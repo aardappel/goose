@@ -81,15 +81,34 @@ beyond the bump pointers themselves.
 
 ## 2. Lexical structure and syntax style
 
-C/Rust-flavored syntax: `{}` blocks, `//` and `/* */` comments,
-semicolon-terminated statements, postfix type annotations (`x: T`).
-Identifiers `[A-Za-z_][A-Za-z0-9_]*`. Integer literals: decimal and `0x` hex;
-float literals with `.`; character literals `'a'` are integer constants;
-string literals `"..."` with escapes `\n \t \r \\ \" \'`.
+C/Rust-flavored syntax: `{}` blocks, `//` and `/* */` comments (block comments
+nest), semicolon-terminated statements, postfix type annotations (`x: T`).
+Identifiers `[A-Za-z_][A-Za-z0-9_]*`.
+
+Literals:
+
+* Integer: decimal and `0x` hex; the full unsigned 64-bit range is accepted
+  (values above `int.max` are carried as bit patterns, §6.2). Character
+  literals `'a'` are integer constants.
+* Float: with `.` and/or a decimal exponent (`1.5`, `2.5e-3`); C99-style hex
+  floats with a mandatory binary exponent (`0x1.8p3`). A `.` starts a
+  fraction only when a digit follows, so `1..2` lexes as a range.
+* String `"..."`, with escapes `\n \t \r \0 \\ \" \' \xNN` (two hex digits).
 
 The language is **expression-oriented**: `if`, `match`, and `block` are
 expressions; a block's value is its trailing expression. Assignment and
 `++`/`--` are *statements*, not expressions.
+
+**Statement termination.** Expression statements end with `;`, but a
+statement that *is* a block-ended construct — `if`, `match`, `block`, the
+loops, `guard … else { }`, a nested `fn`, or a call with a trailing function
+block (§7.6) — needs none. Such a statement ends at its closing `}`:
+operators never continue it (`foo(1) { it }` followed by `-x;` is two
+statements), and using one as an *operand* requires parens
+(`let v = (if c { 1 } else { 2 }) + 3;`). A redundant `;` after a block is
+harmless. Trailing commas are allowed in every comma-separated bracketed
+list: struct/array literals, call arguments, parameter and generic lists,
+field lists, match arms.
 
 Type syntax is postfix throughout: `T[k]` array of T, `T&` reference to T,
 `T[:]` slice of T, `T?` optional T, `T&<u8>` relative reference,
@@ -162,11 +181,11 @@ data...]`, inline, packed (exact layouts in Appendix C).
 
 | Type | Class | Stored metadata | Notes |
 |---|---|---|---|
-| `T[k]` | fixed | none | `k` a compile-time constant |
+| `T[k]` | fixed | none | `k` a compile-time constant expression (literals, named constants, arithmetic) |
 | `T[]` | variable | length (`u32` default) | size chosen at construction |
-| `T[u8]` etc. | variable | length of given int type | explicit length field type |
+| `T[u8]` etc. | variable | length of given unsigned int type | explicit length field type: `u8`–`u64` only |
 | `T[varint]` | variable | varint length | most compact |
-| `T[..k]` | fixed | length only (smallest int type fitting `k`) | capacity `k` is static; in-place grow/shrink up to `k` |
+| `T[..k]` | fixed | length only (smallest int type fitting `k`) | capacity `k` is static (constant expression); in-place grow/shrink up to `k` |
 | `T[..]` | variable | capacity + length (`u32` default) | capacity chosen at construction; in-place grow/shrink up to it |
 | `T[>..]` | resizable (grow-only) | length | element region tops a data stack; grow = bump |
 | `T[>..<]` | resizable (grow-shrink) | length | as above, may also shrink |
@@ -334,7 +353,9 @@ pop/push reuse (§5.3).
 
 A relative reference is a storage form of reference constrained to point
 within the *same enclosing array/pool* as the location storing it. Spelled
-`T&<u8>`, `T&<u16>`, `T&<u32>`, `T&<u64>`, `T&<varint>`.
+`T&<u8>`, `T&<u16>`, `T&<u32>`, `T&<u64>`, `T&<varint>` — widths are spelled
+unsigned (or `varint`), like array length field types, even though the
+stored offset is signed.
 
 * Stored as a self-relative signed offset of the given width (`varint`
   offsets use the signed zigzag encoding, §3.6). Loading one yields an
@@ -525,8 +546,10 @@ created).
 ### 5.4 `reusable` arrays (safe allocation escape hatch)
 
 A grow-only resizable local of fixed-size elements may be declared
-`reusable`. The compiler pairs it with a hidden freelist (itself a small
-resizable of indices, on its own stack, counted in N):
+`reusable` (the keyword prefixes the declaration:
+`reusable var pool: Slot[>..] = [];`, also valid on globals). The compiler
+pairs it with a hidden freelist (itself a small resizable of indices, on its
+own stack, counted in N):
 
 * `a.alloc_index(v) -> int` — index of a slot: a freelist slot if available,
   else a fresh `push`.
@@ -782,10 +805,21 @@ arguments, reference roots (§9.2), writability provenances (§9.5), static
 function values, destination stacks). Errors are reported at the offending
 instantiation **with the compile-time call chain** — the whole-program,
 call-graph-order compiler can always show which call path produced the
-failing instantiation. Explicit `<T>` lists are allowed but normally
-inferred from arguments. Passing arrays by reference is the generic way to
-write mutating range algorithms (each array-family type instantiates its own
-copy); slices are the uniform non-mutating way.
+failing instantiation.
+
+**Call-site type arguments.** Type arguments are inferred from the argument
+types whenever they appear in the parameter list: `fn foo<T>(x: T)` is
+called as `foo(1)`, never `foo<int>(1)` — the typechecker must support this
+for both `<T>`-style and untyped (implicitly generic) parameters. An
+explicit list `f<int>(x)` is allowed, and *needed* only when no argument
+mentions the parameter (e.g. `qget<int>()`). Syntactically, `f<` commits to
+a type argument list only when the `<…>` is immediately followed by `(` (or
+`{` for a struct literal, `Pair<int> { … }`); otherwise `<` is the
+comparison operator.
+
+Passing arrays by reference is the generic way to write mutating range
+algorithms (each array-family type instantiates its own copy); slices are
+the uniform non-mutating way.
 
 ### 7.8 Recursion
 
@@ -1033,10 +1067,11 @@ convention: Appendix C.
 
 ### 11.1 Modules and globals
 
-* One program, compiled whole. `import name;` includes another file once
-  (path relative to the importing file); all declarations are public in v1;
-  name collisions are errors (no namespacing yet). Top-level declarations
-  are order-independent.
+* One program, compiled whole. `import a.b.c;` includes the file `a/b/c.goose`
+  once, resolved relative to the *main file being compiled*; the form
+  `import .a.b;` (leading dot) resolves relative to the *importing file*
+  instead. All declarations are public in v1; name collisions are errors (no
+  namespacing yet). Top-level declarations are order-independent.
 * Globals are declared like locals (`let`/`var`, any type including
   resizable). Semantically the whole program runs inside an implicit
   outermost scope owning them: they participate in the depth check (§9.2) as
@@ -1147,8 +1182,8 @@ whole-resizable assignment (§4.4). Deletions use tombstones or the
 
 ```goose
 enum Node { Num { v: flt }, Add { l: Node..&<u16>, r: Node..&<u16> } }
-rec fn eval(n: Node.Num&) -> flt { n.v }
-rec fn eval(n: Node.Add&) -> flt { eval(n.l) + eval(n.r) }
+recursive fn eval(n: Node.Num&) -> flt { n.v }
+recursive fn eval(n: Node.Add&) -> flt { eval(n.l) + eval(n.r) }
 ```
 
 ### A.5 Long-distance errors
@@ -1197,7 +1232,7 @@ Collected from the design discussion; each needs future resolution work.
 11. **FFI** — `extern fn` boundary rules (what types may cross; flat types
     again?).
 12. **Open syntax details** — trailing-block parameter form (`it` vs
-    `x =>`); `rec fn` annotation verbosity (how much of the signature/
+    `x =>`); `recursive fn` annotation verbosity (how much of the signature/
     roots/destinations must be spelled).
 13. **Labels for `break`** — if early-out patterns demand them.
 14. **Stdlib math types** — `float3` etc.; which named ops are overloads vs
@@ -1286,7 +1321,7 @@ unmapped gap after each region turns runaway growth into a safe abort.
 ```
 program     := topdecl*
 topdecl     := import | struct | enum | typealias | fndecl | globaldecl
-import      := "import" ident ";"
+import      := "import" "."? ident ("." ident)* ";"
 struct      := "struct" ident generics? "{" fieldlist "}"
 enum        := "enum" ident generics? "{" variant ("," variant)* ","? "}"
 variant     := ident ( "{" fieldlist "}" )?
@@ -1295,29 +1330,31 @@ field       := "let"? ident ":" type ("=" expr)? | "pad" intlit?
 typealias   := "type" ident "=" type ";"
 generics    := "<" ident (":" type)? ("," ident (":" type)?)* ">"
 
-fndecl      := "rec"? ("fn" | "thread_fn") ident generics?
+fndecl      := "recursive"? ("fn" | "thread_fn") ident generics?
                "(" params? ")" ("->" rettypes)? blockexpr
-params      := param ("," param)*
+params      := param ("," param)* ","?
 param       := "var"? ident (":" type)?          // untyped => generic
 rettypes    := type ("," type)*                  // no parens in declarations
-globaldecl  := ("let" | "var") ident (":" type)? "=" expr ";"
+globaldecl  := "reusable"? ("let" | "var") ident (":" type)? "=" expr ";"
 
-type        := prim | ident tyargs? | type postfix
+type        := prim | ident tyargs? | "(" type ")" | type postfix
 prim        := "int"|"flt"|"bool"|"varint"|"i8"|…|"u64"|"f32"|"f64"
              | "fn" ( "(" types? ")" ("->" (type | "(" types ")"))? )?
-tyargs      := "<" type ("," type)* ">"
-postfix     := "[" intlit "]"                    // fixed array
-             | "[" inttype? "]"                  // variable array
-             | "[" ".." intlit? "]"              // limited
+tyargs      := "<" type ("," type)* ","? ">"
+uint        := "u8"|"u16"|"u32"|"u64"|"varint"
+postfix     := "[" expr "]"                      // fixed array (const expr)
+             | "[" uint? "]"                     // variable array
+             | "[" ".." expr? "]"                // limited (const expr)
              | "[" ">" ".." "<"? "]"             // resizable
              | "[" ":" "]"                       // slice
-             | "&" ("<" (inttype|"varint") ">")? // reference / relative
+             | "&" ("<" uint ">")?               // reference / relative
              | "?"                               // optional (any type)
              | ".."                              // variable-mode ADT
              | "." ident                         // variant type
 
 stmt        := decl | assign | incdec | exprstmt
-decl        := ("let" | "var") identlist (":" type)? ("=" exprlist)? ";"
+decl        := "reusable"? ("let" | "var") identlist (":" type)?
+               ("=" exprlist)? ";"
 assign      := lvalue assignop expr ";"          // = += -= *= /= %= &= |= ^=
 incdec      := lvalue ("++" | "--") ";"
 exprstmt    := expr ";"
@@ -1332,7 +1369,7 @@ iter        := expr | expr ".." expr
 jumps       := "return" exprlist? ("from" ident)? | "break" expr? | "continue"
 matchexpr   := "match" expr "{" arm ("," arm)* ","? "}"
 arm         := pattern "=>" expr
-pattern     := ident ident? | intlit (".." intlit)? | "_"
+pattern     := ident ident? | "-"? intlit (".." "-"? intlit)? | "_"
 blockexpr   := "{" stmt* expr? "}"
 
 binary      := (precedence climbing; tightest → loosest)
@@ -1342,17 +1379,23 @@ binary      := (precedence climbing; tightest → loosest)
    levels   := * / %  →  + -  →  << >>  →  < <= > >=  →  == !=
              →  &  →  ^  →  |  →  &&  →  ||
 primary     := literal | ident | "(" expr ")" | "copy" "(" expr ")"
-             | arraylit | structlit
+             | arraylit | structlit | genericcall
+genericcall := ident tyargs "(" args ")" trailingblock?
 trailingblock := "{" (params "=>")? stmt* expr? "}"
 sliceargs   := expr | bound? ".." bound?         // bound := "^"? expr
-arraylit    := "[" (exprlist | expr ";" expr)? "]"
-structlit   := (ident | varianttype) "{" (fieldinit ("," fieldinit)*)? "}"
+args        := (expr ("," expr)* ","?)?
+arraylit    := "[" (exprlist ","? | expr ";" expr)? "]"
+structlit   := (ident tyargs? | varianttype) "{" (fieldinit ("," fieldinit)* ","?)? "}"
 fieldinit   := (ident ":")? expr
 ```
 
 Known parse notes: `structlit` vs `trailingblock` vs `blockexpr` ambiguity
-is resolved as in Rust (no struct literals directly in `if`/`while`/`match`
-scrutinee position); `T&<u8>` tokenizes as `&` `<` in type context only;
-`a..b` ranges exist only in `for` headers, slice brackets, and match arms;
-multiple return types in a function *type* (not a declaration header)
-require parens around the list.
+is resolved as in Rust (no struct literals or trailing blocks directly in
+`if`/`while`/`for`/`match`/`guard` scrutinee position); a statement that is
+a block-ended construct needs no `;` and ends at its `}` (§2); `f<`
+commits to a type argument list only when followed by `(` or `{` (§7.7),
+otherwise `<` is comparison; `T&<u8>` tokenizes as `&` `<` in type context
+only; `a..b` ranges exist only in `for` headers, slice brackets, and match
+arms; multiple return types in a function *type* (not a declaration header)
+require parens around the list; `T&?` parses to the same type as `T?`, and
+`?` on an already-optional type is an error.
