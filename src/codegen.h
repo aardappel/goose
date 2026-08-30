@@ -47,7 +47,6 @@ struct Dst {
     string lenlv;
 };
 
-
 struct CodeGen {
     Ast &ast;
 
@@ -93,7 +92,22 @@ struct CodeGen {
         return s;
     }
 
-    string WhereStr(Line l) { return CStr(Where(l)); }
+    // Abort locations: the file path becomes one static string per source
+    // file in the generated code; call sites pass it plus the line number.
+    map<int, string> filerefs;
+
+    string LocArgs(Line l) {
+        auto it = filerefs.find(l.fileidx);
+        if (it == filerefs.end()) {
+            auto f = l.fileidx >= 0 && l.fileidx < (int)ast.sources.size()
+                         ? ast.sources[l.fileidx].first : string("?");
+            for (auto &c : f) if (c == '\\') c = '/';
+            auto name = Unique(cat("gs_file", filerefs.size()));
+            Append(data, "static const char ", name, "[] = ", CStr(f), ";\n");
+            it = filerefs.emplace(l.fileidx, name).first;
+        }
+        return cat(it->second, ", ", l.line);
+    }
 
     // ------------------------------------------------------------------
     // Type utilities on concrete (post-typecheck) types. Sizes of fixed and
@@ -1207,7 +1221,7 @@ struct CodeGen {
 
     // The C parameter list of a spec, as (type, name) decl strings; also
     // registers the parameter VarDefs' names and stack expressions.
-    string SigParams(FnSpec *sp, bool decls) {
+    string SigParams(FnSpec *sp, bool decls, bool er = false) {
         auto &si = sinfo[sp];
         string s;
         auto add = [&](const string &d) {
@@ -1256,9 +1270,10 @@ struct CodeGen {
             }
         }
         for (size_t i = 0; i < sp->rets.size(); i++) {
-            if (IsResz(sp->rets[i])) {
+            if (IsResz(sp->rets[i]) || (er && i == 0)) {
                 // Elements go to the destination stack; the count comes back
-                // through the length out-parameter (C.3's metadata form).
+                // through the length out-parameter (C.3's element-run form —
+                // always for resizables, on demand for variable arrays).
                 add(cat("gs_stack *gs_dst", i));
                 add(cat("int64_t *gs_rl", i));
             } else if (IsBytesT(sp->rets[i])) {
@@ -1283,6 +1298,9 @@ struct CodeGen {
 
     FnSpec *curspec = nullptr;
     SpecInfo *curinfo = nullptr;
+    bool emiter = false;                 // Emitting a spec's element-run twin.
+    unordered_map<FnSpec *, string> ernames;   // "" = ineligible.
+    vector<FnSpec *> erqueue;
     string body;
     int ind = 1;
     int tmpn = 0;
@@ -1296,7 +1314,6 @@ struct CodeGen {
     set<const VarDef *> fvptr;           // Captured fixed vars arriving as pointers.
     set<const VarDef *> nrvovars;        // Locals aliased to a return destination.
     vector<string> fdstsaves;            // Epilogue restores for gs_fdst_* saves.
-
 
     enum { SC_PLAIN, SC_FN, SC_LOOP, SC_BLOCK, SC_IB, SC_STMT };
     struct CScope {
@@ -1717,7 +1734,7 @@ struct CodeGen {
         auto statlen = lv.t->kind == TY_ARRAY && lv.t->arr->akind == A_FIXED
                            ? ArrSize(lv.t->arr) : -1;
         if (il && statlen >= 0 && il->val >= 0 && il->val < statlen) ix = idx;
-        else ix = cat("GS_IDX(", idx, ", ", v.len, ", ", WhereStr(ln), ")");
+        else ix = cat("GS_IDX(", idx, ", ", v.len, ", ", LocArgs(ln), ")");
         if (v.typedelems) {
             Loc r;
             r.t = v.elem;
@@ -1913,7 +1930,7 @@ struct CodeGen {
         auto nn = T();
         L("int64_t ", nn, " = ", v.len, ";");
         L("if (", nn, " > ", ArrSize(et->arr),
-          ") gs_abort(\"limited array capacity exceeded\", ", WhereStr(ln), ");");
+          ") gs_abort(GS_E_CAPACITY, ", LocArgs(ln), ");");
         auto tv = T();
         L(CT(et), " ", tv, ";");
         L(tv, ".len = (", IntCT(LenStore(et->arr)), ")", nn, ";");
@@ -1989,58 +2006,6 @@ struct CodeGen {
         if (d.k == 1) { L(d.s, " = ", GenXD(n, d.t), ";"); return; }
         if (IsVoidT(n->exprtype)) { Fail(n->line, "internal: valueless leaf"); }
         L("(void)(", GenVal(n), ");");
-    }
-
-
-    // Fixed struct/variant/ADT literal as a C value. Relative-reference
-    // fields store against the member's own address (only meaningful when the
-    // value stays put; the typechecker's root rules keep this sane).
-    string GenFixedStructLit(StructLit *sl) {
-        auto et = sl->exprtype;
-        auto tv = T();
-        L(CT(et), " ", tv, ";");
-        auto fieldset = [&](const string &base, const vector<Field> &fields,
-                            const vector<TypeExpr *> &ftypes, const vector<Node *> &defaults) {
-            for (size_t i = 0; i < fields.size(); i++) {
-                if (fields[i].ispad) continue;
-                Node *init = nullptr;
-                for (size_t k = 0; k < sl->fieldindices.size(); k++)
-                    if (sl->fieldindices[k] == (int)i) init = sl->inits[k].val;
-                if (!init && i < defaults.size() && defaults[i]) init = defaults[i];
-                auto ft = ftypes[i];
-                auto path = cat(base, ".", Sanitize(fields[i].name));
-                if (!init) {   // Omitted optional: null.
-                    assert(ft->kind == TY_REF);
-                    L("memset(&", path, ", 0, sizeof(", path, "));");
-                    continue;
-                }
-                if (ft->kind == TY_REF && ft->ref->lenstorage >= 0) {
-                    EmitRelStoreAt(cat("(uint8_t *)&", path), ft, GenX(init), sl->line);
-                    continue;
-                }
-                GenAny(init, Dst { 1, path });
-            }
-        };
-        if (et->kind == TY_STRUCT) {
-            auto si = SI(et);
-            fieldset(tv, si->st->fields, si->ftypes, si->defaults);
-            return tv;
-        }
-        if (et->kind == TY_VARIANT) {
-            auto ei = EIVar(et);
-            auto vi = VarIdx(ei->en, et->var->variant);
-            if (ei->en->variants[vi].fields.empty()) L("memset(&", tv, ", 0, sizeof(", tv, "));");
-            fieldset(tv, ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi]);
-            return tv;
-        }
-        assert(et->kind == TY_ENUM && !et->enu->varmode && sl->variant);
-        auto ei = EIOf(et);
-        auto vi = VarIdx(ei->en, sl->variant);
-        L(tv, ".tag = ", TagConst(ei, vi), ";");
-        if (!ei->en->variants[vi].fields.empty())
-            fieldset(cat(tv, ".u.v_", Sanitize(ei->en->variants[vi].name)),
-                     ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi]);
-        return tv;
     }
 
     string GenFixedArrayLit(ArrayLit *al) {
@@ -2140,22 +2105,6 @@ struct CodeGen {
         return name;
     }
 
-    string GenStrVal(StrLit *s) {
-        auto et = s->exprtype;
-        if (et->kind == TY_SLICE) {
-            auto t = T();
-            L(CT(et), " ", t, " = { ", StrRaw(s->val), ", ", s->val.size(), " };");
-            return t;
-        }
-        // A fixed u8[k] array value.
-        assert(et->kind == TY_ARRAY && et->arr->akind == A_FIXED);
-        auto t = T();
-        L(CT(et), " ", t, ";");
-        if (!s->val.empty())
-            L("memcpy(", t, ".e, ", StrRaw(s->val), ", ", s->val.size(), ");");
-        return t;
-    }
-
     string GenStrBytes(StrLit *s) {
         auto et = s->exprtype;
         assert(et->kind == TY_ARRAY);
@@ -2191,113 +2140,6 @@ struct CodeGen {
 
     // ------------------------------------------------------------------
     // Binary operators. Operand exprtypes are already decayed/widened.
-
-    string GenBinary(Binary *b) {
-        auto op = b->op;
-        if (op == T_ANDAND || op == T_OROR) {
-            // Short-circuit with left-to-right statement emission: the right
-            // operand's statements may only run when the left allows.
-            auto l = GenTruth(b->left);
-            auto t = T();
-            L("uint8_t ", t, " = (uint8_t)(", l, op == T_ANDAND ? " != 0);" : " != 0);");
-            L("if (", op == T_ANDAND ? t : cat("!", t), ") {");
-            ind++;
-            auto r = GenTruth(b->right);
-            L(t, " = (uint8_t)(", r, " != 0);");
-            ind--;
-            L("}");
-            return t;
-        }
-        auto lt = OperandT(b->left->exprtype), rt = OperandT(b->right->exprtype);
-        // Null tests (§3.8).
-        if (op == T_EQ || op == T_NEQ) {
-            auto lnull = Is<NullLit>(b->left) != nullptr, rnull = Is<NullLit>(b->right) != nullptr;
-            if (lnull || rnull) {
-                if (lnull && rnull) return op == T_EQ ? "1" : "0";
-                auto other = lnull ? b->right : b->left;
-                // A narrowed optional variable's exprtype may already be the
-                // decayed pointee; the null test reads the reference itself.
-                string x;
-                TypeExpr *ot = other->exprtype;
-                if (auto id = Is<Ident>(other); id && id->vdef && IsOpt(id->vdef->type)) {
-                    auto lv = VarLoc(id->vdef);
-                    x = lv.s;
-                    ot = id->vdef->type;
-                } else {
-                    x = GenX(other);
-                }
-                auto addr = ot->kind == TY_REF && IsFatPointee(ot->ref->sub)
-                                ? cat(x, ".addr") : x;
-                return cat("(", addr, op == T_EQ ? " == NULL)" : " != NULL)");
-            }
-        }
-        // Resizable operands compare as element ranges through their views.
-        if ((op == T_EQ || op == T_NEQ) && IsResz(OperandT(b->left->exprtype))) {
-            if (b->left->exprtype->kind != b->right->exprtype->kind ||
-                OperandT(b->left->exprtype)->kind != TY_ARRAY)
-                Fail(b->line, "comparing resizable structs is unsupported");
-            auto la = GenLoc(b->left);
-            if (la.t->kind == TY_REF) DerefLoc(la, b->line);
-            auto ra = GenLoc(b->right);
-            if (ra.t->kind == TY_REF) DerefLoc(ra, b->line);
-            auto lvw = ArrayView(la, b->line), rvw = ArrayView(ra, b->line);
-            auto eq = GenRangeEq(lvw.elem, lvw.elems, lvw.len, rvw.elems, rvw.len);
-            return op == T_EQ ? eq : cat("(uint8_t)(!", eq, ")");
-        }
-        // Order of evaluation is left-to-right (§2): if the right operand
-        // needs statements, the left must land in a temp first.
-        auto leftfirst = HasStmts(b->right);
-        string l, r;
-        if (leftfirst) {
-            l = GenPureVal(b->left);
-            r = GenVal(b->right);
-        } else {
-            l = GenVal(b->left);
-            r = GenVal(b->right);
-        }
-        auto isint = lt->kind == TY_INT;
-        auto isflt = lt->kind == TY_FLT;
-        auto f32 = b->exprtype && b->exprtype->kind == TY_FLT &&
-                   b->exprtype->fltstorage == FS_F32;
-        switch (op) {
-            case T_PLUS: case T_MINUS: case T_MUL: case T_DIV: case T_MOD: {
-                if (isflt) {
-                    if (op == T_MOD) return cat(f32 ? "fmodf(" : "fmod(", l, ", ", r, ")");
-                    const char *o = op == T_PLUS ? " + " : op == T_MINUS ? " - "
-                                    : op == T_MUL ? " * " : " / ";
-                    return cat("(", l, o, r, ")");
-                }
-                if (isint) {
-                    switch (op) {
-                        case T_PLUS:  return cat("GS_ADD(", l, ", ", r, ")");
-                        case T_MINUS: return cat("GS_SUB(", l, ", ", r, ")");
-                        case T_MUL:   return cat("GS_MUL(", l, ", ", r, ")");
-                        case T_DIV:   return cat("gs_idiv(", l, ", ", r, ", ",
-                                                 WhereStr(b->line), ")");
-                        default:      return cat("gs_imod(", l, ", ", r, ", ",
-                                                 WhereStr(b->line), ")");
-                    }
-                }
-                // Elementwise math on identical struct/fixed-array types (§6.1).
-                return GenElemwise(b, l, r);
-            }
-            case T_LT: case T_GT: case T_LTEQ: case T_GTEQ: {
-                const char *o = op == T_LT ? " < " : op == T_GT ? " > "
-                                : op == T_LTEQ ? " <= " : " >= ";
-                return cat("(uint8_t)(", l, o, r, ")");
-            }
-            case T_EQ: case T_NEQ: {
-                auto eq = GenEquality(lt, rt, b->left, b->right, l, r);
-                return op == T_EQ ? eq : cat("(uint8_t)(!", eq, ")");
-            }
-            case T_BITAND: return cat("(", l, " & ", r, ")");
-            case T_BITOR:  return cat("(", l, " | ", r, ")");
-            case T_XOR:    return cat("(", l, " ^ ", r, ")");
-            case T_SHL:    return cat("GS_SHL(", l, ", ", r, ")");
-            case T_SHR:    return cat("GS_SHR(", l, ", ", r, ")");
-            default: assert(false); return l;
-        }
-    }
 
     // Operand exprtype as an operator sees it: a spliced reference reads as
     // its pointee (widened like any load).
@@ -2416,9 +2258,9 @@ struct CodeGen {
                             case T_MINUS: x = cat("GS_SUB(", a, ", ", c, ")"); break;
                             case T_MUL:   x = cat("GS_MUL(", a, ", ", c, ")"); break;
                             case T_DIV:   x = cat("gs_idiv(", a, ", ", c, ", ",
-                                                  WhereStr(b->line), ")"); break;
+                                                  LocArgs(b->line), ")"); break;
                             default:      x = cat("gs_imod(", a, ", ", c, ", ",
-                                                  WhereStr(b->line), ")"); break;
+                                                  LocArgs(b->line), ")"); break;
                         }
                         L(tv, path, " = (", CT(tt), ")", x, ";");
                     }
@@ -2454,72 +2296,6 @@ struct CodeGen {
     // Fixed array member paths need ".e" prefixes; adjust: the recursion above
     // treats a top-level fixed array via TY_ARRAY (paths ".e[i]"), fine.
 
-    // `as` range-checks in debug builds (GS_RANGE and friends are identity
-    // casts unless the C is compiled with -DGS_DEBUG=1); `as!` always wraps
-    // or truncates (§6.3).
-    string GenCast(AsCast *ac) {
-        auto x = GenX(ac->child);
-        auto st = ac->child->exprtype;
-        auto tt = ac->exprtype;
-        if (tt->kind == TY_INT) {
-            auto is = tt->intstorage;
-            auto iv = st->kind == TY_FLT
-                          ? (ac->unchecked ? cat("gs_f2iwrap(", x, ")")
-                                           : cat("GS_F2I(", x, ")"))
-                          : cat("(", x, ")");
-            if (ac->unchecked || IntSize(is) == 8)
-                return cat("(", IntCT(is), ")", iv);
-            int64_t lo = 0, hi = 0;
-            switch (CanI(is)) {
-                case IS_I8:  lo = -128; hi = 127; break;
-                case IS_I16: lo = -32768; hi = 32767; break;
-                case IS_I32: lo = INT32_MIN; hi = INT32_MAX; break;
-                case IS_U8:  hi = 255; break;
-                case IS_U16: hi = 65535; break;
-                default:     hi = UINT32_MAX; break;
-            }
-            return cat("(", IntCT(is), ")GS_RANGE(", iv, ", ", IntStr(lo), ", ", IntStr(hi),
-                       ")");
-        }
-        assert(tt->kind == TY_FLT);
-        if (tt->fltstorage == FS_F32) {
-            if (!ac->unchecked && st->kind == TY_FLT && st->fltstorage != FS_F32)
-                return cat("GS_F2F32(", x, ")");
-            return cat("(float)(", x, ")");
-        }
-        if (!ac->unchecked && st->kind == TY_INT) return cat("GS_I2F(", x, ")");
-        return cat("(double)(", x, ")");
-    }
-
-    string GenDotX(Dot *d) {
-        if (d->variantconst) {
-            auto et = d->exprtype;
-            auto ei = d->einst;
-            auto vi = VarIdx(ei->en, d->variantconst);
-            if (et->kind == TY_ENUM && !et->enu->varmode) {
-                auto t = T();
-                L(CT(et), " ", t, ";");
-                L(t, ".tag = ", TagConst(ei, vi), ";");
-                return t;
-            }
-            Fail(d->line, "variant constant in a non-fixed context reached GenX");
-        }
-        if (d->member >= 0) {   // .len / .cap property.
-            auto lv = GenLoc(d->obj);
-            if (lv.t->kind == TY_REF) DerefLoc(lv, d->line);
-            if (lv.t->kind == TY_ARRAY && d->member == B_CAP) {
-                auto &a = *lv.t->arr;
-                assert(a.akind == A_LIMITED);
-                if (ArrSize(lv.t->arr) >= 0) return cat(ArrSize(lv.t->arr));
-                return cat("(int64_t)*(uint32_t *)(", lv.s, ")");
-            }
-            auto v = ArrayView(lv, d->line);
-            return cat("(", v.len, ")");
-        }
-        auto lv = GenLoc(d);
-        return LoadLoc(lv, d->exprtype, d->line);
-    }
-
     string GenSlice(SliceExpr *se) {
         auto lv = GenLoc(se->obj);
         if (lv.t->kind == TY_REF) DerefLoc(lv, se->line);
@@ -2537,7 +2313,7 @@ struct CodeGen {
         auto lov = T(), hiv = T();
         L("int64_t ", lov, " = ", lo, ", ", hiv, " = ", hi, ";");
         L("if (", lov, " < 0 || ", hiv, " < ", lov, " || ", hiv, " > ", lenv,
-          ") gs_abort(\"slice bounds out of range\", ", WhereStr(se->line), ");");
+          ") gs_abort(GS_E_SLICE, ", LocArgs(se->line), ");");
         auto t = T();
         // Adapted contexts (slice constructing an array) leave an array
         // exprtype on the node; the slice value's own type comes from the
@@ -2590,8 +2366,8 @@ struct CodeGen {
         auto bits = IntSize(w) * 8;
         if (bits < 64)
             L("if (", off, " < -(1LL << ", bits - 1, ") || ", off, " >= (1LL << ",
-              bits - 1, ")) gs_abort(\"relative reference offset overflow\", ",
-              WhereStr(ln), ");");
+              bits - 1, ")) gs_abort(GS_E_RELOFF, ",
+              LocArgs(ln), ");");
         L("*(", RelCT(w), " *)(", fa, ") = (", RelCT(w), ")", off, ";");
     }
 
@@ -2775,7 +2551,7 @@ struct CodeGen {
             }
             return;
         }
-        if (auto s2 = Is<StrLit>(n); s2 && IsResz(et)) {
+        if (auto s2 = Is<StrLit>(n); s2 && (IsResz(et) || !lenlv.empty())) {
             // A string literal building a resizable string: raw elements,
             // count into the receiving header.
             assert(!lenlv.empty());
@@ -2787,7 +2563,7 @@ struct CodeGen {
             return;
         }
         if (auto s = Is<StrLit>(n)) {
-            assert(et->kind == TY_ARRAY && et->arr->akind == A_VAR);
+            assert(et->kind == TY_ARRAY && et->arr->akind == A_VAR && lenlv.empty());
             EmitLenStore(stk, LenStore(et->arr), cat(s->val.size()));
             if (!s->val.empty()) {
                 L("memcpy(", stk, "->top, ", StrRaw(s->val), ", ", s->val.size(), ");");
@@ -2831,6 +2607,11 @@ struct CodeGen {
             }
             Fail(n->line, cat("unsupported resizable construction from ", Mangle(lv.t)));
         }
+        if (!lenlv.empty() && et->kind == TY_ARRAY) {
+            // Element-run destination: elements only, count into lenlv.
+            GenArrayFromLoc(lv, et, stk, n->line, lenlv);
+            return;
+        }
         if (TEq(lv.t, et)) {
             assert(!lv.val);
             auto sz = T();
@@ -2853,7 +2634,10 @@ struct CodeGen {
         auto nn = T();
         L("int64_t ", nn, " = ", v.len, ";");
         switch (et->arr->akind) {
-            case A_VAR:     EmitLenStore(stk, LenStore(et->arr), nn); break;
+            case A_VAR:
+                if (!lenlv.empty()) L(lenlv, " = ", nn, ";");
+                else EmitLenStore(stk, LenStore(et->arr), nn);
+                break;
             case A_LIMITED:   // Runtime capacity: chosen as the initial length (v1).
                 L("*(uint32_t *)", stk, "->top = (uint32_t)", nn, ";");
                 L("*(uint32_t *)(", stk, "->top + 4) = (uint32_t)", nn, ";");
@@ -3057,7 +2841,7 @@ struct CodeGen {
             auto t = T();
             L("int64_t ", t, " = ", cv, ";");
             L("if (", t, " < 0 || ", t, " > (int64_t)UINT32_MAX) "
-              "gs_abort(\"invalid capacity\", ", WhereStr(al->line), ");");
+              "gs_abort(GS_E_CAPRANGE, ", LocArgs(al->line), ");");
             L("*(uint32_t *)", stk, "->top = (uint32_t)", t, ";");
             L("*(uint32_t *)(", stk, "->top + 4) = 0;");
             Bump(stk, cat("8 + ", t, " * ", FixedSize(elem)));
@@ -3073,7 +2857,10 @@ struct CodeGen {
         }
         cn = cat(count);
         switch (et->arr->akind) {
-            case A_VAR:     EmitLenStore(stk, LenStore(et->arr), cn); break;
+            case A_VAR:
+                if (!lenlv.empty()) L(lenlv, " = ", cn, ";");
+                else EmitLenStore(stk, LenStore(et->arr), cn);
+                break;
             case A_LIMITED:
                 L("*(uint32_t *)", stk, "->top = ", count, ";");
                 L("*(uint32_t *)(", stk, "->top + 4) = ", count, ";");
@@ -3209,7 +2996,6 @@ struct CodeGen {
         termjump = false;
     }
 
-
     // ------------------------------------------------------------------
     // Loops. Shape: for (<init>; ; <incr>) { [cond exit] body cnt:; restores }
     // Goose break/continue always leave via gotos with explicit watermark
@@ -3243,99 +3029,6 @@ struct CodeGen {
         termjump = false;
     }
 
-    void GenWhile(While *w) {
-        Dst d;
-        GenLoopBody([&]() {
-            auto c = GenTruth(w->cond);
-            auto si = (int)cscopes.size() - 1;
-            // The loop scope has no allocations yet, so a plain goto exits
-            // cleanly; the condition's own temps were allocated in this
-            // scope's compile-time list and are restored... none yet either.
-            L("if (!(", c, ")) goto ", cscopes[si].brklbl, ";");
-            cscopes[si].usedbrk = true;
-        }, w->body, d, w);
-    }
-
-    void GenFor(ForLoop *f) {
-        auto d = Dst {};
-        auto iv = f->vdef ? LocalName(f->vdef) : T();
-        auto ix = f->idxdef ? LocalName(f->idxdef) : "";
-        if (f->iterkind == IK_RANGE) {
-            auto r = Is<RangeExpr>(f->iter);
-            auto lo = GenX(r->lo);
-            auto lov = T();
-            L("int64_t ", lov, " = ", lo, ";");
-            auto hi = GenX(r->hi);
-            auto hiv = T();
-            L("int64_t ", hiv, " = ", hi, ";");
-            if (!ix.empty()) L("int64_t ", ix, " = 0;");
-            GenLoopBody({}, f->body, d, f,
-                        cat("for (int64_t ", iv, " = ", lov, "; ", iv, " < ", hiv, "; ", iv,
-                            "++", ix.empty() ? "" : cat(", ", ix, "++"), ") {"));
-            return;
-        }
-        if (f->iterkind == IK_COUNT) {
-            auto n = GenX(f->iter);
-            auto nv = T();
-            L("int64_t ", nv, " = ", n, ";");
-            if (!ix.empty()) L("int64_t ", ix, " = 0;");
-            GenLoopBody({}, f->body, d, f,
-                        cat("for (int64_t ", iv, " = 0; ", iv, " < ", nv, "; ", iv, "++",
-                            ix.empty() ? "" : cat(", ", ix, "++"), ") {"));
-            return;
-        }
-        // Arrays and slices. The length re-reads each iteration (growth during
-        // iteration is legal, §5.2); element access goes through the view.
-        auto lv = GenLoc(f->iter);
-        if (lv.t->kind == TY_REF) DerefLoc(lv, f->line);
-        auto v = ArrayView(lv, f->line);
-        auto gi = ix.empty() ? T() : ix;
-        auto et = f->vdef->type;
-        if (!IsFix(v.elem)) {
-            // Sequential walk, &-binding only; the cursor advances in the
-            // increment clause so `continue` behaves.
-            auto p = T();
-            L("uint8_t *", p, " = (uint8_t *)(", v.elems, ");");
-            GenLoopBody([&]() {
-                if (f->byref) L("uint8_t *", iv, " = ", p, ";");
-            }, f->body, d, f,
-                cat("for (int64_t ", gi, " = 0; ", gi, " < (", v.len, "); ", gi, "++, ", p,
-                    " += ", SizeX(v.elem, p), ") {"));
-            return;
-        }
-        auto esz = FixedSize(v.elem);
-        GenLoopBody([&]() {
-            string elem = v.typedelems
-                              ? cat(v.elems, "[", gi, "]")
-                              : cat("(*(", CT(v.elem), " *)((", v.elems, ") + ", gi, " * ",
-                                    esz, "))");
-            if (f->byref) L(CT(et), " ", iv, " = &", elem, ";");
-            else L(CT(et), " ", iv, " = ", elem, ";");
-        }, f->body, d, f,
-            cat("for (int64_t ", gi, " = 0; ", gi, " < (", v.len, "); ", gi, "++) {"));
-    }
-
-    void GenGuard(Guard *g) {
-        auto c = GenTruth(g->cond);
-        L("if (!(", c, ")) {");
-        ind++;
-        PushSc(SC_PLAIN);
-        if (g->elseb) {
-            GenBlockInner(g->elseb, Dst {});
-        } else if (g->implicitexit == 1) {
-            GenBreakPath(nullptr, g->line);
-        } else {
-            GenNormalReturn({}, g->line);
-        }
-        cscopes.back().saves.clear();   // The block diverged.
-        PopSc();
-        ind--;
-        L("}");
-        termjump = false;
-    }
-
-    void GenBreak(Break *b) { GenBreakPath(b->val, b->line); }
-
     void GenBreakPath(Node *val, Line ln) {
         auto si = -1;
         for (auto i = (int)cscopes.size() - 1; i >= 0; i--) {
@@ -3351,168 +3044,8 @@ struct CodeGen {
         (void)ln;
     }
 
-    void GenContinue(Node *n) {
-        auto si = -1;
-        for (auto i = (int)cscopes.size() - 1; i >= 0; i--) {
-            if (cscopes[i].kind == SC_LOOP) { si = i; break; }
-            if (cscopes[i].kind == SC_FN) break;
-        }
-        assert(si >= 0);
-        EmitExitRestores(si + 1);
-        cscopes[si].usedcnt = true;
-        L("goto ", cscopes[si].cntlbl, ";");
-        termjump = true;
-        (void)n;
-    }
-
-    // ------------------------------------------------------------------
-    // match (§8.1).
-
-    void GenMatch(MatchExpr *m, Dst d) {
-        auto st = m->scrutinee->exprtype;
-        TypeExpr *enumtype = nullptr;
-        auto isref = false;
-        if (st->kind == TY_REF && st->ref->sub->kind == TY_ENUM) {
-            enumtype = st->ref->sub;
-            isref = true;
-        } else if (st->kind == TY_ENUM) {
-            enumtype = st;
-        }
-        if (!enumtype) {   // Integer match: an if-chain in arm order.
-            auto x = GenPure(m->scrutinee);
-            auto first = true;
-            for (auto &arm : m->arms) {
-                if (arm.pat.kind == P_WILDCARD) {
-                    L(first ? "{" : "} else {");
-                } else if (arm.hi == arm.lo + 1) {
-                    L(first ? "" : "} else ", "if (", x, " == ", IntStr(arm.lo), ") {");
-                } else {
-                    L(first ? "" : "} else ", "if (", x, " >= ", IntStr(arm.lo), " && ", x,
-                      " < ", IntStr(arm.hi), ") {");
-                }
-                first = false;
-                ind++;
-                PushSc(SC_PLAIN);
-                GenAny(arm.body, d);
-                PopSc();
-                ind--;
-            }
-            L("}");
-            termjump = false;
-            return;
-        }
-        auto varmode = enumtype->enu->varmode;
-        auto ei = EIOf(enumtype);
-        auto ts = TagSize(ei->en);
-        string p, sv, tag;
-        if (varmode || isref) {
-            if (isref) {
-                auto x = GenPure(m->scrutinee);
-                p = varmode ? x : cat("((uint8_t *)", x, ")");
-            } else {
-                p = GenPtr(m->scrutinee);
-            }
-            tag = varmode ? cat("*(", IntCT(TagStore(ei->en)), " *)", p)
-                          : cat("((", CT(enumtype), " *)", p, ")->tag");
-        } else {
-            sv = GenPure(m->scrutinee);
-            tag = cat(sv, ".tag");
-        }
-        L("switch (", tag, ") {");
-        auto haswild = false;
-        for (auto &arm : m->arms) {
-            if (arm.pat.kind == P_WILDCARD) {
-                haswild = true;
-                L("default: {");
-            } else {
-                auto vi = VarIdx(ei->en, arm.variant);
-                L("case ", TagConst(ei, vi), ": {");
-            }
-            ind++;
-            PushSc(SC_PLAIN);
-            if (arm.binder) {
-                auto vi = VarIdx(ei->en, arm.variant);
-                auto vt = VariantType(enumtype, vi);
-                auto bn = LocalName(arm.binder);
-                string payload = varmode
-                    ? cat("(", p, " + ", ts, ")")
-                    : (isref ? cat("((uint8_t *)&((", CT(enumtype), " *)", p, ")->u.v_",
-                                   Sanitize(arm.variant->name), ")")
-                             : "");
-                if (arm.pat.byref) {
-                    // Variable-mode payloads only (§8.1).
-                    if (IsBytesT(vt)) L("uint8_t *", bn, " = ", payload, ";");
-                    else L(CT(vt), " *", bn, " = (", CT(vt), " *)(", payload, ");");
-                } else if (IsBytesT(vt)) {
-                    // By-value copy of a variable payload onto its own stack.
-                    auto stk = AllocStk(true);
-                    L("uint8_t *", bn, " = ", stk, "->top;");
-                    SaveBase(true, stk, bn);
-                    vstk[arm.binder] = stk;
-                    auto sz = T();
-                    L("int64_t ", sz, " = ", SizeX(vt, payload), ";");
-                    L("memcpy(", stk, "->top, ", payload, ", (size_t)", sz, ");");
-                    Bump(stk, sz);
-                } else if (arm.variant->fields.empty()) {
-                    L(CT(vt), " ", bn, " = {0};");
-                } else if (!payload.empty()) {
-                    L(CT(vt), " ", bn, " = *(", CT(vt), " *)(", payload, ");");
-                } else {
-                    L(CT(vt), " ", bn, " = ", sv, ".u.v_", Sanitize(arm.variant->name), ";");
-                }
-            }
-            GenAny(arm.body, d);
-            PopSc();
-            ind--;
-            L("} break;");
-        }
-        if (!haswild)
-            L("default: gs_abort(\"corrupt ADT tag\", ", WhereStr(m->line), ");");
-        L("}");
-        termjump = false;
-    }
-
     // ------------------------------------------------------------------
     // Declarations and assignment.
-
-    void GenVarDecl(VarDecl *vd) {
-        // Multi-name binding from one call: wire the call's channels straight
-        // into the locals.
-        if (vd->names.size() > 1 && vd->inits.size() == 1) {
-            auto c = Is<Call>(vd->inits[0]);
-            assert(c);
-            vector<Dst> dsts;
-            for (size_t i = 0; i < vd->defs.size(); i++) {
-                auto d = vd->defs[i];
-                auto rt = c->rettypes[i];
-                auto name = LocalName(d);
-                if (IsResz(rt)) {
-                    EmitCoreTypes();
-                    auto stk = AllocStk(true);
-                    L("gs_rhdr ", name, " = { ", stk, "->top, 0 };");
-                    SaveBase(true, stk, cat(name, ".base"));
-                    vstk[d] = stk;
-                    dsts.push_back(Dst { 2, stk, d->type, cat(name, ".len") });
-                } else if (IsBytesT(rt)) {
-                    auto stk = AllocStk(true);
-                    L("uint8_t *", name, " = ", stk, "->top;");
-                    SaveBase(true, stk, name);
-                    vstk[d] = stk;
-                    dsts.push_back(Dst { 2, stk });
-                } else {
-                    L(CT(d->type), " ", name, ";");
-                    dsts.push_back(Dst { 1, name });
-                }
-            }
-            auto rets = EmitCall(c, dsts.empty() ? Dst {} : dsts[0], &dsts);
-            for (size_t i = 0; i < dsts.size() && i < rets.size(); i++)
-                if (dsts[i].k == 1 && !rets[i].empty() && rets[i] != dsts[i].s)
-                    L(dsts[i].s, " = ", rets[i], ";");
-            return;
-        }
-        for (size_t i = 0; i < vd->defs.size(); i++)
-            BindLocal(vd->defs[i], i < vd->inits.size() ? vd->inits[i] : nullptr);
-    }
 
     void BindLocal(VarDef *d, Node *init) {
         auto name = LocalName(d);
@@ -3598,104 +3131,10 @@ struct CodeGen {
         return name;
     }
 
-    void GenIncDec(IncDec *x) {
-        auto lv = GenLoc(x->lval);
-        if (lv.t->kind == TY_REF) DerefLoc(lv, x->line);
-        assert(lv.val);
-        auto op = x->op == T_INC ? "GS_ADD(" : "GS_SUB(";
-        L(lv.s, " = ", op, lv.s, ", 1);");
-    }
-
-    void GenAssign(Assign *a) {
-        auto lv = GenLoc(a->lval);
-        if (a->op == T_DOTASSIGN) { GenRebind(a, lv); return; }
-        if (a->pointee) DerefLoc(lv, a->line);
-        // Compound operators: full-width int/flt locations only (TC).
-        if (a->op != T_ASSIGN) {
-            assert(lv.val);
-            auto r = GenX(a->rhs);
-            switch (a->op) {
-                case T_PLUSEQ:
-                    if (lv.t->kind == TY_FLT) L(lv.s, " = ", lv.s, " + (", r, ");");
-                    else L(lv.s, " = GS_ADD(", lv.s, ", ", r, ");");
-                    break;
-                case T_MINUSEQ:
-                    if (lv.t->kind == TY_FLT) L(lv.s, " = ", lv.s, " - (", r, ");");
-                    else L(lv.s, " = GS_SUB(", lv.s, ", ", r, ");");
-                    break;
-                case T_MULEQ:
-                    if (lv.t->kind == TY_FLT) L(lv.s, " = ", lv.s, " * (", r, ");");
-                    else L(lv.s, " = GS_MUL(", lv.s, ", ", r, ");");
-                    break;
-                case T_DIVEQ:
-                    if (lv.t->kind == TY_FLT) L(lv.s, " = ", lv.s, " / (", r, ");");
-                    else L(lv.s, " = gs_idiv(", lv.s, ", ", r, ", ", WhereStr(a->line), ");");
-                    break;
-                case T_MODEQ:
-                    if (lv.t->kind == TY_FLT)
-                        L(lv.s, " = ", lv.t->fltstorage == FS_F32 ? "fmodf(" : "fmod(", lv.s,
-                          ", ", r, ");");
-                    else L(lv.s, " = gs_imod(", lv.s, ", ", r, ", ", WhereStr(a->line), ");");
-                    break;
-                case T_ANDEQ: L(lv.s, " = ", lv.s, " & (", r, ");"); break;
-                case T_OREQ:  L(lv.s, " = ", lv.s, " | (", r, ");"); break;
-                case T_XOREQ: L(lv.s, " = ", lv.s, " ^ (", r, ");"); break;
-                default: assert(false);
-            }
-            return;
-        }
-        // Plain assignment, by the target's representation (§4.4).
-        auto t = lv.t;
-        if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
-            // Relative-reference slot: encode from the plain reference value.
-            GenRelAssign(lv, a->rhs, a->line);
-            return;
-        }
-        if (IsResz(t)) {
-            // Whole-resizable assignment: clear (top back to the value start),
-            // then construct the new contents in place (§4.4).
-            assert(!lv.val && !lv.stk.empty() && !lv.lenlv.empty());
-            L(lv.stk, "->top = ", lv.s, ";");
-            GenConstruct(a->rhs, lv.stk, lv.t, lv.lenlv);
-            return;
-        }
-        if (!lv.val) {
-            // Bytes-class fixed-capacity array [..]: copy contents within cap.
-            assert(t->kind == TY_ARRAY && t->arr->akind == A_LIMITED);
-            string srcstk;
-            auto src = GenPtr(a->rhs, &srcstk);
-            auto nn = T();
-            L("int64_t ", nn, " = (int64_t)*(uint32_t *)(", src, " + 4);");
-            L("if (", nn, " > (int64_t)*(uint32_t *)(", lv.s, ")",
-              ") gs_abort(\"limited array capacity exceeded\", ", WhereStr(a->line), ");");
-            L("*(uint32_t *)((", lv.s, ") + 4) = (uint32_t)", nn, ";");
-            L("memcpy((", lv.s, ") + 8, ", src, " + 8, (size_t)(", nn, " * ",
-              FixedSize(t->arr->sub), "));");
-            return;
-        }
-        GenAny(a->rhs, Dst { 1, lv.s, lv.t });
-    }
-
     void GenRelAssign(Loc lv, Node *rhs, Line ln) {
         auto rv = GenX(rhs);
-        auto w = (IntStorage)lv.t->ref->lenstorage;
-        if (w == IS_VARINT) {
-            // Rebinding a varint-width relative reference cannot change its
-            // encoded length (the container layout is frozen, §3.6).
-            auto fa = BytesAddrOf(lv);
-            auto fav = T();
-            L("uint8_t *", fav, " = ", fa, ";");
-            assert(!IsFatPointee(lv.t->ref->sub));
-            auto addr = cat("(uint8_t *)(", rv, ")");
-            auto off = T(), buf = T();
-            L("int64_t ", off, " = ", addr, " ? (int64_t)(", addr, " - ", fav, ") : 0;");
-            L("uint8_t ", buf, "[10];");
-            L("if (gs_zig_write(", buf, ", ", off, ") != gs_uleb_size(", fav,
-              ")) gs_abort(\"varint relative reference rebind changes size\", ",
-              WhereStr(ln), ");");
-            L("memcpy(", fav, ", ", buf, ", (size_t)gs_uleb_size(", buf, "));");
-            return;
-        }
+        // Varint-width relative references are construction-only (typechecked).
+        assert(lv.t->ref->lenstorage != IS_VARINT);
         EmitRelStoreAt(BytesAddrOf(lv), lv.t, rv, ln);
     }
 
@@ -3718,29 +3157,6 @@ struct CodeGen {
     // body, and long-distance (§7.9).
 
     unordered_map<const VarDef *, int> nrvodst;
-
-    void GenReturn(Return *r) {
-        // Exiting an inlined body?
-        for (auto i = (int)cscopes.size() - 1; i >= 0; i--) {
-            if (cscopes[i].kind == SC_IB && cscopes[i].ibsf == r->target) {
-                if (!r->vals.empty()) {
-                    GenAny(r->vals[0], cscopes[i].dst);
-                    for (size_t j = 1; j < r->vals.size(); j++) GenAny(r->vals[j], Dst {});
-                }
-                EmitExitRestores(i);
-                cscopes[i].usedbrk = true;
-                L("goto ", cscopes[i].brklbl, ";");
-                termjump = true;
-                return;
-            }
-            if (cscopes[i].kind == SC_FN) break;
-        }
-        if (curspec && r->target == curspec->sf) {
-            GenNormalReturn(r->vals, r->line);
-            return;
-        }
-        GenFromReturn(r);
-    }
 
     void GenNormalReturn(const vector<Node *> &vals, Line ln) {
         auto sp = curspec;
@@ -3778,7 +3194,7 @@ struct CodeGen {
         assert(vals.size() == sp->rets.size());
         for (size_t i = 0; i < vals.size(); i++) {
             auto rt = sp->rets[i];
-            if (IsResz(rt)) {
+            if (IsResz(rt) || (emiter && i == 0)) {
                 auto id = Is<Ident>(vals[i]);
                 if (id && id->vdef && nrvovars.count(id->vdef)) {
                     // Built at the destination; only the count travels.
@@ -3919,6 +3335,34 @@ struct CodeGen {
     }
 
     vector<string> EmitCall(Call *c, Dst d0, vector<Dst> *alldst = nullptr) {
+        // An element-run destination for a variable-array result: builtins
+        // and tag dispatch have no element-run form, so take the value form
+        // and slide its length prefix out. Specialization calls route to an
+        // element-run twin (or the same fallback) inside EmitSpecCall, and a
+        // function value's tail construction honors the destination as-is.
+        if (d0.k == 2 && !d0.lenlv.empty() && d0.t && d0.t->kind == TY_ARRAY &&
+            d0.t->arr->akind == A_VAR && (c->builtin >= 0 || !c->dispatch.empty())) {
+            auto base = T();
+            L("uint8_t *", base, " = ", d0.s, "->top;");
+            auto rets = c->builtin >= 0 ? EmitBuiltin(c, Dst { 2, d0.s })
+                                        : EmitDispatch(c, Dst { 2, d0.s }, alldst);
+            auto ls = LenStore(d0.t->arr);
+            string metasz, count;
+            if (ls == IS_VARINT) {
+                metasz = cat("gs_uleb_size(", base, ")");
+                count = cat("gs_uleb_read(", base, ")");
+            } else {
+                metasz = cat(IntSize(ls));
+                count = cat("(int64_t)*(", IntCT(ls), " *)", base);
+            }
+            auto ms = T();
+            L("int64_t ", ms, " = ", metasz, ";");
+            L(d0.lenlv, " = ", count, ";");
+            L("memmove(", base, ", ", base, " + ", ms, ", (size_t)(", d0.s, "->top - ",
+              base, " - ", ms, "));");
+            L(d0.s, "->top -= ", ms, ";");
+            return rets;
+        }
         if (c->builtin >= 0) return EmitBuiltin(c, d0);
         if (c->fvbody) return EmitFvCall(c, d0);
         if (!c->dispatch.empty()) return EmitDispatch(c, d0, alldst);
@@ -4000,6 +3444,8 @@ struct CodeGen {
         assert(sinfo.count(sp));
         auto &ki = sinfo[sp];
         auto an = CallArgNodes(c, sp->params.size());
+        string ername, slidebase;
+        Dst slide;
         vector<string> args;
         for (size_t i = 0; i < an.size(); i++) EmitArg(sp, i, an[i], args);
         for (auto fv : ki.freevars) EmitFvArg(fv, args);
@@ -4028,6 +3474,24 @@ struct CodeGen {
                 }
                 args.push_back(stk);
                 args.push_back(cat("&", lenlv));
+            } else if (i == 0 && dd.k == 2 && !dd.lenlv.empty() && rt->kind == TY_ARRAY &&
+                       rt->arr->akind == A_VAR) {
+                // An element-run receiver of a variable-array result: use the
+                // callee's element-run twin when it can have one; otherwise
+                // take the value form and slide its length prefix out.
+                auto er = EnsureEr(sp);
+                if (!er.empty()) {
+                    ername = er;
+                    args.push_back(dd.s);
+                    args.push_back(cat("&", dd.lenlv));
+                    retex[i] = "";
+                } else {
+                    slide = dd;
+                    slidebase = T();
+                    L("uint8_t *", slidebase, " = ", dd.s, "->top;");
+                    args.push_back(dd.s);
+                    retex[i] = "";
+                }
             } else if (IsBytesT(rt)) {
                 string stk;
                 if (dd.k == 2) {
@@ -4063,12 +3527,33 @@ struct CodeGen {
         }
         string argstr;
         for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
+        auto callee = ername.empty() ? ki.cname : ername;
         if (ki.cret >= 0) {
             auto r0 = T();
-            L(CT(sp->rets[ki.cret]), " ", r0, " = ", ki.cname, "(", argstr, ");");
+            L(CT(sp->rets[ki.cret]), " ", r0, " = ", callee, "(", argstr, ");");
             retex[ki.cret] = r0;
         } else {
-            L(ki.cname, "(", argstr, ");");
+            L(callee, "(", argstr, ");");
+        }
+        if (!slidebase.empty()) {
+            // Value form arrived as [len][elems]; slide the prefix out and
+            // report the count (the one caller-side copy of this fallback).
+            auto srct = sp->rets[0];
+            auto ls = LenStore(srct->arr);
+            string metasz, count;
+            if (ls == IS_VARINT) {
+                metasz = cat("gs_uleb_size(", slidebase, ")");
+                count = cat("gs_uleb_read(", slidebase, ")");
+            } else {
+                metasz = cat(IntSize(ls));
+                count = cat("(int64_t)*(", IntCT(ls), " *)", slidebase);
+            }
+            auto ms = T();
+            L("int64_t ", ms, " = ", metasz, ";");
+            L(slide.lenlv, " = ", count, ";");
+            L("memmove(", slidebase, ", ", slidebase, " + ", ms, ", (size_t)(", slide.s,
+              "->top - ", slidebase, " - ", ms, "));");
+            L(slide.s, "->top -= ", ms, ";");
         }
         if (ki.hasrf) EmitRfCheck(rfv, sp);
         // A fixed first return requested onto a stack: store it (mixed cases
@@ -4101,13 +3586,13 @@ struct CodeGen {
             L("} else {");
             ind++;
             if (curinfo && curinfo->hasrf) PropagateReturn(rfv);
-            else L("gs_abort(\"unexpected long-distance return\", \"runtime\");");
+            else L("gs_panic(\"unexpected long-distance return\");");
             ind--;
             L("}");
         } else if (curinfo && curinfo->hasrf) {
             PropagateReturn(rfv);
         } else {
-            L("gs_abort(\"unexpected long-distance return\", \"runtime\");");
+            L("gs_panic(\"unexpected long-distance return\");");
         }
         ind--;
         L("}");
@@ -4312,7 +3797,7 @@ struct CodeGen {
             ind--;
             L("} break;");
         }
-        L("default: gs_abort(\"corrupt ADT tag\", ", WhereStr(c->line), ");");
+        L("default: GS_UNREACHABLE(", LocArgs(c->line), ");");
         L("}");
         (void)ri;
         return retex;
@@ -4383,14 +3868,14 @@ struct CodeGen {
             }
             case B_ASSERT: {
                 auto x = GenTruth(an[0]);
-                L("if (!(", x, ")) gs_abort(\"assert failed\", ", WhereStr(ln), ");");
+                L("if (!(", x, ")) gs_abort(GS_E_ASSERT, ", LocArgs(ln), ");");
                 return {};
             }
             case B_UNSIGNED_DIV:
-                return { cat("gs_udiv(", GenX(an[0]), ", ", GenX(an[1]), ", ", WhereStr(ln),
+                return { cat("gs_udiv(", GenX(an[0]), ", ", GenX(an[1]), ", ", LocArgs(ln),
                              ")") };
             case B_UNSIGNED_MOD:
-                return { cat("gs_umod(", GenX(an[0]), ", ", GenX(an[1]), ", ", WhereStr(ln),
+                return { cat("gs_umod(", GenX(an[0]), ", ", GenX(an[1]), ", ", LocArgs(ln),
                              ")") };
             case B_UNSIGNED_SHR:
                 return { cat("(int64_t)((uint64_t)(", GenX(an[0]), ") >> ((", GenX(an[1]),
@@ -4401,7 +3886,7 @@ struct CodeGen {
             case B_HARDWARE_THREADS: return { "gs_hardware_threads()" };
             case B_THREAD_WAIT: {
                 usesthreads = true;
-                L("gs_thread_wait(", GenX(an[0]), ", ", WhereStr(ln), ");");
+                L("gs_thread_wait(", GenX(an[0]), ", ", LocArgs(ln), ");");
                 return {};
             }
             case B_THREAD_SPAWN: return EmitThreadSpawn(c, an);
@@ -4549,24 +4034,20 @@ struct CodeGen {
                 L("int64_t ", ol, " = ", v.len, ";");
                 L("if (", nn, " < ", ol, ") {");
                 ind++;
-                if (ak == A_GROW) L("gs_abort(\"grow-only arrays cannot shrink\", ",
-                                    WhereStr(ln), ");");
-                else {
-                    L(v.lenlv, " = (", LenCast(lv), ")", nn, ";");
-                    if (ak == A_GROWSHRINK)
-                        L(lv.stk, "->top = (uint8_t *)(", v.elems, ") + ", nn, " * ", esz, ";");
-                }
+                L(v.lenlv, " = (", LenCast(lv), ")", nn, ";");
+                if (ak == A_GROWSHRINK)
+                    L(lv.stk, "->top = (uint8_t *)(", v.elems, ") + ", nn, " * ", esz, ";");
                 ind--;
                 L("} else if (", nn, " > ", ol, ") {");
                 ind++;
                 if (fv.empty()) {
-                    L("gs_abort(\"resize growth requires a fill value\", ", WhereStr(ln), ");");
+                    L("gs_abort(GS_E_RESIZEFILL, ", LocArgs(ln), ");");
                 } else {
                     if (ak == A_LIMITED) {
                         auto capx = lv.val ? cat(ArrSize(lv.t->arr))
                                            : cat("(int64_t)*(uint32_t *)(", lv.s, ")");
                         L("if (", nn, " > ", capx,
-                          ") gs_abort(\"limited array capacity exceeded\", ", WhereStr(ln),
+                          ") gs_abort(GS_E_CAPACITY, ", LocArgs(ln),
                           ");");
                     }
                     auto iv = T();
@@ -4623,8 +4104,8 @@ struct CodeGen {
             auto capx = lv.val ? cat(ArrSize(lv.t->arr)) : cat("(int64_t)*(uint32_t *)(", lv.s, ")");
             auto nl = T();
             L("int64_t ", nl, " = ", v.len, ";");
-            L("if (", nl, " >= ", capx, ") gs_abort(\"limited array capacity exceeded\", ",
-              WhereStr(ln), ");");
+            L("if (", nl, " >= ", capx, ") gs_abort(GS_E_CAPACITY, ",
+              LocArgs(ln), ");");
             auto ev = T();
             L(CT(elem), " ", ev, " = ", GenXD(an[1], elem), ";");
             auto e = T();
@@ -4672,30 +4153,15 @@ struct CodeGen {
             L(v.lenlv, " += ", nn, ";");
             return;
         }
-        // append(f()) where f returns a variable array: the value's length
-        // prefix lands between old and new elements and is slid out with one
-        // memmove (the element-run request form of C.3 is not implemented).
+        // append(f()) where f returns a variable array: request the
+        // element-run form (C.3) -- raw elements at our top plus a count.
+        // Callees that cannot supply it fall back to a value-form call with
+        // its length prefix slid out (inside EmitSpecCall).
         if (auto call = Is<Call>(src); call && IsBytesT(src->exprtype) && ak != A_LIMITED) {
-            auto srct = src->exprtype;
-            assert(srct->kind == TY_ARRAY);
-            auto tv = T();
-            L("uint8_t *", tv, " = ", lv.stk, "->top;");
-            EmitCall(call, Dst { 2, lv.stk });
-            auto ls = LenStore(srct->arr);
-            string metasz, count;
-            if (ls == IS_VARINT) {
-                metasz = cat("gs_uleb_size(", tv, ")");
-                count = cat("gs_uleb_read(", tv, ")");
-            } else {
-                metasz = cat(IntSize(ls));
-                count = cat("(int64_t)*(", IntCT(ls), " *)", tv);
-            }
-            auto nn = T(), ms = T();
-            L("int64_t ", nn, " = ", count, ";");
-            L("int64_t ", ms, " = ", metasz, ";");
-            L("memmove(", tv, ", ", tv, " + ", ms, ", (size_t)(", lv.stk, "->top - ", tv,
-              " - ", ms, "));");
-            L(lv.stk, "->top -= ", ms, ";");
+            assert(src->exprtype->kind == TY_ARRAY);
+            auto nn = T();
+            L("int64_t ", nn, " = 0;");
+            EmitCall(call, Dst { 2, lv.stk, src->exprtype, nn });
             L(v.lenlv, " += ", nn, ";");
             return;
         }
@@ -4708,7 +4174,7 @@ struct CodeGen {
             auto ol = T();
             L("int64_t ", ol, " = ", v.len, ";");
             L("if (", ol, " + ", nn, " > ", capx,
-              ") gs_abort(\"limited array capacity exceeded\", ", WhereStr(ln), ");");
+              ") gs_abort(GS_E_CAPACITY, ", LocArgs(ln), ");");
             L("memcpy(", v.typedelems ? cat(v.elems, " + ", ol)
                                       : cat("(", v.elems, ") + ", ol, " * ", esz),
               ", ", se.elems, ", (size_t)(", nn, " * ", esz, "));");
@@ -4866,15 +4332,37 @@ struct CodeGen {
         termjump = false;
     }
 
-    void EmitSpec(FnSpec *sp) {
+    // The element-run twin of a spec (C.3): same body compiled to emit raw
+    // elements at the destination plus a count, instead of a [len][elems]
+    // value. Returns its C name, or "" when the spec cannot have one.
+    string EnsureEr(FnSpec *sp) {
+        auto it = ernames.find(sp);
+        if (it != ernames.end()) return it->second;
+        auto rt = sp->rets.size() == 1 ? sp->rets[0] : nullptr;
+        auto ok = rt && rt->kind == TY_ARRAY && rt->arr->akind == A_VAR && sp->body &&
+                  !fromids.count(sp->sf);
+        if (!ok) return ernames[sp] = "";
+        auto name = Unique(cat(sinfo[sp].cname, "_er"));
+        ernames[sp] = name;
+        Append(protos, "static ", SigRet(sp), " ", name, "(", SigParams(sp, false, true),
+               ");\n");
+        erqueue.push_back(sp);
+        return name;
+    }
+
+    void EmitSpec(FnSpec *sp, bool er = false) {
         curspec = sp;
         curinfo = &sinfo[sp];
+        emiter = er;
         ResetFnState();
         cursp = curinfo->needssp;
         spexpr = cursp ? "gs_sp" : "0";
         PushSc(SC_FN);
-        auto params = SigParams(sp, true);
-        DetectNrvo(sp);
+        auto params = SigParams(sp, true, er);
+        // In the element-run form named results are not built at the
+        // destination: the callee-side copy at return is the specified cost
+        // of operating on the whole value first (§7.3).
+        if (!er) DetectNrvo(sp);
         if (fromids.count(sp->sf)) {
             // This is a long-distance return target with nonfixed returns:
             // record our destinations for in-flight values (§7.9).
@@ -4902,7 +4390,7 @@ struct CodeGen {
         }
         if (!termjump) {
             if (curinfo->cret >= 0) {
-                L("gs_abort(\"function fell off the end\", ", WhereStr(sp->sf->line), ");");
+                L("GS_UNREACHABLE(", LocArgs(sp->sf->line), ");");
                 auto d = T();
                 L(CT(sp->rets[curinfo->cret]), " ", d, " = {0};");
                 L("return ", d, ";");
@@ -4911,13 +4399,15 @@ struct CodeGen {
             }
         }
         cscopes.clear();
-        Append(code, "static ", SigRet(sp), " ", curinfo->cname, "(", params, ") {\n");
+        Append(code, "static ", SigRet(sp), " ", er ? ernames[sp] : curinfo->cname, "(",
+               params, ") {\n");
         if (stkmax > 0)
             Append(code, "    GS_ENSURE(", spexpr, " + ", stkmax, ");\n");
         code += body;
         code += "}\n\n";
         curspec = nullptr;
         curinfo = nullptr;
+        emiter = false;
     }
 
     // ------------------------------------------------------------------
@@ -5057,6 +4547,8 @@ struct CodeGen {
             Append(protos, "static ", SigRet(sp), " ", sinfo[sp].cname, "(",
                    SigParams(sp, false), ");\n");
         for (auto sp : livespecs) EmitSpec(sp);
+        // Element-run twins requested by call sites (may request more).
+        for (size_t i = 0; i < erqueue.size(); i++) EmitSpec(erqueue[i], true);
         EmitGlobalInit();
         EmitMain();
         if (usesthreads) predefs = "#define GS_NEED_THREADS 1\n";
@@ -5093,7 +4585,21 @@ inline string NullLit::CgX(CodeGen &cg) {
     return "NULL";
 }
 
-inline string StrLit::CgX(CodeGen &cg) { return cg.GenStrVal(this); }
+inline string StrLit::CgX(CodeGen &cg) {
+    auto et = exprtype;
+    if (et->kind == TY_SLICE) {
+        auto t = cg.T();
+        cg.L(cg.CT(et), " ", t, " = { ", cg.StrRaw(val), ", ", val.size(), " };");
+        return t;
+    }
+    // A fixed u8[k] array value.
+    assert(et->kind == TY_ARRAY && et->arr->akind == A_FIXED);
+    auto t = cg.T();
+    cg.L(cg.CT(et), " ", t, ";");
+    if (!val.empty())
+        cg.L("memcpy(", t, ".e, ", cg.StrRaw(val), ", ", val.size(), ");");
+    return t;
+}
 
 inline string Ident::CgX(CodeGen &cg) {
     assert(vdef);   // Named-function values never reach runtime.
@@ -5118,8 +4624,140 @@ inline string Unary::CgX(CodeGen &cg) {
     }
 }
 
-inline string Binary::CgX(CodeGen &cg) { return cg.GenBinary(this); }
-inline string Dot::CgX(CodeGen &cg) { return cg.GenDotX(this); }
+inline string Binary::CgX(CodeGen &cg) {
+    if (op == T_ANDAND || op == T_OROR) {
+        // Short-circuit with left-to-right statement emission: the right
+        // operand's statements may only run when the left allows.
+        auto l = cg.GenTruth(left);
+        auto t = cg.T();
+        cg.L("uint8_t ", t, " = (uint8_t)(", l, op == T_ANDAND ? " != 0);" : " != 0);");
+        cg.L("if (", op == T_ANDAND ? t : cat("!", t), ") {");
+        cg.ind++;
+        auto r = cg.GenTruth(right);
+        cg.L(t, " = (uint8_t)(", r, " != 0);");
+        cg.ind--;
+        cg.L("}");
+        return t;
+    }
+    auto lt = cg.OperandT(left->exprtype), rt = cg.OperandT(right->exprtype);
+    // Null tests (§3.8).
+    if (op == T_EQ || op == T_NEQ) {
+        auto lnull = Is<NullLit>(left) != nullptr, rnull = Is<NullLit>(right) != nullptr;
+        if (lnull || rnull) {
+            if (lnull && rnull) return op == T_EQ ? "1" : "0";
+            auto other = lnull ? right : left;
+            // A narrowed optional variable's exprtype may already be the
+            // decayed pointee; the null test reads the reference itself.
+            string x;
+            TypeExpr *ot = other->exprtype;
+            if (auto id = Is<Ident>(other); id && id->vdef && cg.IsOpt(id->vdef->type)) {
+                auto lv = cg.VarLoc(id->vdef);
+                x = lv.s;
+                ot = id->vdef->type;
+            } else {
+                x = cg.GenX(other);
+            }
+            auto addr = ot->kind == TY_REF && cg.IsFatPointee(ot->ref->sub)
+                            ? cat(x, ".addr") : x;
+            return cat("(", addr, op == T_EQ ? " == NULL)" : " != NULL)");
+        }
+    }
+    // Resizable operands compare as element ranges through their views.
+    if ((op == T_EQ || op == T_NEQ) && cg.IsResz(cg.OperandT(left->exprtype))) {
+        if (left->exprtype->kind != right->exprtype->kind ||
+            cg.OperandT(left->exprtype)->kind != TY_ARRAY)
+            cg.Fail(line, "comparing resizable structs is unsupported");
+        auto la = cg.GenLoc(left);
+        if (la.t->kind == TY_REF) cg.DerefLoc(la, line);
+        auto ra = cg.GenLoc(right);
+        if (ra.t->kind == TY_REF) cg.DerefLoc(ra, line);
+        auto lvw = cg.ArrayView(la, line), rvw = cg.ArrayView(ra, line);
+        auto eq = cg.GenRangeEq(lvw.elem, lvw.elems, lvw.len, rvw.elems, rvw.len);
+        return op == T_EQ ? eq : cat("(uint8_t)(!", eq, ")");
+    }
+    // Order of evaluation is left-to-right (§2): if the right operand
+    // needs statements, the left must land in a temp first.
+    auto leftfirst = cg.HasStmts(right);
+    string l, r;
+    if (leftfirst) {
+        l = cg.GenPureVal(left);
+        r = cg.GenVal(right);
+    } else {
+        l = cg.GenVal(left);
+        r = cg.GenVal(right);
+    }
+    auto isint = lt->kind == TY_INT;
+    auto isflt = lt->kind == TY_FLT;
+    auto f32 = exprtype && exprtype->kind == TY_FLT &&
+               exprtype->fltstorage == FS_F32;
+    switch (op) {
+        case T_PLUS: case T_MINUS: case T_MUL: case T_DIV: case T_MOD: {
+            if (isflt) {
+                if (op == T_MOD) return cat(f32 ? "fmodf(" : "fmod(", l, ", ", r, ")");
+                const char *o = op == T_PLUS ? " + " : op == T_MINUS ? " - "
+                                : op == T_MUL ? " * " : " / ";
+                return cat("(", l, o, r, ")");
+            }
+            if (isint) {
+                switch (op) {
+                    case T_PLUS:  return cat("GS_ADD(", l, ", ", r, ")");
+                    case T_MINUS: return cat("GS_SUB(", l, ", ", r, ")");
+                    case T_MUL:   return cat("GS_MUL(", l, ", ", r, ")");
+                    case T_DIV:   return cat("gs_idiv(", l, ", ", r, ", ",
+                                             cg.LocArgs(line), ")");
+                    default:      return cat("gs_imod(", l, ", ", r, ", ",
+                                             cg.LocArgs(line), ")");
+                }
+            }
+            // Elementwise math on identical struct/fixed-array types (§6.1).
+            return cg.GenElemwise(this, l, r);
+        }
+        case T_LT: case T_GT: case T_LTEQ: case T_GTEQ: {
+            const char *o = op == T_LT ? " < " : op == T_GT ? " > "
+                            : op == T_LTEQ ? " <= " : " >= ";
+            return cat("(uint8_t)(", l, o, r, ")");
+        }
+        case T_EQ: case T_NEQ: {
+            auto eq = cg.GenEquality(lt, rt, left, right, l, r);
+            return op == T_EQ ? eq : cat("(uint8_t)(!", eq, ")");
+        }
+        case T_BITAND: return cat("(", l, " & ", r, ")");
+        case T_BITOR:  return cat("(", l, " | ", r, ")");
+        case T_XOR:    return cat("(", l, " ^ ", r, ")");
+        case T_SHL:    return cat("GS_SHL(", l, ", ", r, ")");
+        case T_SHR:    return cat("GS_SHR(", l, ", ", r, ")");
+        default: assert(false); return l;
+    }
+}
+
+inline string Dot::CgX(CodeGen &cg) {
+    if (variantconst) {
+        auto et = exprtype;
+        auto ei = einst;
+        auto vi = cg.VarIdx(ei->en, variantconst);
+        if (et->kind == TY_ENUM && !et->enu->varmode) {
+            auto t = cg.T();
+            cg.L(cg.CT(et), " ", t, ";");
+            cg.L(t, ".tag = ", cg.TagConst(ei, vi), ";");
+            return t;
+        }
+        cg.Fail(line, "variant constant in a non-fixed context reached GenX");
+    }
+    if (member >= 0) {   // .len / .cap property.
+        auto lv = cg.GenLoc(obj);
+        if (lv.t->kind == TY_REF) cg.DerefLoc(lv, line);
+        if (lv.t->kind == TY_ARRAY && member == B_CAP) {
+            auto &a = *lv.t->arr;
+            assert(a.akind == A_LIMITED);
+            if (cg.ArrSize(lv.t->arr) >= 0) return cat(cg.ArrSize(lv.t->arr));
+            return cat("(int64_t)*(uint32_t *)(", lv.s, ")");
+        }
+        auto v = cg.ArrayView(lv, line);
+        return cat("(", v.len, ")");
+    }
+    auto lv = cg.GenLoc(this);
+    return cg.LoadLoc(lv, exprtype, line);
+}
 
 inline string Index::CgX(CodeGen &cg) {
     auto lv = cg.GenLoc(this);
@@ -5127,7 +4765,42 @@ inline string Index::CgX(CodeGen &cg) {
 }
 
 inline string SliceExpr::CgX(CodeGen &cg) { return cg.GenSlice(this); }
-inline string AsCast::CgX(CodeGen &cg) { return cg.GenCast(this); }
+// `as` range-checks in debug builds (GS_RANGE and friends are identity
+// casts unless the C is compiled with -DGS_DEBUG=1); `as!` always wraps
+// or truncates (§6.3).
+inline string AsCast::CgX(CodeGen &cg) {
+    auto x = cg.GenX(child);
+    auto st = child->exprtype;
+    auto tt = exprtype;
+    if (tt->kind == TY_INT) {
+        auto is = tt->intstorage;
+        auto iv = st->kind == TY_FLT
+                      ? (unchecked ? cat("gs_f2iwrap(", x, ")")
+                                       : cat("GS_F2I(", x, ")"))
+                      : cat("(", x, ")");
+        if (unchecked || cg.IntSize(is) == 8)
+            return cat("(", cg.IntCT(is), ")", iv);
+        int64_t lo = 0, hi = 0;
+        switch (cg.CanI(is)) {
+            case IS_I8:  lo = -128; hi = 127; break;
+            case IS_I16: lo = -32768; hi = 32767; break;
+            case IS_I32: lo = INT32_MIN; hi = INT32_MAX; break;
+            case IS_U8:  hi = 255; break;
+            case IS_U16: hi = 65535; break;
+            default:     hi = UINT32_MAX; break;
+        }
+        return cat("(", cg.IntCT(is), ")GS_RANGE(", iv, ", ", cg.IntStr(lo), ", ", cg.IntStr(hi),
+                   ")");
+    }
+    assert(tt->kind == TY_FLT);
+    if (tt->fltstorage == FS_F32) {
+        if (!unchecked && st->kind == TY_FLT && st->fltstorage != FS_F32)
+            return cat("GS_F2F32(", x, ")");
+        return cat("(float)(", x, ")");
+    }
+    if (!unchecked && st->kind == TY_INT) return cat("GS_I2F(", x, ")");
+    return cat("(double)(", x, ")");
+}
 
 inline string Call::CgX(CodeGen &cg) {
     auto rets = cg.EmitCall(this, Dst {});
@@ -5135,7 +4808,57 @@ inline string Call::CgX(CodeGen &cg) {
     return cg.CallVal0(this, rets[0]);
 }
 
-inline string StructLit::CgX(CodeGen &cg) { return cg.GenFixedStructLit(this); }
+// Fixed struct/variant/ADT literal as a C value. Relative-reference
+// fields store against the member's own address (only meaningful when the
+// value stays put; the typechecker's root rules keep this sane).
+inline string StructLit::CgX(CodeGen &cg) {
+    auto et = exprtype;
+    auto tv = cg.T();
+    cg.L(cg.CT(et), " ", tv, ";");
+    auto fieldset = [&](const string &base, const vector<Field> &fields,
+                        const vector<TypeExpr *> &ftypes, const vector<Node *> &defaults) {
+        for (size_t i = 0; i < fields.size(); i++) {
+            if (fields[i].ispad) continue;
+            Node *init = nullptr;
+            for (size_t k = 0; k < fieldindices.size(); k++)
+                if (fieldindices[k] == (int)i) init = inits[k].val;
+            if (!init && i < defaults.size() && defaults[i]) init = defaults[i];
+            auto ft = ftypes[i];
+            auto path = cat(base, ".", cg.Sanitize(fields[i].name));
+            if (!init) {   // Omitted optional: null.
+                assert(ft->kind == TY_REF);
+                cg.L("memset(&", path, ", 0, sizeof(", path, "));");
+                continue;
+            }
+            if (ft->kind == TY_REF && ft->ref->lenstorage >= 0) {
+                cg.EmitRelStoreAt(cat("(uint8_t *)&", path), ft, cg.GenX(init), line);
+                continue;
+            }
+            cg.GenAny(init, Dst { 1, path });
+        }
+    };
+    if (et->kind == TY_STRUCT) {
+        auto si = cg.SI(et);
+        fieldset(tv, si->st->fields, si->ftypes, si->defaults);
+        return tv;
+    }
+    if (et->kind == TY_VARIANT) {
+        auto ei = cg.EIVar(et);
+        auto vi = cg.VarIdx(ei->en, et->var->variant);
+        if (ei->en->variants[vi].fields.empty()) cg.L("memset(&", tv, ", 0, sizeof(", tv, "));");
+        fieldset(tv, ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi]);
+        return tv;
+    }
+    assert(et->kind == TY_ENUM && !et->enu->varmode && variant);
+    auto ei = cg.EIOf(et);
+    auto vi = cg.VarIdx(ei->en, variant);
+    cg.L(tv, ".tag = ", cg.TagConst(ei, vi), ";");
+    if (!ei->en->variants[vi].fields.empty())
+        fieldset(cat(tv, ".u.v_", cg.Sanitize(ei->en->variants[vi].name)),
+                 ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi]);
+    return tv;
+}
+
 inline string ArrayLit::CgX(CodeGen &cg) { return cg.GenFixedArrayLit(this); }
 
 inline string Block::CgX(CodeGen &cg) { return cg.CtlValX(this); }
@@ -5195,7 +4918,109 @@ inline void IfExpr::CgAny(CodeGen &cg, const Dst &d) {
     cg.termjump = false;
 }
 
-inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) { cg.GenMatch(this, d); }
+inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
+    auto st = scrutinee->exprtype;
+    TypeExpr *enumtype = nullptr;
+    auto isref = false;
+    if (st->kind == TY_REF && st->ref->sub->kind == TY_ENUM) {
+        enumtype = st->ref->sub;
+        isref = true;
+    } else if (st->kind == TY_ENUM) {
+        enumtype = st;
+    }
+    if (!enumtype) {   // Integer match: an if-chain in arm order.
+        auto x = cg.GenPure(scrutinee);
+        auto first = true;
+        for (auto &arm : arms) {
+            if (arm.pat.kind == P_WILDCARD) {
+                cg.L(first ? "{" : "} else {");
+            } else if (arm.hi == arm.lo + 1) {
+                cg.L(first ? "" : "} else ", "if (", x, " == ", cg.IntStr(arm.lo), ") {");
+            } else {
+                cg.L(first ? "" : "} else ", "if (", x, " >= ", cg.IntStr(arm.lo), " && ", x,
+                  " < ", cg.IntStr(arm.hi), ") {");
+            }
+            first = false;
+            cg.ind++;
+            cg.PushSc(CodeGen::SC_PLAIN);
+            cg.GenAny(arm.body, d);
+            cg.PopSc();
+            cg.ind--;
+        }
+        cg.L("}");
+        cg.termjump = false;
+        return;
+    }
+    auto varmode = enumtype->enu->varmode;
+    auto ei = cg.EIOf(enumtype);
+    auto ts = cg.TagSize(ei->en);
+    string p, sv, tag;
+    if (varmode || isref) {
+        if (isref) {
+            auto x = cg.GenPure(scrutinee);
+            p = varmode ? x : cat("((uint8_t *)", x, ")");
+        } else {
+            p = cg.GenPtr(scrutinee);
+        }
+        tag = varmode ? cat("*(", cg.IntCT(cg.TagStore(ei->en)), " *)", p)
+                      : cat("((", cg.CT(enumtype), " *)", p, ")->tag");
+    } else {
+        sv = cg.GenPure(scrutinee);
+        tag = cat(sv, ".tag");
+    }
+    cg.L("switch (", tag, ") {");
+    auto haswild = false;
+    for (auto &arm : arms) {
+        if (arm.pat.kind == P_WILDCARD) {
+            haswild = true;
+            cg.L("default: {");
+        } else {
+            auto vi = cg.VarIdx(ei->en, arm.variant);
+            cg.L("case ", cg.TagConst(ei, vi), ": {");
+        }
+        cg.ind++;
+        cg.PushSc(CodeGen::SC_PLAIN);
+        if (arm.binder) {
+            auto vi = cg.VarIdx(ei->en, arm.variant);
+            auto vt = cg.VariantType(enumtype, vi);
+            auto bn = cg.LocalName(arm.binder);
+            string payload = varmode
+                ? cat("(", p, " + ", ts, ")")
+                : (isref ? cat("((uint8_t *)&((", cg.CT(enumtype), " *)", p, ")->u.v_",
+                               cg.Sanitize(arm.variant->name), ")")
+                         : "");
+            if (arm.pat.byref) {
+                // Variable-mode payloads only (§8.1).
+                if (cg.IsBytesT(vt)) cg.L("uint8_t *", bn, " = ", payload, ";");
+                else cg.L(cg.CT(vt), " *", bn, " = (", cg.CT(vt), " *)(", payload, ");");
+            } else if (cg.IsBytesT(vt)) {
+                // By-value copy of a variable payload onto its own stack.
+                auto stk = cg.AllocStk(true);
+                cg.L("uint8_t *", bn, " = ", stk, "->top;");
+                cg.SaveBase(true, stk, bn);
+                cg.vstk[arm.binder] = stk;
+                auto sz = cg.T();
+                cg.L("int64_t ", sz, " = ", cg.SizeX(vt, payload), ";");
+                cg.L("memcpy(", stk, "->top, ", payload, ", (size_t)", sz, ");");
+                cg.Bump(stk, sz);
+            } else if (arm.variant->fields.empty()) {
+                cg.L(cg.CT(vt), " ", bn, " = {0};");
+            } else if (!payload.empty()) {
+                cg.L(cg.CT(vt), " ", bn, " = *(", cg.CT(vt), " *)(", payload, ");");
+            } else {
+                cg.L(cg.CT(vt), " ", bn, " = ", sv, ".u.v_", cg.Sanitize(arm.variant->name), ";");
+            }
+        }
+        cg.GenAny(arm.body, d);
+        cg.PopSc();
+        cg.ind--;
+        cg.L("} break;");
+    }
+    if (!haswild)
+        cg.L("default: GS_UNREACHABLE(", cg.LocArgs(line), ");");
+    cg.L("}");
+    cg.termjump = false;
+}
 
 inline void EarlyBlock::CgAny(CodeGen &cg, const Dst &d) {
     cg.PushSc(CodeGen::SC_BLOCK);
@@ -5277,16 +5102,251 @@ inline void AliasDecl::CgAny(CodeGen &cg, const Dst &) { cg.Fail(line, "internal
 
 // ---- CgStmt ---------------------------------------------------------------
 
-inline void VarDecl::CgStmt(CodeGen &cg) { cg.GenVarDecl(this); }
-inline void Assign::CgStmt(CodeGen &cg) { cg.GenAssign(this); }
-inline void IncDec::CgStmt(CodeGen &cg) { cg.GenIncDec(this); }
+inline void VarDecl::CgStmt(CodeGen &cg) {
+    // Multi-name binding from one call: wire the call's channels straight
+    // into the locals.
+    if (names.size() > 1 && inits.size() == 1) {
+        auto c = Is<Call>(inits[0]);
+        assert(c);
+        vector<Dst> dsts;
+        for (size_t i = 0; i < defs.size(); i++) {
+            auto d = defs[i];
+            auto rt = c->rettypes[i];
+            auto name = cg.LocalName(d);
+            if (cg.IsResz(rt)) {
+                cg.EmitCoreTypes();
+                auto stk = cg.AllocStk(true);
+                cg.L("gs_rhdr ", name, " = { ", stk, "->top, 0 };");
+                cg.SaveBase(true, stk, cat(name, ".base"));
+                cg.vstk[d] = stk;
+                dsts.push_back(Dst { 2, stk, d->type, cat(name, ".len") });
+            } else if (cg.IsBytesT(rt)) {
+                auto stk = cg.AllocStk(true);
+                cg.L("uint8_t *", name, " = ", stk, "->top;");
+                cg.SaveBase(true, stk, name);
+                cg.vstk[d] = stk;
+                dsts.push_back(Dst { 2, stk });
+            } else {
+                cg.L(cg.CT(d->type), " ", name, ";");
+                dsts.push_back(Dst { 1, name });
+            }
+        }
+        auto rets = cg.EmitCall(c, dsts.empty() ? Dst {} : dsts[0], &dsts);
+        for (size_t i = 0; i < dsts.size() && i < rets.size(); i++)
+            if (dsts[i].k == 1 && !rets[i].empty() && rets[i] != dsts[i].s)
+                cg.L(dsts[i].s, " = ", rets[i], ";");
+        return;
+    }
+    for (size_t i = 0; i < defs.size(); i++)
+        cg.BindLocal(defs[i], i < inits.size() ? inits[i] : nullptr);
+}
+
+inline void Assign::CgStmt(CodeGen &cg) {
+    auto lv = cg.GenLoc(lval);
+    if (op == T_DOTASSIGN) { cg.GenRebind(this, lv); return; }
+    if (pointee) cg.DerefLoc(lv, line);
+    // Compound operators: full-width int/flt locations only (TC).
+    if (op != T_ASSIGN) {
+        assert(lv.val);
+        auto r = cg.GenX(rhs);
+        switch (op) {
+            case T_PLUSEQ:
+                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", lv.s, " + (", r, ");");
+                else cg.L(lv.s, " = GS_ADD(", lv.s, ", ", r, ");");
+                break;
+            case T_MINUSEQ:
+                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", lv.s, " - (", r, ");");
+                else cg.L(lv.s, " = GS_SUB(", lv.s, ", ", r, ");");
+                break;
+            case T_MULEQ:
+                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", lv.s, " * (", r, ");");
+                else cg.L(lv.s, " = GS_MUL(", lv.s, ", ", r, ");");
+                break;
+            case T_DIVEQ:
+                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", lv.s, " / (", r, ");");
+                else cg.L(lv.s, " = gs_idiv(", lv.s, ", ", r, ", ", cg.LocArgs(line), ");");
+                break;
+            case T_MODEQ:
+                if (lv.t->kind == TY_FLT)
+                    cg.L(lv.s, " = ", lv.t->fltstorage == FS_F32 ? "fmodf(" : "fmod(", lv.s,
+                      ", ", r, ");");
+                else cg.L(lv.s, " = gs_imod(", lv.s, ", ", r, ", ", cg.LocArgs(line), ");");
+                break;
+            case T_ANDEQ: cg.L(lv.s, " = ", lv.s, " & (", r, ");"); break;
+            case T_OREQ:  cg.L(lv.s, " = ", lv.s, " | (", r, ");"); break;
+            case T_XOREQ: cg.L(lv.s, " = ", lv.s, " ^ (", r, ");"); break;
+            default: assert(false);
+        }
+        return;
+    }
+    // Plain assignment, by the target's representation (§4.4).
+    auto t = lv.t;
+    if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
+        // Relative-reference slot: encode from the plain reference value.
+        cg.GenRelAssign(lv, rhs, line);
+        return;
+    }
+    if (cg.IsResz(t)) {
+        // Whole-resizable assignment: clear (top back to the value start),
+        // then construct the new contents in place (§4.4).
+        assert(!lv.val && !lv.stk.empty() && !lv.lenlv.empty());
+        cg.L(lv.stk, "->top = ", lv.s, ";");
+        cg.GenConstruct(rhs, lv.stk, lv.t, lv.lenlv);
+        return;
+    }
+    if (!lv.val) {
+        // Bytes-class fixed-capacity array [..]: copy contents within cap.
+        assert(t->kind == TY_ARRAY && t->arr->akind == A_LIMITED);
+        string srcstk;
+        auto src = cg.GenPtr(rhs, &srcstk);
+        auto nn = cg.T();
+        cg.L("int64_t ", nn, " = (int64_t)*(uint32_t *)(", src, " + 4);");
+        cg.L("if (", nn, " > (int64_t)*(uint32_t *)(", lv.s, ")",
+          ") gs_abort(GS_E_CAPACITY, ", cg.LocArgs(line), ");");
+        cg.L("*(uint32_t *)((", lv.s, ") + 4) = (uint32_t)", nn, ";");
+        cg.L("memcpy((", lv.s, ") + 8, ", src, " + 8, (size_t)(", nn, " * ",
+          cg.FixedSize(t->arr->sub), "));");
+        return;
+    }
+    cg.GenAny(rhs, Dst { 1, lv.s, lv.t });
+}
+
+inline void IncDec::CgStmt(CodeGen &cg) {
+    auto lv = cg.GenLoc(lval);
+    if (lv.t->kind == TY_REF) cg.DerefLoc(lv, line);
+    assert(lv.val);
+    auto o = op == T_INC ? "GS_ADD(" : "GS_SUB(";
+    cg.L(lv.s, " = ", o, lv.s, ", 1);");
+}
+
 inline void FnDecl::CgStmt(CodeGen &) {}   // Nested declarations are separate specs.
-inline void While::CgStmt(CodeGen &cg) { cg.GenWhile(this); }
-inline void ForLoop::CgStmt(CodeGen &cg) { cg.GenFor(this); }
-inline void Guard::CgStmt(CodeGen &cg) { cg.GenGuard(this); }
-inline void Return::CgStmt(CodeGen &cg) { cg.GenReturn(this); }
-inline void Break::CgStmt(CodeGen &cg) { cg.GenBreak(this); }
-inline void Continue::CgStmt(CodeGen &cg) { cg.GenContinue(this); }
+inline void While::CgStmt(CodeGen &cg) {
+    Dst d;
+    cg.GenLoopBody([&]() {
+        auto c = cg.GenTruth(cond);
+        auto si = (int)cg.cscopes.size() - 1;
+        // The loop scope has no allocations yet, so a plain goto exits
+        // cleanly; the condition's own temps were allocated in this
+        // scope's compile-time list and are restored... none yet either.
+        cg.L("if (!(", c, ")) goto ", cg.cscopes[si].brklbl, ";");
+        cg.cscopes[si].usedbrk = true;
+    }, body, d, this);
+}
+
+inline void ForLoop::CgStmt(CodeGen &cg) {
+    auto d = Dst {};
+    auto iv = vdef ? cg.LocalName(vdef) : cg.T();
+    auto ix = idxdef ? cg.LocalName(idxdef) : "";
+    if (iterkind == IK_RANGE) {
+        auto r = Is<RangeExpr>(iter);
+        auto lo = cg.GenX(r->lo);
+        auto lov = cg.T();
+        cg.L("int64_t ", lov, " = ", lo, ";");
+        auto hi = cg.GenX(r->hi);
+        auto hiv = cg.T();
+        cg.L("int64_t ", hiv, " = ", hi, ";");
+        if (!ix.empty()) cg.L("int64_t ", ix, " = 0;");
+        cg.GenLoopBody({}, body, d, this,
+                    cat("for (int64_t ", iv, " = ", lov, "; ", iv, " < ", hiv, "; ", iv,
+                        "++", ix.empty() ? "" : cat(", ", ix, "++"), ") {"));
+        return;
+    }
+    if (iterkind == IK_COUNT) {
+        auto n = cg.GenX(iter);
+        auto nv = cg.T();
+        cg.L("int64_t ", nv, " = ", n, ";");
+        if (!ix.empty()) cg.L("int64_t ", ix, " = 0;");
+        cg.GenLoopBody({}, body, d, this,
+                    cat("for (int64_t ", iv, " = 0; ", iv, " < ", nv, "; ", iv, "++",
+                        ix.empty() ? "" : cat(", ", ix, "++"), ") {"));
+        return;
+    }
+    // Arrays and slices. The length re-reads each iteration (growth during
+    // iteration is legal, §5.2); element access goes through the view.
+    auto lv = cg.GenLoc(iter);
+    if (lv.t->kind == TY_REF) cg.DerefLoc(lv, line);
+    auto v = cg.ArrayView(lv, line);
+    auto gi = ix.empty() ? cg.T() : ix;
+    auto et = vdef->type;
+    if (!cg.IsFix(v.elem)) {
+        // Sequential walk, &-binding only; the cursor advances in the
+        // increment clause so `continue` behaves.
+        auto p = cg.T();
+        cg.L("uint8_t *", p, " = (uint8_t *)(", v.elems, ");");
+        cg.GenLoopBody([&]() {
+            if (byref) cg.L("uint8_t *", iv, " = ", p, ";");
+        }, body, d, this,
+            cat("for (int64_t ", gi, " = 0; ", gi, " < (", v.len, "); ", gi, "++, ", p,
+                " += ", cg.SizeX(v.elem, p), ") {"));
+        return;
+    }
+    auto esz = cg.FixedSize(v.elem);
+    cg.GenLoopBody([&]() {
+        string elem = v.typedelems
+                          ? cat(v.elems, "[", gi, "]")
+                          : cat("(*(", cg.CT(v.elem), " *)((", v.elems, ") + ", gi, " * ",
+                                esz, "))");
+        if (byref) cg.L(cg.CT(et), " ", iv, " = &", elem, ";");
+        else cg.L(cg.CT(et), " ", iv, " = ", elem, ";");
+    }, body, d, this,
+        cat("for (int64_t ", gi, " = 0; ", gi, " < (", v.len, "); ", gi, "++) {"));
+}
+
+inline void Guard::CgStmt(CodeGen &cg) {
+    auto c = cg.GenTruth(cond);
+    cg.L("if (!(", c, ")) {");
+    cg.ind++;
+    cg.PushSc(CodeGen::SC_PLAIN);
+    if (elseb) {
+        cg.GenBlockInner(elseb, Dst {});
+    } else if (implicitexit == 1) {
+        cg.GenBreakPath(nullptr, line);
+    } else {
+        cg.GenNormalReturn({}, line);
+    }
+    cg.cscopes.back().saves.clear();   // The block diverged.
+    cg.PopSc();
+    cg.ind--;
+    cg.L("}");
+    cg.termjump = false;
+}
+
+inline void Return::CgStmt(CodeGen &cg) {
+    // Exiting an inlined body?
+    for (auto i = (int)cg.cscopes.size() - 1; i >= 0; i--) {
+        if (cg.cscopes[i].kind == CodeGen::SC_IB && cg.cscopes[i].ibsf == target) {
+            if (!vals.empty()) {
+                cg.GenAny(vals[0], cg.cscopes[i].dst);
+                for (size_t j = 1; j < vals.size(); j++) cg.GenAny(vals[j], Dst {});
+            }
+            cg.EmitExitRestores(i);
+            cg.cscopes[i].usedbrk = true;
+            cg.L("goto ", cg.cscopes[i].brklbl, ";");
+            cg.termjump = true;
+            return;
+        }
+        if (cg.cscopes[i].kind == CodeGen::SC_FN) break;
+    }
+    if (cg.curspec && target == cg.curspec->sf) {
+        cg.GenNormalReturn(vals, line);
+        return;
+    }
+    cg.GenFromReturn(this);
+}
+
+inline void Break::CgStmt(CodeGen &cg) { cg.GenBreakPath(val, line); }
+inline void Continue::CgStmt(CodeGen &cg) {
+    auto si = -1;
+    for (auto i = (int)cg.cscopes.size() - 1; i >= 0; i--) {
+        if (cg.cscopes[i].kind == CodeGen::SC_LOOP) { si = i; break; }
+        if (cg.cscopes[i].kind == CodeGen::SC_FN) break;
+    }
+    assert(si >= 0);
+    cg.EmitExitRestores(si + 1);
+    cg.cscopes[si].usedcnt = true;
+    cg.L("goto ", cg.cscopes[si].cntlbl, ";");
+    cg.termjump = true;
+}
 
 // Everything else in statement position evaluates for effect.
 inline void IntLit::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }

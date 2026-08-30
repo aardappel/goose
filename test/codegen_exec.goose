@@ -40,6 +40,11 @@ fn limited_dyn() {
 // --- append forms ------------------------------------------------------------
 
 fn make_arr() -> int[] { return [4, 5]; }
+fn fwd_arr() -> int[] { return make_arr(); }         // Element-run forwarding.
+fn named_arr() -> int[] {
+    let a: int[] = [7, 8];
+    return a;                            // Named result: callee-side copy in run form.
+}
 
 fn appends() {
     var g: int[>..] = [1];
@@ -61,6 +66,11 @@ fn appends() {
     var lens = 0;
     for &w in vs { lens += w.len; }
     print(lens);                         // 6
+    var g2: int[>..] = [];
+    g2.append(fwd_arr());                // Element-run through a forward.
+    g2.append(named_arr());
+    print(g2.len);                       // 4
+    print(g2[0] + g2[3]);                // 4 + 8 = 12
 }
 
 // --- grow-shrink -------------------------------------------------------------
@@ -385,7 +395,7 @@ fn printedges() {
     print(1.0 / 3.0);
 }
 
-fn main() {
+fn main_codegen_exec() {
     lenstores();
     limited_dyn();
     appends();
@@ -409,3 +419,6 @@ fn main() {
     seqvar();
     printedges();
 }
+
+// Standalone entry; ignored when this file is imported (§11.1).
+fn main() { main_codegen_exec(); }

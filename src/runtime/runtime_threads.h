@@ -85,28 +85,28 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
     if (gs_numthreads == gs_capthreads) {
         gs_capthreads = gs_capthreads ? gs_capthreads * 2 : 16;
         gs_threads = (gs_thread *)realloc(gs_threads, (size_t)gs_capthreads * sizeof(gs_thread));
-        if (!gs_threads) gs_abort("out of memory spawning thread", "runtime");
+        if (!gs_threads) gs_panic("out of memory spawning thread");
     }
     gs_thread *t = &gs_threads[gs_numthreads];
     int64_t id = gs_numthreads++;
     t->entry = entry;
     t->args = (uint8_t *)malloc(argsize ? (size_t)argsize : 1);
-    if (!t->args) gs_abort("out of memory spawning thread", "runtime");
+    if (!t->args) gs_panic("out of memory spawning thread");
     memcpy(t->args, args, (size_t)argsize);
     #ifdef _WIN32
         t->handle = CreateThread(NULL, 0, gs_thread_main, t, 0, NULL);
-        if (!t->handle) gs_abort("cannot create thread", "runtime");
+        if (!t->handle) gs_panic("cannot create thread");
     #else
         if (pthread_create(&t->handle, NULL, gs_thread_main, t))
-            gs_abort("cannot create thread", "runtime");
+            gs_panic("cannot create thread");
     #endif
     gs_mutex_unlock(&gs_threads_mutex);
     return id;
 }
 
-static void gs_thread_wait(int64_t id, const char *loc) {
+static void gs_thread_wait(int64_t id, const char *file, int line) {
     gs_mutex_lock(&gs_threads_mutex);
-    if (id < 0 || id >= gs_numthreads) gs_abort("thread_wait on unknown thread id", loc);
+    if (id < 0 || id >= gs_numthreads) gs_abort(GS_E_THREADID, file, line);
     gs_thread t = gs_threads[id];
     gs_mutex_unlock(&gs_threads_mutex);
     #ifdef _WIN32
@@ -136,7 +136,7 @@ typedef struct {
 
 static void gs_qput(gs_queue *q, const void *data, int64_t size) {
     gs_qnode *n = (gs_qnode *)malloc(sizeof(gs_qnode) + (size_t)size);
-    if (!n) gs_abort("out of memory in qput", "runtime");
+    if (!n) gs_panic("out of memory in qput");
     n->next = NULL;
     n->size = size;
     memcpy(n + 1, data, (size_t)size);

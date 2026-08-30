@@ -28,7 +28,7 @@ fn total(xs: u8[:]) -> int {
     return n;
 }
 
-fn main() {
+fn main_roots() {
     var pool: Cell[>..] = [];
     let c0: Cell& = pool.push(Cell { v: 7 });
     store(&pool, &c0.v);
@@ -44,3 +44,6 @@ fn main() {
     var buf: u8[..4] = [1, 2];
     print(total("bytes") + total(buf[..]));
 }
+
+// Standalone entry; ignored when this file is imported (§11.1).
+fn main() { main_roots(); }

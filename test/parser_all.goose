@@ -412,7 +412,7 @@ fn edge_cases() {
     for x in sl { print(x); }
 }
 
-fn main() {
+fn main_parser_all() {
     edge_cases();
     literals();
     print(operators(3, 4));
@@ -433,3 +433,6 @@ fn main() {
     pools_pa();
     misc();
 }
+
+// Standalone entry; ignored when this file is imported (§11.1).
+fn main() { main_parser_all(); }

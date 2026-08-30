@@ -225,7 +225,9 @@ arrays — the idiomatic way to link up just-built data; on grow-shrink arrays
 it returns nothing, since no interior references exist there, §5.2),
 `.append(src)` (src an array/slice of the element type), `.pop()`,
 `.resize(n, v)` (grow with fill value `v`, or shrink), `.resize(n)` (shrink
-only), `.clear()` per the rules above. Growth always supplies element
+only), `.clear()` per the rules above. Because `resize` can shrink, it does
+not exist on grow-only arrays at all (a compile error; grow with `push`/
+`append` instead). Growth always supplies element
 values — no operation can expose uninitialized slots (§5.3). Per UFCS these
 are ordinary functions: `a.push(v)` is `push(a, v)`.
 
@@ -804,12 +806,13 @@ only in that case. (Often even that is avoided: a callee local resizable
 assigned the destination stack is operated on via its frame header,
 Appendix C.2, and its elements are already in place.)
 
-> **NOT YET IMPLEMENTED:** the dual request kinds. The current compiler has
-> one form per return class: resizable results already emit raw elements
-> plus an out-of-band count (the element-run behavior), so
-> `v.append(f())` of a resizable-returning `f` is contiguous with no copy;
-> *variable* results (`T[]` etc.) construct their self-describing value
-> form, and appending one slides its length prefix out with one memmove.
+Implementation status: both request kinds exist for variable *array* results
+(`T[]`): an element-run receiver compiles the callee a second time in run
+form (raw elements + count out-parameter), so `v.append(f())` is contiguous
+with no copy, and a named result pays the specified single callee-side copy.
+Callees with no run form (builtins, dynamic dispatch) fall back to the value
+form; the receiver then slides the length prefix out with one memmove.
+Non-array variable results have only the value form for now.
 
 Consequence: returning a built-up value and out-parameter style are the same
 cost, and building a variable element "inside" a container is idiomatically a
@@ -1181,7 +1184,11 @@ convention: Appendix C.
   stack's bottom for the program's life (a natural whole-program arena).
   `let` globals of flat fixed type with compile-time-evaluable initializers
   live in static data.
-* Entry point: `fn main() { }`.
+* Entry point: `fn main() { }`. Only the *root* file's `main` is the entry;
+  a `fn main` in an imported file is ignored entirely (not an entry, not
+  callable, no collision). A runnable file can thus double as an importable
+  library: give it `fn main_x() { ... }` plus a `fn main() { main_x(); }`
+  wrapper, and importers call `main_x` directly.
 
 ### 11.2 Concurrency
 

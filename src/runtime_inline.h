@@ -27,6 +27,9 @@ R"GSRT(/* Goose runtime — prepended verbatim to every compiler-generated C fil
 #ifndef GS_NEED_THREADS
 #define GS_NEED_THREADS 0
 #endif
+#ifndef GS_DEBUG
+#define GS_DEBUG 0          /* 1: overflow, `as` range, and tag checks (§9.3). */
+#endif
 
 /* Configuration; all overridable from the compile command line. */
 #ifndef GS_MAX_STACKS
@@ -56,23 +59,65 @@ R"GSRT(/* Goose runtime — prepended verbatim to every compiler-generated C fil
 #endif
 
 /* ---------------------------------------------------------------------------
-   Aborts (§9.3). Not catchable; message + nonzero exit. The int64_t returns
-   let the checks sit inside expressions. */
+   Aborts (§9.3). Not catchable; message + nonzero exit. Compiler-emitted
+   checks carry an error id plus a file (a static string in the generated
+   code) and line; runtime-internal failures use gs_panic. The int64_t
+   returns let checks sit inside expressions. */
 
-static GS_NORETURN void gs_abort(const char *msg, const char *loc) {
-    fprintf(stderr, "goose runtime error: %s (%s)\n", msg, loc);
+enum {
+    GS_E_CAPACITY,     /* limited array capacity exceeded */
+    GS_E_SLICE,        /* slice bounds out of range */
+    GS_E_RELOFF,       /* relative reference offset overflow */
+    GS_E_ASSERT,       /* assert failed */
+    GS_E_CAPRANGE,     /* invalid capacity */
+    GS_E_RESIZEFILL,   /* resize growth requires a fill value */
+    GS_E_THREADID,     /* thread_wait on an unknown thread id */
+    GS_E_TAG,          /* corrupt ADT tag (debug builds only) */
+};
+
+static const char *gs_errmsgs[] = {
+    "limited array capacity exceeded",
+    "slice bounds out of range",
+    "relative reference offset overflow",
+    "assert failed",
+    "invalid capacity",
+    "resize growth requires a fill value",
+    "thread_wait on an unknown thread id",
+    "corrupt ADT tag",
+};
+
+static GS_NORETURN void gs_panic(const char *msg) {
+    fprintf(stderr, "goose runtime error: %s\n", msg);
     exit(1);
 }
 
-static int64_t gs_idxfail(int64_t i, int64_t n, const char *loc) {
-    fprintf(stderr, "goose runtime error: index %lld out of bounds (length %lld) (%s)\n",
-            (long long)i, (long long)n, loc);
+static GS_NORETURN void gs_abort(int err, const char *file, int line) {
+    fprintf(stderr, "goose runtime error: %s (%s:%d)\n", gs_errmsgs[err], file, line);
+    exit(1);
+}
+
+static int64_t gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
+    fprintf(stderr, "goose runtime error: index %lld out of bounds (length %lld) "
+            "(%s:%d)\n", (long long)i, (long long)n, file, line);
     exit(1);
 }
 
 /* Bounds check as one unsigned compare; the index operand must be side-effect
    free (the compiler guarantees this at emission). */
-#define GS_IDX(i, n, loc) ((uint64_t)(i) < (uint64_t)(n) ? (i) : gs_idxfail((int64_t)(i), (n), (loc)))
+#define GS_IDX(i, n, f, l) \
+    ((uint64_t)(i) < (uint64_t)(n) ? (i) : gs_idxfail((int64_t)(i), (n), (f), (l)))
+
+/* Statically unreachable spots (e.g. an ADT tag no variant matches): checked
+   in debug builds, an optimizer hint in release. */
+#if GS_DEBUG
+#define GS_UNREACHABLE(f, l) gs_abort(GS_E_TAG, (f), (l))
+#elif defined(_MSC_VER)
+#define GS_UNREACHABLE(f, l) __assume(0)
+#elif defined(__GNUC__)
+#define GS_UNREACHABLE(f, l) __builtin_unreachable()
+#else
+#define GS_UNREACHABLE(f, l) ((void)0)
+#endif
 
 /* ---------------------------------------------------------------------------
    Integer semantics (§6.2): wrapping two's-complement arithmetic (computed
@@ -80,32 +125,28 @@ static int64_t gs_idxfail(int64_t i, int64_t n, const char *loc) {
    Compiling the generated C with -DGS_DEBUG=1 turns on the debug-build
    aborts: integer overflow and `as` range violations (§9.3). */
 
-#ifndef GS_DEBUG
-#define GS_DEBUG 0
-#endif
-
 #if GS_DEBUG
 
 static int64_t gs_addchk(int64_t a, int64_t b) {
     int64_t r = (int64_t)((uint64_t)a + (uint64_t)b);
-    if (((a ^ r) & (b ^ r)) < 0) gs_abort("integer overflow", "debug");
+    if (((a ^ r) & (b ^ r)) < 0) gs_panic("integer overflow (debug)");
     return r;
 }
 static int64_t gs_subchk(int64_t a, int64_t b) {
     int64_t r = (int64_t)((uint64_t)a - (uint64_t)b);
-    if (((a ^ b) & (a ^ r)) < 0) gs_abort("integer overflow", "debug");
+    if (((a ^ b) & (a ^ r)) < 0) gs_panic("integer overflow (debug)");
     return r;
 }
 static int64_t gs_mulchk(int64_t a, int64_t b) {
     int64_t r = (int64_t)((uint64_t)a * (uint64_t)b);
     if (a && b) {
         if ((a == -1 && b == INT64_MIN) || (b == -1 && a == INT64_MIN) || r / b != a)
-            gs_abort("integer overflow", "debug");
+            gs_panic("integer overflow (debug)");
     }
     return r;
 }
 static int64_t gs_negchk(int64_t a) {
-    if (a == INT64_MIN) gs_abort("integer overflow", "debug");
+    if (a == INT64_MIN) gs_panic("integer overflow (debug)");
     return -a;
 }
 #define GS_ADD(a, b) gs_addchk((a), (b))
@@ -115,25 +156,25 @@ static int64_t gs_negchk(int64_t a) {
 
 /* `as` range checks: abort whenever the conversion would change the value. */
 static int64_t gs_rangechk(int64_t v, int64_t lo, int64_t hi) {
-    if (v < lo || v > hi) gs_abort("as conversion out of range", "debug");
+    if (v < lo || v > hi) gs_panic("as conversion out of range (debug)");
     return v;
 }
 static int64_t gs_f2ichk(double d) {
     if (!(d >= -9223372036854775808.0 && d < 9223372036854775808.0))
-        gs_abort("as conversion out of range", "debug");
+        gs_panic("as conversion out of range (debug)");
     int64_t v = (int64_t)d;
-    if ((double)v != d) gs_abort("as conversion changes the value", "debug");
+    if ((double)v != d) gs_panic("as conversion changes the value (debug)");
     return v;
 }
 static double gs_i2fchk(int64_t v) {
     double d = (double)v;
     if ((int64_t)d != v || d >= 9223372036854775808.0)
-        gs_abort("as conversion changes the value", "debug");
+        gs_panic("as conversion changes the value (debug)");
     return d;
 }
 static float gs_f2f32chk(double d) {
     float f = (float)d;
-    if ((double)f != d) gs_abort("as conversion changes the value", "debug");
+    if ((double)f != d) gs_panic("as conversion changes the value (debug)");
     return f;
 }
 #define GS_RANGE(v, lo, hi) gs_rangechk((v), (lo), (hi))
@@ -157,15 +198,20 @@ static float gs_f2f32chk(double d) {
 #define GS_SHL(a, b) ((int64_t)((uint64_t)(a) << ((b) & 63)))
 #define GS_SHR(a, b) ((a) >> ((b) & 63))
 
-static int64_t gs_idiv(int64_t a, int64_t b, const char *loc) {
-    if (b == 0) gs_abort("division by zero", loc);
-    if (a == INT64_MIN && b == -1) gs_abort("integer overflow in division", loc);
+static GS_NORETURN void gs_divfail(int64_t a, int64_t b, const char *file, int line) {
+    fprintf(stderr, "goose runtime error: %s (%s:%d)\n",
+            b == 0 ? "division by zero" : "integer overflow in division", file, line);
+    exit(1);
+    (void)a;
+}
+
+static int64_t gs_idiv(int64_t a, int64_t b, const char *file, int line) {
+    if (b == 0 || (a == INT64_MIN && b == -1)) gs_divfail(a, b, file, line);
     return a / b;
 }
 
-static int64_t gs_imod(int64_t a, int64_t b, const char *loc) {
-    if (b == 0) gs_abort("modulo by zero", loc);
-    if (a == INT64_MIN && b == -1) gs_abort("integer overflow in modulo", loc);
+static int64_t gs_imod(int64_t a, int64_t b, const char *file, int line) {
+    if (b == 0 || (a == INT64_MIN && b == -1)) gs_divfail(a, b, file, line);
     return a % b;
 }
 
@@ -180,17 +226,18 @@ static int64_t gs_f2iwrap(double d) {
     return (int64_t)(uint64_t)d;
 }
 
-static int64_t gs_udiv(int64_t a, int64_t b, const char *loc) {
-    if (b == 0) gs_abort("division by zero", loc);
+static int64_t gs_udiv(int64_t a, int64_t b, const char *file, int line) {
+    if (b == 0) gs_divfail(a, b, file, line);
     return (int64_t)((uint64_t)a / (uint64_t)b);
 }
 
-static int64_t gs_umod(int64_t a, int64_t b, const char *loc) {
-    if (b == 0) gs_abort("modulo by zero", loc);
+static int64_t gs_umod(int64_t a, int64_t b, const char *file, int line) {
+    if (b == 0) gs_divfail(a, b, file, line);
     return (int64_t)((uint64_t)a % (uint64_t)b);
 }
 
-/* ---------------------------------------------------------------------------
+)GSRT"
+R"GSRT(/* ---------------------------------------------------------------------------
    Data stacks (§1.2, Appendix C.1/C.4): large reserved regions, committed on
    use, bump-pointer allocation, watermark restore on scope exit. Emitted code
    holds them per thread program via gs_stks (index = the hidden gs_sp
@@ -230,8 +277,7 @@ static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
                 size_t n = GS_COMMIT_CHUNK;
                 if (page + n > r.base + r.size - GS_STACK_GAP)
                     n = (size_t)(r.base + r.size - GS_STACK_GAP - page);
-)GSRT"
-R"GSRT(                if (VirtualAlloc(page, n, MEM_COMMIT, PAGE_READWRITE))
+                if (VirtualAlloc(page, n, MEM_COMMIT, PAGE_READWRITE))
                     return EXCEPTION_CONTINUE_EXECUTION;
             }
             fputs("goose runtime error: data stack overflow\n", stderr);
@@ -249,7 +295,7 @@ static uint8_t *gs_reserve_region(size_t size) {
         AddVectoredExceptionHandler(1, gs_fault_filter);
     }
     uint8_t *p = (uint8_t *)VirtualAlloc(0, size, MEM_RESERVE, PAGE_READWRITE);
-    if (!p) gs_abort("cannot reserve data stack address space", "startup");
+    if (!p) gs_panic("cannot reserve data stack address space");
     long i = InterlockedIncrement(&gs_nregions) - 1;
     gs_regions[i].base = p;
     gs_regions[i].size = size;
@@ -297,7 +343,7 @@ static uint8_t *gs_reserve_region(size_t size) {
                        | MAP_NORESERVE
                    #endif
                    , -1, 0);
-    if (p == MAP_FAILED) gs_abort("cannot reserve data stack address space", "startup");
+    if (p == MAP_FAILED) gs_panic("cannot reserve data stack address space");
     mprotect((uint8_t *)p + size - GS_STACK_GAP, GS_STACK_GAP, PROT_NONE);
     long i = __sync_fetch_and_add(&gs_nregions, 1);
     gs_regions[i].base = (uint8_t *)p;
@@ -315,7 +361,7 @@ static GS_TLS int64_t gs_nstks;
 #define GS(i) (&gs_stks[i])
 
 static void gs_stks_grow(int64_t n) {
-    if (n > GS_MAX_STACKS) gs_abort("too many data stacks (deep call nesting?)", "runtime");
+    if (n > GS_MAX_STACKS) gs_panic("too many data stacks (deep call nesting?)");
     while (gs_nstks < n) {
         gs_stack *s = &gs_stks[gs_nstks++];
         s->base = s->top = gs_reserve_region((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP);
@@ -326,7 +372,7 @@ static void gs_stks_grow(int64_t n) {
 
 static gs_stack *gs_new_stack_block(void) {
     gs_stack *b = (gs_stack *)calloc(GS_MAX_STACKS, sizeof(gs_stack));
-    if (!b) gs_abort("out of memory allocating stack block", "runtime");
+    if (!b) gs_panic("out of memory allocating stack block");
     return b;
 }
 
@@ -491,28 +537,28 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
     if (gs_numthreads == gs_capthreads) {
         gs_capthreads = gs_capthreads ? gs_capthreads * 2 : 16;
         gs_threads = (gs_thread *)realloc(gs_threads, (size_t)gs_capthreads * sizeof(gs_thread));
-        if (!gs_threads) gs_abort("out of memory spawning thread", "runtime");
+        if (!gs_threads) gs_panic("out of memory spawning thread");
     }
     gs_thread *t = &gs_threads[gs_numthreads];
     int64_t id = gs_numthreads++;
     t->entry = entry;
     t->args = (uint8_t *)malloc(argsize ? (size_t)argsize : 1);
-    if (!t->args) gs_abort("out of memory spawning thread", "runtime");
+    if (!t->args) gs_panic("out of memory spawning thread");
     memcpy(t->args, args, (size_t)argsize);
     #ifdef _WIN32
         t->handle = CreateThread(NULL, 0, gs_thread_main, t, 0, NULL);
-        if (!t->handle) gs_abort("cannot create thread", "runtime");
+        if (!t->handle) gs_panic("cannot create thread");
     #else
         if (pthread_create(&t->handle, NULL, gs_thread_main, t))
-            gs_abort("cannot create thread", "runtime");
+            gs_panic("cannot create thread");
     #endif
     gs_mutex_unlock(&gs_threads_mutex);
     return id;
 }
 
-static void gs_thread_wait(int64_t id, const char *loc) {
+static void gs_thread_wait(int64_t id, const char *file, int line) {
     gs_mutex_lock(&gs_threads_mutex);
-    if (id < 0 || id >= gs_numthreads) gs_abort("thread_wait on unknown thread id", loc);
+    if (id < 0 || id >= gs_numthreads) gs_abort(GS_E_THREADID, file, line);
     gs_thread t = gs_threads[id];
     gs_mutex_unlock(&gs_threads_mutex);
     #ifdef _WIN32
@@ -542,7 +588,7 @@ typedef struct {
 
 static void gs_qput(gs_queue *q, const void *data, int64_t size) {
     gs_qnode *n = (gs_qnode *)malloc(sizeof(gs_qnode) + (size_t)size);
-    if (!n) gs_abort("out of memory in qput", "runtime");
+    if (!n) gs_panic("out of memory in qput");
     n->next = NULL;
     n->size = size;
     memcpy(n + 1, data, (size_t)size);

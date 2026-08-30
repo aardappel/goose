@@ -347,7 +347,7 @@ fn varmode() {
     print(firstlen(r));
 }
 
-fn main() {
+fn main_optimize() {
     use_inlining();
     use_params();
     folding();
@@ -375,3 +375,6 @@ fn main() {
     let z = G - 6;                                   // 0 after propagation.
     print(100 / z);
 }
+
+// Standalone entry; ignored when this file is imported (§11.1).
+fn main() { main_optimize(); }

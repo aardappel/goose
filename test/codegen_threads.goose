@@ -9,7 +9,7 @@ thread_fn worker(a: int, name: u8[]) {
     qput(Job { id: a, weight: 7 });
 }
 
-fn main() {
+fn main_codegen_threads() {
     let id = thread_spawn(worker, 21, "wk");
     print(qget<int>());                  // 42
     let s = qget<u8[]>();
@@ -32,3 +32,6 @@ fn main() {
     print(qget<u8[]>());                 // z
     print(qget<Job>().weight);           // 7
 }
+
+// Standalone entry; ignored when this file is imported (§11.1).
+fn main() { main_codegen_threads(); }

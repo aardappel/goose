@@ -180,7 +180,7 @@ fn growonly() {
     let r = &g[0];
     let s = g[0..1];
     g.append([2.0, 3.0]);
-    g.resize(6, 0.0);
+    g.append([0.0; 3]);                  // (resize does not exist on grow-only.)
     print(first + r + s[0] + g.len as flt);
 }
 
@@ -491,7 +491,7 @@ fn shadowing(n: int) {
     print(x);
 }
 
-fn main() {
+fn main_typecheck() {
     storage();
     f32widen();
     varints();
@@ -522,3 +522,6 @@ fn main() {
     slices();
     shadowing(1);
 }
+
+// Standalone entry; ignored when this file is imported (§11.1).
+fn main() { main_typecheck(); }

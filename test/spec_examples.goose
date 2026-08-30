@@ -47,7 +47,10 @@ fn parse(src: u8[:]) -> Expr.., u8[] {
     return parse_expr(&l), "";
 }
 
-fn main() {
+fn main_spec_examples() {
     let words = read_words("hello world");
     print(words.len);
 }
+
+// Standalone entry; ignored when this file is imported (§11.1).
+fn main() { main_spec_examples(); }

@@ -3217,14 +3217,12 @@ struct TypeCheck {
             if ((d.flags & BF_REUSABLE) && !rv.reusable)
                 Error(c, cat(".", d.name, " exists on reusable pools only (§5.4)"));
         }
-        // resize has two forms with different receiver rules (§3.3).
+        // resize has two forms (§3.3). It does not exist on grow-only arrays
+        // (push/append are their only growth), so a dynamic shrink attempt on
+        // one cannot arise and needs no runtime check.
         if (d.kind == B_RESIZE) {
             CheckValue(args[1], ast.inttypes[IS_INT]);
-            if (args.size() == 3) {
-                ElemArg(args[2], elem, rv);
-            } else if (ak == A_GROW) {
-                Error(c, ".resize(n) shrinks; a grow-only array needs .resize(n, fill)");
-            }
+            if (args.size() == 3) ElemArg(args[2], elem, rv);
             return VoidVal();
         }
         // Signature-driven arguments.

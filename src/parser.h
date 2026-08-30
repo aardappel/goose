@@ -259,7 +259,11 @@ struct Parser {
             }
         }
         sf->body = ParseBlockExpr("function body");
-        if (!nested) ast.functionmap[sf->name].push_back(sf);
+        // Only the root file's `fn main` is the program entry; an imported
+        // file's main is ignored entirely (§11.1), letting a runnable file
+        // double as an importable library.
+        if (!nested && !(sf->name == "main" && fileidx != 0))
+            ast.functionmap[sf->name].push_back(sf);
         return New<FnDecl>(line, sf);
     }
 
