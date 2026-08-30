@@ -5,8 +5,11 @@
 #include "lexer.h"
 #include "ast.h"
 #include "dump.h"
+#include "clone.h"
 #include "parser.h"
 #include "resolve.h"
+#include "builtins.h"
+#include "typecheck.h"
 
 namespace goose {
 
@@ -63,11 +66,12 @@ void DumpTokens(const string &path) {
 
 int Main(int argc, char **argv) {
     string filename;
-    auto dump = false, tokens = false;
+    auto dump = false, tokens = false, parseonly = false;
     for (int i = 1; i < argc; i++) {
         string arg = argv[i];
         if (arg == "--dump") dump = true;
         else if (arg == "--tokens") tokens = true;
+        else if (arg == "--parse") parseonly = true;
         else if (!arg.empty() && arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg.c_str());
             return 1;
@@ -76,7 +80,7 @@ int Main(int argc, char **argv) {
         else { fprintf(stderr, "multiple input files given\n"); return 1; }
     }
     if (filename.empty()) {
-        fprintf(stderr, "usage: goose [--dump] [--tokens] file.goose\n");
+        fprintf(stderr, "usage: goose [--dump] [--parse] [--tokens] file.goose\n");
         return 1;
     }
     try {
@@ -87,12 +91,19 @@ int Main(int argc, char **argv) {
         Ast ast;
         ParseProgram(ast, filename);
         if (dump) {
+            // Dump is parse-level output: no typecheck, so parse-only test
+            // files can roundtrip.
             string s;
             ast.Dump(s);
             fputs(s.c_str(), stdout);
-        } else {
+        } else if (parseonly) {
             printf("parsed ok: %d top-level declarations, %d file(s)\n",
                    (int)ast.topdecls.size(), (int)ast.sources.size());
+        } else {
+            TypeCheckProgram(ast);
+            printf("typechecked ok: %d specialization(s), %d struct/%d enum instance(s)\n",
+                   (int)ast.fnspecs.size(), (int)ast.structinsts.size(),
+                   (int)ast.enuminsts.size());
         }
     } catch (CompileError &e) {
         fprintf(stderr, "%s\n", e.msg.c_str());

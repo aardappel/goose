@@ -30,21 +30,21 @@ enum Node { Num { v: flt }, Add { l: Node..&<u16>, r: Node..&<u16> } }
 recursive fn eval(n: Node.Num&) -> flt { n.v }
 recursive fn eval(n: Node.Add&) -> flt { eval(n.l) + eval(n.r) }
 
-// A.5 Long-distance errors.
+// A.5 Long-distance errors: parse returns a value and an error string; deep
+// failures land at parse via `return ... from`.
 struct Lexer { pos: int, limit: int }
-struct ParseError { msg: u8[] }
 enum Expr { Nothing, Something { v: int } }
 
 fn tokens_remain(l: Lexer&) -> bool { l.pos < l.limit }
 
 fn parse_expr(l: Lexer&) -> Expr.. {
-    guard l.tokens_remain() else { return ParseError { msg: "eof" } from parse; }
+    guard l.tokens_remain() else { return Expr.Nothing {}, "eof" from parse; }
     Expr.Something { v: 1 }
 }
 
-fn parse(src: u8[:]) -> Expr.. {
+fn parse(src: u8[:]) -> Expr.., u8[] {
     var l = Lexer { pos: 0, limit: src.len };
-    return parse_expr(&l);
+    return parse_expr(&l), "";
 }
 
 fn main() {

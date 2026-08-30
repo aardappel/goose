@@ -1,0 +1,4008 @@
+// Goose compiler — the typechecker. Whole-program, call-graph order (§10.1):
+// starting from global initializers and main, every function is checked per
+// unique specialization of (argument types, reference roots and writability,
+// bound function values), with generic parameters substituted (§7.7, §10.2).
+// Each specialization gets a clone of the function body with all annotations
+// (types, resolved symbols) filled in; those clones are what later phases
+// (optimization/codegen) consume.
+//
+// References are transparent (§3.8): an expression denoting a reference
+// behaves as its pointee in every value context (the checker "decays" it),
+// except where the destination type is itself a reference — initialization,
+// reference-typed parameters/fields, `.=` — which binds the reference value.
+// Plain `=` through a reference writes the pointee; `.=` rebinds it.
+//
+// The lifetime system (§9) is implemented as: every reference/slice-typed
+// value carries a static root (the VarDef owning its target's storage, null =
+// static data) and provenance bits (writable §9.5, reusable §5.4). Roots are
+// compared by scope depth along the current compile-time call path.
+// Deliberate v1 rules (now part of the spec, §9.2/§9.5): a reference read
+// back out of a container is rooted at the container (conservative and
+// sound) and is writable regardless of its original provenance (writability
+// launders through storage — the language's const-cast loophole); a
+// reference variable commits to one root depth for its whole life; all
+// returns of one function agree on the returned reference's root. Remaining
+// conservatisms marked TODO: long-distance returns carry only global/static
+// refs, and the recursive-cycle store rule is coarser than §7.8.
+#pragma once
+
+namespace goose {
+
+enum IterKind { IK_RANGE, IK_COUNT, IK_ARRAY, IK_SLICE };
+
+// Type validation positions: what may be declared where.
+enum ValidPos { VT_LOCAL, VT_GLOBAL, VT_PARAM, VT_RET, VT_FIELD, VT_ELEM, VT_POINTEE };
+
+struct TypeCheck {
+    Ast &ast;
+
+    // (Val, the checked value of an expression, lives in ast.h: node Check
+    // overrides return it.)
+
+    // An assignable/addressable path: Ident, field, or element.
+    struct LVal {
+        TypeExpr *type = nullptr;    // Storage type at the location (unwidened).
+        VarDef *var = nullptr;       // Set when the path is a bare variable name.
+        VarDef *root = nullptr;      // Owner of the storage (null = static).
+        bool writable = false;       // Whole path admits writes.
+        bool reusable = false;
+        bool sequential = false;     // Variable-size element: not addressable.
+        bool ingrowshrink = false;   // Interior of a [>..<]: no refs/slices (§5.2).
+        bool isvarint = false;       // varint field: read-only refs, not assignable.
+    };
+
+    // One level of the compile-time call path.
+    struct Frame {
+        SFunction *sf = nullptr;     // Null for the global-initializer frame.
+        FnSpec *spec = nullptr;      // Owner of locals declared here (null at globals).
+        FnSpec *lexspec = nullptr;   // Lexical env for generic bindings (differs for funvals).
+        int lexframe = -1;           // Frame index for free-variable lookup chains.
+        int scopebase = 0;           // First scope index belonging to this frame.
+        int varbase = 0;             // First var index belonging to this frame.
+        Line callline;               // Call site, for instantiation chain diagnostics.
+        bool isfunval = false;
+    };
+
+    enum ScopeKind { SK_PLAIN, SK_FN, SK_LOOP, SK_BLOCK };
+    struct Scope {
+        int kind = SK_PLAIN;
+        int varbase = 0;
+        int fnbase = 0;              // Into localfns.
+        Node *node = nullptr;        // The loop / `block` construct for SK_LOOP/SK_BLOCK.
+        TypeExpr *breaktype = nullptr;
+        bool hasbreak = false;
+        bool valuelessbreak = false;
+    };
+
+    vector<Frame> frames;
+    vector<Scope> scopes;
+    vector<VarDef *> vars;                            // All in-scope variables, all frames.
+    vector<pair<int, SFunction *>> localfns;          // Nested fns, with their scope index.
+    bool reachable = true;
+    VarDef *curdst = nullptr;    // Root of the value under construction (for ref stores).
+    VarDef *temproot = nullptr;  // Sentinel root for refs read out of temporaries.
+    TypeExpr *fntype = nullptr;  // Shared type of function values.
+    TypeExpr *u8slice = nullptr; // The natural type of a string literal.
+    TypeExpr *nulltype = nullptr;  // Placeholder type of a bare null literal.
+
+    // ------------------------------------------------------------------
+    // Errors, with the compile-time instantiation chain (§7.7).
+
+    string Where(Line l) {
+        if (l.fileidx < 0 || l.fileidx >= (int)ast.sources.size()) return "?";
+        return cat(ast.sources[l.fileidx].first, ":", l.line);
+    }
+
+    [[noreturn]] void Error(Line l, const string &msg) {
+        auto s = cat(Where(l), ": error: ", msg);
+        // Show the offending source line with a caret-less underline context.
+        if (l.fileidx >= 0 && l.fileidx < (int)ast.sources.size() && l.line > 0) {
+            auto &src = *ast.sources[l.fileidx].second;
+            auto p = src.c_str();
+            for (auto ln = 1; *p && ln < l.line; p++) if (*p == '\n') ln++;
+            auto end = p;
+            while (*end && *end != '\n' && *end != '\r') end++;
+            Append(s, "\n", string_view(p, (size_t)(end - p)));
+        }
+        for (auto i = (int)frames.size() - 1; i > 0; i--) {
+            auto &f = frames[i];
+            if (!f.sf || f.isfunval) continue;
+            Append(s, "\n  in ", f.sf->isthread ? "thread_fn " : "fn ", f.sf->name, "(");
+            if (f.spec) {
+                for (size_t j = 0; j < f.spec->argtypes.size(); j++) {
+                    if (j) s += ", ";
+                    f.spec->argtypes[j]->Dump(s);
+                }
+            }
+            Append(s, ") instantiated from ", Where(f.callline));
+        }
+        throw CompileError { s };
+    }
+
+    [[noreturn]] void Error(const Node *n, const string &msg) { Error(n->line, msg); }
+
+    string TypeStr(const TypeExpr *t) {
+        string s;
+        t->Dump(s);
+        return s;
+    }
+
+    // ------------------------------------------------------------------
+    // Constant expression evaluation: array sizes, match arm bounds, literal
+    // fit. Understands literals, arithmetic, and `let` globals.
+
+    bool ConstInt(Node *n, int64_t &v) {
+        if (auto i = Is<IntLit>(n)) { v = i->val; return true; }
+        if (auto b = Is<BoolLit>(n)) { (void)b; return false; }
+        if (auto u = Is<Unary>(n)) {
+            int64_t c;
+            if (!ConstInt(u->child, c)) return false;
+            switch (u->op) {
+                case T_MINUS:  v = -c; return true;
+                case T_BITNOT: v = ~c; return true;
+                default: return false;
+            }
+        }
+        if (auto b = Is<Binary>(n)) {
+            int64_t l, r;
+            if (!ConstInt(b->left, l) || !ConstInt(b->right, r)) return false;
+            switch (b->op) {
+                case T_PLUS:   v = l + r; return true;
+                case T_MINUS:  v = l - r; return true;
+                case T_MUL:    v = l * r; return true;
+                case T_DIV:    if (!r) Error(n, "constant division by zero"); v = l / r; return true;
+                case T_MOD:    if (!r) Error(n, "constant division by zero"); v = l % r; return true;
+                case T_BITAND: v = l & r; return true;
+                case T_BITOR:  v = l | r; return true;
+                case T_XOR:    v = l ^ r; return true;
+                case T_SHL:    v = l << (r & 63); return true;
+                case T_SHR:    v = l >> (r & 63); return true;
+                default: return false;
+            }
+        }
+        if (auto id = Is<Ident>(n)) {
+            // A `let` global with a constant initializer is a named constant.
+            auto git = ast.globalmap.find(id->name);
+            if (git == ast.globalmap.end()) return false;
+            auto vd = git->second;
+            if (vd->isvar || vd->inits.size() != 1) return false;
+            return ConstInt(vd->inits[0], v);
+        }
+        return false;
+    }
+
+    int64_t ConstIntOrError(Node *n, const char *context) {
+        int64_t v;
+        if (!ConstInt(n, v)) Error(n, cat("constant integer expression expected for ", context));
+        return v;
+    }
+
+    // Evaluated A_FIXED size / A_LIMITED capacity, cached in the shared detail.
+    int64_t ArraySize(TypeArray *a) {
+        if (a->size < 0 && a->sizeexpr) {
+            auto v = ConstIntOrError(a->sizeexpr, "array size");
+            if (v < 0) Error(a->sizeexpr, "array size cannot be negative");
+            a->size = v;
+        }
+        return a->size;
+    }
+
+    // ------------------------------------------------------------------
+    // Type equality on concrete (post-substitution) types. i64 is the same
+    // type as int, f64 the same as flt (storage spellings, §3.1).
+
+    static IntStorage CanonI(IntStorage s) { return s == IS_I64 ? IS_INT : s; }
+    static FltStorage CanonF(FltStorage s) { return s == FS_F64 ? FS_FLT : s; }
+
+    bool TypeEq(TypeExpr *a, TypeExpr *b) {
+        if (a == b) return true;
+        if (a->kind != b->kind) return false;
+        switch (a->kind) {
+            case TY_INT:  return CanonI(a->intstorage) == CanonI(b->intstorage);
+            case TY_FLT:  return CanonF(a->fltstorage) == CanonF(b->fltstorage);
+            case TY_BOOL: case TY_VOID: case TY_FN: return true;
+            case TY_STRUCT: {
+                if (a->struc->st != b->struc->st) return false;
+                return TypeArgsEq(a->struc->args, b->struc->args);
+            }
+            case TY_ENUM: {
+                if (a->enu->en != b->enu->en || a->enu->varmode != b->enu->varmode) return false;
+                return TypeArgsEq(a->enu->args, b->enu->args);
+            }
+            case TY_ARRAY: {
+                auto &x = *a->arr, &y = *b->arr;
+                if (x.akind != y.akind || !TypeEq(x.sub, y.sub)) return false;
+                switch (x.akind) {
+                    case A_FIXED:   return ArraySize(a->arr) == ArraySize(b->arr);
+                    case A_VAR: {
+                        auto ls = [](int s) { return s < 0 ? IS_U32 : (IntStorage)s; };
+                        return ls(x.lenstorage) == ls(y.lenstorage);
+                    }
+                    case A_LIMITED: {
+                        auto xs = x.sizeexpr ? ArraySize(a->arr) : -1;
+                        auto ys = y.sizeexpr ? ArraySize(b->arr) : -1;
+                        return xs == ys;
+                    }
+                    default: return true;
+                }
+            }
+            case TY_SLICE: return TypeEq(a->sub, b->sub);
+            case TY_REF:
+                return TypeEq(a->ref->sub, b->ref->sub) && a->ref->optional == b->ref->optional &&
+                       a->ref->lenstorage == b->ref->lenstorage;
+            case TY_VARIANT:
+                return a->var->variant == b->var->variant && TypeEq(a->var->adt, b->var->adt);
+            case TY_GENERIC: return a->named->name == b->named->name;
+            default: assert(false); return false;
+        }
+    }
+
+    bool TypeArgsEq(vector<TypeExpr *> &a, vector<TypeExpr *> &b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); i++) if (!TypeEq(a[i], b[i])) return false;
+        return true;
+    }
+
+    // ------------------------------------------------------------------
+    // Generic substitution. Bindings are searched lexically: the current
+    // frame's lexical spec, then its lexical parents (nested fns see the
+    // enclosing function's generics).
+
+    TypeExpr *LookupBinding(string_view name) {
+        for (auto sp = frames.back().lexspec; sp; sp = sp->lexparent)
+            for (auto &[n, t] : sp->bindings) if (n == name) return t;
+        return nullptr;
+    }
+
+    bool IsFnValName(string_view name) {
+        for (auto sp = frames.back().lexspec; sp; sp = sp->lexparent)
+            for (auto &[n, fv] : sp->fnvals) if (n == name) return true;
+        return false;
+    }
+
+    const FnValBind *LookupFnVal(string_view name) {
+        for (auto sp = frames.back().lexspec; sp; sp = sp->lexparent)
+            for (auto &[n, fv] : sp->fnvals) if (n == name) return &fv;
+        return nullptr;
+    }
+
+    // Substitutes generic parameter names in t using the current lexical
+    // bindings; returns t itself when nothing changed.
+    TypeExpr *Subst(TypeExpr *t) {
+        switch (t->kind) {
+            case TY_GENERIC: {
+                auto b = LookupBindingOuter(t->named->name);
+                if (!b) return t;  // Unknown name; ValidateType reports it.
+                if (!t->named->args.empty())
+                    Error(t->line, cat("generic parameter ", t->named->name,
+                                       " takes no type arguments"));
+                if (t->named->varmode) {
+                    if (b->kind != TY_ENUM)
+                        Error(t->line, cat("variable mode (..) requires an ADT type, not ",
+                                           TypeStr(b)));
+                    if (b->enu->varmode) return b;
+                    auto n = ast.NewType(TY_ENUM, t->line);
+                    n->enu = ast.NewDetail<TypeEnum>();
+                    n->enu->en = b->enu->en;
+                    n->enu->args = b->enu->args;
+                    n->enu->varmode = true;
+                    return n;
+                }
+                return b;
+            }
+            case TY_STRUCT: {
+                auto args = SubstArgs(t->struc->args);
+                if (!args) return t;
+                auto n = ast.NewType(TY_STRUCT, t->line);
+                n->struc = ast.NewDetail<TypeStruct>();
+                n->struc->st = t->struc->st;
+                n->struc->args = std::move(*args);
+                return n;
+            }
+            case TY_ENUM: {
+                auto args = SubstArgs(t->enu->args);
+                if (!args) return t;
+                auto n = ast.NewType(TY_ENUM, t->line);
+                n->enu = ast.NewDetail<TypeEnum>();
+                n->enu->en = t->enu->en;
+                n->enu->args = std::move(*args);
+                n->enu->varmode = t->enu->varmode;
+                return n;
+            }
+            case TY_ARRAY: {
+                auto sub = Subst(t->arr->sub);
+                if (sub == t->arr->sub) return t;
+                auto n = ast.NewType(TY_ARRAY, t->line);
+                n->arr = ast.NewDetail<TypeArray>();
+                *n->arr = *t->arr;
+                n->arr->sub = sub;
+                return n;
+            }
+            case TY_SLICE: {
+                auto sub = Subst(t->sub);
+                if (sub == t->sub) return t;
+                auto n = ast.NewType(TY_SLICE, t->line);
+                n->sub = sub;
+                return n;
+            }
+            case TY_REF: {
+                auto sub = Subst(t->ref->sub);
+                if (sub == t->ref->sub) return t;
+                auto n = ast.NewType(TY_REF, t->line);
+                n->ref = ast.NewDetail<TypeRef>();
+                *n->ref = *t->ref;
+                n->ref->sub = sub;
+                return n;
+            }
+            case TY_VARIANT: {
+                auto adt = Subst(t->var->adt);
+                if (adt == t->var->adt) return t;
+                if (adt->kind != TY_ENUM)
+                    Error(t->line, cat("variant type of non-ADT type ", TypeStr(adt)));
+                auto n = ast.NewType(TY_VARIANT, t->line);
+                n->var = ast.NewDetail<TypeVariant>();
+                n->var->adt = adt;
+                // The template kept the name form when the ADT was generic.
+                auto name = t->var->adt->kind == TY_ENUM ? t->var->variant->name : t->var->name;
+                SVariant *found = nullptr;
+                for (auto &v : adt->enu->en->variants) if (v.name == name) { found = &v; break; }
+                if (!found)
+                    Error(t->line, cat("enum ", adt->enu->en->name, " has no variant named ", name));
+                n->var->variant = found;
+                return n;
+            }
+            default: return t;
+        }
+    }
+
+    // Returns nullopt-style: null when unchanged.
+    unique_ptr<vector<TypeExpr *>> SubstArgs(vector<TypeExpr *> &args) {
+        auto changed = false;
+        vector<TypeExpr *> out;
+        out.reserve(args.size());
+        for (auto a : args) {
+            auto s = Subst(a);
+            changed |= s != a;
+            out.push_back(s);
+        }
+        if (!changed) return nullptr;
+        return make_unique<vector<TypeExpr *>>(std::move(out));
+    }
+
+    // ------------------------------------------------------------------
+    // Struct/enum instantiation, size classes (§1.1), and placement rules
+    // (§3.4). Field types are substituted with the instance's own bindings
+    // only (bindonly), so a stray name in a declaration errors cleanly.
+
+    vector<pair<string_view, TypeExpr *>> *extrabindings = nullptr;
+    bool bindonly = false;
+    // While unifying a call's parameter types, the callee's own generics must
+    // stay unbound even when an enclosing function uses the same name (the
+    // recursive-generic case).
+    const vector<GenericParam> *ownexclude = nullptr;
+
+    TypeExpr *LookupBindingOuter(string_view name) {
+        if (extrabindings)
+            for (auto &[n, t] : *extrabindings) if (n == name) return t;
+        if (ownexclude)
+            for (auto &g : *ownexclude) if (g.name == name) return nullptr;
+        if (bindonly || frames.empty()) return nullptr;
+        return LookupBinding(name);
+    }
+
+    void BindGenerics(vector<GenericParam> &generics, vector<TypeExpr *> &args,
+                      string_view what, string_view name, Line l,
+                      vector<pair<string_view, TypeExpr *>> &out) {
+        if (args.size() != generics.size())
+            Error(l, cat(what, " ", name, " takes ", (int64_t)generics.size(),
+                         " type argument(s), ", (int64_t)args.size(), " given"));
+        for (size_t i = 0; i < generics.size(); i++)
+            out.push_back({ generics[i].name, args[i] });
+    }
+
+    // Runs f with only the given bindings visible to Subst.
+    template<typename F> void WithBindings(vector<pair<string_view, TypeExpr *>> &b, F f) {
+        auto saveb = extrabindings;
+        auto saveo = bindonly;
+        extrabindings = &b;
+        bindonly = true;
+        f();
+        extrabindings = saveb;
+        bindonly = saveo;
+    }
+
+    StructInst *GetStructInst(TypeExpr *t) {
+        auto st = t->struc->st;
+        if (t->struc->inst) return t->struc->inst;
+        for (auto inst : st->insts)
+            if (TypeArgsEq(inst->args, t->struc->args)) return t->struc->inst = inst;
+        auto inst = ast.NewStructInst();
+        inst->st = st;
+        inst->args = t->struc->args;
+        st->insts.push_back(inst);
+        t->struc->inst = inst;
+        vector<pair<string_view, TypeExpr *>> bindings;
+        BindGenerics(st->generics, inst->args, "struct", st->name, t->line, bindings);
+        WithBindings(bindings, [&]() {
+            for (auto &f : st->fields)
+                inst->ftypes.push_back(f.ispad ? nullptr : Subst(f.type));
+        });
+        // Placement (§3.4): a resizable field only as the tail, making the
+        // struct itself resizable; any variable part makes it variable.
+        auto lastreal = -1;
+        for (auto i = 0; i < (int)st->fields.size(); i++) if (!st->fields[i].ispad) lastreal = i;
+        for (auto i = 0; i < (int)st->fields.size(); i++) {
+            if (st->fields[i].ispad) continue;
+            auto ft = inst->ftypes[i];
+            ValidateType(ft, st->line, VT_FIELD);
+            auto c = ClassOf(ft);
+            if (c == SC_RESIZABLE) {
+                if (i != lastreal)
+                    Error(st->line, cat("resizable field ", st->fields[i].name, " of struct ",
+                                        st->name, " must be the final field"));
+                inst->sclass = SC_RESIZABLE;
+            } else if (c == SC_VARIABLE && inst->sclass == SC_FIXED) {
+                inst->sclass = SC_VARIABLE;
+            }
+            inst->flat = inst->flat && IsFlat(ft);
+        }
+        inst->validated = true;
+        CheckFieldDefaults(st->fields, inst->ftypes, inst->defaults, bindings);
+        return inst;
+    }
+
+    EnumInst *GetEnumInst(TypeExpr *t) {
+        auto en = t->enu->en;
+        if (t->enu->inst) return t->enu->inst;
+        for (auto inst : en->insts)
+            if (TypeArgsEq(inst->args, t->enu->args)) return t->enu->inst = inst;
+        auto inst = ast.NewEnumInst();
+        inst->en = en;
+        inst->args = t->enu->args;
+        en->insts.push_back(inst);
+        t->enu->inst = inst;
+        vector<pair<string_view, TypeExpr *>> bindings;
+        BindGenerics(en->generics, inst->args, "enum", en->name, t->line, bindings);
+        WithBindings(bindings, [&]() {
+            for (auto &v : en->variants) {
+                inst->vftypes.emplace_back();
+                for (auto &f : v.fields)
+                    inst->vftypes.back().push_back(f.ispad ? nullptr : Subst(f.type));
+            }
+        });
+        for (size_t vi = 0; vi < en->variants.size(); vi++) {
+            auto &v = en->variants[vi];
+            auto lastreal = -1;
+            for (auto i = 0; i < (int)v.fields.size(); i++) if (!v.fields[i].ispad) lastreal = i;
+            for (auto i = 0; i < (int)v.fields.size(); i++) {
+                if (v.fields[i].ispad) continue;
+                auto ft = inst->vftypes[vi][i];
+                ValidateType(ft, en->line, VT_FIELD);
+                auto c = ClassOf(ft);
+                if (c == SC_RESIZABLE) {
+                    if (i != lastreal)
+                        Error(en->line, cat("resizable field ", v.fields[i].name, " of variant ",
+                                            en->name, ".", v.name, " must be the final field"));
+                    inst->varclass = SC_RESIZABLE;
+                }
+                if (c != SC_FIXED) inst->allfixed = false;
+                inst->flat = inst->flat && IsFlat(ft);
+            }
+        }
+        inst->validated = true;
+        vector<pair<string_view, TypeExpr *>> b2 = bindings;
+        for (size_t vi = 0; vi < en->variants.size(); vi++) {
+            inst->vdefaults.emplace_back();
+            CheckFieldDefaults(en->variants[vi].fields, inst->vftypes[vi],
+                               inst->vdefaults.back(), b2);
+        }
+        return inst;
+    }
+
+    // Field defaults are checked once per instance, on clones, in a pristine
+    // frame that sees only globals (plus the instance's generic bindings).
+    void CheckFieldDefaults(vector<Field> &fields, vector<TypeExpr *> &ftypes,
+                            vector<Node *> &out, vector<pair<string_view, TypeExpr *>> &bindings) {
+        auto any = false;
+        for (auto &f : fields) any |= f.defaultval != nullptr;
+        if (!any) {
+            out.resize(fields.size(), nullptr);
+            return;
+        }
+        auto savereach = reachable;
+        auto savedst = curdst;
+        reachable = true;
+        curdst = nullptr;
+        auto sp = ast.NewFnSpec();  // Bindings holder for the pseudo frame.
+        sp->bindings = bindings;
+        Frame f;
+        f.lexspec = sp;
+        f.scopebase = (int)scopes.size();
+        f.varbase = (int)vars.size();
+        frames.push_back(f);
+        for (size_t i = 0; i < fields.size(); i++) {
+            if (!fields[i].defaultval) { out.push_back(nullptr); continue; }
+            auto clone = fields[i].defaultval->Clone(ast);
+            CheckValue(clone, ftypes[i]);
+            out.push_back(clone);
+        }
+        frames.pop_back();
+        reachable = savereach;
+        curdst = savedst;
+    }
+
+    SizeClass ClassOf(TypeExpr *t) {
+        switch (t->kind) {
+            case TY_INT:  return t->intstorage == IS_VARINT ? SC_VARIABLE : SC_FIXED;
+            case TY_FLT: case TY_BOOL: case TY_REF: case TY_SLICE: return SC_FIXED;
+            case TY_STRUCT: {
+                auto inst = GetStructInst(t);
+                // Still being validated = the struct (transitively) contains
+                // itself by value; references to self are fine (fixed class).
+                if (!inst->validated)
+                    Error(t->line, cat("struct ", inst->st->name, " contains itself by value"));
+                return inst->sclass;
+            }
+            case TY_ENUM: {
+                if (!t->enu->varmode) return SC_FIXED;
+                auto inst = GetEnumInst(t);
+                if (!inst->validated)
+                    Error(t->line, cat("enum ", inst->en->name, " contains itself by value"));
+                return inst->varclass;
+            }
+            case TY_ARRAY:
+                switch (t->arr->akind) {
+                    case A_FIXED:   return SC_FIXED;
+                    case A_VAR:     return SC_VARIABLE;
+                    case A_LIMITED: return ArraySize(t->arr) >= 0 ? SC_FIXED : SC_VARIABLE;
+                    default:        return SC_RESIZABLE;
+                }
+            case TY_VARIANT: {
+                auto inst = GetEnumInst(t->var->adt);
+                auto vi = VariantIndex(t->var->adt->enu->en, t->var->variant);
+                auto c = SC_FIXED;
+                for (auto ft : inst->vftypes[vi])
+                    if (ft) c = std::max(c, ClassOf(ft));
+                return c;
+            }
+            default: return SC_FIXED;
+        }
+    }
+
+    // Flat (§1.1): no references, slices, or relative references at any depth.
+    bool IsFlat(TypeExpr *t) {
+        switch (t->kind) {
+            case TY_REF: case TY_SLICE: return false;
+            case TY_STRUCT: return GetStructInst(t)->flat;
+            case TY_ENUM:   return GetEnumInst(t)->flat;
+            case TY_ARRAY:  return IsFlat(t->arr->sub);
+            case TY_VARIANT: {
+                auto inst = GetEnumInst(t->var->adt);
+                auto vi = VariantIndex(t->var->adt->enu->en, t->var->variant);
+                for (auto ft : inst->vftypes[vi]) if (ft && !IsFlat(ft)) return false;
+                return true;
+            }
+            default: return true;
+        }
+    }
+
+    int VariantIndex(SEnum *en, SVariant *v) {
+        for (size_t i = 0; i < en->variants.size(); i++)
+            if (&en->variants[i] == v) return (int)i;
+        assert(false);
+        return 0;
+    }
+
+    // Is this a type an uninitialized `var x: T;` may have: fixed-size, so a
+    // later whole-value assignment fully constructs it.
+    bool UninitOK(TypeExpr *t) { return ClassOf(t) == SC_FIXED; }
+
+    void ValidateType(TypeExpr *t, Line l, int pos) {
+        switch (t->kind) {
+            case TY_GENERIC:
+                Error(l, cat("unknown type: ", t->named->name));
+            case TY_UNRESOLVED:
+                assert(false);
+                return;
+            case TY_INT: {
+                // Storage spellings exist only inside compound types (§3.1);
+                // an individual variable/parameter/return is plain int.
+                auto compound = pos == VT_FIELD || pos == VT_ELEM || pos == VT_POINTEE;
+                if (t->intstorage == IS_VARINT && !compound)
+                    Error(l, "varint is a storage type: only fields and array elements");
+                if (t->intstorage != IS_INT && !compound)
+                    Error(l, cat(IntStorageName(t->intstorage), " is a storage type: use it "
+                                 "inside compound types, and plain int here"));
+                return;
+            }
+            case TY_FLT:
+                // Like the integer storage types, f32/f64 exist only inside
+                // compound types; variables/parameters/returns are plain flt
+                // (f32 math lives entirely within expressions, §3.1).
+                if (t->fltstorage != FS_FLT && pos != VT_FIELD && pos != VT_ELEM &&
+                    pos != VT_POINTEE)
+                    Error(l, cat(FltStorageName(t->fltstorage), " is a storage type: use it "
+                                 "inside compound types, and plain flt here"));
+                return;
+            case TY_BOOL: return;
+            case TY_VOID:
+                Error(l, "expression has no value here");
+            case TY_FN:
+                Error(l, "function value types are compile-time only and cannot be stored");
+            case TY_STRUCT: GetStructInst(t); return;
+            case TY_ENUM: {
+                auto inst = GetEnumInst(t);
+                if (!inst->validated && !t->enu->varmode)
+                    Error(l, cat("enum ", t->enu->en->name, " contains itself by value"));
+                if (inst->validated && !t->enu->varmode && !inst->allfixed)
+                    Error(l, cat("enum ", t->enu->en->name, " has non-fixed-size payloads and "
+                                 "can only be used in variable mode (",
+                                 t->enu->en->name, "..)"));
+                return;
+            }
+            case TY_VARIANT:
+                if (t->var->adt->kind != TY_ENUM)
+                    Error(l, cat("variant type of non-ADT type ", TypeStr(t->var->adt)));
+                GetEnumInst(t->var->adt);
+                return;
+            case TY_ARRAY: {
+                ValidateType(t->arr->sub, l, VT_ELEM);
+                auto ec = ClassOf(t->arr->sub);
+                switch (t->arr->akind) {
+                    case A_FIXED:
+                        ArraySize(t->arr);
+                        if (ec != SC_FIXED)
+                            Error(l, cat("fixed array elements must be fixed-size: ",
+                                         TypeStr(t->arr->sub)));
+                        break;
+                    case A_LIMITED:
+                        if (t->arr->sizeexpr) ArraySize(t->arr);
+                        if (ec != SC_FIXED)
+                            Error(l, cat("limited array elements must be fixed-size: ",
+                                         TypeStr(t->arr->sub)));
+                        break;
+                    case A_GROWSHRINK:
+                        if (ec != SC_FIXED)
+                            Error(l, cat("grow-shrink array elements must be fixed-size: ",
+                                         TypeStr(t->arr->sub)));
+                        break;
+                    case A_VAR: case A_GROW:
+                        if (ec == SC_RESIZABLE)
+                            Error(l, cat("array elements may not be resizable: ",
+                                         TypeStr(t->arr->sub)));
+                        break;
+                }
+                return;
+            }
+            case TY_SLICE: ValidateType(t->sub, l, VT_ELEM); return;
+            case TY_REF:   ValidateType(t->ref->sub, l, VT_POINTEE); return;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Scopes, variables, and flow state (definite assignment + optional
+    // narrowing, merged at control-flow joins).
+
+    void PushScope(int kind, Node *node = nullptr) {
+        Scope s;
+        s.kind = kind;
+        s.varbase = (int)vars.size();
+        s.fnbase = (int)localfns.size();
+        s.node = node;
+        scopes.push_back(s);
+    }
+
+    void PopScope() {
+        auto &s = scopes.back();
+        vars.resize(s.varbase);
+        localfns.resize(s.fnbase);
+        scopes.pop_back();
+    }
+
+    int CurDepth() { return (int)scopes.size(); }
+    static int Depth(VarDef *v) { return v ? v->depth : 0; }
+    static VarDef *CanonRoot(VarDef *v) {
+        while (v && v->rootalias) v = v->rootalias;
+        return v;
+    }
+
+    // The root of the reference a variable holds; a null-initialized optional
+    // has no commitment yet and reads as the temp sentinel, which no store
+    // outlives (conservative).
+    VarDef *RefRootOf(VarDef *vd) { return vd->refrootknown ? vd->refroot : temproot; }
+
+    // First non-null binding of a reference variable fixes its provenance.
+    void BindRefProvenance(VarDef *vd, const Val &v) {
+        if (v.isnull) return;
+        vd->refroot = CanonRoot(v.root);
+        vd->refrootknown = true;
+        vd->refwritable = v.writable;
+        vd->refreusable = v.reusable;
+    }
+
+    VarDef *NewVar(string_view name, TypeExpr *type, Line l, bool isvar) {
+        auto vd = ast.NewVarDef();
+        vd->name = name;
+        vd->type = type;
+        vd->line = l;
+        vd->isvar = isvar;
+        vd->depth = CurDepth();
+        vd->ownerspec = frames.back().spec;
+        vars.push_back(vd);
+        return vd;
+    }
+
+    // Name lookup: current frame's scopes innermost-out, then the lexical
+    // parent chain (free variables of nested fns / function values, §7.5),
+    // then globals.
+    VarDef *LookupVar(string_view name) {
+        for (auto fi = (int)frames.size() - 1; fi >= 0;) {
+            auto &f = frames[fi];
+            auto limit = fi == (int)frames.size() - 1 ? (int)vars.size()
+                                                      : frames[fi + 1].varbase;
+            for (auto i = limit - 1; i >= f.varbase; i--) {
+                if (vars[i]->name == name) {
+                    if (fi != (int)frames.size() - 1) vars[i]->captured = true;
+                    return vars[i];
+                }
+            }
+            fi = f.lexframe;
+        }
+        auto git = ast.globalmap.find(name);
+        if (git != ast.globalmap.end() && !git->second->defs.empty())
+            return git->second->defs[0];
+        return nullptr;
+    }
+
+    // The frame whose vars the above may address next: used to find a spec's
+    // frame index for lexparent chains.
+    int FrameOfSpec(FnSpec *sp) {
+        for (auto i = (int)frames.size() - 1; i >= 0; i--)
+            if (frames[i].spec == sp && !frames[i].isfunval) return i;
+        return -1;
+    }
+
+    SFunction *LookupLocalFn(string_view name) {
+        // A frame's scopes are [f.scopebase, next frame's scopebase).
+        for (auto fi = (int)frames.size() - 1; fi >= 0;) {
+            auto &f = frames[fi];
+            auto scopelimit = fi == (int)frames.size() - 1 ? (int)scopes.size()
+                                                           : frames[fi + 1].scopebase;
+            for (auto i = (int)localfns.size() - 1; i >= 0; i--) {
+                auto &[si, sf] = localfns[i];
+                if (si >= f.scopebase && si < scopelimit && sf->name == name) return sf;
+            }
+            fi = f.lexframe;
+        }
+        return nullptr;
+    }
+
+    // Snapshot of assigned/narrowed for every variable currently in scope.
+    struct FlowState {
+        vector<pair<bool, TypeExpr *>> st;
+        bool reachable = true;
+    };
+
+    FlowState SaveFlow() {
+        FlowState f;
+        f.st.reserve(vars.size());
+        for (auto v : vars) f.st.push_back({ v->assigned, v->narrowed });
+        // Globals' narrowing participates too (assignment in branches).
+        f.reachable = reachable;
+        return f;
+    }
+
+    void RestoreFlow(const FlowState &f) {
+        for (size_t i = 0; i < f.st.size() && i < vars.size(); i++) {
+            vars[i]->assigned = f.st[i].first;
+            vars[i]->narrowed = f.st[i].second;
+        }
+        reachable = f.reachable;
+    }
+
+    // Joins two branch end states into the current state: a fact holds after
+    // the join iff it holds in every reachable branch.
+    void MergeFlow(const FlowState &a, const FlowState &b) {
+        for (size_t i = 0; i < vars.size(); i++) {
+            auto aa = i < a.st.size() ? a.st[i] : pair<bool, TypeExpr *> { false, nullptr };
+            auto bb = i < b.st.size() ? b.st[i] : pair<bool, TypeExpr *> { false, nullptr };
+            vars[i]->assigned = (a.reachable ? aa.first : true) &&
+                                (b.reachable ? bb.first : true);
+            TypeExpr *n = nullptr;
+            if (!a.reachable) n = bb.second;
+            else if (!b.reachable) n = aa.second;
+            else if (aa.second && bb.second) n = aa.second;
+            vars[i]->narrowed = n;
+        }
+        reachable = a.reachable || b.reachable;
+    }
+
+    // Optional narrowing (§3.8): a bare optional variable as a condition, and
+    // the obvious compositions. `sense` = the region where cond is true.
+    void NarrowCond(Node *cond, bool sense) {
+        if (auto id = Is<Ident>(cond)) {
+            if (!id->vdef) return;
+            auto t = id->vdef->type;
+            if (t && t->kind == TY_REF && t->ref->optional && sense && !id->vdef->narrowed) {
+                auto r = ast.NewType(TY_REF, cond->line);
+                r->ref = ast.NewDetail<TypeRef>();
+                r->ref->sub = t->ref->sub;
+                id->vdef->narrowed = r;
+            }
+            return;
+        }
+        if (auto u = Is<Unary>(cond)) {
+            if (u->op == T_NOT) NarrowCond(u->child, !sense);
+            return;
+        }
+        if (auto b = Is<Binary>(cond)) {
+            if ((b->op == T_ANDAND && sense) || (b->op == T_OROR && !sense)) {
+                NarrowCond(b->left, sense);
+                NarrowCond(b->right, sense);
+                return;
+            }
+            // o != null narrows where true; o == null narrows where false.
+            if (b->op == T_EQ || b->op == T_NEQ) {
+                auto other = Is<NullLit>(b->left) ? b->right
+                                                  : Is<NullLit>(b->right) ? b->left : nullptr;
+                if (other) NarrowCond(other, b->op == T_NEQ ? sense : !sense);
+            }
+            return;
+        }
+    }
+
+    void KillNarrow(VarDef *vd) { vd->narrowed = nullptr; }
+
+    // Names assigned or rebound anywhere below n: loop bodies clear these
+    // narrowings up front, since iteration 2 sees the assignment.
+    void CollectAssignedNames(Node *n, set<string_view> &out) {
+        if (!n) return;
+        if (auto a = Is<Assign>(n))
+            if (auto id = Is<Ident>(a->lval)) out.insert(id->name);
+        n->Children([&](Node *c) { CollectAssignedNames(c, out); });
+    }
+
+    void KillNarrowingsAssignedIn(Node *body) {
+        set<string_view> names;
+        CollectAssignedNames(body, names);
+        for (auto v : vars) if (names.count(v->name)) v->narrowed = nullptr;
+    }
+
+    // ------------------------------------------------------------------
+    // Small type constructors and views.
+
+    TypeExpr *RefTo(TypeExpr *t, Line l) {
+        auto r = ast.NewType(TY_REF, l);
+        r->ref = ast.NewDetail<TypeRef>();
+        r->ref->sub = t;
+        return r;
+    }
+
+    TypeExpr *SliceOf(TypeExpr *t, Line l) {
+        auto s = ast.NewType(TY_SLICE, l);
+        s->sub = t;
+        return s;
+    }
+
+    bool IsIntT(TypeExpr *t) { return t->kind == TY_INT && t->intstorage != IS_VARINT; }
+    bool IsFullInt(TypeExpr *t) { return t->kind == TY_INT && CanonI(t->intstorage) == IS_INT; }
+    bool IsFltT(TypeExpr *t) { return t->kind == TY_FLT; }
+    bool IsF32(TypeExpr *t) { return t->kind == TY_FLT && t->fltstorage == FS_F32; }
+    bool IsOptional(TypeExpr *t) { return t->kind == TY_REF && t->ref->optional; }
+    bool IsPlainRef(TypeExpr *t) {
+        return t->kind == TY_REF && !t->ref->optional && t->ref->lenstorage < 0;
+    }
+    bool IsArrayKind(TypeExpr *t, ArrayKind k) {
+        return t->kind == TY_ARRAY && t->arr->akind == k;
+    }
+    bool IsU8(TypeExpr *t) { return t->kind == TY_INT && t->intstorage == IS_U8; }
+
+    // Loads widen (§3.1): integer storage reads become int, f64 reads flt,
+    // varint reads int; f32 stays f32 (lazy promotion). Relative references
+    // load as ordinary references (§3.9).
+    TypeExpr *Widen(TypeExpr *t) {
+        if (t->kind == TY_INT && t->intstorage != IS_INT) return ast.inttypes[IS_INT];
+        if (t->kind == TY_FLT && t->fltstorage == FS_F64) return ast.flttypes[FS_FLT];
+        if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
+            auto r = ast.NewType(TY_REF, t->line);
+            r->ref = ast.NewDetail<TypeRef>();
+            r->ref->sub = t->ref->sub;
+            r->ref->optional = t->ref->optional;
+            return r;
+        }
+        return t;
+    }
+
+    // The type a variable binding gives a value: storage widths widen, f32
+    // included — f32 math lives entirely within expressions, and variables
+    // are always flt (§3.1).
+    TypeExpr *VarWiden(TypeExpr *t) {
+        t = Widen(t);
+        if (IsF32(t)) return ast.flttypes[FS_FLT];
+        return t;
+    }
+
+    // The pointee type when v is a (non-optional) reference, else null.
+    TypeExpr *DerefType(TypeExpr *t) {
+        if (t->kind != TY_REF) return nullptr;
+        if (t->ref->optional) return nullptr;
+        return t->ref->sub;
+    }
+
+    // Fixed-size element check for indexable access.
+    bool SequentialElems(TypeExpr *arr) {
+        return ClassOf(arr->arr->sub) != SC_FIXED;
+    }
+
+    // ------------------------------------------------------------------
+    // Lvalue paths: names, fields, elements, optionally through references.
+
+    LVal CheckLValue(Node *n) {
+        if (auto id = Is<Ident>(n)) {
+            auto vd = LookupVar(id->name);
+            if (!vd) Error(n, cat("unknown variable: ", id->name));
+            id->vdef = vd;
+            LVal lv;
+            lv.type = vd->narrowed ? vd->narrowed : vd->type;
+            lv.var = vd;
+            lv.root = vd;
+            lv.writable = vd->isvar;
+            lv.reusable = vd->reusable;
+            n->exprtype = vd->type;
+            return lv;
+        }
+        if (auto d = Is<Dot>(n)) {
+            auto lv = LValueBase(d->obj);
+            DerefLValue(lv, d->obj);
+            ResolveMemberLValue(lv, d);
+            n->exprtype = lv.type;
+            return lv;
+        }
+        if (auto ix = Is<Index>(n)) {
+            auto lv = LValueBase(ix->obj);
+            DerefLValue(lv, ix->obj);
+            SliceProvenance(lv, ix->obj);
+            if (lv.type->kind == TY_SLICE) {
+                if (ClassOf(lv.type->sub) != SC_FIXED)
+                    Error(n, "slices of variable-size elements cannot be indexed, only iterated");
+                CheckValue(ix->idx, ast.inttypes[IS_INT]);
+                lv.type = lv.type->sub;
+                lv.var = nullptr;
+                n->exprtype = lv.type;
+                return lv;
+            }
+            if (lv.type->kind != TY_ARRAY)
+                Error(n, cat("cannot index a value of type ", TypeStr(lv.type)));
+            if (SequentialElems(lv.type))
+                Error(n, "arrays of variable-size elements cannot be indexed, only iterated");
+            CheckValue(ix->idx, ast.inttypes[IS_INT]);
+            if (lv.type->arr->akind == A_GROWSHRINK) lv.ingrowshrink = true;
+            lv.type = lv.type->arr->sub;
+            lv.var = nullptr;
+            if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT) lv.isvarint = true;
+            n->exprtype = lv.type;
+            return lv;
+        }
+        Error(n, "not an assignable location");
+    }
+
+    // The base of a path: itself a path, or any other expression (a call
+    // result, a string literal, ...) whose value is then addressed. A null
+    // root means static data; temporaries carry the temproot sentinel.
+    LVal LValueBase(Node *n) {
+        if (Is<Ident>(n) || Is<Dot>(n) || Is<Index>(n)) return CheckLValue(n);
+        auto v = CheckV(n, nullptr);
+        n->exprtype = v.type;
+        LVal lv;
+        lv.type = v.type;
+        lv.root = v.root;
+        lv.writable = v.writable;
+        lv.reusable = v.reusable;
+        return lv;
+    }
+
+    // Crossing a reference in a path (auto-deref, §3.8): the storage owner
+    // becomes the reference's root, writability its provenance.
+    void DerefLValue(LVal &lv, Node *at) {
+        if (lv.type->kind != TY_REF) return;
+        if (lv.type->ref->optional)
+            Error(at, "optional value must be narrowed (if/guard/assert) before use");
+        // Reading a reference variable requires it to have a value.
+        if (lv.var) {
+            RequireAssigned(lv.var, at);
+            lv.writable = lv.var->refwritable;
+            lv.root = RefRootOf(lv.var);
+            lv.reusable = lv.var->refreusable;
+        }
+        // A relative reference loads as an ordinary reference; the pointee is
+        // in the same pool, so it keeps the same root.
+        lv.type = lv.type->ref->sub;
+        lv.var = nullptr;
+        if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT) lv.isvarint = true;
+    }
+
+    void RequireAssigned(VarDef *vd, Node *at) {
+        if (!vd->assigned)
+            Error(at, cat("variable ", vd->name, " may be used before it is assigned"));
+    }
+
+    // Accessing through a slice variable: writes and roots follow the slice
+    // value's provenance, not the variable's own var-ness.
+    void SliceProvenance(LVal &lv, Node *at) {
+        if (!lv.var || lv.type->kind != TY_SLICE) return;
+        RequireAssigned(lv.var, at);
+        lv.writable = lv.var->refwritable;
+        lv.root = RefRootOf(lv.var);
+        lv.reusable = lv.var->refreusable;
+        lv.var = nullptr;
+    }
+
+    // Field / builtin-property resolution on an lvalue path.
+    void ResolveMemberLValue(LVal &lv, Dot *d) {
+        auto t = lv.type;
+        if (t->kind == TY_STRUCT) {
+            auto inst = GetStructInst(t);
+            auto st = inst->st;
+            for (auto i = 0; i < (int)st->fields.size(); i++) {
+                auto &f = st->fields[i];
+                if (!f.ispad && f.name == d->name) {
+                    d->fieldidx = i;
+                    if (f.isconst) lv.writable = false;
+                    lv.type = inst->ftypes[i];
+                    lv.var = nullptr;
+                    if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT)
+                        lv.isvarint = true;
+                    return;
+                }
+            }
+            Error(d, cat("struct ", st->name, " has no field ", d->name));
+        }
+        if (t->kind == TY_VARIANT) {
+            auto inst = GetEnumInst(t->var->adt);
+            auto vi = VariantIndex(inst->en, t->var->variant);
+            auto &fields = t->var->variant->fields;
+            for (auto i = 0; i < (int)fields.size(); i++) {
+                auto &f = fields[i];
+                if (!f.ispad && f.name == d->name) {
+                    d->fieldidx = i;
+                    if (f.isconst) lv.writable = false;
+                    lv.type = inst->vftypes[vi][i];
+                    lv.var = nullptr;
+                    if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT)
+                        lv.isvarint = true;
+                    return;
+                }
+            }
+            Error(d, cat("variant ", inst->en->name, ".", t->var->variant->name,
+                         " has no field ", d->name));
+        }
+        Error(d, cat("no field access on a value of type ", TypeStr(t)));
+    }
+
+    // ------------------------------------------------------------------
+    // Values: the per-node dispatch plus the implicit-conversion rules.
+
+    // The raw per-node check: virtual dispatch; the value may still denote a
+    // reference. Consumers go through CheckValue/CheckArg/Operand, which
+    // apply reference transparency.
+    Val CheckV(Node *n, TypeExpr *expected) { return n->Check(*this, expected); }
+
+    // References are transparent: load the pointee unless the destination
+    // wants the reference itself. Optionals never decay (narrow first).
+    Val DecayRef(Val v) {
+        if (!IsPlainRef(v.type)) return v;
+        Val r;
+        r.type = Widen(v.type->ref->sub);
+        r.root = v.root;  // Compound pointee values: container info, harmless.
+        return r;
+    }
+
+    // Does dt consume a reference value as-is (so no decay before fitting)?
+    bool KeepsRef(Val &v, TypeExpr *dt) {
+        if (!IsPlainRef(v.type)) return true;  // Nothing to decay.
+        if (dt->kind == TY_REF) return true;   // Binding (plain/optional/relative).
+        // Whole-(pointee-)array argument to a slice parameter (§3.10).
+        if (dt->kind == TY_SLICE && v.type->ref->sub->kind == TY_ARRAY) return true;
+        return false;
+    }
+
+    Val CheckValue(Node *n, TypeExpr *expected) {
+        auto v = CheckV(n, expected);
+        if (!expected || expected->kind == TY_VOID) {
+            v = DecayRef(v);
+        } else {
+            if (!KeepsRef(v, expected)) v = DecayRef(v);
+            MustFit(v, n, expected, false);
+        }
+        n->exprtype = v.type;
+        return v;
+    }
+
+    // Argument position: additionally allows the array→slice coercion (§3.10).
+    Val CheckArg(Node *n, TypeExpr *expected) {
+        auto v = CheckV(n, expected);
+        if (expected) {
+            if (!KeepsRef(v, expected)) v = DecayRef(v);
+            MustFit(v, n, expected, true);
+        } else {
+            v = DecayRef(v);
+        }
+        n->exprtype = v.type;
+        return v;
+    }
+
+    // An operand of an operator: always the pointee.
+    Val Operand(Node *n) {
+        auto v = DecayRef(CheckV(n, nullptr));
+        n->exprtype = v.type;
+        return v;
+    }
+
+    string fitfail;  // A specific reason from the last failing FitsAt, if any.
+
+    void MustFit(Val &v, Node *n, TypeExpr *dt, bool callsite) {
+        if (!reachable) return;  // A diverging operand fits anything.
+        fitfail.clear();
+        if (!FitsAt(v, dt, callsite)) {
+            if (!fitfail.empty()) Error(n, fitfail);
+            Error(n, cat("expected a value of type ", TypeStr(dt), ", got ", TypeStr(v.type),
+                         v.type->kind == TY_INT && dt->kind == TY_INT
+                             ? " (narrowing stores require an explicit `as`)" : ""));
+        }
+    }
+
+    // The implicit adaptations legal at construction/assignment sites (§6.3,
+    // §3.1, §3.7, §3.10). On success v.type becomes dt. Also the enforcement
+    // point of the store rule (§9.2): a reference/slice stored into storage
+    // owned by curdst must be rooted at least as shallow (call-site argument
+    // slots pass curdst null: parameters always die before their arguments'
+    // roots).
+    bool FitsAt(Val &v, TypeExpr *dt, bool callsite) {
+        auto t = v.type;
+        // The null literal fits any optional (plain or relative).
+        if (v.isnull) {
+            if (dt->kind == TY_REF && dt->ref->optional) { v.type = dt; return true; }
+            fitfail = cat("null is only a value of optional types, not ", TypeStr(dt));
+            return false;
+        }
+        if ((dt->kind == TY_REF || dt->kind == TY_SLICE) &&
+            (t->kind == TY_REF || t->kind == TY_SLICE) && !callsite && curdst) {
+            auto root = CanonRoot(v.root);
+            if (Depth(root) > Depth(CanonRoot(curdst))) {
+                fitfail = cat("storing a reference rooted at ",
+                              root ? root->name : string_view("static data"),
+                              ", which does not outlive the destination (§9.2)");
+                return false;
+            }
+            auto spec = CurRealFrame().spec;
+            if (root && !root->isglobal && spec && (spec->incycle || spec->sf->isrec)) {
+                fitfail = "references may only be passed down, not stored, inside a "
+                          "recursive cycle (§7.8)";
+                return false;
+            }
+        }
+        if (TypeEq(t, dt)) { v.type = dt; return true; }
+        switch (dt->kind) {
+            case TY_INT:
+                // A constant that statically fits stores into any int storage.
+                if (t->kind == TY_INT && v.ck == CK_INT && FitsIntStorage(v.ival, dt->intstorage)) {
+                    v.type = dt;
+                    return true;
+                }
+                return false;
+            case TY_FLT:
+                if (t->kind != TY_FLT) return false;
+                // Literals adapt to f32; f32 promotes to flt on contact.
+                if (IsF32(dt)) { if (v.ck != CK_FLT) return false; }
+                else if (!IsF32(t)) return false;
+                v.type = dt;
+                return true;
+            case TY_ARRAY: {
+                // Construction of an array from another array/slice of the
+                // same element type (copies, §3.7/§4.2). Fixed destinations
+                // need a statically known length, so only [] adapts.
+                TypeExpr *selem = nullptr;
+                if (t->kind == TY_ARRAY) selem = t->arr->sub;
+                else if (t->kind == TY_SLICE) selem = t->sub;
+                else return false;
+                if (v.emptyarr) {
+                    if (dt->arr->akind == A_FIXED && ArraySize(dt->arr) != 0) return false;
+                    v.type = dt;
+                    return true;
+                }
+                if (dt->arr->akind == A_FIXED) return false;
+                if (!TypeEq(selem, dt->arr->sub)) return false;
+                v.type = dt;
+                return true;
+            }
+            case TY_SLICE: {
+                // Whole-array argument to a slice parameter, call sites only;
+                // through a reference the pointee array is sliced in place.
+                auto at = t;
+                if (IsPlainRef(t) && t->ref->sub->kind == TY_ARRAY) at = t->ref->sub;
+                if (!callsite || at->kind != TY_ARRAY) return false;
+                if (at->arr->akind == A_GROWSHRINK) return false;  // §3.10.
+                if (!TypeEq(at->arr->sub, dt->sub)) return false;
+                v.type = dt;
+                return true;
+            }
+            case TY_REF: {
+                if (t->kind != TY_REF) return false;
+                if (!TypeEq(t->ref->sub, dt->ref->sub)) return false;
+                if (t->ref->lenstorage >= 0) return false;  // Values are never relative.
+                if (dt->ref->lenstorage >= 0) {
+                    // Storing an ordinary reference into a relative reference
+                    // location: both must derive from the same root (§3.9).
+                    if (t->ref->optional && !dt->ref->optional) return false;
+                    if (!curdst || CanonRoot(v.root) != CanonRoot(curdst)) {
+                        fitfail = cat("a relative reference must point within the same root "
+                                      "as its location (§3.9); this reference is rooted at ",
+                                      v.root ? CanonRoot(v.root)->name
+                                             : string_view("static data"));
+                        return false;
+                    }
+                    v.type = dt;
+                    return true;
+                }
+                // T& widens to T?.
+                if (dt->ref->optional && !t->ref->optional) { v.type = dt; return true; }
+                return false;
+            }
+            case TY_ENUM: {
+                // Mode adaptation copies at construction (fixed <-> variable);
+                // a variant value constructs its enum (the tag is static).
+                if (t->kind == TY_VARIANT) {
+                    auto adt = t->var->adt;
+                    if (adt->enu->en != dt->enu->en) return false;
+                    if (!TypeArgsEq(adt->enu->args, dt->enu->args)) return false;
+                } else if (t->kind == TY_ENUM) {
+                    if (t->enu->en != dt->enu->en) return false;
+                    if (!TypeArgsEq(t->enu->args, dt->enu->args)) return false;
+                } else {
+                    return false;
+                }
+                if (!dt->enu->varmode && !GetEnumInst(dt)->allfixed) return false;
+                v.type = dt;
+                return true;
+            }
+            default: return false;
+        }
+    }
+
+    bool FitsIntStorage(int64_t v, IntStorage s) {
+        switch (s) {
+            case IS_I8:  return v >= -128 && v <= 127;
+            case IS_I16: return v >= -32768 && v <= 32767;
+            case IS_I32: return v >= INT32_MIN && v <= INT32_MAX;
+            case IS_U8:  return v >= 0 && v <= 255;
+            case IS_U16: return v >= 0 && v <= 65535;
+            case IS_U32: return v >= 0 && v <= UINT32_MAX;
+            // 64-bit storage holds any bit pattern losslessly (§6.2).
+            case IS_INT: case IS_I64: case IS_U64: case IS_VARINT: return true;
+        }
+        return false;
+    }
+
+    // Conditions: bool, or an optional (§3.8 truthiness + narrowing). Plain
+    // references decay (a bool& condition reads its pointee); an already
+    // narrowed optional stays a valid (trivially true) test.
+    Val CheckCond(Node *n) {
+        auto v = CheckV(n, nullptr);
+        auto id = Is<Ident>(n);
+        auto narrowedopt = id && id->vdef && IsOptional(id->vdef->type) && id->vdef->narrowed;
+        if (!narrowedopt) v = DecayRef(v);
+        n->exprtype = v.type;
+        if (!narrowedopt && v.type->kind != TY_BOOL && !IsOptional(v.type))
+            Error(n, cat("condition must be bool or an optional, got ", TypeStr(v.type)));
+        return v;
+    }
+
+    // Unifies two branch values (literal/f32/root adaptations); null = branch
+    // diverged (bottom). Errors when both produce values of unrelated types
+    // and a value is wanted.
+    TypeExpr *UnifyBranch(TypeExpr *a, TypeExpr *b, Node *at, bool wantvalue) {
+        if (!a) return b;
+        if (!b) return a;
+        if (TypeEq(a, b)) return a;
+        if (a->kind == TY_FLT && b->kind == TY_FLT) return ast.flttypes[FS_FLT];
+        if (!wantvalue) return ast.voidtype;
+        Error(at, cat("branches have mismatched types: ", TypeStr(a), " vs ", TypeStr(b)));
+    }
+
+    Val VoidVal() {
+        Val v;
+        v.type = ast.voidtype;
+        return v;
+    }
+
+    TypeExpr *FixedArrayOf(TypeExpr *elem, int64_t count, Line l) {
+        auto t = ast.NewType(TY_ARRAY, l);
+        t->arr = ast.NewDetail<TypeArray>();
+        t->arr->sub = elem;
+        t->arr->akind = A_FIXED;
+        t->arr->size = count;
+        return t;
+    }
+
+    // &lvalue: reference creation (§3.8) with its restrictions. On a location
+    // that itself holds a reference (a reference variable or field), yields
+    // the stored reference — there are no references to references.
+    Val CheckRefOf(Unary *x) {
+        auto lv = CheckLValue(x->child);
+        if (lv.var) RequireAssigned(lv.var, x);
+        if (lv.ingrowshrink)
+            Error(x, "no references into the interior of a grow-shrink array (§5.2)");
+        if (lv.type->kind == TY_REF) {
+            Val v;
+            v.type = Widen(lv.type);  // Relative refs load as plain (§3.9).
+            if (lv.var) {
+                v.root = RefRootOf(lv.var);
+                v.writable = lv.var->refwritable;
+                v.reusable = lv.var->refreusable;
+            } else {
+                // Container-read: laundered writable by design (§9.5).
+                v.root = lv.root;
+                v.writable = true;
+            }
+            return v;
+        }
+        Val v;
+        v.type = RefTo(lv.type, x->line);
+        v.root = lv.root;
+        v.writable = lv.writable && !lv.isvarint;
+        v.reusable = lv.reusable;
+        return v;
+    }
+
+    void FoldInt(TType op, Val &l, Val &r, Val &out, Node *at) {
+        if (l.ck != CK_INT || r.ck != CK_INT) return;
+        auto a = l.ival, b = r.ival;
+        out.ck = CK_INT;
+        switch (op) {
+            case T_PLUS:   out.ival = a + b; break;
+            case T_MINUS:  out.ival = a - b; break;
+            case T_MUL:    out.ival = a * b; break;
+            case T_DIV:    if (!b) Error(at, "constant division by zero"); out.ival = a / b; break;
+            case T_MOD:    if (!b) Error(at, "constant division by zero"); out.ival = a % b; break;
+            case T_BITAND: out.ival = a & b; break;
+            case T_BITOR:  out.ival = a | b; break;
+            case T_XOR:    out.ival = a ^ b; break;
+            case T_SHL:    out.ival = a << (b & 63); break;
+            case T_SHR:    out.ival = a >> (b & 63); break;
+            default:       out.ck = CK_NONE; break;
+        }
+    }
+
+    // All scalar leaves integers, or all floats; only structs and fixed
+    // arrays compose; the value must be fixed-size (a constructed result).
+    bool ElementwiseOK(TypeExpr *t) {
+        int isint = -1;
+        function<bool(TypeExpr *)> rec = [&](TypeExpr *t2) -> bool {
+            switch (t2->kind) {
+                case TY_INT:
+                    if (t2->intstorage == IS_VARINT) return false;
+                    if (isint == 0) return false;
+                    isint = 1;
+                    return true;
+                case TY_FLT:
+                    if (isint == 1) return false;
+                    isint = 0;
+                    return true;
+                case TY_STRUCT: {
+                    auto inst = GetStructInst(t2);
+                    for (size_t i = 0; i < inst->ftypes.size(); i++)
+                        if (inst->ftypes[i] && !rec(inst->ftypes[i])) return false;
+                    return true;
+                }
+                case TY_ARRAY:
+                    return t2->arr->akind == A_FIXED && rec(t2->arr->sub);
+                default:
+                    return false;
+            }
+        };
+        return (t->kind == TY_STRUCT || t->kind == TY_ARRAY) && rec(t);
+    }
+
+    Val CheckVariantConst(Dot *d, SEnum *en) {
+        if (!en->generics.empty())
+            Error(d, cat("generic enum ", en->name, " needs type arguments to name a variant"));
+        auto t = ast.NewType(TY_ENUM, d->line);
+        t->enu = ast.NewDetail<TypeEnum>();
+        t->enu->en = en;
+        auto inst = GetEnumInst(t);
+        SVariant *found = nullptr;
+        for (auto &var : en->variants) if (var.name == d->name) { found = &var; break; }
+        if (!found) Error(d, cat("enum ", en->name, " has no variant named ", d->name));
+        if (found->has_payload)
+            Error(d, cat("variant ", en->name, ".", d->name,
+                         " has a payload; construct it with ", en->name, ".", d->name, " { ... }"));
+        d->variantconst = found;
+        d->einst = inst;
+        if (!inst->allfixed) t->enu->varmode = true;
+        Val v;
+        v.type = t;
+        return v;
+    }
+
+    // Merges the values of two branches (for roots: the deeper — i.e. more
+    // conservative — root wins; writability must hold in both).
+    Val MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at, bool wantvalue) {
+        if (!areach) return b;
+        if (!breach) return a;
+        Val v;
+        v.type = UnifyBranch(a.type, b.type, at, wantvalue);
+        v.root = Depth(a.root) >= Depth(b.root) ? a.root : b.root;
+        v.writable = a.writable && b.writable;
+        v.reusable = a.reusable && b.reusable;
+        return v;
+    }
+
+    Val CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
+        CheckCond(x->cond);
+        auto entry = SaveFlow();
+        NarrowCond(x->cond, true);
+        auto tv = CheckBlockVal(x->thenb, expected, wantvalue, SK_PLAIN);
+        auto aflow = SaveFlow();
+        RestoreFlow(entry);
+        Val ev = VoidVal();
+        FlowState bflow;
+        if (x->elseb) {
+            NarrowCond(x->cond, false);
+            if (auto ei = Is<IfExpr>(x->elseb)) ev = CheckIf(ei, expected, wantvalue);
+            else ev = CheckBlockVal((Block *)x->elseb, expected, wantvalue, SK_PLAIN);
+            x->elseb->exprtype = ev.type;
+            bflow = SaveFlow();
+            RestoreFlow(entry);
+        } else {
+            if (wantvalue)
+                Error(x, "an if used as a value requires an else branch");
+            NarrowCond(x->cond, false);
+            bflow = SaveFlow();
+            RestoreFlow(entry);
+        }
+        MergeFlow(aflow, bflow);
+        if (!wantvalue) return VoidVal();
+        return MergeVals(tv, aflow.reachable, ev, bflow.reachable, x, wantvalue);
+    }
+
+    Val CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue, int scopekind,
+                      Node *scopenode = nullptr) {
+        PushScope(scopekind, scopenode);
+        for (auto st : b->stmts) CheckStmt(st);
+        Val v = VoidVal();
+        if (b->tail) {
+            if (wantvalue) v = CheckValue(b->tail, expected);
+            else CheckStmtExpr(b->tail);
+        } else if (wantvalue && reachable && expected && expected->kind != TY_VOID) {
+            Error(b, "block used as a value must end in an expression");
+        }
+        if (!reachable) v.type = nullptr;  // Bottom: the block never produces.
+        PopScope();
+        b->exprtype = v.type ? v.type : ast.voidtype;
+        return v;
+    }
+
+    Val CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalue) {
+        auto sv = CheckV(m->scrutinee, nullptr);
+        m->scrutinee->exprtype = sv.type;
+        auto st = sv.type;
+        TypeExpr *enumtype = nullptr;
+        if (st->kind == TY_REF) {
+            if (st->ref->optional)
+                Error(m, "optional value must be narrowed (if/guard/assert), not matched");
+            if (st->ref->sub->kind == TY_ENUM) enumtype = st->ref->sub;
+        } else if (st->kind == TY_ENUM) {
+            enumtype = st;
+        }
+        auto entry = SaveFlow();
+        Val result;
+        auto resultreach = false;
+        auto first = true;
+        FlowState acc;
+        auto DoArm = [&](MatchArm &arm, VarDef *binder) {
+            RestoreFlow(entry);
+            PushScope(SK_PLAIN);
+            if (binder) vars.push_back(binder);
+            Val av;
+            if (wantvalue) av = CheckValue(arm.body, expected);
+            else CheckStmtExpr(arm.body);
+            auto aflow = SaveFlow();
+            if (!reachable) av.type = nullptr;
+            PopScope();
+            if (first) {
+                result = av;
+                resultreach = aflow.reachable;
+                acc = aflow;
+                first = false;
+            } else {
+                result = MergeVals(result, resultreach, av, aflow.reachable, m, wantvalue);
+                resultreach = resultreach || aflow.reachable;
+                // Accumulate the join of all arms' flow.
+                auto save = SaveFlow();
+                MergeFlow(acc, aflow);
+                acc = SaveFlow();
+                RestoreFlow(save);
+            }
+        };
+        if (enumtype) {
+            auto inst = GetEnumInst(enumtype);
+            auto en = inst->en;
+            vector<bool> covered(en->variants.size(), false);
+            auto haswild = false;
+            for (auto &arm : m->arms) {
+                if (arm.pat.kind == P_WILDCARD) {
+                    haswild = true;
+                    DoArm(arm, nullptr);
+                    continue;
+                }
+                if (arm.pat.kind != P_VARIANT)
+                    Error(arm.body, "ADT match arms are variant names (or _)");
+                SVariant *found = nullptr;
+                int vi = 0;
+                for (auto i = 0; i < (int)en->variants.size(); i++)
+                    if (en->variants[i].name == arm.pat.variant) { found = &en->variants[i]; vi = i; break; }
+                if (!found)
+                    Error(arm.body, cat("enum ", en->name, " has no variant named ",
+                                        arm.pat.variant));
+                if (covered[vi])
+                    Error(arm.body, cat("duplicate match arm for variant ", arm.pat.variant));
+                covered[vi] = true;
+                arm.variant = found;
+                VarDef *binder = nullptr;
+                if (!arm.pat.binder.empty()) {
+                    if (!found->has_payload && found->fields.empty())
+                        Error(arm.body, cat("variant ", arm.pat.variant, " has no payload to bind"));
+                    auto vt = VariantTypeOf(enumtype, found, m->line);
+                    binder = ast.NewVarDef();
+                    binder->name = arm.pat.binder;
+                    binder->line = m->line;
+                    binder->depth = CurDepth() + 1;
+                    binder->ownerspec = frames.back().spec;
+                    binder->assigned = true;
+                    if (arm.pat.byref) {
+                        // `Variant &b`: only variable-mode payloads may be
+                        // bound by reference — a fixed-mode value may be
+                        // overwritten with another variant, so references
+                        // into its payload are illegal (§3.5, §8.1).
+                        if (!enumtype->enu->varmode)
+                            Error(arm.body, cat("cannot bind the payload of fixed-mode ",
+                                                enumtype->enu->en->name, " by reference "
+                                                "(§3.5); bind by value: ", arm.pat.variant,
+                                                " ", arm.pat.binder));
+                        binder->type = RefTo(vt, m->line);
+                        binder->refroot = CanonRoot(sv.root);
+                        binder->refrootknown = true;
+                        binder->refwritable = sv.writable;
+                    } else {
+                        binder->type = vt;  // Payload copy, any mode (§8.1).
+                        binder->isvar = false;
+                        NoteNonfixedLocal(vt, m->line, !frames.back().spec);
+                    }
+                    arm.binder = binder;
+                }
+                DoArm(arm, binder);
+            }
+            if (!haswild)
+                for (size_t i = 0; i < en->variants.size(); i++)
+                    if (!covered[i])
+                        Error(m, cat("match does not cover variant ", en->name, ".",
+                                     en->variants[i].name));
+        } else if (IsIntT(Widen(st))) {
+            auto haswild = false;
+            for (auto &arm : m->arms) {
+                if (arm.pat.kind == P_WILDCARD) { haswild = true; DoArm(arm, nullptr); continue; }
+                if (arm.pat.kind == P_VARIANT)
+                    Error(arm.body, cat("unknown pattern ", arm.pat.variant,
+                                        " in an integer match"));
+                arm.lo = ConstIntOrError(arm.pat.lo, "match pattern");
+                arm.hi = arm.pat.kind == P_RANGE
+                             ? ConstIntOrError(arm.pat.hi, "match pattern")
+                             : arm.lo + 1;
+                if (arm.hi <= arm.lo) Error(arm.body, "empty range in match pattern");
+                DoArm(arm, nullptr);
+            }
+            if (!haswild) Error(m, "integer match requires a _ arm");
+        } else {
+            Error(m, cat("cannot match on a value of type ", TypeStr(st)));
+        }
+        if (!first) {
+            auto save = SaveFlow();
+            (void)save;
+            RestoreFlow(acc);
+        }
+        reachable = resultreach;
+        if (!wantvalue) return VoidVal();
+        if (!result.type) result.type = ast.voidtype;
+        return result;
+    }
+
+    TypeExpr *VariantTypeOf(TypeExpr *enumtype, SVariant *v, Line l) {
+        auto t = ast.NewType(TY_VARIANT, l);
+        t->var = ast.NewDetail<TypeVariant>();
+        // Variant types are mode-neutral; drop varmode from the adt type.
+        if (enumtype->enu->varmode) {
+            auto base = ast.NewType(TY_ENUM, l);
+            base->enu = ast.NewDetail<TypeEnum>();
+            base->enu->en = enumtype->enu->en;
+            base->enu->args = enumtype->enu->args;
+            t->var->adt = base;
+        } else {
+            t->var->adt = enumtype;
+        }
+        t->var->variant = v;
+        return t;
+    }
+
+    Val CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wantvalue) {
+        PushScope(SK_BLOCK, x);
+        for (auto st : x->body->stmts) CheckStmt(st);
+        Val v = VoidVal();
+        if (x->body->tail) {
+            if (wantvalue) v = CheckValue(x->body->tail, expected);
+            else CheckStmtExpr(x->body->tail);
+        }
+        if (!reachable) v.type = nullptr;
+        auto sc = scopes.back();
+        PopScope();
+        x->body->exprtype = v.type ? v.type : ast.voidtype;
+        reachable = reachable || sc.hasbreak;  // Exits via the tail or any break.
+        if (!wantvalue) return VoidVal();
+        Val r = v;
+        r.type = UnifyBranch(v.type, sc.breaktype, x, wantvalue);
+        if (!r.type) r.type = ast.voidtype;
+        return r;
+    }
+
+    Val CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue) {
+        (void)expected;
+        KillNarrowingsAssignedIn(x->body);
+        auto entry = SaveFlow();
+        PushScope(SK_LOOP, x);
+        for (auto st : x->body->stmts) CheckStmt(st);
+        if (x->body->tail) CheckStmtExpr(x->body->tail);
+        auto sc = scopes.back();
+        PopScope();
+        RestoreFlow(entry);
+        KillNarrowingsAssignedIn(x->body);
+        reachable = sc.hasbreak;  // A loop only exits via break.
+        Val v;
+        if (wantvalue && sc.breaktype) v.type = sc.breaktype;
+        else v.type = ast.voidtype;
+        return v;
+    }
+
+    void CheckWhile(While *x) {
+        CheckCond(x->cond);
+        auto entry = SaveFlow();
+        NarrowCond(x->cond, true);
+        KillNarrowingsAssignedIn(x->body);
+        PushScope(SK_LOOP, x);
+        for (auto st : x->body->stmts) CheckStmt(st);
+        if (x->body->tail) CheckStmtExpr(x->body->tail);
+        auto sc = scopes.back();
+        PopScope();
+        RestoreFlow(entry);
+        KillNarrowingsAssignedIn(x->body);
+        if (sc.breaktype)
+            Error(x, "break with a value exits loop/block only, not while");
+    }
+
+    void CheckFor(ForLoop *x) {
+        TypeExpr *bindtype = nullptr;
+        VarDef *iterroot = nullptr;
+        auto iterwritable = false;
+        if (auto r = Is<RangeExpr>(x->iter)) {
+            CheckValue(r->lo, ast.inttypes[IS_INT]);
+            CheckValue(r->hi, ast.inttypes[IS_INT]);
+            r->exprtype = ast.inttypes[IS_INT];
+            x->iterkind = IK_RANGE;
+            if (x->byref) Error(x, "cannot iterate an integer range by reference");
+            bindtype = ast.inttypes[IS_INT];
+        } else {
+            auto iv = CheckV(x->iter, nullptr);
+            x->iter->exprtype = iv.type;
+            auto t = iv.type;
+            iterroot = iv.root;
+            iterwritable = iv.writable;
+            if (t->kind == TY_REF && !t->ref->optional) t = t->ref->sub;  // Iterate through refs.
+            if (IsIntT(Widen(t))) {
+                x->iterkind = IK_COUNT;
+                if (x->byref) Error(x, "cannot iterate an integer count by reference");
+                bindtype = ast.inttypes[IS_INT];
+            } else if (t->kind == TY_ARRAY || t->kind == TY_SLICE) {
+                auto elem = t->kind == TY_ARRAY ? t->arr->sub : t->sub;
+                x->iterkind = t->kind == TY_ARRAY ? IK_ARRAY : IK_SLICE;
+                if (x->byref) {
+                    if (t->kind == TY_ARRAY && t->arr->akind == A_GROWSHRINK)
+                        Error(x, "no reference bindings into a grow-shrink array (§5.2)");
+                    bindtype = RefTo(elem, x->line);
+                } else {
+                    if (ClassOf(elem) != SC_FIXED)
+                        Error(x, "variable-size elements require the &x binding form");
+                    bindtype = Widen(elem);
+                }
+            } else {
+                Error(x, cat("cannot iterate a value of type ", TypeStr(t)));
+            }
+        }
+        auto entry = SaveFlow();
+        KillNarrowingsAssignedIn(x->body);
+        PushScope(SK_LOOP, x);
+        auto vd = NewVar(x->var, bindtype, x->line, false);
+        vd->assigned = true;
+        if (bindtype->kind == TY_REF) {
+            vd->refroot = CanonRoot(iterroot);
+            vd->refrootknown = true;
+            vd->refwritable = iterwritable;
+        }
+        x->vdef = vd;
+        if (!x->idxvar.empty()) {
+            auto idx = NewVar(x->idxvar, ast.inttypes[IS_INT], x->line, false);
+            idx->assigned = true;
+            x->idxdef = idx;
+        }
+        for (auto st : x->body->stmts) CheckStmt(st);
+        if (x->body->tail) CheckStmtExpr(x->body->tail);
+        auto sc = scopes.back();
+        PopScope();
+        RestoreFlow(entry);
+        KillNarrowingsAssignedIn(x->body);
+        if (sc.breaktype)
+            Error(x, "break with a value exits loop/block only, not for");
+    }
+
+    void CheckGuard(Guard *g) {
+        CheckCond(g->cond);
+        auto entry = SaveFlow();
+        if (g->elseb) {
+            NarrowCond(g->cond, false);
+            CheckBlockVal(g->elseb, nullptr, false, SK_PLAIN);
+            if (reachable)
+                Error(g, "guard else block must diverge (return, break, continue, or abort)");
+        } else {
+            auto si = FindBreakScope(false);
+            if (si >= 0) {
+                auto &sc = scopes[si];
+                if (sc.breaktype)
+                    Error(g, "bare guard exits a construct that requires a break value");
+                sc.valuelessbreak = true;
+                sc.hasbreak = true;
+                g->implicitexit = 1;
+            } else {
+                ImplicitEmptyReturn(g);
+                g->implicitexit = 2;
+            }
+        }
+        RestoreFlow(entry);
+        NarrowCond(g->cond, true);
+    }
+
+    void ImplicitEmptyReturn(Node *at) {
+        auto &f = CurRealFrame();
+        if (!f.sf) Error(at, "guard shorthand cannot exit the top level");
+        auto spec = f.spec;
+        if (spec->retsknown) {
+            if (!spec->rets.empty())
+                Error(at, cat("bare guard would return without the required value(s) of ",
+                              f.sf->name));
+        } else {
+            spec->rets.clear();
+            spec->retsknown = true;
+        }
+    }
+
+    Frame &CurRealFrame() {
+        for (auto i = (int)frames.size() - 1; i >= 0; i--)
+            if (!frames[i].isfunval) return frames[i];
+        return frames[0];
+    }
+
+    int FindBreakScope(bool forcontinue) {
+        for (auto i = (int)scopes.size() - 1; i >= frames.back().scopebase; i--) {
+            if (scopes[i].kind == SK_LOOP) return i;
+            if (!forcontinue && scopes[i].kind == SK_BLOCK) return i;
+            if (scopes[i].kind == SK_FN) break;
+        }
+        return -1;
+    }
+
+    void CheckBreak(Break *b) {
+        auto si = FindBreakScope(false);
+        if (si < 0) Error(b, "break outside of a loop or block");
+        auto &sc = scopes[si];
+        if (b->val) {
+            if (!Is<LoopExpr>(sc.node) && !Is<EarlyBlock>(sc.node))
+                Error(b, "break with a value exits loop/block only");
+            if (sc.valuelessbreak)
+                Error(b, "this construct mixes valueless and valued breaks");
+            auto v = CheckValue(b->val, scopes[si].breaktype);
+            auto &sc2 = scopes[si];  // CheckValue may not reallocate, but be safe.
+            if (!sc2.breaktype) sc2.breaktype = v.type;
+            sc2.hasbreak = true;
+        } else {
+            if (sc.breaktype)
+                Error(b, "this construct mixes valueless and valued breaks");
+            sc.valuelessbreak = true;
+            sc.hasbreak = true;
+        }
+        reachable = false;
+    }
+
+    void CheckContinue(Node *n) {
+        if (FindBreakScope(true) < 0) Error(n, "continue outside of a loop");
+        reachable = false;
+    }
+
+    // ------------------------------------------------------------------
+    // Calls: builtin members, builtins, UFCS, overload resolution with
+    // generic inference (§7.1, §7.7), and case-function tag dispatch (§8.2).
+
+    // Return values of the most recent call, for `let a, b = f();`.
+    vector<Val> lastcallrets;
+
+    struct MatchInfo {
+        SFunction *sf = nullptr;
+        int tier = 0;  // 0 = exact, 1 = generic binding, 2 = coercions.
+        vector<pair<string_view, TypeExpr *>> bindings;
+        vector<pair<string_view, FnValBind>> fnvals;
+        vector<TypeExpr *> paramtypes;  // Concrete, one per declared parameter.
+        FnSpec *env = nullptr;          // Lexical parent for nested functions.
+    };
+
+    Val CheckCall(Call *c, TypeExpr *expected) {
+        (void)expected;
+        // A node may be re-checked in argument phase 2; reset annotations.
+        c->spec = nullptr;
+        c->dispatch.clear();
+        c->builtin = -1;
+        c->rettypes.clear();
+        lastcallrets.clear();
+        // Arguments construct into parameter slots, not whatever destination
+        // encloses this call; member ops re-set curdst for element pushes.
+        auto savedst = curdst;
+        curdst = nullptr;
+        Val v;
+        if (auto d = Is<Dot>(c->callee)) v = CheckUfcsCall(c, d);
+        else if (auto id = Is<Ident>(c->callee)) v = CheckNamedCall(c, id);
+        else Error(c, "this expression cannot be called");
+        curdst = savedst;
+        return v;
+    }
+
+    Val CheckNamedCall(Call *c, Ident *id) {
+        if (LookupVar(id->name))
+            Error(c, cat(id->name, " is a variable, not a function"));
+        if (auto fb = LookupFnVal(id->name)) {
+            id->vdef = nullptr;
+            return CheckFunValCall(c, *fb);
+        }
+        FnSpec *env = nullptr;
+        vector<SFunction *> cands;
+        if (auto nf = LookupLocalFnEnv(id->name, env)) {
+            cands.push_back(nf);
+        } else {
+            auto fit = ast.functionmap.find(id->name);
+            if (fit != ast.functionmap.end()) cands = fit->second;
+        }
+        if (!cands.empty()) {
+            for (auto sf : cands)
+                if (sf->isthread)
+                    Error(c, cat("thread_fn ", id->name, " is spawned with thread_spawn, "
+                                 "not called"));
+            return ResolveCall(c, cands, env, id->name, nullptr, nullptr);
+        }
+        auto bd = LookupBuiltin(id->name);
+        if (!bd) Error(c, cat("unknown function: ", id->name));
+        if (bd->flags & BF_PROPERTY)
+            Error(c, cat(id->name, " is a property (use a.", id->name, "), not a call"));
+        return CheckBuiltin(c, *bd, c->args, nullptr);
+    }
+
+    SFunction *LookupLocalFnEnv(string_view name, FnSpec *&env) {
+        for (auto fi = (int)frames.size() - 1; fi >= 0;) {
+            auto &f = frames[fi];
+            auto scopelimit = fi == (int)frames.size() - 1 ? (int)scopes.size()
+                                                           : frames[fi + 1].scopebase;
+            for (auto i = (int)localfns.size() - 1; i >= 0; i--) {
+                auto &[si, sf] = localfns[i];
+                if (si >= f.scopebase && si < scopelimit && sf->name == name) {
+                    env = f.lexspec;
+                    return sf;
+                }
+            }
+            fi = f.lexframe;
+        }
+        return nullptr;
+    }
+
+    Val CheckUfcsCall(Call *c, Dot *d) {
+        auto ov = CheckV(d->obj, nullptr);
+        d->obj->exprtype = ov.type;
+        auto rt = ov.type;
+        if (rt->kind == TY_REF) {
+            if (rt->ref->optional)
+                Error(c, "optional value must be narrowed (if/guard/assert) before use");
+            rt = rt->ref->sub;
+        }
+        // Built-in members first (§7.1), then free functions, then the
+        // remaining builtins (a.f(b) is exactly f(a, b)).
+        auto bd = LookupBuiltin(d->name);
+        if (bd && (bd->flags & BF_MEMBER) && !(bd->flags & BF_PROPERTY) &&
+            rt->kind == TY_ARRAY) {
+            vector<Node *> argnodes = { d->obj };
+            for (auto a : c->args) argnodes.push_back(a);
+            d->member = bd->kind;
+            return CheckBuiltin(c, *bd, argnodes, &ov);
+        }
+        if (rt->kind == TY_STRUCT) {
+            for (auto &f : rt->struc->st->fields)
+                if (!f.ispad && f.name == d->name)
+                    Error(c, cat("field ", d->name, " is not callable"));
+        }
+        FnSpec *env = nullptr;
+        vector<SFunction *> cands;
+        if (auto nf = LookupLocalFnEnv(d->name, env)) {
+            cands.push_back(nf);
+        } else {
+            auto fit = ast.functionmap.find(d->name);
+            if (fit != ast.functionmap.end()) cands = fit->second;
+        }
+        if (!cands.empty()) return ResolveCall(c, cands, env, d->name, &ov, d->obj);
+        if (bd && !(bd->flags & BF_PROPERTY)) {
+            vector<Node *> argnodes = { d->obj };
+            for (auto a : c->args) argnodes.push_back(a);
+            return CheckBuiltin(c, *bd, argnodes, &ov);
+        }
+        if (bd) Error(c, cat(".", d->name, " is a property, not a call"));
+        Error(c, cat("unknown function or member: ", d->name));
+    }
+
+    // Phase 1 checks arguments bottom-up for resolution; phase 2 re-checks
+    // each against its concrete parameter type (adapting literals etc.).
+    Val ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *env, string_view name,
+                    Val *preval, Node *prenode) {
+        vector<Node *> argnodes;
+        vector<Val> argvals;
+        if (prenode) {
+            argnodes.push_back(prenode);
+            argvals.push_back(*preval);
+        }
+        for (auto a : c->args) {
+            argnodes.push_back(a);
+            auto v = CheckV(a, nullptr);
+            a->exprtype = v.type;
+            argvals.push_back(v);
+        }
+        MatchInfo best;
+        auto bestcount = 0;
+        string failures;
+        for (auto sf : cands) {
+            MatchInfo mi;
+            mi.sf = sf;
+            mi.env = env;
+            string why;
+            if (!TryMatch(sf, c, argvals, mi, why)) {
+                Append(failures, "\n  candidate ", name, " at ", Where(sf->line), ": ", why);
+                continue;
+            }
+            if (!bestcount || mi.tier < best.tier) {
+                best = mi;
+                bestcount = 1;
+            } else if (mi.tier == best.tier) {
+                bestcount++;
+            }
+        }
+        if (bestcount > 1)
+            Error(c, cat("ambiguous call to ", name, ": multiple overloads match equally well"));
+        if (!bestcount) {
+            // Tag dispatch (§8.2): the match-as-overload-set form.
+            auto v = TryDispatch(c, cands, argnodes, argvals, name);
+            if (v.type) return v;
+            Error(c, cat("no matching overload for call to ", name, failures));
+        }
+        auto spec = GetOrCreateSpec(best, argvals, c);
+        // Phase 2: re-check arguments against the resolved parameter types.
+        // Arguments construct into fresh parameter slots, not curdst.
+        {
+            auto savedst = curdst;
+            curdst = nullptr;
+            for (size_t i = 0; i < best.paramtypes.size(); i++)
+                CheckArg(argnodes[i], best.paramtypes[i]);
+            curdst = savedst;
+        }
+        c->spec = spec;
+        return CallResult(c, spec, argvals, best.paramtypes);
+    }
+
+    bool TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, MatchInfo &mi, string &why) {
+        auto P = sf->params.size();
+        auto N = argvals.size();
+        if (N < P) { why = "too few arguments"; return false; }
+        for (auto i = P; i < N; i++) {
+            if (argvals[i].type != fntype) { why = "too many arguments"; return false; }
+        }
+        if (c->tyargs.size() > sf->generics.size()) {
+            why = "too many explicit type arguments";
+            return false;
+        }
+        for (size_t i = 0; i < c->tyargs.size(); i++) {
+            auto t = Subst(c->tyargs[i]);
+            ValidateType(t, c->line, VT_LOCAL);
+            mi.bindings.push_back({ sf->generics[i].name, t });
+        }
+        mi.paramtypes.resize(P);
+        // The callee's own generic names must not resolve to same-named
+        // enclosing bindings while unifying (the recursive-generic case).
+        auto saveex = ownexclude;
+        ownexclude = &sf->generics;
+        auto paramsok = [&]() {
+            for (size_t i = 0; i < P; i++) {
+                auto &p = sf->params[i];
+                auto &av = argvals[i];
+                if (!p.type) {
+                    // Untyped parameter: independently generic (§7.1); a
+                    // reference argument contributes its pointee (decay).
+                    if (av.type == fntype) {
+                        why = "function values bind to generic parameters, not untyped ones";
+                        return false;
+                    }
+                    auto dv = DecayRef(av);
+                    auto nt = NaturalType(dv);
+                    if (!nt) {
+                        why = cat("cannot infer a type for argument ", (int64_t)i + 1);
+                        return false;
+                    }
+                    mi.paramtypes[i] = VarWiden(nt);
+                    mi.tier = std::max(mi.tier, 1);
+                    continue;
+                }
+                auto ct = UnifyArg(p.type, av, mi.bindings, mi.tier);
+                if (!ct) {
+                    why = cat("argument ", (int64_t)i + 1, ": cannot pass ", TypeStr(av.type),
+                              " as ", TypeStr(p.type));
+                    return false;
+                }
+                mi.paramtypes[i] = ct;
+            }
+            return true;
+        }();
+        ownexclude = saveex;
+        if (!paramsok) return false;
+        // Leftover generics bind function values, in order (§7.6).
+        vector<string_view> unbound;
+        for (auto &g : sf->generics) {
+            auto found = false;
+            for (auto &[n, t] : mi.bindings) found |= n == g.name;
+            if (!found) unbound.push_back(g.name);
+        }
+        auto need = (N - P) + (c->trailing ? 1 : 0);
+        if (unbound.size() != need) {
+            why = need ? cat((int64_t)need, " function value(s) for ",
+                             (int64_t)unbound.size(), " unbound generic parameter(s)")
+                       : "cannot infer all generic parameters (use explicit <...>)";
+            return false;
+        }
+        for (size_t k = 0; P + k < N; k++)
+            mi.fnvals.push_back({ unbound[k], argvals[P + k].fnv });
+        if (c->trailing) {
+            FnValBind fb;
+            fb.fv = c->trailing;
+            fb.env = frames.back().lexspec;
+            mi.fnvals.push_back({ unbound.back(), fb });
+        }
+        return true;
+    }
+
+    // The type an argument value contributes to inference; null when it has
+    // none ([] and null literals).
+    TypeExpr *NaturalType(const Val &av) {
+        if (av.emptyarr || av.isnull) return nullptr;
+        if (av.strlit) return u8slice;
+        return av.type;
+    }
+
+    // Makes parameter type pt concrete against argument av, binding this
+    // call's own generics into b. Returns null when it cannot match. A
+    // reference argument that fails to match as a reference retries as its
+    // pointee (transparency).
+    TypeExpr *UnifyArg(TypeExpr *pt, Val &av, vector<pair<string_view, TypeExpr *>> &b,
+                       int &tier) {
+        auto nbind = b.size();
+        if (auto ct = UnifyArgRaw(pt, av, b, tier)) return ct;
+        if (IsPlainRef(av.type)) {
+            b.resize(nbind);  // Discard bindings from the failed attempt.
+            auto dv = DecayRef(av);
+            if (auto ct = UnifyArgRaw(pt, dv, b, tier)) return ct;
+        }
+        return nullptr;
+    }
+
+    TypeExpr *UnifyArgRaw(TypeExpr *pt, Val &av, vector<pair<string_view, TypeExpr *>> &b,
+                          int &tier) {
+        pt = Subst(pt);  // Enclosing functions' generics are already bound.
+        if (av.isnull) {
+            auto ct = SubstOwn(pt, b);
+            if (!ct || HasGenerics(ct) || !IsOptional(ct)) return nullptr;
+            tier = std::max(tier, 2);
+            return ct;
+        }
+        if (av.emptyarr) {
+            auto ct = SubstOwn(pt, b);
+            if (!ct || HasGenerics(ct) || ct->kind != TY_ARRAY) return nullptr;
+            tier = std::max(tier, 2);
+            return ct;
+        }
+        auto at = NaturalType(av);
+        // A bare generic parameter is a variable: it binds the widened type
+        // (an f32 argument binds T = flt and promotes on the way in, §3.1).
+        if (pt->kind == TY_GENERIC && !pt->named->varmode) at = VarWiden(at);
+        auto hadgen = HasGenerics(pt);
+        if (hadgen) {
+            if (!BindTypes(pt, at, b)) {
+                // The one shape-changing coercion generics see through:
+                // whole-array arguments to slice parameters (§3.10).
+                if (pt->kind == TY_SLICE && at->kind == TY_ARRAY)
+                    BindTypes(pt->sub, at->arr->sub, b);
+            }
+        }
+        auto ct = SubstOwn(pt, b);
+        if (!ct || HasGenerics(ct)) return nullptr;
+        if (TypeEq(at, ct)) {
+            if (hadgen) tier = std::max(tier, 1);
+            return ct;
+        }
+        Val tmp = av;
+        if (!FitsAt(tmp, ct, true)) return nullptr;
+        tier = std::max(tier, 2);
+        return ct;
+    }
+
+    bool HasGenerics(TypeExpr *t) {
+        switch (t->kind) {
+            case TY_GENERIC: return true;
+            case TY_STRUCT: for (auto a : t->struc->args) if (HasGenerics(a)) return true; return false;
+            case TY_ENUM:   for (auto a : t->enu->args) if (HasGenerics(a)) return true; return false;
+            case TY_ARRAY:  return HasGenerics(t->arr->sub);
+            case TY_SLICE:  return HasGenerics(t->sub);
+            case TY_REF:    return HasGenerics(t->ref->sub);
+            case TY_VARIANT: return HasGenerics(t->var->adt);
+            default: return false;
+        }
+    }
+
+    // Structural binding of pt's generic leaves against concrete at. Loose:
+    // the caller re-validates with FitsAt after substitution.
+    bool BindTypes(TypeExpr *pt, TypeExpr *at, vector<pair<string_view, TypeExpr *>> &b) {
+        switch (pt->kind) {
+            case TY_GENERIC: {
+                auto name = pt->named->name;
+                auto bindto = at;
+                if (pt->named->varmode) {
+                    if (at->kind != TY_ENUM) return false;
+                    if (at->enu->varmode) {
+                        auto base = ast.NewType(TY_ENUM, at->line);
+                        base->enu = ast.NewDetail<TypeEnum>();
+                        base->enu->en = at->enu->en;
+                        base->enu->args = at->enu->args;
+                        bindto = base;
+                    }
+                }
+                for (auto &[n, t] : b)
+                    if (n == name) return TypeEq(t, bindto);
+                b.push_back({ name, bindto });
+                return true;
+            }
+            case TY_STRUCT:
+                if (at->kind != TY_STRUCT || at->struc->st != pt->struc->st ||
+                    at->struc->args.size() != pt->struc->args.size()) return false;
+                for (size_t i = 0; i < pt->struc->args.size(); i++)
+                    if (!BindTypes(pt->struc->args[i], at->struc->args[i], b)) return false;
+                return true;
+            case TY_ENUM:
+                if (at->kind != TY_ENUM || at->enu->en != pt->enu->en ||
+                    at->enu->args.size() != pt->enu->args.size()) return false;
+                for (size_t i = 0; i < pt->enu->args.size(); i++)
+                    if (!BindTypes(pt->enu->args[i], at->enu->args[i], b)) return false;
+                return true;
+            case TY_ARRAY:
+                if (at->kind != TY_ARRAY || at->arr->akind != pt->arr->akind) return false;
+                return BindTypes(pt->arr->sub, at->arr->sub, b);
+            case TY_SLICE:
+                if (at->kind != TY_SLICE) return false;
+                return BindTypes(pt->sub, at->sub, b);
+            case TY_REF:
+                if (at->kind != TY_REF) return false;
+                return BindTypes(pt->ref->sub, at->ref->sub, b);
+            case TY_VARIANT: {
+                // The template's union holds a bare name while its ADT is generic.
+                auto ptname = pt->var->adt->kind == TY_ENUM ? pt->var->variant->name
+                                                            : pt->var->name;
+                if (at->kind != TY_VARIANT || at->var->variant->name != ptname) return false;
+                return BindTypes(pt->var->adt, at->var->adt, b);
+            }
+            default:
+                return TypeEq(pt, at);
+        }
+    }
+
+    TypeExpr *SubstOwn(TypeExpr *pt, vector<pair<string_view, TypeExpr *>> &b) {
+        TypeExpr *r = nullptr;
+        WithBindings(b, [&]() { r = Subst(pt); });
+        return r;
+    }
+
+    // Case-function tag dispatch (§8.2): calling an overload set of variant
+    // types with the ADT (or a reference to it) dispatches on the tag.
+    // Returns a Val with null type when no dispatch position exists.
+    Val TryDispatch(Call *c, vector<SFunction *> &cands, vector<Node *> &argnodes,
+                    vector<Val> &argvals, string_view name) {
+        Val novv;
+        novv.type = nullptr;
+        auto found = -1;
+        vector<MatchInfo> matches;  // Per variant, for the found position.
+        TypeExpr *enumtype = nullptr;
+        auto byref = false;
+        for (size_t pos = 0; pos < argvals.size(); pos++) {
+            auto at = argvals[pos].type;
+            TypeExpr *et = nullptr;
+            auto isref = false;
+            if (at->kind == TY_ENUM) et = at;
+            else if (IsPlainRef(at) && at->ref->sub->kind == TY_ENUM) { et = at->ref->sub; isref = true; }
+            if (!et) continue;
+            // Fixed-mode payloads pass by copy even through a reference, for
+            // the same soundness reason as match binders (§3.5).
+            isref = isref && et->enu->varmode;
+            auto en = et->enu->en;
+            vector<MatchInfo> vm;
+            auto allok = true;
+            for (auto &var : en->variants) {
+                auto vt = VariantTypeOf(et, &var, c->line);
+                auto argt = isref ? RefTo(vt, c->line) : vt;
+                Val vv = argvals[pos];
+                vv.type = argt;
+                auto saved = argvals[pos];
+                argvals[pos] = vv;
+                MatchInfo onlymatch;
+                auto count = 0;
+                for (auto sf : cands) {
+                    MatchInfo mi;
+                    mi.sf = sf;
+                    string why;
+                    if (TryMatch(sf, c, argvals, mi, why)) {
+                        onlymatch = mi;
+                        count++;
+                    }
+                }
+                argvals[pos] = saved;
+                if (count != 1) { allok = false; break; }
+                vm.push_back(onlymatch);
+            }
+            if (!allok) continue;
+            if (found >= 0)
+                Error(c, cat("call to ", name, " could dispatch on more than one argument "
+                             "(v1 allows a single dispatch position)"));
+            found = (int)pos;
+            matches = std::move(vm);
+            enumtype = et;
+            byref = isref;
+        }
+        if (found < 0) return novv;
+        // Specialize every arm; return types and the other parameters must
+        // agree across the set.
+        c->dispatcharg = found;
+        vector<Val> armvals = argvals;
+        auto en = enumtype->enu->en;
+        FnSpec *first = nullptr;
+        for (size_t vi = 0; vi < en->variants.size(); vi++) {
+            auto &mi = matches[vi];
+            auto vt = VariantTypeOf(enumtype, &en->variants[vi], c->line);
+            armvals[found] = argvals[found];
+            armvals[found].type = byref ? RefTo(vt, c->line) : vt;
+            auto spec = GetOrCreateSpec(mi, armvals, c);
+            if (first) {
+                if (spec->rets.size() != first->rets.size())
+                    Error(c, cat("case functions of ", name, " disagree on return counts"));
+                for (size_t r = 0; r < spec->rets.size(); r++)
+                    if (!TypeEq(spec->rets[r], first->rets[r]))
+                        Error(c, cat("case functions of ", name, " disagree on return types: ",
+                                     TypeStr(spec->rets[r]), " vs ", TypeStr(first->rets[r])));
+                for (size_t p = 0; p < matches[vi].paramtypes.size(); p++)
+                    if ((int)p != found &&
+                        !TypeEq(matches[vi].paramtypes[p], matches[0].paramtypes[p]))
+                        Error(c, cat("case functions of ", name,
+                                     " disagree on non-dispatch parameter types"));
+            } else {
+                first = spec;
+            }
+            c->dispatch.push_back(spec);
+        }
+        // Phase 2 for the non-dispatch args (before CallResult, so nested
+        // calls cannot clobber lastcallrets); the dispatch arg keeps its type.
+        {
+            auto savedst = curdst;
+            curdst = nullptr;
+            for (size_t i = 0; i < matches[0].paramtypes.size(); i++)
+                if ((int)i != found) CheckArg(argnodes[i], matches[0].paramtypes[i]);
+            curdst = savedst;
+        }
+        return CallResult(c, first, argvals, matches[0].paramtypes);
+    }
+
+    // ------------------------------------------------------------------
+    // Specialization: find or create the FnSpec for a resolved call and
+    // check its body (once) in call-graph order.
+
+    FnSpec *GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, Node *callnode) {
+        auto sf = mi.sf;
+        // Root classes: distinct roots of ref/slice args ordered by depth.
+        vector<RootArg> roots;
+        vector<VarDef *> distinct;
+        for (size_t i = 0; i < mi.paramtypes.size(); i++) {
+            auto pt = mi.paramtypes[i];
+            if (pt->kind != TY_REF && pt->kind != TY_SLICE) continue;
+            auto r = CanonRoot(argvals[i].root);
+            RootArg ra;
+            ra.writable = argvals[i].writable;
+            ra.reusable = argvals[i].reusable;
+            if (!r) {
+                ra.cls = 0;
+            } else {
+                auto idx = -1;
+                for (size_t k = 0; k < distinct.size(); k++)
+                    if (distinct[k] == r) idx = (int)k;
+                if (idx < 0) {
+                    // Keep distinct ordered by depth so classes mean outlives-rank.
+                    auto ins = distinct.size();
+                    while (ins > 0 && Depth(distinct[ins - 1]) > Depth(r)) ins--;
+                    distinct.insert(distinct.begin() + ins, r);
+                    for (auto &rr : roots) if (rr.cls > (int)ins) rr.cls++;
+                    idx = (int)ins;
+                }
+                ra.cls = idx + 1;
+            }
+            roots.push_back(ra);
+        }
+        for (auto spec : sf->specs) {
+            if (spec->lexparent != mi.env) continue;
+            if (!TypeArgsEq(spec->argtypes, mi.paramtypes)) continue;
+            if (spec->fnvals.size() != mi.fnvals.size()) continue;
+            auto fvok = true;
+            for (size_t i = 0; i < mi.fnvals.size(); i++)
+                fvok &= spec->fnvals[i].second == mi.fnvals[i].second;
+            if (!fvok) continue;
+            auto rootsok = spec->roots.size() == roots.size();
+            for (size_t i = 0; rootsok && i < roots.size(); i++)
+                rootsok &= spec->roots[i] == roots[i];
+            // Inside a recursive cycle references may not be stored or
+            // returned, so root identity is irrelevant there and the
+            // back-edge must reuse the in-progress spec (§7.8).
+            if (!rootsok && !spec->inprogress && !spec->incycle) continue;
+            if (spec->inprogress) ValidateCycle(spec, callnode);
+            ValidateNeeds(spec, callnode);
+            return spec;
+        }
+        auto spec = ast.NewFnSpec();
+        spec->sf = sf;
+        spec->lexparent = mi.env;
+        spec->argtypes = mi.paramtypes;
+        spec->roots = roots;
+        spec->fnvals = mi.fnvals;
+        spec->bindings = mi.bindings;
+        sf->specs.push_back(spec);
+        CheckSpecBody(spec, &argvals, callnode->line);
+        return spec;
+    }
+
+    void ValidateCycle(FnSpec *spec, Node *callnode) {
+        if (!spec->sf->isrec)
+            Error(callnode, cat("recursive call cycle through ", spec->sf->name,
+                                ", which is not declared `recursive fn` (§7.8)"));
+        auto fi = FrameOfSpec(spec);
+        if (fi < 0) fi = 0;
+        for (auto i = fi; i < (int)frames.size(); i++) {
+            auto s = frames[i].spec;
+            if (!s || !frames[i].sf || frames[i].isfunval) continue;
+            s->incycle = true;
+            for (auto &p : frames[i].sf->params)
+                if (!p.type)
+                    Error(callnode, cat("function ", frames[i].sf->name, " is in a recursive "
+                                        "cycle and needs fully explicit parameter types"));
+            if (s->has_nonfixed_local)
+                Error(s->nonfixedline, cat("function ", frames[i].sf->name, " is in a "
+                                           "recursive cycle and may not own non-fixed-size "
+                                           "locals (§7.8)"));
+        }
+        // A cycle function without an explicit return type is committed to
+        // returning nothing at the back edge; a later `return v` then errors
+        // with a mismatch (return-type inference cannot cross the back edge).
+        if (!spec->retsknown) spec->retsknown = true;
+    }
+
+    // `return from` targets recorded by a callee must be live on every
+    // compile-time call path (§7.9); cached reuse re-validates here.
+    void ValidateNeeds(FnSpec *spec, Node *callnode) {
+        for (auto t : spec->needs) {
+            auto found = -1;
+            for (auto i = (int)frames.size() - 1; i >= 0; i--)
+                if (frames[i].sf == t && !frames[i].isfunval) { found = i; break; }
+            if (found < 0)
+                Error(callnode, cat("call to ", spec->sf->name, " requires an enclosing call "
+                                    "of ", t->name, " (it does `return ... from ", t->name,
+                                    "`)"));
+            for (auto i = found + 1; i < (int)frames.size(); i++)
+                if (frames[i].spec) frames[i].spec->needs.insert(t);
+        }
+    }
+
+    void CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline) {
+        auto sf = spec->sf;
+        spec->inprogress = true;
+        Frame f;
+        f.sf = sf;
+        f.spec = spec;
+        f.lexspec = spec;
+        f.lexframe = spec->lexparent ? FrameOfSpec(spec->lexparent) : -1;
+        f.scopebase = (int)scopes.size();
+        f.varbase = (int)vars.size();
+        f.callline = callline;
+        frames.push_back(f);
+        auto savereach = reachable;
+        auto savedst = curdst;
+        reachable = true;
+        curdst = nullptr;
+        PushScope(SK_FN);
+        // Parameters. For reference/slice parameters, a synthetic root
+        // VarDef per call-site root class carries the caller-side depth.
+        vector<VarDef *> classroots(spec->roots.size() + 1, nullptr);
+        auto rootidx = 0;
+        for (size_t i = 0; i < sf->params.size(); i++) {
+            auto &p = sf->params[i];
+            auto pt = spec->argtypes[i];
+            ValidateType(pt, sf->line, VT_PARAM);
+            auto vd = NewVar(p.name, pt, sf->line, p.isvar);
+            vd->isparam = true;
+            vd->assigned = true;
+            if (pt->kind == TY_REF || pt->kind == TY_SLICE) {
+                auto &ra = spec->roots[rootidx++];
+                if (ra.cls == 0) {
+                    vd->refroot = nullptr;  // Static data.
+                } else {
+                    if (!classroots[ra.cls]) {
+                        auto rv = ast.NewVarDef();
+                        rv->name = p.name;
+                        rv->depth = argvals ? Depth(CanonRoot((*argvals)[i].root)) : 0;
+                        classroots[ra.cls] = rv;
+                    }
+                    vd->refroot = classroots[ra.cls];
+                }
+                vd->refrootknown = true;
+                vd->refwritable = ra.writable;
+                vd->refreusable = ra.reusable;
+            }
+            spec->params.push_back(vd);
+        }
+        if (sf->has_rets) {
+            for (auto rt : sf->rets) {
+                auto ct = Subst(rt);
+                // An explicitly spelled storage return errors; one arriving
+                // through a generic (T bound to a storage element type)
+                // widens like any variable binding.
+                if (!HasGenerics(rt)) ValidateType(ct, sf->line, VT_RET);
+                ct = VarWiden(ct);
+                ValidateType(ct, sf->line, VT_RET);
+                spec->rets.push_back(ct);
+            }
+            spec->retsknown = true;
+        }
+        spec->retroots.resize(16, nullptr);
+        spec->retwritable.resize(16, false);
+        spec->body = (Block *)sf->body->Clone(ast);
+        // The body: statements plus a value-producing tail (treated exactly
+        // like `return tail`). An else-less if tail cannot be a value, so a
+        // void function may end in one.
+        for (auto st : spec->body->stmts) CheckStmt(st);
+        if (spec->body->tail) {
+            auto tail = spec->body->tail;
+            auto asvalue = !(spec->retsknown && spec->rets.empty());
+            if (auto fi = Is<IfExpr>(tail); fi && !fi->elseb) asvalue = false;
+            if (auto g = Is<Guard>(tail)) { (void)g; asvalue = false; }
+            if (!asvalue) {
+                CheckStmtExpr(tail);
+                if (reachable && spec->retsknown && !spec->rets.empty())
+                    Error(tail, cat("function ", sf->name, " must return value(s)"));
+            } else {
+                auto expected = spec->retsknown && spec->rets.size() == 1 ? spec->rets[0]
+                                                                          : nullptr;
+                auto tv = CheckValue(tail, expected);
+                if (reachable) {
+                    if (tv.type->kind == TY_VOID) {
+                        if (spec->retsknown && !spec->rets.empty())
+                            Error(tail, cat("function ", sf->name, " must return value(s)"));
+                    } else {
+                        vector<Val> vals = { tv };
+                        RecordReturn(spec, vals, tail);
+                        reachable = false;
+                    }
+                }
+            }
+        }
+        if (reachable) {
+            if (spec->retsknown && !spec->rets.empty())
+                Error(sf->body, cat("function ", sf->name,
+                                    " can fall off the end without returning value(s)"));
+            if (!spec->retsknown) spec->retsknown = true;  // No returns at all: void.
+        }
+        if (!spec->retsknown) spec->retsknown = true;
+        PopScope();
+        frames.pop_back();
+        reachable = savereach;
+        curdst = savedst;
+        spec->inprogress = false;
+        spec->checked = true;
+    }
+
+    // Shared by `return` statements and body tails: agree the values with
+    // the target's return types (setting them on first sight), and record
+    // reference roots for the caller to map (§9.2).
+    void RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) {
+        // A single call forwards all its return values.
+        vector<TypeExpr *> types;
+        for (auto &v : vals) types.push_back(v.type);
+        if (!tspec->retsknown) {
+            for (auto &v : vals) {
+                if (v.type->kind == TY_VOID)
+                    Error(at, "cannot return a valueless expression");
+                // Inferred returns widen like variable bindings (f32 → flt).
+                tspec->rets.push_back(VarWiden(v.type));
+            }
+            tspec->retsknown = true;
+        } else {
+            if (vals.size() != tspec->rets.size())
+                Error(at, cat("returning ", (int64_t)vals.size(), " value(s), function ",
+                              tspec->sf ? tspec->sf->name : string_view("?"), " has ",
+                              (int64_t)tspec->rets.size()));
+        }
+        for (size_t i = 0; i < vals.size(); i++) {
+            auto rt = tspec->rets[i];
+            auto rk = rt->kind;
+            if (rk != TY_REF && rk != TY_SLICE) continue;
+            auto root = CanonRoot(vals[i].root);
+            // Anything whose storage the callee's frame owns dies on return;
+            // reference parameters' pointee roots are synthetic per-class
+            // VarDefs (no ownerspec), so they pass and map at the call site.
+            if (root && root->ownerspec == tspec)
+                Error(at, cat("returning a reference rooted in ", root->name,
+                              ", which dies with this function (§9.2)"));
+            if (root && root == temproot)
+                Error(at, "returning a reference into a temporary");
+            if (i < tspec->retroots.size()) {
+                if (tspec->checkedreturn && tspec->retroots[i] != root)
+                    Error(at, "returns disagree on the returned reference's root "
+                              "(not yet supported; use one source)");
+                tspec->retroots[i] = root;
+                tspec->retwritable[i] = vals[i].writable;
+            }
+        }
+        tspec->checkedreturn = true;
+    }
+
+    Val CallResult(Call *c, FnSpec *spec, vector<Val> &argvals, vector<TypeExpr *> &paramtypes) {
+        c->rettypes = spec->rets;
+        lastcallrets.clear();
+        for (size_t i = 0; i < spec->rets.size(); i++) {
+            Val v;
+            v.type = spec->rets[i];
+            if (v.type->kind == TY_REF || v.type->kind == TY_SLICE) {
+                auto rr = i < spec->retroots.size() ? spec->retroots[i] : nullptr;
+                v.writable = i < spec->retwritable.size() && spec->retwritable[i];
+                if (!rr) {
+                    v.root = nullptr;
+                } else if (!rr->isglobal && !rr->ownerspec) {
+                    // A synthetic per-class parameter root: map back to this
+                    // call site's argument root.
+                    v.root = rr;
+                    for (size_t p = 0; p < spec->params.size(); p++) {
+                        if (spec->params[p]->refroot == rr) {
+                            if (p < argvals.size()) {
+                                v.root = CanonRoot(argvals[p].root);
+                                v.writable = argvals[p].writable;
+                            }
+                            break;
+                        }
+                    }
+                } else {
+                    v.root = rr;  // A global or a captured outer local.
+                }
+            } else {
+                v.root = temproot;
+                v.writable = false;
+            }
+            lastcallrets.push_back(v);
+        }
+        (void)paramtypes;
+        if (spec->rets.empty()) return VoidVal();
+        return lastcallrets[0];
+    }
+
+    void CheckReturn(Return *r) {
+        // Which function does this exit? `from f` names one on the current
+        // compile-time path; a plain return inside a function value exits the
+        // lexically enclosing named function (§7.6, §7.9).
+        auto tf = -1;
+        if (!r->from.empty()) {
+            for (auto i = (int)frames.size() - 1; i >= 1; i--)
+                if (!frames[i].isfunval && frames[i].sf && frames[i].sf->name == r->from) {
+                    tf = i;
+                    break;
+                }
+            if (tf < 0)
+                Error(r, cat("return from ", r->from, ": no enclosing call of ", r->from,
+                             " on this compile-time call path"));
+        } else if (frames.back().isfunval) {
+            tf = FrameOfSpec(frames.back().lexspec);
+            if (tf < 0) Error(r, "cannot resolve the enclosing function of this value");
+        } else {
+            tf = (int)frames.size() - 1;
+            if (!frames[tf].sf) Error(r, "return outside of a function");
+        }
+        auto tspec = frames[tf].spec;
+        r->target = frames[tf].sf;
+        for (auto i = tf + 1; i < (int)frames.size(); i++)
+            if (frames[i].spec) frames[i].spec->needs.insert(frames[tf].sf);
+        // Values.
+        vector<Val> vals;
+        auto expectone = [&](size_t i) -> TypeExpr * {
+            return tspec->retsknown && i < tspec->rets.size() ? tspec->rets[i] : nullptr;
+        };
+        if (r->vals.size() == 1) {
+            auto v = CheckValue(r->vals[0], tspec->retsknown && tspec->rets.size() == 1
+                                                ? tspec->rets[0] : nullptr);
+            if (auto call = Is<Call>(r->vals[0]); call && call->rettypes.size() > 1) {
+                vals = lastcallrets;  // Forward a multi-value call.
+            } else {
+                if (v.type->kind == TY_VOID) Error(r, "cannot return a valueless expression");
+                vals.push_back(v);
+            }
+        } else {
+            for (size_t i = 0; i < r->vals.size(); i++) {
+                auto v = CheckValue(r->vals[i], expectone(i));
+                if (v.type->kind == TY_VOID) Error(r, "cannot return a valueless expression");
+                vals.push_back(v);
+            }
+        }
+        if (vals.empty() && tspec->retsknown && !tspec->rets.empty())
+            Error(r, cat("function ", frames[tf].sf->name, " must return value(s)"));
+        if (!vals.empty() || !tspec->retsknown) {
+            // For long-distance returns, references must not be rooted in
+            // frames that unwind; conservatively require globals/static.
+            if (tf != (int)frames.size() - 1 && !frames.back().isfunval) {
+                for (auto &v : vals) {
+                    auto rk = v.type->kind;
+                    if ((rk == TY_REF || rk == TY_SLICE) && v.root && !v.root->isglobal)
+                        Error(r, "a long-distance return may only carry references to "
+                                 "globals or static data");
+                }
+            }
+            RecordReturn(tspec, vals, r);
+        }
+        reachable = false;
+    }
+
+    // ------------------------------------------------------------------
+    // Struct and variant literals (§4.2). The per-node entry is
+    // StructLit::Check at the end of this file.
+
+    void CheckInits(StructLit *sl, vector<Field> &fields, vector<TypeExpr *> &ftypes,
+                    string_view what) {
+        auto named = !sl->inits.empty() && !sl->inits[0].name.empty();
+        vector<bool> got(fields.size(), false);
+        auto pos = 0;
+        for (auto &fi : sl->inits) {
+            auto idx = -1;
+            if (named) {
+                for (auto i = 0; i < (int)fields.size(); i++)
+                    if (!fields[i].ispad && fields[i].name == fi.name) { idx = i; break; }
+                if (idx < 0) Error(fi.val, cat(what, " has no field ", fi.name));
+                if (got[idx]) Error(fi.val, cat("duplicate initializer for field ", fi.name));
+            } else {
+                while (pos < (int)fields.size() && fields[pos].ispad) pos++;
+                if (pos >= (int)fields.size())
+                    Error(fi.val, cat("too many initializers for ", what));
+                idx = pos++;
+            }
+            got[idx] = true;
+            sl->fieldindices.push_back(idx);
+            CheckValue(fi.val, ftypes[idx]);
+        }
+        for (auto i = 0; i < (int)fields.size(); i++) {
+            if (fields[i].ispad || got[i]) continue;
+            // Optional fields default to null (there is no null literal to
+            // spell it with); anything else needs a declared default.
+            if (!fields[i].defaultval && !IsOptional(ftypes[i]))
+                Error(sl, cat("missing initializer for field ", fields[i].name, " of ", what,
+                              " (it has no default)"));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Statements.
+
+    void CheckStmt(Node *n) {
+        if (auto vd = Is<VarDecl>(n)) { CheckVarDecl(vd, false); return; }
+        if (auto a = Is<Assign>(n)) { CheckAssign(a); return; }
+        if (auto x = Is<IncDec>(n)) { CheckIncDec(x); return; }
+        if (auto fd = Is<FnDecl>(n)) {
+            // Nested function: visible from here to the end of the scope;
+            // checked when called, specialized per caller (§7.5).
+            localfns.push_back({ (int)scopes.size() - 1, fd->sf });
+            return;
+        }
+        CheckStmtExpr(n);
+    }
+
+    // An expression in statement position: control constructs want no value;
+    // other values are computed and discarded.
+    void CheckStmtExpr(Node *n) {
+        if (auto x = Is<IfExpr>(n)) { CheckIf(x, nullptr, false); n->exprtype = ast.voidtype; return; }
+        if (auto x = Is<MatchExpr>(n)) { CheckMatch(x, nullptr, false); n->exprtype = ast.voidtype; return; }
+        if (auto x = Is<EarlyBlock>(n)) { CheckEarlyBlock(x, nullptr, false); n->exprtype = ast.voidtype; return; }
+        if (auto x = Is<LoopExpr>(n)) { CheckLoop(x, nullptr, false); n->exprtype = ast.voidtype; return; }
+        CheckValue(n, nullptr);
+    }
+
+    void CheckVarDecl(VarDecl *vd, bool global) {
+        TypeExpr *ann = nullptr;
+        if (vd->type) {
+            ann = Subst(vd->type);
+            ValidateType(ann, vd->line, global ? VT_GLOBAL : VT_LOCAL);
+        }
+        auto MakeDef = [&](size_t i) -> VarDef * {
+            if (global) return vd->defs[i];  // Pre-created by the driver.
+            auto d = ast.NewVarDef();
+            d->name = vd->names[i];
+            d->line = vd->line;
+            d->isvar = vd->isvar;
+            d->reusable = vd->reusable;
+            d->depth = CurDepth();
+            d->ownerspec = frames.back().spec;
+            return d;
+        };
+        auto Finish = [&](VarDef *d, TypeExpr *t, const Val *v) {
+            if (t->kind == TY_VOID) Error(vd, "initializer has no value");
+            if (t->kind == TY_FN)
+                Error(vd, "function values are compile-time only and cannot be stored (§7.6)");
+            d->type = t;
+            if (v && (t->kind == TY_REF || t->kind == TY_SLICE)) BindRefProvenance(d, *v);
+            if (vd->reusable) {
+                if (!vd->isvar) Error(vd, "reusable requires var");
+                if (!IsArrayKind(t, A_GROW) || ClassOf(t->arr->sub) != SC_FIXED)
+                    Error(vd, "reusable applies to grow-only arrays of fixed-size "
+                              "elements (§5.4)");
+            }
+            NoteNonfixedLocal(t, vd->line, global);
+            if (!global) {
+                vd->defs.push_back(d);
+                vars.push_back(d);
+            }
+        };
+        if (vd->inits.empty()) {
+            if (!ann) Error(vd, "a declaration without an initializer needs a type");
+            if (!UninitOK(ann))
+                Error(vd, cat("a value of type ", TypeStr(ann),
+                              " must be constructed at its declaration (§4.2)"));
+            for (size_t i = 0; i < vd->names.size(); i++) {
+                auto d = MakeDef(i);
+                d->assigned = false;
+                Finish(d, ann, nullptr);
+            }
+            return;
+        }
+        if (vd->inits.size() == 1 && vd->names.size() > 1) {
+            // let a, b = f();
+            if (ann) Error(vd, "a type annotation is not supported on multi-value bindings");
+            CheckValue(vd->inits[0], nullptr);
+            auto call = Is<Call>(vd->inits[0]);
+            if (!call || call->rettypes.size() != vd->names.size())
+                Error(vd, cat((int64_t)vd->names.size(), " names need that many values"));
+            auto rets = lastcallrets;
+            for (size_t i = 0; i < vd->names.size(); i++) {
+                auto d = MakeDef(i);
+                d->assigned = true;
+                // Reference returns decay in inference, like everywhere.
+                auto rv = DecayRef(rets[i]);
+                Finish(d, VarWiden(rv.type), &rv);
+            }
+            return;
+        }
+        if (vd->inits.size() != vd->names.size())
+            Error(vd, cat((int64_t)vd->names.size(), " name(s) with ",
+                          (int64_t)vd->inits.size(), " initializer(s)"));
+        for (size_t i = 0; i < vd->names.size(); i++) {
+            auto d = MakeDef(i);
+            auto savedst = curdst;
+            curdst = d;
+            Val v;
+            auto refinit = Is<Unary>(vd->inits[i]);
+            if (!ann && refinit && refinit->op == T_BITAND) {
+                // `let r = &x;` keeps the reference (an explicit &); every
+                // other un-annotated initializer decays to the pointee.
+                v = CheckV(vd->inits[i], nullptr);
+                vd->inits[i]->exprtype = v.type;
+            } else {
+                v = CheckValue(vd->inits[i], ann);
+            }
+            curdst = savedst;
+            if (v.emptyarr && !ann)
+                Error(vd->inits[i], "cannot infer the type of [] without an annotation");
+            if (v.isnull && !ann)
+                Error(vd->inits[i], "null needs an annotated optional type");
+            d->assigned = true;
+            Finish(d, ann ? ann : VarWiden(v.type), &v);
+        }
+    }
+
+    void NoteNonfixedLocal(TypeExpr *t, Line l, bool global) {
+        if (global) return;
+        if (ClassOf(t) == SC_FIXED) return;
+        auto spec = frames.back().spec;
+        if (!spec) return;
+        if (!spec->has_nonfixed_local) {
+            spec->has_nonfixed_local = true;
+            spec->nonfixedline = l;
+        }
+        if (spec->incycle || spec->sf->isrec)
+            Error(l, cat("function ", spec->sf->name, " is (in) a recursive cycle and may "
+                         "not own non-fixed-size locals (§7.8)"));
+    }
+
+    // §4.4: which lvalues accept `=` after construction.
+    void AssignableClassCheck(TypeExpr *t, Node *at) {
+        auto cls = ClassOf(t);
+        if (cls == SC_VARIABLE && !(t->kind == TY_ARRAY && t->arr->akind == A_LIMITED))
+            Error(at, cat("a value of type ", TypeStr(t),
+                          " is frozen at construction (§4.4); rebuild its container instead"));
+    }
+
+    void CheckAssign(Assign *a) {
+        auto lv = CheckLValue(a->lval);
+        if (a->op == T_DOTASSIGN) { CheckRebind(a, lv); return; }
+        if (lv.isvarint)
+            Error(a, "varint fields are written only at construction (§3.6)");
+        // References are transparent: `=` through a reference-typed location
+        // (a narrowed optional included, since lv.type is the narrowed type)
+        // writes the pointee; rebinding is `.=`.
+        if (IsPlainRef(lv.type)) {
+            if (a->op == T_ASSIGN) PointeeAssign(a, lv);
+            else CompoundAssign(a, lv, lv.type->ref->sub, PointeeWritable(lv, a));
+            a->pointee = true;
+            return;
+        }
+        if (IsOptional(lv.type))
+            Error(a, "optional value must be narrowed before writing through it, "
+                     "or rebound with .=");
+        if (a->op != T_ASSIGN) {
+            CompoundAssign(a, lv, lv.type, lv.writable);
+            if (lv.var) RequireAssigned(lv.var, a);
+            return;
+        }
+        // Plain value assignment.
+        auto target = lv.var ? lv.var->type : lv.type;
+        if (lv.var && !lv.var->assigned) {
+            // First assignment of an uninitialized local constructs it.
+        } else {
+            if (!lv.writable)
+                Error(a, "cannot assign through this path (let, or non-writable "
+                         "provenance, §9.5)");
+            AssignableClassCheck(target, a);
+        }
+        auto savedst = curdst;
+        curdst = lv.root;
+        auto v = CheckValue(a->rhs, target);
+        curdst = savedst;
+        if (v.type->kind == TY_VOID && reachable)
+            Error(a, "the right-hand side has no value");
+        if (lv.var) {
+            // Slice variables carry their value's provenance (refs use .=).
+            if (target->kind == TY_SLICE) {
+                if (!lv.var->refrootknown) BindRefProvenance(lv.var, v);
+                else CheckRefRebindRoot(a, lv.var, v);
+            }
+            lv.var->assigned = true;
+            KillNarrow(lv.var);
+        }
+    }
+
+    // `.=`: rebinds the reference stored at the location (§3.8).
+    void CheckRebind(Assign *a, LVal &lv) {
+        auto target = lv.var ? lv.var->type : lv.type;
+        if (target->kind != TY_REF)
+            Error(a, cat(".= rebinds references; the target has type ", TypeStr(target)));
+        if (lv.var) {
+            if (!lv.var->isvar && lv.var->assigned)
+                Error(a, cat("cannot rebind let ", lv.var->name));
+        } else if (!lv.writable) {
+            Error(a, "cannot assign through this path (let, or non-writable "
+                     "provenance, §9.5)");
+        }
+        auto savedst = curdst;
+        curdst = lv.var ? lv.var : lv.root;
+        auto v = CheckV(a->rhs, target);
+        auto wasplain = IsPlainRef(v.type);
+        MustFit(v, a->rhs, target, false);
+        a->rhs->exprtype = v.type;
+        curdst = savedst;
+        if (lv.var) {
+            if (!lv.var->refrootknown) BindRefProvenance(lv.var, v);
+            else if (!v.isnull) CheckRefRebindRoot(a, lv.var, v);
+            lv.var->assigned = true;
+            // Rebinding an optional settles its nullness — narrowed only when
+            // the new value is provably non-null (a plain reference).
+            if (target->ref->optional) {
+                if (!v.isnull && wasplain) {
+                    auto r = ast.NewType(TY_REF, a->line);
+                    r->ref = ast.NewDetail<TypeRef>();
+                    r->ref->sub = target->ref->sub;
+                    lv.var->narrowed = r;
+                } else {
+                    lv.var->narrowed = nullptr;
+                }
+            }
+        }
+    }
+
+    // Provenance for writing the pointee of the reference at lv.
+    bool PointeeWritable(LVal &lv, Node *at) {
+        if (lv.var) {
+            RequireAssigned(lv.var, at);
+            return lv.var->refwritable;
+        }
+        // Container-read: laundered writable by design (§9.5).
+        return true;
+    }
+
+    void PointeeAssign(Assign *a, LVal &lv) {
+        auto pt = lv.type->ref->sub;
+        if (!PointeeWritable(lv, a))
+            Error(a, "cannot write through this reference: non-writable provenance (§9.5)");
+        if (pt->kind == TY_INT && pt->intstorage == IS_VARINT)
+            Error(a, "varint fields are written only at construction (§3.6)");
+        AssignableClassCheck(pt, a);
+        auto savedst = curdst;
+        curdst = lv.var ? RefRootOf(lv.var) : lv.root;
+        auto v = CheckValue(a->rhs, pt);
+        curdst = savedst;
+        if (v.type->kind == TY_VOID && reachable)
+            Error(a, "the right-hand side has no value");
+    }
+
+    // A reference variable keeps one root for its whole life (see header
+    // note): re-assignments must carry the same root, or one at the same
+    // scope depth (which is equivalent for the outlives check).
+    void CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
+        auto nr = CanonRoot(rv.root);
+        if (nr == vd->refroot) return;
+        if (Depth(nr) == Depth(vd->refroot)) return;
+        Error(at, cat("re-binding ", vd->name, " with a reference rooted at a different "
+                      "scope depth is not supported; declare a new variable"));
+    }
+
+    void CompoundAssign(Assign *a, LVal &lv, TypeExpr *st, bool writable) {
+        (void)lv;
+        if (!writable)
+            Error(a, "cannot assign through this path (let, or non-writable "
+                     "provenance, §9.5)");
+        auto isbit = a->op == T_ANDEQ || a->op == T_OREQ || a->op == T_XOREQ;
+        if (st->kind == TY_INT) {
+            if (CanonI(st->intstorage) != IS_INT)
+                Error(a, cat("compound assignment to ", IntStorageName(st->intstorage),
+                             " storage would narrow; use an explicit `as`"));
+            CheckValue(a->rhs, ast.inttypes[IS_INT]);
+        } else if (st->kind == TY_FLT && !isbit) {
+            // An f32 target keeps the update in 32 bits (§3.1).
+            CheckValue(a->rhs, ast.flttypes[IsF32(st) ? FS_F32 : FS_FLT]);
+        } else {
+            Error(a, cat("operator ", TName(a->op), " cannot be applied to ", TypeStr(st)));
+        }
+    }
+
+    void CheckIncDec(IncDec *x) {
+        auto lv = CheckLValue(x->lval);
+        auto st = lv.type;
+        auto writable = lv.writable;
+        if (IsPlainRef(lv.type)) {
+            st = lv.type->ref->sub;
+            writable = PointeeWritable(lv, x);
+        } else if (lv.var) {
+            RequireAssigned(lv.var, x);
+        }
+        if (!writable) Error(x, "cannot modify through this path (let, or non-writable "
+                                "provenance, §9.5)");
+        if (st->kind != TY_INT || CanonI(st->intstorage) != IS_INT)
+            Error(x, cat(TName(x->op), " requires an int lvalue, got ", TypeStr(st)));
+    }
+
+    // ------------------------------------------------------------------
+    // Builtins (§12) and array members (§3.3, §5.4).
+
+    // One entry for every builtin (builtins.h), for both spellings — f(a, b)
+    // and a.f(b) arrive with a uniform argument list (receiver first). The
+    // table drives arity, receiver kind/provenance, and simple signatures;
+    // BF_CUSTOM entries get dedicated code below.
+    Val CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> &args, Val *precv) {
+        c->builtin = d.kind;
+        if (c->trailing) Error(c, cat(d.name, " takes no function value"));
+        if (!(d.flags & BF_TYARGS) && !c->tyargs.empty())
+            Error(c, cat(d.name, " takes no type arguments"));
+        if ((int)args.size() < d.minargs || (int)args.size() > d.maxargs)
+            Error(c, cat(d.name, " takes ", (int64_t)d.minargs,
+                         d.minargs == d.maxargs ? string() : cat("-", (int64_t)d.maxargs),
+                         " argument(s), ", (int64_t)args.size(), " given"));
+        // The fully custom builtins first.
+        switch (d.kind) {
+            case B_PRINT: {
+                auto av = CheckValue(args[0], nullptr);
+                auto t = av.type;
+                auto ok = t->kind == TY_INT || t->kind == TY_FLT || t->kind == TY_BOOL;
+                if (t->kind == TY_ARRAY) ok = IsU8(t->arr->sub);
+                if (t->kind == TY_SLICE) ok = IsU8(t->sub);
+                if (!ok)
+                    Error(c, cat("print takes scalars and u8 arrays/slices, not ", TypeStr(t)));
+                return VoidVal();
+            }
+            case B_ASSERT:
+                CheckCond(args[0]);
+                NarrowCond(args[0], true);  // assert(r) narrows onwards (§3.8).
+                return VoidVal();
+            case B_THREAD_SPAWN: {
+                auto wid = Is<Ident>(args[0]);
+                SFunction *wsf = nullptr;
+                if (wid) {
+                    auto fit = ast.functionmap.find(wid->name);
+                    if (fit != ast.functionmap.end())
+                        for (auto sf : fit->second) if (sf->isthread) wsf = sf;
+                }
+                if (!wsf) Error(c, "thread_spawn's first argument names a thread_fn");
+                wid->fnref = wsf;
+                wid->exprtype = fntype;
+                auto spec = EnsureThreadSpec(wsf, c->line);
+                if (args.size() != 1 + spec->argtypes.size())
+                    Error(c, cat("thread_spawn(", wsf->name, ", ...) takes ",
+                                 (int64_t)spec->argtypes.size(), " worker argument(s)"));
+                auto savedst = curdst;
+                curdst = nullptr;
+                for (size_t i = 0; i < spec->argtypes.size(); i++)
+                    CheckArg(args[1 + i], spec->argtypes[i]);
+                curdst = savedst;
+                c->spec = spec;
+                Val v;
+                v.type = ast.inttypes[IS_INT];
+                return v;
+            }
+            case B_QPUT: {
+                auto av = CheckValue(args[0], nullptr);
+                if (av.type->kind == TY_VOID || av.type->kind == TY_FN || !IsFlat(av.type))
+                    Error(c, cat("queue elements must be flat (§11.2), not ", TypeStr(av.type)));
+                return VoidVal();
+            }
+            case B_QGET: case B_QPOLL: {
+                if (c->tyargs.size() != 1)
+                    Error(c, cat(d.name, "<T>() needs exactly one explicit type argument"));
+                auto t = Subst(c->tyargs[0]);
+                ValidateType(t, c->line, VT_LOCAL);
+                if (!IsFlat(t))
+                    Error(c, cat("queue elements must be flat (§11.2), not ", TypeStr(t)));
+                c->rettypes.push_back(t);
+                Val first;
+                first.type = t;
+                first.root = temproot;
+                lastcallrets.clear();
+                lastcallrets.push_back(first);
+                if (d.kind == B_QPOLL) {
+                    Val b2;
+                    b2.type = ast.booltype;
+                    c->rettypes.push_back(ast.booltype);
+                    lastcallrets.push_back(b2);
+                }
+                return first;
+            }
+            default: break;
+        }
+        // Member receiver validation, from the table.
+        Val rv;
+        TypeExpr *elem = nullptr;
+        auto ak = A_FIXED;
+        if (d.flags & BF_MEMBER) {
+            if (precv) {
+                rv = *precv;
+            } else {
+                rv = CheckV(args[0], nullptr);
+                args[0]->exprtype = rv.type;
+            }
+            auto rt = rv.type;
+            if (IsPlainRef(rt)) rt = rt->ref->sub;
+            auto got = 0;
+            if (rt->kind == TY_ARRAY) {
+                ak = rt->arr->akind;
+                elem = rt->arr->sub;
+                switch (ak) {
+                    case A_FIXED:      got = BR_FIXED; break;
+                    case A_VAR:        got = BR_VAR; break;
+                    case A_LIMITED:    got = BR_LIMITED; break;
+                    case A_GROW:       got = BR_GROW; break;
+                    case A_GROWSHRINK: got = BR_GROWSHRINK; break;
+                }
+            } else if (rt->kind == TY_SLICE) {
+                got = BR_SLICE;
+                elem = rt->sub;
+            }
+            if (!(got & d.recv))
+                Error(c, cat(".", d.name, " is not available on ", TypeStr(rv.type)));
+            if ((d.flags & BF_WRITE) && !rv.writable)
+                Error(c, cat("cannot .", d.name, " through a non-writable value "
+                             "(let, or non-writable provenance, §9.5)"));
+            if ((d.flags & BF_REUSABLE) && !rv.reusable)
+                Error(c, cat(".", d.name, " exists on reusable pools only (§5.4)"));
+        }
+        // resize has two forms with different receiver rules (§3.3).
+        if (d.kind == B_RESIZE) {
+            CheckValue(args[1], ast.inttypes[IS_INT]);
+            if (args.size() == 3) {
+                ElemArg(args[2], elem, rv);
+            } else if (ak == A_GROW) {
+                Error(c, ".resize(n) shrinks; a grow-only array needs .resize(n, fill)");
+            }
+            return VoidVal();
+        }
+        // Signature-driven arguments.
+        auto base = (d.flags & BF_MEMBER) ? 1 : 0;
+        for (auto i = 0; d.args[i]; i++) {
+            auto an = args[base + i];
+            switch (d.args[i]) {
+                case 'i': CheckValue(an, ast.inttypes[IS_INT]); break;
+                case 'f': CheckValue(an, ast.flttypes[FS_FLT]); break;
+                case 'b': CheckValue(an, ast.booltype); break;
+                case 'e': ElemArg(an, elem, rv); break;
+                case 'a': {  // An array/slice of the receiver's element type.
+                    auto av = CheckV(an, nullptr);
+                    an->exprtype = av.type;
+                    auto t2 = av.type;
+                    if (IsPlainRef(t2)) t2 = t2->ref->sub;
+                    TypeExpr *selem = nullptr;
+                    if (t2->kind == TY_ARRAY) selem = t2->arr->sub;
+                    if (t2->kind == TY_SLICE) selem = t2->sub;
+                    if (av.strlit) selem = ast.inttypes[IS_U8];
+                    if (!selem || !TypeEq(selem, elem))
+                        Error(c, cat(".", d.name, " takes an array or slice of ",
+                                     TypeStr(elem), ", got ", TypeStr(av.type)));
+                    break;
+                }
+                default: assert(false);
+            }
+        }
+        // Returns, from the table.
+        Val v = VoidVal();
+        switch (d.rets[0]) {
+            case 0: break;
+            case 'i': v.type = ast.inttypes[IS_INT]; break;
+            case 'b': v.type = ast.booltype; break;
+            case 'e':
+                v.type = Widen(elem);
+                v.root = temproot;
+                break;
+            case 'r':
+                // push returns a reference to the new element — except into a
+                // grow-shrink array, which admits no interior references (§5.2).
+                if (d.kind == B_PUSH && ak == A_GROWSHRINK) break;
+                v.type = RefTo(elem, c->line);
+                v.root = rv.root;
+                v.writable = rv.writable;
+                break;
+            default: assert(false);
+        }
+        return v;
+    }
+
+    // Element construction targets the array's storage (relative references
+    // in the element must derive from the same root, §3.9).
+    void ElemArg(Node *n, TypeExpr *elem, Val &rv) {
+        auto savedst = curdst;
+        curdst = rv.root;
+        CheckArg(n, elem);
+        curdst = savedst;
+    }
+
+    FnSpec *EnsureThreadSpec(SFunction *sf, Line l) {
+        if (!sf->specs.empty()) return sf->specs[0];
+        if (!sf->generics.empty()) Error(l, cat("thread_fn ", sf->name, " cannot be generic"));
+        if (sf->has_rets) Error(l, cat("thread_fn ", sf->name, " cannot return values"));
+        auto spec = ast.NewFnSpec();
+        spec->sf = sf;
+        for (auto &p : sf->params) {
+            if (!p.type)
+                Error(l, cat("thread_fn ", sf->name, " needs fully typed parameters"));
+            auto t = Subst(p.type);
+            ValidateType(t, sf->line, VT_PARAM);
+            if (!IsFlat(t))
+                Error(l, cat("thread_fn parameters must be flat (§11.2), not ", TypeStr(t)));
+            spec->argtypes.push_back(t);
+        }
+        sf->specs.push_back(spec);
+        CheckSpecBody(spec, nullptr, l);
+        return spec;
+    }
+
+    // ------------------------------------------------------------------
+    // Calling a function value F(a): the body is cloned and checked inline
+    // in the lexical environment it was written in (§7.6).
+
+    Val CheckFunValCall(Call *c, const FnValBind &fb) {
+        if (c->trailing)
+            Error(c, "a function value call cannot itself take a trailing block");
+        if (fb.named) {
+            vector<SFunction *> cands = { fb.named };
+            return ResolveCall(c, cands, fb.env, fb.named->name, nullptr, nullptr);
+        }
+        auto fv = fb.fv;
+        vector<Val> argvals;
+        for (auto a : c->args) {
+            auto v = CheckV(a, nullptr);
+            a->exprtype = v.type;
+            argvals.push_back(v);
+        }
+        vector<Param> params;
+        if (fv->explicit_params) {
+            params = fv->params;
+            if (params.size() != argvals.size())
+                Error(c, cat("this function value takes ", (int64_t)params.size(),
+                             " argument(s), ", (int64_t)argvals.size(), " given"));
+        } else if (argvals.size() == 1) {
+            Param p;
+            p.name = "it";
+            params.push_back(p);
+        } else if (!argvals.empty()) {
+            Error(c, "a block with multiple arguments needs named parameters (x, y => ...)");
+        }
+        // Parameter types: annotations resolve in the defining environment.
+        vector<TypeExpr *> ptypes;
+        for (size_t i = 0; i < params.size(); i++) {
+            if (params[i].type) {
+                auto t = SubstEnv(params[i].type, fb.env);
+                ValidateType(t, c->line, VT_PARAM);
+                ptypes.push_back(t);
+            } else {
+                auto nt = NaturalType(argvals[i]);
+                if (!nt || nt->kind == TY_VOID || nt == fntype)
+                    Error(c->args[i], "cannot infer a type for this argument");
+                ptypes.push_back(nt);
+            }
+        }
+        {
+            auto savedst = curdst;
+            curdst = nullptr;
+            for (size_t i = 0; i < ptypes.size(); i++) CheckArg(c->args[i], ptypes[i]);
+            curdst = savedst;
+        }
+        // Check the body inline, with lookups chaining to the definer.
+        Frame f;
+        f.sf = fb.env ? fb.env->sf : CurRealFrame().sf;
+        f.spec = CurRealFrame().spec;
+        f.lexspec = fb.env;
+        f.lexframe = fb.env ? FrameOfSpec(fb.env) : 0;
+        f.scopebase = (int)scopes.size();
+        f.varbase = (int)vars.size();
+        f.callline = c->line;
+        f.isfunval = true;
+        frames.push_back(f);
+        PushScope(SK_FN);
+        c->fvparams.clear();
+        for (size_t i = 0; i < params.size(); i++) {
+            auto vd = NewVar(params[i].name, ptypes[i], c->line, params[i].isvar);
+            vd->assigned = true;
+            if (ptypes[i]->kind == TY_REF || ptypes[i]->kind == TY_SLICE)
+                BindRefProvenance(vd, argvals[i]);
+            c->fvparams.push_back(vd);
+        }
+        c->fvtarget = fb.env ? fb.env->sf : nullptr;
+        c->fvbody = (Block *)fv->body->Clone(ast);
+        for (auto st : c->fvbody->stmts) CheckStmt(st);
+        Val v = VoidVal();
+        if (auto tail = c->fvbody->tail) {
+            auto fi = Is<IfExpr>(tail);
+            if ((fi && !fi->elseb) || Is<Guard>(tail)) CheckStmtExpr(tail);
+            else v = CheckValue(tail, nullptr);
+        }
+        c->fvbody->exprtype = v.type;
+        PopScope();
+        frames.pop_back();
+        return v;
+    }
+
+    TypeExpr *SubstEnv(TypeExpr *t, FnSpec *env) {
+        Frame f;
+        f.lexspec = env;
+        f.lexframe = -1;
+        f.scopebase = (int)scopes.size();
+        f.varbase = (int)vars.size();
+        frames.push_back(f);
+        auto r = Subst(t);
+        frames.pop_back();
+        return r;
+    }
+
+    // ------------------------------------------------------------------
+    // The driver: globals in order, then main, then thread entry points.
+
+    TypeCheck(Ast &_ast) : ast(_ast) {
+        temproot = ast.NewVarDef();
+        temproot->name = "<temporary>";
+        temproot->depth = INT32_MAX;
+        fntype = ast.NewType(TY_FN, Line {});
+        fntype->fn = ast.NewDetail<TypeFn>();
+        u8slice = SliceOf(ast.inttypes[IS_U8], Line {});
+        nulltype = ast.NewType(TY_REF, Line {});
+        nulltype->ref = ast.NewDetail<TypeRef>();
+        nulltype->ref->sub = ast.voidtype;
+        nulltype->ref->optional = true;
+        Frame f;
+        frames.push_back(f);
+        // Global VarDefs exist up front so names resolve in any order; reads
+        // before their initializer ran are caught by the assigned flag.
+        for (auto g : ast.globals) {
+            for (auto name : g->names) {
+                auto vd = ast.NewVarDef();
+                vd->name = name;
+                vd->line = g->line;
+                vd->isvar = g->isvar;
+                vd->isglobal = true;
+                vd->reusable = g->reusable;
+                g->defs.push_back(vd);
+            }
+        }
+        // Validate all non-generic type declarations up front: clearer errors
+        // than at first use, and unused decls get checked too.
+        for (auto st : ast.structs) {
+            if (!st->generics.empty()) continue;
+            auto t = ast.NewType(TY_STRUCT, st->line);
+            t->struc = ast.NewDetail<TypeStruct>();
+            t->struc->st = st;
+            GetStructInst(t);
+        }
+        for (auto en : ast.enums) {
+            if (!en->generics.empty()) continue;
+            auto t = ast.NewType(TY_ENUM, en->line);
+            t->enu = ast.NewDetail<TypeEnum>();
+            t->enu->en = en;
+            t->enu->varmode = true;
+            GetEnumInst(t);
+        }
+        for (auto g : ast.globals) {
+            CheckVarDecl(g, true);
+            for (auto d : g->defs) d->assigned = true;
+        }
+        auto mit = ast.functionmap.find("main");
+        if (mit == ast.functionmap.end() || mit->second.size() != 1)
+            throw CompileError { "program needs exactly one fn main()" };
+        auto mainsf = mit->second[0];
+        if (!mainsf->params.empty() || mainsf->has_rets || !mainsf->generics.empty() ||
+            mainsf->isthread)
+            Error(mainsf->line, "fn main() takes no parameters and returns nothing");
+        auto mainspec = ast.NewFnSpec();
+        mainspec->sf = mainsf;
+        mainsf->specs.push_back(mainspec);
+        CheckSpecBody(mainspec, nullptr, mainsf->line);
+        // Thread entry points compile as separate programs (§11.2); check any
+        // that no spawn reached.
+        for (auto sf : ast.functions)
+            if (sf->isthread) EnsureThreadSpec(sf, sf->line);
+        // NOTE: in this compilation model, code no call reaches would never be
+        // typechecked at all. That is right for generic functions (they need a
+        // caller's types), but silently skipping plain dead code makes for a
+        // confusing experience, so leftover non-generic functions are checked
+        // standalone here with permissive assumptions (every reference
+        // parameter distinct-rooted, writable, reusable where it could be).
+        // Errors these produce are real; a lack of errors is weaker than for
+        // reached code, since no call-site facts were available.
+        for (auto sf : ast.functions) CheckUnreached(sf);
+    }
+
+    void CheckUnreached(SFunction *sf) {
+        if (!sf->specs.empty() || sf->isthread || sf->isnested) return;
+        if (!sf->generics.empty()) return;
+        for (auto &p : sf->params) if (!p.type) return;
+        set<string_view> names = { sf->name };
+        auto foreign = false;
+        ScanForeignFrom(sf->body, names, foreign);
+        if (foreign) return;
+        auto spec = ast.NewFnSpec();
+        spec->sf = sf;
+        for (auto &p : sf->params) {
+            auto t = Subst(p.type);
+            ValidateType(t, sf->line, VT_PARAM);
+            spec->argtypes.push_back(t);
+            if (t->kind == TY_REF || t->kind == TY_SLICE) {
+                RootArg ra;
+                ra.cls = 0;
+                ra.writable = true;
+                ra.reusable = t->kind == TY_REF && IsArrayKind(t->ref->sub, A_GROW) &&
+                              ClassOf(t->ref->sub->arr->sub) == SC_FIXED;
+                spec->roots.push_back(ra);
+            }
+        }
+        sf->specs.push_back(spec);
+        CheckSpecBody(spec, nullptr, sf->line);
+    }
+
+    // Does the body contain `return ... from f` for an f not declared within?
+    void ScanForeignFrom(Node *n, set<string_view> &names, bool &foreign) {
+        if (!n || foreign) return;
+        if (auto r = Is<Return>(n)) {
+            if (!r->from.empty() && !names.count(r->from)) foreign = true;
+        } else if (auto fd = Is<FnDecl>(n)) {
+            // Nested fns count as in-scope targets; their bodies are not
+            // Children, so recurse explicitly.
+            names.insert(fd->sf->name);
+            ScanForeignFrom(fd->sf->body, names, foreign);
+            return;
+        }
+        n->Children([&](Node *c) { ScanForeignFrom(c, names, foreign); });
+    }
+};
+
+// ---------------------------------------------------------------------------
+// The per-node typecheck implementations (the Check virtual): the pass reads
+// top to bottom here; shared machinery (calls, control flow, literals'
+// construction rules) lives in the TypeCheck methods above. Values may denote
+// references; the CheckValue/CheckArg/Operand wrappers apply transparency.
+
+inline Val IntLit::Check(TypeCheck &tc, TypeExpr *) {
+    Val v;
+    v.type = tc.ast.inttypes[IS_INT];
+    v.ck = CK_INT;
+    v.ival = val;
+    return v;
+}
+
+inline Val FltLit::Check(TypeCheck &tc, TypeExpr *) {
+    Val v;
+    v.type = tc.ast.flttypes[FS_FLT];
+    v.ck = CK_FLT;
+    v.fval = val;
+    return v;
+}
+
+inline Val BoolLit::Check(TypeCheck &tc, TypeExpr *) {
+    Val v;
+    v.type = tc.ast.booltype;
+    return v;
+}
+
+inline Val NullLit::Check(TypeCheck &tc, TypeExpr *expected) {
+    Val v;
+    v.isnull = true;
+    // Its own type only matters when nothing adapts it; FitsAt checks isnull.
+    v.type = expected && expected->kind == TY_REF && expected->ref->optional
+                 ? expected : tc.nulltype;
+    return v;
+}
+
+inline Val StrLit::Check(TypeCheck &tc, TypeExpr *expected) {
+    Val v;
+    v.strlit = true;
+    v.writable = false;
+    if (expected) {
+        // A string literal constructs any u8-element array type (§3.7).
+        if (expected->kind == TY_ARRAY && tc.IsU8(expected->arr->sub)) {
+            if (expected->arr->akind == A_FIXED &&
+                tc.ArraySize(expected->arr) != (int64_t)val.size())
+                tc.Error(this, cat("string literal of length ", (int64_t)val.size(),
+                                   " does not fit ", tc.TypeStr(expected)));
+            v.type = expected;
+            return v;
+        }
+        if (expected->kind == TY_SLICE && tc.IsU8(expected->sub)) {
+            v.type = expected;
+            return v;
+        }
+    }
+    v.type = tc.u8slice;
+    return v;
+}
+
+inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
+    if (auto vd = tc.LookupVar(name)) {
+        vdef = vd;
+        tc.RequireAssigned(vd, this);
+        Val v;
+        auto t = vd->narrowed ? vd->narrowed : vd->type;
+        v.type = tc.Widen(t);
+        if (t->kind == TY_REF || t->kind == TY_SLICE) {
+            v.root = tc.RefRootOf(vd);
+            v.writable = vd->refwritable;
+            v.reusable = vd->refreusable;
+        } else {
+            v.root = vd;
+            v.writable = vd->isvar;
+            v.reusable = vd->reusable;
+        }
+        return v;
+    }
+    // A generic parameter bound to a function value, or a named function: a
+    // compile-time function value (§7.6).
+    if (auto fb = tc.LookupFnVal(name)) {
+        Val v;
+        v.type = tc.fntype;
+        v.fnv = *fb;
+        return v;
+    }
+    if (auto sf = tc.LookupLocalFn(name)) {
+        fnref = sf;
+        Val v;
+        v.type = tc.fntype;
+        v.fnv.named = sf;
+        v.fnv.env = tc.frames.back().lexspec;
+        return v;
+    }
+    auto fit = tc.ast.functionmap.find(name);
+    if (fit != tc.ast.functionmap.end()) {
+        if (fit->second.size() != 1)
+            tc.Error(this, cat("overloaded function ", name, " cannot be a function value"));
+        fnref = fit->second[0];
+        Val v;
+        v.type = tc.fntype;
+        v.fnv.named = fit->second[0];
+        return v;
+    }
+    tc.Error(this, cat("unknown identifier: ", name));
+}
+
+inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
+    Val v;
+    TypeExpr *elem = nullptr;
+    int64_t wantcount = -1;
+    if (expected && expected->kind == TY_ARRAY) {
+        elem = expected->arr->sub;
+        if (expected->arr->akind == A_FIXED) wantcount = tc.ArraySize(expected->arr);
+    } else if (expected && expected->kind == TY_SLICE) {
+        elem = expected->sub;
+    }
+    if (fillval) {
+        auto cnt = tc.ConstIntOrError(fillcount, "array fill count");
+        if (cnt < 0) tc.Error(this, "array fill count cannot be negative");
+        auto ev = tc.CheckValue(fillval, elem);
+        if (!elem) elem = ev.type;
+        if (wantcount >= 0 && cnt != wantcount)
+            tc.Error(this, cat("fill count ", cnt, " does not match array size ", wantcount));
+        v.type = expected && expected->kind == TY_ARRAY
+                     ? expected : tc.FixedArrayOf(elem, cnt, line);
+        return v;
+    }
+    if (elems.empty() && !elem) {
+        // [] adapts to any array type; callers re-check with an expected type
+        // or report the missing context.
+        v.emptyarr = true;
+        v.type = tc.FixedArrayOf(tc.ast.voidtype, 0, line);
+        return v;
+    }
+    for (auto e : elems) {
+        auto ev = tc.CheckValue(e, elem);
+        if (!elem) elem = ev.type;
+    }
+    if (elem->kind == TY_VOID) tc.Error(this, "cannot infer array element type");
+    if (wantcount >= 0 && (int64_t)elems.size() != wantcount)
+        tc.Error(this, cat((int64_t)elems.size(), " element(s) do not fill ",
+                           tc.TypeStr(expected)));
+    if (expected && (expected->kind == TY_ARRAY || expected->kind == TY_SLICE)) {
+        // A literal in slice position materializes a temporary fixed array.
+        v.type = expected->kind == TY_ARRAY
+                     ? expected : tc.FixedArrayOf(elem, (int64_t)elems.size(), line);
+        v.root = expected->kind == TY_SLICE ? tc.temproot : nullptr;
+        return v;
+    }
+    v.type = tc.FixedArrayOf(elem, (int64_t)elems.size(), line);
+    return v;
+}
+
+inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
+    fieldindices.clear();
+    sinst = nullptr;
+    einst = nullptr;
+    variant = nullptr;
+    auto t = tc.Subst(type);
+    if (t->kind == TY_VARIANT) {
+        if (t->var->adt->kind != TY_ENUM)
+            tc.Error(this, cat("variant literal of non-ADT type ", tc.TypeStr(t->var->adt)));
+        auto ei = tc.GetEnumInst(t->var->adt);
+        auto var = t->var->variant;
+        auto vi = tc.VariantIndex(ei->en, var);
+        einst = ei;
+        variant = var;
+        tc.CheckInits(this, var->fields, ei->vftypes[vi], ei->en->name);
+        Val v;
+        // The mode comes from the receiving declaration (§3.5); a literal
+        // adapts to either, or stands as a first-class variant value (§8.2).
+        if (expected && expected->kind == TY_ENUM && expected->enu->en == ei->en &&
+            tc.TypeArgsEq(expected->enu->args, t->var->adt->enu->args)) {
+            v.type = expected;
+            return v;
+        }
+        v.type = t;
+        return v;
+    }
+    if (t->kind == TY_STRUCT) {
+        auto st = t->struc->st;
+        if (t->struc->args.empty() && !st->generics.empty()) {
+            // Infer the struct's generics from the field initializers.
+            vector<pair<string_view, TypeExpr *>> b;
+            auto named = !inits.empty() && !inits[0].name.empty();
+            auto pos = 0;
+            for (auto &fi : inits) {
+                Field *field = nullptr;
+                if (named) {
+                    for (auto &f2 : st->fields)
+                        if (!f2.ispad && f2.name == fi.name) { field = &f2; break; }
+                } else {
+                    while (pos < (int)st->fields.size() && st->fields[pos].ispad) pos++;
+                    if (pos < (int)st->fields.size()) field = &st->fields[pos++];
+                }
+                if (!field) continue;  // Reported properly below.
+                auto av = tc.CheckV(fi.val, nullptr);
+                fi.val->exprtype = av.type;
+                auto nt = tc.NaturalType(av);
+                if (nt) tc.BindTypes(field->type, nt, b);
+            }
+            auto nt2 = tc.ast.NewType(TY_STRUCT, line);
+            nt2->struc = tc.ast.NewDetail<TypeStruct>();
+            nt2->struc->st = st;
+            for (auto &g : st->generics) {
+                TypeExpr *bound = nullptr;
+                for (auto &[n, bt] : b) if (n == g.name) bound = bt;
+                if (!bound)
+                    tc.Error(this, cat("cannot infer generic parameter ", g.name, " of ",
+                                       st->name, "; use ", st->name, "<...> { }"));
+                nt2->struc->args.push_back(bound);
+            }
+            t = nt2;
+        }
+        auto inst = tc.GetStructInst(t);
+        sinst = inst;
+        tc.CheckInits(this, st->fields, inst->ftypes, st->name);
+        Val v;
+        v.type = t;
+        return v;
+    }
+    tc.Error(this, cat("cannot construct a value of type ", tc.TypeStr(t), " with a literal"));
+}
+
+inline Val Unary::Check(TypeCheck &tc, TypeExpr *) {
+    if (op == T_BITAND) return tc.CheckRefOf(this);
+    auto v = tc.Operand(child);
+    auto t = tc.Widen(v.type);
+    Val r;
+    switch (op) {
+        case T_MINUS:
+            if (tc.IsIntT(t)) {
+                r.type = tc.ast.inttypes[IS_INT];
+                if (v.ck == CK_INT) { r.ck = CK_INT; r.ival = -v.ival; }
+            } else if (t->kind == TY_FLT) {
+                r.type = t;
+                if (v.ck == CK_FLT) { r.ck = CK_FLT; r.fval = -v.fval; }
+            } else {
+                tc.Error(this, cat("cannot negate a value of type ", tc.TypeStr(t)));
+            }
+            return r;
+        case T_NOT:
+            // Optionals are testable like conditions (§3.8 truthiness).
+            if (t->kind != TY_BOOL && !tc.IsOptional(t))
+                tc.Error(this, cat("! requires bool, got ", tc.TypeStr(t)));
+            r.type = tc.ast.booltype;
+            return r;
+        case T_BITNOT:
+            if (!tc.IsIntT(t)) tc.Error(this, cat("~ requires int, got ", tc.TypeStr(t)));
+            r.type = tc.ast.inttypes[IS_INT];
+            if (v.ck == CK_INT) { r.ck = CK_INT; r.ival = ~v.ival; }
+            return r;
+        default:
+            assert(false);
+            return tc.VoidVal();
+    }
+}
+
+inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
+    if (op == T_ANDAND || op == T_OROR) {
+        tc.CheckCond(left);
+        auto snap = tc.SaveFlow();
+        tc.NarrowCond(left, op == T_ANDAND);
+        tc.CheckCond(right);
+        tc.RestoreFlow(snap);
+        Val v;
+        v.type = tc.ast.booltype;
+        return v;
+    }
+    auto lv = tc.Operand(left);
+    auto rv = tc.Operand(right);
+    auto lt = tc.Widen(lv.type), rt = tc.Widen(rv.type);
+    Val v;
+    switch (op) {
+        case T_LT: case T_GT: case T_LTEQ: case T_GTEQ: {
+            if (tc.IsIntT(lt) && tc.IsIntT(rt)) { v.type = tc.ast.booltype; return v; }
+            if (lt->kind == TY_FLT && rt->kind == TY_FLT) { v.type = tc.ast.booltype; return v; }
+            tc.Error(this, cat("ordering comparison requires int or flt operands, got ",
+                               tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
+        }
+        case T_EQ: case T_NEQ: {
+            // null tests: the other side must be an optional (an already
+            // narrowed optional variable still counts).
+            if (lv.isnull || rv.isnull) {
+                auto othernode = lv.isnull ? right : left;
+                auto &other = lv.isnull ? rt : lt;
+                auto oid = Is<Ident>(othernode);
+                auto narrowedopt = oid && oid->vdef && tc.IsOptional(oid->vdef->type);
+                if (!tc.IsOptional(other) && !narrowedopt && !(lv.isnull && rv.isnull))
+                    tc.Error(this, cat("only optionals compare against null, not ",
+                                       tc.TypeStr(other)));
+                v.type = tc.ast.booltype;
+                return v;
+            }
+            if (lt->kind == TY_FLT && rt->kind == TY_FLT) { v.type = tc.ast.booltype; return v; }
+            if (lt->kind == TY_FN || lt->kind == TY_VOID)
+                tc.Error(this, "these values cannot be compared");
+            if (!tc.TypeEq(lt, rt))
+                tc.Error(this, cat("== requires operands of the same type, got ",
+                                   tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
+            v.type = tc.ast.booltype;
+            return v;
+        }
+        case T_BITAND: case T_BITOR: case T_XOR: case T_SHL: case T_SHR: {
+            if (!tc.IsIntT(lt) || !tc.IsIntT(rt))
+                tc.Error(this, cat("bitwise operator requires int operands, got ",
+                                   tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
+            v.type = tc.ast.inttypes[IS_INT];
+            tc.FoldInt(op, lv, rv, v, this);
+            return v;
+        }
+        case T_PLUS: case T_MINUS: case T_MUL: case T_DIV: case T_MOD: {
+            if (tc.IsIntT(lt) && tc.IsIntT(rt)) {
+                v.type = tc.ast.inttypes[IS_INT];
+                tc.FoldInt(op, lv, rv, v, this);
+                return v;
+            }
+            if (lt->kind == TY_FLT && rt->kind == TY_FLT) {
+                // % is fmod on floats. f32 stays 32-bit end-to-end; contact
+                // with flt promotes; literals adapt to the other side (§3.1).
+                auto lf32 = tc.IsF32(lt) || (lv.ck == CK_FLT && tc.IsF32(rt));
+                auto rf32 = tc.IsF32(rt) || (rv.ck == CK_FLT && tc.IsF32(lt));
+                v.type = lf32 && rf32 ? tc.ast.flttypes[FS_F32] : tc.ast.flttypes[FS_FLT];
+                if (lv.ck == CK_FLT && rv.ck == CK_FLT && op != T_MOD) {
+                    v.ck = CK_FLT;
+                    switch (op) {
+                        case T_PLUS:  v.fval = lv.fval + rv.fval; break;
+                        case T_MINUS: v.fval = lv.fval - rv.fval; break;
+                        case T_MUL:   v.fval = lv.fval * rv.fval; break;
+                        default:      v.fval = rv.fval != 0 ? lv.fval / rv.fval : 0; break;
+                    }
+                }
+                return v;
+            }
+            // Elementwise math on identical struct / fixed array types whose
+            // scalar leaves are uniformly int or float (§6.1).
+            if (tc.TypeEq(lt, rt) && tc.ElementwiseOK(lt)) {
+                v.type = lt;
+                return v;
+            }
+            tc.Error(this, cat("operator ", TName(op), " cannot be applied to ",
+                               tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
+        }
+        default:
+            assert(false);
+            return tc.VoidVal();
+    }
+}
+
+inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
+    // EnumName.Variant: a payload-less variant constant (§3.5).
+    if (auto id = Is<Ident>(obj)) {
+        if (!tc.LookupVar(id->name) && !tc.IsFnValName(id->name)) {
+            auto eit = tc.ast.enummap.find(id->name);
+            if (eit != tc.ast.enummap.end()) return tc.CheckVariantConst(this, eit->second);
+        }
+    }
+    auto ov = tc.CheckV(obj, nullptr);
+    obj->exprtype = ov.type;
+    auto t = ov.type;
+    if (t->kind == TY_REF) {
+        if (t->ref->optional)
+            tc.Error(this, "optional value must be narrowed (if/guard/assert) before use");
+        t = t->ref->sub;  // Auto-deref; ov.root is already the pointee's owner.
+    }
+    // Builtin properties (.len/.cap) from the table.
+    if (auto bd = LookupBuiltin(name); bd && (bd->flags & BF_PROPERTY)) {
+        auto got = 0;
+        if (t->kind == TY_ARRAY) {
+            switch (t->arr->akind) {
+                case A_FIXED:      got = BR_FIXED; break;
+                case A_VAR:        got = BR_VAR; break;
+                case A_LIMITED:    got = BR_LIMITED; break;
+                case A_GROW:       got = BR_GROW; break;
+                case A_GROWSHRINK: got = BR_GROWSHRINK; break;
+            }
+        } else if (t->kind == TY_SLICE) {
+            got = BR_SLICE;
+        }
+        if (got & bd->recv) {
+            member = bd->kind;
+            Val v;
+            assert(bd->rets[0] == 'i');
+            v.type = tc.ast.inttypes[IS_INT];
+            return v;
+        }
+        if (t->kind == TY_ARRAY || t->kind == TY_SLICE)
+            tc.Error(this, cat(".", name, " is not available on ", tc.TypeStr(t)));
+    }
+    TypeCheck::LVal lv;
+    lv.type = t;
+    lv.root = ov.root;
+    lv.writable = ov.writable;
+    tc.ResolveMemberLValue(lv, this);
+    Val v;
+    v.type = tc.Widen(lv.type);
+    v.root = lv.root;
+    // References read out of containers are rooted at the container and
+    // writable by design (§9.5 laundering; see the header note).
+    v.writable = v.type->kind == TY_REF || v.type->kind == TY_SLICE ? true : lv.writable;
+    return v;
+}
+
+inline Val Call::Check(TypeCheck &tc, TypeExpr *expected) {
+    return tc.CheckCall(this, expected);
+}
+
+inline Val Index::Check(TypeCheck &tc, TypeExpr *) {
+    auto lv = tc.CheckLValue(this);
+    Val v;
+    v.type = tc.Widen(lv.type);
+    v.root = lv.root;
+    // Container-read laundering, as for fields above (§9.5).
+    v.writable = v.type->kind == TY_REF || v.type->kind == TY_SLICE ? true : lv.writable;
+    v.reusable = lv.reusable;
+    return v;
+}
+
+inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
+    auto lv = tc.LValueBase(obj);
+    tc.DerefLValue(lv, obj);
+    tc.SliceProvenance(lv, obj);
+    TypeExpr *elem;
+    if (lv.type->kind == TY_SLICE) {
+        elem = lv.type->sub;
+        if (tc.ClassOf(elem) != SC_FIXED && (lo || hi))
+            tc.Error(this, "slices of variable-size elements can only be re-sliced "
+                           "whole ([..])");
+    } else if (lv.type->kind == TY_ARRAY) {
+        if (lv.type->arr->akind == A_GROWSHRINK)
+            tc.Error(this, "no slices of grow-shrink arrays (§5.2)");
+        elem = lv.type->arr->sub;
+        if (tc.ClassOf(elem) != SC_FIXED && (lo || hi))
+            tc.Error(this, "arrays of variable-size elements can only be sliced "
+                           "whole ([..])");
+    } else {
+        tc.Error(this, cat("cannot slice a value of type ", tc.TypeStr(lv.type)));
+    }
+    if (lo) tc.CheckValue(lo, tc.ast.inttypes[IS_INT]);
+    if (hi) tc.CheckValue(hi, tc.ast.inttypes[IS_INT]);
+    Val v;
+    v.type = tc.SliceOf(elem, line);
+    v.root = lv.root;
+    v.writable = lv.writable;
+    return v;
+}
+
+inline Val AsCast::Check(TypeCheck &tc, TypeExpr *) {
+    auto cv = tc.Operand(child);
+    auto st = tc.Widen(cv.type);
+    if (!tc.IsIntT(st) && st->kind != TY_FLT)
+        tc.Error(this, cat("as requires a numeric source, got ", tc.TypeStr(st)));
+    auto tt = tc.Subst(type);
+    Val v;
+    if (tt->kind == TY_INT) {
+        if (tt->intstorage == IS_VARINT)
+            tc.Error(this, "cannot cast to varint (varints are written at construction only)");
+        v.type = tt;
+        return v;
+    }
+    if (tt->kind == TY_FLT) {
+        v.type = tt;
+        return v;
+    }
+    tc.Error(this, cat("as can only convert between numeric types, not to ", tc.TypeStr(tt)));
+}
+
+inline Val RangeExpr::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, "range expressions are only valid in for headers");
+}
+
+inline Val Block::Check(TypeCheck &tc, TypeExpr *expected) {
+    return tc.CheckBlockVal(this, expected, true, TypeCheck::SK_PLAIN);
+}
+
+inline Val IfExpr::Check(TypeCheck &tc, TypeExpr *expected) {
+    return tc.CheckIf(this, expected, true);
+}
+
+inline Val MatchExpr::Check(TypeCheck &tc, TypeExpr *expected) {
+    return tc.CheckMatch(this, expected, true);
+}
+
+inline Val EarlyBlock::Check(TypeCheck &tc, TypeExpr *expected) {
+    return tc.CheckEarlyBlock(this, expected, true);
+}
+
+inline Val While::Check(TypeCheck &tc, TypeExpr *) {
+    tc.CheckWhile(this);
+    return tc.VoidVal();
+}
+
+inline Val LoopExpr::Check(TypeCheck &tc, TypeExpr *expected) {
+    return tc.CheckLoop(this, expected, true);
+}
+
+inline Val ForLoop::Check(TypeCheck &tc, TypeExpr *) {
+    tc.CheckFor(this);
+    return tc.VoidVal();
+}
+
+inline Val Guard::Check(TypeCheck &tc, TypeExpr *) {
+    tc.CheckGuard(this);
+    return tc.VoidVal();
+}
+
+inline Val Return::Check(TypeCheck &tc, TypeExpr *) {
+    tc.CheckReturn(this);
+    return tc.VoidVal();
+}
+
+inline Val Break::Check(TypeCheck &tc, TypeExpr *) {
+    tc.CheckBreak(this);
+    return tc.VoidVal();
+}
+
+inline Val Continue::Check(TypeCheck &tc, TypeExpr *) {
+    tc.CheckContinue(this);
+    return tc.VoidVal();
+}
+
+inline Val FunVal::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, "function values can only be passed to calls (§7.6)");
+}
+
+inline Val VarDecl::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, "a declaration is a statement, not a value");
+}
+
+inline Val Assign::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, "an assignment is a statement, not a value");
+}
+
+inline Val IncDec::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, "an increment is a statement, not a value");
+}
+
+inline Val FnDecl::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, "a declaration is a statement, not a value");
+}
+
+inline Val StructDecl::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, "a declaration is a statement, not a value");
+}
+
+inline Val EnumDecl::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, "a declaration is a statement, not a value");
+}
+
+inline Val AliasDecl::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, "a declaration is a statement, not a value");
+}
+
+// Runs the whole pass; errors throw CompileError.
+inline void TypeCheckProgram(Ast &ast) { TypeCheck tc(ast); }
+
+}  // namespace goose

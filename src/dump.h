@@ -138,6 +138,7 @@ inline void TypeExpr::Dump(string &s) const {
             s += ".";
             s += var->adt->kind == TY_ENUM ? var->variant->name : var->name;
             break;
+        case TY_VOID: s += "void"; break;
     }
 }
 
@@ -281,11 +282,7 @@ inline void AsCast::Dump(string &s, int ind) const {
     s += ")";
 }
 
-inline void CopyExpr::Dump(string &s, int ind) const {
-    s += "copy(";
-    child->Dump(s, ind);
-    s += ")";
-}
+inline void NullLit::Dump(string &s, int) const { s += "null"; }
 
 inline void RangeExpr::Dump(string &s, int ind) const {
     lo->Dump(s, ind);
@@ -314,7 +311,8 @@ inline void MatchExpr::Dump(string &s, int ind) const {
             case P_WILDCARD: s += "_"; break;
             case P_VARIANT:
                 s += arm.pat.variant;
-                if (!arm.pat.binder.empty()) Append(s, " ", arm.pat.binder);
+                if (!arm.pat.binder.empty())
+                    Append(s, arm.pat.byref ? " &" : " ", arm.pat.binder);
                 break;
             case P_INT: arm.pat.lo->Dump(s, ind); break;
             case P_RANGE:

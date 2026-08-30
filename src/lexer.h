@@ -17,7 +17,7 @@ namespace goose {
     F(T_LBRACKET, "[")   F(T_RBRACKET, "]") \
     F(T_LCURLY,   "{")   F(T_RCURLY,   "}") \
     F(T_COMMA,    ",")   F(T_SEMI,     ";")  F(T_COLON, ":")  F(T_QUESTION, "?") \
-    F(T_DOT,      ".")   F(T_DOTDOT,   "..") \
+    F(T_DOT,      ".")   F(T_DOTDOT,   "..") F(T_DOTASSIGN, ".=") \
     F(T_PLUS,     "+")   F(T_MINUS,    "-")  F(T_MUL,   "*")  F(T_DIV, "/")  F(T_MOD, "%") \
     F(T_PLUSEQ,   "+=")  F(T_MINUSEQ,  "-=") F(T_MULEQ, "*=") F(T_DIVEQ, "/=") F(T_MODEQ, "%=") \
     F(T_ANDEQ,    "&=")  F(T_OREQ,     "|=") F(T_XOREQ, "^=") \
@@ -39,8 +39,8 @@ namespace goose {
     F(T_FOR,      "for")       F(T_IN,       "in")      F(T_LOOP,   "loop") \
     F(T_BLOCK,    "block")     F(T_GUARD,    "guard")   F(T_MATCH,  "match") \
     F(T_RETURN,   "return")    F(T_FROM,     "from")    F(T_BREAK,  "break") \
-    F(T_CONTINUE, "continue")  F(T_AS,       "as")      F(T_COPY,   "copy") \
-    F(T_TRUE,     "true")      F(T_FALSE,    "false") \
+    F(T_CONTINUE, "continue")  F(T_AS,       "as") \
+    F(T_TRUE,     "true")      F(T_FALSE,    "false")   F(T_NULLLIT, "null") \
     F(T_TINT,     "int")       F(T_TFLT,     "flt")     F(T_TBOOL,  "bool") \
     F(T_TVARINT,  "varint") \
     F(T_TI8,      "i8")  F(T_TI16, "i16") F(T_TI32, "i32") F(T_TI64, "i64") \
@@ -137,7 +137,9 @@ struct Lexer {
             case '~': Set(T_BITNOT);   return;
 
             case '.':
-                if (*p == '.') { p++; Set(T_DOTDOT); } else Set(T_DOT);
+                if (*p == '.') { p++; Set(T_DOTDOT); }
+                else if (*p == '=') { p++; Set(T_DOTASSIGN); }
+                else Set(T_DOT);
                 return;
             case '+':
                 if (*p == '+') { p++; Set(T_INC); }

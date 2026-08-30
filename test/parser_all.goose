@@ -127,8 +127,8 @@ fn literals() {
     let h = "hello\tworld\n";
     let i = true;
     let j = false;
-    let k: u8 = 255;
-    let l: f32 = 0.5;
+    let k = 255;
+    let l = 0.5;
     let m: int[5] = [1, 2, 3, 4, 5];
     let n: int[100] = [0; 100];
     let o: int[>..] = [];
@@ -214,7 +214,7 @@ fn references_and_slices(data: int[:]) -> int {
     let s4 = local[..^1];
     let s5 = local[^2..^0];
     let ss = s1[..1];
-    let copied = copy(r);
+    let copied = r;          // References are transparent: copies the pointee.
     print(copied + data[0] + data.len);
     print(s2.len + s3.len + s4.len + s5.len + ss.len);
     print(whole.len);
@@ -222,7 +222,7 @@ fn references_and_slices(data: int[:]) -> int {
 }
 
 fn optionals(o: int?) -> int {
-    if o { copy(o) } else { 0 }
+    if o { o } else { 0 }
 }
 
 fn calls_and_ufcs() {
@@ -235,7 +235,7 @@ fn calls_and_ufcs() {
     let u = typed_generic(1.0, 2.0);
     print(t);
     print(u);
-    var b: int[>..] = [];
+    var b: int[>..<] = [];
     b.push(1);
     b.append([2, 3]);
     b.resize(10, 0);
@@ -294,16 +294,20 @@ fn control(n: int) -> int {
 
     let blocked = block {
         guard n != 0 else { break 0; }
-        guard n > 0;
+        guard n > 0 else { break 0; }
         n * 2
     };
+    block {
+        guard n >= 0;
+        print(n);
+    }
     return blocked + v;
 }
 
 fn guards(o: int?, n: int) -> int {
     guard o else { return -1; }
     guard n > 0 else { return 0; }
-    copy(o) + n
+    o + n
 }
 
 fn matches(s: Shape, sv: Shape.., n: int, c: int) -> flt {
@@ -379,7 +383,8 @@ fn misc() {
         let shadow = 2;
         print(shadow);
     }
-    print(unassigned + b as int);
+    print(unassigned);
+    print(b);
     let ud = unsigned_div(10, 3);
     let um = unsigned_mod(10, 3);
     let us = unsigned_shr(10, 1);

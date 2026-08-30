@@ -1,8 +1,8 @@
 // Token soup for `goose --tokens`; not a parseable program.
 // Identifiers and keywords:
 foo _bar baz123 _ import struct enum type fn thread_fn rec let var pad reusable
-if else while for in loop block guard match return from break continue as copy
-true false int flt bool varint i8 i16 i32 i64 u8 u16 u32 u64 f32 f64
+if else while for in loop block guard match return from break continue as
+true false null int flt bool varint i8 i16 i32 i64 u8 u16 u32 u64 f32 f64
 // Numbers:
 0 42 1234567890 0x0 0xDEADbeef 0xffffffffffffffff 18446744073709551615
 1.5 0.25 3.14159 1e10 2.5e-3 1E+2 0x1.8p3 0x1p-2 0xAp+1
@@ -13,6 +13,6 @@ true false int flt bool varint i8 i16 i32 i64 u8 u16 u32 u64 f32 f64
 // Strings:
 "" "hello" "a\nb\tc" "quote:\" backslash:\\ tick:\'" "nul\0hex\x41\x0A"
 // All punctuation, longest-munch checks:
-( ) [ ] { } , ; : ? . .. + - * / % += -= *= /= %= &= |= ^= ++ -- = == != < >
+( ) [ ] { } , ; : ? . .. .= + - * / % += -= *= /= %= &= |= ^= ++ -- = == != < >
 <= >= << >> ! ~ & | ^ && || -> =>
 >..< >.. [:] &<u8> /* block comment /* nested */ still comment */ end

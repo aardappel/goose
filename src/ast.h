@@ -7,12 +7,19 @@ namespace goose {
 
 struct Node;
 struct Block;
+struct FunVal;
 struct TypeExpr;
 struct SFunction;
 struct SStruct;
 struct SEnum;
 struct SVariant;
 struct SAlias;
+struct Ast;
+struct VarDef;
+struct FnSpec;
+struct StructInst;
+struct EnumInst;
+struct TypeCheck;
 
 struct Line {
     int line = 0;
@@ -41,6 +48,7 @@ enum TypeKind {
     TY_SLICE,       // T[:] — a reference + count; kin of TY_REF, not TY_ARRAY.
     TY_REF,         // T& / T&<w> (self-relative offset of width w) / optional T?.
     TY_VARIANT,     // T.Name — variant type of an ADT.
+    TY_VOID,        // Typecheck-created: the "type" of statements and valueless blocks.
 };
 
 enum ArrayKind {
@@ -75,12 +83,14 @@ struct TypeDetail { virtual ~TypeDetail() {} };
 struct TypeStruct : TypeDetail {     // TY_STRUCT
     SStruct *st = nullptr;
     vector<TypeExpr *> args;         // Generic type arguments, possibly empty.
+    StructInst *inst = nullptr;      // Instantiation cache (typecheck; concrete args only).
 };
 
 struct TypeEnum : TypeDetail {       // TY_ENUM
     SEnum *en = nullptr;
     vector<TypeExpr *> args;
     bool varmode = false;            // T.. — variable-mode use (§3.5).
+    EnumInst *inst = nullptr;        // Instantiation cache (typecheck; concrete args only).
 };
 
 struct TypeName : TypeDetail {       // TY_UNRESOLVED and TY_GENERIC
@@ -100,6 +110,7 @@ struct TypeArray : TypeDetail {      // TY_ARRAY
     ArrayKind akind = A_FIXED;
     Node *sizeexpr = nullptr;        // A_FIXED size / A_LIMITED capacity (const expr; null for `[..]`).
     int lenstorage = -1;             // A_VAR length field IntStorage; -1 = default (u32).
+    int64_t size = -1;               // Evaluated sizeexpr (typecheck); -1 = not yet / none.
 };
 
 struct TypeRef : TypeDetail {        // TY_REF
@@ -173,6 +184,7 @@ struct Pattern {
     PatKind kind = P_WILDCARD;
     string_view variant;        // P_VARIANT: variant name.
     string_view binder;         // P_VARIANT: optional payload binding.
+    bool byref = false;         // `Variant &b`: bind the payload by reference (§8.1).
     Node *lo = nullptr;         // P_INT / P_RANGE bounds (const exprs).
     Node *hi = nullptr;
 };
@@ -180,6 +192,41 @@ struct Pattern {
 struct MatchArm {
     Pattern pat;
     Node *body = nullptr;
+    // Filled by typecheck:
+    SVariant *variant = nullptr;    // P_VARIANT arms.
+    VarDef *binder = nullptr;       // P_VARIANT payload binding, if any.
+    int64_t lo = 0, hi = 0;         // P_INT / P_RANGE evaluated bounds (hi exclusive).
+};
+
+// A function value bound to a generic parameter at some call (typecheck):
+// either a literal FunVal (trailing block) or a named function, plus the
+// specialization whose locals it captures.
+struct FnValBind {
+    const FunVal *fv = nullptr;
+    SFunction *named = nullptr;
+    FnSpec *env = nullptr;
+    bool operator==(const FnValBind &o) const {
+        return fv == o.fv && named == o.named && env == o.env;
+    }
+};
+
+// The checked value of an expression (typecheck.h): its type plus, for
+// reference/slice-typed values, the lifetime root and provenance, plus the
+// constant folding used for literal fit and array sizes. Lives here because
+// every node's Check override returns one.
+enum ConstKind { CK_NONE, CK_INT, CK_FLT };
+struct Val {
+    TypeExpr *type = nullptr;
+    VarDef *root = nullptr;      // Ref/slice: owner of the pointee (null = static data).
+    bool writable = false;       // Ref/slice provenance (§9.5).
+    bool reusable = false;       // Root is a reusable pool (§5.4).
+    ConstKind ck = CK_NONE;
+    int64_t ival = 0;
+    double fval = 0;
+    bool strlit = false;         // String literal: adaptable to u8 array types.
+    bool emptyarr = false;       // [] with as yet unknown element type.
+    bool isnull = false;         // The null literal: adaptable to any optional.
+    FnValBind fnv;               // When type is TY_FN.
 };
 
 // ---------------------------------------------------------------------------
@@ -188,13 +235,27 @@ struct MatchArm {
 
 struct Node {
     Line line;
+    TypeExpr *exprtype = nullptr;   // Filled by typecheck (the value's type; TY_VOID for none).
     Node(Line _line) : line(_line) {}
     virtual ~Node() {}
     virtual void Dump(string &s, int ind) const = 0;
+    // Deep copy of the tree (typecheck clones function bodies per specialization
+    // so annotations are per-instantiation). TypeExprs are shared, not cloned.
+    virtual Node *Clone(Ast &ast) const = 0;
+    // Calls f on every direct child; generic tree walks build on this
+    // (implementations in clone.h alongside Clone).
+    virtual void Children(const function<void(Node *)> &f) const = 0;
+    // The typecheck pass for this node as a value expression; statements are
+    // dispatched separately by TypeCheck::CheckStmt. Implementations live
+    // together at the end of typecheck.h.
+    virtual Val Check(TypeCheck &tc, TypeExpr *expected) = 0;
 };
 
 #define NODE(name) struct name : Node { \
-    void Dump(string &s, int ind) const override;
+    void Dump(string &s, int ind) const override; \
+    Node *Clone(Ast &ast) const override; \
+    void Children(const function<void(Node *)> &f) const override; \
+    Val Check(TypeCheck &tc, TypeExpr *expected) override;
 #define NODE_END };
 
 NODE(IntLit)
@@ -220,6 +281,9 @@ NODE_END
 
 NODE(Ident)
     string_view name;
+    // Filled by typecheck: exactly one of these.
+    VarDef *vdef = nullptr;         // A variable.
+    SFunction *fnref = nullptr;     // A named function used as a function value.
     Ident(Line l, string_view _name) : Node(l), name(_name) {}
 NODE_END
 
@@ -233,6 +297,11 @@ NODE_END
 NODE(StructLit)
     TypeExpr *type;             // Named type or variant type.
     vector<FieldInit> inits;
+    // Filled by typecheck:
+    StructInst *sinst = nullptr;    // Struct literals.
+    EnumInst *einst = nullptr;      // Variant literals.
+    SVariant *variant = nullptr;    //   "
+    vector<int> fieldindices;       // Per init, the target field index.
     StructLit(Line l, TypeExpr *_type) : Node(l), type(_type) {}
 NODE_END
 
@@ -251,6 +320,12 @@ NODE_END
 NODE(Dot)
     Node *obj;
     string_view name;
+    // Filled by typecheck: field access, builtin property (.len/.cap), or a
+    // payload-less variant constant (obj names the enum type).
+    int fieldidx = -1;
+    int member = -1;                // BuiltinKind, builtins.h.
+    SVariant *variantconst = nullptr;
+    EnumInst *einst = nullptr;
     Dot(Line l, Node *_obj, string_view _name) : Node(l), obj(_obj), name(_name) {}
 NODE_END
 
@@ -261,6 +336,15 @@ NODE(Call)
     vector<TypeExpr *> tyargs;  // Explicit <T> list, normally empty (inferred).
     vector<Node *> args;
     FunVal *trailing = nullptr; // Trailing-block function value, if any.
+    // Filled by typecheck: exactly one resolution among these.
+    FnSpec *spec = nullptr;             // A direct call to one specialization.
+    vector<FnSpec *> dispatch;          // Case-function tag dispatch, per variant.
+    int dispatcharg = -1;               //   which argument dispatches.
+    int builtin = -1;                   // BuiltinKind, builtins.h (members included).
+    Block *fvbody = nullptr;            // Call of a function value: checked body instance.
+    vector<VarDef *> fvparams;          //   its parameter bindings.
+    SFunction *fvtarget = nullptr;      //   the named fn a plain `return` inside exits.
+    vector<TypeExpr *> rettypes;        // All return values (exprtype is rettypes[0] or void).
     Call(Line l, Node *_callee) : Node(l), callee(_callee) {}
 NODE_END
 
@@ -284,9 +368,8 @@ NODE(AsCast)
         : Node(l), child(_child), type(_type), unchecked(_unchecked) {}
 NODE_END
 
-NODE(CopyExpr)
-    Node *child;
-    CopyExpr(Line l, Node *_child) : Node(l), child(_child) {}
+NODE(NullLit)                   // The null optional; adapts to any T? (§3.8).
+    NullLit(Line l) : Node(l) {}
 NODE_END
 
 NODE(RangeExpr)                 // Only inside for-headers.
@@ -300,6 +383,9 @@ struct Block : Node {
     Node *tail = nullptr;
     Block(Line l) : Node(l) {}
     void Dump(string &s, int ind) const override;
+    Node *Clone(Ast &ast) const override;
+    void Children(const function<void(Node *)> &f) const override;
+    Val Check(TypeCheck &tc, TypeExpr *expected) override;
 };
 
 NODE(IfExpr)
@@ -338,6 +424,10 @@ NODE(ForLoop)
     string_view idxvar;         // Optional second binding; empty if absent.
     Node *iter;                 // Expression or RangeExpr.
     Block *body;
+    // Filled by typecheck:
+    VarDef *vdef = nullptr;
+    VarDef *idxdef = nullptr;
+    int iterkind = 0;           // IterKind, typecheck.h.
     ForLoop(Line l, bool _byref, string_view _var, string_view _idxvar, Node *_iter, Block *_body)
         : Node(l), byref(_byref), var(_var), idxvar(_idxvar), iter(_iter), body(_body) {}
 NODE_END
@@ -345,12 +435,14 @@ NODE_END
 NODE(Guard)
     Node *cond;
     Block *elseb;               // Null for the bare "guard c;" shorthand.
+    int implicitexit = 0;       // Bare form resolution (typecheck): 1 = break, 2 = return.
     Guard(Line l, Node *_cond, Block *_elseb) : Node(l), cond(_cond), elseb(_elseb) {}
 NODE_END
 
 NODE(Return)
     vector<Node *> vals;
     string_view from;           // "return ... from f"; empty if absent.
+    SFunction *target = nullptr;  // Filled by typecheck (the fn this exits; `from` or own).
     Return(Line l) : Node(l) {}
 NODE_END
 
@@ -371,6 +463,9 @@ struct FunVal : Node {
     Block *body;
     FunVal(Line l, Block *_body) : Node(l), body(_body) {}
     void Dump(string &s, int ind) const override;
+    Node *Clone(Ast &ast) const override;
+    void Children(const function<void(Node *)> &f) const override;
+    Val Check(TypeCheck &tc, TypeExpr *expected) override;
 };
 
 // let/var declarations, local and global.
@@ -381,12 +476,14 @@ NODE(VarDecl)
     vector<string_view> names;  // let a, b = f();
     TypeExpr *type = nullptr;
     vector<Node *> inits;       // Empty for uninitialized locals.
+    vector<VarDef *> defs;      // Filled by typecheck, aligned with names.
     VarDecl(Line l, bool _isvar) : Node(l), isvar(_isvar) {}
 NODE_END
 
 NODE(Assign)
     TType op;                   // T_ASSIGN, T_PLUSEQ, ...
     Node *lval, *rhs;
+    bool pointee = false;       // Typecheck: lval is a reference and this writes its pointee.
     Assign(Line l, TType _op, Node *_lval, Node *_rhs) : Node(l), op(_op), lval(_lval), rhs(_rhs) {}
 NODE_END
 
@@ -411,6 +508,7 @@ struct SFunction {
     bool isthread = false;
     bool isnested = false;
     Block *body = nullptr;
+    vector<FnSpec *> specs;     // Specializations (typecheck), owned by Ast.
 };
 
 struct SStruct {
@@ -418,6 +516,7 @@ struct SStruct {
     Line line;
     vector<GenericParam> generics;
     vector<Field> fields;
+    vector<StructInst *> insts;  // Instantiations (typecheck), owned by Ast.
 };
 
 struct SVariant {
@@ -431,6 +530,7 @@ struct SEnum {
     Line line;
     vector<GenericParam> generics;
     vector<SVariant> variants;  // Stable once parsing completes; pointed at by TY_VARIANT.
+    vector<EnumInst *> insts;   // Instantiations (typecheck), owned by Ast.
 };
 
 // Not a type: a name referring to a type. Uses are substituted away during
@@ -465,6 +565,107 @@ NODE_END
 #undef NODE_END
 
 // ---------------------------------------------------------------------------
+// Typecheck data. Everything below is produced by typecheck.h; it lives here
+// because later phases (optimization/codegen) consume it alongside the AST.
+
+// Size classes (§1.1): the max over a compound's parts, subject to placement.
+enum SizeClass { SC_FIXED, SC_VARIABLE, SC_RESIZABLE };
+
+// One checked variable: a global, local, parameter, or binding (for/match/
+// function value). Created per specialization, so generic code has concrete
+// types here. Also carries the transient flow state (assigned/narrowed) used
+// while its scope is being checked.
+struct VarDef {
+    string_view name;
+    TypeExpr *type = nullptr;   // Concrete (post-substitution) declared type.
+    Line line;
+    bool isvar = false;         // Assignable, and derived references writable.
+    bool isglobal = false;
+    bool isparam = false;
+    bool reusable = false;
+    FnSpec *ownerspec = nullptr;  // Null for globals.
+    // Lifetime depth for the outlives check (§9.2): globals 0, then one per
+    // nested scope along the current compile-time call path. Only comparable
+    // between variables simultaneously live on that path.
+    int depth = 0;
+    VarDef *rootalias = nullptr;  // Params: canonical VarDef when call-site roots coincide.
+    // For variables of reference/slice type: the provenance of the reference
+    // value they hold, fixed at first binding (see typecheck.h header note).
+    // A null-initialized optional has no commitment yet (refrootknown false).
+    VarDef *refroot = nullptr;
+    bool refrootknown = false;
+    bool refwritable = true;
+    bool refreusable = false;
+    // Flow state during checking:
+    bool assigned = false;
+    TypeExpr *narrowed = nullptr;  // T? narrowed to T& in the current region.
+    bool captured = false;         // Accessed from a nested fn / function value.
+};
+
+// A struct type with concrete generic arguments: substituted field types plus
+// the derived properties every user of the type needs.
+struct StructInst {
+    SStruct *st = nullptr;
+    vector<TypeExpr *> args;
+    vector<TypeExpr *> ftypes;     // Aligned with st->fields; null for pads.
+    vector<Node *> defaults;       // Aligned; checked clones of field defaults (or null).
+    SizeClass sclass = SC_FIXED;
+    bool flat = true;
+    bool validated = false;        // Guards against recursive by-value nesting.
+};
+
+// An enum type with concrete generic arguments.
+struct EnumInst {
+    SEnum *en = nullptr;
+    vector<TypeExpr *> args;
+    vector<vector<TypeExpr *>> vftypes;   // Per variant, per field.
+    vector<vector<Node *>> vdefaults;     // Checked clones of field defaults (or null).
+    bool allfixed = true;                 // Fixed-mode use is legal.
+    SizeClass varclass = SC_VARIABLE;     // Class when used in variable mode.
+    bool flat = true;
+    bool validated = false;
+};
+
+// Call-site facts about one reference/slice parameter, part of the
+// specialization key (§10.2): the relative-outlives class of its root among
+// the call's reference arguments (0 = static, 1 = outermost, ...), and the
+// provenance bits.
+struct RootArg {
+    int cls = 0;
+    bool writable = true;
+    bool reusable = false;
+    bool operator==(const RootArg &o) const {
+        return cls == o.cls && writable == o.writable && reusable == o.reusable;
+    }
+};
+
+// One monomorphic specialization of a function: the unit of typechecking and
+// of later codegen. Owns nothing; body is a clone with annotations filled.
+struct FnSpec {
+    SFunction *sf = nullptr;
+    FnSpec *lexparent = nullptr;   // Defining specialization, for nested fns.
+    vector<TypeExpr *> argtypes;   // Concrete parameter types (the key, with the below).
+    vector<RootArg> roots;         // Per reference/slice-typed parameter.
+    vector<pair<string_view, FnValBind>> fnvals;  // Generic name -> bound function value.
+    vector<pair<string_view, TypeExpr *>> bindings;  // Generic name -> concrete type.
+    Block *body = nullptr;         // Cloned, annotated copy of sf->body.
+    vector<VarDef *> params;
+    vector<TypeExpr *> rets;       // TY_VOID-free: empty = no return values.
+    vector<VarDef *> retroots;     // Per ret: root if ref/slice-typed (param VarDef,
+                                   // global, or null = static), else null.
+    vector<bool> retwritable;
+    bool retsknown = false;
+    bool checkedreturn = false;    // A return with values has been recorded.
+    bool checked = false;
+    bool inprogress = false;
+    bool incycle = false;          // Part of a recursive cycle (§7.8).
+    bool has_nonfixed_local = false;
+    Line nonfixedline;             // First nonfixed local, for cycle diagnostics.
+    set<SFunction *> needs;        // `return from` targets that must enclose every call.
+    int id = 0;                    // Unique, for diagnostics/codegen naming.
+};
+
+// ---------------------------------------------------------------------------
 // Ast: owner of everything produced by parsing.
 
 struct Ast {
@@ -479,6 +680,12 @@ struct Ast {
     vector<SStruct *> structs;
     vector<SEnum *> enums;
     vector<SAlias *> aliases;
+
+    // Typecheck products (owned here so later phases can rely on them).
+    vector<VarDef *> vardefs;
+    vector<StructInst *> structinsts;
+    vector<EnumInst *> enuminsts;
+    vector<FnSpec *> fnspecs;
 
     vector<Node *> topdecls;                        // In source/import order.
     vector<VarDecl *> globals;                      // Initialization order.
@@ -495,6 +702,7 @@ struct Ast {
     TypeExpr *inttypes[IS_VARINT + 1];
     TypeExpr *flttypes[FS_F64 + 1];
     TypeExpr *booltype;
+    TypeExpr *voidtype;
 
     Ast() {
         for (int s = IS_INT; s <= IS_VARINT; s++) {
@@ -506,6 +714,7 @@ struct Ast {
             flttypes[s]->fltstorage = (FltStorage)s;
         }
         booltype = NewType(TY_BOOL, Line {});
+        voidtype = NewType(TY_VOID, Line {});
     }
 
     ~Ast() {
@@ -516,6 +725,10 @@ struct Ast {
         for (auto s : structs) delete s;
         for (auto e : enums) delete e;
         for (auto a : aliases) delete a;
+        for (auto v : vardefs) delete v;
+        for (auto i : structinsts) delete i;
+        for (auto i : enuminsts) delete i;
+        for (auto sp : fnspecs) delete sp;
     }
 
     TypeExpr *NewType(TypeKind kind, Line line) {
@@ -534,6 +747,16 @@ struct Ast {
         auto n = new T(std::forward<Args>(args)...);
         allnodes.push_back(n);
         return n;
+    }
+
+    VarDef *NewVarDef()       { auto v = new VarDef();     vardefs.push_back(v);     return v; }
+    StructInst *NewStructInst() { auto i = new StructInst(); structinsts.push_back(i); return i; }
+    EnumInst *NewEnumInst()   { auto i = new EnumInst();   enuminsts.push_back(i);   return i; }
+    FnSpec *NewFnSpec() {
+        auto sp = new FnSpec();
+        sp->id = (int)fnspecs.size();
+        fnspecs.push_back(sp);
+        return sp;
     }
 
     TypeExpr *PrimTypeForToken(TType t) {

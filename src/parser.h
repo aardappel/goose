@@ -629,7 +629,11 @@ struct Parser {
                 p.kind = P_VARIANT;
                 p.variant = lex.attr;
                 lex.Next();
-                if (lex.tok == T_IDENT) {
+                if (IsNext(T_BITAND)) {
+                    // `Variant &b`: an explicit by-reference payload binding.
+                    p.byref = true;
+                    p.binder = ExpectIdent("match binding");
+                } else if (lex.tok == T_IDENT) {
                     p.binder = lex.attr;
                     lex.Next();
                 }
@@ -821,6 +825,7 @@ struct Parser {
             }
             case T_TRUE:  lex.Next(); return New<BoolLit>(line, true);
             case T_FALSE: lex.Next(); return New<BoolLit>(line, false);
+            case T_NULLLIT: lex.Next(); return New<NullLit>(line);
             case T_LPAREN: {
                 lex.Next();
                 auto save = no_struct_lit;
@@ -832,30 +837,26 @@ struct Parser {
                 LeaveSub(sub);
                 return e;
             }
-            case T_COPY: {
-                lex.Next();
-                Expect(T_LPAREN, "copy");
-                auto save = no_struct_lit;
-                auto sub = EnterSub();
-                no_struct_lit = false;
-                auto e = ParseExpr();
-                Expect(T_RPAREN, "copy");
-                no_struct_lit = save;
-                LeaveSub(sub);
-                return New<CopyExpr>(line, e);
-            }
             case T_LBRACKET: return ParseArrayLit(line);
             case T_IDENT: {
                 auto name = lex.attr;
                 lex.Next();
                 if (lex.tok == T_LT) {
-                    // Possibly f<T>(...) or Name<T> { ... }; backtrack if not.
+                    // Possibly f<T>(...), Name<T> { ... }, or the variant
+                    // literal Name<T>.Variant { ... }; backtrack if not.
                     vector<TypeExpr *> tyargs;
                     if (TryParseTyArgs(tyargs)) {
                         if (IsNext(T_LPAREN))
                             return ParseCallRest(New<Ident>(line, name), std::move(tyargs), line);
                         auto t = NewUnresolvedType(name, line);
                         t->named->args = std::move(tyargs);
+                        if (IsNext(T_DOT)) {
+                            auto vt = ast.NewType(TY_VARIANT, line);
+                            vt->var = ast.NewDetail<TypeVariant>();
+                            vt->var->adt = t;
+                            vt->var->name = ExpectIdent("variant literal");
+                            return ParseStructLitBody(vt, line);
+                        }
                         return ParseStructLitBody(t, line);
                     }
                 }
@@ -890,6 +891,20 @@ struct Parser {
                 return false;
             }
             if (lex.tok == T_LPAREN || (lex.tok == T_LCURLY && !no_struct_lit)) return true;
+            if (lex.tok == T_DOT && !no_struct_lit) {
+                // Name<T>.Variant { ... }: commit only when the full variant
+                // literal head is present.
+                auto save2 = lex;
+                lex.Next();
+                if (lex.tok == T_IDENT) {
+                    lex.Next();
+                    if (lex.tok == T_LCURLY) {
+                        lex = save2;  // Leave the '.' for the caller.
+                        return true;
+                    }
+                }
+                lex = save2;
+            }
         } catch (CompileError &) {}
         lex = save;
         tyargs.clear();
@@ -1022,8 +1037,9 @@ struct Parser {
             auto line = CurLine();
             if (!stmt_ended) {
                 switch (lex.tok) {
-                    case T_ASSIGN: case T_PLUSEQ: case T_MINUSEQ: case T_MULEQ:
-                    case T_DIVEQ: case T_MODEQ: case T_ANDEQ: case T_OREQ: case T_XOREQ: {
+                    case T_ASSIGN: case T_DOTASSIGN: case T_PLUSEQ: case T_MINUSEQ:
+                    case T_MULEQ: case T_DIVEQ: case T_MODEQ: case T_ANDEQ: case T_OREQ:
+                    case T_XOREQ: {
                         auto op = lex.tok;
                         lex.Next();
                         auto rhs = ParseExpr();

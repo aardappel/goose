@@ -94,6 +94,7 @@ Literals:
   floats with a mandatory binary exponent (`0x1.8p3`). A `.` starts a
   fraction only when a digit follows, so `1..2` lexes as a range.
 * String `"..."`, with escapes `\n \t \r \0 \\ \" \' \xNN` (two hex digits).
+* `null` — the empty value of any optional type `T?` (§3.8).
 
 The language is **expression-oriented**: `if`, `match`, and `block` are
 expressions; a block's value is its trailing expression. Assignment and
@@ -128,17 +129,22 @@ A grammar sketch and precedence table are in Appendix D.
 * `int` — the default integer type: signed two's-complement 64-bit, on every
   platform. All integer arithmetic happens at this type. Use for all indices,
   sizes, and any integer without precise layout needs.
-* `i8 i16 i32 i64 u8 u16 u32 u64` — integer **storage types**. They exist in
-  memory (fields, elements, locals with explicit annotation) but reads widen
-  to `int` immediately (zero- or sign-extended per signedness). Expressions
-  have exactly one integer type: `int`.
+* `i8 i16 i32 i64 u8 u16 u32 u64` — integer **storage types**. They exist
+  only inside compound types (fields, array elements) and reads widen to
+  `int` immediately (zero- or sign-extended per signedness). Expressions
+  have exactly one integer type: `int`. Individual variables, parameters,
+  and returns are always plain `int` (never a storage spelling).
 * `varint` — variable-length integer storage type (§3.6). Reads widen to
   `int`; writable only at construction.
 * `flt` — 64-bit IEEE float, the default float type. `f64` is its storage
-  spelling.
-* `f32` — 32-bit float storage type. Unlike integers, `f32` converts to `flt`
-  *lazily*: an expression whose operands are all `f32` computes in 32 bits
-  end-to-end; contact with a `flt` operand promotes. Float literals count as
+  spelling (fields/elements only, like the integer storage types).
+* `f32` — 32-bit float storage type (fields/elements only, like the rest).
+  Unlike integers, `f32` converts to `flt` *lazily, within an expression*: a
+  subexpression whose operands are all `f32` (loads of f32 storage, float
+  literals, `as f32` results) computes in 32 bits; contact with a `flt`
+  operand promotes, and *binding any variable/parameter/return widens to
+  `flt`* — so an f32 computation lives entirely inside one expression,
+  typically ending in a store back to f32 storage. Float literals count as
   either (they adapt to an `f32` context).
 * `bool` — 1-byte storage, values `true`/`false`. Produced by comparisons;
   required by `if`/`while` conditions (no int-to-bool coercion).
@@ -210,11 +216,14 @@ Shrink operations (`pop`, `resize` downward, `clear`) exist only on `[>..<]`
 and limited arrays.
 
 Built-in members: `.len` (always, returns `int`), `.cap` (limited arrays),
-`.push(v)`, `.append(src)` (src an array/slice of the element type),
-`.pop()`, `.resize(n, v)` (grow with fill value `v`, or shrink),
-`.resize(n)` (shrink only), `.clear()` per the rules above. Growth always
-supplies element values — no operation can expose uninitialized slots
-(§5.3).
+`.push(v)` (returns a reference to the new element on grow-only and limited
+arrays — the idiomatic way to link up just-built data; on grow-shrink arrays
+it returns nothing, since no interior references exist there, §5.2),
+`.append(src)` (src an array/slice of the element type), `.pop()`,
+`.resize(n, v)` (grow with fill value `v`, or shrink), `.resize(n)` (shrink
+only), `.clear()` per the rules above. Growth always supplies element
+values — no operation can expose uninitialized slots (§5.3). Per UFCS these
+are ordinary functions: `a.push(v)` is `push(a, v)`.
 
 ### 3.4 Placement rules (what may contain what)
 
@@ -309,16 +318,30 @@ enforced; UTF-8 is a library-level convention.
 `T&` is a reference to a `T`: one machine address, no pointer arithmetic, no
 casts, never dangling.
 
+**References are transparent** (like C++ references): an expression that
+denotes a reference behaves as its pointee in every value context — reads,
+arithmetic, comparisons (`r1 == r2` compares the pointees), passing to a
+by-value parameter, `print(r)` — all operate on the target. There is no
+dereference operator and no `copy` builtin; the load is implicit.
+
 * Created with `&lvalue`. Lvalues are: local/global names, fields, indexed
   elements, dereferenced references, and (for reference creation) variable
   elements reached by iteration. `&` of an rvalue (temporary) is an error.
-* References grant read and write access to the pointee, subject to
+  `&` of a location that itself holds a reference yields the *stored*
+  reference (there are no references to references).
+* Writes: `r = v` (and `r += v`, `r++`, …) write the pointee, subject to
   writability provenance (§9.5) and the target's own rules. There is no
   `const`/`mut` distinction inside reference types.
-* Auto-deref: field access, indexing, and UFCS calls through a reference
-  need no explicit dereference; the whole pointee is copied out with
-  `copy(r)`.
-* Rebinding the reference variable itself is governed by its own `let`/`var`.
+* Rebinding: the special assignment `r .= &x` updates the reference *value*
+  itself (the one thing transparency cannot express). `.=` applies to any
+  reference-typed location — variables (subject to their `let`/`var`),
+  fields, elements. On non-reference locations `.=` is an error.
+* Binding contexts keep the reference rather than loading through it: an
+  initializer/argument/field whose *declared type* is a reference type binds
+  the reference value. Where a type is inferred (`let x = r;`, untyped
+  generic parameters), the reference decays to a pointee copy — except an
+  explicit `&lvalue` initializer, which infers the reference type. To bind a
+  reference-returning call, annotate: `let e: T& = pool.push(v);`.
 * References to `varint` fields are always read-only (varints are written
   only at construction, §3.6).
 
@@ -327,9 +350,14 @@ T*: represented as a nullable reference to T (null = address 0, no space
 cost), with all reference semantics and restrictions (roots, lifetimes,
 writability). This composes with any type — pass `int?` for an optional
 integer. Applied to a type that is already a reference, `?` simply makes
-that reference nullable (`T&?` ≡ `T?`). Access requires narrowing via
-`if`/`match`/`assert`/`guard` (flow typing: inside the guarded region the
-value has type `T&`; narrowing is killed by reassignment of the variable).
+that reference nullable (`T&?` ≡ `T?`). The literal `null` is the empty
+value of any optional type; an optional struct field with no declared
+default defaults to null. Optionals are *not* transparent: access requires
+narrowing via `if`/`guard`/`assert(r)`/`== null`/`!= null` tests (flow
+typing: inside the guarded region the value behaves as `T&`; narrowing is
+killed by rebinding the variable). `o .= &x` / `o .= null` rebind an
+optional; a rebind to a plain reference narrows it, a rebind to anything
+possibly null un-narrows it.
 
 **Implementation note (fat references).** When a callee grows a resizable
 through a reference (e.g. `push` through a `flt[>..]&`), it must know which
@@ -468,7 +496,9 @@ returned locals.
 ### 4.4 Assignability
 
 An lvalue may be assigned (`=`) after construction iff its size cannot change
-or it can absorb the change:
+or it can absorb the change (for reference-typed lvalues these rules govern
+the *pointee* write that `=` performs; the reference value itself is updated
+only by `.=`, §3.8):
 
 * fixed-size lvalues declared `var`: assignable (plain overwrite copy);
 * whole resizable arrays (top of their stack): assignable — semantically
@@ -494,9 +524,11 @@ type: scalars and bools by value; structs and fixed arrays memberwise (pad
 and ADT padding bytes excluded — semantic comparison is per-member; memcmp
 is a valid optimization only for gap-free layouts); array-family values and
 slices by length then elements (sequential walk for variable elements); ADTs
-by tag then payload; references and slices compare as *values* (address, and
-address+length) — compare pointees by dereferencing/`copy` explicitly.
-Ordering `< <= > >=` exists on `int` and `flt` only.
+by tag then payload. References are transparent (§3.8): `r1 == r2` compares
+the *pointees* (address-identity comparison is an unresolved item, Appendix
+B). Optionals compare as nullable references (`o == null` is the null test);
+slices compare as values (address+length). Ordering `< <= > >=` exists on
+`int` and `flt` only.
 
 ---
 
@@ -568,11 +600,12 @@ tree-mutation workloads that would otherwise need an allocator.
 
 ### 6.1 Operators
 
-C/Rust set: `+ - * / %`, comparisons, `! && ||` (short-circuit, `bool`
-only), bitwise `~ & | ^ << >>` (on `int`), assignment statements `=`, `+=`
-etc. on assignable lvalues, and `++`/`--` as statements on integer lvalues
-(no expression form). Precedence: Appendix D. Range expressions `a..b`
-appear only in slicing brackets, `for` headers, and match arms.
+C/Rust set: `+ - * / %` (`%` on `flt` is C `fmod`), comparisons, `! && ||`
+(short-circuit, `bool` only), bitwise `~ & | ^ << >>` (on `int`), assignment
+statements `=`, `+=` etc. on assignable lvalues, `.=` (reference rebinding,
+§3.8), and `++`/`--` as statements on integer lvalues (no expression form).
+Precedence: Appendix D. Range expressions `a..b` appear only in slicing
+brackets, `for` headers, and match arms.
 
 **Elementwise math**: the arithmetic operators apply memberwise to any two
 values of the *same* struct/fixed-array type whose scalar leaves are all
@@ -813,9 +846,10 @@ called as `foo(1)`, never `foo<int>(1)` — the typechecker must support this
 for both `<T>`-style and untyped (implicitly generic) parameters. An
 explicit list `f<int>(x)` is allowed, and *needed* only when no argument
 mentions the parameter (e.g. `qget<int>()`). Syntactically, `f<` commits to
-a type argument list only when the `<…>` is immediately followed by `(` (or
-`{` for a struct literal, `Pair<int> { … }`); otherwise `<` is the
-comparison operator.
+a type argument list only when the `<…>` is immediately followed by `(`,
+by `{` for a struct literal (`Pair<int> { … }`), or by `.ident {` for a
+variant literal (`Opt<int>.Some { … }`); otherwise `<` is the comparison
+operator.
 
 Passing arrays by reference is the generic way to write mutating range
 algorithms (each array-family type instantiates its own copy); slices are
@@ -883,9 +917,13 @@ multi-value returns. Long-distance: `return from`.
 
 ```goose
 match shape {
-    Circle c => c.r * c.r * 3.14159,
+    Circle c => c.r * c.r * 3.14159,   // payload by value (a copy)
     Rect r   => r.w * r.h,
     Point    => 0.0,
+}
+match sexp {
+    Sym &s   => use(&s.name),          // payload by reference (&-binder)
+    List &l  => walk(l.kids),
 }
 match n { 0 => "zero", 1..10 => "small", _ => "big" }
 ```
@@ -893,13 +931,17 @@ match n { 0 => "zero", 1..10 => "small", _ => "big" }
 * Over ADTs: exhaustive over variants; `_ =>` wildcard allowed; arm binds
   the variant payload (`c: Shape.Circle` above).
 * Over integers: constant and half-open-range arms; `_` required.
-* Matching a **variable-mode** ADT (or any ADT through a reference) binds the
-  payload by reference (no copy); the variant cannot be reassigned through
-  it.
-* Matching a **fixed-mode** ADT value binds payload fields by value copy
-  (interior references are forbidden there); the matched lvalue may be
-  overwritten with another variant inside the arm.
-* `T?` narrows via `if r { … }` / `guard` / `assert r` (flow typing, §3.8).
+* Arm binders are explicit about copy vs reference, like the rest of the
+  language: `Circle c =>` binds the payload *by value* — a copy, potentially
+  a large one for variable-size payloads — and `Circle &c =>` binds it *by
+  reference* (the `for &x` spelling; `Circle& c` is the same tokens).
+* `&`-binders are legal only on **variable-mode** payloads (whether the
+  scrutinee is a value or a reference): a fixed-mode value may be
+  overwritten with another variant — inside the arm included — so a
+  reference into its payload is exactly what §3.5 forbids, and matching a
+  fixed-mode ADT (even through a reference) offers by-value binding only.
+  The variant can never be reassigned through a `&`-binder.
+* `T?` narrows via `if r { … }` / `guard` / `assert(r)` (flow typing, §3.8).
 
 ### 8.2 Case functions (match as an overload set)
 
@@ -920,7 +962,10 @@ let a = area(s);     // s: Shape — dispatches on the tag, like a match
   tag dispatch (jump table); exhaustiveness is checked exactly like `match`:
   every variant must have exactly one applicable overload; return types must
   agree. All arms construct any nonfixed result to the same destination
-  (§4.3).
+  (§4.3). The overloads' parameter types choose copy vs reference like match
+  binders do (`Shape.Circle` vs `Shape.Circle&`), with the same §3.5 rule: a
+  fixed-mode scrutinee — even behind a reference — dispatches to by-value
+  variant parameters only.
 * Dispatch is on one parameter position (v1 rule: multi-position dispatch is
   an error). Other parameters pass through unchanged.
 
@@ -962,6 +1007,13 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   types for checking purposes (same layout).
 * References into a value being copied by value do not transfer to the copy;
   they keep referring to the source (plain value semantics).
+* A reference *variable* commits to its first binding's root: `.=` may
+  rebind it only within the same root, or to one at the same scope depth
+  (the common case: retargeting to another element of the same or a sibling
+  container in a loop). Anything else needs a new variable. This keeps the
+  checker single-pass over loop bodies.
+* All `return`s of one function must agree on the returned reference's root
+  (v1 simplification; use one source or split the function).
 * Inside recursive cycles the stricter §7.8 cycle store rule applies.
 
 Violations are compile errors. There is no escape hatch in v1.
@@ -1000,6 +1052,15 @@ roots, with zero syntax:
   through one) is a compile error at the offending instantiation.
 * Everything else is writable. Slices remain the read idiom by convention,
   not by rule.
+* Provenance is tracked through *direct* derivation paths (variables,
+  fields, `&`, slicing, calls), not through storage round-trips: a
+  reference stored into a container and read back out is writable regardless
+  of its original provenance. This laundering is deliberate — the struct
+  definition (its `let` fields) is the source of truth for what may be
+  written through paths *it* controls, and the loophole is this pragmatic
+  language's const-cast. (Root tracking is unaffected: a read-back reference
+  is conservatively rooted at the container, which its true root is known to
+  outlive.)
 
 Consequence, accepted deliberately: the check is callee-driven — a utility
 function that mutates its slice argument compiles in one calling context and
@@ -1123,7 +1184,7 @@ machinery this needs.)
 ## 12. Deliberately out of scope for v1
 
 Standard library contents (beyond: `print(x)` for scalars and u8-arrays/
-slices, `assert`, `copy`, `hardware_threads`, the unsigned builtins of
+slices, `assert`, `hardware_threads`, the unsigned builtins of
 §6.2, and the math types of §6.1 are assumed); FFI details (an `extern fn`
 C boundary is assumed to exist, unchecked by nature); error-value
 conventions (§7.9); move operations for resizables; multiple resizables per
@@ -1190,10 +1251,11 @@ recursive fn eval(n: Node.Add&) -> flt { eval(n.l) + eval(n.r) }
 
 ```goose
 fn parse_expr(l: Lexer&) -> Expr.. {
-    guard l.tokens_remain() else { return ParseError { msg: "eof" } from parse; }
+    guard l.tokens_remain() else { return Expr.Nothing {}, "eof" from parse; }
     ...
 }
-fn parse(src: u8[:]) -> Expr.. { ... }   // all deep failures land here
+// All deep failures land here; the error is the last return value (§7.9).
+fn parse(src: u8[:]) -> Expr.., u8[] { ...; return parse_expr(&l), ""; }
 ```
 
 ---
@@ -1201,6 +1263,27 @@ fn parse(src: u8[:]) -> Expr.. { ... }   // all deep failures land here
 ## Appendix B. TODO / open items
 
 Collected from the design discussion; each needs future resolution work.
+The newest, highest-priority items first:
+
+0a. **Storage-to-storage transfer ergonomics** — reads widen to `int` and
+    narrowing stores are never implicit, so `a.x = b.x` between two `u8`
+    fields requires `as` even though no information can be lost. Loosening
+    this for provably width-preserving field-to-field transfers needs a rule
+    that doesn't reopen implicit narrowing in general.
+0b. **Reference address identity** — references are transparent (§3.8), so
+    `r1 == r2` compares pointees; there is currently no way to ask whether
+    two references alias the same address (a `same_ref(a, b)` builtin?).
+0c. **Pointee writes through optionals** — a narrowed optional writes
+    through fine, but there is no way to write through an optional without
+    narrowing; and rebinding to a plain reference first (`let r: T& = o;`)
+    is the only escape hatch. Possibly fine; revisit with usage.
+0d. **Lifetime precision, remaining cases** — two checker conservatisms
+    still exceed the spec: long-distance returns (§7.9) only carry
+    references to globals/static data (precise rule: rooted at or above the
+    target's frame), and the recursive-cycle store rule (§7.8) rejects
+    storing any non-global-rooted reference inside a cycle. (Container-read
+    writability laundering, one-root-per-reference-variable, and the single
+    agreed return root are now deliberate language rules, §9.2/§9.5.)
 
 1. **varint format benchmark** — DONE, see `varint_bench/results.md`:
    ULEB128 adopted (§3.6). Break-even vs the best branchless format sits at
@@ -1355,7 +1438,7 @@ postfix     := "[" expr "]"                      // fixed array (const expr)
 stmt        := decl | assign | incdec | exprstmt
 decl        := "reusable"? ("let" | "var") identlist (":" type)?
                ("=" exprlist)? ";"
-assign      := lvalue assignop expr ";"          // = += -= *= /= %= &= |= ^=
+assign      := lvalue assignop expr ";"          // = .= += -= *= /= %= &= |= ^=
 incdec      := lvalue ("++" | "--") ";"
 exprstmt    := expr ";"
 
@@ -1369,7 +1452,7 @@ iter        := expr | expr ".." expr
 jumps       := "return" exprlist? ("from" ident)? | "break" expr? | "continue"
 matchexpr   := "match" expr "{" arm ("," arm)* ","? "}"
 arm         := pattern "=>" expr
-pattern     := ident ident? | "-"? intlit (".." "-"? intlit)? | "_"
+pattern     := ident ("&"? ident)? | "-"? intlit (".." "-"? intlit)? | "_"
 blockexpr   := "{" stmt* expr? "}"
 
 binary      := (precedence climbing; tightest → loosest)
@@ -1378,7 +1461,7 @@ binary      := (precedence climbing; tightest → loosest)
    unary    := ("-" | "!" | "~" | "&") unary
    levels   := * / %  →  + -  →  << >>  →  < <= > >=  →  == !=
              →  &  →  ^  →  |  →  &&  →  ||
-primary     := literal | ident | "(" expr ")" | "copy" "(" expr ")"
+primary     := literal | ident | "null" | "(" expr ")"
              | arraylit | structlit | genericcall
 genericcall := ident tyargs "(" args ")" trailingblock?
 trailingblock := "{" (params "=>")? stmt* expr? "}"
@@ -1393,9 +1476,9 @@ Known parse notes: `structlit` vs `trailingblock` vs `blockexpr` ambiguity
 is resolved as in Rust (no struct literals or trailing blocks directly in
 `if`/`while`/`for`/`match`/`guard` scrutinee position); a statement that is
 a block-ended construct needs no `;` and ends at its `}` (§2); `f<`
-commits to a type argument list only when followed by `(` or `{` (§7.7),
-otherwise `<` is comparison; `T&<u8>` tokenizes as `&` `<` in type context
-only; `a..b` ranges exist only in `for` headers, slice brackets, and match
-arms; multiple return types in a function *type* (not a declaration header)
-require parens around the list; `T&?` parses to the same type as `T?`, and
-`?` on an already-optional type is an error.
+commits to a type argument list only when followed by `(`, `{`, or
+`.ident {` (§7.7), otherwise `<` is comparison; `T&<u8>` tokenizes as `&`
+`<` in type context only; `a..b` ranges exist only in `for` headers, slice
+brackets, and match arms; multiple return types in a function *type* (not a
+declaration header) require parens around the list; `T&?` parses to the
+same type as `T?`, and `?` on an already-optional type is an error.

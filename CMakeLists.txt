@@ -11,8 +11,11 @@ add_executable(goose
     src/lexer.h
     src/ast.h
     src/dump.h
+    src/clone.h
     src/parser.h
     src/resolve.h
+    src/builtins.h
+    src/typecheck.h
 )
 
 if(MSVC)
