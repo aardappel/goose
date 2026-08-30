@@ -15,14 +15,14 @@ type CapByN = int[..N];
 
 struct Trailing {
     a: int,
-    b: Pair<
+    b: Pair_pa<
         int,
     >,
 }
 
 // --- struct declarations -------------------------------------------------
 
-struct Packed {
+struct Packed_pa {
     a: i8[3],
     pad,
     b: i32,
@@ -31,7 +31,7 @@ struct Packed {
     let d: u8 = 255,
 }
 
-struct Pair<T> { a: T, b: T }
+struct Pair_pa<T> { a: T, b: T }
 
 struct Holder {
     name: u8[varint],
@@ -81,15 +81,15 @@ type Fn1 = fn(int);
 type Fn2 = fn(int, flt) -> bool;
 type FnMulti = fn(int) -> (int, bool);
 type Grouped = (Shape..&<varint>)[varint];
-type NestedGen = Pair<Pair<int>>;
-type DeepArray = Pair<int>[4][:];
+type NestedGen = Pair_pa<Pair_pa<int>>;
+type DeepArray = Pair_pa<int>[4][:];
 
 // --- globals -------------------------------------------------------------
 
 let gconst = 42;
-var gcounter: int = 0;
-let gname: u8[] = "goose";
-var gpool: Shape..[>..] = [];
+var gcounter_pa: int = 0;
+let gname_pa: u8[] = "goose";
+var gpool_pa: Shape..[>..] = [];
 reusable var gslots: Slot2[>..] = [];
 
 struct Slot2 { v: int = 0 }
@@ -106,7 +106,7 @@ fn bare_bound<F>(n: int) { F(n); }
 fn multi_ret(a: int) -> int, bool { return a, a > 0; }
 fn multi_ret_nonfixed(n: int) -> u8[], int { return "x", n; }
 recursive fn fact(n: int) -> int { if n <= 1 { 1 } else { n * fact(n - 1) } }
-thread_fn worker(id: int) {
+thread_fn worker_pa(id: int) {
     qput(id);
     let got = qget<int>();
     let polled, ok = qpoll<int>();
@@ -173,7 +173,7 @@ fn assignments(var x: int) {
     y++;
     y--;
     x = y;
-    let p = Pair<int> { a: 1, b: 2 };
+    let p = Pair_pa<int> { a: 1, b: 2 };
     var q = p;
     q.a = 3;
     var arr = [1, 2, 3];
@@ -182,21 +182,21 @@ fn assignments(var x: int) {
 }
 
 fn struct_literals() {
-    let named = Packed { a: [1, 2, 3], b: 4, c: 5, d: 6 };
-    let defaulted = Packed { a: [1, 2, 3], b: 4 };
+    let named = Packed_pa { a: [1, 2, 3], b: 4, c: 5, d: 6 };
+    let defaulted = Packed_pa { a: [1, 2, 3], b: 4 };
     let positional = Slot2 { 1 };
     let empty = Slot2 {};
-    let inferred = Pair { a: 1, b: 2 };
-    let generic = Pair<flt> { a: 1.0, b: 2.0 };
+    let inferred = Pair_pa { a: 1, b: 2 };
+    let generic = Pair_pa<flt> { a: 1.0, b: 2.0 };
     let variant = Shape.Circle { r: 1.0 };
     let variant2 = Shape.Rect { 3.0, 4.0 };
-    let multiline = Packed {
+    let multiline = Packed_pa {
         a: [1, 2, 3],
         b: 4,
         c: 5,
     };
     print(multiline.c);
-    let nested = Pair<Pair<int>> { a: Pair<int> { a: 1, b: 2 }, b: Pair<int> { 3, 4 } };
+    let nested = Pair_pa<Pair_pa<int>> { a: Pair_pa<int> { a: 1, b: 2 }, b: Pair_pa<int> { 3, 4 } };
     print(named.c + defaulted.c + positional.v + empty.v);
     print(inferred.a + nested.a.b);
     print(generic.a);
@@ -347,13 +347,13 @@ fn early(n: int) -> int {
     return n;
 }
 
-fn deep(n: int) -> int {
+fn deep_pa(n: int) -> int {
     if n == 0 { return -1 from outer; }
     n
 }
 
 fn outer(n: int) -> int {
-    return deep(n) + 1;
+    return deep_pa(n) + 1;
 }
 
 fn returns_nothing(n: int) {
@@ -361,9 +361,9 @@ fn returns_nothing(n: int) {
     print(n);
 }
 
-// --- reusable pools ------------------------------------------------------
+// --- reusable pools_pa ------------------------------------------------------
 
-fn pools() {
+fn pools_pa() {
     reusable var slots: Slot2[>..] = [];
     let i = slots.alloc_index(Slot2 { v: 1 });
     let r = slots.alloc_ref(Slot2 { v: 2 });
@@ -392,8 +392,8 @@ fn misc() {
     print(ud + um + us);
     print(ul);
     assert(a > 0);
-    gcounter += 1;
-    let spawned = thread_spawn(worker, 1);
+    gcounter_pa += 1;
+    let spawned = thread_spawn(worker_pa, 1);
     thread_wait(spawned);
     print(hardware_threads());
 }
@@ -403,8 +403,8 @@ fn edge_cases() {
     if (Slot2 { v: 1 }).v == 1 { print(1); }
     while (Slot2 { v: 0 }).v != 0 { break; }
     // Nested generic arguments at a call site: the >> split.
-    let p = Pair<int> { a: 1, b: 2 };
-    let q = typed_generic<Pair<int>>(p, p);
+    let p = Pair_pa<int> { a: 1, b: 2 };
+    let q = typed_generic<Pair_pa<int>>(p, p);
     print(q.a);
     var lim: int[..8] = [1, 2];
     print(lim.cap + lim.len);
@@ -430,6 +430,6 @@ fn main() {
     print(dispatch(Shape.Rect { w: 2.0, h: 3.0 }));
     print(early(1) + outer(2));
     returns_nothing(4);
-    pools();
+    pools_pa();
     misc();
 }

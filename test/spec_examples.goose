@@ -15,20 +15,20 @@ fn read_words(text: u8[:]) -> u8[][>..] {
 }
 
 // A.2 A compact tree with relative references.
-enum Sexp {
+enum Sexp_se {
     Sym  { name: u8[varint] },
-    List { kids: (Sexp..&<varint>)[varint] },
+    List { kids: (Sexp_se..&<varint>)[varint] },
 }
-var pool: Sexp..[>..] = [];
+var pool: Sexp_se..[>..] = [];
 
 // A.3 A growable hash table (open addressing), in-model.
-struct Slot { key: int = 0, val: int = 0 }
-struct Map { slots: Slot[>..] }
+struct Slot_se { key: int = 0, val: int = 0 }
+struct Map { slots: Slot_se[>..] }
 
 // A.4 Case functions as virtuals.
-enum Node { Num { v: flt }, Add { l: Node..&<u16>, r: Node..&<u16> } }
-recursive fn eval(n: Node.Num&) -> flt { n.v }
-recursive fn eval(n: Node.Add&) -> flt { eval(n.l) + eval(n.r) }
+enum Node_se { Num { v: flt }, Add { l: Node_se..&<u16>, r: Node_se..&<u16> } }
+recursive fn eval_se(n: Node_se.Num&) -> flt { n.v }
+recursive fn eval_se(n: Node_se.Add&) -> flt { eval_se(n.l) + eval_se(n.r) }
 
 // A.5 Long-distance errors: parse returns a value and an error string; deep
 // failures land at parse via `return ... from`.

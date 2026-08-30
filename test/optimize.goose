@@ -37,7 +37,7 @@ fn void_helper(v: int) {                             // Void result + bare guard
 }
 fn var_param(var x: int) -> int { x += 1; x * 2 }    // Written param: no const subst.
 fn two_rets(a: int) -> int, int { return a, a + 1; } // Multi-value: never inlined.
-recursive fn fact(n: int) -> int { if n <= 1 { 1 } else { n * fact(n - 1) } }
+recursive fn fact_op(n: int) -> int { if n <= 1 { 1 } else { n * fact_op(n - 1) } }
 
 fn use_inlining() {
     print(tiny_add(1, 2) + tiny_add(3, 4));          // Constant args cascade to 10.
@@ -51,14 +51,14 @@ fn use_inlining() {
     print(var_param(41));
     let a, b = two_rets(1);
     print(a + b);
-    print(fact(5));
+    print(fact_op(5));
 }
 
 // --- reference/slice/nonfixed parameters through inlining --------------------
 
 fn bump(r: int&) { r += 1; }                         // Reference binds; writes pointee.
 fn doubled(v: int) -> int { v * 2 }
-fn total(xs: int[:]) -> int {
+fn total_op(xs: int[:]) -> int {
     var s = 0;
     for x in xs { s += x; }
     s
@@ -76,7 +76,7 @@ fn use_params() {
     bump(&x);
     x = x.doubled();                                 // UFCS receiver becomes param 0.
     let arr = [1, 2, 3, 4];
-    print(total(arr) + arr.len);                     // .len of a fixed array folds.
+    print(total_op(arr) + arr.len);                     // .len of a fixed array folds.
     print(takes_string("hello"));
     var v: int[>..] = [];
     grow(&v);
@@ -111,11 +111,11 @@ fn folding() {
     print(9223372036854775807 + a);
 }
 
-// --- casts -------------------------------------------------------------------
+// --- casts_op -------------------------------------------------------------------
 
 struct Bytes { b: u8, w: u16, f: f32 }
 
-fn casts() {
+fn casts_op() {
     var s = Bytes { 1, 2, 0.5 };
     s.b = 300 as! u8;                                // Wraps: folds to 44.
     s.w = 70000 as! u16;
@@ -182,7 +182,7 @@ fn bigger_hof<F>(n: int) -> int {
     s
 }
 
-fn hofs() {
+fn hofs_op() {
     let base = 3;                                    // Captured let: decl must stay.
     print(apply(4) { it + base });
     print(twice(2) { x => x * x });
@@ -203,21 +203,21 @@ fn nested_host(n: int) -> int {
 
 // --- case functions and match binders ----------------------------------------
 
-enum Shape {
+enum Shape_op {
     Circle { r: flt },
     Rect { w: flt, h: flt },
     Point,
 }
 
-fn area(c: Shape.Circle) -> flt { c.r * c.r * 3.14159 }
-fn area(r: Shape.Rect) -> flt { r.w * r.h }
-fn area(p: Shape.Point) -> flt { 0.0 }
+fn area_op(c: Shape_op.Circle) -> flt { c.r * c.r * 3.14159 }
+fn area_op(r: Shape_op.Rect) -> flt { r.w * r.h }
+fn area_op(p: Shape_op.Point) -> flt { 0.0 }
 
 fn shapes() {
-    var s: Shape = Shape.Rect { w: 2.0, h: 3.0 };
-    print(area(s));                                  // Tag dispatch: not inlined.
-    let c = Shape.Circle { r: 1.0 };
-    print(area(c));                                  // Direct variant call: inlinable.
+    var s: Shape_op = Shape_op.Rect { w: 2.0, h: 3.0 };
+    print(area_op(s));                                  // Tag dispatch: not inlined.
+    let c = Shape_op.Circle { r: 1.0 };
+    print(area_op(c));                                  // Direct variant call: inlinable.
     match s {
         Circle cc => print(cc.r),
         Rect rr   => print(rr.w * rr.h),
@@ -228,16 +228,16 @@ fn shapes() {
 // --- long-distance returns ---------------------------------------------------
 
 fn deep_fail(x: int) -> int {
-    guard x >= 0 else { return -1 from outer; }
+    guard x >= 0 else { return -1 from outer_op; }
     x * 2
 }
-fn outer(x: int) -> int {
-    let v = deep_fail(x);                            // Callee unwinds to outer.
+fn outer_op(x: int) -> int {
+    let v = deep_fail(x);                            // Callee unwinds to outer_op.
     v + 1
 }
-fn longdistance() {
-    print(outer(5));
-    print(outer(0 - 5));
+fn longdistance_op() {
+    print(outer_op(5));
+    print(outer_op(0 - 5));
 }
 
 // --- function-value returns exit the defining function -----------------------
@@ -304,15 +304,15 @@ fn cap_host(n: int) -> int {
     t
 }
 
-// A big function unwinding to outer2 stays a call, so outer2 must stay a frame.
+// A big function unwinding to outer2_op stays a call, so outer2_op must stay a frame.
 fn deep_big(x: int) -> int {
     var s = x;
     for i in 10 { s += i; s *= 2; s -= i / 2; s += i % 3; }
     for j in 10 { s -= j; s += 1; }
-    guard s >= 0 else { return -1 from outer2; }
+    guard s >= 0 else { return -1 from outer2_op; }
     s
 }
-fn outer2(x: int) -> int { deep_big(x) + deep_big(x + 1) }
+fn outer2_op(x: int) -> int { deep_big(x) + deep_big(x + 1) }
 
 // --- inline blocks in every expression position ------------------------------
 
@@ -323,10 +323,10 @@ fn whilecond() -> int {
     i
 }
 
-fn pick() -> int { 2 }
+fn pick_op() -> int { 2 }
 fn indexpos() -> int {
     let a = [10, 20, 30];
-    a[pick()]                                        // Collapses to a constant index.
+    a[pick_op()]                                        // Collapses to a constant index.
 }
 
 // --- variable-mode ADT payloads by reference through inlining ----------------
@@ -351,19 +351,19 @@ fn main() {
     use_inlining();
     use_params();
     folding();
-    casts();
+    casts_op();
     print(controlflow());
     limits();
-    hofs();
+    hofs_op();
     print(nested_host(4));
     shapes();
-    longdistance();
+    longdistance_op();
     print(finder(5));
     print(earlyblocks(3));
     defaults();
     print(uses_big_hof());
     print(cap_host(5));
-    print(outer2(1));
+    print(outer2_op(1));
     print(whilecond() + indexpos());
     varmode();
     print(ginit + G);

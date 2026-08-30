@@ -16,7 +16,7 @@ fn headtail(xs: int[:]) -> int[:], int {
 
 // A returned reference into a by-reference parameter maps back to the
 // caller's argument root.
-fn pick(xs: int[..8]&, i: int) -> int& {
+fn pick_rt(xs: int[..8]&, i: int) -> int& {
     &xs[i]
 }
 
@@ -36,10 +36,10 @@ fn main() {
     let rest, head = headtail(data);
     print(rest.len + head);
     var lim: int[..8] = [4, 5, 6];
-    let r: int& = pick(&lim, 1);   // Annotated: binds the returned reference.
+    let r: int& = pick_rt(&lim, 1);   // Annotated: binds the returned reference.
     r = 9;
     print(r + lim[1]);
-    let picked = pick(&lim, 2);    // Un-annotated: decays to an int copy.
+    let picked = pick_rt(&lim, 2);    // Un-annotated: decays to an int copy.
     print(picked);
     var buf: u8[..4] = [1, 2];
     print(total("bytes") + total(buf[..]));

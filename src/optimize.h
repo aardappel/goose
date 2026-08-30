@@ -536,6 +536,7 @@ inline Node *ArrayLit::Cp1(Inliner &inl) const {
     for (auto e : elems) c->elems.push_back(inl.Cp(e));
     if (fillval) c->fillval = inl.Cp(fillval);
     if (fillcount) c->fillcount = inl.Cp(fillcount);
+    if (capexpr) c->capexpr = inl.Cp(capexpr);
     return c;
 }
 
@@ -935,6 +936,7 @@ inline Node *ArrayLit::Opt(Optimizer &o) {
     for (auto &e : elems) e = o.Opt(e);
     if (fillval) fillval = o.Opt(fillval);
     if (fillcount) fillcount = o.Opt(fillcount);
+    if (capexpr) capexpr = o.Opt(capexpr);
     return this;
 }
 

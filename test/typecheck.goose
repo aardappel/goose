@@ -229,7 +229,9 @@ fn build_tree() {
     for &s in spool {
         match s {
             Sym &sy => print(sy.name.len),     // &-binder: variable mode only.
-            List l => if l.kid { print(1); } else { print(0); },  // By-value copy.
+            // Relative-reference payloads bind by reference (copies of values
+            // containing them are rejected).
+            List &l => if l.kid { print(1); } else { print(0); },
         }
     }
 }

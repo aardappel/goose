@@ -917,7 +917,12 @@ struct Parser {
         auto save = no_struct_lit;
         auto sub = EnterSub();
         no_struct_lit = false;
-        if (lex.tok != T_RBRACKET) {
+        if (lex.tok == T_DOTDOT) {
+            // [..cap]: an empty limited array with a construction-time
+            // capacity (§5.3).
+            lex.Next();
+            a->capexpr = ParseExpr();
+        } else if (lex.tok != T_RBRACKET) {
             auto first = ParseExpr();
             if (IsNext(T_SEMI)) {
                 a->fillval = first;

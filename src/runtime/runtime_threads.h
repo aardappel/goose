@@ -51,11 +51,11 @@ static int64_t gs_hardware_threads(void) {
 typedef struct {
     void (*entry)(uint8_t *args);
     uint8_t *args;
-#ifdef _WIN32
-    HANDLE handle;
-#else
-    pthread_t handle;
-#endif
+    #ifdef _WIN32
+        HANDLE handle;
+    #else
+        pthread_t handle;
+    #endif
 } gs_thread;
 
 static gs_thread *gs_threads;
@@ -73,11 +73,11 @@ static void *gs_thread_main(void *p)
     gs_nstks = 0;
     t->entry(t->args);
     free(t->args);
-#ifdef _WIN32
-    return 0;
-#else
-    return NULL;
-#endif
+    #ifdef _WIN32
+        return 0;
+    #else
+        return NULL;
+    #endif
 }
 
 static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64_t argsize) {
@@ -93,13 +93,13 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
     t->args = (uint8_t *)malloc(argsize ? (size_t)argsize : 1);
     if (!t->args) gs_abort("out of memory spawning thread", "runtime");
     memcpy(t->args, args, (size_t)argsize);
-#ifdef _WIN32
-    t->handle = CreateThread(NULL, 0, gs_thread_main, t, 0, NULL);
-    if (!t->handle) gs_abort("cannot create thread", "runtime");
-#else
-    if (pthread_create(&t->handle, NULL, gs_thread_main, t))
-        gs_abort("cannot create thread", "runtime");
-#endif
+    #ifdef _WIN32
+        t->handle = CreateThread(NULL, 0, gs_thread_main, t, 0, NULL);
+        if (!t->handle) gs_abort("cannot create thread", "runtime");
+    #else
+        if (pthread_create(&t->handle, NULL, gs_thread_main, t))
+            gs_abort("cannot create thread", "runtime");
+    #endif
     gs_mutex_unlock(&gs_threads_mutex);
     return id;
 }
@@ -109,11 +109,11 @@ static void gs_thread_wait(int64_t id, const char *loc) {
     if (id < 0 || id >= gs_numthreads) gs_abort("thread_wait on unknown thread id", loc);
     gs_thread t = gs_threads[id];
     gs_mutex_unlock(&gs_threads_mutex);
-#ifdef _WIN32
-    WaitForSingleObject(t.handle, INFINITE);
-#else
-    pthread_join(t.handle, NULL);
-#endif
+    #ifdef _WIN32
+        WaitForSingleObject(t.handle, INFINITE);
+    #else
+        pthread_join(t.handle, NULL);
+    #endif
 }
 
 /* ---------------------------------------------------------------------------

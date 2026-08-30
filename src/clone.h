@@ -33,6 +33,7 @@ inline Node *ArrayLit::Clone(Ast &ast) const {
     CloneNodes(ast, elems, a->elems);
     a->fillval = CloneOrNull(ast, fillval);
     a->fillcount = CloneOrNull(ast, fillcount);
+    a->capexpr = CloneOrNull(ast, capexpr);
     return a;
 }
 
@@ -206,6 +207,7 @@ inline void ArrayLit::Children(const function<void(Node *)> &f) const {
     for (auto e : elems) f(e);
     CH(fillval);
     CH(fillcount);
+    CH(capexpr);
 }
 
 inline void StructLit::Children(const function<void(Node *)> &f) const {

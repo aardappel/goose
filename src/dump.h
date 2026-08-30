@@ -184,6 +184,12 @@ inline void Ident::Dump(string &s, int) const { s += name; }
 
 inline void ArrayLit::Dump(string &s, int ind) const {
     s += "[";
+    if (capexpr) {
+        s += "..";
+        capexpr->Dump(s, ind);
+        s += "]";
+        return;
+    }
     if (fillval) {
         fillval->Dump(s, ind);
         s += "; ";

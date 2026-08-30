@@ -938,6 +938,47 @@ struct TypeCheck {
         return ClassOf(arr->arr->sub) != SC_FIXED;
     }
 
+    // Does this type embed relative references at the value level (not
+    // behind plain references/slices)?
+    bool HasRelRefT(TypeExpr *t) {
+        switch (t->kind) {
+            case TY_REF: return t->ref->lenstorage >= 0;
+            case TY_STRUCT: {
+                auto inst = GetStructInst(t);
+                for (size_t i = 0; i < inst->ftypes.size(); i++)
+                    if (inst->ftypes[i] && HasRelRefT(inst->ftypes[i])) return true;
+                return false;
+            }
+            case TY_ENUM: {
+                auto inst = GetEnumInst(t);
+                for (auto &vf : inst->vftypes)
+                    for (auto ft : vf)
+                        if (ft && HasRelRefT(ft)) return true;
+                return false;
+            }
+            case TY_VARIANT: {
+                auto inst = GetEnumInst(t->var->adt);
+                auto vi = VariantIndex(t->var->adt->enu->en, t->var->variant);
+                for (auto ft : inst->vftypes[vi]) if (ft && HasRelRefT(ft)) return true;
+                return false;
+            }
+            case TY_ARRAY: return HasRelRefT(t->arr->sub);
+            default: return false;
+        }
+    }
+
+    // A copy of a value containing relative references would carry offsets
+    // measured from the source location; only in-place construction (a
+    // literal) is allowed for now. TODO: track the region a relative
+    // reference ranges over so whole-region copies can be permitted.
+    void NoRelRefCopy(Node *n, TypeExpr *t) {
+        if (!reachable || !t) return;
+        if (t->kind == TY_REF || t->kind == TY_SLICE || !HasRelRefT(t)) return;
+        if (Is<StructLit>(n) || Is<ArrayLit>(n)) return;   // Constructed in place.
+        Error(n, cat("copying a value of type ", TypeStr(t), ", which contains relative "
+                     "references, is not supported; construct it in place"));
+    }
+
     // ------------------------------------------------------------------
     // Lvalue paths: names, fields, elements, optionally through references.
 
@@ -1117,6 +1158,7 @@ struct TypeCheck {
         } else {
             if (!KeepsRef(v, expected)) v = DecayRef(v);
             MustFit(v, n, expected, false);
+            NoRelRefCopy(n, expected);
         }
         n->exprtype = v.type;
         return v;
@@ -1128,6 +1170,7 @@ struct TypeCheck {
         if (expected) {
             if (!KeepsRef(v, expected)) v = DecayRef(v);
             MustFit(v, n, expected, true);
+            NoRelRefCopy(n, expected);
         } else {
             v = DecayRef(v);
         }
@@ -1336,6 +1379,11 @@ struct TypeCheck {
         if (lv.var) RequireAssigned(lv.var, x);
         if (lv.ingrowshrink)
             Error(x, "no references into the interior of a grow-shrink array (§5.2)");
+        // A reference to a resizable value points at its owning header (C.2),
+        // which only whole variables have.
+        if (!lv.var && lv.type->kind != TY_REF && ClassOf(lv.type) == SC_RESIZABLE)
+            Error(x, "cannot reference a nested resizable value; reference the owning "
+                     "variable instead");
         if (lv.type->kind == TY_REF) {
             Val v;
             v.type = Widen(lv.type);  // Relative refs load as plain (§3.9).
@@ -1578,6 +1626,10 @@ struct TypeCheck {
                         binder->refrootknown = true;
                         binder->refwritable = sv.writable;
                     } else {
+                        if (HasRelRefT(vt))
+                            Error(arm.body, cat("payload of ", arm.pat.variant, " contains "
+                                                "relative references; bind it by reference "
+                                                "(&", arm.pat.binder, ")"));
                         binder->type = vt;  // Payload copy, any mode (§8.1).
                         binder->isvar = false;
                         NoteNonfixedLocal(vt, m->line, !frames.back().spec);
@@ -1723,6 +1775,9 @@ struct TypeCheck {
                 } else {
                     if (ClassOf(elem) != SC_FIXED)
                         Error(x, "variable-size elements require the &x binding form");
+                    if (HasRelRefT(elem))
+                        Error(x, "elements containing relative references require the "
+                                 "&x binding form (copies are not supported)");
                     bindtype = Widen(elem);
                 }
             } else {
@@ -2708,6 +2763,14 @@ struct TypeCheck {
                     if (!fields[i].ispad && fields[i].name == fi.name) { idx = i; break; }
                 if (idx < 0) Error(fi.val, cat(what, " has no field ", fi.name));
                 if (got[idx]) Error(fi.val, cat("duplicate initializer for field ", fi.name));
+                // Declaration order is required (S4.2): values construct
+                // front-to-back, so out-of-order names would obfuscate either
+                // evaluation order or cost.
+                for (auto i = idx + 1; i < (int)fields.size(); i++)
+                    if (got[i])
+                        Error(fi.val, cat("field initializers must follow declaration "
+                                          "order: ", fi.name, " comes before ",
+                                          fields[i].name));
             } else {
                 while (pos < (int)fields.size() && fields[pos].ispad) pos++;
                 if (pos >= (int)fields.size())
@@ -2840,6 +2903,7 @@ struct TypeCheck {
                 Error(vd->inits[i], "cannot infer the type of [] without an annotation");
             if (v.isnull && !ann)
                 Error(vd->inits[i], "null needs an annotated optional type");
+            if (!ann) NoRelRefCopy(vd->inits[i], v.type);
             d->assigned = true;
             Finish(d, ann ? ann : VarWiden(v.type), &v);
         }
@@ -2872,6 +2936,8 @@ struct TypeCheck {
         if (a->op == T_DOTASSIGN) { CheckRebind(a, lv); return; }
         if (lv.isvarint)
             Error(a, "varint fields are written only at construction (§3.6)");
+        if (lv.type->kind == TY_REF && lv.type->ref->lenstorage == IS_VARINT)
+            Error(a, "varint-width relative references are written only at construction");
         // References are transparent: `=` through a reference-typed location
         // (a narrowed optional included, since lv.type is the narrowed type)
         // writes the pointee; rebinding is `.=`.
@@ -2921,6 +2987,10 @@ struct TypeCheck {
         auto target = lv.var ? lv.var->type : lv.type;
         if (target->kind != TY_REF)
             Error(a, cat(".= rebinds references; the target has type ", TypeStr(target)));
+        // A varint-width relative reference cannot be re-encoded in place
+        // (its byte length could change, §3.6/§3.9).
+        if (target->ref->lenstorage == IS_VARINT)
+            Error(a, "varint-width relative references are written only at construction");
         if (lv.var) {
             if (!lv.var->isvar && lv.var->assigned)
                 Error(a, cat("cannot rebind let ", lv.var->name));
@@ -3398,6 +3468,10 @@ struct TypeCheck {
         // that no spawn reached.
         for (auto sf : ast.functions)
             if (sf->isthread) EnsureThreadSpec(sf, sf->line);
+        // Thread programs may not touch globals: that would be shared mutable
+        // memory between programs (§11.2).
+        for (auto sf : ast.functions)
+            if (sf->isthread && !sf->specs.empty()) CheckThreadGlobals(sf->specs[0]);
         // NOTE: in this compilation model, code no call reaches would never be
         // typechecked at all. That is right for generic functions (they need a
         // caller's types), but silently skipping plain dead code makes for a
@@ -3434,6 +3508,31 @@ struct TypeCheck {
         }
         sf->specs.push_back(spec);
         CheckSpecBody(spec, nullptr, sf->line);
+    }
+
+    // Walks a thread program's call graph rejecting global accesses (§11.2).
+    void CheckThreadGlobals(FnSpec *entry) {
+        set<FnSpec *> seen;
+        function<void(FnSpec *)> rec = [&](FnSpec *sp) {
+            if (!sp || !sp->body || !seen.insert(sp).second) return;
+            function<void(Node *)> walk = [&](Node *n) {
+                if (!n) return;
+                if (auto id = Is<Ident>(n)) {
+                    if (id->vdef && id->vdef->isglobal)
+                        Error(n, cat("thread programs may not access globals (§11.2): ",
+                                     id->name, " (reached from thread_fn ",
+                                     entry->sf->name, ")"));
+                }
+                if (auto c = Is<Call>(n)) {
+                    rec(c->spec);
+                    for (auto d : c->dispatch) rec(d);
+                    walk(c->fvbody);
+                }
+                n->Children([&](Node *ch) { walk(ch); });
+            };
+            walk(sp->body);
+        };
+        rec(entry);
     }
 
     // Does the body contain `return ... from f` for an f not declared within?
@@ -3561,6 +3660,16 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
 
 inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     Val v;
+    if (capexpr) {
+        // [..cap]: an empty limited array with a runtime capacity (§5.3).
+        tc.CheckValue(capexpr, tc.ast.inttypes[IS_INT]);
+        if (!expected || expected->kind != TY_ARRAY ||
+            expected->arr->akind != A_LIMITED || expected->arr->sizeexpr)
+            tc.Error(this, "[..cap] constructs a limited array of construction-time "
+                           "capacity; it needs a T[..] destination");
+        v.type = expected;
+        return v;
+    }
     TypeExpr *elem = nullptr;
     int64_t wantcount = -1;
     if (expected && expected->kind == TY_ARRAY) {

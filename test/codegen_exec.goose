@@ -30,6 +30,11 @@ fn limited_dyn() {
     print(l.len);                        // 0
     l.resize(2, 5);
     print(l[0] + l[1]);                  // 10
+    var big: int[..] = [..4];            // Empty, with construction-time capacity.
+    print(big.cap);                      // 4
+    big.push(6);
+    big.append([1, 1, 1]);               // Fills to capacity.
+    print(big.len + big[3]);             // 5
 }
 
 // --- append forms ------------------------------------------------------------

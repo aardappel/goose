@@ -116,7 +116,9 @@ Type syntax is postfix throughout: `T[k]` array of T, `T&` reference to T,
 `Shape..` variable-mode ADT.
 
 Evaluation order is left-to-right everywhere (operands, arguments, field
-initializers). Overlapping copies have memmove semantics.
+initializers — which named struct literals keep aligned with construction
+order by requiring declaration order, §4.2). Overlapping copies have
+memmove semantics.
 
 A grammar sketch and precedence table are in Appendix D.
 
@@ -168,7 +170,9 @@ struct X { a: i8[3], b: i32, c: int = 0 }
 * `pad n` inserts n bytes explicitly; bare `pad` pads the *next* field to its
   own size, for compatibility with foreign layouts:
   `struct X { a: i8[3], pad, b: i32 }`. Pad bytes are never read and are
-  ignored by `==`.
+  ignored by `==`. In variable-class layouts (where offsets are dynamic)
+  `pad n` still inserts n bytes, but bare `pad` has no defined alignment to
+  aim for and inserts nothing.
 * Fields are mutable by default; `let` before a field name makes it
   const-after-construction (transitively, via writability §9.5).
 * A field may declare a default value (`c: int = 0` above); constructors may
@@ -391,6 +395,15 @@ stored offset is signed.
   requires the compiler to see that both the reference and the destination
   location derive from the same root array (§9.2 root tracking); the offset
   is range-checked at the store (abort on overflow of the width).
+  Varint-width relative references are written only at construction, like
+  varint fields (re-encoding could change the byte length); fixed widths may
+  be re-stored with `.=`/`=`.
+* Copying a *value that contains* relative references (assignment from an
+  lvalue, a by-value argument, a by-value match binder, an element copy) is
+  a compile error: the copied offsets would still be measured from the
+  source location. Construct such values in place (literals), and bind their
+  match payloads by reference. (TODO 16: track the region a relative
+  reference ranges over, so provably whole-region copies can be allowed.)
 * Optional spelling `T&<u8>?` uses offset 0 as null (a relative reference
   to itself is meaningless).
 * Because they are position-independent, structures linked by relative
@@ -470,9 +483,14 @@ Literal forms usable in any construction context:
 * array literals `[1, 2, 3]`; `[]` where the element type is known from
   context; `[v; n]` fill form for fixed arrays;
 * struct literals `X { a: 1, b: 2 }` (named) or `X { 1, 2 }` (positional, in
-  declaration order; no mixing). Fields with declared defaults (§3.2) may be
-  omitted: trailing ones in the positional form, any of them in the named
-  form;
+  declaration order; no mixing). Named initializers must also appear in
+  declaration order (out-of-order names are a compile error: values construct
+  front-to-back, and reordering would obfuscate either evaluation order or
+  cost). Fields with declared defaults (§3.2) may be omitted: trailing ones
+  in the positional form, any of them in the named form;
+* `[..cap]` — an empty limited array `T[..]` with the given construction-time
+  capacity (`cap` a runtime expression); the reserved slots stay
+  uninitialized (§5.3, C.4);
 * variant literals `Shape.Circle { r: 1.0 }`;
 * string literals (§3.7).
 
@@ -524,11 +542,16 @@ type: scalars and bools by value; structs and fixed arrays memberwise (pad
 and ADT padding bytes excluded — semantic comparison is per-member; memcmp
 is a valid optimization only for gap-free layouts); array-family values and
 slices by length then elements (sequential walk for variable elements); ADTs
-by tag then payload. References are transparent (§3.8): `r1 == r2` compares
-the *pointees* (address-identity comparison is an unresolved item, Appendix
-B). Optionals compare as nullable references (`o == null` is the null test);
-slices compare as values (address+length). Ordering `< <= > >=` exists on
-`int` and `flt` only.
+by tag then payload.
+
+References and slices follow a *top-level rule*: as the direct operands of
+`==` they have value-like semantics — a reference compares its pointee
+(transparency, §3.8), a slice compares length then elements. As *members* of
+a compared composite they compare by identity (the reference address, the
+slice's address+length): recursing through them would turn `==` into an
+unbounded pointer traversal. Optionals compare as nullable references
+(`o == null` is the null test). Ordering `< <= > >=` exists on `int` and
+`flt` only.
 
 ---
 
@@ -562,7 +585,9 @@ This is the workhorse type: arenas, pools, string builders, tree storage.
 
 Grow and shrink freely within fixed capacity; not stack-top-bound (their
 capacity is reserved at construction), so they can live anywhere fixed/
-variable values live (`[..k]` is fixed-class, `[..]` variable-class).
+variable values live (`[..k]` is fixed-class, `[..]` variable-class). A
+`T[..]` constructs either from element contents (capacity = initial length)
+or with the `[..cap]` literal (capacity `cap`, length 0).
 
 Interior references and slices **are allowed**, including surviving pops:
 because capacity and element type are fixed, every slot within capacity,
@@ -639,6 +664,10 @@ ordinary stdlib overloads per math type, not language builtins.
   ints, int ↔ flt, flt → f32.
 * `x as! T` — always-unchecked wrap/truncate, for when losing bits is what
   is intended, even in debug.
+* flt → int (both forms in release, `as!` always) is defined exactly:
+  truncate toward zero, then wrap modulo 2^64; NaN yields 0. The common
+  in-range case is one compare and a hardware conversion; only the
+  out-of-range tail pays for the defined wrap.
 * No implicit int↔flt mixing in expressions.
 
 ### 6.4 Control expressions
@@ -775,6 +804,13 @@ only in that case. (Often even that is avoided: a callee local resizable
 assigned the destination stack is operated on via its frame header,
 Appendix C.2, and its elements are already in place.)
 
+> **NOT YET IMPLEMENTED:** the dual request kinds. The current compiler has
+> one form per return class: resizable results already emit raw elements
+> plus an out-of-band count (the element-run behavior), so
+> `v.append(f())` of a resizable-returning `f` is contiguous with no copy;
+> *variable* results (`T[]` etc.) construct their self-describing value
+> form, and appending one slides its length prefix out with one memmove.
+
 Consequence: returning a built-up value and out-parameter style are the same
 cost, and building a variable element "inside" a container is idiomatically a
 function call in argument/push position.
@@ -865,7 +901,11 @@ back-edge), and — the key restriction — **no function in the cycle may
 declare locals requiring a new data-stack assignment**. Growable data used
 by recursive code must be owned outside the cycle and passed in (references,
 slices, reusable pools). The compiler checks this in call-graph order;
-recursion depth then only consumes native call stack.
+recursion depth then only consumes native call stack. Unnamed nonfixed
+*temporaries* (e.g. an intermediate call result) are exempt: they cannot be
+referred to across activations, so the soundness argument holds — but an
+implementation may then consume data-stack slots proportional to recursion
+depth for them (aborting past its limit).
 
 **Cycle store rule.** Within a recursive cycle, distinct activations of the
 same local are statically indistinguishable, so the §9.2 depth check is not
@@ -1165,12 +1205,16 @@ the Linda tuple-space / coordination style.
   returns — enabling both scoped fork/join parallelism and orderly shutdown
   (send quit messages, then wait). Workers still running when `main`
   returns are killed.
+* A thread program may not access globals — that would be shared mutable
+  memory between programs; the typechecker rejects it for every function a
+  `thread_fn` reaches. Data enters through the spawn arguments and queues.
 * Args and queue elements must be **flat** types (§1.1); values are copied
   in and out, which is cheap because Goose values are contiguous.
 * **Typed queues**: conceptually one queue per flat element type;
   `qput(v)`, `qget<T>() -> T` (blocking), `qpoll<T>() -> T, bool`
-  (non-blocking; bool = got one) select the queue by type. Queues live
-  outside stack memory (runtime-internal allocation permitted here).
+  (non-blocking; bool = got one; on a miss the value is T's zero value —
+  zeroed scalars, empty arrays, variant 0) select the queue by type. Queues
+  live outside stack memory (runtime-internal allocation permitted here).
 
 ### 11.3 Dynamic stacks (future)
 
@@ -1321,6 +1365,10 @@ The newest, highest-priority items first:
 14. **Stdlib math types** — `float3` etc.; which named ops are overloads vs
     generic-over-structural-shape.
 15. **Wasm fallback** — index-based reference representation details.
+16. **Relative-reference region tracking** — copies of values containing
+    relative references are currently rejected outright (§3.9); track the
+    region an offset ranges over so whole-region copies (and serialization
+    moves) can be proven safe.
 
 ---
 
@@ -1360,10 +1408,15 @@ stack (§1.3(2)); where its length lives depends on nesting:
   backpatched when the count is known).
 * *Outermost* (a local, global, or by-value param): the value is represented
   as a header in the owning frame — `{ base: byte*, len: int64 }` — plus the
-  element region on the data stack. `&v` yields the header's address; with
-  the stack identity known statically (or carried as a fat reference /
-  hidden argument), push compiles to `*(T*)S.top = e; S.top += size;
-  h.len++`.
+  element region on the data stack. `&v` yields the header's address (a fat
+  reference is that pointer plus the stack identity); with the stack
+  identity known statically (or carried as a fat reference / hidden
+  argument), push compiles to `*(T*)S.top = e; S.top += size; h.len++`.
+  Since only whole variables have headers, a reference to a *nested*
+  resizable value (`&s.tail`) is a compile error — reference the owning
+  variable. (The current implementation always uses the header form; the
+  nested inline-length case above does not arise, because resizable-tailed
+  values are themselves resizable-class and so always outermost.)
 
 ### C.3 Calling convention
 

@@ -22,6 +22,8 @@ struct EnumInst;
 struct TypeCheck;
 struct Optimizer;
 struct Inliner;
+struct CodeGen;
+struct Dst;
 
 struct Line {
     int line = 0;
@@ -258,6 +260,13 @@ struct Node {
     // VarDecl and statement removal itself.
     virtual Node *Cp1(Inliner &inl) const = 0;
     virtual Node *Opt(Optimizer &opt) = 0;
+    // The codegen pass (codegen.h): CgX emits the node as a C value
+    // expression, CgAny routes its value to a destination, CgStmt emits it in
+    // statement position. Implementations live together at the end of
+    // codegen.h; most are one-line delegations into CodeGen's machinery.
+    virtual string CgX(CodeGen &cg) = 0;
+    virtual void CgAny(CodeGen &cg, const Dst &d) = 0;
+    virtual void CgStmt(CodeGen &cg) = 0;
 };
 
 #define NODE(name) struct name : Node { \
@@ -266,7 +275,10 @@ struct Node {
     void Children(const function<void(Node *)> &f) const override; \
     Val Check(TypeCheck &tc, TypeExpr *expected) override; \
     Node *Cp1(Inliner &inl) const override; \
-    Node *Opt(Optimizer &opt) override;
+    Node *Opt(Optimizer &opt) override; \
+    string CgX(CodeGen &cg) override; \
+    void CgAny(CodeGen &cg, const Dst &d) override; \
+    void CgStmt(CodeGen &cg) override;
 #define NODE_END };
 
 NODE(IntLit)
@@ -302,6 +314,7 @@ NODE(ArrayLit)
     vector<Node *> elems;
     Node *fillval = nullptr;    // [v; n] fill form: fillval/fillcount, elems empty.
     Node *fillcount = nullptr;
+    Node *capexpr = nullptr;    // [..cap]: an empty limited array with capacity.
     ArrayLit(Line l) : Node(l) {}
 NODE_END
 
@@ -399,6 +412,9 @@ struct Block : Node {
     Val Check(TypeCheck &tc, TypeExpr *expected) override;
     Node *Cp1(Inliner &inl) const override;
     Node *Opt(Optimizer &opt) override;
+    string CgX(CodeGen &cg) override;
+    void CgAny(CodeGen &cg, const Dst &d) override;
+    void CgStmt(CodeGen &cg) override;
 };
 
 NODE(IfExpr)
@@ -481,6 +497,9 @@ struct FunVal : Node {
     Val Check(TypeCheck &tc, TypeExpr *expected) override;
     Node *Cp1(Inliner &inl) const override;
     Node *Opt(Optimizer &opt) override;
+    string CgX(CodeGen &cg) override;
+    void CgAny(CodeGen &cg, const Dst &d) override;
+    void CgStmt(CodeGen &cg) override;
 };
 
 // let/var declarations, local and global.

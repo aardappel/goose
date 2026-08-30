@@ -18,6 +18,7 @@ add_executable(goose
     src/typecheck.h
     src/optimize.h
     src/codegen.h
+    src/runtime_inline.h
     src/runtime/runtime.h
     src/runtime/runtime_threads.h
 )
