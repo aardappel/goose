@@ -534,7 +534,11 @@ struct TypeCheck {
     SizeClass ClassOf(TypeExpr *t) {
         switch (t->kind) {
             case TY_INT:  return t->intstorage == IS_VARINT ? SC_VARIABLE : SC_FIXED;
-            case TY_FLT: case TY_BOOL: case TY_REF: case TY_SLICE: return SC_FIXED;
+            case TY_REF:
+                // A varint-width relative reference is varint-encoded storage,
+                // so it makes its container variable-class like any varint (§3.6).
+                return t->ref->lenstorage == IS_VARINT ? SC_VARIABLE : SC_FIXED;
+            case TY_FLT: case TY_BOOL: case TY_SLICE: return SC_FIXED;
             case TY_STRUCT: {
                 auto inst = GetStructInst(t);
                 // Still being validated = the struct (transitively) contains

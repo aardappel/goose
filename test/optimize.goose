@@ -106,10 +106,9 @@ fn folding() {
     print(h);
     gv += 1;
     print(gv);
-    // Runtime aborts survive folding: neither of these becomes a constant.
-    let z = a - 13;                                  // z = 0 after propagation.
-    print(9223372036854775807 + a);                  // Overflow: left for the runtime.
-    print(100 / z);                                  // Division by zero: kept.
+    // A runtime abort survives folding: overflow wraps in release, so this
+    // stays an addition rather than becoming a constant.
+    print(9223372036854775807 + a);
 }
 
 // --- casts -------------------------------------------------------------------
@@ -146,7 +145,7 @@ fn controlflow() -> int {
     assert(true);                                    // Removed.
     assert(m > 0);                                   // Condition folds, then removed.
     loop {
-        guard i > 2;                                 // Bare guard: implicit break.
+        guard i < 6;                                 // Bare guard: implicit break.
         i += 1;
     }
     block {
@@ -371,4 +370,8 @@ fn main() {
     var acc = 0;
     acc += gv;
     print(acc);
+    // Division by zero survives folding and is kept as a runtime abort; it
+    // ends the program, so it comes last.
+    let z = G - 6;                                   // 0 after propagation.
+    print(100 / z);
 }

@@ -481,14 +481,24 @@ inline Node *Optimizer::TryInline(Call *c) {
     // Re-fold the copy so substituted constants cascade — the one re-visit
     // the single-pass design allows, and only over fresh nodes.
     OptBlock(body);
-    // Trivial results unwrap to plain expressions.
-    if (body->stmts.empty() && body->tail && !ReturnsFor(body->tail, K->sf))
+    // Trivial results unwrap to plain expressions — but only when the value's
+    // type survives as-is (a reference return decayed at the call site must
+    // keep the InlineBlock, whose exprtype records the decayed type).
+    auto unwrapok = [&](Node *v) {
+        if (SameType(v->exprtype, c->exprtype)) return true;
+        auto a = v->exprtype, b = c->exprtype;
+        return a && b && a->kind == b->kind && a->kind != TY_REF;
+    };
+    if (body->stmts.empty() && body->tail && !ReturnsFor(body->tail, K->sf) &&
+        unwrapok(body->tail))
         return body->tail;
     if (body->stmts.empty() && !body->tail) return EmptyBlock(c);
     if (body->stmts.size() == 1 && !body->tail) {
         if (auto r = Is<Return>(body->stmts[0]); r && r->target == K->sf) {
             if (r->vals.empty()) return EmptyBlock(c);
-            if (r->vals.size() == 1 && !ReturnsFor(r->vals[0], K->sf)) return r->vals[0];
+            if (r->vals.size() == 1 && !ReturnsFor(r->vals[0], K->sf) &&
+                unwrapok(r->vals[0]))
+                return r->vals[0];
         }
     }
     return ib;
