@@ -144,6 +144,13 @@ inline Node *Break::Clone(Ast &ast) const {
 
 inline Node *Continue::Clone(Ast &ast) const { return ast.New<Continue>(line); }
 
+// InlineBlocks exist only after typecheck; the annotation-stripping Clone has
+// no meaning for them (the optimizer's copier in optimize.h preserves them).
+inline Node *InlineBlock::Clone(Ast &ast) const {
+    assert(false);
+    return ast.New<InlineBlock>(line, sf, spec, (Block *)body->Clone(ast));
+}
+
 inline Node *FunVal::Clone(Ast &ast) const {
     auto fv = ast.New<FunVal>(line, (Block *)body->Clone(ast));
     fv->params = params;
@@ -259,6 +266,8 @@ inline void MatchExpr::Children(const function<void(Node *)> &f) const {
 }
 
 inline void EarlyBlock::Children(const function<void(Node *)> &f) const { f(body); }
+
+inline void InlineBlock::Children(const function<void(Node *)> &f) const { f(body); }
 
 inline void While::Children(const function<void(Node *)> &f) const {
     f(cond);

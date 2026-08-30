@@ -1269,7 +1269,7 @@ struct TypeCheck {
         }
     }
 
-    bool FitsIntStorage(int64_t v, IntStorage s) {
+    static bool FitsIntStorage(int64_t v, IntStorage s) {
         switch (s) {
             case IS_I8:  return v >= -128 && v <= 127;
             case IS_I16: return v >= -32768 && v <= 32767;
@@ -4000,6 +4000,10 @@ inline Val EnumDecl::Check(TypeCheck &tc, TypeExpr *) {
 
 inline Val AliasDecl::Check(TypeCheck &tc, TypeExpr *) {
     tc.Error(this, "a declaration is a statement, not a value");
+}
+
+inline Val InlineBlock::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, "internal: optimizer node reached the typechecker");
 }
 
 // Runs the whole pass; errors throw CompileError.

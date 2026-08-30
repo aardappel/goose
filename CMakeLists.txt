@@ -16,6 +16,7 @@ add_executable(goose
     src/resolve.h
     src/builtins.h
     src/typecheck.h
+    src/optimize.h
 )
 
 if(MSVC)

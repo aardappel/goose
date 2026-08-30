@@ -145,7 +145,8 @@ inline void TypeExpr::Dump(string &s) const {
 // True for nodes that end in a block and therefore need no ';' as a statement.
 inline bool EndsInBlock(const Node *n) {
     if (Is<IfExpr>(n) || Is<MatchExpr>(n) || Is<EarlyBlock>(n) || Is<While>(n) ||
-        Is<LoopExpr>(n) || Is<ForLoop>(n) || Is<FnDecl>(n) || Is<Block>(n)) return true;
+        Is<LoopExpr>(n) || Is<ForLoop>(n) || Is<FnDecl>(n) || Is<Block>(n) ||
+        Is<InlineBlock>(n)) return true;
     if (auto g = Is<Guard>(n)) return g->elseb != nullptr;
     if (auto c = Is<Call>(n)) return c->trailing != nullptr;
     return false;
@@ -384,6 +385,12 @@ inline void Break::Dump(string &s, int ind) const {
 }
 
 inline void Continue::Dump(string &s, int) const { s += "continue"; }
+
+// Optimizer output only (--specs); this form does not reparse.
+inline void InlineBlock::Dump(string &s, int ind) const {
+    Append(s, "inline ", sf->name, "#", spec->id, " ");
+    body->Dump(s, ind);
+}
 
 inline void FunVal::Dump(string &s, int ind) const {
     s += "{";

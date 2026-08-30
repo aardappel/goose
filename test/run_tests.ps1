@@ -46,6 +46,19 @@ foreach ($f in Get-ChildItem "$PSScriptRoot\*.goose") {
     }
 }
 
+# The optimizer runs at -O1 in every typecheck above; also exercise the other
+# levels (and the --specs dump path) on the optimizer coverage file.
+foreach ($lvl in "-O0", "-O1", "-O2") {
+    & $exe $lvl --specs "$PSScriptRoot\optimize.goose" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        & $exe $lvl "$PSScriptRoot\optimize.goose"
+        Write-Host "FAIL optimize $lvl"
+        $failures++
+    } else {
+        Write-Host "ok   optimize $lvl"
+    }
+}
+
 foreach ($f in Get-ChildItem "$PSScriptRoot\errors\*.goose") {
     & $exe --parse $f.FullName 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { Write-Host "FAIL expected-error $($f.Name)"; $failures++ }

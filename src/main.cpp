@@ -10,6 +10,7 @@
 #include "resolve.h"
 #include "builtins.h"
 #include "typecheck.h"
+#include "optimize.h"
 
 namespace goose {
 
@@ -66,12 +67,17 @@ void DumpTokens(const string &path) {
 
 int Main(int argc, char **argv) {
     string filename;
-    auto dump = false, tokens = false, parseonly = false;
+    auto dump = false, tokens = false, parseonly = false, specs = false;
+    auto optlevel = 1;
     for (int i = 1; i < argc; i++) {
         string arg = argv[i];
         if (arg == "--dump") dump = true;
         else if (arg == "--tokens") tokens = true;
         else if (arg == "--parse") parseonly = true;
+        else if (arg == "--specs") specs = true;
+        else if (arg == "-O0") optlevel = 0;
+        else if (arg == "-O1") optlevel = 1;
+        else if (arg == "-O2") optlevel = 2;
         else if (!arg.empty() && arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg.c_str());
             return 1;
@@ -80,7 +86,8 @@ int Main(int argc, char **argv) {
         else { fprintf(stderr, "multiple input files given\n"); return 1; }
     }
     if (filename.empty()) {
-        fprintf(stderr, "usage: goose [--dump] [--parse] [--tokens] file.goose\n");
+        fprintf(stderr, "usage: goose [--dump] [--parse] [--tokens] [--specs] [-O0|-O1|-O2] "
+                        "file.goose\n");
         return 1;
     }
     try {
@@ -101,9 +108,17 @@ int Main(int argc, char **argv) {
                    (int)ast.topdecls.size(), (int)ast.sources.size());
         } else {
             TypeCheckProgram(ast);
-            printf("typechecked ok: %d specialization(s), %d struct/%d enum instance(s)\n",
+            Optimizer opt(ast, optlevel);
+            if (specs) {
+                string s;
+                opt.DumpSpecs(s);
+                fputs(s.c_str(), stdout);
+            }
+            printf("typechecked ok: %d specialization(s), %d struct/%d enum instance(s); "
+                   "optimized -O%d: %d inlined, %d folded, %d propagated\n",
                    (int)ast.fnspecs.size(), (int)ast.structinsts.size(),
-                   (int)ast.enuminsts.size());
+                   (int)ast.enuminsts.size(), optlevel, opt.inlined, opt.folded,
+                   opt.propagated);
         }
     } catch (CompileError &e) {
         fprintf(stderr, "%s\n", e.msg.c_str());

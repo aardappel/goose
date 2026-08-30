@@ -20,6 +20,8 @@ struct FnSpec;
 struct StructInst;
 struct EnumInst;
 struct TypeCheck;
+struct Optimizer;
+struct Inliner;
 
 struct Line {
     int line = 0;
@@ -249,13 +251,22 @@ struct Node {
     // dispatched separately by TypeCheck::CheckStmt. Implementations live
     // together at the end of typecheck.h.
     virtual Val Check(TypeCheck &tc, TypeExpr *expected) = 0;
+    // The optimizer pass (both in optimize.h): Cp1 is the annotation-preserving
+    // deep copy used for inlining (its Cp wrapper carries exprtype over); Opt
+    // folds/propagates/inlines below this node and returns the possibly
+    // replaced node. Statements go through Optimizer::OptStmt, which handles
+    // VarDecl and statement removal itself.
+    virtual Node *Cp1(Inliner &inl) const = 0;
+    virtual Node *Opt(Optimizer &opt) = 0;
 };
 
 #define NODE(name) struct name : Node { \
     void Dump(string &s, int ind) const override; \
     Node *Clone(Ast &ast) const override; \
     void Children(const function<void(Node *)> &f) const override; \
-    Val Check(TypeCheck &tc, TypeExpr *expected) override;
+    Val Check(TypeCheck &tc, TypeExpr *expected) override; \
+    Node *Cp1(Inliner &inl) const override; \
+    Node *Opt(Optimizer &opt) override;
 #define NODE_END };
 
 NODE(IntLit)
@@ -386,12 +397,14 @@ struct Block : Node {
     Node *Clone(Ast &ast) const override;
     void Children(const function<void(Node *)> &f) const override;
     Val Check(TypeCheck &tc, TypeExpr *expected) override;
+    Node *Cp1(Inliner &inl) const override;
+    Node *Opt(Optimizer &opt) override;
 };
 
 NODE(IfExpr)
     Node *cond;
     Block *thenb;
-    Node *elseb;                // Block, IfExpr, or null.
+    Node *elseb;                // Block, IfExpr, or null (any expr after optimization).
     IfExpr(Line l, Node *_cond, Block *_thenb, Node *_elseb)
         : Node(l), cond(_cond), thenb(_thenb), elseb(_elseb) {}
 NODE_END
@@ -466,6 +479,8 @@ struct FunVal : Node {
     Node *Clone(Ast &ast) const override;
     void Children(const function<void(Node *)> &f) const override;
     Val Check(TypeCheck &tc, TypeExpr *expected) override;
+    Node *Cp1(Inliner &inl) const override;
+    Node *Opt(Optimizer &opt) override;
 };
 
 // let/var declarations, local and global.
@@ -491,6 +506,20 @@ NODE(IncDec)
     TType op;                   // T_INC / T_DEC.
     Node *lval;
     IncDec(Line l, TType _op, Node *_lval) : Node(l), op(_op), lval(_lval) {}
+NODE_END
+
+// Created by the optimizer (optimize.h), never by the parser: an inlined call
+// body spliced into the caller. Parameter bindings are ordinary VarDecls at
+// the top of body. Value semantics for codegen: a Return inside whose target
+// == sf exits this block with its value(s) as the block's value; normal
+// completion yields the body's tail value. Returns with other targets pass
+// through (they exit an enclosing InlineBlock or the real function).
+NODE(InlineBlock)
+    SFunction *sf;
+    FnSpec *spec;               // The specialization this body came from.
+    Block *body;
+    InlineBlock(Line l, SFunction *_sf, FnSpec *_spec, Block *_body)
+        : Node(l), sf(_sf), spec(_spec), body(_body) {}
 NODE_END
 
 // ---------------------------------------------------------------------------
@@ -663,6 +692,11 @@ struct FnSpec {
     Line nonfixedline;             // First nonfixed local, for cycle diagnostics.
     set<SFunction *> needs;        // `return from` targets that must enclose every call.
     int id = 0;                    // Unique, for diagnostics/codegen naming.
+    // Filled by the optimizer (optimize.h):
+    int uses = 0;                  // Call sites in live code (tag-dispatch entries included).
+    int nodecount = 0;             // Body node count after its own optimization.
+    bool live = false;             // Reachable from main / threads / global initializers.
+    bool noinline = false;         // This body cannot be spliced into callers.
 };
 
 // ---------------------------------------------------------------------------
