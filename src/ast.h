@@ -387,6 +387,7 @@ NODE_END
 
 NODE(Index)
     Node *obj, *idx;
+    bool nobc = false;          // Bounds check proven redundant (bce.h); codegen omits it.
     Index(Line l, Node *_obj, Node *_idx) : Node(l), obj(_obj), idx(_idx) {}
 NODE_END
 
@@ -394,6 +395,7 @@ NODE(SliceExpr)
     Node *obj;
     Node *lo = nullptr, *hi = nullptr;      // Either may be absent.
     bool lo_from_end = false, hi_from_end = false;  // ^k bounds.
+    bool nobc = false;          // Bounds check proven redundant (bce.h); codegen omits it.
     SliceExpr(Line l, Node *_obj) : Node(l), obj(_obj) {}
 NODE_END
 

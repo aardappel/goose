@@ -11,6 +11,7 @@
 #include "builtins.h"
 #include "typecheck.h"
 #include "optimize.h"
+#include "bce.h"
 #include "codegen.h"
 #include "runtime_inline.h"
 
@@ -131,6 +132,7 @@ void GenRuntimeHeader(const char *argv0) {
 int Main(int argc, char **argv) {
     string filename, outfile;
     auto dump = false, tokens = false, parseonly = false, specs = false, nocgen = false;
+    auto nobce = false, bcetest = false;
     auto optlevel = 1;
     for (int i = 1; i < argc; i++) {
         string arg = argv[i];
@@ -139,6 +141,8 @@ int Main(int argc, char **argv) {
         else if (arg == "--parse") parseonly = true;
         else if (arg == "--specs") specs = true;
         else if (arg == "--check") nocgen = true;
+        else if (arg == "--no-bce") nobce = true;
+        else if (arg == "--bce-test") bcetest = true;
         else if (arg == "--gen-runtime-header") { GenRuntimeHeader(argv[0]); return 0; }
         else if (arg == "-O0") optlevel = 0;
         else if (arg == "-O1") optlevel = 1;
@@ -153,7 +157,8 @@ int Main(int argc, char **argv) {
     }
     if (filename.empty()) {
         fprintf(stderr, "usage: goose [--dump] [--parse] [--tokens] [--specs] [--check] "
-                        "[-O0|-O1|-O2] [-o out.c] file.goose | --gen-runtime-header\n");
+                        "[--no-bce] [--bce-test] [-O0|-O1|-O2] [-o out.c] file.goose | "
+                        "--gen-runtime-header\n");
         return 1;
     }
     try {
@@ -188,6 +193,20 @@ int Main(int argc, char **argv) {
                (int)ast.fnspecs.size(), (int)ast.structinsts.size(),
                (int)ast.enuminsts.size(), optlevel, opt.inlined, opt.folded,
                opt.propagated);
+        BCE bce(ast);
+        if (!nobce) {
+            bce.RunAll();
+            printf("bce: elided %d/%d index and %d/%d slice checks\n",
+                   bce.idxelided, bce.idxtotal, bce.slelided, bce.sltotal);
+        }
+        if (bcetest) {
+            auto fails = bce.VerifyAnnotations();
+            if (fails) {
+                fprintf(stderr, "bce-test: %d annotation failure(s)\n", fails);
+                return 1;
+            }
+            printf("bce-test: all annotations verified\n");
+        }
         if (nocgen) return 0;
         CodeGen cg(ast);
         // Assemble: compiler-set feature defines, the embedded runtime, then

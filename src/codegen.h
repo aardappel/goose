@@ -1736,9 +1736,10 @@ struct CodeGen {
         return s;
     }
 
-    // Indexed element location with bounds check (elided for provably
-    // in-range constant indices into fixed arrays).
-    Loc IndexLoc(Loc lv, Node *idxnode, Line ln) {
+    // Indexed element location with bounds check (elided when the BCE pass
+    // proved it redundant, or for provably in-range constant indices into
+    // fixed arrays).
+    Loc IndexLoc(Loc lv, Node *idxnode, Line ln, bool nobc) {
         if (lv.t->kind == TY_REF) DerefLoc(lv, ln);
         auto v = ArrayView(lv, ln);
         auto idx = GenPure(idxnode);
@@ -1746,7 +1747,7 @@ struct CodeGen {
         auto il = Is<IntLit>(idxnode);
         auto statlen = lv.t->kind == TY_ARRAY && lv.t->arr->akind == A_FIXED
                            ? ArrSize(lv.t->arr) : -1;
-        if (il && statlen >= 0 && il->val >= 0 && il->val < statlen) ix = idx;
+        if (nobc || (il && statlen >= 0 && il->val >= 0 && il->val < statlen)) ix = idx;
         else ix = cat("GS_IDX((int64_t)(", idx, "), ", v.len, ", ", LocArgs(ln), ")");
         if (v.typedelems) {
             Loc r;
@@ -1776,7 +1777,7 @@ struct CodeGen {
         if (auto ix = Is<Index>(n)) {
             auto lv = GenLoc(ix->obj);
             if (lv.t->kind == TY_REF) DerefLoc(lv, ix->line);
-            return IndexLoc(lv, ix->idx, ix->line);
+            return IndexLoc(lv, ix->idx, ix->line, ix->nobc);
         }
         // Any other expression: an addressed temporary (TC's LValueBase).
         Loc l;
@@ -1885,17 +1886,9 @@ struct CodeGen {
             if (IsBytesT(r.sub)) return p;
             return cat("((", CT(r.sub), " *)", p, ")");
         }
-        if (!lv.val) {
-            assert(IsBytesT(lv.t));
-            if (lv.t->kind == TY_INT)   // varint field read: decode to i64.
-                return cat("gs_zig_read(", lv.s, ")");
-            if (et && IsFix(et) && !TEq(lv.t, et)) return AdaptToFixed(lv, et, ln);
-            return lv.s;   // Bytes value: the pointer is the currency.
-        }
-        if (et && IsFix(et) && lv.val && lv.t->kind == TY_SLICE && et->kind == TY_ARRAY)
-            return AdaptToFixed(lv, et, ln);
         if (et && et->kind == TY_SLICE && lv.t->kind == TY_ARRAY) {
-            // Whole-array argument to a slice parameter (§3.10).
+            // Whole-array argument to a slice parameter (§3.10), any loc form
+            // (fixed value or bytes/resizable pointer).
             auto v = ArrayView(lv, ln);
             auto t = T();
             auto dp = v.typedelems && IsBytesT(et->sub)
@@ -1905,6 +1898,15 @@ struct CodeGen {
             L(CT(et), " ", t, " = { ", dp, ", ", v.len, " };");
             return t;
         }
+        if (!lv.val) {
+            assert(IsBytesT(lv.t));
+            if (lv.t->kind == TY_INT)   // varint field read: decode to i64.
+                return cat("gs_zig_read(", lv.s, ")");
+            if (et && IsFix(et) && !TEq(lv.t, et)) return AdaptToFixed(lv, et, ln);
+            return lv.s;   // Bytes value: the pointer is the currency.
+        }
+        if (et && IsFix(et) && lv.val && lv.t->kind == TY_SLICE && et->kind == TY_ARRAY)
+            return AdaptToFixed(lv, et, ln);
         if (lv.ispref && et && et->kind == TY_REF) {
             // A pool reference read as a plain reference drops the freelist.
             auto t = T();
@@ -2336,8 +2338,9 @@ struct CodeGen {
         auto hi = bound(se->hi, se->hi_from_end, lenv.c_str());
         auto lov = T(), hiv = T();
         L("int64_t ", lov, " = ", lo, ", ", hiv, " = ", hi, ";");
-        L("if (", lov, " < 0 || ", hiv, " < ", lov, " || ", hiv, " > ", lenv,
-          ") gs_abort(GS_E_SLICE, ", LocArgs(se->line), ");");
+        if (!se->nobc)
+            L("if (", lov, " < 0 || ", hiv, " < ", lov, " || ", hiv, " > ", lenv,
+              ") gs_abort(GS_E_SLICE, ", LocArgs(se->line), ");");
         auto t = T();
         // Adapted contexts (slice constructing an array) leave an array
         // exprtype on the node; the slice value's own type comes from the

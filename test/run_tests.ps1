@@ -63,6 +63,17 @@ foreach ($lvl in "-O0", "-O1", "-O2") {
     }
 }
 
+# Bounds-check elimination: verify the per-line elide/keep annotations in
+# bce.goose (the file's runtime behavior is covered by the cgen runs below).
+& $exe --check --bce-test "$PSScriptRoot\bce.goose" | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    & $exe --check --bce-test "$PSScriptRoot\bce.goose"
+    Write-Host "FAIL bce-test bce.goose"
+    $failures++
+} else {
+    Write-Host "ok   bce-test bce.goose"
+}
+
 # --- codegen: generate C, compile with MSVC, run, compare ------------------
 $cc = $null
 if (-not $nocgen) {
@@ -171,3 +182,6 @@ foreach ($f in Get-ChildItem "$PSScriptRoot\errors_tc\*.goose") {
 
 if ($failures) { Write-Host "$failures FAILURE(S)"; exit 1 }
 Write-Host "all tests passed"
+# Explicit, so the script's status is its own and not the last native command's
+# (the error tests all exit nonzero by design).
+exit 0
