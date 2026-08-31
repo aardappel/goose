@@ -28,19 +28,23 @@ recursive fn build(depth: i64, seed: u64) -> TNode& {
     return pool.push(TNode { v: xs_mod(seed, 1000) as i32, l: l, r: r });
 }
 
-recursive fn sum_tree(n: TNode&) -> i64 {
-    var t: i64 = n.v;
+// The pass index is folded into every node's contribution, so the eight
+// passes are eight different computations. Without that a backend that can
+// see `sum_tree` is pure hoists the call out of the loop and the benchmark
+// measures one pass instead of eight -- clang does exactly that.
+recursive fn sum_tree(n: TNode&, p: i64) -> i64 {
+    var t: i64 = n.v ^ p;
     let l = n.l;                         // Narrowing tracks locals, so bind first.
-    if l { t += sum_tree(l); }
+    if l { t += sum_tree(l, p); }
     let r = n.r;
-    if r { t += sum_tree(r); }
+    if r { t += sum_tree(r, p); }
     t
 }
 
 fn main() {
     let root: TNode& = build(DEPTH, 12345);
     var total = 0;
-    for p in PASSES { total += sum_tree(root); }
+    for p in PASSES { total += sum_tree(root, p); }
     print(pool.len);
     print(total);
 }

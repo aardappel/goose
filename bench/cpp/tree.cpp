@@ -2,6 +2,9 @@
 //   VARIANT 0: unique_ptr nodes -- an allocation each, and a full recursive
 //              destructor walk before the process can exit.
 //   VARIANT 1: raw new plus an explicit recursive delete.
+// The pass index is folded into every node's contribution so the eight passes
+// are eight different computations; otherwise clang hoists the whole pure call
+// out of the loop (see bench/notes.md).
 //   VARIANT 2: one arena vector with uint32 child indices, exactly reserved:
 //              no per-node allocation and no teardown, which is what the
 //              Goose version gets for free.
@@ -24,11 +27,11 @@ static uint32_t build(int depth, uint64_t seed) {
     pool.push_back(TNode { (int32_t)xs_mod(seed, 1000), l, r });
     return (uint32_t)pool.size() - 1;
 }
-static long long sum_tree(uint32_t n) {
+static long long sum_tree(uint32_t n, long long p) {
     const TNode &t = pool[n];
-    long long s = t.v;
-    if (t.l) s += sum_tree(t.l);
-    if (t.r) s += sum_tree(t.r);
+    long long s = t.v ^ p;
+    if (t.l) s += sum_tree(t.l, p);
+    if (t.r) s += sum_tree(t.r, p);
     return s;
 }
 #else
@@ -58,10 +61,10 @@ static Owned build(int depth, uint64_t seed) {
 }
 static void destroy(TNode *n) { if (!n) return; destroy(n->l); destroy(n->r); delete n; }
   #endif
-static long long sum_tree(const TNode *n) {
-    long long s = n->v;
-    if (n->l) s += sum_tree(&*n->l);
-    if (n->r) s += sum_tree(&*n->r);
+static long long sum_tree(const TNode *n, long long p) {
+    long long s = n->v ^ p;
+    if (n->l) s += sum_tree(&*n->l, p);
+    if (n->r) s += sum_tree(&*n->r, p);
     return s;
 }
 static long long node_count(int depth) { return (1LL << (depth + 1)) - 1; }
@@ -74,11 +77,11 @@ int main() {
     pool.push_back(TNode { 0, 0, 0 });        // Index 0 is the null sentinel.
     uint32_t root = build(DEPTH, 12345);
     count = (long long)pool.size() - 1;
-    for (int p = 0; p < 8; p++) total += sum_tree(root);
+    for (long long p = 0; p < 8; p++) total += sum_tree(root, p);
 #else
     Owned root = build(DEPTH, 12345);
     count = node_count(DEPTH);
-    for (int p = 0; p < 8; p++) total += sum_tree(&*root);
+    for (long long p = 0; p < 8; p++) total += sum_tree(&*root, p);
   #if VARIANT == 1
     destroy(root);
   #endif

@@ -125,13 +125,16 @@ fn nextof(n: Sexp.List&) -> Sexp..? { n.next }
 // The sibling chain is walked by passing the next link down: inside a
 // recursive cycle a reference may be passed as an argument but not stored
 // (spec 7.8), so the loop form with `.=` is not available here.
-recursive fn walk(n: Sexp.Sym&) -> i64 { n.name.len + n.name[0] }
-recursive fn walk(n: Sexp.Num&) -> i64 { n.v }
-recursive fn walk(n: Sexp.List&) -> i64 { 1 + walk_chain(n.first) }
+// The pass index rides along so the four walks are four different
+// computations, which stops a backend that can see the walk is pure from
+// hoisting it out of the loop (see bench/notes.md).
+recursive fn walk(n: Sexp.Sym&, p: i64) -> i64 { n.name.len + n.name[0] + p }
+recursive fn walk(n: Sexp.Num&, p: i64) -> i64 { n.v ^ p }
+recursive fn walk(n: Sexp.List&, p: i64) -> i64 { 1 + walk_chain(n.first, p) }
 
-recursive fn walk_chain(c: Sexp..?) -> i64 {
+recursive fn walk_chain(c: Sexp..?, p: i64) -> i64 {
     guard c else { return 0; }
-    return walk(c) + walk_chain(nextof(c));
+    return walk(c, p) + walk_chain(nextof(c), p);
 }
 
 fn main() {
@@ -144,7 +147,7 @@ fn main() {
     print(err.len);
     var total = 0;
     for p in PASSES {
-        for r in roots { total += walk(r); }
+        for r in roots { total += walk(r, p); }
     }
     print(total);
 }

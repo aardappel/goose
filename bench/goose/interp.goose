@@ -35,15 +35,18 @@ recursive fn build(depth: i64, seed: u64) -> Expr..& {
 }
 
 // Case functions: the language's virtual-call idiom, dispatched on the tag.
-recursive fn eval(e: Expr.Num&) -> i64 { e.v }
-recursive fn eval(e: Expr.Add&) -> i64 { (eval(e.l) + eval(e.r)) % M }
-recursive fn eval(e: Expr.Mul&) -> i64 { (eval(e.l) * eval(e.r)) % M }
-recursive fn eval(e: Expr.Neg&) -> i64 { (M - eval(e.of)) % M }
+// The pass index enters at the leaves so the eight evaluations are eight
+// different computations; a backend that sees `eval` is pure otherwise hoists
+// the whole call out of the loop (see bench/notes.md).
+recursive fn eval(e: Expr.Num&, p: i64) -> i64 { (e.v + p) % M }
+recursive fn eval(e: Expr.Add&, p: i64) -> i64 { (eval(e.l, p) + eval(e.r, p)) % M }
+recursive fn eval(e: Expr.Mul&, p: i64) -> i64 { (eval(e.l, p) * eval(e.r, p)) % M }
+recursive fn eval(e: Expr.Neg&, p: i64) -> i64 { (M - eval(e.of, p)) % M }
 
 fn main() {
     let root: Expr..& = build(DEPTH, 12345);
     var total = 0;
-    for p in PASSES { total = (total + eval(root)) % M; }
+    for p in PASSES { total = (total + eval(root, p)) % M; }
     print(pool.len);
     print(total);
 }

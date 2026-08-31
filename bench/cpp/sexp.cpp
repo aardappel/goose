@@ -102,13 +102,13 @@ static std::unique_ptr<Node> parse_node(std::unique_ptr<Node> prev) {
     return n;
 }
 
-static long long walk(const Node *n);
-static long long walk_chain(const Node *c) { return c ? walk(c) + walk_chain(c->next.get()) : 0; }
-static long long walk(const Node *n) {
+static long long walk(const Node *n, long long p);
+static long long walk_chain(const Node *c, long long p) { return c ? walk(c, p) + walk_chain(c->next.get(), p) : 0; }
+static long long walk(const Node *n, long long p) {
     switch (n->kind) {
-        case 0: return (long long)n->name.size() + (unsigned char)n->name[0];
-        case 1: return n->v;
-        default: return 1 + walk_chain(n->first.get());
+        case 0: return (long long)n->name.size() + (unsigned char)n->name[0] + p;
+        case 1: return n->v ^ p;
+        default: return 1 + walk_chain(n->first.get(), p);
     }
 }
 #else
@@ -147,14 +147,14 @@ static uint32_t parse_node(uint32_t prev) {
     return (uint32_t)pool.size() - 1;
 }
 
-static long long walk(uint32_t n);
-static long long walk_chain(uint32_t c) { return c ? walk(c) + walk_chain(pool[c].next) : 0; }
-static long long walk(uint32_t i) {
+static long long walk(uint32_t n, long long p);
+static long long walk_chain(uint32_t c, long long p) { return c ? walk(c, p) + walk_chain(pool[c].next, p) : 0; }
+static long long walk(uint32_t i, long long p) {
     const Node &n = pool[i];
     switch (n.kind) {
-        case 0: return n.len + (unsigned char)text[n.off];
-        case 1: return n.v;
-        default: return 1 + walk_chain(n.first);
+        case 0: return n.len + (unsigned char)text[n.off] + p;
+        case 1: return n.v ^ p;
+        default: return 1 + walk_chain(n.first, p);
     }
 }
 #endif
@@ -175,12 +175,12 @@ int main() {
 #endif
     }
     long long total = 0;
-    for (int p = 0; p < PASSES; p++)
+    for (long long p = 0; p < PASSES; p++)
         for (const auto &r : roots)
 #if VARIANT == 0
-            total += walk(r.get());
+            total += walk(r.get(), p);
 #else
-            total += walk(r);
+            total += walk(r, p);
 #endif
     emit((long long)text.size());
 #if VARIANT == 0

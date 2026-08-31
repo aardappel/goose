@@ -1,5 +1,6 @@
 // Expression-tree evaluation: see bench/goose/interp.goose. The dispatch
-// mechanism is the point.
+// mechanism is the point. The pass index enters at the leaves so the eight
+// evaluations differ; otherwise clang hoists the pure call out of the loop.
 //   VARIANT 0: class hierarchy with virtual eval and unique_ptr children --
 //              a vtable pointer per node and an allocation per node.
 //   VARIANT 1: std::variant in an arena, evaluated with std::visit.
@@ -15,14 +16,14 @@
 static const long long M = 1000003;
 
 #if VARIANT == 0
-struct Expr { virtual ~Expr() = default; virtual long long eval() const = 0; };
-struct Num : Expr { int32_t v; long long eval() const override { return v; } };
+struct Expr { virtual ~Expr() = default; virtual long long eval(long long p) const = 0; };
+struct Num : Expr { int32_t v; long long eval(long long p) const override { return (v + p) % M; } };
 struct Add : Expr { std::unique_ptr<Expr> l, r;
-    long long eval() const override { return (l->eval() + r->eval()) % M; } };
+    long long eval(long long p) const override { return (l->eval(p) + r->eval(p)) % M; } };
 struct Mul : Expr { std::unique_ptr<Expr> l, r;
-    long long eval() const override { return (l->eval() * r->eval()) % M; } };
+    long long eval(long long p) const override { return (l->eval(p) * r->eval(p)) % M; } };
 struct Neg : Expr { std::unique_ptr<Expr> of;
-    long long eval() const override { return (M - of->eval()) % M; } };
+    long long eval(long long p) const override { return (M - of->eval(p)) % M; } };
 using Ref = std::unique_ptr<Expr>;
 static long long count = 0;
 
@@ -79,22 +80,22 @@ static uint32_t build(int depth, uint64_t seed) {
     return (uint32_t)pool.size() - 1;
 }
 
-static long long eval(uint32_t i) {
+static long long eval(uint32_t i, long long p) {
   #if VARIANT == 1
     const Node &n = pool[i];
     switch (n.index()) {
-        case 0: return std::get<ENum>(n).v;
-        case 1: { auto &e = std::get<EAdd>(n); return (eval(e.l) + eval(e.r)) % M; }
-        case 2: { auto &e = std::get<EMul>(n); return (eval(e.l) * eval(e.r)) % M; }
-        default: { auto &e = std::get<ENeg>(n); return (M - eval(e.of)) % M; }
+        case 0: return (std::get<ENum>(n).v + p) % M;
+        case 1: { auto &e = std::get<EAdd>(n); return (eval(e.l, p) + eval(e.r, p)) % M; }
+        case 2: { auto &e = std::get<EMul>(n); return (eval(e.l, p) * eval(e.r, p)) % M; }
+        default: { auto &e = std::get<ENeg>(n); return (M - eval(e.of, p)) % M; }
     }
   #else
     const Node &n = pool[i];
     switch (n.tag) {
-        case 0: return n.v;
-        case 1: return (eval(n.b.l) + eval(n.b.r)) % M;
-        case 2: return (eval(n.b.l) * eval(n.b.r)) % M;
-        default: return (M - eval(n.of)) % M;
+        case 0: return (n.v + p) % M;
+        case 1: return (eval(n.b.l, p) + eval(n.b.r, p)) % M;
+        case 2: return (eval(n.b.l, p) * eval(n.b.r, p)) % M;
+        default: return (M - eval(n.of, p)) % M;
     }
   #endif
 }
@@ -105,11 +106,11 @@ int main() {
 #if VARIANT == 0
     Ref root = build(DEPTH, 12345);
     count_out = count;
-    for (int p = 0; p < 8; p++) total = (total + root->eval()) % M;
+    for (long long p = 0; p < 8; p++) total = (total + root->eval(p)) % M;
 #else
     uint32_t root = build(DEPTH, 12345);
     count_out = (long long)pool.size();
-    for (int p = 0; p < 8; p++) total = (total + eval(root)) % M;
+    for (long long p = 0; p < 8; p++) total = (total + eval(root, p)) % M;
 #endif
     emit(count_out);
     emit(total);
