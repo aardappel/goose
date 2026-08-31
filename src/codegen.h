@@ -4020,6 +4020,9 @@ struct CodeGen {
                 auto esz = FixedSize(elem);
                 auto nl = T();
                 L("int64_t ", nl, " = ", v.len, " - 1;");
+                // On empty, the stored length would wrap (limited arrays) or
+                // the stack top drop below the elements (grow-shrink).
+                L("if (", nl, " < 0) gs_abort(GS_E_POP, ", LocArgs(ln), ");");
                 L(v.lenlv, " = (", LenCast(lv), ")", nl, ";");
                 auto tv = T();
                 if (lv.t->arr->akind == A_GROWSHRINK) {
@@ -4045,6 +4048,11 @@ struct CodeGen {
                 if (an.size() > 2) fv = GenPure(an[2]);
                 auto ol = T();
                 L("int64_t ", ol, " = ", v.len, ";");
+                // A negative target length shrinks past empty: the same
+                // corruption as a pop on an empty array. An unsigned `n` above
+                // INT64_MAX casts negative and is rejected here as well.
+                L("if ((int64_t)(", nn, ") < 0) gs_abort(GS_E_RESIZENEG, ", LocArgs(ln),
+                  ");");
                 L("if (", nn, " < ", ol, ") {");
                 ind++;
                 L(v.lenlv, " = (", LenCast(lv), ")", nn, ";");

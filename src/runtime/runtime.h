@@ -59,6 +59,8 @@ enum {
     GS_E_ASSERT,       /* assert failed */
     GS_E_CAPRANGE,     /* invalid capacity */
     GS_E_RESIZEFILL,   /* resize growth requires a fill value */
+    GS_E_RESIZENEG,    /* resize to a negative length */
+    GS_E_POP,          /* pop on empty array */
     GS_E_THREADID,     /* thread_wait on an unknown thread id */
     GS_E_TAG,          /* corrupt ADT tag (debug builds only) */
 };
@@ -70,6 +72,8 @@ static const char *gs_errmsgs[] = {
     "assert failed",
     "invalid capacity",
     "resize growth requires a fill value",
+    "resize to a negative length",
+    "pop on empty array",
     "thread_wait on an unknown thread id",
     "corrupt ADT tag",
 };

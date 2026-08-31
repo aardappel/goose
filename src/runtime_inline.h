@@ -71,6 +71,8 @@ enum {
     GS_E_ASSERT,       /* assert failed */
     GS_E_CAPRANGE,     /* invalid capacity */
     GS_E_RESIZEFILL,   /* resize growth requires a fill value */
+    GS_E_RESIZENEG,    /* resize to a negative length */
+    GS_E_POP,          /* pop on empty array */
     GS_E_THREADID,     /* thread_wait on an unknown thread id */
     GS_E_TAG,          /* corrupt ADT tag (debug builds only) */
 };
@@ -82,6 +84,8 @@ static const char *gs_errmsgs[] = {
     "assert failed",
     "invalid capacity",
     "resize growth requires a fill value",
+    "resize to a negative length",
+    "pop on empty array",
     "thread_wait on an unknown thread id",
     "corrupt ADT tag",
 };
@@ -210,7 +214,8 @@ static int64_t gs_mul_i64(int64_t a, int64_t b) {
     return r;
 }
 static int64_t gs_neg_i64(int64_t a) {
-    if (GS_DEBUG && a == INT64_MIN) gs_ovf();
+)GSRT"
+R"GSRT(    if (GS_DEBUG && a == INT64_MIN) gs_ovf();
     return (int64_t)(0u - (uint64_t)a);
 }
 static int64_t gs_div_i64(int64_t a, int64_t b, const char *file, int line) {
@@ -222,8 +227,7 @@ static int64_t gs_div_i64(int64_t a, int64_t b, const char *file, int line) {
     }
     return a / b;
 }
-)GSRT"
-R"GSRT(static int64_t gs_mod_i64(int64_t a, int64_t b, const char *file, int line) {
+static int64_t gs_mod_i64(int64_t a, int64_t b, const char *file, int line) {
     if (b == 0) gs_divfail(file, line);
     if (a == INT64_MIN && b == -1) return 0;
     return a % b;
@@ -424,7 +428,8 @@ static uint8_t *gs_reserve_region(size_t size) {
             sigaction(SIGBUS, &sa, NULL);
         #endif
     }
-    /* Commit-on-touch via overcommit; the gap at the end stays PROT_NONE. */
+)GSRT"
+R"GSRT(    /* Commit-on-touch via overcommit; the gap at the end stays PROT_NONE. */
     void *p = mmap(NULL, size, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS
                    #ifdef MAP_NORESERVE
@@ -439,8 +444,7 @@ static uint8_t *gs_reserve_region(size_t size) {
     return (uint8_t *)p;
 }
 
-)GSRT"
-R"GSRT(#endif
+#endif
 
 /* The current thread program's stack block. gs_sp-relative indices resolve
    through this; stacks materialize lazily as call depth first reaches them. */

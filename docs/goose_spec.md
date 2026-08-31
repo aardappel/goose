@@ -210,7 +210,8 @@ Element restrictions:
 Growth operations (`push`, `append`, …) exist only on resizable arrays and on
 limited arrays (`[..k]`, `[..]`) up to capacity (exceeding capacity aborts).
 Shrink operations (`pop`, `resize` downward, `clear`) exist only on `[>..<]`
-and limited arrays.
+and limited arrays, and abort when they would shrink below empty (`pop` on
+an empty array, `resize` to a negative length).
 
 Built-in members: `.len` (always, returns `i64`), `.cap` (limited arrays),
 `.push(v)` (returns a reference to the new element on grow-only and limited
@@ -1099,6 +1100,8 @@ Aborts (message + exit; not catchable):
 * array/slice indexing out of bounds (elidable by optimizer; can be disabled
   wholesale in a designated unsafe-fast build);
 * limited-array capacity overflow;
+* shrinking below empty (`pop` on an empty array, `resize` to a negative
+  length);
 * relative-reference offset overflow at store;
 * debug only: integer overflow, `as` range violations;
 * division by zero (always);
