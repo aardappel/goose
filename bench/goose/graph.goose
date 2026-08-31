@@ -22,11 +22,11 @@ fn main() {
     // pool[0..V) are the list heads, pool[V..) the edges themselves.
     var pool: Edge[>..] = [];
     for v in V { pool.push(Edge { to: -1 }); }
-    var r = 12345;
+    var r: u64 = 12345;
     for e in V * DEG {
         r = xs_next(r);
         let u = xs_mod(r, V);
-        let w = xs_mod(unsigned_shr(r, 24), V);
+        let w = xs_mod(r >> 24, V);
         let ne: Edge& = pool.push(Edge { to: w as i32, next: pool[u].next });
         pool[u].next .= ne;
     }
@@ -35,7 +35,7 @@ fn main() {
     for v in V { dist.push(-1); }
     var q: i32[>..<] = [];
     var total = 0;
-    var seed = 999;
+    var seed: u64 = 999;
     for s in SOURCES {
         seed = xs_next(seed);
         let src = xs_mod(seed, V);
@@ -54,8 +54,8 @@ fn main() {
                 guard cur;
                 let w = cur.to;
                 if dist[w] < 0 {
-                    dist[w] = (d + 1) as i32;
-                    q.push(w as i32);
+                    dist[w] = d + 1;
+                    q.push(w);
                 }
                 cur .= cur.next;
             }

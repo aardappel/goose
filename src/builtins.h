@@ -42,10 +42,6 @@ enum BuiltinRecv {
 #define BUILTINS \
     F(B_PRINT,            "print",            1,  1,   "",   "",  0,              BF_CUSTOM) \
     F(B_ASSERT,           "assert",           1,  1,   "",   "",  0,              BF_CUSTOM) \
-    F(B_UNSIGNED_DIV,     "unsigned_div",     2,  2,   "ii", "i", 0,              0) \
-    F(B_UNSIGNED_MOD,     "unsigned_mod",     2,  2,   "ii", "i", 0,              0) \
-    F(B_UNSIGNED_SHR,     "unsigned_shr",     2,  2,   "ii", "i", 0,              0) \
-    F(B_UNSIGNED_LESS,    "unsigned_less",    2,  2,   "ii", "b", 0,              0) \
     F(B_HARDWARE_THREADS, "hardware_threads", 0,  0,   "",   "i", 0,              0) \
     F(B_THREAD_SPAWN,     "thread_spawn",     1, 99,   "",   "i", 0,              BF_CUSTOM) \
     F(B_THREAD_WAIT,      "thread_wait",      1,  1,   "i",  "",  0,              0) \

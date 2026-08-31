@@ -10,7 +10,7 @@ let PASSES = 8;
 
 fn main() {
     var data: i32[>..] = [];
-    var r = 12345;
+    var r: u64 = 12345;
     for i in N {
         r = xs_next(r);
         data.push(xs_mod(r, 1000) as i32);

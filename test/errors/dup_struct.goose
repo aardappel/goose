@@ -1,2 +1,2 @@
-struct X { a: int }
-struct X { b: flt }
+struct X { a: i64 }
+struct X { b: f64 }

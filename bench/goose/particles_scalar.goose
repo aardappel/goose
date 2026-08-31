@@ -19,17 +19,17 @@ struct P { pos: F3, vel: F3 }
 
 fn main() {
     var ps: P[>..] = [];
-    var r = 12345;
+    var r: u64 = 12345;
     for i in N {
         r = xs_next(r);
-        let px = xs_mod(r, 1024) as flt;
-        let py = xs_mod(unsigned_shr(r, 12), 1024) as flt;
-        let pz = xs_mod(unsigned_shr(r, 24), 1024) as flt;
-        let vx = (xs_mod(unsigned_shr(r, 36), 256) - 128) as flt / 16.0;
-        let vy = (xs_mod(unsigned_shr(r, 44), 256) - 128) as flt / 16.0;
-        let vz = (xs_mod(unsigned_shr(r, 52), 256) - 128) as flt / 16.0;
-        ps.push(P { pos: F3 { x: px as f32, y: py as f32, z: pz as f32 },
-                    vel: F3 { x: vx as f32, y: vy as f32, z: vz as f32 } });
+        let px = xs_mod(r, 1024) as f32;
+        let py = xs_mod(r >> 12, 1024) as f32;
+        let pz = xs_mod(r >> 24, 1024) as f32;
+        let vx = (xs_mod(r >> 36, 256) - 128) as f32 / 16.0;
+        let vy = (xs_mod(r >> 44, 256) - 128) as f32 / 16.0;
+        let vz = (xs_mod(r >> 52, 256) - 128) as f32 / 16.0;
+        ps.push(P { pos: F3 { x: px, y: py, z: pz },
+                    vel: F3 { x: vx, y: vy, z: vz } });
     }
     for s in STEPS {
         for &p in ps {
@@ -45,8 +45,8 @@ fn main() {
     }
     var total = 0;
     for &p in ps {
-        total += (p.pos.x * 16.0) as int + (p.pos.y * 16.0) as int
-               + (p.pos.z * 16.0) as int;
+        total += (p.pos.x * 16.0) as i64 + (p.pos.y * 16.0) as i64
+               + (p.pos.z * 16.0) as i64;
     }
     print(ps.len);
     print(total);

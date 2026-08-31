@@ -1,2 +1,2 @@
-type Bad = int[i16];
+type Bad = i64[i16];
 fn main() { }

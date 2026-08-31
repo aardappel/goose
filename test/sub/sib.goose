@@ -1,1 +1,1 @@
-fn sib_helper(x: int) -> int { x * 2 }
+fn sib_helper(x: i64) -> i64 { x * 2 }

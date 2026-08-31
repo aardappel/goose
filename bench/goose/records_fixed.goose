@@ -17,7 +17,7 @@ enum Event {
     Quit { id: i32, code: u8 },
 }
 
-fn word(seed: int) -> u8[..15] {
+fn word(seed: u64) -> u8[..15] {
     var w: u8[..15] = [];
     var r = xs_next(seed);
     let n = 4 + xs_mod(r, 12);
@@ -30,19 +30,19 @@ fn word(seed: int) -> u8[..15] {
 
 fn main() {
     var log: Event[>..] = [];
-    var r = 12345;
+    var r: u64 = 12345;
     for i in N {
         r = xs_next(r);
         let k = xs_mod(r, 8);
-        let id = xs_mod(unsigned_shr(r, 3), 100000);
+        let id = xs_mod(r >> 3, 100000);
         if k < 4 {
             log.push(Event.Move { id: id as i32,
-                                  dx: (xs_mod(unsigned_shr(r, 20), 201) - 100) as i16,
-                                  dy: (xs_mod(unsigned_shr(r, 40), 201) - 100) as i16 });
+                                  dx: (xs_mod(r >> 20, 201) - 100) as i16,
+                                  dy: (xs_mod(r >> 40, 201) - 100) as i16 });
         } else if k < 6 {
             log.push(Event.Say { id: id as i32, text: word(r) });
         } else if k < 7 {
-            log.push(Event.Quit { id: id as i32, code: xs_mod(unsigned_shr(r, 20), 256) as u8 });
+            log.push(Event.Quit { id: id as i32, code: xs_mod(r >> 20, 256) as u8 });
         } else {
             log.push(Event.Tick);
         }

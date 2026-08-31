@@ -22,5 +22,5 @@ static inline uint64_t xs_next(uint64_t x) {
 
 static inline uint64_t xs_mod(uint64_t x, uint64_t k) { return x % k; }
 
-// Matches goose's print(int): decimal, one per line.
+// Matches goose's print(i64): decimal, one per line.
 static inline void emit(long long v) { printf("%lld\n", v); }

@@ -2,4 +2,4 @@
 // with the `.name` form (relative to this file).
 import .sib;
 
-fn from_mod(x: int) -> int { sib_helper(x) + 1 }
+fn from_mod(x: i64) -> i64 { sib_helper(x) + 1 }

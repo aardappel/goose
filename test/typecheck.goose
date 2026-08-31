@@ -16,32 +16,32 @@ struct Packed {
 
 fn storage() {
     var p = Packed { a: -5, b: 1000, c: -70000, d: 18446744073709551615 };
-    let widened = p.a + p.b + p.c + p.d + p.e;   // All reads widen to int.
+    // Narrow reads widen implicitly into an i64 expression; u64 needs a cast.
+    let widened = p.a as i64 + p.b + p.c + p.d as! i64 + p.e;
     p.a = -128;          // Literal fit into i8.
     p.b = 65535;
     p.c = 0x7FFFFFFF;
-    p.d = 1;             // 64-bit storage takes any int.
+    p.d = 1;
     let x = 300;
-    p.c = x as i32;      // Non-literal ints need `as` to narrow.
+    p.c = x as i32;      // Non-literal narrowing needs `as`.
     print(widened + p.c);
-    // f32 math lives within one expression: loads of f32 storage compute in
-    // 32 bits, literals adapt, and any variable binding widens to flt.
+    // f32 math stays 32-bit: loads, literals, and locals all keep the type.
     p.f = p.f * 2.0 + 0.25;
     let widerf = p.f + 0.5;
     print(widerf);
-    print(p.f as flt + 1.0);
+    print(p.f as f64 + 1.0);
 }
 
-// f32 widening at generic and untyped bindings and inferred returns.
+// f32 at generic and untyped bindings, widening at f64 returns.
 struct F2 { a: f32, b: f32 }
 fn samef<T>(x: T, y: T) -> bool { x == y }
-fn pickf(a, b) -> flt { if a == a { a } else { b } }
-fn half(f: F2&) -> flt { f.a * 0.5 }
+fn pickf(a, b) -> f64 { if a == a { a } else { b } }
+fn half(f: F2&) -> f64 { f.a * 0.5 }
 
 fn f32widen() {
     var f = F2 { a: 1.5, b: 2.5 };
-    print(samef(f.a, 1.0));           // T binds flt; the f32 promotes in.
-    print(pickf(f.a, f.b) + half(&f));  // Untyped params widen too.
+    print(samef(f.a, 1.0));             // T binds f32; the literal adapts in.
+    print(pickf(f.a, f.b) + half(&f));  // f32 results widen into the f64 returns.
 }
 
 // --- varint fields and compact strings --------------------------------------
@@ -53,7 +53,7 @@ struct Compact {
 
 fn varints() {
     let c = Compact { tag: -3, name: "abc" };
-    let t = c.tag + c.name.len;          // varint reads widen to int.
+    let t = c.tag + c.name.len;          // varint reads widen to i64.
     print(t);
     let tiny: u8[u8] = "hi";             // Explicit length-field storage type.
     print(tiny.len);
@@ -61,7 +61,7 @@ fn varints() {
 
 // --- elementwise math (§6.1) ------------------------------------------------
 
-struct Float3 { x: flt, y: flt, z: flt }
+struct Float3 { x: f64, y: f64, z: f64 }
 
 fn elementwise() {
     let a = Float3 { 1.0, 2.0, 3.0 };
@@ -71,7 +71,7 @@ fn elementwise() {
     print(d.x + d.y + d.z);
     let ia = [1, 2, 3];
     let ib = [4, 5, 6];
-    let ic = ia + ib;                    // Fixed int arrays, memberwise.
+    let ic = ia + ib;                    // Fixed i64 arrays, memberwise.
     print(ic[0] + ic[1] + ic[2]);
 }
 
@@ -93,7 +93,7 @@ fn equality() {
 
 // --- references: creation, writes, provenance -------------------------------
 
-fn add_through(r: int&, v: int) { r += v; }
+fn add_through(r: i64&, v: i64) { r += v; }
 
 fn refs() {
     var a = 1;
@@ -101,15 +101,15 @@ fn refs() {
     r = 5;                               // Transparent: writes the pointee.
     r += 2;
     r++;
-    let readback = r;                    // And reads it (a plain int copy).
+    let readback = r;                    // And reads it (a plain i64 copy).
     add_through(&a, 10);                 // Writable provenance: a is var.
     var arr = [1, 2, 3];
     for &x in arr { x = x * 2; }         // The mutation idiom.
     print(a + arr[0] + readback);
-    var opt: int? = &a;
+    var opt: i64? = &a;
     guard opt else { return; }
     print(opt);
-    var rebound: int& = &arr[0];
+    var rebound: i64& = &arr[0];
     rebound .= &arr[1];                  // .= rebinds the reference itself.
     rebound = 9;
     print(rebound + arr[1]);
@@ -117,7 +117,7 @@ fn refs() {
 
 // --- optionals and flow narrowing -------------------------------------------
 
-fn narrowing(o: int?, p: int?) -> int {
+fn narrowing(o: i64?, p: i64?) -> i64 {
     if o && o > 0 { return o; }
     guard p else { return -1; }
     let v = p + 0;                       // Narrowed: reads the pointee.
@@ -125,15 +125,15 @@ fn narrowing(o: int?, p: int?) -> int {
     o + v
 }
 
-fn assert_narrow(o: int?) -> int {
+fn assert_narrow(o: i64?) -> i64 {
     assert(o);                           // Narrows o for the rest of the block.
     o
 }
 
-struct OptBox { o: int&? }
+struct OptBox { o: i64&? }
 
 fn transparency() {
-    var g: int[>..] = [];
+    var g: i64[>..] = [];
     push(g, 1);                    // Members are functions: free-call form.
     g.len.print();                 // ...and builtins work via UFCS.
     var a = 5;
@@ -143,13 +143,13 @@ fn transparency() {
     var b = OptBox { };            // Optional field defaults to null.
     b.o .= &a;                     // Rebind a field.
     b.o .= null;
-    var o: int? = null;
+    var o: i64? = null;
     o .= &a;
     print(o);                      // Narrowed by the non-null rebind.
     if o != null { print(o + 1); }
 }
 
-fn nulls(var o: int?) -> int {
+fn nulls(var o: i64?) -> i64 {
     if o == null { return -1; }
     let v = o;                           // Narrowed by the null test.
     o .= null;                           // Rebinding to null kills narrowing.
@@ -160,12 +160,12 @@ fn nulls(var o: int?) -> int {
 // --- limited arrays: refs survive pops (§5.3) -------------------------------
 
 fn limited() {
-    var lim: int[..4] = [1, 2, 3];
+    var lim: i64[..4] = [1, 2, 3];
     let r = &lim[1];
     lim.pop();
     lim.push(9);                         // Type-safe reuse: r stays valid.
     print(r + lim.cap + lim.len);
-    var open: int[..] = [1, 2, 3, 4];    // Construction-time capacity.
+    var open: i64[..] = [1, 2, 3, 4];    // Construction-time capacity.
     open.resize(2);
     open.resize(4, 0);
     open.clear();
@@ -175,30 +175,30 @@ fn limited() {
 // --- grow-only arrays: interior refs/slices stay valid (§5.1) ---------------
 
 fn growonly() {
-    var g: flt[>..] = [];
-    let first: flt& = g.push(1.0);       // push returns a ref to the element.
+    var g: f64[>..] = [];
+    let first: f64& = g.push(1.0);       // push returns a ref to the element.
     let r = &g[0];
     let s = g[0..1];
     g.append([2.0, 3.0]);
     g.append([0.0; 3]);                  // (resize does not exist on grow-only.)
-    print(first + r + s[0] + g.len as flt);
+    print(first + r + s[0] + g.len as f64);
 }
 
-fn push_through(v: flt[>..]&) { v.push(4.0); }
+fn push_through(v: f64[>..]&) { v.push(4.0); }
 
 fn grow_via_ref() {
-    var g: flt[>..] = [1.0];
+    var g: f64[>..] = [1.0];
     push_through(&g);
     print(g.len);
 }
 
 // --- reusable pools (§5.4) --------------------------------------------------
 
-struct Slot { v: int = 0, next: int = -1 }
+struct Slot { v: i64 = 0, next: i64 = -1 }
 
 reusable var gpool: Slot[>..] = [];
 
-fn use_pool(pool: Slot[>..]&) -> int {
+fn use_pool(pool: Slot[>..]&) -> i64 {
     let i = pool.alloc_index(Slot { v: 1 });
     let r: Slot& = pool.alloc_ref(Slot { v: 2 });
     r.v = 3;
@@ -265,10 +265,10 @@ enum Opt<T> { None, Some { v: T } }
 
 fn generic_data() {
     let p = Pair { a: 1, b: 2 };                  // Inferred from fields.
-    let q = Pair<Pair<int>> { a: p, b: Pair<int> { 3, 4 } };
+    let q = Pair<Pair<i64>> { a: p, b: Pair<i64> { 3, 4 } };
     print(q.a.a + q.b.b);
-    let s: Opt<int> = Opt<int>.Some { v: 5 };
-    let n: Opt<int> = Opt<int>.None {};
+    let s: Opt<i64> = Opt<i64>.Some { v: 5 };
+    let n: Opt<i64> = Opt<i64>.None {};
     let got = match s { Some x => x.v, None => 0 };
     let got2 = match n { Some x => x.v, _ => -1 };
     print(got + got2);
@@ -285,13 +285,13 @@ fn outer2<T>(x: T) -> T {
 }
 
 // Recursive generics: the back edge reuses the same specialization.
-recursive fn depth2<T>(x: T, n: int) -> int {
+recursive fn depth2<T>(x: T, n: i64) -> i64 {
     if n <= 0 { 0 } else { depth2(x, n - 1) + 1 }
 }
 
 // Forwarding a function value down through another HOF.
-fn apply2<F>(x: int) { F(x); }
-fn forward2<F>(x: int) { apply2(x, F); }
+fn apply2<F>(x: i64) { F(x); }
+fn forward2<F>(x: i64) { apply2(x, F); }
 
 fn generic_fns() {
     let arr = [7, 8, 9];
@@ -301,7 +301,7 @@ fn generic_fns() {
     print(same(1, 2));
     print(same("a", "b"));
     pick(1, 2.5);
-    print(first<int>([4, 5]));                    // Explicit type argument.
+    print(first<i64>([4, 5]));                    // Explicit type argument.
     print(outer2(5));
     print(outer2(1.5));
     print(depth2(true, 3));
@@ -310,8 +310,8 @@ fn generic_fns() {
 
 // --- function values and HOFs (§7.6) ----------------------------------------
 
-fn repeat<F: fn(int)>(n: int) { for i in n { F(i); } }
-fn fold<F>(xs: int[:], var acc: int) -> int {
+fn repeat<F: fn(i64)>(n: i64) { for i in n { F(i); } }
+fn fold<F>(xs: i64[:], var acc: i64) -> i64 {
     for x in xs { acc = F(acc, x); }
     return acc;
 }
@@ -321,17 +321,17 @@ fn hofs() {
     let xs = [1, 2, 3];
     let sum = fold(xs, 0) { a, x => a + x };
     print(sum);
-    fn double(v: int) { print(v * 2) }
+    fn double(v: i64) { print(v * 2) }
     repeat(2, double);
     var captured = 0;
-    fn bump(v: int) { captured += v; }
+    fn bump(v: i64) { captured += v; }
     bump(5);
     repeat(2) { captured += it; }
     print(captured);
 }
 
 // Plain return inside a function value exits the named function (§7.6).
-fn find_gt(xs: int[:], limit: int) -> int {
+fn find_gt(xs: i64[:], limit: i64) -> i64 {
     repeat(xs.len) {
         if xs[it] > limit { return xs[it]; }
     }
@@ -340,12 +340,12 @@ fn find_gt(xs: int[:], limit: int) -> int {
 
 // --- multiple returns, nonfixed returns, NRVO shapes ------------------------
 
-fn minmax(a: int, b: int) -> int, int {
+fn minmax(a: i64, b: i64) -> i64, i64 {
     if a < b { return a, b; }
     return b, a;
 }
 
-fn labelled(n: int) -> u8[], int { return "num", n }
+fn labelled(n: i64) -> u8[], i64 { return "num", n }
 
 fn multi() {
     let lo, hi = minmax(4, 2);
@@ -357,12 +357,12 @@ fn multi() {
 
 // --- case functions with references (§8.2) ----------------------------------
 
-enum Node { Num { v: flt }, Neg { of: Node..&<u16>? } }
+enum Node { Num { v: f64 }, Neg { of: Node..&<u16>? } }
 
 var npool: Node..[>..] = [];
 
-recursive fn eval(n: Node.Num&) -> flt { n.v }
-recursive fn eval(n: Node.Neg&) -> flt {
+recursive fn eval(n: Node.Num&) -> f64 { n.v }
+recursive fn eval(n: Node.Neg&) -> f64 {
     let of = n.of;                       // Narrowing tracks locals, so bind it.
     guard of else { return 0.0; }
     -eval(of)
@@ -378,7 +378,7 @@ fn casedispatch() {
 
 // --- fixed-mode ADTs: in-place variant replacement (§3.5) -------------------
 
-enum State { Idle, Busy { job: int }, Done { code: i16 } }
+enum State { Idle, Busy { job: i64 }, Done { code: i16 } }
 
 fn fixedmode() {
     var s: State = State.Idle {};
@@ -396,7 +396,7 @@ fn fixedmode() {
 
 // --- match over integers ----------------------------------------------------
 
-fn intmatch(n: int) {
+fn intmatch(n: i64) {
     let s = match n {
         -9..0    => "negative",
         0        => "zero",
@@ -409,7 +409,7 @@ fn intmatch(n: int) {
 
 // --- guards, blocks, loop values --------------------------------------------
 
-fn guards_blocks(n: int) -> int {
+fn guards_blocks(n: i64) -> i64 {
     let picked = loop {
         if n > 0 { break n; }
         break 1;
@@ -432,14 +432,14 @@ fn guards_blocks(n: int) -> int {
 
 // --- long-distance returns (§7.9) -------------------------------------------
 
-fn inner_fail(n: int) -> int {
+fn inner_fail(n: i64) -> i64 {
     if n < 0 { return -1 from process; }
     n * 2
 }
 
-fn middle(n: int) -> int { inner_fail(n) + 1 }
+fn middle(n: i64) -> i64 { inner_fail(n) + 1 }
 
-fn process(n: int) -> int {
+fn process(n: i64) -> i64 {
     return middle(n);
 }
 
@@ -450,7 +450,7 @@ let gname: u8[] = "goose";
 var gvec = Float3 { 0.0, 0.0, 0.0 };
 
 var gint = 5;
-struct GHolder { r: int& }
+struct GHolder { r: i64& }
 var gheld = GHolder { r: &gint };        // Global-rooted ref into a global.
 
 fn globals() {
@@ -463,7 +463,7 @@ fn globals() {
 
 // --- slices: bounds forms, re-slicing, writable slices ----------------------
 
-fn fill(s: int[:], v: int) { for i in s.len { s[i] = v; } }
+fn fill(s: i64[:], v: i64) { for i in s.len { s[i] = v; } }
 
 fn slices() {
     var data = [1, 2, 3, 4, 5];
@@ -479,8 +479,8 @@ fn slices() {
 
 // --- shadowing and definite assignment --------------------------------------
 
-fn shadowing(n: int) {
-    var acc: int;
+fn shadowing(n: i64) {
+    var acc: i64;
     if n > 0 { acc = 1; } else { acc = 2; }
     print(acc);
     let x = 1;

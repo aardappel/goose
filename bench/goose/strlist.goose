@@ -13,7 +13,7 @@ let PASSES = 4;
 fn main() {
     // One text buffer of space-separated random words.
     var text: u8[>..] = [];
-    var r = 12345;
+    var r: u64 = 12345;
     for i in N {
         r = xs_next(r);
         let wl = 3 + xs_mod(r, 18);

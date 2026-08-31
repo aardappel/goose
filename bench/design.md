@@ -107,10 +107,10 @@ wash case, and useful precisely as the control.
 Worth benchmarking deliberately, so the limits are ours to report rather than someone
 else's to discover:
 
-* All integer arithmetic is 64-bit `int` (6.2), with storage types widening on load. A
-  numeric kernel over i32 data that clang auto-vectorizes 8 wide may only go 4 wide in
-  Goose, or not at all if the widening blocks it. Spec TODO 10 flags this; a
-  straightforward integer array kernel should quantify it.
+* Arithmetic runs at the operands' own width (6.2), so an i32 kernel is genuinely
+  32-bit — but Goose's packed, unaligned layouts may still cost SIMD performance
+  against aligned C++ data. A straightforward integer array kernel should quantify
+  what remains.
 * Packed, unaligned layouts (3.2) may cost real SIMD performance for the same reason:
   no padding means no alignment guarantee. Also TODO 10. A float/vector math benchmark
   (particles, n-body, image kernel) is the test, and it doubles as the exercise for
@@ -151,8 +151,8 @@ Familiar, widely written code, each chosen to hit specific axes above:
 * Graph build plus BFS/Dijkstra: adjacency built incrementally (axis 3), then traversed.
   Compare Goose's nested resizables against hand built CSR in C++/Rust, which is the
   performance conscious thing to do there and is genuinely more work to write.
-* Particle/n-body or image kernel: the SIMD and 64-bit-int questions. Expect a wash or
-  a loss; that is the point of including it.
+* Particle/n-body or image kernel: the SIMD and packed-layout questions. Expect a wash
+  or a loss; that is the point of including it.
 * Save/load round trip of a built structure: mmap and use, vs parse and fixup.
 * Sort of a flat scalar array: the control. Should be a dead heat.
 * Binary trees (the well known benchmark game one) is worth including for

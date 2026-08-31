@@ -114,9 +114,6 @@ struct CodeGen {
     // limited arrays were evaluated during checking; assert rather than
     // re-evaluate.
 
-    static IntStorage CanI(IntStorage s) { return TypeCheck::CanonI(s); }
-    static FltStorage CanF(FltStorage s) { return TypeCheck::CanonF(s); }
-
     int64_t ArrSize(TypeArray *a) {
         assert(a->size >= 0 || !a->sizeexpr);
         return a->size;
@@ -126,8 +123,8 @@ struct CodeGen {
         if (a == b) return true;
         if (a->kind != b->kind) return false;
         switch (a->kind) {
-            case TY_INT:  return CanI(a->intstorage) == CanI(b->intstorage);
-            case TY_FLT:  return CanF(a->fltstorage) == CanF(b->fltstorage);
+            case TY_INT:  return a->intstorage == b->intstorage;
+            case TY_FLT:  return a->fltstorage == b->fltstorage;
             case TY_BOOL: case TY_VOID: case TY_FN: return true;
             case TY_STRUCT: return SI(a) == SI(b);
             case TY_ENUM:   return EIOf(a) == EIOf(b) && a->enu->varmode == b->enu->varmode;
@@ -245,17 +242,10 @@ struct CodeGen {
         }
     }
 
-    static int64_t IntSize(IntStorage s) {
-        switch (CanI(s)) {
-            case IS_I8: case IS_U8: return 1;
-            case IS_I16: case IS_U16: return 2;
-            case IS_I32: case IS_U32: return 4;
-            default: return 8;
-        }
-    }
+    static int64_t IntSize(IntStorage s) { return IntBits(s) / 8; }
 
     static const char *IntCT(IntStorage s) {
-        switch (CanI(s)) {
+        switch (s) {
             case IS_I8:  return "int8_t";
             case IS_I16: return "int16_t";
             case IS_I32: return "int32_t";
@@ -264,6 +254,34 @@ struct CodeGen {
             case IS_U32: return "uint32_t";
             case IS_U64: return "uint64_t";
             default:     return "int64_t";
+        }
+    }
+
+    // The value range of an integer type (u64's maximum reads as -1).
+    static pair<int64_t, int64_t> IntRange(IntStorage s) {
+        switch (s) {
+            case IS_I8:  return { -128, 127 };
+            case IS_I16: return { -32768, 32767 };
+            case IS_I32: return { INT32_MIN, INT32_MAX };
+            case IS_U8:  return { 0, 255 };
+            case IS_U16: return { 0, 65535 };
+            case IS_U32: return { 0, (int64_t)UINT32_MAX };
+            case IS_U64: return { 0, -1 };
+            default:     return { INT64_MIN, INT64_MAX };
+        }
+    }
+
+    // The runtime arithmetic helper suffix per integer type (runtime.h).
+    static const char *IntSfx(IntStorage s) {
+        switch (s) {
+            case IS_I8:  return "i8";
+            case IS_I16: return "i16";
+            case IS_I32: return "i32";
+            case IS_U8:  return "u8";
+            case IS_U16: return "u16";
+            case IS_U32: return "u32";
+            case IS_U64: return "u64";
+            default:     return "i64";
         }
     }
 
@@ -423,13 +441,8 @@ struct CodeGen {
     string Mangle(TypeExpr *t) {
         switch (t->kind) {
             case TY_INT:
-                switch (CanI(t->intstorage)) {
-                    case IS_I8: return "i8"; case IS_I16: return "i16"; case IS_I32: return "i32";
-                    case IS_U8: return "u8"; case IS_U16: return "u16"; case IS_U32: return "u32";
-                    case IS_U64: return "u64"; case IS_VARINT: return "vi";
-                    default: return "i";
-                }
-            case TY_FLT: return t->fltstorage == FS_F32 ? "f32" : "f";
+                return t->intstorage == IS_VARINT ? "vi" : IntSfx(t->intstorage);
+            case TY_FLT: return t->fltstorage == FS_F32 ? "f32" : "f64";
             case TY_BOOL: return "b";
             case TY_STRUCT: {
                 auto s = Sanitize(t->struc->st->name);
@@ -1734,7 +1747,7 @@ struct CodeGen {
         auto statlen = lv.t->kind == TY_ARRAY && lv.t->arr->akind == A_FIXED
                            ? ArrSize(lv.t->arr) : -1;
         if (il && statlen >= 0 && il->val >= 0 && il->val < statlen) ix = idx;
-        else ix = cat("GS_IDX(", idx, ", ", v.len, ", ", LocArgs(ln), ")");
+        else ix = cat("GS_IDX((int64_t)(", idx, "), ", v.len, ", ", LocArgs(ln), ")");
         if (v.typedelems) {
             Loc r;
             r.t = v.elem;
@@ -1831,7 +1844,7 @@ struct CodeGen {
     // Expression values. GenX produces a C expression for fixed-class values
     // (possibly after emitting statements); GenPtr produces a byte pointer to
     // a bytes-class value. Both follow the node's checked exprtype, which
-    // already encodes widening and reference decay.
+    // already encodes operand unification and reference decay.
 
     static bool IsCtl(Node *n) {
         return Is<IfExpr>(n) || Is<MatchExpr>(n) || Is<Block>(n) || Is<EarlyBlock>(n) ||
@@ -1874,7 +1887,7 @@ struct CodeGen {
         }
         if (!lv.val) {
             assert(IsBytesT(lv.t));
-            if (lv.t->kind == TY_INT)   // varint field read: widen to int.
+            if (lv.t->kind == TY_INT)   // varint field read: decode to i64.
                 return cat("gs_zig_read(", lv.s, ")");
             if (et && IsFix(et) && !TEq(lv.t, et)) return AdaptToFixed(lv, et, ln);
             return lv.s;   // Bytes value: the pointer is the currency.
@@ -2139,18 +2152,13 @@ struct CodeGen {
     }
 
     // ------------------------------------------------------------------
-    // Binary operators. Operand exprtypes are already decayed/widened.
+    // Binary operators. Operand exprtypes are already decayed and unified.
 
     // Operand exprtype as an operator sees it: a spliced reference reads as
-    // its pointee (widened like any load).
+    // its pointee.
     TypeExpr *OperandT(TypeExpr *t) {
-        if (t && t->kind == TY_REF && !t->ref->optional && t->ref->lenstorage < 0) {
-            auto p2 = t->ref->sub;
-            if (p2->kind == TY_INT && p2->intstorage != IS_VARINT &&
-                CanI(p2->intstorage) != IS_INT) return ast.inttypes[IS_INT];
-            if (p2->kind == TY_FLT && p2->fltstorage == FS_F64) return ast.flttypes[FS_FLT];
-            return p2;
-        }
+        if (t && t->kind == TY_REF && !t->ref->optional && t->ref->lenstorage < 0)
+            return t->ref->sub;
         return t;
     }
 
@@ -2229,18 +2237,16 @@ struct CodeGen {
         return t;
     }
 
-    // Elementwise arithmetic (§6.1): expand member by member into a temp.
-    string GenElemwise(Binary *b, const string &l, const string &r) {
-        auto t = b->exprtype;
-        auto tv = T();
-        L(CT(t), " ", tv, ";");
-        auto lt = T(), rtv = T();
-        L(CT(t), " ", lt, " = ", l, ";");
-        L(CT(t), " ", rtv, " = ", r, ";");
+    // Elementwise arithmetic (§6.1), expanded member by member with direct
+    // loads and stores — no whole-struct temporaries, which backends fail to
+    // scalarize. Member i of the result depends only on member i of each
+    // operand, so writing members straight into `dst` is exact even when it
+    // aliases an operand (the p.vel = p.vel + g shape).
+    void GenElemwiseInto(Binary *b, const string &l, const string &r, const string &dst) {
         function<void(TypeExpr *, const string &)> rec = [&](TypeExpr *tt, const string &path) {
             switch (tt->kind) {
                 case TY_INT: case TY_FLT: {
-                    auto a = cat(lt, path), c = cat(rtv, path);
+                    auto a = cat("(", l, ")", path), c = cat("(", r, ")", path);
                     string x;
                     if (tt->kind == TY_FLT) {
                         switch (b->op) {
@@ -2251,19 +2257,19 @@ struct CodeGen {
                             default:      x = cat((tt->fltstorage == FS_F32 ? "fmodf(" : "fmod("),
                                                   a, ", ", c, ")"); break;
                         }
-                        L(tv, path, " = ", x, ";");
                     } else {
+                        auto sfx = IntSfx(tt->intstorage);
                         switch (b->op) {
-                            case T_PLUS:  x = cat("GS_ADD(", a, ", ", c, ")"); break;
-                            case T_MINUS: x = cat("GS_SUB(", a, ", ", c, ")"); break;
-                            case T_MUL:   x = cat("GS_MUL(", a, ", ", c, ")"); break;
-                            case T_DIV:   x = cat("gs_idiv(", a, ", ", c, ", ",
+                            case T_PLUS:  x = cat("gs_add_", sfx, "(", a, ", ", c, ")"); break;
+                            case T_MINUS: x = cat("gs_sub_", sfx, "(", a, ", ", c, ")"); break;
+                            case T_MUL:   x = cat("gs_mul_", sfx, "(", a, ", ", c, ")"); break;
+                            case T_DIV:   x = cat("gs_div_", sfx, "(", a, ", ", c, ", ",
                                                   LocArgs(b->line), ")"); break;
-                            default:      x = cat("gs_imod(", a, ", ", c, ", ",
+                            default:      x = cat("gs_mod_", sfx, "(", a, ", ", c, ", ",
                                                   LocArgs(b->line), ")"); break;
                         }
-                        L(tv, path, " = (", CT(tt), ")", x, ";");
                     }
+                    L(dst, path, " = ", x, ";");
                     return;
                 }
                 case TY_STRUCT: {
@@ -2289,12 +2295,30 @@ struct CodeGen {
         };
         // Struct field paths start at the value; array paths at .e — handled
         // uniformly since the outer type is one of the two.
-        rec(t, "");
-        return tv;
+        rec(b->exprtype, "");
     }
 
-    // Fixed array member paths need ".e" prefixes; adjust: the recursion above
-    // treats a top-level fixed array via TY_ARRAY (paths ".e[i]"), fine.
+    // Left-to-right evaluation (§2): when the right operand needs statements,
+    // the left's value must be snapshotted before they run.
+    void ElemwiseOperands(Binary *b, string &l, string &r) {
+        if (HasStmts(b->right)) {
+            l = GenVal(b->left);
+            auto lt = T();
+            L(CT(b->exprtype), " ", lt, " = ", l, ";");
+            l = lt;
+            r = GenVal(b->right);
+        } else {
+            l = GenVal(b->left);
+            r = GenVal(b->right);
+        }
+    }
+
+    string GenElemwise(Binary *b, const string &l, const string &r) {
+        auto tv = T();
+        L(CT(b->exprtype), " ", tv, ";");
+        GenElemwiseInto(b, l, r, tv);
+        return tv;
+    }
 
     string GenSlice(SliceExpr *se) {
         auto lv = GenLoc(se->obj);
@@ -2945,12 +2969,7 @@ struct CodeGen {
                            Bump(stk, cat(IntSize((IntStorage)ft->ref->lenstorage))); }
                     continue;
                 }
-                auto widened = ast.NewType(TY_REF, ft->line);
-                widened->ref = ast.NewDetail<TypeRef>();
-                widened->ref->sub = ft->ref->sub;
-                widened->ref->optional = ft->ref->optional;
                 auto rv = GenX(init);
-                (void)widened;
                 EmitRelStore(stk, ft, rv, sl->line);
                 continue;
             }
@@ -2962,7 +2981,7 @@ struct CodeGen {
                 continue;
             }
             if (ft->kind == TY_INT && ft->intstorage == IS_VARINT) {
-                auto x = GenXD(init, ast.inttypes[IS_INT]);
+                auto x = GenXD(init, ast.inttypes[IS_I64]);
                 Bump(stk, cat("gs_zig_write(", stk, "->top, ", x, ")"));
                 continue;
             }
@@ -3848,7 +3867,13 @@ struct CodeGen {
         switch ((BuiltinKind)c->builtin) {
             case B_PRINT: {
                 auto t = an[0]->exprtype;
-                if (t->kind == TY_INT) { L("gs_print_int(", GenX(an[0]), ");"); return {}; }
+                if (t->kind == TY_INT) {
+                    if (t->intstorage == IS_U64)
+                        L("gs_print_uint(", GenX(an[0]), ");");
+                    else
+                        L("gs_print_int((int64_t)(", GenX(an[0]), "));");
+                    return {};
+                }
                 if (t->kind == TY_FLT) {
                     L("gs_print_flt((double)(", GenX(an[0]), "));");
                     return {};
@@ -3871,18 +3896,6 @@ struct CodeGen {
                 L("if (!(", x, ")) gs_abort(GS_E_ASSERT, ", LocArgs(ln), ");");
                 return {};
             }
-            case B_UNSIGNED_DIV:
-                return { cat("gs_udiv(", GenX(an[0]), ", ", GenX(an[1]), ", ", LocArgs(ln),
-                             ")") };
-            case B_UNSIGNED_MOD:
-                return { cat("gs_umod(", GenX(an[0]), ", ", GenX(an[1]), ", ", LocArgs(ln),
-                             ")") };
-            case B_UNSIGNED_SHR:
-                return { cat("(int64_t)((uint64_t)(", GenX(an[0]), ") >> ((", GenX(an[1]),
-                             ") & 63))") };
-            case B_UNSIGNED_LESS:
-                return { cat("(uint8_t)((uint64_t)(", GenX(an[0]), ") < (uint64_t)(",
-                             GenX(an[1]), "))") };
             case B_HARDWARE_THREADS: return { "gs_hardware_threads()" };
             case B_THREAD_WAIT: {
                 usesthreads = true;
@@ -3903,7 +3916,7 @@ struct CodeGen {
                     SaveBase(false, stk, base);
                     auto lenv = T();
                     L("int64_t ", lenv, ";");
-                    EmitValStore(stk, ast.inttypes[IS_INT], "0");
+                    EmitValStore(stk, ast.inttypes[IS_I64], "0");
                     EmitRzCopy(src, t, stk, lenv, ln);
                     L("*(int64_t *)", base, " = ", lenv, ";");
                     L("gs_qput(&", q, ", ", base, ", ", stk, "->top - ", base, ");");
@@ -4567,7 +4580,12 @@ struct CodeGen {
 
 // ---- CgX ------------------------------------------------------------------
 
-inline string IntLit::CgX(CodeGen &) { return CodeGen::IntStr(val); }
+inline string IntLit::CgX(CodeGen &) {
+    // A u64-typed value above i64.max has negative bits; emit it unsigned.
+    if (val < 0 && exprtype && exprtype->kind == TY_INT && exprtype->intstorage == IS_U64)
+        return cat((uint64_t)val, "ULL");
+    return CodeGen::IntStr(val);
+}
 
 inline string FltLit::CgX(CodeGen &) {
     return CodeGen::FltStr(val, exprtype && exprtype->kind == TY_FLT &&
@@ -4612,14 +4630,16 @@ inline string Unary::CgX(CodeGen &cg) {
     switch (op) {
         case T_MINUS:
             if (child->exprtype->kind == TY_FLT) return cat("(-", x, ")");
-            return cat("GS_NEG(", x, ")");
+            return cat("gs_neg_", cg.IntSfx(child->exprtype->intstorage), "(", x, ")");
         case T_NOT: {
             auto ct = child->exprtype;
             if (ct->kind == TY_REF && cg.IsFatPointee(ct->ref->sub))
                 return cat("(", x, ".hdr == 0)");
             return cat("(uint8_t)(!", x, ")");
         }
-        case T_BITNOT: return cat("(~", x, ")");
+        case T_BITNOT:
+            // The cast undoes C's promotion to int for the narrow types.
+            return cat("(", cg.CT(exprtype), ")(~(", x, "))");
         default: assert(false); return x;
     }
 }
@@ -4686,26 +4706,32 @@ inline string Binary::CgX(CodeGen &cg) {
         l = cg.GenVal(left);
         r = cg.GenVal(right);
     }
-    auto isint = lt->kind == TY_INT;
+    auto isint = lt->kind == TY_INT && lt->intstorage != IS_VARINT;
     auto isflt = lt->kind == TY_FLT;
     auto f32 = exprtype && exprtype->kind == TY_FLT &&
                exprtype->fltstorage == FS_F32;
+    // Operands were unified by the typechecker; casting to the common C type
+    // realizes any implicit widening (and truncates nothing).
+    auto ct = isint || isflt ? cg.CT(lt) : "";
+    auto lc = isint || isflt ? cat("(", ct, ")(", l, ")") : l;
+    auto rc = isint || isflt ? cat("(", ct, ")(", r, ")") : r;
     switch (op) {
         case T_PLUS: case T_MINUS: case T_MUL: case T_DIV: case T_MOD: {
             if (isflt) {
-                if (op == T_MOD) return cat(f32 ? "fmodf(" : "fmod(", l, ", ", r, ")");
+                if (op == T_MOD) return cat(f32 ? "fmodf(" : "fmod(", lc, ", ", rc, ")");
                 const char *o = op == T_PLUS ? " + " : op == T_MINUS ? " - "
                                 : op == T_MUL ? " * " : " / ";
-                return cat("(", l, o, r, ")");
+                return cat("(", lc, o, rc, ")");
             }
             if (isint) {
+                auto sfx = cg.IntSfx(lt->intstorage);
                 switch (op) {
-                    case T_PLUS:  return cat("GS_ADD(", l, ", ", r, ")");
-                    case T_MINUS: return cat("GS_SUB(", l, ", ", r, ")");
-                    case T_MUL:   return cat("GS_MUL(", l, ", ", r, ")");
-                    case T_DIV:   return cat("gs_idiv(", l, ", ", r, ", ",
+                    case T_PLUS:  return cat("gs_add_", sfx, "(", l, ", ", r, ")");
+                    case T_MINUS: return cat("gs_sub_", sfx, "(", l, ", ", r, ")");
+                    case T_MUL:   return cat("gs_mul_", sfx, "(", l, ", ", r, ")");
+                    case T_DIV:   return cat("gs_div_", sfx, "(", l, ", ", r, ", ",
                                              cg.LocArgs(line), ")");
-                    default:      return cat("gs_imod(", l, ", ", r, ", ",
+                    default:      return cat("gs_mod_", sfx, "(", l, ", ", r, ", ",
                                              cg.LocArgs(line), ")");
                 }
             }
@@ -4715,17 +4741,23 @@ inline string Binary::CgX(CodeGen &cg) {
         case T_LT: case T_GT: case T_LTEQ: case T_GTEQ: {
             const char *o = op == T_LT ? " < " : op == T_GT ? " > "
                             : op == T_LTEQ ? " <= " : " >= ";
-            return cat("(uint8_t)(", l, o, r, ")");
+            return cat("(uint8_t)(", lc, o, rc, ")");
         }
         case T_EQ: case T_NEQ: {
+            if (isint || isflt) {
+                auto eq = cat("(", lc, " == ", rc, ")");
+                return op == T_EQ ? cat("(uint8_t)", eq) : cat("(uint8_t)(!", eq, ")");
+            }
             auto eq = cg.GenEquality(lt, rt, left, right, l, r);
             return op == T_EQ ? eq : cat("(uint8_t)(!", eq, ")");
         }
-        case T_BITAND: return cat("(", l, " & ", r, ")");
-        case T_BITOR:  return cat("(", l, " | ", r, ")");
-        case T_XOR:    return cat("(", l, " ^ ", r, ")");
-        case T_SHL:    return cat("GS_SHL(", l, ", ", r, ")");
-        case T_SHR:    return cat("GS_SHR(", l, ", ", r, ")");
+        case T_BITAND: return cat("(", ct, ")(", lc, " & ", rc, ")");
+        case T_BITOR:  return cat("(", ct, ")(", lc, " | ", rc, ")");
+        case T_XOR:    return cat("(", ct, ")(", lc, " ^ ", rc, ")");
+        case T_SHL:    return cat("gs_shl_", cg.IntSfx(lt->intstorage), "(", l,
+                                  ", (int64_t)(", r, "))");
+        case T_SHR:    return cat("gs_shr_", cg.IntSfx(lt->intstorage), "(", l,
+                                  ", (int64_t)(", r, "))");
         default: assert(false); return l;
     }
 }
@@ -4772,33 +4804,53 @@ inline string AsCast::CgX(CodeGen &cg) {
     auto x = cg.GenX(child);
     auto st = child->exprtype;
     auto tt = exprtype;
+    // u64 is the one source whose values exceed the int64 range the checks
+    // compute in; it gets unsigned-compare variants.
+    auto su64 = st->kind == TY_INT && st->intstorage == IS_U64;
     if (tt->kind == TY_INT) {
         auto is = tt->intstorage;
-        auto iv = st->kind == TY_FLT
-                      ? (unchecked ? cat("gs_f2iwrap(", x, ")")
-                                       : cat("GS_F2I(", x, ")"))
-                      : cat("(", x, ")");
-        if (unchecked || cg.IntSize(is) == 8)
-            return cat("(", cg.IntCT(is), ")", iv);
-        int64_t lo = 0, hi = 0;
-        switch (cg.CanI(is)) {
-            case IS_I8:  lo = -128; hi = 127; break;
-            case IS_I16: lo = -32768; hi = 32767; break;
-            case IS_I32: lo = INT32_MIN; hi = INT32_MAX; break;
-            case IS_U8:  hi = 255; break;
-            case IS_U16: hi = 65535; break;
-            default:     hi = UINT32_MAX; break;
+        auto tct = cg.IntCT(is);
+        if (st->kind == TY_FLT) {
+            if (unchecked) return cat("(", tct, ")gs_f2iwrap(", x, ")");
+            if (is == IS_U64) return cat("(uint64_t)GS_F2U(", x, ")");
+            // GS_F2I checks the exact i64 value; GS_RANGE narrows further.
+            if (cg.IntSize(is) == 8) return cat("(", tct, ")GS_F2I(", x, ")");
+            auto [lo, hi] = cg.IntRange(is);
+            return cat("(", tct, ")GS_RANGE(GS_F2I(", x, "), ", cg.IntStr(lo), ", ",
+                       cg.IntStr(hi), ")");
         }
-        return cat("(", cg.IntCT(is), ")GS_RANGE(", iv, ", ", cg.IntStr(lo), ", ", cg.IntStr(hi),
-                   ")");
+        if (unchecked || cg.TEq(st, tt)) return cat("(", tct, ")(", x, ")");
+        if (su64) {
+            // From u64: value-preserving iff it does not exceed the target's
+            // maximum (all targets' maxima fit an unsigned compare).
+            if (is == IS_U64) return cat("(", x, ")");
+            auto [lo, hi] = cg.IntRange(is);
+            (void)lo;
+            return cat("(", tct, ")GS_RANGE_U(", x, ", ", (uint64_t)hi, "ULL)");
+        }
+        if (is == IS_U64)   // Source ≤ i64.max: only negatives are out of range.
+            return cat("(uint64_t)GS_RANGE((int64_t)(", x, "), 0, INT64_MAX)");
+        if (cg.IntSize(is) == 8) return cat("(", tct, ")(", x, ")");
+        auto [lo, hi] = cg.IntRange(is);
+        return cat("(", tct, ")GS_RANGE((int64_t)(", x, "), ", cg.IntStr(lo), ", ",
+                   cg.IntStr(hi), ")");
     }
     assert(tt->kind == TY_FLT);
     if (tt->fltstorage == FS_F32) {
         if (!unchecked && st->kind == TY_FLT && st->fltstorage != FS_F32)
             return cat("GS_F2F32(", x, ")");
+        if (!unchecked && st->kind == TY_INT) {
+            if (IntBits(st->intstorage) <= 16) return cat("(float)(", x, ")");  // Exact.
+            if (su64) return cat("GS_U2F32(", x, ")");
+            return cat("GS_I2F32((int64_t)(", x, "))");
+        }
         return cat("(float)(", x, ")");
     }
-    if (!unchecked && st->kind == TY_INT) return cat("GS_I2F(", x, ")");
+    if (!unchecked && st->kind == TY_INT) {
+        if (IntBits(st->intstorage) <= 32) return cat("(double)(", x, ")");  // Exact.
+        if (su64) return cat("GS_U2F(", x, ")");
+        return cat("GS_I2F(", x, ")");
+    }
     return cat("(double)(", x, ")");
 }
 
@@ -4930,15 +4982,20 @@ inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
     }
     if (!enumtype) {   // Integer match: an if-chain in arm order.
         auto x = cg.GenPure(scrutinee);
+        // Compare at the scrutinee's type (unsigned scrutinees compare
+        // unsigned; pattern constants carry that type's value bits).
+        auto sct = cg.CT(scrutinee->exprtype);
+        auto k = [&](int64_t v) { return cat("(", sct, ")", cg.IntStr(v)); };
+        auto xs = cat("(", sct, ")(", x, ")");
         auto first = true;
         for (auto &arm : arms) {
             if (arm.pat.kind == P_WILDCARD) {
                 cg.L(first ? "{" : "} else {");
             } else if (arm.hi == arm.lo + 1) {
-                cg.L(first ? "" : "} else ", "if (", x, " == ", cg.IntStr(arm.lo), ") {");
+                cg.L(first ? "" : "} else ", "if (", xs, " == ", k(arm.lo), ") {");
             } else {
-                cg.L(first ? "" : "} else ", "if (", x, " >= ", cg.IntStr(arm.lo), " && ", x,
-                  " < ", cg.IntStr(arm.hi), ") {");
+                cg.L(first ? "" : "} else ", "if (", xs, " >= ", k(arm.lo), " && ", xs,
+                  " < ", k(arm.hi), ") {");
             }
             first = false;
             cg.ind++;
@@ -5077,7 +5134,19 @@ inline void Ident::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
 inline void ArrayLit::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
 inline void StructLit::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
 inline void Unary::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
-inline void Binary::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
+inline void Binary::CgAny(CodeGen &cg, const Dst &d) {
+    // An elementwise result (struct/fixed-array typed, §6.1) writes its
+    // members straight into a plain destination — including one that aliases
+    // an operand (see GenElemwiseInto).
+    if (d.k == 1 && exprtype &&
+        (exprtype->kind == TY_STRUCT || exprtype->kind == TY_ARRAY)) {
+        string l, r;
+        cg.ElemwiseOperands(this, l, r);
+        cg.GenElemwiseInto(this, l, r, d.s);
+        return;
+    }
+    cg.LeafAny(this, d);
+}
 inline void Dot::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
 inline void Index::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
 inline void SliceExpr::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
@@ -5149,32 +5218,35 @@ inline void Assign::CgStmt(CodeGen &cg) {
     if (op != T_ASSIGN) {
         assert(lv.val);
         auto r = cg.GenX(rhs);
+        auto sfx = lv.t->kind == TY_INT ? cg.IntSfx(lv.t->intstorage) : "";
         switch (op) {
             case T_PLUSEQ:
                 if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", lv.s, " + (", r, ");");
-                else cg.L(lv.s, " = GS_ADD(", lv.s, ", ", r, ");");
+                else cg.L(lv.s, " = gs_add_", sfx, "(", lv.s, ", ", r, ");");
                 break;
             case T_MINUSEQ:
                 if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", lv.s, " - (", r, ");");
-                else cg.L(lv.s, " = GS_SUB(", lv.s, ", ", r, ");");
+                else cg.L(lv.s, " = gs_sub_", sfx, "(", lv.s, ", ", r, ");");
                 break;
             case T_MULEQ:
                 if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", lv.s, " * (", r, ");");
-                else cg.L(lv.s, " = GS_MUL(", lv.s, ", ", r, ");");
+                else cg.L(lv.s, " = gs_mul_", sfx, "(", lv.s, ", ", r, ");");
                 break;
             case T_DIVEQ:
                 if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", lv.s, " / (", r, ");");
-                else cg.L(lv.s, " = gs_idiv(", lv.s, ", ", r, ", ", cg.LocArgs(line), ");");
+                else cg.L(lv.s, " = gs_div_", sfx, "(", lv.s, ", ", r, ", ",
+                          cg.LocArgs(line), ");");
                 break;
             case T_MODEQ:
                 if (lv.t->kind == TY_FLT)
                     cg.L(lv.s, " = ", lv.t->fltstorage == FS_F32 ? "fmodf(" : "fmod(", lv.s,
                       ", ", r, ");");
-                else cg.L(lv.s, " = gs_imod(", lv.s, ", ", r, ", ", cg.LocArgs(line), ");");
+                else cg.L(lv.s, " = gs_mod_", sfx, "(", lv.s, ", ", r, ", ",
+                          cg.LocArgs(line), ");");
                 break;
-            case T_ANDEQ: cg.L(lv.s, " = ", lv.s, " & (", r, ");"); break;
-            case T_OREQ:  cg.L(lv.s, " = ", lv.s, " | (", r, ");"); break;
-            case T_XOREQ: cg.L(lv.s, " = ", lv.s, " ^ (", r, ");"); break;
+            case T_ANDEQ: cg.L(lv.s, " = (", cg.CT(lv.t), ")(", lv.s, " & (", r, "));"); break;
+            case T_OREQ:  cg.L(lv.s, " = (", cg.CT(lv.t), ")(", lv.s, " | (", r, "));"); break;
+            case T_XOREQ: cg.L(lv.s, " = (", cg.CT(lv.t), ")(", lv.s, " ^ (", r, "));"); break;
             default: assert(false);
         }
         return;
@@ -5215,8 +5287,8 @@ inline void IncDec::CgStmt(CodeGen &cg) {
     auto lv = cg.GenLoc(lval);
     if (lv.t->kind == TY_REF) cg.DerefLoc(lv, line);
     assert(lv.val);
-    auto o = op == T_INC ? "GS_ADD(" : "GS_SUB(";
-    cg.L(lv.s, " = ", o, lv.s, ", 1);");
+    auto o = op == T_INC ? "gs_add_" : "gs_sub_";
+    cg.L(lv.s, " = ", o, cg.IntSfx(lv.t->intstorage), "(", lv.s, ", 1);");
 }
 
 inline void FnDecl::CgStmt(CodeGen &) {}   // Nested declarations are separate specs.
@@ -5238,26 +5310,30 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
     auto iv = vdef ? cg.LocalName(vdef) : cg.T();
     auto ix = idxdef ? cg.LocalName(idxdef) : "";
     if (iterkind == IK_RANGE) {
+        // The loop variable runs at the range's own type: narrow counters
+        // stay narrow through the body (§6.5).
+        auto ict = cg.CT(vdef->type);
         auto r = Is<RangeExpr>(iter);
         auto lo = cg.GenX(r->lo);
         auto lov = cg.T();
-        cg.L("int64_t ", lov, " = ", lo, ";");
+        cg.L(ict, " ", lov, " = ", lo, ";");
         auto hi = cg.GenX(r->hi);
         auto hiv = cg.T();
-        cg.L("int64_t ", hiv, " = ", hi, ";");
+        cg.L(ict, " ", hiv, " = ", hi, ";");
         if (!ix.empty()) cg.L("int64_t ", ix, " = 0;");
         cg.GenLoopBody({}, body, d, this,
-                    cat("for (int64_t ", iv, " = ", lov, "; ", iv, " < ", hiv, "; ", iv,
+                    cat("for (", ict, " ", iv, " = ", lov, "; ", iv, " < ", hiv, "; ", iv,
                         "++", ix.empty() ? "" : cat(", ", ix, "++"), ") {"));
         return;
     }
     if (iterkind == IK_COUNT) {
+        auto ict = cg.CT(vdef->type);
         auto n = cg.GenX(iter);
         auto nv = cg.T();
-        cg.L("int64_t ", nv, " = ", n, ";");
+        cg.L(ict, " ", nv, " = ", n, ";");
         if (!ix.empty()) cg.L("int64_t ", ix, " = 0;");
         cg.GenLoopBody({}, body, d, this,
-                    cat("for (int64_t ", iv, " = 0; ", iv, " < ", nv, "; ", iv, "++",
+                    cat("for (", ict, " ", iv, " = 0; ", iv, " < ", nv, "; ", iv, "++",
                         ix.empty() ? "" : cat(", ", ix, "++"), ") {"));
         return;
     }

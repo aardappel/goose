@@ -1,2 +1,2 @@
-fn f(x: int??) { }
+fn f(x: i64??) { }
 fn main() { }

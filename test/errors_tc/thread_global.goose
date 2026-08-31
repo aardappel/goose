@@ -1,7 +1,7 @@
 // Thread programs may not access globals (§11.2): they would be shared
 // mutable memory between programs.
 var counter = 0;
-thread_fn worker(n: int) {
+thread_fn worker(n: i64) {
     counter += n;
 }
 fn main() {

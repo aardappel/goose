@@ -5,7 +5,7 @@
 // --- arrays: length storages, varint lengths, limited dynamic ---------------
 
 fn lenstores() {
-    let a: int[u8] = [10, 20, 30];
+    let a: i64[u8] = [10, 20, 30];
     print(a.len);                        // 3
     print(a[2]);                         // 30
     let b: u8[u16] = "wide";
@@ -19,7 +19,7 @@ fn lenstores() {
 }
 
 fn limited_dyn() {
-    var l: int[..] = [7, 8];             // Capacity = initial length (2).
+    var l: i64[..] = [7, 8];             // Capacity = initial length (2).
     print(l.cap);                        // 2
     l.pop();
     l.push(9);
@@ -30,7 +30,7 @@ fn limited_dyn() {
     print(l.len);                        // 0
     l.resize(2, 5);
     print(l[0] + l[1]);                  // 10
-    var big: int[..] = [..4];            // Empty, with construction-time capacity.
+    var big: i64[..] = [..4];            // Empty, with construction-time capacity.
     print(big.cap);                      // 4
     big.push(6);
     big.append([1, 1, 1]);               // Fills to capacity.
@@ -39,15 +39,15 @@ fn limited_dyn() {
 
 // --- append forms ------------------------------------------------------------
 
-fn make_arr() -> int[] { return [4, 5]; }
-fn fwd_arr() -> int[] { return make_arr(); }         // Element-run forwarding.
-fn named_arr() -> int[] {
-    let a: int[] = [7, 8];
+fn make_arr() -> i64[] { return [4, 5]; }
+fn fwd_arr() -> i64[] { return make_arr(); }         // Element-run forwarding.
+fn named_arr() -> i64[] {
+    let a: i64[] = [7, 8];
     return a;                            // Named result: callee-side copy in run form.
 }
 
 fn appends() {
-    var g: int[>..] = [1];
+    var g: i64[>..] = [1];
     g.append([2, 3]);                    // Fixed array source.
     let s = [9, 9, 9];
     g.append(s[1..2]);                   // Slice source.
@@ -66,7 +66,7 @@ fn appends() {
     var lens = 0;
     for &w in vs { lens += w.len; }
     print(lens);                         // 6
-    var g2: int[>..] = [];
+    var g2: i64[>..] = [];
     g2.append(fwd_arr());                // Element-run through a forward.
     g2.append(named_arr());
     print(g2.len);                       // 4
@@ -76,7 +76,7 @@ fn appends() {
 // --- grow-shrink -------------------------------------------------------------
 
 fn growshrink() {
-    var gs: int[>..<] = [1, 2, 3];
+    var gs: i64[>..<] = [1, 2, 3];
     print(gs.pop());                     // 3
     gs.push(7);
     gs.resize(1);
@@ -183,7 +183,7 @@ fn f32s() {
 
 // --- control: break values, bytes-valued blocks ------------------------------
 
-fn controls(n: int) {
+fn controls(n: i64) {
     let picked: u8[] = if n > 0 { "pos" } else { "neg" };
     print(picked);                       // pos
     var j = 0;
@@ -218,7 +218,7 @@ fn void_like() {
 fn capture_test() {
     var log: u8[>..] = [];
     var count = 0;
-    fn note(c: int) {
+    fn note(c: i64) {
         log.push(c as! u8);
         count++;
     }
@@ -230,12 +230,12 @@ fn capture_test() {
 
 // --- multiple returns, mixed and forwarded ----------------------------------
 
-fn three(n: int) -> int, u8[], bool {
+fn three(n: i64) -> i64, u8[], bool {
     if n > 0 { return n, "up", true; }
     return -n, "down", false;
 }
 
-fn fwd(n: int) -> int, u8[], bool { return three(n); }
+fn fwd(n: i64) -> i64, u8[], bool { return three(n); }
 
 fn multis() {
     let a, s, f = fwd(-7);
@@ -246,17 +246,17 @@ fn multis() {
 
 // --- long-distance returns with values (A.5 shape) ---------------------------
 
-recursive fn deep(n: int) -> int {
+recursive fn deep(n: i64) -> i64 {
     if n == 0 { return 99, "boom" from top; }
     deep(n - 1) + 1
 }
 
-recursive fn deepr(n: int) -> int {
+recursive fn deepr(n: i64) -> i64 {
     if n == 0 { return 0; }
     deepr(n - 1) + 1
 }
 
-fn top(n: int) -> int, u8[] {
+fn top(n: i64) -> i64, u8[] {
     return deep(n) + 1000, "ok";
 }
 
@@ -269,14 +269,14 @@ fn longdistance() {
 
 // --- NRVO both ways ----------------------------------------------------------
 
-fn build(n: int) -> u8[>..] {
+fn build(n: i64) -> u8[>..] {
     var out: u8[>..] = [];
     if n > 0 { out.push('a'); return out; }
     out.push('b');
     return out;                          // Same local: built at the destination.
 }
 
-fn pick_one(n: int) -> u8[>..] {
+fn pick_one(n: i64) -> u8[>..] {
     var x: u8[>..] = "x";
     var y: u8[>..] = "y";
     if n > 0 { return x; }               // Two sources: one copies on return.
@@ -290,19 +290,19 @@ fn nrvo() {
     print(pick_one(0));                  // y
 }
 
-// --- casts and unsigned builtins ---------------------------------------------
+// --- casts and unsigned arithmetic -------------------------------------------
 
 fn casts() {
     print(300 as! u8);                   // 44
     print((0 - 1) as! u16);              // 65535 (`as` binds tighter than unary -)
-    print(2.9 as! int);                  // 2 (checked `as` would abort in debug)
-    print(-2.9 as! int);                 // -2
-    print(7 as flt / 2.0);               // 3.5
+    print(2.9 as! i64);                  // 2 (checked `as` would abort in debug)
+    print(-2.9 as! i64);                 // -2
+    print(7 as f64 / 2.0);               // 3.5
     print(1 << 65);                      // 2 (shift count masked to 1)
-    print(unsigned_shr(-1, 60));         // 15
-    print(unsigned_div(-2, 3));          // 6148914691236517204
-    print(unsigned_mod(-1, 10));         // 5
-    print(unsigned_less(1, -1));         // true
+    print((0 - 1) as! u64 >> 60);        // 15
+    print((0 - 2) as! u64 / 3);          // 6148914691236517204
+    print((0 - 1) as! u64 % 10);         // 5
+    print(1 as u64 < (0 - 1) as! u64);   // true
     print(hardware_threads() >= 1);      // true
 }
 
@@ -324,7 +324,7 @@ fn msgs() {
 
 // --- reusable pools: freelist reuse order ------------------------------------
 
-struct PSlot { n: int = 0 }
+struct PSlot { n: i64 = 0 }
 
 fn pool_reuse() {
     reusable var pool: PSlot[>..] = [];
@@ -354,9 +354,9 @@ fn globals2() {
 // --- empty and zero-sized ----------------------------------------------------
 
 fn empties() {
-    let e: int[] = [];
+    let e: i64[] = [];
     print(e.len);                        // 0
-    var g: flt[>..] = [];
+    var g: f64[>..] = [];
     print(g.len);                        // 0
     let s: u8[:] = "";
     print(s.len);                        // 0
@@ -365,7 +365,7 @@ fn empties() {
 
 // --- structs with resizable tails (§3.4) -------------------------------------
 
-struct Tailed { count: int, items: int[>..] }
+struct Tailed { count: i64, items: i64[>..] }
 
 fn tails() {
     var t = Tailed { count: 1, items: [5] };
@@ -384,6 +384,37 @@ fn seqvar() {
     var n = 0;
     for &w in copy { n += w.len; }
     print(n + copy.len);                 // 5 + 2 = 7
+}
+
+// --- sized locals, widening, per-width arithmetic (§6.1–§6.3) ----------------
+
+fn addu8(a: u8, b: u8) -> u8 { a + b }
+
+fn sized() {
+    var a: u8 = 250;
+    let b = a;                           // Inference keeps the size: b is u8.
+    print(addu8(b, 5));                  // 255 (u8 math, at the u8 maximum)
+    var w: i32 = -70000;
+    let widened: i64 = w;                // Implicit widening, signed.
+    print(widened - a);                  // -70250 (the u8 widens into the i64 op)
+    var u: u32 = 4000000000;
+    let big: i64 = u;                    // u32 -> i64 is value-preserving.
+    print(big + 1);                      // 4000000001
+    var h: u64 = 14695981039346656037;   // Above i64.max: prints unsigned.
+    h = h ^ 33;
+    print(h);                            // 14695981039346656004
+    print(h % 10);                       // 4
+    print(h / 3);                        // 4898660346448885334
+    print(h > 1);                        // true (unsigned compare)
+    h = h * 1099511628211;               // Unsigned math wraps in every build.
+    print(h);                            // 12638116831811436492
+    var total: i32 = 0;
+    for i in 5 as i32 { total += i * i; }  // The loop variable runs at i32.
+    print(total);                        // 30
+    var narrow: i16 = -300;
+    narrow--;
+    print(narrow as i64 * 2);            // -602
+    print((1 as u8) << 9);               // 2 (the count is masked to the width: 9 & 7)
 }
 
 // --- print edges -------------------------------------------------------------
@@ -417,6 +448,7 @@ fn main_codegen_exec() {
     empties();
     tails();
     seqvar();
+    sized();
     printedges();
 }
 

@@ -1,6 +1,6 @@
 // Definite assignment: no reads of uninitialized locals (§4.4).
 fn main() {
-    var x: int;
+    var x: i64;
     if x > 0 { x = 1; }
     print(x);
 }

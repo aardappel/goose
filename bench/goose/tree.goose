@@ -19,7 +19,7 @@ struct TNode { v: i32, l: TNode&<u32>?, r: TNode&<u32>? }
 // A global: the whole program's node arena, owning the bottom of one stack.
 var pool: TNode[>..] = [];
 
-recursive fn build(depth: int, seed: int) -> TNode& {
+recursive fn build(depth: i64, seed: u64) -> TNode& {
     if depth == 0 {
         return pool.push(TNode { v: xs_mod(seed, 1000) as i32 });
     }
@@ -28,8 +28,8 @@ recursive fn build(depth: int, seed: int) -> TNode& {
     return pool.push(TNode { v: xs_mod(seed, 1000) as i32, l: l, r: r });
 }
 
-recursive fn sum_tree(n: TNode&) -> int {
-    var t = n.v;
+recursive fn sum_tree(n: TNode&) -> i64 {
+    var t: i64 = n.v;
     let l = n.l;                         // Narrowing tracks locals, so bind first.
     if l { t += sum_tree(l); }
     let r = n.r;

@@ -41,8 +41,7 @@ namespace goose {
     F(T_RETURN,   "return")    F(T_FROM,     "from")    F(T_BREAK,  "break") \
     F(T_CONTINUE, "continue")  F(T_AS,       "as") \
     F(T_TRUE,     "true")      F(T_FALSE,    "false")   F(T_NULLLIT, "null") \
-    F(T_TINT,     "int")       F(T_TFLT,     "flt")     F(T_TBOOL,  "bool") \
-    F(T_TVARINT,  "varint") \
+    F(T_TBOOL,    "bool")      F(T_TVARINT,  "varint") \
     F(T_TI8,      "i8")  F(T_TI16, "i16") F(T_TI32, "i32") F(T_TI64, "i64") \
     F(T_TU8,      "u8")  F(T_TU16, "u16") F(T_TU32, "u32") F(T_TU64, "u64") \
     F(T_TF32,     "f32") F(T_TF64, "f64")
@@ -77,6 +76,7 @@ struct Lexer {
     TType tok = T_EOF;
     string_view attr;                // Source text of ident/literal tokens.
     int64_t ival = 0;                // T_INTLIT value (also char literals).
+    bool iuns = false;               // T_INTLIT above i64.max: a u64 constant.
     double fval = 0;                 // T_FLTLIT value.
     string sval;                     // T_STRLIT decoded value.
     int tokline = 1;
@@ -213,6 +213,7 @@ struct Lexer {
 
             case '\'': {
                 ival = LexEscapedChar('\'');
+                iuns = false;
                 if (*p != '\'') Error("expected closing \' of character literal");
                 p++;
                 Set(T_INTLIT);
@@ -260,6 +261,7 @@ struct Lexer {
                         errno = 0;
                         ival = (int64_t)strtoull(string(numstart, p).c_str(), nullptr, 16);
                         if (errno) Error("hex literal too large for 64 bits");
+                        iuns = ival < 0;
                         Set(T_INTLIT);
                         return;
                     }
@@ -283,11 +285,12 @@ struct Lexer {
                         fval = strtod(text.c_str(), nullptr);
                         Set(T_FLTLIT);
                     } else {
-                        // Decimal literals cover the full u64 range (carried as an
-                        // int bit pattern, per the spec's unsigned story).
+                        // Decimal literals cover the full u64 range; a value
+                        // above i64.max is a u64 constant (§2).
                         errno = 0;
                         ival = (int64_t)strtoull(text.c_str(), nullptr, 10);
                         if (errno) Error(cat("integer literal too large for 64 bits: ", text));
+                        iuns = ival < 0;
                         Set(T_INTLIT);
                     }
                     return;

@@ -7,16 +7,16 @@ import sub.mod;
 // --- constant expressions in array sizes ----------------------------------
 
 let N = 4;
-type ByN = int[N];
-type ByExpr = flt[N * 2 + 1];
-type CapByN = int[..N];
+type ByN = i64[N];
+type ByExpr = f64[N * 2 + 1];
+type CapByN = i64[..N];
 
 // --- trailing commas allowed in all bracketed lists ------------------------
 
 struct Trailing {
-    a: int,
+    a: i64,
     b: Pair_pa<
-        int,
+        i64,
     >,
 }
 
@@ -27,7 +27,7 @@ struct Packed_pa {
     pad,
     b: i32,
     pad 2,
-    c: int = 0,
+    c: i64 = 0,
     let d: u8 = 255,
 }
 
@@ -35,22 +35,22 @@ struct Pair_pa<T> { a: T, b: T }
 
 struct Holder {
     name: u8[varint],
-    tail: int[>..],
+    tail: i64[>..],
 }
 
 struct WithRefs {
-    r: int&,
+    r: i64&,
     rel: Holder&<u16>,
     orel: Holder&<u8>?,
-    opt: flt?,
+    opt: f64?,
     s: u8[:],
 }
 
 // --- enum declarations ---------------------------------------------------
 
 enum Shape {
-    Circle { r: flt },
-    Rect { w: flt, h: flt },
+    Circle { r: f64 },
+    Rect { w: f64, h: f64 },
     Point,
 }
 
@@ -65,51 +65,51 @@ enum Tree<T> {
 
 type Str = u8[];
 type CompactStr = u8[varint];
-type Fixed3 = flt[3];
-type Limited = int[..16];
-type LimitedVar = int[..];
-type Grow = int[>..];
-type GrowShrink = int[>..<];
-type SliceI = int[:];
-type RefI = int&;
+type Fixed3 = f64[3];
+type Limited = i64[..16];
+type LimitedVar = i64[..];
+type Grow = i64[>..];
+type GrowShrink = i64[>..<];
+type SliceI = i64[:];
+type RefI = i64&;
 type RelRef = Holder&<u32>;
-type OptI = int?;
+type OptI = i64?;
 type ShapeVar = Shape..;
 type CircleT = Shape.Circle;
 type Fn0 = fn;
-type Fn1 = fn(int);
-type Fn2 = fn(int, flt) -> bool;
-type FnMulti = fn(int) -> (int, bool);
+type Fn1 = fn(i64);
+type Fn2 = fn(i64, f64) -> bool;
+type FnMulti = fn(i64) -> (i64, bool);
 type Grouped = (Shape..&<varint>)[varint];
-type NestedGen = Pair_pa<Pair_pa<int>>;
-type DeepArray = Pair_pa<int>[4][:];
+type NestedGen = Pair_pa<Pair_pa<i64>>;
+type DeepArray = Pair_pa<i64>[4][:];
 
 // --- globals -------------------------------------------------------------
 
 let gconst = 42;
-var gcounter_pa: int = 0;
+var gcounter_pa: i64 = 0;
 let gname_pa: u8[] = "goose";
 var gpool_pa: Shape..[>..] = [];
 reusable var gslots: Slot2[>..] = [];
 
-struct Slot2 { v: int = 0 }
+struct Slot2 { v: i64 = 0 }
 
 // --- functions: headers --------------------------------------------------
 
 fn no_args() { }
-fn one(a: int) -> int { a }
-fn defaults_and_var(var a: int, b: flt) -> flt { a++; a as flt + b }
+fn one(a: i64) -> i64 { a }
+fn defaults_and_var(var a: i64, b: f64) -> f64 { a++; a as f64 + b }
 fn untyped_generic(a, b) { print(a); print(b); }
 fn typed_generic<T>(a: T, b: T) -> T { if a == b { a } else { b } }
-fn bounded<F: fn(int)>(n: int) { F(n); }
-fn bare_bound<F>(n: int) { F(n); }
-fn multi_ret(a: int) -> int, bool { return a, a > 0; }
-fn multi_ret_nonfixed(n: int) -> u8[], int { return "x", n; }
-recursive fn fact(n: int) -> int { if n <= 1 { 1 } else { n * fact(n - 1) } }
-thread_fn worker_pa(id: int) {
+fn bounded<F: fn(i64)>(n: i64) { F(n); }
+fn bare_bound<F>(n: i64) { F(n); }
+fn multi_ret(a: i64) -> i64, bool { return a, a > 0; }
+fn multi_ret_nonfixed(n: i64) -> u8[], i64 { return "x", n; }
+recursive fn fact(n: i64) -> i64 { if n <= 1 { 1 } else { n * fact(n - 1) } }
+thread_fn worker_pa(id: i64) {
     qput(id);
-    let got = qget<int>();
-    let polled, ok = qpoll<int>();
+    let got = qget<i64>();
+    let polled, ok = qpoll<i64>();
     print(got + polled);
     print(ok);
 }
@@ -129,9 +129,9 @@ fn literals() {
     let j = false;
     let k = 255;
     let l = 0.5;
-    let m: int[5] = [1, 2, 3, 4, 5];
-    let n: int[100] = [0; 100];
-    let o: int[>..] = [];
+    let m: i64[5] = [1, 2, 3, 4, 5];
+    let n: i64[100] = [0; 100];
+    let o: i64[>..] = [];
     let hf = 0x1.8p3;
     let hf2 = 0x1p-2;
     let esc = "nul:\0 hex:\x41\x7f";
@@ -140,7 +140,7 @@ fn literals() {
         1,
         2,
     ];
-    print(a + b + c + f + g + k);
+    print(a + b + c as! i64 + f + g + k);
     print(d + e + hf + hf2);
     print(l);
     print(h.len + m.len + n.len + o.len);
@@ -148,18 +148,18 @@ fn literals() {
     print(i && !j);
 }
 
-fn operators(a: int, b: int) -> int {
+fn operators(a: i64, b: i64) -> i64 {
     let arith = a + b - a * b / (a % b);
     let bits = ~a & b | a ^ b << 2 >> 1;
     let cmp = a < b || a <= b || a > b || a >= b || a == b || a != b;
     let logic = !cmp && a + 1 < b || false;
     let neg = - -a;
-    let casts = (a as u8) as! i16 as flt;
+    let casts = (a as u8) as! i16 as f64;
     print(casts + 0.5);
     if logic { arith + bits + neg } else { arith - bits }
 }
 
-fn assignments(var x: int) {
+fn assignments(var x: i64) {
     var y = x;
     y = 1;
     y += 2;
@@ -173,7 +173,7 @@ fn assignments(var x: int) {
     y++;
     y--;
     x = y;
-    let p = Pair_pa<int> { a: 1, b: 2 };
+    let p = Pair_pa<i64> { a: 1, b: 2 };
     var q = p;
     q.a = 3;
     var arr = [1, 2, 3];
@@ -187,7 +187,7 @@ fn struct_literals() {
     let positional = Slot2 { 1 };
     let empty = Slot2 {};
     let inferred = Pair_pa { a: 1, b: 2 };
-    let generic = Pair_pa<flt> { a: 1.0, b: 2.0 };
+    let generic = Pair_pa<f64> { a: 1.0, b: 2.0 };
     let variant = Shape.Circle { r: 1.0 };
     let variant2 = Shape.Rect { 3.0, 4.0 };
     let multiline = Packed_pa {
@@ -196,7 +196,7 @@ fn struct_literals() {
         c: 5,
     };
     print(multiline.c);
-    let nested = Pair_pa<Pair_pa<int>> { a: Pair_pa<int> { a: 1, b: 2 }, b: Pair_pa<int> { 3, 4 } };
+    let nested = Pair_pa<Pair_pa<i64>> { a: Pair_pa<i64> { a: 1, b: 2 }, b: Pair_pa<i64> { 3, 4 } };
     print(named.c + defaulted.c + positional.v + empty.v);
     print(inferred.a + nested.a.b);
     print(generic.a);
@@ -204,7 +204,7 @@ fn struct_literals() {
     print(variant2.w);
 }
 
-fn references_and_slices(data: int[:]) -> int {
+fn references_and_slices(data: i64[:]) -> i64 {
     var local = [1, 2, 3, 4, 5];
     let r = &local[2];
     let whole = &local;
@@ -221,7 +221,7 @@ fn references_and_slices(data: int[:]) -> int {
     return local[0];
 }
 
-fn optionals(o: int?) -> int {
+fn optionals(o: i64?) -> i64 {
     if o { o } else { 0 }
 }
 
@@ -231,11 +231,11 @@ fn calls_and_ufcs() {
     let v3 = add2(v1, v2);
     let v4 = v1.add2(v2);
     print(v3.x + v4.y);
-    let t = typed_generic<int>(1, 2);
+    let t = typed_generic<i64>(1, 2);
     let u = typed_generic(1.0, 2.0);
     print(t);
     print(u);
-    var b: int[>..<] = [];
+    var b: i64[>..<] = [];
     b.push(1);
     b.append([2, 3]);
     b.resize(10, 0);
@@ -248,8 +248,8 @@ fn function_values() {
     // Trailing-block calls are block-ended statements: no semicolon needed.
     bounded(1) { print(it) }
     bounded(2) { x => print(x) }
-    bounded(3) { x: int => print(x) }
-    fn named(v: int) { print(v) }
+    bounded(3) { x: i64 => print(x) }
+    fn named(v: i64) { print(v) }
     bounded(4, named);
     bare_bound(5) {
         let doubled = it * 2;
@@ -260,9 +260,9 @@ fn function_values() {
     print(r);
 }
 
-fn nested_functions(outer: int) -> int {
+fn nested_functions(outer: i64) -> i64 {
     var acc = 0;
-    fn add_in(v: int) { acc += v; }
+    fn add_in(v: i64) { acc += v; }
     add_in(outer);
     add_in(acc);
     return acc;
@@ -270,7 +270,7 @@ fn nested_functions(outer: int) -> int {
 
 // --- control flow --------------------------------------------------------
 
-fn control(n: int) -> int {
+fn control(n: i64) -> i64 {
     let v = if n > 0 { 1 } else if n < 0 { -1 } else { 0 };
     if v == 1 { print(1); } else { print(2); }
     if v == 0 { print(3); }
@@ -304,13 +304,13 @@ fn control(n: int) -> int {
     return blocked + v;
 }
 
-fn guards(o: int?, n: int) -> int {
+fn guards(o: i64?, n: i64) -> i64 {
     guard o else { return -1; }
     guard n > 0 else { return 0; }
     o + n
 }
 
-fn matches(s: Shape, sv: Shape.., n: int, c: int) -> flt {
+fn matches(s: Shape, sv: Shape.., n: i64, c: i64) -> f64 {
     let area = match s {
         Circle cr => cr.r * cr.r * 3.14159,
         Rect r => r.w * r.h,
@@ -334,29 +334,29 @@ fn matches(s: Shape, sv: Shape.., n: int, c: int) -> flt {
 
 // --- case functions (match as an overload set) ---------------------------
 
-fn area(c: Shape.Circle) -> flt { c.r * c.r * 3.14159 }
-fn area(r: Shape.Rect) -> flt { r.w * r.h }
-fn area(p: Shape.Point) -> flt { 0.0 }
+fn area(c: Shape.Circle) -> f64 { c.r * c.r * 3.14159 }
+fn area(r: Shape.Rect) -> f64 { r.w * r.h }
+fn area(p: Shape.Point) -> f64 { 0.0 }
 
-fn dispatch(s: Shape) -> flt { area(s) }
+fn dispatch(s: Shape) -> f64 { area(s) }
 
 // --- return forms --------------------------------------------------------
 
-fn early(n: int) -> int {
+fn early(n: i64) -> i64 {
     if n < 0 { return 0; }
     return n;
 }
 
-fn deep_pa(n: int) -> int {
+fn deep_pa(n: i64) -> i64 {
     if n == 0 { return -1 from outer; }
     n
 }
 
-fn outer(n: int) -> int {
+fn outer(n: i64) -> i64 {
     return deep_pa(n) + 1;
 }
 
-fn returns_nothing(n: int) {
+fn returns_nothing(n: i64) {
     if n == 0 { return; }
     print(n);
 }
@@ -376,7 +376,7 @@ fn pools_pa() {
 fn misc() {
     let a, b = multi_ret(7);
     let x, y = 1, 2;
-    var unassigned: int;
+    var unassigned: i64;
     unassigned = a + x + y;
     let shadow = 1;
     if shadow == 1 {
@@ -385,10 +385,10 @@ fn misc() {
     }
     print(unassigned);
     print(b);
-    let ud = unsigned_div(10, 3);
-    let um = unsigned_mod(10, 3);
-    let us = unsigned_shr(10, 1);
-    let ul = unsigned_less(1, 2);
+    let ud = 10 as u64 / 3;
+    let um = 10 as u64 % 3;
+    let us = 10 as u64 >> 1;
+    let ul = 1 as u64 < 2;
     print(ud + um + us);
     print(ul);
     assert(a > 0);
@@ -403,10 +403,10 @@ fn edge_cases() {
     if (Slot2 { v: 1 }).v == 1 { print(1); }
     while (Slot2 { v: 0 }).v != 0 { break; }
     // Nested generic arguments at a call site: the >> split.
-    let p = Pair_pa<int> { a: 1, b: 2 };
-    let q = typed_generic<Pair_pa<int>>(p, p);
+    let p = Pair_pa<i64> { a: 1, b: 2 };
+    let q = typed_generic<Pair_pa<i64>>(p, p);
     print(q.a);
-    var lim: int[..8] = [1, 2];
+    var lim: i64[..8] = [1, 2];
     print(lim.cap + lim.len);
     let sl = lim[..];
     for x in sl { print(x); }

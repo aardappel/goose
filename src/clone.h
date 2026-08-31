@@ -21,7 +21,7 @@ inline void CloneNodes(Ast &ast, const vector<Node *> &src, vector<Node *> &dst)
     for (auto n : src) dst.push_back(n->Clone(ast));
 }
 
-inline Node *IntLit::Clone(Ast &ast) const { return ast.New<IntLit>(line, val, text); }
+inline Node *IntLit::Clone(Ast &ast) const { return ast.New<IntLit>(line, val, text, uns); }
 inline Node *FltLit::Clone(Ast &ast) const { return ast.New<FltLit>(line, val); }
 inline Node *BoolLit::Clone(Ast &ast) const { return ast.New<BoolLit>(line, val); }
 inline Node *NullLit::Clone(Ast &ast) const { return ast.New<NullLit>(line); }

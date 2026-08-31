@@ -13,7 +13,7 @@ struct Item { key: i32, val: i32 }
 fn main() {
     var items: Item[>..] = [];
     var marks: Item&[>..] = [];
-    var r = 12345;
+    var r: u64 = 12345;
     for i in N {
         r = xs_next(r);
         let e: Item& = items.push(Item { key: xs_mod(r, 1000000) as i32,

@@ -40,8 +40,8 @@ struct Line {
 // comparing kind, nothing else.
 
 enum TypeKind {
-    TY_INT,         // The one integer type; intstorage picks the in-memory width (§3.1, §3.6).
-    TY_FLT,         // The one float type; fltstorage picks flt/f32/f64.
+    TY_INT,         // A sized integer type; intstorage picks the width (§3.1, §3.6).
+    TY_FLT,         // A sized float type; fltstorage picks f32/f64.
     TY_BOOL,
     TY_STRUCT,      // A nominal struct, with any generic type arguments.
     TY_ENUM,        // A nominal ADT; fixed-mode use, or variable-mode T.. (varmode flag, §3.5).
@@ -63,21 +63,31 @@ enum ArrayKind {
     A_GROWSHRINK,  // T[>..<]
 };
 
-// Integer storage types (§3.1). IS_INT is the only expression type; the others
-// exist in memory and widen to it on load. IS_VARINT is LEB128 (§3.6).
-enum IntStorage { IS_INT, IS_I8, IS_I16, IS_I32, IS_I64, IS_U8, IS_U16, IS_U32, IS_U64, IS_VARINT };
+// The integer types (§3.1). All are usable everywhere; IS_VARINT is the one
+// storage-only exception, LEB128-encoded in memory and read as i64 (§3.6).
+enum IntStorage { IS_I8, IS_I16, IS_I32, IS_I64, IS_U8, IS_U16, IS_U32, IS_U64, IS_VARINT };
 
-enum FltStorage { FS_FLT, FS_F32, FS_F64 };  // f64 is the storage spelling of flt.
+enum FltStorage { FS_F32, FS_F64 };
 
 inline const char *IntStorageName(int s) {
-    static const char *names[] = { "int", "i8", "i16", "i32", "i64",
+    static const char *names[] = { "i8", "i16", "i32", "i64",
                                    "u8", "u16", "u32", "u64", "varint" };
     return names[s];
 }
 
 inline const char *FltStorageName(int s) {
-    static const char *names[] = { "flt", "f32", "f64" };
+    static const char *names[] = { "f32", "f64" };
     return names[s];
+}
+
+inline bool IsUnsigned(IntStorage s) { return s >= IS_U8 && s <= IS_U64; }
+inline int IntBits(IntStorage s) {
+    switch (s) {
+        case IS_I8: case IS_U8:   return 8;
+        case IS_I16: case IS_U16: return 16;
+        case IS_I32: case IS_U32: return 32;
+        default:                  return 64;
+    }
 }
 
 // Per-kind detail payloads. A kind that needs more than one field gets one of
@@ -155,7 +165,7 @@ struct TypeExpr {
 };
 
 // The primitive type keyword tokens, in a contiguous range.
-inline bool IsPrimTypeToken(TType t) { return t >= T_TINT && t <= T_TF64; }
+inline bool IsPrimTypeToken(TType t) { return t >= T_TBOOL && t <= T_TF64; }
 
 struct GenericParam {
     string_view name;
@@ -226,6 +236,7 @@ struct Val {
     bool reusable = false;       // Root is a reusable pool (§5.4).
     ConstKind ck = CK_NONE;
     int64_t ival = 0;
+    bool uns = false;            // CK_INT: ival's bits are a u64 above i64.max.
     double fval = 0;
     bool strlit = false;         // String literal: adaptable to u8 array types.
     bool emptyarr = false;       // [] with as yet unknown element type.
@@ -282,9 +293,11 @@ struct Node {
 #define NODE_END };
 
 NODE(IntLit)
-    int64_t val;
+    int64_t val;       // The value's bits; uns says how to read them.
     string_view text;  // Original spelling, so hex/char literals dump readably.
-    IntLit(Line l, int64_t _val, string_view _text = {}) : Node(l), val(_val), text(_text) {}
+    bool uns;          // Value above i64.max: a u64 constant carried as bits.
+    IntLit(Line l, int64_t _val, string_view _text = {}, bool _uns = false)
+        : Node(l), val(_val), text(_text), uns(_uns) {}
 NODE_END
 
 NODE(FltLit)
@@ -758,11 +771,11 @@ struct Ast {
     TypeExpr *voidtype;
 
     Ast() {
-        for (int s = IS_INT; s <= IS_VARINT; s++) {
+        for (int s = IS_I8; s <= IS_VARINT; s++) {
             inttypes[s] = NewType(TY_INT, Line {});
             inttypes[s]->intstorage = (IntStorage)s;
         }
-        for (int s = FS_FLT; s <= FS_F64; s++) {
+        for (int s = FS_F32; s <= FS_F64; s++) {
             flttypes[s] = NewType(TY_FLT, Line {});
             flttypes[s]->fltstorage = (FltStorage)s;
         }
@@ -814,7 +827,6 @@ struct Ast {
 
     TypeExpr *PrimTypeForToken(TType t) {
         switch (t) {
-            case T_TINT:    return inttypes[IS_INT];
             case T_TI8:     return inttypes[IS_I8];
             case T_TI16:    return inttypes[IS_I16];
             case T_TI32:    return inttypes[IS_I32];
@@ -824,11 +836,10 @@ struct Ast {
             case T_TU32:    return inttypes[IS_U32];
             case T_TU64:    return inttypes[IS_U64];
             case T_TVARINT: return inttypes[IS_VARINT];
-            case T_TFLT:    return flttypes[FS_FLT];
             case T_TF32:    return flttypes[FS_F32];
             case T_TF64:    return flttypes[FS_F64];
             case T_TBOOL:   return booltype;
-            default:        assert(false); return inttypes[IS_INT];
+            default:        assert(false); return inttypes[IS_I64];
         }
     }
 

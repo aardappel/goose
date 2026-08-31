@@ -88,7 +88,7 @@ Identifiers `[A-Za-z_][A-Za-z0-9_]*`.
 Literals:
 
 * Integer: decimal and `0x` hex; the full unsigned 64-bit range is accepted
-  (values above `int.max` are carried as bit patterns, §6.2). Character
+  (a value above `i64.max` is a `u64` constant, §6.2). Character
   literals `'a'` are integer constants.
 * Float: with `.` and/or a decimal exponent (`1.5`, `2.5e-3`); C99-style hex
   floats with a mandatory binary exponent (`0x1.8p3`). A `.` starts a
@@ -128,41 +128,34 @@ A grammar sketch and precedence table are in Appendix D.
 
 ### 3.1 Scalars
 
-* `int` — the default integer type: signed two's-complement 64-bit, on every
-  platform. All integer arithmetic happens at this type. Use for all indices,
-  sizes, and any integer without precise layout needs.
-* `i8 i16 i32 i64 u8 u16 u32 u64` — integer **storage types**. They exist
-  only inside compound types (fields, array elements) and reads widen to
-  `int` immediately (zero- or sign-extended per signedness). Expressions
-  have exactly one integer type: `int`. Individual variables, parameters,
-  and returns are always plain `int` (never a storage spelling).
-* `varint` — variable-length integer storage type (§3.6). Reads widen to
-  `int`; writable only at construction.
-* `flt` — 64-bit IEEE float, the default float type. `f64` is its storage
-  spelling (fields/elements only, like the integer storage types).
-* `f32` — 32-bit float storage type (fields/elements only, like the rest).
-  Unlike integers, `f32` converts to `flt` *lazily, within an expression*: a
-  subexpression whose operands are all `f32` (loads of f32 storage, float
-  literals, `as f32` results) computes in 32 bits; contact with a `flt`
-  operand promotes, and *binding any variable/parameter/return widens to
-  `flt`* — so an f32 computation lives entirely inside one expression,
-  typically ending in a store back to f32 storage. Float literals count as
-  either (they adapt to an `f32` context).
+* `i8 i16 i32 i64 u8 u16 u32 u64` — the integer types, two's-complement,
+  usable everywhere: fields, array elements, locals, parameters, returns,
+  and expression temporaries. Every integer operation computes at its
+  operands' exact type and width (§6.2) — a loop over `i32` data runs in
+  32-bit registers end to end, which is what lets backends vectorize it.
+  `i64` is the conventional default for indices, sizes, and counts (it is
+  what `.len`, integer literals, and the builtins produce); the sized types
+  are for data, and for kernels where the width is the point.
+* `varint` — variable-length integer **storage type** (§3.6), the one
+  integer spelling restricted to fields and array elements. Reads decode to
+  `i64`; writable only at construction.
+* `f32 f64` — IEEE floats, likewise usable everywhere. `f32` arithmetic
+  stays 32-bit; `f32` widens to `f64` implicitly (§6.3), never the reverse.
+  Float literals adapt to either type.
 * `bool` — 1-byte storage, values `true`/`false`. Produced by comparisons;
   required by `if`/`while` conditions (no int-to-bool coercion).
 
-Stylistically `i64`/`f64` are used only where the width is the point; `int`/
-`flt` elsewhere.
-
-Narrowing (storing an `int` into a smaller storage type, or `flt` into `f32`)
-is never implicit, with one exception: a *literal* whose value statically
-fits the destination storage type stores directly (`let x: u8 = 255;` is
-fine, `= 256` is a compile error). See conversions §6.3.
+Integer literals are *constants without a committed type*: they adapt to any
+integer type whose range holds their value (`let x: u8 = 255;` is fine,
+`= 256` is a compile error), and where nothing constrains them they are
+`i64` (`u64` for values above `i64.max`). All other conversions follow one
+rule — **implicit when provably value-preserving, an explicit cast
+otherwise** (§6.3).
 
 ### 3.2 Structs
 
 ```goose
-struct X { a: i8[3], b: i32, c: int = 0 }
+struct X { a: i8[3], b: i32, c: i64 = 0 }
 ```
 
 * Packed by default: a struct of `i8[3]` + `i32` is 7 bytes. Unaligned
@@ -175,7 +168,7 @@ struct X { a: i8[3], b: i32, c: int = 0 }
   aim for and inserts nothing.
 * Fields are mutable by default; `let` before a field name makes it
   const-after-construction (transitively, via writability §9.5).
-* A field may declare a default value (`c: int = 0` above); constructors may
+* A field may declare a default value (`c: i64 = 0` above); constructors may
   then omit it (§4.2).
 * Layout is declaration order; variable/resizable fields obey §3.4.
 
@@ -219,7 +212,7 @@ limited arrays (`[..k]`, `[..]`) up to capacity (exceeding capacity aborts).
 Shrink operations (`pop`, `resize` downward, `clear`) exist only on `[>..<]`
 and limited arrays.
 
-Built-in members: `.len` (always, returns `int`), `.cap` (limited arrays),
+Built-in members: `.len` (always, returns `i64`), `.cap` (limited arrays),
 `.push(v)` (returns a reference to the new element on grow-only and limited
 arrays — the idiomatic way to link up just-built data; on grow-shrink arrays
 it returns nothing, since no interior references exist there, §5.2),
@@ -253,8 +246,8 @@ resizables with memmove-on-insert semantics, opt-in.)
 
 ```goose
 enum Shape {
-    Circle { r: flt },
-    Rect { w: flt, h: flt },
+    Circle { r: f64 },
+    Rect { w: f64, h: f64 },
     Point,
 }
 ```
@@ -303,11 +296,13 @@ user-visible whenever Goose data is serialized directly:
 
 Because the two encodings differ, varint values are never copied byte-wise
 between contexts: any varint-to-varint construction (e.g. a struct varint
-field initialized from `arr.len`) goes through `int` — decode, re-encode.
+field initialized from `arr.len`) goes through `i64` — decode, re-encode.
 
 Restrictions: a `varint` field/element is written only at construction of
 its containing value; changing it means reconstructing the container. Reads
-widen to `int`. A struct containing `varint` fields is variable-class.
+decode to `i64`; construction stores accept any integer type except `u64`
+(a varint holds exactly the `i64` value range). A struct containing
+`varint` fields is variable-class.
 References to `varint` fields are always read-only (§3.8).
 
 ### 3.7 Strings
@@ -354,7 +349,7 @@ dereference operator and no `copy` builtin; the load is implicit.
 **Optionals.** References are non-nullable by default. `T?` is an *optional
 T*: represented as a nullable reference to T (null = address 0, no space
 cost), with all reference semantics and restrictions (roots, lifetimes,
-writability). This composes with any type — pass `int?` for an optional
+writability). This composes with any type — pass `i64?` for an optional
 integer. Applied to a type that is already a reference, `?` simply makes
 that reference nullable (`T&?` ≡ `T?`). The literal `null` is the empty
 value of any optional type; an optional struct field with no declared
@@ -366,7 +361,7 @@ optional; a rebind to a plain reference narrows it, a rebind to anything
 possibly null un-narrows it.
 
 **Implementation note (fat references).** When a callee grows a resizable
-through a reference (e.g. `push` through a `flt[>..]&`), it must know which
+through a reference (e.g. `push` through a `f64[>..]&`), it must know which
 data stack to bump. Where the compiler cannot pin that stack statically per
 call site (§10.2), such a reference costs two pointers instead of one — the
 address plus the stack identity, passed as a fat reference or hidden
@@ -552,8 +547,8 @@ References and slices follow a *top-level rule*: as the direct operands of
 a compared composite they compare by identity (the reference address, the
 slice's address+length): recursing through them would turn `==` into an
 unbounded pointer traversal. Optionals compare as nullable references
-(`o == null` is the null test). Ordering `< <= > >=` exists on `int` and
-`flt` only.
+(`o == null` is the null test). Ordering `< <= > >=` exists on the numeric
+types only, with operands unified per §6.1.
 
 ---
 
@@ -610,7 +605,7 @@ A grow-only resizable local of fixed-size elements may be declared
 pairs it with a hidden freelist (itself a small resizable of indices, on its
 own stack, counted in N):
 
-* `a.alloc_index(v) -> int` — index of a slot: a freelist slot if available,
+* `a.alloc_index(v) -> i64` — index of a slot: a freelist slot if available,
   else a fresh `push`.
 * `a.alloc_ref(v) -> T&` — same, returning `&a[i]`.
 * `a.free(i)` — records slot `i` for reuse. The element remains a valid,
@@ -627,12 +622,26 @@ tree-mutation workloads that would otherwise need an allocator.
 
 ### 6.1 Operators
 
-C/Rust set: `+ - * / %` (`%` on `flt` is C `fmod`), comparisons, `! && ||`
-(short-circuit, `bool` only), bitwise `~ & | ^ << >>` (on `int`), assignment
-statements `=`, `+=` etc. on assignable lvalues, `.=` (reference rebinding,
-§3.8), and `++`/`--` as statements on integer lvalues (no expression form).
-Precedence: Appendix D. Range expressions `a..b` appear only in slicing
-brackets, `for` headers, and match arms.
+C/Rust set: `+ - * / %` (`%` on floats is C `fmod`), comparisons, `! && ||`
+(short-circuit, `bool` only), bitwise `~ & | ^ << >>` (on integers),
+assignment statements `=`, `+=` etc. on assignable lvalues, `.=` (reference
+rebinding, §3.8), and `++`/`--` as statements on integer lvalues (no
+expression form). Precedence: Appendix D. Range expressions `a..b` appear
+only in slicing brackets, `for` headers, and match arms.
+
+**Operand unification.** A binary numeric operator's operands must reach
+*one common type*, which is also the result type, found as follows: equal
+types stand; a constant adapts to the other operand's type (compile error
+if its value does not fit); otherwise, if exactly one operand implicitly
+widens into the other's type (§6.3), the wider type wins. Anything else —
+same-width signed/unsigned, `u64` with anything signed, int with float — is
+a compile error asking for a cast. Nothing here invents a type absent from
+the expression: `u8 + i64` is an `i64` add, but `u32 + i32` does not
+silently become 64-bit math — that would smuggle the wide operations this
+type system exists to avoid. Exceptions: shifts take the *left* operand's
+type as the result (the count is any integer type, masked per §6.2), and
+`==`/`!=`/orderings unify the same way but produce `bool`. Unary `-`
+requires a signed (or float) operand; `~` any integer, keeping its type.
 
 **Elementwise math**: the arithmetic operators apply memberwise to any two
 values of the *same* struct/fixed-array type whose scalar leaves are all
@@ -643,34 +652,53 @@ ordinary stdlib overloads per math type, not language builtins.
 
 ### 6.2 Integer semantics
 
-* All integer arithmetic is 64-bit (`int`). Mixed-width source operands are
-  already widened at load, so C's promotion zoo does not exist.
-* Overflow: aborts in debug builds; wraps two's-complement (defined) in
-  release. Division/modulo by zero: aborts always. `int.min / -1`: aborts.
-  Shift counts are masked to 0–63 (defined).
-* The *only* dangerous operation is a narrowing store, and it never happens
-  implicitly (§3.1 literal exception aside, which is statically checked).
-* **Unsigned 64-bit values** are carried in `int` as bit patterns; there is
-  no separate unsigned expression type. For the few operations where
-  signedness changes the result bits, builtins are provided:
-  `unsigned_div(a, b)`, `unsigned_mod(a, b)`, `unsigned_shr(a, n)`,
-  `unsigned_less(a, b)`. Their use should be rare (e.g. updating a `u64`
-  storage field in a specific way); everything else defaults to signed.
+* Every integer operation computes **at its operands' type**: `u8 + u8` is
+  an 8-bit add, `i32 * i32` a 32-bit multiply. There is no promotion —
+  operands reach a common type only by the unification rule of §6.1, which
+  never widens both sides behind the programmer's back.
+* Signedness is part of the type: `/`, `%`, `>>`, and the ordering
+  comparisons are unsigned operations on unsigned types (`>>` shifts in
+  zeroes) and signed on signed ones (`>>` replicates the sign bit). `%`
+  takes the dividend's sign on signed types.
+* **Signed overflow** (at the operation's width): aborts in debug builds;
+  wraps two's-complement (defined) in release. **Unsigned arithmetic wraps
+  modulo 2^width by definition, in every build** — modular arithmetic is
+  what hashing, PRNGs, and bit manipulation mean by unsigned math, and it
+  is why those kernels are written on unsigned types. Division/modulo by
+  zero: aborts always. `i64.min / -1` aborts in every build (it would trap
+  in hardware); at narrower signed widths the same case is an ordinary
+  overflow — debug abort, release wrap. Shift counts are masked to
+  `0..width-1` (defined).
+* Integer literals above `i64.max` (up to `u64.max`) are `u64` constants
+  (§2, §3.1); negating one is a compile error (except `-(2^63)`, which is
+  exactly `i64.min`).
 
 ### 6.3 Conversions
 
-* Implicit: storage-type loads widen to `int`; `f32` promotes to `flt` on
-  contact with `flt`; literals narrow when they statically fit (§3.1).
-* `x as T` — explicit conversion, **range-checked in debug** (abort on value
-  change), truncates/rounds-toward-zero silently in release: int → narrower
-  ints, int ↔ flt, flt → f32.
+One principle: within a kind, a conversion the machine can prove
+value-preserving is implicit; anything that could lose a bit or flip a sign
+takes a cast — and crossing between int and float is always a cast, exact
+or not.
+
+* **Implicit** (silent, everywhere a value meets a differently-typed
+  destination or operand): to a *wider* integer type of the same
+  signedness (`i8→i16/i32/i64`, `u8→u16/u32/u64`); from an unsigned type to
+  any *strictly wider* signed type (`u8→i16..i64`, `u32→i64`); `f32 → f64`;
+  and constants into any type their value fits (§3.1). Also: any integer
+  type except `u64` into a `varint` store (§3.6).
+* **Never implicit**: narrowing; same-width signedness changes (`i32 ↔ u32`);
+  anything signed into any unsigned type (a negative value can hide in any
+  signed operand — so `u32→i64` is silent but `i32→u64` is not); `u64` into
+  any signed type; `f64 → f32`; and int ↔ float in either direction.
+* `x as T` — explicit conversion between any two numeric types,
+  **range-checked in debug** (abort on value change), truncates/wraps/
+  rounds-toward-zero silently in release.
 * `x as! T` — always-unchecked wrap/truncate, for when losing bits is what
   is intended, even in debug.
-* flt → int (both forms in release, `as!` always) is defined exactly:
-  truncate toward zero, then wrap modulo 2^64; NaN yields 0. The common
-  in-range case is one compare and a hardware conversion; only the
-  out-of-range tail pays for the defined wrap.
-* No implicit int↔flt mixing in expressions.
+* float → int (both forms in release, `as!` always) is defined exactly:
+  truncate toward zero, then wrap modulo 2^64 into the target's width; NaN
+  yields 0. The common in-range case is one compare and a hardware
+  conversion; only the out-of-range tail pays for the defined wrap.
 
 ### 6.4 Control expressions
 
@@ -704,14 +732,16 @@ exit requires no value.
 
 Built-in iteration only (no iterator protocol):
 
-* `for i in a..b` — integer range, half-open `[a..b)`.
-* `for i in n` — sugar for `0..n`.
-* `for x in arr` — element copies (fixed-size elements; storage types widen
-  as always).
+* `for i in a..b` — integer range, half-open `[a..b)`; the bounds unify per
+  §6.1 and `i` runs at that type (an `i32` range gives a genuinely 32-bit
+  loop variable).
+* `for i in n` — sugar for `0..n`; `i` has `n`'s type.
+* `for x in arr` — element copies (fixed-size elements), at the element's
+  type.
 * `for &x in arr` — element references (required form for variable-size
   elements, whose walk is sequential; also the mutation form). Unavailable
   for `[>..<]` (§5.2).
-* `for x, i in arr` / `for &x, i in arr` — with index.
+* `for x, i in arr` / `for &x, i in arr` — with index (`i: i64`).
 
 All array-family types and slices are iterable. Custom access patterns are
 provided by HOFs taking static function values (§7.6), which compile to
@@ -724,7 +754,7 @@ plain loops.
 ### 7.1 Declarations and generics
 
 ```goose
-fn name(a: int, var b: flt, xs: int[:]) -> int { ... }
+fn name(a: i64, var b: f64, xs: i32[:]) -> i64 { ... }
 fn generic<T>(a: T, b: T) -> T { ... }
 fn also_generic(a, b) { ... }        // untyped params are generic
 ```
@@ -739,12 +769,12 @@ fn also_generic(a, b) { ... }        // untyped params are generic
   recursive cycles, §7.8).
 * Overloading by parameter types is allowed; resolution is static: the
   unique overload matching exactly wins, else the unique one matching after
-  coercions (array→slice §3.10, literal fit §3.1), else tag dispatch (§8.2),
-  else error. Ambiguity is an error.
+  coercions (array→slice §3.10, literal fit §3.1, implicit widening §6.3),
+  else tag dispatch (§8.2), else error. Ambiguity is an error.
 * Multiple return values: `fn f() -> A, B`; received as `let a, b = f();`.
   There is no tuple *type* — multiple returns are a calling convention;
   structs are the way to keep data together. (Function *types* with
-  multiple returns need parens — `fn(int) -> (A, B)` — to disambiguate the
+  multiple returns need parens — `fn(i64) -> (A, B)` — to disambiguate the
   comma; declaration headers don't.) Nonfixed types are allowed in any
   return position; each nonfixed result gets its own destination per §7.3
   (possibly distinct stacks).
@@ -845,10 +875,10 @@ keep them as real arguments.
 ### 7.6 Static function values
 
 ```goose
-fn foo<F: fn(int)>(a: int) { F(a); }
+fn foo<F: fn(i64)>(a: i64) { F(a); }
 foo(1) { print(it) }                  // trailing-block sugar, implicit `it`
 foo(1) { x => print(x) }              // named block params
-fn h(v: int) { print(v) }  foo(1, h)  // or pass a named function
+fn h(v: i64) { print(v) }  foo(1, h)  // or pass a named function
 ```
 
 Function values are compile-time entities passed as generic parameters, not
@@ -881,13 +911,13 @@ failing instantiation.
 
 **Call-site type arguments.** Type arguments are inferred from the argument
 types whenever they appear in the parameter list: `fn foo<T>(x: T)` is
-called as `foo(1)`, never `foo<int>(1)` — the typechecker must support this
+called as `foo(1)`, never `foo<i64>(1)` — the typechecker must support this
 for both `<T>`-style and untyped (implicitly generic) parameters. An
-explicit list `f<int>(x)` is allowed, and *needed* only when no argument
-mentions the parameter (e.g. `qget<int>()`). Syntactically, `f<` commits to
+explicit list `f<i64>(x)` is allowed, and *needed* only when no argument
+mentions the parameter (e.g. `qget<i64>()`). Syntactically, `f<` commits to
 a type argument list only when the `<…>` is immediately followed by `(`,
-by `{` for a struct literal (`Pair<int> { … }`), or by `.ident {` for a
-variant literal (`Opt<int>.Some { … }`); otherwise `<` is the comparison
+by `{` for a struct literal (`Pair<i64> { … }`), or by `.ident {` for a
+variant literal (`Opt<i64>.Some { … }`); otherwise `<` is the comparison
 operator.
 
 Passing arrays by reference is the generic way to write mutating range
@@ -948,7 +978,7 @@ Semantics and implementation:
   `f`'s return type applies as usual.
 
 Error handling idiom: there is deliberately **no specified error-value
-convention** (bool, enum, string, int — application's choice; by custom the
+convention** (bool, enum, string, i64 — application's choice; by custom the
 error is the last of multiple return values). Short-distance: manual
 multi-value returns. Long-distance: `return from`.
 
@@ -973,7 +1003,8 @@ match n { 0 => "zero", 1..10 => "small", _ => "big" }
 
 * Over ADTs: exhaustive over variants; `_ =>` wildcard allowed; arm binds
   the variant payload (`c: Shape.Circle` above).
-* Over integers: constant and half-open-range arms; `_` required.
+* Over integers (any integer type): constant and half-open-range arms; `_`
+  required; pattern values must fit the scrutinee's type.
 * Arm binders are explicit about copy vs reference, like the rest of the
   language: `Circle c =>` binds the payload *by value* — a copy, potentially
   a large one for variable-size payloads — and `Circle &c =>` binds it *by
@@ -992,9 +1023,9 @@ The cases of a `match` may instead be written as separate functions, each
 taking one *variant type* in the same parameter position:
 
 ```goose
-fn area(c: Shape.Circle) -> flt { c.r * c.r * 3.14159 }
-fn area(r: Shape.Rect) -> flt   { r.w * r.h }
-fn area(p: Shape.Point) -> flt  { 0.0 }
+fn area(c: Shape.Circle) -> f64 { c.r * c.r * 3.14159 }
+fn area(r: Shape.Rect) -> f64   { r.w * r.h }
+fn area(p: Shape.Point) -> f64  { 0.0 }
 
 let a = area(s);     // s: Shape — dispatches on the tag, like a match
 ```
@@ -1195,7 +1226,7 @@ convention: Appendix C.
 No shared mutable memory, ever. The model is a statically typed cousin of
 the Linda tuple-space / coordination style.
 
-* A worker entry point is declared `thread_fn worker(a: int, ...) { }`.
+* A worker entry point is declared `thread_fn worker(a: i64, ...) { }`.
   The compiler compiles a `thread_fn` and everything it calls **as a
   separate program** with its own stack assignment (its own N′). Because
   many instances of a thread program can run at once, a thread program's
@@ -1206,9 +1237,9 @@ the Linda tuple-space / coordination style.
   references arrive via (hidden) arguments; any static stack use
   re-specializes it per program, exactly like a template instantiation.
 * Worker count is decided **at runtime** (no static maximum):
-  `thread_spawn(worker, args…) -> int` reserves a fresh stack block, copies
+  `thread_spawn(worker, args…) -> i64` reserves a fresh stack block, copies
   the args, starts the worker, and returns its id. `hardware_threads() ->
-  int` exists for sizing. `thread_wait(id)` blocks until that worker
+  i64` exists for sizing. `thread_wait(id)` blocks until that worker
   returns — enabling both scoped fork/join parallelism and orderly shutdown
   (send quit messages, then wait). Workers still running when `main`
   returns are killed.
@@ -1235,8 +1266,8 @@ machinery this needs.)
 ## 12. Deliberately out of scope for v1
 
 Standard library contents (beyond: `print(x)` for scalars and u8-arrays/
-slices, `assert`, `hardware_threads`, the unsigned builtins of
-§6.2, and the math types of §6.1 are assumed); FFI details (an `extern fn`
+slices, `assert`, `hardware_threads`, and the math types of §6.1 are
+assumed); FFI details (an `extern fn`
 C boundary is assumed to exist, unchecked by nature); error-value
 conventions (§7.9); move operations for resizables; multiple resizables per
 struct; two-way growth arrays; inline compaction / copying GC for pools;
@@ -1293,9 +1324,9 @@ whole-resizable assignment (§4.4). Deletions use tombstones or the
 ### A.4 Case functions as virtuals
 
 ```goose
-enum Node { Num { v: flt }, Add { l: Node..&<u16>, r: Node..&<u16> } }
-recursive fn eval(n: Node.Num&) -> flt { n.v }
-recursive fn eval(n: Node.Add&) -> flt { eval(n.l) + eval(n.r) }
+enum Node { Num { v: f64 }, Add { l: Node..&<u16>, r: Node..&<u16> } }
+recursive fn eval(n: Node.Num&) -> f64 { n.v }
+recursive fn eval(n: Node.Add&) -> f64 { eval(n.l) + eval(n.r) }
 ```
 
 ### A.5 Long-distance errors
@@ -1316,11 +1347,10 @@ fn parse(src: u8[:]) -> Expr.., u8[] { ...; return parse_expr(&l), ""; }
 Collected from the design discussion; each needs future resolution work.
 The newest, highest-priority items first:
 
-0a. **Storage-to-storage transfer ergonomics** — reads widen to `int` and
-    narrowing stores are never implicit, so `a.x = b.x` between two `u8`
-    fields requires `as` even though no information can be lost. Loosening
-    this for provably width-preserving field-to-field transfers needs a rule
-    that doesn't reopen implicit narrowing in general.
+0a. **Mixed-signedness ergonomics in practice** — §6.1's unification
+    deliberately rejects `u32 + i32` and `u64` against anything signed.
+    Watch whether real code (hash kernels, size math against `.len`'s
+    `i64`) accumulates enough casts to justify a relaxation or an idiom.
 0b. **Reference address identity** — references are transparent (§3.8), so
     `r1 == r2` compares pointees; there is currently no way to ask whether
     two references alias the same address (a `same_ref(a, b)` builtin?).
@@ -1360,9 +1390,9 @@ The newest, highest-priority items first:
    worker-local init, flat-type relaxation for self-contained
    relative-reference values (send whole trees through queues).
 10. **SIMD/alignment** — measure whether packed layouts cost real SIMD
-    performance; consider opt-in aligned types if so. Related: f32-lane
-    elementwise ops (§6.1) should vectorize; verify the 64-bit `int`
-    semantics don't block it.
+    performance; consider opt-in aligned types if so. Related: narrow-lane
+    elementwise ops (§6.1) should vectorize now that arithmetic runs at the
+    element width; verify with the particle/sum benchmarks.
 11. **FFI** — `extern fn` boundary rules (what types may cross; flat types
     again?).
 12. **Open syntax details** — trailing-block parameter form (`it` vs
@@ -1481,7 +1511,7 @@ rettypes    := type ("," type)*                  // no parens in declarations
 globaldecl  := "reusable"? ("let" | "var") ident (":" type)? "=" expr ";"
 
 type        := prim | ident tyargs? | "(" type ")" | type postfix
-prim        := "int"|"flt"|"bool"|"varint"|"i8"|…|"u64"|"f32"|"f64"
+prim        := "bool"|"varint"|"i8"|…|"u64"|"f32"|"f64"
              | "fn" ( "(" types? ")" ("->" (type | "(" types ")"))? )?
 tyargs      := "<" type ("," type)* ","? ">"
 uint        := "u8"|"u16"|"u32"|"u64"|"varint"

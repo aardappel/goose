@@ -22,18 +22,18 @@ enum Sexp_se {
 var pool: Sexp_se..[>..] = [];
 
 // A.3 A growable hash table (open addressing), in-model.
-struct Slot_se { key: int = 0, val: int = 0 }
+struct Slot_se { key: i64 = 0, val: i64 = 0 }
 struct Map { slots: Slot_se[>..] }
 
 // A.4 Case functions as virtuals.
-enum Node_se { Num { v: flt }, Add { l: Node_se..&<u16>, r: Node_se..&<u16> } }
-recursive fn eval_se(n: Node_se.Num&) -> flt { n.v }
-recursive fn eval_se(n: Node_se.Add&) -> flt { eval_se(n.l) + eval_se(n.r) }
+enum Node_se { Num { v: f64 }, Add { l: Node_se..&<u16>, r: Node_se..&<u16> } }
+recursive fn eval_se(n: Node_se.Num&) -> f64 { n.v }
+recursive fn eval_se(n: Node_se.Add&) -> f64 { eval_se(n.l) + eval_se(n.r) }
 
 // A.5 Long-distance errors: parse returns a value and an error string; deep
 // failures land at parse via `return ... from`.
-struct Lexer { pos: int, limit: int }
-enum Expr { Nothing, Something { v: int } }
+struct Lexer { pos: i64, limit: i64 }
+enum Expr { Nothing, Something { v: i64 } }
 
 fn tokens_remain(l: Lexer&) -> bool { l.pos < l.limit }
 

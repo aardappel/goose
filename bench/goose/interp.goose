@@ -20,7 +20,7 @@ enum Expr {
 
 var pool: Expr..[>..] = [];
 
-recursive fn build(depth: int, seed: int) -> Expr..& {
+recursive fn build(depth: i64, seed: u64) -> Expr..& {
     let s = xs_next(seed);
     if depth == 0 { return pool.push(Expr.Num { v: xs_mod(s, 1000) as i32 }); }
     let k = xs_mod(s, 8);
@@ -35,10 +35,10 @@ recursive fn build(depth: int, seed: int) -> Expr..& {
 }
 
 // Case functions: the language's virtual-call idiom, dispatched on the tag.
-recursive fn eval(e: Expr.Num&) -> int { e.v }
-recursive fn eval(e: Expr.Add&) -> int { (eval(e.l) + eval(e.r)) % M }
-recursive fn eval(e: Expr.Mul&) -> int { (eval(e.l) * eval(e.r)) % M }
-recursive fn eval(e: Expr.Neg&) -> int { (M - eval(e.of)) % M }
+recursive fn eval(e: Expr.Num&) -> i64 { e.v }
+recursive fn eval(e: Expr.Add&) -> i64 { (eval(e.l) + eval(e.r)) % M }
+recursive fn eval(e: Expr.Mul&) -> i64 { (eval(e.l) * eval(e.r)) % M }
+recursive fn eval(e: Expr.Neg&) -> i64 { (M - eval(e.of)) % M }
 
 fn main() {
     let root: Expr..& = build(DEPTH, 12345);

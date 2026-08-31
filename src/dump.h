@@ -168,7 +168,9 @@ inline void Block::Dump(string &s, int ind) const {
 }
 
 inline void IntLit::Dump(string &s, int) const {
-    if (!text.empty()) s += text; else Append(s, val);
+    if (!text.empty()) s += text;
+    else if (uns) Append(s, (uint64_t)val);
+    else Append(s, val);
 }
 
 inline void FltLit::Dump(string &s, int) const {

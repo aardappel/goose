@@ -10,7 +10,7 @@ import rng;
 let N = 2000000;                         // BENCH_N
 let MAXW = 20;
 
-fn fnv(s: u8[:]) -> int {
+fn fnv(s: u8[:]) -> u64 {
     var h = 0xcbf29ce484222325;
     for c in s { h = (h ^ c) * 0x100000001b3; }
     h
@@ -20,7 +20,7 @@ struct Slot { key: u8[:], count: i32 }
 
 fn main() {
     let vocab = N / 10 + 16;
-    var r = 12345;
+    var r: u64 = 12345;
     // A vocabulary of fixed-capacity words, so it stays randomly indexable.
     var dict: u8[..MAXW][>..] = [];
     for i in vocab {
@@ -54,7 +54,7 @@ fn main() {
     // Count, in an open-addressed map whose keys are slices into the text.
     var nslots = 16;
     while nslots < vocab * 4 { nslots *= 2; }
-    let mask = nslots - 1;
+    let mask = (nslots - 1) as u64;
     var slots: Slot[>..] = [];
     for s in nslots { slots.push(Slot { key: text[0..0], count: 0 }); }
     var distinct = 0;
@@ -68,7 +68,7 @@ fn main() {
                 distinct++;
                 break;
             }
-            if slots[idx].key == key { slots[idx].count = (slots[idx].count + 1) as i32; break; }
+            if slots[idx].key == key { slots[idx].count = slots[idx].count + 1; break; }
             idx = (idx + 1) & mask;
         }
     }

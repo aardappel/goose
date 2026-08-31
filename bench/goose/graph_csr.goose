@@ -18,30 +18,30 @@ fn main() {
     var edst: i32[>..] = [];
     var start: i32[>..] = [];
     for v in V + 1 { start.push(0); }
-    var r = 12345;
+    var r: u64 = 12345;
     for e in ne {
         r = xs_next(r);
         let u = xs_mod(r, V);
         esrc.push(u as i32);
-        edst.push(xs_mod(unsigned_shr(r, 24), V) as i32);
-        start[u + 1] = (start[u + 1] + 1) as i32;
+        edst.push(xs_mod(r >> 24, V) as i32);
+        start[u + 1] = start[u + 1] + 1;
     }
-    for v in V { start[v + 1] = (start[v + 1] + start[v]) as i32; }
+    for v in V { start[v + 1] = start[v + 1] + start[v]; }
     var fill: i32[>..] = [];
-    for v in V + 1 { fill.push(start[v] as i32); }
+    for v in V + 1 { fill.push(start[v]); }
     var out: i32[>..] = [];
     for e in ne { out.push(0); }
     for e in ne {
         let s = esrc[e];
-        out[fill[s]] = edst[e] as i32;
-        fill[s] = (fill[s] + 1) as i32;
+        out[fill[s]] = edst[e];
+        fill[s] = fill[s] + 1;
     }
     // BFS, identical to graph.goose apart from how the edges are reached.
     var dist: i32[>..] = [];
     for v in V { dist.push(-1); }
     var q: i32[>..<] = [];
     var total = 0;
-    var seed = 999;
+    var seed: u64 = 999;
     for s in SOURCES {
         seed = xs_next(seed);
         let src = xs_mod(seed, V);
@@ -58,8 +58,8 @@ fn main() {
             for k in start[u]..start[u + 1] {
                 let w = out[k];
                 if dist[w] < 0 {
-                    dist[w] = (d + 1) as i32;
-                    q.push(w as i32);
+                    dist[w] = d + 1;
+                    q.push(w);
                 }
             }
         }

@@ -40,21 +40,18 @@ list copies the bytes and is therefore self-contained, while the offsets row is
 
 ## Where Goose loses, and why
 
-**Elementwise struct math is a codegen problem, not a language one, and it is
-the biggest single finding here.** The `particles` rows settle it. Written per
-component, Goose is 909 ms against C++'s 852 -- a 7% draw. Written the
-idiomatic way, `p.vel = p.vel + G`, Goose is 4568 ms, while the *same*
-expression shape in C++ costs nothing over the per-component form (906 ms). So
-it is not the extra zero-component adds, and it is not the packed layout:
-rebuilding the generated C with `#pragma pack(8)` changes nothing, and hoisting
-the array header and the global constant out of the loop changes nothing. What
-is left is how the operator is emitted -- whole struct temporaries copied out
-of and assigned back through the element pointer, which MSVC does not
-scalarise. A further ~10% is separately explained by the generated C using
-double literals (`0.0`, `0.5`) in expressions that are `f32`, so those
-subexpressions round-trip through double. This is spec TODO 10 with a number
-attached: the language's nicest vector-math notation is currently its slowest
-path by 5x.
+**Elementwise struct math now costs what it should.** The `particles` rows
+settle it. Written per component, Goose is 878 ms against C++'s 847 -- a 4%
+draw. Written the idiomatic way, `p.vel = p.vel + G`, Goose is 910 ms against
+C++'s 888 for the same expression shape: the elementwise emitter expands
+member-by-member with direct loads and stores (member i of the result depends
+only on member i of the operands, so in-place stores are exact even when the
+destination aliases an operand), and no whole-struct temporary ever exists
+for MSVC to fail to scalarise. The remaining few percent over the
+per-component form is the zero-component adds gravity's x and z contribute,
+which C++ pays identically. It was worth 5x: an earlier emitter that copied
+operands and result through packed struct temporaries measured 4568 ms on the
+same loop.
 
 **Pointer-linked adjacency loses to CSR, in both languages.** On `graph` the
 one-pass linked build is 4-6x slower to traverse than two-pass
@@ -68,9 +65,8 @@ CSR is still the answer, and Goose writes it at least as well as C++ does.
 
 **A 5-30% tax where the structures are identical.** Goose's linked `graph` row
 is 32% behind its C++ twin, `tree` 10% behind the reserved arena, `particles`
-per component 7% behind. Bounds checking and 64-bit `int` arithmetic are the
-obvious suspects; nothing here isolates them, and a build with checks disabled
-would.
+per component 7% behind. Bounds checking is the obvious suspect; nothing here
+isolates it, and a build with checks disabled would.
 
 ## Caveats on these numbers specifically
 
@@ -95,16 +91,6 @@ would.
 These are findings from implementing the benchmarks, independent of how fast
 anything ran. Several are places where the implementation is stricter than
 the spec, or where a rule composes badly with another rule.
-
-**`varint` fields cannot hold a computed value.** A `varint` struct or payload
-field accepts a literal, but a runtime `int` is rejected as a narrowing store,
-and `as varint` is rejected outright ("varints are written at construction
-only"). That leaves no path from a computed value into a varint field, which
-contradicts spec 3.6 ("a struct varint field initialized from `arr.len` goes
-through `int` -- decode, re-encode"). Hit in `sexp.goose`, where parsed
-numbers wanted to be varints and had to become `i32`. Varint *array lengths*
-(`u8[varint]`) work fine and are used throughout, so only the value path is
-affected.
 
 **Reference laundering defeats relative references.** A reference read back
 out of a container is conservatively rooted at that container (spec 9.5), so

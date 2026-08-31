@@ -8,10 +8,9 @@
 // means the walk sees each list's children in reverse source order, which the
 // C++ rows reproduce exactly so the checksums line up.
 //
-// The links are plain references rather than relative ones, and the parsed
-// numbers are i32 rather than varint. Both are forced by the current
-// implementation rather than chosen -- see the notes in bench/notes.md -- and
-// both cost this benchmark memory it should not have to spend.
+// The links are plain references rather than relative ones -- forced by the
+// current implementation rather than chosen (see the notes in bench/notes.md)
+// -- which costs this benchmark memory it should not have to spend.
 //
 // The parser carries a `return from` error path (spec 7.9) it never takes on
 // this input, which is the honest thing to measure: real parsers have one,
@@ -25,7 +24,7 @@ let PASSES = 4;
 
 enum Sexp {
     Sym  { name: u8[varint], next: Sexp..? },
-    Num  { v: i32, next: Sexp..? },
+    Num  { v: varint, next: Sexp..? },
     List { first: Sexp..?, next: Sexp..? },
 }
 
@@ -36,7 +35,7 @@ var roots: Sexp..&[>..] = [];
 
 // --- generation --------------------------------------------------------------
 
-fn emit_num(v: int) {
+fn emit_num(v: i64) {
     var d = v;
     if d == 0 { text.push('0'); return; }
     var tmp: u8[..24] = [];
@@ -45,7 +44,7 @@ fn emit_num(v: int) {
     while i > 0 { i--; text.push(tmp[i] as u8); }
 }
 
-fn emit_sym(seed: int) {
+fn emit_sym(seed: u64) {
     var r = seed;
     let n = 3 + xs_mod(r, 12);
     for i in n {
@@ -54,16 +53,16 @@ fn emit_sym(seed: int) {
     }
 }
 
-recursive fn gen(depth: int, seed: int) -> int {
+recursive fn gen(depth: i64, seed: u64) -> u64 {
     var r = xs_next(seed);
     if depth == 0 || xs_mod(r, 4) == 0 {
-        if xs_mod(unsigned_shr(r, 8), 2) == 0 { emit_sym(r); }
-        else { emit_num(xs_mod(unsigned_shr(r, 16), 100000)); }
+        if xs_mod(r >> 8, 2) == 0 { emit_sym(r); }
+        else { emit_num(xs_mod(r >> 16, 100000)); }
         text.push(' ');
         return r;
     }
     text.push('(');
-    let kids = 2 + xs_mod(unsigned_shr(r, 24), 4);
+    let kids = 2 + xs_mod(r >> 24, 4);
     for k in kids { r = gen(depth - 1, r); }
     text.push(')');
     text.push(' ');
@@ -75,7 +74,7 @@ recursive fn gen(depth: int, seed: int) -> int {
 fn skip_space() { while pos < text.len && text[pos] == ' ' { pos++; } }
 
 // A symbol's bytes, copied straight into the node under construction.
-fn sym_text(start: int, end: int) -> u8[varint] { text[start..end] }
+fn sym_text(start: i64, end: i64) -> u8[varint] { text[start..end] }
 
 recursive fn parse_node(prev: Sexp..&?) -> Sexp..& {
     skip_space();
@@ -99,13 +98,13 @@ recursive fn parse_node(prev: Sexp..&?) -> Sexp..& {
             v = v * 10 + (text[pos] - '0');
             pos++;
         }
-        return pool.push(Sexp.Num { v: v as i32, next: prev });
+        return pool.push(Sexp.Num { v: v, next: prev });
     }
     while pos < text.len && text[pos] != ' ' && text[pos] != '(' && text[pos] != ')' { pos++; }
     return pool.push(Sexp.Sym { name: sym_text(start, pos), next: prev })
 }
 
-fn parse_all() -> int, u8[] {
+fn parse_all() -> i64, u8[] {
     loop {
         skip_space();
         guard pos < text.len;
@@ -126,17 +125,17 @@ fn nextof(n: Sexp.List&) -> Sexp..? { n.next }
 // The sibling chain is walked by passing the next link down: inside a
 // recursive cycle a reference may be passed as an argument but not stored
 // (spec 7.8), so the loop form with `.=` is not available here.
-recursive fn walk(n: Sexp.Sym&) -> int { n.name.len + n.name[0] }
-recursive fn walk(n: Sexp.Num&) -> int { n.v }
-recursive fn walk(n: Sexp.List&) -> int { 1 + walk_chain(n.first) }
+recursive fn walk(n: Sexp.Sym&) -> i64 { n.name.len + n.name[0] }
+recursive fn walk(n: Sexp.Num&) -> i64 { n.v }
+recursive fn walk(n: Sexp.List&) -> i64 { 1 + walk_chain(n.first) }
 
-recursive fn walk_chain(c: Sexp..?) -> int {
+recursive fn walk_chain(c: Sexp..?) -> i64 {
     guard c else { return 0; }
     return walk(c) + walk_chain(nextof(c));
 }
 
 fn main() {
-    var seed = 12345;
+    var seed: u64 = 12345;
     for i in N { seed = gen(DEPTH, seed); }
     let nroots, err = parse_all();
     print(text.len);

@@ -81,29 +81,11 @@ struct Optimizer {
         if (a == b) return true;
         if (!a || !b || a->kind != b->kind) return false;
         switch (a->kind) {
-            case TY_INT:  return TypeCheck::CanonI(a->intstorage) == TypeCheck::CanonI(b->intstorage);
-            case TY_FLT:  return TypeCheck::CanonF(a->fltstorage) == TypeCheck::CanonF(b->fltstorage);
+            case TY_INT:  return a->intstorage == b->intstorage;
+            case TY_FLT:  return a->fltstorage == b->fltstorage;
             case TY_BOOL: case TY_VOID: return true;
             default: return false;
         }
-    }
-
-    // Wrap-checked int64 arithmetic (overflow aborts in debug builds, §6.2,
-    // so an overflowing constant op is left for the runtime to decide).
-    static bool AddOv(int64_t a, int64_t b, int64_t &r) {
-        r = (int64_t)((uint64_t)a + (uint64_t)b);
-        return ((a ^ r) & (b ^ r)) < 0;
-    }
-    static bool SubOv(int64_t a, int64_t b, int64_t &r) {
-        r = (int64_t)((uint64_t)a - (uint64_t)b);
-        return ((a ^ b) & (a ^ r)) < 0;
-    }
-    static bool MulOv(int64_t a, int64_t b, int64_t &r) {
-        r = (int64_t)((uint64_t)a * (uint64_t)b);
-        if (a == 0 || b == 0) return false;
-        if (a == -1) return b == INT64_MIN;
-        if (b == -1) return a == INT64_MIN;
-        return r / b != a;
     }
 
     static int64_t WrapStorage(int64_t v, IntStorage s) {
@@ -113,6 +95,13 @@ struct Optimizer {
             case IS_I32: return (int32_t)v;  case IS_U32: return (int64_t)(uint32_t)v;
             default:     return v;
         }
+    }
+
+    // The integer type an already-checked node computes at; null when it is
+    // not a (non-varint) integer.
+    static TypeExpr *IntTypeOf(Node *n) {
+        auto t = n->exprtype;
+        return t && t->kind == TY_INT && t->intstorage != IS_VARINT ? t : nullptr;
     }
 
     Node *NewInt(Node *at, int64_t v) {
@@ -141,7 +130,7 @@ struct Optimizer {
 
     Node *CloneLit(Node *lit, TypeExpr *usetype) {
         Node *r;
-        if (auto i = Is<IntLit>(lit)) r = ast.New<IntLit>(lit->line, i->val, i->text);
+        if (auto i = Is<IntLit>(lit)) r = ast.New<IntLit>(lit->line, i->val, i->text, i->uns);
         else if (auto f = Is<FltLit>(lit)) r = ast.New<FltLit>(lit->line, f->val);
         else r = ast.New<BoolLit>(lit->line, ((BoolLit *)lit)->val);
         r->exprtype = usetype ? usetype : lit->exprtype;
@@ -509,7 +498,7 @@ inline Node *Optimizer::TryInline(Call *c) {
 // kind. Inliner::Cp wraps every call and carries exprtype over; TypeExprs and
 // symbols are shared, VarDefs remap via Inliner::Remap.
 
-inline Node *IntLit::Cp1(Inliner &inl) const { return inl.ast.New<IntLit>(line, val, text); }
+inline Node *IntLit::Cp1(Inliner &inl) const { return inl.ast.New<IntLit>(line, val, text, uns); }
 inline Node *FltLit::Cp1(Inliner &inl) const { return inl.ast.New<FltLit>(line, val); }
 inline Node *BoolLit::Cp1(Inliner &inl) const { return inl.ast.New<BoolLit>(line, val); }
 inline Node *StrLit::Cp1(Inliner &inl) const { return inl.ast.New<StrLit>(line, val); }
@@ -749,13 +738,21 @@ inline Node *Unary::Opt(Optimizer &o) {
     switch (op) {
         case T_MINUS:
             if (auto i = Is<IntLit>(child)) {
-                if (i->val == INT64_MIN) break;  // Overflows; runtime decides.
+                auto t = Optimizer::IntTypeOf(this);
+                // An unrepresentable negation overflows; the runtime decides.
+                if (!t || !TypeCheck::FitsIntStorage(-i->val, false, t->intstorage) ||
+                    i->val == INT64_MIN)
+                    break;
                 return o.NewInt(this, -i->val);
             }
             if (auto fl = Is<FltLit>(child)) return o.NewFlt(this, -fl->val);
             break;
         case T_BITNOT:
-            if (auto i = Is<IntLit>(child)) return o.NewInt(this, ~i->val);
+            if (auto i = Is<IntLit>(child)) {
+                auto t = Optimizer::IntTypeOf(this);
+                if (!t) break;
+                return o.NewInt(this, Optimizer::WrapStorage(~i->val, t->intstorage));
+            }
             break;
         case T_NOT:
             if (auto b = Is<BoolLit>(child)) return o.NewBool(this, !b->val);
@@ -787,21 +784,53 @@ inline Node *Binary::Opt(Optimizer &o) {
     right = o.Opt(right);
     auto li = Is<IntLit>(left), ri = Is<IntLit>(right);
     if (li && ri) {
+        // Folds compute at the operands' checked type (the typechecker
+        // unified both sides). Overflow and division aborts stay runtime
+        // behavior: those cases are simply not folded.
+        auto ot = Optimizer::IntTypeOf(left);
+        if (!ot) return this;
+        auto s = ot->intstorage;
+        auto bits = IntBits(s);
+        if (IsUnsigned(s)) {
+            // Unsigned arithmetic wraps by definition (§6.2): every op folds.
+            auto a = (uint64_t)li->val, b = (uint64_t)ri->val;
+            auto max = bits == 64 ? UINT64_MAX : (1ull << bits) - 1;
+            switch (op) {
+                case T_PLUS:  return o.NewInt(this, (int64_t)((a + b) & max));
+                case T_MINUS: return o.NewInt(this, (int64_t)((a - b) & max));
+                case T_MUL:   return o.NewInt(this, (int64_t)((a * b) & max));
+                case T_DIV:   if (b) return o.NewInt(this, (int64_t)(a / b)); break;
+                case T_MOD:   if (b) return o.NewInt(this, (int64_t)(a % b)); break;
+                case T_BITAND: return o.NewInt(this, (int64_t)(a & b));
+                case T_BITOR:  return o.NewInt(this, (int64_t)(a | b));
+                case T_XOR:    return o.NewInt(this, (int64_t)(a ^ b));
+                case T_SHL:    return o.NewInt(this, (int64_t)((a << (b & (bits - 1))) & max));
+                case T_SHR:    return o.NewInt(this, (int64_t)((a & max) >> (b & (bits - 1))));
+                case T_LT:     return o.NewBool(this, a < b);
+                case T_GT:     return o.NewBool(this, a > b);
+                case T_LTEQ:   return o.NewBool(this, a <= b);
+                case T_GTEQ:   return o.NewBool(this, a >= b);
+                case T_EQ:     return o.NewBool(this, a == b);
+                case T_NEQ:    return o.NewBool(this, a != b);
+                default: break;
+            }
+            return this;
+        }
         auto a = li->val, b = ri->val;
+        auto fits = [&](int64_t r) { return TypeCheck::FitsIntStorage(r, false, s); };
         int64_t r;
         switch (op) {
-            // Overflow and division aborts stay runtime behavior: those
-            // cases are simply not folded.
-            case T_PLUS:  if (!Optimizer::AddOv(a, b, r)) return o.NewInt(this, r); break;
-            case T_MINUS: if (!Optimizer::SubOv(a, b, r)) return o.NewInt(this, r); break;
-            case T_MUL:   if (!Optimizer::MulOv(a, b, r)) return o.NewInt(this, r); break;
-            case T_DIV:   if (b && !(a == INT64_MIN && b == -1)) return o.NewInt(this, a / b); break;
+            case T_PLUS:  if (!TypeCheck::AddOv(a, b, r) && fits(r)) return o.NewInt(this, r); break;
+            case T_MINUS: if (!TypeCheck::SubOv(a, b, r) && fits(r)) return o.NewInt(this, r); break;
+            case T_MUL:   if (!TypeCheck::MulOv(a, b, r) && fits(r)) return o.NewInt(this, r); break;
+            case T_DIV:   if (b && !(a == INT64_MIN && b == -1) && fits(a / b)) return o.NewInt(this, a / b); break;
             case T_MOD:   if (b && !(a == INT64_MIN && b == -1)) return o.NewInt(this, a % b); break;
             case T_BITAND: return o.NewInt(this, a & b);
             case T_BITOR:  return o.NewInt(this, a | b);
             case T_XOR:    return o.NewInt(this, a ^ b);
-            case T_SHL:    return o.NewInt(this, (int64_t)((uint64_t)a << (b & 63)));
-            case T_SHR:    return o.NewInt(this, a >> (b & 63));
+            case T_SHL:    return o.NewInt(this, Optimizer::WrapStorage(
+                                       (int64_t)((uint64_t)a << (b & (bits - 1))), s));
+            case T_SHR:    return o.NewInt(this, a >> (b & (bits - 1)));
             case T_LT:     return o.NewBool(this, a < b);
             case T_GT:     return o.NewBool(this, a > b);
             case T_LTEQ:   return o.NewBool(this, a <= b);
@@ -890,11 +919,16 @@ inline Node *AsCast::Opt(Optimizer &o) {
     child = o.Opt(child);
     auto tt = exprtype;  // The concrete target type, set at checking.
     if (auto i = Is<IntLit>(child)) {
+        // Whether the source value's bits read as a u64 above i64.max.
+        auto st = Optimizer::IntTypeOf(child);
+        auto suns = i->val < 0 && (i->uns || (st && st->intstorage == IS_U64));
         if (tt->kind == TY_INT) {
             if (unchecked) return o.NewInt(this, Optimizer::WrapStorage(i->val, tt->intstorage));
             // `as` range-checks in debug: fold only a fitting value.
-            if (TypeCheck::FitsIntStorage(i->val, tt->intstorage)) return o.NewInt(this, i->val);
+            if (TypeCheck::FitsIntStorage(i->val, suns, tt->intstorage))
+                return o.NewInt(this, i->val);
         } else if (tt->kind == TY_FLT) {
+            if (suns) return this;   // u64-range sources are for the runtime.
             auto d = (double)i->val;
             if (Optimizer::IsF32T(tt)) d = (double)(float)d;
             // Checked casts fold only when the conversion is exact; ±2^53
@@ -913,7 +947,7 @@ inline Node *AsCast::Opt(Optimizer &o) {
             if (d >= -9223372036854775808.0 && d < 9223372036854775808.0) {
                 auto t = (int64_t)d;
                 if (unchecked) return o.NewInt(this, Optimizer::WrapStorage(t, tt->intstorage));
-                if ((double)t == d && TypeCheck::FitsIntStorage(t, tt->intstorage))
+                if ((double)t == d && TypeCheck::FitsIntStorage(t, false, tt->intstorage))
                     return o.NewInt(this, t);
             }
         } else if (tt->kind == TY_FLT) {
@@ -975,12 +1009,20 @@ inline Node *MatchExpr::Opt(Optimizer &o) {
     scrutinee = o.Opt(scrutinee);
     if (auto iv = Is<IntLit>(scrutinee)) {
         // An integer match on a constant selects its arm statically (first
-        // matching arm; a _ arm is guaranteed present).
+        // matching arm; a _ arm is guaranteed present). Compare at the
+        // scrutinee's signedness.
+        auto st = Optimizer::IntTypeOf(scrutinee);
+        auto uns = st && IsUnsigned(st->intstorage);
+        auto inrange = [&](const MatchArm &arm) {
+            if (uns)
+                return (uint64_t)iv->val >= (uint64_t)arm.lo &&
+                       (uint64_t)iv->val < (uint64_t)arm.hi;
+            return iv->val >= arm.lo && iv->val < arm.hi;
+        };
         MatchArm *sel = nullptr;
         for (auto &arm : arms) {
             auto hit = arm.pat.kind == P_WILDCARD ||
-                       ((arm.pat.kind == P_INT || arm.pat.kind == P_RANGE) &&
-                        iv->val >= arm.lo && iv->val < arm.hi);
+                       ((arm.pat.kind == P_INT || arm.pat.kind == P_RANGE) && inrange(arm));
             if (hit) { sel = &arm; break; }
         }
         if (sel && (exprtype->kind == TY_VOID ||

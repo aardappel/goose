@@ -41,7 +41,7 @@ struct TypeCheck {
 
     // An assignable/addressable path: Ident, field, or element.
     struct LVal {
-        TypeExpr *type = nullptr;    // Storage type at the location (unwidened).
+        TypeExpr *type = nullptr;    // The location's own type (varints undecoded).
         VarDef *var = nullptr;       // Set when the path is a bare variable name.
         VarDef *root = nullptr;      // Owner of the storage (null = static).
         bool writable = false;       // Whole path admits writes.
@@ -188,18 +188,14 @@ struct TypeCheck {
     }
 
     // ------------------------------------------------------------------
-    // Type equality on concrete (post-substitution) types. i64 is the same
-    // type as int, f64 the same as flt (storage spellings, §3.1).
-
-    static IntStorage CanonI(IntStorage s) { return s == IS_I64 ? IS_INT : s; }
-    static FltStorage CanonF(FltStorage s) { return s == FS_F64 ? FS_FLT : s; }
+    // Type equality on concrete (post-substitution) types.
 
     bool TypeEq(TypeExpr *a, TypeExpr *b) {
         if (a == b) return true;
         if (a->kind != b->kind) return false;
         switch (a->kind) {
-            case TY_INT:  return CanonI(a->intstorage) == CanonI(b->intstorage);
-            case TY_FLT:  return CanonF(a->fltstorage) == CanonF(b->fltstorage);
+            case TY_INT:  return a->intstorage == b->intstorage;
+            case TY_FLT:  return a->fltstorage == b->fltstorage;
             case TY_BOOL: case TY_VOID: case TY_FN: return true;
             case TY_STRUCT: {
                 if (a->struc->st != b->struc->st) return false;
@@ -609,25 +605,14 @@ struct TypeCheck {
                 assert(false);
                 return;
             case TY_INT: {
-                // Storage spellings exist only inside compound types (§3.1);
-                // an individual variable/parameter/return is plain int.
+                // varint is encoded storage: it exists only inside compound
+                // types (fields, elements) and behind references (§3.6).
                 auto compound = pos == VT_FIELD || pos == VT_ELEM || pos == VT_POINTEE;
                 if (t->intstorage == IS_VARINT && !compound)
                     Error(l, "varint is a storage type: only fields and array elements");
-                if (t->intstorage != IS_INT && !compound)
-                    Error(l, cat(IntStorageName(t->intstorage), " is a storage type: use it "
-                                 "inside compound types, and plain int here"));
                 return;
             }
-            case TY_FLT:
-                // Like the integer storage types, f32/f64 exist only inside
-                // compound types; variables/parameters/returns are plain flt
-                // (f32 math lives entirely within expressions, §3.1).
-                if (t->fltstorage != FS_FLT && pos != VT_FIELD && pos != VT_ELEM &&
-                    pos != VT_POINTEE)
-                    Error(l, cat(FltStorageName(t->fltstorage), " is a storage type: use it "
-                                 "inside compound types, and plain flt here"));
-                return;
+            case TY_FLT: return;
             case TY_BOOL: return;
             case TY_VOID:
                 Error(l, "expression has no value here");
@@ -889,7 +874,6 @@ struct TypeCheck {
     }
 
     bool IsIntT(TypeExpr *t) { return t->kind == TY_INT && t->intstorage != IS_VARINT; }
-    bool IsFullInt(TypeExpr *t) { return t->kind == TY_INT && CanonI(t->intstorage) == IS_INT; }
     bool IsFltT(TypeExpr *t) { return t->kind == TY_FLT; }
     bool IsF32(TypeExpr *t) { return t->kind == TY_FLT && t->fltstorage == FS_F32; }
     bool IsOptional(TypeExpr *t) { return t->kind == TY_REF && t->ref->optional; }
@@ -901,12 +885,11 @@ struct TypeCheck {
     }
     bool IsU8(TypeExpr *t) { return t->kind == TY_INT && t->intstorage == IS_U8; }
 
-    // Loads widen (§3.1): integer storage reads become int, f64 reads flt,
-    // varint reads int; f32 stays f32 (lazy promotion). Relative references
-    // load as ordinary references (§3.9).
-    TypeExpr *Widen(TypeExpr *t) {
-        if (t->kind == TY_INT && t->intstorage != IS_INT) return ast.inttypes[IS_INT];
-        if (t->kind == TY_FLT && t->fltstorage == FS_F64) return ast.flttypes[FS_FLT];
+    // The value type a load from storage yields: numeric types load as
+    // themselves, varint decodes to i64 (§3.6), and relative references load
+    // as ordinary references (§3.9).
+    TypeExpr *LoadType(TypeExpr *t) {
+        if (t->kind == TY_INT && t->intstorage == IS_VARINT) return ast.inttypes[IS_I64];
         if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
             auto r = ast.NewType(TY_REF, t->line);
             r->ref = ast.NewDetail<TypeRef>();
@@ -917,13 +900,14 @@ struct TypeCheck {
         return t;
     }
 
-    // The type a variable binding gives a value: storage widths widen, f32
-    // included — f32 math lives entirely within expressions, and variables
-    // are always flt (§3.1).
-    TypeExpr *VarWiden(TypeExpr *t) {
-        t = Widen(t);
-        if (IsF32(t)) return ast.flttypes[FS_FLT];
-        return t;
+    // The implicit numeric widenings (§6.3): conversions that can never
+    // change a value — to a wider type of the same signedness, or from an
+    // unsigned type to any strictly wider signed type; f32 to f64.
+    static bool ImplicitInt(IntStorage from, IntStorage to) {
+        if (from == IS_VARINT || to == IS_VARINT) return false;
+        if (from == to) return true;
+        if (IntBits(from) >= IntBits(to)) return false;
+        return IsUnsigned(to) ? IsUnsigned(from) : true;
     }
 
     // The pointee type when v is a (non-optional) reference, else null.
@@ -936,6 +920,16 @@ struct TypeCheck {
     // Fixed-size element check for indexable access.
     bool SequentialElems(TypeExpr *arr) {
         return ClassOf(arr->arr->sub) != SC_FIXED;
+    }
+
+    // Positions that accept any integer type (indices, slice bounds, sizes,
+    // counts): the value is used at 64 bits internally; a u64 above i64.max
+    // is out of range for every such use and the bounds check catches it.
+    Val CheckIntAny(Node *n) {
+        auto v = Operand(n);
+        if (!IsIntT(v.type))
+            Error(n, cat("an integer is expected here, got ", TypeStr(v.type)));
+        return v;
     }
 
     // Does this type embed relative references at the value level (not
@@ -1010,7 +1004,7 @@ struct TypeCheck {
             if (lv.type->kind == TY_SLICE) {
                 if (ClassOf(lv.type->sub) != SC_FIXED)
                     Error(n, "slices of variable-size elements cannot be indexed, only iterated");
-                CheckValue(ix->idx, ast.inttypes[IS_INT]);
+                CheckIntAny(ix->idx);
                 lv.type = lv.type->sub;
                 lv.var = nullptr;
                 n->exprtype = lv.type;
@@ -1020,7 +1014,7 @@ struct TypeCheck {
                 Error(n, cat("cannot index a value of type ", TypeStr(lv.type)));
             if (SequentialElems(lv.type))
                 Error(n, "arrays of variable-size elements cannot be indexed, only iterated");
-            CheckValue(ix->idx, ast.inttypes[IS_INT]);
+            CheckIntAny(ix->idx);
             if (lv.type->arr->akind == A_GROWSHRINK) lv.ingrowshrink = true;
             lv.type = lv.type->arr->sub;
             lv.var = nullptr;
@@ -1137,7 +1131,7 @@ struct TypeCheck {
     Val DecayRef(Val v) {
         if (!IsPlainRef(v.type)) return v;
         Val r;
-        r.type = Widen(v.type->ref->sub);
+        r.type = LoadType(v.type->ref->sub);
         r.root = v.root;  // Compound pointee values: container info, harmless.
         return r;
     }
@@ -1194,7 +1188,8 @@ struct TypeCheck {
             if (!fitfail.empty()) Error(n, fitfail);
             Error(n, cat("expected a value of type ", TypeStr(dt), ", got ", TypeStr(v.type),
                          v.type->kind == TY_INT && dt->kind == TY_INT
-                             ? " (narrowing stores require an explicit `as`)" : ""));
+                             ? " (narrowing and sign changes require an explicit `as`)"
+                             : ""));
         }
     }
 
@@ -1231,15 +1226,33 @@ struct TypeCheck {
         if (TypeEq(t, dt)) { v.type = dt; return true; }
         switch (dt->kind) {
             case TY_INT:
-                // A constant that statically fits stores into any int storage.
-                if (t->kind == TY_INT && v.ck == CK_INT && FitsIntStorage(v.ival, dt->intstorage)) {
+                if (t->kind != TY_INT) return false;
+                // A constant adapts to any integer type its value fits.
+                if (v.ck == CK_INT) {
+                    if (FitsIntStorage(v.ival, v.uns, dt->intstorage)) {
+                        v.type = dt;
+                        return true;
+                    }
+                    fitfail = cat("constant ", ConstStr(v), " does not fit ", TypeStr(dt));
+                    return false;
+                }
+                if (dt->intstorage == IS_VARINT) {
+                    // varint stores hold the full i64 value range: every
+                    // integer type embeds except u64 (§3.6).
+                    if (t->intstorage != IS_U64 && t->intstorage != IS_VARINT) {
+                        v.type = dt;
+                        return true;
+                    }
+                    return false;
+                }
+                if (ImplicitInt(t->intstorage, dt->intstorage)) {
                     v.type = dt;
                     return true;
                 }
                 return false;
             case TY_FLT:
                 if (t->kind != TY_FLT) return false;
-                // Literals adapt to f32; f32 promotes to flt on contact.
+                // Literals adapt to f32; f32 widens to f64.
                 if (IsF32(dt)) { if (v.ck != CK_FLT) return false; }
                 else if (!IsF32(t)) return false;
                 v.type = dt;
@@ -1316,7 +1329,10 @@ struct TypeCheck {
         }
     }
 
-    static bool FitsIntStorage(int64_t v, IntStorage s) {
+    // Whether the constant (value bits v, u64-flavored when uns) fits the
+    // given integer type. varint holds the full i64 value range.
+    static bool FitsIntStorage(int64_t v, bool uns, IntStorage s) {
+        if (uns) return s == IS_U64;   // Above i64.max: only u64 holds it.
         switch (s) {
             case IS_I8:  return v >= -128 && v <= 127;
             case IS_I16: return v >= -32768 && v <= 32767;
@@ -1324,10 +1340,14 @@ struct TypeCheck {
             case IS_U8:  return v >= 0 && v <= 255;
             case IS_U16: return v >= 0 && v <= 65535;
             case IS_U32: return v >= 0 && v <= UINT32_MAX;
-            // 64-bit storage holds any bit pattern losslessly (§6.2).
-            case IS_INT: case IS_I64: case IS_U64: case IS_VARINT: return true;
+            case IS_U64: return v >= 0;
+            case IS_I64: case IS_VARINT: return true;
         }
         return false;
+    }
+
+    static string ConstStr(const Val &v) {
+        return v.uns ? cat((uint64_t)v.ival) : cat(v.ival);
     }
 
     // Conditions: bool, or an optional (§3.8 truthiness + narrowing). Plain
@@ -1351,7 +1371,11 @@ struct TypeCheck {
         if (!a) return b;
         if (!b) return a;
         if (TypeEq(a, b)) return a;
-        if (a->kind == TY_FLT && b->kind == TY_FLT) return ast.flttypes[FS_FLT];
+        if (a->kind == TY_INT && b->kind == TY_INT) {
+            if (ImplicitInt(a->intstorage, b->intstorage)) return b;
+            if (ImplicitInt(b->intstorage, a->intstorage)) return a;
+        }
+        if (a->kind == TY_FLT && b->kind == TY_FLT) return ast.flttypes[FS_F64];
         if (!wantvalue) return ast.voidtype;
         Error(at, cat("branches have mismatched types: ", TypeStr(a), " vs ", TypeStr(b)));
     }
@@ -1386,7 +1410,7 @@ struct TypeCheck {
                      "variable instead");
         if (lv.type->kind == TY_REF) {
             Val v;
-            v.type = Widen(lv.type);  // Relative refs load as plain (§3.9).
+            v.type = LoadType(lv.type);  // Relative refs load as plain (§3.9).
             if (lv.var) {
                 v.root = RefRootOf(lv.var);
                 v.writable = lv.var->refwritable;
@@ -1406,23 +1430,133 @@ struct TypeCheck {
         return v;
     }
 
+    // Wrap-free signed 64-bit arithmetic, reporting overflow.
+    static bool AddOv(int64_t a, int64_t b, int64_t &r) {
+        r = (int64_t)((uint64_t)a + (uint64_t)b);
+        return ((a ^ r) & (b ^ r)) < 0;
+    }
+    static bool SubOv(int64_t a, int64_t b, int64_t &r) {
+        r = (int64_t)((uint64_t)a - (uint64_t)b);
+        return ((a ^ b) & (a ^ r)) < 0;
+    }
+    static bool MulOv(int64_t a, int64_t b, int64_t &r) {
+        r = (int64_t)((uint64_t)a * (uint64_t)b);
+        if (a == 0 || b == 0) return false;
+        if (a == -1) return b == INT64_MIN;
+        if (b == -1) return a == INT64_MIN;
+        return r / b != a;
+    }
+
+    // Folds a constant binary op at the width and signedness of out.type. An
+    // operation whose result does not fit is left for the runtime (overflow
+    // aborts in debug builds, §6.2); division by a constant zero is a
+    // compile error. Operand values fit out.type (the unify rules ensured it).
     void FoldInt(TType op, Val &l, Val &r, Val &out, Node *at) {
         if (l.ck != CK_INT || r.ck != CK_INT) return;
-        auto a = l.ival, b = r.ival;
-        out.ck = CK_INT;
-        switch (op) {
-            case T_PLUS:   out.ival = a + b; break;
-            case T_MINUS:  out.ival = a - b; break;
-            case T_MUL:    out.ival = a * b; break;
-            case T_DIV:    if (!b) Error(at, "constant division by zero"); out.ival = a / b; break;
-            case T_MOD:    if (!b) Error(at, "constant division by zero"); out.ival = a % b; break;
-            case T_BITAND: out.ival = a & b; break;
-            case T_BITOR:  out.ival = a | b; break;
-            case T_XOR:    out.ival = a ^ b; break;
-            case T_SHL:    out.ival = a << (b & 63); break;
-            case T_SHR:    out.ival = a >> (b & 63); break;
-            default:       out.ck = CK_NONE; break;
+        auto s = out.type->intstorage;
+        if (s == IS_VARINT) return;
+        auto bits = IntBits(s);
+        if (IsUnsigned(s)) {
+            // Unsigned arithmetic wraps modulo 2^width by definition (§6.2),
+            // so every operation folds exactly.
+            auto a = (uint64_t)l.ival, b = (uint64_t)r.ival;
+            auto max = bits == 64 ? UINT64_MAX : (1ull << bits) - 1;
+            uint64_t res = 0;
+            switch (op) {
+                case T_PLUS:   res = (a + b) & max; break;
+                case T_MINUS:  res = (a - b) & max; break;
+                case T_MUL:    res = (a * b) & max; break;
+                case T_DIV:    if (!b) Error(at, "constant division by zero"); res = a / b; break;
+                case T_MOD:    if (!b) Error(at, "constant division by zero"); res = a % b; break;
+                case T_BITAND: res = a & b; break;
+                case T_BITOR:  res = a | b; break;
+                case T_XOR:    res = a ^ b; break;
+                case T_SHL:    res = (a << (b & (bits - 1))) & max; break;
+                case T_SHR:    res = (a & max) >> (b & (bits - 1)); break;
+                default:       return;
+            }
+            out.ck = CK_INT;
+            out.ival = (int64_t)res;
+            out.uns = s == IS_U64 && out.ival < 0;
+            return;
         }
+        auto a = l.ival, b = r.ival;
+        int64_t res = 0;
+        switch (op) {
+            case T_PLUS:   if (AddOv(a, b, res)) return; break;
+            case T_MINUS:  if (SubOv(a, b, res)) return; break;
+            case T_MUL:    if (MulOv(a, b, res)) return; break;
+            case T_DIV:
+                if (!b) Error(at, "constant division by zero");
+                if (a == INT64_MIN && b == -1) return;
+                res = a / b;
+                break;
+            case T_MOD:
+                if (!b) Error(at, "constant division by zero");
+                if (a == INT64_MIN && b == -1) return;
+                res = a % b;
+                break;
+            case T_BITAND: res = a & b; break;
+            case T_BITOR:  res = a | b; break;
+            case T_XOR:    res = a ^ b; break;
+            case T_SHL:    res = (int64_t)((uint64_t)a << (b & (bits - 1))); break;
+            case T_SHR:    res = a >> (b & (bits - 1)); break;
+            default:       return;
+        }
+        if (!FitsIntStorage(res, false, s)) return;
+        out.ck = CK_INT;
+        out.ival = res;
+    }
+
+    // The operand/result type of a binary numeric operator: equal types
+    // stand; a constant adapts to the other operand's type; otherwise the
+    // operand that implicitly widens into the other picks the wider type
+    // (§6.1). Returns null for non-numeric or int/float-mixed pairs.
+    TypeExpr *UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, TypeExpr *lt, TypeExpr *rt) {
+        if (IsIntT(lt) && IsIntT(rt)) {
+            if (TypeEq(lt, rt)) return lt;
+            if (lv.ck == CK_INT && rv.ck == CK_INT) {
+                if (lv.uns || rv.uns) {
+                    if ((!lv.uns && lv.ival < 0) || (!rv.uns && rv.ival < 0))
+                        Error(at, "constant operands have no common type (one is above "
+                                  "i64.max, the other negative)");
+                    return ast.inttypes[IS_U64];
+                }
+                return ast.inttypes[IS_I64];
+            }
+            if (lv.ck == CK_INT) {
+                if (!FitsIntStorage(lv.ival, lv.uns, rt->intstorage))
+                    Error(at, cat("constant ", ConstStr(lv), " does not fit ", TypeStr(rt)));
+                return rt;
+            }
+            if (rv.ck == CK_INT) {
+                if (!FitsIntStorage(rv.ival, rv.uns, lt->intstorage))
+                    Error(at, cat("constant ", ConstStr(rv), " does not fit ", TypeStr(lt)));
+                return lt;
+            }
+            if (ImplicitInt(lt->intstorage, rt->intstorage)) return rt;
+            if (ImplicitInt(rt->intstorage, lt->intstorage)) return lt;
+            Error(at, cat("operands of ", TName(op), " have no common type: ", TypeStr(lt),
+                          " and ", TypeStr(rt), " (convert one with `as`)"));
+        }
+        if (lt->kind == TY_FLT && rt->kind == TY_FLT) {
+            if (TypeEq(lt, rt)) return lt;
+            // One side is f32, the other f64: a literal adapts to the typed
+            // side, otherwise f32 widens (§6.3).
+            if (lv.ck == CK_FLT) return rt;
+            if (rv.ck == CK_FLT) return lt;
+            return ast.flttypes[FS_F64];
+        }
+        return nullptr;
+    }
+
+    // Re-types both operands to the unified type ct: adapted constants and
+    // implicitly widened operands emit at ct downstream.
+    void RetypeOperands(Node *left, Node *right, Val &lv, Val &rv, TypeExpr *ct) {
+        lv.type = ct;
+        rv.type = ct;
+        left->exprtype = ct;
+        right->exprtype = ct;
     }
 
     // All scalar leaves integers, or all floats; only structs and fixed
@@ -1643,7 +1777,8 @@ struct TypeCheck {
                     if (!covered[i])
                         Error(m, cat("match does not cover variant ", en->name, ".",
                                      en->variants[i].name));
-        } else if (IsIntT(Widen(st))) {
+        } else if (IsIntT(LoadType(st))) {
+            auto sit = LoadType(st)->intstorage;
             auto haswild = false;
             for (auto &arm : m->arms) {
                 if (arm.pat.kind == P_WILDCARD) { haswild = true; DoArm(arm, nullptr); continue; }
@@ -1654,7 +1789,19 @@ struct TypeCheck {
                 arm.hi = arm.pat.kind == P_RANGE
                              ? ConstIntOrError(arm.pat.hi, "match pattern")
                              : arm.lo + 1;
-                if (arm.hi <= arm.lo) Error(arm.body, "empty range in match pattern");
+                // Pattern values must fit the scrutinee's type (a u64
+                // scrutinee accepts any 64-bit pattern).
+                if (sit != IS_U64) {
+                    auto ul = Is<IntLit>(arm.pat.lo) && Is<IntLit>(arm.pat.lo)->uns;
+                    auto uh = arm.pat.hi && Is<IntLit>(arm.pat.hi) &&
+                              Is<IntLit>(arm.pat.hi)->uns;
+                    if (!FitsIntStorage(arm.lo, ul, sit) ||
+                        (arm.pat.kind == P_RANGE && !FitsIntStorage(arm.hi, uh, sit)))
+                        Error(arm.body, cat("match pattern does not fit the scrutinee "
+                                            "type ", TypeStr(st)));
+                }
+                if (arm.hi <= arm.lo && !(sit == IS_U64 && (arm.lo < 0 || arm.hi < 0)))
+                    Error(arm.body, "empty range in match pattern");
                 DoArm(arm, nullptr);
             }
             if (!haswild) Error(m, "integer match requires a _ arm");
@@ -1748,12 +1895,14 @@ struct TypeCheck {
         VarDef *iterroot = nullptr;
         auto iterwritable = false;
         if (auto r = Is<RangeExpr>(x->iter)) {
-            CheckValue(r->lo, ast.inttypes[IS_INT]);
-            CheckValue(r->hi, ast.inttypes[IS_INT]);
-            r->exprtype = ast.inttypes[IS_INT];
+            auto lo = CheckIntAny(r->lo);
+            auto hi = CheckIntAny(r->hi);
+            auto ct = UnifyNumeric(r, T_DOTDOT, lo, hi, lo.type, hi.type);
+            RetypeOperands(r->lo, r->hi, lo, hi, ct);
+            r->exprtype = ct;
             x->iterkind = IK_RANGE;
             if (x->byref) Error(x, "cannot iterate an integer range by reference");
-            bindtype = ast.inttypes[IS_INT];
+            bindtype = ct;
         } else {
             auto iv = CheckV(x->iter, nullptr);
             x->iter->exprtype = iv.type;
@@ -1761,10 +1910,11 @@ struct TypeCheck {
             iterroot = iv.root;
             iterwritable = iv.writable;
             if (t->kind == TY_REF && !t->ref->optional) t = t->ref->sub;  // Iterate through refs.
-            if (IsIntT(Widen(t))) {
+            t = LoadType(t);
+            if (IsIntT(t)) {
                 x->iterkind = IK_COUNT;
                 if (x->byref) Error(x, "cannot iterate an integer count by reference");
-                bindtype = ast.inttypes[IS_INT];
+                bindtype = t;
             } else if (t->kind == TY_ARRAY || t->kind == TY_SLICE) {
                 auto elem = t->kind == TY_ARRAY ? t->arr->sub : t->sub;
                 x->iterkind = t->kind == TY_ARRAY ? IK_ARRAY : IK_SLICE;
@@ -1778,7 +1928,7 @@ struct TypeCheck {
                     if (HasRelRefT(elem))
                         Error(x, "elements containing relative references require the "
                                  "&x binding form (copies are not supported)");
-                    bindtype = Widen(elem);
+                    bindtype = LoadType(elem);
                 }
             } else {
                 Error(x, cat("cannot iterate a value of type ", TypeStr(t)));
@@ -1796,7 +1946,7 @@ struct TypeCheck {
         }
         x->vdef = vd;
         if (!x->idxvar.empty()) {
-            auto idx = NewVar(x->idxvar, ast.inttypes[IS_INT], x->line, false);
+            auto idx = NewVar(x->idxvar, ast.inttypes[IS_I64], x->line, false);
             idx->assigned = true;
             x->idxdef = idx;
         }
@@ -2111,7 +2261,7 @@ struct TypeCheck {
                         why = cat("cannot infer a type for argument ", (int64_t)i + 1);
                         return false;
                     }
-                    mi.paramtypes[i] = VarWiden(nt);
+                    mi.paramtypes[i] = nt;
                     mi.tier = std::max(mi.tier, 1);
                     continue;
                 }
@@ -2192,9 +2342,6 @@ struct TypeCheck {
             return ct;
         }
         auto at = NaturalType(av);
-        // A bare generic parameter is a variable: it binds the widened type
-        // (an f32 argument binds T = flt and promotes on the way in, §3.1).
-        if (pt->kind == TY_GENERIC && !pt->named->varmode) at = VarWiden(at);
         auto hadgen = HasGenerics(pt);
         if (hadgen) {
             if (!BindTypes(pt, at, b)) {
@@ -2543,11 +2690,6 @@ struct TypeCheck {
         if (sf->has_rets) {
             for (auto rt : sf->rets) {
                 auto ct = Subst(rt);
-                // An explicitly spelled storage return errors; one arriving
-                // through a generic (T bound to a storage element type)
-                // widens like any variable binding.
-                if (!HasGenerics(rt)) ValidateType(ct, sf->line, VT_RET);
-                ct = VarWiden(ct);
                 ValidateType(ct, sf->line, VT_RET);
                 spec->rets.push_back(ct);
             }
@@ -2611,8 +2753,7 @@ struct TypeCheck {
             for (auto &v : vals) {
                 if (v.type->kind == TY_VOID)
                     Error(at, "cannot return a valueless expression");
-                // Inferred returns widen like variable bindings (f32 → flt).
-                tspec->rets.push_back(VarWiden(v.type));
+                tspec->rets.push_back(v.type);
             }
             tspec->retsknown = true;
         } else {
@@ -2877,7 +3018,7 @@ struct TypeCheck {
                 d->assigned = true;
                 // Reference returns decay in inference, like everywhere.
                 auto rv = DecayRef(rets[i]);
-                Finish(d, VarWiden(rv.type), &rv);
+                Finish(d, rv.type, &rv);
             }
             return;
         }
@@ -2905,7 +3046,7 @@ struct TypeCheck {
                 Error(vd->inits[i], "null needs an annotated optional type");
             if (!ann) NoRelRefCopy(vd->inits[i], v.type);
             d->assigned = true;
-            Finish(d, ann ? ann : VarWiden(v.type), &v);
+            Finish(d, ann ? ann : v.type, &v);
         }
     }
 
@@ -3066,14 +3207,14 @@ struct TypeCheck {
             Error(a, "cannot assign through this path (let, or non-writable "
                      "provenance, §9.5)");
         auto isbit = a->op == T_ANDEQ || a->op == T_OREQ || a->op == T_XOREQ;
-        if (st->kind == TY_INT) {
-            if (CanonI(st->intstorage) != IS_INT)
-                Error(a, cat("compound assignment to ", IntStorageName(st->intstorage),
-                             " storage would narrow; use an explicit `as`"));
-            CheckValue(a->rhs, ast.inttypes[IS_INT]);
+        if (st->kind == TY_INT && st->intstorage != IS_VARINT) {
+            // The update computes at the target's type; the operand must
+            // reach it implicitly (literal fit or widening, §6.3).
+            CheckValue(a->rhs, st);
         } else if (st->kind == TY_FLT && !isbit) {
-            // An f32 target keeps the update in 32 bits (§3.1).
-            CheckValue(a->rhs, ast.flttypes[IsF32(st) ? FS_F32 : FS_FLT]);
+            CheckValue(a->rhs, st);
+        } else if (st->kind == TY_INT) {
+            Error(a, "varint fields are written only at construction (§3.6)");
         } else {
             Error(a, cat("operator ", TName(a->op), " cannot be applied to ", TypeStr(st)));
         }
@@ -3091,8 +3232,8 @@ struct TypeCheck {
         }
         if (!writable) Error(x, "cannot modify through this path (let, or non-writable "
                                 "provenance, §9.5)");
-        if (st->kind != TY_INT || CanonI(st->intstorage) != IS_INT)
-            Error(x, cat(TName(x->op), " requires an int lvalue, got ", TypeStr(st)));
+        if (!IsIntT(st))
+            Error(x, cat(TName(x->op), " requires an integer lvalue, got ", TypeStr(st)));
     }
 
     // ------------------------------------------------------------------
@@ -3149,7 +3290,7 @@ struct TypeCheck {
                 curdst = savedst;
                 c->spec = spec;
                 Val v;
-                v.type = ast.inttypes[IS_INT];
+                v.type = ast.inttypes[IS_I64];
                 return v;
             }
             case B_QPUT: {
@@ -3221,7 +3362,7 @@ struct TypeCheck {
         // (push/append are their only growth), so a dynamic shrink attempt on
         // one cannot arise and needs no runtime check.
         if (d.kind == B_RESIZE) {
-            CheckValue(args[1], ast.inttypes[IS_INT]);
+            CheckIntAny(args[1]);
             if (args.size() == 3) ElemArg(args[2], elem, rv);
             return VoidVal();
         }
@@ -3230,8 +3371,8 @@ struct TypeCheck {
         for (auto i = 0; d.args[i]; i++) {
             auto an = args[base + i];
             switch (d.args[i]) {
-                case 'i': CheckValue(an, ast.inttypes[IS_INT]); break;
-                case 'f': CheckValue(an, ast.flttypes[FS_FLT]); break;
+                case 'i': CheckIntAny(an); break;
+                case 'f': CheckValue(an, ast.flttypes[FS_F64]); break;
                 case 'b': CheckValue(an, ast.booltype); break;
                 case 'e': ElemArg(an, elem, rv); break;
                 case 'a': {  // An array/slice of the receiver's element type.
@@ -3255,10 +3396,10 @@ struct TypeCheck {
         Val v = VoidVal();
         switch (d.rets[0]) {
             case 0: break;
-            case 'i': v.type = ast.inttypes[IS_INT]; break;
+            case 'i': v.type = ast.inttypes[IS_I64]; break;
             case 'b': v.type = ast.booltype; break;
             case 'e':
-                v.type = Widen(elem);
+                v.type = LoadType(elem);
                 v.root = temproot;
                 break;
             case 'r':
@@ -3557,15 +3698,16 @@ struct TypeCheck {
 
 inline Val IntLit::Check(TypeCheck &tc, TypeExpr *) {
     Val v;
-    v.type = tc.ast.inttypes[IS_INT];
+    v.type = tc.ast.inttypes[uns ? IS_U64 : IS_I64];
     v.ck = CK_INT;
     v.ival = val;
+    v.uns = uns;
     return v;
 }
 
 inline Val FltLit::Check(TypeCheck &tc, TypeExpr *) {
     Val v;
-    v.type = tc.ast.flttypes[FS_FLT];
+    v.type = tc.ast.flttypes[FS_F64];
     v.ck = CK_FLT;
     v.fval = val;
     return v;
@@ -3615,7 +3757,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
         tc.RequireAssigned(vd, this);
         Val v;
         auto t = vd->narrowed ? vd->narrowed : vd->type;
-        v.type = tc.Widen(t);
+        v.type = tc.LoadType(t);
         if (t->kind == TY_REF || t->kind == TY_SLICE) {
             v.root = tc.RefRootOf(vd);
             v.writable = vd->refwritable;
@@ -3660,7 +3802,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     Val v;
     if (capexpr) {
         // [..cap]: an empty limited array with a runtime capacity (§5.3).
-        tc.CheckValue(capexpr, tc.ast.inttypes[IS_INT]);
+        tc.CheckIntAny(capexpr);
         if (!expected || expected->kind != TY_ARRAY ||
             expected->arr->akind != A_LIMITED || expected->arr->sizeexpr)
             tc.Error(this, "[..cap] constructs a limited array of construction-time "
@@ -3787,13 +3929,26 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
 inline Val Unary::Check(TypeCheck &tc, TypeExpr *) {
     if (op == T_BITAND) return tc.CheckRefOf(this);
     auto v = tc.Operand(child);
-    auto t = tc.Widen(v.type);
+    auto t = tc.LoadType(v.type);
     Val r;
     switch (op) {
         case T_MINUS:
             if (tc.IsIntT(t)) {
-                r.type = tc.ast.inttypes[IS_INT];
-                if (v.ck == CK_INT) { r.ck = CK_INT; r.ival = -v.ival; }
+                if (v.ck == CK_INT) {
+                    // -(2^63) is exactly i64.min; any other u64-range value
+                    // cannot be negated.
+                    if (v.uns && v.ival != INT64_MIN)
+                        tc.Error(this, "negated constant too large for i64");
+                    r.type = tc.ast.inttypes[IS_I64];
+                    r.ck = CK_INT;
+                    r.ival = v.uns ? INT64_MIN : -v.ival;
+                    child->exprtype = r.type;
+                    return r;
+                }
+                if (IsUnsigned(t->intstorage))
+                    tc.Error(this, cat("cannot negate a value of unsigned type ",
+                                       tc.TypeStr(t), " (convert with `as`)"));
+                r.type = t;
             } else if (t->kind == TY_FLT) {
                 r.type = t;
                 if (v.ck == CK_FLT) { r.ck = CK_FLT; r.fval = -v.fval; }
@@ -3808,9 +3963,17 @@ inline Val Unary::Check(TypeCheck &tc, TypeExpr *) {
             r.type = tc.ast.booltype;
             return r;
         case T_BITNOT:
-            if (!tc.IsIntT(t)) tc.Error(this, cat("~ requires int, got ", tc.TypeStr(t)));
-            r.type = tc.ast.inttypes[IS_INT];
-            if (v.ck == CK_INT) { r.ck = CK_INT; r.ival = ~v.ival; }
+            if (!tc.IsIntT(t))
+                tc.Error(this, cat("~ requires an integer, got ", tc.TypeStr(t)));
+            if (v.ck == CK_INT) {
+                r.type = tc.ast.inttypes[v.uns ? IS_U64 : IS_I64];
+                r.ck = CK_INT;
+                r.ival = ~v.ival;
+                r.uns = v.uns && r.ival < 0;
+                child->exprtype = r.type;
+                return r;
+            }
+            r.type = t;
             return r;
         default:
             assert(false);
@@ -3831,14 +3994,17 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
     }
     auto lv = tc.Operand(left);
     auto rv = tc.Operand(right);
-    auto lt = tc.Widen(lv.type), rt = tc.Widen(rv.type);
+    auto lt = tc.LoadType(lv.type), rt = tc.LoadType(rv.type);
     Val v;
     switch (op) {
         case T_LT: case T_GT: case T_LTEQ: case T_GTEQ: {
-            if (tc.IsIntT(lt) && tc.IsIntT(rt)) { v.type = tc.ast.booltype; return v; }
-            if (lt->kind == TY_FLT && rt->kind == TY_FLT) { v.type = tc.ast.booltype; return v; }
-            tc.Error(this, cat("ordering comparison requires int or flt operands, got ",
-                               tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
+            auto ct = tc.UnifyNumeric(this, op, lv, rv, lt, rt);
+            if (!ct)
+                tc.Error(this, cat("ordering comparison requires numeric operands, got ",
+                                   tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
+            tc.RetypeOperands(left, right, lv, rv, ct);
+            v.type = tc.ast.booltype;
+            return v;
         }
         case T_EQ: case T_NEQ: {
             // null tests: the other side must be an optional (an already
@@ -3854,7 +4020,11 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
                 v.type = tc.ast.booltype;
                 return v;
             }
-            if (lt->kind == TY_FLT && rt->kind == TY_FLT) { v.type = tc.ast.booltype; return v; }
+            if (auto ct = tc.UnifyNumeric(this, op, lv, rv, lt, rt)) {
+                tc.RetypeOperands(left, right, lv, rv, ct);
+                v.type = tc.ast.booltype;
+                return v;
+            }
             if (lt->kind == TY_FN || lt->kind == TY_VOID)
                 tc.Error(this, "these values cannot be compared");
             if (!tc.TypeEq(lt, rt))
@@ -3863,34 +4033,51 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
             v.type = tc.ast.booltype;
             return v;
         }
-        case T_BITAND: case T_BITOR: case T_XOR: case T_SHL: case T_SHR: {
+        case T_SHL: case T_SHR: {
+            // Shifts: the left operand's type is the result type; the count
+            // may be any integer type and is masked to the width (§6.2).
             if (!tc.IsIntT(lt) || !tc.IsIntT(rt))
-                tc.Error(this, cat("bitwise operator requires int operands, got ",
+                tc.Error(this, cat("shift requires integer operands, got ",
                                    tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
-            v.type = tc.ast.inttypes[IS_INT];
+            if (lv.ck == CK_INT)
+                v.type = tc.ast.inttypes[lv.uns ? IS_U64 : IS_I64];
+            else
+                v.type = lt;
+            left->exprtype = v.type;
+            lv.type = v.type;
+            tc.FoldInt(op, lv, rv, v, this);
+            return v;
+        }
+        case T_BITAND: case T_BITOR: case T_XOR: {
+            if (!tc.IsIntT(lt) || !tc.IsIntT(rt))
+                tc.Error(this, cat("bitwise operator requires integer operands, got ",
+                                   tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
+            auto ct = tc.UnifyNumeric(this, op, lv, rv, lt, rt);
+            tc.RetypeOperands(left, right, lv, rv, ct);
+            v.type = ct;
             tc.FoldInt(op, lv, rv, v, this);
             return v;
         }
         case T_PLUS: case T_MINUS: case T_MUL: case T_DIV: case T_MOD: {
-            if (tc.IsIntT(lt) && tc.IsIntT(rt)) {
-                v.type = tc.ast.inttypes[IS_INT];
-                tc.FoldInt(op, lv, rv, v, this);
-                return v;
-            }
-            if (lt->kind == TY_FLT && rt->kind == TY_FLT) {
-                // % is fmod on floats. f32 stays 32-bit end-to-end; contact
-                // with flt promotes; literals adapt to the other side (§3.1).
-                auto lf32 = tc.IsF32(lt) || (lv.ck == CK_FLT && tc.IsF32(rt));
-                auto rf32 = tc.IsF32(rt) || (rv.ck == CK_FLT && tc.IsF32(lt));
-                v.type = lf32 && rf32 ? tc.ast.flttypes[FS_F32] : tc.ast.flttypes[FS_FLT];
-                if (lv.ck == CK_FLT && rv.ck == CK_FLT && op != T_MOD) {
+            if ((tc.IsIntT(lt) && tc.IsIntT(rt)) ||
+                (lt->kind == TY_FLT && rt->kind == TY_FLT)) {
+                auto ct = tc.UnifyNumeric(this, op, lv, rv, lt, rt);
+                tc.RetypeOperands(left, right, lv, rv, ct);
+                v.type = ct;
+                if (ct->kind == TY_INT) {
+                    tc.FoldInt(op, lv, rv, v, this);
+                } else if (lv.ck == CK_FLT && rv.ck == CK_FLT && op != T_MOD) {
+                    // % (fmod) is left to the runtime.
+                    auto a = lv.fval, b = rv.fval;
+                    if (tc.IsF32(ct)) { a = (float)a; b = (float)b; }
                     v.ck = CK_FLT;
                     switch (op) {
-                        case T_PLUS:  v.fval = lv.fval + rv.fval; break;
-                        case T_MINUS: v.fval = lv.fval - rv.fval; break;
-                        case T_MUL:   v.fval = lv.fval * rv.fval; break;
-                        default:      v.fval = rv.fval != 0 ? lv.fval / rv.fval : 0; break;
+                        case T_PLUS:  v.fval = a + b; break;
+                        case T_MINUS: v.fval = a - b; break;
+                        case T_MUL:   v.fval = a * b; break;
+                        default:      v.fval = b != 0 ? a / b : 0; break;
                     }
+                    if (tc.IsF32(ct)) v.fval = (double)(float)v.fval;
                 }
                 return v;
             }
@@ -3943,7 +4130,7 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
             member = bd->kind;
             Val v;
             assert(bd->rets[0] == 'i');
-            v.type = tc.ast.inttypes[IS_INT];
+            v.type = tc.ast.inttypes[IS_I64];
             return v;
         }
         if (t->kind == TY_ARRAY || t->kind == TY_SLICE)
@@ -3955,7 +4142,7 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     lv.writable = ov.writable;
     tc.ResolveMemberLValue(lv, this);
     Val v;
-    v.type = tc.Widen(lv.type);
+    v.type = tc.LoadType(lv.type);
     v.root = lv.root;
     // References read out of containers are rooted at the container and
     // writable by design (§9.5 laundering; see the header note).
@@ -3970,7 +4157,7 @@ inline Val Call::Check(TypeCheck &tc, TypeExpr *expected) {
 inline Val Index::Check(TypeCheck &tc, TypeExpr *) {
     auto lv = tc.CheckLValue(this);
     Val v;
-    v.type = tc.Widen(lv.type);
+    v.type = tc.LoadType(lv.type);
     v.root = lv.root;
     // Container-read laundering, as for fields above (§9.5).
     v.writable = v.type->kind == TY_REF || v.type->kind == TY_SLICE ? true : lv.writable;
@@ -3998,8 +4185,8 @@ inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
     } else {
         tc.Error(this, cat("cannot slice a value of type ", tc.TypeStr(lv.type)));
     }
-    if (lo) tc.CheckValue(lo, tc.ast.inttypes[IS_INT]);
-    if (hi) tc.CheckValue(hi, tc.ast.inttypes[IS_INT]);
+    if (lo) tc.CheckIntAny(lo);
+    if (hi) tc.CheckIntAny(hi);
     Val v;
     v.type = tc.SliceOf(elem, line);
     v.root = lv.root;
@@ -4009,7 +4196,7 @@ inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
 
 inline Val AsCast::Check(TypeCheck &tc, TypeExpr *) {
     auto cv = tc.Operand(child);
-    auto st = tc.Widen(cv.type);
+    auto st = tc.LoadType(cv.type);
     if (!tc.IsIntT(st) && st->kind != TY_FLT)
         tc.Error(this, cat("as requires a numeric source, got ", tc.TypeStr(st)));
     auto tt = tc.Subst(type);

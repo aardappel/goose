@@ -658,7 +658,10 @@ struct Parser {
         auto neg = IsNext(T_MINUS);
         if (lex.tok != T_INTLIT)
             Error(cat("integer constant expected in match pattern, found \'", TokStr(), "\'"));
-        auto n = New<IntLit>(line, neg ? -lex.ival : lex.ival, neg ? string_view {} : lex.attr);
+        if (neg && lex.iuns && lex.ival != INT64_MIN)
+            Error("negated literal too large for i64");
+        auto n = New<IntLit>(line, neg ? -lex.ival : lex.ival,
+                             neg ? string_view {} : lex.attr, !neg && lex.iuns);
         lex.Next();
         return n;
     }
@@ -813,7 +816,7 @@ struct Parser {
         auto line = CurLine();
         switch (lex.tok) {
             case T_INTLIT: {
-                auto n = New<IntLit>(line, lex.ival, lex.attr);
+                auto n = New<IntLit>(line, lex.ival, lex.attr, lex.iuns);
                 lex.Next();
                 return n;
             }

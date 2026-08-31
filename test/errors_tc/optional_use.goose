@@ -1,5 +1,5 @@
 // Optionals must be narrowed before access (§3.8).
-fn f(o: int?) -> int {
+fn f(o: i64?) -> i64 {
     o + 1
 }
 fn main() {

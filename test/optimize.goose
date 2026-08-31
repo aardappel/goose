@@ -4,21 +4,21 @@
 
 // --- inlining fodder ---------------------------------------------------------
 
-fn tiny_add(a: int, b: int) -> int { a + b }         // Multi-use, below NC.
-fn tiny_flt(x: flt) -> flt { x * 2.0 }
-fn once_used(n: int) -> int {                        // Single use, large body.
+fn tiny_add(a: i64, b: i64) -> i64 { a + b }         // Multi-use, below NC.
+fn tiny_flt(x: f64) -> f64 { x * 2.0 }
+fn once_used(n: i64) -> i64 {                        // Single use, large body.
     var s = 0;
     for i in n { s += i * i; }
     if s > 100 { s = s - 100; }
     while s > 17 { s -= 17; }
     s
 }
-fn medium(v: int, w: int) -> int {                   // Lands in NCU territory.
+fn medium(v: i64, w: i64) -> i64 {                   // Lands in NCU territory.
     let a = v * 2 + w;
     let b = a - v / 3;
     if a > b { a } else { b }
 }
-fn big_not_inlined(n: int) -> int {                  // Over every threshold.
+fn big_not_inlined(n: i64) -> i64 {                  // Over every threshold.
     var s = 1;
     for i in n { s += i; s *= 3; s -= i / 2; s += i % 5; }
     for j in n { s += j * j; s -= j * 2; s += 1; }
@@ -26,18 +26,18 @@ fn big_not_inlined(n: int) -> int {                  // Over every threshold.
     while s > 1000 { s /= 7; s -= 3; }
     s
 }
-fn returns_early(n: int) -> int {                    // Return statements in loops.
+fn returns_early(n: i64) -> i64 {                    // Return statements in loops.
     if n < 0 { return -1; }
     for i in n { if i == 3 { return i * 10; } }
     n
 }
-fn void_helper(v: int) {                             // Void result + bare guard.
+fn void_helper(v: i64) {                             // Void result + bare guard.
     guard v > 0;
     print(v);
 }
-fn var_param(var x: int) -> int { x += 1; x * 2 }    // Written param: no const subst.
-fn two_rets(a: int) -> int, int { return a, a + 1; } // Multi-value: never inlined.
-recursive fn fact_op(n: int) -> int { if n <= 1 { 1 } else { n * fact_op(n - 1) } }
+fn var_param(var x: i64) -> i64 { x += 1; x * 2 }    // Written param: no const subst.
+fn two_rets(a: i64) -> i64, i64 { return a, a + 1; } // Multi-value: never inlined.
+recursive fn fact_op(n: i64) -> i64 { if n <= 1 { 1 } else { n * fact_op(n - 1) } }
 
 fn use_inlining() {
     print(tiny_add(1, 2) + tiny_add(3, 4));          // Constant args cascade to 10.
@@ -56,16 +56,16 @@ fn use_inlining() {
 
 // --- reference/slice/nonfixed parameters through inlining --------------------
 
-fn bump(r: int&) { r += 1; }                         // Reference binds; writes pointee.
-fn doubled(v: int) -> int { v * 2 }
-fn total_op(xs: int[:]) -> int {
+fn bump(r: i64&) { r += 1; }                         // Reference binds; writes pointee.
+fn doubled(v: i64) -> i64 { v * 2 }
+fn total_op(xs: i64[:]) -> i64 {
     var s = 0;
     for x in xs { s += x; }
     s
 }
-fn takes_string(s: u8[]) -> int { s.len }            // Variable-size by value.
-fn grow(v: int[>..]&) { v.push(1); v.push(2); }      // Growing through a reference.
-fn make_str(n: int) -> u8[>..] {                     // Nonfixed return (NRVO shape).
+fn takes_string(s: u8[]) -> i64 { s.len }            // Variable-size by value.
+fn grow(v: i64[>..]&) { v.push(1); v.push(2); }      // Growing through a reference.
+fn make_str(n: i64) -> u8[>..] {                     // Nonfixed return (NRVO shape).
     var s: u8[>..] = "x";
     for i in n { s.append("y"); }
     return s;
@@ -78,7 +78,7 @@ fn use_params() {
     let arr = [1, 2, 3, 4];
     print(total_op(arr) + arr.len);                     // .len of a fixed array folds.
     print(takes_string("hello"));
-    var v: int[>..] = [];
+    var v: i64[>..] = [];
     grow(&v);
     print(v.len);
     print(x);
@@ -120,18 +120,18 @@ fn casts_op() {
     s.b = 300 as! u8;                                // Wraps: folds to 44.
     s.w = 70000 as! u16;
     s.f = s.f * 2.0 + 0.25;                          // f32 math, not constant.
-    let i = 3.0 as int;                              // Integral: folds.
-    let f2 = 7 as flt;
-    let g3 = 2.5 as! int;                            // as! truncation folds.
+    let i = 3.0 as i64;                              // Integral: folds.
+    let f2 = 7 as f64;
+    let g3 = 2.5 as! i64;                            // as! truncation folds.
     let h2 = 1.5 as f32;                             // Exact in f32: folds.
-    let big = 10000000000000000000.5 as! int;        // Out of range: left alone.
+    let big = 10000000000000000000.5 as! i64;        // Out of range: left alone.
     print(s.b + s.w + i + g3 + big);
-    print(f2 + (h2 as flt) + (s.f as flt));
+    print(f2 + (h2 as f64) + (s.f as f64));
 }
 
 // --- control-flow folding ----------------------------------------------------
 
-fn controlflow() -> int {
+fn controlflow() -> i64 {
     let t = true;
     if t { print(1); } else { print(2); }            // Else branch dropped.
     if 1 > 2 { print(3); }                           // Whole statement dropped.
@@ -164,15 +164,15 @@ fn limits() {
     let addr = 7;
     let r = &addr;                                   // Address taken: not propagated.
     print(w + addr + r);
-    let cap: int[..4] = [1, 2];
+    let cap: i64[..4] = [1, 2];
     print(cap.cap + cap.len);                        // .cap folds; .len stays dynamic.
 }
 
 // --- HOFs, function values, captures -----------------------------------------
 
-fn apply<F>(x: int) -> int { F(x) }
-fn twice<F>(x: int) -> int { F(F(x)) }
-fn bigger_hof<F>(n: int) -> int {
+fn apply<F>(x: i64) -> i64 { F(x) }
+fn twice<F>(x: i64) -> i64 { F(F(x)) }
+fn bigger_hof<F>(n: i64) -> i64 {
     var s = 0;
     for i in n {
         s += F(i);
@@ -192,10 +192,10 @@ fn hofs_op() {
     print(acc);
 }
 
-fn nested_host(n: int) -> int {
-    fn helper(k: int) -> int { k * 3 }               // Nested, no captures.
+fn nested_host(n: i64) -> i64 {
+    fn helper(k: i64) -> i64 { k * 3 }               // Nested, no captures.
     var t = 0;
-    fn addt(k: int) { t += k; }                      // Captures t.
+    fn addt(k: i64) { t += k; }                      // Captures t.
     addt(helper(n));
     addt(2);
     t
@@ -204,14 +204,14 @@ fn nested_host(n: int) -> int {
 // --- case functions and match binders ----------------------------------------
 
 enum Shape_op {
-    Circle { r: flt },
-    Rect { w: flt, h: flt },
+    Circle { r: f64 },
+    Rect { w: f64, h: f64 },
     Point,
 }
 
-fn area_op(c: Shape_op.Circle) -> flt { c.r * c.r * 3.14159 }
-fn area_op(r: Shape_op.Rect) -> flt { r.w * r.h }
-fn area_op(p: Shape_op.Point) -> flt { 0.0 }
+fn area_op(c: Shape_op.Circle) -> f64 { c.r * c.r * 3.14159 }
+fn area_op(r: Shape_op.Rect) -> f64 { r.w * r.h }
+fn area_op(p: Shape_op.Point) -> f64 { 0.0 }
 
 fn shapes() {
     var s: Shape_op = Shape_op.Rect { w: 2.0, h: 3.0 };
@@ -227,11 +227,11 @@ fn shapes() {
 
 // --- long-distance returns ---------------------------------------------------
 
-fn deep_fail(x: int) -> int {
+fn deep_fail(x: i64) -> i64 {
     guard x >= 0 else { return -1 from outer_op; }
     x * 2
 }
-fn outer_op(x: int) -> int {
+fn outer_op(x: i64) -> i64 {
     let v = deep_fail(x);                            // Callee unwinds to outer_op.
     v + 1
 }
@@ -242,15 +242,15 @@ fn longdistance_op() {
 
 // --- function-value returns exit the defining function -----------------------
 
-fn each<F>(n: int) { for i in n { F(i); } }
-fn finder(n: int) -> int {
+fn each<F>(n: i64) { for i in n { F(i); } }
+fn finder(n: i64) -> i64 {
     each(n) { if it == 2 { return it * 100; } };     // Exits finder, through each.
     -1
 }
 
 // --- early blocks as values --------------------------------------------------
 
-fn earlyblocks(n: int) -> int {
+fn earlyblocks(n: i64) -> i64 {
     let r = block {
         guard n > 0 else { break -1; }
         if n > 100 { break 100; }
@@ -261,10 +261,10 @@ fn earlyblocks(n: int) -> int {
 
 // --- inlining into a global initializer, defaults folding --------------------
 
-fn init_helper(a: int) -> int { a * 5 + 1 }
+fn init_helper(a: i64) -> i64 { a * 5 + 1 }
 let ginit = init_helper(4);
 
-struct Defaulted { a: int = 2 + 3, b: flt = 1.0 / 4.0, c: int = 0 }
+struct Defaulted { a: i64 = 2 + 3, b: f64 = 1.0 / 4.0, c: i64 = 0 }
 
 fn defaults() {
     let d = Defaulted { c: 9 };
@@ -277,15 +277,15 @@ fn defaults() {
 // A big HOF bound to the same named nested function twice: one specialization,
 // two uses, over threshold — the call survives, so its funval body still
 // references this function's locals and this function must stay a real frame.
-fn big_hof<F>(n: int) -> int {
+fn big_hof<F>(n: i64) -> i64 {
     var s = 0;
     for i in n { s += F(i); s *= 2; s -= 1; s += i % 3; s /= 1 + (i & 1); }
     for j in n { s += F(j) * 2; s -= j; s += 1; s *= 1 + (j & 3); }
     s
 }
-fn uses_big_hof() -> int {
+fn uses_big_hof() -> i64 {
     let mul = 3;
-    fn scale(k: int) -> int { k * mul }
+    fn scale(k: i64) -> i64 { k * mul }
     let a = big_hof(6, scale);
     let b = big_hof(7, scale);
     a + b
@@ -293,9 +293,9 @@ fn uses_big_hof() -> int {
 
 // A big capturing nested function called twice: not inlined, so the host keeps
 // owning the captured local.
-fn cap_host(n: int) -> int {
+fn cap_host(n: i64) -> i64 {
     var t = 0;
-    fn work(k: int) {
+    fn work(k: i64) {
         for i in k { t += i; t *= 2; t -= 1; t += i % 3; t /= 1 + (i & 1); }
         for j in k { t += j; t -= 1; }
     }
@@ -305,26 +305,26 @@ fn cap_host(n: int) -> int {
 }
 
 // A big function unwinding to outer2_op stays a call, so outer2_op must stay a frame.
-fn deep_big(x: int) -> int {
+fn deep_big(x: i64) -> i64 {
     var s = x;
     for i in 10 { s += i; s *= 2; s -= i / 2; s += i % 3; }
     for j in 10 { s -= j; s += 1; }
     guard s >= 0 else { return -1 from outer2_op; }
     s
 }
-fn outer2_op(x: int) -> int { deep_big(x) + deep_big(x + 1) }
+fn outer2_op(x: i64) -> i64 { deep_big(x) + deep_big(x + 1) }
 
 // --- inline blocks in every expression position ------------------------------
 
-fn step(i: int&) -> bool { i += 1; i < 5 }
-fn whilecond() -> int {
+fn step(i: i64&) -> bool { i += 1; i < 5 }
+fn whilecond() -> i64 {
     var i = 0;
     while step(&i) { }                               // Inlined body inside the condition.
     i
 }
 
-fn pick_op() -> int { 2 }
-fn indexpos() -> int {
+fn pick_op() -> i64 { 2 }
+fn indexpos() -> i64 {
     let a = [10, 20, 30];
     a[pick_op()]                                        // Collapses to a constant index.
 }
@@ -332,10 +332,10 @@ fn indexpos() -> int {
 // --- variable-mode ADT payloads by reference through inlining ----------------
 
 enum Node2 {
-    Leaf { v: int },
+    Leaf { v: i64 },
     Pair { name: u8[] },
 }
-fn firstlen(n: Node2..&) -> int {
+fn firstlen(n: Node2..&) -> i64 {
     match n {
         Leaf l  => l.v,
         Pair &p => p.name.len,
