@@ -213,6 +213,13 @@ predicted for flat scalar work.
   Without them the toolchain comparison measures the malware scanner.
 * One machine, no core pinning. Differences under ~10% are not differences, and
   `graph` at `large` has been seen to move 20% between runs.
+* Code alignment is a real confound when comparing two *Goose* builds. Two
+  compiler versions whose hot loop was byte-identical measured 14% apart on
+  `particles` under clang, purely because a change earlier in the function
+  moved that loop; building both with `-falign-loops=32` closed the gap
+  entirely. Use that flag when A/B-ing compiler changes against each other, and
+  not here: these rows compare languages, so a flag given to Goose would have
+  to be given to C++ and Rust too, where it would likely cancel out.
 * This CPU has a very large L3, so `small` and `medium` can sit entirely in
   cache. The `large` rows are the ones that stress the memory subsystem.
 * Rust rows are a single rustc time, not one per backend. rustc is LLVM, so
