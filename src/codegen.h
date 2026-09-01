@@ -1120,6 +1120,73 @@ struct CodeGen {
                sp->argtypes[i]->ref->sub->arr->akind == A_GROW;
     }
 
+    // Which globals with dedicated data stacks a specialization may touch, its
+    // callees included. A call can only move a stack it can name: one handed to
+    // it as an argument, or a global it (transitively) mentions. Everything
+    // else the caller has cached stays cached across the call.
+    unordered_map<FnSpec *, set<const VarDef *>> gtouch;
+
+    void ComputeGlobalTouch() {
+        for (auto sp : livespecs) {
+            auto &g = gtouch[sp];
+            function<void(Node *)> walk = [&](Node *n) {
+                if (!n) return;
+                if (auto id = Is<Ident>(n))
+                    if (auto v = id->vdef; v && v->isglobal && v->type && IsBytesT(v->type))
+                        g.insert(v);
+                if (auto c = Is<Call>(n)) walk(c->fvbody);
+                n->Children([&](Node *ch) { walk(ch); });
+            };
+            walk(sp->body);
+        }
+        // Every key exists now, so absorbing never rehashes under the reference.
+        for (auto changed = true; changed;) {
+            changed = false;
+            for (auto sp : livespecs) {
+                auto &g = gtouch[sp];
+                function<void(Node *)> walk = [&](Node *n) {
+                    if (!n) return;
+                    if (auto c = Is<Call>(n)) {
+                        auto absorb = [&](FnSpec *k) {
+                            if (!k || !gtouch.count(k)) return;
+                            for (auto v : gtouch[k]) if (g.insert(v).second) changed = true;
+                        };
+                        if (c->builtin < 0) absorb(c->spec);
+                        for (auto d : c->dispatch) absorb(d);
+                        walk(c->fvbody);
+                    }
+                    n->Children([&](Node *ch) { walk(ch); });
+                };
+                walk(sp->body);
+            }
+        }
+    }
+
+    // A pool or fat-reference argument carries its stack inside the value, so
+    // the argument text does not name it; such a call syncs everything.
+    bool PassesOpaqueStack(FnSpec *sp) {
+        for (size_t i = 0; i < sp->argtypes.size(); i++) {
+            if (IsPoolParam(sp, i)) return true;
+            auto pt = sp->argtypes[i];
+            if (pt->kind == TY_REF && IsFatPointee(pt->ref->sub)) return true;
+        }
+        for (auto fv : sinfo[sp].freevars) if (fv->reusable) return true;
+        return false;
+    }
+
+    // What a call to `callee` with these arguments can reach: the argument text
+    // (a stack handed over appears in it verbatim) plus the callee's globals.
+    string SyncReach(FnSpec *callee, const vector<string> &args) {
+        if (!cachetops || PassesOpaqueStack(callee)) return "*";
+        string s;
+        for (auto &a : args) { s += a; s += '\x01'; }
+        for (auto d : gtouch[callee]) {
+            auto it = gstks.find(d);
+            if (it != gstks.end()) { s += it->second; s += '\x01'; }
+        }
+        return s;
+    }
+
     void CollectSpecs() {
         for (auto sp : ast.fnspecs)
             if (sp->live && sp->body) livespecs.push_back(sp);
@@ -1397,12 +1464,14 @@ struct CodeGen {
 
     // Sync points are marked rather than written, because a stack first used
     // after a call still needs that call's reload: the expansion happens once
-    // the whole body is emitted and every cached stack is known.
-    void MarkFlush()  { if (cachetops) L(FLUSHMARK); }
-    void MarkReload() { if (cachetops) L(RELOADMARK); }
+    // the whole body is emitted and every cached stack is known. The mark
+    // carries what the call can reach, so expansion can sync just those --
+    // "*" means everything, which is what a function exit needs.
+    void MarkFlush(const string &reach = "*")  { if (cachetops) L(FLUSHMARK, reach); }
+    void MarkReload(const string &reach = "*") { if (cachetops) L(RELOADMARK, reach); }
 
-    // Replaces each marker line with the sync for every stack this function
-    // caches, keeping the marker's own indentation.
+    // Replaces each marker line with the sync for every cached stack the mark
+    // says the call can reach, keeping the marker's own indentation.
     // A body that cached nothing still has its markers to remove.
     string ExpandTopMarkers(const string &b) {
         if (!cachetops) return b;
@@ -1413,11 +1482,14 @@ struct CodeGen {
             auto line = string_view(b).substr(i, eol - i);
             auto ind0 = line.find_first_not_of(' ');
             auto rest = ind0 == string_view::npos ? string_view() : line.substr(ind0);
-            if (rest == FLUSHMARK || rest == RELOADMARK) {
-                auto store = rest == FLUSHMARK;
+            auto isflush = rest.compare(0, strlen(FLUSHMARK), FLUSHMARK) == 0;
+            auto isreload = rest.compare(0, strlen(RELOADMARK), RELOADMARK) == 0;
+            if (isflush || isreload) {
+                auto reach = rest.substr(strlen(isflush ? FLUSHMARK : RELOADMARK));
                 for (auto &stk : toporder) {
+                    if (reach != "*" && reach.find(stk) == string_view::npos) continue;
                     out.append(ind0, ' ');
-                    if (store) Append(out, stk, "->top = ", topcache[stk], ";\n");
+                    if (isflush) Append(out, stk, "->top = ", topcache[stk], ";\n");
                     else Append(out, topcache[stk], " = ", stk, "->top;\n");
                 }
             } else {
@@ -3638,8 +3710,9 @@ struct CodeGen {
         string argstr;
         for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
         auto callee = ername.empty() ? ki.cname : ername;
-        // The callee reads and bumps whatever stacks it was handed.
-        MarkFlush();
+        // The callee reads and bumps the stacks it was handed, and no others.
+        auto reach = SyncReach(sp, args);
+        MarkFlush(reach);
         if (ki.cret >= 0) {
             auto r0 = T();
             L(CT(sp->rets[ki.cret]), " ", r0, " = ", callee, "(", argstr, ");");
@@ -3647,7 +3720,7 @@ struct CodeGen {
         } else {
             L(callee, "(", argstr, ");");
         }
-        MarkReload();
+        MarkReload(reach);
         if (!slidebase.empty()) {
             // Value form arrived as [len][elems]; slide the prefix out and
             // report the count (the one caller-side copy of this fallback).
@@ -3904,10 +3977,11 @@ struct CodeGen {
             }
             string argstr;
             for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
-            MarkFlush();
+            auto reach = SyncReach(sp, args);
+            MarkFlush(reach);
             if (ki.cret >= 0) L(retex[ki.cret], " = ", ki.cname, "(", argstr, ");");
             else L(ki.cname, "(", argstr, ");");
-            MarkReload();
+            MarkReload(reach);
             if (ki.hasrf) EmitRfCheck(rfv, sp);
             ind--;
             L("} break;");
@@ -4796,6 +4870,7 @@ struct CodeGen {
     CodeGen(Ast &_ast) : ast(_ast) {
         CollectSpecs();
         EmitGlobalDecls();
+        ComputeGlobalTouch();
         // Prototypes for every live specialization, then their bodies.
         for (auto sp : livespecs)
             Append(protos, "static ", SigRet(sp), " ", sinfo[sp].cname, "(",
