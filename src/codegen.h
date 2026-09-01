@@ -1352,6 +1352,83 @@ struct CodeGen {
     string SpIdx(int k) { return cat("GS(", spexpr, " + ", k, ")"); }
     string SpTop() { return cat(spexpr, " + ", stknext); }   // First free index.
 
+    // ------------------------------------------------------------------
+    // Data-stack top caching. A bump pointer read and written through
+    // gs_stks[i].top is memory the C backend must reload after every byte
+    // store, because a `uint8_t *` store may alias it; a run of pushes then
+    // costs a load, an add and a store each instead of register arithmetic.
+    // So each stack the function owns keeps its top in a local, and memory is
+    // synchronized only where something else can observe it: across calls
+    // (which may be handed the stack) and at every function exit.
+    //
+    // Soundness rests on one spelling per cached stack. Own stacks qualify:
+    // a callee's indices start above the caller's in-use watermark (§10.3), so
+    // `GS(gs_sp + k)` names a stack no caller expression can also name, and
+    // global stacks live outside the indexed block entirely. A reference to a
+    // resizable, though, carries its stack inside the reference value, giving
+    // a second spelling for a stack that may be one of ours -- so a function
+    // holding one keeps the plain memory form throughout (CanCacheTops).
+    unordered_map<string, string> topcache;   // Stack expr -> its local.
+    vector<string> toporder;                  // Discovery order, for stable output.
+    bool cachetops = false;
+
+    static constexpr const char *FLUSHMARK = "@@gsflush@@";
+    static constexpr const char *RELOADMARK = "@@gsreload@@";
+
+    set<string> gstkexprs;   // Every global's dedicated stack expression.
+
+    // The function's own indexed stacks, plus the globals' dedicated ones --
+    // both have a single spelling here (see the note above). A caller's stack,
+    // arriving as a parameter, does not: it may be the very global stack this
+    // body also names directly, so those keep the memory form.
+    bool CacheableStk(const string &stk) {
+        return cachetops && (stk.compare(0, 3, "GS(") == 0 || gstkexprs.count(stk));
+    }
+
+    // The lvalue for a stack's top: the cached local where the stack qualifies.
+    string Top(const string &stk) {
+        if (!CacheableStk(stk)) return cat(stk, "->top");
+        auto it = topcache.find(stk);
+        if (it != topcache.end()) return it->second;
+        auto v = T();
+        toporder.push_back(stk);
+        return topcache[stk] = v;
+    }
+
+    // Sync points are marked rather than written, because a stack first used
+    // after a call still needs that call's reload: the expansion happens once
+    // the whole body is emitted and every cached stack is known.
+    void MarkFlush()  { if (cachetops) L(FLUSHMARK); }
+    void MarkReload() { if (cachetops) L(RELOADMARK); }
+
+    // Replaces each marker line with the sync for every stack this function
+    // caches, keeping the marker's own indentation.
+    // A body that cached nothing still has its markers to remove.
+    string ExpandTopMarkers(const string &b) {
+        if (!cachetops) return b;
+        string out;
+        for (size_t i = 0; i < b.size();) {
+            auto eol = b.find('\n', i);
+            if (eol == string::npos) eol = b.size();
+            auto line = string_view(b).substr(i, eol - i);
+            auto ind0 = line.find_first_not_of(' ');
+            auto rest = ind0 == string_view::npos ? string_view() : line.substr(ind0);
+            if (rest == FLUSHMARK || rest == RELOADMARK) {
+                auto store = rest == FLUSHMARK;
+                for (auto &stk : toporder) {
+                    out.append(ind0, ' ');
+                    if (store) Append(out, stk, "->top = ", topcache[stk], ";\n");
+                    else Append(out, topcache[stk], " = ", stk, "->top;\n");
+                }
+            } else {
+                out.append(line);
+                out += '\n';
+            }
+            i = eol + 1;
+        }
+        return out;
+    }
+
     void PushSc(int kind) {
         CScope s;
         s.kind = kind;
@@ -1361,7 +1438,7 @@ struct CodeGen {
 
     void EmitRestores(const CScope &s) {
         for (auto i = (int)s.saves.size() - 1; i >= 0; i--)
-            L(s.saves[i].first, "->top = ", s.saves[i].second, ";");
+            L(Top(s.saves[i].first), " = ", s.saves[i].second, ";");
     }
 
     void PopSc() {
@@ -1803,7 +1880,7 @@ struct CodeGen {
         EmitCoreTypes();
         auto stk = AllocStk(false);
         auto h = T();
-        L("gs_rhdr ", h, " = { ", stk, "->top, 0 };");
+        L("gs_rhdr ", h, " = { ", Top(stk), ", 0 };");
         SaveBase(false, stk, cat(h, ".base"));
         GenAny(n, Dst { 2, stk, n->exprtype, cat(h, ".len") });
         Loc l;
@@ -2095,7 +2172,7 @@ struct CodeGen {
         // Everything else constructs on a fresh temp stack.
         auto stk = AllocStk(false);
         auto base = T();
-        L("uint8_t *", base, " = ", stk, "->top;");
+        L("uint8_t *", base, " = ", Top(stk), ";");
         SaveBase(false, stk, base);
         GenAny(n, Dst { 2, stk });
         if (stkout) *stkout = stk;
@@ -2362,20 +2439,20 @@ struct CodeGen {
     // top, bumping it. All branches of value-producing control constructs
     // construct to the same destination; calls pass the stack down.
 
-    void Bump(const string &stk, const string &n) { L(stk, "->top += ", n, ";"); }
+    void Bump(const string &stk, const string &n) { L(Top(stk), " += ", n, ";"); }
 
     void EmitValStore(const string &stk, TypeExpr *t, const string &x) {
         auto sz = FixedSize(t);
         if (sz == 0) { L("(void)(", x, ");"); return; }
-        L("*(", CT(t), " *)", stk, "->top = ", x, ";");
+        L("*(", CT(t), " *)", Top(stk), " = ", x, ";");
         Bump(stk, cat(sz));
     }
 
     void EmitLenStore(const string &stk, IntStorage ls, const string &n) {
         if (ls == IS_VARINT) {
-            Bump(stk, cat("gs_uleb_write(", stk, "->top, (uint64_t)(", n, "))"));
+            Bump(stk, cat("gs_uleb_write(", Top(stk), ", (uint64_t)(", n, "))"));
         } else {
-            L("*(", IntCT(ls), " *)", stk, "->top = (", IntCT(ls), ")(", n, ");");
+            L("*(", IntCT(ls), " *)", Top(stk), " = (", IntCT(ls), ")(", n, ");");
             Bump(stk, cat(IntSize(ls)));
         }
     }
@@ -2401,7 +2478,7 @@ struct CodeGen {
     void EmitRelStore(const string &stk, TypeExpr *rt, const string &rv, Line ln) {
         auto w = (IntStorage)rt->ref->lenstorage;
         auto fa = T();
-        L("uint8_t *", fa, " = ", stk, "->top;");
+        L("uint8_t *", fa, " = ", Top(stk), ";");
         if (w == IS_VARINT) {
             assert(!IsFatPointee(rt->ref->sub));
             auto addr = cat("(uint8_t *)(", rv, ")");
@@ -2453,7 +2530,7 @@ struct CodeGen {
     void EmitCopyElems(const string &stk, TypeExpr *elem, const string &src, const string &n) {
         if (IsFix(elem)) {
             auto esz = FixedSize(elem);
-            L("memcpy(", stk, "->top, ", src, ", (size_t)((", n, ") * ", esz, "));");
+            L("memcpy(", Top(stk), ", ", src, ", (size_t)((", n, ") * ", esz, "));");
             Bump(stk, cat("(", n, ") * ", esz));
         } else {
             auto p = T(), iv = T();
@@ -2462,7 +2539,7 @@ struct CodeGen {
             ind++;
             auto sz = T();
             L("int64_t ", sz, " = ", SizeX(elem, p), ";");
-            L("memcpy(", stk, "->top, ", p, ", (size_t)", sz, ");");
+            L("memcpy(", Top(stk), ", ", p, ", (size_t)", sz, ");");
             Bump(stk, sz);
             L(p, " += ", sz, ";");
             ind--;
@@ -2529,7 +2606,7 @@ struct CodeGen {
                 auto x = GenX(n);
                 auto sz = T();
                 L("int64_t ", sz, " = ", SizeX(sub, x), ";");
-                L("memcpy(", stk, "->top, ", x, ", (size_t)", sz, ");");
+                L("memcpy(", Top(stk), ", ", x, ", (size_t)", sz, ");");
                 Bump(stk, sz);
             }
             return;
@@ -2550,7 +2627,7 @@ struct CodeGen {
                 } else if (IsBytesT(rt->ref->sub)) {
                     auto sz = T();
                     L("int64_t ", sz, " = ", SizeX(et, rets[0]), ";");
-                    L("memcpy(", stk, "->top, ", rets[0], ", (size_t)", sz, ");");
+                    L("memcpy(", Top(stk), ", ", rets[0], ", (size_t)", sz, ");");
                     Bump(stk, sz);
                 }
             }
@@ -2570,10 +2647,10 @@ struct CodeGen {
             // The zero value of an optional field.
             assert(et->kind == TY_REF);
             if (et->ref->lenstorage == IS_VARINT) {
-                L("*", stk, "->top = 0;");
+                L("*", Top(stk), " = 0;");
                 Bump(stk, "1");
             } else {
-                L("memset(", stk, "->top, 0, ", FixedSize(et), ");");
+                L("memset(", Top(stk), ", 0, ", FixedSize(et), ");");
                 Bump(stk, cat(FixedSize(et)));
             }
             return;
@@ -2584,7 +2661,7 @@ struct CodeGen {
             assert(!lenlv.empty());
             L(lenlv, " = ", s2->val.size(), ";");
             if (!s2->val.empty()) {
-                L("memcpy(", stk, "->top, ", StrRaw(s2->val), ", ", s2->val.size(), ");");
+                L("memcpy(", Top(stk), ", ", StrRaw(s2->val), ", ", s2->val.size(), ");");
                 Bump(stk, cat(s2->val.size()));
             }
             return;
@@ -2593,7 +2670,7 @@ struct CodeGen {
             assert(et->kind == TY_ARRAY && et->arr->akind == A_VAR && lenlv.empty());
             EmitLenStore(stk, LenStore(et->arr), cat(s->val.size()));
             if (!s->val.empty()) {
-                L("memcpy(", stk, "->top, ", StrRaw(s->val), ", ", s->val.size(), ");");
+                L("memcpy(", Top(stk), ", ", StrRaw(s->val), ", ", s->val.size(), ");");
                 Bump(stk, cat(s->val.size()));
             }
             return;
@@ -2643,7 +2720,7 @@ struct CodeGen {
             assert(!lv.val);
             auto sz = T();
             L("int64_t ", sz, " = ", SizeX(et, lv.s), ";");
-            L("memcpy(", stk, "->top, ", lv.s, ", (size_t)", sz, ");");
+            L("memcpy(", Top(stk), ", ", lv.s, ", (size_t)", sz, ");");
             Bump(stk, sz);
             return;
         }
@@ -2666,8 +2743,8 @@ struct CodeGen {
                 else EmitLenStore(stk, LenStore(et->arr), nn);
                 break;
             case A_LIMITED:   // Runtime capacity: chosen as the initial length (v1).
-                L("*(uint32_t *)", stk, "->top = (uint32_t)", nn, ";");
-                L("*(uint32_t *)(", stk, "->top + 4) = (uint32_t)", nn, ";");
+                L("*(uint32_t *)", Top(stk), " = (uint32_t)", nn, ";");
+                L("*(uint32_t *)(", Top(stk), " + 4) = (uint32_t)", nn, ";");
                 Bump(stk, "8");
                 break;
             default:
@@ -2690,7 +2767,7 @@ struct CodeGen {
         auto len = T();
         L("int64_t ", len, " = ", lv.lenlv, ";");
         if (prefix) {
-            L("memcpy(", stk, "->top, ", lv.s, ", ", prefix, ");");
+            L("memcpy(", Top(stk), ", ", lv.s, ", ", prefix, ");");
             Bump(stk, cat(prefix));
         }
         EmitCopyElems(stk, elem, cat("(", lv.s, ") + ", prefix), len);
@@ -2731,7 +2808,7 @@ struct CodeGen {
             if (!lv.val) {
                 auto sz = T();
                 L("int64_t ", sz, " = ", SizeX(lv.t, lv.s), ";");
-                L("memcpy(", stk, "->top, ", lv.s, ", (size_t)", sz, ");");
+                L("memcpy(", Top(stk), ", ", lv.s, ", (size_t)", sz, ");");
                 Bump(stk, sz);
             } else {
                 EmitValStore(stk, lv.t, lv.s);
@@ -2748,7 +2825,7 @@ struct CodeGen {
             L("case ", TagConst(ei, (int)vi), ":");
             ind++;
             if (psz) {
-                L("memcpy(", stk, "->top, &", sv, ".u.v_",
+                L("memcpy(", Top(stk), ", &", sv, ".u.v_",
                   Sanitize(ei->en->variants[vi].name), ", ", psz, ");");
                 Bump(stk, cat(psz));
             }
@@ -2766,7 +2843,7 @@ struct CodeGen {
         auto et = n->exprtype;
         auto Gap = [&](int64_t bytes) {
             if (bytes <= 0) return;
-            L("memset(", stk, "->top, 0, ", bytes, ");");
+            L("memset(", Top(stk), ", 0, ", bytes, ");");
             Bump(stk, cat(bytes));
         };
         auto EmitF = [&](Node *init, TypeExpr *ft) {
@@ -2852,7 +2929,7 @@ struct CodeGen {
     }
 
     void EmitValStoreTag(const string &stk, IntStorage ts, const string &x) {
-        L("*(", IntCT(ts), " *)", stk, "->top = (", IntCT(ts), ")(", x, ");");
+        L("*(", IntCT(ts), " *)", Top(stk), " = (", IntCT(ts), ")(", x, ");");
         Bump(stk, cat(IntSize(ts)));
     }
 
@@ -2869,8 +2946,8 @@ struct CodeGen {
             L("int64_t ", t, " = ", cv, ";");
             L("if (", t, " < 0 || ", t, " > (int64_t)UINT32_MAX) "
               "gs_abort(GS_E_CAPRANGE, ", LocArgs(al->line), ");");
-            L("*(uint32_t *)", stk, "->top = (uint32_t)", t, ";");
-            L("*(uint32_t *)(", stk, "->top + 4) = 0;");
+            L("*(uint32_t *)", Top(stk), " = (uint32_t)", t, ";");
+            L("*(uint32_t *)(", Top(stk), " + 4) = 0;");
             Bump(stk, cat("8 + ", t, " * ", FixedSize(elem)));
             return;
         }
@@ -2889,8 +2966,8 @@ struct CodeGen {
                 else EmitLenStore(stk, LenStore(et->arr), cn);
                 break;
             case A_LIMITED:
-                L("*(uint32_t *)", stk, "->top = ", count, ";");
-                L("*(uint32_t *)(", stk, "->top + 4) = ", count, ";");
+                L("*(uint32_t *)", Top(stk), " = ", count, ";");
+                L("*(uint32_t *)(", Top(stk), " + 4) = ", count, ";");
                 Bump(stk, "8");
                 break;
             default:
@@ -2956,7 +3033,7 @@ struct CodeGen {
         for (size_t i = 0; i < fields.size(); i++) {
             if (fields[i].ispad) {
                 auto n = fields[i].padsize > 0 ? fields[i].padsize : 0;
-                if (n) { L("memset(", stk, "->top, 0, ", n, ");"); Bump(stk, cat(n)); }
+                if (n) { L("memset(", Top(stk), ", 0, ", n, ");"); Bump(stk, cat(n)); }
                 continue;
             }
             Node *init = nullptr;
@@ -2967,8 +3044,8 @@ struct CodeGen {
             if (ft->kind == TY_REF && ft->ref->lenstorage >= 0) {
                 // Relative-reference slot: store from the plain reference.
                 if (!init) {
-                    if (ft->ref->lenstorage == IS_VARINT) { L("*", stk, "->top = 0;"); Bump(stk, "1"); }
-                    else { L("memset(", stk, "->top, 0, ", IntSize((IntStorage)ft->ref->lenstorage), ");");
+                    if (ft->ref->lenstorage == IS_VARINT) { L("*", Top(stk), " = 0;"); Bump(stk, "1"); }
+                    else { L("memset(", Top(stk), ", 0, ", IntSize((IntStorage)ft->ref->lenstorage), ");");
                            Bump(stk, cat(IntSize((IntStorage)ft->ref->lenstorage))); }
                     continue;
                 }
@@ -2979,13 +3056,13 @@ struct CodeGen {
             if (!init) {
                 // Omitted optional: null (checked by TC that a default exists otherwise).
                 assert(ft->kind == TY_REF && ft->ref->optional);
-                L("memset(", stk, "->top, 0, ", FixedSize(ft), ");");
+                L("memset(", Top(stk), ", 0, ", FixedSize(ft), ");");
                 Bump(stk, cat(FixedSize(ft)));
                 continue;
             }
             if (ft->kind == TY_INT && ft->intstorage == IS_VARINT) {
                 auto x = GenXD(init, ast.inttypes[IS_I64]);
-                Bump(stk, cat("gs_zig_write(", stk, "->top, ", x, ")"));
+                Bump(stk, cat("gs_zig_write(", Top(stk), ", ", x, ")"));
                 continue;
             }
             // The resizable tail (if any) receives the enclosing header's
@@ -3081,14 +3158,14 @@ struct CodeGen {
             } else {
                 stk = AllocStk(true);
             }
-            L("gs_rhdr ", name, " = { ", stk, "->top, 0 };");
+            L("gs_rhdr ", name, " = { ", Top(stk), ", 0 };");
             if (!nrvovars.count(d)) SaveBase(true, stk, cat(name, ".base"));
             vstk[d] = stk;
             if (d->reusable) {
                 // Companion freelist: free slot indices on their own stack.
                 auto flstk = AllocStk(true);
                 auto fln = Unique2(cat(name, "_fl"));
-                L("gs_rhdr ", fln, " = { ", flstk, "->top, 0 };");
+                L("gs_rhdr ", fln, " = { ", Top(flstk), ", 0 };");
                 SaveBase(true, flstk, cat(fln, ".base"));
                 vpool[d] = { fln, flstk };
             }
@@ -3098,7 +3175,7 @@ struct CodeGen {
         if (IsBytesT(t)) {
             assert(init);
             auto stk = AllocStk(true);
-            L("uint8_t *", name, " = ", stk, "->top;");
+            L("uint8_t *", name, " = ", Top(stk), ";");
             SaveBase(true, stk, name);
             vstk[d] = stk;
             GenConstruct(init, stk, t);
@@ -3245,6 +3322,7 @@ struct CodeGen {
 
     void Epilogue(const string &retv) {
         EmitExitRestores(0);
+        MarkFlush();   // The caller and every later callee read stack tops from memory.
         for (auto &s : fdstsaves) L(s);
         if (curinfo && curinfo->hasrf) L("*gs_rf = 0;");
         L(retv.empty() ? "return;" : cat("return ", retv, ";"));
@@ -3254,6 +3332,7 @@ struct CodeGen {
     // The dummy C return value used on propagate paths.
     void PropagateReturn(const string &rfval) {
         EmitExitRestores(0);
+        MarkFlush();
         for (auto &s : fdstsaves) L(s);
         L("*gs_rf = ", rfval, ";");
         if (curinfo->cret >= 0) {
@@ -3365,7 +3444,7 @@ struct CodeGen {
         if (d0.k == 2 && !d0.lenlv.empty() && d0.t && d0.t->kind == TY_ARRAY &&
             d0.t->arr->akind == A_VAR && (c->builtin >= 0 || !c->dispatch.empty())) {
             auto base = T();
-            L("uint8_t *", base, " = ", d0.s, "->top;");
+            L("uint8_t *", base, " = ", Top(d0.s), ";");
             auto rets = c->builtin >= 0 ? EmitBuiltin(c, Dst { 2, d0.s })
                                         : EmitDispatch(c, Dst { 2, d0.s }, alldst);
             auto ls = LenStore(d0.t->arr);
@@ -3380,9 +3459,9 @@ struct CodeGen {
             auto ms = T();
             L("int64_t ", ms, " = ", metasz, ";");
             L(d0.lenlv, " = ", count, ";");
-            L("memmove(", base, ", ", base, " + ", ms, ", (size_t)(", d0.s, "->top - ",
+            L("memmove(", base, ", ", base, " + ", ms, ", (size_t)(", Top(d0.s), " - ",
               base, " - ", ms, "));");
-            L(d0.s, "->top -= ", ms, ";");
+            L(Top(d0.s), " -= ", ms, ";");
             return rets;
         }
         if (c->builtin >= 0) return EmitBuiltin(c, d0);
@@ -3413,7 +3492,7 @@ struct CodeGen {
             EmitCoreTypes();
             auto stk = AllocStk(false);
             auto h = T();
-            L("gs_rhdr ", h, " = { ", stk, "->top, 0 };");
+            L("gs_rhdr ", h, " = { ", Top(stk), ", 0 };");
             SaveBase(false, stk, cat(h, ".base"));
             GenConstruct(node, stk, pt, cat(h, ".len"));
             args.push_back(h);
@@ -3424,7 +3503,7 @@ struct CodeGen {
             // By-value nonfixed argument: construct into a fresh slot (§7.2).
             auto stk = AllocStk(false);
             auto base = T();
-            L("uint8_t *", base, " = ", stk, "->top;");
+            L("uint8_t *", base, " = ", Top(stk), ";");
             SaveBase(false, stk, base);
             GenConstruct(node, stk, pt);
             args.push_back(base);
@@ -3489,7 +3568,7 @@ struct CodeGen {
                 } else {
                     stk = AllocStk(false);
                     auto h = T();
-                    L("gs_rhdr ", h, " = { ", stk, "->top, 0 };");
+                    L("gs_rhdr ", h, " = { ", Top(stk), ", 0 };");
                     SaveBase(false, stk, cat(h, ".base"));
                     lenlv = cat(h, ".len");
                     retex[i] = h;
@@ -3510,7 +3589,7 @@ struct CodeGen {
                 } else {
                     slide = dd;
                     slidebase = T();
-                    L("uint8_t *", slidebase, " = ", dd.s, "->top;");
+                    L("uint8_t *", slidebase, " = ", Top(dd.s), ";");
                     args.push_back(dd.s);
                     retex[i] = "";
                 }
@@ -3521,11 +3600,11 @@ struct CodeGen {
                 } else {
                     stk = AllocStk(false);
                     auto sb = T();
-                    L("uint8_t *", sb, " = ", stk, "->top;");
+                    L("uint8_t *", sb, " = ", Top(stk), ";");
                     SaveBase(false, stk, sb);
                 }
                 auto base = T();
-                L("uint8_t *", base, " = ", stk, "->top;");
+                L("uint8_t *", base, " = ", Top(stk), ";");
                 retex[i] = base;
                 args.push_back(stk);
             } else if ((int)i != ki.cret) {
@@ -3550,6 +3629,8 @@ struct CodeGen {
         string argstr;
         for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
         auto callee = ername.empty() ? ki.cname : ername;
+        // The callee reads and bumps whatever stacks it was handed.
+        MarkFlush();
         if (ki.cret >= 0) {
             auto r0 = T();
             L(CT(sp->rets[ki.cret]), " ", r0, " = ", callee, "(", argstr, ");");
@@ -3557,6 +3638,7 @@ struct CodeGen {
         } else {
             L(callee, "(", argstr, ");");
         }
+        MarkReload();
         if (!slidebase.empty()) {
             // Value form arrived as [len][elems]; slide the prefix out and
             // report the count (the one caller-side copy of this fallback).
@@ -3573,9 +3655,9 @@ struct CodeGen {
             auto ms = T();
             L("int64_t ", ms, " = ", metasz, ";");
             L(slide.lenlv, " = ", count, ";");
-            L("memmove(", slidebase, ", ", slidebase, " + ", ms, ", (size_t)(", slide.s,
-              "->top - ", slidebase, " - ", ms, "));");
-            L(slide.s, "->top -= ", ms, ";");
+            L("memmove(", slidebase, ", ", slidebase, " + ", ms, ", (size_t)(",
+              Top(slide.s), " - ", slidebase, " - ", ms, "));");
+            L(Top(slide.s), " -= ", ms, ";");
         }
         if (ki.hasrf) EmitRfCheck(rfv, sp);
         // A fixed first return requested onto a stack: store it (mixed cases
@@ -3635,7 +3717,7 @@ struct CodeGen {
         } else if (wantsval && IsBytesT(et) && d0.k != 2) {
             auto stk = AllocStk(false);
             rv = T();
-            L("uint8_t *", rv, " = ", stk, "->top;");
+            L("uint8_t *", rv, " = ", Top(stk), ";");
             SaveBase(false, stk, rv);
             d = Dst { 2, stk };
         } else if (wantsval && d0.k == 1) {
@@ -3706,7 +3788,7 @@ struct CodeGen {
             } else if (IsBytesT(pt)) {
                 auto stk = AllocStk(false);
                 auto base = T();
-                L("uint8_t *", base, " = ", stk, "->top;");
+                L("uint8_t *", base, " = ", Top(stk), ";");
                 SaveBase(false, stk, base);
                 GenConstruct(an[i], stk);
                 shared[i] = base;
@@ -3729,11 +3811,11 @@ struct CodeGen {
                 else {
                     stk = AllocStk(false);
                     auto sb = T();
-                    L("uint8_t *", sb, " = ", stk, "->top;");
+                    L("uint8_t *", sb, " = ", Top(stk), ";");
                     SaveBase(false, stk, sb);
                 }
                 auto base = T();
-                L("uint8_t *", base, " = ", stk, "->top;");
+                L("uint8_t *", base, " = ", Top(stk), ";");
                 retex[i] = base;
                 dststk[i] = stk;
             } else {
@@ -3765,11 +3847,11 @@ struct CodeGen {
             } else if (IsBytesT(vt)) {
                 auto stk = AllocStk(false);
                 auto base = T();
-                L("uint8_t *", base, " = ", stk, "->top;");
+                L("uint8_t *", base, " = ", Top(stk), ";");
                 SaveBase(false, stk, base);
                 auto sz = T();
                 L("int64_t ", sz, " = ", SizeX(vt, payload), ";");
-                L("memcpy(", stk, "->top, ", payload, ", (size_t)", sz, ");");
+                L("memcpy(", Top(stk), ", ", payload, ", (size_t)", sz, ");");
                 Bump(stk, sz);
                 varg = base;
             } else if (ei->en->variants[vi].fields.empty()) {
@@ -3813,8 +3895,10 @@ struct CodeGen {
             }
             string argstr;
             for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
+            MarkFlush();
             if (ki.cret >= 0) L(retex[ki.cret], " = ", ki.cname, "(", argstr, ");");
             else L(ki.cname, "(", argstr, ");");
+            MarkReload();
             if (ki.hasrf) EmitRfCheck(rfv, sp);
             ind--;
             L("} break;");
@@ -3915,14 +3999,14 @@ struct CodeGen {
                     if (src.t->kind == TY_REF) DerefLoc(src, ln);
                     auto stk = AllocStk(false);
                     auto base = T();
-                    L("uint8_t *", base, " = ", stk, "->top;");
+                    L("uint8_t *", base, " = ", Top(stk), ";");
                     SaveBase(false, stk, base);
                     auto lenv = T();
                     L("int64_t ", lenv, ";");
                     EmitValStore(stk, ast.inttypes[IS_I64], "0");
                     EmitRzCopy(src, t, stk, lenv, ln);
                     L("*(int64_t *)", base, " = ", lenv, ";");
-                    L("gs_qput(&", q, ", ", base, ", ", stk, "->top - ", base, ");");
+                    L("gs_qput(&", q, ", ", base, ", ", Top(stk), " - ", base, ");");
                 } else if (IsBytesT(t)) {
                     auto p = GenPtr(an[0]);
                     L("gs_qput(&", q, ", ", p, ", ", SizeX(t, p), ");");
@@ -3954,7 +4038,7 @@ struct CodeGen {
                     if (stk.empty()) {
                         stk = AllocStk(false);
                         hv = T();
-                        L("gs_rhdr ", hv, " = { ", stk, "->top, 0 };");
+                        L("gs_rhdr ", hv, " = { ", Top(stk), ", 0 };");
                         SaveBase(false, stk, cat(hv, ".base"));
                         lenlv = cat(hv, ".len");
                     }
@@ -3966,7 +4050,7 @@ struct CodeGen {
                     }
                     ind++;
                     L(lenlv, " = *(int64_t *)(", nn, " + 1);");
-                    L("memcpy(", stk, "->top, (uint8_t *)(", nn, " + 1) + 8, (size_t)(",
+                    L("memcpy(", Top(stk), ", (uint8_t *)(", nn, " + 1) + 8, (size_t)(",
                       nn, "->size - 8));");
                     Bump(stk, cat("(", nn, "->size - 8)"));
                     L("free(", nn, ");");
@@ -3979,15 +4063,15 @@ struct CodeGen {
                     string base = T();
                     if (stk.empty()) {
                         stk = AllocStk(false);
-                        L("uint8_t *", base, " = ", stk, "->top;");
+                        L("uint8_t *", base, " = ", Top(stk), ";");
                         SaveBase(false, stk, base);
                     } else {
-                        L("uint8_t *", base, " = ", stk, "->top;");
+                        L("uint8_t *", base, " = ", Top(stk), ";");
                     }
                     if (poll) L("if (", nn, ") {");
                     else L("{");
                     ind++;
-                    L("memcpy(", stk, "->top, ", nn, " + 1, (size_t)", nn, "->size);");
+                    L("memcpy(", Top(stk), ", ", nn, " + 1, (size_t)", nn, "->size);");
                     Bump(stk, cat(nn, "->size"));
                     L("free(", nn, ");");
                     ind--;
@@ -3995,7 +4079,7 @@ struct CodeGen {
                         // A missed poll still yields a valid (zero) value.
                         L("} else {");
                         ind++;
-                        L("memset(", stk, "->top, 0, ", ZeroSize(t), ");");
+                        L("memset(", Top(stk), ", 0, ", ZeroSize(t), ");");
                         Bump(stk, cat(ZeroSize(t)));
                         ind--;
                     }
@@ -4030,8 +4114,8 @@ struct CodeGen {
                 auto tv = T();
                 if (lv.t->arr->akind == A_GROWSHRINK) {
                     // The array tops its stack: the element region ends at top.
-                    L(lv.stk, "->top -= ", esz, ";");
-                    L(CT(elem), " ", tv, " = *(", CT(elem), " *)", lv.stk, "->top;");
+                    L(Top(lv.stk), " -= ", esz, ";");
+                    L(CT(elem), " ", tv, " = *(", CT(elem), " *)", Top(lv.stk), ";");
                 } else if (v.typedelems) {
                     L(CT(elem), " ", tv, " = ", v.elems, "[", nl, "];");
                 } else {
@@ -4060,7 +4144,7 @@ struct CodeGen {
                 ind++;
                 L(v.lenlv, " = (", LenCast(lv), ")", nn, ";");
                 if (ak == A_GROWSHRINK)
-                    L(lv.stk, "->top = (uint8_t *)(", v.elems, ") + ", nn, " * ", esz, ";");
+                    L(Top(lv.stk), " = (uint8_t *)(", v.elems, ") + ", nn, " * ", esz, ";");
                 ind--;
                 L("} else if (", nn, " > ", ol, ") {");
                 ind++;
@@ -4082,8 +4166,8 @@ struct CodeGen {
                         else L("*(", CT(elem), " *)((", v.elems, ") + ", iv, " * ", esz,
                                ") = ", fv, ";");
                     } else {
-                        L("*(", CT(elem), " *)", lv.stk, "->top = ", fv, ";");
-                        L(lv.stk, "->top += ", esz, ";");
+                        L("*(", CT(elem), " *)", Top(lv.stk), " = ", fv, ";");
+                        L(Top(lv.stk), " += ", esz, ";");
                     }
                     ind--;
                     L("}");
@@ -4098,7 +4182,7 @@ struct CodeGen {
                 auto lv = RecvLoc(an[0]);
                 auto v = ArrayView(lv, ln);
                 if (lv.t->arr->akind == A_GROWSHRINK)
-                    L(lv.stk, "->top = (uint8_t *)(", v.elems, ");");
+                    L(Top(lv.stk), " = (uint8_t *)(", v.elems, ");");
                 L(v.lenlv, " = 0;");
                 return {};
             }
@@ -4107,8 +4191,8 @@ struct CodeGen {
                 auto lv = RecvLoc(an[0]);
                 assert(!lv.fl.empty());
                 auto x = GenX(an[1]);
-                L("*(int64_t *)", lv.flstk, "->top = ", x, ";");
-                L(lv.flstk, "->top += 8;");
+                L("*(int64_t *)", Top(lv.flstk), " = ", x, ";");
+                L(Top(lv.flstk), " += 8;");
                 L(lv.fl, ".len++;");
                 return {};
             }
@@ -4144,9 +4228,9 @@ struct CodeGen {
             assert(!lv.stk.empty());
             auto e = T();
             if (IsBytesT(elem)) {
-                L("uint8_t *", e, " = ", lv.stk, "->top;");
+                L("uint8_t *", e, " = ", Top(lv.stk), ";");
             } else {
-                L(CT(elem), " *", e, " = (", CT(elem), " *)", lv.stk, "->top;");
+                L(CT(elem), " *", e, " = (", CT(elem), " *)", Top(lv.stk), ";");
             }
             GenConstruct(an[1], lv.stk, elem);
             L(v.lenlv, "++;");
@@ -4224,14 +4308,14 @@ struct CodeGen {
         L("if (", lv.fl, ".len > 0) {");
         ind++;
         L(lv.fl, ".len--;");
-        L(lv.flstk, "->top -= 8;");
-        L(iv, " = *(int64_t *)", lv.flstk, "->top;");
+        L(Top(lv.flstk), " -= 8;");
+        L(iv, " = *(int64_t *)", Top(lv.flstk), ";");
         ind--;
         L("} else {");
         ind++;
         L(iv, " = ", lv.lenlv, ";");
         L(lv.lenlv, "++;");
-        L(lv.stk, "->top += ", esz, ";");
+        L(Top(lv.stk), " += ", esz, ";");
         ind--;
         L("}");
         auto e = T();
@@ -4253,10 +4337,10 @@ struct CodeGen {
         auto thunk = EnsureThreadThunk(sp);
         auto stk = AllocStk(false);
         auto base = T();
-        L("uint8_t *", base, " = ", stk, "->top;");
+        L("uint8_t *", base, " = ", Top(stk), ";");
         SaveBase(false, stk, base);
         for (size_t i = 0; i < sp->argtypes.size(); i++) GenConstruct(an[1 + i], stk);
-        return { cat("gs_thread_spawn(", thunk, ", ", base, ", ", stk, "->top - ", base,
+        return { cat("gs_thread_spawn(", thunk, ", ", base, ", ", Top(stk), " - ", base,
                      ")") };
     }
 
@@ -4338,7 +4422,36 @@ struct CodeGen {
         }
     }
 
+    // A reference to a resizable carries its stack inside the reference value,
+    // so a function holding one has a second spelling for a stack it may also
+    // name directly; that function keeps the plain memory form throughout.
+    bool CanCacheTops(FnSpec *sp) {
+        auto ok = true;
+        auto check = [&](const VarDef *v) {
+            // A pool reference likewise carries its stack (and its freelist's).
+            if (v && (PrefVar(v) || (v->type && v->type->kind == TY_REF &&
+                                     IsResz(v->type->ref->sub))))
+                ok = false;
+        };
+        for (auto p : sp->params) check(p);
+        for (auto fv : sinfo[sp].freevars) check(fv);
+        function<void(Node *)> walk = [&](Node *n) {
+            if (!n || !ok) return;
+            if (auto id = Is<Ident>(n)) check(id->vdef);
+            if (auto vd = Is<VarDecl>(n)) for (auto d : vd->defs) check(d);
+            if (auto fl = Is<ForLoop>(n)) check(fl->vdef);
+            if (auto me = Is<MatchExpr>(n)) for (auto &arm : me->arms) check(arm.binder);
+            if (auto c = Is<Call>(n)) { walk(c->fvbody); for (auto p : c->fvparams) check(p); }
+            n->Children([&](Node *ch) { walk(ch); });
+        };
+        walk(sp->body);
+        return ok;
+    }
+
     void ResetFnState() {
+        topcache.clear();
+        toporder.clear();
+        cachetops = false;
         vnames.clear();
         vstk.clear();
         vpool.clear();
@@ -4381,6 +4494,7 @@ struct CodeGen {
         ResetFnState();
         cursp = curinfo->needssp;
         spexpr = cursp ? "gs_sp" : "0";
+        cachetops = CanCacheTops(sp);
         PushSc(SC_FN);
         auto params = SigParams(sp, true, er);
         // In the element-run form named results are not built at the
@@ -4427,7 +4541,11 @@ struct CodeGen {
                params, ") {\n");
         if (stkmax > 0)
             Append(code, "    GS_ENSURE(", spexpr, " + ", stkmax, ");\n");
-        code += body;
+        // Cached tops load once the stacks are known to exist, and the sync
+        // markers expand now that every stack this body caches is known.
+        for (auto &stk : toporder)
+            Append(code, "    uint8_t *", topcache[stk], " = ", stk, "->top;\n");
+        code += ExpandTopMarkers(body);
         code += "}\n\n";
         curspec = nullptr;
         curinfo = nullptr;
@@ -4443,24 +4561,29 @@ struct CodeGen {
             for (auto d : g->defs) {
                 auto name = Unique(Sanitize(d->name));
                 gnames[d] = name;
+                // Registered as they are created; see CacheableStk.
+                auto reg = [&](const string &s) { gstkexprs.insert(s); };
                 if (IsResz(d->type)) {
                     EmitCoreTypes();
                     auto stk = Unique(cat("gs_gstk_", name));
                     Append(data, "static gs_rhdr ", name, ";\nstatic gs_stack ", stk,
                            ";\n");
                     gstks[d] = cat("(&", stk, ")");
+                    reg(gstks[d]);
                     if (d->reusable) {
                         auto fln = Unique(cat(name, "_fl"));
                         auto flstk = Unique(cat("gs_gstk_", fln));
                         Append(data, "static gs_rhdr ", fln, ";\nstatic gs_stack ", flstk,
                                ";\n");
                         gpools[d] = { fln, cat("(&", flstk, ")") };
+                        reg(gpools[d].second);
                     }
                 } else if (IsBytesT(d->type)) {
                     auto stk = Unique(cat("gs_gstk_", name));
                     Append(data, "static uint8_t *", name, ";\nstatic gs_stack ", stk,
                            ";\n");
                     gstks[d] = cat("(&", stk, ")");
+                    reg(gstks[d]);
                 } else {
                     Append(data, "static ", VarCT(d), " ", name, ";\n");
                 }
@@ -4532,15 +4655,15 @@ struct CodeGen {
         auto stk = gstks[d];
         L("gs_stack_init(", stk, ");");
         if (IsResz(d->type)) {
-            L(gnames[d], ".base = ", stk, "->top;");
+            L(gnames[d], ".base = ", Top(stk), ";");
             L(gnames[d], ".len = 0;");
         } else {
-            L(gnames[d], " = ", stk, "->top;");
+            L(gnames[d], " = ", Top(stk), ";");
         }
         if (d->reusable) {
             auto &p = gpools[d];
             L("gs_stack_init(", p.second, ");");
-            L(p.first, ".base = ", p.second, "->top;");
+            L(p.first, ".base = ", Top(p.second), ";");
             L(p.first, ".len = 0;");
         }
     }
@@ -5064,12 +5187,12 @@ inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
             } else if (cg.IsBytesT(vt)) {
                 // By-value copy of a variable payload onto its own stack.
                 auto stk = cg.AllocStk(true);
-                cg.L("uint8_t *", bn, " = ", stk, "->top;");
+                cg.L("uint8_t *", bn, " = ", cg.Top(stk), ";");
                 cg.SaveBase(true, stk, bn);
                 cg.vstk[arm.binder] = stk;
                 auto sz = cg.T();
                 cg.L("int64_t ", sz, " = ", cg.SizeX(vt, payload), ";");
-                cg.L("memcpy(", stk, "->top, ", payload, ", (size_t)", sz, ");");
+                cg.L("memcpy(", cg.Top(stk), ", ", payload, ", (size_t)", sz, ");");
                 cg.Bump(stk, sz);
             } else if (arm.variant->fields.empty()) {
                 cg.L(cg.CT(vt), " ", bn, " = {0};");
@@ -5196,13 +5319,13 @@ inline void VarDecl::CgStmt(CodeGen &cg) {
             if (cg.IsResz(rt)) {
                 cg.EmitCoreTypes();
                 auto stk = cg.AllocStk(true);
-                cg.L("gs_rhdr ", name, " = { ", stk, "->top, 0 };");
+                cg.L("gs_rhdr ", name, " = { ", cg.Top(stk), ", 0 };");
                 cg.SaveBase(true, stk, cat(name, ".base"));
                 cg.vstk[d] = stk;
                 dsts.push_back(Dst { 2, stk, d->type, cat(name, ".len") });
             } else if (cg.IsBytesT(rt)) {
                 auto stk = cg.AllocStk(true);
-                cg.L("uint8_t *", name, " = ", stk, "->top;");
+                cg.L("uint8_t *", name, " = ", cg.Top(stk), ";");
                 cg.SaveBase(true, stk, name);
                 cg.vstk[d] = stk;
                 dsts.push_back(Dst { 2, stk });
@@ -5273,7 +5396,7 @@ inline void Assign::CgStmt(CodeGen &cg) {
         // Whole-resizable assignment: clear (top back to the value start),
         // then construct the new contents in place (§4.4).
         assert(!lv.val && !lv.stk.empty() && !lv.lenlv.empty());
-        cg.L(lv.stk, "->top = ", lv.s, ";");
+        cg.L(cg.Top(lv.stk), " = ", lv.s, ";");
         cg.GenConstruct(rhs, lv.stk, lv.t, lv.lenlv);
         return;
     }
