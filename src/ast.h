@@ -242,6 +242,11 @@ struct Val {
     bool strlit = false;         // String literal: adaptable to u8 array types.
     bool emptyarr = false;       // [] with as yet unknown element type.
     bool isnull = false;         // The null literal: adaptable to any optional.
+    // A signed value the compiler knows cannot be negative, which is what
+    // lets it meet a u64 in a comparison (§6.1). Deliberately syntactic --
+    // a literal, a .len/.cap, or a `let` bound to one -- so that whether a
+    // comparison compiles never depends on how much the optimizer proved.
+    bool nonneg = false;
     FnValBind fnv;               // When type is TY_FN.
 };
 
@@ -689,6 +694,7 @@ struct VarDef {
     bool isglobal = false;
     bool isparam = false;
     bool reusable = false;
+    bool nonneg = false;        // A `let` whose initializer was non-negative (§6.1).
     FnSpec *ownerspec = nullptr;  // Null for globals.
     // Lifetime depth for the outlives check (§9.2): globals 0, then one per
     // nested scope along the current compile-time call path. Only comparable

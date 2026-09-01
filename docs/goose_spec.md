@@ -645,6 +645,27 @@ type as the result (the count is any integer type, masked per §6.2), and
 `==`/`!=`/orderings unify the same way but produce `bool`. Unary `-`
 requires a signed (or float) operand; `~` any integer, keeping its type.
 
+**Comparisons and `u64`.** A comparison produces `bool`, so unlike every
+other binary operator it has no result type to choose, and the mathematical
+answer across a sign boundary is never in doubt. `u64` is the one unsigned
+type with no signed supertype (`u8`–`u32` widen into `i64`, §6.3), so it is
+the only one this ever bites. A comparison between `u64` and a signed type
+is therefore allowed **when the signed operand is known non-negative**: it
+converts to `u64` without changing value, and the comparison is a single
+unsigned one — no wider than either operand, and never a hidden branch.
+
+"Known non-negative" is deliberately a *syntactic* property, not an inferred
+one: a non-negative integer literal, a `.len` or `.cap` (non-negative by
+§10.4), or a `let` bound to one of those. Whether a comparison compiles thus
+depends only on what is written, never on how much the optimizer managed to
+prove. Anything else is a compile error asking for the cast — the honest
+outcome, since the conversion could then change the value. Note that writing
+that cast by hand is not a cheaper workaround but a wrong one: `x as! i64`
+on a `u64` above `i64.max` silently compares as negative, and the checked
+`x as i64` aborts in debug on a value that was perfectly legitimate to
+compare. Within its rule, the direct comparison is the only correct
+spelling as well as the cheapest.
+
 **Elementwise math**: the arithmetic operators apply memberwise to any two
 values of the *same* struct/fixed-array type whose scalar leaves are all
 integers or all floats; the result has that same type. This covers vector
@@ -1207,6 +1228,41 @@ plus guard gaps between regions so runaway growth aborts cleanly. Platforms
 without address-space reservation (wasm today) fall back to index-based
 references + bounds-checked growth, with reduced performance.
 
+**The 48-bit size limit.** A data stack reserves **at most 2^48 bytes**.
+Consequently, in every conforming implementation:
+
+* no value's byte size exceeds 2^48;
+* no array's element count exceeds 2^48 (stated separately because an
+  element type may be zero-size, and because most array types are already
+  far tighter — `T[]`'s length field defaults to `u32`, §3.3);
+* therefore every length, capacity, index, and byte offset lies in
+  `[0, 2^48]`, and `.len` and `.cap` are non-negative by construction.
+
+This is a deliberate trade of unreachable range for reasoning the compiler
+can rely on everywhere, and it costs nothing to enforce. 2^48 is the
+canonical address width current 64-bit hardware actually implements, so the
+limit is above anything reachable (256 TB in one value); the guard region
+after each reservation already turns an attempt to exceed it into a safe
+abort (§9.3), so no growth operation needs a check of its own, and a fixed
+array's size is a constant checked at compile time. Implementations may
+impose a *smaller* limit (wasm32 is inherently capped at 2^32); they may not
+raise it, so a program's meaning never depends on the target having more.
+
+What the limit buys, and why it is worth a spec clause rather than an
+implementation assumption:
+
+* **Size arithmetic cannot overflow.** With 15 bits of headroom below `i64`,
+  `len - 1`, `i + 1` for `i < len`, `len + len`, `len * 2`, and
+  `i * element size` are all in range. The optimizer may assume this rather
+  than prove it, and the bounds-check analysis (§10.5) relies on it directly.
+* **Signed is the right default for sizes.** `.len` returns `i64` (§3.1) and
+  the top bit is provably unused, so the sign bit costs nothing real, while
+  subtraction and difference math stay natural. This is the trade C++'s
+  `size_t` gets backwards.
+* **Non-negativity is a type-level fact, not an inferred one**, which is what
+  lets §6.1 admit the one mixed-signedness comparison that matters without
+  any analysis being involved.
+
 Compilation target: C/C++ first, LLVM later. Representation and calling
 convention: Appendix C.
 
@@ -1391,18 +1447,19 @@ Collected from the design discussion; each needs future resolution work.
 The newest, highest-priority items first:
 
 0a. **Mixed-signedness ergonomics in practice** — §6.1's unification
-    deliberately rejects `u32 + i32` and `u64` against anything signed.
-    Watch whether real code (hash kernels, size math against `.len`'s
-    `i64`) accumulates enough casts to justify a relaxation or an idiom.
-    First real data point (`bench/goose/words.goose`): the open-addressed
-    map's `slots[idx]`, where `idx = hash & mask` is `u64` because the hash
-    is, keeps its bounds check — nothing can relate a `u64` index to an
-    `i64` length. Note this is a `u64`-only problem: `u8`/`u16`/`u32` all
-    widen implicitly into `i64` (§6.3), so the same code on a `u32` hash
-    composes. Two candidate fixes, neither yet chosen: allow *comparisons*
-    (only) to mix signedness — they need no result type, so the answer is
-    unambiguous, unlike `+` — or track "this `u64` is known to fit `i64`"
-    so such values re-enter signed math. §10.5's analysis would use either.
+    deliberately rejects `u32 + i32`, and `u64` against anything signed
+    outside the comparison rule now in §6.1. Watch whether real code (hash
+    kernels, size math against `.len`'s `i64`) still accumulates casts.
+    Note this is a `u64`-only problem: `u8`/`u16`/`u32` all widen implicitly
+    into `i64` (§6.3), so the same code on a `u32` hash composes already.
+    What remains is the *analysis* half rather than the language half: the
+    bounds-check pass (§10.5) follows a `u64` value's range through
+    `%`, `&` and casts, but drops it the moment the value is bound to a
+    `u64` local, because in general a `u64` need not fit `i64`. A `let` has
+    one value, so it could carry its initializer's range the way §6.1's
+    non-negativity already does — the narrow, checkable version of "track
+    that this `u64` fits `i64`". Until then, the open-addressed map in
+    `bench/goose/words.goose` keeps the four checks around `slots[idx]`.
 0e. **Per-array index types** — an index validated once against a specific
     array, so repeated `a[i]` and indirect `a[b[i]]` need no further check.
     Goose is unusually well placed for this: specializations already carry

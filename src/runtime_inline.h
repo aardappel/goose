@@ -41,6 +41,12 @@ R"GSRT(/* Goose runtime — prepended verbatim to every compiler-generated C fil
 #ifndef GS_STACK_GAP
 #define GS_STACK_GAP (1ull << 20)   /* Unmapped tail so runaway growth aborts. */
 #endif
+/* §10.4 caps a stack reservation at 2^48 bytes, which is what lets the
+   compiler treat every size, count and index as fitting in 48 bits: the
+   guard region enforces it, so no growth path needs its own check. */
+#if GS_STACK_RESERVE > (1ull << 48)
+#error "GS_STACK_RESERVE exceeds the 2^48 limit (goose_spec.md 10.4)"
+#endif
 
 #ifdef _MSC_VER
 #define GS_NORETURN __declspec(noreturn)
@@ -204,7 +210,8 @@ static int64_t gs_add_i64(int64_t a, int64_t b) {
     return r;
 }
 static int64_t gs_sub_i64(int64_t a, int64_t b) {
-    int64_t r = (int64_t)((uint64_t)a - (uint64_t)b);
+)GSRT"
+R"GSRT(    int64_t r = (int64_t)((uint64_t)a - (uint64_t)b);
     if (GS_DEBUG && ((a ^ b) & (a ^ r)) < 0) gs_ovf();
     return r;
 }
@@ -213,8 +220,7 @@ static int64_t gs_mul_i64(int64_t a, int64_t b) {
     if (GS_DEBUG && a && b &&
         ((a == -1 && b == INT64_MIN) || (b == -1 && a == INT64_MIN) || r / b != a))
         gs_ovf();
-)GSRT"
-R"GSRT(    return r;
+    return r;
 }
 static int64_t gs_neg_i64(int64_t a) {
     if (GS_DEBUG && a == INT64_MIN) gs_ovf();
@@ -411,7 +417,8 @@ static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
     for (long i = 0; i < gs_nregions; i++) {
         gs_region r = gs_regions[i];
         if (hit >= r.base && hit < r.base + r.size) {
-            static const char msg[] = "goose runtime error: data stack overflow\n";
+)GSRT"
+R"GSRT(            static const char msg[] = "goose runtime error: data stack overflow\n";
             ssize_t w = write(2, msg, sizeof(msg) - 1);
             (void)w;
             _exit(1);
@@ -424,8 +431,7 @@ static uint8_t *gs_reserve_region(size_t size) {
     static int handler_installed = 0;
     if (!handler_installed) {
         handler_installed = 1;
-)GSRT"
-R"GSRT(        struct sigaction sa;
+        struct sigaction sa;
         memset(&sa, 0, sizeof(sa));
         sa.sa_sigaction = gs_fault_handler;
         sa.sa_flags = SA_SIGINFO;

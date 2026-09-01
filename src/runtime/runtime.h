@@ -29,6 +29,12 @@
 #ifndef GS_STACK_GAP
 #define GS_STACK_GAP (1ull << 20)   /* Unmapped tail so runaway growth aborts. */
 #endif
+/* §10.4 caps a stack reservation at 2^48 bytes, which is what lets the
+   compiler treat every size, count and index as fitting in 48 bits: the
+   guard region enforces it, so no growth path needs its own check. */
+#if GS_STACK_RESERVE > (1ull << 48)
+#error "GS_STACK_RESERVE exceeds the 2^48 limit (goose_spec.md 10.4)"
+#endif
 
 #ifdef _MSC_VER
 #define GS_NORETURN __declspec(noreturn)

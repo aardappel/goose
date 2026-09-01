@@ -306,6 +306,36 @@ fn casts() {
     print(hardware_threads() >= 1);      // true
 }
 
+// A u64 may be compared against a signed operand the compiler knows is
+// non-negative (§6.1); the comparison is unsigned, so it stays correct for
+// values above i64.max, where a hand-written `as!` cast would not be.
+fn u64_compare() {
+    var a: i64[>..] = [];
+    for i in 5 { a.push(i); }
+    let big = (0 - 1) as! u64;           // u64.max
+    let small = 3 as u64;
+    print(small < a.len);                // true
+    print(big < a.len);                  // false (as! i64 would say true)
+    print(big > a.len);                  // true
+    print(big == a.len);                 // false
+    print(small < 4);                    // true (literal)
+    let n = a.len;                       // a `let` keeps the property
+    print(small < n);                    // true
+    print(big >= n);                     // true
+    let cap: i64[..8] = [1, 2];
+    print(small < cap.cap);              // true
+    // The guarded index reduction the rule exists for: a u64 hash compared
+    // against a length with no cast on the comparison itself.
+    var sum = 0;
+    var h: u64 = 7;
+    for i in 4 {
+        h = h * 3;                       // 21, 63, 189, 567
+        let r = h % (a.len as u64);      // 1, 3, 4, 2
+        if r < a.len { sum += a[r as! i64]; }
+    }
+    print(sum);                          // 10, since a[i] == i
+}
+
 // `%` is Euclidean at every integer type (§6.2): the result is in [0, |b|)
 // whatever the dividend's sign, so it is always a valid index into `b` slots.
 fn euclidean_mod() {
@@ -461,6 +491,7 @@ fn main_codegen_exec() {
     longdistance();
     nrvo();
     casts();
+    u64_compare();
     euclidean_mod();
     msgs();
     pool_reuse();

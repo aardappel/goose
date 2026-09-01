@@ -1524,7 +1524,8 @@ struct TypeCheck {
     // stand; a constant adapts to the other operand's type; otherwise the
     // operand that implicitly widens into the other picks the wider type
     // (§6.1). Returns null for non-numeric or int/float-mixed pairs.
-    TypeExpr *UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, TypeExpr *lt, TypeExpr *rt) {
+    TypeExpr *UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, TypeExpr *lt, TypeExpr *rt,
+                           bool cmp = false) {
         if (IsIntT(lt) && IsIntT(rt)) {
             if (TypeEq(lt, rt)) return lt;
             if (lv.ck == CK_INT && rv.ck == CK_INT) {
@@ -1548,6 +1549,27 @@ struct TypeCheck {
             }
             if (ImplicitInt(lt->intstorage, rt->intstorage)) return rt;
             if (ImplicitInt(rt->intstorage, lt->intstorage)) return lt;
+            // §6.1: a comparison produces bool, so it has no result type to
+            // pick and the mathematical answer across signedness is never in
+            // doubt. u64 is the one unsigned type with no signed supertype;
+            // it may meet a signed operand the compiler knows is
+            // non-negative, and the compare is then a single unsigned one.
+            // Without that knowledge the conversion could change the value,
+            // so the cast has to be written (and thought about).
+            if (cmp) {
+                auto isu64 = [](TypeExpr *t) { return t->intstorage == IS_U64; };
+                if (isu64(lt) != isu64(rt)) {
+                    auto &sv = isu64(lt) ? rv : lv;
+                    auto st = isu64(lt) ? rt : lt;
+                    if (!IsUnsigned(st->intstorage)) {
+                        if (sv.nonneg) return ast.inttypes[IS_U64];
+                        Error(at, cat("comparing ", TypeStr(lt), " with ", TypeStr(rt),
+                                      " needs the signed side to be known non-negative "
+                                      "(a literal, .len/.cap, or a `let` bound to one); "
+                                      "convert it with `as` otherwise"));
+                    }
+                }
+            }
             Error(at, cat("operands of ", TName(op), " have no common type: ", TypeStr(lt),
                           " and ", TypeStr(rt), " (convert one with `as`)"));
         }
@@ -3058,6 +3080,10 @@ struct TypeCheck {
                 Error(vd->inits[i], "null needs an annotated optional type");
             if (!ann) NoRelRefCopy(vd->inits[i], v.type);
             d->assigned = true;
+            // A `let` has exactly one value, so its initializer's
+            // non-negativity is the name's for good (§6.1). A `var` can be
+            // assigned anything later.
+            d->nonneg = !vd->isvar && v.nonneg;
             Finish(d, ann ? ann : v.type, &v);
         }
     }
@@ -3714,6 +3740,7 @@ inline Val IntLit::Check(TypeCheck &tc, TypeExpr *) {
     v.ck = CK_INT;
     v.ival = val;
     v.uns = uns;
+    v.nonneg = uns || val >= 0;
     return v;
 }
 
@@ -3778,6 +3805,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
             v.root = vd;
             v.writable = vd->isvar;
             v.reusable = vd->reusable;
+            v.nonneg = vd->nonneg;
         }
         return v;
     }
@@ -4010,7 +4038,7 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
     Val v;
     switch (op) {
         case T_LT: case T_GT: case T_LTEQ: case T_GTEQ: {
-            auto ct = tc.UnifyNumeric(this, op, lv, rv, lt, rt);
+            auto ct = tc.UnifyNumeric(this, op, lv, rv, lt, rt, true);
             if (!ct)
                 tc.Error(this, cat("ordering comparison requires numeric operands, got ",
                                    tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
@@ -4032,7 +4060,7 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
                 v.type = tc.ast.booltype;
                 return v;
             }
-            if (auto ct = tc.UnifyNumeric(this, op, lv, rv, lt, rt)) {
+            if (auto ct = tc.UnifyNumeric(this, op, lv, rv, lt, rt, true)) {
                 tc.RetypeOperands(left, right, lv, rv, ct);
                 v.type = tc.ast.booltype;
                 return v;
@@ -4143,6 +4171,7 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
             Val v;
             assert(bd->rets[0] == 'i');
             v.type = tc.ast.inttypes[IS_I64];
+            v.nonneg = true;   // A length or capacity is in [0, 2^48] (§10.4).
             return v;
         }
         if (t->kind == TY_ARRAY || t->kind == TY_SLICE)

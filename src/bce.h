@@ -100,7 +100,11 @@ struct BCE {
     int nextgen = 0;
 
     static constexpr int64_t INF = INT64_MAX;
-    static constexpr int64_t LENMAX = int64_t(1) << 61;   // Bytes exceed any address space beyond this.
+    // §10.4: a data stack reserves at most 2^48 bytes, so no value is larger
+    // and no array longer than that. Guaranteed rather than assumed, and the
+    // 15 bits of headroom below i64 are what make size arithmetic (i + 1,
+    // len - 1, len + len) provably free of overflow.
+    static constexpr int64_t LENMAX = int64_t(1) << 48;
     static constexpr int64_t OFFCAP = int64_t(1) << 32;
     static constexpr int64_t CCAP = int64_t(1) << 60;
     static constexpr size_t MAXFACTS = 200;
