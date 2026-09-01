@@ -158,6 +158,42 @@ if (-not $cc) {
     } else {
         Write-Host "ok   cgen-debug codegen_exec.goose"
     }
+
+    # The same coverage test through clang, release and debug. MSVC's C front
+    # end accepts things clang rejects, so a second compiler is what checks the
+    # generated C is actually valid C: a call to a function defined only in
+    # debug builds compiled silently under MSVC and broke every clang release
+    # build. clang here is the VS-bundled one unless PATH has its own; it needs
+    # the vcvars environment imported above to link.
+    $clang = (Get-Command clang.exe -ErrorAction SilentlyContinue).Source
+    if (-not $clang -and $vsroot) {
+        $vsclang = "$vsroot\VC\Tools\Llvm\x64\bin\clang.exe"
+        if (Test-Path $vsclang) { $clang = $vsclang }
+    }
+    if (-not $clang) {
+        Write-Host "skip cgen-clang (no clang found)"
+    } else {
+        & $exe -O2 -o "$gendir\cgclang.c" "$PSScriptRoot\codegen_exec.goose" | Out-Null
+        foreach ($label in "release", "debug") {
+            $cargs = @("-O1", "-Wno-everything", "-Werror=implicit-function-declaration",
+                       "$gendir\cgclang.c", "-o", "$gendir\cgclang-$label.exe")
+            if ($label -eq "debug") { $cargs = @("-DGS_DEBUG=1") + $cargs }
+            & $clang @cargs > "$gendir\cgclang-$label.log" 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Get-Content "$gendir\cgclang-$label.log" | Select-Object -First 8
+                Write-Host "FAIL cgen-clang-$label codegen_exec.goose"
+                $failures++
+                continue
+            }
+            $out = & "$gendir\cgclang-$label.exe" 2>$null
+            if ($LASTEXITCODE -ne 0 -or ($out -join "`n") -ne $want) {
+                Write-Host "FAIL cgen-clang-$label-output codegen_exec.goose (exit $LASTEXITCODE)"
+                $failures++
+            } else {
+                Write-Host "ok   cgen-clang-$label codegen_exec.goose"
+            }
+        }
+    }
 }
 
 foreach ($f in Get-ChildItem "$PSScriptRoot\errors\*.goose") {
