@@ -1956,7 +1956,10 @@ struct CodeGen {
             }
             auto ov = T(), p = T();
             L("int64_t ", ov, " = ", off, ";");
-            L("uint8_t *", p, " = ", ov, " ? ", faddr, " + ", ov, " : NULL;");
+            // Offset 0 is null only for the optional spelling (§3.9); a
+            // non-optional slot holds a reference, so the address is the sum.
+            if (r.optional) L("uint8_t *", p, " = ", ov, " ? ", faddr, " + ", ov, " : NULL;");
+            else L("uint8_t *", p, " = ", faddr, " + ", ov, ";");
             // Relative references never point at resizables: pool elements
             // are at most variable-class (S3.3).
             assert(!IsFatPointee(r.sub));
@@ -2466,7 +2469,10 @@ struct CodeGen {
         assert(!IsFatPointee(rt->ref->sub));
         auto addr = cat("(uint8_t *)(", rv, ")");
         auto off = T();
-        L("int64_t ", off, " = ", addr, " ? (int64_t)(", addr, " - (", fa, ")) : 0;");
+        if (rt->ref->optional)
+            L("int64_t ", off, " = ", addr, " ? (int64_t)(", addr, " - (", fa, ")) : 0;");
+        else
+            L("int64_t ", off, " = (int64_t)(", addr, " - (", fa, "));");
         auto bits = IntSize(w) * 8;
         if (bits < 64)
             L("if (", off, " < -(1LL << ", bits - 1, ") || ", off, " >= (1LL << ",
@@ -2483,7 +2489,10 @@ struct CodeGen {
             assert(!IsFatPointee(rt->ref->sub));
             auto addr = cat("(uint8_t *)(", rv, ")");
             auto off = T();
-            L("int64_t ", off, " = ", addr, " ? (int64_t)(", addr, " - ", fa, ") : 0;");
+            if (rt->ref->optional)
+                L("int64_t ", off, " = ", addr, " ? (int64_t)(", addr, " - ", fa, ") : 0;");
+            else
+                L("int64_t ", off, " = (int64_t)(", addr, " - ", fa, ");");
             Bump(stk, cat("gs_zig_write(", fa, ", ", off, ")"));
             (void)ln;
         } else {
