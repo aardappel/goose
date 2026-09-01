@@ -474,33 +474,28 @@ struct BCE {
         return t;
     }
 
-    // `a % b` and `a & b` bound their result by b (§6.2): the remainder is
-    // below the divisor, and a mask can only pass bits the mask has. Both
-    // yield a fresh base carrying those two facts.
+    // `a % b` and `a & b` bound their result by b (§6.2): a Euclidean
+    // remainder lies in [0, |b|) whatever the dividend's sign, and a mask can
+    // only pass bits the mask has. Both yield a fresh base carrying the
+    // resulting facts.
     Term RangedOpTerm(Binary *b) {
         if (mode == M_KILLS) return {};
         auto t = b->exprtype;
         if (!t || t->kind != TY_INT || t->intstorage == IS_VARINT) return {};
-        auto uns = IsUnsigned(t->intstorage);
         auto rt = TermOf(b->right);
         if (!rt.ok) return {};
-        if (b->op == T_MOD) {
-            // A zero divisor aborts (§6.2), so a completed modulo has b >= 1;
-            // signed operands additionally need a nonnegative dividend for
-            // the result to be nonnegative (the remainder takes its sign).
-            if (!uns) {
-                auto lt = TermOf(b->left);
-                if (!lt.ok || !Query(Zero(), lt.b, lt.off)) return {};
-                if (!Query(Zero(), rt.b, rt.off)) return {};
-            }
-        } else {
-            // The mask bound needs a nonnegative mask; for unsigned operands
-            // that also requires the term to be a real (i64-range) value.
-            if (!Query(Zero(), rt.b, rt.off)) return {};
-        }
         auto m = TmpBase();
-        AddFactB(Zero(), m, 0);                                     // 0 <= result.
-        AddFactB(m, rt.b, b->op == T_MOD ? SatSub(rt.off, 1) : rt.off);
+        AddFactB(Zero(), m, 0);   // 0 <= result, unconditionally.
+        if (b->op == T_MOD) {
+            // A zero divisor aborts (§6.2), so a completed modulo has b != 0.
+            // The upper bound is |b|, which is a term only when the divisor
+            // is provably nonnegative or is a negative constant.
+            if (Query(Zero(), rt.b, rt.off)) AddFactB(m, rt.b, SatSub(rt.off, 1));
+            else if (rt.b.kind == BK_ZERO && rt.off < 0)
+                AddFactB(m, Zero(), SatSub(SatSub(0, rt.off), 1));
+        } else if (Query(Zero(), rt.b, rt.off)) {
+            AddFactB(m, rt.b, rt.off);
+        }
         return Term { true, m, 0 };
     }
 
@@ -953,58 +948,30 @@ struct BCE {
         if (pid >= 0) relpids[v].insert(pid);
     }
 
-    void MarkPass(Node *n) {
-        if (!n) return;
-        if (auto u = Is<Unary>(n); u && u->op == T_BITAND) MarkAddr(u->child);
-        if (auto fl = Is<ForLoop>(n)) {
-            if (fl->byref) MarkAddr(fl->iter);
-            NoteVar(fl->vdef);
-            NoteVar(fl->idxdef);
-        }
-        if (auto m = Is<MatchExpr>(n))
-            for (auto &arm : m->arms) {
-                if (arm.pat.byref) MarkAddr(m->scrutinee);
-                NoteVar(arm.binder);
-            }
-        if (auto id = Is<Ident>(n)) NoteVar(id->vdef);
-        if (auto vd = Is<VarDecl>(n)) {
-            for (auto d : vd->defs) NoteVar(d);
-            if (vd->defs.size() == 1 && vd->inits.size() == 1 && vd->defs[0])
-                wdecl.insert(vd->defs[0]);
-            else
-                for (auto d : vd->defs) if (d) wbad.insert(d);
-        }
-        if (auto a = Is<Assign>(n)) {
-            if (auto id = Is<Ident>(a->lval); id && id->vdef && !a->pointee) {
-                auto v = id->vdef;
-                auto lit = Is<IntLit>(a->rhs);
-                if (a->op == T_ASSIGN) {
-                    wkinds[v].setw = true;
-                } else if ((a->op == T_PLUSEQ || a->op == T_MINUSEQ) && lit && !lit->uns) {
-                    auto c = a->op == T_PLUSEQ ? lit->val : -lit->val;
-                    (c >= 0 ? wkinds[v].inc : wkinds[v].dec) = true;
-                } else {
-                    wbad.insert(v);
-                }
-            }
-        }
-        if (auto x = Is<IncDec>(n)) {
-            if (auto id = Is<Ident>(x->lval); id && id->vdef &&
-                (!id->vdef->type || id->vdef->type->kind != TY_REF))
-                (x->op == T_INC ? wkinds[id->vdef].inc : wkinds[id->vdef].dec) = true;
-        }
+    // ------------------------------------------------------------------
+    // The two walks. Both dispatch to the per-node overrides at the end of
+    // this file; a null child is simply nothing to analyze.
+
+    // Analyzes `n` in its program position; false when control provably does
+    // not continue past it. Value positions discard that (an expression only
+    // fails to complete by diverging, which the enclosing statement sees).
+    bool Walk(Node *n) { return n ? n->BceWalk(*this) : true; }
+
+    void Mark(Node *n) { if (n) n->BceMark(*this); }
+
+    // The parts of an assignment target that are themselves evaluated: the
+    // location is written rather than read, but an index into it is computed
+    // and bounds-checked like any other.
+    void WalkLvalParts(Node *n) {
+        if (Is<Ident>(n)) return;
+        if (auto d = Is<Dot>(n)) { Walk(d->obj); return; }
         if (auto ix = Is<Index>(n)) {
-            NotePlace(ix->obj);
-            NoteRel(ix->obj, ix->idx);
+            Walk(ix->obj);
+            Walk(ix->idx);
+            JudgeIndex(ix);
+            return;
         }
-        if (auto se = Is<SliceExpr>(n)) {
-            NotePlace(se->obj);
-            NoteRel(se->obj, se->lo);
-            NoteRel(se->obj, se->hi);
-        }
-        if (auto d = Is<Dot>(n); d && d->member == B_LEN) NotePlace(d->obj);
-        if (auto c = Is<Call>(n)) MarkPass(c->fvbody);
-        n->Children([&](Node *ch) { MarkPass(ch); });
+        Walk(n);
     }
 
     // Breaks that would bind a loop/block whose body is `n` (stops at nested
@@ -1056,7 +1023,7 @@ struct BCE {
         shsum = nullptr;
         vksum = nullptr;
         mode = M_KILLS;
-        Stmt(n);
+        Walk(n);
         flow = std::move(savedflow);
         mode = savedmode;
         ksum = savedks;
@@ -1078,7 +1045,7 @@ struct BCE {
         vksum = nullptr;
         anybump = false;
         mode = M_KILLS;
-        Stmt(n);
+        Walk(n);
         auto r = anybump;
         flow = std::move(savedflow);
         mode = savedmode;
@@ -1093,577 +1060,8 @@ struct BCE {
     void StripKills(Node *n) {
         auto saved = mode;
         mode = M_KILLS;
-        Stmt(n);
+        Walk(n);
         mode = saved;
-    }
-
-    // ------------------------------------------------------------------
-    // The walk. Stmt returns false when the statement provably diverges.
-
-    bool Stmt(Node *n) {
-        if (!n) return true;
-        if (auto vd = Is<VarDecl>(n)) {
-            for (auto i : vd->inits) Val(i);
-            if (vd->defs.size() == 1 && vd->inits.size() == 1 && vd->defs[0]) {
-                auto v = vd->defs[0];
-                auto lt = mode != M_KILLS && v->type && v->type->kind == TY_ARRAY
-                              ? FreshLenOf(vd->inits[0]) : Term {};
-                if (ScalarIntVar(v)) {
-                    SetWrite(v, vd->inits[0], true);
-                } else if (loopdepth > 0 && v->type &&
-                           (v->type->kind == TY_SLICE || v->type->kind == TY_REF)) {
-                    RebindKill(v);   // Loop-repeated redeclaration rebinds.
-                } else if (loopdepth > 0 && v->type && v->type->kind != TY_FLT &&
-                           v->type->kind != TY_BOOL && v->type->kind != TY_INT) {
-                    StorageWriteKill(UK_OWNED, v, v);   // Loop-repeated reconstruction.
-                }
-                if (lt.ok) {
-                    auto pid = PlaceOfVar(v);
-                    if (pid >= 0) ExactLenIs(pid, lt);
-                }
-            } else {
-                for (auto d : vd->defs) if (d) VarKillWrite(d);
-            }
-            return true;
-        }
-        if (auto a = Is<Assign>(n)) { DoAssign(a); return true; }
-        if (auto x = Is<IncDec>(n)) { DoIncDec(x); return true; }
-        if (auto r = Is<Return>(n)) {
-            for (auto v : r->vals) Val(v);
-            return false;
-        }
-        if (auto b = Is<Break>(n)) {
-            if (b->val) Val(b->val);
-            return false;
-        }
-        if (Is<Continue>(n)) return false;
-        if (auto g = Is<Guard>(n)) { DoGuard(g); return true; }
-        if (Is<FnDecl>(n)) return true;
-        return ValCtl(n);
-    }
-
-    bool ValCtl(Node *n) {
-        if (auto b = Is<Block>(n)) return DoBlock(b);
-        if (auto f = Is<IfExpr>(n)) return DoIf(f);
-        if (auto m = Is<MatchExpr>(n)) return DoMatch(m);
-        if (auto w = Is<While>(n)) { DoWhile(w); return true; }
-        if (auto fl = Is<ForLoop>(n)) { DoFor(fl); return true; }
-        if (auto lp = Is<LoopExpr>(n)) { DoLoop(lp); return true; }
-        if (auto eb = Is<EarlyBlock>(n)) return DoEarly(eb);
-        if (auto ib = Is<InlineBlock>(n)) return DoInline(ib);
-        if (auto c = Is<Call>(n); c && c->builtin == B_ASSERT) {
-            DoCall(c);
-            if (!c->args.empty())
-                if (auto bl = Is<BoolLit>(c->args[0]); bl && !bl->val) return false;
-            return true;
-        }
-        Val(n);
-        return true;
-    }
-
-    void Val(Node *n) {
-        if (!n) return;
-        if (Is<IntLit>(n) || Is<FltLit>(n) || Is<BoolLit>(n) || Is<StrLit>(n) ||
-            Is<NullLit>(n) || Is<Ident>(n) || Is<FunVal>(n))
-            return;
-        if (auto u = Is<Unary>(n)) { Val(u->child); return; }
-        if (auto b = Is<Binary>(n)) { DoBinary(b); return; }
-        if (auto d = Is<Dot>(n)) { Val(d->obj); return; }
-        if (auto c = Is<Call>(n)) { DoCall(c); return; }
-        if (auto ix = Is<Index>(n)) {
-            Val(ix->obj);
-            Val(ix->idx);
-            JudgeIndex(ix);
-            return;
-        }
-        if (auto se = Is<SliceExpr>(n)) { DoSlice(se); return; }
-        if (auto ac = Is<AsCast>(n)) { Val(ac->child); return; }
-        if (auto re = Is<RangeExpr>(n)) {
-            Val(re->lo);
-            Val(re->hi);
-            return;
-        }
-        if (auto al = Is<ArrayLit>(n)) {
-            for (auto e : al->elems) Val(e);
-            if (al->fillval) Val(al->fillval);
-            if (al->fillcount) Val(al->fillcount);
-            if (al->capexpr) Val(al->capexpr);
-            return;
-        }
-        if (auto sl = Is<StructLit>(n)) {
-            for (auto &fi : sl->inits) Val(fi.val);
-            return;
-        }
-        if (auto bl = Is<Block>(n)) { DoBlock(bl); return; }
-        if (auto f = Is<IfExpr>(n)) { DoIf(f); return; }
-        if (auto m = Is<MatchExpr>(n)) { DoMatch(m); return; }
-        if (auto w = Is<While>(n)) { DoWhile(w); return; }
-        if (auto fl = Is<ForLoop>(n)) { DoFor(fl); return; }
-        if (auto lp = Is<LoopExpr>(n)) { DoLoop(lp); return; }
-        if (auto eb = Is<EarlyBlock>(n)) { DoEarly(eb); return; }
-        if (auto ib = Is<InlineBlock>(n)) { DoInline(ib); return; }
-        // Anything else carries no tracked effects.
-    }
-
-    void DoBinary(Binary *b) {
-        if ((b->op == T_ANDAND || b->op == T_OROR) && mode != M_KILLS) {
-            // The right side runs only when the left settled it one way; its
-            // facts and effects merge against the short-circuit path.
-            Val(b->left);
-            auto after = flow;
-            CondFacts(b->left, b->op == T_ANDAND);
-            Val(b->right);
-            flow = Meet(after, flow);
-            return;
-        }
-        Val(b->left);
-        Val(b->right);
-    }
-
-    void DoCall(Call *c) {
-        Node *recv = nullptr;
-        if (auto d = Is<Dot>(c->callee)) {
-            recv = d->obj;
-            Val(recv);
-        }
-        for (auto a : c->args) Val(a);
-        if (c->builtin >= 0) {
-            auto rn = recv ? recv : (c->args.empty() ? nullptr : c->args[0]);
-            // The first non-receiver argument, in either call spelling.
-            auto arg0 = recv ? (c->args.empty() ? nullptr : c->args[0])
-                             : (c->args.size() > 1 ? c->args[1] : nullptr);
-            switch (c->builtin) {
-                case B_PUSH:
-                    GrowShrinkKill(rn, 1, 1);
-                    break;
-                case B_APPEND: {
-                    auto st = arg0 ? LenTermOf(arg0) : Term {};
-                    GrowShrinkKill(rn, 1, st.ok && st.b.kind == BK_ZERO ? st.off
-                                                                        : INT64_MIN);
-                    break;
-                }
-                case B_ALLOC_INDEX: case B_ALLOC_REF:
-                    GrowShrinkKill(rn, 1);
-                    break;
-                case B_POP: {
-                    // Exact only when provably non-empty: pop on an empty
-                    // array is unchecked and wraps the stored length.
-                    auto exact = INT64_MIN;
-                    if (mode != M_KILLS && rn) {
-                        auto lt = LenTermOf(rn);
-                        if (lt.ok && Query(Zero(), lt.b, SatSub(lt.off, 1)))
-                            exact = -1;
-                    }
-                    GrowShrinkKill(rn, -1, exact);
-                    break;
-                }
-                case B_CLEAR: {
-                    auto pid = GrowShrinkKill(rn, -1);
-                    if (pid >= 0) ExactLenIs(pid, Term { true, Zero(), 0 });
-                    break;
-                }
-                case B_RESIZE: {
-                    auto nt = mode == M_KILLS ? Term {} : TermOf(arg0);
-                    auto pid = GrowShrinkKill(rn, 0);
-                    if (pid >= 0) ExactLenIs(pid, nt);
-                    break;
-                }
-                case B_ASSERT:
-                    if (mode != M_KILLS && !c->args.empty() && !HasKillEffects(c->args[0]))
-                        CondFacts(c->args[0], true);
-                    break;
-                default:
-                    break;   // len/cap/print/free/queues/threads: no tracked effect.
-            }
-            return;
-        }
-        if (c->fvbody) {
-            // The function value runs inside the callee, possibly repeatedly
-            // and after arbitrary callee effects: analyze it from scratch.
-            auto saved = std::move(flow);
-            flow = Flow {};
-            loopdepth++;
-            for (auto p : c->fvparams) if (p) BumpVar(p, false);   // Re-bind per call.
-            DoBlock(c->fvbody);
-            loopdepth--;
-            flow = std::move(saved);
-        }
-        auto anyref = false;
-        auto reft = [](Node *a) { return a->exprtype && a->exprtype->kind == TY_REF; };
-        if (recv && reft(recv)) anyref = true;
-        for (auto a : c->args) anyref = anyref || reft(a);
-        KillByCall(anyref);
-    }
-
-    void DoSlice(SliceExpr *se) {
-        Val(se->obj);
-        // The runtime check compares against a length snapshot taken before
-        // the bound expressions run; capture the term at that moment.
-        auto lent = mode == M_JUDGE ? LenTermOf(se->obj) : Term {};
-        if (se->lo) Val(se->lo);
-        if (se->hi) Val(se->hi);
-        if (mode == M_JUDGE) JudgeSlice(se, lent);
-    }
-
-    void DoAssign(Assign *a) {
-        WalkLvalParts(a->lval);
-        Val(a->rhs);
-        if (a->op == T_DOTASSIGN) {
-            auto ch = ChainOf(a->lval);
-            if (ch.kind == CH_INDEX) return;   // Element ref slots: no tracked places.
-            if (ch.kind == CH_OK) RebindKill(ch.root);
-            else StorageWriteKill(UK_OPAQUE, nullptr, nullptr);
-            return;
-        }
-        if (a->pointee) {
-            auto lt = a->lval->exprtype;
-            PointeeWriteKill(a->lval, lt && lt->kind == TY_REF ? lt->ref->sub : nullptr);
-            return;
-        }
-        if (auto id = Is<Ident>(a->lval)) {
-            auto v = id->vdef;
-            if (!v) return;
-            if (ScalarIntVar(v)) {
-                if (a->op == T_ASSIGN) {
-                    SetWrite(v, a->rhs, false);
-                } else if (a->op == T_PLUSEQ || a->op == T_MINUSEQ) {
-                    auto lit = Is<IntLit>(a->rhs);
-                    if (lit && !lit->uns && SmallOff(lit->val))
-                        ShiftWrite(v, a->op == T_PLUSEQ ? lit->val : -lit->val);
-                    else VarKillWrite(v);
-                } else {
-                    VarKillWrite(v);
-                }
-                return;
-            }
-            auto t = v->type;
-            auto lt = mode != M_KILLS && t && t->kind == TY_ARRAY && a->op == T_ASSIGN
-                          ? FreshLenOf(a->rhs) : Term {};
-            if (t && t->kind == TY_SLICE) RebindKill(v);
-            else if (t && t->kind != TY_FLT && t->kind != TY_BOOL && t->kind != TY_INT)
-                StorageWriteKill(UK_OWNED, v, v);
-            if (lt.ok) {
-                auto pid = PlaceOfVar(v);
-                if (pid >= 0) ExactLenIs(pid, lt);
-            }
-            return;
-        }
-        if (Is<Index>(a->lval)) return;   // Element writes cannot change any tracked length.
-        auto lt = a->lval->exprtype;
-        if (lt && (lt->kind == TY_INT || lt->kind == TY_FLT || lt->kind == TY_BOOL))
-            return;   // A scalar field write cannot change any length.
-        auto ch = ChainOf(a->lval);
-        if (ch.kind == CH_INDEX) return;
-        if (ch.kind == CH_FAIL || !ch.root) {
-            StorageWriteKill(UK_OPAQUE, nullptr, nullptr);
-            return;
-        }
-        if (!ch.anycross) {
-            StorageWriteKill(UK_OWNED, ch.root, ch.root);
-        } else if (ch.rootonlycross) {
-            auto [k, u] = UltOf(ch.root);
-            if (k != UK_STATIC) StorageWriteKill(k, u, ch.root);
-            else RebindKill(ch.root);
-        } else {
-            StorageWriteKill(UK_OPAQUE, nullptr, ch.root);
-        }
-    }
-
-    void DoIncDec(IncDec *x) {
-        WalkLvalParts(x->lval);
-        auto lt = x->lval->exprtype;
-        if (lt && lt->kind == TY_REF) {
-            PointeeWriteKill(x->lval, lt->ref->sub);
-            return;
-        }
-        if (auto id = Is<Ident>(x->lval); id && id->vdef) {
-            if (ScalarIntVar(id->vdef)) ShiftWrite(id->vdef, x->op == T_INC ? 1 : -1);
-            else VarKillWrite(id->vdef);
-        }
-        // A field/element integer is not a tracked base.
-    }
-
-    void WalkLvalParts(Node *n) {
-        if (Is<Ident>(n)) return;
-        if (auto d = Is<Dot>(n)) { Val(d->obj); return; }
-        if (auto ix = Is<Index>(n)) {
-            Val(ix->obj);
-            Val(ix->idx);
-            JudgeIndex(ix);
-            return;
-        }
-        Val(n);
-    }
-
-    bool DoBlock(Block *b) {
-        auto fell = true;
-        for (auto st : b->stmts) {
-            fell = Stmt(st);
-            if (!fell) break;
-        }
-        if (fell && b->tail) Val(b->tail);
-        return fell;
-    }
-
-    bool DoIf(IfExpr *f) {
-        Val(f->cond);
-        if (mode == M_KILLS) {
-            DoBlock(f->thenb);
-            if (f->elseb) Stmt(f->elseb);
-            return true;
-        }
-        auto killfree = !HasKillEffects(f->cond);
-        auto base = flow;
-        if (killfree) CondFacts(f->cond, true);
-        auto fellthen = DoBlock(f->thenb);
-        auto thenf = std::move(flow);
-        flow = std::move(base);
-        if (killfree) CondFacts(f->cond, false);
-        auto fellelse = f->elseb ? Stmt(f->elseb) : true;
-        if (fellthen && !fellelse) { flow = std::move(thenf); return true; }
-        if (!fellthen && fellelse) return true;   // flow is already the else path.
-        if (!fellthen && !fellelse) return false;
-        flow = Meet(thenf, flow);
-        return true;
-    }
-
-    bool DoMatch(MatchExpr *m) {
-        Val(m->scrutinee);
-        if (mode == M_KILLS) {
-            for (auto &arm : m->arms) {
-                if (arm.binder) BumpVar(arm.binder, false);   // Re-binds per execution.
-                Stmt(arm.body);
-            }
-            return true;
-        }
-        auto st = TermOf(m->scrutinee);
-        auto stt = m->scrutinee->exprtype;
-        auto admissible = st.ok && CmpAdmissible(st) && stt && stt->kind == TY_INT &&
-                          stt->intstorage != IS_U64;
-        auto base = flow;
-        Flow acc;
-        auto anyfell = false;
-        for (auto &arm : m->arms) {
-            flow = base;
-            if (admissible && (arm.pat.kind == P_INT || arm.pat.kind == P_RANGE)) {
-                AddFactB(Zero(), st.b, SatSub(st.off, arm.lo));            // lo <= s.
-                AddFactB(st.b, Zero(), SatSub(SatSub(arm.hi, 1), st.off)); // s <= hi-1.
-            }
-            auto fell = Stmt(arm.body);
-            if (fell) {
-                if (!anyfell) acc = std::move(flow);
-                else acc = Meet(acc, flow);
-                anyfell = true;
-            }
-        }
-        if (!anyfell) { flow = std::move(base); return false; }
-        flow = std::move(acc);
-        return true;
-    }
-
-    void DoGuard(Guard *g) {
-        Val(g->cond);
-        if (mode == M_KILLS) {
-            if (g->elseb) DoBlock(g->elseb);
-            return;
-        }
-        auto killfree = !HasKillEffects(g->cond);
-        if (g->elseb) {
-            auto save = flow;
-            if (killfree) CondFacts(g->cond, false);
-            DoBlock(g->elseb);   // Must diverge (TC).
-            flow = std::move(save);
-        }
-        if (killfree) CondFacts(g->cond, true);
-    }
-
-    void DoWhile(While *w) {
-        loopdepth++;
-        if (mode == M_KILLS) {
-            Val(w->cond);
-            DoBlock(w->body);
-            loopdepth--;
-            return;
-        }
-        StripKills(w->cond);
-        StripKills(w->body);
-        Val(w->cond);
-        auto exitf = flow;
-        auto killfree = !HasKillEffects(w->cond);
-        if (killfree) CondFacts(w->cond, true);
-        DoBlock(w->body);
-        flow = std::move(exitf);
-        loopdepth--;
-        if (killfree && !HasBreaks(w->body)) CondFacts(w->cond, false);
-    }
-
-    void DoFor(ForLoop *fl) {
-        if (mode == M_KILLS) {
-            Val(fl->iter);
-            loopdepth++;
-            if (fl->vdef) BumpVar(fl->vdef, false);
-            if (fl->idxdef) BumpVar(fl->idxdef, false);
-            DoBlock(fl->body);
-            loopdepth--;
-            return;
-        }
-        Val(fl->iter);
-        // Range/count loops compare the variable against loop-entry
-        // snapshots: capture those terms before the body havoc. Array/slice
-        // loops re-read the length every iteration: capture after.
-        Term lot, hit;
-        if (fl->iterkind == IK_RANGE) {
-            if (auto r = Is<RangeExpr>(fl->iter)) {
-                lot = TermOf(r->lo);
-                hit = TermOf(r->hi);
-            }
-        } else if (fl->iterkind == IK_COUNT) {
-            lot = Term { true, Zero(), 0 };
-            hit = TermOf(fl->iter);
-        }
-        // Counted push loops `for _ in n { ...; a.push(x); ...; }`: when no
-        // other statement can touch a's length and no break/continue skips an
-        // iteration, the loop grows a by exactly its push count per
-        // iteration, so afterwards len(a) == len-before + k*n.
-        vector<pair<int, int64_t>> pushpids;   // (place, pushes per iteration).
-        vector<Term> prelens;
-        if ((fl->iterkind == IK_COUNT || fl->iterkind == IK_RANGE) && mode != M_KILLS &&
-            !fl->body->tail && !HasIterationJumps(fl->body)) {
-            map<int, int64_t> counts;
-            set<int> otherbumps;
-            for (auto st : fl->body->stmts) {
-                if (auto pc = Is<Call>(st); pc && pc->builtin == B_PUSH) {
-                    Node *precv = nullptr, *parg = nullptr;
-                    if (auto pd = Is<Dot>(pc->callee)) {
-                        precv = pd->obj;
-                        parg = pc->args.empty() ? nullptr : pc->args[0];
-                    } else if (pc->args.size() == 2) {
-                        precv = pc->args[0];
-                        parg = pc->args[1];
-                    }
-                    auto pid = precv ? PlaceOf(precv) : -1;
-                    if (pid >= 0 && (!parg || !HasKillEffects(parg))) {
-                        counts[pid]++;
-                        continue;
-                    }
-                }
-                SummarizeInto(st, otherbumps);
-            }
-            for (auto &[pid, k] : counts)
-                if (!otherbumps.count(pid)) {
-                    pushpids.push_back({ pid, k });
-                    prelens.push_back(Term { true, LenBase(pid), 0 });
-                }
-        }
-        loopdepth++;
-        StripKills(fl->body);
-        if (fl->iterkind == IK_ARRAY || fl->iterkind == IK_SLICE) {
-            lot = Term { true, Zero(), 0 };
-            hit = LenTermOf(fl->iter);
-        }
-        auto exitf = flow;
-        auto iv = fl->iterkind == IK_ARRAY || fl->iterkind == IK_SLICE ? fl->idxdef
-                                                                       : fl->vdef;
-        if (iv) {
-            auto vb = VarBase(iv);
-            if (lot.ok && CmpAdmissible(lot)) AddFactB(lot.b, vb, SatSub(0, lot.off));
-            if (hit.ok && CmpAdmissible(hit)) AddFactB(vb, hit.b, SatSub(hit.off, 1));
-        }
-        if ((fl->iterkind == IK_RANGE || fl->iterkind == IK_COUNT) && fl->idxdef)
-            AddFactB(Zero(), VarBase(fl->idxdef), 0);
-        DoBlock(fl->body);
-        flow = std::move(exitf);
-        loopdepth--;
-        if (!pushpids.empty()) {
-            Term iters;
-            if (fl->iterkind == IK_COUNT) {
-                iters = hit;
-            } else if (lot.ok && hit.ok) {
-                if (lot.b == hit.b) iters = Term { true, Zero(), SatSub(hit.off, lot.off) };
-                else if (lot.b.kind == BK_ZERO)
-                    iters = Term { true, hit.b, SatSub(hit.off, lot.off) };
-            }
-            // A negative count runs zero iterations; facts only when >= 0.
-            if (iters.ok && CmpAdmissible(iters) && Query(Zero(), iters.b, iters.off)) {
-                for (size_t i = 0; i < pushpids.size(); i++) {
-                    auto [pid, k] = pushpids[i];
-                    auto &pre = prelens[i];
-                    auto post = LenBase(pid);
-                    if (iters.b.kind == BK_ZERO) {
-                        auto total = SatAdd(iters.off, 0);
-                        for (auto m = int64_t(1); m < k && total != INF; m++)
-                            total = SatAdd(total, iters.off);
-                        if (total == INF) continue;
-                        AddFactB(post, pre.b, total);              // post == pre + k*n.
-                        AddFactB(pre.b, post, SatSub(0, total));
-                    } else if (k == 1) {
-                        AddFactB(iters.b, post, SatSub(0, iters.off));   // n <= post.
-                        if (Query(pre.b, Zero(), 0))                     // pre == 0:
-                            AddFactB(post, iters.b, iters.off);          // post == n.
-                    }
-                }
-            }
-        }
-    }
-
-    void DoLoop(LoopExpr *lp) {
-        loopdepth++;
-        if (mode == M_KILLS) {
-            DoBlock(lp->body);
-            loopdepth--;
-            return;
-        }
-        StripKills(lp->body);
-        auto exitf = flow;
-        DoBlock(lp->body);
-        flow = std::move(exitf);
-        loopdepth--;
-    }
-
-    bool DoEarly(EarlyBlock *eb) {
-        if (mode == M_KILLS) {
-            DoBlock(eb->body);
-            return true;
-        }
-        if (!HasBreaks(eb->body)) return DoBlock(eb->body);
-        auto entry = flow;
-        DoBlock(eb->body);
-        flow = std::move(entry);
-        StripKills(eb->body);
-        return true;
-    }
-
-    bool DoInline(InlineBlock *ib) {
-        if (mode == M_KILLS) {
-            DoBlock(ib->body);
-            return true;
-        }
-        // A trailing return-to-this-block is the block's one normal exit and
-        // needs no havoc; earlier ones join the end from other states.
-        auto &stmts = ib->body->stmts;
-        Node *last = stmts.empty() ? nullptr : stmts.back();
-        auto lastret = Is<Return>(last) && ((Return *)last)->target == ib->sf;
-        auto early = false;
-        for (size_t i = 0; i + 1 < stmts.size(); i++)
-            early = early || ReturnsForTarget(stmts[i], ib->sf);
-        if (last) {
-            if (lastret) {
-                for (auto v : ((Return *)last)->vals)
-                    early = early || ReturnsForTarget(v, ib->sf);
-            } else {
-                early = early || ReturnsForTarget(last, ib->sf);
-            }
-        }
-        if (ib->body->tail) early = early || ReturnsForTarget(ib->body->tail, ib->sf);
-        if (!early) {
-            DoBlock(ib->body);
-            return true;
-        }
-        auto entry = flow;
-        DoBlock(ib->body);
-        flow = std::move(entry);
-        StripKills(ib->body);
-        return true;
     }
 
     Flow Meet(const Flow &a, const Flow &b) {
@@ -1704,7 +1102,7 @@ struct BCE {
         lelen.clear();
         mono.clear();
         for (auto &[v, ok] : gge0) if (ok) ge0.insert(v);
-        MarkPass(sp->body);
+        Mark(sp->body);
         // Whole-body kill summary: which places and variables any path can
         // invalidate or re-bind.
         set<int> bumped, shrunk;
@@ -1716,7 +1114,7 @@ struct BCE {
             shsum = &shrunk;
             vksum = &vbumped;
             mode = M_KILLS;
-            DoBlock(sp->body);
+            Walk(sp->body);
             ksum = nullptr;
             shsum = nullptr;
             vksum = nullptr;
@@ -1745,7 +1143,7 @@ struct BCE {
             mode = M_RECORD;
             flow = Flow {};
             derived.clear();
-            DoBlock(sp->body);
+            Walk(sp->body);
             for (auto &[v, c] : cands) {
                 if (!c.declseen) continue;
                 if (c.ge0) ge0.insert(v);
@@ -1758,7 +1156,7 @@ struct BCE {
         mode = M_JUDGE;
         flow = Flow {};
         derived.clear();
-        DoBlock(sp->body);
+        Walk(sp->body);
     }
 
     // Seeds gge0 from the globals' initializers, then drops every candidate
@@ -1783,7 +1181,7 @@ struct BCE {
             wbad.clear();
             wkinds.clear();
             relpids.clear();
-            MarkPass(sp->body);
+            Mark(sp->body);
             for (auto v : addrof) gaddr.insert(v);
         }
         for (auto &[v, ok] : gge0) if (gaddr.count(v)) ok = false;
@@ -1803,7 +1201,7 @@ struct BCE {
             ge0.clear();
             lelen.clear();
             mono.clear();
-            MarkPass(sp->body);
+            Mark(sp->body);
             for (auto &[v, ok] : gge0)
                 if (ok) {
                     cands[v].declseen = true;
@@ -1811,7 +1209,7 @@ struct BCE {
                 }
             mode = M_RECORD;
             flow = Flow {};
-            DoBlock(sp->body);
+            Walk(sp->body);
             for (auto &[v, ok] : gge0) {
                 auto it = cands.find(v);
                 if (it != cands.end() && !it->second.ge0) ok = false;
@@ -1837,20 +1235,20 @@ struct BCE {
         for (auto g : ast.globals)
             for (auto i : g->inits) {
                 flow = Flow {};
-                Val(i);
+                Walk(i);
             }
         for (auto si : ast.structinsts)
             for (auto d : si->defaults)
                 if (d) {
                     flow = Flow {};
-                    Val(d);
+                    Walk(d);
                 }
         for (auto ei : ast.enuminsts)
             for (auto &vd : ei->vdefaults)
                 for (auto d : vd)
                     if (d) {
                         flow = Flow {};
-                        Val(d);
+                        Walk(d);
                     }
     }
 
@@ -1892,5 +1290,608 @@ struct BCE {
         return fails;
     }
 };
+
+// ---------------------------------------------------------------------------
+// BceMark: the prescan, one override per node kind that contributes to it.
+// The default recurses over Children, which is all a node whose only role is
+// to hold subexpressions needs.
+
+inline void Node::BceMark(BCE &b) { Children([&](Node *ch) { b.Mark(ch); }); }
+
+inline void Ident::BceMark(BCE &b) { b.NoteVar(vdef); }
+
+inline void Unary::BceMark(BCE &b) {
+    if (op == T_BITAND) b.MarkAddr(child);
+    Node::BceMark(b);
+}
+
+inline void Dot::BceMark(BCE &b) {
+    if (member == B_LEN) b.NotePlace(obj);
+    Node::BceMark(b);
+}
+
+inline void Call::BceMark(BCE &b) {
+    // `trailing` is an unchecked template; the instance that runs is fvbody.
+    b.Mark(callee);
+    for (auto a : args) b.Mark(a);
+    b.Mark(fvbody);
+}
+
+inline void Index::BceMark(BCE &b) {
+    b.NotePlace(obj);
+    b.NoteRel(obj, idx);
+    Node::BceMark(b);
+}
+
+inline void SliceExpr::BceMark(BCE &b) {
+    b.NotePlace(obj);
+    b.NoteRel(obj, lo);
+    b.NoteRel(obj, hi);
+    Node::BceMark(b);
+}
+
+inline void MatchExpr::BceMark(BCE &b) {
+    for (auto &arm : arms) {
+        if (arm.pat.byref) b.MarkAddr(scrutinee);
+        b.NoteVar(arm.binder);
+    }
+    Node::BceMark(b);
+}
+
+inline void ForLoop::BceMark(BCE &b) {
+    if (byref) b.MarkAddr(iter);
+    b.NoteVar(vdef);
+    b.NoteVar(idxdef);
+    Node::BceMark(b);
+}
+
+inline void VarDecl::BceMark(BCE &b) {
+    for (auto d : defs) b.NoteVar(d);
+    if (defs.size() == 1 && inits.size() == 1 && defs[0]) b.wdecl.insert(defs[0]);
+    else for (auto d : defs) if (d) b.wbad.insert(d);
+    Node::BceMark(b);
+}
+
+inline void Assign::BceMark(BCE &b) {
+    if (auto id = Is<Ident>(lval); id && id->vdef && !pointee) {
+        auto v = id->vdef;
+        auto lit = Is<IntLit>(rhs);
+        if (op == T_ASSIGN) {
+            b.wkinds[v].setw = true;
+        } else if ((op == T_PLUSEQ || op == T_MINUSEQ) && lit && !lit->uns) {
+            auto c = op == T_PLUSEQ ? lit->val : -lit->val;
+            (c >= 0 ? b.wkinds[v].inc : b.wkinds[v].dec) = true;
+        } else {
+            b.wbad.insert(v);
+        }
+    }
+    Node::BceMark(b);
+}
+
+inline void IncDec::BceMark(BCE &b) {
+    if (auto id = Is<Ident>(lval); id && id->vdef &&
+        (!id->vdef->type || id->vdef->type->kind != TY_REF))
+        (op == T_INC ? b.wkinds[id->vdef].inc : b.wkinds[id->vdef].dec) = true;
+    Node::BceMark(b);
+}
+
+// ---------------------------------------------------------------------------
+// BceWalk: the analysis proper, one override per node kind that carries facts,
+// kills, or a bounds check. The default evaluates the children left to right
+// and falls through, which is exactly right for every operand-holding node.
+
+inline bool Node::BceWalk(BCE &b) {
+    Children([&](Node *ch) { b.Walk(ch); });
+    return true;
+}
+
+// A function-value template is never analyzed: the checked instance reached
+// through its call site is (Call::BceWalk).
+inline bool FunVal::BceWalk(BCE &) { return true; }
+
+inline bool Binary::BceWalk(BCE &b) {
+    if ((op == T_ANDAND || op == T_OROR) && b.mode != BCE::M_KILLS) {
+        // The right side runs only when the left settled it one way, so its
+        // facts and effects merge against the short-circuit path.
+        b.Walk(left);
+        auto after = b.flow;
+        b.CondFacts(left, op == T_ANDAND);
+        b.Walk(right);
+        b.flow = b.Meet(after, b.flow);
+        return true;
+    }
+    b.Walk(left);
+    b.Walk(right);
+    return true;
+}
+
+inline bool Index::BceWalk(BCE &b) {
+    b.Walk(obj);
+    b.Walk(idx);
+    b.JudgeIndex(this);
+    return true;
+}
+
+inline bool SliceExpr::BceWalk(BCE &b) {
+    b.Walk(obj);
+    // The runtime check compares against a length snapshot taken before the
+    // bound expressions run; capture the term at that moment.
+    auto lent = b.mode == BCE::M_JUDGE ? b.LenTermOf(obj) : BCE::Term {};
+    b.Walk(lo);
+    b.Walk(hi);
+    if (b.mode == BCE::M_JUDGE) b.JudgeSlice(this, lent);
+    return true;
+}
+
+inline bool Call::BceWalk(BCE &b) {
+    Node *recv = nullptr;
+    if (auto d = Is<Dot>(callee)) {
+        recv = d->obj;
+        b.Walk(recv);
+    }
+    for (auto a : args) b.Walk(a);
+    if (builtin >= 0) {
+        auto rn = recv ? recv : (args.empty() ? nullptr : args[0]);
+        // The first non-receiver argument, in either call spelling.
+        auto arg0 = recv ? (args.empty() ? nullptr : args[0])
+                         : (args.size() > 1 ? args[1] : nullptr);
+        switch (builtin) {
+            case B_PUSH:
+                b.GrowShrinkKill(rn, 1, 1);
+                break;
+            case B_APPEND: {
+                auto st = arg0 ? b.LenTermOf(arg0) : BCE::Term {};
+                b.GrowShrinkKill(rn, 1, st.ok && st.b.kind == BCE::BK_ZERO ? st.off
+                                                                          : INT64_MIN);
+                break;
+            }
+            case B_ALLOC_INDEX: case B_ALLOC_REF:
+                b.GrowShrinkKill(rn, 1);
+                break;
+            case B_POP: {
+                // A pop that returns proves its own precondition: popping an
+                // empty array aborts (§9.3), so the length was at least one
+                // and the new one is exactly one less.
+                auto lt = b.mode == BCE::M_KILLS || !rn ? BCE::Term {} : b.LenTermOf(rn);
+                b.GrowShrinkKill(rn, -1, -1);
+                if (lt.ok && lt.b.kind != BCE::BK_ZERO)
+                    b.AddFactB(BCE::Zero(), lt.b, lt.off - 1);
+                break;
+            }
+            case B_CLEAR: {
+                auto pid = b.GrowShrinkKill(rn, -1);
+                if (pid >= 0) b.ExactLenIs(pid, BCE::Term { true, BCE::Zero(), 0 });
+                break;
+            }
+            case B_RESIZE: {
+                auto nt = b.mode == BCE::M_KILLS ? BCE::Term {} : b.TermOf(arg0);
+                auto pid = b.GrowShrinkKill(rn, 0);
+                if (pid >= 0) b.ExactLenIs(pid, nt);
+                break;
+            }
+            case B_ASSERT:
+                if (b.mode != BCE::M_KILLS && !args.empty() && !b.HasKillEffects(args[0]))
+                    b.CondFacts(args[0], true);
+                // A statically false assertion ends the path.
+                if (!args.empty())
+                    if (auto bl = Is<BoolLit>(args[0]); bl && !bl->val) return false;
+                break;
+            default:
+                break;   // len/cap/print/free/queues/threads: no tracked effect.
+        }
+        return true;
+    }
+    if (fvbody) {
+        // The function value runs inside the callee, possibly repeatedly and
+        // after arbitrary callee effects: analyze it from scratch.
+        auto saved = std::move(b.flow);
+        b.flow = BCE::Flow {};
+        b.loopdepth++;
+        for (auto p : fvparams) if (p) b.BumpVar(p, false);   // Re-bound per call.
+        b.Walk(fvbody);
+        b.loopdepth--;
+        b.flow = std::move(saved);
+    }
+    auto anyref = false;
+    auto reft = [](Node *a) { return a->exprtype && a->exprtype->kind == TY_REF; };
+    if (recv && reft(recv)) anyref = true;
+    for (auto a : args) anyref = anyref || reft(a);
+    b.KillByCall(anyref);
+    return true;
+}
+
+inline bool Block::BceWalk(BCE &b) {
+    auto fell = true;
+    for (auto st : stmts) {
+        fell = b.Walk(st);
+        if (!fell) break;
+    }
+    if (fell) b.Walk(tail);
+    return fell;
+}
+
+inline bool IfExpr::BceWalk(BCE &b) {
+    b.Walk(cond);
+    if (b.mode == BCE::M_KILLS) {
+        b.Walk(thenb);
+        b.Walk(elseb);
+        return true;
+    }
+    auto killfree = !b.HasKillEffects(cond);
+    auto base = b.flow;
+    if (killfree) b.CondFacts(cond, true);
+    auto fellthen = b.Walk(thenb);
+    auto thenf = std::move(b.flow);
+    b.flow = std::move(base);
+    if (killfree) b.CondFacts(cond, false);
+    auto fellelse = b.Walk(elseb);
+    if (fellthen && !fellelse) { b.flow = std::move(thenf); return true; }
+    if (!fellthen && fellelse) return true;   // b.flow is already the else path.
+    if (!fellthen && !fellelse) return false;
+    b.flow = b.Meet(thenf, b.flow);
+    return true;
+}
+
+inline bool MatchExpr::BceWalk(BCE &b) {
+    b.Walk(scrutinee);
+    if (b.mode == BCE::M_KILLS) {
+        for (auto &arm : arms) {
+            if (arm.binder) b.BumpVar(arm.binder, false);   // Re-bound per execution.
+            b.Walk(arm.body);
+        }
+        return true;
+    }
+    auto st = b.TermOf(scrutinee);
+    auto stt = scrutinee->exprtype;
+    auto admissible = st.ok && BCE::CmpAdmissible(st) && stt && stt->kind == TY_INT &&
+                      stt->intstorage != IS_U64;
+    auto base = b.flow;
+    BCE::Flow acc;
+    auto anyfell = false;
+    for (auto &arm : arms) {
+        b.flow = base;
+        if (admissible && (arm.pat.kind == P_INT || arm.pat.kind == P_RANGE)) {
+            b.AddFactB(BCE::Zero(), st.b, BCE::SatSub(st.off, arm.lo));
+            b.AddFactB(st.b, BCE::Zero(), BCE::SatSub(BCE::SatSub(arm.hi, 1), st.off));
+        }
+        if (b.Walk(arm.body)) {
+            if (!anyfell) acc = std::move(b.flow);
+            else acc = b.Meet(acc, b.flow);
+            anyfell = true;
+        }
+    }
+    if (!anyfell) { b.flow = std::move(base); return false; }
+    b.flow = std::move(acc);
+    return true;
+}
+
+inline bool EarlyBlock::BceWalk(BCE &b) {
+    if (b.mode == BCE::M_KILLS) {
+        b.Walk(body);
+        return true;
+    }
+    if (!b.HasBreaks(body)) return b.Walk(body);
+    auto entry = b.flow;
+    b.Walk(body);
+    b.flow = std::move(entry);
+    b.StripKills(body);
+    return true;
+}
+
+inline bool While::BceWalk(BCE &b) {
+    b.loopdepth++;
+    if (b.mode == BCE::M_KILLS) {
+        b.Walk(cond);
+        b.Walk(body);
+        b.loopdepth--;
+        return true;
+    }
+    b.StripKills(cond);
+    b.StripKills(body);
+    b.Walk(cond);
+    auto exitf = b.flow;
+    auto killfree = !b.HasKillEffects(cond);
+    if (killfree) b.CondFacts(cond, true);
+    b.Walk(body);
+    b.flow = std::move(exitf);
+    b.loopdepth--;
+    if (killfree && !b.HasBreaks(body)) b.CondFacts(cond, false);
+    return true;
+}
+
+inline bool LoopExpr::BceWalk(BCE &b) {
+    b.loopdepth++;
+    if (b.mode == BCE::M_KILLS) {
+        b.Walk(body);
+        b.loopdepth--;
+        return true;
+    }
+    b.StripKills(body);
+    auto exitf = b.flow;
+    b.Walk(body);
+    b.flow = std::move(exitf);
+    b.loopdepth--;
+    return true;
+}
+
+inline bool ForLoop::BceWalk(BCE &b) {
+    if (b.mode == BCE::M_KILLS) {
+        b.Walk(iter);
+        b.loopdepth++;
+        if (vdef) b.BumpVar(vdef, false);
+        if (idxdef) b.BumpVar(idxdef, false);
+        b.Walk(body);
+        b.loopdepth--;
+        return true;
+    }
+    b.Walk(iter);
+    // Range and count loops compare the variable against loop-entry snapshots,
+    // so capture those terms before the body havoc; array and slice loops
+    // re-read the length every iteration, so capture after.
+    BCE::Term lot, hit;
+    if (iterkind == IK_RANGE) {
+        if (auto r = Is<RangeExpr>(iter)) {
+            lot = b.TermOf(r->lo);
+            hit = b.TermOf(r->hi);
+        }
+    } else if (iterkind == IK_COUNT) {
+        lot = BCE::Term { true, BCE::Zero(), 0 };
+        hit = b.TermOf(iter);
+    }
+    // Counted push loops `for _ in n { ...; a.push(x); ...; }`: when no other
+    // statement can touch a's length and no break or continue skips an
+    // iteration, the loop grows a by its push count per iteration, so
+    // afterwards len(a) == len-before + k*n.
+    vector<pair<int, int64_t>> pushpids;
+    vector<BCE::Term> prelens;
+    if ((iterkind == IK_COUNT || iterkind == IK_RANGE) && !body->tail &&
+        !b.HasIterationJumps(body)) {
+        map<int, int64_t> counts;
+        set<int> otherbumps;
+        for (auto st : body->stmts) {
+            if (auto pc = Is<Call>(st); pc && pc->builtin == B_PUSH) {
+                Node *precv = nullptr, *parg = nullptr;
+                if (auto pd = Is<Dot>(pc->callee)) {
+                    precv = pd->obj;
+                    parg = pc->args.empty() ? nullptr : pc->args[0];
+                } else if (pc->args.size() == 2) {
+                    precv = pc->args[0];
+                    parg = pc->args[1];
+                }
+                auto pid = precv ? b.PlaceOf(precv) : -1;
+                if (pid >= 0 && (!parg || !b.HasKillEffects(parg))) {
+                    counts[pid]++;
+                    continue;
+                }
+            }
+            b.SummarizeInto(st, otherbumps);
+        }
+        for (auto &[pid, k] : counts)
+            if (!otherbumps.count(pid)) {
+                pushpids.push_back({ pid, k });
+                prelens.push_back(BCE::Term { true, b.LenBase(pid), 0 });
+            }
+    }
+    b.loopdepth++;
+    b.StripKills(body);
+    if (iterkind == IK_ARRAY || iterkind == IK_SLICE) {
+        lot = BCE::Term { true, BCE::Zero(), 0 };
+        hit = b.LenTermOf(iter);
+    }
+    auto exitf = b.flow;
+    auto iv = iterkind == IK_ARRAY || iterkind == IK_SLICE ? idxdef : vdef;
+    if (iv) {
+        auto vb = b.VarBase(iv);
+        if (lot.ok && BCE::CmpAdmissible(lot))
+            b.AddFactB(lot.b, vb, BCE::SatSub(0, lot.off));
+        if (hit.ok && BCE::CmpAdmissible(hit))
+            b.AddFactB(vb, hit.b, BCE::SatSub(hit.off, 1));
+    }
+    if ((iterkind == IK_RANGE || iterkind == IK_COUNT) && idxdef)
+        b.AddFactB(BCE::Zero(), b.VarBase(idxdef), 0);
+    b.Walk(body);
+    b.flow = std::move(exitf);
+    b.loopdepth--;
+    if (!pushpids.empty()) {
+        BCE::Term iters;
+        if (iterkind == IK_COUNT) {
+            iters = hit;
+        } else if (lot.ok && hit.ok) {
+            if (lot.b == hit.b)
+                iters = BCE::Term { true, BCE::Zero(), BCE::SatSub(hit.off, lot.off) };
+            else if (lot.b.kind == BCE::BK_ZERO)
+                iters = BCE::Term { true, hit.b, BCE::SatSub(hit.off, lot.off) };
+        }
+        // A negative count runs zero iterations; facts only when it is >= 0.
+        if (iters.ok && BCE::CmpAdmissible(iters) &&
+            b.Query(BCE::Zero(), iters.b, iters.off)) {
+            for (size_t i = 0; i < pushpids.size(); i++) {
+                auto [pid, k] = pushpids[i];
+                auto &pre = prelens[i];
+                auto post = b.LenBase(pid);
+                if (iters.b.kind == BCE::BK_ZERO) {
+                    auto total = iters.off;
+                    for (auto m = int64_t(1); m < k && total != BCE::INF; m++)
+                        total = BCE::SatAdd(total, iters.off);
+                    if (total == BCE::INF) continue;
+                    b.AddFactB(post, pre.b, total);              // post == pre + k*n.
+                    b.AddFactB(pre.b, post, BCE::SatSub(0, total));
+                } else if (k == 1) {
+                    b.AddFactB(iters.b, post, BCE::SatSub(0, iters.off));   // n <= post.
+                    if (b.Query(pre.b, BCE::Zero(), 0))                     // pre == 0:
+                        b.AddFactB(post, iters.b, iters.off);               // post == n.
+                }
+            }
+        }
+    }
+    return true;
+}
+
+inline bool Guard::BceWalk(BCE &b) {
+    b.Walk(cond);
+    if (b.mode == BCE::M_KILLS) {
+        b.Walk(elseb);
+        return true;
+    }
+    auto killfree = !b.HasKillEffects(cond);
+    if (elseb) {
+        auto save = b.flow;
+        if (killfree) b.CondFacts(cond, false);
+        b.Walk(elseb);   // Must diverge (TC).
+        b.flow = std::move(save);
+    }
+    if (killfree) b.CondFacts(cond, true);
+    return true;
+}
+
+inline bool InlineBlock::BceWalk(BCE &b) {
+    if (b.mode == BCE::M_KILLS) {
+        b.Walk(body);
+        return true;
+    }
+    // A trailing return to this block is its one normal exit and needs no
+    // havoc; earlier ones join the end from other states.
+    auto &stmts = body->stmts;
+    Node *last = stmts.empty() ? nullptr : stmts.back();
+    auto lastret = Is<Return>(last) && ((Return *)last)->target == sf;
+    auto early = false;
+    for (size_t i = 0; i + 1 < stmts.size(); i++)
+        early = early || b.ReturnsForTarget(stmts[i], sf);
+    if (last) {
+        if (lastret) {
+            for (auto v : ((Return *)last)->vals)
+                early = early || b.ReturnsForTarget(v, sf);
+        } else {
+            early = early || b.ReturnsForTarget(last, sf);
+        }
+    }
+    if (body->tail) early = early || b.ReturnsForTarget(body->tail, sf);
+    if (!early) {
+        b.Walk(body);
+        return true;
+    }
+    auto entry = b.flow;
+    b.Walk(body);
+    b.flow = std::move(entry);
+    b.StripKills(body);
+    return true;
+}
+
+inline bool Return::BceWalk(BCE &b) {
+    for (auto v : vals) b.Walk(v);
+    return false;
+}
+
+inline bool Break::BceWalk(BCE &b) {
+    b.Walk(val);
+    return false;
+}
+
+inline bool Continue::BceWalk(BCE &) { return false; }
+
+inline bool VarDecl::BceWalk(BCE &b) {
+    for (auto i : inits) b.Walk(i);
+    if (defs.size() == 1 && inits.size() == 1 && defs[0]) {
+        auto v = defs[0];
+        auto lt = b.mode != BCE::M_KILLS && v->type && v->type->kind == TY_ARRAY
+                      ? b.FreshLenOf(inits[0]) : BCE::Term {};
+        if (BCE::ScalarIntVar(v)) {
+            b.SetWrite(v, inits[0], true);
+        } else if (b.loopdepth > 0 && v->type &&
+                   (v->type->kind == TY_SLICE || v->type->kind == TY_REF)) {
+            b.RebindKill(v);   // Loop-repeated redeclaration rebinds.
+        } else if (b.loopdepth > 0 && v->type && v->type->kind != TY_FLT &&
+                   v->type->kind != TY_BOOL && v->type->kind != TY_INT) {
+            b.StorageWriteKill(BCE::UK_OWNED, v, v);   // Loop-repeated reconstruction.
+        }
+        if (lt.ok) {
+            auto pid = b.PlaceOfVar(v);
+            if (pid >= 0) b.ExactLenIs(pid, lt);
+        }
+    } else {
+        for (auto d : defs) if (d) b.VarKillWrite(d);
+    }
+    return true;
+}
+
+inline bool Assign::BceWalk(BCE &b) {
+    b.WalkLvalParts(lval);
+    b.Walk(rhs);
+    if (op == T_DOTASSIGN) {
+        auto ch = b.ChainOf(lval);
+        if (ch.kind == BCE::CH_INDEX) return true;   // Element ref slots: no tracked places.
+        if (ch.kind == BCE::CH_OK) b.RebindKill(ch.root);
+        else b.StorageWriteKill(BCE::UK_OPAQUE, nullptr, nullptr);
+        return true;
+    }
+    if (pointee) {
+        auto pt = lval->exprtype;
+        b.PointeeWriteKill(lval, pt && pt->kind == TY_REF ? pt->ref->sub : nullptr);
+        return true;
+    }
+    if (auto id = Is<Ident>(lval)) {
+        auto v = id->vdef;
+        if (!v) return true;
+        if (BCE::ScalarIntVar(v)) {
+            if (op == T_ASSIGN) {
+                b.SetWrite(v, rhs, false);
+            } else if (op == T_PLUSEQ || op == T_MINUSEQ) {
+                auto lit = Is<IntLit>(rhs);
+                if (lit && !lit->uns && BCE::SmallOff(lit->val))
+                    b.ShiftWrite(v, op == T_PLUSEQ ? lit->val : -lit->val);
+                else b.VarKillWrite(v);
+            } else {
+                b.VarKillWrite(v);
+            }
+            return true;
+        }
+        auto t = v->type;
+        auto fresh = b.mode != BCE::M_KILLS && t && t->kind == TY_ARRAY && op == T_ASSIGN
+                         ? b.FreshLenOf(rhs) : BCE::Term {};
+        if (t && t->kind == TY_SLICE) b.RebindKill(v);
+        else if (t && t->kind != TY_FLT && t->kind != TY_BOOL && t->kind != TY_INT)
+            b.StorageWriteKill(BCE::UK_OWNED, v, v);
+        if (fresh.ok) {
+            auto pid = b.PlaceOfVar(v);
+            if (pid >= 0) b.ExactLenIs(pid, fresh);
+        }
+        return true;
+    }
+    if (Is<Index>(lval)) return true;   // Element writes cannot change any tracked length.
+    auto lt = lval->exprtype;
+    if (lt && (lt->kind == TY_INT || lt->kind == TY_FLT || lt->kind == TY_BOOL))
+        return true;                    // A scalar field write cannot change a length.
+    auto ch = b.ChainOf(lval);
+    if (ch.kind == BCE::CH_INDEX) return true;
+    if (ch.kind == BCE::CH_FAIL || !ch.root) {
+        b.StorageWriteKill(BCE::UK_OPAQUE, nullptr, nullptr);
+        return true;
+    }
+    if (!ch.anycross) {
+        b.StorageWriteKill(BCE::UK_OWNED, ch.root, ch.root);
+    } else if (ch.rootonlycross) {
+        auto [k, u] = b.UltOf(ch.root);
+        if (k != BCE::UK_STATIC) b.StorageWriteKill(k, u, ch.root);
+        else b.RebindKill(ch.root);
+    } else {
+        b.StorageWriteKill(BCE::UK_OPAQUE, nullptr, ch.root);
+    }
+    return true;
+}
+
+inline bool IncDec::BceWalk(BCE &b) {
+    b.WalkLvalParts(lval);
+    auto lt = lval->exprtype;
+    if (lt && lt->kind == TY_REF) {
+        b.PointeeWriteKill(lval, lt->ref->sub);
+        return true;
+    }
+    if (auto id = Is<Ident>(lval); id && id->vdef) {
+        if (BCE::ScalarIntVar(id->vdef)) b.ShiftWrite(id->vdef, op == T_INC ? 1 : -1);
+        else b.VarKillWrite(id->vdef);
+    }
+    // A field or element integer is not a tracked base.
+    return true;
+}
 
 }  // namespace goose

@@ -164,7 +164,9 @@ static T gs_div_##SFX(T a, T b, const char *file, int line) { \
     return (T)r; } \
 static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
-    return (T)((int64_t)a % (int64_t)b); } \
+    int64_t r = (int64_t)a % (int64_t)b; \
+    if (r < 0) r += (int64_t)b < 0 ? -(int64_t)b : (int64_t)b; \
+    return (T)r; } \
 static T gs_shl_##SFX(T a, int64_t n) { \
     return (T)((uint64_t)a << (n & (BITS - 1))); } \
 static T gs_shr_##SFX(T a, int64_t n) { \
@@ -211,11 +213,11 @@ static int64_t gs_mul_i64(int64_t a, int64_t b) {
     if (GS_DEBUG && a && b &&
         ((a == -1 && b == INT64_MIN) || (b == -1 && a == INT64_MIN) || r / b != a))
         gs_ovf();
-    return r;
+)GSRT"
+R"GSRT(    return r;
 }
 static int64_t gs_neg_i64(int64_t a) {
-)GSRT"
-R"GSRT(    if (GS_DEBUG && a == INT64_MIN) gs_ovf();
+    if (GS_DEBUG && a == INT64_MIN) gs_ovf();
     return (int64_t)(0u - (uint64_t)a);
 }
 static int64_t gs_div_i64(int64_t a, int64_t b, const char *file, int line) {
@@ -229,8 +231,11 @@ static int64_t gs_div_i64(int64_t a, int64_t b, const char *file, int line) {
 }
 static int64_t gs_mod_i64(int64_t a, int64_t b, const char *file, int line) {
     if (b == 0) gs_divfail(file, line);
-    if (a == INT64_MIN && b == -1) return 0;
-    return a % b;
+    if (b == -1) return 0;   /* Exactly 0, and i64.min % -1 would trap. */
+    int64_t r = a % b;
+    /* |b| unsigned, so a divisor of i64.min (unrepresentable negated) works. */
+    if (r < 0) r = (int64_t)((uint64_t)r + (b < 0 ? 0u - (uint64_t)b : (uint64_t)b));
+    return r;
 }
 static int64_t gs_shl_i64(int64_t a, int64_t n) {
     return (int64_t)((uint64_t)a << (n & 63));
@@ -419,7 +424,8 @@ static uint8_t *gs_reserve_region(size_t size) {
     static int handler_installed = 0;
     if (!handler_installed) {
         handler_installed = 1;
-        struct sigaction sa;
+)GSRT"
+R"GSRT(        struct sigaction sa;
         memset(&sa, 0, sizeof(sa));
         sa.sa_sigaction = gs_fault_handler;
         sa.sa_flags = SA_SIGINFO;
@@ -428,8 +434,7 @@ static uint8_t *gs_reserve_region(size_t size) {
             sigaction(SIGBUS, &sa, NULL);
         #endif
     }
-)GSRT"
-R"GSRT(    /* Commit-on-touch via overcommit; the gap at the end stays PROT_NONE. */
+    /* Commit-on-touch via overcommit; the gap at the end stays PROT_NONE. */
     void *p = mmap(NULL, size, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS
                    #ifdef MAP_NORESERVE

@@ -306,6 +306,25 @@ fn casts() {
     print(hardware_threads() >= 1);      // true
 }
 
+// `%` is Euclidean at every integer type (§6.2): the result is in [0, |b|)
+// whatever the dividend's sign, so it is always a valid index into `b` slots.
+fn euclidean_mod() {
+    var a = 7;
+    var b = 3;
+    print(a % b);                        // 1
+    print((0 - a) % b);                  // 2  (C's truncating % gives -1)
+    print(a % (0 - b));                  // 1
+    print((0 - a) % (0 - b));            // 2
+    var e: i32 = 0 - 7;
+    print(e % 3);                        // 2 (narrow types agree)
+    var m = -9223372036854775807 - 1;    // i64.min
+    print(m % (0 - 1));                  // 0 (would trap as a hardware divide)
+    print(m % 4);                        // 0
+    print((m + 1) % 4);                  // 1
+    var u: u32 = 7;
+    print(u % 3);                        // 1 (unsigned is unchanged)
+}
+
 // --- match over variable payload by value ------------------------------------
 
 enum Msg { Ping, Text { body: u8[] } }
@@ -442,6 +461,7 @@ fn main_codegen_exec() {
     longdistance();
     nrvo();
     casts();
+    euclidean_mod();
     msgs();
     pool_reuse();
     globals2();

@@ -260,24 +260,26 @@ fn whole_assign_kills(extra: i64) -> i64 {
 
 // --- value ranges from the operation itself --------------------------------
 
+// `%` is Euclidean (§6.2), so the reduction is in range for any dividend --
+// no guard, and nothing left for a check to catch.
 fn modulo_index(s: i64[:], k: i64) -> i64 {
     guard s.len > 0 else { return 0; }
-    guard k >= 0 else { return 0; }
-    return s[k % s.len];                      // bce:elide (a remainder is below its divisor)
+    return s[k % s.len];                      // bce:elide
 }
 
-// A signed remainder takes the dividend's sign, so an unconstrained dividend
-// leaves the index possibly negative.
-fn modulo_signed(s: i64[:], k: i64) -> i64 {
-    guard s.len > 0 else { return 0; }
-    return s[k % s.len];                      // bce:keep
+// A negative divisor bounds the result by its magnitude, which the analysis
+// can state when the divisor is a constant...
+fn modulo_negative_const(s: i64[:], k: i64) -> i64 {
+    guard s.len > 3 else { return 0; }
+    return s[k % -4];                         // bce:elide
 }
 
+// ...but not when it is a symbolic negation: |b| is not expressible as an
+// offset from b's own term. The access is in fact safe.
 fn modulo_negative(s: i64[:], k: i64) -> i64 {
     guard s.len > 0 else { return 0; }
-    guard k >= 0 else { return 0; }
     let n = 0 - s.len;
-    return s[k % n];                          // bce:keep (a negative divisor bounds nothing)
+    return s[k % n];                          // bce:keep
 }
 
 fn mask_index() -> i64 {
@@ -528,8 +530,10 @@ fn main() {
     print(exact_lengths());                   // 34
     print(shrink_invalidates(kz));            // 4
     print(whole_assign_kills(kz));            // 6
+    let kneg = 0 - data[2];                   // -3, opaque to the analysis
     print(modulo_index(data, ke));            // 6
-    print(modulo_signed(data, ke));           // 6
+    print(modulo_index(data, kneg));          // 6 (Euclidean: -3 % 8 == 5)
+    print(modulo_negative_const(data, kneg)); // 2 (-3 % -4 == 1)
     print(modulo_negative(data, ke));         // 6
     print(mask_index());                      // 228
     print(unsigned_modulo(data, 20));         // 5

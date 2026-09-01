@@ -623,7 +623,8 @@ tree-mutation workloads that would otherwise need an allocator.
 
 ### 6.1 Operators
 
-C/Rust set: `+ - * / %` (`%` on floats is C `fmod`), comparisons, `! && ||`
+C/Rust set: `+ - * / %` (`%` is Euclidean on integers, §6.2; on floats it is
+C `fmod`), comparisons, `! && ||`
 (short-circuit, `bool` only), bitwise `~ & | ^ << >>` (on integers),
 assignment statements `=`, `+=` etc. on assignable lvalues, `.=` (reference
 rebinding, §3.8), and `++`/`--` as statements on integer lvalues (no
@@ -657,10 +658,19 @@ ordinary stdlib overloads per math type, not language builtins.
   an 8-bit add, `i32 * i32` a 32-bit multiply. There is no promotion —
   operands reach a common type only by the unification rule of §6.1, which
   never widens both sides behind the programmer's back.
-* Signedness is part of the type: `/`, `%`, `>>`, and the ordering
-  comparisons are unsigned operations on unsigned types (`>>` shifts in
-  zeroes) and signed on signed ones (`>>` replicates the sign bit). `%`
-  takes the dividend's sign on signed types.
+* Signedness is part of the type: `/`, `>>`, and the ordering comparisons are
+  unsigned operations on unsigned types (`>>` shifts in zeroes) and signed on
+  signed ones (`>>` replicates the sign bit).
+* **`%` is Euclidean** at every integer type: the result lies in `[0, |b|)`
+  and is never negative, whatever the dividend's sign. So `x % n` is a valid
+  index into a length-`n` array for *any* `x` — the reduction idiom means
+  what it looks like, and the optimizer can drop the resulting bounds check
+  (§10.5) instead of demanding a guard the programmer knows is redundant.
+  On unsigned types this is ordinary remainder; on signed ones it costs one
+  predictable conditional add over C's truncating `%`, on an operation that
+  is already a division. Consequently `i64.min % -1` is `0`, not a trap.
+  (A truncating form may be added later if a use for it appears; float `%`
+  stays C `fmod`, whose convention numeric code expects.)
 * **Signed overflow** (at the operation's width): aborts in debug builds;
   wraps two's-complement (defined) in release. **Unsigned arithmetic wraps
   modulo 2^width by definition, in every build** — modular arithmetic is
@@ -1097,8 +1107,9 @@ Violations are compile errors. There is no escape hatch in v1.
 
 Aborts (message + exit; not catchable):
 
-* array/slice indexing out of bounds (elidable by optimizer; can be disabled
-  wholesale in a designated unsafe-fast build);
+* array/slice indexing out of bounds (elided wherever the compiler proves it
+  cannot fire, §10.5; can be disabled wholesale in a designated unsafe-fast
+  build);
 * limited-array capacity overflow;
 * shrinking below empty (`pop` on an empty array, `resize` to a negative
   length);
@@ -1198,6 +1209,35 @@ references + bounds-checked growth, with reduced performance.
 
 Compilation target: C/C++ first, LLVM later. Representation and calling
 convention: Appendix C.
+
+### 10.5 Bounds-check elimination
+
+The index and slice checks of §9.3 are the one abort the compiler routinely
+proves unnecessary, so the analysis that removes them is part of the
+compilation model rather than an implementation detail. It runs over each
+specialization after optimization, and it is required only to be *sound*:
+every check it removes is one that could not have aborted, and what it fails
+to prove stays in the program. Nothing about a program's meaning depends on
+how much it proves.
+
+What the language gives it, beyond ordinary flow facts (loop headers,
+conditions and their negations, `assert`, match arms):
+
+* **Monotonicity in the type.** A grow-only `[>..]` never shrinks (§5.1), so
+  a bound established before a `push` still holds after it. This is a
+  guarantee a resizable-array type without the grow-only/grow-shrink split
+  cannot offer.
+* **Roots.** Every reference's root is static per specialization (§9.2), so
+  a call cannot invalidate a length the callee has no path to — storage is
+  reachable only through a global, a capture, or an explicit `&` (§3.8).
+* **Static extents.** `T[k]`'s length and `[..k]`'s capacity are constants.
+* **Total operations.** `%` is Euclidean (§6.2), so a reduction is in range
+  by construction; a completed `pop` proves the array was non-empty, because
+  the empty case aborts.
+
+Known gaps are TODO 0f. Whole-program compilation makes the analysis
+intraprocedural without loss: each specialization sees concrete argument
+roots, and a caller's facts reach a callee body once it is inlined.
 
 ---
 
@@ -1354,6 +1394,31 @@ The newest, highest-priority items first:
     deliberately rejects `u32 + i32` and `u64` against anything signed.
     Watch whether real code (hash kernels, size math against `.len`'s
     `i64`) accumulates enough casts to justify a relaxation or an idiom.
+    First real data point (`bench/goose/words.goose`): the open-addressed
+    map's `slots[idx]`, where `idx = hash & mask` is `u64` because the hash
+    is, keeps its bounds check — nothing can relate a `u64` index to an
+    `i64` length. Note this is a `u64`-only problem: `u8`/`u16`/`u32` all
+    widen implicitly into `i64` (§6.3), so the same code on a `u32` hash
+    composes. Two candidate fixes, neither yet chosen: allow *comparisons*
+    (only) to mix signedness — they need no result type, so the answer is
+    unambiguous, unlike `+` — or track "this `u64` is known to fit `i64`"
+    so such values re-enter signed math. §10.5's analysis would use either.
+0e. **Per-array index types** — an index validated once against a specific
+    array, so repeated `a[i]` and indirect `a[b[i]]` need no further check.
+    Goose is unusually well placed for this: specializations already carry
+    each reference's root (§10.2), and a grow-only `[>..]` can never shrink,
+    so such an index could not be invalidated by any later operation. This
+    is the one direction that would take §10.5 past what an LLVM-based
+    language can prove, since it turns a dataflow question into a type one.
+0f. **Bounds-check analysis, known gaps** (§10.5) — a loop's exit condition
+    is a disjunction (`!(i < n && p)`), which a difference-constraint domain
+    cannot represent, so post-loop bounds rest on the inferred invariants
+    instead; LLVM meets the same wall and works around it by duplicating
+    blocks so the conditions never merge, which is available here too. A
+    value loaded from an array has no known range, so indirect indexing
+    (`dist[out[k]]`, `bench/goose/graph_csr.goose`) keeps its check — see
+    0e. Release-mode wrapping (§6.2) is deliberate and stays, so the
+    analysis proves absence of wrap explicitly where it needs to.
 0b. **Reference address identity** — references are transparent (§3.8), so
     `r1 == r2` compares pointees; there is currently no way to ask whether
     two references alias the same address (a `same_ref(a, b)` builtin?).

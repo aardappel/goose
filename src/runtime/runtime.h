@@ -152,7 +152,9 @@ static T gs_div_##SFX(T a, T b, const char *file, int line) { \
     return (T)r; } \
 static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
-    return (T)((int64_t)a % (int64_t)b); } \
+    int64_t r = (int64_t)a % (int64_t)b; \
+    if (r < 0) r += (int64_t)b < 0 ? -(int64_t)b : (int64_t)b; \
+    return (T)r; } \
 static T gs_shl_##SFX(T a, int64_t n) { \
     return (T)((uint64_t)a << (n & (BITS - 1))); } \
 static T gs_shr_##SFX(T a, int64_t n) { \
@@ -216,8 +218,11 @@ static int64_t gs_div_i64(int64_t a, int64_t b, const char *file, int line) {
 }
 static int64_t gs_mod_i64(int64_t a, int64_t b, const char *file, int line) {
     if (b == 0) gs_divfail(file, line);
-    if (a == INT64_MIN && b == -1) return 0;
-    return a % b;
+    if (b == -1) return 0;   /* Exactly 0, and i64.min % -1 would trap. */
+    int64_t r = a % b;
+    /* |b| unsigned, so a divisor of i64.min (unrepresentable negated) works. */
+    if (r < 0) r = (int64_t)((uint64_t)r + (b < 0 ? 0u - (uint64_t)b : (uint64_t)b));
+    return r;
 }
 static int64_t gs_shl_i64(int64_t a, int64_t n) {
     return (int64_t)((uint64_t)a << (n & 63));

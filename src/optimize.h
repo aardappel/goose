@@ -824,7 +824,7 @@ inline Node *Binary::Opt(Optimizer &o) {
             case T_MINUS: if (!TypeCheck::SubOv(a, b, r) && fits(r)) return o.NewInt(this, r); break;
             case T_MUL:   if (!TypeCheck::MulOv(a, b, r) && fits(r)) return o.NewInt(this, r); break;
             case T_DIV:   if (b && !(a == INT64_MIN && b == -1) && fits(a / b)) return o.NewInt(this, a / b); break;
-            case T_MOD:   if (b && !(a == INT64_MIN && b == -1)) return o.NewInt(this, a % b); break;
+            case T_MOD:   if (b) return o.NewInt(this, TypeCheck::EuclidMod(a, b)); break;
             case T_BITAND: return o.NewInt(this, a & b);
             case T_BITOR:  return o.NewInt(this, a | b);
             case T_XOR:    return o.NewInt(this, a ^ b);

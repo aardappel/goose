@@ -151,7 +151,8 @@ struct TypeCheck {
                 case T_MINUS:  v = l - r; return true;
                 case T_MUL:    v = l * r; return true;
                 case T_DIV:    if (!r) Error(n, "constant division by zero"); v = l / r; return true;
-                case T_MOD:    if (!r) Error(n, "constant division by zero"); v = l % r; return true;
+                case T_MOD:    if (!r) Error(n, "constant division by zero");
+                               v = EuclidMod(l, r); return true;
                 case T_BITAND: v = l & r; return true;
                 case T_BITOR:  v = l | r; return true;
                 case T_XOR:    v = l ^ r; return true;
@@ -1447,6 +1448,18 @@ struct TypeCheck {
         return r / b != a;
     }
 
+    // Signed `%` is Euclidean (§6.2): the result is in [0, |b|), never
+    // negative. Callers check b != 0 first. The adjustment is computed
+    // unsigned so that b == i64.min (whose negation is unrepresentable) and
+    // the i64.min % -1 case both work out; the latter's exact remainder is 0,
+    // which is why it needs no hardware division.
+    static int64_t EuclidMod(int64_t a, int64_t b) {
+        if (b == -1) return 0;
+        auto r = a % b;
+        if (r < 0) r = (int64_t)((uint64_t)r + (b < 0 ? 0u - (uint64_t)b : (uint64_t)b));
+        return r;
+    }
+
     // Folds a constant binary op at the width and signedness of out.type. An
     // operation whose result does not fit is left for the runtime (overflow
     // aborts in debug builds, §6.2); division by a constant zero is a
@@ -1493,8 +1506,7 @@ struct TypeCheck {
                 break;
             case T_MOD:
                 if (!b) Error(at, "constant division by zero");
-                if (a == INT64_MIN && b == -1) return;
-                res = a % b;
+                res = EuclidMod(a, b);
                 break;
             case T_BITAND: res = a & b; break;
             case T_BITOR:  res = a | b; break;

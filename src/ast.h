@@ -22,6 +22,7 @@ struct EnumInst;
 struct TypeCheck;
 struct Optimizer;
 struct Inliner;
+struct BCE;
 struct CodeGen;
 struct Dst;
 
@@ -271,6 +272,14 @@ struct Node {
     // VarDecl and statement removal itself.
     virtual Node *Cp1(Inliner &inl) const = 0;
     virtual Node *Opt(Optimizer &opt) = 0;
+    // The bounds-check elimination pass (bce.h): BceWalk analyzes this node
+    // in its program position and returns false when control provably does
+    // not continue past it; BceMark is the prescan that collects per-body
+    // facts before the analysis proper. Unlike the passes above, these two
+    // default to walking Children, so only the nodes that carry facts,
+    // kills, or bounds checks override them.
+    virtual bool BceWalk(BCE &bce);
+    virtual void BceMark(BCE &bce);
     // The codegen pass (codegen.h): CgX emits the node as a C value
     // expression, CgAny routes its value to a destination, CgStmt emits it in
     // statement position. Implementations live together at the end of
@@ -279,6 +288,9 @@ struct Node {
     virtual void CgAny(CodeGen &cg, const Dst &d) = 0;
     virtual void CgStmt(CodeGen &cg) = 0;
 };
+
+#define BCE_WALK bool BceWalk(BCE &bce) override;
+#define BCE_MARK void BceMark(BCE &bce) override;
 
 #define NODE(name) struct name : Node { \
     void Dump(string &s, int ind) const override; \
@@ -316,6 +328,7 @@ NODE(StrLit)
 NODE_END
 
 NODE(Ident)
+    BCE_MARK
     string_view name;
     // Filled by typecheck: exactly one of these.
     VarDef *vdef = nullptr;         // A variable.
@@ -343,18 +356,21 @@ NODE(StructLit)
 NODE_END
 
 NODE(Unary)
+    BCE_MARK
     TType op;                   // T_MINUS, T_NOT, T_BITNOT, T_BITAND (ref-of).
     Node *child;
     Unary(Line l, TType _op, Node *_child) : Node(l), op(_op), child(_child) {}
 NODE_END
 
 NODE(Binary)
+    BCE_WALK
     TType op;
     Node *left, *right;
     Binary(Line l, TType _op, Node *_l, Node *_r) : Node(l), op(_op), left(_l), right(_r) {}
 NODE_END
 
 NODE(Dot)
+    BCE_MARK
     Node *obj;
     string_view name;
     // Filled by typecheck: field access, builtin property (.len/.cap), or a
@@ -369,6 +385,8 @@ NODE_END
 struct FunVal;
 
 NODE(Call)
+    BCE_WALK
+    BCE_MARK
     Node *callee;               // Ident, or Dot for UFCS; resolution is later.
     vector<TypeExpr *> tyargs;  // Explicit <T> list, normally empty (inferred).
     vector<Node *> args;
@@ -386,12 +404,16 @@ NODE(Call)
 NODE_END
 
 NODE(Index)
+    BCE_WALK
+    BCE_MARK
     Node *obj, *idx;
     bool nobc = false;          // Bounds check proven redundant (bce.h); codegen omits it.
     Index(Line l, Node *_obj, Node *_idx) : Node(l), obj(_obj), idx(_idx) {}
 NODE_END
 
 NODE(SliceExpr)
+    BCE_WALK
+    BCE_MARK
     Node *obj;
     Node *lo = nullptr, *hi = nullptr;      // Either may be absent.
     bool lo_from_end = false, hi_from_end = false;  // ^k bounds.
@@ -427,12 +449,14 @@ struct Block : Node {
     Val Check(TypeCheck &tc, TypeExpr *expected) override;
     Node *Cp1(Inliner &inl) const override;
     Node *Opt(Optimizer &opt) override;
+    BCE_WALK
     string CgX(CodeGen &cg) override;
     void CgAny(CodeGen &cg, const Dst &d) override;
     void CgStmt(CodeGen &cg) override;
 };
 
 NODE(IfExpr)
+    BCE_WALK
     Node *cond;
     Block *thenb;
     Node *elseb;                // Block, IfExpr, or null (any expr after optimization).
@@ -441,28 +465,35 @@ NODE(IfExpr)
 NODE_END
 
 NODE(MatchExpr)
+    BCE_WALK
+    BCE_MARK
     Node *scrutinee;
     vector<MatchArm> arms;
     MatchExpr(Line l, Node *_scrutinee) : Node(l), scrutinee(_scrutinee) {}
 NODE_END
 
 NODE(EarlyBlock)                // "block { }": breakable early-out construct.
+    BCE_WALK
     Block *body;
     EarlyBlock(Line l, Block *_body) : Node(l), body(_body) {}
 NODE_END
 
 NODE(While)
+    BCE_WALK
     Node *cond;
     Block *body;
     While(Line l, Node *_cond, Block *_body) : Node(l), cond(_cond), body(_body) {}
 NODE_END
 
 NODE(LoopExpr)
+    BCE_WALK
     Block *body;
     LoopExpr(Line l, Block *_body) : Node(l), body(_body) {}
 NODE_END
 
 NODE(ForLoop)
+    BCE_WALK
+    BCE_MARK
     bool byref;                 // for &x in ...
     string_view var;
     string_view idxvar;         // Optional second binding; empty if absent.
@@ -477,6 +508,7 @@ NODE(ForLoop)
 NODE_END
 
 NODE(Guard)
+    BCE_WALK
     Node *cond;
     Block *elseb;               // Null for the bare "guard c;" shorthand.
     int implicitexit = 0;       // Bare form resolution (typecheck): 1 = break, 2 = return.
@@ -484,6 +516,7 @@ NODE(Guard)
 NODE_END
 
 NODE(Return)
+    BCE_WALK
     vector<Node *> vals;
     string_view from;           // "return ... from f"; empty if absent.
     SFunction *target = nullptr;  // Filled by typecheck (the fn this exits; `from` or own).
@@ -491,11 +524,13 @@ NODE(Return)
 NODE_END
 
 NODE(Break)
+    BCE_WALK
     Node *val;
     Break(Line l, Node *_val) : Node(l), val(_val) {}
 NODE_END
 
 NODE(Continue)
+    BCE_WALK
     Continue(Line l) : Node(l) {}
 NODE_END
 
@@ -512,6 +547,7 @@ struct FunVal : Node {
     Val Check(TypeCheck &tc, TypeExpr *expected) override;
     Node *Cp1(Inliner &inl) const override;
     Node *Opt(Optimizer &opt) override;
+    BCE_WALK
     string CgX(CodeGen &cg) override;
     void CgAny(CodeGen &cg, const Dst &d) override;
     void CgStmt(CodeGen &cg) override;
@@ -519,6 +555,8 @@ struct FunVal : Node {
 
 // let/var declarations, local and global.
 NODE(VarDecl)
+    BCE_WALK
+    BCE_MARK
     bool isvar;                 // var vs let.
     bool reusable = false;
     bool isglobal = false;
@@ -530,6 +568,8 @@ NODE(VarDecl)
 NODE_END
 
 NODE(Assign)
+    BCE_WALK
+    BCE_MARK
     TType op;                   // T_ASSIGN, T_PLUSEQ, ...
     Node *lval, *rhs;
     bool pointee = false;       // Typecheck: lval is a reference and this writes its pointee.
@@ -537,6 +577,8 @@ NODE(Assign)
 NODE_END
 
 NODE(IncDec)
+    BCE_WALK
+    BCE_MARK
     TType op;                   // T_INC / T_DEC.
     Node *lval;
     IncDec(Line l, TType _op, Node *_lval) : Node(l), op(_op), lval(_lval) {}
@@ -549,6 +591,7 @@ NODE_END
 // completion yields the body's tail value. Returns with other targets pass
 // through (they exit an enclosing InlineBlock or the real function).
 NODE(InlineBlock)
+    BCE_WALK
     SFunction *sf;
     FnSpec *spec;               // The specialization this body came from.
     Block *body;
