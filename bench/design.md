@@ -178,9 +178,26 @@ Familiar, widely written code, each chosen to hit specific axes above:
 
 ## The suite as built
 
-`bench/goose/` and `bench/cpp/` hold ten benchmarks against this design, from
-`sum` (the control) to `sexp` (the flagship). `bench/run_bench.ps1` builds and
-runs them at three sizes each, checks that every implementation of a benchmark
-prints the same checksum, and writes `bench/results.md`; the commentary that
-file ends with lives in `bench/notes.md`. Rust and clang rows are picked up
-automatically once those toolchains and `bench/rust/` are present.
+`bench/goose/`, `bench/cpp/` and `bench/rust/` hold ten benchmarks against this
+design, from `sum` (the control) to `sexp` (the flagship).
+`bench/run_bench.ps1` builds and runs them at three sizes each, checks that
+every implementation of a benchmark prints the same checksum, and writes
+`bench/results.md`; the commentary that file ends with lives in
+`bench/notes.md`.
+
+C++ is measured at two tiers, idiomatic and expert, because the language admits
+such a wide range of hackery that one row would misrepresent it. Rust is
+measured against a single target -- the way the language is meant to be used --
+because it points much more clearly at one answer and its community is firm
+about what that is. Where a benchmark genuinely has two idiomatic Rust shapes
+they are both listed, but the reason is always a semantic difference (owned
+versus borrowed strings) or a structural one (owning `Box` nodes versus the
+`Vec`-plus-indices arena the community recommends for pointer-heavy data), never
+just that one is faster. The prediction made above -- that the arena, not `Box`,
+is the real Rust comparison point -- held: it is 2.8x to 6x faster than `Box` on
+the three benchmarks that have both.
+
+That makes the Rust comparison as much a software-engineering one as a
+performance one. Where Rust ties Goose using `u32` indices while Goose uses
+typed, nullable references, the tie is worth reporting as a Goose win on the
+axis the benchmark cannot time.

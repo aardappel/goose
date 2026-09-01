@@ -1,3 +1,60 @@
+## Reading the Rust rows
+
+Rust gets one target here rather than the two tiers C++ gets, because the
+language points much more clearly at one way of doing things and its community
+is unusually firm about what that is. Where a benchmark genuinely has two
+idiomatic shapes, both are listed, and the reason is never "one of them is
+faster":
+
+* `strlist` has `Vec<String>` and `Vec<&str>`, which differ in *ownership*. Only
+  the first can outlive the text it came from, which is the semantics the Goose
+  row has.
+* `tree`, `interp` and `sexp` have an owning-pointer row (`Box`) and an arena row
+  (`Vec` plus `u32` indices). Both are safe and both are idiomatic; the arena is
+  what the community recommends for anything pointer-heavy, and `design.md`
+  predicted it would be the real comparison point rather than `Box`. It was, by
+  2.8x to 6x.
+* `graph` has three rows for the same reason the C++ side does: `Vec<Vec>`, CSR,
+  and the one-pass index-linked arena. CSR wins there in every language and is
+  index-based in every language, so `graph` is the one place where the
+  references-versus-indices question does not show up in the winning row.
+* `words` has `HashMap<&str, i32>` and a hand-rolled open-addressed table,
+  because std's default hasher is a security policy rather than a speed choice,
+  and the usual Rust answer to that -- a hasher crate -- is outside a std-only
+  suite.
+
+Everything else is a single row. The aggregate table compares Goose against
+whichever Rust row *won*, so those ratios are against the best safe Rust here,
+not the most flattering one.
+
+Build flags are `-O -C codegen-units=1`. The codegen-units setting is what makes
+the comparison fair rather than generous: every C++ row is one translation unit
+compiled whole, and the rustc default of 16 units would deny Rust the same
+cross-function view. Everything else is left where a shipped Rust binary leaves
+it -- bounds checks on, unwinding panics, no `target-cpu` beyond the x86-64
+baseline the C++ rows also build for. Goose and Rust are therefore both checked,
+with C++ as the unchecked baseline.
+
+### The layouts, since most of the memory column follows from them
+
+Measured with `size_of` and `sizeof`:
+
+| | Rust | C++ | Goose |
+|---|---:|---:|---:|
+| `tree` node | 12 arena / 24 `Box` | 12 arena / 24 `unique_ptr` | 12 |
+| `interp` node | 12 | 12, both `variant` and union | 5 leaf, 9 binary |
+| `sexp` node | 24 arena / 32 + heap | 24 arena / 64 + heap | variable, text inline |
+| `records` event | 32 + heap for `Say` | 48 + heap / 24 buffer | variable |
+| string header | `String` 24, `&str` 16 | `std::string` 32 | none: inline varint |
+
+The `records` row is where Rust beats C++ outright and still loses to Goose by
+4.1x. Rust's 32 bytes against MSVC's 48 comes from two things: `String` is three
+words where `std::string` is four, and the enum tag hides in the pointer's
+niche rather than needing its own word. But it is still a *fixed* enum, so every
+one of the 16M elements is sized for `Say` whether it is a `Say` or not, and the
+text is a second allocation on top. That is the thing no amount of Rust skill
+removes, and it is what `records_fixed.goose` is the control for.
+
 ## Reading the toolchain table
 
 The two backends are within 10% on most rows and neither dominates. The gaps
@@ -124,18 +181,23 @@ Three plausible-sounding ideas were measured and should **not** be done:
 
 ## Where Goose loses
 
-**Pointer-linked adjacency loses to CSR, in both languages.** On `graph` the
-one-pass linked build is 5-6x slower to traverse than two-pass
-count-then-fill: Goose linked 4,955 ms against Goose CSR 838, with the
-equivalent C++ arena-with-indices at 4,710 and C++ CSR at 849. The Goose CSR
-row exists to show this is a data-structure effect rather than a language one,
-and Goose writes CSR level with C++. What Goose buys is that the one-pass
-version is *possible* and pleasant to write while handing out real pointers; it
-does not make a linked list local.
+**Pointer-linked adjacency loses to CSR, in all three languages.** On `graph`
+the one-pass linked build is 5-6x slower to traverse than two-pass
+count-then-fill: Goose linked 4,729 ms against Goose CSR 798, C++
+arena-with-indices 4,462 against C++ CSR 835, Rust arena-with-indices 4,109
+against Rust CSR 877. The Goose CSR row exists to show this is a data-structure
+effect rather than a language one, and Goose writes CSR level with both. What
+Goose buys is that the one-pass version is *possible* and pleasant to write
+while handing out real pointers -- Rust has no safe spelling of it at all, only
+the index form -- but it does not make a linked list local.
 
-**Float kernels are a draw, not a win.** `particles` per component is 2% ahead
-of C++ under v145 and 4% behind under clang (866 vs 834 ms). The elementwise regression is fixed, so the remaining gap
-is small, but there is no Goose advantage here either -- as the design
+**Float kernels are a draw, not a win.** `particles` per component is 862-881 ms
+for Goose against 832-916 for C++ and 862 for Rust: everyone is inside everyone
+else's noise, on identical memory. Rust is nominally the fastest row in the
+benchmark, by 2% over Goose, which is the only place in the suite it leads.
+Elementwise notation is free in both languages that can express it (Goose 881
+against 917, Rust 862 against 872), so `impl Add for F3` costs a Rust programmer
+nothing but the boilerplate. There is no Goose advantage here -- as the design
 predicted for flat scalar work.
 
 ## Caveats on these numbers
@@ -153,7 +215,9 @@ predicted for flat scalar work.
   `graph` at `large` has been seen to move 20% between runs.
 * This CPU has a very large L3, so `small` and `medium` can sit entirely in
   cache. The `large` rows are the ones that stress the memory subsystem.
-* Rust is not represented yet.
+* Rust rows are a single rustc time, not one per backend. rustc is LLVM, so
+  the clang column is the one they are most directly comparable with; the
+  Goose-vs-Rust ratios are reported against both Goose builds anyway.
 
 ## What writing these taught us about the language
 
@@ -202,3 +266,79 @@ relative references inside a single root, variable-mode ADTs with inline
 variable-size payloads, case functions as the dispatch mechanism, returning
 references rooted at globals out of recursive functions, slices as struct
 fields, `return ... from` as a parser error path, and NRVO on returned locals.
+
+## What writing the Rust benchmarks taught us
+
+Findings from implementing the suite a third time, independent of how fast
+anything ran. The headline is that Rust is a much closer competitor than C++ on
+speed and a much better-designed language than C++ on most of these axes -- and
+that the places it still cannot follow Goose are structural, not effort.
+
+**One benchmark has no Rust spelling at all.** `push` keeps a pointer to every
+64th element of an array it is still appending to. In Goose that is
+`marks.push(items.push(...))` and the reference stays valid for the array's whole
+life. In Rust it does not compile: a `&Item` borrows `items` for as long as it is
+held, so the following `items.push` is rejected. No std container is both
+pointer-stable and O(1)-append -- `VecDeque` is a ring buffer and reallocates,
+`Vec<Box<Item>>` still borrows the outer `Vec`. The remaining options are
+indices, `Rc<RefCell<_>>`, a third-party arena crate, or `unsafe`. The row uses
+indices because that is what a Rust programmer writes, and it ties Goose on both
+time and memory. The whole cost of the tie is in the source, not the numbers.
+
+**Indices everywhere Goose has references.** Same story in `tree`, `interp`,
+`graph` and `sexp`: the fast, safe, recommended Rust shape is a `Vec` arena with
+`u32` links, exactly as `design.md` predicted. Worth being precise about what
+that costs, because it is not safety -- an out-of-range index panics like any
+other Rust index:
+
+* the type says `u32`, not what it points at, so nothing connects a link to the
+  pool it belongs to and nothing stops one pool's index being used on another;
+* `Option<&T>` becomes a magic `0` sentinel, and the sentinel has to occupy a
+  real slot (every arena row here wastes element 0);
+* an index into a pool that is later reused is stale in a way the compiler
+  cannot see, where a reference would have been rejected.
+
+Goose reaches the same 12-byte layout with `TNode&<u32>?`: checked, nullable,
+and typed to the thing it points at. So on these five benchmarks Goose is not
+just level with Rust, it is level with the shape Rust falls back to when the
+borrow checker says no, while keeping the one the borrow checker would have
+liked.
+
+**Rust enums are the best fixed-tag ADT of the three.** A byte discriminant, a
+jump table from `match`, no vtable pointer, and niche optimisation that hides
+the tag inside a payload pointer. That is enough to beat `std::variant` on both
+time and memory in `records` and `interp`. On `interp` the time gap against Rust
+is the same as against hand-built C++ (1.31x and 1.30x), but the memory gap is
+smaller -- 2.2x rather than 2.4x -- because the Rust arena node is the most
+compact of the non-Goose rows. What it cannot do is stop being fixed: every
+element is sized for the largest variant. Variable-mode enums are the one Goose feature in this
+suite with no Rust analogue at any level of effort.
+
+**Rust's idioms are already the fast ones, twice.** `collect()` over a
+`TrustedLen` iterator preallocates exactly, so the "did you remember to
+`reserve`" gap that `sum` and `push` measure against C++ simply does not exist
+against Rust. And borrowing is the default, so `Vec<&str>` and
+`HashMap<&str, _>` are the first thing written -- where the idiomatic C++ row
+copies every key into a `std::string` and has to be talked out of it. Both are
+real language-design wins over C++ and both shrink the Goose margin.
+
+**Where Rust pays anyway:**
+
+* `Box::new(T { .. })` builds the value in a stack temporary and moves it to the
+  heap. There is no guaranteed construct-in-place, which is spec 4.3/7.3.
+* Teardown is real and it is the same cache-hostile pointer chase that building
+  was. `interp`'s `Box` row is the slowest in that benchmark at 448 ms --
+  *behind C++ virtual dispatch* -- because an allocation per node plus a
+  recursive drop costs more than a vtable does.
+* std's `HashMap` hashes with SipHash-1-3, keyed and DoS-resistant by policy.
+  That is the right default for a general map and the wrong one for counting
+  words in a local buffer: it costs about 39% here. The community answer is a
+  hasher crate, which a std-only suite cannot use, hence the hand-rolled row.
+* The borrow that makes `sexp`'s arena row fast works only because `text` is
+  complete before parsing starts and never grows again. A parser that interned
+  or rewrote text while building nodes -- which real ones do -- would be back to
+  owned `String`s or to offsets.
+
+**What Rust does that Goose should be measured against again later:** `Vec<Vec>`
+is 1.6x faster than the `vector<vector>` it mirrors, so the idiomatic-nested-
+container row is much less of a straw man in Rust than in C++.

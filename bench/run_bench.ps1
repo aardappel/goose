@@ -47,106 +47,128 @@ $rustdir  = "$PSScriptRoot\rust"
 $stackReserve = "8589934592ull"
 
 # --- manifest ----------------------------------------------------------------
-# sizes:  the value substituted for the `// BENCH_N` line (Goose) and
-#         /DBENCH_N (C++/Rust), in small, medium, large order.
+# sizes:  the value substituted for the `// BENCH_N` line, in small, medium,
+#         large order. Goose and Rust take it by rewriting that line in a copy
+#         of the source; C++ takes it as /DBENCH_N.
 # param:  what that value is called in the table header; "N" if omitted.
 # goose:  implementations built from bench/goose/<file>.
 # cpp:    implementations built from bench/cpp/<file> with /DVARIANT=<variant>.
+# rust:   implementations built from bench/rust/<file>, one file per row.
+#         Rust is built by rustc only, so its rows carry a single time rather
+#         than one per C/C++ toolchain.
 
 $benchmarks = @(
     @{ name = "sum"
-       summary = 'Goose edges the exactly-reserved vector by 10% at large and beats the unreserved one by 1.6x, on identical memory. This is the control -- flat scalar data, nothing in the layout favours anyone -- so the only win is not having to remember to reserve.'
+       summary = 'A dead heat between Goose, Rust and the exactly-reserved vector (296 / 296 / 318 ms) on memory identical to within 0.1%, which is what the control should show: flat scalar data, same layout everywhere, nothing to win. The only row that loses is the unreserved vector at 1.5x, and that gap does not exist against Rust, because collect() over a TrustedLen iterator sizes the allocation exactly -- the idiomatic Rust spelling gets for free what C++ only gets from a remembered reserve.'
        what = "Control: build a flat i32 array, then scan it eight times."
        sizes = @(1000000, 16000000, 128000000)
-       goose = @(@{ label = "goose"; file = "sum.goose" })
+       goose = @(@{ label = "goose grow-only array"; file = "sum.goose" })
        cpp = @(@{ label = "cpp vector"; file = "sum.cpp"; variant = 0; tier = "idiomatic" },
-               @{ label = "cpp vector+reserve"; file = "sum.cpp"; variant = 1; tier = "expert" }) },
+               @{ label = "cpp vector+reserve"; file = "sum.cpp"; variant = 1; tier = "expert" })
+       rust = @(@{ label = "rust Vec, collect"; file = "sum.rs" }) },
 
     @{ name = "push"
-       summary = 'Goose is 3.0x faster than an unreserved vector and 11% faster than an exactly-reserved one, on half the memory of the former and the same as the latter. The code difference is the point: Goose hands out real pointers that stay valid across all later growth, while both vector rows have to store indices instead, and deque -- the one C++ container that could hand out stable pointers -- is 9.5x slower and 2.5x larger.'
+       summary = 'A three-way tie on time and memory between Goose, the exactly-reserved C++ vector and Rust (161 / 179 / 162 ms, 500 MB each) -- and the most interesting row in the suite because of what the tie cost. Goose keeps real Item& pointers that stay valid across every later push. Safe Rust cannot: a &Item borrows the vector, so the next push does not compile, and no std container is both pointer-stable and O(1)-append. Its marks are usize indices because that is the only shape the language admits, not because it is faster. C++ has the same problem, and its one pointer-stable answer, deque, is 9.8x slower and 2.5x larger.'
        what = "Push N records while keeping pointers to every 64th one."
        sizes = @(1000000, 16000000, 64000000)
-       goose = @(@{ label = "goose"; file = "push.goose" })
+       goose = @(@{ label = "goose array, typed references"; file = "push.goose" })
        cpp = @(@{ label = "cpp vector, indices"; file = "push.cpp"; variant = 0; tier = "idiomatic" },
                @{ label = "cpp vector+reserve, indices"; file = "push.cpp"; variant = 1; tier = "expert" },
-               @{ label = "cpp deque, pointers"; file = "push.cpp"; variant = 2; tier = "idiomatic" }) },
+               @{ label = "cpp deque, pointers"; file = "push.cpp"; variant = 2; tier = "idiomatic" })
+       rust = @(@{ label = "rust Vec+reserve, indices"; file = "push.rs" }) },
 
     @{ name = "strlist"
-       summary = 'Goose is 2.8x faster than vector<string> on a third of the memory, and 6% ahead of hand-rolled flat offsets. It is also the only benchmark where Goose uses more memory than the best C++ row (217 vs 192 MB), and that is a fair trade: the Goose list is one contiguous block that owns its bytes, where both fast C++ rows are views into a text buffer they cannot outlive.'
+       summary = 'Against the two rows that own their bytes the way Goose does, Goose is 2.9x faster than vector<string> and 2.7x faster than Rust Vec<String>, on 3.2x and 2.2x less memory. Against the borrowing rows it is 8-9% ahead of Rust Vec<&str> and 6-19% ahead of hand-rolled C++ offsets -- but those are views into a text buffer they cannot outlive, which the Goose list is not. Borrowing is the Rust default rather than an optimisation someone has to be talked into, so Vec<&str> is what a Rust programmer writes first; ownership is the question worth asking of it.'
        what = "Split a text into N words, keep them as a list, scan it four times."
        sizes = @(200000, 2000000, 8000000)
-       goose = @(@{ label = "goose"; file = "strlist.goose" })
+       goose = @(@{ label = "goose inline strings, owned"; file = "strlist.goose" })
        cpp = @(@{ label = "cpp vector<string>"; file = "strlist.cpp"; variant = 0; tier = "idiomatic" },
                @{ label = "cpp vector<string_view>"; file = "strlist.cpp"; variant = 1; tier = "expert" },
-               @{ label = "cpp flat offsets"; file = "strlist.cpp"; variant = 2; tier = "expert" }) },
+               @{ label = "cpp flat offsets"; file = "strlist.cpp"; variant = 2; tier = "expert" })
+       rust = @(@{ label = "rust Vec<String>"; file = "strlist_owned.rs" },
+                @{ label = "rust Vec<&str>"; file = "strlist_borrowed.rs" }) },
 
     @{ name = "records"
-       summary = 'The variable-mode enum is 4.1x faster than the virtual/unique_ptr shape and 1.4x faster than a std::variant with a fixed buffer, on 4.9x and 3.8x less memory. The Goose fixed-enum row is the control for that: same work, same language, 2.2x the memory, because every element pads out to the largest variant the way C++ and Rust must.'
+       summary = 'The largest margin over Rust in the suite: 2.2x faster on 4.1x less memory, and 1.4x faster than the best C++ row on 3.8x less. Rust has the best of the fixed-tag shapes here -- niche optimisation hides the tag inside the String pointer, so its enum beats std::variant with a string on both time and memory -- but it is still a fixed enum, so every element pays for the largest variant and the Say text is a second allocation on top. The Goose fixed-enum row is the control for exactly that: same work, same language, 2.2x the memory.'
        what = "Build a log of N variant records, aggregate it four times."
        sizes = @(500000, 4000000, 16000000)
        goose = @(@{ label = "goose variable enum"; file = "records_var.goose" },
                  @{ label = "goose fixed enum"; file = "records_fixed.goose" })
        cpp = @(@{ label = "cpp virtual + unique_ptr"; file = "records.cpp"; variant = 0; tier = "idiomatic" },
                @{ label = "cpp variant + string"; file = "records.cpp"; variant = 1; tier = "idiomatic" },
-               @{ label = "cpp variant + buffer"; file = "records.cpp"; variant = 2; tier = "expert" }) },
+               @{ label = "cpp variant + buffer"; file = "records.cpp"; variant = 2; tier = "expert" })
+       rust = @(@{ label = "rust enum + String"; file = "records.rs" }) },
 
     @{ name = "tree"
-       summary = 'Goose is 4.5x faster than unique_ptr nodes on 2.7x less memory, and 8-14% faster than a hand-built arena while using the same memory as it. Goose links nodes with typed 4-byte relative references and never frees; the arena row reaches the same place with raw uint32 indices, and the two owning-pointer rows pay a malloc per node on the way in and a recursive destructor walk on the way out.'
+       summary = 'Goose is 4.3-4.5x faster than owning-pointer nodes in both languages (unique_ptr 2,907 ms, Rust Box 2,844) on 2.7x less memory, and 3-16% faster than the two arena rows while matching their memory to within 0.2%. That the three arena rows land together is the finding: to get there both Rust and C++ give up pointers for u32 indices into a Vec, because neither will let a node hold a reference into the container that owns it. Goose links the same layout with typed, nullable, 4-byte relative references, and never frees.'
        what = "Build a complete binary tree of the given depth, sum it eight times."
        param = "depth"
        sizes = @(16, 20, 24)
-       goose = @(@{ label = "goose pool + relative refs"; file = "tree.goose" })
+       goose = @(@{ label = "goose pool + typed relative refs"; file = "tree.goose" })
        cpp = @(@{ label = "cpp unique_ptr"; file = "tree.cpp"; variant = 0; tier = "idiomatic" },
                @{ label = "cpp new/delete"; file = "tree.cpp"; variant = 1; tier = "idiomatic" },
-               @{ label = "cpp arena + indices"; file = "tree.cpp"; variant = 2; tier = "expert" }) },
+               @{ label = "cpp arena + indices"; file = "tree.cpp"; variant = 2; tier = "expert" })
+       rust = @(@{ label = "rust Box nodes"; file = "tree_box.rs" },
+                @{ label = "rust arena + indices"; file = "tree_arena.rs" }) },
 
     @{ name = "interp"
-       summary = 'The largest win in the suite: 6.1x over virtual dispatch with unique_ptr nodes (7.1x under clang) and 1.25x over a tagged union in an arena, on 4.1x and 2.4x less memory. A variable-mode leaf costs 5 bytes where the union pays max-payload for every node, and case functions dispatch through a jump table with no vtable pointer to store.'
+       summary = 'Goose is 1.3x faster than the best Rust row on 2.2x less memory, and 1.3x faster than a C++ tagged union on 2.4x less. Rust dispatches well -- a byte tag, a jump table, no vtable pointer -- and its arena row is the most compact of the non-Goose rows, so the remaining gap is representation: a variable-mode leaf costs 5 bytes and a binary node 9, where every fixed enum pays max-payload for both. The Rust Box row is the slowest in the benchmark at 448 ms, behind even C++ virtual dispatch, because an allocation per node plus a recursive drop costs more than a vtable does.'
        what = "Build an expression tree of the given depth, evaluate it eight times."
        param = "depth"
        sizes = @(16, 20, 24)
-       goose = @(@{ label = "goose case functions"; file = "interp.goose" })
+       goose = @(@{ label = "goose case functions + relative refs"; file = "interp.goose" })
        cpp = @(@{ label = "cpp virtual + unique_ptr"; file = "interp.cpp"; variant = 0; tier = "idiomatic" },
                @{ label = "cpp variant + arena"; file = "interp.cpp"; variant = 1; tier = "expert" },
-               @{ label = "cpp tagged union + arena"; file = "interp.cpp"; variant = 2; tier = "expert" }) },
+               @{ label = "cpp tagged union + arena"; file = "interp.cpp"; variant = 2; tier = "expert" })
+       rust = @(@{ label = "rust enum + Box"; file = "interp_box.rs" },
+                @{ label = "rust enum + arena indices"; file = "interp_arena.rs" }) },
 
     @{ name = "graph"
-       summary = 'A wash where it counts: Goose CSR and C++ CSR are level (842 vs 854 ms, same memory). The one-pass linked build is 5.8x slower than CSR in Goose and 5.4x slower in C++, so that is a data-structure effect and not a language one. What Goose buys is that the one-pass version is writable at all with real pointers into a growing pool; the idiomatic C++ answer, vector<vector>, is 4.2x slower than CSR and needs an allocation per vertex.'
+       summary = 'A wash where it counts: Goose CSR, C++ CSR and Rust CSR are level (798-877 ms on the same memory), which is the honest result, because every language wants CSR here. The one-pass linked build is 5-6x slower than CSR in all three, so that is a data-structure effect and not a language one. What Goose buys is that its one-pass version is written with real Edge& references into a growing pool; the Rust equivalent must chain u32 indices, and there is no safe Rust spelling of the pointer version at any level of effort. Rust Vec<Vec> is 1.6x faster than the C++ vector<vector> it mirrors.'
        what = "Build adjacency for V vertices and 8V edges in one pass, then BFS from four sources."
        param = "V"
        sizes = @(100000, 500000, 2000000)
-       goose = @(@{ label = "goose pool + relative refs"; file = "graph.goose" },
+       goose = @(@{ label = "goose one-pass, typed relative refs"; file = "graph.goose" },
                  @{ label = "goose CSR two-pass"; file = "graph_csr.goose" })
        cpp = @(@{ label = "cpp vector<vector>"; file = "graph.cpp"; variant = 0; tier = "idiomatic" },
                @{ label = "cpp CSR two-pass"; file = "graph.cpp"; variant = 1; tier = "expert" },
-               @{ label = "cpp arena + indices"; file = "graph.cpp"; variant = 2; tier = "expert" }) },
+               @{ label = "cpp arena + indices"; file = "graph.cpp"; variant = 2; tier = "expert" })
+       rust = @(@{ label = "rust Vec<Vec>"; file = "graph_nested.rs" },
+                @{ label = "rust CSR two-pass"; file = "graph_csr.rs" },
+                @{ label = "rust arena + indices"; file = "graph_arena.rs" }) },
 
     @{ name = "words"
-       summary = 'Goose is 1.7x faster than unordered_map and 15-20% ahead of a hand-rolled open-addressed table, on 6% less memory than the maps and 19% less than the hand-rolled one. The map keys are slices pointing straight into the text with no copy and no allocation; the idiomatic C++ row copies every distinct key into a std::string inside a node.'
+       summary = 'Goose is level with a hand-rolled open-addressed table in Rust (2,126-1,941 ms against 2,140) on 21% less memory than it, and 1.4-1.5x faster than HashMap<&str> on 4% less. Both languages get borrowed keys from their idiomatic map -- that is the Rust default, and the thing a C++ programmer has to be talked into -- so the HashMap gap is the hash function: std SipHash-1-3 is keyed and DoS-resistant by policy, which costs about 39% here, and which the Rust community answers with a third-party hasher crate that this std-only suite does not use.'
        what = "Count word frequencies over a text of N words."
        sizes = @(500000, 4000000, 16000000)
        goose = @(@{ label = "goose slices + open addressing"; file = "words.goose" })
        cpp = @(@{ label = "cpp unordered_map<string>"; file = "words.cpp"; variant = 0; tier = "idiomatic" },
                @{ label = "cpp unordered_map<string_view>"; file = "words.cpp"; variant = 1; tier = "idiomatic" },
-               @{ label = "cpp open addressing"; file = "words.cpp"; variant = 2; tier = "expert" }) },
+               @{ label = "cpp open addressing"; file = "words.cpp"; variant = 2; tier = "expert" })
+       rust = @(@{ label = "rust HashMap<&str>"; file = "words_hashmap.rs" },
+                @{ label = "rust open addressing"; file = "words_open.rs" }) },
 
     @{ name = "particles"
-       summary = 'A draw, and the only benchmark where C++ is ever ahead: Goose is 3% up under v145 and 4% down under clang against the fastest C++ row. Elementwise struct math now costs nothing over writing the components out (883 vs 885 ms), so the idiomatic notation is free. The struct-of-arrays row is slower than array-of-structs in both toolchains -- six streams instead of one -- though clang narrows it by 1.6x over v145.'
+       summary = 'A draw, and the one benchmark where Goose is never ahead: 862 ms for Rust against 862-881 for Goose and 832-916 for C++, all within noise on identical memory. Elementwise notation is free in both languages that can express it -- Goose 881 against 917, Rust 862 against 872 -- so impl Add for F3 costs a Rust programmer nothing but the boilerplate, and Goose costs nothing at all. The struct-of-arrays C++ row is slower than array-of-structs under both toolchains.'
        what = "Integrate N particles for 200 steps of f32 vector math."
        sizes = @(100000, 1000000, 4000000)
        goose = @(@{ label = "goose AoS, elementwise"; file = "particles.goose" },
                  @{ label = "goose AoS, per component"; file = "particles_scalar.goose" })
        cpp = @(@{ label = "cpp AoS, per component"; file = "particles.cpp"; variant = 0; tier = "expert" },
                @{ label = "cpp AoS, elementwise"; file = "particles.cpp"; variant = 2; tier = "idiomatic" },
-               @{ label = "cpp SoA"; file = "particles.cpp"; variant = 1; tier = "expert" }) },
+               @{ label = "cpp SoA"; file = "particles.cpp"; variant = 1; tier = "expert" })
+       rust = @(@{ label = "rust AoS, elementwise"; file = "particles.rs" },
+                @{ label = "rust AoS, per component"; file = "particles_scalar.rs" }) },
 
     @{ name = "sexp"
-       summary = 'The flagship: 3.4x faster than unique_ptr nodes with std::string symbols on 3.9x less memory, and 11% faster than an arena with string_view keys on half its memory. Nodes are exactly as big as their variant needs, symbol text sits inline behind a varint length, and the tree is never freed because there is nothing to free.'
+       summary = 'The flagship, and the closest Rust gets on time: 1,569 ms against 1,413-1,530, on 1.9x the memory. Both fast rows are arenas whose symbols borrow the source text; Goose stores symbol bytes inline behind a varint length in nodes exactly as big as their variant needs, and never frees. The idiomatic owning shapes are 2.8x slower in Rust and 3.3-3.5x in C++. The Rust borrow works here only because the text is complete before parsing starts -- a parser that interned or rewrote text while building nodes would be back to owned Strings or offsets.'
        what = "Generate N s-expression forms, parse them into a tree, walk it four times."
        sizes = @(20000, 100000, 300000)
-       goose = @(@{ label = "goose pool + varint text"; file = "sexp.goose" })
+       goose = @(@{ label = "goose pool + refs, inline text"; file = "sexp.goose" })
        cpp = @(@{ label = "cpp unique_ptr + string"; file = "sexp.cpp"; variant = 0; tier = "idiomatic" },
-               @{ label = "cpp arena + string_view"; file = "sexp.cpp"; variant = 1; tier = "expert" }) }
+               @{ label = "cpp arena + string_view"; file = "sexp.cpp"; variant = 1; tier = "expert" })
+       rust = @(@{ label = "rust enum + Box + String"; file = "sexp_box.rs" },
+                @{ label = "rust arena + &str"; file = "sexp_arena.rs" }) }
 )
 
 # --- toolchains --------------------------------------------------------------
@@ -183,11 +205,20 @@ if (-not $clangVersion) { $Toolchains = @($Toolchains | Where-Object { $_ -ne "c
 $activeTc = @($tcdefs.Keys | Where-Object { $Toolchains -contains $_ })
 if (-not $activeTc) { throw "no usable toolchain selected" }
 
+# rustup installs into %USERPROFILE%\.cargo\bin and puts it on the PATH of
+# shells started afterwards, which is not necessarily this one.
 $rustc = (Get-Command rustc.exe -ErrorAction SilentlyContinue)
-$haveRust = ($null -ne $rustc) -and (Test-Path $rustdir)
+$rustcPath = if ($rustc) { $rustc.Source } else { "$env:USERPROFILE\.cargo\bin\rustc.exe" }
+$haveRust = (Test-Path $rustcPath) -and (Test-Path $rustdir)
+$rustVersion = if ($haveRust) { (& $rustcPath --version) } else { $null }
+# Rust is not built by the C/C++ toolchains, so its measurements are filed
+# under a toolchain of their own and its rows carry one time, not one per
+# backend.
+$rustTc = "rustc"
 
 New-Item -ItemType Directory -Force $gendir | Out-Null
 Copy-Item "$goosedir\rng.goose" $gendir -Force      # imports resolve next to the root file
+if ($haveRust) { Copy-Item "$rustdir\bench.rs" $gendir -Force }   # `mod bench;` resolves next to the root file
 
 # --- build and run helpers ---------------------------------------------------
 
@@ -196,6 +227,20 @@ function Write-Sized-Goose([string]$src, [string]$dst, [long]$n) {
     $hit = $false
     $outl = foreach ($l in $lines) {
         if (-not $hit -and $l -match '^(\s*let\s+\w+\s*=\s*)(\d+)(\s*;.*//\s*BENCH_N.*)$') {
+            $hit = $true
+            "$($matches[1])$n$($matches[3])"
+        } else { $l }
+    }
+    if (-not $hit) { throw "no '// BENCH_N' line in $src" }
+    [IO.File]::WriteAllLines($dst, $outl, (New-Object Text.UTF8Encoding($false)))
+}
+
+# The same trick for Rust, which has no preprocessor to take a -D through.
+function Write-Sized-Rust([string]$src, [string]$dst, [long]$n) {
+    $lines = Get-Content $src
+    $hit = $false
+    $outl = foreach ($l in $lines) {
+        if (-not $hit -and $l -match '^(\s*const\s+\w+\s*:\s*\w+\s*=\s*)(\d+)(\s*;.*//\s*BENCH_N.*)$') {
             $hit = $true
             "$($matches[1])$n$($matches[3])"
         } else { $l }
@@ -249,8 +294,12 @@ function Invoke-Timed([string]$exe) {
     $peak = [MemProbe]::Peak($h)
     $code = $p.ExitCode
     $p.Dispose()
-    return @{ ms = $sw.Elapsed.TotalMilliseconds; peak = $peak; out = $stdout.Trim()
-              err = $stderr.Trim(); code = $code }
+    # Line endings are normalised before the checksums are compared: C stdio
+    # writes CRLF on Windows and Rust's println! writes LF, which would make
+    # identical numbers look like a mismatch.
+    return @{ ms = $sw.Elapsed.TotalMilliseconds; peak = $peak
+              out = ($stdout -replace "`r`n", "`n").Trim()
+              err = ($stderr -replace "`r`n", "`n").Trim(); code = $code }
 }
 
 function Measure-Exe([string]$exe, [int]$reps) {
@@ -310,6 +359,21 @@ function Build-Cpp([string]$file, [int]$variant, [long]$n, [string]$tag, [string
     & $tcdefs[$tc].cc /nologo /O2 /EHsc /std:c++20 "/DBENCH_N=$n" "/DVARIANT=$variant" "$cppdir\$file" `
         "/Fe:$exe" "/Fo:$gendir\$tag.obj" > "$gendir\$tag.cc.log" 2>&1
     if ($LASTEXITCODE -ne 0) { return @{ ok = $false; note = "$tc failed, see $tag.cc.log" } }
+    return @{ ok = $true; exe = $exe }
+}
+
+# `-C codegen-units=1` is what makes this comparable to the C++ rows: each of
+# those is one translation unit compiled whole, and the rustc default of 16
+# codegen units would deny Rust the same cross-function view. Everything else
+# is left at the defaults a Rust program actually ships with -- bounds checks
+# on, unwinding panics, no target-cpu beyond the x86-64 baseline the C++ rows
+# also build for.
+function Build-Rust([string]$file, [long]$n, [string]$tag) {
+    $src = "$gendir\$tag.rs"
+    Write-Sized-Rust "$rustdir\$file" $src $n
+    $exe = "$gendir\$tag.exe"
+    & $rustcPath -O -C codegen-units=1 -o $exe $src > "$gendir\$tag.rs.log" 2>&1
+    if ($LASTEXITCODE -ne 0) { return @{ ok = $false; note = "rustc failed, see $tag.rs.log" } }
     return @{ ok = $true; exe = $exe }
 }
 
@@ -374,16 +438,24 @@ foreach ($b in $(if ($ReportOnly) { @() } else { $selected })) {
         $impls = @()
         foreach ($g in $b.goose) { $impls += @{ kind = "goose"; label = $g.label; file = $g.file } }
         foreach ($c in $b.cpp)   { $impls += @{ kind = "cpp"; label = $c.label; file = $c.file; variant = $c.variant } }
+        if ($haveRust -and $b.Contains("rust")) {
+            foreach ($u in $b.rust) { $impls += @{ kind = "rust"; label = $u.label; file = $u.file } }
+        }
         foreach ($im in $impls) {
             $slug = ($im.label -replace '[^A-Za-z0-9]+', '_').Trim('_')
             if (-not $results[$b.name].Contains($im.label)) { $results[$b.name][$im.label] = @{} }
-            foreach ($tc in $activeTc) {
+            # Rust has one backend, so its rows are built and timed once rather
+            # than once per C/C++ toolchain.
+            $tcs = if ($im.kind -eq "rust") { @($rustTc) } else { $activeTc }
+            foreach ($tc in $tcs) {
                 $tag = "$($b.name)_${sname}_${slug}_$tc"
                 if (-not $results[$b.name][$im.label].Contains($tc)) { $results[$b.name][$im.label][$tc] = @{} }
                 if ($SkipBuild) {
                     $build = @{ ok = (Test-Path "$gendir\$tag.exe"); exe = "$gendir\$tag.exe"; note = "not built" }
                 } elseif ($im.kind -eq "goose") {
                     $build = Build-Goose $im.file $n $tag $tc
+                } elseif ($im.kind -eq "rust") {
+                    $build = Build-Rust $im.file $n $tag
                 } else {
                     $build = Build-Cpp $im.file $im.variant $n $tag $tc
                 }
@@ -471,8 +543,9 @@ function W($s) { [void]$md.AppendLine($s) }
 W "# Goose benchmark results"
 W ""
 W "Generated by ``bench/run_bench.ps1`` on $(Get-Date -Format 'yyyy-MM-dd HH:mm'). Do not edit by hand."
-W "The benchmarks themselves are ``bench/goose/*.goose`` and ``bench/cpp/*.cpp``; what they are"
-W "trying to find out is written down in ``bench/design.md``."
+W "The benchmarks themselves are ``bench/goose/*.goose``, ``bench/cpp/*.cpp`` and"
+W "``bench/rust/*.rs``; what they are trying to find out is written down in"
+W "``bench/design.md``."
 W ""
 W "## How to read this"
 W ""
@@ -482,10 +555,12 @@ W "  of what that row means."
 W "* One table per benchmark. Rows are implementations, the three time columns are the"
 W "  data sizes -- the small one is meant to fit in cache, the large one is meant not"
 W "  to -- and the last column is peak memory at the large size."
-W "* Every time cell is ``v145 / clang``: the same source built by MSVC and by the"
-W "  clang-cl that ships in the same Visual Studio, so a gap between the two numbers is"
-W "  the backend and nothing else. Goose is compiled to C once per size and both"
-W "  toolchains build that same C."
+W "* Every Goose and C++ time cell is ``v145 / clang``: the same source built by MSVC"
+W "  and by the clang-cl that ships in the same Visual Studio, so a gap between the two"
+W "  numbers is the backend and nothing else. Goose is compiled to C once per size and"
+W "  both toolchains build that same C. Rust rows carry a single time, because rustc is"
+W "  the only Rust backend here; it is LLVM, so it is the clang column they are most"
+W "  directly comparable with."
 W "* Times are the best of $Reps whole-process wall clocks, after two discarded warm-up"
 W "  runs. Memory is the peak working set, the larger of the two toolchains (they"
 W "  rarely differ)."
@@ -506,7 +581,8 @@ W "| RAM | $ram |"
 W "| OS | $([Environment]::OSVersion.VersionString) |"
 foreach ($tc in $activeTc) { W "| $tc | $($tcdefs[$tc].desc), ``/O2`` (C++20 for the C++ rows) |" }
 W "| Goose | ``goose -O2`` to C, then each toolchain above on that C |"
-W "| Rust | $(if ($haveRust) { (& rustc --version) } else { "not installed yet -- rows pending" }) |"
+$rustDesc = if ($haveRust) { "$rustVersion, ``-O -C codegen-units=1``" } else { 'not installed -- rows pending' }
+W "| Rust | $rustDesc |"
 W ""
 if ($baseline) {
     W "Startup floor (an empty program, best of 5): Goose $("{0:N1}" -f $baseline.goose.ms) ms / $("{0:N1}" -f ($baseline.goose.peak / 1MB)) MB, C++ $("{0:N1}" -f $baseline.cpp.ms) ms / $("{0:N1}" -f ($baseline.cpp.peak / 1MB)) MB."
@@ -532,10 +608,13 @@ function Best-Time($bench, $labels, $tc, $size) {
     }
     return $best
 }
+# Over whichever toolchains actually measured this label, so the Rust rows --
+# filed under `rustc` alone -- are picked up the same way as the others.
 function Best-Mem($bench, $labels, $size) {
     $best = $null
     foreach ($l in $labels) {
-        foreach ($tc in $activeTc) {
+        if (-not $results[$bench].Contains($l)) { continue }
+        foreach ($tc in $results[$bench][$l].Keys) {
             $m = Get-M $bench $l $tc $size
             if ($m -and $m.ok -and ($null -eq $best -or $m.peak -lt $best)) { $best = $m.peak }
         }
@@ -581,49 +660,79 @@ if ($activeSizes -contains "large") {
                 $row["$tier-mem"] = $cm / $gm
             }
         }
+        # Rust is one column pair rather than two tiers: the comparison point is
+        # the fastest (and separately the smallest) safe Rust row, whichever
+        # shape that turned out to be, because "the way Rust is meant to be
+        # used" is a single target and picking the loser of two Rust rows would
+        # be flattering Goose for nothing.
+        $ul = @($(if ($b.Contains("rust")) { $b.rust | ForEach-Object { $_.label } } else { @() }) |
+                Where-Object { $results[$b.name].Contains($_) })
+        if ($ul.Count) {
+            $u = Best-Time $b.name $ul $rustTc "large"
+            foreach ($tc in $activeTc) {
+                $g = Best-Time $b.name $gl $tc "large"
+                if ($g -and $u) {
+                    if (-not $ratios.ContainsKey("rust")) { $ratios["rust"] = @{} }
+                    if (-not $ratios["rust"].ContainsKey($tc)) { $ratios["rust"][$tc] = @() }
+                    $ratios["rust"][$tc] += ($u / $g)
+                    $row["rust-$tc"] = $u / $g
+                }
+            }
+            $gm = Best-Mem $b.name $gl "large"
+            $um = Best-Mem $b.name $ul "large"
+            if ($gm -and $um) {
+                if (-not $memRatios.ContainsKey("rust")) { $memRatios["rust"] = @() }
+                $memRatios["rust"] += ($um / $gm)
+                $row["rust-mem"] = $um / $gm
+            }
+        }
         $perBench += $row
     }
 
+    $tiers = @("idiomatic", "expert") + $(if ($ratios.ContainsKey("rust")) { @("rust") } else { @() })
     W "## Across all benchmarks"
     W ""
-    W "How many times faster (or smaller) Goose is than the best C++ row of each"
-    W "tier, at the ``large`` size. *Idiomatic* is what a C++ programmer writes first"
+    W "How many times faster (or smaller) Goose is than the best row of each comparison"
+    W "at the ``large`` size. *Idiomatic* is what a C++ programmer writes first"
     W "(``unique_ptr``, ``vector<string>``, ``unordered_map``, ``std::variant``);"
     W "*expert* is the hand-built version (exactly-reserved arena with indices,"
-    W "``string_view``, flat offsets, open addressing, CSR). Above 1.00 means Goose"
+    W "``string_view``, flat offsets, open addressing, CSR); *rust* is the best safe"
+    W "Rust row for that benchmark, whichever shape won. Above 1.00 means Goose"
     W "wins. The suite figure is the geometric mean over the $($perBench.Count) benchmarks."
+    W ""
+    W "The Rust number is the same in the v145 and clang columns -- there is only one"
+    W "rustc -- so those two columns differ only in which Goose build they are against."
     W ""
     $hdr = "| benchmark |"
     $sep = "|---|"
-    foreach ($tier in "idiomatic", "expert") {
+    foreach ($tier in $tiers) {
         foreach ($tc in $activeTc) { $hdr += " vs $tier ($tc) |"; $sep += "---:|" }
     }
-    $hdr += " memory vs idiomatic | memory vs expert |"
-    $sep += "---:|---:|"
+    foreach ($tier in $tiers) { $hdr += " memory vs $tier |"; $sep += "---:|" }
     W $hdr
     W $sep
     foreach ($r in $perBench) {
         $line = "| $($r.bench) |"
-        foreach ($tier in "idiomatic", "expert") {
+        foreach ($tier in $tiers) {
             foreach ($tc in $activeTc) {
                 $v = $r["$tier-$tc"]
                 $line += $(if ($v) { " {0:N2}x |" -f $v } else { " -- |" })
             }
         }
-        foreach ($tier in "idiomatic", "expert") {
+        foreach ($tier in $tiers) {
             $v = $r["$tier-mem"]
             $line += $(if ($v) { " {0:N2}x |" -f $v } else { " -- |" })
         }
         W $line
     }
     $line = "| **geometric mean** |"
-    foreach ($tier in "idiomatic", "expert") {
+    foreach ($tier in $tiers) {
         foreach ($tc in $activeTc) {
             $v = GeoMean $ratios[$tier][$tc]
             $line += $(if ($v) { " **{0:N2}x** |" -f $v } else { " -- |" })
         }
     }
-    foreach ($tier in "idiomatic", "expert") {
+    foreach ($tier in $tiers) {
         $v = GeoMean $memRatios[$tier]
         $line += $(if ($v) { " **{0:N2}x** |" -f $v } else { " -- |" })
     }
@@ -640,13 +749,17 @@ if ($activeSizes -contains "large") {
 foreach ($b in $selected) {
     if (-not $results[$b.name].Count) { continue }
     $pname = if ($b.Contains("param")) { $b.param } else { "N" }
-    $labels = @($b.goose | ForEach-Object { $_.label }) + @($b.cpp | ForEach-Object { $_.label })
+    $rustOf = @{}
+    if ($b.Contains("rust")) { foreach ($u in $b.rust) { $rustOf[$u.label] = $true } }
+    $labels = @($b.goose | ForEach-Object { $_.label }) + @($b.cpp | ForEach-Object { $_.label }) +
+              @($(if ($b.Contains("rust")) { $b.rust | ForEach-Object { $_.label } } else { @() }))
     $labels = @($labels | Where-Object { $results[$b.name].Contains($_) })
     W "## $($b.name)"
     W ""
     W $b.what
     W ""
-    W "Time in ms as ``$($activeTc -join ' / ')``; memory is the peak working set at the largest size."
+    W "Time in ms as ``$($activeTc -join ' / ')`` for the Goose and C++ rows, and a single"
+    W "rustc time for the Rust ones; memory is the peak working set at the largest size."
     W ""
     $hdr = "| implementation |"
     $sep = "|---|"
@@ -660,12 +773,13 @@ foreach ($b in $selected) {
     W $sep
     foreach ($label in $labels) {
         $row = "| $label |"
+        $tcs = if ($rustOf.ContainsKey($label)) { @($rustTc) } else { $activeTc }
         foreach ($s in $activeSizes) {
-            $cells = foreach ($tc in $activeTc) { Fmt-Ms (Get-M $b.name $label $tc $s) }
+            $cells = foreach ($tc in $tcs) { Fmt-Ms (Get-M $b.name $label $tc $s) }
             $row += " $($cells -join ' / ') |"
         }
         $peak = $null
-        foreach ($tc in $activeTc) {
+        foreach ($tc in $tcs) {
             $m = Get-M $b.name $label $tc "large"
             if ($m -and $m.ok -and ($null -eq $peak -or $m.peak -gt $peak.peak)) { $peak = $m }
         }
@@ -717,11 +831,13 @@ if (Test-Path "$PSScriptRoot\notes.md") {
     W ""
 }
 
-W "## Pending"
-W ""
-W "* Rust implementations (``bench/rust/``) are not written yet; the harness picks them up"
-W "  automatically once they and ``rustc`` are present."
-W ""
+if (-not $haveRust) {
+    W "## Pending"
+    W ""
+    W "* The Rust rows are missing from this run: ``rustc`` was not found. The harness"
+    W "  picks up ``bench/rust/`` automatically once it is installed."
+    W ""
+}
 
 [IO.File]::WriteAllText($Out, $md.ToString(), (New-Object Text.UTF8Encoding($false)))
 Write-Host "wrote $Out"
