@@ -146,6 +146,9 @@ static int64_t gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
 
 #if GS_DEBUG
 static void gs_ovf(void) { gs_panic("integer overflow (debug)"); }
+#define GS_OVFCHK(r, MIN, MAX) do { if ((r) < (MIN) || (r) > (MAX)) gs_ovf(); } while (0)
+#else
+#define GS_OVFCHK(r, MIN, MAX) ((void)0)
 #endif
 
 static GS_NORETURN void gs_divfail(const char *file, int line) {
@@ -159,7 +162,7 @@ static GS_NORETURN void gs_divfail(const char *file, int line) {
 static T gs_div_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
     int64_t r = (int64_t)a / (int64_t)b; \
-    if (GS_DEBUG && (r < MIN || r > MAX)) gs_ovf(); \
+    GS_OVFCHK(r, MIN, MAX); \
     return (T)r; } \
 static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
@@ -213,11 +216,11 @@ static T gs_shr_##SFX(T a, int64_t n) { \
 #define GS_INTOPS_U(SFX, T, MAX, BITS) \
 static T gs_add_##SFX(T a, T b) { return (T)(a + b); } \
 static T gs_sub_##SFX(T a, T b) { return (T)(a - b); } \
-static T gs_mul_##SFX(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
+)GSRT"
+R"GSRT(static T gs_mul_##SFX(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
 static T gs_shl_##SFX(T a, int64_t n) { \
     return (T)((uint64_t)a << (n & (BITS - 1))); } \
-)GSRT"
-R"GSRT(static T gs_shr_##SFX(T a, int64_t n) { \
+static T gs_shr_##SFX(T a, int64_t n) { \
     return (T)((uint64_t)a >> (n & (BITS - 1))); }
 
 GS_INTOPS_S(i8,  int8_t,  -128, 127, 8)
@@ -399,13 +402,13 @@ static float gs_f2f32chk(double d) {
 }
 #define GS_RANGE(v, lo, hi) gs_rangechk((v), (lo), (hi))
 #define GS_RANGE_U(v, hi)   gs_rangechk_u((v), (hi))
-#define GS_F2I(d)    gs_f2ichk(d)
+)GSRT"
+R"GSRT(#define GS_F2I(d)    gs_f2ichk(d)
 #define GS_F2U(d)    gs_f2uchk(d)
 #define GS_I2F(v)    gs_i2fchk(v)
 #define GS_U2F(v)    gs_u2fchk(v)
 #define GS_I2F32(v)  gs_f2f32chk(gs_i2fchk(v))
-)GSRT"
-R"GSRT(#define GS_U2F32(v)  gs_f2f32chk(gs_u2fchk(v))
+#define GS_U2F32(v)  gs_f2f32chk(gs_u2fchk(v))
 #define GS_F2F32(d)  gs_f2f32chk(d)
 
 #else
@@ -628,12 +631,12 @@ static void gs_print_flt(double v) {
     printf("%s\n", buf);
 }
 
-static void gs_print_bool(int64_t v) { fputs(v ? "true\n" : "false\n", stdout); }
+)GSRT"
+R"GSRT(static void gs_print_bool(int64_t v) { fputs(v ? "true\n" : "false\n", stdout); }
 
 static void gs_print_bytes(const uint8_t *p, int64_t len) {
     fwrite(p, 1, (size_t)len, stdout);
-)GSRT"
-R"GSRT(    fputc('\n', stdout);
+    fputc('\n', stdout);
 }
 )GSRT"
     ) },

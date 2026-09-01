@@ -134,6 +134,9 @@ static int64_t gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
 
 #if GS_DEBUG
 static void gs_ovf(void) { gs_panic("integer overflow (debug)"); }
+#define GS_OVFCHK(r, MIN, MAX) do { if ((r) < (MIN) || (r) > (MAX)) gs_ovf(); } while (0)
+#else
+#define GS_OVFCHK(r, MIN, MAX) ((void)0)
 #endif
 
 static GS_NORETURN void gs_divfail(const char *file, int line) {
@@ -147,7 +150,7 @@ static GS_NORETURN void gs_divfail(const char *file, int line) {
 static T gs_div_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
     int64_t r = (int64_t)a / (int64_t)b; \
-    if (GS_DEBUG && (r < MIN || r > MAX)) gs_ovf(); \
+    GS_OVFCHK(r, MIN, MAX); \
     return (T)r; } \
 static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
