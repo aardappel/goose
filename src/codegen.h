@@ -4565,9 +4565,99 @@ struct CodeGen {
     // Globals (§11.1): C globals plus dedicated data stacks for nonfixed
     // ones; initializers run in declaration order before main.
 
+    // Globals whose declaration carries a C initializer, so gs_init_globals
+    // has nothing left to do for them (§11.1).
+    set<const VarDef *> gstatic;
+
+    // Spelling out more elements than this would trade startup work for source
+    // size; such a value keeps its runtime initialization.
+    static constexpr int64_t MAXSTATICELEMS = 256;
+
+    // A C initializer for a compile-time constant of fixed, flat type. Fails
+    // for everything with a runtime component -- references, slices, ADTs,
+    // relative references -- leaving the value to gs_init_globals.
+    bool StaticInitX(Node *n, TypeExpr *t, string &out) {
+        if (!n || !t || !IsFix(t) || HasRelRef(t)) return false;
+        switch (t->kind) {
+            case TY_INT: {
+                auto i = Is<IntLit>(n);
+                if (!i || t->intstorage == IS_VARINT) return false;
+                out = i->val < 0 && t->intstorage == IS_U64 ? cat((uint64_t)i->val, "ULL")
+                                                            : IntStr(i->val);
+                return true;
+            }
+            case TY_FLT: {
+                auto f = Is<FltLit>(n);
+                if (!f) return false;
+                out = FltStr(f->val, t->fltstorage == FS_F32);
+                return true;
+            }
+            case TY_BOOL: {
+                auto b = Is<BoolLit>(n);
+                if (!b) return false;
+                out = b->val ? "1" : "0";
+                return true;
+            }
+            case TY_STRUCT: {
+                auto sl = Is<StructLit>(n);
+                auto si = SI(t);
+                if (!sl || sl->sinst != si) return false;
+                string s = "{ ";
+                auto any = false;
+                for (size_t fi = 0; fi < si->st->fields.size(); fi++) {
+                    if (si->st->fields[fi].ispad) continue;   // Pads zero-fill.
+                    Node *v = nullptr;
+                    for (size_t k = 0; k < sl->fieldindices.size(); k++)
+                        if (sl->fieldindices[k] == (int)fi) { v = sl->inits[k].val; break; }
+                    if (!v && fi < si->defaults.size()) v = si->defaults[fi];
+                    string fx;
+                    if (!StaticInitX(v, si->ftypes[fi], fx)) return false;
+                    Append(s, any ? ", " : "", ".", Sanitize(si->st->fields[fi].name),
+                           " = ", fx);
+                    any = true;
+                }
+                out = any ? s + " }" : "{ 0 }";
+                return true;
+            }
+            case TY_ARRAY: {
+                auto &a = *t->arr;
+                if (a.akind != A_FIXED) return false;
+                auto k = ArrSize(t->arr);
+                if (k < 1 || k > MAXSTATICELEMS) return false;
+                string s = "{ { ";
+                if (auto str = Is<StrLit>(n)) {
+                    if (!IsU8T(a.sub) || (int64_t)str->val.size() != k) return false;
+                    for (int64_t e = 0; e < k; e++)
+                        Append(s, e ? ", " : "", (int)(uint8_t)str->val[(size_t)e]);
+                } else if (auto al = Is<ArrayLit>(n)) {
+                    string ex;
+                    if (al->fillval) {
+                        if (!StaticInitX(al->fillval, a.sub, ex)) return false;
+                        for (int64_t e = 0; e < k; e++) Append(s, e ? ", " : "", ex);
+                    } else {
+                        if ((int64_t)al->elems.size() != k) return false;
+                        for (int64_t e = 0; e < k; e++) {
+                            if (!StaticInitX(al->elems[(size_t)e], a.sub, ex)) return false;
+                            Append(s, e ? ", " : "", ex);
+                        }
+                    }
+                } else {
+                    return false;
+                }
+                out = s + " } }";
+                return true;
+            }
+            default: return false;
+        }
+    }
+
     void EmitGlobalDecls() {
         for (auto g : ast.globals) {
-            for (auto d : g->defs) {
+            // The multi-value call form has one initializer for several defs;
+            // only the one-init-per-def shape can carry a static initializer.
+            auto perdef = g->inits.size() == g->defs.size();
+            for (size_t di = 0; di < g->defs.size(); di++) {
+                auto d = g->defs[di];
                 auto name = Unique(Sanitize(d->name));
                 gnames[d] = name;
                 // Registered as they are created; see CacheableStk.
@@ -4594,7 +4684,14 @@ struct CodeGen {
                     gstks[d] = cat("(&", stk, ")");
                     reg(gstks[d]);
                 } else {
-                    Append(data, "static ", VarCT(d), " ", name, ";\n");
+                    string init;
+                    if (perdef && !d->isvar && !PrefVar(d) &&
+                        StaticInitX(g->inits[di], d->type, init)) {
+                        Append(data, "static ", VarCT(d), " ", name, " = ", init, ";\n");
+                        gstatic.insert(d);
+                    } else {
+                        Append(data, "static ", VarCT(d), " ", name, ";\n");
+                    }
                 }
             }
         }
@@ -4634,6 +4731,7 @@ struct CodeGen {
             } else {
                 for (size_t i = 0; i < g->defs.size(); i++) {
                     auto d = g->defs[i];
+                    if (gstatic.count(d)) continue;   // Initialized at its declaration.
                     if (IsResz(d->type)) {
                         InitGlobalStack(d);
                         GenConstruct(g->inits[i], gstks[d], d->type,
