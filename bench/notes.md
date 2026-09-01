@@ -11,27 +11,80 @@ that remain:
   clang improves 13% and v145 1%. Neither compiler goes above SSE2 by default,
   so both languages are leaving that on the table equally.
 * **v145 is better at `std::vector::push_back`.** `push cpp vector+reserve` is
-  0.60 -- v145 185 ms against clang 307. clang also trails on `graph cpp CSR`
-  (0.82) and on both `interp` arena rows.
+  0.61 -- v145 182 ms against clang 298. clang also trails on both `interp`
+  arena rows.
 * **clang is consistently ~10% ahead on string and hash work** (`words`,
   `strlist`, `records variant+string`, `sexp unique_ptr`).
 * On Goose's own rows the spread is small: `records variable enum` favours v145
-  by 14%, `words` and `sexp` favour clang by 7-11%, everything else is inside
+  by 16%, `words` and `sexp` favour clang by 9-11%, everything else is inside
   noise. No row's conclusion changes with the backend.
+
+## Bounds-check elimination, measured
+
+The compiler now proves most index and slice checks away (spec 10.5).
+`bench/bce_ab.ps1` builds each benchmark with and without `--no-bce` under both
+toolchains; what it finds is that the pass removes a lot of checks and changes
+no measurable time.
+
+| benchmark | index checks elided | slice |
+|---|---|---|
+| sexp | 11/12 | 0/1 |
+| graph_csr | 11/21 | -- |
+| graph | 5/9 | -- |
+| words | 2/10 | 3/3 |
+| strlist | 2/4 | 1/1 |
+| records | 0/1 | -- |
+| sum, push, tree, interp, particles | no index expressions at all | |
+
+A/B over eight runs per side: `graph` +2.4% under v145 and +3.0% under clang,
+everything else inside +/-3% in both directions. So the pass is worth roughly
+nothing today -- but that is because of *which* checks it gets, not because
+bounds checking is free. Neutering `GS_IDX` entirely in the generated C puts
+`graph` at 1,842 ms against 1,910 with the pass on and 1,956 with it off, and
+`graph_csr` at 235 against 265 and 256. Bounds checking costs `graph` about 8%
+in total; the pass currently recovers two or three points of that, and the
+remaining five or six sit in checks it cannot prove.
+
+**Every check that survives is an index that came out of memory.** `dist[u]`
+where `u = q[qh]`, `dist[w]` where `w = cur.to`, `out[fill[s]]` in the CSR
+fill. The analysis gets everything derived from loop counters, lengths,
+constant masks and reductions, and nothing that was loaded from a data
+structure -- which is what `test/bce.goose` documents ("keep-cases index with
+values loaded from array contents, which the analysis never tracks").
+
+Four rewrites were tried to see whether any natural form unlocks them. None is
+worth adopting, and the reasons are the useful part:
+
+* **Making `graph`'s pool, dist and queue globals**, so the whole-program
+  invariant pass could apply: still 5/9. The invariant would have to hold on
+  array *contents* ("every `i32` in `q` is a valid index into `dist`"), not on
+  a scalar variable.
+* **Deriving `words`'s mask from `slots.len`** rather than from the separate
+  `nslots`: 3/10. `x & (len - 1)` is not related to `len`; the case that works
+  in `test/bce.goose` has a constant mask and a constant length.
+* **Using the documented `%` reduction** for the probe index: still 3/10,
+  because `idx` is loop-carried. Re-deriving the reduction inside the probe
+  loop reaches 9/10, which pins the gap precisely: the range fact does not
+  survive the loop back-edge.
+* **One `assert(idx >= 0 && idx < slots.len)` at the top of the probe loop**:
+  9/10, five checks traded for one assert. But all four variants time within
+  noise of each other (110-125 ms), because those checks are perfectly
+  predicted branches on a value already in a register and the loop is bound by
+  the random slot access.
 
 ## Recommended compiler work, in order of measured payoff
 
 Each was measured by transforming the generated C by hand and timing it, so
 these are upper bounds on what doing it properly in the compiler would buy. The
 percentages are whole-program, so the effect on the construct itself is larger.
+They are all single digits: there is no large win left lying around.
 
-1. **Elide bounds checks the front end can already prove.** Removing every
-   check from `graph` is worth **15% under v145** and 3% under clang. The
-   common case is a `for i in 0..n` loop indexing an array whose length is `n`
-   and does not change in the loop: the C backend cannot see that, the Goose
-   optimizer can. This is the largest lever measured, and the same pass would
-   remove the duplicated `GS_IDX(u, pool.len)` that currently appears two and
-   three times inside a single statement group.
+1. **Do accumulator tail-recursion elimination in the Goose optimizer.** Worth
+   **7.5% under v145** on `tree`; clang already does it, so this is purely
+   about levelling the backends. `sum_tree`, `walk_chain` and `eval` are all
+   the shape `return f(a) + self(b)`, which becomes a loop with a running
+   accumulator. Goose knows its whole call graph and already requires
+   `recursive fn`, so it has everything the transform needs.
 2. **Cache each data stack's `top` in a local across a loop or function.**
    Worth **6% under v145** on `push`, nothing under clang. Every push currently
    loads a global, stores through it, and reloads it to bump: three accesses to
@@ -40,12 +93,14 @@ percentages are whole-program, so the effect on the construct itself is larger.
    register; MSVC does no TBAA by default and reloads every time. Emitting the
    local -- and writing it back before any call that could touch the same stack
    -- makes the two backends behave alike.
-3. **Do accumulator tail-recursion elimination in the Goose optimizer.** Worth
-   **7.5% under v145** on `tree`; clang already does it, so this is purely
-   about levelling the backends. `sum_tree`, `walk_chain` and `eval` are all
-   the shape `return f(a) + self(b)`, which becomes a loop with a running
-   accumulator. Goose knows its whole call graph and already requires
-   `recursive fn`, so it has everything the transform needs.
+3. **Extend the bounds-check invariant pass from scalars to array contents.**
+   Worth the **5-6% still left in `graph`** and about 10% in `graph_csr`, per
+   the measurements above. The pass already records "every write preserves
+   `v >= 0 && v <= len`" for scalar variables and globals; the checks it misses
+   need the same statement about the *elements* of an array, so that an index
+   read back out of `q` is known to be in range for `dist`. A narrower version
+   would help too: carry a range fact for a loop-carried index across the back
+   edge, which is what the `words` probe loop needs.
 4. **Merge repeated dispatch on the same scrutinee.** `sexp`'s `walk_chain`
    switches on the same tag byte twice in a row -- once to visit the node, once
    to fetch its `next` link -- emitting two jump tables where one would do. Not
@@ -55,7 +110,7 @@ percentages are whole-program, so the effect on the construct itself is larger.
    clang. A build-flag decision rather than codegen, but it is the one place
    where the backend choice repays wider vectors today.
 
-Two plausible-sounding ideas were measured and should **not** be done:
+Three plausible-sounding ideas were measured and should **not** be done:
 
 * **Dropping `#pragma pack(1)` where the layout is already gap-free** makes no
   difference to either backend (`particles`: 40.8 vs 41.1 ms under v145, 36.8
@@ -64,20 +119,22 @@ Two plausible-sounding ideas were measured and should **not** be done:
   it** makes both backends *worse*: `tree` goes from 38.9 to 42.8 ms under v145
   and 35.2 to 39.4 under clang. The current three-statement form gives the
   optimizers something they evidently prefer.
+* **Rewriting benchmark code so the bounds-check pass can prove more** buys
+  nothing, per the section above.
 
 ## Where Goose loses
 
 **Pointer-linked adjacency loses to CSR, in both languages.** On `graph` the
 one-pass linked build is 5-6x slower to traverse than two-pass
-count-then-fill: Goose linked 4,899 ms against Goose CSR 842, with the
-equivalent C++ arena-with-indices at 4,654 and C++ CSR at 854. The Goose CSR
+count-then-fill: Goose linked 4,955 ms against Goose CSR 838, with the
+equivalent C++ arena-with-indices at 4,710 and C++ CSR at 849. The Goose CSR
 row exists to show this is a data-structure effect rather than a language one,
 and Goose writes CSR level with C++. What Goose buys is that the one-pass
 version is *possible* and pleasant to write while handing out real pointers; it
 does not make a linked list local.
 
-**Float kernels are a draw, not a win.** `particles` per component is 4% behind
-C++ (883 vs 845 ms). The elementwise regression is fixed, so the remaining gap
+**Float kernels are a draw, not a win.** `particles` per component is 2% ahead
+of C++ under v145 and 4% behind under clang (866 vs 834 ms). The elementwise regression is fixed, so the remaining gap
 is small, but there is no Goose advantage here either -- as the design
 predicted for flat scalar work.
 

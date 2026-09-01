@@ -55,7 +55,7 @@ $stackReserve = "8589934592ull"
 
 $benchmarks = @(
     @{ name = "sum"
-       summary = 'Goose edges the exactly-reserved vector by 8% at large and beats the unreserved one by 1.5x, on identical memory. This is the control -- flat scalar data, nothing in the layout favours anyone -- so the only win is not having to remember to reserve.'
+       summary = 'Goose edges the exactly-reserved vector by 10% at large and beats the unreserved one by 1.6x, on identical memory. This is the control -- flat scalar data, nothing in the layout favours anyone -- so the only win is not having to remember to reserve.'
        what = "Control: build a flat i32 array, then scan it eight times."
        sizes = @(1000000, 16000000, 128000000)
        goose = @(@{ label = "goose"; file = "sum.goose" })
@@ -63,7 +63,7 @@ $benchmarks = @(
                @{ label = "cpp vector+reserve"; file = "sum.cpp"; variant = 1; tier = "expert" }) },
 
     @{ name = "push"
-       summary = 'Goose is 3.1x faster than an unreserved vector and 18% faster than an exactly-reserved one, on half the memory of the former and the same as the latter. The code difference is the point: Goose hands out real pointers that stay valid across all later growth, while both vector rows have to store indices instead, and deque -- the one C++ container that could hand out stable pointers -- is 10x slower and 2.5x larger.'
+       summary = 'Goose is 3.0x faster than an unreserved vector and 11% faster than an exactly-reserved one, on half the memory of the former and the same as the latter. The code difference is the point: Goose hands out real pointers that stay valid across all later growth, while both vector rows have to store indices instead, and deque -- the one C++ container that could hand out stable pointers -- is 9.5x slower and 2.5x larger.'
        what = "Push N records while keeping pointers to every 64th one."
        sizes = @(1000000, 16000000, 64000000)
        goose = @(@{ label = "goose"; file = "push.goose" })
@@ -101,7 +101,7 @@ $benchmarks = @(
                @{ label = "cpp arena + indices"; file = "tree.cpp"; variant = 2; tier = "expert" }) },
 
     @{ name = "interp"
-       summary = 'The largest win in the suite: 6.7x over virtual dispatch with unique_ptr nodes and 1.4x over a tagged union in an arena, on 4.1x and 2.4x less memory. A variable-mode leaf costs 5 bytes where the union pays max-payload for every node, and case functions dispatch through a jump table with no vtable pointer to store.'
+       summary = 'The largest win in the suite: 6.1x over virtual dispatch with unique_ptr nodes (7.1x under clang) and 1.25x over a tagged union in an arena, on 4.1x and 2.4x less memory. A variable-mode leaf costs 5 bytes where the union pays max-payload for every node, and case functions dispatch through a jump table with no vtable pointer to store.'
        what = "Build an expression tree of the given depth, evaluate it eight times."
        param = "depth"
        sizes = @(16, 20, 24)
@@ -122,7 +122,7 @@ $benchmarks = @(
                @{ label = "cpp arena + indices"; file = "graph.cpp"; variant = 2; tier = "expert" }) },
 
     @{ name = "words"
-       summary = 'Goose is 1.6x faster than unordered_map and 6% ahead of a hand-rolled open-addressed table, on 6% less memory than the maps and 19% less than the hand-rolled one. The map keys are slices pointing straight into the text with no copy and no allocation; the idiomatic C++ row copies every distinct key into a std::string inside a node.'
+       summary = 'Goose is 1.7x faster than unordered_map and 15-20% ahead of a hand-rolled open-addressed table, on 6% less memory than the maps and 19% less than the hand-rolled one. The map keys are slices pointing straight into the text with no copy and no allocation; the idiomatic C++ row copies every distinct key into a std::string inside a node.'
        what = "Count word frequencies over a text of N words."
        sizes = @(500000, 4000000, 16000000)
        goose = @(@{ label = "goose slices + open addressing"; file = "words.goose" })

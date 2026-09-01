@@ -118,10 +118,11 @@ else's to discover:
 * No aliasing information. Rust hands LLVM `noalias` on `&mut`, C++ has `restrict`
   when someone bothers, and Goose deliberately permits aliasing and so tells the
   backend nothing. Any in-place transform over two array arguments is where this shows.
-* Bounds checks on everything non-fixed, like Rust, unlike C++. Where the optimizer
-  fails to elide them, C++ wins. Since the spec allows disabling them wholesale we can
-  report both, but the checked number is the headline: that is the honest safe vs safe
-  comparison against Rust, with C++ as the unsafe baseline.
+* Bounds checks on everything non-fixed, like Rust, unlike C++. The compiler now
+  proves most of them away (10.5), and `--no-bce` gives a direct A/B for what the
+  rest cost -- `bench/bce_ab.ps1` runs it. The checked number stays the headline:
+  that is the honest safe vs safe comparison against Rust, with C++ as the unsafe
+  baseline.
 * Copies are real. By-value semantics with no move operation (4.1, TODO 3) means idioms
   a Rust programmer would express as a cheap move are an O(size) copy in Goose. A
   benchmark that returns different locals on different paths (7.3), or reassigns large
