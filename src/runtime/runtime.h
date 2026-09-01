@@ -119,38 +119,31 @@ static int64_t gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
 
 /* ---------------------------------------------------------------------------
    Integer semantics (§6.2): every operation runs at its operands' type. The
-   helpers compute wide (so wrap is defined in C), truncate back, and — when
+   operations compute wide (so wrap is defined in C), truncate back, and — when
    the generated C is compiled with -DGS_DEBUG=1 — abort when the wide result
    does not fit the type. Shifts mask their count to the width; division is
-   zero-checked always. GS_DEBUG is a compile-time constant, so the checks
-   vanish entirely from release builds. */
+   zero-checked always.
 
+   Only division and modulo check anything in a release build, so only they
+   need to be functions there; everything else is a macro whose body is the
+   expression the release function would have returned. An optimizing backend
+   inlines either form to the same instruction, but a backend that does not
+   inline (libtcc, or any -O0 build) would otherwise pay a call for every
+   arithmetic operation in the program — which measured as 13-37% of total
+   runtime across the benchmarks. */
+
+#if GS_DEBUG
 static void gs_ovf(void) { gs_panic("integer overflow (debug)"); }
+#endif
 
 static GS_NORETURN void gs_divfail(const char *file, int line) {
     fprintf(stderr, "goose runtime error: division by zero (%s:%d)\n", file, line);
     exit(1);
 }
 
-/* Signed narrow types (8/16/32 bits): 64-bit signed math covers every
-   intermediate result. */
-#define GS_INTOPS_S(SFX, T, MIN, MAX, BITS) \
-static T gs_add_##SFX(T a, T b) { \
-    int64_t r = (int64_t)a + (int64_t)b; \
-    if (GS_DEBUG && (r < MIN || r > MAX)) gs_ovf(); \
-    return (T)r; } \
-static T gs_sub_##SFX(T a, T b) { \
-    int64_t r = (int64_t)a - (int64_t)b; \
-    if (GS_DEBUG && (r < MIN || r > MAX)) gs_ovf(); \
-    return (T)r; } \
-static T gs_mul_##SFX(T a, T b) { \
-    int64_t r = (int64_t)a * (int64_t)b; \
-    if (GS_DEBUG && (r < MIN || r > MAX)) gs_ovf(); \
-    return (T)r; } \
-static T gs_neg_##SFX(T a) { \
-    int64_t r = -(int64_t)a; \
-    if (GS_DEBUG && (r < MIN || r > MAX)) gs_ovf(); \
-    return (T)r; } \
+/* Division and modulo, both builds: the zero check is not optional, and `%`
+   is Euclidean. */
+#define GS_DIVOPS_S(SFX, T, MIN, MAX) \
 static T gs_div_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
     int64_t r = (int64_t)a / (int64_t)b; \
@@ -160,6 +153,43 @@ static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
     int64_t r = (int64_t)a % (int64_t)b; \
     if (r < 0) r += (int64_t)b < 0 ? -(int64_t)b : (int64_t)b; \
+    return (T)r; }
+
+#define GS_DIVOPS_U(SFX, T) \
+static T gs_div_##SFX(T a, T b, const char *file, int line) { \
+    if (b == 0) gs_divfail(file, line); \
+    return (T)(a / b); } \
+static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
+    if (b == 0) gs_divfail(file, line); \
+    return (T)(a % b); }
+
+GS_DIVOPS_S(i8, int8_t, -128, 127)
+GS_DIVOPS_S(i16, int16_t, -32768, 32767)
+GS_DIVOPS_S(i32, int32_t, INT32_MIN, INT32_MAX)
+GS_DIVOPS_U(u8, uint8_t)
+GS_DIVOPS_U(u16, uint16_t)
+GS_DIVOPS_U(u32, uint32_t)
+
+#if GS_DEBUG
+
+/* Signed narrow types (8/16/32 bits): 64-bit signed math covers every
+   intermediate result. */
+#define GS_INTOPS_S(SFX, T, MIN, MAX, BITS) \
+static T gs_add_##SFX(T a, T b) { \
+    int64_t r = (int64_t)a + (int64_t)b; \
+    if (r < MIN || r > MAX) gs_ovf(); \
+    return (T)r; } \
+static T gs_sub_##SFX(T a, T b) { \
+    int64_t r = (int64_t)a - (int64_t)b; \
+    if (r < MIN || r > MAX) gs_ovf(); \
+    return (T)r; } \
+static T gs_mul_##SFX(T a, T b) { \
+    int64_t r = (int64_t)a * (int64_t)b; \
+    if (r < MIN || r > MAX) gs_ovf(); \
+    return (T)r; } \
+static T gs_neg_##SFX(T a) { \
+    int64_t r = -(int64_t)a; \
+    if (r < MIN || r > MAX) gs_ovf(); \
     return (T)r; } \
 static T gs_shl_##SFX(T a, int64_t n) { \
     return (T)((uint64_t)a << (n & (BITS - 1))); } \
@@ -172,12 +202,6 @@ static T gs_shr_##SFX(T a, int64_t n) { \
 static T gs_add_##SFX(T a, T b) { return (T)(a + b); } \
 static T gs_sub_##SFX(T a, T b) { return (T)(a - b); } \
 static T gs_mul_##SFX(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
-static T gs_div_##SFX(T a, T b, const char *file, int line) { \
-    if (b == 0) gs_divfail(file, line); \
-    return (T)(a / b); } \
-static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
-    if (b == 0) gs_divfail(file, line); \
-    return (T)(a % b); } \
 static T gs_shl_##SFX(T a, int64_t n) { \
     return (T)((uint64_t)a << (n & (BITS - 1))); } \
 static T gs_shr_##SFX(T a, int64_t n) { \
@@ -190,29 +214,96 @@ GS_INTOPS_U(u8,  uint8_t,  255u, 8)
 GS_INTOPS_U(u16, uint16_t, 65535u, 16)
 GS_INTOPS_U(u32, uint32_t, 4294967295u, 32)
 
-/* The 64-bit types detect overflow on the value itself. Division overflow
-   (i64.min / -1) would trap in hardware and aborts in every build. */
+/* The 64-bit types detect overflow on the value itself. */
 static int64_t gs_add_i64(int64_t a, int64_t b) {
     int64_t r = (int64_t)((uint64_t)a + (uint64_t)b);
-    if (GS_DEBUG && ((a ^ r) & (b ^ r)) < 0) gs_ovf();
+    if (((a ^ r) & (b ^ r)) < 0) gs_ovf();
     return r;
 }
 static int64_t gs_sub_i64(int64_t a, int64_t b) {
     int64_t r = (int64_t)((uint64_t)a - (uint64_t)b);
-    if (GS_DEBUG && ((a ^ b) & (a ^ r)) < 0) gs_ovf();
+    if (((a ^ b) & (a ^ r)) < 0) gs_ovf();
     return r;
 }
 static int64_t gs_mul_i64(int64_t a, int64_t b) {
     int64_t r = (int64_t)((uint64_t)a * (uint64_t)b);
-    if (GS_DEBUG && a && b &&
+    if (a && b &&
         ((a == -1 && b == INT64_MIN) || (b == -1 && a == INT64_MIN) || r / b != a))
         gs_ovf();
     return r;
 }
 static int64_t gs_neg_i64(int64_t a) {
-    if (GS_DEBUG && a == INT64_MIN) gs_ovf();
+    if (a == INT64_MIN) gs_ovf();
     return (int64_t)(0u - (uint64_t)a);
 }
+static int64_t gs_shl_i64(int64_t a, int64_t n) {
+    return (int64_t)((uint64_t)a << (n & 63));
+}
+static int64_t gs_shr_i64(int64_t a, int64_t n) { return a >> (n & 63); }
+static uint64_t gs_add_u64(uint64_t a, uint64_t b) { return a + b; }
+static uint64_t gs_sub_u64(uint64_t a, uint64_t b) { return a - b; }
+static uint64_t gs_mul_u64(uint64_t a, uint64_t b) { return a * b; }
+static uint64_t gs_shl_u64(uint64_t a, int64_t n) { return a << (n & 63); }
+static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
+
+#else  /* release: each operation is the expression the function returned */
+
+#define gs_add_i8(a, b)  ((int8_t)((int64_t)(a) + (int64_t)(b)))
+#define gs_sub_i8(a, b)  ((int8_t)((int64_t)(a) - (int64_t)(b)))
+#define gs_mul_i8(a, b)  ((int8_t)((int64_t)(a) * (int64_t)(b)))
+#define gs_neg_i8(a)     ((int8_t)(-(int64_t)(a)))
+#define gs_shl_i8(a, n)  ((int8_t)((uint64_t)(a) << ((n) & 7)))
+#define gs_shr_i8(a, n)  ((int8_t)((int64_t)(a) >> ((n) & 7)))
+
+#define gs_add_i16(a, b) ((int16_t)((int64_t)(a) + (int64_t)(b)))
+#define gs_sub_i16(a, b) ((int16_t)((int64_t)(a) - (int64_t)(b)))
+#define gs_mul_i16(a, b) ((int16_t)((int64_t)(a) * (int64_t)(b)))
+#define gs_neg_i16(a)    ((int16_t)(-(int64_t)(a)))
+#define gs_shl_i16(a, n) ((int16_t)((uint64_t)(a) << ((n) & 15)))
+#define gs_shr_i16(a, n) ((int16_t)((int64_t)(a) >> ((n) & 15)))
+
+#define gs_add_i32(a, b) ((int32_t)((int64_t)(a) + (int64_t)(b)))
+#define gs_sub_i32(a, b) ((int32_t)((int64_t)(a) - (int64_t)(b)))
+#define gs_mul_i32(a, b) ((int32_t)((int64_t)(a) * (int64_t)(b)))
+#define gs_neg_i32(a)    ((int32_t)(-(int64_t)(a)))
+#define gs_shl_i32(a, n) ((int32_t)((uint64_t)(a) << ((n) & 31)))
+#define gs_shr_i32(a, n) ((int32_t)((int64_t)(a) >> ((n) & 31)))
+
+#define gs_add_u8(a, b)  ((uint8_t)((a) + (b)))
+#define gs_sub_u8(a, b)  ((uint8_t)((a) - (b)))
+#define gs_mul_u8(a, b)  ((uint8_t)((uint64_t)(a) * (uint64_t)(b)))
+#define gs_shl_u8(a, n)  ((uint8_t)((uint64_t)(a) << ((n) & 7)))
+#define gs_shr_u8(a, n)  ((uint8_t)((uint64_t)(a) >> ((n) & 7)))
+
+#define gs_add_u16(a, b) ((uint16_t)((a) + (b)))
+#define gs_sub_u16(a, b) ((uint16_t)((a) - (b)))
+#define gs_mul_u16(a, b) ((uint16_t)((uint64_t)(a) * (uint64_t)(b)))
+#define gs_shl_u16(a, n) ((uint16_t)((uint64_t)(a) << ((n) & 15)))
+#define gs_shr_u16(a, n) ((uint16_t)((uint64_t)(a) >> ((n) & 15)))
+
+#define gs_add_u32(a, b) ((uint32_t)((a) + (b)))
+#define gs_sub_u32(a, b) ((uint32_t)((a) - (b)))
+#define gs_mul_u32(a, b) ((uint32_t)((uint64_t)(a) * (uint64_t)(b)))
+#define gs_shl_u32(a, n) ((uint32_t)((uint64_t)(a) << ((n) & 31)))
+#define gs_shr_u32(a, n) ((uint32_t)((uint64_t)(a) >> ((n) & 31)))
+
+#define gs_add_i64(a, b) ((int64_t)((uint64_t)(a) + (uint64_t)(b)))
+#define gs_sub_i64(a, b) ((int64_t)((uint64_t)(a) - (uint64_t)(b)))
+#define gs_mul_i64(a, b) ((int64_t)((uint64_t)(a) * (uint64_t)(b)))
+#define gs_neg_i64(a)    ((int64_t)(0u - (uint64_t)(a)))
+#define gs_shl_i64(a, n) ((int64_t)((uint64_t)(a) << ((n) & 63)))
+#define gs_shr_i64(a, n) ((int64_t)((a) >> ((n) & 63)))
+
+#define gs_add_u64(a, b) ((uint64_t)((a) + (b)))
+#define gs_sub_u64(a, b) ((uint64_t)((a) - (b)))
+#define gs_mul_u64(a, b) ((uint64_t)((a) * (b)))
+#define gs_shl_u64(a, n) ((uint64_t)((a) << ((n) & 63)))
+#define gs_shr_u64(a, n) ((uint64_t)((a) >> ((n) & 63)))
+
+#endif  /* GS_DEBUG */
+
+/* 64-bit division and modulo. Division overflow (i64.min / -1) would trap in
+   hardware and aborts in every build. */
 static int64_t gs_div_i64(int64_t a, int64_t b, const char *file, int line) {
     if (b == 0) gs_divfail(file, line);
     if (a == INT64_MIN && b == -1) {
@@ -230,14 +321,6 @@ static int64_t gs_mod_i64(int64_t a, int64_t b, const char *file, int line) {
     if (r < 0) r = (int64_t)((uint64_t)r + (b < 0 ? 0u - (uint64_t)b : (uint64_t)b));
     return r;
 }
-static int64_t gs_shl_i64(int64_t a, int64_t n) {
-    return (int64_t)((uint64_t)a << (n & 63));
-}
-static int64_t gs_shr_i64(int64_t a, int64_t n) { return a >> (n & 63); }
-
-static uint64_t gs_add_u64(uint64_t a, uint64_t b) { return a + b; }
-static uint64_t gs_sub_u64(uint64_t a, uint64_t b) { return a - b; }
-static uint64_t gs_mul_u64(uint64_t a, uint64_t b) { return a * b; }
 static uint64_t gs_div_u64(uint64_t a, uint64_t b, const char *file, int line) {
     if (b == 0) gs_divfail(file, line);
     return a / b;
@@ -246,8 +329,6 @@ static uint64_t gs_mod_u64(uint64_t a, uint64_t b, const char *file, int line) {
     if (b == 0) gs_divfail(file, line);
     return a % b;
 }
-static uint64_t gs_shl_u64(uint64_t a, int64_t n) { return a << (n & 63); }
-static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 
 /* `as!` float-to-int: truncate toward zero, wrap modulo 2^64 (§6.3). Defined
    the same on every platform, unlike a raw C cast of an out-of-range value. */
