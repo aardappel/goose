@@ -1676,6 +1676,17 @@ inline bool ForLoop::BceWalk(BCE &b) {
                 prelens.push_back(BCE::Term { true, b.LenBase(pid), 0 });
             }
     }
+    // Growth during iteration is legal (§6.5), so the length is re-read every
+    // iteration unless nothing in the body can change it -- which is what the
+    // kill summary answers, calls included.
+    if (b.mode == BCE::M_JUDGE && (iterkind == IK_ARRAY || iterkind == IK_SLICE)) {
+        auto pid = b.PlaceOf(iter);
+        if (pid >= 0) {
+            set<int> kills;
+            b.SummarizeInto(body, kills);
+            fixedlen = !kills.count(pid);
+        }
+    }
     b.loopdepth++;
     b.StripKills(body);
     if (iterkind == IK_ARRAY || iterkind == IK_SLICE) {

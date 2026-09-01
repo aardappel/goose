@@ -498,6 +498,11 @@ NODE_END
 
 NODE(ForLoop)
     BCE_WALK
+    // Set by BCE for array/slice iteration: nothing in the body can change the
+    // iterated array's length, so the view may be read once instead of every
+    // iteration (§6.5 otherwise requires the re-read, since growing during
+    // iteration is legal).
+    bool fixedlen = false;
     BCE_MARK
     bool byref;                 // for &x in ...
     string_view var;

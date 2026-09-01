@@ -5485,6 +5485,23 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
     auto lv = cg.GenLoc(iter);
     if (lv.t->kind == TY_REF) cg.DerefLoc(lv, line);
     auto v = cg.ArrayView(lv, line);
+    // Where BCE proved the body cannot resize it, both halves of the view are
+    // loop-invariant. Only a length that is an actual memory load is worth
+    // spelling as a local: that is the one the C backend cannot hoist for
+    // itself, since an element store in the body might alias it. A resizable
+    // owned here keeps its length in a frame header (C.2) -- an ordinary local
+    // the backend already knows nothing aliases, and hoisting it by hand only
+    // lengthens a live range.
+    auto memlen = v.len.find('*') != string::npos || v.len.find("->") != string::npos;
+    if (fixedlen && memlen) {
+        auto nv = cg.T();
+        cg.L("int64_t ", nv, " = ", v.len, ";");
+        auto bv = cg.T();
+        if (v.typedelems) cg.L(cg.CT(v.elem), " *", bv, " = ", v.elems, ";");
+        else cg.L("uint8_t *", bv, " = (uint8_t *)(", v.elems, ");");
+        v.len = nv;
+        v.elems = bv;
+    }
     auto gi = ix.empty() ? cg.T() : ix;
     auto et = vdef->type;
     if (!cg.IsFix(v.elem)) {
