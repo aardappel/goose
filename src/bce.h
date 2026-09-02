@@ -36,11 +36,21 @@
 //
 // Lengths are tracked exactly where the program states them: a literal's
 // element count, `resize`/`clear`, a push or a constant-length append as a
-// delta on the previous length, and a counted loop whose body pushes a fixed
-// number of times per iteration. Values likewise: `a % b` and `a & b` land in
+// delta on the previous length, a counted loop whose body pushes a fixed
+// number of times per iteration, and a slice binding, whose length is the
+// difference of its bounds (`src[lo..lo + W]` is W long, so the row-slice
+// idiom needs no assert). Values likewise: `a % b` and `a & b` land in
 // [0, b], and a cast whose value the facts already place in the target's
 // range carries its operand's term across — together these prove the
 // reduce-a-hash-into-a-table idiom without any guard in the source.
+//
+// Products and two-variable sums fall outside a difference domain, so they
+// are handled by intervals instead: where both operands have constant bounds,
+// `a * b` takes the extremes of the four corner products and `a ± b` the sum
+// of the two ranges, on a one-shot base. That is what proves a row-major
+// index — `y * W + x` against a `W * H` length — and the interval is only
+// stated when it fits the expression's own width, since §6.2 arithmetic wraps
+// there in release builds.
 //
 // Aliasing uses the checker's reference provenance (VarDef::refroot chains):
 // a write or grow/shrink kills the length bases of every place it may name.
@@ -341,7 +351,13 @@ struct BCE {
     // The query: prove l <= r + c from facts + axioms, by shortest path.
 
     bool Query(Base l, Base r, int64_t c) {
-        if (l == r) return c >= 0;
+        auto d = Dist(l, r);
+        return d != INF && d <= c;
+    }
+
+    // The smallest c for which `l <= r + c` is provable, INF when nothing is.
+    int64_t Dist(Base l, Base r) {
+        if (l == r) return 0;
         vector<Base> nodes { Zero(), l, r };
         auto add = [&](const Base &b) {
             for (auto &x : nodes) if (x == b) return;
@@ -396,8 +412,100 @@ struct BCE {
             }
             if (!changed) break;
         }
-        auto ri = idx(r);
-        return dist[ri] != INF && dist[ri] <= c;
+        return dist[idx(r)];
+    }
+
+    // ------------------------------------------------------------------
+    // Constant intervals. The difference domain relates two bases at a time,
+    // so it cannot name `a * b` or `a + b` at all; what it can do is read off
+    // each operand's constant bounds and combine those, which is enough for
+    // the row-major index shapes (`y * W + x` against a `W * H` length).
+
+    struct Ival { bool ok = false; int64_t lo = 0, hi = 0; };
+
+    // The tightest constant bounds the facts prove for a term's value. Both
+    // ends must be finite: an interval open at either end says nothing a
+    // product or a sum could use, and every bound produced here stays inside
+    // CCAP, so the arithmetic below cannot leave the range the facts and the
+    // machine agree on.
+    Ival BoundsOf(const Term &t) {
+        if (!t.ok) return {};
+        if (t.b.kind == BK_ZERO) return Ival { true, t.off, t.off };
+        auto up = Dist(t.b, Zero());   // b <= up.
+        if (up == INF) return {};
+        auto dn = Dist(Zero(), t.b);   // 0 <= b + dn, i.e. b >= -dn.
+        if (dn == INF) return {};
+        auto hi = SatAdd(up, t.off), lo = SatAdd(SatSub(0, dn), t.off);
+        if (hi == INF || lo == INF || hi > CCAP || lo < -CCAP) return {};
+        if (lo > hi) return {};   // Contradictory facts prove nothing usable.
+        return Ival { true, lo, hi };
+    }
+
+    // Exact i64 product, refused when the result would leave the fact range.
+    static bool MulIn(int64_t a, int64_t b, int64_t &r) {
+        if (a >= CCAP || a <= -CCAP || b >= CCAP || b <= -CCAP) return false;
+        if (a == 0 || b == 0) { r = 0; return true; }
+        auto aa = a < 0 ? -a : a, bb = b < 0 ? -b : b;
+        if (aa > CCAP / bb) return false;
+        r = a * b;
+        return true;
+    }
+
+    // A one-shot base carrying [lo, hi], for a value the operation computes
+    // but the domain cannot relate to anything else. The interval is only
+    // stated when the machine's own arithmetic agrees with it: §6.2 wraps at
+    // the expression's width in release builds, so a result the facts place
+    // outside that width is not the value the program computed.
+    Term IvalTerm(TypeExpr *t, int64_t lo, int64_t hi) {
+        if (!t || t->kind != TY_INT || t->intstorage == IS_U64 ||
+            t->intstorage == IS_VARINT)
+            return {};
+        auto [tlo, thi] = RangeOf(t->intstorage);
+        if (lo < tlo || hi > thi) return {};
+        auto m = TmpBase();
+        AddFactB(Zero(), m, SatSub(0, lo));   // lo <= m.
+        AddFactB(m, Zero(), hi);              // m <= hi.
+        return Term { true, m, 0 };
+    }
+
+    // `a * b` from the operands' constant bounds: the four corner products
+    // bracket the result whatever the signs, so a negative counter is handled
+    // by the same rule as a nonnegative one.
+    Term MulTerm(Binary *b) {
+        if (mode == M_KILLS) return {};
+        auto t = b->exprtype;
+        if (!t || t->kind != TY_INT || t->intstorage == IS_U64 ||
+            t->intstorage == IS_VARINT)
+            return {};
+        auto lt = TermOf(b->left), rt = TermOf(b->right);
+        if (!lt.ok || !rt.ok) return {};
+        auto li = BoundsOf(lt), ri = BoundsOf(rt);
+        if (!li.ok || !ri.ok) return {};
+        int64_t c[4];
+        if (!MulIn(li.lo, ri.lo, c[0]) || !MulIn(li.lo, ri.hi, c[1]) ||
+            !MulIn(li.hi, ri.lo, c[2]) || !MulIn(li.hi, ri.hi, c[3]))
+            return {};
+        auto lo = c[0], hi = c[0];
+        for (auto i = 1; i < 4; i++) {
+            lo = std::min(lo, c[i]);
+            hi = std::max(hi, c[i]);
+        }
+        return IvalTerm(b->exprtype, lo, hi);
+    }
+
+    // `a + b` / `a - b` where neither side is a constant, so the difference
+    // domain has no term for it: the intervals add. Both ends came out of
+    // BoundsOf inside CCAP, so the sum cannot overflow the i64 the facts are
+    // computed in.
+    Term IvalSumTerm(Binary *b, const Term &lt, const Term &rt) {
+        if (mode == M_KILLS) return {};
+        auto li = BoundsOf(lt), ri = BoundsOf(rt);
+        if (!li.ok || !ri.ok) return {};
+        auto minus = b->op == T_MINUS;
+        auto lo = minus ? li.lo - ri.hi : li.lo + ri.lo;
+        auto hi = minus ? li.hi - ri.lo : li.hi + ri.hi;
+        if (lo < -CCAP || hi > CCAP) return {};
+        return IvalTerm(b->exprtype, lo, hi);
     }
 
     // ------------------------------------------------------------------
@@ -431,16 +539,23 @@ struct BCE {
         if (auto d = Is<Dot>(n); d && d->member == B_LEN) return LenTermOf(d->obj);
         if (auto b = Is<Binary>(n); b && (b->op == T_PLUS || b->op == T_MINUS)) {
             auto t = n->exprtype;
-            if (!t || t->kind != TY_INT || t->intstorage != IS_I64) return {};
+            if (!t || t->kind != TY_INT || t->intstorage == IS_U64 ||
+                t->intstorage == IS_VARINT)
+                return {};
             auto lt = TermOf(b->left), rt = TermOf(b->right);
             if (!lt.ok || !rt.ok) return {};
             if (b->op == T_PLUS && lt.b.kind == BK_ZERO) std::swap(lt, rt);
-            if (rt.b.kind != BK_ZERO) return {};
+            // Two moving operands: no difference term, but the intervals add.
+            if (rt.b.kind != BK_ZERO)
+                return Derived(n, [&] { return IvalSumTerm(b, lt, rt); });
+            if (t->intstorage != IS_I64) return {};
             auto off = b->op == T_PLUS ? SatAdd(lt.off, rt.off) : SatSub(lt.off, rt.off);
             if (off == INF) return {};
             if (lt.b.kind != BK_ZERO && !SmallOff(off)) return {};
             return Term { true, lt.b, off };
         }
+        if (auto b = Is<Binary>(n); b && b->op == T_MUL)
+            return Derived(n, [&] { return MulTerm(b); });
         if (auto b = Is<Binary>(n); b && (b->op == T_MOD || b->op == T_BITAND))
             return Derived(n, [&] { return RangedOpTerm(b); });
         if (auto ac = Is<AsCast>(n)) return Derived(n, [&] { return CastTerm(ac); });
@@ -832,20 +947,42 @@ struct BCE {
         RecordLine(ix->line, ok);
     }
 
-    void JudgeSlice(SliceExpr *se, const Term &lent) {
+    // One bound of a slice expression, as a term in the state at the moment
+    // that bound is evaluated: absent means 0 (lower) or the length snapshot
+    // (upper), and a from-end bound is that snapshot minus the term.
+    Term SliceBound(Node *bn, bool fromend, const Term &lent, Term dflt) {
+        if (!bn) return dflt;
+        auto t = TermOf(bn);
+        if (!t.ok) return {};
+        if (!fromend) return t;
+        if (t.b.kind != BK_ZERO || !lent.ok) return {};
+        return Term { true, lent.b, SatSub(lent.off, t.off) };
+    }
+
+    // A completed `p[lo..hi]` has length exactly hi - lo: the check aborts
+    // unless 0 <= lo <= hi <= len, so on any path that continues the
+    // difference is the new length, and a slice's length never moves
+    // afterwards (growing p leaves the slice's own header alone). The domain
+    // can name that difference when both bounds sit on one base -- the
+    // `src[lo..lo + W]` row idiom, a constant length -- or when the lower
+    // bound is a constant, leaving a length offset from the upper bound's.
+    static Term SliceLenTerm(const Term &lot, const Term &hit) {
+        if (!lot.ok || !hit.ok) return {};
+        auto d = SatSub(hit.off, lot.off);
+        if (!SmallOff(d)) return {};
+        // A constant difference below zero is a slice that always aborts;
+        // stating it as a length would only contradict `0 <= len`.
+        if (lot.b == hit.b) return d < 0 ? Term {} : Term { true, Zero(), d };
+        if (lot.b.kind == BK_ZERO) return Term { true, hit.b, d };
+        return {};
+    }
+
+    // The length of the value the last walked SliceExpr produced, consumed by
+    // the declaration or assignment that binds it.
+    Term slicelen;
+
+    void JudgeSlice(SliceExpr *se, const Term &lent, const Term &lot, const Term &hit) {
         sltotal++;
-        auto bt = [&](Node *bn, bool fromend, Term dflt) -> Term {
-            if (!bn) return dflt;
-            auto t = TermOf(bn);
-            if (!t.ok) return {};
-            if (fromend) {
-                if (t.b.kind != BK_ZERO || !lent.ok) return {};
-                return Term { true, lent.b, SatSub(lent.off, t.off) };
-            }
-            return t;
-        };
-        auto lot = bt(se->lo, se->lo_from_end, Term { true, Zero(), 0 });
-        auto hit = bt(se->hi, se->hi_from_end, lent);
         auto ok = lent.ok && lot.ok && hit.ok &&
                   Query(Zero(), lot.b, lot.off) &&
                   Query(lot.b, hit.b, SatSub(hit.off, lot.off)) &&
@@ -1466,13 +1603,25 @@ inline bool Index::BceWalk(BCE &b) {
 }
 
 inline bool SliceExpr::BceWalk(BCE &b) {
+    auto kills = b.mode == BCE::M_KILLS;
     b.Walk(obj);
     // The runtime check compares against a length snapshot taken before the
-    // bound expressions run; capture the term at that moment.
-    auto lent = b.mode == BCE::M_JUDGE ? b.LenTermOf(obj) : BCE::Term {};
+    // bound expressions run, and each bound against the state it is evaluated
+    // in; capture all three at those moments.
+    auto lent = kills ? BCE::Term {} : b.LenTermOf(obj);
+    b.slicelen = BCE::Term {};
     b.Walk(lo);
+    auto lot = kills ? BCE::Term {}
+                     : b.SliceBound(lo, lo_from_end, lent,
+                                    BCE::Term { true, BCE::Zero(), 0 });
+    auto gen = b.nextgen;
     b.Walk(hi);
-    if (b.mode == BCE::M_JUDGE) b.JudgeSlice(this, lent);
+    auto hit = kills ? BCE::Term {} : b.SliceBound(hi, hi_from_end, lent, lent);
+    // Evaluating the upper bound may have re-pinned what the lower one names,
+    // in which case the captured term no longer denotes the value compared.
+    if (b.nextgen != gen) lot = BCE::Term {};
+    if (!kills) b.slicelen = BCE::SliceLenTerm(lot, hit);
+    if (b.mode == BCE::M_JUDGE) b.JudgeSlice(this, lent, lot, hit);
     return true;
 }
 
@@ -1862,6 +2011,10 @@ inline bool VarDecl::BceWalk(BCE &b) {
         auto v = defs[0];
         auto lt = b.mode != BCE::M_KILLS && v->type && v->type->kind == TY_ARRAY
                       ? b.FreshLenOf(inits[0]) : BCE::Term {};
+        // A slice binding takes the length its bounds just stated.
+        if (b.mode != BCE::M_KILLS && v->type && v->type->kind == TY_SLICE &&
+            Is<SliceExpr>(inits[0]))
+            lt = b.slicelen;
         if (BCE::ScalarIntVar(v)) {
             b.SetWrite(v, inits[0], true);
         } else if (b.loopdepth > 0 && v->type &&
@@ -1915,6 +2068,9 @@ inline bool Assign::BceWalk(BCE &b) {
         auto t = v->type;
         auto fresh = b.mode != BCE::M_KILLS && t && t->kind == TY_ARRAY && op == T_ASSIGN
                          ? b.FreshLenOf(rhs) : BCE::Term {};
+        if (b.mode != BCE::M_KILLS && t && t->kind == TY_SLICE && op == T_ASSIGN &&
+            Is<SliceExpr>(rhs))
+            fresh = b.slicelen;
         if (t && t->kind == TY_SLICE) b.RebindKill(v);
         else if (t && t->kind != TY_FLT && t->kind != TY_BOOL && t->kind != TY_INT)
             b.StorageWriteKill(BCE::UK_OWNED, v, v);
