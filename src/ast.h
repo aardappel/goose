@@ -611,6 +611,10 @@ NODE(InlineBlock)
     SFunction *sf;
     FnSpec *spec;               // The specialization this body came from.
     Block *body;
+    // The block's named result (§7.3): the top-level local every exit hands
+    // back, so codegen can build it at the destination. Null when there is
+    // none; recomputed by the optimizer whenever the body is rewritten.
+    VarDef *namedresult = nullptr;
     InlineBlock(Line l, SFunction *_sf, FnSpec *_spec, Block *_body)
         : Node(l), sf(_sf), spec(_spec), body(_body) {}
 NODE_END

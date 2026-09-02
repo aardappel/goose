@@ -697,6 +697,105 @@ fn loopviews() {
     print(t);                            // 1+2+3+4+4 + 5+6+7 = 32
 }
 
+// --- named results of inlined bodies -----------------------------------------
+// Each builder below is used once, so from -O1 the optimizer splices it into
+// its call site; its named result is then built at the destination the value
+// lands in (§7.3), with the receiving length prefix reserved in front of the
+// elements and patched at the return. At -O0 the same functions take the
+// non-inlined path, so the two levels agreeing is what this tests.
+
+struct NRec  { tag: u8, s: u8[varint], n: varint }
+struct NLong { s: u8[varint], k: varint }
+struct NWide { s: u8[], n: i64 }
+struct NPair { a: u8[varint], b: u8[varint] }
+
+fn nr_short() -> u8[] {
+    var s: u8[>..] = [];
+    for i in 5 { s.push(('a' + i) as! u8); }
+    return s;
+}
+
+// 200 elements: the count outgrows the single byte a varint prefix reserves,
+// so the elements move up by one when it is patched.
+fn nr_long() -> u8[] {
+    var s: u8[>..] = [];
+    for i in 200 { s.push(('a' + i % 26) as! u8); }
+    return s;
+}
+
+fn nr_wide() -> u8[] {
+    var s: u8[>..] = [];
+    for i in 4 { s.push(('m' + i) as! u8); }
+    return s;
+}
+
+fn nr_pushed() -> u8[] {
+    var s: u8[>..] = [];
+    for i in 3 { s.push(('x' + i) as! u8); }
+    return s;
+}
+
+fn nr_inner() -> u8[] {
+    var s: u8[>..] = [];
+    for i in 4 { s.push(('p' + i) as! u8); }
+    return s;
+}
+
+// A builder whose elements are themselves built by one: both named results
+// land on the same destination stack, nested.
+fn nr_pairs(k: i64) -> NPair[] {
+    var t: NPair[>..] = [];
+    for i in k { t.push(NPair { a: nr_inner(), b: "z" }); }
+    return t;
+}
+
+fn nr_grown() -> u8[] {
+    var s: u8[>..] = [];
+    for i in 6 { s.push(('A' + i) as! u8); }
+    return s;
+}
+
+fn nr_two() -> u8[>..], i64 {
+    var s: u8[>..] = [];
+    s.push('m');
+    s.push('n');
+    return s, 5;
+}
+
+// A multi-name receive is not a named result: those locals take the call's
+// channels on a stack of their own, so this one is copied on return.
+fn nr_recv() -> u8[] {
+    let a, b = nr_two();
+    return a;
+}
+
+fn inlined_results() {
+    let rec = NRec { tag: 1, s: nr_short(), n: 7 };
+    print(rec.tag);                      // 1
+    print(rec.s);                        // abcde
+    print(rec.n);                        // 7
+    let big = NLong { s: nr_long(), k: 42 };
+    print(big.s.len);                    // 200
+    print(big.s[0]);                     // 97
+    print(big.s[199]);                   // 114
+    print(big.k);                        // 42
+    let w = NWide { s: nr_wide(), n: 3 };   // A u32 prefix: reserved, never moved.
+    print(w.s);                          // mnop
+    print(w.n);                          // 3
+    var nlist: u8[varint][>..] = [];
+    nlist.push(nr_pushed());             // A push destination.
+    for &e in nlist { print(e); }        // xyz
+    let ps = nr_pairs(2);
+    var acc = 0;
+    for &p in ps { acc += p.a.len * 10 + p.b.len; }
+    print(acc);                          // 82
+    var g: u8[>..] = nr_grown();         // A resizable receiver: only the count.
+    print(g);                            // ABCDEF
+    let rv = NLong { s: nr_recv(), k: 8 };
+    print(rv.s);                         // mn
+    print(rv.k);                         // 8
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -728,6 +827,7 @@ fn main_codegen_exec() {
     looptops();
     reftops();
     loopviews();
+    inlined_results();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

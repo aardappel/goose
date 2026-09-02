@@ -199,6 +199,45 @@ struct Optimizer {
 
     Node *TryInline(Call *c);   // Defined after Inliner below.
 
+    // §7.3's named result for a spliced body: the top-level local (a bound
+    // parameter counts) that every exit of the block -- each Return aimed at
+    // it, plus the tail value -- hands back. Purely structural; codegen adds
+    // the layout test against the receiving slot. Recomputed after every
+    // rewrite of the body, since folding and further inlining move statements.
+    void SetNamedResult(InlineBlock *ib) {
+        ib->namedresult = nullptr;
+        if (!ib->spec || ib->spec->rets.size() != 1) return;
+        // Single-name bindings only: a multi-name receive wires a call's
+        // channels into locals of its own, which codegen cannot place.
+        set<VarDef *> toplocals;
+        for (auto st : ib->body->stmts)
+            if (auto vd = Is<VarDecl>(st); vd && vd->defs.size() == 1)
+                toplocals.insert(vd->defs[0]);
+        VarDef *cand = nullptr;
+        auto ok = true;
+        auto consider = [&](Node *val) {
+            auto id = Is<Ident>(val);
+            if (!id || !id->vdef || !toplocals.count(id->vdef)) { ok = false; return; }
+            if (cand && cand != id->vdef) { ok = false; return; }
+            cand = id->vdef;
+        };
+        function<void(Node *)> walk = [&](Node *n) {
+            if (!n || !ok) return;
+            if (auto r = Is<Return>(n)) {
+                if (r->target == ib->sf) {
+                    if (r->vals.size() != 1) ok = false;
+                    else consider(r->vals[0]);
+                }
+            }
+            if (auto cc = Is<Call>(n)) walk(cc->fvbody);
+            n->Children([&](Node *ch) { walk(ch); });
+        };
+        walk(ib->body);
+        auto tail = ib->body->tail;
+        if (tail && tail->exprtype && tail->exprtype->kind != TY_VOID) consider(tail);
+        if (ok) ib->namedresult = cand;
+    }
+
     // ------------------------------------------------------------------
     // The fold/propagate/inline walk. Opt returns the (possibly replaced)
     // node; statements go through OptStmt, which may drop them.
@@ -490,6 +529,7 @@ inline Node *Optimizer::TryInline(Call *c) {
                 return r->vals[0];
         }
     }
+    SetNamedResult(ib);
     return ib;
 }
 
@@ -695,7 +735,9 @@ inline Node *IncDec::Cp1(Inliner &inl) const {
 }
 
 inline Node *InlineBlock::Cp1(Inliner &inl) const {
-    return inl.ast.New<InlineBlock>(line, sf, spec, inl.CpBlock(body));
+    auto c = inl.ast.New<InlineBlock>(line, sf, spec, inl.CpBlock(body));
+    c->namedresult = inl.Remap(namedresult);
+    return c;
 }
 
 // A nested declaration copies inert; its own specializations are separate
@@ -1107,6 +1149,7 @@ inline Node *IncDec::Opt(Optimizer &o) {
 
 inline Node *InlineBlock::Opt(Optimizer &o) {
     o.OptBlock(body);
+    o.SetNamedResult(this);
     return this;
 }
 
