@@ -50,8 +50,10 @@ R"GSRT(/* Goose runtime — prepended verbatim to every compiler-generated C fil
 
 #ifdef _MSC_VER
 #define GS_NORETURN __declspec(noreturn)
+#define GS_NOINLINE __declspec(noinline)
 #else
 #define GS_NORETURN __attribute__((noreturn))
+#define GS_NOINLINE __attribute__((noinline))
 #endif
 
 #if GS_NEED_THREADS
@@ -215,9 +217,9 @@ static T gs_shr_##SFX(T a, int64_t n) { \
    plain C unsigned arithmetic, truncated back to the width. */
 #define GS_INTOPS_U(SFX, T, MAX, BITS) \
 static T gs_add_##SFX(T a, T b) { return (T)(a + b); } \
-static T gs_sub_##SFX(T a, T b) { return (T)(a - b); } \
 )GSRT"
-R"GSRT(static T gs_mul_##SFX(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
+R"GSRT(static T gs_sub_##SFX(T a, T b) { return (T)(a - b); } \
+static T gs_mul_##SFX(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
 static T gs_shl_##SFX(T a, int64_t n) { \
     return (T)((uint64_t)a << (n & (BITS - 1))); } \
 static T gs_shr_##SFX(T a, int64_t n) { \
@@ -401,9 +403,9 @@ static float gs_f2f32chk(double d) {
     return f;
 }
 #define GS_RANGE(v, lo, hi) gs_rangechk((v), (lo), (hi))
-#define GS_RANGE_U(v, hi)   gs_rangechk_u((v), (hi))
 )GSRT"
-R"GSRT(#define GS_F2I(d)    gs_f2ichk(d)
+R"GSRT(#define GS_RANGE_U(v, hi)   gs_rangechk_u((v), (hi))
+#define GS_F2I(d)    gs_f2ichk(d)
 #define GS_F2U(d)    gs_f2uchk(d)
 #define GS_I2F(v)    gs_i2fchk(v)
 #define GS_U2F(v)    gs_u2fchk(v)
@@ -597,7 +599,29 @@ static int64_t gs_uleb_size(const uint8_t *p) {
     return (int64_t)(q - p) + 1;
 }
 
-static int64_t gs_uleb_write(uint8_t *p, uint64_t v) {
+/* An inline array's length prefix is one byte unless the array holds 128
+   elements or more, so the two macros below are what the compiler emits for
+   it: a load, a test, and the byte. The continuation is a call the caller's
+   loop does not contain, and reaching it means there is a large array to
+   walk, against which the call costs nothing. Both read the pointer twice,
+   which the emitting sites already assume (they form the element address
+   from the same text). A varint *value*, by contrast, is whatever the
+   program stored, so scalar fields and relative offsets keep the loop above
+   inline, where the compilers peel the first byte themselves. */
+
+static GS_NOINLINE int64_t gs_uleb_read_slow(const uint8_t *p) {
+    return gs_uleb_read(p);
+}
+
+static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
+    return gs_uleb_size(p);
+}
+
+#define GS_ULEB_READ(p) ((*(p) & 0x80) ? gs_uleb_read_slow(p) : (int64_t)*(p))
+#define GS_ULEB_SIZE(p) ((*(p) & 0x80) ? gs_uleb_size_slow(p) : (int64_t)1)
+
+)GSRT"
+R"GSRT(static int64_t gs_uleb_write(uint8_t *p, uint64_t v) {
     uint8_t *q = p;
     for (;;) {
         uint8_t b = v & 0x7f;
@@ -631,8 +655,7 @@ static void gs_print_flt(double v) {
     printf("%s\n", buf);
 }
 
-)GSRT"
-R"GSRT(static void gs_print_bool(int64_t v) { fputs(v ? "true\n" : "false\n", stdout); }
+static void gs_print_bool(int64_t v) { fputs(v ? "true\n" : "false\n", stdout); }
 
 static void gs_print_bytes(const uint8_t *p, int64_t len) {
     fwrite(p, 1, (size_t)len, stdout);
