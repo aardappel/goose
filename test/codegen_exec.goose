@@ -394,10 +394,26 @@ let gbase = 40;
 var gnext = gbase + 2;
 var gtext: u8[>..] = "g";
 
+var galias: u8[>..] = "";
+
+struct RHold { p: u8[>..]& }
+
+// The reference in the field may be the very global this body also pushes to,
+// so neither spelling of that stack may hold its top anywhere but in memory.
+fn hpush(h: RHold&, c: u8) -> i64 {
+    galias.push('a');
+    h.p.push(c);
+    galias.push('z');
+    return galias.len;
+}
+
 fn globals2() {
     print(gnext);                        // 42
     gtext.push('!');
     print(gtext);                        // g!
+    let h = RHold { p: &galias };
+    print(hpush(&h, 'm'));               // 3
+    print(galias);                       // amz
 }
 
 // --- empty and zero-sized ----------------------------------------------------
@@ -553,6 +569,64 @@ fn looptops() {
     print(t * 10 + e.len);               // (0+2+4+6) * 10 + 4 = 124
 }
 
+// --- pushing through a reference, across calls that push through it too -----
+
+struct RNode { tag: i64, l: RNode&<u32>?, r: RNode&<u32>? }
+
+// A callee that pushes into the same array its caller is pushing into: the
+// caller's stack top has to be in memory across the call and read back after.
+fn rleaf(p: RNode[>..]&, v: i64) -> RNode& { return p.push(RNode { tag: v }); }
+
+// The middle element is pushed between the two recursive calls and read again
+// after the second, so a stale or unreloaded top shows up in the tags.
+recursive fn rbuild(p: RNode[>..]&, d: i64) -> RNode& {
+    if d == 0 { return rleaf(p, 1); }
+    let a: RNode& = rbuild(p, d - 1);
+    let m: RNode& = rleaf(p, d + 10);
+    let b: RNode& = rbuild(p, d - 1);
+    return p.push(RNode { tag: m.tag, l: a, r: b });
+}
+
+recursive fn rwalk(n: RNode&) -> i64, i64 {   // (tag digest, nodes on the tree)
+    let l = n.l;
+    guard l else { return n.tag, 1; }
+    let r = n.r;
+    guard r else { return n.tag, 1; }
+    let ld, lc = rwalk(l);
+    let rd, rc = rwalk(r);
+    return n.tag + 3 * ld + 5 * rd, lc + rc + 1;
+}
+
+// A reusable pool by reference carries a second stack for the freelist; both
+// are cached, and both cross the recursive call.
+recursive fn pfill(p: PSlot[>..]&, n: i64) -> i64 {
+    if n == 0 {
+        let a = p.alloc_index(PSlot { n: 7 });
+        p.free(a);
+        return p.alloc_index(PSlot { n: 8 });   // Reuses a's slot.
+    }
+    let i = p.alloc_index(PSlot { n: n });
+    return i + pfill(p, n - 1);
+}
+
+fn reftops() {
+    var pool: RNode[>..] = [];
+    let root: RNode& = rbuild(&pool, 3);
+    print(pool.len);                     // 22
+    var tags = 0;
+    for &n in pool { tags += n.tag; }
+    print(tags);                         // 170
+    let digest, nodes = rwalk(root);
+    print(nodes);                        // 15 of the 22 are on the tree
+    print(digest);                       // 1325
+    reusable var slots: PSlot[>..] = [];
+    print(pfill(&slots, 3));             // 0 + 1 + 2 fresh, then 3 reused = 6
+    print(slots.len);                    // 4
+    var ns = 0;
+    for &s in slots { ns += s.n; }
+    print(ns);                           // 3 + 2 + 1 + 8 = 14
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -581,6 +655,7 @@ fn main_codegen_exec() {
     printedges();
     layouts();
     looptops();
+    reftops();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

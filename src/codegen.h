@@ -1200,7 +1200,10 @@ struct CodeGen {
     // What a call to `callee` with these arguments can reach: the argument text
     // (a stack handed over appears in it verbatim) plus the callee's globals.
     string SyncReach(FnSpec *callee, const vector<string> &args) {
-        if (!cachetops || PassesOpaqueStack(callee)) return "*";
+        // A cached reference parameter's stack is opaque to this analysis: the
+        // callee may reach it under a name of its own (a global only it
+        // mentions, a pool it captures), so those bodies sync at every call.
+        if (!cachetops || reftops || PassesOpaqueStack(callee)) return "*";
         string s;
         for (auto &a : args) { s += a; s += '\x01'; }
         for (auto d : gtouch[callee]) {
@@ -1462,9 +1465,16 @@ struct CodeGen {
     // a callee's indices start above the caller's in-use watermark (§10.3), so
     // `GS(gs_sp + k)` names a stack no caller expression can also name, and
     // global stacks live outside the indexed block entirely. A reference to a
-    // resizable, though, carries its stack inside the reference value, giving
-    // a second spelling for a stack that may be one of ours -- so a function
-    // holding one keeps the plain memory form throughout (CanCacheTops).
+    // resizable carries its stack inside the reference value (`p.stk`), which
+    // is a second spelling for a stack the body may also name directly, so a
+    // function holding one gets neither of those two (CanCacheTops).
+    //
+    // It caches its reference parameters' stacks instead, where RefTopsOk
+    // clears it: `p.stk` is then the body's only spelling of that stack, and
+    // the checker's root classes say which parameters are distinct stacks
+    // (§10.2). That is the form a push through a reference wants -- `*(T *)top
+    // = e; top += n` with top in a register -- and the same marks carry it
+    // across calls.
     vector<string> toporder;                  // Cacheable stacks, discovery order.
     // Every growth or shrink, as parallel stack index and innermost enclosing
     // loop (-1 for one outside every loop).
@@ -1474,6 +1484,8 @@ struct CodeGen {
     vector<int> regstk, regloop;              // The regions, as stack and loop.
     vector<string> topfnlocal;                // Stack -> its whole-body local, or "".
     bool cachetops = false;
+    bool reftops = false;               // Caching reference parameters' stacks.
+    set<string> refstkexprs;            // Their `<param>.stk` / `.flstk` spellings.
 
     static constexpr const char *FLUSHMARK = "@@gsflush@@";
     static constexpr const char *RELOADMARK = "@@gsreload@@";
@@ -1482,12 +1494,14 @@ struct CodeGen {
 
     set<string> gstkexprs;   // Every global's dedicated stack expression.
 
-    // The function's own indexed stacks, plus the globals' dedicated ones --
-    // both have a single spelling here (see the note above). A caller's stack,
-    // arriving as a parameter, does not: it may be the very global stack this
-    // body also names directly, so those keep the memory form.
+    // The function's own indexed stacks, plus -- per the mode -- either the
+    // globals' dedicated ones or the reference parameters': each has a single
+    // spelling in its mode (see the note above). A caller's stack arriving as
+    // a plain `gs_stack *` parameter never does, and keeps the memory form.
     bool CacheableStk(const string &stk) {
-        return cachetops && (stk.compare(0, 3, "GS(") == 0 || gstkexprs.count(stk));
+        if (!cachetops) return false;
+        if (stk.compare(0, 3, "GS(") == 0) return true;
+        return reftops ? refstkexprs.count(stk) != 0 : gstkexprs.count(stk) != 0;
     }
 
     // A function owns a handful of stacks at most, so these stay linear scans.
@@ -4849,10 +4863,95 @@ struct CodeGen {
         for (auto fv : sinfo[sp].freevars) check(fv);
         function<void(Node *)> walk = [&](Node *n) {
             if (!n || !ok) return;
+            // A fat reference that is not held in a variable either -- one read
+            // out of a field or an element, or returned by a call -- can be
+            // dereferenced right here, and names its stack the same way.
+            // Taking one of a variable does not: that value is only handed on.
+            if (n->exprtype && IsFatRef(n->exprtype)) {
+                auto un = Is<Unary>(n);
+                if (!Is<Ident>(n) && !(un && Is<Ident>(un->child))) ok = false;
+            }
             if (auto id = Is<Ident>(n)) check(id->vdef);
             if (auto vd = Is<VarDecl>(n)) for (auto d : vd->defs) check(d);
             if (auto fl = Is<ForLoop>(n)) check(fl->vdef);
             if (auto me = Is<MatchExpr>(n)) for (auto &arm : me->arms) check(arm.binder);
+            if (auto c = Is<Call>(n)) { walk(c->fvbody); for (auto p : c->fvparams) check(p); }
+            n->Children([&](Node *ch) { walk(ch); });
+        };
+        walk(sp->body);
+        return ok;
+    }
+
+    // Whether this specialization may cache the tops of the stacks it reaches
+    // through its reference parameters (the reftops mode; see the note above
+    // topcache). Every condition below rules out a second spelling of one of
+    // those stacks, or a way for one to move without a mark:
+    //  * each fat reference in the body is a parameter, named directly, so
+    //    `<p>.stk` is its one spelling and is in scope throughout. A reference
+    //    from a field, an element or an `&` here has no parameter to name;
+    //  * the fat parameters' root classes are distinct, which is what §10.2
+    //    proves distinct. Two parameters in one class are *not* proven equal
+    //    (a reference read out of a container is rooted at the container), so
+    //    that case would need one cache for two stacks;
+    //  * nothing else the body names can be one of those stacks: no global of
+    //    a parameter's pointee type (a reference parameter may well be rooted
+    //    at one, and the specialization key does not record which), no captured
+    //    or by-value resizable, no return destination, no long-distance return
+    //    channel.
+    bool RefTopsOk(FnSpec *sp) {
+        set<const VarDef *> fatparams, classes;
+        vector<TypeExpr *> pointees;
+        for (size_t i = 0; i < sp->params.size(); i++) {
+            auto vd = sp->params[i];
+            if (!IsFatRef(sp->argtypes[i])) continue;
+            if (!vd->refrootknown || !vd->refroot || !classes.insert(vd->refroot).second)
+                return false;
+            fatparams.insert(vd);
+            pointees.push_back(sp->argtypes[i]->ref->sub);
+        }
+        if (fatparams.empty()) return false;
+        for (auto pt : sp->argtypes) if (IsResz(pt)) return false;
+        for (auto rt : sp->rets) if (IsBytesT(rt)) return false;
+        if (fromids.count(sp->sf)) return false;
+        for (auto fv : sinfo[sp].freevars)
+            if (fv->reusable || (fv->type && (IsResz(fv->type) || IsFatRef(fv->type))))
+                return false;
+        auto ok = true;
+        // A return exiting this function or an inlined body stays here; any
+        // other target constructs into a gs_fdst_ channel, which is a stack
+        // this body cannot place (§7.9).
+        set<SFunction *> localexits { sp->sf };
+        function<void(Node *)> ibs = [&](Node *n) {
+            if (!n) return;
+            if (auto ib = Is<InlineBlock>(n)) localexits.insert(ib->sf);
+            if (auto c = Is<Call>(n)) ibs(c->fvbody);
+            n->Children([&](Node *ch) { ibs(ch); });
+        };
+        ibs(sp->body);
+        // A reference to a resizable always names a whole variable (§3.8 has no
+        // spelling for a nested one), so a global with a dedicated stack can be
+        // what a parameter points at only if it has that parameter's pointee
+        // type; a global of any other type is a different stack.
+        auto maybeparam = [&](TypeExpr *gt) {
+            for (auto pt : pointees) if (TEq(pt, gt)) return true;
+            return false;
+        };
+        auto check = [&](const VarDef *v) {
+            if (!v || !v->type) return;
+            if (IsFatRef(v->type) && !fatparams.count(v)) ok = false;
+            if (v->isglobal && IsBytesT(v->type) && maybeparam(v->type)) ok = false;
+        };
+        function<void(Node *)> walk = [&](Node *n) {
+            if (!n || !ok) return;
+            if (n->exprtype && IsFatRef(n->exprtype)) {
+                auto id = Is<Ident>(n);
+                if (!id || !fatparams.count(id->vdef)) { ok = false; return; }
+            }
+            if (auto id = Is<Ident>(n)) check(id->vdef);
+            if (auto vd = Is<VarDecl>(n)) for (auto d : vd->defs) check(d);
+            if (auto fl = Is<ForLoop>(n)) check(fl->vdef);
+            if (auto me = Is<MatchExpr>(n)) for (auto &arm : me->arms) check(arm.binder);
+            if (auto r = Is<Return>(n); r && !localexits.count(r->target)) ok = false;
             if (auto c = Is<Call>(n)) { walk(c->fvbody); for (auto p : c->fvparams) check(p); }
             n->Children([&](Node *ch) { walk(ch); });
         };
@@ -4869,7 +4968,9 @@ struct CodeGen {
         regstk.clear();
         regloop.clear();
         topfnlocal.clear();
+        refstkexprs.clear();
         cachetops = false;
+        reftops = false;
         vnames.clear();
         vstk.clear();
         vpool.clear();
@@ -4913,8 +5014,19 @@ struct CodeGen {
         cursp = curinfo->needssp;
         spexpr = cursp ? "gs_sp" : "0";
         cachetops = CanCacheTops(sp);
+        reftops = !cachetops && RefTopsOk(sp);
+        cachetops = cachetops || reftops;
         PushSc(SC_FN);
         auto params = SigParams(sp, true, er);
+        // The spellings are only known once SigParams has named the parameters.
+        if (reftops) {
+            for (size_t i = 0; i < sp->params.size(); i++) {
+                if (!IsFatRef(sp->argtypes[i])) continue;
+                auto pn = LocalName(sp->params[i]);
+                refstkexprs.insert(cat(pn, ".stk"));
+                if (IsPoolParam(sp, i)) refstkexprs.insert(cat(pn, ".flstk"));
+            }
+        }
         // In the element-run form named results are not built at the
         // destination: the callee-side copy at return is the specified cost
         // of operating on the whole value first (§7.3).
