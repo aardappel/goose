@@ -2171,8 +2171,12 @@ struct CodeGen {
         return t;
     }
 
+    // The two minima are written as a subtraction: C has no negative decimal
+    // constants, and MSVC's C front end types both magnitudes as unsigned
+    // (C90 literal rules), which the negation would carry through.
     static string IntStr(int64_t v) {
         if (v == INT64_MIN) return "(-9223372036854775807LL - 1)";
+        if (v == INT32_MIN) return "(-2147483647 - 1)";
         if (v > INT32_MAX || v < INT32_MIN) return cat(v, "LL");
         return cat(v);
     }
@@ -2476,7 +2480,14 @@ struct CodeGen {
     // A non-control node's value routed to a destination.
     void LeafAny(Node *n, const Dst &d) {
         if (d.k == 2) { GenConstruct(n, d.s, d.t, d.lenlv); return; }
-        if (d.k == 1) { L(d.s, " = ", GenXD(n, d.t), ";"); return; }
+        if (d.k == 1) {
+            // A literal holding relative references builds at the destination;
+            // assigning it from a temporary would copy the temporary's offsets.
+            if ((Is<StructLit>(n) || Is<ArrayLit>(n)) && HasRelRef(n->exprtype))
+                FixedLitAt(n, d.s);
+            else L(d.s, " = ", GenXD(n, d.t), ";");
+            return;
+        }
         if (IsVoidT(n->exprtype)) { Fail(n->line, "internal: valueless leaf"); }
         L("(void)(", GenVal(n), ");");
     }
@@ -2504,22 +2515,7 @@ struct CodeGen {
         assert(et->kind == TY_ARRAY);
         auto tv = T();
         L(CT(et), " ", tv, ";");
-        if (et->arr->akind == A_LIMITED) {
-            auto count = al->fillval ? ((IntLit *)al->fillcount)->val
-                                     : (int64_t)al->elems.size();
-            L(tv, ".len = ", count, ";");
-        }
-        if (al->fillval) {
-            auto fc = Is<IntLit>(al->fillcount);
-            assert(fc);
-            auto fv = GenPure(al->fillval);
-            auto iv = T();
-            L("for (int64_t ", iv, " = 0; ", iv, " < ", fc->val, "; ", iv, "++) ", tv, ".e[",
-              iv, "] = ", fv, ";");
-            return tv;
-        }
-        for (size_t i = 0; i < al->elems.size(); i++)
-            GenAny(al->elems[i], Dst { 1, cat(tv, ".e[", i, "]") });
+        FixedArrayLitAt(al, tv, false);
         return tv;
     }
 
@@ -3388,6 +3384,116 @@ struct CodeGen {
         Gap(FixedSize(et) - TagSize(ei->en) - lo.size);
     }
 
+    // The same construct-in-place rule as FixedLitAtStk, for a literal whose
+    // destination is a C lvalue rather than a stack top: the relative
+    // references measure from where the value stays, not from a temporary
+    // that is then copied over. `dst` is named once, through a pointer, so an
+    // indexed destination evaluates (and bounds-checks) once.
+    void FixedLitAt(Node *n, const string &dst) {
+        auto p = T();
+        L(CT(n->exprtype), " *", p, " = &", dst, ";");
+        FixedLitAtLv(n, cat("(*", p, ")"), true);
+    }
+
+    // As above, for a destination cheap enough to name per field.
+    void FixedLitAtLv(Node *n, const string &base, bool inroot) {
+        if (auto al = Is<ArrayLit>(n)) { FixedArrayLitAt(al, base, inroot); return; }
+        auto sl = Is<StructLit>(n);
+        assert(sl);
+        StructLitAt(sl, base, inroot);
+    }
+
+    void FixedArrayLitAt(ArrayLit *al, const string &base, bool inroot) {
+        auto et = al->exprtype;
+        assert(et->kind == TY_ARRAY);
+        auto elem = et->arr->sub;
+        auto rel = elem->kind == TY_REF && elem->ref->lenstorage >= 0;
+        auto emitelem = [&](Node *e, const string &path) {
+            if (rel) EmitRelStoreAt(cat("(uint8_t *)&", path), elem, GenX(e), al->line, inroot);
+            else GenAny(e, Dst { 1, path });
+        };
+        if (et->arr->akind == A_LIMITED) {
+            auto count = al->fillval ? ((IntLit *)al->fillcount)->val
+                                     : (int64_t)al->elems.size();
+            L(base, ".len = ", count, ";");
+        }
+        if (al->fillval) {
+            auto fc = Is<IntLit>(al->fillcount);
+            assert(fc);
+            // Elements holding relative references are built one by one, each
+            // against its own address; any other fill value is evaluated once.
+            auto perelem = HasRelRef(elem);
+            auto fv = perelem ? string() : GenPure(al->fillval);
+            auto iv = T();
+            L("for (int64_t ", iv, " = 0; ", iv, " < ", fc->val, "; ", iv, "++) {");
+            ind++;
+            auto path = cat(base, ".e[", iv, "]");
+            if (perelem) emitelem(al->fillval, path);
+            else L(path, " = ", fv, ";");
+            ind--;
+            L("}");
+            return;
+        }
+        for (size_t i = 0; i < al->elems.size(); i++)
+            emitelem(al->elems[i], cat(base, ".e[", i, "]"));
+    }
+
+    // `inroot` says `base` is the value's real address inside its root (see
+    // EmitRelStoreAt); a temporary that is copied afterwards is not.
+    void StructLitAt(StructLit *sl, const string &base, bool inroot) {
+        auto et = sl->exprtype;
+        // `baseoff` is where the fields run starts within the whole value, so a
+        // `self` field can store its (constant) offset back to it.
+        auto fieldset = [&](const string &b, const vector<Field> &fields,
+                            const vector<TypeExpr *> &ftypes, const vector<Node *> &defaults,
+                            const Layout &lo, int64_t baseoff) {
+            for (size_t i = 0; i < fields.size(); i++) {
+                if (fields[i].ispad) continue;
+                Node *init = nullptr;
+                for (size_t k = 0; k < sl->fieldindices.size(); k++)
+                    if (sl->fieldindices[k] == (int)i) init = sl->inits[k].val;
+                if (!init && i < defaults.size() && defaults[i]) init = defaults[i];
+                auto ft = ftypes[i];
+                auto path = cat(b, ".", Sanitize(fields[i].name));
+                if (!init) {   // Omitted optional: null.
+                    assert(ft->kind == TY_REF);
+                    L("memset(&", path, ", 0, sizeof(", path, "));");
+                    continue;
+                }
+                if (ft->kind == TY_REF && ft->ref->lenstorage >= 0) {
+                    if (Is<SelfRef>(init))
+                        EmitRelSelfAt(cat("(uint8_t *)&", path), ft, baseoff + lo.offs[i], sl->line);
+                    else
+                        EmitRelStoreAt(cat("(uint8_t *)&", path), ft, GenX(init), sl->line, inroot);
+                    continue;
+                }
+                GenAny(init, Dst { 1, path });
+            }
+        };
+        if (et->kind == TY_STRUCT) {
+            auto si = SI(et);
+            fieldset(base, si->st->fields, si->ftypes, si->defaults, StructLayout(si), 0);
+            return;
+        }
+        if (et->kind == TY_VARIANT) {
+            auto ei = EIVar(et);
+            auto vi = VarIdx(ei->en, et->var->variant);
+            if (ei->en->variants[vi].fields.empty())
+                L("memset(&", base, ", 0, sizeof(", base, "));");
+            fieldset(base, ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi],
+                     VariantLayout(ei, vi), 0);
+            return;
+        }
+        assert(et->kind == TY_ENUM && !et->enu->varmode && sl->variant);
+        auto ei = EIOf(et);
+        auto vi = VarIdx(ei->en, sl->variant);
+        L(base, ".tag = ", TagConst(ei, vi), ";");
+        if (!ei->en->variants[vi].fields.empty())
+            fieldset(cat(base, ".u.v_", Sanitize(ei->en->variants[vi].name)),
+                     ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi],
+                     VariantLayout(ei, vi), TagSize(ei->en));
+    }
+
     void EmitValStoreTag(const string &stk, IntStorage ts, const string &x) {
         L("*(", IntCT(ts), " *)", Top(stk), " = (", IntCT(ts), ")(", x, ");");
         Bump(stk, cat(IntSize(ts)));
@@ -3680,7 +3786,10 @@ struct CodeGen {
             L("gs_pref ", name, " = ", GenPrefVal(init), ";");
             return;
         }
-        if (IsCtl(init) || Is<Call>(init)) {
+        // Literals holding relative references construct into the variable
+        // itself rather than through an initializer copy.
+        if (IsCtl(init) || Is<Call>(init) ||
+            ((Is<StructLit>(init) || Is<ArrayLit>(init)) && HasRelRef(t))) {
             L(CT(t), " ", name, ";");
             GenAny(init, Dst { 1, name, t });
             return;
@@ -4913,7 +5022,11 @@ struct CodeGen {
         auto v = ArrayView(lv, ln);
         auto elem = v.elem;
         auto esz = FixedSize(elem);
-        auto ev = GenPure(an[1]);
+        // A literal holding relative references is built once the slot is
+        // known, so its offsets measure from the slot; anything else keeps
+        // its value evaluated ahead of the freelist bookkeeping.
+        auto atslot = (Is<StructLit>(an[1]) || Is<ArrayLit>(an[1])) && HasRelRef(elem);
+        auto ev = atslot ? string() : GenPure(an[1]);
         auto iv = T();
         L("int64_t ", iv, ";");
         L("if (", lv.fl, ".len > 0) {");
@@ -4932,7 +5045,8 @@ struct CodeGen {
         auto e = T();
         L(CT(elem), " *", e, " = (", CT(elem), " *)((", v.elems, ") + ", iv, " * ", esz,
           ");");
-        L("*", e, " = ", ev, ";");
+        if (atslot) FixedLitAtLv(an[1], cat("(*", e, ")"), true);
+        else L("*", e, " = ", ev, ";");
         if (c->builtin == B_ALLOC_INDEX) return { iv };
         if (c->exprtype && c->exprtype->kind != TY_REF) return { cat("(*", e, ")") };
         return { e };
@@ -5885,62 +5999,14 @@ inline string Call::CgX(CodeGen &cg) {
     return cg.CallVal0(this, rets[0]);
 }
 
-// Fixed struct/variant/ADT literal as a C value. Relative-reference
-// fields store against the member's own address (only meaningful when the
-// value stays put; the typechecker's root rules keep this sane).
+// Fixed struct/variant/ADT literal as a C value: a temporary the caller
+// copies from. Values containing relative references are built at their
+// destination instead (FixedLitAt), since offsets from a temporary would
+// not survive the copy.
 inline string StructLit::CgX(CodeGen &cg) {
-    auto et = exprtype;
     auto tv = cg.T();
-    cg.L(cg.CT(et), " ", tv, ";");
-    // `baseoff` is where the fields run starts within the whole value, so a
-    // `self` field can store its (constant) offset back to it.
-    auto fieldset = [&](const string &base, const vector<Field> &fields,
-                        const vector<TypeExpr *> &ftypes, const vector<Node *> &defaults,
-                        const CodeGen::Layout &lo, int64_t baseoff) {
-        for (size_t i = 0; i < fields.size(); i++) {
-            if (fields[i].ispad) continue;
-            Node *init = nullptr;
-            for (size_t k = 0; k < fieldindices.size(); k++)
-                if (fieldindices[k] == (int)i) init = inits[k].val;
-            if (!init && i < defaults.size() && defaults[i]) init = defaults[i];
-            auto ft = ftypes[i];
-            auto path = cat(base, ".", cg.Sanitize(fields[i].name));
-            if (!init) {   // Omitted optional: null.
-                assert(ft->kind == TY_REF);
-                cg.L("memset(&", path, ", 0, sizeof(", path, "));");
-                continue;
-            }
-            if (ft->kind == TY_REF && ft->ref->lenstorage >= 0) {
-                if (Is<SelfRef>(init))
-                    cg.EmitRelSelfAt(cat("(uint8_t *)&", path), ft, baseoff + lo.offs[i], line);
-                else
-                    cg.EmitRelStoreAt(cat("(uint8_t *)&", path), ft, cg.GenX(init), line, false);
-                continue;
-            }
-            cg.GenAny(init, Dst { 1, path });
-        }
-    };
-    if (et->kind == TY_STRUCT) {
-        auto si = cg.SI(et);
-        fieldset(tv, si->st->fields, si->ftypes, si->defaults, cg.StructLayout(si), 0);
-        return tv;
-    }
-    if (et->kind == TY_VARIANT) {
-        auto ei = cg.EIVar(et);
-        auto vi = cg.VarIdx(ei->en, et->var->variant);
-        if (ei->en->variants[vi].fields.empty()) cg.L("memset(&", tv, ", 0, sizeof(", tv, "));");
-        fieldset(tv, ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi],
-                 cg.VariantLayout(ei, vi), 0);
-        return tv;
-    }
-    assert(et->kind == TY_ENUM && !et->enu->varmode && variant);
-    auto ei = cg.EIOf(et);
-    auto vi = cg.VarIdx(ei->en, variant);
-    cg.L(tv, ".tag = ", cg.TagConst(ei, vi), ";");
-    if (!ei->en->variants[vi].fields.empty())
-        fieldset(cat(tv, ".u.v_", cg.Sanitize(ei->en->variants[vi].name)),
-                 ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi],
-                 cg.VariantLayout(ei, vi), cg.TagSize(ei->en));
+    cg.L(cg.CT(exprtype), " ", tv, ";");
+    cg.StructLitAt(this, tv, false);
     return tv;
 }
 

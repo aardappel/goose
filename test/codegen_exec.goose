@@ -240,6 +240,48 @@ fn self_links() {
     print(k.back.back.n);                // 4
 }
 
+// --- relative references: literals built at their destination ---------------
+
+struct RelCell { v: i64, link: RelCell&<u16>? }
+struct RelPair { one: RelCell, two: RelCell }
+struct RelSlot { n: i64 = 0, up: RelSlot&<u16>? }
+
+fn relink(c: RelCell&, t: RelCell&) {
+    c = RelCell { v: 9, link: t };       // Whole-value store through a reference.
+}
+
+// Every destination here is an element of the array the offsets range over,
+// so the stored offsets are small; measured from anywhere else they overflow
+// the u16 width and abort (§3.9).
+fn rel_inplace() {
+    var a: RelCell[>..] = [];
+    a.push(RelCell { v: 1 });
+    a.push(RelCell { v: 2 });
+    a.push(RelCell { v: 3 });
+    a[2] = RelCell { v: 30, link: &a[1] };   // Element assignment.
+    let l = a[2].link;
+    if l { print(l.v * 10 + a[2].v); }   // 2*10+30 = 50
+    relink(&a[0], &a[2]);
+    let m = a[0].link;
+    if m { print(m.v + a[0].v); }        // 30+9 = 39
+    var p: RelPair[>..] = [];
+    p.push(RelPair { one: RelCell { v: 1 }, two: RelCell { v: 2 } });
+    p[0].two = RelCell { v: 7, link: &p[0].one };   // Struct-typed field.
+    let n = p[0].two.link;
+    if n { print(n.v * 10 + p[0].two.v); }   // 1*10+7 = 17
+}
+
+fn rel_pool() {
+    reusable var pool: RelSlot[>..] = [];
+    let a = pool.alloc_index(RelSlot { n: 1 });
+    let b = pool.alloc_index(RelSlot { n: 2, up: &pool[a] });   // Built in the slot.
+    let u = pool[b].up;
+    if u { print(u.n * 10 + pool[b].n); }   // 12
+    let c: RelSlot& = pool.alloc_ref(RelSlot { n: 3, up: &pool[b] });
+    let w = c.up;
+    if w { print(w.n * 10 + c.n); }      // 23
+}
+
 // --- f32 storage and arrays --------------------------------------------------
 
 struct F3 { x: f32, y: f32, z: f32 }
@@ -567,6 +609,10 @@ fn seqvar() {
 
 fn addu8(a: u8, b: u8) -> u8 { a + b }
 
+// Not folded at -O0, so the checked narrowing survives to the C: its range
+// check names i32's bounds, i32.min among them.
+fn narrow32(v: i64) -> i32 { v as i32 }
+
 fn sized() {
     var a: u8 = 250;
     let b = a;                           // Inference keeps the size: b is u8.
@@ -592,12 +638,15 @@ fn sized() {
     narrow--;
     print(narrow as i64 * 2);            // -602
     print((1 as u8) << 9);               // 2 (the count is masked to the width: 9 & 7)
+    print(narrow32(widened));            // -70000 (checked narrowing back to i32)
+    print(narrow32(-2147483648));        // -2147483648 (i32.min passes its own check)
 }
 
 // --- print edges -------------------------------------------------------------
 
 fn printedges() {
     print(-9223372036854775807 - 1);     // int64 min
+    print(-2147483648);                  // int32 min, as an i64 literal
     print(0.1);
     print(1.0e300);
     print(1.0 / 3.0);
@@ -1021,6 +1070,8 @@ fn main_codegen_exec() {
     fixed_adts();
     rel_refs();
     self_links();
+    rel_inplace();
+    rel_pool();
     f32s();
     controls(8);
     capture_test();
