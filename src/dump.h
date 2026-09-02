@@ -293,6 +293,8 @@ inline void AsCast::Dump(string &s, int ind) const {
 
 inline void NullLit::Dump(string &s, int) const { s += "null"; }
 
+inline void SelfRef::Dump(string &s, int) const { s += "self"; }
+
 inline void RangeExpr::Dump(string &s, int ind) const {
     lo->Dump(s, ind);
     s += "..";

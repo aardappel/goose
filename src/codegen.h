@@ -2879,6 +2879,26 @@ struct CodeGen {
         }
     }
 
+    // `self` in a literal field (§3.9): the slot at `fa` gets the offset back
+    // to the start of the value under construction, which for a fixed layout
+    // is minus the field's own byte offset in it. Such an offset is the same
+    // wherever the value lives, so unlike other relative references it
+    // survives being built in a temp and copied into place.
+    void EmitRelSelfAt(const string &fa, TypeExpr *rt, int64_t fieldoff, Line ln) {
+        auto w = (IntStorage)rt->ref->lenstorage;
+        assert(w != IS_VARINT);
+        auto bits = IntSize(w) * 8;
+        if (bits < 64 && fieldoff > (1LL << (bits - 1)))
+            Fail(ln, cat("self at byte offset ", fieldoff, " does not fit a ",
+                         IntStorageName(w), "-width relative reference"));
+        L("*(", RelCT(w), " *)(", fa, ") = (", RelCT(w), ")", -fieldoff, ";");
+    }
+
+    void EmitRelSelfStore(const string &stk, TypeExpr *rt, int64_t fieldoff, Line ln) {
+        EmitRelSelfAt(Top(stk), rt, fieldoff, ln);
+        Bump(stk, cat(IntSize((IntStorage)rt->ref->lenstorage)));
+    }
+
     // Does a fixed type contain relative references at any depth? Literals of
     // such types must construct in their final location, not via a temp.
     bool HasRelRef(TypeExpr *t) {
@@ -3252,13 +3272,16 @@ struct CodeGen {
             L("memset(", Top(stk), ", 0, ", bytes, ");");
             Bump(stk, cat(bytes));
         };
-        auto EmitF = [&](Node *init, TypeExpr *ft) {
+        // `fieldoff` is the field's byte offset within the value, which is
+        // what a `self` initializer stores the negation of.
+        auto EmitF = [&](Node *init, TypeExpr *ft, int64_t fieldoff = 0) {
             if (!init) {   // Omitted optional: null.
                 Gap(FixedSize(ft));
                 return;
             }
             if (ft->kind == TY_REF && ft->ref->lenstorage >= 0) {
-                EmitRelStore(stk, ft, GenX(init), n->line);
+                if (Is<SelfRef>(init)) EmitRelSelfStore(stk, ft, fieldoff, n->line);
+                else EmitRelStore(stk, ft, GenX(init), n->line);
                 return;
             }
             if ((Is<StructLit>(init) || Is<ArrayLit>(init)) && HasRelRef(ft)) {
@@ -3294,8 +3317,11 @@ struct CodeGen {
         }
         auto sl = Is<StructLit>(n);
         assert(sl);
+        // `base` is where the fields run starts within the value: past the tag
+        // for a literal constructing its enum, zero otherwise.
         auto emitfields = [&](const vector<Field> &fields, const vector<TypeExpr *> &ftypes,
-                              const vector<Node *> &defaults, const Layout &lo, int64_t total) {
+                              const vector<Node *> &defaults, const Layout &lo, int64_t total,
+                              int64_t base) {
             int64_t cur = 0;
             for (size_t i = 0; i < fields.size(); i++) {
                 if (fields[i].ispad) continue;
@@ -3305,7 +3331,7 @@ struct CodeGen {
                 for (size_t k = 0; k < sl->fieldindices.size(); k++)
                     if (sl->fieldindices[k] == (int)i) init = sl->inits[k].val;
                 if (!init && i < defaults.size() && defaults[i]) init = defaults[i];
-                EmitF(init, ftypes[i]);
+                EmitF(init, ftypes[i], base + lo.offs[i]);
                 cur += FixedSize(ftypes[i]);
             }
             Gap(total - cur);
@@ -3313,7 +3339,7 @@ struct CodeGen {
         if (et->kind == TY_STRUCT) {
             auto si = SI(et);
             auto &lo = StructLayout(si);
-            emitfields(si->st->fields, si->ftypes, si->defaults, lo, lo.size);
+            emitfields(si->st->fields, si->ftypes, si->defaults, lo, lo.size, 0);
             return;
         }
         if (et->kind == TY_VARIANT) {
@@ -3321,7 +3347,7 @@ struct CodeGen {
             auto vi = VarIdx(ei->en, et->var->variant);
             auto &lo = VariantLayout(ei, vi);
             emitfields(ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi], lo,
-                       lo.size);
+                       lo.size, 0);
             return;
         }
         assert(et->kind == TY_ENUM && !et->enu->varmode && sl->variant);
@@ -3330,7 +3356,7 @@ struct CodeGen {
         EmitValStoreTag(stk, TagStore(ei->en), TagConst(ei, vi));
         auto &lo = VariantLayout(ei, vi);
         emitfields(ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi], lo,
-                   lo.size);
+                   lo.size, TagSize(ei->en));
         Gap(FixedSize(et) - TagSize(ei->en) - lo.size);
     }
 
@@ -3403,12 +3429,25 @@ struct CodeGen {
         for (auto e : al->elems) GenConstruct(e, stk);
     }
 
+    // Does this literal name `self` directly? Such a literal has no static
+    // layout here, so the address it constructs at must be captured before
+    // any of its bytes are written.
+    static bool HasSelfInit(StructLit *sl) {
+        for (auto &fi : sl->inits) if (Is<SelfRef>(fi.val)) return true;
+        return false;
+    }
+
     // Struct/variant literal into a bytes destination: fields in layout
     // order, defaults (or a zero optional) for omitted ones. Named inits out
     // of declaration order still construct in layout order (a note against
     // §2's left-to-right rule; flagged for the spec).
     void GenStructLit(StructLit *sl, const string &stk, const string &lenlv = "") {
         auto et = sl->exprtype;
+        string selfbase;
+        if (HasSelfInit(sl)) {
+            selfbase = T();
+            L("uint8_t *", selfbase, " = ", Top(stk), ";");
+        }
         if (et->kind == TY_ENUM) {
             assert(et->enu->varmode && sl->variant);
             auto ei = EIOf(et);
@@ -3418,24 +3457,25 @@ struct CodeGen {
             // the receiving header length zero.
             if (!lenlv.empty() && IsFix(VariantType(et, vi))) L(lenlv, " = 0;");
             GenFieldInits(sl, ei->en->variants[vi].fields, ei->vftypes[vi],
-                          ei->vdefaults[vi], stk, lenlv);
+                          ei->vdefaults[vi], stk, lenlv, selfbase);
             return;
         }
         if (et->kind == TY_VARIANT) {
             auto ei = EIVar(et);
             auto vi = VarIdx(ei->en, et->var->variant);
             GenFieldInits(sl, ei->en->variants[vi].fields, ei->vftypes[vi],
-                          ei->vdefaults[vi], stk, lenlv);
+                          ei->vdefaults[vi], stk, lenlv, selfbase);
             return;
         }
         assert(et->kind == TY_STRUCT);
         auto si = SI(et);
-        GenFieldInits(sl, si->st->fields, si->ftypes, si->defaults, stk, lenlv);
+        GenFieldInits(sl, si->st->fields, si->ftypes, si->defaults, stk, lenlv, selfbase);
     }
 
     void GenFieldInits(StructLit *sl, const vector<Field> &fields,
                        const vector<TypeExpr *> &ftypes, const vector<Node *> &defaults,
-                       const string &stk, const string &lenlv = "") {
+                       const string &stk, const string &lenlv = "",
+                       const string &selfbase = "") {
         for (size_t i = 0; i < fields.size(); i++) {
             if (fields[i].ispad) {
                 auto n = fields[i].padsize > 0 ? fields[i].padsize : 0;
@@ -3455,7 +3495,9 @@ struct CodeGen {
                            Bump(stk, cat(IntSize((IntStorage)ft->ref->lenstorage))); }
                     continue;
                 }
-                auto rv = GenX(init);
+                // A `self` field points at the value this literal is building,
+                // whose start was captured above.
+                auto rv = Is<SelfRef>(init) ? selfbase : GenX(init);
                 EmitRelStore(stk, ft, rv, sl->line);
                 continue;
             }
@@ -5816,8 +5858,11 @@ inline string StructLit::CgX(CodeGen &cg) {
     auto et = exprtype;
     auto tv = cg.T();
     cg.L(cg.CT(et), " ", tv, ";");
+    // `baseoff` is where the fields run starts within the whole value, so a
+    // `self` field can store its (constant) offset back to it.
     auto fieldset = [&](const string &base, const vector<Field> &fields,
-                        const vector<TypeExpr *> &ftypes, const vector<Node *> &defaults) {
+                        const vector<TypeExpr *> &ftypes, const vector<Node *> &defaults,
+                        const CodeGen::Layout &lo, int64_t baseoff) {
         for (size_t i = 0; i < fields.size(); i++) {
             if (fields[i].ispad) continue;
             Node *init = nullptr;
@@ -5832,7 +5877,10 @@ inline string StructLit::CgX(CodeGen &cg) {
                 continue;
             }
             if (ft->kind == TY_REF && ft->ref->lenstorage >= 0) {
-                cg.EmitRelStoreAt(cat("(uint8_t *)&", path), ft, cg.GenX(init), line);
+                if (Is<SelfRef>(init))
+                    cg.EmitRelSelfAt(cat("(uint8_t *)&", path), ft, baseoff + lo.offs[i], line);
+                else
+                    cg.EmitRelStoreAt(cat("(uint8_t *)&", path), ft, cg.GenX(init), line);
                 continue;
             }
             cg.GenAny(init, Dst { 1, path });
@@ -5840,14 +5888,15 @@ inline string StructLit::CgX(CodeGen &cg) {
     };
     if (et->kind == TY_STRUCT) {
         auto si = cg.SI(et);
-        fieldset(tv, si->st->fields, si->ftypes, si->defaults);
+        fieldset(tv, si->st->fields, si->ftypes, si->defaults, cg.StructLayout(si), 0);
         return tv;
     }
     if (et->kind == TY_VARIANT) {
         auto ei = cg.EIVar(et);
         auto vi = cg.VarIdx(ei->en, et->var->variant);
         if (ei->en->variants[vi].fields.empty()) cg.L("memset(&", tv, ", 0, sizeof(", tv, "));");
-        fieldset(tv, ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi]);
+        fieldset(tv, ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi],
+                 cg.VariantLayout(ei, vi), 0);
         return tv;
     }
     assert(et->kind == TY_ENUM && !et->enu->varmode && variant);
@@ -5856,7 +5905,8 @@ inline string StructLit::CgX(CodeGen &cg) {
     cg.L(tv, ".tag = ", cg.TagConst(ei, vi), ";");
     if (!ei->en->variants[vi].fields.empty())
         fieldset(cat(tv, ".u.v_", cg.Sanitize(ei->en->variants[vi].name)),
-                 ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi]);
+                 ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi],
+                 cg.VariantLayout(ei, vi), cg.TagSize(ei->en));
     return tv;
 }
 
@@ -5878,6 +5928,7 @@ inline string Break::CgX(CodeGen &cg) { cg.Fail(line, "internal: Break as value"
 inline string Continue::CgX(CodeGen &cg) { cg.Fail(line, "internal: Continue as value"); }
 inline string RangeExpr::CgX(CodeGen &cg) { cg.Fail(line, "internal: RangeExpr as value"); }
 inline string FunVal::CgX(CodeGen &cg) { cg.Fail(line, "internal: FunVal as value"); }
+inline string SelfRef::CgX(CodeGen &cg) { cg.Fail(line, "internal: self as value"); }
 inline string VarDecl::CgX(CodeGen &cg) { cg.Fail(line, "internal: VarDecl as value"); }
 inline string Assign::CgX(CodeGen &cg) { cg.Fail(line, "internal: Assign as value"); }
 inline string IncDec::CgX(CodeGen &cg) { cg.Fail(line, "internal: IncDec as value"); }
@@ -6113,6 +6164,7 @@ inline void Return::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
 inline void Break::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
 inline void Continue::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
 inline void FunVal::CgAny(CodeGen &cg, const Dst &) { cg.Fail(line, "internal: FunVal emitted"); }
+inline void SelfRef::CgAny(CodeGen &cg, const Dst &) { cg.Fail(line, "internal: self emitted"); }
 inline void VarDecl::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
 inline void Assign::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
 inline void IncDec::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
@@ -6419,6 +6471,7 @@ inline void EarlyBlock::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
 inline void LoopExpr::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
 inline void InlineBlock::CgStmt(CodeGen &cg) { cg.GenAny(this, Dst {}); }
 inline void FunVal::CgStmt(CodeGen &cg) { cg.Fail(line, "internal: FunVal statement"); }
+inline void SelfRef::CgStmt(CodeGen &cg) { cg.Fail(line, "internal: self statement"); }
 inline void StructDecl::CgStmt(CodeGen &) {}
 inline void EnumDecl::CgStmt(CodeGen &) {}
 inline void AliasDecl::CgStmt(CodeGen &) {}

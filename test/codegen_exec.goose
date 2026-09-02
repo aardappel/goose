@@ -165,6 +165,37 @@ fn rel_refs() {
     print(walk);                         // 321
 }
 
+// --- relative references: self-linked construction ---------------------------
+
+struct Ring { v: u8, prev: Ring&<u16>, next: Ring&<u16> }
+enum Knot { Loop { n: u8, back: Knot.Loop&<u8> }, Plain { n: u8 } }
+
+reusable var ringpool: Ring[>..] = [];
+
+fn self_links() {
+    // A sentinel: nothing else exists yet, so `self` is the only reference
+    // its non-optional links can hold.
+    let hi = ringpool.alloc_index(Ring { v: 1, prev: self, next: self });
+    print(ringpool[hi].prev.v * 10 + ringpool[hi].next.v);   // 11
+    // Two sentinels closed into a circle once both exist.
+    let ti = ringpool.alloc_index(Ring { v: 2, prev: self, next: self });
+    ringpool[hi].next .= &ringpool[ti];
+    ringpool[hi].prev .= &ringpool[ti];
+    ringpool[ti].next .= &ringpool[hi];
+    ringpool[ti].prev .= &ringpool[hi];
+    var cur: Ring& = &ringpool[hi];
+    var walk = 0;
+    for i in 5 { walk = walk * 10 + cur.v; cur .= cur.next; }
+    print(walk);                         // 12121
+    var back = 0;
+    for i in 3 { back = back * 10 + cur.v; cur .= cur.prev; }
+    print(back);                         // 212
+    // The same inside a variant literal, built at the stack top.
+    var knots: Knot.Loop[>..] = [];
+    let k: Knot.Loop& = knots.push(Knot.Loop { n: 4, back: self });
+    print(k.back.back.n);                // 4
+}
+
 // --- f32 storage and arrays --------------------------------------------------
 
 struct F3 { x: f32, y: f32, z: f32 }
@@ -805,6 +836,7 @@ fn main_codegen_exec() {
     varint_fields();
     fixed_adts();
     rel_refs();
+    self_links();
     f32s();
     controls(8);
     capture_test();

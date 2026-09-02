@@ -543,6 +543,7 @@ inline Node *FltLit::Cp1(Inliner &inl) const { return inl.ast.New<FltLit>(line, 
 inline Node *BoolLit::Cp1(Inliner &inl) const { return inl.ast.New<BoolLit>(line, val); }
 inline Node *StrLit::Cp1(Inliner &inl) const { return inl.ast.New<StrLit>(line, val); }
 inline Node *NullLit::Cp1(Inliner &inl) const { return inl.ast.New<NullLit>(line); }
+inline Node *SelfRef::Cp1(Inliner &inl) const { return inl.ast.New<SelfRef>(line); }
 inline Node *Continue::Cp1(Inliner &inl) const { return inl.ast.New<Continue>(line); }
 
 inline Node *Ident::Cp1(Inliner &inl) const {
@@ -761,6 +762,7 @@ inline Node *FltLit::Opt(Optimizer &) { return this; }
 inline Node *BoolLit::Opt(Optimizer &) { return this; }
 inline Node *StrLit::Opt(Optimizer &) { return this; }
 inline Node *NullLit::Opt(Optimizer &) { return this; }
+inline Node *SelfRef::Opt(Optimizer &) { return this; }
 inline Node *Continue::Opt(Optimizer &) { return this; }
 inline Node *FnDecl::Opt(Optimizer &) { return this; }   // Inert statement.
 

@@ -833,6 +833,7 @@ struct Parser {
             case T_TRUE:  lex.Next(); return New<BoolLit>(line, true);
             case T_FALSE: lex.Next(); return New<BoolLit>(line, false);
             case T_NULLLIT: lex.Next(); return New<NullLit>(line);
+            case T_SELF:  lex.Next(); return New<SelfRef>(line);
             case T_LPAREN: {
                 lex.Next();
                 auto save = no_struct_lit;
