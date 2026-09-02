@@ -59,7 +59,7 @@ $stackReserve = "8589934592ull"
 
 $benchmarks = @(
     @{ name = "sum"
-       summary = 'A dead heat between Goose, Rust and the exactly-reserved vector (296 / 296 / 318 ms) on memory identical to within 0.1%, which is what the control should show: flat scalar data, same layout everywhere, nothing to win. The only row that loses is the unreserved vector at 1.5x, and that gap does not exist against Rust, because collect() over a TrustedLen iterator sizes the allocation exactly -- the idiomatic Rust spelling gets for free what C++ only gets from a remembered reserve.'
+       summary = 'The control is now a narrow Goose win rather than the dead heat it used to be: 295 ms against Rust 311 and the exactly-reserved vector 334, on memory identical to within 0.1%. Caching each data stack top in a local took 6% off the fill loop under both backends, and on flat scalar data that push loop is most of what there is to win -- under clang, where the backend already kept the top in a register, Goose and Rust are still level at 311. The only row that really loses is the unreserved vector at 1.6x, and that gap does not exist against Rust, because collect() over a TrustedLen iterator sizes the allocation exactly.'
        what = "Control: build a flat i32 array, then scan it eight times."
        sizes = @(1000000, 16000000, 128000000)
        goose = @(@{ label = "goose grow-only array"; file = "sum.goose" })
@@ -68,7 +68,7 @@ $benchmarks = @(
        rust = @(@{ label = "rust Vec, collect"; file = "sum.rs" }) },
 
     @{ name = "push"
-       summary = 'A three-way tie on time and memory between Goose, the exactly-reserved C++ vector and Rust (161 / 179 / 162 ms, 500 MB each) -- and the most interesting row in the suite because of what the tie cost. Goose keeps real Item& pointers that stay valid across every later push. Safe Rust cannot: a &Item borrows the vector, so the next push does not compile, and no std container is both pointer-stable and O(1)-append. Its marks are usize indices because that is the only shape the language admits, not because it is faster. C++ has the same problem, and its one pointer-stable answer, deque, is 9.8x slower and 2.5x larger.'
+       summary = 'Goose 150 ms against the exactly-reserved C++ vector 185 and Rust 168, on 500 MB for all three: what used to be a three-way tie is a 12% Goose lead since the data stack top moved into a local, which is exactly the loop this benchmark is made of. It stays the most interesting row in the suite for a reason unrelated to time. Goose keeps real Item& pointers that stay valid across every later push. Safe Rust cannot: a &Item borrows the vector, so the next push does not compile, and no std container is both pointer-stable and O(1)-append. Its marks are usize indices because that is the only shape the language admits, not because it is faster. C++ has the same problem, and its one pointer-stable answer, deque, is 10.9x slower and 2.5x larger.'
        what = "Push N records while keeping pointers to every 64th one."
        sizes = @(1000000, 16000000, 64000000)
        goose = @(@{ label = "goose array, typed references"; file = "push.goose" })
@@ -78,7 +78,7 @@ $benchmarks = @(
        rust = @(@{ label = "rust Vec+reserve, indices"; file = "push.rs" }) },
 
     @{ name = "strlist"
-       summary = 'Against the two rows that own their bytes the way Goose does, Goose is 2.9x faster than vector<string> and 2.7x faster than Rust Vec<String>, on 3.2x and 2.2x less memory. Against the borrowing rows it is 8-9% ahead of Rust Vec<&str> and 6-19% ahead of hand-rolled C++ offsets -- but those are views into a text buffer they cannot outlive, which the Goose list is not. Borrowing is the Rust default rather than an optimisation someone has to be talked into, so Vec<&str> is what a Rust programmer writes first; ownership is the question worth asking of it.'
+       summary = 'Against the two rows that own their bytes the way Goose does, Goose is 2.7-3.0x faster than vector<string> and 2.8x faster than Rust Vec<String>, on 3.2x and 2.2x less memory. Against the borrowing rows it is 11-13% ahead of Rust Vec<&str> and 7-22% ahead of hand-rolled C++ offsets -- but those are views into a text buffer they cannot outlive, which the Goose list is not. Borrowing is the Rust default rather than an optimisation someone has to be talked into, so Vec<&str> is what a Rust programmer writes first; ownership is the question worth asking of it.'
        what = "Split a text into N words, keep them as a list, scan it four times."
        sizes = @(200000, 2000000, 8000000)
        goose = @(@{ label = "goose inline strings, owned"; file = "strlist.goose" })
@@ -100,7 +100,7 @@ $benchmarks = @(
        rust = @(@{ label = "rust enum + String"; file = "records.rs" }) },
 
     @{ name = "tree"
-       summary = 'Goose is 4.3-4.5x faster than owning-pointer nodes in both languages (unique_ptr 2,907 ms, Rust Box 2,844) on 2.7x less memory, and 3-16% faster than the two arena rows while matching their memory to within 0.2%. That the three arena rows land together is the finding: to get there both Rust and C++ give up pointers for u32 indices into a Vec, because neither will let a node hold a reference into the container that owns it. Goose links the same layout with typed, nullable, 4-byte relative references, and never frees.'
+       summary = 'Goose is 4.4-4.7x faster than owning-pointer nodes in both languages (unique_ptr 2,974-3,084 ms, Rust Box 2,902) on 2.7x less memory, and 6-15% faster than the two arena rows while matching their memory to within 0.2%. That the three arena rows land together is the finding: to get there both Rust and C++ give up pointers for u32 indices into a Vec, because neither will let a node hold a reference into the container that owns it. Goose links the same layout with typed, nullable, 4-byte relative references, and never frees.'
        what = "Build a complete binary tree of the given depth, sum it eight times."
        param = "depth"
        sizes = @(16, 20, 24)
@@ -112,7 +112,7 @@ $benchmarks = @(
                 @{ label = "rust arena + indices"; file = "tree_arena.rs" }) },
 
     @{ name = "interp"
-       summary = 'Goose is 1.3x faster than the best Rust row on 2.2x less memory, and 1.3x faster than a C++ tagged union on 2.4x less. Rust dispatches well -- a byte tag, a jump table, no vtable pointer -- and its arena row is the most compact of the non-Goose rows, so the remaining gap is representation: a variable-mode leaf costs 5 bytes and a binary node 9, where every fixed enum pays max-payload for both. The Rust Box row is the slowest in the benchmark at 448 ms, behind even C++ virtual dispatch, because an allocation per node plus a recursive drop costs more than a vtable does.'
+       summary = 'Goose is 1.3-1.4x faster than the best Rust row on 2.2x less memory, and 1.3-1.4x faster than a C++ tagged union on 2.4x less. Rust dispatches well -- a byte tag, a jump table, no vtable pointer -- and its arena row is the most compact of the non-Goose rows, so the remaining gap is representation: a variable-mode leaf costs 5 bytes and a binary node 9, where every fixed enum pays max-payload for both. The Rust Box row is the slowest in the benchmark at 463 ms, behind even C++ virtual dispatch, because an allocation per node plus a recursive drop costs more than a vtable does.'
        what = "Build an expression tree of the given depth, evaluate it eight times."
        param = "depth"
        sizes = @(16, 20, 24)
@@ -124,7 +124,7 @@ $benchmarks = @(
                 @{ label = "rust enum + arena indices"; file = "interp_arena.rs" }) },
 
     @{ name = "graph"
-       summary = 'A wash where it counts: Goose CSR, C++ CSR and Rust CSR are level (798-877 ms on the same memory), which is the honest result, because every language wants CSR here. The one-pass linked build is 5-6x slower than CSR in all three, so that is a data-structure effect and not a language one. What Goose buys is that its one-pass version is written with real Edge& references into a growing pool; the Rust equivalent must chain u32 indices, and there is no safe Rust spelling of the pointer version at any level of effort. Rust Vec<Vec> is 1.6x faster than the C++ vector<vector> it mirrors.'
+       summary = 'A wash where it counts: Goose CSR, C++ CSR and Rust CSR are level (870-935 ms on the same memory), which is the honest result, because every language wants CSR here. The one-pass linked build is 4.5-5.7x slower than CSR in all three, so that is a data-structure effect and not a language one. What Goose buys is that its one-pass version is written with real Edge& references into a growing pool; the Rust equivalent must chain u32 indices, and there is no safe Rust spelling of the pointer version at any level of effort. Rust Vec<Vec> is 1.6x faster than the C++ vector<vector> it mirrors. This is much the noisiest benchmark in the suite: between two full harness runs the linked rows moved by up to 23%, in every language at once (Rust arena 23%, C++ arena 17-21%, Goose 3-16%), so only the large gaps here mean anything.'
        what = "Build adjacency for V vertices and 8V edges in one pass, then BFS from four sources."
        param = "V"
        sizes = @(100000, 500000, 2000000)
@@ -138,7 +138,7 @@ $benchmarks = @(
                 @{ label = "rust arena + indices"; file = "graph_arena.rs" }) },
 
     @{ name = "words"
-       summary = 'Goose is level with a hand-rolled open-addressed table in Rust (2,126-1,941 ms against 2,140) on 21% less memory than it, and 1.4-1.5x faster than HashMap<&str> on 4% less. Both languages get borrowed keys from their idiomatic map -- that is the Rust default, and the thing a C++ programmer has to be talked into -- so the HashMap gap is the hash function: std SipHash-1-3 is keyed and DoS-resistant by policy, which costs about 39% here, and which the Rust community answers with a third-party hasher crate that this std-only suite does not use.'
+       summary = 'Goose is level with a hand-rolled open-addressed table in Rust (2,127-2,021 ms against 2,187) on 21% less memory than it, and 1.4-1.5x faster than HashMap<&str> on 4% less. Both languages get borrowed keys from their idiomatic map -- that is the Rust default, and the thing a C++ programmer has to be talked into -- so the HashMap gap is the hash function: std SipHash-1-3 is keyed and DoS-resistant by policy, which costs about 39% here, and which the Rust community answers with a third-party hasher crate that this std-only suite does not use.'
        what = "Count word frequencies over a text of N words."
        sizes = @(500000, 4000000, 16000000)
        goose = @(@{ label = "goose slices + open addressing"; file = "words.goose" })
@@ -149,7 +149,7 @@ $benchmarks = @(
                 @{ label = "rust open addressing"; file = "words_open.rs" }) },
 
     @{ name = "particles"
-       summary = 'A draw, and the one benchmark where Goose is never ahead: 862 ms for Rust against 862-881 for Goose and 832-916 for C++, all within noise on identical memory. Elementwise notation is free in both languages that can express it -- Goose 881 against 917, Rust 862 against 872 -- so impl Add for F3 costs a Rust programmer nothing but the boilerplate, and Goose costs nothing at all. The struct-of-arrays C++ row is slower than array-of-structs under both toolchains.'
+       summary = 'The one benchmark where Goose is never ahead, and this round it moved further against Goose under clang: Rust 854 ms against Goose 870 under v145 and 902 under clang, with C++ spanning 824-916, on identical memory. The clang side is a real regression and not noise -- caching data stack tops in locals costs both float kernels about 6% under clang (854 -> 907 ms in a per-commit A/B with -falign-loops=32 controlling for code alignment) while winning 6-14% on the array and pointer benchmarks -- and it is tracked separately. Elementwise notation is free in both languages that can express it: Goose 908 against 870, Rust 868 against 854. The struct-of-arrays C++ row is slower than array-of-structs under both toolchains.'
        what = "Integrate N particles for 200 steps of f32 vector math."
        sizes = @(100000, 1000000, 4000000)
        goose = @(@{ label = "goose AoS, elementwise"; file = "particles.goose" },
@@ -161,7 +161,7 @@ $benchmarks = @(
                 @{ label = "rust AoS, per component"; file = "particles_scalar.rs" }) },
 
     @{ name = "sexp"
-       summary = 'The flagship, and the closest Rust gets on time: 1,569 ms against 1,413-1,530, on 1.9x the memory. Both fast rows are arenas whose symbols borrow the source text; Goose stores symbol bytes inline behind a varint length in nodes exactly as big as their variant needs, and never frees. The idiomatic owning shapes are 2.8x slower in Rust and 3.3-3.5x in C++. The Rust borrow works here only because the text is complete before parsing starts -- a parser that interned or rewrote text while building nodes would be back to owned Strings or offsets.'
+       summary = 'The flagship, and the closest Rust gets on time: 1,612 ms against 1,467-1,522, on 1.9x the memory. Both fast rows are arenas whose symbols borrow the source text; Goose stores symbol bytes inline behind a varint length in nodes exactly as big as their variant needs, and never frees. The idiomatic owning shapes are 2.8x slower in Rust and 3.0-3.3x in C++. The Rust borrow works here only because the text is complete before parsing starts -- a parser that interned or rewrote text while building nodes would be back to owned Strings or offsets.'
        what = "Generate N s-expression forms, parse them into a tree, walk it four times."
        sizes = @(20000, 100000, 300000)
        goose = @(@{ label = "goose pool + refs, inline text"; file = "sexp.goose" })
