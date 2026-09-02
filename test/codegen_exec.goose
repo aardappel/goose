@@ -267,6 +267,43 @@ fn longdistance() {
     print(deepr(5));                     // 5
 }
 
+// A propagating callee whose own result is a reference, so the discriminant
+// cannot ride in the returned value.
+struct RCell { v: i64 }
+
+recursive fn refpick(pool: RCell[>..]&, n: i64) -> RCell& {
+    if n == 0 { return -1 from refroot; }
+    if n == 1 { return pool.push(RCell { v: 10 }); }
+    return refpick(pool, n - 1);
+}
+
+fn refroot(n: i64) -> i64 {
+    var pool: RCell[>..] = [];
+    let c: RCell& = refpick(&pool, n);
+    return c.v + pool.len;
+}
+
+// Two intermediate frames with scalar results between the target and the site.
+recursive fn scal_inner(n: i64) -> i64 {
+    if n < 0 { return 7 from scal_top; }
+    if n > 100 { return scal_inner(n - 100); }
+    return n * 2;
+}
+
+recursive fn scal_mid(n: i64) -> i64 {
+    if n > 1000 { return scal_mid(n - 1000); }
+    return scal_inner(n) + 1;
+}
+
+fn scal_top(n: i64) -> i64 { scal_mid(n) + 100 }
+
+fn longdistance2() {
+    print(refroot(3));                   // 11: the pushed cell, plus one node
+    print(refroot(0));                   // -1
+    print(scal_top(4));                  // 109
+    print(scal_top(0 - 1));              // 7
+}
+
 // --- NRVO both ways ----------------------------------------------------------
 
 fn build(n: i64) -> u8[>..] {
@@ -674,6 +711,7 @@ fn main_codegen_exec() {
     capture_test();
     multis();
     longdistance();
+    longdistance2();
     nrvo();
     casts();
     u64_compare();

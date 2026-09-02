@@ -1615,9 +1615,12 @@ stack (§1.3(2)); where its length lives depends on nesting:
   in-flight return data carries no inline header above the caller's live
   data, `v.append(f())` is contiguous by construction.
 * Hidden arguments, in order after declared ones: free-variable references
-  (§7.5), destination/target stack identities; the `return from`
-  discriminant is a second return value (an int: 0 = normal, k = propagate
-  to target k).
+  (§7.5), destination/target stack identities. The `return from`
+  discriminant is not in the signature: it is a single thread-local int
+  (0 = normal, k = propagate to target k) that is zero except between a
+  `return … from` and the catch in its target frame, so an ordinary return
+  writes nothing and a call on a propagation path costs a load and a
+  never-taken branch.
 
 ### C.4 Guard pages and commit order
 

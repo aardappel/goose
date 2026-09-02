@@ -25,10 +25,14 @@
 //   passed as a hidden gs_stack* argument (guaranteed in-place, §4.3/§7.3);
 //   the C function returns nothing for them. `v.append(f())` calls f at v's
 //   top and then slides the result's 8-byte length header out (see EmitCall).
-// * `return ... from` (§7.9) uses a hidden int32* discriminant out-argument
-//   on every function on a propagation path, plus per-target thread-local
-//   channels for the in-flight fixed values (nonfixed ones land directly on
-//   the target's destination stack, recorded thread-locally at target entry).
+// * `return ... from` (§7.9) signals through one thread-local discriminant,
+//   gs_rf, plus per-target thread-local channels for the in-flight fixed
+//   values (nonfixed ones land directly on the target's destination stack,
+//   recorded thread-locally at target entry). gs_rf is zero except between a
+//   `return ... from` and the catch in its target frame, so only those two
+//   points write it: every other exit of a propagating function leaves it
+//   alone, and a call on a propagation path costs one load and a
+//   never-taken branch.
 //
 // Scope exits restore data-stack watermarks: every nonfixed local's own base
 // pointer doubles as the watermark to restore, so exits (fallthrough, break,
@@ -59,6 +63,11 @@ struct CodeGen {
     string protos;
     string code;        // Function bodies, size/eq helpers, thunks, main.
     bool usesthreads = false;
+    // Measurement only, and unsound: emit the whole `return ... from`
+    // machinery but none of the post-call discriminant checks, so a program
+    // that never takes a long-distance return still prints the right answer
+    // and the checks' cost can be priced (--unsafe-no-rf-check).
+    bool norfcheck = false;
 
     [[noreturn]] void Fail(Line l, const string &msg) {
         auto s = cat("codegen: ", msg);
@@ -1117,8 +1126,9 @@ struct CodeGen {
     //   [free-variable references, §7.5]
     //   [out-pointers for fixed returns after the first]
     //   [destination stacks for nonfixed returns]
-    //   [int64_t gs_sp]  [int32_t *gs_rf].
-    // The C return value is the first fixed return, else void.
+    //   [int64_t gs_sp].
+    // The C return value is the first fixed return, else void; a `return ...
+    // from` discriminant travels in the thread-local gs_rf, not the signature.
 
     struct SpecInfo {
         string cname;
@@ -1389,7 +1399,6 @@ struct CodeGen {
             }
         }
         if (si.needssp) add("int64_t gs_sp");
-        if (si.hasrf) add("int32_t *gs_rf");
         if (s.empty()) s = "void";
         return s;
     }
@@ -3728,17 +3737,18 @@ struct CodeGen {
         EmitExitRestores(0);
         MarkFlush();   // The caller and every later callee read stack tops from memory.
         for (auto &s : fdstsaves) L(s);
-        if (curinfo && curinfo->hasrf) L("*gs_rf = 0;");
         L(retv.empty() ? "return;" : cat("return ", retv, ";"));
         termjump = true;
     }
 
-    // The dummy C return value used on propagate paths.
+    // The dummy C return value used on propagate paths. `rfval` names the
+    // target to propagate to, or is empty when gs_rf already holds it (an
+    // intermediate frame passing on a propagation it did not start).
     void PropagateReturn(const string &rfval) {
         EmitExitRestores(0);
         MarkFlush();
         for (auto &s : fdstsaves) L(s);
-        L("*gs_rf = ", rfval, ";");
+        if (!rfval.empty()) L("gs_rf = ", rfval, ";");
         if (curinfo->cret >= 0) {
             auto d = T();
             L(CT(curspec->rets[curinfo->cret]), " ", d, " = {0};");
@@ -4052,12 +4062,6 @@ struct CodeGen {
             }
         }
         if (ki.needssp) args.push_back(SpTop());
-        string rfv;
-        if (ki.hasrf) {
-            rfv = T();
-            L("int32_t ", rfv, " = 0;");
-            args.push_back(cat("&", rfv));
-        }
         string argstr;
         for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
         auto callee = ername.empty() ? ki.cname : ername;
@@ -4093,7 +4097,7 @@ struct CodeGen {
               Top(slide.s), " - ", slidebase, " - ", ms, "));");
             L(TopW(slide.s), " -= ", ms, ";");
         }
-        if (ki.hasrf) EmitRfCheck(rfv, sp);
+        if (ki.hasrf) EmitRfCheck(sp);
         // A fixed first return requested onto a stack: store it (mixed cases
         // are handled above via cret; nothing more to do here).
         return retex;
@@ -4138,15 +4142,19 @@ struct CodeGen {
         L(TopW(dd.s), " += ", ms, " - ", oms, ";");
     }
 
-    void EmitRfCheck(const string &rfv, FnSpec *callee) {
-        L("if (", rfv, ") {");
+    void EmitRfCheck(FnSpec *callee) {
+        if (norfcheck) return;
+        L("if (gs_rf) {");
         ind++;
         auto caught = curspec && callee->needs.count(curspec->sf);
         if (caught) {
             auto tid = fromids[curspec->sf];
             EnsureFromChannels(curspec->sf);
-            L("if (", rfv, " == ", tid, ") {");
+            L("if (gs_rf == ", tid, ") {");
             ind++;
+            // The propagation ends here, so restore the "nothing in flight"
+            // state every other exit path relies on.
+            L("gs_rf = 0;");
             string retv;
             for (size_t i = 0; i < curspec->rets.size(); i++) {
                 if (IsResz(curspec->rets[i])) {
@@ -4162,12 +4170,12 @@ struct CodeGen {
             ind--;
             L("} else {");
             ind++;
-            if (curinfo && curinfo->hasrf) PropagateReturn(rfv);
+            if (curinfo && curinfo->hasrf) PropagateReturn("");
             else L("gs_panic(\"unexpected long-distance return\");");
             ind--;
             L("}");
         } else if (curinfo && curinfo->hasrf) {
-            PropagateReturn(rfv);
+            PropagateReturn("");
         } else {
             L("gs_panic(\"unexpected long-distance return\");");
         }
@@ -4360,12 +4368,6 @@ struct CodeGen {
                 else if ((int)i != ki.cret) args.push_back(cat("&", retex[i]));
             }
             if (ki.needssp) args.push_back(SpTop());
-            string rfv;
-            if (ki.hasrf) {
-                rfv = T();
-                L("int32_t ", rfv, " = 0;");
-                args.push_back(cat("&", rfv));
-            }
             string argstr;
             for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
             auto reach = SyncReach(sp, args);
@@ -4373,7 +4375,7 @@ struct CodeGen {
             if (ki.cret >= 0) L(retex[ki.cret], " = ", ki.cname, "(", argstr, ");");
             else L(ki.cname, "(", argstr, ");");
             MarkReload(reach);
-            if (ki.hasrf) EmitRfCheck(rfv, sp);
+            if (ki.hasrf) EmitRfCheck(sp);
             ind--;
             L("} break;");
         }
@@ -5387,8 +5389,11 @@ struct CodeGen {
 
     string result;   // Everything after the runtime paste.
 
-    CodeGen(Ast &_ast) : ast(_ast) {
+    CodeGen(Ast &_ast, bool _norfcheck = false) : ast(_ast), norfcheck(_norfcheck) {
         CollectSpecs();
+        // Zero means "no long-distance return in flight", which is also the
+        // state every propagating function's ordinary exit leaves behind.
+        if (!fromids.empty()) data += "static GS_TLS int32_t gs_rf;\n";
         EmitGlobalDecls();
         ComputeGlobalTouch();
         // Prototypes for every live specialization, then their bodies.
