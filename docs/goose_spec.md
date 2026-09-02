@@ -977,7 +977,14 @@ same local are statically indistinguishable, so the §9.2 depth check is not
 sufficient there. Therefore: a reference whose root is a local of a cycle
 function may be passed *down* as an argument, but may not be stored into any
 location, nor returned. References rooted outside the cycle are
-unrestricted. (Refinements are future work, TODO.)
+unrestricted — in particular a pool handed to the cycle by reference (a
+parameter whose pointee is resizable-class, which no cycle function can own),
+so a recursive builder can push into a caller's local pool and link what it
+pushed. Because the cycle's functions are checked once against the entry
+call's roots, every recursive call must pass such a pool by the same
+reference the entry call did: swapping two pools, or passing a different one,
+at a back edge is a compile error. (Further refinements are future work,
+TODO.)
 
 ### 7.9 `return … from` (long-distance return)
 
@@ -1486,10 +1493,21 @@ The newest, highest-priority items first:
 0d. **Lifetime precision, remaining cases** — two checker conservatisms
     still exceed the spec: long-distance returns (§7.9) only carry
     references to globals/static data (precise rule: rooted at or above the
-    target's frame), and the recursive-cycle store rule (§7.8) rejects
-    storing any non-global-rooted reference inside a cycle. (Container-read
-    writability laundering, one-root-per-reference-variable, and the single
-    agreed return root are now deliberate language rules, §9.2/§9.5.)
+    target's frame), and the recursive-cycle store rule (§7.8) admits only
+    globals and pool parameters as roots of stored references — a reference
+    to a caller's fixed-size local is still pass-down-only inside a cycle.
+    (Container-read writability laundering, one-root-per-reference-variable,
+    and the single agreed return root are now deliberate language rules,
+    §9.2/§9.5.)
+0g. **Recursive results' roots at back edges** — a recursive call's returned
+    reference takes the root the callee has recorded *so far*, so a cycle
+    function must have a return whose root is visible (`return pool.push(…)`)
+    textually before the back edge whose result it stores or returns; a
+    result that reaches the entry function before any of its returns has a
+    static-data root, which is both too strict (it cannot be stored
+    relatively, `bench/goose/calc.goose`'s Paren node) and unsound (it could
+    be stored into a global). Seed the return root from a syntactic scan of
+    the cycle's returns, or from the pool parameter the returns push into.
 
 1. **varint format benchmark** — DONE, see `varint_bench/results.md`:
    ULEB128 adopted (§3.6). Break-even vs the best branchless format sits at

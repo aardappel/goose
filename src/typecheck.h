@@ -21,9 +21,14 @@
 // sound) and is writable regardless of its original provenance (writability
 // launders through storage — the language's const-cast loophole); a
 // reference variable commits to one root depth for its whole life; all
-// returns of one function agree on the returned reference's root. Remaining
-// conservatisms marked TODO: long-distance returns carry only global/static
-// refs, and the recursive-cycle store rule is coarser than §7.8.
+// returns of one function agree on the returned reference's root. Inside a
+// recursive cycle (§7.8) a reference may be stored only if it is rooted at a
+// global or at a pool parameter -- a parameter root class whose members are
+// all references to resizable-class values, which no cycle function can own
+// (VarDef::poolclass); a back edge must then pass those pools exactly as the
+// entry call did (ValidatePoolArgs). Remaining conservatisms marked TODO:
+// long-distance returns carry only global/static refs, and references rooted
+// at a caller's fixed-size local are still pass-down-only inside a cycle.
 #pragma once
 
 namespace goose {
@@ -1218,7 +1223,8 @@ struct TypeCheck {
                 return false;
             }
             auto spec = CurRealFrame().spec;
-            if (root && !root->isglobal && spec && (spec->incycle || spec->sf->isrec)) {
+            if (root && !root->isglobal && !root->poolclass && spec &&
+                (spec->incycle || spec->sf->isrec)) {
                 fitfail = "references may only be passed down, not stored, inside a "
                           "recursive cycle (§7.8)";
                 return false;
@@ -2613,11 +2619,16 @@ struct TypeCheck {
             auto rootsok = spec->roots.size() == roots.size();
             for (size_t i = 0; rootsok && i < roots.size(); i++)
                 rootsok &= spec->roots[i] == roots[i];
-            // Inside a recursive cycle references may not be stored or
-            // returned, so root identity is irrelevant there and the
-            // back-edge must reuse the in-progress spec (§7.8).
-            if (!rootsok && !spec->inprogress && !spec->incycle) continue;
-            if (spec->inprogress) ValidateCycle(spec, callnode);
+            // A back edge must reuse the in-progress spec whatever the roots
+            // (§7.8): inside a cycle, references rooted at cycle locals may
+            // not be stored or returned, so their identity is irrelevant, and
+            // the pool parameters that may be stored are checked below to be
+            // the same ones the entry call passed.
+            if (!rootsok && !spec->inprogress) continue;
+            if (spec->inprogress) {
+                ValidateCycle(spec, callnode);
+                ValidatePoolArgs(spec, argvals, callnode);
+            }
             ValidateNeeds(spec, callnode);
             return spec;
         }
@@ -2656,6 +2667,30 @@ struct TypeCheck {
         // returning nothing at the back edge; a later `return v` then errors
         // with a mismatch (return-type inference cannot cross the back edge).
         if (!spec->retsknown) spec->retsknown = true;
+    }
+
+    // The root a synthetic parameter class stands for, followed back through
+    // the call sites that created it to a real variable (or null for static
+    // data).
+    static VarDef *UltimateRoot(VarDef *v) {
+        while (v && v->classfrom) v = CanonRoot(v->classfrom);
+        return v;
+    }
+
+    // References in a pool class (VarDef::poolclass) may be stored inside a
+    // recursive cycle, which is sound only while every activation's pool
+    // parameters name the pools the entry call passed: the reused spec's
+    // stores were proven against those. A back edge that passes a different
+    // pool, or swaps two, is rejected here.
+    void ValidatePoolArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode) {
+        for (size_t i = 0; i < spec->params.size() && i < argvals.size(); i++) {
+            auto pr = spec->params[i]->refroot;
+            if (!pr || !pr->poolclass) continue;
+            if (UltimateRoot(pr) != UltimateRoot(CanonRoot(argvals[i].root)))
+                Error(callnode, cat("recursive call passes ", spec->params[i]->name,
+                                    " rooted differently from the cycle's entry call, which "
+                                    "stored references into it (§7.8)"));
+        }
     }
 
     // `return from` targets recorded by a callee must be live on every
@@ -2711,8 +2746,15 @@ struct TypeCheck {
                         auto rv = ast.NewVarDef();
                         rv->name = p.name;
                         rv->depth = argvals ? Depth(CanonRoot((*argvals)[i].root)) : 0;
+                        rv->classfrom = argvals ? CanonRoot((*argvals)[i].root) : nullptr;
+                        rv->poolclass = true;
                         classroots[ra.cls] = rv;
                     }
+                    // A pool class holds only references to resizable-class
+                    // values; a slice or a reference to anything smaller may
+                    // point at a cycle function's own storage.
+                    if (pt->kind != TY_REF || ClassOf(pt->ref->sub) != SC_RESIZABLE)
+                        classroots[ra.cls]->poolclass = false;
                     vd->refroot = classroots[ra.cls];
                 }
                 vd->refrootknown = true;

@@ -132,7 +132,10 @@ else's to discover:
   long lived mutable graphs, anything wanting free-then-alloc at differing sizes) must
   go through `reusable` pools, and recursive cycles cannot own growable locals at all
   (7.8). Worth one benchmark that is honestly awkward in Goose, to see what the
-  workaround costs.
+  workaround costs. (`lru` is that benchmark. The pool itself turned out to cost
+  nothing; the relative links it relinks cost 1.5x against indices -- the offset
+  arithmetic sits on the pointer-chasing path -- so compact links are a
+  build-once-walk-many trade, not a free one.)
 * Address space accounting: report committed pages, not the multi-GB reservations
   (10.4), or the memory numbers are nonsense. Conversely, Goose commits at page
   granularity per stack, so at the smallest data sizes it may legitimately look worse
@@ -178,12 +181,27 @@ Familiar, widely written code, each chosen to hit specific axes above:
 
 ## The suite as built
 
-`bench/goose/`, `bench/cpp/` and `bench/rust/` hold ten benchmarks against this
-design, from `sum` (the control) to `sexp` (the flagship).
-`bench/run_bench.ps1` builds and runs them at three sizes each, checks that
-every implementation of a benchmark prints the same checksum, and writes
-`bench/results.md`; the commentary that file ends with lives in
-`bench/notes.md`.
+`bench/goose/`, `bench/cpp/` and `bench/rust/` hold sixteen benchmarks against
+this design. The first ten are small, one construct each, from `sum` (the
+control) to `sexp` (the flagship). The six added after that are a little
+larger and were chosen to fill the gaps the first ten left: `lru` (a cache:
+the `reusable` pool, free-then-alloc out of scope order, the mutation-heavy
+shape the stack discipline is worst placed for), `scene` (a scene graph with
+inline child arrays of relative references, mutated every frame), `calc`
+(many small parses into per-input local pools, with `return from` taken as a
+real error path a quarter of the time), `bintrees` (the Benchmarks Game's
+allocator benchmark, for recognisability), `respond` (a web handler's DTO
+with a string and a list of records, built and rendered per request), and
+`blur` (an image stencil: flat scalar work, bounds checks and no aliasing
+information, included to lose). `bench/run_bench.ps1` builds and runs them at
+three sizes each, checks that every implementation of a benchmark prints the
+same checksum, and writes `bench/results.md`; the commentary that file ends
+with lives in `bench/notes.md`.
+
+Two of the advantages listed above still have no benchmark, for language
+reasons rather than lack of trying: save/load of a relative-reference
+structure needs the whole-region copy of TODO 16, and thread queues cannot
+carry relative-reference values because those are not flat (TODO 9).
 
 C++ is measured at two tiers, idiomatic and expert, because the language admits
 such a wide range of hackery that one row would misrepresent it. Rust is

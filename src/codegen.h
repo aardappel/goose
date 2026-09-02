@@ -521,16 +521,16 @@ struct CodeGen {
                 EmitCoreTypes();
                 if (IsFatPointee(r.sub)) return "gs_rref";
                 if (IsBytesT(r.sub)) return "uint8_t *";
-                return cat(CT(r.sub), " *");
+                // A pointer needs only the pointee's name, so a node type can
+                // hold references to itself and the body can come later.
+                return cat(StructLike(r.sub) ? NameCT(r.sub) : CT(r.sub), " *");
             }
             default: break;
         }
+        auto name = NameCT(t);
         auto m = Mangle(t);
-        auto it = ctypes.find(m);
-        if (it != ctypes.end()) return it->second;
-        EmitCoreTypes();
-        auto name = Unique(m);
-        ctypes[m] = name;   // Before the body: recursion terminates via refs.
+        if (cdefined.count(m)) return name;
+        cdefined.insert(m);   // Before the body: recursion terminates via refs.
         string d;
         switch (t->kind) {
             case TY_SLICE: {
@@ -553,26 +553,26 @@ struct CodeGen {
             }
             case TY_STRUCT: {
                 auto si = SI(t);
-                Append(d, "typedef struct {\n");
+                Append(d, "struct ", name, " {\n");
                 EmitCFields(d, si->st->fields, si->ftypes);
-                Append(d, "} ", name, ";\n");
+                Append(d, "};\n");
                 break;
             }
             case TY_VARIANT: {
                 auto ei = EIVar(t);
                 auto vi = VarIdx(ei->en, t->var->variant);
                 auto &v = ei->en->variants[vi];
-                Append(d, "typedef struct {\n");
+                Append(d, "struct ", name, " {\n");
                 if (v.fields.empty()) Append(d, "    uint8_t gs_empty;\n");
                 else EmitCFields(d, v.fields, ei->vftypes[vi]);
-                Append(d, "} ", name, ";\n");
+                Append(d, "};\n");
                 break;
             }
             case TY_ENUM: {
                 assert(!t->enu->varmode);
                 auto ei = EIOf(t);
                 EnsureTagEnum(ei, t);
-                Append(d, "typedef struct {\n    ", IntCT(TagStore(ei->en)), " tag;\n");
+                Append(d, "struct ", name, " {\n    ", IntCT(TagStore(ei->en)), " tag;\n");
                 string members;
                 for (size_t vi = 0; vi < ei->en->variants.size(); vi++) {
                     if (ei->en->variants[vi].fields.empty()) continue;
@@ -581,7 +581,7 @@ struct CodeGen {
                            Sanitize(ei->en->variants[vi].name), ";\n");
                 }
                 if (!members.empty()) Append(d, "    union {\n", members, "    } u;\n");
-                Append(d, "} ", name, ";\n");
+                Append(d, "};\n");
                 break;
             }
             default: assert(false);
@@ -590,6 +590,29 @@ struct CodeGen {
         tdecls += "\n";
         return name;
     }
+
+    // Fixed-class kinds that C declares as a named struct: they get a
+    // forward typedef the moment they are named (NameCT), so a reference to
+    // one needs only the name and the body follows when the type is first
+    // needed by value.
+    static bool StructLike(TypeExpr *t) {
+        return t->kind == TY_STRUCT || t->kind == TY_VARIANT ||
+               (t->kind == TY_ENUM && !t->enu->varmode);
+    }
+
+    // The C name of a fixed-class type, assigned (and, for struct-like kinds,
+    // forward-declared) on first sight; CT emits the body.
+    string NameCT(TypeExpr *t) {
+        auto m = Mangle(t);
+        auto it = ctypes.find(m);
+        if (it != ctypes.end()) return it->second;
+        EmitCoreTypes();
+        auto name = Unique(m);
+        ctypes[m] = name;
+        if (StructLike(t)) Append(tdecls, "typedef struct ", name, " ", name, ";\n");
+        return name;
+    }
+    set<string> cdefined;    // Mangled names whose C body has been emitted.
 
     void EmitCFields(string &d, const vector<Field> &fields, const vector<TypeExpr *> &ftypes) {
         auto lo = LayoutFields(fields, ftypes);
@@ -2160,9 +2183,13 @@ struct CodeGen {
     void GenStmt2(Node *n) { n->CgStmt(*this); }
 
     // A control construct used as a fixed-class value: route it into a temp.
+    // A varint-typed value (an inlined call initializing a varint field) is
+    // held in its decoded i64 form, like every other varint read.
     string CtlValX(Node *n) {
         auto t = T();
-        L(CT(n->exprtype), " ", t, ";");
+        auto vt = n->exprtype;
+        if (vt->kind == TY_INT && vt->intstorage == IS_VARINT) vt = ast.inttypes[IS_I64];
+        L(CT(vt), " ", t, ";");
         GenAny(n, Dst { 1, t });
         return t;
     }
@@ -2671,6 +2698,13 @@ struct CodeGen {
     void GenConstruct(Node *n, const string &stk, TypeExpr *want = nullptr,
                       const string &lenlv = "") {
         auto et = n->exprtype;
+        // A variable array landing in a slot of another length storage takes
+        // the slot's layout: the prefix written here is the destination's,
+        // whatever the expression's own type says.
+        if (want && et && want->kind == TY_ARRAY && want->arr->akind == A_VAR &&
+            et->kind == TY_ARRAY && et->arr->akind == A_VAR &&
+            LenStore(want->arr) != LenStore(et->arr) && TEq(want->arr->sub, et->arr->sub))
+            et = want;
         if (want && NeedsDeref(n->exprtype, want)) {
             // A spliced reference in a decayed slot: copy the pointee.
             auto sub = n->exprtype->ref->sub;
@@ -3384,7 +3418,14 @@ struct CodeGen {
                 GenConstruct(vals[i], cat("gs_dst", i), rt, cat("(*gs_rl", i, ")"));
             } else if (IsBytesT(rt)) {
                 auto id = Is<Ident>(vals[i]);
-                if (id && id->vdef && nrvovars.count(id->vdef)) continue;   // In place already.
+                if (id && id->vdef && nrvovars.count(id->vdef)) {
+                    // In place already. A resizable local's elements sit at
+                    // the destination with no prefix (its length lives in
+                    // the frame header), so returning it as a variable array
+                    // means putting that array's length in front of them.
+                    if (IsResz(id->vdef->type)) EmitNrvoPrefix(id->vdef, rt, cat("gs_dst", i));
+                    continue;
+                }
                 GenConstruct(vals[i], cat("gs_dst", i), rt);
             } else if ((int)i == si.cret) {
                 retv = T();
@@ -3399,6 +3440,31 @@ struct CodeGen {
         }
         Epilogue(retv);
         (void)ln;
+    }
+
+    // The elements of the NRVO'd resizable local `vd` fill the destination
+    // stack from its base to the top; move them up by the size of the
+    // returned array type's length prefix and write the prefix.
+    void EmitNrvoPrefix(VarDef *vd, TypeExpr *rt, const string &stk) {
+        assert(rt->kind == TY_ARRAY && rt->arr->akind == A_VAR);
+        auto hdr = HdrLv(vd);
+        auto ls = LenStore(rt->arr);
+        auto ms = T();
+        string writepref;
+        if (ls == IS_VARINT) {
+            auto tmp = T();
+            L("uint8_t ", tmp, "[10];");
+            L("int64_t ", ms, " = gs_uleb_write(", tmp, ", (uint64_t)", hdr, ".len);");
+            writepref = cat("memcpy(", hdr, ".base, ", tmp, ", (size_t)", ms, ");");
+        } else {
+            L("int64_t ", ms, " = ", IntSize(ls), ";");
+            writepref = cat("*(", IntCT(ls), " *)", hdr, ".base = (", IntCT(ls), ")", hdr,
+                            ".len;");
+        }
+        L("memmove(", hdr, ".base + ", ms, ", ", hdr, ".base, (size_t)(", Top(stk), " - ", hdr,
+          ".base));");
+        L(writepref);
+        L(Top(stk), " += ", ms, ";");
     }
 
     void Epilogue(const string &retv) {
@@ -3628,6 +3694,12 @@ struct CodeGen {
         auto an = CallArgNodes(c, sp->params.size());
         string ername, slidebase;
         Dst slide;
+        // Set when the destination's length storage differs from the callee's
+        // return type: the value arrives as an element run (or, without a run
+        // twin, in the callee's own layout) and gets the destination's prefix
+        // written in front of it after the call.
+        string reprefixbase, reprefixcnt;
+        Dst reprefix;
         vector<string> args;
         for (size_t i = 0; i < an.size(); i++) EmitArg(sp, i, an[i], args);
         for (auto fv : ki.freevars) EmitFvArg(fv, args);
@@ -3674,6 +3746,28 @@ struct CodeGen {
                     args.push_back(dd.s);
                     retex[i] = "";
                 }
+            } else if (i == 0 && dd.k == 2 && dd.lenlv.empty() && dd.t &&
+                       dd.t->kind == TY_ARRAY && dd.t->arr->akind == A_VAR &&
+                       rt->kind == TY_ARRAY && rt->arr->akind == A_VAR &&
+                       LenStore(dd.t->arr) != LenStore(rt->arr)) {
+                // A T[] result landing in a slot of another length storage
+                // (a T[varint] field, say): the callee cannot write the
+                // destination's layout, so its elements are taken raw and the
+                // prefix is put in front of them afterwards (EmitReprefix).
+                reprefix = dd;
+                reprefixbase = T();
+                L("uint8_t *", reprefixbase, " = ", Top(dd.s), ";");
+                auto er = EnsureEr(sp);
+                if (!er.empty()) {
+                    ername = er;
+                    reprefixcnt = T();
+                    L("int64_t ", reprefixcnt, " = 0;");
+                    args.push_back(dd.s);
+                    args.push_back(cat("&", reprefixcnt));
+                } else {
+                    args.push_back(dd.s);
+                }
+                retex[i] = reprefixbase;
             } else if (IsBytesT(rt)) {
                 string stk;
                 if (dd.k == 2) {
@@ -3721,6 +3815,7 @@ struct CodeGen {
             L(callee, "(", argstr, ");");
         }
         MarkReload(reach);
+        if (!reprefixbase.empty()) EmitReprefix(sp, reprefix, reprefixbase, reprefixcnt);
         if (!slidebase.empty()) {
             // Value form arrived as [len][elems]; slide the prefix out and
             // report the count (the one caller-side copy of this fallback).
@@ -3745,6 +3840,45 @@ struct CodeGen {
         // A fixed first return requested onto a stack: store it (mixed cases
         // are handled above via cret; nothing more to do here).
         return retex;
+    }
+
+    // The elements of a variable-array call result sit at `base` -- raw (the
+    // count in `cnt`) or, when `cnt` is empty, behind the callee's own prefix
+    // -- and the destination wants its own prefix in front of them: move the
+    // elements up by the difference and write it. One memmove, the same cost
+    // as the value-form slide.
+    void EmitReprefix(FnSpec *sp, const Dst &dd, const string &base, const string &cnt) {
+        auto ls = LenStore(dd.t->arr);
+        auto count = cnt;
+        auto oms = T();
+        if (cnt.empty()) {
+            auto srcls = LenStore(sp->rets[0]->arr);
+            count = T();
+            if (srcls == IS_VARINT) {
+                L("int64_t ", count, " = gs_uleb_read(", base, ");");
+                L("int64_t ", oms, " = gs_uleb_size(", base, ");");
+            } else {
+                L("int64_t ", count, " = (int64_t)*(", IntCT(srcls), " *)", base, ";");
+                L("int64_t ", oms, " = ", IntSize(srcls), ";");
+            }
+        } else {
+            L("int64_t ", oms, " = 0;");
+        }
+        auto ms = T();
+        string writepref;
+        if (ls == IS_VARINT) {
+            auto tmp = T();
+            L("uint8_t ", tmp, "[10];");
+            L("int64_t ", ms, " = gs_uleb_write(", tmp, ", (uint64_t)", count, ");");
+            writepref = cat("memcpy(", base, ", ", tmp, ", (size_t)", ms, ");");
+        } else {
+            L("int64_t ", ms, " = ", IntSize(ls), ";");
+            writepref = cat("*(", IntCT(ls), " *)", base, " = (", IntCT(ls), ")", count, ";");
+        }
+        L("memmove(", base, " + ", ms, ", ", base, " + ", oms, ", (size_t)(", Top(dd.s), " - ",
+          base, " - ", oms, "));");
+        L(writepref);
+        L(Top(dd.s), " += ", ms, " - ", oms, ";");
     }
 
     void EmitRfCheck(const string &rfv, FnSpec *callee) {
@@ -4297,13 +4431,19 @@ struct CodeGen {
             L("int64_t ", nl, " = ", v.len, ";");
             L("if (", nl, " >= ", capx, ") gs_abort(GS_E_CAPACITY, ",
               LocArgs(ln), ");");
-            auto ev = T();
-            L(CT(elem), " ", ev, " = ", GenXD(an[1], elem), ";");
             auto e = T();
             if (v.typedelems) L(CT(elem), " *", e, " = &", v.elems, "[", nl, "];");
             else L(CT(elem), " *", e, " = (", CT(elem), " *)((", v.elems, ") + ", nl, " * ",
                    esz, ");");
-            L("*", e, " = ", ev, ";");
+            if (elem->kind == TY_REF && elem->ref->lenstorage >= 0) {
+                // A relative-reference element stores the offset from its
+                // own slot, not the pointer (§3.9).
+                EmitRelStoreAt(cat("(uint8_t *)", e), elem, GenX(an[1]), ln);
+            } else {
+                auto ev = T();
+                L(CT(elem), " ", ev, " = ", GenXD(an[1], elem), ";");
+                L("*", e, " = ", ev, ";");
+            }
             L(v.lenlv, " = (", lv.val ? IntCT(LenStore(lv.t->arr)) : "uint32_t", ")(", nl,
               " + 1);");
             ref = e;
@@ -4498,6 +4638,18 @@ struct CodeGen {
             walk(sp->body);
             if (sp->body->tail && sp->rets.size() == 1 &&
                 !IsVoidT(sp->body->tail->exprtype)) consider(sp->body->tail);
+            // The local's layout must be the return type's, or a resizable
+            // whose elements become the returned variable array's (the
+            // prefix is added at the return, EmitNrvoPrefix); anything else
+            // is copied on return like a non-named result.
+            if (ok && cand) {
+                auto rt = sp->rets[j];
+                auto ct = cand->type;
+                auto same = TEq(ct, rt);
+                auto rzarr = IsResz(ct) && ct->kind == TY_ARRAY && rt->kind == TY_ARRAY &&
+                             rt->arr->akind == A_VAR && TEq(ct->arr->sub, rt->arr->sub);
+                if (!same && !rzarr) ok = false;
+            }
             if (ok && cand) {
                 nrvovars.insert(cand);
                 nrvodst[cand] = (int)j;

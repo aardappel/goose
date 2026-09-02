@@ -10,7 +10,8 @@
 # particles) are omitted: there is nothing for the pass to do in them.
 
 param(
-    [string[]] $Names = @("graph", "graph_csr", "words", "strlist", "sexp", "records_var"),
+    [string[]] $Names = @("graph", "graph_csr", "words", "strlist", "sexp", "records_var",
+                          "lru", "scene", "calc", "respond", "blur", "blur_rows"),
     [int]      $Reps = 4,
     [string]   $Exe = "$PSScriptRoot\..\build\Debug\goose.exe",
     [string]   $Dir = "$PSScriptRoot\gen\bce"
