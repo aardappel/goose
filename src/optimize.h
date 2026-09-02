@@ -40,6 +40,8 @@
 
 namespace goose {
 
+struct BaseCaseInliner;   // optimize_basecase.h.
+
 struct Optimizer {
     Ast &ast;
     int nc = 0, ncu = 0;         // Inline thresholds; 0 = inlining off.
@@ -237,6 +239,13 @@ struct Optimizer {
         if (tail && tail->exprtype && tail->exprtype->kind != TY_VOID) consider(tail);
         if (ok) ib->namedresult = cand;
     }
+    // Base-case inlining for self-recursive functions: the pass and what it
+    // is for live in optimize_basecase.h, which defines these two — it needs
+    // the Inliner below, so it is included after us and holds the state.
+    unique_ptr<BaseCaseInliner> basecase;
+    void SetupBaseCase(FnSpec *sp);   // Records the base case of sp, if any.
+    Node *TryBaseCase(Call *c);       // Rewrites one self-call against it.
+    int basecases = 0;
 
     // ------------------------------------------------------------------
     // The fold/propagate/inline walk. Opt returns the (possibly replaced)
@@ -376,6 +385,7 @@ struct Optimizer {
         for (auto sp : postorder) {
             curspec = sp;
             cursf = sp->sf;
+            SetupBaseCase(sp);
             OptBlock(sp->body);
             Scan(sp);
         }
@@ -943,6 +953,7 @@ inline Node *Call::Opt(Optimizer &o) {
         }
     }
     if (auto r = o.TryInline(this)) return r;
+    if (auto r = o.TryBaseCase(this)) return r;
     return this;
 }
 

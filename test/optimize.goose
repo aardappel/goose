@@ -347,6 +347,72 @@ fn varmode() {
     print(firstlen(r));
 }
 
+// --- base-case inlining of self-recursive functions --------------------------
+
+struct RecNode { v: i64, l: RecNode&<u32>?, r: RecNode&<u32>? }
+
+var rec_marks = 0;
+
+// The first statement is a base case reading only the parameters: both
+// self-call sites get it spliced in ahead of the call.
+recursive fn rec_build(pool: RecNode[>..]&, depth: i64, v: i64) -> RecNode& {
+    if depth == 0 { return pool.push(RecNode { v: v }); }
+    let l: RecNode& = rec_build(pool, depth - 1, v * 2);
+    let r: RecNode& = rec_build(pool, depth - 1, v * 2 + 1);
+    return pool.push(RecNode { v: v, l: l, r: r });
+}
+
+// The `guard` spelling of the same shape; the second call has a constant
+// argument, which substitutes instead of binding.
+recursive fn rec_sum(n: RecNode&, d: i64) -> i64 {
+    guard d > 0 else { return n.v; }
+    var t = n.v;
+    let l = n.l;
+    if l { t += rec_sum(l, d - 1); }
+    let r = n.r;
+    if r { t += rec_sum(r, 0); }
+    t
+}
+
+recursive fn rec_mark(n: RecNode&, d: i64) {         // Valueless base case.
+    if d == 0 { return; }
+    rec_marks += 1;
+    let l = n.l;
+    if l { rec_mark(l, d - 1); }
+}
+
+// Left alone: the test reads a local, which the call site cannot see.
+recursive fn rec_local(n: RecNode&, d: i64) -> i64 {
+    let stop = d <= 0;
+    if stop { return n.v; }
+    let l = n.l;
+    guard l else { return n.v; }
+    return rec_local(l, d - 1);
+}
+
+// Left alone: a mutual cycle has no self-call site to rewrite.
+recursive fn rec_even(k: i64) -> i64 { if k == 0 { return 1; } return rec_odd(k - 1); }
+recursive fn rec_odd(k: i64) -> i64 { if k == 0 { return 0; } return rec_even(k - 1); }
+
+// Left alone: binding the non-fixed parameter would give the cycle a
+// non-fixed local of its own (§7.8), and copy the bytes at every level.
+recursive fn rec_bytes(s: u8[], k: i64) -> i64 {
+    if k == 0 { return s.len; }
+    return rec_bytes(s, k - 1) + 1;
+}
+
+fn recursion_op() {
+    var pool: RecNode[>..] = [];
+    let root: RecNode& = rec_build(&pool, 3, 1);
+    print(pool.len);                                 // 15
+    print(rec_sum(root, 3));                         // 32
+    rec_mark(root, 3);
+    print(rec_marks);                                // 3
+    print(rec_local(root, 3));                       // 8
+    print(rec_even(7) + rec_odd(7));                 // 0 + 1
+    print(rec_bytes("hello", 3));                    // 5 + 3
+}
+
 fn main_optimize() {
     use_inlining();
     use_params();
@@ -366,6 +432,7 @@ fn main_optimize() {
     print(outer2_op(1));
     print(whilecond() + indexpos());
     varmode();
+    recursion_op();
     print(ginit + G);
     var acc = 0;
     acc += gv;

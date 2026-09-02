@@ -11,6 +11,7 @@
 #include "builtins.h"
 #include "typecheck.h"
 #include "optimize.h"
+#include "optimize_basecase.h"
 #include "bce.h"
 #include "codegen.h"
 #include "runtime_inline.h"
@@ -191,10 +192,10 @@ int Main(int argc, char **argv) {
             fputs(s.c_str(), stdout);
         }
         printf("typechecked ok: %d specialization(s), %d struct/%d enum instance(s); "
-               "optimized -O%d: %d inlined, %d folded, %d propagated\n",
+               "optimized -O%d: %d inlined, %d base case(s), %d folded, %d propagated\n",
                (int)ast.fnspecs.size(), (int)ast.structinsts.size(),
-               (int)ast.enuminsts.size(), optlevel, opt.inlined, opt.folded,
-               opt.propagated);
+               (int)ast.enuminsts.size(), optlevel, opt.inlined, opt.basecases,
+               opt.folded, opt.propagated);
         BCE bce(ast);
         if (!nobce) {
             bce.RunAll();
