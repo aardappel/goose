@@ -25,7 +25,9 @@ add_executable(goose
 )
 
 if(MSVC)
-    target_compile_options(goose PRIVATE /W4 /permissive- /utf-8 /EHsc)
+    # /bigobj: the compiler is one translation unit of header-inline
+    # functions, past the object format's default COMDAT section limit.
+    target_compile_options(goose PRIVATE /W4 /permissive- /utf-8 /EHsc /bigobj)
     target_compile_definitions(goose PRIVATE _CRT_SECURE_NO_WARNINGS)
 else()
     target_compile_options(goose PRIVATE -Wall -Wextra)
