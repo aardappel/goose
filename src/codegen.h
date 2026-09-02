@@ -1447,9 +1447,16 @@ struct CodeGen {
     // gs_stks[i].top is memory the C backend must reload after every byte
     // store, because a `uint8_t *` store may alias it; a run of pushes then
     // costs a load, an add and a store each instead of register arithmetic.
-    // So each stack the function owns keeps its top in a local, and memory is
+    // So a stack the function owns keeps its top in a local, and memory is
     // synchronized only where something else can observe it: across calls
     // (which may be handed the stack) and at every function exit.
+    //
+    // The local pays for itself only where the stack actually grows, and
+    // elsewhere it is a live pointer holding a register for nothing, so it is
+    // confined to the loops that grow the stack: a kernel loop that only reads
+    // and writes elements of an array keeps the memory form for it. Growth
+    // outside every loop caches the stack over the whole body, which is the
+    // extent it is live across anyway.
     //
     // Soundness rests on one spelling per cached stack. Own stacks qualify:
     // a callee's indices start above the caller's in-use watermark (§10.3), so
@@ -1458,12 +1465,20 @@ struct CodeGen {
     // resizable, though, carries its stack inside the reference value, giving
     // a second spelling for a stack that may be one of ours -- so a function
     // holding one keeps the plain memory form throughout (CanCacheTops).
-    unordered_map<string, string> topcache;   // Stack expr -> its local.
-    vector<string> toporder;                  // Discovery order, for stable output.
+    vector<string> toporder;                  // Cacheable stacks, discovery order.
+    // Every growth or shrink, as parallel stack index and innermost enclosing
+    // loop (-1 for one outside every loop).
+    vector<int> growstk, growloop;
+    vector<int> loopparent;                   // Loop -> enclosing loop, or -1.
+    vector<int> loopstack;                    // Loops open at this point of the emission.
+    vector<int> regstk, regloop;              // The regions, as stack and loop.
+    vector<string> topfnlocal;                // Stack -> its whole-body local, or "".
     bool cachetops = false;
 
     static constexpr const char *FLUSHMARK = "@@gsflush@@";
     static constexpr const char *RELOADMARK = "@@gsreload@@";
+    static constexpr const char *LOOPMARK = "@@gsloop@@";
+    static constexpr const char *TOPMARK = "@@gstop";
 
     set<string> gstkexprs;   // Every global's dedicated stack expression.
 
@@ -1475,14 +1490,37 @@ struct CodeGen {
         return cachetops && (stk.compare(0, 3, "GS(") == 0 || gstkexprs.count(stk));
     }
 
-    // The lvalue for a stack's top: the cached local where the stack qualifies.
+    // A function owns a handful of stacks at most, so these stay linear scans.
+    int TopIdx(const string &stk) {
+        for (size_t i = 0; i < toporder.size(); i++) if (toporder[i] == stk) return (int)i;
+        toporder.push_back(stk);
+        return (int)toporder.size() - 1;
+    }
+
+    bool IsRegion(int k, int id) {
+        for (size_t i = 0; i < regstk.size(); i++)
+            if (regstk[i] == k && regloop[i] == id) return true;
+        return false;
+    }
+
+    // The lvalue for a stack's top, emitted as a placeholder: which form it
+    // takes here depends on the regions, and those are only known once the
+    // whole body is.
     string Top(const string &stk) {
         if (!CacheableStk(stk)) return cat(stk, "->top");
-        auto it = topcache.find(stk);
-        if (it != topcache.end()) return it->second;
-        auto v = T();
-        toporder.push_back(stk);
-        return topcache[stk] = v;
+        return cat(TOPMARK, TopIdx(stk), "@@");
+    }
+
+    // The same, at a point that grows or shrinks the stack -- which is what
+    // decides where the cached form is worth having. A watermark restore is
+    // not growth: it runs once on the way out of a scope and takes whichever
+    // form is already in effect there.
+    string TopW(const string &stk) {
+        if (CacheableStk(stk)) {
+            growstk.push_back(TopIdx(stk));
+            growloop.push_back(loopstack.empty() ? -1 : loopstack.back());
+        }
+        return Top(stk);
     }
 
     // Sync points are marked rather than written, because a stack first used
@@ -1493,33 +1531,170 @@ struct CodeGen {
     void MarkFlush(const string &reach = "*")  { if (cachetops) L(FLUSHMARK, reach); }
     void MarkReload(const string &reach = "*") { if (cachetops) L(RELOADMARK, reach); }
 
-    // Replaces each marker line with the sync for every cached stack the mark
-    // says the call can reach, keeping the marker's own indentation.
+    // A loop's edges, where the tops it grows are loaded and stored back.
+    int MarkLoopBegin() {
+        if (!cachetops) return -1;
+        auto id = (int)loopparent.size();
+        loopparent.push_back(loopstack.empty() ? -1 : loopstack.back());
+        loopstack.push_back(id);
+        L(LOOPMARK, "b", id);
+        return id;
+    }
+
+    void MarkLoopEnd(int id) {
+        if (id < 0) return;
+        assert(loopstack.back() == id);
+        loopstack.pop_back();
+        L(LOOPMARK, "e", id);
+    }
+
+    // Where each stack is cached: the innermost loop around every growth of
+    // it, less any of those nested inside another. A growth outside every
+    // loop takes the whole body instead, which is the extent the local is
+    // live across in that case anyway.
+    void PlanTopCaches() {
+        regstk.clear();
+        regloop.clear();
+        topfnlocal.assign(toporder.size(), string());
+        vector<int> fnwide(toporder.size(), 0);
+        for (size_t i = 0; i < growstk.size(); i++) {
+            if (growloop[i] < 0) fnwide[growstk[i]] = 1;
+            else if (!IsRegion(growstk[i], growloop[i])) {
+                regstk.push_back(growstk[i]);
+                regloop.push_back(growloop[i]);
+            }
+        }
+        for (size_t i = 0; i < regstk.size();) {
+            auto drop = fnwide[regstk[i]] != 0;
+            for (auto p = loopparent[regloop[i]]; !drop && p >= 0; p = loopparent[p])
+                drop = IsRegion(regstk[i], p);
+            if (!drop) { i++; continue; }
+            regstk.erase(regstk.begin() + i);
+            regloop.erase(regloop.begin() + i);
+        }
+        for (size_t i = 0; i < toporder.size(); i++) if (fnwide[i]) topfnlocal[i] = T();
+    }
+
+    static bool LineIs(string_view s, const char *pfx) {
+        return s.compare(0, strlen(pfx), pfx) == 0;
+    }
+
+    // The label a jump on this line targets, or "" -- the conditional form
+    // `if (!(c)) goto L;` counts, since a flush placed before it is harmless
+    // on the path that does not take it.
+    static string_view GotoTarget(string_view line) {
+        auto g = line.find("goto ");
+        if (g == string_view::npos) return {};
+        auto b = g + 5;
+        auto e = line.find(';', b);
+        return e == string_view::npos ? string_view() : line.substr(b, e - b);
+    }
+
+    // The label this line defines, or "".
+    static string_view LabelHere(string_view line) {
+        if (line.size() < 3 || line.compare(line.size() - 2, 2, ":;") != 0) return {};
+        auto name = line.substr(0, line.size() - 2);
+        for (auto c : name)
+            if (!isalnum((unsigned char)c) && c != '_') return {};
+        return name;
+    }
+
+    // Line `i` of `b` without its indentation, whose width lands in `ind0`;
+    // `i` moves on to the next line.
+    static string_view NextLine(const string &b, size_t &i, size_t &ind0) {
+        auto eol = b.find('\n', i);
+        if (eol == string::npos) eol = b.size();
+        auto line = string_view(b).substr(i, eol - i);
+        i = eol + 1;
+        auto n = line.find_first_not_of(' ');
+        ind0 = n == string_view::npos ? line.size() : n;
+        return n == string_view::npos ? string_view() : line.substr(n);
+    }
+
+    // Replaces the markers: a region's edges load and store its local, a
+    // call's mark syncs the stacks it can reach that are cached where it
+    // stands, a jump out of a region flushes it on the way, and every top
+    // placeholder becomes the local in force there or the memory form.
     // A body that cached nothing still has its markers to remove.
     string ExpandTopMarkers(const string &b) {
         if (!cachetops) return b;
-        string out;
-        for (size_t i = 0; i < b.size();) {
-            auto eol = b.find('\n', i);
-            if (eol == string::npos) eol = b.size();
-            auto line = string_view(b).substr(i, eol - i);
-            auto ind0 = line.find_first_not_of(' ');
-            auto rest = ind0 == string_view::npos ? string_view() : line.substr(ind0);
-            auto isflush = rest.compare(0, strlen(FLUSHMARK), FLUSHMARK) == 0;
-            auto isreload = rest.compare(0, strlen(RELOADMARK), RELOADMARK) == 0;
-            if (isflush || isreload) {
-                auto reach = rest.substr(strlen(isflush ? FLUSHMARK : RELOADMARK));
-                for (auto &stk : toporder) {
-                    if (reach != "*" && reach.find(stk) == string_view::npos) continue;
-                    out.append(ind0, ' ');
-                    if (isflush) Append(out, stk, "->top = ", topcache[stk], ";\n");
-                    else Append(out, topcache[stk], " = ", stk, "->top;\n");
-                }
-            } else {
-                out.append(line);
-                out += '\n';
+        // A region is the text between its loop's two markers, so a jump stays
+        // inside it exactly when the line its label sits on does.
+        vector<int> loopbeg(loopparent.size(), 0), loopend(loopparent.size(), 0);
+        vector<string> lbname;
+        vector<int> lbline;
+        for (size_t i = 0, ind0 = 0, ln = 0; i < b.size(); ln++) {
+            auto rest = NextLine(b, i, ind0);
+            if (LineIs(rest, LOOPMARK)) {
+                auto t = rest.substr(strlen(LOOPMARK));
+                auto id = atoi(string(t.substr(1)).c_str());
+                (t[0] == 'b' ? loopbeg : loopend)[id] = (int)ln;
+            } else if (auto lb = LabelHere(rest); !lb.empty()) {
+                lbname.push_back(string(lb));
+                lbline.push_back((int)ln);
             }
-            i = eol + 1;
+        }
+        vector<string> active = topfnlocal;   // Empty: the memory form here.
+        vector<int> open;
+        string out;
+        for (size_t i = 0, ind0 = 0; i < b.size();) {
+            auto rest = NextLine(b, i, ind0);
+            if (LineIs(rest, LOOPMARK)) {
+                auto t = rest.substr(strlen(LOOPMARK));
+                auto beg = t[0] == 'b';
+                auto id = atoi(string(t.substr(1)).c_str());
+                if (beg) open.push_back(id); else open.pop_back();
+                for (size_t k = 0; k < toporder.size(); k++) {
+                    if (!IsRegion((int)k, id)) continue;
+                    out.append(ind0, ' ');
+                    if (beg) {
+                        active[k] = T();
+                        Append(out, "uint8_t *", active[k], " = ", toporder[k], "->top;\n");
+                    } else {
+                        Append(out, toporder[k], "->top = ", active[k], ";\n");
+                        active[k].clear();
+                    }
+                }
+                continue;
+            }
+            auto isflush = LineIs(rest, FLUSHMARK);
+            if (isflush || LineIs(rest, RELOADMARK)) {
+                auto reach = rest.substr(strlen(isflush ? FLUSHMARK : RELOADMARK));
+                for (size_t k = 0; k < toporder.size(); k++) {
+                    if (active[k].empty()) continue;
+                    if (reach != "*" && reach.find(toporder[k]) == string_view::npos) continue;
+                    out.append(ind0, ' ');
+                    if (isflush) Append(out, toporder[k], "->top = ", active[k], ";\n");
+                    else Append(out, active[k], " = ", toporder[k], "->top;\n");
+                }
+                continue;
+            }
+            if (auto tgt = GotoTarget(rest); !tgt.empty()) {
+                auto at = -1;
+                for (size_t j = 0; j < lbname.size(); j++) if (lbname[j] == tgt) at = lbline[j];
+                for (size_t k = 0; k < toporder.size(); k++) {
+                    if (active[k].empty() || !topfnlocal[k].empty()) continue;
+                    auto reg = -1;
+                    for (auto id : open) if (IsRegion((int)k, id)) reg = id;
+                    if (reg >= 0 && at > loopbeg[reg] && at < loopend[reg]) continue;
+                    out.append(ind0, ' ');
+                    Append(out, toporder[k], "->top = ", active[k], ";\n");
+                }
+            }
+            out.append(ind0, ' ');
+            for (size_t p = 0; p < rest.size();) {
+                auto m = rest.find(TOPMARK, p);
+                if (m == string_view::npos) { out.append(rest.substr(p)); break; }
+                out.append(rest.substr(p, m - p));
+                auto ds = m + strlen(TOPMARK);
+                auto e = rest.find("@@", ds);
+                assert(e != string_view::npos);
+                auto k = atoi(string(rest.substr(ds, e - ds)).c_str());
+                if (active[k].empty()) Append(out, toporder[k], "->top");
+                else out.append(active[k]);
+                p = e + 2;
+            }
+            out += '\n';
         }
         return out;
     }
@@ -2541,7 +2716,7 @@ struct CodeGen {
     // top, bumping it. All branches of value-producing control constructs
     // construct to the same destination; calls pass the stack down.
 
-    void Bump(const string &stk, const string &n) { L(Top(stk), " += ", n, ";"); }
+    void Bump(const string &stk, const string &n) { L(TopW(stk), " += ", n, ";"); }
 
     void EmitValStore(const string &stk, TypeExpr *t, const string &x) {
         auto sz = FixedSize(t);
@@ -3224,6 +3399,7 @@ struct CodeGen {
         cscopes[si].brklbl = Lbl();
         cscopes[si].cntlbl = Lbl();
         cscopes[si].dst = d;
+        auto loopid = MarkLoopBegin();
         L(forhead.empty() ? "for (;;) {" : forhead);
         ind++;
         if (condexit) condexit();
@@ -3240,6 +3416,7 @@ struct CodeGen {
         cscopes.back().saves.clear();   // Restores already emitted in-loop.
         PopSc();
         if (usedbrk) L(brklbl, ":;");
+        MarkLoopEnd(loopid);
         termjump = false;
     }
 
@@ -3464,7 +3641,7 @@ struct CodeGen {
         L("memmove(", hdr, ".base + ", ms, ", ", hdr, ".base, (size_t)(", Top(stk), " - ", hdr,
           ".base));");
         L(writepref);
-        L(Top(stk), " += ", ms, ";");
+        L(TopW(stk), " += ", ms, ";");
     }
 
     void Epilogue(const string &retv) {
@@ -3608,7 +3785,7 @@ struct CodeGen {
             L(d0.lenlv, " = ", count, ";");
             L("memmove(", base, ", ", base, " + ", ms, ", (size_t)(", Top(d0.s), " - ",
               base, " - ", ms, "));");
-            L(Top(d0.s), " -= ", ms, ";");
+            L(TopW(d0.s), " -= ", ms, ";");
             return rets;
         }
         if (c->builtin >= 0) return EmitBuiltin(c, d0);
@@ -3834,7 +4011,7 @@ struct CodeGen {
             L(slide.lenlv, " = ", count, ";");
             L("memmove(", slidebase, ", ", slidebase, " + ", ms, ", (size_t)(",
               Top(slide.s), " - ", slidebase, " - ", ms, "));");
-            L(Top(slide.s), " -= ", ms, ";");
+            L(TopW(slide.s), " -= ", ms, ";");
         }
         if (ki.hasrf) EmitRfCheck(rfv, sp);
         // A fixed first return requested onto a stack: store it (mixed cases
@@ -3878,7 +4055,7 @@ struct CodeGen {
         L("memmove(", base, " + ", ms, ", ", base, " + ", oms, ", (size_t)(", Top(dd.s), " - ",
           base, " - ", oms, "));");
         L(writepref);
-        L(Top(dd.s), " += ", ms, " - ", oms, ";");
+        L(TopW(dd.s), " += ", ms, " - ", oms, ";");
     }
 
     void EmitRfCheck(const string &rfv, FnSpec *callee) {
@@ -4331,7 +4508,7 @@ struct CodeGen {
                 auto tv = T();
                 if (lv.t->arr->akind == A_GROWSHRINK) {
                     // The array tops its stack: the element region ends at top.
-                    L(Top(lv.stk), " -= ", esz, ";");
+                    L(TopW(lv.stk), " -= ", esz, ";");
                     L(CT(elem), " ", tv, " = *(", CT(elem), " *)", Top(lv.stk), ";");
                 } else if (v.typedelems) {
                     L(CT(elem), " ", tv, " = ", v.elems, "[", nl, "];");
@@ -4361,7 +4538,7 @@ struct CodeGen {
                 ind++;
                 L(v.lenlv, " = (", LenCast(lv), ")", nn, ";");
                 if (ak == A_GROWSHRINK)
-                    L(Top(lv.stk), " = (uint8_t *)(", v.elems, ") + ", nn, " * ", esz, ";");
+                    L(TopW(lv.stk), " = (uint8_t *)(", v.elems, ") + ", nn, " * ", esz, ";");
                 ind--;
                 L("} else if (", nn, " > ", ol, ") {");
                 ind++;
@@ -4384,7 +4561,7 @@ struct CodeGen {
                                ") = ", fv, ";");
                     } else {
                         L("*(", CT(elem), " *)", Top(lv.stk), " = ", fv, ";");
-                        L(Top(lv.stk), " += ", esz, ";");
+                        L(TopW(lv.stk), " += ", esz, ";");
                     }
                     ind--;
                     L("}");
@@ -4399,7 +4576,7 @@ struct CodeGen {
                 auto lv = RecvLoc(an[0]);
                 auto v = ArrayView(lv, ln);
                 if (lv.t->arr->akind == A_GROWSHRINK)
-                    L(Top(lv.stk), " = (uint8_t *)(", v.elems, ");");
+                    L(TopW(lv.stk), " = (uint8_t *)(", v.elems, ");");
                 L(v.lenlv, " = 0;");
                 return {};
             }
@@ -4409,7 +4586,7 @@ struct CodeGen {
                 assert(!lv.fl.empty());
                 auto x = GenX(an[1]);
                 L("*(int64_t *)", Top(lv.flstk), " = ", x, ";");
-                L(Top(lv.flstk), " += 8;");
+                L(TopW(lv.flstk), " += 8;");
                 L(lv.fl, ".len++;");
                 return {};
             }
@@ -4531,14 +4708,14 @@ struct CodeGen {
         L("if (", lv.fl, ".len > 0) {");
         ind++;
         L(lv.fl, ".len--;");
-        L(Top(lv.flstk), " -= 8;");
+        L(TopW(lv.flstk), " -= 8;");
         L(iv, " = *(int64_t *)", Top(lv.flstk), ";");
         ind--;
         L("} else {");
         ind++;
         L(iv, " = ", lv.lenlv, ";");
         L(lv.lenlv, "++;");
-        L(Top(lv.stk), " += ", esz, ";");
+        L(TopW(lv.stk), " += ", esz, ";");
         ind--;
         L("}");
         auto e = T();
@@ -4684,8 +4861,14 @@ struct CodeGen {
     }
 
     void ResetFnState() {
-        topcache.clear();
         toporder.clear();
+        growstk.clear();
+        growloop.clear();
+        loopparent.clear();
+        loopstack.clear();
+        regstk.clear();
+        regloop.clear();
+        topfnlocal.clear();
         cachetops = false;
         vnames.clear();
         vstk.clear();
@@ -4772,15 +4955,21 @@ struct CodeGen {
             }
         }
         cscopes.clear();
+        // The regions and the markers resolve now that every stack this body
+        // grows, and where it grows it, is known.
+        PlanTopCaches();
+        auto bodyout = ExpandTopMarkers(body);
+        assert(bodyout.find("@@gs") == string::npos);
         Append(code, "static ", SigRet(sp), " ", er ? ernames[sp] : curinfo->cname, "(",
                params, ") {\n");
         if (stkmax > 0)
             Append(code, "    GS_ENSURE(", spexpr, " + ", stkmax, ");\n");
-        // Cached tops load once the stacks are known to exist, and the sync
-        // markers expand now that every stack this body caches is known.
-        for (auto &stk : toporder)
-            Append(code, "    uint8_t *", topcache[stk], " = ", stk, "->top;\n");
-        code += ExpandTopMarkers(body);
+        // A whole-body cache loads once the stacks are known to exist; a
+        // per-loop one declares and loads itself at its loop's edge.
+        for (size_t i = 0; i < toporder.size(); i++)
+            if (!topfnlocal[i].empty())
+                Append(code, "    uint8_t *", topfnlocal[i], " = ", toporder[i], "->top;\n");
+        code += bodyout;
         code += "}\n\n";
         curspec = nullptr;
         curinfo = nullptr;
@@ -5730,7 +5919,7 @@ inline void Assign::CgStmt(CodeGen &cg) {
         // Whole-resizable assignment: clear (top back to the value start),
         // then construct the new contents in place (§4.4).
         assert(!lv.val && !lv.stk.empty() && !lv.lenlv.empty());
-        cg.L(cg.Top(lv.stk), " = ", lv.s, ";");
+        cg.L(cg.TopW(lv.stk), " = ", lv.s, ";");
         cg.GenConstruct(rhs, lv.stk, lv.t, lv.lenlv);
         return;
     }
