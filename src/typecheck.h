@@ -84,6 +84,11 @@ struct TypeCheck {
     vector<VarDef *> vars;                            // All in-scope variables, all frames.
     vector<pair<int, SFunction *>> localfns;          // Nested fns, with their scope index.
     bool reachable = true;
+    // Inside a block/if/match/loop that produces a value, or a function-value
+    // body: an enclosing expression may hold references it evaluated before
+    // this point, which are in no variable and so invisible to the liveness
+    // scan of CheckGrowClear.
+    bool invalue = false;
     VarDef *curdst = nullptr;    // Root of the value under construction (for ref stores).
     VarDef *temproot = nullptr;  // Sentinel root for refs read out of temporaries.
     TypeExpr *fntype = nullptr;  // Shared type of function values.
@@ -677,6 +682,18 @@ struct TypeCheck {
     // ------------------------------------------------------------------
     // Scopes, variables, and flow state (definite assignment + optional
     // narrowing, merged at control-flow joins).
+
+    // Marks the statements of a construct that is producing a value for an
+    // enclosing expression (see `invalue`); nests, and restores itself on the
+    // throw an error does.
+    struct ValueRegion {
+        TypeCheck &tc;
+        bool saved;
+        ValueRegion(TypeCheck &t, bool wantvalue) : tc(t), saved(t.invalue) {
+            tc.invalue = tc.invalue || wantvalue;
+        }
+        ~ValueRegion() { tc.invalue = saved; }
+    };
 
     void PushScope(int kind, Node *node = nullptr) {
         Scope s;
@@ -1693,6 +1710,7 @@ struct TypeCheck {
 
     Val CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue, int scopekind,
                       Node *scopenode = nullptr) {
+        ValueRegion vr(*this, wantvalue);
         PushScope(scopekind, scopenode);
         for (auto st : b->stmts) CheckStmt(st);
         Val v = VoidVal();
@@ -1877,6 +1895,7 @@ struct TypeCheck {
     }
 
     Val CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wantvalue) {
+        ValueRegion vr(*this, wantvalue);
         PushScope(SK_BLOCK, x);
         for (auto st : x->body->stmts) CheckStmt(st);
         Val v = VoidVal();
@@ -1898,6 +1917,7 @@ struct TypeCheck {
 
     Val CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue) {
         (void)expected;
+        ValueRegion vr(*this, wantvalue);
         KillNarrowingsAssignedIn(x->body);
         auto entry = SaveFlow();
         PushScope(SK_LOOP, x);
@@ -3464,6 +3484,9 @@ struct TypeCheck {
             if ((d.flags & BF_REUSABLE) && !rv.reusable)
                 Error(c, cat(".", d.name, " exists on reusable pools only (§5.4)"));
         }
+        // clear is the one shrink a grow-only array has, and only where no
+        // reference or slice into it survives it (§5.1).
+        if (d.kind == B_CLEAR && ak == A_GROW) CheckGrowClear(c, args[0], rv);
         // resize has two forms (§3.3). It does not exist on grow-only arrays
         // (push/append are their only growth), so a dynamic shrink attempt on
         // one cannot arise and needs no runtime check.
@@ -3519,6 +3542,57 @@ struct TypeCheck {
             default: assert(false);
         }
         return v;
+    }
+
+    // `clear()` on a grow-only array (§5.1). Everything below the stack top
+    // belongs to the array's elements for as long as it lives, so handing the
+    // region back is safe exactly when nothing can still point into it: the
+    // receiver is a local of the function being checked (not a global, not a
+    // field, not reached through a reference — those have holders this pass
+    // cannot see), and no live value can hold a reference or slice rooted at
+    // it. Roots are only known per variable, so the scan is conservative
+    // wherever they are: a value whose type contains references at all counts
+    // as a possible holder, and so does a `var` reference the same-depth
+    // rebinding rule (§9.2) could retarget into the array.
+    void CheckGrowClear(Call *c, Node *recv, const Val &rv) {
+        auto id = Is<Ident>(recv);
+        auto vd = id ? id->vdef : nullptr;
+        if (!vd || rv.type->kind != TY_ARRAY)
+            Error(c, "clear on a grow-only array names the array's own variable, not a "
+                     "reference or an element of another value (§5.1)");
+        if (vd->isglobal || vd->isparam || !frames.back().spec ||
+            vd->ownerspec != frames.back().spec)
+            Error(c, cat("cannot clear ", vd->name,
+                         ": clear on a grow-only array applies to a local of the function "
+                         "that owns it (§5.1)"));
+        if (vd->reusable)
+            Error(c, cat("cannot clear reusable pool ", vd->name,
+                         ": its slots stay live for the freelist (§5.4)"));
+        if (invalue)
+            Error(c, cat("cannot clear ", vd->name,
+                         " inside a value-producing expression: references taken earlier in "
+                         "it may still be live (§5.1)"));
+        for (auto v : vars) {
+            if (v == vd || !v->type) continue;
+            auto t = v->type;
+            if (t->kind == TY_REF || t->kind == TY_SLICE) {
+                // A recorded root is exact only while the variable keeps its
+                // first binding: a `var` may since have been rebound to any
+                // root at the same depth, and one not bound yet can still
+                // commit to this array further down a loop body.
+                auto root = RefRootOf(v);
+                auto holds = root == vd || (v->isvar && Depth(root) == Depth(vd)) ||
+                             (!v->refrootknown && Depth(v) >= Depth(vd));
+                if (!holds) continue;
+            } else {
+                // Any other value holds references only where a store put
+                // them, which the outlives rule permits only into storage the
+                // array outlives (§9.2); flat types have no room for one.
+                if (IsFlat(t) || Depth(v) < Depth(vd)) continue;
+            }
+            Error(c, cat("cannot clear ", vd->name, " while ", v->name,
+                         " is in scope: it may hold a reference or slice into it (§5.1)"));
+        }
     }
 
     // Element construction targets the array's storage (relative references
@@ -3623,6 +3697,7 @@ struct TypeCheck {
         }
         c->fvtarget = fb.env ? fb.env->sf : nullptr;
         c->fvbody = (Block *)fv->body->Clone(ast);
+        ValueRegion vr(*this, true);   // The body runs inside this call's expression.
         for (auto st : c->fvbody->stmts) CheckStmt(st);
         Val v = VoidVal();
         if (auto tail = c->fvbody->tail) {

@@ -4781,7 +4781,12 @@ struct CodeGen {
             case B_CLEAR: {
                 auto lv = RecvLoc(an[0]);
                 auto v = ArrayView(lv, ln);
-                if (lv.t->arr->akind == A_GROWSHRINK)
+                // A resizable is the topmost value on its stack for its whole
+                // life (§1.3), so both flavors hand the element region back by
+                // dropping the top to the base; a limited array's capacity is
+                // reserved and only its length moves.
+                auto ak = lv.t->arr->akind;
+                if (ak == A_GROWSHRINK || ak == A_GROW)
                     L(TopW(lv.stk), " = (uint8_t *)(", v.elems, ");");
                 L(v.lenlv, " = 0;");
                 return {};
