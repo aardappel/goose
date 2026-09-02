@@ -395,7 +395,12 @@ stored offset is signed.
   ordinary `T&` (base = address of the offset field itself). Storing one
   requires the compiler to see that both the reference and the destination
   location derive from the same root array (§9.2 root tracking); the offset
-  is range-checked at the store (abort on overflow of the width).
+  is range-checked at the store (abort on overflow of the width). Both ends
+  lie in one root array, so the offset cannot exceed that array's span, and
+  the check exists only where a root can be wider than the width's signed
+  range: a root on a data stack spans at most the reservation (§10.4), so
+  2 GB or less of it needs no check for `u32`, and 32 KB or less none for
+  `u16`.
   Varint-width relative references are written only at construction, like
   varint fields (re-encoding could change the byte length); fixed widths may
   be re-stored with `.=`/`=`.
@@ -1167,7 +1172,8 @@ Aborts (message + exit; not catchable):
 * limited-array capacity overflow;
 * shrinking below empty (`pop` on an empty array, `resize` to a negative
   length);
-* relative-reference offset overflow at store;
+* relative-reference offset overflow at store (only where a root array can
+  span more than the width's signed range, §3.9);
 * debug only: integer overflow, `as` range violations;
 * division by zero (always);
 * `assert` failures;

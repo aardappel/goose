@@ -2841,7 +2841,17 @@ struct CodeGen {
     // Writes a plain-reference value into the relative-reference slot at
     // `fa` (§3.9): self-relative signed offset, range-checked. Fixed widths
     // only; the varint form exists only in the stack-top variant below.
-    void EmitRelStoreAt(const string &fa, TypeExpr *rt, const string &rv, Line ln) {
+    //
+    // `inroot` says `fa` is the slot's real address inside the root array,
+    // which holds everywhere except the literal-temp path in
+    // StructLit::CgX. The offset then cannot exceed the root's span: a root
+    // on a data stack is inside one reservation of GS_STACK_RESERVE bytes
+    // (guard region behind it, so nothing past it is ever written), and a
+    // fixed root is at most `relrootmax` bytes. The check is emitted only
+    // where one of those exceeds the width; GS_STACK_RESERVE is a C macro,
+    // so that half of the test is left to the C preprocessor.
+    void EmitRelStoreAt(const string &fa, TypeExpr *rt, const string &rv, Line ln,
+                        bool inroot) {
         auto w = (IntStorage)rt->ref->lenstorage;
         assert(w != IS_VARINT);
         assert(!IsFatPointee(rt->ref->sub));
@@ -2852,10 +2862,14 @@ struct CodeGen {
         else
             L("int64_t ", off, " = (int64_t)(", addr, " - (", fa, "));");
         auto bits = IntSize(w) * 8;
-        if (bits < 64)
+        if (bits < 64) {
+            auto guarded = inroot && relrootmax <= (1ll << (bits - 1));
+            if (guarded) L("#if GS_STACK_RESERVE > (1ull << ", bits - 1, ")");
             L("if (", off, " < -(1LL << ", bits - 1, ") || ", off, " >= (1LL << ",
               bits - 1, ")) gs_abort(GS_E_RELOFF, ",
               LocArgs(ln), ");");
+            if (guarded) L("#endif");
+        }
         L("*(", RelCT(w), " *)(", fa, ") = (", RelCT(w), ")", off, ";");
     }
 
@@ -2874,7 +2888,7 @@ struct CodeGen {
             Bump(stk, cat("gs_zig_write(", fa, ", ", off, ")"));
             (void)ln;
         } else {
-            EmitRelStoreAt(fa, rt, rv, ln);
+            EmitRelStoreAt(fa, rt, rv, ln, true);
             Bump(stk, cat(IntSize(w)));
         }
     }
@@ -2929,6 +2943,20 @@ struct CodeGen {
                 return (t->arr->akind == A_FIXED || t->arr->akind == A_LIMITED) &&
                        HasRelRef(t->arr->sub);
             default: return false;
+        }
+    }
+
+    // Byte span of the largest fixed value that can be a relative
+    // reference's root array (§3.9). Roots are variables, so this is the
+    // widest offset a store into a root that is *not* on a data stack can
+    // produce; stack roots are bounded by GS_STACK_RESERVE instead. Both
+    // bounds decide whether EmitRelStoreAt emits its range check.
+    int64_t relrootmax = 0;
+
+    void ComputeRelRootMax() {
+        for (auto vd : ast.vardefs) {
+            if (!vd->type || !IsFix(vd->type) || !HasRelRef(vd->type)) continue;
+            relrootmax = std::max(relrootmax, FixedSize(vd->type));
         }
     }
 
@@ -3697,7 +3725,7 @@ struct CodeGen {
         auto rv = GenX(rhs);
         // Varint-width relative references are construction-only (typechecked).
         assert(lv.t->ref->lenstorage != IS_VARINT);
-        EmitRelStoreAt(BytesAddrOf(lv), lv.t, rv, ln);
+        EmitRelStoreAt(BytesAddrOf(lv), lv.t, rv, ln, true);
     }
 
     void GenRebind(Assign *a, Loc lv) {
@@ -4793,7 +4821,7 @@ struct CodeGen {
             if (elem->kind == TY_REF && elem->ref->lenstorage >= 0) {
                 // A relative-reference element stores the offset from its
                 // own slot, not the pointer (§3.9).
-                EmitRelStoreAt(cat("(uint8_t *)", e), elem, GenX(an[1]), ln);
+                EmitRelStoreAt(cat("(uint8_t *)", e), elem, GenX(an[1]), ln, true);
             } else {
                 auto ev = T();
                 L(CT(elem), " ", ev, " = ", GenXD(an[1], elem), ";");
@@ -5540,6 +5568,7 @@ struct CodeGen {
     string result;   // Everything after the runtime paste.
 
     CodeGen(Ast &_ast, bool _norfcheck = false) : ast(_ast), norfcheck(_norfcheck) {
+        ComputeRelRootMax();
         CollectSpecs();
         // Zero means "no long-distance return in flight", which is also the
         // state every propagating function's ordinary exit leaves behind.
@@ -5880,7 +5909,7 @@ inline string StructLit::CgX(CodeGen &cg) {
                 if (Is<SelfRef>(init))
                     cg.EmitRelSelfAt(cat("(uint8_t *)&", path), ft, baseoff + lo.offs[i], line);
                 else
-                    cg.EmitRelStoreAt(cat("(uint8_t *)&", path), ft, cg.GenX(init), line);
+                    cg.EmitRelStoreAt(cat("(uint8_t *)&", path), ft, cg.GenX(init), line, false);
                 continue;
             }
             cg.GenAny(init, Dst { 1, path });
