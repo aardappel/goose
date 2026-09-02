@@ -9,6 +9,7 @@
 #include "parser.h"
 #include "resolve.h"
 #include "builtins.h"
+#include "typecheck_cycles.h"
 #include "typecheck.h"
 #include "optimize.h"
 #include "optimize_basecase.h"

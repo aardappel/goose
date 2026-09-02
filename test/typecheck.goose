@@ -256,6 +256,69 @@ fn build_tree() {
     }
 }
 
+// --- cycle return roots (§7.8) ----------------------------------------------
+// A cycle's return roots are the fixpoint over its returns, computed before
+// any body is checked, so a back edge into a function that has returned
+// nothing yet still gets a real root: the parser below hands a parenthesised
+// subexpression straight back through `pfactor` (no wrapper node), and the
+// builder's base case sits after its recursive call.
+
+enum PNode { PLit { v: i64 }, PSum { l: PNode..&<u16>, r: PNode..&<u16> } }
+
+var ptext: u8[>..<] = [];
+var ppos = 0;
+
+recursive fn pexpr(pool: PNode..[>..]&) -> PNode..& {
+    var lhs: PNode..& = pfactor(pool);
+    loop {
+        guard ppos < ptext.len && ptext[ppos] == '+';
+        ppos++;
+        let rhs: PNode..& = pfactor(pool);
+        lhs .= pool.push(PNode.PSum { l: lhs, r: rhs });
+    }
+    return lhs;
+}
+
+recursive fn pfactor(pool: PNode..[>..]&) -> PNode..& {
+    guard ppos < ptext.len else { return pool.push(PNode.PLit { v: 0 }); }
+    let c = ptext[ppos];
+    ppos++;
+    if c == '(' {
+        // The back edge into the cycle's entry, reached before any of its own
+        // returns: the result is rooted at this activation's pool, so it needs
+        // no wrapper node and its links stay relative.
+        let inner: PNode..& = pexpr(pool);
+        if ppos < ptext.len && ptext[ppos] == ')' { ppos++; }
+        return inner;
+    }
+    return pool.push(PNode.PLit { v: (c - '0') as i64 });
+}
+
+recursive fn psum(n: PNode.PLit&) -> i64 { n.v }
+recursive fn psum(n: PNode.PSum&) -> i64 { psum(n.l) + psum(n.r) }
+
+// The base case is the *last* return, so the back edge above it sees no
+// recorded root at all.
+recursive fn pchain(pool: PNode..[>..]&, n: i64) -> PNode..& {
+    if n > 0 {
+        let rest: PNode..& = pchain(pool, n - 1);
+        let leaf: PNode..& = pool.push(PNode.PLit { v: n });
+        return pool.push(PNode.PSum { l: leaf, r: rest });
+    }
+    return pool.push(PNode.PLit { v: 0 });
+}
+
+fn cycleroots() {
+    var pool: PNode..[>..] = [];
+    ptext.clear();
+    ptext.append("(1+(2+3))+4");
+    ppos = 0;
+    let root: PNode..& = pexpr(&pool);
+    print(psum(root));                   // 10, with no node per paren.
+    print(pool.len);                     // Seven: four literals, three sums.
+    print(psum(pchain(&pool, 4)));       // 1+2+3+4.
+}
+
 // --- variable-size elements: sequential arrays ------------------------------
 
 fn words(text: u8[:]) -> u8[][>..] {
@@ -529,6 +592,7 @@ fn main_typecheck() {
     print(clear_scratch());
     pools();
     build_tree();
+    cycleroots();
     sequential();
     generic_data();
     generic_fns();

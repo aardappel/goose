@@ -15,6 +15,7 @@ add_executable(goose
     src/parser.h
     src/resolve.h
     src/builtins.h
+    src/typecheck_cycles.h
     src/typecheck.h
     src/optimize.h
     src/optimize_basecase.h
