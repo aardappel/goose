@@ -17,6 +17,7 @@ add_executable(goose
     src/builtins.h
     src/typecheck.h
     src/optimize.h
+    src/optimize_basecase.h
     src/bce.h
     src/codegen.h
     src/runtime_inline.h

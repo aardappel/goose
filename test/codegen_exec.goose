@@ -892,6 +892,51 @@ fn lenprefixes() {
     print(ns);                           // 130 * 1 + 2 = 132
 }
 
+// --- self-recursive base cases ----------------------------------------------
+
+// Each of these starts with a base case over its parameters alone, which the
+// optimizer splices into every self-call site (optimize_basecase.h): the tree
+// built and the walks over it must come out the same either way.
+
+struct BNode { v: i64, l: BNode&<u32>?, r: BNode&<u32>? }
+
+var rmarks = 0;
+
+recursive fn bbuild(pool: BNode[>..]&, depth: i64, v: i64) -> BNode& {
+    if depth == 0 { return pool.push(BNode { v: v }); }
+    let l: BNode& = bbuild(pool, depth - 1, v * 2);
+    let r: BNode& = bbuild(pool, depth - 1, v * 2 + 1);
+    return pool.push(BNode { v: v, l: l, r: r });
+}
+
+recursive fn rsum(n: BNode&, d: i64) -> i64 {          // Guard form: arms swap.
+    guard d > 0 else { return n.v; }
+    var t = n.v;
+    let l = n.l;
+    if l { t += rsum(l, d - 1); }
+    let r = n.r;
+    if r { t += rsum(r, d - 1); }
+    t
+}
+
+recursive fn rmark(n: BNode&, d: i64) {                // Valueless base case.
+    if d == 0 { return; }
+    rmarks += 1;
+    let l = n.l;
+    if l { rmark(l, d - 1); }
+    let r = n.r;
+    if r { rmark(r, d - 1); }
+}
+
+fn basecases() {
+    var pool: BNode[>..] = [];
+    let root: BNode& = bbuild(&pool, 3, 1);
+    print(pool.len);                     // A complete tree of depth 3: 15
+    print(rsum(root, 3));                // Values 1..15: 120
+    rmark(root, 3);
+    print(rmarks);                       // Everything above the leaves: 7
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -927,6 +972,7 @@ fn main_codegen_exec() {
     loopviews();
     inlined_results();
     lenprefixes();
+    basecases();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).
