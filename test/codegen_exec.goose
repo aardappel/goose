@@ -827,6 +827,27 @@ fn inlined_results() {
     print(rv.k);                         // 8
 }
 
+// Length prefixes on both sides of the one-byte ULEB boundary: 131 variable
+// elements (a two-byte prefix on the array itself), 130 of them with a
+// one-byte inline length and one with a two-byte one, so a walk over this
+// value steps across both encodings.
+fn vlong() -> VItem[] {
+    var t: VItem[>..] = [];
+    for i in 130 { t.push(VItem { name: "ab", n: 1 }); }
+    t.push(VItem { name: "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789", n: 2 });
+    return t;
+}
+
+fn lenprefixes() {
+    let bag = VBag { id: 0, items: vlong() };
+    var chars = 0;
+    var ns = 0;
+    for &it in bag.items { chars += it.name.len; ns += it.n; }
+    print(bag.items.len);                // 131
+    print(chars);                        // 130 * 2 + 130 = 390
+    print(ns);                           // 130 * 1 + 2 = 132
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -860,6 +881,7 @@ fn main_codegen_exec() {
     reftops();
     loopviews();
     inlined_results();
+    lenprefixes();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

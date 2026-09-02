@@ -733,8 +733,8 @@ struct CodeGen {
                     case A_VAR: {
                         auto ls = LenStore(t->arr);
                         if (ls == IS_VARINT)
-                            Append(b, "    { int64_t n = gs_uleb_read(", q, "); ", q,
-                                   " += gs_uleb_size(", q, ");\n");
+                            Append(b, "    { int64_t n = GS_ULEB_READ(", q, "); ", q,
+                                   " += GS_ULEB_SIZE(", q, ");\n");
                         else
                             Append(b, "    { int64_t n = (int64_t)*(", IntCT(ls), " *)", q,
                                    "; ", q, " += ", IntSize(ls), ";\n");
@@ -1053,8 +1053,8 @@ struct CodeGen {
                     if (a.akind == A_VAR) {
                         auto ls = LenStore(t->arr);
                         if (ls == IS_VARINT) {
-                            Append(bo, I, "int64_t ", out, " = gs_uleb_read(", p, "); ", p,
-                                   " += gs_uleb_size(", p, ");\n");
+                            Append(bo, I, "int64_t ", out, " = GS_ULEB_READ(", p, "); ", p,
+                                   " += GS_ULEB_SIZE(", p, ");\n");
                         } else {
                             Append(bo, I, "int64_t ", out, " = (int64_t)*(", IntCT(ls), " *)",
                                    p, "; ", p, " += ", IntSize(ls), ";\n");
@@ -2087,9 +2087,9 @@ struct CodeGen {
                     // Sequential unless elements are fixed; length prefix is
                     // dynamic, so materialize both once.
                     auto p = T();
-                    L("uint8_t *", p, " = (", lv.s, ") + gs_uleb_size(", lv.s, ");");
+                    L("uint8_t *", p, " = (", lv.s, ") + GS_ULEB_SIZE(", lv.s, ");");
                     v.elems = p;
-                    v.len = cat("gs_uleb_read(", lv.s, ")");
+                    v.len = cat("GS_ULEB_READ(", lv.s, ")");
                 } else {
                     v.elems = cat("((", lv.s, ") + ", IntSize(ls), ")");
                     v.len = cat("(int64_t)*(", IntCT(ls), " *)(", lv.s, ")");
@@ -3985,8 +3985,8 @@ struct CodeGen {
             auto ls = LenStore(d0.t->arr);
             string metasz, count;
             if (ls == IS_VARINT) {
-                metasz = cat("gs_uleb_size(", base, ")");
-                count = cat("gs_uleb_read(", base, ")");
+                metasz = cat("GS_ULEB_SIZE(", base, ")");
+                count = cat("GS_ULEB_READ(", base, ")");
             } else {
                 metasz = cat(IntSize(ls));
                 count = cat("(int64_t)*(", IntCT(ls), " *)", base);
@@ -4208,8 +4208,8 @@ struct CodeGen {
             auto ls = LenStore(srct->arr);
             string metasz, count;
             if (ls == IS_VARINT) {
-                metasz = cat("gs_uleb_size(", slidebase, ")");
-                count = cat("gs_uleb_read(", slidebase, ")");
+                metasz = cat("GS_ULEB_SIZE(", slidebase, ")");
+                count = cat("GS_ULEB_READ(", slidebase, ")");
             } else {
                 metasz = cat(IntSize(ls));
                 count = cat("(int64_t)*(", IntCT(ls), " *)", slidebase);
@@ -4243,8 +4243,8 @@ struct CodeGen {
         auto count = T();
         auto oms = T();
         if (srcls == IS_VARINT) {
-            L("int64_t ", count, " = gs_uleb_read(", base, ");");
-            L("int64_t ", oms, " = gs_uleb_size(", base, ");");
+            L("int64_t ", count, " = GS_ULEB_READ(", base, ");");
+            L("int64_t ", oms, " = GS_ULEB_SIZE(", base, ");");
         } else {
             L("int64_t ", count, " = (int64_t)*(", IntCT(srcls), " *)", base, ";");
             L("int64_t ", oms, " = ", IntSize(srcls), ";");
