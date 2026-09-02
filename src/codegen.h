@@ -1428,6 +1428,21 @@ struct CodeGen {
     unordered_map<const VarDef *, pair<string, string>> vpool;  // fl base name, fl stack expr.
     set<const VarDef *> fvptr;           // Captured fixed vars arriving as pointers.
     set<const VarDef *> nrvovars;        // Locals aliased to a return destination.
+
+    // A named result built at its destination (§7.3): the local's elements are
+    // written where the value ends up, so only its metadata travels at the
+    // return. A destination that wants a length prefix in front of the
+    // elements gets those bytes reserved at the declaration and patched at the
+    // return, rather than the elements moved out of the way.
+    struct NrvoDest {
+        string stk;               // Destination stack expression.
+        string lenlv;             // Receiving count lvalue; empty when prefix.
+        IntStorage ls = IS_U32;   // The prefix's length storage.
+        bool prefix = false;      // Reserve prefix bytes and patch the count.
+        bool inlined = false;     // Bound by an InlineBlock, not by DetectNrvo.
+        string pref, hdr;         // Reserved prefix address, header name (BindLocal).
+    };
+    unordered_map<const VarDef *, NrvoDest> nrvo;
     vector<string> fdstsaves;            // Epilogue restores for gs_fdst_* saves.
 
     enum { SC_PLAIN, SC_FN, SC_LOOP, SC_BLOCK, SC_IB, SC_STMT };
@@ -2961,6 +2976,18 @@ struct CodeGen {
     // the count assigned there (§7.3's metadata-outside-the-data form).
     void GenConstruct(Node *n, const string &stk, TypeExpr *want = nullptr,
                       const string &lenlv = "") {
+        // An inlined body's named result reaching the destination it was
+        // bound to (OpenIbNrvo): the elements are in place, so all that is
+        // left is the count or the reserved prefix. Any other use of that
+        // local constructs a copy elsewhere and takes the normal path.
+        if (auto id = Is<Ident>(n); id && id->vdef) {
+            auto it = nrvo.find(id->vdef);
+            if (it != nrvo.end() && it->second.inlined && it->second.stk == stk &&
+                it->second.lenlv == lenlv) {
+                EmitNrvoFinish(it->second);
+                return;
+            }
+        }
         auto et = n->exprtype;
         // A variable array landing in a slot of another length storage takes
         // the slot's layout: the prefix written here is the destination's,
@@ -3534,13 +3561,26 @@ struct CodeGen {
             assert(init);
             EmitCoreTypes();
             string stk;
-            if (nrvovars.count(d)) {
-                stk = cat("gs_dst", nrvodst[d]);
+            auto nit = nrvo.find(d);
+            if (nit != nrvo.end()) {
+                auto &nd = nit->second;
+                stk = nd.stk;
+                // The receiving prefix goes in front of the elements, so its
+                // bytes are claimed before the first one lands. A varint takes
+                // one byte here and is widened at the return only if the count
+                // does not fit (EmitPrefixPatch).
+                if (nd.prefix) {
+                    nd.pref = T();
+                    L("uint8_t *", nd.pref, " = ", Top(stk), ";");
+                    Bump(stk, cat(PrefixBytes(nd.ls)));
+                }
+                nd.hdr = name;
             } else {
                 stk = AllocStk(true);
             }
             L("gs_rhdr ", name, " = { ", Top(stk), ", 0 };");
-            if (!nrvovars.count(d)) SaveBase(true, stk, cat(name, ".base"));
+            // The destination outlives us: no watermark to restore there.
+            if (nit == nrvo.end()) SaveBase(true, stk, cat(name, ".base"));
             vstk[d] = stk;
             if (d->reusable) {
                 // Companion freelist: free slot indices on their own stack.
@@ -3636,8 +3676,6 @@ struct CodeGen {
     // Returns: normal, forwarding a multi-value call, exiting an inlined
     // body, and long-distance (§7.9).
 
-    unordered_map<const VarDef *, int> nrvodst;
-
     void GenNormalReturn(const vector<Node *> &vals, Line ln) {
         auto sp = curspec;
         assert(sp);
@@ -3686,10 +3724,9 @@ struct CodeGen {
                 auto id = Is<Ident>(vals[i]);
                 if (id && id->vdef && nrvovars.count(id->vdef)) {
                     // In place already. A resizable local's elements sit at
-                    // the destination with no prefix (its length lives in
-                    // the frame header), so returning it as a variable array
-                    // means putting that array's length in front of them.
-                    if (IsResz(id->vdef->type)) EmitNrvoPrefix(id->vdef, rt, cat("gs_dst", i));
+                    // the destination behind the length prefix reserved for
+                    // them at its declaration; the count goes in there now.
+                    if (IsResz(id->vdef->type)) EmitNrvoFinish(nrvo[id->vdef]);
                     continue;
                 }
                 GenConstruct(vals[i], cat("gs_dst", i), rt);
@@ -3708,29 +3745,43 @@ struct CodeGen {
         (void)ln;
     }
 
-    // The elements of the NRVO'd resizable local `vd` fill the destination
-    // stack from its base to the top; move them up by the size of the
-    // returned array type's length prefix and write the prefix.
-    void EmitNrvoPrefix(VarDef *vd, TypeExpr *rt, const string &stk) {
-        assert(rt->kind == TY_ARRAY && rt->arr->akind == A_VAR);
-        auto hdr = HdrLv(vd);
-        auto ls = LenStore(rt->arr);
-        auto ms = T();
-        string writepref;
-        if (ls == IS_VARINT) {
-            auto tmp = T();
-            L("uint8_t ", tmp, "[10];");
-            L("int64_t ", ms, " = gs_uleb_write(", tmp, ", (uint64_t)", hdr, ".len);");
-            writepref = cat("memcpy(", hdr, ".base, ", tmp, ", (size_t)", ms, ");");
-        } else {
-            L("int64_t ", ms, " = ", IntSize(ls), ";");
-            writepref = cat("*(", IntCT(ls), " *)", hdr, ".base = (", IntCT(ls), ")", hdr,
-                            ".len;");
+    // The bytes a length prefix of this storage reserves ahead of the
+    // elements. A varint takes the one byte that covers counts under 128.
+    int64_t PrefixBytes(IntStorage ls) { return ls == IS_VARINT ? 1 : IntSize(ls); }
+
+    // Writes the count into the prefix bytes reserved at `pref`, in front of
+    // the `count` elements that run from `elems` to the top of `stk`. Fixed
+    // widths patch in place; a varint moves the elements up by one or two
+    // bytes only when the count outgrew its reserved byte.
+    void EmitPrefixPatch(const string &pref, IntStorage ls, const string &stk,
+                         const string &count, const string &elems) {
+        if (ls != IS_VARINT) {
+            L("*(", IntCT(ls), " *)", pref, " = (", IntCT(ls), ")(", count, ");");
+            return;
         }
-        L("memmove(", hdr, ".base + ", ms, ", ", hdr, ".base, (size_t)(", Top(stk), " - ", hdr,
-          ".base));");
-        L(writepref);
-        L(TopW(stk), " += ", ms, ";");
+        L("if ((", count, ") < 128) {");
+        ind++;
+        L("*", pref, " = (uint8_t)(", count, ");");
+        ind--;
+        L("} else {");
+        ind++;
+        auto tmp = T(), ms = T();
+        L("uint8_t ", tmp, "[10];");
+        L("int64_t ", ms, " = gs_uleb_write(", tmp, ", (uint64_t)(", count, "));");
+        L("memmove((", elems, ") + ", ms, " - 1, ", elems, ", (size_t)(", Top(stk), " - (",
+          elems, ")));");
+        L("memcpy(", pref, ", ", tmp, ", (size_t)", ms, ");");
+        L(TopW(stk), " += ", ms, " - 1;");
+        ind--;
+        L("}");
+    }
+
+    // Completes a named result whose elements are already at the destination:
+    // the count goes to the receiving header, or into the prefix reserved in
+    // front of the elements when the destination is a value slot.
+    void EmitNrvoFinish(const NrvoDest &nd) {
+        if (!nd.prefix) { L(nd.lenlv, " = ", nd.hdr, ".len;"); return; }
+        EmitPrefixPatch(nd.pref, nd.ls, nd.stk, cat(nd.hdr, ".len"), cat(nd.hdr, ".base"));
     }
 
     void Epilogue(const string &retv) {
@@ -4029,6 +4080,9 @@ struct CodeGen {
                     ername = er;
                     reprefixcnt = T();
                     L("int64_t ", reprefixcnt, " = 0;");
+                    // The run lands behind the destination's prefix: claim
+                    // those bytes now and patch the count in afterwards.
+                    Bump(dd.s, cat(PrefixBytes(LenStore(dd.t->arr))));
                     args.push_back(dd.s);
                     args.push_back(cat("&", reprefixcnt));
                 } else {
@@ -4104,26 +4158,26 @@ struct CodeGen {
     }
 
     // The elements of a variable-array call result sit at `base` -- raw (the
-    // count in `cnt`) or, when `cnt` is empty, behind the callee's own prefix
-    // -- and the destination wants its own prefix in front of them: move the
-    // elements up by the difference and write it. One memmove, the same cost
-    // as the value-form slide.
+    // count in `cnt`, written after prefix bytes reserved before the call) or,
+    // when `cnt` is empty, behind the callee's own prefix -- and the
+    // destination wants its own prefix in front of them. The run form only
+    // patches the reserved bytes; the value form moves the elements by the
+    // difference in prefix sizes, the same cost as the value-form slide.
     void EmitReprefix(FnSpec *sp, const Dst &dd, const string &base, const string &cnt) {
         auto ls = LenStore(dd.t->arr);
-        auto count = cnt;
+        if (!cnt.empty()) {
+            EmitPrefixPatch(base, ls, dd.s, cnt, cat(base, " + ", PrefixBytes(ls)));
+            return;
+        }
+        auto srcls = LenStore(sp->rets[0]->arr);
+        auto count = T();
         auto oms = T();
-        if (cnt.empty()) {
-            auto srcls = LenStore(sp->rets[0]->arr);
-            count = T();
-            if (srcls == IS_VARINT) {
-                L("int64_t ", count, " = gs_uleb_read(", base, ");");
-                L("int64_t ", oms, " = gs_uleb_size(", base, ");");
-            } else {
-                L("int64_t ", count, " = (int64_t)*(", IntCT(srcls), " *)", base, ";");
-                L("int64_t ", oms, " = ", IntSize(srcls), ";");
-            }
+        if (srcls == IS_VARINT) {
+            L("int64_t ", count, " = gs_uleb_read(", base, ");");
+            L("int64_t ", oms, " = gs_uleb_size(", base, ");");
         } else {
-            L("int64_t ", oms, " = 0;");
+            L("int64_t ", count, " = (int64_t)*(", IntCT(srcls), " *)", base, ";");
+            L("int64_t ", oms, " = ", IntSize(srcls), ";");
         }
         auto ms = T();
         string writepref;
@@ -4867,12 +4921,15 @@ struct CodeGen {
     // one nonfixed return position is allocated at that destination.
     void DetectNrvo(FnSpec *sp) {
         nrvovars.clear();
-        nrvodst.clear();
+        nrvo.clear();
         if (sp->rets.empty()) return;
+        // Only bindings BindLocal places: a multi-name receive wires the
+        // call's channels into locals of its own (VarDecl::CgStmt), which
+        // are not at a return destination.
         set<const VarDef *> toplocals;
         for (auto st : sp->body->stmts)
-            if (auto vd = Is<VarDecl>(st))
-                for (auto d : vd->defs) toplocals.insert(d);
+            if (auto vd = Is<VarDecl>(st); vd && vd->defs.size() == 1)
+                toplocals.insert(vd->defs[0]);
         for (size_t j = 0; j < sp->rets.size(); j++) {
             if (!IsBytesT(sp->rets[j])) continue;
             const VarDef *cand = nullptr;
@@ -4898,22 +4955,73 @@ struct CodeGen {
             if (sp->body->tail && sp->rets.size() == 1 &&
                 !IsVoidT(sp->body->tail->exprtype)) consider(sp->body->tail);
             // The local's layout must be the return type's, or a resizable
-            // whose elements become the returned variable array's (the
-            // prefix is added at the return, EmitNrvoPrefix); anything else
-            // is copied on return like a non-named result.
+            // whose elements become the returned variable array's (that
+            // array's prefix is reserved ahead of them); anything else is
+            // copied on return like a non-named result.
+            auto rzarr = false;
             if (ok && cand) {
                 auto rt = sp->rets[j];
                 auto ct = cand->type;
                 auto same = TEq(ct, rt);
-                auto rzarr = IsResz(ct) && ct->kind == TY_ARRAY && rt->kind == TY_ARRAY &&
-                             rt->arr->akind == A_VAR && TEq(ct->arr->sub, rt->arr->sub);
+                rzarr = IsResz(ct) && ct->kind == TY_ARRAY && rt->kind == TY_ARRAY &&
+                        rt->arr->akind == A_VAR && TEq(ct->arr->sub, rt->arr->sub);
                 if (!same && !rzarr) ok = false;
             }
             if (ok && cand) {
                 nrvovars.insert(cand);
-                nrvodst[cand] = (int)j;
+                NrvoDest nd;
+                nd.stk = cat("gs_dst", j);
+                if (rzarr) {
+                    nd.prefix = true;
+                    nd.ls = LenStore(sp->rets[j]->arr);
+                } else {
+                    nd.lenlv = cat("(*gs_rl", j, ")");
+                }
+                nrvo[cand] = nd;
             }
         }
+    }
+
+    // §7.3 for a body the optimizer spliced in: an inlined call in a
+    // construction context still has a destination, so bind the block's named
+    // result to it rather than to a stack of its own -- its elements are then
+    // written where the value has to end up, and the `return` only completes
+    // the receiving metadata. Applies where the local's raw elements are
+    // exactly the ones the destination wants; returns the bound local, or null.
+    const VarDef *OpenIbNrvo(InlineBlock *ib, const Dst &d) {
+        if (d.k != 2) return nullptr;
+        auto vd = ib->namedresult;
+        if (!vd || !IsResz(vd->type) || nrvo.count(vd)) return nullptr;
+        auto ct = vd->type;
+        NrvoDest nd;
+        nd.stk = d.s;
+        nd.inlined = true;
+        if (!d.lenlv.empty()) {
+            // An element-run or resizable receiver: raw elements plus a count.
+            if (!d.t) return nullptr;
+            auto elems = ct->kind == TY_ARRAY && d.t->kind == TY_ARRAY &&
+                         (IsResz(d.t) || d.t->arr->akind == A_VAR) &&
+                         TEq(ct->arr->sub, d.t->arr->sub);
+            if (!TEq(ct, d.t) && !elems) return nullptr;
+            nd.lenlv = d.lenlv;
+        } else {
+            // A value receiver: the elements need a length prefix in front of
+            // them. Its storage is the one the call itself would have written
+            // -- the result type's, retargeted to the slot's when the receiver
+            // names one (the retarget GenConstruct does at the leaf).
+            auto at = ib->spec->rets[0];
+            if (!at || at->kind != TY_ARRAY || at->arr->akind != A_VAR) return nullptr;
+            if (d.t) {
+                if (d.t->kind != TY_ARRAY || d.t->arr->akind != A_VAR ||
+                    !TEq(d.t->arr->sub, at->arr->sub)) return nullptr;
+                at = d.t;
+            }
+            if (ct->kind != TY_ARRAY || !TEq(ct->arr->sub, at->arr->sub)) return nullptr;
+            nd.prefix = true;
+            nd.ls = LenStore(at->arr);
+        }
+        nrvo[vd] = nd;
+        return vd;
     }
 
     // A reference to a resizable carries its stack inside the reference value,
@@ -5046,7 +5154,7 @@ struct CodeGen {
         fvptr.clear();
         fnused.clear();
         nrvovars.clear();
-        nrvodst.clear();
+        nrvo.clear();
         fdstsaves.clear();
         cscopes.clear();
         body.clear();
@@ -5943,6 +6051,7 @@ inline void LoopExpr::CgAny(CodeGen &cg, const Dst &d) {
 }
 
 inline void InlineBlock::CgAny(CodeGen &cg, const Dst &d) {
+    auto named = cg.OpenIbNrvo(this, d);
     cg.PushSc(CodeGen::SC_IB);
     auto si = (int)cg.cscopes.size() - 1;
     cg.cscopes[si].ibsf = sf;
@@ -5953,6 +6062,7 @@ inline void InlineBlock::CgAny(CodeGen &cg, const Dst &d) {
     auto lbl = cg.cscopes.back().brklbl;
     cg.PopSc();
     if (brk) cg.L(lbl, ":;");
+    if (named) cg.nrvo.erase(named);
     cg.termjump = false;
 }
 
