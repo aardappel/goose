@@ -1,31 +1,32 @@
-**Over sixteen benchmarks Goose runs at about 3.1x the speed of idiomatic C++,
-about 1.1x the speed of hand-optimised C++, and level with idiomatic Rust
-(1.01x under v145, 1.04x under clang), on 1.9x, 1.3x and 1.2x less memory.**
-The first ten benchmarks say what they said last round -- every row within the
-documented noise of the previous run, Goose 1.2x ahead of Rust on their
-geometric mean -- and the six new, larger ones pull the Rust figure down to
-level, which is the result of this round: Goose beats the idiomatic C++ shape
-on all six by 2.3x to 8.4x and the idiomatic Rust shape (`Box`, `HashMap`,
-`String`) on five of them, but against the *arena* Rust rows it wins one
-(`respond`, 1.25x), ties two (`blur`, `scene` under clang) and loses three
-(`calc` 0.78x, `bintrees` 0.64x, `lru` 0.61x).
+**Over sixteen benchmarks Goose runs at about 3.2x the speed of idiomatic C++,
+about 1.15x the speed of hand-optimised C++, and ahead of idiomatic Rust
+(1.04x under v145, 1.08x under clang), on 1.9x, 1.3x and 1.2x less memory.**
+This round changed the compiler, not the benchmarks: thirteen optimizations
+and language items from `plan.md` landed (`notes.md` has the per-row A/B,
+`adoption.md` the per-item verdicts), and only the Goose rows moved. Against
+the six larger benchmarks' *arena* Rust rows, which last round Goose lost
+three of, it now wins two (`respond` 1.23-1.35x, `blur` 1.09x under clang),
+ties two (`bintrees` 0.95x under v145, `scene` 0.99x under clang) and still
+loses two (`calc` 0.82x, `lru` 0.69x under v145 and 0.84x under clang); it
+beats every idiomatic C++ and idiomatic Rust shape on all six.
 
-**Each loss was taken apart, and they are three different things.** `lru` is
-the relative references: the same Goose program with `i32` index links runs
-in 2,397 ms and with plain 8-byte references in 2,557, against 3,738 with the
-4-byte self-relative links, so the encoding -- an offset computed and
-range-checked on every relink -- costs 1.5x on a workload that only relinks,
-and that is the whole gap to Rust's 2,170. `bintrees` is the backend: Goose
-and the C++ vector arena land together (353-397 ms) and the Rust arena is 1.6x
-ahead of both in building and in checking alike; a global pool, 8-byte links
-and the by-reference push all measure the same, so the difference is what LLVM
-makes of rustc's recursion rather than anything in Goose's data path. `calc`
-is 7% behind the C++ arena under v145 and 21-24% behind Rust's, and the
-per-input pool is not the cost either (a never-reset global pool times the
-same); what remains is the `return from` discriminant on every call, the
-global cursor and the varint decode, on inputs that never leave L1. `scene`
-under v145 is a backend gap the C++ arena shares (both 24% behind their clang
-builds); under clang Goose and Rust are level on 1.35x less memory.
+**The losses, taken apart, are still three different things, and two of them
+shrank.** `lru` is the relative references: an offset computed from two
+addresses on every relink and a null test plus an add on every load. The
+range check on the store is gone this round (a `u32` link into a stack under
+2 GB cannot overflow), which is the 1.13x on the row, and the rest of the gap
+to Rust's 2,296 ms is the encoding itself; an experimental pool-relative
+encoding halves what remains under clang (`adoption.md` 3.1), and the
+language question of what a compressed reference should mean is where that
+stops. `bintrees` was the backend, and the backend caught up: inlining the
+base case, keeping the pool's stack top in a register through the fat
+reference and eliminating the accumulator tail call take Goose from 360 to
+244 ms under v145 against the Rust arena's 232 and the C++ arena's 387;
+under clang 0.81x remains. `calc` is 0.82x, from 0.78x: the `return from`
+discriminant no longer travels through every call, and what is left is the
+global cursor and a varint decode on values that mostly need two bytes.
+`scene` is unchanged: a backend gap under v145 that the C++ arena shares,
+level with Rust under clang on 1.35x less memory.
 
 **The two clearest new wins are the two Goose ideas the first ten did not
 reach.** `respond` builds a DTO -- a string, a list of records each with a
@@ -38,17 +39,19 @@ did on average, because the idiomatic shapes here are a `std::list` plus an
 half-built `unique_ptr` trees, and `new`/`delete` per node, which is what the
 design said would compound.
 
-**`blur` was included to lose and does, twice over, and both halves are
-compiler work rather than language cost.** The obvious `src[y*W + x]` form is
-1.8x slower than flat C++ and 6.4x slower than flat Rust. Under v145 the nine
-bounds checks per pixel stop the loop vectorising (the analysis reasons in
-differences and cannot see `y*W + x < W*W`); under clang the checks are free
--- it vectorises around them, exactly as it does for Rust's checked row -- and
-the same 4x is lost to the array header being reloaded after every store
-because a byte store might alias it, the no-aliasing-information cost
-`design.md` predicted. Written over row slices with one `assert` per row,
-every check is proven away, both backends vectorise, and Goose lands on Rust
-(304/263 ms against 287-292) and on C++ with `__restrict`.
+**`blur` was included to lose and now loses only under v145.** The obvious
+`src[y*W + x]` form was 1.8x slower than flat C++ and 6.4x slower than flat
+Rust under both backends. Under clang the loss was the array header being
+reloaded after every store because a byte store might alias it, the
+no-aliasing-information cost `design.md` predicted; the loop-view hoist now
+reaches arrays behind references, and the row runs 268 ms against Rust's
+292. Under v145 the nine bounds checks per pixel still stop the loop
+vectorising (2,026 ms against 1,056 for flat C++): the analysis can now
+prove `y*W + x < W*W`, but only where it knows the array's length, which
+inside `blur(src: u8[>..]&, ...)` it does not; one `assert` on the length
+at the top of the kernel is enough. Written over row slices, every check is
+proven away, both backends vectorise, and Goose lands on Rust (303/264 ms
+against 287-292) and on C++ with `__restrict`.
 
 **Memory is still the least ambiguous column: 1.9x smaller than idiomatic C++,
 1.3x smaller than expert C++, 1.2x smaller than Rust.** Where the layouts are
@@ -78,7 +81,7 @@ records what to do about it.
 against C++'s `vector<vector>`, and `respond`'s and `blur`'s best Goose row is
 the streaming or row-slice form, so those three idiomatic columns are partly
 data-structure comparisons; the per-benchmark tables carry the like-for-like
-rows. `push`'s expert figure is 1.24x under v145 and 2.03x under clang for
+rows. `push`'s expert figure is 1.22x under v145 and 2.01x under clang for
 backend reasons, so read the v145 one. `words` and `lru` compare against
 hand-rolled tables in both other languages because std's default hasher is
 SipHash by policy. And `lru`, like `graph`, is a cache-bound random-access row
@@ -88,5 +91,5 @@ whose noise floor is about 15%.
 including input generation, so benchmarks that spend a large share of their
 time generating data (`sexp`, `words`, `graph`, `calc`) have their ratios
 pulled toward 1.0; the gap on the phase under test is larger than the table
-shows. The machine was slower to start a process this run (13 ms against 4.6
-last time, for every language alike), which is most of the `small` column.
+shows. The process-start floor is 13.8 ms this run, as last time, for every
+language alike, and it is most of the `small` column.
