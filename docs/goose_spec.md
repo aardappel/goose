@@ -743,14 +743,19 @@ ordinary stdlib overloads per math type, not language builtins.
   (A truncating form may be added later if a use for it appears; float `%`
   stays C `fmod`, whose convention numeric code expects.)
 * **Signed overflow** (at the operation's width): aborts in debug builds;
-  wraps two's-complement (defined) in release. **Unsigned arithmetic wraps
-  modulo 2^width by definition, in every build** — modular arithmetic is
-  what hashing, PRNGs, and bit manipulation mean by unsigned math, and it
-  is why those kernels are written on unsigned types. Division/modulo by
-  zero: aborts always. `i64.min / -1` aborts in every build (it would trap
-  in hardware); at narrower signed widths the same case is an ordinary
-  overflow — debug abort, release wrap. Shift counts are masked to
-  `0..width-1` (defined).
+  wraps two's-complement (defined) in release. The debug abort is per
+  operation *as it executes*, not per operation as written: the optimizer
+  may regroup an associative chain or drop an operation altogether, and
+  each check travels with the operation it belongs to. So a debug build is
+  a bug-finding tool, not a promise about every intermediate the source
+  spells out; what a release build computes never depends on any of it.
+  **Unsigned arithmetic wraps modulo 2^width by definition, in every
+  build** — modular arithmetic is what hashing, PRNGs, and bit manipulation
+  mean by unsigned math, and it is why those kernels are written on
+  unsigned types. Division/modulo by zero: aborts always. `i64.min / -1`
+  aborts in every build (it would trap in hardware); at narrower signed
+  widths the same case is an ordinary overflow — debug abort, release wrap.
+  Shift counts are masked to `0..width-1` (defined).
 * Integer literals above `i64.max` (up to `u64.max`) are `u64` constants
   (§2, §3.1); negating one is a compile error (except `-(2^63)`, which is
   exactly `i64.min`).
@@ -1215,7 +1220,8 @@ Aborts (message + exit; not catchable):
   length);
 * relative-reference offset overflow at store (only where a root array can
   span more than the width's signed range, §3.9);
-* debug only: integer overflow, `as` range violations;
+* debug only: integer overflow (per operation as it executes, §6.2), `as`
+  range violations;
 * division by zero (always);
 * `assert` failures;
 * guard-page hits (stack budget exceeded) — safe abort, never corruption.

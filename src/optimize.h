@@ -1,9 +1,12 @@
 // Goose compiler — the optimizer: function inlining, constant folding, and
 // constant propagation, applied in place to the typechecked specialization
-// bodies that codegen consumes. The one hard rule: no rewrite may change the
-// program's semantics, aborts included — an operation that would abort at
-// runtime (division by zero, debug-build overflow, a failed `as` range check)
-// is never folded into a value or folded away.
+// bodies that codegen consumes. The one hard rule: no rewrite may change
+// what a release build computes, and an operation that would abort at
+// runtime (division by zero, a failed `as` range check, an out-of-bounds
+// index) is never folded into a value or folded away. Debug-build signed
+// overflow is the one detection not pinned to source order: it happens per
+// operation as it executes (§6.2), so regrouping an associative chain moves
+// which intermediate value can trip it.
 //
 // Shape of the pass: reachable specializations are visited once each, in
 // call-graph postorder (callees before callers), so a caller's inline
@@ -48,7 +51,7 @@ struct Optimizer {
     bool caninline = false;
     FnSpec *curspec = nullptr;   // Specialization being optimized (null: globals).
     SFunction *cursf = nullptr;
-    int inlined = 0, folded = 0, propagated = 0;
+    int inlined = 0, folded = 0, propagated = 0, tailloops = 0;
 
     // Per-VarDef write/address facts, collected across every live body before
     // any rewriting (so writes to captured variables and globals from other
@@ -332,6 +335,9 @@ struct Optimizer {
         sp->noinline = noin;
     }
 
+    // Accumulator tail-recursion elimination, defined in optimize_tre.h.
+    void TailRecurse(FnSpec *sp);
+
     // ------------------------------------------------------------------
     // Global initializers: fold (and on the second pass inline into) each
     // init, and register constant scalar globals for propagation everywhere.
@@ -387,6 +393,7 @@ struct Optimizer {
             cursf = sp->sf;
             SetupBaseCase(sp);
             OptBlock(sp->body);
+            TailRecurse(sp);
             Scan(sp);
         }
         curspec = nullptr;
