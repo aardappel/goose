@@ -15,11 +15,13 @@
 // out, against C++ exceptions (idiomatic, with a full unwind) or error codes
 // threaded through every return (expert), and Rust's Result plus `?`.
 //
-// The tree keeps a Paren node for a parenthesised subexpression so that every
-// implementation builds the same nodes and the counts and checksums agree.
-// Goose no longer needs one -- a cycle's return roots are known before its
-// back edges (spec 7.8), so parse_factor can hand parse_expr's result
-// straight back; `calc_noparen.goose` is that version, outside the suite.
+// This is `calc.goose` with the wrapper node the other implementations carry
+// removed: a parenthesised subexpression is the subexpression itself, so
+// `parse_factor` returns `parse_expr`'s result straight through. That is only
+// legal once the checker knows a cycle's return roots before its back edges
+// (spec 7.8), which also makes every link in the tree relative. It is not
+// part of the timed suite -- the node counts and the checksum no longer match
+// the C++/Rust rows -- it is the shape check for that rule.
 
 import rng;
 
@@ -33,7 +35,6 @@ let E_DIV0 = 4;
 enum Expr {
     Num { v: varint },
     Neg { of: Expr..&<u16> },
-    Paren { of: Expr..& },
     Bin { op: u8, l: Expr..&<u16>, r: Expr..&<u16> },
 }
 
@@ -138,12 +139,13 @@ recursive fn parse_factor(pool: Expr..[>..]&) -> Expr..& {
     }
     guard c == '(' else { return 0, E_TOKEN from run_one; }
     pos++;
+    // The back edge into the cycle's entry: its result is rooted at this
+    // activation's pool, so it can be returned as it stands.
     let e: Expr..& = parse_expr(pool);
     skip();
     guard pos < text.len && text[pos] == ')' else { return 0, E_PAREN from run_one; }
     pos++;
-    nodes++;
-    return pool.push(Expr.Paren { of: e });
+    return e;
 }
 
 // --- evaluation --------------------------------------------------------------
@@ -151,7 +153,6 @@ recursive fn parse_factor(pool: Expr..[>..]&) -> Expr..& {
 
 recursive fn eval(e: Expr.Num&) -> u64 { e.v as u64 }
 recursive fn eval(e: Expr.Neg&) -> u64 { 0 - eval(e.of) }
-recursive fn eval(e: Expr.Paren&) -> u64 { eval(e.of) }
 recursive fn eval(e: Expr.Bin&) -> u64 {
     let a = eval(e.l);
     let b = eval(e.r);

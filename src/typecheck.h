@@ -26,9 +26,14 @@
 // global or at a pool parameter -- a parameter root class whose members are
 // all references to resizable-class values, which no cycle function can own
 // (VarDef::poolclass); a back edge must then pass those pools exactly as the
-// entry call did (ValidatePoolArgs). Remaining conservatisms marked TODO:
-// long-distance returns carry only global/static refs, and references rooted
-// at a caller's fixed-size local are still pass-down-only inside a cycle.
+// entry call did (ValidatePoolArgs). A cycle's *return* roots cannot come from
+// its returns either, since a back edge reaches a function before those are
+// checked, so they are predicted by a syntactic fixpoint over the cycle's
+// returns before any body runs (CycleRoots, typecheck_cycles.h) and verified
+// against the real returns as they are checked. Remaining conservatisms
+// marked TODO: long-distance returns carry only global/static refs, and
+// references rooted at a caller's fixed-size local are still pass-down-only
+// inside a cycle.
 #pragma once
 
 namespace goose {
@@ -91,6 +96,8 @@ struct TypeCheck {
     bool invalue = false;
     VarDef *curdst = nullptr;    // Root of the value under construction (for ref stores).
     VarDef *temproot = nullptr;  // Sentinel root for refs read out of temporaries.
+    VarDef *cycleroot = nullptr; // Sentinel root for a back edge's result whose root
+                                 // the cycle's returns do not determine (§7.8).
     TypeExpr *fntype = nullptr;  // Shared type of function values.
     TypeExpr *u8slice = nullptr; // The natural type of a string literal.
     TypeExpr *nulltype = nullptr;  // Placeholder type of a bare null literal.
@@ -1233,6 +1240,12 @@ struct TypeCheck {
         if ((dt->kind == TY_REF || dt->kind == TY_SLICE) &&
             (t->kind == TY_REF || t->kind == TY_SLICE) && !callsite && curdst) {
             auto root = CanonRoot(v.root);
+            if (root && root == cycleroot) {
+                fitfail = "storing the result of a recursive call whose returned "
+                          "reference's root the cycle's returns do not determine "
+                          "(§7.8); it may only be passed down";
+                return false;
+            }
             if (Depth(root) > Depth(CanonRoot(curdst))) {
                 fitfail = cat("storing a reference rooted at ",
                               root ? root->name : string_view("static data"),
@@ -2729,6 +2742,14 @@ struct TypeCheck {
         }
     }
 
+    // The §7.8 cycle return-root analysis, handed the one piece of checker
+    // state it cannot derive from the syntax: the root a variable holds.
+    CycleRoots Cycles() {
+        return CycleRoots(ast, cycleroot, [this](VarDef *vd, bool isref) {
+            return CanonRoot(isref ? RefRootOf(vd) : vd);
+        });
+    }
+
     void CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline) {
         auto sf = spec->sf;
         spec->inprogress = true;
@@ -2793,6 +2814,10 @@ struct TypeCheck {
         }
         spec->retroots.resize(16, nullptr);
         spec->retwritable.resize(16, false);
+        spec->retrootseeded.resize(16, false);
+        // A cycle's back edges reach this specialization before any of its own
+        // returns are checked, so predict their roots first (§7.8).
+        if (sf->isrec && spec->retsknown) Cycles().Seed(spec);
         spec->body = (Block *)sf->body->Clone(ast);
         // The body: statements plus a value-producing tail (treated exactly
         // like `return tail`). An else-less if tail cannot be a value, so a
@@ -2871,12 +2896,18 @@ struct TypeCheck {
                               ", which dies with this function (§9.2)"));
             if (root && root == temproot)
                 Error(at, "returning a reference into a temporary");
-            if (i < tspec->retroots.size()) {
+            if (root && root == cycleroot)
+                Error(at, "returning the result of a recursive call whose returned "
+                          "reference's root the cycle's returns do not determine (§7.8)");
+            if (i < tspec->retroots.size() && i < tspec->retrootseeded.size()) {
                 if (tspec->checkedreturn && tspec->retroots[i] != root)
                     Error(at, "returns disagree on the returned reference's root "
                               "(not yet supported; use one source)");
+                if (auto bad = Cycles().ReturnConflict(tspec, i, root); !bad.empty())
+                    Error(at, bad);
                 tspec->retroots[i] = root;
                 tspec->retwritable[i] = vals[i].writable;
+                tspec->retrootseeded[i] = false;
             }
         }
         tspec->checkedreturn = true;
@@ -2892,7 +2923,11 @@ struct TypeCheck {
                 auto rr = i < spec->retroots.size() ? spec->retroots[i] : nullptr;
                 v.writable = i < spec->retwritable.size() && spec->retwritable[i];
                 if (!rr) {
-                    v.root = nullptr;
+                    // A back edge whose target has neither recorded nor
+                    // predicted this root: unknown, which is not static data.
+                    auto known = spec->checkedreturn ||
+                                 (i < spec->retrootseeded.size() && spec->retrootseeded[i]);
+                    v.root = spec->inprogress && !known ? cycleroot : nullptr;
                 } else if (!rr->isglobal && !rr->ownerspec) {
                     // A synthetic per-class parameter root: map back to this
                     // call site's argument root.
@@ -3730,6 +3765,9 @@ struct TypeCheck {
         temproot = ast.NewVarDef();
         temproot->name = "<temporary>";
         temproot->depth = INT32_MAX;
+        cycleroot = ast.NewVarDef();
+        cycleroot->name = "<recursive result>";
+        cycleroot->depth = INT32_MAX;
         fntype = ast.NewType(TY_FN, Line {});
         fntype->fn = ast.NewDetail<TypeFn>();
         u8slice = SliceOf(ast.inttypes[IS_U8], Line {});

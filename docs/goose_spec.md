@@ -1036,6 +1036,28 @@ reference the entry call did: swapping two pools, or passing a different one,
 at a back edge is a compile error. (Further refinements are future work,
 TODO.)
 
+**Cycle return roots.** A back edge reaches a function whose own returns may
+not have been checked yet, so the root of its result cannot come from them.
+Instead, **the return roots of a cycle are the fixpoint over the returns of
+the functions in it**, computed before any of their bodies are checked: a
+return of `X.push(…)`, `X.alloc_ref(…)` or `&X[…]` gives the root of `X` (a
+global, or a parameter, whose root each specialization already has from its
+call site); a return of a reference variable gives the root of what it was
+bound to; a return of `g(…)` gives `g`'s return root, mapped through the
+argument that carries it; iterating settles the mutual definitions. A cycle
+function may therefore `return` the result of a back-edge call, and a
+parenthesised subexpression in a recursive-descent parser needs no wrapper
+node (`bench/goose/calc_noparen.goose`). Every real return is then checked
+against the fixpoint's answer, and the §9.2 rule that all returns agree
+applies as usual.
+
+Where the fixpoint cannot determine a root — a callee that returns one of two
+of its own pool parameters, say, so which one it is depends on the call site —
+the result of a back edge is not treated as static data (that would let it be
+stored into a global and outlive the pool it points into). It carries instead
+a root that outlives nothing: such a result may be passed down, but storing or
+returning it is a compile error.
+
 ### 7.9 `return … from` (long-distance return)
 
 ```goose
@@ -1550,15 +1572,15 @@ The newest, highest-priority items first:
     (Container-read writability laundering, one-root-per-reference-variable,
     and the single agreed return root are now deliberate language rules,
     §9.2/§9.5.)
-0g. **Recursive results' roots at back edges** — a recursive call's returned
-    reference takes the root the callee has recorded *so far*, so a cycle
-    function must have a return whose root is visible (`return pool.push(…)`)
-    textually before the back edge whose result it stores or returns; a
-    result that reaches the entry function before any of its returns has a
-    static-data root, which is both too strict (it cannot be stored
-    relatively, `bench/goose/calc.goose`'s Paren node) and unsound (it could
-    be stored into a global). Seed the return root from a syntactic scan of
-    the cycle's returns, or from the pool parameter the returns push into.
+0g. **Recursive results' roots at back edges** — DONE (§7.8, cycle return
+    roots): a cycle's return roots are the fixpoint over its returns,
+    computed before any body is checked, so a back edge's result carries a
+    real root wherever the fixpoint determines one and an outlives-nothing
+    root (pass-down-only) where it does not. What remains is the precision of
+    the scan itself: it reads returns of `X.push(…)`/`&X[…]`, of reference
+    variables, and of calls to uniquely named functions, and gives up on
+    anything else (overload sets, function values, nested functions), which
+    only ever costs a back-edge result its usability, never soundness.
 
 1. **varint format benchmark** — DONE, see `varint_bench/results.md`:
    ULEB128 adopted (§3.6). Break-even vs the best branchless format sits at
