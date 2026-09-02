@@ -157,6 +157,113 @@ fn slice_word_scan(text: u8[:]) -> i64 {
     return chars;
 }
 
+// A slice is exactly `hi - lo` long, so a row taken as `s[lo..lo + 4]` is four
+// long whatever lo is, and indexing it needs no fact about the source.
+fn slice_span_len(s: i64[:], lo: i64) -> i64 {
+    if lo >= 0 && lo <= s.len - 4 {
+        let row = s[lo..lo + 4];              // bce:elide
+        return row[0] + row[3];               // bce:elide
+    }
+    return 0;
+}
+
+// A constant lower bound leaves the length as an offset from the upper one.
+fn slice_head_len(s: i64[:], k: i64) -> i64 {
+    if k >= 1 && k <= s.len {
+        let head = s[0..k];                   // bce:elide
+        return head[k - 1];                   // bce:elide
+    }
+    return 0;
+}
+
+// Two unrelated bounds: their difference is not a term the domain can name,
+// so the result's length is unknown and every index into it stays checked.
+fn slice_len_untracked(s: i64[:], a: i64, b: i64) -> i64 {
+    let t = s[a..b];                          // bce:keep
+    return t[0];                              // bce:keep (length unknown)
+}
+
+// --- products and interval sums --------------------------------------------
+
+// Row-major indexing: `y * 4 + x` is a constant range against a length the
+// push loop stated, so the whole nine-point neighbourhood is provable.
+fn row_major() -> i64 {
+    var g: i64[>..] = [];
+    for i in 16 { g.push(i); }                // A 4x4 image.
+    var s = 0;
+    for y in 1..3 {
+        for x in 1..3 {
+            let i = y * 4 + x;
+            s += g[i - 4 - 1] + g[i] + g[i + 4 + 1];   // bce:elide
+        }
+    }
+    return s;
+}
+
+// The row-slice spelling of the same kernel: the row's length comes from the
+// slice, so the inner indices need nothing from the outer counter.
+fn row_slices() -> i64 {
+    var img: i64[>..] = [];
+    for i in 16 { img.push(i); }
+    var s = 0;
+    for y in 1..3 {
+        let lo = (y - 1) * 4;
+        let r = img[lo..lo + 4];              // bce:elide
+        for x in 1..3 {
+            s += r[x - 1] + r[x] + r[x + 1];  // bce:elide
+        }
+    }
+    return s;
+}
+
+// The four corner products bracket a signed factor's range: d in [-2, 2]
+// against 3 gives [-6, 6], which 8 recentres inside a 16-element array.
+fn product_signed() -> i64 {
+    var g: i64[>..] = [];
+    for i in 16 { g.push(i); }
+    var s = 0;
+    for j in 0..5 {
+        let d = j - 2;
+        s += g[8 + d * 3];                    // bce:elide
+    }
+    return s;
+}
+
+// Two moving operands: the difference domain has no term for `a + b`, but
+// their intervals add.
+fn sum_two_counters() -> i64 {
+    var g: i64[>..] = [];
+    for i in 16 { g.push(i); }
+    var s = 0;
+    for a in 4 {
+        for b in 4 {
+            s += g[a + b];                    // bce:elide
+        }
+    }
+    return s;
+}
+
+// A factor with no upper bound has no interval, so neither has the product.
+fn product_unbounded(k: i64) -> i64 {
+    var g: i64[>..] = [];
+    for i in 16 { g.push(i); }
+    if k >= 0 {
+        return g[k * 2];                      // bce:keep (no upper bound on k)
+    }
+    return 0;
+}
+
+// A sum needs both sides bounded; one open end and the interval is gone.
+fn sum_unbounded(k: i64) -> i64 {
+    var g: i64[>..] = [];
+    for i in 16 { g.push(i); }
+    var s = 0;
+    for y in 4 {
+        s += g[y * 2 + k];                    // bce:keep (k is unbounded)
+    }
+    return s;
+}
+
 // --- limited and grow-shrink arrays ----------------------------------------
 
 fn limited_ops(extra: i64) -> i64 {
@@ -523,6 +630,15 @@ fn main() {
     print(slice_guarded(data, ks, ke));       // 3
     print(slice_unknown(data, ka, kb));       // 2
     print(slice_word_scan("hello world  x")); // 11
+    print(slice_span_len(data, ks));          // 9
+    print(slice_head_len(data, ke));          // 5
+    print(slice_len_untracked(data, ks, ke)); // 3
+    print(row_major());                       // 90
+    print(row_slices());                      // 42
+    print(product_signed());                  // 40
+    print(sum_two_counters());                // 48
+    print(product_unbounded(ks));             // 4
+    print(sum_unbounded(ks));                 // 20
     print(limited_ops(kz));                   // 13
     print(limited_conditional_shrink());      // 20
     print(growshrink_loop());                 // 45
