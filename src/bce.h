@@ -1035,6 +1035,55 @@ struct BCE {
         vksum = savedvks;
     }
 
+    // Reference variables `n` indexes, whose pointee is an array with a
+    // length worth reading once (a fixed array's is a constant).
+    void RefIndexed(Node *n, vector<VarDef *> &out) {
+        if (!n) return;
+        if (auto ix = Is<Index>(n))
+            if (auto id = Is<Ident>(ix->obj); id && id->vdef && id->vdef->type) {
+                auto t = id->vdef->type;
+                auto s = t->kind == TY_REF ? t->ref->sub : nullptr;
+                if (s && s->kind == TY_ARRAY && s->arr->akind != A_FIXED &&
+                    std::find(out.begin(), out.end(), id->vdef) == out.end())
+                    out.push_back(id->vdef);
+            }
+        // As in the prescan: `trailing` is a template, fvbody is what runs.
+        if (auto c = Is<Call>(n)) {
+            RefIndexed(c->callee, out);
+            for (auto a : c->args) RefIndexed(a, out);
+            RefIndexed(c->fvbody, out);
+            return;
+        }
+        n->Children([&](Node *ch) { RefIndexed(ch, out); });
+    }
+
+    // Which of the reference variables a loop indexes keep the same array,
+    // base and length throughout: an array behind a reference has both halves
+    // of its view in memory the C backend must reload after every byte store
+    // (§6.5 also makes growth during iteration legal), and only a grow, a
+    // shrink, a whole-value write or a call that can reach the array changes
+    // them -- exactly what the kill summary reports. Codegen reads the view of
+    // each variable named here once, before the loop.
+    void LoopViewRefs(Node *body, Node *cond, vector<VarDef *> &out) {
+        out.clear();
+        if (mode != M_JUDGE) return;
+        vector<VarDef *> vars;
+        RefIndexed(body, vars);
+        RefIndexed(cond, vars);
+        // The summary only reports kills for places that already exist, so
+        // name them all before walking.
+        vector<pair<VarDef *, int>> named;
+        for (auto v : vars) {
+            auto pid = PlaceOfVar(v);
+            if (pid >= 0) named.push_back({ v, pid });
+        }
+        if (named.empty()) return;
+        set<int> kills;
+        SummarizeInto(body, kills);
+        SummarizeInto(cond, kills);
+        for (auto &[v, pid] : named) if (!kills.count(pid)) out.push_back(v);
+    }
+
     // Runs the walk over `n` recording only kill effects into a scratch flow;
     // returns whether anything tracked was changed.
     bool HasKillEffects(Node *n) {
@@ -1590,6 +1639,7 @@ inline bool While::BceWalk(BCE &b) {
         b.loopdepth--;
         return true;
     }
+    b.LoopViewRefs(body, cond, hoistrefs);
     b.StripKills(cond);
     b.StripKills(body);
     b.Walk(cond);
@@ -1610,6 +1660,7 @@ inline bool LoopExpr::BceWalk(BCE &b) {
         b.loopdepth--;
         return true;
     }
+    b.LoopViewRefs(body, nullptr, hoistrefs);
     b.StripKills(body);
     auto exitf = b.flow;
     b.Walk(body);
@@ -1688,6 +1739,7 @@ inline bool ForLoop::BceWalk(BCE &b) {
         }
     }
     b.loopdepth++;
+    b.LoopViewRefs(body, nullptr, hoistrefs);
     b.StripKills(body);
     if (iterkind == IK_ARRAY || iterkind == IK_SLICE) {
         lot = BCE::Term { true, BCE::Zero(), 0 };

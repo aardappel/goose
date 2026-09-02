@@ -627,6 +627,39 @@ fn reftops() {
     print(ns);                           // 3 + 2 + 1 + 8 = 14
 }
 
+// --- array views through references ------------------------------------------
+
+fn stencil(src: i64[>..]&, dst: i64[>..]&) {
+    // Element stores change neither length, so both views are read once here;
+    // the growth after the loop still goes through the reference's own header.
+    var i = 1;
+    while i < src.len - 1 {
+        dst[i] = src[i - 1] + src[i] * 2 + src[i + 1];
+        i += 1;
+    }
+    src.push(src.len);
+}
+
+fn tailgrow(a: i64[>..]&, n: i64) {
+    // The push in the body changes the length, so `a.len` is re-read: a view
+    // hoisted here would keep reading the element it started at.
+    for k in n { a.push(a[a.len - 1] + 1); }
+}
+
+fn loopviews() {
+    var s: i64[>..] = [1, 2, 3, 4];
+    var d: i64[>..] = [0, 0, 0, 0];
+    stencil(&s, &d);
+    var t = 0;
+    for x in d { t += x; }
+    print(t);                            // (1+4+3) + (2+6+4) = 20
+    print(s.len * 10 + s[4]);            // 54: the push landed after [1, 2, 3, 4]
+    tailgrow(&s, 3);
+    t = 0;
+    for x in s { t += x; }
+    print(t);                            // 1+2+3+4+4 + 5+6+7 = 32
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -656,6 +689,7 @@ fn main_codegen_exec() {
     layouts();
     looptops();
     reftops();
+    loopviews();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

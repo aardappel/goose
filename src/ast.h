@@ -485,6 +485,10 @@ NODE_END
 
 NODE(While)
     BCE_WALK
+    // Set by BCE: the reference variables this loop indexes whose array it can
+    // neither resize nor re-bind, so codegen reads their base and length once
+    // before the loop instead of through the reference at every access.
+    vector<VarDef *> hoistrefs;
     Node *cond;
     Block *body;
     While(Line l, Node *_cond, Block *_body) : Node(l), cond(_cond), body(_body) {}
@@ -492,6 +496,7 @@ NODE_END
 
 NODE(LoopExpr)
     BCE_WALK
+    vector<VarDef *> hoistrefs;   // See While.
     Block *body;
     LoopExpr(Line l, Block *_body) : Node(l), body(_body) {}
 NODE_END
@@ -503,6 +508,7 @@ NODE(ForLoop)
     // iteration (§6.5 otherwise requires the re-read, since growing during
     // iteration is legal).
     bool fixedlen = false;
+    vector<VarDef *> hoistrefs;   // See While.
     BCE_MARK
     bool byref;                 // for &x in ...
     string_view var;
