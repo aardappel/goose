@@ -519,6 +519,40 @@ fn layouts() {
     if nx { print(nx.v + second.v); }    // 12
 }
 
+// --- data-stack tops cached across the loops that grow them (C.4) ------------
+
+// Inlined at -O2: the early return leaves the pushing loop by a jump, so the
+// cached top has to reach memory on that path too.
+fn evens_upto(n: i64, stop: i64) -> i64[>..] {
+    var out: i64[>..] = [];
+    for i in n {
+        out.push(i * 2);
+        if out.len == stop { return out; }
+    }
+    return out;
+}
+
+fn add_two(xs: i64[>..]&, v: i64) { xs.push(v); xs.push(v + 1); }
+
+fn looptops() {
+    var xs: i64[>..] = [];
+    for i in 6 { xs.push(i); }           // Grows the stack: cached across here.
+    var s = 0;
+    for &x in xs { x = x * 3; s += x; }  // Elements only: the memory form.
+    print(s);                            // 3 * 15 = 45
+    for i in 3 { xs.push(100 + i); }     // A second region on the same stack.
+    for i in 2 { add_two(&xs, 200 + i * 2); }   // Grown by a callee instead.
+    for &x in xs { s += x; }
+    print(s + xs.len);                   // 45 + 1154 + 13 = 1212
+    var ys: i64[>..] = [];
+    for i in 10 { if i == 4 { break; } ys.push(i); }
+    print(ys.len * 100 + ys[3]);         // 403
+    let e = evens_upto(10, 4);
+    var t = 0;
+    for &v in e { t += v; }
+    print(t * 10 + e.len);               // (0+2+4+6) * 10 + 4 = 124
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -546,6 +580,7 @@ fn main_codegen_exec() {
     sized();
     printedges();
     layouts();
+    looptops();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).
