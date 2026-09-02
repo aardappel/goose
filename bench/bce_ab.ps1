@@ -62,7 +62,7 @@ foreach ($n in $Names) {
             # overwrite the $Exe parameter holding the compiler path.
             $bin = Join-Path $Dir "$n-$mode-$tc.exe"
             if (Test-Path $bin) { Remove-Item $bin }
-            & $ccs[$tc] /nologo /O2 "/DGS_STACK_RESERVE=8589934592ull" $c `
+            & $ccs[$tc] /nologo /O2 "/DGS_STACK_RESERVE=2147483648ull" $c `
                 "/Fe:$bin" "/Fo:$(Join-Path $Dir "$n-$mode-$tc.obj")" `
                 > (Join-Path $Dir "$n-$mode-$tc.cc.log") 2>&1
             if (-not (Test-Path $bin)) { Write-Host "$tc failed on $n $mode"; continue }

@@ -42,9 +42,11 @@ $goosedir = "$PSScriptRoot\goose"
 $cppdir   = "$PSScriptRoot\cpp"
 $rustdir  = "$PSScriptRoot\rust"
 
-# Address space reserved per Goose data stack. The default in the runtime is
-# 256MB, which the large sizes exceed.
-$stackReserve = "8589934592ull"
+# Address space reserved per Goose data stack. The runtime default of 256 MB
+# is below what the large sizes need (up to 536 MB on one stack); 2 GB leaves
+# them 4x headroom and is the largest reservation under which a u32 relative
+# reference stores without a range check (spec 3.9).
+$stackReserve = "2147483648ull"
 
 # --- manifest ----------------------------------------------------------------
 # sizes:  the value substituted for the `// BENCH_N` line, in small, medium,
