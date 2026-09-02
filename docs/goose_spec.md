@@ -95,6 +95,9 @@ Literals:
   fraction only when a digit follows, so `1..2` lexes as a range.
 * String `"..."`, with escapes `\n \t \r \0 \\ \" \' \xNN` (two hex digits).
 * `null` — the empty value of any optional type `T?` (§3.8).
+* `self` — inside a struct or variant literal, the value that literal is
+  constructing; it exists to initialize non-optional relative-reference
+  fields (§3.9, §4.2).
 
 The language is **expression-oriented**: `if`, `match`, and `block` are
 expressions; a block's value is its trailing expression. Assignment and
@@ -403,7 +406,26 @@ stored offset is signed.
   match payloads by reference. (TODO 16: track the region a relative
   reference ranges over, so provably whole-region copies can be allowed.)
 * Optional spelling `T&<u8>?` uses offset 0 as null (a relative reference
-  to itself is meaningless).
+  to the offset field itself is meaningless).
+* **`self`.** A non-optional relative reference has no null, so a value whose
+  links point back at itself — the sentinel of a circular list, the first
+  node of a pool — could not be constructed at all: there is nothing yet for
+  it to point at. `self`, written as the entire initializer of such a field
+  in a struct or variant literal, denotes the value that literal is
+  constructing: `Node { key: -1, prev: self, next: self }`. It is legal only
+  there, and only when the field's type is a non-optional relative reference
+  whose pointee is the type of the value the literal constructs (for a
+  variant literal in fixed enum mode, §3.5, that is the enum, tag included);
+  `self` in a nested literal names the literal it is written in, never an
+  enclosing one. That type must not be resizable: an offset alone cannot
+  reach a resizable value's header, which is why the same-root rule keeps
+  every *other* relative reference away from one. The stored offset is minus
+  the field's own byte offset within the value, so it is the one relative
+  reference whose meaning does not depend on where the value lives.
+  The point is that the whole structure can then be non-optional: with
+  optional links every load pays a null test for a null that never occurs
+  (that is what a sentinel is for), and non-optional relative references load
+  as a plain add.
 * Because they are position-independent, structures linked by relative
   references are trivially serializable / mappable.
 
@@ -490,6 +512,10 @@ Literal forms usable in any construction context:
   capacity (`cap` a runtime expression); the reserved slots stay
   uninitialized (§5.3, C.4);
 * variant literals `Shape.Circle { r: 1.0 }`;
+* `self`, inside a struct or variant literal only, as the initializer of a
+  non-optional relative-reference field pointing at the very value being
+  constructed (`Node { prev: self, next: self }`, §3.9) — the one way to give
+  such a field a value before anything else it could point at exists;
 * string literals (§3.7).
 
 ### 4.3 The copy-free construction guarantee
@@ -1697,7 +1723,7 @@ binary      := (precedence climbing; tightest → loosest)
    unary    := ("-" | "!" | "~" | "&") unary
    levels   := * / %  →  + -  →  << >>  →  < <= > >=  →  == !=
              →  &  →  ^  →  |  →  &&  →  ||
-primary     := literal | ident | "null" | "(" expr ")"
+primary     := literal | ident | "null" | "self" | "(" expr ")"
              | arraylit | structlit | genericcall
 genericcall := ident tyargs "(" args ")" trailingblock?
 trailingblock := "{" (params "=>")? stmt* expr? "}"

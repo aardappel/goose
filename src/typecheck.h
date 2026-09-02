@@ -2968,8 +2968,10 @@ struct TypeCheck {
     // Struct and variant literals (§4.2). The per-node entry is
     // StructLit::Check at the end of this file.
 
+    // `selft` is the type of the value this literal constructs (the enum type
+    // for a variant literal in fixed enum mode), which is what `self` names.
     void CheckInits(StructLit *sl, vector<Field> &fields, vector<TypeExpr *> &ftypes,
-                    string_view what) {
+                    string_view what, TypeExpr *selft) {
         auto named = !sl->inits.empty() && !sl->inits[0].name.empty();
         vector<bool> got(fields.size(), false);
         auto pos = 0;
@@ -2996,6 +2998,7 @@ struct TypeCheck {
             }
             got[idx] = true;
             sl->fieldindices.push_back(idx);
+            if (Is<SelfRef>(fi.val)) { CheckSelfInit(fi.val, ftypes[idx], selft); continue; }
             CheckValue(fi.val, ftypes[idx]);
         }
         for (auto i = 0; i < (int)fields.size(); i++) {
@@ -3006,6 +3009,29 @@ struct TypeCheck {
                 Error(sl, cat("missing initializer for field ", fields[i].name, " of ", what,
                               " (it has no default)"));
         }
+    }
+
+    // `self` in a field initializer: the field must hold a non-optional
+    // relative reference to the very value being constructed (§3.9), which is
+    // the one reference to it that exists before the value does. Optional
+    // relative references are excluded because offset 0 is their null.
+    void CheckSelfInit(Node *n, TypeExpr *ft, TypeExpr *selft) {
+        if (ft->kind != TY_REF || ft->ref->lenstorage < 0)
+            Error(n, cat("self initializes relative-reference fields (T&<u32> and friends), "
+                         "not ", TypeStr(ft)));
+        if (ft->ref->optional)
+            Error(n, cat("self cannot initialize the optional relative reference ",
+                         TypeStr(ft), ": offset 0 is its null (§3.9)"));
+        if (!TypeEq(ft->ref->sub, selft))
+            Error(n, cat("self here is a value of type ", TypeStr(selft), ", which does not "
+                         "fit a field of type ", TypeStr(ft)));
+        // A resizable pointee needs a header the offset cannot carry; the root
+        // rule keeps every other relative reference away from one, but a
+        // self-reference satisfies that rule by construction.
+        if (ClassOf(selft) == SC_RESIZABLE)
+            Error(n, cat("self cannot be stored relative: ", TypeStr(selft),
+                         " is resizable, and a relative reference is an offset alone (§3.9)"));
+        n->exprtype = ft;
     }
 
     // ------------------------------------------------------------------
@@ -3809,6 +3835,13 @@ inline Val NullLit::Check(TypeCheck &tc, TypeExpr *expected) {
     return v;
 }
 
+// `self` is consumed by CheckInits in the only position that gives it a
+// meaning, so reaching the general expression path means it is misplaced.
+inline Val SelfRef::Check(TypeCheck &tc, TypeExpr *) {
+    tc.Error(this, "self is only valid as the initializer of a non-optional "
+                   "relative-reference field of the literal containing it (§3.9)");
+}
+
 inline Val StrLit::Check(TypeCheck &tc, TypeExpr *expected) {
     Val v;
     v.strlit = true;
@@ -3951,16 +3984,15 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
         auto vi = tc.VariantIndex(ei->en, var);
         einst = ei;
         variant = var;
-        tc.CheckInits(this, var->fields, ei->vftypes[vi], ei->en->name);
         Val v;
         // The mode comes from the receiving declaration (§3.5); a literal
         // adapts to either, or stands as a first-class variant value (§8.2).
-        if (expected && expected->kind == TY_ENUM && expected->enu->en == ei->en &&
-            tc.TypeArgsEq(expected->enu->args, t->var->adt->enu->args)) {
-            v.type = expected;
-            return v;
-        }
-        v.type = t;
+        // Which it is decides what `self` inside it denotes, so settle the
+        // type before the initializers are checked.
+        v.type = expected && expected->kind == TY_ENUM && expected->enu->en == ei->en &&
+                         tc.TypeArgsEq(expected->enu->args, t->var->adt->enu->args)
+                     ? expected : t;
+        tc.CheckInits(this, var->fields, ei->vftypes[vi], ei->en->name, v.type);
         return v;
     }
     if (t->kind == TY_STRUCT) {
@@ -3980,6 +4012,9 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
                     if (pos < (int)st->fields.size()) field = &st->fields[pos++];
                 }
                 if (!field) continue;  // Reported properly below.
+                // `self` says nothing about the arguments (its type is the
+                // literal's own), and has no meaning outside CheckInits.
+                if (Is<SelfRef>(fi.val)) continue;
                 auto av = tc.CheckV(fi.val, nullptr);
                 fi.val->exprtype = av.type;
                 auto nt = tc.NaturalType(av);
@@ -4000,7 +4035,7 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
         }
         auto inst = tc.GetStructInst(t);
         sinst = inst;
-        tc.CheckInits(this, st->fields, inst->ftypes, st->name);
+        tc.CheckInits(this, st->fields, inst->ftypes, st->name, t);
         Val v;
         v.type = t;
         return v;

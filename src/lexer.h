@@ -41,6 +41,7 @@ namespace goose {
     F(T_RETURN,   "return")    F(T_FROM,     "from")    F(T_BREAK,  "break") \
     F(T_CONTINUE, "continue")  F(T_AS,       "as") \
     F(T_TRUE,     "true")      F(T_FALSE,    "false")   F(T_NULLLIT, "null") \
+    F(T_SELF,     "self") \
     F(T_TBOOL,    "bool")      F(T_TVARINT,  "varint") \
     F(T_TI8,      "i8")  F(T_TI16, "i16") F(T_TI32, "i32") F(T_TI64, "i64") \
     F(T_TU8,      "u8")  F(T_TU16, "u16") F(T_TU32, "u32") F(T_TU64, "u64") \

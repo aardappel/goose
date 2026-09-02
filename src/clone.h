@@ -25,6 +25,7 @@ inline Node *IntLit::Clone(Ast &ast) const { return ast.New<IntLit>(line, val, t
 inline Node *FltLit::Clone(Ast &ast) const { return ast.New<FltLit>(line, val); }
 inline Node *BoolLit::Clone(Ast &ast) const { return ast.New<BoolLit>(line, val); }
 inline Node *NullLit::Clone(Ast &ast) const { return ast.New<NullLit>(line); }
+inline Node *SelfRef::Clone(Ast &ast) const { return ast.New<SelfRef>(line); }
 inline Node *StrLit::Clone(Ast &ast) const { return ast.New<StrLit>(line, val); }
 inline Node *Ident::Clone(Ast &ast) const { return ast.New<Ident>(line, name); }
 
@@ -195,6 +196,7 @@ inline void IntLit::Children(const function<void(Node *)> &) const {}
 inline void FltLit::Children(const function<void(Node *)> &) const {}
 inline void BoolLit::Children(const function<void(Node *)> &) const {}
 inline void NullLit::Children(const function<void(Node *)> &) const {}
+inline void SelfRef::Children(const function<void(Node *)> &) const {}
 inline void StrLit::Children(const function<void(Node *)> &) const {}
 inline void Ident::Children(const function<void(Node *)> &) const {}
 inline void Continue::Children(const function<void(Node *)> &) const {}

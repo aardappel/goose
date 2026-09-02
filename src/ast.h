@@ -438,6 +438,10 @@ NODE(NullLit)                   // The null optional; adapts to any T? (§3.8).
     NullLit(Line l) : Node(l) {}
 NODE_END
 
+NODE(SelfRef)                   // `self`: the value a literal is constructing (§3.9).
+    SelfRef(Line l) : Node(l) {}
+NODE_END
+
 NODE(RangeExpr)                 // Only inside for-headers.
     Node *lo, *hi;
     RangeExpr(Line l, Node *_lo, Node *_hi) : Node(l), lo(_lo), hi(_hi) {}
