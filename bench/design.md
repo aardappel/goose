@@ -194,8 +194,8 @@ they are both listed, but the reason is always a semantic difference (owned
 versus borrowed strings) or a structural one (owning `Box` nodes versus the
 `Vec`-plus-indices arena the community recommends for pointer-heavy data), never
 just that one is faster. The prediction made above -- that the arena, not `Box`,
-is the real Rust comparison point -- held: it is 2.8x to 6x faster than `Box` on
-the three benchmarks that have both.
+is the real Rust comparison point -- held: it is 2.8x to 5.9x faster than `Box`
+on the three benchmarks that have both.
 
 That makes the Rust comparison as much a software-engineering one as a
 performance one. Where Rust ties Goose using `u32` indices while Goose uses
