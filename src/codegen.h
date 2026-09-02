@@ -1799,6 +1799,10 @@ struct CodeGen {
         bool val = false;
         bool ispref = false;   // s is a gs_pref-typed lvalue (pool reference).
         string stk, lenlv, fl, flstk;
+        // A loop-hoisted view of the array behind this reference (see `views`):
+        // set on the reference by VarLoc, and, for the length, carried across
+        // the deref to the pointee, where ArrayView reads it instead of memory.
+        string hbase, hlen;
     };
 
     // Reference variables with reusable-pool provenance are represented as
@@ -1871,8 +1875,10 @@ struct CodeGen {
             Loc nl;
             nl.t = r.sub;
             nl.val = false;
-            nl.s = cat(rv, ".hdr->base");
+            nl.s = lv.hbase.empty() ? cat(rv, ".hdr->base") : lv.hbase;
+            // Growth writes the header even where the reads come from a hoist.
             nl.lenlv = cat(rv, ".hdr->len");
+            nl.hlen = lv.hlen;
             nl.stk = cat(rv, ".stk");
             // A pool reference (gs_pref) has the same leading members plus the
             // freelist; keep the companions reachable for pool operations.
@@ -1886,6 +1892,7 @@ struct CodeGen {
             nl.t = r.sub;
             nl.val = false;
             nl.s = rv;
+            nl.hlen = lv.hlen;
             lv = nl;
             return;
         }
@@ -1893,6 +1900,7 @@ struct CodeGen {
         nl.t = r.sub;
         nl.val = true;
         nl.s = cat("(*", rv, ")");
+        nl.hlen = lv.hlen;
         lv = nl;
         (void)ln;
     }
@@ -1901,6 +1909,10 @@ struct CodeGen {
         Loc l;
         l.t = vd->type;
         auto name = VName(vd);
+        if (auto hit = views.find(vd); hit != views.end()) {
+            l.hbase = hit->second.first;
+            l.hlen = hit->second.second;
+        }
         if (vd->reusable) {
             // A reusable pool: locals/globals have gs_rhdr companions; a
             // captured pool arrives as a gs_pref.
@@ -2004,7 +2016,15 @@ struct CodeGen {
         bool typedelems = false;   // elems is CT* (else uint8_t*).
     };
 
+    // Reads of the length come from a loop-hoisted local where there is one;
+    // `lenlv`, which the operations that change the length write, does not.
     ArrView ArrayView(const Loc &lv, Line ln) {
+        auto v = RawArrayView(lv, ln);
+        if (!lv.hlen.empty()) v.len = lv.hlen;
+        return v;
+    }
+
+    ArrView RawArrayView(const Loc &lv, Line ln) {
         auto t = lv.t;
         ArrView v;
         if (t->kind == TY_SLICE) {
@@ -2061,6 +2081,52 @@ struct CodeGen {
         }
         (void)ln;
     }
+
+    // ------------------------------------------------------------------
+    // Loop-invariant array views. An array reached through a reference keeps
+    // both halves of its view behind that reference, and the C backend reloads
+    // them at every access, since a byte store through any reference may alias
+    // the header they live in. BCE marks per loop which reference variables it
+    // can neither resize nor re-bind (`hoistrefs`); for those the view is read
+    // into locals once before the loop and every access inside uses them.
+    unordered_map<const VarDef *, pair<string, string>> views;   // base, length.
+
+    bool AddView(VarDef *vd, Line ln) {
+        auto t = vd->type;
+        if (views.count(vd) || !t || t->kind != TY_REF) return false;
+        if (t->ref->optional || t->ref->lenstorage >= 0) return false;
+        auto s = t->ref->sub;
+        if (s->kind != TY_ARRAY || s->arr->akind == A_FIXED) return false;
+        // A varint length prefix is not a plain load: its view emits statements.
+        if (s->arr->akind == A_VAR && LenStore(s->arr) == IS_VARINT) return false;
+        // Not named yet means bound inside the loop (a for/match binder, or a
+        // declaration the body repeats), which has no view to read out here.
+        if (!vnames.count(vd) && !gnames.count(vd)) return false;
+        auto lv = VarLoc(vd);
+        DerefLoc(lv, ln);
+        auto v = ArrayView(lv, ln);
+        // Only a fat reference keeps the elements pointer in memory too; the
+        // other forms reach them by offsetting the reference itself.
+        string nb;
+        if (IsFatPointee(s)) {
+            nb = T();
+            L("uint8_t *", nb, " = ", v.elems, ";");
+        }
+        auto nl = T();
+        L("int64_t ", nl, " = ", v.len, ";");
+        views[vd] = { nb, nl };
+        return true;
+    }
+
+    // Installs the views a loop body may read, for the extent of that body.
+    struct ViewScope {
+        CodeGen &cg;
+        vector<VarDef *> added;
+        ViewScope(CodeGen &_cg, const vector<VarDef *> &refs, Line ln) : cg(_cg) {
+            for (auto vd : refs) if (cg.AddView(vd, ln)) added.push_back(vd);
+        }
+        ~ViewScope() { for (auto vd : added) cg.views.erase(vd); }
+    };
 
     // A side-effect-free C expression for a node: literals and plain scalar
     // variables pass through, anything else lands in a temp first.
@@ -4972,6 +5038,7 @@ struct CodeGen {
         cachetops = false;
         reftops = false;
         vnames.clear();
+        views.clear();
         vstk.clear();
         vpool.clear();
         fvptr.clear();
@@ -5866,6 +5933,7 @@ inline void EarlyBlock::CgAny(CodeGen &cg, const Dst &d) {
 }
 
 inline void LoopExpr::CgAny(CodeGen &cg, const Dst &d) {
+    CodeGen::ViewScope vs(cg, hoistrefs, line);
     cg.GenLoopBody({}, body, d, this);
 }
 
@@ -6063,6 +6131,7 @@ inline void IncDec::CgStmt(CodeGen &cg) {
 inline void FnDecl::CgStmt(CodeGen &) {}   // Nested declarations are separate specs.
 inline void While::CgStmt(CodeGen &cg) {
     Dst d;
+    CodeGen::ViewScope vs(cg, hoistrefs, line);
     cg.GenLoopBody([&]() {
         auto c = cg.GenTruth(cond);
         auto si = (int)cg.cscopes.size() - 1;
@@ -6076,6 +6145,7 @@ inline void While::CgStmt(CodeGen &cg) {
 
 inline void ForLoop::CgStmt(CodeGen &cg) {
     auto d = Dst {};
+    CodeGen::ViewScope vs(cg, hoistrefs, line);
     auto iv = vdef ? cg.LocalName(vdef) : cg.T();
     auto ix = idxdef ? cg.LocalName(idxdef) : "";
     if (iterkind == IK_RANGE) {
