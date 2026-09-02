@@ -351,6 +351,22 @@ fn shrink_invalidates(extra: i64) -> i64 {
     return l[3];                              // bce:keep (the pop may undo the guard)
 }
 
+// A grow-only array shrinks at a `clear` (§5.1), so both its length facts and
+// the `j <= len` invariant a cursor rests on die there.
+fn grow_clear_invalidates(extra: i64) -> i64 {
+    var v: i64[>..] = [];
+    for i in 6 { v.push(i); }
+    var j = 0;
+    while j < v.len {
+        j++;
+        if extra > 0 && j == 3 { v.clear(); }
+    }
+    let n = v[0..j].len;                      // bce:keep (a clear may have cut the length)
+    v.clear();
+    for i in 4 { v.push(i); }
+    return n + v[3];                          // bce:elide (four counted pushes after it)
+}
+
 fn whole_assign_kills(extra: i64) -> i64 {
     var v: i64[>..] = [];
     v.push(1);
@@ -645,6 +661,7 @@ fn main() {
     print(append_bridge());                   // 10
     print(exact_lengths());                   // 34
     print(shrink_invalidates(kz));            // 4
+    print(grow_clear_invalidates(kz));        // 9
     print(whole_assign_kills(kz));            // 6
     let kneg = 0 - data[2];                   // -3, opaque to the analysis
     print(modulo_index(data, ke));            // 6

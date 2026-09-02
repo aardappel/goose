@@ -214,7 +214,8 @@ Growth operations (`push`, `append`, …) exist only on resizable arrays and on
 limited arrays (`[..k]`, `[..]`) up to capacity (exceeding capacity aborts).
 Shrink operations (`pop`, `resize` downward, `clear`) exist only on `[>..<]`
 and limited arrays, and abort when they would shrink below empty (`pop` on
-an empty array, `resize` to a negative length).
+an empty array, `resize` to a negative length). `clear` also reaches a
+grow-only *local* nothing points into (§5.1).
 
 Built-in members: `.len` (always, returns `i64`), `.cap` (limited arrays),
 `.push(v)` (returns a reference to the new element on grow-only and limited
@@ -592,9 +593,27 @@ types only, with operands unified per §6.1.
   valid forever (memory below the top never moves or gets reused while the
   owner lives).
 * May contain variable-size elements (build strings/ADTs in place, §7.3).
-* No shrink operations of any kind.
+* No `pop`, no `resize`. The one shrink is `clear()`, under the liveness
+  condition below.
 
 This is the workhorse type: arenas, pools, string builders, tree storage.
+
+**`clear()`.** Legal exactly where no reference or slice into the array can
+still be named. The receiver must be a *local* of the function being compiled
+— not a global, not a field, not an array reached through a reference, whose
+holders lie outside anything the check can see — and not a `reusable` pool
+(§5.4: its freelist keeps every slot live). At the clear, no variable in an
+open scope may hold a reference or slice rooted at the array. Scopes are what
+make this usable: what a loop body or a nested block took out of the buffer is
+gone at its end, so a scratch buffer refilled per iteration can hand out
+slices of itself — "reusable scratch" and "structure I can point into" are the
+same type again. The test is conservative wherever roots are (§9.2): a live
+value of any type containing references counts as a holder unless the array is
+declared deeper than it, as does a `var` reference that the same-depth
+rebinding rule could retarget into the array; and the clear must stand as a
+statement, not inside an expression that produces a value, whose earlier
+operands may hold references no variable names. The operation is a stack-top
+reset and a length store — the same two stores as a grow-shrink `clear`.
 
 ### 5.2 Grow-shrink `[>..<]`
 
@@ -1552,7 +1571,12 @@ The newest, highest-priority items first:
 3. **Move operation for resizables** — assign-and-leave-source-empty, as the
    one sanctioned "move".
 4. **`[>..<]` interior-reference relaxation** — flow-sensitive analysis to
-   allow temporary references between shrinks.
+   allow temporary references between shrinks. The mirror image is done: a
+   grow-only local takes `clear()` where no reference or slice into it is
+   live (§5.1), and the same scope-based liveness test is most of what this
+   needs. What it does not answer is `pop`: the memory a grow-shrink array
+   gives back can be re-used at a *different* type, so a reference that
+   survives one must be barred, not merely dead.
 5. **Cycle store rule refinement** (§7.8) — the pass-down-only rule is
    conservative; explore per-activation reasoning.
 6. **"Current pool" implicit destinations** — allocation without naming the

@@ -91,6 +91,50 @@ fn growshrink() {
     print(gs.len);                       // 0
 }
 
+// A named result cleared while it is built at the caller's destination
+// (§7.3): the reset goes to the value's own base, not the stack's.
+fn built_twice(n: i64) -> u8[>..] {
+    var out: u8[>..] = [];
+    out.append("xyz");
+    out.clear();
+    out.append("ab");
+    if n > 1 { out.push('!'); }
+    return out;
+}
+
+// A grow-only local gives its element region back at clear (§5.1) and refills
+// it from the base; slices taken after a clear read the new contents.
+fn growclear() {
+    var scratch: u8[>..] = [];
+    var last = 0;
+    for i in 3 {
+        scratch.clear();
+        scratch.append("ab");
+        scratch.push(('0' + i) as! u8);
+        let s = scratch[1..scratch.len];
+        last = s.len * 100 + s[1] - '0';
+    }
+    print(last);                         // "b2": 2 * 100 + 2 = 202
+    print(scratch.len);                  // 3
+    // Variable-size elements: every refill re-lays out the same bytes.
+    var words: u8[][>..] = [];
+    var n = 0;
+    for i in 2 {
+        words.clear();
+        words.push("alpha");
+        words.push("beta");
+        for &w in words { n += w.len + i; }
+    }
+    print(n);                            // (5+4) + (5+1+4+1) = 20
+    words.clear();
+    print(words.len);                    // 0
+    var acc: u8[>..] = [];
+    acc.append("12");
+    acc.append(built_twice(2));          // Cleared above what acc already holds.
+    acc.append("34");
+    print(acc);                          // "12ab!34"
+}
+
 // --- packed layouts, pads, equality -----------------------------------------
 
 struct Padded { a: i8, pad, b: i16, pad 2, c: u8 = 3 }
@@ -853,6 +897,7 @@ fn main_codegen_exec() {
     limited_dyn();
     appends();
     growshrink();
+    growclear();
     pads();
     varint_fields();
     fixed_adts();

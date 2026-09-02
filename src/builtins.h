@@ -36,6 +36,9 @@ enum BuiltinRecv {
     BR_ANY = BR_FIXED | BR_VAR | BR_LIMITED | BR_GROW | BR_GROWSHRINK | BR_SLICE,
     BR_GROWABLE = BR_LIMITED | BR_GROW | BR_GROWSHRINK,
     BR_SHRINKABLE = BR_LIMITED | BR_GROWSHRINK,
+    // clear reaches grow-only arrays too, under the liveness rule of §5.1
+    // (CheckGrowClear in typecheck.h).
+    BR_CLEARABLE = BR_SHRINKABLE | BR_GROW,
 };
 
 //        enum            name                min max  args  rets recv            flags
@@ -54,7 +57,7 @@ enum BuiltinRecv {
     F(B_APPEND,           "append",           2,  2,   "a",  "",  BR_GROWABLE,    BF_MEMBER | BF_WRITE) \
     F(B_POP,              "pop",              1,  1,   "",   "e", BR_SHRINKABLE,  BF_MEMBER | BF_WRITE) \
     F(B_RESIZE,           "resize",           2,  3,   "",   "",  BR_SHRINKABLE,  BF_MEMBER | BF_WRITE | BF_CUSTOM) \
-    F(B_CLEAR,            "clear",            1,  1,   "",   "",  BR_SHRINKABLE,  BF_MEMBER | BF_WRITE) \
+    F(B_CLEAR,            "clear",            1,  1,   "",   "",  BR_CLEARABLE,   BF_MEMBER | BF_WRITE | BF_CUSTOM) \
     F(B_ALLOC_INDEX,      "alloc_index",      2,  2,   "e",  "i", BR_GROW,        BF_MEMBER | BF_WRITE | BF_REUSABLE) \
     F(B_ALLOC_REF,        "alloc_ref",        2,  2,   "e",  "r", BR_GROW,        BF_MEMBER | BF_WRITE | BF_REUSABLE) \
     F(B_FREE,             "free",             2,  2,   "i",  "",  BR_GROW,        BF_MEMBER | BF_WRITE | BF_REUSABLE)

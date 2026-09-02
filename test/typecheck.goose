@@ -192,6 +192,26 @@ fn grow_via_ref() {
     print(g.len);
 }
 
+// A grow-only local may be cleared where no reference or slice into it can
+// still be named (§5.1): the loop body's slice dies with its iteration, and
+// the block's with the block.
+fn clear_scratch() -> i64 {
+    var scratch: u8[>..] = [];
+    var total = 0;
+    for i in 3 {
+        scratch.clear();
+        for j in i + 1 { scratch.push(('a' + j) as! u8); }
+        let s = scratch[0..scratch.len];
+        total += s.len + s[0];
+    }
+    block {
+        let all = scratch[..];
+        total += all.len;
+    }
+    scratch.clear();
+    return total + scratch.len;
+}
+
 // --- reusable pools (§5.4) --------------------------------------------------
 
 struct Slot { v: i64 = 0, next: i64 = -1 }
@@ -506,6 +526,7 @@ fn main_typecheck() {
     limited();
     growonly();
     grow_via_ref();
+    print(clear_scratch());
     pools();
     build_tree();
     sequential();
