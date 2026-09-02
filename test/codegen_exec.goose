@@ -603,6 +603,79 @@ fn printedges() {
     print(1.0 / 3.0);
 }
 
+// --- accumulator tail recursion ----------------------------------------------
+// The optimizer rewrites a self-recursive fold into a loop from -O1 up, so the
+// -O0 and -O2 runs of this file are what pin the rewrite to the recursion's
+// value, evaluation order and float behaviour.
+
+struct TreN { v: i32, l: TreN&<u32>?, r: TreN&<u32>? }
+
+var trepool: TreN[>..] = [];
+
+recursive fn trebuild(d: i64, v: i64) -> TreN& {
+    if d == 0 { return trepool.push(TreN { v: v as! i32 }); }
+    let l: TreN& = trebuild(d - 1, v * 2);
+    let r: TreN& = trebuild(d - 1, v * 2 + 1);
+    return trepool.push(TreN { v: v as! i32, l: l, r: r });
+}
+
+// Two self-calls: the left one stays a call, the right one becomes the loop.
+recursive fn tresum(n: TreN&) -> i64 {
+    let l = n.l;
+    guard l else { return n.v; }
+    let r = n.r;
+    guard r else { return n.v; }
+    return n.v + tresum(l) + tresum(r);
+}
+
+recursive fn treadd(n: i64) -> i64 {
+    if n <= 0 { return 0; }
+    return n + treadd(n - 1);
+}
+
+recursive fn tremul(n: i64) -> i64 {
+    if n <= 1 { return 1; }
+    return n * tremul(n - 1);
+}
+
+// A float fold must not be regrouped: 1.0 added to 1.0e16 is absorbed, added
+// to itself it is not, so the two groupings give different answers.
+recursive fn tredrift(n: i64) -> f64 {
+    if n <= 0 { return 1.0e16; }
+    return 1.0 + tredrift(n - 1);
+}
+
+// Evaluation order: the accumulated operand advances a global that the deeper
+// calls read back, so swapping it with the call would change the sum.
+// Unsigned arithmetic wraps in every build, so only the order is under test.
+var trestate: u32 = 1;
+
+fn trestep(k: u32) -> u32 {
+    trestate = trestate * 2654435761 + k;
+    return trestate;
+}
+
+recursive fn treorder(n: u32) -> u32 {
+    if n == 0 { return trestate; }
+    return trestep(n) + treorder(n - 1);
+}
+
+// Both parameters change at once and the new `b` reads the old `a`.
+recursive fn treswap(a: i64, b: i64) -> i64 {
+    if a <= 0 { return b; }
+    return b + treswap(a - 1, a + b);
+}
+
+fn tailrec() {
+    let root: TreN& = trebuild(3, 1);
+    print(tresum(root));                 // 1 + 2 + ... + 15 = 120
+    print(treadd(100));                  // 5050
+    print(tremul(10));                   // 3628800
+    print(tredrift(8));                  // 1e+16: every add is absorbed
+    print(treorder(6));
+    print(treswap(6, 1));                // 1 + 7 + 12 + 16 + 19 + 21 + 22 = 98
+}
+
 // --- values landing in layouts other than their own ------------------------
 
 struct VCell { q: varint }
@@ -966,6 +1039,7 @@ fn main_codegen_exec() {
     seqvar();
     sized();
     printedges();
+    tailrec();
     layouts();
     looptops();
     reftops();

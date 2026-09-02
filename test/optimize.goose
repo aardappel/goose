@@ -329,6 +329,78 @@ fn indexpos() -> i64 {
     a[pick_op()]                                        // Collapses to a constant index.
 }
 
+// --- accumulator tail-recursion elimination ----------------------------------
+
+// `E + self(x)`: becomes a loop, with the base return folding the accumulator
+// in on the way out.
+recursive fn tre_add(n: i64) -> i64 {
+    if n <= 0 { return 0; }
+    return (n * 2) + tre_add(n - 1);
+}
+
+// `self(x) ^ E` with an inert operand, which may move ahead of the call.
+recursive fn tre_rev(n: i64) -> i64 {
+    if n <= 0 { return 0; }
+    return tre_rev(n - 1) ^ 3;
+}
+
+// `%` is not associative, so this is not a fold and nothing is rewritten.
+recursive fn tre_mod(n: i64) -> i64 {
+    if n <= 0 { return 1; }
+    return (7 + tre_mod(n - 1)) % 1000;
+}
+
+// Two operators: the first tail becomes the loop, the other stays a call
+// whose result folds in the way a base value does.
+recursive fn tre_mixed(n: i64) -> i64 {
+    if n <= 0 { return 1; }
+    if n % 2 == 0 { return 2 + tre_mixed(n - 1); }
+    return 3 * tre_mixed(n - 1);
+}
+
+// No operator: plain tail recursion, looped without an accumulator. Both
+// parameters change and the new `k` reads the old `n`.
+recursive fn tre_plain(n: i64, k: i64) -> i64 {
+    if n <= 0 { return k; }
+    return tre_plain(n - 1, k + n);
+}
+
+// Floats are left alone: regrouping them changes the answer.
+recursive fn tre_flt(n: i64, x: f64) -> f64 {
+    if n <= 0 { return x; }
+    return 0.5 + tre_flt(n - 1, x);
+}
+
+// A callee that can `return ... from` us lands in the innermost active frame
+// (§7.9), so this one keeps a frame per level.
+fn tre_leaf(n: i64) -> i64 {
+    if n == 4 { return 100 from tre_from; }
+    n
+}
+recursive fn tre_from(n: i64) -> i64 {
+    if n <= 0 { return 0; }
+    return tre_leaf(n) + tre_from(n - 1);
+}
+
+// A tail return inside a loop of its own: the rewrite's `continue` would
+// restart that loop instead, so this one keeps its calls.
+recursive fn tre_inloop(n: i64) -> i64 {
+    var i = 0;
+    while i < 3 {
+        i += 1;
+        if i == 2 && n > 0 { return 10 + tre_inloop(n - 1); }
+    }
+    return n;
+}
+
+fn tailrec_op() {
+    print(tre_add(6) + tre_rev(5) + tre_mod(4));      // 42 + 3 + 29 = 74
+    print(tre_mixed(5) + tre_plain(4, 0));            // 51 + 10 = 61
+    print(tre_flt(3, 0.125));                         // 1.625
+    print(tre_from(6));                               // 6 + 5 + 100 = 111
+    print(tre_inloop(3));                             // 10 + 10 + 10 + 0 = 30
+}
+
 // --- variable-mode ADT payloads by reference through inlining ----------------
 
 enum Node2 {
@@ -431,6 +503,7 @@ fn main_optimize() {
     print(cap_host(5));
     print(outer2_op(1));
     print(whilecond() + indexpos());
+    tailrec_op();
     varmode();
     recursion_op();
     print(ginit + G);
