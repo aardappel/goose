@@ -706,6 +706,13 @@ struct VarDef {
     // between variables simultaneously live on that path.
     int depth = 0;
     VarDef *rootalias = nullptr;  // Params: canonical VarDef when call-site roots coincide.
+    // Synthetic per-class parameter roots only (typecheck.h): the call-site
+    // root the class was created from, and whether every parameter in the
+    // class is a reference to a resizable-class value. No function in a
+    // recursive cycle can own such a value (§7.8), so references in a pool
+    // class are rooted outside any cycle and exempt from the cycle store rule.
+    VarDef *classfrom = nullptr;
+    bool poolclass = false;
     // For variables of reference/slice type: the provenance of the reference
     // value they hold, fixed at first binding (see typecheck.h header note).
     // A null-initialized optional has no commitment yet (refrootknown false).

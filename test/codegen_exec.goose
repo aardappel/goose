@@ -475,6 +475,50 @@ fn printedges() {
     print(1.0 / 3.0);
 }
 
+// --- values landing in layouts other than their own ------------------------
+
+struct VCell { q: varint }
+struct VItem { name: u8[varint], n: varint }
+struct VBag { id: varint, items: VItem[varint] }
+struct VLink { v: u8, kids: (VLink&<u16>)[..2] }
+struct VSelf { v: i64, next: VSelf? }    // A fixed struct naming its own type.
+
+fn vmod(a: u64) -> i64 { (a % 5) as! i64 }
+
+// A resizable local returned as a variable array: the length prefix is
+// written in front of its elements at the return.
+fn vitems(k: i64) -> VItem[] {
+    var t: VItem[>..] = [];
+    for i in k { t.push(VItem { name: "ab", n: i + 1 }); }
+    return t;
+}
+
+fn layouts() {
+    var seed: u64 = 12;
+    seed = seed * 7;
+    let c = VCell { q: vmod(seed) };     // A call (inlined at -O2) as a varint initializer.
+    print(c.q);                          // 4
+    let plain: VItem[] = vitems(2);      // The callee's own length storage.
+    var s = 0;
+    for &it in plain { s += it.n * 10 + it.name.len; }
+    print(s);                            // 12 + 22 = 34
+    let bag = VBag { id: 9, items: vitems(3) };   // A u32-length result in a varint-length slot.
+    s = bag.id;
+    for &it in bag.items { s += it.n * 10 + it.name.len; }
+    print(s);                            // 9 + 12 + 22 + 32 = 75
+    var links: VLink[>..] = [];
+    let root: VLink& = links.push(VLink { v: 1, kids: [] });
+    let a: VLink& = links.push(VLink { v: 2, kids: [] });
+    let b: VLink& = links.push(VLink { v: 3, kids: [] });
+    root.kids.push(a);                   // References pushed into relative-reference slots.
+    root.kids.push(b);
+    print(root.kids[0].v * 10 + root.kids[1].v);   // 23
+    var first = VSelf { v: 5 };
+    var second = VSelf { v: 7, next: &first };
+    let nx = second.next;
+    if nx { print(nx.v + second.v); }    // 12
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -501,6 +545,7 @@ fn main_codegen_exec() {
     seqvar();
     sized();
     printedges();
+    layouts();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

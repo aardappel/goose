@@ -24,3 +24,5 @@ static inline uint64_t xs_mod(uint64_t x, uint64_t k) { return x % k; }
 
 // Matches goose's print(i64): decimal, one per line.
 static inline void emit(long long v) { printf("%lld\n", v); }
+// Matches goose's print(u64): the wrapped hash checksums pass 2^63.
+static inline void emit_u(uint64_t v) { printf("%llu\n", (unsigned long long)v); }
