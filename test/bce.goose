@@ -367,6 +367,16 @@ fn grow_clear_invalidates(extra: i64) -> i64 {
     return n + v[3];                          // bce:elide (four counted pushes after it)
 }
 
+// A grow-only local shrinks at a `pop` too (§5.1): a length fact from before
+// it does not survive.
+fn grow_pop_invalidates(extra: i64) -> i64 {
+    var v: i64[>..] = [];
+    for i in 6 { v.push(i); }
+    let n = v.len;
+    if extra > 0 { v.pop(); }
+    return v[n - 2];                          // bce:keep (the pop may have shortened it)
+}
+
 fn whole_assign_kills(extra: i64) -> i64 {
     var v: i64[>..] = [];
     v.push(1);
@@ -662,6 +672,7 @@ fn main() {
     print(exact_lengths());                   // 34
     print(shrink_invalidates(kz));            // 4
     print(grow_clear_invalidates(kz));        // 9
+    print(grow_pop_invalidates(kz));          // 4
     print(whole_assign_kills(kz));            // 6
     let kneg = 0 - data[2];                   // -3, opaque to the analysis
     print(modulo_index(data, ke));            // 6

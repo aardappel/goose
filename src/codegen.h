@@ -4821,7 +4821,8 @@ struct CodeGen {
                 L("if (", nl, " < 0) gs_abort(GS_E_POP, ", LocArgs(ln), ");");
                 L(v.lenlv, " = (", LenCast(lv), ")", nl, ";");
                 auto tv = T();
-                if (lv.t->arr->akind == A_GROWSHRINK) {
+                auto ak = lv.t->arr->akind;
+                if (ak == A_GROWSHRINK || ak == A_GROW) {
                     // The array tops its stack: the element region ends at top.
                     L(TopW(lv.stk), " -= ", esz, ";");
                     L(CT(elem), " ", tv, " = *(", CT(elem), " *)", Top(lv.stk), ";");
@@ -4852,7 +4853,7 @@ struct CodeGen {
                 L("if (", nn, " < ", ol, ") {");
                 ind++;
                 L(v.lenlv, " = (", LenCast(lv), ")", nn, ";");
-                if (ak == A_GROWSHRINK)
+                if (ak == A_GROWSHRINK || ak == A_GROW)
                     L(TopW(lv.stk), " = (uint8_t *)(", v.elems, ") + ", nn, " * ", esz, ";");
                 ind--;
                 L("} else if (", nn, " > ", ol, ") {");

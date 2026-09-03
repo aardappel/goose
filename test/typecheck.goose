@@ -212,6 +212,24 @@ fn clear_scratch() -> i64 {
     return total + scratch.len;
 }
 
+// `pop` and `resize` join `clear` on a grow-only local (§5.1): the slice
+// lives in its block, and the shrinks stand between phases.
+fn pop_scratch() -> i64 {
+    var st: i64[>..] = [];
+    for i in 5 { st.push(i); }
+    var total = 0;
+    block {
+        let s = st[2..st.len];
+        total += s.len;                  // 3
+    }
+    let last = st.pop();                 // 4
+    total += last;
+    st.resize(2);                        // 0 1
+    st.resize(4, 9);                     // 0 1 9 9
+    total += st.pop();                   // 9
+    return total * 10 + st.len;          // 163
+}
+
 // --- reusable pools (§5.4) --------------------------------------------------
 
 struct Slot { v: i64 = 0, next: i64 = -1 }
@@ -590,6 +608,7 @@ fn main_typecheck() {
     growonly();
     grow_via_ref();
     print(clear_scratch());
+    print(pop_scratch());                // 163
     pools();
     build_tree();
     cycleroots();
