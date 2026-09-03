@@ -5255,10 +5255,12 @@ struct CodeGen {
     //  * each fat reference in the body is a parameter, named directly, so
     //    `<p>.stk` is its one spelling and is in scope throughout. A reference
     //    from a field, an element or an `&` here has no parameter to name;
-    //  * the fat parameters' root classes are distinct, which is what §10.2
-    //    proves distinct. Two parameters in one class are *not* proven equal
-    //    (a reference read out of a container is rooted at the container), so
-    //    that case would need one cache for two stacks;
+    //  * the fat parameters' root classes are distinct and every one of them
+    //    was rooted exactly at its call sites, which is what §10.2 proves
+    //    distinct: two exact roots that differ are two variables. An inexact
+    //    root only bounds a lifetime (§9.5), so two of them may still be one
+    //    stack, and two parameters in one class are not proven equal either;
+    //    both cases would need one cache for two stacks;
     //  * nothing else the body names can be one of those stacks: no global of
     //    a parameter's pointee type (a reference parameter may well be rooted
     //    at one, and the specialization key does not record which), no captured
@@ -5267,10 +5269,15 @@ struct CodeGen {
     bool RefTopsOk(FnSpec *sp) {
         set<const VarDef *> fatparams, classes;
         vector<TypeExpr *> pointees;
+        auto ri = 0;
         for (size_t i = 0; i < sp->params.size(); i++) {
             auto vd = sp->params[i];
+            auto isref = sp->argtypes[i]->kind == TY_REF || sp->argtypes[i]->kind == TY_SLICE;
+            auto exact = isref && ri < (int)sp->roots.size() && sp->roots[ri].exact;
+            if (isref) ri++;
             if (!IsFatRef(sp->argtypes[i])) continue;
-            if (!vd->refrootknown || !vd->refroot || !classes.insert(vd->refroot).second)
+            if (!vd->refrootknown || !vd->refroot || !exact ||
+                !classes.insert(vd->refroot).second)
                 return false;
             fatparams.insert(vd);
             pointees.push_back(sp->argtypes[i]->ref->sub);

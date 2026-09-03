@@ -578,6 +578,53 @@ fn slices() {
     print(str[1..3].len);                // Reads through a literal slice.
 }
 
+// --- read-back roots: what a reference out of a container points into -------
+
+struct RbNode { key: i64, next: RbNode&<u32>? }
+struct RbCell { tag: i64, n: RbNode }
+
+// One local can hold an RbNode, so a reference read out of the slot array is
+// that pool and can be linked relatively into it (§9.5).
+fn readback_local() -> i64 {
+    var pool: RbNode[>..] = [];
+    var slots: (RbNode&?)[>..] = [];
+    pool.push(RbNode { key: 1 });
+    pool.push(RbNode { key: 2 });
+    slots.push(&pool[1]);
+    let n = slots[0];
+    assert(n);
+    pool[0].next .= n;
+    let m = pool[0].next;
+    assert(m);
+    return m.key;
+}
+
+// The sole candidate is an RbNode nested inside another array's elements.
+fn readback_field() -> i64 {
+    var cells: RbCell[>..] = [];
+    var slots: (RbNode&?)[>..] = [];
+    cells.push(RbCell { tag: 1, n: RbNode { key: 7 } });
+    slots.push(&cells[0].n);
+    let m = slots[0];
+    assert(m);
+    cells[0].n.next .= m;
+    let b = cells[0].n.next;
+    assert(b);
+    return b.key;
+}
+
+// A fat reference (one to a resizable) read back out of a container: the sole
+// candidate is the array it was taken from, so it stays exactly rooted.
+fn readback_fat() -> i64 {
+    var v: i64[>..] = [];
+    var refs: (i64[>..]&)[>..] = [];
+    v.push(3);
+    refs.push(&v);
+    let r: i64[>..]& = refs[0];
+    r.push(4);
+    return v.len * 10 + r[1];
+}
+
 // --- shadowing and definite assignment --------------------------------------
 
 fn shadowing(n: i64) {
@@ -624,6 +671,7 @@ fn main_typecheck() {
     print(process(3) + process(-3));
     globals();
     slices();
+    print(readback_local() + readback_field() + readback_fat());
     shadowing(1);
 }
 
