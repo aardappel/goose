@@ -1219,6 +1219,10 @@ struct CodeGen {
         for (auto d : gtouch[callee]) {
             auto it = gstks.find(d);
             if (it != gstks.end()) { s += it->second; s += '\x01'; }
+            // A reusable pool's freelist is a second stack the same name
+            // reaches: an alloc or a free in the callee moves it too.
+            auto pit = gpools.find(d);
+            if (pit != gpools.end()) { s += pit->second.second; s += '\x01'; }
         }
         return s;
     }
