@@ -4150,6 +4150,26 @@ struct TypeCheck {
         // Errors these produce are real; a lack of errors is weaker than for
         // reached code, since no call-site facts were available.
         for (auto sf : ast.functions) CheckUnreached(sf);
+        SettleParamRootExactness();
+    }
+
+    // Checking is over, so every call site of every specialization has been
+    // seen. A root class named one array inside its body whatever the call
+    // site (GetOrCreateSpec keeps an inexactly rooted argument out of every
+    // other argument's class), but *which* array only a call site knows, and
+    // the later passes ask that question instead: whether two classes are two
+    // arrays. Record the answer where they read it.
+    void SettleParamRootExactness() {
+        for (auto spec : ast.fnspecs) {
+            auto ri = 0;
+            for (size_t i = 0; i < spec->params.size() && i < spec->argtypes.size(); i++) {
+                auto t = spec->argtypes[i];
+                if (t->kind != TY_REF && t->kind != TY_SLICE) continue;
+                if (ri < (int)spec->roots.size() && !spec->roots[ri].exact)
+                    spec->params[i]->refrootexact = false;
+                ri++;
+            }
+        }
     }
 
     void CheckUnreached(SFunction *sf) {

@@ -5273,14 +5273,10 @@ struct CodeGen {
     bool RefTopsOk(FnSpec *sp) {
         set<const VarDef *> fatparams, classes;
         vector<TypeExpr *> pointees;
-        auto ri = 0;
         for (size_t i = 0; i < sp->params.size(); i++) {
             auto vd = sp->params[i];
-            auto isref = sp->argtypes[i]->kind == TY_REF || sp->argtypes[i]->kind == TY_SLICE;
-            auto exact = isref && ri < (int)sp->roots.size() && sp->roots[ri].exact;
-            if (isref) ri++;
             if (!IsFatRef(sp->argtypes[i])) continue;
-            if (!vd->refrootknown || !vd->refroot || !exact ||
+            if (!vd->refrootknown || !vd->refroot || !vd->refrootexact ||
                 !classes.insert(vd->refroot).second)
                 return false;
             fatparams.insert(vd);
