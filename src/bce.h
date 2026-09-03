@@ -208,14 +208,16 @@ struct BCE {
 
     // Follows reference/slice provenance to the storage-owning variable.
     // A synthetic parameter root class (typeless VarDef) is opaque, but two
-    // references in distinct classes are known-distinct roots (§10.2).
+    // references in distinct classes are known-distinct roots (§10.2). An
+    // inexact root names a scope the pointee outlives rather than its owner
+    // (§9.5), so it says nothing about which storage this is.
     pair<int, VarDef *> UltOf(VarDef *v) {
         for (auto guard = 0; guard < 16; guard++) {
             if (!v) return { UK_STATIC, nullptr };
             auto t = v->type;
             if (!t) return { UK_OPAQUE, v };
             if (t->kind != TY_REF && t->kind != TY_SLICE) return { UK_OWNED, v };
-            if (!v->refrootknown) return { UK_OPAQUE, nullptr };
+            if (!v->refrootknown || !v->refrootexact) return { UK_OPAQUE, nullptr };
             v = v->refroot;
         }
         return { UK_OPAQUE, nullptr };
