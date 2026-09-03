@@ -1,29 +1,27 @@
 # The Goose Standard Library — Design Proposal
 
-Status: revision 2, after the first review round. Section references of the
+Status: revision 3, after the second review round. Section references of the
 form §N are to `goose_spec.md`. Every calling convention and idiom below was
 prototyped against the compiler; where a prototype hit a bug or a language
 gap, that is recorded in §9 rather than designed around silently.
 
-Changes since revision 1, from the review:
+Changes since revision 2, from the review:
 
-* Library type names are lowercase (`dictionary<K, V>`, `rng`, `vec3<T>`,
-  `float3`, `double3`).
-* `print`, `str` and `write` are one variadic builtin family: any number of
-  arguments, any type, no separators; `str(a, b, c)` builds a fresh string in
-  place. The Goose `write` overload set and `str(v)` are gone.
-* `zero<T>()` became `default<T>()`: declared field defaults apply.
-* Fresh results are `T[>..]`; builder out-parameters are the default shape
-  for `os`; comparators exist in both the explicit and the `<` form.
-* Untyped parameters now bind a reference argument as a reference (the
-  compiler fix is in this change set, §8.7); slices of `[>..<]` and
-  references to resizable tails become checker work rather than library
-  workarounds (§8.7).
-* `map` needs no result-type inference feature: only a way to declare a
-  local whose element type is fixed by a later `push` (§8.5).
-* A declaration-site *binder parameter* `&name` is proposed as the answer to
-  the UFCS-and-references question (§8.7, question 1).
-* `extern fn` admits flat structs and pointers from the start (§8.4).
+* The binder-parameter idea is withdrawn. In its place §8.7 works through
+  the proposal to pass values by *size class*: fixed values by value,
+  non-fixed values by reference or by explicit `copy`, with `&` no longer
+  needed at call sites. The library's signatures are ordinary typed
+  references again; the examples are written the way that rule reads.
+* Text goes into strings with `format`, not `write`: the builtin family is
+  `print`/`str`/`format`, the helpers are `format_int` and friends, and
+  `write_*` is reserved for I/O. User `format` overloads extend the builtin.
+* Aggregates print with their type name and positional fields.
+* Slices of `[>..<]`: the error lands on the shrink and cites where the
+  slice was taken and where it is still used.
+* References to resizable tails: the recommended representation gives the
+  tail its own frame header instead of offsetting the struct's.
+* `extern fn` takes the simplest route (compiler-emitted prototypes, shims
+  in an included header).
 
 ---
 
@@ -38,8 +36,9 @@ function over the user's own arrays, structs and pools.
 
 Everything is written in Goose except:
 
-* a small extension of the builtin table: the `print`/`str`/`write` family,
-  `default<T>()`, `abort(msg)`, `exit(code)`; and
+* a small extension of the builtin table: the `print`/`str`/`format`
+  family, `default<T>()`, `abort(msg)`, `exit(code)`, and `copy(x)` if the
+  passing rule of §8.7 is adopted; and
 * a new `extern fn` declaration form, through which the `math` and `os`
   modules reach libm and a thin C runtime layer without adding a builtin per
   function.
@@ -83,8 +82,7 @@ typechecker.
 
 **Zero cost, visibly.** No hidden allocation, no hidden copies. The
 conventions in §2 are chosen so that the cheap call is the natural one to
-write, and the expensive one (passing an array by value) requires leaving out
-an `&` that the rest of the language already demands.
+write and the expensive one cannot be written by accident.
 
 **Lobster's shape, Goose's cost model.** From Lobster's `std.lobster` we take
 the function-heavy surface, the `it` blocks, `find`/`filter`/`fold`/`map`,
@@ -102,15 +100,17 @@ instead of `Option`, `Result` and exceptions.
 ## 2. Conventions
 
 Each of these was checked against the compiler; the prototype results are
-summarized in §9.
+summarized in §9. Call-site spellings are given in the form of the passing
+rule proposed in §8.7 (no `&` at call sites); until it is adopted, a
+reference parameter takes an explicit `&x`.
 
 ### 2.1 How containers are passed
 
 | The function… | Parameter | Call sites | Works on |
 |---|---|---|---|
-| reads, or mutates elements in place without changing the length (`sort`, `reverse`, `fill`, `find`, `sum`, …) | `xs: T[:]` | `f(arr)`, `f(arr[1..])`, `f(&arr)`, `f(slice)` | every array kind and slices (`[>..<]` once §8.7 lands) |
-| changes the length (`push_n`, `insert_at`, `remove_at`, `retain`, `heap_push`, …) | `&xs` — a *binder* parameter (§8.7, proposed); `xs: A&` until then | `f(arr)` or `f(&arr)` | every array kind that has the operations used |
-| takes a library type (`dictionary`, `rng`) | `&d: dictionary<K, V>` (binder); `d: dictionary<K, V>&` until then | `d.insert(k, v)` or `insert(&d, k, v)` | — |
+| reads, or mutates elements in place without changing the length (`sort`, `reverse`, `fill`, `find`, `sum`, …) | `xs: T[:]` | `f(arr)`, `f(arr[1..])`, `f(slice)` | every array kind and slices (`[>..<]` once §8.7's slice rule lands) |
+| changes the length (`push_n`, `insert_at`, `remove_at`, `retain`, `heap_push`, …) | `xs: A&` — `A` a generic bound to the whole array type | `f(arr)` (today `f(&arr)`) | every array kind that has the operations used |
+| takes a library type (`dictionary`, `rng`) | `d: dictionary<K, V>&` | `d.insert(k, v)` (today `insert(&d, k, v)`) | — |
 
 Rationale, and what was ruled out:
 
@@ -119,19 +119,22 @@ Rationale, and what was ruled out:
   array is writable (§9.5), so in-place algorithms need no second form. A
   `let` array passed to `sort` is a compile error carrying the call chain,
   which is the intended behaviour.
-* An untyped parameter (`fn f(xs)`) binds the argument's *exact* type — now
-  including a reference type for `f(&arr)` — but `f(arr)` on a bare array
-  is then a by-value copy of the array, which is the one silent cost the
-  library must never invite. So untyped container parameters are not used
-  for read-only functions, where the caller would naturally omit the `&`.
-  They are exactly right for the length-changing functions, where the
-  caller is mutating and expects to pass the container by reference; with
-  the binder form of §8.7 the `&` moves into the declaration.
+* A generic reference parameter `xs: A&` binds `A` to the whole array type
+  and instantiates per kind: one `push_n<A, T>(xs: A&, v: T, n: i64)` body
+  serves a `[>..<]`, a `[>..]`, a `[..k]` field. It cannot accept a slice,
+  so it is reserved for length-changing operations, where a slice would be
+  meaningless anyway.
+* An untyped parameter (`fn f(xs)`) binds the argument's exact type, which
+  since revision 2 includes a reference type for `f(&arr)`. Under §8.7 a
+  non-fixed lvalue argument reaches an untyped parameter by reference and a
+  fixed one by value, so `fn total(xs)` would serve every kind; the library
+  still prefers `T[:]` for read-only functions because it names the element
+  type (`find -> T?`, `contains(xs, v: T)`) and accepts sub-ranges.
 * Grow-shrink arrays `[>..<]` cannot be sliced today (§5.2), so they cannot
-  reach the first row. The review decided the checker should allow it with
-  a flow rule instead (§8.7); until then `sum(&q)` on a `[>..<]` is a
-  compile error and only the length-changing functions apply to them.
-* Nothing is ever taken by value.
+  reach the first row; the checker rule of §8.7 lifts that. Until then only
+  the length-changing functions apply to them.
+* Nothing is ever taken by value. Under §8.7 that is enforced by the
+  language for every non-fixed type; today it is a convention.
 
 ### 2.2 Results
 
@@ -153,10 +156,10 @@ Rationale, and what was ruled out:
 * **Two-outcome scalars** (`parse_int`, `binary_search`, `read_line`) use the
   spec's convention of a trailing `bool` in a multiple return: `let v, ok =
   parse_int(s);`. There is no error type; programming errors `abort`.
-* **Text output** goes into a builder passed in (`write(&out, …)`,
-  `read_file(path, &out)`): the result appends transparently to whatever
-  the caller is assembling. The one exception is `str(…)`, whose whole
-  point is to *be* the fresh string.
+* **Text output** goes into a builder passed in (`format(out, …)`,
+  `read_file(path, out)`): the result appends transparently to whatever the
+  caller is assembling. The one exception is `str(…)`, whose whole point is
+  to *be* the fresh string.
 
 ### 2.3 Function-value parameters
 
@@ -170,7 +173,7 @@ Rationale, and what was ruled out:
   verified.
 * A *key* function returns a value (`min_by(xs) { it.score }`).
 * A block parameter binds a **reference** when the library passes it `&x`,
-  so blocks can mutate: `each(&d) { k, v => v += 1; }` works because `each`
+  so blocks can mutate: `d.each() { k, v => v += 1; }` works because `each`
   calls `F(s.key, &s.val)`. Functions document which arguments they pass by
   reference.
 * Inside a block, `return` returns from the *enclosing named function*
@@ -187,7 +190,7 @@ types:
 |---|---|---|---|
 | `hash(x) -> u64` | every scalar type, `bool`, `u8[:]` | `fn hash(k: mykey) -> u64` | `dictionary` |
 | `compare(a, b) -> i64` | `u8[:]` | `fn compare(a: ver, b: ver) -> i64` | sorting strings |
-| `format(out: u8[>..]&, x)` | nothing (the builtins render every type) | `fn format(out: u8[>..]&, p: point)` | `print`/`str`/`write`, which prefer a user `format` over the structural form (§8.1) |
+| `format(out: u8[>..]&, x)` | every type, structurally, by the builtin (§8.1) | `fn format(out: u8[>..]&, p: point)` | `print`/`str`/`format`, which use a user overload for its type wherever that type occurs |
 
 Two resolution facts (§7.1) shape how these are written:
 
@@ -199,24 +202,27 @@ Two resolution facts (§7.1) shape how these are written:
 
 ### 2.5 UFCS
 
-`x.f(args)` is `f(x, args)` with `x` passed by value (§7.1), which today
-means:
+`x.f(args)` is `f(x, args)` (§7.1). Today `x` is passed by value, which means
+a function taking `T&` cannot be called as `x.f()` on a local value `x`
+("cannot pass dictionary<…> as dictionary<…>&"): it must be `f(&x, …)`, or
+`x` must already be a reference variable or parameter (`fn handle(d:
+dictionary<…>&) { d.insert(k, v); }` compiles; so does `let r = &out;
+r.format("!")`). The builtin members (`push`, `format`) are exempt, since
+their receiver is an lvalue.
 
-* Slice-taking and value-taking functions read well as methods:
-  `words.sort()`, `s.trim()`, `xs.contains(3)`.
-* A function taking `T&` cannot be called as `x.f()` on a local value `x`
-  ("cannot pass dictionary<…> as dictionary<…>&"); it must be `f(&x, …)`.
-  Through a reference variable or parameter it does work: `fn handle(d:
-  dictionary<…>&) { d.insert(k, v); }` and `let r = &out; r.write("!")`
-  both compile. The builtin members (`push`, `write`) are exempt: their
-  receiver is an lvalue.
-* A reference-returning call is not an assignable location
-  (`get_or_insert(&d, k, 0) += 1` is rejected); binding it needs the
-  annotated form `let c: i64& = get_or_insert(&d, k, 0);` (§3.8). The
-  `dictionary` API sidesteps this with the block-taking `update` (§5.2).
+Under the passing rule of §8.7, `x.f()` binds `x` by reference exactly when
+`f`'s first parameter is a reference type, for the same reason a free call
+`f(x)` does, so `d.insert(k, v)`, `q.heap_push(v)` and `r.rand_int(6)` all
+work and mean the obvious thing. The binder-parameter idea of revision 2 was
+withdrawn because it would have taught callers to drop `&` everywhere,
+which brings back the accidental copy the moment someone forgets to declare
+a binder, and because it made the call form depend on knowing how each
+function was declared.
 
-The binder parameter of §8.7 makes `d.insert(k, v)` and `insert(d, k, v)`
-both bind `d` by reference, which is the form this document's examples use.
+A reference-returning call is not an assignable location
+(`get_or_insert(d, k, 0) += 1` is rejected); binding it needs the annotated
+form `let c: i64& = d.get_or_insert(k, 0);` (§3.8). The `dictionary` API
+sidesteps this with the block-taking `update` (§5.2).
 
 ### 2.6 Naming
 
@@ -227,12 +233,12 @@ both bind `d` by reference, which is the form this document's examples use.
 * `*_by`: the key-function variant of a value function (`min`/`min_by`).
 * `*_at`: index-addressed array mutation (`insert_at`, `remove_at`), keeping
   the bare verbs (`insert`, `remove`) for `dictionary`. Two generic
-  functions of the same name and arity whose first parameters are an array
-  binder and a `dictionary<K, V>` binder would be ambiguous (both bind at
-  the generic tier), so the array and dictionary vocabularies are kept
-  disjoint by construction.
-* `write_*`: append a textual form to a `u8[>..]` builder with formatting
-  control; `parse_*`: the inverse; `to_*`: in-place case conversion.
+  functions of the same name and arity whose first parameters are `A&` and
+  `dictionary<K, V>&` would be ambiguous (both bind at the generic tier),
+  so the array and dictionary vocabularies are kept disjoint by construction.
+* `format_*`: append a textual form to a `u8[>..]` builder with formatting
+  control; `parse_*`: the inverse; `to_*`: in-place case conversion;
+  `write_*`: I/O, and only I/O.
 * No `is_` prefix (`any`, `all`, `contains`, `starts_with`).
 * There is no namespacing in v1 (§11.1), so every library name is global.
   Names were chosen to be the ones a user would also pick, on the theory
@@ -248,14 +254,14 @@ on `u8` arrays with these roles:
 | Role | Type | Notes |
 |---|---|---|
 | input | `u8[:]` | literals, any `u8` array and any slice coerce |
-| output being built | `u8[>..]&` | the "builder"; `push`/`append`/`write` are the primitives |
+| output being built | `u8[>..]&` | the "builder"; `push`/`append`/`format` are the primitives |
 | owned, stored | `u8[]`, `u8[varint]`, `u8[..k]` | fields and elements; a `u8[>..]` result lands in them |
 
 All functions are byte-oriented and ASCII by default (`to_lower`, `trim`);
-`each_utf8`/`write_utf8` are the only encoding-aware pieces. Comparison is
+`each_utf8`/`push_utf8` are the only encoding-aware pieces. Comparison is
 `==` (structural, §4.5) and `compare`. A character literal is an integer
-constant (§2): `write(&out, 'x')` prints `120`, and a byte goes in with
-`out.push('x')` or `write(&out, "x")`.
+constant (§2): `format(out, 'x')` appends `120`, and a byte goes in with
+`out.push('x')` or `format(out, "x")`.
 
 ---
 
@@ -284,10 +290,9 @@ unreferenced generic never instantiates.
 ## 4. `std`
 
 Signatures are written in documentation form. Where a function's return type
-is the element type of a binder/`A&` parameter, the source omits the
-annotation (it is inferred from the body, §7.1) and the documentation writes
-`-> T` with "T = the element type". `xs: T[:]` accepts every sliceable array
-(§2.1); `&xs` is a binder parameter (§8.7).
+is the element type of an `A&` parameter, the source omits the annotation (it
+is inferred from the body, §7.1) and the documentation writes `-> T` with
+"T = the element type". `xs: T[:]` accepts every sliceable array (§2.1).
 
 ### 4.1 Scalars and bits
 
@@ -331,10 +336,10 @@ slice overload, which is what makes them usable as `dictionary` keys.
 
 ```goose
 struct rng { s: u64 }                    // splitmix64 state; the seed is the state
-fn rand_u64(&r: rng) -> u64
-fn rand_int(&r: rng, n: i64) -> i64      // uniform in [0, n)
-fn rand_flt(&r: rng) -> f64              // uniform in [0, 1)
-fn shuffle<T>(xs: T[:], &r: rng)         // Fisher-Yates
+fn rand_u64(r: rng&) -> u64
+fn rand_int(r: rng&, n: i64) -> i64      // uniform in [0, n)
+fn rand_flt(r: rng&) -> f64              // uniform in [0, 1)
+fn shuffle<T>(xs: T[:], r: rng&)         // Fisher-Yates
 ```
 
 `var r = rng { 12345 };` then `r.rand_int(6)`. splitmix64 is one word of
@@ -416,29 +421,28 @@ fresh data stack (a stack index, not an allocation).
 ### 4.7 Arrays: changing the length
 
 ```goose
-fn push_n<T>(&xs, v: T, n: i64)                  // n pushes; grow-only arrays' answer to resize
-fn insert_at<T>(&xs, i: i64, v: T)               // shifts [i..) up; needs push
-fn remove_at(&xs, i: i64) -> T                   // shifts down; needs pop; returns the element
-fn swap_remove(&xs, i: i64) -> T                 // O(1), reorders
-fn retain<F>(&xs)                                // keeps x with F(x), stable; needs resize
-fn dedup(&xs)                                    // drops adjacent duplicates (sort first for all)
-fn heap_push<T>(&xs, v: T)                       // min-heap by <; F(a, b) forms of all three exist
-fn heap_pop(&xs) -> T
-fn make_heap(&xs)                                // O(n) heapify
+fn push_n<A, T>(xs: A&, v: T, n: i64)            // n pushes; grow-only arrays' answer to resize
+fn insert_at<A, T>(xs: A&, i: i64, v: T)         // shifts [i..) up; needs push
+fn remove_at<A>(xs: A&, i: i64) -> T             // shifts down; needs pop; returns the element
+fn swap_remove<A>(xs: A&, i: i64) -> T           // O(1), reorders
+fn retain<A, F>(xs: A&)                          // keeps x with F(x), stable; needs resize
+fn dedup<A>(xs: A&)                              // drops adjacent duplicates (sort first for all)
+fn heap_push<A, T>(xs: A&, v: T)                 // min-heap by <; F(a, b) forms of all three exist
+fn heap_pop<A>(xs: A&) -> T
+fn make_heap<A>(xs: A&)                          // O(n) heapify
 ```
 
 Each instantiates only for array kinds that have the operations it uses
 (`remove_at` on a grow-only array is an instantiation error naming the
 missing `pop`). A `[>..<]` is the expected heap and queue container; a
-limited `[..k]` inside a struct works too. Until the binder form exists
-these are declared `xs: A&` and called with an explicit `&`.
+limited `[..k]` inside a struct works too.
 
 ### 4.8 Strings
 
 ```goose
-fn write_int(out: u8[>..]&, v: i64, base: i64, width: i64, pad: u8)   // base 2..36, right-aligned
-fn write_uint(out: u8[>..]&, v: u64, base: i64, width: i64, pad: u8)
-fn write_flt(out: u8[>..]&, v: f64, decimals: i64)   // fixed decimals
+fn format_int(out: u8[>..]&, v: i64, base: i64, width: i64, pad: u8)   // base 2..36, right-aligned
+fn format_uint(out: u8[>..]&, v: u64, base: i64, width: i64, pad: u8)
+fn format_flt(out: u8[>..]&, v: f64, decimals: i64)   // fixed decimals
 fn parse_int(s: u8[:]) -> i64, bool              // optional sign, base 10, whole string
 fn parse_int(s: u8[:], base: i64) -> i64, bool
 fn parse_flt(s: u8[:]) -> f64, bool              // extern-backed (strtod); Goose fallback in phase 1
@@ -450,12 +454,12 @@ fn split(s: u8[:], sep: u8) -> u8[:][>..]        // slices into s; empty parts k
 fn each_split<F>(s: u8[:], sep: u8)              // F(part: u8[:]); no array built
 fn each_split<F>(s: u8[:], sep: u8[:])
 fn join<T>(out: u8[>..]&, parts: T[:], sep: u8[:])   // T any u8 array/slice type
-fn write_replaced(out: u8[>..]&, s: u8[:], from: u8[:], to: u8[:])
+fn format_replaced(out: u8[>..]&, s: u8[:], from: u8[:], to: u8[:])
 fn each_utf8<F>(s: u8[:])                        // F(cp: i64); malformed bytes yield 0xFFFD
-fn write_utf8(out: u8[>..]&, cp: i64)
+fn push_utf8(out: u8[>..]&, cp: i64)             // the UTF-8 bytes of a code point
 ```
 
-Plain rendering of scalars and strings is the builtin `write` (§8.1); the
+Plain rendering of scalars and strings is the builtin `format` (§8.1); the
 functions here add formatting control and parsing. `split` returning slices
 into its input (no copies, elements rooted at the caller's text) is the
 Goose replacement for Lobster's `tokenize`; the `each_split` form does not
@@ -482,10 +486,11 @@ struct dictionary<K, V> { count: i64 = 0, slots: dictionary_slot<K, V>[>..] = []
   tail of a struct. It is spec A.3, generalized.
 * Growth doubles at ⅔ load: a fresh slot array local is filled by
   re-inserting the used slots and then assigned over `d.slots` — the
-  whole-resizable assignment of §4.4, prototyped and working. The transient
-  second table costs one data stack index during the call, never an
-  allocation. In-place doubling (`append` then re-place) is possible with
-  this layout and can replace it later without changing the API.
+  whole-resizable assignment of §4.4, prototyped and working (under §8.7 it
+  is spelled `d.slots = copy(ns)`, or `move(ns)` once that exists). The
+  transient second table costs one data stack index during the call, never
+  an allocation. In-place doubling (`append` then re-place) is possible
+  with this layout and can replace it later without changing the API.
 * Fresh slots are filled with `default<K>()`/`default<V>()` (§8.2).
 * A hash is not cached in the slot in v1 (17 bytes for an `i64 → i64` table);
   caching it (`h: u32`) speeds rehash and slice-keyed probes and is a
@@ -494,15 +499,15 @@ struct dictionary<K, V> { count: i64 = 0, slots: dictionary_slot<K, V>[>..] = []
 ### 5.2 API
 
 ```goose
-fn get<K, V>(&d: dictionary<K, V>, key: K) -> V?              // reference to the value, or null
-fn contains<K, V>(&d: dictionary<K, V>, key: K) -> bool
-fn insert<K, V>(&d: dictionary<K, V>, key: K, val: V) -> bool  // overwrites; true if the key was new
-fn get_or_insert<K, V>(&d: dictionary<K, V>, key: K, v0: V) -> V&
-fn update<K, V, F>(&d: dictionary<K, V>, key: K, v0: V)        // F(val&): inserts v0 if absent, then calls F
-fn remove<K, V>(&d: dictionary<K, V>, key: K) -> bool
-fn clear<K, V>(&d: dictionary<K, V>)
-fn reserve<K, V>(&d: dictionary<K, V>, n: i64)                 // capacity for n entries without rehash
-fn each<K, V, F>(&d: dictionary<K, V>)                         // F(key, val&); order unspecified
+fn get<K, V>(d: dictionary<K, V>&, key: K) -> V?              // reference to the value, or null
+fn contains<K, V>(d: dictionary<K, V>&, key: K) -> bool
+fn insert<K, V>(d: dictionary<K, V>&, key: K, val: V) -> bool  // overwrites; true if the key was new
+fn get_or_insert<K, V>(d: dictionary<K, V>&, key: K, v0: V) -> V&
+fn update<K, V, F>(d: dictionary<K, V>&, key: K, v0: V)        // F(val&): inserts v0 if absent, then calls F
+fn remove<K, V>(d: dictionary<K, V>&, key: K) -> bool
+fn clear<K, V>(d: dictionary<K, V>&)
+fn reserve<K, V>(d: dictionary<K, V>&, n: i64)                 // capacity for n entries without rehash
+fn each<K, V, F>(d: dictionary<K, V>&)                         // F(key, val&); order unspecified
 ```
 
 Word counting, the canonical use (prototyped end to end):
@@ -513,7 +518,8 @@ each_split(text, ' ') { counts.update(it, 0) { it += 1; } };
 counts.each() { w, n => if n > 100 { print(w, " ", n); } };
 ```
 
-`update` exists because the natural spelling, `get_or_insert(&d, k, 0) += 1`,
+(Today, without §8.7: `update(&counts, it, 0) { … }` and `each(&counts) …`.)
+`update` exists because the natural spelling, `get_or_insert(d, k, 0) += 1`,
 is not an assignable location and the annotated binding needs the value
 type spelled out (§2.5). A block gets the reference without either problem.
 
@@ -623,7 +629,7 @@ know it diverges (§8.3).
 
 Ordered by how much of the library depends on them.
 
-### 8.1 The `print` / `str` / `write` family
+### 8.1 The `print` / `str` / `format` family
 
 One rendering engine behind three builtins, each taking any number of
 arguments of any type, rendered in sequence with no separator:
@@ -631,7 +637,7 @@ arguments of any type, rendered in sequence with no separator:
 ```goose
 print(a, b, …)                 // stdout, newline at the end
 str(a, b, …) -> u8[>..]        // a fresh string, constructed at the destination
-out.write(a, b, …)             // append to any growable u8 array (a builtin member)
+format(out, a, b, …)           // append to any growable u8 array; out.format(a, b, …) via UFCS
 ```
 
 `str` is the answer to "quickly concatenate a few things into a new
@@ -643,17 +649,18 @@ string", which Goose does in place and should encourage: `words.push(str(
   common case), quoted and escaped when nested inside an aggregate.
 * other arrays and slices: `[1, 2, 3]`.
 * structs and ADT variants: the type name and the positional literal form,
-  `float3 { 1, 2, 3 }`, `Circle { 1.5 }`, no field labels. The name is kept
-  because it is what disambiguates nested values and variants, and the
-  output stays valid Goose.
+  `float3 { 1, 2, 3 }`, `Circle { 1.5 }`, no field labels. The name keeps
+  nested values and variants readable, and the output stays valid Goose.
 * references: their pointee; optionals: `null` or the pointee; relative
   references likewise.
-* a type that has a user overload `fn format(out: u8[>..]&, v: T)` renders
-  through it instead, wherever it occurs.
+* a type with a user overload `fn format(out: u8[>..]&, v: T)` renders
+  through it instead, wherever it occurs — the builtin is the structural
+  fallback of the `format` overload set, and user overloads are found by
+  the same resolution as any call.
 
 This is codegen per type, the same walk equality already does, and it is
 the single most useful debugging affordance Lobster has. Scalars and
-strings ship first; aggregates and the `format` hook follow.
+strings ship first; aggregates and user overloads follow.
 
 ### 8.2 `default<T>()`
 
@@ -675,7 +682,7 @@ Diverging calls, so `guard c else { abort("bad input"); }` typechecks (§6.4
 requires the else block to diverge). `abort` prints `goose runtime error:
 <msg>` and exits nonzero, like the checked aborts of §9.3; `exit` flushes
 and exits with the code. The library uses `abort` for contract violations
-that are not plain `assert`s (an unknown base in `write_int`).
+that are not plain `assert`s (an unknown base in `format_int`).
 
 ### 8.4 `extern fn`
 
@@ -702,30 +709,29 @@ extern fn gl_vertex3(v: float3&);
   flat fixed struct, or nothing.
 * What does not cross: `varint`, references inside structs, variable and
   resizable values by value, slices of variable elements. The checker
-  rejects them with the reason. Spec §12's "FFI details" is thereby the
-  flat-data case of TODO 11, which is the case that matters.
+  rejects them with the reason.
 * Writability is checked at the call site as for `push` (§9.5). Extern
   functions are usable from thread programs when the C is re-entrant, which
   the runtime's are.
-* The C for the library's externs lives in `src/runtime/runtime_os.h`,
-  prepended to generated programs like the other runtime files. User
-  externs get their C in via a compiler flag `--include <header>` that
-  emits an `#include` after the generated type declarations, so a header
-  can implement shims against `gs_<name>` types. Because Goose layouts are
-  packed and the compiler emits its own prototypes, calling an existing C
-  API whose declaration differs takes a one-line shim in that header; that
-  is also where calling conventions (`APIENTRY`) get absorbed.
+* Simplest workable plumbing, to be extended later: the compiler always
+  emits its own prototype from the Goose declaration; the C for the
+  library's externs lives in `src/runtime/runtime_os.h`, prepended like the
+  other runtime files; user externs get their C in via `--include <header>`,
+  emitted after the generated type declarations so a header can implement
+  shims against the `gs_<name>` typedefs. An existing C API whose
+  declaration differs from the emitted prototype (alignment, `APIENTRY`,
+  pointer types) gets a one-line shim in that header.
 
 ### 8.5 `map` and the empty-array declaration
 
 Nothing about generics is needed: a generic body is checked only at an
 instantiation where every type is concrete, including what `F(x)` returns
-(the spec now says so in §7.7). The only thing `map` cannot write today is
-its result local: `var out = [];` is rejected because `[]` has no element
-type *yet*. The fix is local-variable inference in the checker: an
-empty-array local without an annotation gets a pending array type that the
-first `push`/`append`/assignment of a concrete element completes; using it
-in a way that needs the element type before then (`out[0]`) is an error,
+(spec §7.7 now says so). The only thing `map` cannot write today is its
+result local: `var out = [];` is rejected because `[]` has no element type
+*yet*. The fix is local-variable inference in the checker: an empty-array
+local without an annotation gets a pending array type that the first
+`push`/`append`/assignment of a concrete element completes; using it in a
+way that needs the element type before then (`out[0]`) is an error,
 `out.len` is fine, and a body that never completes it is an error at its
 end. Codegen sees only completed types. Then `map` is
 
@@ -744,73 +750,163 @@ test runner points at the source tree's `stdlib/`.
 
 ### 8.7 Checker and language changes
 
-**Binder parameters (`&name`) — proposed, question 1.** The review asked for
-a way to let `d.insert(k, v)` bind `d` by reference without giving up the
-two-way `&` protection of §7.2 for ordinary functions. The proposal is to
-let a declaration say so, with the spelling the language already uses for
-by-reference binding in `for &x in xs` and `Sym &s =>`:
+**Passing by size class — proposed (question 1).** The review proposed
+replacing "explicit `&` on both ends" (§7.2) with a rule keyed on the size
+class of the value being connected to a destination — a call argument, a
+`let`/`var` initializer, an assignment, a field initializer, a `push`, a
+`for` binding, a match binder, a queue put:
 
-```goose
-fn insert<K, V>(&d: dictionary<K, V>, key: K, val: V)   // typed binder
-fn heap_push<T>(&xs, v: T)                              // untyped binder
-```
+* A **fixed** value connects by value, as today. A reference-typed
+  destination (`x: T&`, `T?`, an annotated `let r: T&`) binds the lvalue's
+  address implicitly; `&x` stays legal and means the same, so forwarding a
+  reference variable is unchanged.
+* A **non-fixed** value is never copied implicitly. A reference-typed
+  destination binds it; an untyped or generic destination binds it by
+  reference too, that being the only free option; a value-typed destination
+  accepts an rvalue — a call result, a literal, a slice or other conversion,
+  a local being returned — or an explicit `copy(x)`, a builtin that
+  constructs the copy at the destination (§4.3 semantics; one word, and
+  greppable).
+* `&` at call sites is thereby redundant rather than required.
 
-Semantics: the parameter is a reference to the argument. An lvalue argument
-is referenced implicitly (`insert(d, k, v)`, `d.insert(k, v)`); an explicit
-`&d` is accepted as-is; an argument that is already reference-like (a
-reference, a slice) binds as itself; any other rvalue is an error ("needs a
-location"). Provenance and roots are those of `T&`. Free-form and UFCS
-calls are therefore consistent (concern a), and the copy-protection of
-`T&`-typed parameters is untouched: a binder is the author's declared
-choice, visible in the signature (concern b). An untyped binder covers
-every array kind with one body (`heap_push` on a `[>..<]`, a `[..k]` field,
-a `[>..]`), and, given a slice argument, degrades to the slice, which the
-in-place functions can exploit. Alternatives considered: UFCS-only
-auto-referencing (inconsistent between `d.insert` and `insert(d)`), the
-reference-variable idiom `let d = &dict;` (works today, one line per
-container per scope, the fallback if binders are rejected), and a call-site
-marker (no gain over `&x`).
+Where the rule has to be pinned down, with the reading this document
+assumes:
 
-**Slices of `[>..<]` — decided.** The ban of §5.2 becomes a flow rule: a
-slice or reference into a `[>..<]` may be created and used, and is *killed*
-by any shrinking operation on its root (`pop`, `resize`, `clear`, whole
-assignment) the way narrowing is killed by a rebind; it may be passed down
-and returned (the caller's copy of the same rule applies) but not stored
-into a container (a store would escape the flow analysis). The memory
-argument is that a live `[>..<]` owns its stack region exclusively
-(§1.3(2)), so even a slice that outlives a shrink reads type-safe reused
-memory exactly as a limited array's does (§5.3); the flow rule exists to
-catch the logic error, not a memory one. Spec §5.2, §3.10 and TODO 4
+* `let y = x;` for a non-fixed `x` is an error: write `let y = &x;` (a
+  reference, the inferred type as today) or `let y = copy(x);`. For fixed
+  `x` it copies, as today.
+* `push(v)` is a construction context (§4.2): a non-fixed lvalue `v` needs
+  `copy(v)`; a slice `v[..]`, a literal or a call result does not.
+  `append(src)` takes its source as a slice and copies elements as its
+  defined operation, so `g.append(h)` stays as it is.
+* `g = h` between resizables (§4.4's clear-then-copy) becomes `g = copy(h)`;
+  `g = f()` stays. This is where a `move(x)` (spec TODO 3) would first be
+  wanted: the dictionary's rehash assigns a dying local.
+* `return x` of a non-fixed local moves it (NRVO, no copy); returning a
+  non-fixed *field* or parameter copies and takes `copy`. The one implicit
+  copy of §7.3 — two different locals returned on different paths — stays
+  implicit, because the programmer cannot know which of the two will be the
+  copied one.
+* `for x in xs` and `Circle c =>` copy fixed elements and payloads as today;
+  non-fixed ones already require the `&x` binder form (§6.5, §8.1) — the
+  rule makes that a consequence rather than a special case.
+* An untyped or `<T>` parameter given a non-fixed lvalue binds `T` to the
+  reference type; given a fixed lvalue, to the value type. `fn total(xs)`
+  then serves a fixed array (copied), a `[>..]` and a `[>..<]` (by
+  reference) with one body, and a body that writes through `xs` is an
+  error at the fixed instantiation (an immutable copy) rather than a
+  silently discarded write.
+* Overloads `f(x: T)` and `f(x: T&)` for the same fixed `T` become
+  ambiguous for an lvalue argument; the pair `f<T>(xs: T[:])` / `f<A>(xs:
+  A&)` does not (a `[>..<]` reaches only the second, an array reaches the
+  second at the generic tier, a slice only the first), so the library's two
+  container conventions coexist.
+* An explicit `&x` argument to a reference parameter is accepted silently
+  (it is what forwarding a reference already looks like); a lint for
+  redundant ones can come later.
+
+For the library: no binder parameters, no `&` in any example, UFCS works
+for every mutator, generic HOFs could even be untyped, and the library's
+own copies become visible where they are intended (`stable_sort`'s
+temporary is a construction; the dictionary rehash is a `copy`/`move`).
+
+Pros, beyond the UFCS fix that motivated it: the rule matches the cost
+model exactly (registers for fixed values, in-place construction or a
+reference for everything else); non-fixed copies become *impossible* to
+write by accident, which is stronger than today, where `f(arr)` to a
+by-value non-fixed parameter compiles and silently copies; one rule
+covers calls, `let`, `=`, fields, `push` and `for` alike; `copy` gives
+`move` a natural sibling; and §4.1's "everything is a value" simplifies to
+"fixed values are values; non-fixed values live in one place and are
+copied only on request".
+
+Cons, and what limits them:
+
+* Mutation of a fixed value is no longer visible at the call site:
+  `normalize(v)` may write `v`. Writability provenance (§9.5) confines this
+  to `var` locals — a `let` argument yields a non-writable reference, and a
+  callee that writes through it is a compile error with the call chain —
+  so the reader's rule is "a `var` passed to a function may change", which
+  is the C++ situation restricted to values the programmer already declared
+  mutable. Naming conventions do the rest; a lint could flag writes through
+  implicitly bound fixed references if it turns out to matter.
+* "Fixed" is not "small". A limited array `u8[..4096]` or a fixed
+  `f32[1024]` is fixed-class and would copy silently. Options: accept it
+  (C's struct-by-value rule; the compiler may pass an unwritten by-value
+  argument by pointer when the specialization's roots prove nothing writes
+  the source during the call); a size-based lint; or treat limited arrays
+  as copy-explicit. Question 1b.
+* `copy` will appear in places that feel like plain data flow —
+  `items.push(copy(item))`, `let name = copy(rec.name)` — which is the
+  point, but is a migration cost. The existing tests and benchmarks change
+  in a handful of places (`let copy: u8[][] = src;`, `g = h`, `d.slots =
+  ns`, pushes of variable-size locals); every `&` they already write stays
+  valid.
+* `&` does not leave the language, only call sites: reference creation for
+  inferred `let`s, `.=` rebinding, and reference-typed fields initialized
+  from lvalues still spell it, and a reference-typed field initializer
+  binding an lvalue implicitly would read oddly enough that the rule should
+  perhaps stop at call sites, `let`s and `=`. Question 1c.
+* Spec text to rewrite: §4.1, §4.4, §7.2, the §3.8 binding paragraph, §7.5's
+  implementation note, and every "explicit on both ends" mention.
+
+Recommendation: adopt it, in the reading above. Nothing in the library's
+design depends on the outcome except the spelling of examples.
+
+**Slices of `[>..<]` — decided, with the error placement from the review.**
+Creating a slice or reference into a `[>..<]` becomes legal. A shrinking
+operation on that array (`pop`, `resize`, `clear`, whole assignment) while
+such a slice or reference is still *live* — used again on some later path —
+is a compile error at the shrink, citing where the slice was taken and where
+it is next used, so the programmer can fix either end. Liveness is the
+last-use information the checker keeps for named results (§7.3); inside a
+loop a shrink anywhere in the body counts against slices taken earlier in
+the body, since the next iteration would see them. Such a slice may be
+passed down and returned (the caller's copy of the same rule applies to
+what it receives) but not stored into a container, which would escape the
+analysis. The memory argument is that a live `[>..<]` owns its stack region
+exclusively (§1.3(2)), so even a slice that outlives a shrink would read
+type-safe reused memory exactly as a limited array's does (§5.3); the rule
+catches the logic error, not a memory one. Spec §5.2, §3.10 and TODO 4
 change accordingly. Until it lands, `[>..<]` reaches only the
 length-changing functions.
 
-**References to resizable tails — explained, question 6.** `&bag.items`
-is rejected today for a representational reason, not a semantic one. A
-resizable-tailed struct is one frame header `{ base, len }` whose `base` is
-the *struct's* start on the data stack (static prefix fields, then the
-tail elements) and whose `len` is the tail's count; a `T[>..]&` is a pointer
-to a header whose `base` must be the element region. There is no header
-for the tail alone, and `len` must stay shared with the struct's header so
-a push through either updates both. Two fixes, both zero-cost: (a) point
-the struct's header `base` at the tail elements and reach the prefix fields
-at statically known *negative* offsets, so a reference to the tail *is*
-the reference to the struct (the same C value), or (b) keep the layout and
-let a reference-to-tail carry its static prefix offset as part of the
-callee's specialization (every reference already carries a root). (a) is
-simpler in codegen and makes `d.slots.push(…)` through `d: dictionary&`,
-`&bag.items`, and the implicit slice coercion `count(bag.items)` all fall
-out of one representation; it is the recommendation. Note that pushing
-through the *struct* reference (`b.items.push(v)` with `b: bag&`) already
-works, as does explicit slicing `b.items[..]`; only naming the tail as a
-reference is blocked.
+**References to resizable tails — recommended representation (question
+2).** `&bag.items` is rejected today because a resizable-tailed struct is
+one frame header `{ base, len }` whose `base` is the *struct's* start on the
+data stack (static prefix fields, then tail elements) and whose `len` is
+the tail's count; a `T[>..]&` is a pointer to a header whose `base` must be
+the element region, and there is no such header for the tail alone.
+Offsetting the struct's header (revision 2's option a) fixes it at the cost
+of every struct being addressed relative to its tail. The review's
+instinct — give the tail its own independent header — leads to this layout:
+a resizable-tailed struct is represented as a *frame object* holding its
+fixed prefix fields exactly as a fixed local would, followed by the tail's
+own `gs_rhdr`; only the tail's elements live on the data stack. Then
+`&bag.items` is a pointer to that header field — an ordinary `gs_rref`,
+indistinguishable from a reference to a standalone resizable, so nothing
+downstream needs to know it came from a struct; `&bag` is a pointer to the
+frame object; `bag.n` through either is a plain field access; `d.slots` via
+`d: dictionary&` is a normal header; and the implicit slice coercion
+`count(bag.items)` follows. Copying such a value copies the frame object
+and the elements (today's `RzShape` prefix walk becomes a struct copy plus
+`EmitCopyElems`); by-value parameters and returns pass the frame object
+where they pass the header today (C.3 already passes "the metadata
+appropriate to the type"). Nesting composes: a struct whose tail is itself
+a resizable-tailed struct nests frame objects. The two awkward cases keep
+today's bytes-on-stack shape behind a base pointer in the frame object: a
+*variable-size* prefix (a `u8[]` field before the tail, which `RzShape`
+already refuses to copy), and a resizable-class ADT, whose payload shape is
+per variant. Spec C.2 changes from "outermost values have a frame header"
+to "a resizable-class value's fixed part lives in the owning frame, and
+every resizable tail has its own header there".
 
 **Untyped parameters bind exact types — done.** `TryMatch` decayed a
 reference argument to its pointee before binding an untyped parameter, so
 `f(&x)` handed `f` a copy of `x`; an explicit `<T>` parameter already bound
-the reference. The decay is removed in this change set (`src/typecheck.h`),
-§3.8 is reworded, and the suite passes; `f(&gs)` into `fn f(xs)` now
-mutates `gs`, and the codegen crash B7 of revision 1 (a by-value `[>..<]`
-parameter) no longer arises on that path.
+the reference. The decay was removed, §3.8 reworded, and the suite passes
+(commit `a6bde04`); `f(&gs)` into `fn f(xs)` now mutates `gs`, and the
+codegen crash B7 of revision 1 no longer arises on that path.
 
 **`return null` and root agreement.** `fn find<T, F>(xs: T[:]) -> T?`
 written as `for &x in xs { if F(x) { return &x; } } return null;` is
@@ -892,13 +988,13 @@ Each phase ends with the test suite green at -O0 and -O2 under MSVC and
 clang, as `test/run_tests.ps1` already checks.
 
 **Phase 0 — compiler.** Bugs B1–B4 (B5–B7 as they are reached); the
-untyped-parameter fix (done); the stdlib search path (§8.6);
-`abort`/`exit` (§8.3); `print`/`str`/`write` for scalars and strings
-(§8.1); `default<T>()` (§8.2); the empty-array declaration (§8.5); slices
-of `[>..<]` (§8.7); references to tails (§8.7, option a); binder
-parameters if question 1 says yes. Tests: `test/stdlib_returns.goose`
-covering every receiver shape of §7.3 for non-inlined generic results
-(the regression net for B1–B3), plus one test per language change.
+stdlib search path (§8.6); `abort`/`exit` (§8.3); `print`/`str`/`format`
+for scalars and strings (§8.1); `default<T>()` (§8.2); the empty-array
+declaration (§8.5); slices of `[>..<]` (§8.7); the tail representation
+(§8.7); and, if question 1 says yes, the passing rule with `copy`. Tests:
+`test/stdlib_returns.goose` covering every receiver shape of §7.3 for
+non-inlined generic results (the regression net for B1–B3), plus one test
+per language change.
 
 **Phase 1 — `std`.** Everything in §4 except the extern-backed
 `parse_flt`, which carries a Goose fallback. `test/stdlib_std.goose` with
@@ -917,9 +1013,9 @@ measurement. `vec` is small and independent; `particles.goose` gains a
 
 **Phase 3 — `extern fn`, `math`, `os`, printing of aggregates.** The extern
 form (§8.4) with `runtime_os.h`; `math`; `os`; `parse_flt` over `strtod`;
-`print` of aggregates and the `format` hook. `test/stdlib_os.goose` writes
-and reads a temp file, reads its own arguments, and checks `clock()` is
-monotonic.
+`print` of aggregates and user `format` overloads. `test/stdlib_os.goose`
+writes and reads a temp file, reads its own arguments, and checks `clock()`
+is monotonic.
 
 **Documentation.** `docs/stdlib.md`, a reference in the layout of §4–§7 with
 one example per function group, maintained by hand; a `--doc` mode that
@@ -944,7 +1040,7 @@ rather than a gap:
   each is `filter`/`lower_bound`/`insert_at` plus a line.
 * `keys`/`values` of a dictionary: `each` plus a push.
 * String `concat` of many pieces, `repeat`, `pad`, `capitalize`, `escape`:
-  `str(a, b, c)`, `push_n`, `write_int`'s width, and a loop.
+  `str(a, b, c)`, `push_n`, `format_int`'s width, and a loop.
 * `lines`/`words`: `each_split(s, '\n')` and `each_split(s, ' ')` plus
   `trim`; a whitespace-class tokenizer belongs in the user's lexer.
 * Multiple-resizable containers (a deque, an owning string dictionary): the
@@ -961,31 +1057,21 @@ rather than a gap:
 
 ---
 
-## 12. Questions (round 2)
+## 12. Questions (round 3)
 
-1. **Binder parameters** (§8.7): is `&name` in a parameter list the right
-   answer, with those semantics? The library's signatures are written with
-   it; if not, they revert to `xs: A&` / `d: dictionary<K, V>&` and the
-   documentation shows `insert(&d, k, v)` and the `let d = &dict;` idiom.
-2. **Aggregate printing**: type name plus positional fields
-   (`float3 { 1, 2, 3 }`, proposed) or bare `{ 1, 2, 3 }`? And is `format`
-   the right name for the per-type rendering hook, given `write` is now the
-   builtin?
-3. **`default<T>()`**: the name (versus `zero`), and the rule that an
-   optional field with no declared default is null and a `let` field keeps
-   its default — anything to add?
-4. **`[>..<]` slicing rule** (§8.7): flow-kill on shrink, pass-down and
-   return allowed, store into containers rejected — the intended shape, or
-   should stores be allowed under the type-safe-reuse argument alone?
-5. **Tail references** (§8.7): option (a), header base at the elements with
-   the prefix at negative offsets, or (b)?
-6. **Stdlib location**: the upward search from the executable plus
-   `GOOSE_STDLIB`/`--stdlib`, and `stdlib/` at the repository root — fine?
-7. **Extern shims**: packed by-value structs and `gs_<name>` typedefs with a
-   one-line C shim for APIs whose declarations differ, via `--include` —
-   acceptable, or should the compiler also accept a per-declaration C
-   parameter type list to call existing prototypes directly?
-8. **Names**: `dictionary_slot` for the internal slot type; `xy`/`xyz` as
-   global function names; `str` for the builtin.
-9. **Raw versus quoted strings**: a `u8` array renders raw at the top level
-   of `print`/`str`/`write` and quoted inside aggregates — the right split?
+1. **Passing by size class** (§8.7): adopt it in the reading given there?
+   Specifically: (a) `copy(x)` as the spelling, and `move(x)` now or later;
+   (b) where fixed-but-large values land — accept, lint above a size, or
+   make limited arrays copy-explicit; (c) whether the implicit reference
+   binding stops at call sites, `let` and `=`, or also covers
+   reference-typed field initializers; (d) `push(v)` needing `copy(v)` for
+   a non-fixed lvalue while `append(v)` does not; (e) untyped and `<T>`
+   parameters binding non-fixed lvalues by reference rather than erroring.
+2. **Tail representation** (§8.7): the frame-object layout with the tail's
+   own header, and bytes-on-stack kept for variable prefixes and
+   resizable-class ADTs — the direction you had in mind?
+3. **`[>..<]` slices**: error at the shrink citing the slice's creation and
+   its next use, loops conservative, no stores into containers — as worded?
+4. **`format` details**: `format_int`/`format_uint`/`format_flt`,
+   `format_replaced`, `push_utf8`, and user `format` overloads extending the
+   builtin — anything to rename?
