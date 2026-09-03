@@ -314,10 +314,11 @@ remains, with what it is worth:
 2. **Decide what a compressed reference denotes.** Pool-relative offsets
    (`--relref-base` on `opt/pool-relative`) recover 1.41x on `lru` under
    clang and 1.18x on `graph`, cost hot recursion 4-7% where the base must
-   travel as a hidden argument, and cannot decode a reference read back out
-   of a container -- the same missing fact as the laundering item below. The
-   principled form makes the pool part of the reference's type, which fixes
-   both at once; that is a language decision, not a compiler one.
+   travel as a hidden argument, and can decode a reference read back out of a
+   container only where the read-back rule (spec 9.5) names one candidate
+   pool. The principled form makes the pool part of the reference's type,
+   which needs no such derivation; that is a language decision, not a
+   compiler one.
 3. **Inline a base case that is not the first statement** (`scene`,
    `interp`), and match expression-bodied folds (`if c { 0 } else { 1 + f(x) }`)
    in tail-recursion elimination.
@@ -360,8 +361,8 @@ nothing measurable against indices, so this is specifically the relink
 pattern. The pool-relative encoding tried this round (`adoption.md` 3.1:
 offsets from the pool's base rather than from the field) recovers 1.41x of
 it under clang and 1.04x under v145, and needs to know which pool a
-reference points into -- the same fact the laundering item below is missing
--- so the two are one language decision.
+reference points into, which the read-back rule now derives wherever the
+enclosing scope has one candidate for the pointee type.
 
 **Recursive construction was where the C backends fell behind rustc, and
 three optimizer items closed most of it.** `bintrees` builds and discards
@@ -444,8 +445,16 @@ inside recursion, `return from` as a taken error path, inline child arrays,
 DTOs with nested variable-size parts -- and most of what follows came out of
 that.
 
-**Fixed this round:** a recursive cycle's return roots are known before its
-back edges (spec 7.8), so a mutually recursive parser can store the result
+**Fixed this round:** a reference read back out of a container is rooted at
+the storage that can own it -- a candidate variable of the enclosing scope
+that holds its pointee type by value -- rather than at the container, so a
+sole candidate is that pool exactly and the reference still links relatively
+into it (`lru_refslots.goose` is `lru` with the map holding `Node&?` instead
+of indices; it costs 5-10% for the bigger slots and nodes, which is why `lru`
+keeps the indices).
+
+**Fixed the round before:** a recursive cycle's return roots are known before
+its back edges (spec 7.8), so a mutually recursive parser can store the result
 of a back-edge call relatively -- `calc` no longer needs its Paren node
 (`calc_noparen.goose`, 1.04-1.09x; the row keeps it so the node counts match
 the other languages); a grow-only local may be popped, resized or cleared
@@ -456,7 +465,7 @@ throughout; a struct literal with relative-reference fields assigned into an
 element, or built through `alloc_index`, now measures its offsets from the
 final address.
 
-**Fixed the round before** (details in the compiler section above): recursive
+**Fixed two rounds before** (details in the compiler section above): recursive
 builders can build into a pool passed by reference; references push correctly
 into limited arrays of relative references; call results and inlined values
 land in `varint`-length slots with the right layout; a fixed struct may refer
@@ -468,16 +477,6 @@ initialisers need no `as` from a value the compiler can see is in range.
 
 **Still open, re-verified against the current compiler:**
 
-* **Reference laundering defeats relative references.** A reference read back
-  out of a container is conservatively rooted at that container (spec 9.5), so
-  it cannot then be stored into a relative-reference field belonging to the
-  array it actually points into. `graph` keeps its per-vertex list heads in
-  the same pool as the edges to work around it, and `lru`'s map holds pool
-  *indices* rather than `Node?` references for the same reason: a node
-  reached through the map could not be linked relatively into the pool. A
-  pool-relative encoding needs the same missing fact -- which pool a stored
-  reference points into -- so one answer (the pool as part of the reference
-  type) would settle both.
 * **A `null`-reachable optional is rooted at static data**, which is why
   `sexp`'s links are still plain 8-byte references.
 * **Inline child arrays need their count at construction.** The A.2 shape

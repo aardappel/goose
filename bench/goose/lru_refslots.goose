@@ -1,27 +1,17 @@
-// An LRU cache: a hash map from key to node, a doubly-linked recency list,
-// and a capacity that evicts the least recently used entry on a miss. Every
-// cache, page table, and connection pool has one of these in it, and it is
-// the mutation-heavy shape Goose's stack discipline is worst placed for:
-// nodes are freed and reallocated in an order that has nothing to do with
-// scope. The `reusable` pool (spec 5.4) is the language's answer -- a
-// freelist over a grow-only array, so a freed node's slot comes back on the
-// next alloc without an allocator, and every slot stays a valid Node forever.
+// lru.goose with the map holding node *references* instead of pool indices.
+// A reference read back out of a container is rooted at the storage that can
+// own it rather than at the container (spec 9.5), and here only `pool` can
+// hold a Node, so a node reached through the map is rooted at `pool` exactly
+// and still links relatively into it. That is the version this data structure
+// wants to be written in; lru.goose stays on indices because 8-byte slots
+// match the C++ and Rust arenas it is compared against.
 //
-// The list links are 4-byte relative references between pool elements, and
-// both sentinels live in the pool so no link is ever null in practice. The
-// map slots hold pool *indices* rather than references, which is a size
-// choice: 8-byte slots match the vector-arena-with-u32-indices shape the C++
-// and Rust versions use, and that is what this row compares. References work
-// too -- a node read back out of the map is rooted at `pool` exactly (spec
-// 9.5), so it still links relatively -- and lru_refslots.goose is that
-// version, at 16 bytes per slot. C++'s idiomatic version is the textbook
-// std::list + std::unordered_map, an allocation per node and another per map
-// entry; the expert version is the arena, which is also the only shape safe
-// Rust can write.
+// The one thing a reference cannot supply is the index `pool.free` takes, so
+// each node carries its own (20-byte nodes against lru.goose's 16). The
+// lookup path has no `&pool[i]` in it at all; the insert path has one, since
+// `alloc_index` is what yields the index to store.
 //
-// The workload is a skewed key stream so most lookups hit, with an explicit
-// invalidation every sixteenth operation so that nodes are freed out of
-// order and the freelist actually cycles.
+// Otherwise identical to lru.goose: same workload, same output.
 
 import rng;
 
@@ -29,8 +19,8 @@ let N = 8000000;                         // BENCH_N
 let CAP = N / 8;
 let KEYS = CAP * 2;
 
-struct Node { key: i32, val: i32, prev: Node&<u32>?, next: Node&<u32>? }
-struct Slot { key: i32, idx: i32 }       // idx < 0: empty.
+struct Node { key: i32, val: i32, idx: i32, prev: Node&<u32>?, next: Node&<u32>? }
+struct Slot { key: i32, node: Node&? }   // node == null: empty.
 
 reusable var pool: Node[>..] = [];
 var slots: Slot[>..] = [];
@@ -43,7 +33,7 @@ fn find(key: i64) -> i64 {
     var i = home(key);
     loop {
         let s = slots[i];
-        guard s.idx >= 0 && s.key != key;
+        guard s.node != null && s.key != key;
         i = (((i + 1) as u64) & mask) as! i64;
     }
     return i;
@@ -57,14 +47,14 @@ fn map_remove(at: i64) {
     loop {
         j = (((j + 1) as u64) & mask) as! i64;
         let s = slots[j];
-        guard s.idx >= 0;
+        guard s.node != null;
         let h = home(s.key);
         if (i < j && (h <= i || h > j)) || (i > j && h <= i && h > j) {
             slots[i] = s;
             i = j;
         }
     }
-    slots[i].idx = -1;
+    slots[i].node .= null;
 }
 
 fn unlink(n: Node&) {
@@ -89,10 +79,10 @@ fn main() {
     var nslots = 16;
     while nslots < CAP * 2 { nslots *= 2; }
     mask = (nslots - 1) as u64;
-    for s in nslots { slots.push(Slot { key: 0, idx: -1 }); }
+    for s in nslots { slots.push(Slot { key: 0, node: null }); }
     // Two sentinels: the list is never empty, so no link is null in practice.
-    let hi = pool.alloc_index(Node { key: -1, val: 0 });
-    let ti = pool.alloc_index(Node { key: -1, val: 0 });
+    let hi = pool.alloc_index(Node { key: -1, val: 0, idx: 0 });
+    let ti = pool.alloc_index(Node { key: -1, val: 0, idx: 1 });
     pool[hi].next .= &pool[ti];
     pool[ti].prev .= &pool[hi];
     var count = 0;
@@ -105,23 +95,22 @@ fn main() {
         let a = xs_mod(r, KEYS);
         let key = (a * a) / KEYS;          // Skewed towards small keys.
         let at = find(key);
-        let fi = slots[at].idx;
+        let f = slots[at].node;
         if xs_mod(r >> 40, 16) == 0 {
             // An invalidation: drop the entry if it is cached.
-            if fi >= 0 {
-                unlink(&pool[fi]);
+            if f {
+                unlink(f);
                 map_remove(at);
-                pool.free(fi);
+                pool.free(f.idx);
                 count--;
                 removes++;
             }
             continue;
         }
-        if fi >= 0 {
-            let n = &pool[fi];
-            n.val += 1;
-            unlink(n);
-            link_front(&pool[hi], n);
+        if f {
+            f.val += 1;
+            unlink(f);
+            link_front(&pool[hi], f);
             hits++;
             continue;
         }
@@ -132,17 +121,18 @@ fn main() {
             assert(lru);
             unlink(lru);
             let lat = find(lru.key);
-            let li = slots[lat].idx;
             map_remove(lat);
-            pool.free(li);
+            pool.free(lru.idx);
             count--;
             // The deletion may have shifted entries in this key's probe run,
             // so the empty slot found above can be stale.
             ins = find(key);
         }
-        let ni = pool.alloc_index(Node { key: key as i32, val: (key % 1000) as i32 });
-        slots[ins] = Slot { key: key as i32, idx: ni as i32 };
-        link_front(&pool[hi], &pool[ni]);
+        let ni = pool.alloc_index(Node { key: key as i32, val: (key % 1000) as i32, idx: 0 });
+        let n = &pool[ni];
+        n.idx = ni as! i32;
+        slots[ins] = Slot { key: key as i32, node: n };
+        link_front(&pool[hi], n);
         count++;
     }
     // Walk the list from most to least recent, so the order is checked too.
