@@ -92,7 +92,7 @@ struct TypeCheck {
     // Inside a block/if/match/loop that produces a value, or a function-value
     // body: an enclosing expression may hold references it evaluated before
     // this point, which are in no variable and so invisible to the liveness
-    // scan of CheckGrowClear.
+    // scan of CheckGrowShrink.
     bool invalue = false;
     VarDef *curdst = nullptr;    // Root of the value under construction (for ref stores).
     VarDef *temproot = nullptr;  // Sentinel root for refs read out of temporaries.
@@ -3519,12 +3519,16 @@ struct TypeCheck {
             if ((d.flags & BF_REUSABLE) && !rv.reusable)
                 Error(c, cat(".", d.name, " exists on reusable pools only (§5.4)"));
         }
-        // clear is the one shrink a grow-only array has, and only where no
-        // reference or slice into it survives it (§5.1).
-        if (d.kind == B_CLEAR && ak == A_GROW) CheckGrowClear(c, args[0], rv);
-        // resize has two forms (§3.3). It does not exist on grow-only arrays
-        // (push/append are their only growth), so a dynamic shrink attempt on
-        // one cannot arise and needs no runtime check.
+        // A grow-only array shrinks only where nothing can still be rooted in
+        // it (§5.1); pop and resize also need an element the shrink can find,
+        // which a sequential array has not got.
+        if (ak == A_GROW && (d.kind == B_POP || d.kind == B_RESIZE || d.kind == B_CLEAR)) {
+            CheckGrowShrink(c, d.name, args[0], rv);
+            if (d.kind != B_CLEAR && ClassOf(elem) != SC_FIXED)
+                Error(c, cat(".", d.name, " needs fixed-size elements: ", TypeStr(rv.type),
+                             " is sequential (§3.3)"));
+        }
+        // resize has two forms (§3.3); a target below zero is caught at runtime.
         if (d.kind == B_RESIZE) {
             CheckIntAny(args[1]);
             if (args.size() == 3) ElemArg(args[2], elem, rv);
@@ -3579,32 +3583,39 @@ struct TypeCheck {
         return v;
     }
 
-    // `clear()` on a grow-only array (§5.1). Everything below the stack top
-    // belongs to the array's elements for as long as it lives, so handing the
-    // region back is safe exactly when nothing can still point into it: the
-    // receiver is a local of the function being checked (not a global, not a
-    // field, not reached through a reference — those have holders this pass
-    // cannot see), and no live value can hold a reference or slice rooted at
-    // it. Roots are only known per variable, so the scan is conservative
-    // wherever they are: a value whose type contains references at all counts
-    // as a possible holder, and so does a `var` reference the same-depth
-    // rebinding rule (§9.2) could retarget into the array.
-    void CheckGrowClear(Call *c, Node *recv, const Val &rv) {
+    // A shrink (`pop`, `resize` down, `clear`) of a grow-only array (§5.1).
+    // Everything below the stack top belongs to the array's elements for as
+    // long as it lives, so handing part of the region back is safe exactly
+    // when nothing can still point into it: the receiver is a local of the
+    // function being checked (not a global, not a field, not reached through a
+    // reference -- those have holders this pass cannot see); the call stands on
+    // its own (a statement, an initializer, or the right-hand side of an
+    // assignment to a variable), so no reference taken earlier in the same
+    // expression outlives it; and no live value can hold a reference or slice
+    // rooted at the array. Roots are only known per variable, so the scan is
+    // conservative wherever they are: a value whose type contains references
+    // at all counts as a possible holder, and so does a `var` reference the
+    // same-depth rebinding rule (§9.2) could retarget into the array.
+    void CheckGrowShrink(Call *c, const char *op, Node *recv, const Val &rv) {
         auto id = Is<Ident>(recv);
         auto vd = id ? id->vdef : nullptr;
         if (!vd || rv.type->kind != TY_ARRAY)
-            Error(c, "clear on a grow-only array names the array's own variable, not a "
-                     "reference or an element of another value (§5.1)");
+            Error(c, cat(op, " on a grow-only array names the array's own variable, not a "
+                         "reference or an element of another value (§5.1)"));
         if (vd->isglobal || vd->isparam || !frames.back().spec ||
             vd->ownerspec != frames.back().spec)
-            Error(c, cat("cannot clear ", vd->name,
-                         ": clear on a grow-only array applies to a local of the function "
+            Error(c, cat("cannot ", op, " ", vd->name,
+                         ": a shrink of a grow-only array applies to a local of the function "
                          "that owns it (§5.1)"));
         if (vd->reusable)
-            Error(c, cat("cannot clear reusable pool ", vd->name,
+            Error(c, cat("cannot ", op, " reusable pool ", vd->name,
                          ": its slots stay live for the freelist (§5.4)"));
+        if (!c->standalone)
+            Error(c, cat("cannot ", op, " ", vd->name,
+                         " inside a larger expression: a reference taken earlier in it may "
+                         "still be live, so bind the result first (§5.1)"));
         if (invalue)
-            Error(c, cat("cannot clear ", vd->name,
+            Error(c, cat("cannot ", op, " ", vd->name,
                          " inside a value-producing expression: references taken earlier in "
                          "it may still be live (§5.1)"));
         for (auto v : vars) {
@@ -3625,7 +3636,7 @@ struct TypeCheck {
                 // array outlives (§9.2); flat types have no room for one.
                 if (IsFlat(t) || Depth(v) < Depth(vd)) continue;
             }
-            Error(c, cat("cannot clear ", vd->name, " while ", v->name,
+            Error(c, cat("cannot ", op, " ", vd->name, " while ", v->name,
                          " is in scope: it may hold a reference or slice into it (§5.1)"));
         }
     }

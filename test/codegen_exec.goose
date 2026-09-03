@@ -1059,6 +1059,32 @@ fn basecases() {
     print(rmarks);                       // Everything above the leaves: 7
 }
 
+// --- pop and resize on a grow-only local (§5.1) -------------------------------
+
+// The stack is popped and resized where nothing points into it, and sliced
+// in between; the element region it gives back is reused by its own pushes.
+fn growshrink_local() {
+    var st: i64[>..] = [];
+    for i in 5 { st.push(i * i); }       // 0 1 4 9 16
+    var acc = 0;
+    acc += st.pop();                     // 16
+    acc += st.pop();                     // 9
+    block {
+        let s = st[1..st.len];           // what remains: 1 4
+        acc += s[0] * 100 + s[1] * 10;   // 140
+    }
+    print(acc);                          // 16 + 9 + 140 = 165
+    st.resize(1);                        // 0
+    st.resize(3, 7);                     // 0 7 7
+    let a = st.pop();
+    let b = st.pop();
+    st.push(a + b);                      // 0 14
+    print(st.len * 100 + st[1]);         // 214
+    var top: i64[>..] = [];
+    top.push(st.len);
+    print(top[0] + st[0]);               // 2
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -1098,6 +1124,7 @@ fn main_codegen_exec() {
     inlined_results();
     lenprefixes();
     basecases();
+    growshrink_local();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

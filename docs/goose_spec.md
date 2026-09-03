@@ -212,10 +212,11 @@ Element restrictions:
 
 Growth operations (`push`, `append`, …) exist only on resizable arrays and on
 limited arrays (`[..k]`, `[..]`) up to capacity (exceeding capacity aborts).
-Shrink operations (`pop`, `resize` downward, `clear`) exist only on `[>..<]`
-and limited arrays, and abort when they would shrink below empty (`pop` on
-an empty array, `resize` to a negative length). `clear` also reaches a
-grow-only *local* nothing points into (§5.1).
+Shrink operations (`pop`, `resize` downward, `clear`) exist on `[>..<]` and
+limited arrays anywhere, and on a grow-only `[>..]` exactly where the
+compiler can see that no reference or slice into it is live (§5.1); they
+abort when they would shrink below empty (`pop` on an empty array, `resize`
+to a negative length).
 
 Built-in members: `.len` (always, returns `i64`), `.cap` (limited arrays),
 `.push(v)` (returns a reference to the new element on grow-only and limited
@@ -223,9 +224,7 @@ arrays — the idiomatic way to link up just-built data; on grow-shrink arrays
 it returns nothing, since no interior references exist there, §5.2),
 `.append(src)` (src an array/slice of the element type), `.pop()`,
 `.resize(n, v)` (grow with fill value `v`, or shrink), `.resize(n)` (shrink
-only), `.clear()` per the rules above. Because `resize` can shrink, it does
-not exist on grow-only arrays at all (a compile error; grow with `push`/
-`append` instead). Growth always supplies element
+only), `.clear()` per the rules above. Growth always supplies element
 values — no operation can expose uninitialized slots (§5.3). Per UFCS these
 are ordinary functions: `a.push(v)` is `push(a, v)`.
 
@@ -378,8 +377,10 @@ choice per instantiation.
 * the interior (elements/fields) of a grow-shrink array `[>..<]` (§5.2);
 * the interior of a fixed-mode ADT payload (§3.5).
 
-References into a grow-only resizable `[>..]` remain valid for the owner's
-entire life: grown memory never moves and never shrinks. References into
+References into a grow-only resizable `[>..]` remain valid for as long as
+they can be named: grown memory never moves, and the array shrinks only
+where the compiler can see that no such reference or slice is live (§5.1).
+References into
 limited arrays `[..k]`/`[..]` are also allowed and stay type-valid across
 pop/push reuse (§5.3).
 
@@ -589,31 +590,40 @@ types only, with operands unified per §6.1.
 
 ### 5.1 Grow-only `[>..]`
 
-* `push`/`append` bump the stack; all prior interior references/slices stay
-  valid forever (memory below the top never moves or gets reused while the
-  owner lives).
+"Grow-only" names the guarantee, not the operation set: **the array never
+shrinks while a reference or slice into it can be live.** Memory below the
+top never moves and is never reused while the owner lives, so every interior
+reference and slice stays valid for as long as it can be named, and a bound
+on the length holds across every `push`.
+
+* `push`/`append` bump the stack.
 * May contain variable-size elements (build strings/ADTs in place, §7.3).
-* No `pop`, no `resize`. The one shrink is `clear()`, under the liveness
-  condition below.
+* Shrinking — `pop`, `resize` downward, `clear` — is legal exactly where the
+  compiler can see that nothing is rooted in the array, under the conditions
+  below. `pop` and `resize` additionally need fixed-size elements, since a
+  sequential array cannot find its last element (§3.3).
 
-This is the workhorse type: arenas, pools, string builders, tree storage.
+This is the workhorse type: arenas, pools, string builders, tree storage, and
+scratch that is refilled or popped between phases.
 
-**`clear()`.** Legal exactly where no reference or slice into the array can
-still be named. The receiver must be a *local* of the function being compiled
-— not a global, not a field, not an array reached through a reference, whose
-holders lie outside anything the check can see — and not a `reusable` pool
-(§5.4: its freelist keeps every slot live). At the clear, no variable in an
-open scope may hold a reference or slice rooted at the array. Scopes are what
-make this usable: what a loop body or a nested block took out of the buffer is
-gone at its end, so a scratch buffer refilled per iteration can hand out
-slices of itself — "reusable scratch" and "structure I can point into" are the
-same type again. The test is conservative wherever roots are (§9.2): a live
-value of any type containing references counts as a holder unless the array is
-declared deeper than it, as does a `var` reference that the same-depth
-rebinding rule could retarget into the array; and the clear must stand as a
-statement, not inside an expression that produces a value, whose earlier
-operands may hold references no variable names. The operation is a stack-top
-reset and a length store — the same two stores as a grow-shrink `clear`.
+**When a grow-only local may shrink.** The receiver must be a *local* of the
+function being compiled — not a global, not a field, not an array reached
+through a reference, whose holders lie outside anything the check can see —
+and not a `reusable` pool (§5.4: its freelist keeps every slot live). The
+call must stand on its own: a statement, the initializer of a declaration, or
+the right-hand side of an assignment to a variable, so that no reference
+taken earlier in the same expression outlives the shrink; and not inside a
+block, `if`, `match` or loop that produces a value, whose enclosing expression
+may hold such references too. At the shrink, no variable in an open scope may
+hold a reference or slice rooted at the array. Scopes are what make this
+usable: what a loop body or a nested block took out of the buffer is gone at
+its end, so a scratch buffer refilled per iteration, or a stack popped between
+phases, can hand out slices of itself — "reusable scratch" and "structure I
+can point into" are the same type. The test is conservative wherever roots
+are (§9.2): a live value of any type containing references counts as a holder
+unless the array is declared deeper than it, as does a `var` reference that
+the same-depth rebinding rule could retarget into the array. The operations
+themselves are the grow-shrink ones: a stack-top move and a length store.
 
 ### 5.2 Grow-shrink `[>..<]`
 
@@ -625,6 +635,11 @@ reset and a length store — the same two stores as a grow-shrink `clear`.
   by *different types* (other locals, other pushes), so references into it
   cannot be allowed to survive; the coarse ban needs zero analysis. Flow-
   sensitive relaxations are future work (TODO).
+* The difference from a grow-only local's shrink (§5.1) is only who proves
+  the absence of references: there the compiler does, per site, so shrinking
+  is a statement-level operation on a local; here the type does, so a
+  grow-shrink array may be shrunk from anywhere, through a reference, at any
+  time.
 * Iterating with `for` uses indices under the hood (the `&x` binding form is
   unavailable); mutating length during iteration is legal and merely a logic
   hazard (bounds checks keep it safe).
@@ -1365,7 +1380,8 @@ how much it proves.
 What the language gives it, beyond ordinary flow facts (loop headers,
 conditions and their negations, `assert`, match arms):
 
-* **Monotonicity in the type.** A grow-only `[>..]` never shrinks (§5.1), so
+* **Monotonicity in the type.** A grow-only `[>..]` shrinks only at a `pop`,
+  `resize` or `clear` on the array itself (§5.1), which the analysis sees, so
   a bound established before a `push` still holds after it. This is a
   guarantee a resizable-array type without the grow-only/grow-shrink split
   cannot offer.
@@ -1549,8 +1565,9 @@ The newest, highest-priority items first:
 0e. **Per-array index types** — an index validated once against a specific
     array, so repeated `a[i]` and indirect `a[b[i]]` need no further check.
     Goose is unusually well placed for this: specializations already carry
-    each reference's root (§10.2), and a grow-only `[>..]` can never shrink,
-    so such an index could not be invalidated by any later operation. This
+    each reference's root (§10.2), and a grow-only `[>..]` shrinks only at an
+    operation on the array itself (§5.1), so such an index could only be
+    invalidated by one the analysis sees. This
     is the one direction that would take §10.5 past what an LLVM-based
     language can prove, since it turns a dataflow question into a type one.
 0f. **Bounds-check analysis, known gaps** (§10.5) — a loop's exit condition
@@ -1600,11 +1617,11 @@ The newest, highest-priority items first:
    one sanctioned "move".
 4. **`[>..<]` interior-reference relaxation** — flow-sensitive analysis to
    allow temporary references between shrinks. The mirror image is done: a
-   grow-only local takes `clear()` where no reference or slice into it is
-   live (§5.1), and the same scope-based liveness test is most of what this
-   needs. What it does not answer is `pop`: the memory a grow-shrink array
-   gives back can be re-used at a *different* type, so a reference that
-   survives one must be barred, not merely dead.
+   grow-only local takes `pop`, `resize` and `clear` where no reference or
+   slice into it is live (§5.1), and the same scope-based liveness test is
+   most of what this needs. What it does not answer is a shrink the analysis
+   cannot see — through a reference, or of a global — which is where the
+   grow-shrink type's blanket ban does its work.
 5. **Cycle store rule refinement** (§7.8) — the pass-down-only rule is
    conservative; explore per-activation reasoning.
 6. **"Current pool" implicit destinations** — allocation without naming the
