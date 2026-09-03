@@ -484,7 +484,11 @@ recursion instead of a named global.
 
 **Verdict: adopt as an expressiveness item, not a speed one.** It removes
 the "reusable scratch or sliceable structure, pick one" rule from the
-findings. **Future code: medium** -- per-iteration scratch buffers are
+findings. On master the same rule now covers `pop` and `resize` as well, and
+spec 5.1 defines grow-only as "never shrinks while a reference or slice into
+it can be live"; a shrink must also stand on its own (a statement, an
+initializer, or the right-hand side of an assignment to a variable), so no
+reference taken earlier in the same expression can outlive it. **Future code: medium** -- per-iteration scratch buffers are
 everywhere; whether they need slicing is case by case.
 
 ---
