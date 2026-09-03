@@ -437,7 +437,8 @@ is root plumbing the compiler did not have. Narrow widths change meaning (a
 `u16` would bound the pool at 32 KB rather than the link distance) and
 sub-region copies (TODO 16) would need rebasing.
 
-**Verdict: hold, and decide at the language level.** The experiment answers
+**Verdict: hold, and decide at the language level** (the comparison is
+written up in `docs/relative_references.md`). The experiment answers
 plan.md 3.1: pool-relative recovers about half of the `lru` deficit under
 clang, little under v145, costs the build-once walkers nothing and a hot
 recursion 4-7%. Not a default; a per-declaration choice (`T&<u32 pool>`)
