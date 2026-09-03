@@ -286,16 +286,23 @@ struct CycleRoots {
         descqueue.clear();
     }
 
-    // The prediction as a root of this specialization. A parameter's root
-    // class may legitimately be null (the call site passed static data).
-    VarDef *ResolveDesc(FnSpec *spec, const RootDesc &d) {
+    // The prediction as a root of this specialization, with the exactness
+    // that root carries (§9.5): a global owns its own storage, a parameter
+    // stands for one call-site array only where that argument's root did. A
+    // parameter's root class may legitimately be null (the call site passed
+    // static data).
+    VarDef *ResolveDesc(FnSpec *spec, const RootDesc &d, bool &exact) {
+        exact = false;
         if (d.kind == RD_PARAM && d.param < (int)spec->params.size() &&
             d.param < (int)spec->argtypes.size()) {
             auto pt = spec->argtypes[d.param];
-            if (pt->kind == TY_REF || pt->kind == TY_SLICE)
-                return rootof(spec->params[d.param], true);
+            if (pt->kind == TY_REF || pt->kind == TY_SLICE) {
+                auto vd = spec->params[d.param];
+                exact = vd->refrootknown && vd->refrootexact;
+                return rootof(vd, true);
+            }
         }
-        if (d.kind == RD_GLOBAL) return RootOfGlobal(d.glob);
+        if (d.kind == RD_GLOBAL) { exact = true; return RootOfGlobal(d.glob); }
         return cycleroot;
     }
 
@@ -309,7 +316,9 @@ struct CycleRoots {
         for (size_t i = 0; i < spec->rets.size() && i < spec->retroots.size(); i++) {
             auto rk = spec->rets[i]->kind;
             if (rk != TY_REF && rk != TY_SLICE) continue;
-            spec->retroots[i] = i < ds.size() ? ResolveDesc(spec, ds[i]) : cycleroot;
+            auto exact = false;
+            spec->retroots[i] = i < ds.size() ? ResolveDesc(spec, ds[i], exact) : cycleroot;
+            if (i < spec->retrootexact.size()) spec->retrootexact[i] = exact;
             spec->retrootseeded[i] = true;
         }
     }
@@ -317,11 +326,21 @@ struct CycleRoots {
     // The prediction the cycle's back edges were given must hold: what is
     // wrong with a checked return whose root contradicts it, empty when it
     // agrees. A sentinel prediction promised nothing to contradict.
-    string ReturnConflict(FnSpec *spec, size_t i, VarDef *root) {
+    string ReturnConflict(FnSpec *spec, size_t i, VarDef *root, bool exact) {
         if (spec->checkedreturn || i >= spec->retroots.size() ||
             i >= spec->retrootseeded.size() || !spec->retrootseeded[i]) return {};
         auto seeded = spec->retroots[i];
-        if (seeded == cycleroot || seeded == root) return {};
+        if (seeded == cycleroot) return {};
+        if (seeded == root) {
+            // A back edge may already have stored the result relatively on the
+            // strength of the prediction's exactness (§3.9).
+            if (!exact && i < spec->retrootexact.size() && spec->retrootexact[i])
+                return cat("this return's reference only outlives ",
+                           root ? root->name : string_view("static data"),
+                           ", but the recursive cycle's returns give storage it owns "
+                           "(§7.8); use one source");
+            return {};
+        }
         return cat("this return's reference is rooted at ",
                    root ? root->name : string_view("static data"),
                    ", but the recursive cycle's returns give ",

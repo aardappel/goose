@@ -861,6 +861,84 @@ fn reftops() {
     print(ns);                           // 3 + 2 + 1 + 8 = 14
 }
 
+// --- read-back roots: an LRU list relinked through a slot array --------------
+// The slots hold references, not indices: a reference read back out of a
+// container whose only candidate pool is `lrupool` is rooted there exactly, so
+// a node reached through the map can still be linked relatively (§9.5, §3.9).
+// Only `free` still wants an index, which each node carries.
+
+struct LruNode { key: i64, idx: i32, prev: LruNode&<u32>?, next: LruNode&<u32>? }
+struct LruSlot { key: i64, node: LruNode&? }
+
+reusable var lrupool: LruNode[>..] = [];
+var lruslots: LruSlot[>..] = [];
+
+fn lru_unlink(n: LruNode&) {
+    let p = n.prev;
+    let q = n.next;
+    assert(p);
+    assert(q);
+    p.next .= q;
+    q.prev .= p;
+}
+
+fn lru_front(head: LruNode&, n: LruNode&) {
+    let q = head.next;
+    assert(q);
+    n.prev .= head;
+    n.next .= q;
+    q.prev .= n;
+    head.next .= n;
+}
+
+// The head sentinel is lrupool[0], so both ends of the link are rooted at the
+// global pool; a head *parameter* would be rooted at its own class instead.
+fn lru_add(key: i64) {
+    let i = lrupool.alloc_index(LruNode { key: key, idx: -1 });
+    let n = &lrupool[i];
+    n.idx = i as! i32;
+    lru_front(&lrupool[0], n);
+    lruslots.push(LruSlot { key: key, node: n });
+}
+
+// The list from the head, most recent first.
+fn lru_order() -> i64 {
+    var order = 0;
+    var cur = lrupool[0].next;
+    loop {
+        guard cur;
+        guard cur.key >= 0;
+        order = order * 10 + cur.key;
+        cur .= cur.next;
+    }
+    order
+}
+
+fn lru_slots() {
+    // Two sentinels, so no link is ever null.
+    let hi = lrupool.alloc_index(LruNode { key: -1, idx: 0 });
+    let ti = lrupool.alloc_index(LruNode { key: -1, idx: 1 });
+    lrupool[hi].next .= &lrupool[ti];
+    lrupool[ti].prev .= &lrupool[hi];
+    for k in 4 { lru_add(k + 1); }
+    print(lrupool.len);                  // 6: two sentinels and four nodes
+    print(lru_order());                  // 4321
+    // Touch key 2 through the slot array: the read-back relinks it to the
+    // front, which is what the index-keyed version needed the index for.
+    let m = lruslots[1].node;
+    assert(m);
+    lru_unlink(m);
+    lru_front(&lrupool[hi], m);
+    print(lru_order());                  // 2431
+    // Evict it; the freed slot comes back on the next alloc, still a valid
+    // LruNode (§5.4).
+    lru_unlink(m);
+    lrupool.free(m.idx);
+    lru_add(9);
+    print(lru_order());                  // 9431
+    print(lrupool.len);                  // 6: the freed slot was reused
+}
+
 // --- array views through references ------------------------------------------
 
 fn stencil(src: i64[>..]&, dst: i64[>..]&) {
@@ -1120,6 +1198,7 @@ fn main_codegen_exec() {
     layouts();
     looptops();
     reftops();
+    lru_slots();
     loopviews();
     inlined_results();
     lenprefixes();

@@ -396,12 +396,16 @@ stored offset is signed.
   offsets use the signed zigzag encoding, §3.6). Loading one yields an
   ordinary `T&` (base = address of the offset field itself). Storing one
   requires the compiler to see that both the reference and the destination
-  location derive from the same root array (§9.2 root tracking); the offset
-  is range-checked at the store (abort on overflow of the width). Both ends
-  lie in one root array, so the offset cannot exceed that array's span, and
-  the check exists only where a root can be wider than the width's signed
-  range: a root on a data stack spans at most the reservation (§10.4), so
-  2 GB or less of it needs no check for `u32`, and 32 KB or less none for
+  location derive from the same root array: the two roots must be the same
+  variable *and* both exact (§9.2), since a root that only bounds a lifetime
+  does not say which array the offset would span. A reference read out of a
+  container qualifies exactly when the read-back rule of §9.5 names one
+  candidate; otherwise the error names the ones it could not choose between.
+  The offset is range-checked at the store (abort on overflow of the width).
+  Both ends lie in one root array, so the offset cannot exceed that array's
+  span, and the check exists only where a root can be wider than the width's
+  signed range: a root on a data stack spans at most the reservation (§10.4),
+  so 2 GB or less of it needs no check for `u32`, and 32 KB or less none for
   `u16`.
   Varint-width relative references are written only at construction, like
   varint fields (re-encoding could change the byte length); fixed widths may
@@ -1193,12 +1197,22 @@ outlives-rule is the language's entire "borrow checker".
 
 ### 9.2 Roots and the depth check
 
-Every reference/slice value has a static **root**: the local or global
-variable whose owned storage contains the target. Compilation in call-graph
-order with per-instantiation specialization means roots are always
-statically known — parameters' roots come from each call site, and functions
-are specialized per distinct root (Rust-lifetime precision via
-monomorphization, with zero syntax).
+Every reference/slice value has a static **root**: a local or global variable
+that bounds the scope its target lives in. The root is **exact** when that
+variable's own storage contains the target, and inexact when it only bounds
+the target's lifetime — the owner is then that variable or one further out.
+Every root a `&lvalue` creates is exact; the reads out of containers of §9.5
+are where inexact ones come from. Compilation in call-graph order with
+per-instantiation specialization means roots are always statically known —
+parameters' roots come from each call site, and functions are specialized per
+distinct root (Rust-lifetime precision via monomorphization, with zero
+syntax).
+
+The rules below are the *scope* rules, and hold of exact and inexact roots
+alike. Only rules that need the target's **identity** rather than its lifetime
+consult exactness — storing a reference into a relative-reference location
+(§3.9), and the compiler's proof that two references name different arrays —
+and each of those takes its conservative answer without it.
 
 Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
 
@@ -1216,7 +1230,10 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   rebind it only within the same root, or to one at the same scope depth
   (the common case: retargeting to another element of the same or a sibling
   container in a loop). Anything else needs a new variable. This keeps the
-  checker single-pass over loop bodies.
+  checker single-pass over loop bodies. A rebind to a different root leaves
+  the variable inexact, since it no longer names one array; and since a loop
+  body is checked once, such a rebind is rejected outright when the
+  variable's root has already been used as an identity earlier in that loop.
 * All `return`s of one function must agree on the returned reference's root
   (v1 simplification; use one source or split the function).
 * Inside recursive cycles the stricter §7.8 cycle store rule applies.
@@ -1268,9 +1285,38 @@ roots, with zero syntax:
   of its original provenance. This laundering is deliberate — the struct
   definition (its `let` fields) is the source of truth for what may be
   written through paths *it* controls, and the loophole is this pragmatic
-  language's const-cast. (Root tracking is unaffected: a read-back reference
-  is conservatively rooted at the container, which its true root is known to
-  outlive.)
+  language's const-cast.
+
+**Read-back roots.** A container names a scope, not the storage its contents
+point into, so the root of a reference or slice of pointee type `T` read out
+of a container `C` is re-derived. A **candidate** is a variable whose own
+storage can hold a `T` by value — an array of `T` in any array kind, a struct
+or ADT payload with a `T` field, a `T` itself, and so on through by-value
+nesting; a variable that merely holds *references* to `T` is not one, and a
+reference or slice field ends the search. Static data is a candidate for the
+element types a literal can supply. Then, by where `C`'s own root lies:
+
+1. **A global.** Only globals outlive globals (§11.1), so the owner is a
+   global candidate whatever local scope is open. One candidate: that
+   variable, exact. Otherwise the global scope, inexact.
+2. **A local of the function being checked**, at any block depth,
+   by-value parameters included. Everything stored into `C` was reachable
+   from this frame and had to outlive `C`, so the owner is a local declared
+   at or outside `C`'s block, a reference parameter's pointee, a global, or
+   static data. The root is the innermost such candidate — the true owner is
+   that one or one further out, so its scope bounds every possibility — and
+   is exact when there is exactly one candidate in all.
+3. **A reference parameter's pointee, or itself inexact.** The owner may be
+   caller storage this function cannot enumerate: the root is `C`'s, inexact.
+
+A relative reference `T&<w>` read out of `C` points within `C`'s own root
+array by construction (§3.9), so it takes `C`'s root and `C`'s exactness
+whichever case applies.
+
+A diagnostic that turns on an inexact read-back names the container it came
+out of and the candidates it could not choose between ("`n` was read out of
+`slots` and may point into `pool` or `spare`"), or, where the candidates are
+the caller's to know, the parameter whose pointee bounds it.
 
 Consequence, accepted deliberately: the check is callee-driven — a utility
 function that mutates its slice argument compiles in one calling context and

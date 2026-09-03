@@ -233,6 +233,12 @@ enum ConstKind { CK_NONE, CK_INT, CK_FLT };
 struct Val {
     TypeExpr *type = nullptr;
     VarDef *root = nullptr;      // Ref/slice: owner of the pointee (null = static data).
+    // Is `root` the pointee's owner, or only a scope bound something the
+    // pointee outlives? A reference read out of a container names a scope,
+    // and only sometimes one variable in it (§9.5); rules that need the
+    // pointee's identity rather than its lifetime consult this.
+    bool rootexact = false;
+    VarDef *rootfrom = nullptr;  // Inexact read-back: the container, for diagnostics.
     bool writable = false;       // Ref/slice provenance (§9.5).
     bool reusable = false;       // Root is a reusable pool (§5.4).
     ConstKind ck = CK_NONE;
@@ -767,6 +773,12 @@ struct VarDef {
     // A null-initialized optional has no commitment yet (refrootknown false).
     VarDef *refroot = nullptr;
     bool refrootknown = false;
+    bool refrootexact = false;   // See Val::rootexact.
+    VarDef *refrootfrom = nullptr;   // See Val::rootfrom.
+    // A read of this variable's exact root inside a loop it was declared
+    // outside of: a later rebind in that loop is observed by that read on the
+    // next iteration, so it may no longer change the root (typecheck.h).
+    bool refidentityused = false;
     bool refwritable = true;
     bool refreusable = false;
     // Flow state during checking:
@@ -807,6 +819,13 @@ struct RootArg {
     int cls = 0;
     bool writable = true;
     bool reusable = false;
+    // Val::rootexact of the argument, ANDed over every call site that reaches
+    // the specialization. Deliberately not part of the key: within the callee
+    // a class always names one array (typecheck.h keeps an inexactly rooted
+    // argument out of every other argument's class), and the only use of this
+    // bit -- codegen's proof that two classes are *different* arrays -- runs
+    // after every call site has been seen.
+    bool exact = true;
     bool operator==(const RootArg &o) const {
         return cls == o.cls && writable == o.writable && reusable == o.reusable;
     }
@@ -826,6 +845,7 @@ struct FnSpec {
     vector<TypeExpr *> rets;       // TY_VOID-free: empty = no return values.
     vector<VarDef *> retroots;     // Per ret: root if ref/slice-typed (param VarDef,
                                    // global, or null = static), else null.
+    vector<bool> retrootexact;     // Per ret: Val::rootexact of the returned reference.
     vector<bool> retwritable;
     vector<bool> retrootseeded;    // Per ret: retroots holds the cycle fixpoint's
                                    // predicted root and no return has been checked yet

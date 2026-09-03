@@ -13,27 +13,33 @@
 // Plain `=` through a reference writes the pointee; `.=` rebinds it.
 //
 // The lifetime system (§9) is implemented as: every reference/slice-typed
-// value carries a static root (the VarDef owning its target's storage, null =
-// static data) and provenance bits (writable §9.5, reusable §5.4). Roots are
-// compared by scope depth along the current compile-time call path.
-// Deliberate v1 rules (now part of the spec, §9.2/§9.5): a reference read
-// back out of a container is rooted at the container (conservative and
-// sound) and is writable regardless of its original provenance (writability
-// launders through storage — the language's const-cast loophole); a
-// reference variable commits to one root depth for its whole life; all
-// returns of one function agree on the returned reference's root. Inside a
-// recursive cycle (§7.8) a reference may be stored only if it is rooted at a
-// global or at a pool parameter -- a parameter root class whose members are
-// all references to resizable-class values, which no cycle function can own
-// (VarDef::poolclass); a back edge must then pass those pools exactly as the
-// entry call did (ValidatePoolArgs). A cycle's *return* roots cannot come from
-// its returns either, since a back edge reaches a function before those are
-// checked, so they are predicted by a syntactic fixpoint over the cycle's
-// returns before any body runs (CycleRoots, typecheck_cycles.h) and verified
-// against the real returns as they are checked. Remaining conservatisms
-// marked TODO: long-distance returns carry only global/static refs, and
-// references rooted at a caller's fixed-size local are still pass-down-only
-// inside a cycle.
+// value carries a static root (a VarDef, null = static data), an exactness
+// bit saying whether that root owns the target or merely outlives it, and
+// provenance bits (writable §9.5, reusable §5.4). Roots are compared by scope
+// depth along the current compile-time call path; only rules that need the
+// target's *identity* -- storing it as a relative reference (§3.9), and
+// codegen's proof that two fat reference parameters are distinct stacks --
+// consult the exactness bit, and fall back to the conservative path without
+// it. A reference read out of a container is re-rooted by ReadBackRoot: the
+// container bounds the lifetime, and the candidate variables of the enclosing
+// scope that can hold the pointee by value say which storage it can be, so a
+// sole candidate is exact (§9.5). Other deliberate v1 rules (now part of the
+// spec, §9.2/§9.5): a read-back reference is writable regardless of its
+// original provenance (writability launders through storage -- the language's
+// const-cast loophole); a reference variable commits to one root depth for
+// its whole life; all returns of one function agree on the returned
+// reference's root. Inside a recursive cycle (§7.8) a reference may be stored
+// only if it is rooted at a global or at a pool parameter -- a parameter root
+// class whose members are all references to resizable-class values, which no
+// cycle function can own (VarDef::poolclass); a back edge must then pass
+// those pools exactly as the entry call did (ValidatePoolArgs). A cycle's
+// *return* roots cannot come from its returns either, since a back edge
+// reaches a function before those are checked, so they are predicted by a
+// syntactic fixpoint over the cycle's returns before any body runs
+// (CycleRoots, typecheck_cycles.h) and verified against the real returns as
+// they are checked. Remaining conservatisms marked TODO: long-distance
+// returns carry only global/static refs, and references rooted at a caller's
+// fixed-size local are still pass-down-only inside a cycle.
 #pragma once
 
 namespace goose {
@@ -54,6 +60,10 @@ struct TypeCheck {
         TypeExpr *type = nullptr;    // The location's own type (varints undecoded).
         VarDef *var = nullptr;       // Set when the path is a bare variable name.
         VarDef *root = nullptr;      // Owner of the storage (null = static).
+        bool rootexact = false;      // See Val::rootexact.
+        VarDef *rootfrom = nullptr;  // See Val::rootfrom.
+        bool fromstorage = false;    // Reached by a field or element step, so a
+                                     // reference read out of it is a read-back (§9.5).
         bool writable = false;       // Whole path admits writes.
         bool reusable = false;
         bool sequential = false;     // Variable-size element: not addressable.
@@ -94,7 +104,13 @@ struct TypeCheck {
     // this point, which are in no variable and so invisible to the liveness
     // scan of CheckGrowShrink.
     bool invalue = false;
-    VarDef *curdst = nullptr;    // Root of the value under construction (for ref stores).
+    // The destination of the value under construction (for reference stores):
+    // its root plus whether that root is the destination storage's owner.
+    struct Dest {
+        VarDef *root = nullptr;
+        bool exact = false;
+    };
+    Dest curdst;
     VarDef *temproot = nullptr;  // Sentinel root for refs read out of temporaries.
     VarDef *cycleroot = nullptr; // Sentinel root for a back edge's result whose root
                                  // the cycle's returns do not determine (§7.8).
@@ -526,7 +542,7 @@ struct TypeCheck {
         auto savereach = reachable;
         auto savedst = curdst;
         reachable = true;
-        curdst = nullptr;
+        curdst = Dest {};
         auto sp = ast.NewFnSpec();  // Bindings holder for the pseudo frame.
         sp->bindings = bindings;
         Frame f;
@@ -730,11 +746,24 @@ struct TypeCheck {
     // outlives (conservative).
     VarDef *RefRootOf(VarDef *vd) { return vd->refrootknown ? vd->refroot : temproot; }
 
+    // Reading a reference variable's root as an identity. A loop body is
+    // checked once, so a read here sees the value a later rebind in the same
+    // loop leaves behind; noting the read lets that rebind reject the root
+    // change instead of silently invalidating this one.
+    bool RefExactOf(VarDef *vd) {
+        if (!vd->refrootknown || !vd->refrootexact) return false;
+        for (auto i = (int)scopes.size() - 1; i >= vd->depth; i--)
+            if (scopes[i].kind == SK_LOOP) { vd->refidentityused = true; break; }
+        return true;
+    }
+
     // First non-null binding of a reference variable fixes its provenance.
     void BindRefProvenance(VarDef *vd, const Val &v) {
         if (v.isnull) return;
         vd->refroot = CanonRoot(v.root);
         vd->refrootknown = true;
+        vd->refrootexact = v.rootexact;
+        vd->refrootfrom = v.rootfrom;
         vd->refwritable = v.writable;
         vd->refreusable = v.reusable;
     }
@@ -1004,6 +1033,172 @@ struct TypeCheck {
     }
 
     // ------------------------------------------------------------------
+    // Read-back roots (§9.5): what a reference or slice loaded out of a
+    // container points into.
+    //
+    // The container names a scope the pointee outlives, not the storage that
+    // owns it, so the checker re-derives the owner from the one thing it does
+    // know about that scope: which variables in it can hold the pointee type
+    // by value. A variable that only holds *references* to it cannot be its
+    // owner. Where exactly one such candidate exists the read-back is that
+    // variable, and rules that need identity (a relative-reference store,
+    // §3.9) may use it; otherwise the candidates only bound the lifetime.
+
+    // Can a value of type `t` contain an `of` by value anywhere inside it? A
+    // reference or slice field ends the search: what is behind one belongs to
+    // its own root.
+    bool CanContain(TypeExpr *t, TypeExpr *of) {
+        if (!t) return false;
+        if (TypeEq(LoadType(t), of)) return true;
+        switch (t->kind) {
+            case TY_ARRAY: return CanContain(t->arr->sub, of);
+            case TY_STRUCT: {
+                auto inst = GetStructInst(t);
+                for (auto ft : inst->ftypes) if (CanContain(ft, of)) return true;
+                return false;
+            }
+            case TY_ENUM: {
+                auto inst = GetEnumInst(t);
+                for (auto &vf : inst->vftypes)
+                    for (auto ft : vf) if (CanContain(ft, of)) return true;
+                return false;
+            }
+            case TY_VARIANT: {
+                auto inst = GetEnumInst(t->var->adt);
+                auto vi = VariantIndex(t->var->adt->enu->en, t->var->variant);
+                for (auto ft : inst->vftypes[vi]) if (CanContain(ft, of)) return true;
+                return false;
+            }
+            default: return false;
+        }
+    }
+
+    // The pointee type a reference or slice type reaches: for a slice, its
+    // elements (a candidate must hold a run of those).
+    TypeExpr *PointeeOf(TypeExpr *t) {
+        if (t->kind == TY_REF) return LoadType(t->ref->sub);
+        if (t->kind == TY_SLICE) return t->sub;
+        return nullptr;
+    }
+
+    // Every variable the body being checked can name, exactly the set
+    // LookupVar reaches: this frame's scopes plus the lexical parent chain
+    // (§7.5). Globals are enumerated separately.
+    void VisibleVars(const function<void(VarDef *)> &f) {
+        for (auto fi = (int)frames.size() - 1; fi >= 0;) {
+            auto &fr = frames[fi];
+            auto limit = fi == (int)frames.size() - 1 ? (int)vars.size()
+                                                      : frames[fi + 1].varbase;
+            for (auto i = limit - 1; i >= fr.varbase; i--) f(vars[i]);
+            fi = fr.lexframe;
+        }
+    }
+
+    // A string literal is a run of u8s, so static data owns anything a
+    // literal could supply.
+    bool StaticCanContain(TypeExpr *of) {
+        return of->kind == TY_INT && of->intstorage == IS_U8;
+    }
+
+    // The candidates for a pointee of type `of`: every global whose own
+    // storage can hold one, static data where a literal could supply one and,
+    // unless `globalsonly`, every named local at scope depth `d` or shallower
+    // that can hold one plus the pointee of every reference/slice in scope (a
+    // parameter's caller-side storage is reachable only through it).
+    // Deduplicated by root; the caller picks the deepest.
+    void RootCandidates(TypeExpr *of, int d, bool globalsonly, vector<VarDef *> &out,
+                        bool &hasstatic) {
+        hasstatic = false;
+        auto add = [&](VarDef *r) {
+            r = CanonRoot(r);
+            if (!r) { hasstatic = true; return; }
+            for (auto o : out) if (o == r) return;
+            out.push_back(r);
+        };
+        auto consider = [&](VarDef *v, int rd) {
+            if (!v->type) return;
+            if (v->type->kind == TY_REF || v->type->kind == TY_SLICE) {
+                if (!v->refrootknown) return;   // No commitment yet; nothing stored from it.
+                auto r = CanonRoot(v->refroot);
+                if (Depth(r) > rd) return;
+                auto pt = PointeeOf(v->type);
+                if (pt && CanContain(pt, of)) add(r);
+            } else if (Depth(v) <= rd && CanContain(v->type, of)) {
+                add(v);
+            }
+        };
+        if (!globalsonly) VisibleVars([&](VarDef *v) { if (!v->isglobal) consider(v, d); });
+        for (auto g : ast.globals) for (auto gd : g->defs) consider(gd, 0);
+        if (StaticCanContain(of)) hasstatic = true;
+    }
+
+    // What the read-back rule makes of one load.
+    struct ReadBack {
+        VarDef *root = nullptr;
+        bool exact = false;
+        VarDef *from = nullptr;   // The container, where candidates were enumerated.
+    };
+
+    // The root of a reference/slice of type `rt` loaded out of a container
+    // whose own root is (croot, cexact).
+    ReadBack ReadBackRoot(TypeExpr *rt, VarDef *croot, bool cexact) {
+        ReadBack rb;
+        croot = CanonRoot(croot);
+        rb.root = croot;
+        // A relative reference points within its own root array by
+        // construction (§3.9), so it inherits the container's root outright.
+        if (rt->kind == TY_REF && rt->ref->lenstorage >= 0) {
+            rb.exact = cexact;
+            return rb;
+        }
+        auto of = PointeeOf(rt);
+        if (!of || !croot || croot == temproot || croot == cycleroot) return rb;
+        // Case 3: the container came from a caller, or its own root is only a
+        // bound -- storage this function cannot enumerate may be behind it.
+        auto global = croot->isglobal;
+        if (!global && (!cexact || croot->ownerspec != CurRealFrame().spec)) return rb;
+        // Only globals outlive globals (§11.1), so a global container's
+        // pointee is owned by a global or by static data, whatever local scope
+        // is open here. A local container's was reachable from this frame and
+        // had to outlive the container, so its owner is a candidate at the
+        // container's depth or shallower.
+        vector<VarDef *> cands;
+        auto hasstatic = false;
+        RootCandidates(of, Depth(croot), global, cands, hasstatic);
+        rb.from = croot;
+        if (cands.empty()) {
+            // Static data alone: null is its root, and it outlives everything.
+            if (hasstatic) { rb.root = nullptr; rb.exact = true; }
+            return rb;
+        }
+        // The deepest candidate is the conservative choice: the owner is that
+        // one or one further out, so its depth bounds every possibility.
+        rb.root = cands[0];
+        for (auto c : cands) if (Depth(c) > Depth(rb.root)) rb.root = c;
+        rb.exact = cands.size() == 1 && !hasstatic;
+        return rb;
+    }
+
+    // "was read out of `slots` and may point into `pool` or `spare`": the
+    // candidates a read-back could not choose between, for the diagnostics of
+    // the rules that need one (§3.9).
+    string ReadBackWhy(TypeExpr *rt, VarDef *from) {
+        auto of = PointeeOf(rt);
+        if (!from || !of) return {};
+        vector<VarDef *> cands;
+        auto hasstatic = false;
+        RootCandidates(of, Depth(from), from->isglobal, cands, hasstatic);
+        string s = cat("it was read out of ", from->name, " and may point into ");
+        auto n = cands.size() + (hasstatic ? 1 : 0);
+        for (size_t i = 0; i < cands.size(); i++) {
+            if (i) s += i + 1 == n ? " or " : ", ";
+            s += cands[i]->name;
+        }
+        if (hasstatic) { if (n > 1) s += " or "; s += "static data"; }
+        return s;
+    }
+
+    // ------------------------------------------------------------------
     // Lvalue paths: names, fields, elements, optionally through references.
 
     LVal CheckLValue(Node *n) {
@@ -1015,6 +1210,7 @@ struct TypeCheck {
             lv.type = vd->narrowed ? vd->narrowed : vd->type;
             lv.var = vd;
             lv.root = vd;
+            lv.rootexact = true;
             lv.writable = vd->isvar;
             lv.reusable = vd->reusable;
             n->exprtype = vd->type;
@@ -1037,6 +1233,7 @@ struct TypeCheck {
                 CheckIntAny(ix->idx);
                 lv.type = lv.type->sub;
                 lv.var = nullptr;
+                lv.fromstorage = true;
                 n->exprtype = lv.type;
                 return lv;
             }
@@ -1048,6 +1245,7 @@ struct TypeCheck {
             if (lv.type->arr->akind == A_GROWSHRINK) lv.ingrowshrink = true;
             lv.type = lv.type->arr->sub;
             lv.var = nullptr;
+            lv.fromstorage = true;
             if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT) lv.isvarint = true;
             n->exprtype = lv.type;
             return lv;
@@ -1065,6 +1263,8 @@ struct TypeCheck {
         LVal lv;
         lv.type = v.type;
         lv.root = v.root;
+        lv.rootexact = v.rootexact;
+        lv.rootfrom = v.rootfrom;
         lv.writable = v.writable;
         lv.reusable = v.reusable;
         return lv;
@@ -1081,10 +1281,16 @@ struct TypeCheck {
             RequireAssigned(lv.var, at);
             lv.writable = lv.var->refwritable;
             lv.root = RefRootOf(lv.var);
+            lv.rootexact = RefExactOf(lv.var);
+            lv.rootfrom = lv.var->refrootfrom;
             lv.reusable = lv.var->refreusable;
+        } else if (lv.fromstorage) {
+            // Crossing a reference the path read out of a container: it is a
+            // read-back, so where it points is re-derived (§9.5). A relative
+            // one loads as an ordinary reference into the same pool, so it
+            // keeps the container's root.
+            ReadBackLVal(lv);
         }
-        // A relative reference loads as an ordinary reference; the pointee is
-        // in the same pool, so it keeps the same root.
         lv.type = lv.type->ref->sub;
         lv.var = nullptr;
         if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT) lv.isvarint = true;
@@ -1098,12 +1304,28 @@ struct TypeCheck {
     // Accessing through a slice variable: writes and roots follow the slice
     // value's provenance, not the variable's own var-ness.
     void SliceProvenance(LVal &lv, Node *at) {
-        if (!lv.var || lv.type->kind != TY_SLICE) return;
+        if (lv.type->kind != TY_SLICE) return;
+        if (!lv.var) {
+            if (lv.fromstorage) ReadBackLVal(lv);
+            return;
+        }
         RequireAssigned(lv.var, at);
         lv.writable = lv.var->refwritable;
         lv.root = RefRootOf(lv.var);
+        lv.rootexact = RefExactOf(lv.var);
+        lv.rootfrom = lv.var->refrootfrom;
         lv.reusable = lv.var->refreusable;
         lv.var = nullptr;
+    }
+
+    // A location whose own type is a reference or slice: the value loaded out
+    // of it is a read-back, so its root is re-derived (§9.5).
+    void ReadBackLVal(LVal &lv) {
+        if (lv.type->kind != TY_REF && lv.type->kind != TY_SLICE) return;
+        auto rb = ReadBackRoot(lv.type, lv.root, lv.rootexact);
+        lv.root = rb.root;
+        lv.rootexact = rb.exact;
+        lv.rootfrom = rb.from;
     }
 
     // Field / builtin-property resolution on an lvalue path.
@@ -1119,6 +1341,7 @@ struct TypeCheck {
                     if (f.isconst) lv.writable = false;
                     lv.type = inst->ftypes[i];
                     lv.var = nullptr;
+                    lv.fromstorage = true;
                     if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT)
                         lv.isvarint = true;
                     return;
@@ -1137,6 +1360,7 @@ struct TypeCheck {
                     if (f.isconst) lv.writable = false;
                     lv.type = inst->vftypes[vi][i];
                     lv.var = nullptr;
+                    lv.fromstorage = true;
                     if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT)
                         lv.isvarint = true;
                     return;
@@ -1163,6 +1387,8 @@ struct TypeCheck {
         Val r;
         r.type = LoadType(v.type->ref->sub);
         r.root = v.root;  // Compound pointee values: container info, harmless.
+        r.rootexact = v.rootexact;
+        r.rootfrom = v.rootfrom;
         return r;
     }
 
@@ -1238,7 +1464,7 @@ struct TypeCheck {
             return false;
         }
         if ((dt->kind == TY_REF || dt->kind == TY_SLICE) &&
-            (t->kind == TY_REF || t->kind == TY_SLICE) && !callsite && curdst) {
+            (t->kind == TY_REF || t->kind == TY_SLICE) && !callsite && curdst.root) {
             auto root = CanonRoot(v.root);
             if (root && root == cycleroot) {
                 fitfail = "storing the result of a recursive call whose returned "
@@ -1246,7 +1472,7 @@ struct TypeCheck {
                           "(§7.8); it may only be passed down";
                 return false;
             }
-            if (Depth(root) > Depth(CanonRoot(curdst))) {
+            if (Depth(root) > Depth(CanonRoot(curdst.root))) {
                 fitfail = cat("storing a reference rooted at ",
                               root ? root->name : string_view("static data"),
                               ", which does not outlive the destination (§9.2)");
@@ -1331,11 +1557,22 @@ struct TypeCheck {
                     // Storing an ordinary reference into a relative reference
                     // location: both must derive from the same root (§3.9).
                     if (t->ref->optional && !dt->ref->optional) return false;
-                    if (!curdst || CanonRoot(v.root) != CanonRoot(curdst)) {
+                    // Both ends must be the *same* array, so a root that only
+                    // bounds the pointee's lifetime will not do (§9.5).
+                    if (!curdst.root || !curdst.exact || !v.rootexact ||
+                        CanonRoot(v.root) != CanonRoot(curdst.root)) {
+                        auto why = v.rootexact ? string() : ReadBackWhy(v.type, v.rootfrom);
                         fitfail = cat("a relative reference must point within the same root "
-                                      "as its location (§3.9); this reference is rooted at ",
-                                      v.root ? CanonRoot(v.root)->name
-                                             : string_view("static data"));
+                                      "as its location (§3.9); ",
+                                      !why.empty() ? why
+                                      : !v.rootexact
+                                          ? cat("this reference's root is not known exactly, "
+                                                "only that it outlives ",
+                                                v.root ? CanonRoot(v.root)->name
+                                                       : string_view("static data"))
+                                      : cat("this reference is rooted at ",
+                                            v.root ? CanonRoot(v.root)->name
+                                                   : string_view("static data")));
                         return false;
                     }
                     v.type = dt;
@@ -1450,11 +1687,17 @@ struct TypeCheck {
             v.type = LoadType(lv.type);  // Relative refs load as plain (§3.9).
             if (lv.var) {
                 v.root = RefRootOf(lv.var);
+                v.rootexact = RefExactOf(lv.var);
+                v.rootfrom = lv.var->refrootfrom;
                 v.writable = lv.var->refwritable;
                 v.reusable = lv.var->refreusable;
             } else {
-                // Container-read: laundered writable by design (§9.5).
+                // Container-read: laundered writable by design (§9.5), and
+                // rooted by the read-back rule rather than at the container.
+                ReadBackLVal(lv);
                 v.root = lv.root;
+                v.rootexact = lv.rootexact;
+                v.rootfrom = lv.rootfrom;
                 v.writable = true;
             }
             return v;
@@ -1462,6 +1705,8 @@ struct TypeCheck {
         Val v;
         v.type = RefTo(lv.type, x->line);
         v.root = lv.root;
+        v.rootexact = lv.rootexact;
+        v.rootfrom = lv.rootfrom;
         v.writable = lv.writable && !lv.isvarint;
         v.reusable = lv.reusable;
         return v;
@@ -1688,6 +1933,8 @@ struct TypeCheck {
         Val v;
         v.type = UnifyBranch(a.type, b.type, at, wantvalue);
         v.root = Depth(a.root) >= Depth(b.root) ? a.root : b.root;
+        v.rootexact = a.rootexact && b.rootexact && CanonRoot(a.root) == CanonRoot(b.root);
+        v.rootfrom = a.rootfrom ? a.rootfrom : b.rootfrom;
         v.writable = a.writable && b.writable;
         v.reusable = a.reusable && b.reusable;
         return v;
@@ -1829,6 +2076,8 @@ struct TypeCheck {
                         binder->type = RefTo(vt, m->line);
                         binder->refroot = CanonRoot(sv.root);
                         binder->refrootknown = true;
+                        binder->refrootexact = sv.rootexact;
+                        binder->refrootfrom = sv.rootfrom;
                         binder->refwritable = sv.writable;
                     } else {
                         if (HasRelRefT(vt))
@@ -1966,6 +2215,8 @@ struct TypeCheck {
     void CheckFor(ForLoop *x) {
         TypeExpr *bindtype = nullptr;
         VarDef *iterroot = nullptr;
+        auto iterexact = false;
+        VarDef *iterfrom = nullptr;
         auto iterwritable = false;
         if (auto r = Is<RangeExpr>(x->iter)) {
             auto lo = CheckIntAny(r->lo);
@@ -1981,6 +2232,8 @@ struct TypeCheck {
             x->iter->exprtype = iv.type;
             auto t = iv.type;
             iterroot = iv.root;
+            iterexact = iv.rootexact;
+            iterfrom = iv.rootfrom;
             iterwritable = iv.writable;
             if (t->kind == TY_REF && !t->ref->optional) t = t->ref->sub;  // Iterate through refs.
             t = LoadType(t);
@@ -2015,6 +2268,8 @@ struct TypeCheck {
         if (bindtype->kind == TY_REF) {
             vd->refroot = CanonRoot(iterroot);
             vd->refrootknown = true;
+            vd->refrootexact = iterexact;
+            vd->refrootfrom = iterfrom;
             vd->refwritable = iterwritable;
         }
         x->vdef = vd;
@@ -2142,7 +2397,7 @@ struct TypeCheck {
         // Arguments construct into parameter slots, not whatever destination
         // encloses this call; member ops re-set curdst for element pushes.
         auto savedst = curdst;
-        curdst = nullptr;
+        curdst = Dest {};
         Val v;
         if (auto d = Is<Dot>(c->callee)) v = CheckUfcsCall(c, d);
         else if (auto id = Is<Ident>(c->callee)) v = CheckNamedCall(c, id);
@@ -2287,7 +2542,7 @@ struct TypeCheck {
         // Arguments construct into fresh parameter slots, not curdst.
         {
             auto savedst = curdst;
-            curdst = nullptr;
+            curdst = Dest {};
             for (size_t i = 0; i < best.paramtypes.size(); i++)
                 CheckArg(argnodes[i], best.paramtypes[i]);
             curdst = savedst;
@@ -2599,7 +2854,7 @@ struct TypeCheck {
         // calls cannot clobber lastcallrets); the dispatch arg keeps its type.
         {
             auto savedst = curdst;
-            curdst = nullptr;
+            curdst = Dest {};
             for (size_t i = 0; i < matches[0].paramtypes.size(); i++)
                 if ((int)i != found) CheckArg(argnodes[i], matches[0].paramtypes[i]);
             curdst = savedst;
@@ -2623,12 +2878,19 @@ struct TypeCheck {
             RootArg ra;
             ra.writable = argvals[i].writable;
             ra.reusable = argvals[i].reusable;
+            ra.exact = argvals[i].rootexact;
             if (!r) {
                 ra.cls = 0;
             } else {
                 auto idx = -1;
-                for (size_t k = 0; k < distinct.size(); k++)
-                    if (distinct[k] == r) idx = (int)k;
+                // Sharing a class says the two arguments point into the same
+                // array, which an inexactly rooted one does not establish: it
+                // names a scope its pointee outlives, not the storage that
+                // owns it (§9.5). Such an argument gets a class to itself, so
+                // a class is always one array whatever the call site.
+                if (ra.exact)
+                    for (size_t k = 0; k < distinct.size(); k++)
+                        if (distinct[k] == r) idx = (int)k;
                 if (idx < 0) {
                     // Keep distinct ordered by depth so classes mean outlives-rank.
                     auto ins = distinct.size();
@@ -2658,6 +2920,10 @@ struct TypeCheck {
             // the pool parameters that may be stored are checked below to be
             // the same ones the entry call passed.
             if (!rootsok && !spec->inprogress) continue;
+            // Exactness is not part of the key, so what the specialization
+            // records is what every call site that reaches it agrees on.
+            for (size_t i = 0; i < roots.size() && i < spec->roots.size(); i++)
+                spec->roots[i].exact = spec->roots[i].exact && roots[i].exact;
             if (spec->inprogress) {
                 ValidateCycle(spec, callnode);
                 ValidatePoolArgs(spec, argvals, callnode);
@@ -2719,7 +2985,8 @@ struct TypeCheck {
         for (size_t i = 0; i < spec->params.size() && i < argvals.size(); i++) {
             auto pr = spec->params[i]->refroot;
             if (!pr || !pr->poolclass) continue;
-            if (UltimateRoot(pr) != UltimateRoot(CanonRoot(argvals[i].root)))
+            if (!argvals[i].rootexact ||
+                UltimateRoot(pr) != UltimateRoot(CanonRoot(argvals[i].root)))
                 Error(callnode, cat("recursive call passes ", spec->params[i]->name,
                                     " rooted differently from the cycle's entry call, which "
                                     "stored references into it (§7.8)"));
@@ -2765,7 +3032,7 @@ struct TypeCheck {
         auto savereach = reachable;
         auto savedst = curdst;
         reachable = true;
-        curdst = nullptr;
+        curdst = Dest {};
         PushScope(SK_FN);
         // Parameters. For reference/slice parameters, a synthetic root
         // VarDef per call-site root class carries the caller-side depth.
@@ -2794,11 +3061,17 @@ struct TypeCheck {
                     // A pool class holds only references to resizable-class
                     // values; a slice or a reference to anything smaller may
                     // point at a cycle function's own storage.
-                    if (pt->kind != TY_REF || ClassOf(pt->ref->sub) != SC_RESIZABLE)
+                    if (pt->kind != TY_REF || ClassOf(pt->ref->sub) != SC_RESIZABLE ||
+                        !ra.exact)
                         classroots[ra.cls]->poolclass = false;
                     vd->refroot = classroots[ra.cls];
                 }
                 vd->refrootknown = true;
+                // Every member of a class points into one array (see
+                // GetOrCreateSpec), so within this body the class names that
+                // array. Whether it is the array some *other* class names is a
+                // different question, and only ra.exact answers it.
+                vd->refrootexact = true;
                 vd->refwritable = ra.writable;
                 vd->refreusable = ra.reusable;
             }
@@ -2813,6 +3086,7 @@ struct TypeCheck {
             spec->retsknown = true;
         }
         spec->retroots.resize(16, nullptr);
+        spec->retrootexact.resize(16, false);
         spec->retwritable.resize(16, false);
         spec->retrootseeded.resize(16, false);
         // A cycle's back edges reach this specialization before any of its own
@@ -2903,9 +3177,11 @@ struct TypeCheck {
                 if (tspec->checkedreturn && tspec->retroots[i] != root)
                     Error(at, "returns disagree on the returned reference's root "
                               "(not yet supported; use one source)");
-                if (auto bad = Cycles().ReturnConflict(tspec, i, root); !bad.empty())
+                if (auto bad = Cycles().ReturnConflict(tspec, i, root, vals[i].rootexact);
+                    !bad.empty())
                     Error(at, bad);
                 tspec->retroots[i] = root;
+                tspec->retrootexact[i] = vals[i].rootexact;
                 tspec->retwritable[i] = vals[i].writable;
                 tspec->retrootseeded[i] = false;
             }
@@ -2921,6 +3197,7 @@ struct TypeCheck {
             v.type = spec->rets[i];
             if (v.type->kind == TY_REF || v.type->kind == TY_SLICE) {
                 auto rr = i < spec->retroots.size() ? spec->retroots[i] : nullptr;
+                auto rex = i < spec->retrootexact.size() && spec->retrootexact[i];
                 v.writable = i < spec->retwritable.size() && spec->retwritable[i];
                 if (!rr) {
                     // A back edge whose target has neither recorded nor
@@ -2932,10 +3209,13 @@ struct TypeCheck {
                     // A synthetic per-class parameter root: map back to this
                     // call site's argument root.
                     v.root = rr;
+                    v.rootexact = rex;
                     for (size_t p = 0; p < spec->params.size(); p++) {
                         if (spec->params[p]->refroot == rr) {
                             if (p < argvals.size()) {
                                 v.root = CanonRoot(argvals[p].root);
+                                v.rootexact = rex && argvals[p].rootexact;
+                                v.rootfrom = argvals[p].rootfrom;
                                 v.writable = argvals[p].writable;
                             }
                             break;
@@ -2943,6 +3223,7 @@ struct TypeCheck {
                     }
                 } else {
                     v.root = rr;  // A global or a captured outer local.
+                    v.rootexact = rex;
                 }
             } else {
                 v.root = temproot;
@@ -3185,7 +3466,7 @@ struct TypeCheck {
         for (size_t i = 0; i < vd->names.size(); i++) {
             auto d = MakeDef(i);
             auto savedst = curdst;
-            curdst = d;
+            curdst = Dest { d, true };
             Val v;
             auto refinit = Is<Unary>(vd->inits[i]);
             if (!ann && refinit && refinit->op == T_BITAND) {
@@ -3268,7 +3549,7 @@ struct TypeCheck {
             AssignableClassCheck(target, a);
         }
         auto savedst = curdst;
-        curdst = lv.root;
+        curdst = Dest { lv.root, lv.rootexact };
         auto v = CheckValue(a->rhs, target);
         curdst = savedst;
         if (v.type->kind == TY_VOID && reachable)
@@ -3301,7 +3582,7 @@ struct TypeCheck {
                      "provenance, §9.5)");
         }
         auto savedst = curdst;
-        curdst = lv.var ? lv.var : lv.root;
+        curdst = lv.var ? Dest { lv.var, true } : Dest { lv.root, lv.rootexact };
         auto v = CheckV(a->rhs, target);
         auto wasplain = IsPlainRef(v.type);
         MustFit(v, a->rhs, target, false);
@@ -3344,7 +3625,8 @@ struct TypeCheck {
             Error(a, "varint fields are written only at construction (§3.6)");
         AssignableClassCheck(pt, a);
         auto savedst = curdst;
-        curdst = lv.var ? RefRootOf(lv.var) : lv.root;
+        curdst = lv.var ? Dest { RefRootOf(lv.var), RefExactOf(lv.var) }
+                        : Dest { lv.root, lv.rootexact };
         auto v = CheckValue(a->rhs, pt);
         curdst = savedst;
         if (v.type->kind == TY_VOID && reachable)
@@ -3356,10 +3638,27 @@ struct TypeCheck {
     // scope depth (which is equivalent for the outlives check).
     void CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
         auto nr = CanonRoot(rv.root);
-        if (nr == vd->refroot) return;
-        if (Depth(nr) == Depth(vd->refroot)) return;
-        Error(at, cat("re-binding ", vd->name, " with a reference rooted at a different "
-                      "scope depth is not supported; declare a new variable"));
+        if (nr != vd->refroot && Depth(nr) != Depth(vd->refroot))
+            Error(at, cat("re-binding ", vd->name, " with a reference rooted at a different "
+                          "scope depth is not supported; declare a new variable"));
+        if (nr == vd->refroot) {
+            // The root is unchanged, so only the new value's own exactness can
+            // weaken what the variable stands for.
+            if (!rv.rootexact) { vd->refrootexact = false; vd->refrootfrom = rv.rootfrom; }
+            return;
+        }
+        // A same-depth rebind keeps the lifetime bound but moves the pointee to
+        // other storage, so the variable no longer names one array. A read
+        // earlier in an enclosing loop has already seen this value, and cannot
+        // be revisited, so its claim has to be rejected here.
+        if (vd->refidentityused)
+            Error(at, cat("re-binding ", vd->name, " to storage rooted at ",
+                          nr ? nr->name : string_view("static data"), " after its root ",
+                          vd->refroot ? vd->refroot->name : string_view("static data"),
+                          " was used as the identity of a relative reference (§3.9)"));
+        vd->refroot = nr;
+        vd->refrootexact = false;
+        vd->refrootfrom = rv.rootfrom;
     }
 
     void CompoundAssign(Assign *a, LVal &lv, TypeExpr *st, bool writable) {
@@ -3445,7 +3744,7 @@ struct TypeCheck {
                     Error(c, cat("thread_spawn(", wsf->name, ", ...) takes ",
                                  (int64_t)spec->argtypes.size(), " worker argument(s)"));
                 auto savedst = curdst;
-                curdst = nullptr;
+                curdst = Dest {};
                 for (size_t i = 0; i < spec->argtypes.size(); i++)
                     CheckArg(args[1 + i], spec->argtypes[i]);
                 curdst = savedst;
@@ -3576,6 +3875,7 @@ struct TypeCheck {
                 if (d.kind == B_PUSH && ak == A_GROWSHRINK) break;
                 v.type = RefTo(elem, c->line);
                 v.root = rv.root;
+                v.rootexact = rv.rootexact;
                 v.writable = rv.writable;
                 break;
             default: assert(false);
@@ -3645,7 +3945,7 @@ struct TypeCheck {
     // in the element must derive from the same root, §3.9).
     void ElemArg(Node *n, TypeExpr *elem, Val &rv) {
         auto savedst = curdst;
-        curdst = rv.root;
+        curdst = Dest { rv.root, rv.rootexact };
         CheckArg(n, elem);
         curdst = savedst;
     }
@@ -3717,7 +4017,7 @@ struct TypeCheck {
         }
         {
             auto savedst = curdst;
-            curdst = nullptr;
+            curdst = Dest {};
             for (size_t i = 0; i < ptypes.size(); i++) CheckArg(c->args[i], ptypes[i]);
             curdst = savedst;
         }
@@ -3969,6 +4269,7 @@ inline Val SelfRef::Check(TypeCheck &tc, TypeExpr *) {
 inline Val StrLit::Check(TypeCheck &tc, TypeExpr *expected) {
     Val v;
     v.strlit = true;
+    v.rootexact = true;   // Static data owns what it holds.
     v.writable = false;
     if (expected) {
         // A string literal constructs any u8-element array type (§3.7).
@@ -3998,10 +4299,13 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
         v.type = tc.LoadType(t);
         if (t->kind == TY_REF || t->kind == TY_SLICE) {
             v.root = tc.RefRootOf(vd);
+            v.rootexact = tc.RefExactOf(vd);
+            v.rootfrom = vd->refrootfrom;
             v.writable = vd->refwritable;
             v.reusable = vd->refreusable;
         } else {
             v.root = vd;
+            v.rootexact = true;
             v.writable = vd->isvar;
             v.reusable = vd->reusable;
             v.nonneg = vd->nonneg;
@@ -4381,13 +4685,18 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     TypeCheck::LVal lv;
     lv.type = t;
     lv.root = ov.root;
+    lv.rootexact = ov.rootexact;
+    lv.rootfrom = ov.rootfrom;
     lv.writable = ov.writable;
     tc.ResolveMemberLValue(lv, this);
+    // A reference read out of a container is re-rooted (§9.5) and writable by
+    // design (§9.5 laundering; see the header note).
+    tc.ReadBackLVal(lv);
     Val v;
     v.type = tc.LoadType(lv.type);
     v.root = lv.root;
-    // References read out of containers are rooted at the container and
-    // writable by design (§9.5 laundering; see the header note).
+    v.rootexact = lv.rootexact;
+    v.rootfrom = lv.rootfrom;
     v.writable = v.type->kind == TY_REF || v.type->kind == TY_SLICE ? true : lv.writable;
     return v;
 }
@@ -4398,9 +4707,12 @@ inline Val Call::Check(TypeCheck &tc, TypeExpr *expected) {
 
 inline Val Index::Check(TypeCheck &tc, TypeExpr *) {
     auto lv = tc.CheckLValue(this);
+    tc.ReadBackLVal(lv);
     Val v;
     v.type = tc.LoadType(lv.type);
     v.root = lv.root;
+    v.rootexact = lv.rootexact;
+    v.rootfrom = lv.rootfrom;
     // Container-read laundering, as for fields above (§9.5).
     v.writable = v.type->kind == TY_REF || v.type->kind == TY_SLICE ? true : lv.writable;
     v.reusable = lv.reusable;
@@ -4432,6 +4744,8 @@ inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
     Val v;
     v.type = tc.SliceOf(elem, line);
     v.root = lv.root;
+    v.rootexact = lv.rootexact;
+    v.rootfrom = lv.rootfrom;
     v.writable = lv.writable;
     return v;
 }
