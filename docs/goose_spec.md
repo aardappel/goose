@@ -350,10 +350,13 @@ dereference operator and no `copy` builtin; the load is implicit.
   fields, elements. On non-reference locations `.=` is an error.
 * Binding contexts keep the reference rather than loading through it: an
   initializer/argument/field whose *declared type* is a reference type binds
-  the reference value. Where a type is inferred (`let x = r;`, untyped
-  generic parameters), the reference decays to a pointee copy — except an
-  explicit `&lvalue` initializer, which infers the reference type. To bind a
-  reference-returning call, annotate: `let e: T& = pool.push(v);`.
+  the reference value. Where a *variable's* type is inferred (`let x = r;`),
+  the reference decays to a pointee copy — except an explicit `&lvalue`
+  initializer, which infers the reference type. To bind a
+  reference-returning call, annotate: `let e: T& = pool.push(v);`. An
+  untyped parameter is an anonymous type variable and binds the argument's
+  exact type, reference or not, exactly as an explicit `<T>` does (§7.7):
+  `f(&x)` hands `f` a reference, `f(x)` a copy.
 * References to `varint` fields are always read-only (varints are written
   only at construction, §3.6).
 
@@ -1076,6 +1079,14 @@ function values, destination stacks). Errors are reported at the offending
 instantiation **with the compile-time call chain** — the whole-program,
 call-graph-order compiler can always show which call path produced the
 failing instantiation.
+
+Type variables are never checked abstractly. A generic body is checked only
+at an instantiation where every type is concrete — including the result of
+every call it makes on a function-value parameter, since that value's body
+is checked inline against the concrete argument types at that point (§7.6).
+So a HOF never needs to state what its function value returns: `map`'s
+result element type is simply the type `F(x)` turns out to have, even when
+the block is `{ generic(it) }` and that type depends on the instantiation.
 
 **Call-site type arguments.** Type arguments are inferred from the argument
 types whenever they appear in the parameter list: `fn foo<T>(x: T)` is

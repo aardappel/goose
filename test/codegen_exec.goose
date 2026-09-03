@@ -1217,6 +1217,21 @@ fn growshrink_local() {
     print(top[0] + st[0]);               // 2
 }
 
+// --- untyped parameters bind a reference argument as a reference (§3.8) ----
+
+fn bump_any(x) { x += 1; }               // x: i64& when called with &a.
+fn first_any(xs) -> i64 { xs[0] }        // xs: i64[>..<]& when called with &q.
+
+fn untyped_refs() {
+    var a = 41;
+    bump_any(&a);
+    print(a);                            // 42
+    var q: i64[>..<] = [7, 8];
+    print(first_any(&q));                // 7
+    q.push(9);
+    print(first_any(&q) + q.len);        // 10
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -1261,6 +1276,7 @@ fn main_codegen_exec() {
     lenprefixes();
     basecases();
     growshrink_local();
+    untyped_refs();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

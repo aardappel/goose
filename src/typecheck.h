@@ -2653,14 +2653,14 @@ struct TypeCheck {
                 auto &p = sf->params[i];
                 auto &av = argvals[i];
                 if (!p.type) {
-                    // Untyped parameter: independently generic (§7.1); a
-                    // reference argument contributes its pointee (decay).
+                    // Untyped parameter: an anonymous type variable (§7.1),
+                    // bound to the argument's exact type — a reference
+                    // argument binds as a reference, like `<T>` does.
                     if (av.type == fntype) {
                         why = "function values bind to generic parameters, not untyped ones";
                         return false;
                     }
-                    auto dv = DecayRef(av);
-                    auto nt = NaturalType(dv);
+                    auto nt = NaturalType(av);
                     if (!nt) {
                         why = cat("cannot infer a type for argument ", (int64_t)i + 1);
                         return false;
