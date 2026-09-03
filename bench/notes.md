@@ -450,8 +450,8 @@ the storage that can own it -- a candidate variable of the enclosing scope
 that holds its pointee type by value -- rather than at the container, so a
 sole candidate is that pool exactly and the reference still links relatively
 into it (`lru_refslots.goose` is `lru` with the map holding `Node&?` instead
-of indices; it costs 5-10% for the bigger slots and nodes, which is why `lru`
-keeps the indices).
+of indices; at BENCH_N 32000000 it runs 1.11-1.13x under v145 and 1.09x under
+clang for the bigger slots and nodes, which is why `lru` keeps the indices).
 
 **Fixed the round before:** a recursive cycle's return roots are known before
 its back edges (spec 7.8), so a mutually recursive parser can store the result
