@@ -876,6 +876,7 @@ struct FnSpec {
                                    // global, or null = static), else null.
     vector<bool> retrootexact;     // Per ret: Val::rootexact of the returned reference.
     vector<bool> retwritable;
+    vector<bool> retrootset;       // Per ret: a non-null return has recorded its root.
     vector<bool> retrootseeded;    // Per ret: retroots holds the cycle fixpoint's
                                    // predicted root and no return has been checked yet
                                    // (§7.8); the prediction is verified as they are.

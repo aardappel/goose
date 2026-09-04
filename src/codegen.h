@@ -414,7 +414,11 @@ struct CodeGen {
                 }
                 return IsFatPointee(t->ref->sub) ? 16 : 8;
             case TY_SLICE: return 16;
-            case TY_STRUCT: return StructLayout(SI(t)).size;
+            case TY_STRUCT: {
+                // An empty struct takes the one byte C gives it.
+                auto sz = StructLayout(SI(t)).size;
+                return sz ? sz : 1;
+            }
             case TY_ENUM: {
                 assert(!t->enu->varmode);
                 auto ei = EIOf(t);
@@ -595,7 +599,10 @@ struct CodeGen {
             case TY_STRUCT: {
                 auto si = SI(t);
                 Append(d, "struct ", name, " {\n");
-                EmitCFields(d, si->st->fields, si->ftypes);
+                auto any = false;
+                for (auto &f : si->st->fields) any |= !f.ispad;
+                if (any) EmitCFields(d, si->st->fields, si->ftypes);
+                else Append(d, "    uint8_t gs_empty;\n");
                 Append(d, "};\n");
                 break;
             }
@@ -2681,6 +2688,12 @@ struct CodeGen {
     string GenXD(Node *n, TypeExpr *want) {
         if (NeedsDeref(n->exprtype, want)) {
             auto sub = n->exprtype->ref->sub;
+            if (want->kind == TY_SLICE && sub->kind == TY_ARRAY) {
+                // The pointee array sliced whole (§3.10).
+                auto lv = GenLoc(n);
+                if (lv.t->kind == TY_REF) DerefLoc(lv, n->line);
+                return LoadLoc(lv, want, n->line);
+            }
             auto x = GenX(n);
             if (IsFatPointee(sub) || IsBytesT(sub)) return x;   // Byte-pointer currency.
             return cat("(*", x, ")");
@@ -3308,6 +3321,11 @@ struct CodeGen {
             et->kind == TY_ARRAY && et->arr->akind == A_VAR &&
             LenStore(want->arr) != LenStore(et->arr) && TEq(want->arr->sub, et->arr->sub))
             et = want;
+        // A resizable value landing in a variable-array slot (an element, a
+        // field) takes the slot's layout: its elements behind a length prefix.
+        if (want && et && lenlv.empty() && want->kind == TY_ARRAY && want->arr->akind == A_VAR &&
+            et->kind == TY_ARRAY && IsResz(et) && TEq(want->arr->sub, et->arr->sub))
+            et = want;
         if (want && NeedsDeref(n->exprtype, want)) {
             // A spliced reference in a decayed slot: copy the pointee.
             auto sub = n->exprtype->ref->sub;
@@ -3333,6 +3351,18 @@ struct CodeGen {
         if (auto c = Is<Call>(n)) {
             auto rets = EmitCall(c, Dst { 2, stk, want, lenlv });
             if (rets.empty() || IsVoidT(et)) return;
+            // A resizable result with no receiving header was built behind a
+            // temporary one: copy it into the slot as the slot's array kind.
+            auto rt0 = c->rettypes.empty() ? nullptr : c->rettypes[0];
+            if (rt0 && IsResz(rt0) && rt0->kind == TY_ARRAY && lenlv.empty() &&
+                et->kind == TY_ARRAY && !rets[0].empty()) {
+                Loc lv;
+                lv.t = rt0;
+                lv.s = cat(rets[0], ".base");
+                lv.lenlv = cat(rets[0], ".len");
+                GenArrayFromLoc(lv, et, stk, n->line, lenlv);
+                return;
+            }
             // A reference-returning call decayed to a value here: the callee
             // did not construct at the destination; copy the pointee.
             auto rt = c->rettypes.empty() ? nullptr : c->rettypes[0];
@@ -3420,6 +3450,10 @@ struct CodeGen {
         auto lv = GenLoc(n);
         if (lv.t->kind == TY_REF && et->kind != TY_REF) DerefLoc(lv, n->line);
         if (IsResz(et)) {
+            if (lv.t->kind == TY_SLICE && et->kind == TY_ARRAY) {
+                GenArrayFromLoc(lv, et, stk, n->line, lenlv);
+                return;
+            }
             if (lv.t->kind == TY_ARRAY || TEq(lv.t, et)) {
                 if (TEq(lv.t, et) && et->kind != TY_ARRAY) {
                     EmitRzCopy(lv, et, stk, lenlv, n->line);

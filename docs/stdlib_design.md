@@ -983,6 +983,14 @@ Compiler bugs, with the shape that triggers each:
 | B9 | an overload mismatch reported against an array-literal argument | the checker crashed printing the literal's synthesized array type — fixed |
 | B10 | `g = [9]` on a grow-only local while a slice of `g` is in scope; also through a `T[>..]&` parameter | accepted: whole assignment was not treated as a shrink — fixed (§5.1) |
 
+B1–B7 are fixed as well: B1/B3 by the call-result store fix (B8); B2 by
+giving a resizable result landing in a variable-array slot the slot's
+layout; B4 by slicing the pointee array behind a reference; B5 came along
+with the frame-object work; B6 by building a resizable from a slice value;
+B7 by giving an empty struct the one byte C gives it. `return null` is now
+root-neutral, so `fn find<T, F>(xs: T[:]) -> T?` returning either an
+element reference or `null` typechecks.
+
 B1–B3 are the blocking ones: every fresh-array result in §4.5 and §4.8 goes
 through that path. B4 matters because `T[>..]&` parameters are everywhere in
 real code (`bench/goose/blur_rows.goose`) and they will be handed to slice

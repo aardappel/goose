@@ -1425,6 +1425,40 @@ fn frame_objects() {
     print(gbag_fo.items.len + gbag_fo.n); // 3
 }
 
+fn doubled_bf(xs: i64[:]) -> i64[>..] {
+    var out: i64[>..] = [];
+    for x in xs { out.push(x * 2); }
+    return out;
+}
+fn sum_bf<T>(xs: T[:]) -> T { var s: T = 0; for x in xs { s += x; } return s; }
+struct unit_bf {}
+fn find_bf<T, F>(xs: T[:]) -> T? {
+    for &x in xs { if F(x) { return x; } }
+    return null;
+}
+
+fn bug_fixes() {
+    let a = [1, 2, 3];
+    var vs: i64[][>..] = [];
+    vs.push(doubled_bf(a));              // A resizable result in a variable-array slot.
+    for v in vs { print(v.len, v[2]); }  // 36
+    var g: i64[>..] = [1, 2, 3];
+    let r = g;                           // A reference: g is not fixed-size.
+    print(sum_bf(r));                    // 6: a reference to an array as a slice.
+    let sl: u8[:] = "hello";
+    var o: u8[>..] = sl;                 // A resizable built from a slice value.
+    o.push(33);
+    print(o);                            // hello!
+    var us: unit_bf[>..] = [];
+    us.push(unit_bf {});
+    us.push(unit_bf {});
+    print(us.len);                       // 2
+    let f1 = find_bf(a) { it > 1 };
+    if f1 { print(f1); }                 // 2
+    let f2 = find_bf(a) { it > 9 };
+    print(f2 == null);                   // true
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -1476,6 +1510,7 @@ fn main_codegen_exec() {
     growshrink_slices();
     passing_rules();
     frame_objects();
+    bug_fixes();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

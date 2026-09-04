@@ -3462,6 +3462,7 @@ struct TypeCheck {
         spec->retrootexact.resize(16, false);
         spec->retwritable.resize(16, false);
         spec->retrootseeded.resize(16, false);
+        spec->retrootset.resize(16, false);
         // A cycle's back edges reach this specialization before any of its own
         // returns are checked, so predict their roots first (§7.8).
         if (sf->isrec && spec->retsknown) Cycles().Seed(spec);
@@ -3535,6 +3536,8 @@ struct TypeCheck {
             auto rt = tspec->rets[i];
             auto rk = rt->kind;
             if (rk != TY_REF && rk != TY_SLICE) continue;
+            // A null return names no root: it agrees with every other return.
+            if (vals[i].isnull) continue;
             auto root = CanonRoot(vals[i].root);
             // Anything whose storage the callee's frame owns dies on return;
             // reference parameters' pointee roots are synthetic per-class
@@ -3548,9 +3551,10 @@ struct TypeCheck {
                 Error(at, "returning the result of a recursive call whose returned "
                           "reference's root the cycle's returns do not determine (§7.8)");
             if (i < tspec->retroots.size() && i < tspec->retrootseeded.size()) {
-                if (tspec->checkedreturn && tspec->retroots[i] != root)
+                if (tspec->retrootset[i] && tspec->retroots[i] != root)
                     Error(at, "returns disagree on the returned reference's root "
                               "(not yet supported; use one source)");
+                tspec->retrootset[i] = true;
                 if (auto bad = Cycles().ReturnConflict(tspec, i, root, vals[i].rootexact);
                     !bad.empty())
                     Error(at, bad);
