@@ -1,27 +1,26 @@
 # The Goose Standard Library — Design Proposal
 
-Status: revision 3, after the second review round. Section references of the
+Status: revision 4, after the third review round. Section references of the
 form §N are to `goose_spec.md`. Every calling convention and idiom below was
 prototyped against the compiler; where a prototype hit a bug or a language
 gap, that is recorded in §9 rather than designed around silently.
 
-Changes since revision 2, from the review:
+Changes since revision 3, from the review:
 
-* The binder-parameter idea is withdrawn. In its place §8.7 works through
-  the proposal to pass values by *size class*: fixed values by value,
-  non-fixed values by reference or by explicit `copy`, with `&` no longer
-  needed at call sites. The library's signatures are ordinary typed
-  references again; the examples are written the way that rule reads.
-* Text goes into strings with `format`, not `write`: the builtin family is
-  `print`/`str`/`format`, the helpers are `format_int` and friends, and
-  `write_*` is reserved for I/O. User `format` overloads extend the builtin.
-* Aggregates print with their type name and positional fields.
-* Slices of `[>..<]`: the error lands on the shrink and cites where the
-  slice was taken and where it is still used.
-* References to resizable tails: the recommended representation gives the
-  tail its own frame header instead of offsetting the struct's.
-* `extern fn` takes the simplest route (compiler-emitted prototypes, shims
-  in an included header).
+* Passing by size class (§8.7) is decided and is language work that
+  precedes the library: `copy(x)` now and `move` only when a need arises,
+  large fixed values copy silently, untyped and `<T>` parameters take a
+  non-fixed lvalue by reference, and a redundant `&` at a reference-typed
+  destination is a warning so that code keeps one style.
+* The tail representation — a frame object with the tail's own header — is
+  decided, likewise before the library.
+* The `[>..<]` slice rule, the `format` names and the extern plumbing are
+  confirmed. One question remains (§12).
+
+Revision 3 had withdrawn the binder-parameter idea in favour of the passing
+rule, renamed `write` to `format` (with `write_*` reserved for I/O), settled
+aggregate printing on type name plus positional fields, and moved the
+`[>..<]` error to the shrink.
 
 ---
 
@@ -37,8 +36,8 @@ function over the user's own arrays, structs and pools.
 Everything is written in Goose except:
 
 * a small extension of the builtin table: the `print`/`str`/`format`
-  family, `default<T>()`, `abort(msg)`, `exit(code)`, and `copy(x)` if the
-  passing rule of §8.7 is adopted; and
+  family, `default<T>()`, `abort(msg)`, `exit(code)`, and `copy(x)` from
+  the passing rule of §8.7; and
 * a new `extern fn` declaration form, through which the `math` and `os`
   modules reach libm and a thin C runtime layer without adding a builtin per
   function.
@@ -101,7 +100,7 @@ instead of `Option`, `Result` and exceptions.
 
 Each of these was checked against the compiler; the prototype results are
 summarized in §9. Call-site spellings are given in the form of the passing
-rule proposed in §8.7 (no `&` at call sites); until it is adopted, a
+rule decided in §8.7 (no `&` at call sites); until it is implemented, a
 reference parameter takes an explicit `&x`.
 
 ### 2.1 How containers are passed
@@ -125,16 +124,16 @@ Rationale, and what was ruled out:
   so it is reserved for length-changing operations, where a slice would be
   meaningless anyway.
 * An untyped parameter (`fn f(xs)`) binds the argument's exact type, which
-  since revision 2 includes a reference type for `f(&arr)`. Under §8.7 a
-  non-fixed lvalue argument reaches an untyped parameter by reference and a
-  fixed one by value, so `fn total(xs)` would serve every kind; the library
+  since revision 2 includes a reference type for `f(&arr)`. By §8.7's rule
+  a non-fixed lvalue argument reaches an untyped parameter by reference and
+  a fixed one by value, so `fn total(xs)` serves every kind; the library
   still prefers `T[:]` for read-only functions because it names the element
   type (`find -> T?`, `contains(xs, v: T)`) and accepts sub-ranges.
 * Grow-shrink arrays `[>..<]` cannot be sliced today (§5.2), so they cannot
   reach the first row; the checker rule of §8.7 lifts that. Until then only
   the length-changing functions apply to them.
-* Nothing is ever taken by value. Under §8.7 that is enforced by the
-  language for every non-fixed type; today it is a convention.
+* Nothing is ever taken by value. §8.7's rule makes the language enforce
+  that for every non-fixed type; until it is implemented it is a convention.
 
 ### 2.2 Results
 
@@ -210,7 +209,7 @@ dictionary<…>&) { d.insert(k, v); }` compiles; so does `let r = &out;
 r.format("!")`). The builtin members (`push`, `format`) are exempt, since
 their receiver is an lvalue.
 
-Under the passing rule of §8.7, `x.f()` binds `x` by reference exactly when
+With the passing rule of §8.7 in place, `x.f()` binds `x` by reference exactly when
 `f`'s first parameter is a reference type, for the same reason a free call
 `f(x)` does, so `d.insert(k, v)`, `q.heap_push(v)` and `r.rand_int(6)` all
 work and mean the obvious thing. The binder-parameter idea of revision 2 was
@@ -518,7 +517,7 @@ each_split(text, ' ') { counts.update(it, 0) { it += 1; } };
 counts.each() { w, n => if n > 100 { print(w, " ", n); } };
 ```
 
-(Today, without §8.7: `update(&counts, it, 0) { … }` and `each(&counts) …`.)
+(Until §8.7 is implemented: `update(&counts, it, 0) { … }` and `each(&counts) …`.)
 `update` exists because the natural spelling, `get_or_insert(d, k, 0) += 1`,
 is not an assignable location and the annotated binding needs the value
 type spelled out (§2.5). A block gets the reference without either problem.
@@ -750,7 +749,8 @@ test runner points at the source tree's `stdlib/`.
 
 ### 8.7 Checker and language changes
 
-**Passing by size class — proposed (question 1).** The review proposed
+**Passing by size class — decided; language work that precedes the
+library.** The second review round proposed, and the third adopted,
 replacing "explicit `&` on both ends" (§7.2) with a rule keyed on the size
 class of the value being connected to a destination — a call argument, a
 `let`/`var` initializer, an assignment, a field initializer, a `push`, a
@@ -767,10 +767,12 @@ class of the value being connected to a destination — a call argument, a
   a local being returned — or an explicit `copy(x)`, a builtin that
   constructs the copy at the destination (§4.3 semantics; one word, and
   greppable).
-* `&` at call sites is thereby redundant rather than required.
+* `&` at call sites is thereby redundant rather than required, and a
+  redundant `&` — one written at a source whose reference-typed destination
+  would have bound it anyway — is a warning, so that code in the language
+  keeps one style rather than a scatter of leftover `&`.
 
-Where the rule has to be pinned down, with the reading this document
-assumes:
+Where the rule has to be pinned down, with the readings decided:
 
 * `let y = x;` for a non-fixed `x` is an error: write `let y = &x;` (a
   reference, the inferred type as today) or `let y = copy(x);`. For fixed
@@ -791,19 +793,22 @@ assumes:
   non-fixed ones already require the `&x` binder form (§6.5, §8.1) — the
   rule makes that a consequence rather than a special case.
 * An untyped or `<T>` parameter given a non-fixed lvalue binds `T` to the
-  reference type; given a fixed lvalue, to the value type. `fn total(xs)`
-  then serves a fixed array (copied), a `[>..]` and a `[>..<]` (by
-  reference) with one body, and a body that writes through `xs` is an
-  error at the fixed instantiation (an immutable copy) rather than a
-  silently discarded write.
+  reference type; given a fixed lvalue, to the value type. A type variable
+  normally adopts the caller's type exactly; this is the one pragmatic
+  exception, and it is what lets `fn total(xs)` serve a fixed array
+  (copied), a `[>..]` and a `[>..<]` (by reference) with one body. A body
+  that writes through `xs` is an error at the fixed instantiation (an
+  immutable copy) rather than a silently discarded write.
 * Overloads `f(x: T)` and `f(x: T&)` for the same fixed `T` become
   ambiguous for an lvalue argument; the pair `f<T>(xs: T[:])` / `f<A>(xs:
   A&)` does not (a `[>..<]` reaches only the second, an array reaches the
   second at the generic tier, a slice only the first), so the library's two
   container conventions coexist.
-* An explicit `&x` argument to a reference parameter is accepted silently
-  (it is what forwarding a reference already looks like); a lint for
-  redundant ones can come later.
+* An explicit `&x` argument whose destination would have bound `x` without
+  it draws the redundancy warning. Forwarding a reference *variable*
+  (`f(r)` with `r: T&`) involves no `&` and is silent, as is `&x` where the
+  destination is inferred (`let r = &x;`), since there the `&` is what
+  selects the reference type.
 
 For the library: no binder parameters, no `&` in any example, UFCS works
 for every mutator, generic HOFs could even be untyped, and the library's
@@ -823,35 +828,39 @@ copied only on request".
 Cons, and what limits them:
 
 * Mutation of a fixed value is no longer visible at the call site:
-  `normalize(v)` may write `v`. Writability provenance (§9.5) confines this
-  to `var` locals — a `let` argument yields a non-writable reference, and a
-  callee that writes through it is a compile error with the call chain —
-  so the reader's rule is "a `var` passed to a function may change", which
-  is the C++ situation restricted to values the programmer already declared
-  mutable. Naming conventions do the rest; a lint could flag writes through
-  implicitly bound fixed references if it turns out to matter.
+  `normalize(v)` may write `v`. Accepted: the UFCS discussion had already
+  concluded that mutable arguments would go unmarked at the call site, and
+  it is rarer than mutating arrays. Writability provenance (§9.5) confines
+  it to `var` locals — a `let` argument yields a non-writable reference,
+  and a callee that writes through it is a compile error with the call
+  chain — so the reader's rule is "a `var` passed to a function may
+  change", which is the C++ situation restricted to values the programmer
+  already declared mutable.
 * "Fixed" is not "small". A limited array `u8[..4096]` or a fixed
-  `f32[1024]` is fixed-class and would copy silently. Options: accept it
-  (C's struct-by-value rule; the compiler may pass an unwritten by-value
+  `f32[1024]` is fixed-class and copies silently. Accepted, with no
+  mitigation for now: resizables will be far more common in this language
+  than large fixed arrays, and the compiler may pass an unwritten by-value
   argument by pointer when the specialization's roots prove nothing writes
-  the source during the call); a size-based lint; or treat limited arrays
-  as copy-explicit. Question 1b.
+  the source during the call.
 * `copy` will appear in places that feel like plain data flow —
   `items.push(copy(item))`, `let name = copy(rec.name)` — which is the
-  point, but is a migration cost. The existing tests and benchmarks change
-  in a handful of places (`let copy: u8[][] = src;`, `g = h`, `d.slots =
-  ns`, pushes of variable-size locals); every `&` they already write stays
-  valid.
-* `&` does not leave the language, only call sites: reference creation for
-  inferred `let`s, `.=` rebinding, and reference-typed fields initialized
-  from lvalues still spell it, and a reference-typed field initializer
-  binding an lvalue implicitly would read oddly enough that the rule should
-  perhaps stop at call sites, `let`s and `=`. Question 1c.
-* Spec text to rewrite: §4.1, §4.4, §7.2, the §3.8 binding paragraph, §7.5's
-  implementation note, and every "explicit on both ends" mention.
+  point: the expectation is that it reads as a welcome marker of the
+  expensive places, and if it turns out to be everywhere a `*` spelling
+  can be considered. The existing tests and benchmarks change in a handful
+  of places (`let copy: u8[][] = src;`, `g = h`, `d.slots = ns`, pushes of
+  variable-size locals); every `&` they already write stays valid, modulo
+  the redundancy warning.
+* `&` does not leave the language, only the places where the destination's
+  type already says "reference": inferred `let r = &x;` keeps it, because
+  there it chooses the type. Whether a reference-typed *field* initializer
+  and `.=` bind an lvalue implicitly is the one open point (question 1).
+* Spec text to rewrite with the implementation: §4.1, §4.4, §7.2, the §3.8
+  binding paragraph, §7.5's implementation note, and every "explicit on
+  both ends" mention. Appendix B carries the item until then.
 
-Recommendation: adopt it, in the reading above. Nothing in the library's
-design depends on the outcome except the spelling of examples.
+Decided in the reading above. It is language work to be done before the
+library starts (phase 0), so that the library is written against the new
+rules from its first line.
 
 **Slices of `[>..<]` — decided, with the error placement from the review.**
 Creating a slice or reference into a `[>..<]` becomes legal. A shrinking
@@ -871,8 +880,9 @@ catches the logic error, not a memory one. Spec §5.2, §3.10 and TODO 4
 change accordingly. Until it lands, `[>..<]` reaches only the
 length-changing functions.
 
-**References to resizable tails — recommended representation (question
-2).** `&bag.items` is rejected today because a resizable-tailed struct is
+**References to resizable tails — decided representation; language work
+that precedes the library.** `&bag.items` is rejected today because a
+resizable-tailed struct is
 one frame header `{ base, len }` whose `base` is the *struct's* start on the
 data stack (static prefix fields, then tail elements) and whose `len` is
 the tail's count; a `T[>..]&` is a pointer to a header whose `base` must be
@@ -991,7 +1001,9 @@ clang, as `test/run_tests.ps1` already checks.
 stdlib search path (§8.6); `abort`/`exit` (§8.3); `print`/`str`/`format`
 for scalars and strings (§8.1); `default<T>()` (§8.2); the empty-array
 declaration (§8.5); slices of `[>..<]` (§8.7); the tail representation
-(§8.7); and, if question 1 says yes, the passing rule with `copy`. Tests:
+(§8.7); the passing rule with `copy` and the redundant-`&` warning (§8.7),
+with its spec rewrite. The language work of §8.7 comes first, so that the
+library is written against the new rules from the start. Tests:
 `test/stdlib_returns.goose` covering every receiver shape of §7.3 for
 non-inlined generic results (the regression net for B1–B3), plus one test
 per language change.
@@ -1057,21 +1069,18 @@ rather than a gap:
 
 ---
 
-## 12. Questions (round 3)
+## 12. Questions (round 4)
 
-1. **Passing by size class** (§8.7): adopt it in the reading given there?
-   Specifically: (a) `copy(x)` as the spelling, and `move(x)` now or later;
-   (b) where fixed-but-large values land — accept, lint above a size, or
-   make limited arrays copy-explicit; (c) whether the implicit reference
-   binding stops at call sites, `let` and `=`, or also covers
-   reference-typed field initializers; (d) `push(v)` needing `copy(v)` for
-   a non-fixed lvalue while `append(v)` does not; (e) untyped and `<T>`
-   parameters binding non-fixed lvalues by reference rather than erroring.
-2. **Tail representation** (§8.7): the frame-object layout with the tail's
-   own header, and bytes-on-stack kept for variable prefixes and
-   resizable-class ADTs — the direction you had in mind?
-3. **`[>..<]` slices**: error at the shrink citing the slice's creation and
-   its next use, loops conservative, no stores into containers — as worded?
-4. **`format` details**: `format_int`/`format_uint`/`format_flt`,
-   `format_replaced`, `push_utf8`, and user `format` overloads extending the
-   builtin — anything to rename?
+1. **Implicit reference binding outside calls.** The rule binds an lvalue
+   to a reference-typed destination without `&` for call arguments,
+   annotated `let r: T& = x;`, and `=` where the destination is a
+   reference. Two more destinations have a declared reference type: a
+   struct-literal field whose field type is a reference (`struct cell {
+   link: i64& }` — is `cell { link: x }` allowed to mean `link: &x`?), and
+   the rebinding statement (`r .= x` meaning `r .= &x`). Applying the rule
+   there too is consistent, and the redundancy warning would then fire on
+   `cell { link: &x }`; requiring `&` there keeps the fact that a reference
+   is being *stored* — a lifetime commitment the root rules will check —
+   visible in the literal. Recommendation: uniform (bind implicitly, warn
+   on redundant `&`), on the grounds that the struct declaration is the
+   source of truth exactly as a parameter list is.
