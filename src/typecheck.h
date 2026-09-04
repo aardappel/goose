@@ -676,6 +676,56 @@ struct TypeCheck {
     // later whole-value assignment fully constructs it.
     bool UninitOK(TypeExpr *t) { return ClassOf(t) == SC_FIXED; }
 
+    // ------------------------------------------------------------------
+    // `var out = [];` (§4.2): a grow-only array whose element type is still
+    // to be learned. The placeholder element is a private void type, so the
+    // pending array is recognizable by kind alone; the first push, append or
+    // assignment into the variable overwrites it in place, which completes the
+    // type everywhere it was already recorded (the VarDef, every Ident
+    // checked so far, the literal itself), since all of them share the one
+    // TypeExpr object.
+
+    TypeExpr *PendingArray(Line l) {
+        auto t = ast.NewType(TY_ARRAY, l);
+        t->arr = ast.NewDetail<TypeArray>();
+        t->arr->sub = ast.NewType(TY_VOID, l);
+        t->arr->akind = A_GROW;
+        return t;
+    }
+
+    // Distinct from an empty array literal's `void[0]`, which is fixed-size.
+    bool IsPendingArray(TypeExpr *t) {
+        return t && t->kind == TY_ARRAY && t->arr->akind == A_GROW && t->arr->sub->kind == TY_VOID;
+    }
+
+    // The element type an argument value supplies to a pending array: a
+    // string literal makes it an array of owned strings (u8[]), the natural
+    // element to be pushing literals into; [] and null say nothing.
+    TypeExpr *PendingElemFrom(const Val &av, Node *at) {
+        if (av.emptyarr || av.isnull || av.type->kind == TY_VOID || av.type == fntype)
+            Error(at, "cannot infer the element type of this array from this value");
+        if (av.strlit) {
+            auto t = ast.NewType(TY_ARRAY, at->line);
+            t->arr = ast.NewDetail<TypeArray>();
+            t->arr->sub = ast.inttypes[IS_U8];
+            t->arr->akind = A_VAR;
+            return t;
+        }
+        return av.type;
+    }
+
+    void CompletePending(TypeExpr *arrt, TypeExpr *elem, Line l) {
+        arrt->arr->sub = elem;
+        ValidateType(arrt, l, VT_LOCAL);
+    }
+
+    void RequireComplete(TypeExpr *t, Line l) {
+        if (IsPendingArray(t))
+            Error(l, "the element type of this array is not known yet (it was declared "
+                     "with `= []`): push or append into it first, or annotate the "
+                     "declaration");
+    }
+
     void ValidateType(TypeExpr *t, Line l, int pos) {
         switch (t->kind) {
             case TY_GENERIC:
@@ -714,6 +764,7 @@ struct TypeCheck {
                 GetEnumInst(t->var->adt);
                 return;
             case TY_ARRAY: {
+                RequireComplete(t, l);
                 ValidateType(t->arr->sub, l, VT_ELEM);
                 auto ec = ClassOf(t->arr->sub);
                 switch (t->arr->akind) {
@@ -781,6 +832,13 @@ struct TypeCheck {
 
     void PopScope() {
         auto &s = scopes.back();
+        // A `var x = []` that nothing ever pushed into has no type to give
+        // codegen; the scope ending is the last chance to say so.
+        for (auto i = s.varbase; i < (int)vars.size(); i++)
+            if (IsPendingArray(vars[i]->type))
+                Error(vars[i]->line, cat("the element type of ", vars[i]->name,
+                                         " was never determined: nothing was pushed or "
+                                         "appended into it, and no array was assigned to it"));
         vars.resize(s.varbase);
         localfns.resize(s.fnbase);
         scopes.pop_back();
@@ -1351,6 +1409,7 @@ struct TypeCheck {
             }
             if (lv.type->kind != TY_ARRAY)
                 Error(n, cat("cannot index a value of type ", TypeStr(lv.type)));
+            RequireComplete(lv.type, n->line);
             if (SequentialElems(lv.type))
                 Error(n, "arrays of variable-size elements cannot be indexed, only iterated");
             CheckIntAny(ix->idx);
@@ -2356,6 +2415,7 @@ struct TypeCheck {
             iterwritable = iv.writable;
             if (t->kind == TY_REF && !t->ref->optional) t = t->ref->sub;  // Iterate through refs.
             t = LoadType(t);
+            RequireComplete(t, x->line);
             if (IsIntT(t)) {
                 x->iterkind = IK_COUNT;
                 if (x->byref) Error(x, "cannot iterate an integer count by reference");
@@ -2626,6 +2686,7 @@ struct TypeCheck {
         for (auto a : c->args) {
             argnodes.push_back(a);
             auto v = CheckV(a, nullptr);
+            RequireComplete(v.type, a->line);
             a->exprtype = v.type;
             argvals.push_back(v);
         }
@@ -3617,8 +3678,16 @@ struct TypeCheck {
                 v = CheckValue(vd->inits[i], ann);
             }
             curdst = savedst;
-            if (v.emptyarr && !ann)
-                Error(vd->inits[i], "cannot infer the type of [] without an annotation");
+            if (v.emptyarr && !ann) {
+                // `var out = [];` -- a grow-only array whose element type the
+                // first push, append or assignment into it supplies (§4.2).
+                if (!vd->isvar)
+                    Error(vd->inits[i], "a let bound to [] can never receive elements; "
+                                        "annotate its type, or make it a var");
+                v.type = PendingArray(vd->inits[i]->line);
+                vd->inits[i]->exprtype = v.type;
+                v.emptyarr = false;
+            }
             if (v.isnull && !ann)
                 Error(vd->inits[i], "null needs an annotated optional type");
             if (!ann) NoRelRefCopy(vd->inits[i], v.type);
@@ -3686,6 +3755,18 @@ struct TypeCheck {
                 Error(a, "cannot assign through this path (let, or non-writable "
                          "provenance, §9.5)");
             AssignableClassCheck(target, a);
+        }
+        if (IsPendingArray(target)) {
+            // `var x = []; x = other;` completes x from the assigned array.
+            auto av = DecayRef(CheckV(a->rhs, nullptr));
+            auto t2 = av.type;
+            TypeExpr *selem = nullptr;
+            if (t2->kind == TY_ARRAY) selem = t2->arr->sub;
+            else if (t2->kind == TY_SLICE) selem = t2->sub;
+            if (av.strlit) selem = ast.inttypes[IS_U8];
+            if (!selem || av.emptyarr)
+                Error(a, "cannot infer the element type of this array from this value");
+            CompletePending(target, selem, a->line);
         }
         auto savedst = curdst;
         curdst = Dest { lv.root, lv.rootexact };
@@ -3989,6 +4070,33 @@ struct TypeCheck {
                              "(let, or non-writable provenance, §9.5)"));
             if ((d.flags & BF_REUSABLE) && !rv.reusable)
                 Error(c, cat(".", d.name, " exists on reusable pools only (§5.4)"));
+        }
+        // A pending `var x = []` receiver learns its element type from what
+        // is first pushed or appended into it (§4.2).
+        if (elem && elem->kind == TY_VOID) {
+            auto rt = rv.type;
+            if (IsPlainRef(rt)) rt = rt->ref->sub;
+            if (d.kind == B_PUSH || d.kind == B_ALLOC_INDEX || d.kind == B_ALLOC_REF) {
+                auto av = DecayRef(CheckV(args[1], nullptr));
+                CompletePending(rt, PendingElemFrom(av, args[1]), c->line);
+            } else if (d.kind == B_APPEND || d.kind == B_FORMAT) {
+                TypeExpr *selem = nullptr;
+                if (d.kind == B_FORMAT) {
+                    selem = ast.inttypes[IS_U8];
+                } else {
+                    auto av = DecayRef(CheckV(args[1], nullptr));
+                    auto t2 = av.type;
+                    if (t2->kind == TY_ARRAY) selem = t2->arr->sub;
+                    else if (t2->kind == TY_SLICE) selem = t2->sub;
+                    if (av.strlit) selem = ast.inttypes[IS_U8];
+                    if (!selem || av.emptyarr)
+                        Error(c, "cannot infer the element type of this array from this value");
+                }
+                CompletePending(rt, selem, c->line);
+            } else {
+                RequireComplete(rt, c->line);
+            }
+            elem = rt->arr->sub;
         }
         // format(out, a, b, ...): the arguments' text appended to a growable
         // u8 array (§3.7).
