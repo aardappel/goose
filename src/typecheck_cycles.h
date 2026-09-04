@@ -298,7 +298,7 @@ struct CycleRoots {
             auto pt = spec->argtypes[d.param];
             if (pt->kind == TY_REF || pt->kind == TY_SLICE) {
                 auto vd = spec->params[d.param];
-                exact = vd->refrootknown && vd->refrootexact;
+                exact = vd->refrootknown && vd->ref.rootexact;
                 return rootof(vd, true);
             }
         }

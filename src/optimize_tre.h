@@ -98,7 +98,7 @@ struct TailRecursion {
         if (!t || p->captured) return false;
         if (Optimizer::ScalarType(t)) return true;
         return t->kind == TY_REF && t->ref->lenstorage < 0 && !p->reusable &&
-               !p->refreusable && !ReszType(t->ref->sub);
+               !p->ref.reusable && !ReszType(t->ref->sub);
     }
 
     // Safe to evaluate one step ahead of the call it followed: no abort, no

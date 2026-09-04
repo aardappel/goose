@@ -231,22 +231,31 @@ struct FnValBind {
     }
 };
 
-// The checked value of an expression (typecheck.h): its type plus, for
-// reference/slice-typed values, the lifetime root and provenance, plus the
-// constant folding used for literal fit and array sizes. Lives here because
-// every node's Check override returns one.
-enum ConstKind { CK_NONE, CK_INT, CK_FLT };
-struct Val {
-    TypeExpr *type = nullptr;
-    VarDef *root = nullptr;      // Ref/slice: owner of the pointee (null = static data).
+// Where a reference or slice points, as the lifetime system tracks it (§9):
+// the variable whose scope bounds the pointee's life, whether that variable
+// owns the pointee or only outlives it, and the provenance bits. The checked
+// value of an expression (Val), a location (TypeCheck::LVal) and the binding
+// a reference variable holds (VarDef::ref) all carry one.
+struct Prov {
+    VarDef *root = nullptr;      // Owner or bound of the pointee (null = static data).
     // Is `root` the pointee's owner, or only a scope bound something the
     // pointee outlives? A reference read out of a container names a scope,
     // and only sometimes one variable in it (§9.5); rules that need the
     // pointee's identity rather than its lifetime consult this.
     bool rootexact = false;
     VarDef *rootfrom = nullptr;  // Inexact read-back: the container, for diagnostics.
-    bool writable = false;       // Ref/slice provenance (§9.5).
+    bool writable = false;       // Writable provenance (§9.5).
     bool reusable = false;       // Root is a reusable pool (§5.4).
+    void SetProv(const Prov &p) { *this = p; }
+};
+
+// The checked value of an expression (typecheck.h): its type, where it
+// points when it is a reference or slice, and the constant folding used for
+// literal fit and array sizes. Lives here because every node's Check
+// override returns one.
+enum ConstKind { CK_NONE, CK_INT, CK_FLT };
+struct Val : Prov {
+    TypeExpr *type = nullptr;
     ConstKind ck = CK_NONE;
     int64_t ival = 0;
     bool uns = false;            // CK_INT: ival's bits are a u64 above i64.max.
@@ -767,19 +776,16 @@ struct VarDef {
     // Synthetic class roots only: the call-site root holds a grow-shrink
     // array, so the shrink rules follow the class into the body (§5.2).
     bool growshrink = false;
-    // For variables of reference/slice type: the provenance of the reference
-    // value they hold, fixed at first binding (see typecheck.h header note).
-    // A null-initialized optional has no commitment yet (refrootknown false).
-    VarDef *refroot = nullptr;
+    // For variables of reference/slice type: where the value they hold
+    // points, fixed at first binding (see typecheck.h header note). A
+    // null-initialized optional has no commitment yet (refrootknown false),
+    // and counts as writable until it makes one.
+    Prov ref { .writable = true };
     bool refrootknown = false;
-    bool refrootexact = false;   // See Val::rootexact.
-    VarDef *refrootfrom = nullptr;   // See Val::rootfrom.
     // A read of this variable's exact root inside a loop it was declared
     // outside of: a later rebind in that loop is observed by that read on the
     // next iteration, so it may no longer change the root (typecheck.h).
     bool refidentityused = false;
-    bool refwritable = true;
-    bool refreusable = false;
     // Flow state during checking:
     bool assigned = false;
     TypeExpr *narrowed = nullptr;  // T? narrowed to T& in the current region.

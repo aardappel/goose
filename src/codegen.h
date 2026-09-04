@@ -2033,7 +2033,7 @@ struct CodeGen {
         auto t = vd->type;
         return t && t->kind == TY_REF && t->ref->lenstorage < 0 && !t->ref->optional &&
                t->ref->sub->kind == TY_ARRAY && t->ref->sub->arr->akind == A_GROW &&
-               vd->refreusable;
+               vd->ref.reusable;
     }
 
     // Construction destination: 0 = discard, 1 = assign C lvalue, 2 =
@@ -6114,8 +6114,8 @@ struct CodeGen {
         for (size_t i = 0; i < sp->params.size(); i++) {
             auto vd = sp->params[i];
             if (!IsFatRef(sp->argtypes[i])) continue;
-            if (!vd->refrootknown || !vd->refroot || !vd->refrootexact ||
-                !classes.insert(vd->refroot).second)
+            if (!vd->refrootknown || !vd->ref.root || !vd->ref.rootexact ||
+                !classes.insert(vd->ref.root).second)
                 return false;
             fatparams.insert(vd);
             pointees.push_back(sp->argtypes[i]->ref->sub);
