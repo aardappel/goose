@@ -1628,8 +1628,8 @@ struct TypeCheck {
     }
 
     bool BindsRef(const Val &v, TypeExpr *dt) {
-        return dt->kind == TY_REF && v.lvalue && v.type->kind != TY_REF &&
-               v.type->kind != TY_SLICE && !v.isnull && TypeEq(v.type, dt->ref->sub);
+        return dt->kind == TY_REF && v.lvalue && v.type->kind != TY_REF && !v.isnull &&
+               TypeEq(v.type, dt->ref->sub);
     }
 
     bool IsNonFixedLValue(const Val &v) {
@@ -3025,6 +3025,15 @@ struct TypeCheck {
             if (!ct || HasGenerics(ct) || ct->kind != TY_ARRAY) return nullptr;
             tier = std::max(tier, 2);
             return ct;
+        }
+        // An lvalue meeting a reference parameter binds by reference (§4.1),
+        // so a generic pointee unifies with the argument's own type.
+        if (av.lvalue && pt->kind == TY_REF && pt->ref->lenstorage < 0 &&
+            av.type->kind != TY_REF) {
+            Val rv = av;
+            rv.type = RefTo(av.type, pt->line);
+            rv.lvalue = false;
+            return UnifyArgRaw(pt, rv, b, tier);
         }
         auto at = NaturalType(av);
         auto hadgen = HasGenerics(pt);
@@ -5053,6 +5062,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
             v.rootfrom = vd->refrootfrom;
             v.writable = vd->refwritable;
             v.reusable = vd->refreusable;
+            v.lvalue = t->kind == TY_SLICE;   // A slice variable is storage; a reference is the pointee's path.
         } else {
             v.root = vd;
             v.rootexact = true;
@@ -5449,7 +5459,7 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     v.rootexact = lv.rootexact;
     v.rootfrom = lv.rootfrom;
     v.writable = v.type->kind == TY_REF || v.type->kind == TY_SLICE ? true : lv.writable;
-    v.lvalue = v.type->kind != TY_REF && v.type->kind != TY_SLICE;
+    v.lvalue = v.type->kind != TY_REF;
     return v;
 }
 
@@ -5468,7 +5478,7 @@ inline Val Index::Check(TypeCheck &tc, TypeExpr *) {
     // Container-read laundering, as for fields above (§9.5).
     v.writable = v.type->kind == TY_REF || v.type->kind == TY_SLICE ? true : lv.writable;
     v.reusable = lv.reusable;
-    v.lvalue = v.type->kind != TY_REF && v.type->kind != TY_SLICE;
+    v.lvalue = v.type->kind != TY_REF;
     return v;
 }
 
