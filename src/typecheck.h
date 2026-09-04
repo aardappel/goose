@@ -258,8 +258,10 @@ struct TypeCheck {
             }
             case TY_SLICE: return TypeEq(a->sub, b->sub);
             case TY_REF:
+                // The pool is part of a relative reference's identity: offsets
+                // measured from different bases are different encodings (§3.9).
                 return TypeEq(a->ref->sub, b->ref->sub) && a->ref->optional == b->ref->optional &&
-                       a->ref->lenstorage == b->ref->lenstorage;
+                       a->ref->lenstorage == b->ref->lenstorage && a->ref->pool == b->ref->pool;
             case TY_VARIANT:
                 return a->var->variant == b->var->variant && TypeEq(a->var->adt, b->var->adt);
             case TY_GENERIC: return a->named->name == b->named->name;
@@ -698,7 +700,14 @@ struct TypeCheck {
                 return;
             }
             case TY_SLICE: ValidateType(t->sub, l, VT_ELEM); return;
-            case TY_REF:   ValidateType(t->ref->sub, l, VT_POINTEE); return;
+            case TY_REF:
+                // A pool's own type is only known once the globals are
+                // checked; the driver revisits every concrete in-pool type
+                // then, and this catches the ones substitution makes later.
+                if (t->ref->pool && t->ref->pool->type && !HasGenerics(t->ref->sub))
+                    ValidatePool(t);
+                ValidateType(t->ref->sub, l, VT_POINTEE);
+                return;
         }
     }
 
@@ -991,11 +1000,13 @@ struct TypeCheck {
         return v;
     }
 
-    // Does this type embed relative references at the value level (not
-    // behind plain references/slices)?
+    // Does this type embed self-relative references at the value level (not
+    // behind plain references/slices)? Those are the offsets that depend on
+    // where the value sits, so a copy would carry the wrong ones; an
+    // `in pool` offset is measured from the pool and copies fine (§3.9).
     bool HasRelRefT(TypeExpr *t) {
         switch (t->kind) {
-            case TY_REF: return t->ref->lenstorage >= 0;
+            case TY_REF: return t->ref->lenstorage >= 0 && !t->ref->pool;
             case TY_STRUCT: {
                 auto inst = GetStructInst(t);
                 for (size_t i = 0; i < inst->ftypes.size(); i++)
@@ -1020,16 +1031,71 @@ struct TypeCheck {
         }
     }
 
-    // A copy of a value containing relative references would carry offsets
-    // measured from the source location; only in-place construction (a
-    // literal) is allowed for now. TODO: track the region a relative
+    // A copy of a value containing self-relative references would carry
+    // offsets measured from the source location; only in-place construction
+    // (a literal) is allowed for now. TODO: track the region a relative
     // reference ranges over so whole-region copies can be permitted.
     void NoRelRefCopy(Node *n, TypeExpr *t) {
         if (!reachable || !t) return;
         if (t->kind == TY_REF || t->kind == TY_SLICE || !HasRelRefT(t)) return;
         if (Is<StructLit>(n) || Is<ArrayLit>(n)) return;   // Constructed in place.
-        Error(n, cat("copying a value of type ", TypeStr(t), ", which contains relative "
+        Error(n, cat("copying a value of type ", TypeStr(t), ", which contains self-relative "
                      "references, is not supported; construct it in place"));
+    }
+
+    // ------------------------------------------------------------------
+    // Pool-relative references (§3.9). `T&<u32 in pool>` names a global pool
+    // at the declaration, so nothing has to be discovered per call site: the
+    // base is that global's, everywhere.
+
+    // Names resolve once, before any type is instantiated, so the pool is
+    // part of the type's identity from the first comparison on.
+    void ResolvePools() {
+        for (auto t : ast.alltypes) {
+            if (t->kind != TY_REF || t->ref->poolname.empty()) continue;
+            auto git = ast.globalmap.find(t->ref->poolname);
+            if (git == ast.globalmap.end() || git->second->defs.empty())
+                Error(t->line, cat("in ", t->ref->poolname,
+                                   ": a relative reference's pool must be a global variable; a "
+                                   "local or parameter pool has no name at this declaration, so "
+                                   "use the self-relative form ", TypeStr(t->ref->sub), "&<",
+                                   IntStorageName(t->ref->lenstorage), "> instead (§3.9)"));
+            t->ref->pool = git->second->defs[0];
+            poolglobals.insert(t->ref->pool);
+        }
+    }
+
+    // The globals some relative reference type measures offsets from. Empty
+    // for a program without the feature, which is what keeps `RootArg::pool`
+    // from splitting any specialization such a program would not have split.
+    set<VarDef *> poolglobals;
+
+    // The pool a reference rooted at `r` points into, or null. A global names
+    // itself; a synthetic parameter class names what every call site that
+    // reaches this specialization passed, which is part of its key.
+    VarDef *PoolOf(VarDef *r) {
+        r = CanonRoot(r);
+        if (!r) return nullptr;
+        if (r->isglobal) return poolglobals.count(r) ? r : nullptr;
+        return r->classpool;
+    }
+
+    // The pool must be storage a `T` can live in, and one whose base never
+    // moves: a grow-only resizable global grows by bumping its stack's top.
+    void ValidatePool(TypeExpr *t) {
+        auto pool = t->ref->pool;
+        auto pt = pool->type;
+        if (!pt || !IsArrayKind(pt, A_GROW))
+            Error(t->line, cat("in ", pool->name, ": a relative reference's pool must be a "
+                               "grow-only resizable global (", pool->name, ": T[>..]), not ",
+                               pt ? TypeStr(pt) : string("an unresolved type"), " (§3.9)"));
+        if (!pool->isvar)
+            Error(t->line, cat("in ", pool->name, ": a relative reference's pool must be a "
+                               "var (§3.9)"));
+        if (!CanContain(pt, t->ref->sub))
+            Error(t->line, cat("in ", pool->name, ": ", TypeStr(pool->type),
+                               " cannot hold a value of type ", TypeStr(t->ref->sub),
+                               ", so nothing in it can be pointed at (§3.9)"));
     }
 
     // ------------------------------------------------------------------
@@ -1146,8 +1212,11 @@ struct TypeCheck {
         croot = CanonRoot(croot);
         rb.root = croot;
         // A relative reference points within its own root array by
-        // construction (§3.9), so it inherits the container's root outright.
+        // construction (§3.9), so it inherits the container's root outright —
+        // unless it named a pool, in which case the pool *is* the root, and
+        // exactly, wherever the container sits.
         if (rt->kind == TY_REF && rt->ref->lenstorage >= 0) {
+            if (rt->ref->pool) { rb.root = rt->ref->pool; rb.exact = true; return rb; }
             rb.exact = cexact;
             return rb;
         }
@@ -1555,15 +1624,22 @@ struct TypeCheck {
                 if (t->ref->lenstorage >= 0) return false;  // Values are never relative.
                 if (dt->ref->lenstorage >= 0) {
                     // Storing an ordinary reference into a relative reference
-                    // location: both must derive from the same root (§3.9).
+                    // location (§3.9). A self-relative one needs both ends in
+                    // the same root array; an `in pool` one needs the value in
+                    // the pool, and takes the destination wherever it is.
                     if (t->ref->optional && !dt->ref->optional) return false;
-                    // Both ends must be the *same* array, so a root that only
+                    // The target must be the *same* array, so a root that only
                     // bounds the pointee's lifetime will not do (§9.5).
-                    if (!curdst.root || !curdst.exact || !v.rootexact ||
-                        CanonRoot(v.root) != CanonRoot(curdst.root)) {
+                    auto want = dt->ref->pool ? dt->ref->pool : CanonRoot(curdst.root);
+                    auto have = dt->ref->pool ? PoolOf(v.root) : CanonRoot(v.root);
+                    if (!want || (!dt->ref->pool && !curdst.exact) || !v.rootexact ||
+                        have != want) {
                         auto why = v.rootexact ? string() : ReadBackWhy(v.type, v.rootfrom);
-                        fitfail = cat("a relative reference must point within the same root "
-                                      "as its location (§3.9); ",
+                        fitfail = cat(dt->ref->pool
+                                          ? cat("a relative reference in ", want->name,
+                                                " must point into ", want->name, " (§3.9); ")
+                                          : string("a relative reference must point within the "
+                                                   "same root as its location (§3.9); "),
                                       !why.empty() ? why
                                       : !v.rootexact
                                           ? cat("this reference's root is not known exactly, "
@@ -2879,6 +2955,7 @@ struct TypeCheck {
             ra.writable = argvals[i].writable;
             ra.reusable = argvals[i].reusable;
             ra.exact = argvals[i].rootexact;
+            if (ra.exact) ra.pool = PoolOf(r);
             if (!r) {
                 ra.cls = 0;
             } else {
@@ -2984,7 +3061,15 @@ struct TypeCheck {
     void ValidatePoolArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode) {
         for (size_t i = 0; i < spec->params.size() && i < argvals.size(); i++) {
             auto pr = spec->params[i]->refroot;
-            if (!pr || !pr->poolclass) continue;
+            if (!pr) continue;
+            // A named pool is part of the specialization key everywhere else,
+            // but a back edge reuses the in-progress spec whatever its roots.
+            if (pr->classpool &&
+                (!argvals[i].rootexact || PoolOf(CanonRoot(argvals[i].root)) != pr->classpool))
+                Error(callnode, cat("recursive call passes ", spec->params[i]->name,
+                                    " rooted outside ", pr->classpool->name,
+                                    ", which the cycle's entry call rooted there (§3.9)"));
+            if (!pr->poolclass) continue;
             if (!argvals[i].rootexact ||
                 UltimateRoot(pr) != UltimateRoot(CanonRoot(argvals[i].root)))
                 Error(callnode, cat("recursive call passes ", spec->params[i]->name,
@@ -3056,8 +3141,12 @@ struct TypeCheck {
                         rv->depth = argvals ? Depth(CanonRoot((*argvals)[i].root)) : 0;
                         rv->classfrom = argvals ? CanonRoot((*argvals)[i].root) : nullptr;
                         rv->poolclass = true;
+                        rv->classpool = ra.pool;
                         classroots[ra.cls] = rv;
                     }
+                    // Members of one class share a root, so they agree on the
+                    // pool; a member that names none settles it for all.
+                    if (!ra.pool) classroots[ra.cls]->classpool = nullptr;
                     // A pool class holds only references to resizable-class
                     // values; a slice or a reference to anything smaller may
                     // point at a cycle function's own storage.
@@ -3361,6 +3450,13 @@ struct TypeCheck {
         if (!TypeEq(ft->ref->sub, selft))
             Error(n, cat("self here is a value of type ", TypeStr(selft), ", which does not "
                          "fit a field of type ", TypeStr(ft)));
+        // An `in pool` self is the value's own offset in the pool, so unlike a
+        // self-relative one it only means anything where the literal is being
+        // built: inside that pool.
+        if (ft->ref->pool && (!curdst.exact || PoolOf(curdst.root) != ft->ref->pool))
+            Error(n, cat("self initializes ", TypeStr(ft), " only in a literal being built "
+                         "inside ", ft->ref->pool->name, " (a push, an alloc, or an element "
+                         "store), since it stores the value's own offset in it (§3.9)"));
         // A resizable pointee needs a header the offset cannot carry; the root
         // rule keeps every other relative reference away from one, but a
         // self-reference satisfies that rule by construction.
@@ -4124,6 +4220,7 @@ struct TypeCheck {
                 g->defs.push_back(vd);
             }
         }
+        ResolvePools();
         // Validate all non-generic type declarations up front: clearer errors
         // than at first use, and unused decls get checked too.
         for (auto st : ast.structs) {
@@ -4145,6 +4242,10 @@ struct TypeCheck {
             CheckVarDecl(g, true);
             for (auto d : g->defs) d->assigned = true;
         }
+        // Concrete ones only; a pointee still spelled with a type parameter
+        // gets here again once a specialization substitutes it.
+        for (auto t : ast.alltypes)
+            if (t->kind == TY_REF && t->ref->pool && !HasGenerics(t->ref->sub)) ValidatePool(t);
         auto mit = ast.functionmap.find("main");
         if (mit == ast.functionmap.end() || mit->second.size() != 1)
             throw CompileError { "program needs exactly one fn main()" };

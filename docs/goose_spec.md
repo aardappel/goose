@@ -116,7 +116,7 @@ field lists, match arms.
 
 Type syntax is postfix throughout: `T[k]` array of T, `T&` reference to T,
 `T[:]` slice of T, `T?` optional T, `T&<u8>` relative reference,
-`Shape..` variable-mode ADT.
+`T&<u8 in pool>` one measured from a named pool, `Shape..` variable-mode ADT.
 
 Evaluation order is left-to-right everywhere (operands, arguments, field
 initializers — which named struct literals keep aligned with construction
@@ -299,9 +299,10 @@ There is one `varint` type, with two encodings by position — this is
 user-visible whenever Goose data is serialized directly:
 
 * As an array **length field type** (`T[varint]`): unsigned ULEB128.
-* Everywhere else (struct fields, ADT payloads, relative-reference offsets):
+* Everywhere else (struct fields, ADT payloads, self-relative offsets):
   **signed**, zigzag-transformed (`(v << 1) ^ (v >> 63)`), so small
-  negatives are as compact as small positives. The transform sits on the
+  negatives are as compact as small positives. A pool-relative offset (§3.9)
+  is unsigned, so it is ULEB128 like a length. The transform sits on the
   value path, not the length/advance path, so it costs no decode latency.
 
 Because the two encodings differ, varint values are never copied byte-wise
@@ -392,21 +393,30 @@ pop/push reuse (§5.3).
 
 ### 3.9 Relative references
 
-A relative reference is a storage form of reference constrained to point
-within the *same enclosing array/pool* as the location storing it. Spelled
-`T&<u8>`, `T&<u16>`, `T&<u32>`, `T&<u64>`, `T&<varint>` — widths are spelled
-unsigned (or `varint`), like array length field types, even though the
-stored offset is signed.
+A relative reference is a storage form of reference stored as a narrow
+offset instead of an address. Spelled `T&<u8>`, `T&<u16>`, `T&<u32>`,
+`T&<u64>`, `T&<varint>` — widths are spelled unsigned (or `varint`), like
+array length field types. It comes in two forms, differing only in what the
+offset is measured from: **self-relative**, the default, measured from the
+offset field itself; and **pool-relative**, written `T&<u32 in pool>`,
+measured from a named pool's base.
 
-* Stored as a self-relative signed offset of the given width (`varint`
-  offsets use the signed zigzag encoding, §3.6). Loading one yields an
-  ordinary `T&` (base = address of the offset field itself). Storing one
-  requires the compiler to see that both the reference and the destination
-  location derive from the same root array: the two roots must be the same
-  variable *and* both exact (§9.2), since a root that only bounds a lifetime
-  does not say which array the offset would span. A reference read out of a
-  container qualifies exactly when the read-back rule of §9.5 names one
-  candidate; otherwise the error names the ones it could not choose between.
+Both forms have the optional spelling `T&<u8>?`, which uses offset 0 as null
+(no target can encode as 0: a self-relative reference to the offset field
+itself is meaningless, and a pool-relative one is biased by one).
+
+**Self-relative.** Constrained to point within the *same enclosing
+array/pool* as the location storing it.
+
+* Stored as a signed offset of the given width (`varint` offsets use the
+  signed zigzag encoding, §3.6). Loading one yields an ordinary `T&` (base =
+  address of the offset field itself). Storing one requires the compiler to
+  see that both the reference and the destination location derive from the
+  same root array: the two roots must be the same variable *and* both exact
+  (§9.2), since a root that only bounds a lifetime does not say which array
+  the offset would span. A reference read out of a container qualifies
+  exactly when the read-back rule of §9.5 names one candidate; otherwise the
+  error names the ones it could not choose between.
   The offset is range-checked at the store (abort on overflow of the width).
   Both ends lie in one root array, so the offset cannot exceed that array's
   span, and the check exists only where a root can be wider than the width's
@@ -416,38 +426,83 @@ stored offset is signed.
   Varint-width relative references are written only at construction, like
   varint fields (re-encoding could change the byte length); fixed widths may
   be re-stored with `.=`/`=`.
-* Copying a *value that contains* relative references (assignment from an
-  lvalue, a by-value argument, a by-value match binder, an element copy) is
-  a compile error: the copied offsets would still be measured from the
+* Copying a *value that contains* self-relative references (assignment from
+  an lvalue, a by-value argument, a by-value match binder, an element copy)
+  is a compile error: the copied offsets would still be measured from the
   source location. Construct such values in place (literals), and bind their
   match payloads by reference. (TODO 16: track the region a relative
   reference ranges over, so provably whole-region copies can be allowed.)
-* Optional spelling `T&<u8>?` uses offset 0 as null (a relative reference
-  to the offset field itself is meaningless).
-* **`self`.** A non-optional relative reference has no null, so a value whose
-  links point back at itself — the sentinel of a circular list, the first
-  node of a pool — could not be constructed at all: there is nothing yet for
-  it to point at. `self`, written as the entire initializer of such a field
-  in a struct or variant literal, denotes the value that literal is
-  constructing: `Node { key: -1, prev: self, next: self }`. It is legal only
-  there, and only when the field's type is a non-optional relative reference
-  whose pointee is the type of the value the literal constructs (for a
-  variant literal in fixed enum mode, §3.5, that is the enum, tag included);
-  `self` in a nested literal names the literal it is written in, never an
-  enclosing one. That type must not be resizable: an offset alone cannot
-  reach a resizable value's header, which is why the same-root rule keeps
-  every *other* relative reference away from one. The stored offset is minus
-  the field's own byte offset within the value, so it is the one relative
-  reference whose meaning does not depend on where the value lives.
-  The point is that the whole structure can then be non-optional: with
-  optional links every load pays a null test for a null that never occurs
-  (that is what a sentinel is for), and non-optional relative references load
-  as a plain add.
-* Because they are position-independent, structures linked by relative
+* Because they are position-independent, structures linked by self-relative
   references are trivially serializable / mappable.
 
-This is the mechanism for ultra-compact trees: single-byte links to nearby
-nodes (see A.2).
+**Pool-relative (`in pool`).** `pool` names a *global* `var` (or `reusable
+var`) of a grow-only resizable type (`[>..]`) whose storage can hold a `T`
+by value — an element, or a by-value field of one, transitively (the
+candidate notion of §9.5). Anything else is a compile error, which for a
+local or parameter pool points at the self-relative form: the pool is named
+where the field is declared, and a local's name means nothing there.
+
+* The pool is part of the type's identity: `Node&<u32 in pool>` is neither
+  `Node&<u32>` nor `Node&<u32 in spare>`. Loading either form yields an
+  ordinary `Node&`, and storing re-encodes.
+* The stored value is `(target − base(pool)) + 1`, unsigned, so 0 is the
+  null of the optional form and a `uN` width covers a pool of up to
+  2^N − 1 bytes; `varint` is the unsigned LEB form (§3.6). Loading is
+  `base(pool) + stored − 1`, and the result is a `T&` rooted at `pool`
+  *exactly* (§9.2) whatever it was read out of.
+* Storing requires the value's root to be exactly `pool`; otherwise the
+  error names the value's root, or, for an inexact read-back, the candidates
+  §9.5 could not choose between. The destination may be anywhere — another
+  global, a local, a parameter's pointee — since the offset does not depend
+  on where it is stored. Cross-array links are the point: a slot array can
+  hold 4-byte links into the pool. The §9.2 store rule is trivially met, the
+  pool being global.
+* A width bounds the *pool*, not the distance between the two ends, so the
+  store is range-checked exactly where the pool's reservation can exceed it
+  (§10.4): `u32` at a 2 GB reservation needs no check, `u16` at any
+  realistic one does.
+  `base(pool)` never moves — a grow-only global's element region starts at
+  its stack's reservation and growth only bumps the top.
+* A value whose relative fields are *all* `in pool` copies like any other
+  (assignment, by-value arguments, element copies, `pop`): its offsets do
+  not depend on where it sits. A value mixing both forms does not.
+* Whether a *parameter* points into `pool` is settled at each call site, so
+  a function that relinks (`fn front(head: Node&, n: Node&)`) is specialized
+  per pool like every other root class (§10.2) and needs nothing passed to
+  it.
+
+**`self`.** A non-optional relative reference has no null, so a value whose
+links point back at itself — the sentinel of a circular list, the first node
+of a pool — could not be constructed at all: there is nothing yet for it to
+point at. `self`, written as the entire initializer of such a field in a
+struct or variant literal, denotes the value that literal is constructing:
+`Node { key: -1, prev: self, next: self }`. It is legal only there, and only
+when the field's type is a non-optional relative reference whose pointee is
+the type of the value the literal constructs (for a variant literal in fixed
+enum mode, §3.5, that is the enum, tag included); `self` in a nested literal
+names the literal it is written in, never an enclosing one. That type must
+not be resizable: an offset alone cannot reach a resizable value's header,
+which is why the same-root rule keeps every *other* relative reference away
+from one. In a self-relative field the stored offset is minus the field's
+own byte offset within the value, so it is the one relative reference whose
+meaning does not depend on where the value lives. In an `in pool` field it
+is the value's own offset in the pool, which only a literal being built
+*inside* `pool` has — a `push`, an `alloc_index`/`alloc_ref`, or an element
+store into it; anywhere else it is a compile error.
+The point is that the whole structure can then be non-optional: with
+optional links every load pays a null test for a null that never occurs
+(that is what a sentinel is for), and non-optional relative references load
+as a plain add.
+
+**Which form.** Self-relative for position-independent blobs — a compact
+tree that is saved, mapped or moved whole (single-byte links to nearby
+nodes, see A.2) — and for structures living in a local or parameter pool,
+which has no name to write. `in pool` for relink-heavy structures in a
+global pool, where a store is a subtraction from a base already in a
+register rather than from the field's own address; for links *into* that
+pool from other arrays, which self-relative cannot express at all; and
+wherever the offset is wanted as an index, since `&pool[i]` encodes as
+`i * sizeof(T) + 1` and `index_of` (§3.3) reads it back.
 
 ### 3.10 Slices
 
@@ -1218,8 +1273,11 @@ syntax).
 The rules below are the *scope* rules, and hold of exact and inexact roots
 alike. Only rules that need the target's **identity** rather than its lifetime
 consult exactness — storing a reference into a relative-reference location
-(§3.9), and the compiler's proof that two references name different arrays —
-and each of those takes its conservative answer without it.
+(§3.9), converting one to an index (`index_of`, §3.3), and the compiler's
+proof that two references name different arrays — and each of those takes its
+conservative answer without it. A relative reference that names a pool (§3.9)
+is where an exact root also *comes from*: a load out of one is rooted at that
+pool, exactly, whatever container it was read out of.
 
 Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
 
@@ -1257,8 +1315,8 @@ Aborts (message + exit; not catchable):
 * limited-array capacity overflow;
 * shrinking below empty (`pop` on an empty array, `resize` to a negative
   length);
-* relative-reference offset overflow at store (only where a root array can
-  span more than the width's signed range, §3.9);
+* relative-reference offset overflow at store (only where a root array, or
+  a named pool, can span more than the width holds, §3.9);
 * debug only: integer overflow (per operation as it executes, §6.2), `as`
   range violations;
 * division by zero (always);
@@ -1318,7 +1376,10 @@ element types a literal can supply. Then, by where `C`'s own root lies:
 
 A relative reference `T&<w>` read out of `C` points within `C`'s own root
 array by construction (§3.9), so it takes `C`'s root and `C`'s exactness
-whichever case applies.
+whichever case applies. One that names a pool needs no candidates at all: it
+points into that pool, so it is rooted there and exact, and this is how a
+container of links stays usable where a container of plain references would
+be ambiguous.
 
 A diagnostic that turns on an inexact read-back names the container it came
 out of and the candidates it could not choose between ("`n` was read out of
@@ -1700,9 +1761,9 @@ The newest, highest-priority items first:
     generic-over-structural-shape.
 15. **Wasm fallback** — index-based reference representation details.
 16. **Relative-reference region tracking** — copies of values containing
-    relative references are currently rejected outright (§3.9); track the
-    region an offset ranges over so whole-region copies (and serialization
-    moves) can be proven safe.
+    *self-relative* references are currently rejected outright (§3.9; the
+    `in pool` form already copies); track the region an offset ranges over so
+    whole-region copies (and serialization moves) can be proven safe.
 
 ---
 
@@ -1729,8 +1790,13 @@ state exists.
   uninitialized, never read). ADT variable mode: tag, then the actual
   variant's payload.
 * varint: §3.6 (ULEB128; zigzag where signed).
-* Reference: one pointer. Optional: 0 = null. Relative: signed offset of the
-  declared width, relative to the offset field's own address; 0 = null.
+* Reference: one pointer. Optional: 0 = null. Self-relative: signed offset
+  of the declared width from the offset field's own address; 0 = null.
+  Pool-relative (`in pool`, §3.9): unsigned offset of the declared width,
+  `(target − base(pool)) + 1`, so 0 stays null and a `uN` width spans
+  2^N − 1 bytes of the pool. `base(pool)` is the global's element region,
+  fixed when its stack is reserved before any initializer runs; a function
+  that loads or stores such a reference reads it once into a local at entry.
 * Slice: `{ data: T*, len: int64 }` (len = element count).
 
 **Resizable values.** A resizable's element region always tops its data
@@ -1820,7 +1886,7 @@ postfix     := "[" expr "]"                      // fixed array (const expr)
              | "[" ".." expr? "]"                // limited (const expr)
              | "[" ">" ".." "<"? "]"             // resizable
              | "[" ":" "]"                       // slice
-             | "&" ("<" uint ">")?               // reference / relative
+             | "&" ("<" uint ("in" ident)? ">")?  // reference / relative
              | "?"                               // optional (any type)
              | ".."                              // variable-mode ADT
              | "." ident                         // variant type

@@ -353,6 +353,10 @@ struct Parser {
                     r->ref->sub = t;
                     if (IsNext(T_LT)) {
                         r->ref->lenstorage = ParseLengthStorage("relative reference width");
+                        // `T&<u32 in pool>`: offsets measured from a named
+                        // global pool rather than from the field (§3.9).
+                        if (IsNext(T_IN))
+                            r->ref->poolname = ExpectIdent("relative reference pool");
                         ExpectClosingAngle("relative reference width");
                     }
                     t = r;

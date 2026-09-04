@@ -127,7 +127,9 @@ inline void TypeExpr::Dump(string &s) const {
         case TY_REF:
             SubDump(ref->sub);
             if (ref->lenstorage >= 0) {
-                Append(s, "&<", IntStorageName(ref->lenstorage), ">");
+                Append(s, "&<", IntStorageName(ref->lenstorage));
+                if (!ref->poolname.empty()) Append(s, " in ", ref->poolname);
+                s += ">";
                 if (ref->optional) s += "?";
             } else {
                 s += ref->optional ? "?" : "&";  // Canonically T?, not T&?.
