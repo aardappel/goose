@@ -892,7 +892,8 @@ top level. `break` binds to the innermost `loop`/`while`/`for`/`block`;
 labels are not in v1. All `break E` of one construct must agree on E's type.
 
 `guard c else { s }`: the block runs when `c` is false and must diverge
-(`return`, `break`, `continue`, or a call to an aborting function); code
+(`return`, `break`, `continue`, or a call that never returns: `abort(msg)`,
+`exit(code)`, §9.3); code
 after the guard proceeds with `c` known true — including flow-narrowing of
 `T?` (`guard r else { return; }` leaves `r: T&`). The bare form `guard c;`
 is shorthand for `guard c else { break }` inside a loop or `block`, and for
@@ -1331,8 +1332,14 @@ Aborts (message + exit; not catchable):
 * debug only: integer overflow (per operation as it executes, §6.2), `as`
   range violations;
 * division by zero (always);
-* `assert` failures;
+* `assert` failures, and the program's own `abort(msg)` (`msg` any `u8`
+  array or slice; printed as `goose runtime error: <msg>`);
 * guard-page hits (stack budget exceeded) — safe abort, never corruption.
+
+`exit(code)` ends the program normally with the given process exit code.
+Both `abort` and `exit` never return, which the checker knows: code after
+them is unreachable, and either may be the whole of a `guard`'s else block
+(§6.4).
 
 ### 9.4 The residual unsafety, stated honestly
 
@@ -1592,8 +1599,8 @@ machinery this needs.)
 ## 12. Deliberately out of scope for v1
 
 Standard library contents (beyond: `print(x)` for scalars and u8-arrays/
-slices, `assert`, `hardware_threads`, and the math types of §6.1 are
-assumed); FFI details (an `extern fn`
+slices, `assert`, `abort`, `exit`, `hardware_threads`, and the math types
+of §6.1 are assumed; the library's design is in `stdlib_design.md`); FFI details (an `extern fn`
 C boundary is assumed to exist, unchecked by nature); error-value
 conventions (§7.9); move operations for resizables; multiple resizables per
 struct; two-way growth arrays; inline compaction / copying GC for pools;

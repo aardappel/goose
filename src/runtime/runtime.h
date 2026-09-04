@@ -96,6 +96,21 @@ static GS_NORETURN void gs_abort(int err, const char *file, int line) {
     exit(1);
 }
 
+/* The program's own abort(msg) (§9.3): the message is Goose bytes, not a C
+   string, so it goes out with an explicit length. */
+static GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char *file,
+                                     int line) {
+    fputs("goose runtime error: ", stderr);
+    fwrite(msg, 1, (size_t)len, stderr);
+    fprintf(stderr, " (%s:%d)\n", file, line);
+    exit(1);
+}
+
+static GS_NORETURN void gs_exit(int64_t code) {
+    fflush(stdout);
+    exit((int)code);
+}
+
 static int64_t gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
     fprintf(stderr, "goose runtime error: index %lld out of bounds (length %lld) "
             "(%s:%d)\n", (long long)i, (long long)n, file, line);

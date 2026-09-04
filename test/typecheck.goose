@@ -130,6 +130,13 @@ fn assert_narrow(o: i64?) -> i64 {
     o
 }
 
+// abort() ends the program, so a guard's else may consist of it (§6.4, §9.3).
+fn abort_narrow(o: i64?) -> i64 {
+    guard o else { abort("abort_narrow needs a value"); }
+    if o < 0 { exit(2); }                // exit() diverges the same way.
+    o
+}
+
 struct OptBox { o: i64&? }
 
 fn transparency() {
@@ -691,6 +698,7 @@ fn main_typecheck() {
     refs();
     print(narrowing(&gcounter, &gcounter));
     print(assert_narrow(&gcounter));
+    assert(abort_narrow(&gcounter) == gcounter);
     transparency();
     print(nulls(&gcounter));
     print(nulls(null));

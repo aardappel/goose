@@ -1680,6 +1680,8 @@ inline bool Call::BceWalk(BCE &b) {
                 if (!args.empty())
                     if (auto bl = Is<BoolLit>(args[0]); bl && !bl->val) return false;
                 break;
+            case B_ABORT: case B_EXIT:
+                return false;   // The program ends here (§9.3).
             default:
                 break;   // len/cap/print/free/queues/threads: no tracked effect.
         }
