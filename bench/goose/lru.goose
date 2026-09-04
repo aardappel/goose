@@ -27,6 +27,7 @@
 // order and the freelist actually cycles.
 
 import rng;
+import std;
 
 let N = 8000000;                         // BENCH_N
 let CAP = N / 8;
@@ -90,10 +91,9 @@ fn link_front(head: Node&, n: Node&) {
 }
 
 fn main() {
-    var nslots = 16;
-    while nslots < CAP * 2 { nslots *= 2; }
+    let nslots = max(16, next_pow2(CAP * 2));
     mask = (nslots - 1) as u64;
-    for s in nslots { slots.push(Slot { key: 0, node: null }); }
+    push_n(slots, Slot { key: 0, node: null }, nslots);
     // Two sentinels: the list is never empty, so no link is null in practice.
     let hi = pool.alloc_index(Node { key: -1, val: 0 });
     let ti = pool.alloc_index(Node { key: -1, val: 0 });

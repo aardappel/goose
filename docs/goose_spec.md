@@ -431,7 +431,12 @@ measured from a named pool's base.
 
 Both forms have the optional spelling `T&<u8>?`, which uses offset 0 as null
 (no target can encode as 0: a self-relative reference to the offset field
-itself is meaningless, and a pool-relative one is biased by one).
+itself is meaningless, and a pool-relative one is biased by one). Null is
+therefore representable in any relative location whatever the location's
+root: a value known to be null — the literal, or a reference whose root is
+static data, which nothing but null has — stores into an optional relative
+slot without a root check of its own. So a sentinel-ended chain does not
+force plain links on the whole structure.
 
 **Self-relative.** Constrained to point within the *same enclosing
 array/pool* as the location storing it.
@@ -991,7 +996,10 @@ Built-in iteration only (no iterator protocol):
 * `for i in n` — sugar for `0..n`; `i` has `n`'s type.
 * `for x in arr` — element copies for fixed-size elements, at the element's
   type; element references for non-fixed ones (§4.1), whose walk is
-  sequential.
+  sequential. An element that *is* a relative reference (§3.9) binds as the
+  loaded plain reference, exactly as indexing it gives; an element with
+  relative references *inside* it cannot be copied out of its root at all,
+  and needs the `&x` form.
 * `for &x in arr` — element references (the mutation form for fixed-size
   elements; redundant, and a warning, for non-fixed ones). Over a `[>..<]`,
   the binding is a reference in scope: no shrink inside the loop (§5.2).
@@ -1655,9 +1663,11 @@ roots, and a caller's facts reach a callee body once it is inlined.
 * Globals are declared like locals (`let`/`var`, any type including
   resizable). Semantically the whole program runs inside an implicit
   outermost scope owning them: they participate in the depth check (§9.2) as
-  the outermost roots, initialize in declaration order before `main` (their
-  initializers may call functions), and a global resizable simply owns a
-  stack's bottom for the program's life (a natural whole-program arena).
+  the outermost roots, initialize before `main` in declaration order within a
+  file and imported-file-first across files (so a global initializer may name
+  one from a module it imports; their initializers may call functions), and a
+  global resizable simply owns a stack's bottom for the program's life (a
+  natural whole-program arena).
   `let` globals of flat fixed type with compile-time-evaluable initializers
   live in static data.
 * Entry point: `fn main() { }`. Only the *root* file's `main` is the entry;

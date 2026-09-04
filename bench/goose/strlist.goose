@@ -6,6 +6,7 @@
 // Word lengths here run 3..20, straddling the SSO boundary on purpose.
 
 import rng;
+import std;
 
 let N = 400000;                          // BENCH_N
 let PASSES = 4;
@@ -23,15 +24,10 @@ fn main() {
         }
         text.push(' ');
     }
-    // Split it into a flat list of strings.
+    // Split it into a flat list of strings; the trailing separator yields
+    // an empty part, which is not a word.
     var words: u8[][>..] = [];
-    var i = 0;
-    while i < text.len {
-        let start = i;
-        while i < text.len && text[i] != ' ' { i++; }
-        words.push(text[start..i]);
-        while i < text.len && text[i] == ' ' { i++; }
-    }
+    each_split(text, ' ') { if it.len > 0 { words.push(it); } };
     // Scan the list repeatedly: length and first/last character of each word.
     var total = 0;
     for p in PASSES {

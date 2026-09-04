@@ -13,6 +13,7 @@
 // code for the same result.
 
 import rng;
+import std;
 
 let V = 1000000;                         // BENCH_N
 let DEG = 8;
@@ -41,7 +42,7 @@ fn main() {
     for s in SOURCES {
         seed = xs_next(seed);
         let src = xs_mod(seed, V);
-        for v in V { dist[v] = -1; }
+        fill(dist, -1);
         q.clear();
         dist[src] = 0;
         q.push(src as i32);

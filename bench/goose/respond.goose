@@ -16,6 +16,7 @@
 // buffer -- respond_stream.goose is the Goose row of that shape.
 
 import rng;
+import std;
 
 let N = 400000;                          // BENCH_N
 
@@ -102,12 +103,6 @@ fn render(out: u8[>..]&, r: Resp&) {
     out.push('}');
 }
 
-fn fnv(s: u8[:]) -> u64 {
-    var h = 0xcbf29ce484222325;
-    for c in s { h = (h ^ c) * 0x100000001b3; }
-    h
-}
-
 // One request: the response object and its rendering are both locals.
 fn handle(seed: u64) -> u64, i64 {
     let r = xs_next(seed);
@@ -115,7 +110,7 @@ fn handle(seed: u64) -> u64, i64 {
     let resp = Resp { id: xs_mod(r >> 4, 1000000), user: name_of(r >> 8), items: make_items(r >> 16, n) };
     var out: u8[>..] = [];
     render(out, resp);
-    return fnv(out[..]), out.len;
+    return hash(out[..]), out.len;
 }
 
 fn main() {

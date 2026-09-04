@@ -7,6 +7,7 @@
 // and the checksum -- are identical.
 
 import rng;
+import std;
 
 let N = 400000;                          // BENCH_N
 
@@ -43,12 +44,6 @@ fn emit_sku(out: u8[>..]&, seed: u64) {
     out.push('"');
 }
 
-fn fnv(s: u8[:]) -> u64 {
-    var h = 0xcbf29ce484222325;
-    for c in s { h = (h ^ c) * 0x100000001b3; }
-    h
-}
-
 fn handle(seed: u64) -> u64, i64 {
     let r0 = xs_next(seed);
     let n = 1 + xs_mod(r0, 8);
@@ -77,7 +72,7 @@ fn handle(seed: u64) -> u64, i64 {
     out.append("],\"total\":");
     emit_int(out, total);
     out.push('}');
-    return fnv(out[..]), out.len;
+    return hash(out[..]), out.len;
 }
 
 fn main() {

@@ -1,5 +1,9 @@
 # The plan.md branches: what each is worth, and whether to take it
 
+*A completed round's per-item outcome, kept as the record of what was measured
+and why each verdict went the way it did. The current state of the compiler is
+what `results.md` reports.*
+
 Sixteen branches, one per item of `bench/plan.md`, each implemented on its
 own `opt/<name>` branch from master `caf3b65` by its own agent, with tests,
 and each measured the same way afterwards on a quiet machine: every Goose row

@@ -1,5 +1,9 @@
 # Next compiler work, from the sixteen benchmarks
 
+*A completed round's plan, kept as the record of how each item was chosen and
+measured; `adoption.md` says what each turned out to be worth. What is still
+open is the list at the end of `notes.md`, not this file.*
+
 What to change in the compiler, and in a few places the language, to remove
 the deficits the benchmark suite measures and to compound the advantages it
 confirms. Every item below carries either a measurement (a hand-transformed

@@ -28,6 +28,12 @@ Conventions that hold throughout:
 * Text output goes into a `u8[>..]&` builder the caller passes; `str(…)` is
   the fresh-string form.
 * UFCS applies: `xs.sort()`, `d.insert(k, v)`, `r.rand_int(6)`.
+* A function taking an element *by value* (`push_n`, `insert_at`, `fill`,
+  `heap_push`) cannot take one that contains self-relative references, which
+  no copy can carry (spec §3.9); build those in place.
+* The names here live in the program's one namespace, so a local called
+  `fill` or `count` shadows the library's and the error lands at the call,
+  not at the declaration.
 
 ## std
 

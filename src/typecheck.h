@@ -1864,6 +1864,18 @@ struct TypeCheck {
                     // the same root array; an `in pool` one needs the value in
                     // the pool, and takes the destination wherever it is.
                     if (t->ref->optional && !dt->ref->optional) return false;
+                    // Null is the only reference value rooted at static data
+                    // (§9.5's read-back rule says so too, and a null argument
+                    // is what puts a reference parameter in the static root
+                    // class), and it stores as the sentinel offset, which
+                    // means the same in every location. So an optional
+                    // relative slot takes it wherever the slot is: a linked
+                    // structure's sentinel end does not force plain links.
+                    if (t->ref->optional && dt->ref->optional && v.rootexact &&
+                        !CanonRoot(v.root)) {
+                        v.type = dt;
+                        return true;
+                    }
                     // The target must be the *same* array, so a root that only
                     // bounds the pointee's lifetime will not do (§9.5).
                     auto want = dt->ref->pool ? dt->ref->pool : CanonRoot(curdst.root);
@@ -2526,6 +2538,7 @@ struct TypeCheck {
 
     void CheckFor(ForLoop *x) {
         TypeExpr *bindtype = nullptr;
+        TypeExpr *elemtype = nullptr;   // The array's element type, where it has one.
         VarDef *iterroot = nullptr;
         auto iterexact = false;
         VarDef *iterfrom = nullptr;
@@ -2556,6 +2569,7 @@ struct TypeCheck {
                 bindtype = t;
             } else if (t->kind == TY_ARRAY || t->kind == TY_SLICE) {
                 auto elem = t->kind == TY_ARRAY ? t->arr->sub : t->sub;
+                elemtype = elem;
                 x->iterkind = t->kind == TY_ARRAY ? IK_ARRAY : IK_SLICE;
                 // Non-fixed elements bind by reference either way (§4.1).
                 if (!x->byref && ClassOf(elem) != SC_FIXED) {
@@ -2567,7 +2581,11 @@ struct TypeCheck {
                 if (x->byref) {
                     bindtype = RefTo(elem, x->line);
                 } else {
-                    if (HasRelRefT(elem))
+                    // An element that *is* a relative reference loads as a
+                    // plain one, exactly as indexing it does; only a value
+                    // with relative references *inside* it cannot be copied
+                    // out of the root they are measured against (§3.9).
+                    if (HasRelRefT(elem) && elem->kind != TY_REF)
                         Error(x, "elements containing relative references require the "
                                  "&x binding form (copies are not supported)");
                     bindtype = LoadType(elem);
@@ -2582,10 +2600,21 @@ struct TypeCheck {
         auto vd = NewVar(x->var, bindtype, x->line, false);
         vd->assigned = true;
         if (bindtype->kind == TY_REF) {
-            vd->refroot = CanonRoot(iterroot);
+            // A relative-reference element bound by value was read out of the
+            // array, so where it points follows the read-back rule (§9.5),
+            // not the array's own root.
+            if (!x->byref && elemtype && elemtype->kind == TY_REF &&
+                elemtype->ref->lenstorage >= 0) {
+                auto rb = ReadBackRoot(elemtype, CanonRoot(iterroot), iterexact);
+                vd->refroot = CanonRoot(rb.root);
+                vd->refrootexact = rb.exact;
+                vd->refrootfrom = rb.from;
+            } else {
+                vd->refroot = CanonRoot(iterroot);
+                vd->refrootexact = iterexact;
+                vd->refrootfrom = iterfrom;
+            }
             vd->refrootknown = true;
-            vd->refrootexact = iterexact;
-            vd->refrootfrom = iterfrom;
             vd->refwritable = iterwritable;
         }
         x->vdef = vd;
