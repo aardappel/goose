@@ -399,14 +399,6 @@ killed by rebinding the variable). `o .= &x` / `o .= null` rebind an
 optional; a rebind to a plain reference narrows it, a rebind to anything
 possibly null un-narrows it.
 
-**Implementation note (fat references).** When a callee grows a resizable
-through a reference (e.g. `push` through a `f64[>..]&`), it must know which
-data stack to bump. Where the compiler cannot pin that stack statically per
-call site (§10.2), such a reference costs two pointers instead of one — the
-address plus the stack identity, passed as a fat reference or hidden
-argument. There is no surface syntax; this is purely an implementation
-choice per instantiation.
-
 **What references may point to.** Anything except the interior of a
 fixed-mode ADT payload (§3.5). A reference into a grow-shrink array `[>..<]`
 lives in a variable only and must be out of scope at the array's next shrink
@@ -1097,14 +1089,6 @@ only in that case. (Often even that is avoided: a callee local resizable
 assigned the destination stack is operated on via its frame header,
 Appendix C.2, and its elements are already in place.)
 
-Implementation status: both request kinds exist for variable *array* results
-(`T[]`): an element-run receiver compiles the callee a second time in run
-form (raw elements + count out-parameter), so `v.append(f())` is contiguous
-with no copy, and a named result pays the specified single callee-side copy.
-Callees with no run form (builtins, dynamic dispatch) fall back to the value
-form; the receiver then slides the length prefix out with one memmove.
-Non-array variable results have only the value form for now.
-
 Consequence: returning a built-up value and out-parameter style are the same
 cost, and building a variable element "inside" a container is idiomatically a
 function call in argument/push position.
@@ -1113,7 +1097,7 @@ function call in argument/push position.
 
 Passing `&v` where `v` is resizable lets the callee push/append: per call
 site the compiler specializes on the identity of the stack `v` tops (§10.2),
-or passes it as a hidden argument / fat reference (§3.8) when one body serves
+or passes it as a hidden argument / fat reference (Appendix E) when one body serves
 multiple stacks. No surface syntax distinguishes these.
 
 An in-scope "current pool" mechanism (allocation without naming the array,
@@ -1721,14 +1705,38 @@ machinery this needs.)
 
 ## 12. Builtins, the standard library, and what v1 leaves out
 
-The language's own functions are few: `print`, `str` and `format` (§3.7);
-`assert`, `abort` and `exit` (§9.3); `copy` (§4.1) and `default<T>()`
-(§4.2); the array members of §3.3 and §5.4; and `thread_spawn`,
-`thread_wait`, `hardware_threads` and the queue operations of §11.2.
+The language's own functions:
+
+| Builtin | Meaning |
+|---|---|
+| `print(a, b, …)` | the arguments' text and a newline to standard output (§3.7) |
+| `str(a, b, …) -> u8[>..]` | the arguments' text as a fresh string, built at its destination (§3.7) |
+| `format(out, a, b, …)` | the arguments' text appended to `out`, any growable `u8` array (§3.7) |
+| `assert(c)` | aborts unless `c`, a `bool` or an optional, which it narrows (§9.3, §3.8) |
+| `abort(msg: u8[:])`, `exit(code: i64)` | end the program; both diverge (§9.3) |
+| `copy(x) -> T` | a fresh copy of the stored value `x` names (§4.1) |
+| `default<T>() -> T` | the value a fixed-size `T` has before anything is written to it (§4.2) |
+| `hardware_threads() -> i64`, `thread_spawn(worker, args…) -> i64`, `thread_wait(id)` | workers (§11.2) |
+| `qput(v)`, `qget<T>() -> T`, `qpoll<T>() -> T, bool` | the typed queues (§11.2) |
+
+And the array members, ordinary functions of their receiver per UFCS
+(`a.push(v)` is `push(a, v)`):
+
+| Member | On | Meaning |
+|---|---|---|
+| `.len -> i64` | every array kind and slices | the element count (§3.3) |
+| `.cap -> i64` | limited arrays | the capacity (§3.3) |
+| `.push(v) -> T&` | limited, grow-only, grow-shrink | one element, constructed in place (§3.3) |
+| `.append(src)` | limited, grow-only, grow-shrink | an array or slice of elements (§3.3) |
+| `.pop() -> T`, `.resize(n, v?)`, `.clear()` | limited, grow-shrink; grow-only where §5.1 allows a shrink | shrinking, and growing with a fill value (§3.3, §5) |
+| `.index_of(r) -> i64` | fixed, limited, grow-only, grow-shrink | the index of the element `r` refers to (§3.3) |
+| `.alloc_index(v) -> i64`, `.alloc_ref(v) -> T&`, `.free(i)` | `reusable` pools | slot reuse (§5.4) |
+
 Everything else is the standard library: Goose source under `stdlib/`,
 reached by `import` (§11.1) and documented in `stdlib.md` (the design it
-came from is `stdlib_design.md`). The math types of §6.1 are its `vec`
-module; the C behind `math` and `os` enters through `extern fn` (§7.10).
+came from is `design/stdlib_design.md`). The math types of §6.1 are its
+`vec` module; the C behind `math` and `os` enters through `extern fn`
+(§7.10).
 
 Deliberately out of scope for v1: error-value conventions (§7.9); move
 operations for resizables; multiple resizables per struct; two-way growth
@@ -2110,3 +2118,34 @@ commits to a type argument list only when followed by `(`, `{`, or
 brackets, and match arms; multiple return types in a function *type* (not a
 declaration header) require parens around the list; `T&?` parses to the
 same type as `T?`, and `?` on an already-optional type is an error.
+
+---
+
+## Appendix E. Implementation notes (informative)
+
+What the current compiler does where the text above leaves it a choice.
+
+* **Fat references.** A callee that grows a resizable through a reference
+  (`push` through a `f64[>..]&`) must know which data stack to bump. The
+  compiler does not pin that stack per call site (§10.2): every reference
+  to a resizable-class value carries the stack identity beside the header
+  address (C.2), and a reference with reusable-pool provenance (§5.4)
+  carries the freelist as well. There is no surface syntax; the form is per
+  instantiation and invisible to the program.
+* **Stack assignment** is the hidden-argument strategy §10.3 permits: every
+  function that uses data stacks takes its base index as a hidden argument
+  and addresses its nonfixed locals at constant offsets from it, callees
+  start above its in-use watermark, and stacks are reserved lazily as the
+  depth first reaches them. Globals own dedicated stacks outside the indexed
+  block, which is what lets thread programs (§11.2), each with a block of
+  its own, share every generated function.
+* **Element-run results** (§7.3) exist for variable *array* results
+  (`T[]`): an element-run receiver compiles the callee a second time in run
+  form (raw elements plus a count out-parameter), so `v.append(f())` is
+  contiguous with no copy, and a named result pays the specified single
+  callee-side copy. Callees with no run form (builtins, tag dispatch) fall
+  back to the value form, and the receiver slides the length prefix out
+  with one memmove. Non-array variable results have only the value form.
+* **Queue images** (§11.2) are one contiguous byte image per value; a
+  resizable's is its count, its fixed fields and its tail's elements, built
+  on a scratch stack at `qput` and unpacked at the receiver's destination.
