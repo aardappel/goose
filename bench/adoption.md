@@ -77,7 +77,7 @@ listed below. Decisions taken on the way:
   nothing was ported from it.
 * 3.1 pool-relative was held on its branch pending the language-level
   question of what a compressed reference denotes; the answer is the
-  `in pool` form of spec §3.9 (`docs/relative_references.md`), implemented
+  `in pool` form of spec §3.9 (`docs/design/relative_references.md`), implemented
   afterwards without the flag branch's hidden arguments or fixpoint.
 * The variant sources the branches used for their claims stay in
   `bench/goose/` beside the rows (`push_ref`, `blur_assert`, `lru_nonopt`,
@@ -444,7 +444,7 @@ is root plumbing the compiler did not have. Narrow widths change meaning (a
 sub-region copies (TODO 16) would need rebasing.
 
 **Verdict: resolved at the language level** -- the comparison is written up in
-`docs/relative_references.md`, and the outcome is the `in pool` form of spec
+`docs/design/relative_references.md`, and the outcome is the `in pool` form of spec
 §3.9: a field names a global pool, no hidden arguments, no per-call-site
 fixpoint; `lru` with 8-byte reference slots is level with the index form under
 v145 and 1.31x faster under clang. The experiment answered

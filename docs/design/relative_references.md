@@ -188,28 +188,22 @@ structures live.
 ## Outcome
 
 C, built: `T&<u32 in pool>` where `pool` is a global grow-only array (spec
-3.9). The pool is named at the field's declaration and is part of the type,
-so a store measures from that global's base and a load is rooted there
-exactly -- no fixpoint over parameter classes and no hidden arguments; a
-call site passing a reference rooted in a different pool is simply a
-different specialization, as every other root difference already is. The
-`in pool` form is restricted to global pools, which is where the note
-expected the relink-heavy structures to be; a local or parameter pool keeps
-the self-relative form. `lru` was rewritten onto it, with the map holding
-`Node&<u32 in pool>?` in 8-byte slots and `pool.free(pool.index_of(n))`
-(spec 3.3) where it used to hold an index; the index form is kept as
-`lru_indices.goose`.
+§3.9), plus `a.index_of(r)` (§3.3). The pool is named at the field's
+declaration and is part of the type, so a store measures from that global's
+base and a load is rooted there exactly -- no fixpoint over parameter classes
+and no hidden arguments; a call site passing a reference rooted in a
+different pool is simply a different specialization, as every other root
+difference already is. The `in pool` form is restricted to global pools,
+which is where the note expected the relink-heavy structures to be; a local
+or parameter pool keeps the self-relative form, which is why `graph` stays
+self-relative (its pool is a local of `main`), and that is the intended
+division of labour.
 
-## Status
-
-Option C is implemented (spec §3.9, `T&<u32 in pool>` with a global pool,
-plus `a.index_of(r)`). `lru` now keeps 8-byte slots holding `in pool` links
-and relinks through them, `pool.free(pool.index_of(n))` closing the loop:
-against the index form (`lru_indices.goose`) it is level under v145 and
-1.31x faster under clang, with the pool's base held in one local per
-function. `graph` stays self-relative: its pool is a local of `main`, which
-the pool-named form cannot name, and that is the intended division of
-labour. No other benchmark's generated C changed. In the suite the row is
-3,255/2,133 ms against the Rust arena's 2,237 and the C++ arena's
-2,413/2,261: level with both under clang, 1.45x behind under v145, where the
-base-plus-offset load is scheduled worse.
+`lru` was rewritten onto it: the map holds `Node&<u32 in pool>?` in 8-byte
+slots and relinks through them, `pool.free(pool.index_of(n))` closes the
+loop, and the pool's base is held in one local per function; the index form
+is kept as `lru_indices.goose`. Against it the reference form is level under
+v145 and 1.31x faster under clang. No other benchmark's generated C changed.
+In the suite the row is 3,255/2,133 ms against the Rust arena's 2,237 and
+the C++ arena's 2,413/2,261: level with both under clang, 1.45x behind under
+v145, where the base-plus-offset load is scheduled worse.
