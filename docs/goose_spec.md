@@ -1266,6 +1266,35 @@ multi-value returns. Long-distance: `return from`.
 
 ---
 
+### 7.10 `extern fn`
+
+```goose
+extern fn sqrt(x: f64) -> f64;
+extern "sqrtf" fn sqrt(x: f32) -> f32;
+extern "gs_os_read_file" fn read_file(path: u8[:], out: u8[>..]&) -> bool;
+extern fn gl_vertex3(v: float3&);
+```
+
+A declaration without a body binds a Goose signature to a C function: the
+optional string is the C symbol (default: the Goose name). It is top-level
+only, fully typed, not generic, and joins overload resolution like any
+function. A call compiles to a direct C call with no calling-convention
+extras, and a prototype is emitted from the declaration unless the runtime
+defines the symbol (the `os` library's `gs_os_*` functions, in
+`src/runtime/runtime_os.h`). User C reaches the program through
+`--include <header>`, emitted after the generated type declarations so a
+header can implement shims against the generated typedefs.
+
+What crosses (layouts per C.2): the integer and float scalars and `bool`;
+any flat fixed-size struct or fixed array, by value as its packed C type;
+`T&` to such a `T`, as a pointer; `T[:]` of such a `T`, as the slice struct
+(`{ data, len }`); and `u8[>..]&`, as the resizable's header plus its stack
+(`gs_rref`), which C appends to through `gs_bld_append(ref, p, n)`.
+Returns are one such value or nothing. Everything else — varints,
+references inside structs, variable and resizable values by value, slices
+of variable elements, optionals — is rejected at the declaration.
+Writability is checked at the call site as for `push` (§9.5).
+
 ## 8. ADTs in use
 
 ### 8.1 `match`

@@ -1281,6 +1281,7 @@ struct BCE {
     // Per-specialization driver.
 
     void RunSpec(FnSpec *sp) {
+        if (!sp->body) return;   // An extern fn (§7.10).
         addrof.clear();
         intvars.clear();
         wdecl.clear();

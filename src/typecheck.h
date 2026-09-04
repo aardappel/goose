@@ -3385,8 +3385,81 @@ struct TypeCheck {
         });
     }
 
+    // A fixed-size value C takes by value (§7.10): a scalar, bool, or a flat
+    // fixed struct or array (packed, no references).
+    bool ExternValueOk(TypeExpr *t, string &why) {
+        switch (t->kind) {
+            case TY_INT:
+                if (t->intstorage == IS_VARINT) { why = "varints have no C form"; return false; }
+                return true;
+            case TY_FLT: case TY_BOOL: return true;
+            case TY_REF: case TY_SLICE: why = "nested references and slices do not cross"; return false;
+            default: break;
+        }
+        if (ClassOf(t) != SC_FIXED) { why = "only fixed-size values cross by value"; return false; }
+        if (!IsFlat(t)) { why = "values holding references do not cross"; return false; }
+        return true;
+    }
+
+    bool ExternParamOk(TypeExpr *t, string &why) {
+        if (t->kind == TY_REF) {
+            if (t->ref->optional || t->ref->lenstorage >= 0) {
+                why = "only plain references cross";
+                return false;
+            }
+            auto s = t->ref->sub;
+            if (s->kind == TY_ARRAY && s->arr->akind == A_GROW && IsU8(s->arr->sub)) return true;
+            return ExternValueOk(s, why);
+        }
+        if (t->kind == TY_SLICE) return ExternValueOk(t->sub, why);
+        return ExternValueOk(t, why);
+    }
+
+    // An extern declaration (§7.10) has typed parameters of C-crossing
+    // shapes, at most one fixed-size return, and no body to check.
+    void CheckExternSpec(FnSpec *spec) {
+        auto sf = spec->sf;
+        if (!sf->generics.empty())
+            Error(sf->line, cat("extern fn ", sf->name, " cannot be generic"));
+        for (size_t i = 0; i < sf->params.size(); i++) {
+            auto &p = sf->params[i];
+            if (!p.type) Error(sf->line, cat("extern fn ", sf->name, ": parameter ", p.name,
+                                             " needs a type"));
+            auto pt = spec->argtypes[i];
+            ValidateType(pt, sf->line, VT_PARAM);
+            string why;
+            if (!ExternParamOk(pt, why))
+                Error(sf->line, cat("extern fn ", sf->name, ": parameter ", p.name, " of type ",
+                                    TypeStr(pt), " cannot cross to C: ", why));
+            auto vd = ast.NewVarDef();
+            vd->name = p.name;
+            vd->type = pt;
+            vd->line = sf->line;
+            vd->isparam = true;
+            vd->ownerspec = spec;
+            spec->params.push_back(vd);
+        }
+        if (sf->rets.size() > 1)
+            Error(sf->line, cat("extern fn ", sf->name, " returns at most one value"));
+        spec->rets.clear();
+        for (auto rt : sf->rets) {
+            auto t = Subst(rt);
+            ValidateType(t, sf->line, VT_LOCAL);
+            string why;
+            if (!ExternValueOk(t, why))
+                Error(sf->line, cat("extern fn ", sf->name, " cannot return ", TypeStr(t), ": ",
+                                    why));
+            spec->rets.push_back(t);
+        }
+        spec->retsknown = true;
+        spec->checkedreturn = true;
+        spec->checked = true;
+        spec->inprogress = false;
+    }
+
     void CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline) {
         auto sf = spec->sf;
+        if (sf->isextern) { CheckExternSpec(spec); return; }
         spec->inprogress = true;
         Frame f;
         f.sf = sf;
@@ -4835,7 +4908,7 @@ struct TypeCheck {
         for (auto &p : sf->params) if (!p.type) return;
         set<string_view> names = { sf->name };
         auto foreign = false;
-        ScanForeignFrom(sf->body, names, foreign);
+        if (sf->body) ScanForeignFrom(sf->body, names, foreign);
         if (foreign) return;
         auto spec = ast.NewFnSpec();
         spec->sf = sf;
@@ -4890,7 +4963,7 @@ struct TypeCheck {
             // Nested fns count as in-scope targets; their bodies are not
             // Children, so recurse explicitly.
             names.insert(fd->sf->name);
-            ScanForeignFrom(fd->sf->body, names, foreign);
+            if (fd->sf->body) ScanForeignFrom(fd->sf->body, names, foreign);
             return;
         }
         n->Children([&](Node *c) { ScanForeignFrom(c, names, foreign); });
