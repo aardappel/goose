@@ -106,7 +106,10 @@ inline void TypeExpr::Dump(string &s) const {
             switch (arr->akind) {
                 case A_FIXED:
                     s += "[";
-                    arr->sizeexpr->Dump(s, 0);
+                    // Types the checker synthesizes (array literals) carry
+                    // only the evaluated size.
+                    if (arr->sizeexpr) arr->sizeexpr->Dump(s, 0);
+                    else s += std::to_string(arr->size);
                     s += "]";
                     break;
                 case A_VAR:
