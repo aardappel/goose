@@ -51,6 +51,11 @@ struct Dst {
     string lenlv;
 };
 
+// Set by the driver before codegen (§7.10): the runtime's extern-support C,
+// spliced after the generated types, and the user's --include headers.
+inline string gs_runtime_os_text;
+inline vector<string> gs_includes;
+
 struct CodeGen {
     Ast &ast;
 
@@ -61,6 +66,7 @@ struct CodeGen {
     string pdata;       // Packed static data (string literals).
     string data;        // Queues, long-distance return channels, globals.
     string protos;
+    set<FnSpec *> usedexterns;   // Extern fns called by live code: prototypes.
     string code;        // Function bodies, size/eq helpers, thunks, main.
     bool usesthreads = false;
     // Measurement only, and unsound: emit the whole `return ... from`
@@ -4477,7 +4483,42 @@ struct CodeGen {
         if (c->fvbody) return EmitFvCall(c, d0);
         if (!c->dispatch.empty()) return EmitDispatch(c, d0, alldst);
         assert(c->spec);
+        if (c->spec->sf->isextern) return EmitExternCall(c, c->spec);
         return EmitSpecCall(c, c->spec, d0, alldst);
+    }
+
+    // A call to an extern fn (§7.10): the C function directly, each argument
+    // in its C type, no calling-convention extras; a fixed result lands in
+    // a temporary like any other C value.
+    vector<string> EmitExternCall(Call *c, FnSpec *sp) {
+        usedexterns.insert(sp);
+        auto an = CallArgNodes(c, sp->argtypes.size());
+        string argstr;
+        for (size_t i = 0; i < an.size(); i++) {
+            auto pt = sp->argtypes[i];
+            if (i) argstr += ", ";
+            argstr += pt->kind == TY_REF ? GenX(an[i]) : GenXD(an[i], pt);
+        }
+        if (sp->rets.empty()) {
+            L(sp->sf->cname, "(", argstr, ");");
+            return {};
+        }
+        auto r0 = T();
+        L(CT(sp->rets[0]), " ", r0, " = ", sp->sf->cname, "(", argstr, ");");
+        return { r0 };
+    }
+
+    // The C prototype of an extern fn, from its Goose declaration (§7.10).
+    string ExternProto(FnSpec *sp) {
+        string s = sp->rets.empty() ? string("void") : CT(sp->rets[0]);
+        Append(s, " ", sp->sf->cname, "(");
+        for (size_t i = 0; i < sp->argtypes.size(); i++) {
+            if (i) s += ", ";
+            s += CT(sp->argtypes[i]);
+        }
+        if (sp->argtypes.empty()) s += "void";
+        s += ");\n";
+        return s;
     }
 
     vector<Node *> CallArgNodes(Call *c, size_t nparams) {
@@ -6198,7 +6239,8 @@ struct CodeGen {
         auto mit = ast.functionmap.find("main");
         if (mit != ast.functionmap.end() && !mit->second[0]->specs.empty())
             mainspec = mit->second[0]->specs[0];
-        Append(code, "int main(void) {\n    gs_rt_init();\n    gs_init_globals();\n");
+        Append(code, "int main(int argc, char **argv) {\n    gs_argc = argc;\n    gs_argv = argv;\n"
+                     "    gs_rt_init();\n    gs_init_globals();\n");
         if (mainspec && sinfo.count(mainspec)) {
             auto &mi = sinfo[mainspec];
             Append(code, "    ", mi.cname, "(", mi.needssp ? "0" : "", ");\n");
@@ -6231,8 +6273,25 @@ struct CodeGen {
         EmitGlobalInit();
         EmitMain();
         if (usesthreads) predefs = "#define GS_NEED_THREADS 1\n";
+        // Extern fns: the runtime's own C follows the types it is written
+        // against, then user headers, then prototypes for whatever neither
+        // defines.
+        string externs;
+        if (!usedexterns.empty() || !gs_runtime_os_text.empty()) {
+            EmitCoreTypes();
+            CT(MakeSliceT(ast.inttypes[IS_U8], Line {}));
+        }
+        for (auto sp : usedexterns) {
+            if (gs_runtime_os_text.find(cat(" ", sp->sf->cname, "(")) != string::npos) continue;
+            externs += ExternProto(sp);
+        }
+        string includes;
+        for (auto &inc : gs_includes) Append(includes, "#include \"", inc, "\"\n");
         Append(result, "\n/* ---- types ---- */\n#pragma pack(push, 1)\n", tdecls, pdata,
                "#pragma pack(pop)\n\n/* ---- data ---- */\n", data,
+               "\n/* ---- runtime (extern support) ---- */\n", gs_runtime_os_text,
+               "\n/* ---- includes ---- */\n", includes,
+               "\n/* ---- extern prototypes ---- */\n", externs,
                "\n/* ---- prototypes ---- */\n", protos, "\n/* ---- code ---- */\n", code);
     }
 };

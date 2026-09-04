@@ -679,6 +679,8 @@ struct SFunction {
     bool has_rets = false;
     bool isrec = false;         // Declared with `recursive`.
     bool isthread = false;
+    bool isextern = false;      // A C function behind a Goose signature (§7.10); no body.
+    string cname;               // Its C symbol (the Goose name unless spelled out).
     bool isnested = false;
     Block *body = nullptr;
     vector<FnSpec *> specs;     // Specializations (typecheck), owned by Ast.

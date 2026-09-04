@@ -149,6 +149,7 @@ struct Optimizer {
     void Reach(FnSpec *sp) {
         if (!sp || sp->live) return;
         sp->live = true;
+        if (!sp->body) return;   // An extern fn: no body, never inlined (§7.10).
         ReachTree(sp->body);
         postorder.push_back(sp);
     }
@@ -375,7 +376,7 @@ struct Optimizer {
         for (auto ei : ast.enuminsts)
             for (auto &vd : ei->vdefaults) for (auto d : vd) if (d) ReachTree(d);
         // Write/address facts across every live body, before any rewriting.
-        for (auto sp : postorder) Analyze(sp->body);
+        for (auto sp : postorder) if (sp->body) Analyze(sp->body);
         for (auto g : ast.globals)
             for (auto i : g->inits) Analyze(i);
         for (auto si : ast.structinsts)
@@ -436,7 +437,8 @@ struct Optimizer {
                 sp->params[i]->type->Dump(s);
             }
             s += ") ";
-            sp->body->Dump(s, 0);
+            if (sp->body) sp->body->Dump(s, 0);
+            else s += ";";
             s += "\n\n";
         }
     }

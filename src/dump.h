@@ -476,6 +476,10 @@ inline void DumpFields(string &s, const vector<Field> &fields, int ind) {
 }
 
 inline void FnDecl::Dump(string &s, int ind) const {
+    if (sf->isextern) {
+        s += "extern ";
+        if (sf->cname != sf->name) { s += "\""; s += sf->cname; s += "\" "; }
+    }
     if (sf->isrec) s += "recursive ";
     s += sf->isthread ? "thread_fn " : "fn ";
     s += sf->name;
@@ -494,6 +498,10 @@ inline void FnDecl::Dump(string &s, int ind) const {
             if (i) s += ", ";
             sf->rets[i]->Dump(s);
         }
+    }
+    if (sf->isextern) {
+        s += ";";
+        return;
     }
     s += " ";
     sf->body->Dump(s, ind);

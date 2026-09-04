@@ -683,7 +683,7 @@ requires the else block to diverge). `abort` prints `goose runtime error:
 and exits with the code. The library uses `abort` for contract violations
 that are not plain `assert`s (an unknown base in `format_int`).
 
-### 8.4 `extern fn`
+### 8.4 `extern fn` — done (spec §7.10)
 
 ```goose
 extern fn sqrt(x: f64) -> f64;

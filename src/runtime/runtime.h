@@ -439,6 +439,10 @@ typedef struct {
     uint8_t *base;
 } gs_stack;
 
+/* The program's arguments, for stdlib/os.goose (runtime_os.h). */
+static int gs_argc;
+static char **gs_argv;
+
 /* Every reserved region, so the Windows fault handler can tell "commit more"
    from a genuine crash, and so overruns into the gap abort with a message. */
 typedef struct { uint8_t *base; size_t size; } gs_region;

@@ -1459,6 +1459,18 @@ fn bug_fixes() {
     print(f2 == null);                   // true
 }
 
+extern fn sqrt(x: f64) -> f64;
+extern "fabs" fn abs_ex(x: f64) -> f64;
+extern "gs_os_getenv" fn getenv_ex(name: u8[:], out: u8[>..]&) -> bool;
+
+// extern fns (§7.10): libm through the emitted prototypes, and a
+// runtime-defined one taking a slice and a builder reference.
+fn externs() {
+    print(sqrt(16.0) == 4.0, abs_ex(-2.5) == 2.5);   // truetrue
+    var v: u8[>..] = [];
+    print(getenv_ex("GOOSE_NO_SUCH_VARIABLE_", v), v.len);   // false0
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -1511,6 +1523,7 @@ fn main_codegen_exec() {
     passing_rules();
     frame_objects();
     bug_fixes();
+    externs();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

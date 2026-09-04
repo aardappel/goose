@@ -34,6 +34,7 @@ namespace goose {
     F(T_IMPORT,   "import")    F(T_STRUCT,   "struct")  F(T_ENUM,   "enum") \
     F(T_TYPE,     "type")      F(T_FN,       "fn")      F(T_THREADFN, "thread_fn") \
     F(T_RECURSIVE, "recursive") F(T_LET,     "let")     F(T_VAR,    "var") \
+    F(T_EXTERN,   "extern") \
     F(T_PAD,      "pad")       F(T_REUSABLE, "reusable") \
     F(T_IF,       "if")        F(T_ELSE,     "else")    F(T_WHILE,  "while") \
     F(T_FOR,      "for")       F(T_IN,       "in")      F(T_LOOP,   "loop") \

@@ -121,7 +121,7 @@ struct Parser {
                 ast.topdecls.push_back(New<AliasDecl>(line, al));
                 return;
             }
-            case T_RECURSIVE: case T_FN: case T_THREADFN: {
+            case T_RECURSIVE: case T_FN: case T_THREADFN: case T_EXTERN: {
                 auto fd = ParseFnDecl(false);
                 ast.topdecls.push_back(fd);
                 return;
@@ -228,6 +228,15 @@ struct Parser {
         ast.functions.push_back(sf);
         sf->line = line;
         sf->isnested = nested;
+        if (lex.tok == T_EXTERN) {
+            sf->isextern = true;
+            if (nested) Error("extern fn must be declared at top level");
+            lex.Next();
+            if (lex.tok == T_STRLIT) {
+                sf->cname = lex.sval;
+                lex.Next();
+            }
+        }
         sf->isrec = IsNext(T_RECURSIVE);
         if (lex.tok == T_THREADFN) {
             sf->isthread = true;
@@ -258,7 +267,12 @@ struct Parser {
                 if (!IsNext(T_COMMA)) break;
             }
         }
-        sf->body = ParseBlockExpr("function body");
+        if (sf->isextern) {
+            if (sf->cname.empty()) sf->cname = string(sf->name);
+            Expect(T_SEMI, "extern declaration");
+        } else {
+            sf->body = ParseBlockExpr("function body");
+        }
         // Only the root file's `fn main` is the program entry; an imported
         // file's main is ignored entirely (§11.1), letting a runnable file
         // double as an importable library.
@@ -1051,7 +1065,7 @@ struct Parser {
                     b->stmts.push_back(vd);
                     continue;
                 }
-                case T_RECURSIVE: case T_FN: case T_THREADFN:
+                case T_RECURSIVE: case T_FN: case T_THREADFN: case T_EXTERN:
                     b->stmts.push_back(ParseFnDecl(true));
                     continue;
                 default: break;
