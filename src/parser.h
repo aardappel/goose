@@ -94,7 +94,6 @@ struct Parser {
         switch (lex.tok) {
             case T_IMPORT: {
                 lex.Next();
-                (void)line;
                 Import imp;
                 imp.relative = IsNext(T_DOT);
                 imp.path = ExpectIdent("import");

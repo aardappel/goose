@@ -443,7 +443,6 @@ static float gs_f2f32chk(double d) {
 
 typedef struct {
     uint8_t *top;
-    uint8_t *base;
 } gs_stack;
 
 /* The program's arguments, for stdlib/os.goose (runtime_os.h). */
@@ -566,7 +565,7 @@ static void gs_stks_grow(int64_t n) {
     if (n > GS_MAX_STACKS) gs_panic("too many data stacks (deep call nesting?)");
     while (gs_nstks < n) {
         gs_stack *s = &gs_stks[gs_nstks++];
-        s->base = s->top = gs_reserve_region((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP);
+        s->top = gs_reserve_region((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP);
     }
 }
 
@@ -579,7 +578,7 @@ static gs_stack *gs_new_stack_block(void) {
 }
 
 static void gs_stack_init(gs_stack *s) {
-    s->base = s->top = gs_reserve_region((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP);
+    s->top = gs_reserve_region((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP);
 }
 
 static void gs_rt_init(void) {
@@ -696,7 +695,7 @@ static int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n) {
     return (int64_t)(d - dst);
 }
 
-/* print(...) (§12): each argument's text, then a newline. stdout is
+/* print(...) (§3.7): each argument's text, then a newline. stdout is
    unbuffered (gs_rt_init), so every piece is its own write; revisit if print
    throughput ever matters. */
 
