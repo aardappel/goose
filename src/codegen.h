@@ -3230,23 +3230,28 @@ struct CodeGen {
         if (IsCtl(n)) { GenAny(n, Dst { 2, stk, want, lenlv }); return; }
         if (auto c = Is<Call>(n)) {
             auto rets = EmitCall(c, Dst { 2, stk, want, lenlv });
+            if (rets.empty() || IsVoidT(et)) return;
             // A reference-returning call decayed to a value here: the callee
             // did not construct at the destination; copy the pointee.
             auto rt = c->rettypes.empty() ? nullptr : c->rettypes[0];
-            if (rt && rt->kind == TY_REF && !rets.empty() && et->kind != TY_REF) {
+            if (rt && rt->kind == TY_REF && et->kind != TY_REF && IsBytesT(rt->ref->sub)) {
                 if (IsFatPointee(rt->ref->sub)) {
                     Loc lv;
                     lv.t = rt->ref->sub;
                     lv.s = cat(rets[0], ".hdr->base");
                     lv.lenlv = cat(rets[0], ".hdr->len");
                     EmitRzCopy(lv, et, stk, lenlv, n->line);
-                } else if (IsBytesT(rt->ref->sub)) {
+                } else {
                     auto sz = T();
                     L("int64_t ", sz, " = ", SizeX(et, rets[0]), ";");
                     L("memcpy(", Top(stk), ", ", rets[0], ", (size_t)", sz, ");");
                     Bump(stk, sz);
                 }
+                return;
             }
+            // A fixed-size result (a reference-returning call's pointee
+            // included) is a C value: it lands at the top like any other.
+            if (!IsBytesT(et)) EmitValStore(stk, et, CallVal0(c, rets[0]));
             return;
         }
         if (!IsBytesT(et)) {
