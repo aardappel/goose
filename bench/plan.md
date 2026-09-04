@@ -244,6 +244,10 @@ live target.
 
 ### 3.1 Self-relative or pool-relative offsets
 
+*Outcome: both, chosen per field. Self-relative stays the default; a field may
+be declared relative to a named global pool (`T&<u32 in pool>`, spec §3.9).
+The comparison behind the decision is `docs/relative_references.md`.*
+
 Spec 3.9 makes relative references self-relative so that a linked region is
 position-independent as a unit and any sub-region can be moved (the
 whole-region copies of TODO 16, not yet implemented). `lru` prices that

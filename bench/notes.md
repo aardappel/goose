@@ -103,7 +103,9 @@ that remain:
   `scene`, where it is 1.24x on the Goose row and 1.09x on the C++ arena.
 * On Goose's own rows: `records` and `interp` favour v145 (0.89 and 0.90),
   everything string-shaped favours clang by 4-8%, `lru` favours clang by
-  1.23x, and `blur` in its flat form is now the largest gap in the suite at
+  1.53x (its pool-relative loads are a base-plus-offset that clang schedules
+  and v145 does not), and `blur` in its flat form is the largest gap in the
+  suite at
   7.6x (2,026 against 268 ms), because the hoisted views let clang vectorise
   around the checks that v145 will not. Two conclusions change with the
   backend: `scene` is a tie against Rust under clang and a 19% loss under
@@ -246,8 +248,17 @@ cycle computed before its back edges (which
 retires the Paren workaround below and closes a soundness hole), and three
 pre-existing codegen bugs the branches surfaced. Two items were implemented,
 measured and dropped: array-contents invariants (nothing measurable) and
-merged tag dispatch (1%). Pool-relative offsets are held on a branch pending
-a language decision (`adoption.md` 3.1).
+merged tag dispatch (1%).
+
+After the round, three things followed from it. The pool-relative question
+was settled at the language level (`docs/relative_references.md`): spec 3.9
+gained the `in pool` form -- an offset from a named global pool's base,
+with `index_of` to turn a reference back into a pool index -- and `lru` was
+rewritten onto it (see "Where Goose loses"). A reference read back out of a
+container is now rooted at the storage that can own it, exactly where one
+candidate can (§9.5), which is what the `in pool` store rule needs and what
+removed the laundering finding below. And `pop`/`resize` joined `clear` on
+grow-only locals.
 
 ## What writing the benchmarks changed in the compiler
 
@@ -331,14 +342,18 @@ the bounds-check pass can prove loaded indices (buys nothing).
 
 ## Where Goose loses
 
-**Relative references lose to indices when the workload is relinking.** `lru`
-is the first benchmark in the suite that mutates links rather than building
-them once, and the Goose row is 1.45x behind the Rust arena under v145 and
-1.19x under clang (3,320/2,734 ms against 2,296, and against the C++ arena's
-2,425/2,530) while using the least memory of the three. Last round it was
-1.5x behind both; the difference is this round's range-check skip and the
-alloc literals built in their slot. The same program written three more
-ways, at the `large` size, measured last round:
+**Relinking through self-relative references was the clearest loss; pool-
+relative links close it under clang.** `lru` is the first benchmark in the
+suite that mutates links rather than building them once. With self-relative
+links and index slots it was 1.5x behind the Rust and C++ arenas; with spec
+3.9's `in pool` form -- 4-byte offsets from the pool's base in the nodes and
+in the 8-byte map slots, `pool.free(pool.index_of(n))` closing the loop --
+the row is 3,255/2,133 ms against the Rust arena's 2,237 and the C++
+arena's 2,413/2,261: level with both under clang, 1.45x behind under v145,
+on the least memory of the three. The index form is kept as
+`lru_indices.goose`; back to back it is level under v145 and 1.31x slower
+under clang. The same program written more ways last round, at the `large`
+size, all with the map holding indices:
 
 | links | node | v145 | clang |
 |---|---:|---:|---:|
@@ -358,11 +373,12 @@ for the 8 bytes they save per node against plain references, which `lru`
 never gets to enjoy: the index shape is the same 16 bytes. On the build-once
 benchmarks (`tree`, `interp`, `sexp`, `scene`, `bintrees`) the same links cost
 nothing measurable against indices, so this is specifically the relink
-pattern. The pool-relative encoding tried this round (`adoption.md` 3.1:
-offsets from the pool's base rather than from the field) recovers 1.41x of
-it under clang and 1.04x under v145, and needs to know which pool a
-reference points into, which the read-back rule now derives wherever the
-enclosing scope has one candidate for the pointee type.
+pattern. The pool-relative form replaces the field-address subtraction with
+one from a base held in a register, and the load with `base + off`; clang
+schedules that far better than v145, which is the 1.45x that remains, now a
+backend gap. The build-once benchmarks keep self-relative links, whose
+position independence they want and whose cost against indices there is
+nothing measurable.
 
 **Recursive construction was where the C backends fell behind rustc, and
 three optimizer items closed most of it.** `bintrees` builds and discards
@@ -449,9 +465,10 @@ that.
 the storage that can own it -- a candidate variable of the enclosing scope
 that holds its pointee type by value -- rather than at the container, so a
 sole candidate is that pool exactly and the reference still links relatively
-into it (`lru_refslots.goose` is `lru` with the map holding `Node&?` instead
-of indices; at BENCH_N 32000000 it runs 1.11-1.13x under v145 and 1.09x under
-clang for the bigger slots and nodes, which is why `lru` keeps the indices).
+into it (measured first as a variant of `lru` with plain `Node&?` in 16-byte
+slots: 1.11-1.13x slower under v145 and 1.09x under clang than indices, for
+the bigger slots and nodes, which is why the map's links became
+pool-relative rather than plain).
 
 **Fixed the round before:** a recursive cycle's return roots are known before
 its back edges (spec 7.8), so a mutually recursive parser can store the result
@@ -496,14 +513,15 @@ initialisers need no `as` from a value the compiler can see is in range.
 * **Two parses to know about.** `x as u64 & mask` reads `u64&` as a reference
   type (parenthesise the cast), and an `if`/`else if` chain that ends without
   an `else` in tail position is an error (write early returns).
-* **Relative references trade speed for size in code that relinks.** They
-  cost nothing measurable against indices on the five benchmarks that build
-  a structure once and walk it, and 1.5x on `lru`, which relinks six links
-  per hit; this round's range-check skip and non-optional sentinel links
-  take about a fifth of that back, and the self-relative arithmetic on the
-  pointer-chasing path is what remains. The right link type is a
-  per-structure decision, and the suite now has one benchmark on each side
-  of it.
+* **Self-relative references trade speed for position independence in code
+  that relinks; pool-relative ones do not.** Self-relative links cost nothing
+  measurable against indices on the five benchmarks that build a structure
+  once and walk it, and 1.5x on `lru`, which relinks six links per hit. Spec
+  3.9's `in pool` form -- offsets from a named global pool's base -- makes
+  the relink a subtraction from a register and lets other arrays hold 4-byte
+  links into the pool; `lru` on it is level with the arenas under clang. The
+  encoding is a per-field decision: self-relative for blobs and for local
+  pools, `in pool` for relink-heavy structures in a global pool.
 * **A fixed struct can hold references to its own type** (`struct Node {
   next: Node? }`) -- the generated C had declared such a struct after its own
   first use and did not compile; fixed this round with a forward typedef.
