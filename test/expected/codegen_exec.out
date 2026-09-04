@@ -265,3 +265,14 @@ hello!
 true
 truetrue
 false0
+PtAg { 1, 2.5 }
+NamedAg { "bob", PtAg { 3, 4 }, [7, 8, 9] }
+[PtAg { 1, 1 }, PtAg { 2, 2 }]
+["a b", "c"]
+null
+PtAg { 3, 4 }
+[ShapeAg.Dot, Circle { 1.5 }, Rect { 2, 3 }]
+$12.34
+WalletAg { "ann", $2.50 }
+15 v=PtAg { 5, 6 }
+[$0.5]

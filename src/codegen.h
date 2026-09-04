@@ -2536,13 +2536,17 @@ struct CodeGen {
 
     Loc MemberLoc(Loc lv, Dot *d) {
         assert(d->fieldidx >= 0);
+        return FieldLocAt(lv, d->fieldidx);
+    }
+
+    Loc FieldLocAt(Loc lv, int fieldidx) {
         if (lv.t->kind == TY_STRUCT) {
             auto si = SI(lv.t);
-            auto ft = si->ftypes[d->fieldidx];
+            auto ft = si->ftypes[fieldidx];
             if (lv.val) {
                 Loc r = lv;
                 r.t = ft;
-                r.s = cat(lv.s, ".", Sanitize(si->st->fields[d->fieldidx].name));
+                r.s = cat(lv.s, ".", Sanitize(si->st->fields[fieldidx].name));
                 r.hbase.clear();
                 r.hlen.clear();
                 r.lenlv.clear();
@@ -2558,20 +2562,21 @@ struct CodeGen {
                 }
                 return r;
             }
-            return BytesLoc(FieldPtr(lv.s, si->st->fields, si->ftypes, d->fieldidx), ft, lv);
+            return BytesLoc(FieldPtr(lv.s, si->st->fields, si->ftypes, fieldidx), ft, lv);
         }
-        assert(lv.t->kind == TY_VARIANT);
+        if (lv.t->kind != TY_VARIANT)
+            Fail(Line {}, cat("internal: field of a non-struct location of type ", Mangle(lv.t)));
         auto ei = EIVar(lv.t);
         auto vi = VarIdx(ei->en, lv.t->var->variant);
-        auto ft = ei->vftypes[vi][d->fieldidx];
+        auto ft = ei->vftypes[vi][fieldidx];
         if (lv.val) {
             Loc r = lv;
             r.t = ft;
-            r.s = cat(lv.s, ".", Sanitize(ei->en->variants[vi].fields[d->fieldidx].name));
+            r.s = cat(lv.s, ".", Sanitize(ei->en->variants[vi].fields[fieldidx].name));
             return r;
         }
         return BytesLoc(FieldPtr(lv.s, ei->en->variants[vi].fields, ei->vftypes[vi],
-                                 d->fieldidx), ft, lv);
+                                 fieldidx), ft, lv);
     }
 
     // ------------------------------------------------------------------
@@ -5112,13 +5117,13 @@ struct CodeGen {
         auto ln = c->line;
         switch ((BuiltinKind)c->builtin) {
             case B_PRINT:
-                for (auto a : an) EmitOutArg(a);
+                for (auto a : an) EmitOutArg(a, c);
                 L("gs_out_nl();");
                 return {};
-            case B_STR: return EmitStr(an, d0, ln);
+            case B_STR: return EmitStr(c, an, d0, ln);
             case B_FORMAT: {
                 auto lv = RecvLoc(an[0]);
-                for (size_t i = 1; i < an.size(); i++) EmitFormatInto(lv, an[i], ln);
+                for (size_t i = 1; i < an.size(); i++) EmitFormatInto(lv, an[i], ln, c);
                 return {};
             }
             case B_ASSERT: {
@@ -5382,8 +5387,289 @@ struct CodeGen {
     // a u8 array or slice contributes its bytes as they are.
 
     // One print argument to stdout.
-    void EmitOutArg(Node *a) {
+    // ------------------------------------------------------------------
+    // Rendering aggregates (§3.7): the text of any value appended to a
+    // u8[>..] builder, structurally, or through a user `format` overload
+    // recorded on the call for that type.
+
+    TypeExpr *growu8 = nullptr;
+    TypeExpr *GrowU8() {
+        if (growu8) return growu8;
+        growu8 = ast.NewType(TY_ARRAY, Line {});
+        growu8->arr = ast.NewDetail<TypeArray>();
+        growu8->arr->sub = ast.inttypes[IS_U8];
+        growu8->arr->akind = A_GROW;
+        return growu8;
+    }
+
+    // A u8[>..] builder on a statement stack.
+    Loc TempBuilder() {
+        EmitCoreTypes();
+        auto stk = AllocStk(false);
+        auto h = T();
+        L("gs_rhdr ", h, " = { ", Top(stk), ", 0 };");
+        SaveBase(false, stk, cat(h, ".base"));
+        Loc l;
+        l.t = GrowU8();
+        l.s = cat(h, ".base");
+        l.lenlv = cat(h, ".len");
+        l.stk = stk;
+        l.hdr = h;
+        return l;
+    }
+
+    FnSpec *FmtSpecFor(Call *c, TypeExpr *t) {
+        if (!c) return nullptr;
+        for (auto &fs : c->fmtspecs) if (TEq(fs.first, t)) return fs.second;
+        return nullptr;
+    }
+
+    // The scalar, bool, u8-array cases EmitOutArg/FmtCall handle directly.
+    bool SimpleText(Call *c, TypeExpr *t) {
+        if (FmtSpecFor(c, t)) return false;
+        if (t->kind == TY_INT || t->kind == TY_FLT || t->kind == TY_BOOL) return true;
+        auto u8 = [&](TypeExpr *e) { return e->kind == TY_INT && e->intstorage == IS_U8; };
+        if (t->kind == TY_ARRAY) return u8(t->arr->sub);
+        if (t->kind == TY_SLICE) return u8(t->sub);
+        return false;
+    }
+
+    void RenderLit(Loc &out, const string &text) {
+        L("memcpy(", Top(out.stk), ", ", StrRaw(text), ", ", text.size(), ");");
+        Bump(out.stk, cat(text.size()));
+        L(out.lenlv, " += ", text.size(), ";");
+    }
+
+    // nexpr writes at the builder's top and yields the byte count.
+    void RenderN(Loc &out, const string &nexpr) {
+        auto n = T();
+        L("int64_t ", n, " = ", nexpr, ";");
+        Bump(out.stk, n);
+        L(out.lenlv, " += ", n, ";");
+    }
+
+    void RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call *c, Line ln) {
+        // A reference location whose checked type already decayed (a narrowed
+        // optional, a plain reference in value position): the pointee.
+        if (lv.t->kind == TY_REF && t->kind != TY_REF) DerefLoc(lv, ln);
+        if (auto sp = FmtSpecFor(c, t)) { EmitUserFormat(out, lv, sp, ln); return; }
+        auto u8 = [&](TypeExpr *e) { return e->kind == TY_INT && e->intstorage == IS_U8; };
+        switch (t->kind) {
+            case TY_INT: {
+                auto vt = t->intstorage == IS_VARINT ? ast.inttypes[IS_I64] : t;
+                auto x = LoadLoc(lv, vt, ln);
+                if (vt->intstorage == IS_U64)
+                    RenderN(out, cat("gs_fmt_u64(", Top(out.stk), ", ", x, ")"));
+                else
+                    RenderN(out, cat("gs_fmt_i64(", Top(out.stk), ", (int64_t)(", x, "))"));
+                return;
+            }
+            case TY_FLT: {
+                auto x = LoadLoc(lv, t, ln);
+                RenderN(out, cat("gs_fmt_f64(", Top(out.stk), ", (double)(", x, "))"));
+                return;
+            }
+            case TY_BOOL: {
+                auto x = LoadLoc(lv, t, ln);
+                RenderN(out, cat("gs_fmt_bool(", Top(out.stk), ", ", x, ")"));
+                return;
+            }
+            case TY_REF: {
+                if (lv.t->kind != TY_REF) Fail(ln, "internal: reference render of a value");
+                auto x = LoadLoc(lv, lv.t, ln);
+                if (t->ref->optional) {
+                    auto isnull = IsFatPointee(t->ref->sub) ? cat("(", x, ").hdr == 0")
+                                                            : cat("(", x, ") == NULL");
+                    L("if (", isnull, ") {");
+                    ind++;
+                    RenderLit(out, "null");
+                    ind--;
+                    L("} else {");
+                    ind++;
+                    Loc pl = lv;
+                    DerefLoc(pl, ln);
+                    RenderLoc(out, pl, t->ref->sub, nested, c, ln);
+                    ind--;
+                    L("}");
+                    return;
+                }
+                DerefLoc(lv, ln);
+                RenderLoc(out, lv, t->ref->sub, nested, c, ln);
+                return;
+            }
+            case TY_ARRAY: case TY_SLICE: {
+                auto elem = t->kind == TY_ARRAY ? t->arr->sub : t->sub;
+                auto v = ArrayView(lv, ln);
+                if (u8(elem)) {
+                    if (nested) {
+                        RenderN(out, cat("gs_fmt_quoted(", Top(out.stk), ", (const uint8_t *)(",
+                                         v.elems, "), ", v.len, ")"));
+                    } else {
+                        auto n = T();
+                        L("int64_t ", n, " = ", v.len, ";");
+                        L("memcpy(", Top(out.stk), ", (const uint8_t *)(", v.elems, "), (size_t)",
+                          n, ");");
+                        Bump(out.stk, n);
+                        L(out.lenlv, " += ", n, ";");
+                    }
+                    return;
+                }
+                RenderLit(out, "[");
+                auto i = T();
+                auto cnt = T();
+                L("int64_t ", cnt, " = ", v.len, ";");
+                string cur;
+                if (!v.typedelems && !IsFix(elem)) {
+                    cur = T();
+                    L("const uint8_t *", cur, " = (const uint8_t *)(", v.elems, ");");
+                }
+                L("for (int64_t ", i, " = 0; ", i, " < ", cnt, "; ", i, "++) {");
+                ind++;
+                L("if (", i, ") {");
+                ind++;
+                RenderLit(out, ", ");
+                ind--;
+                L("}");
+                Loc el;
+                if (v.typedelems) {
+                    el.t = elem;
+                    el.val = true;
+                    el.s = cat(v.elems, "[", i, "]");
+                    el.stk = lv.stk;
+                } else if (IsFix(elem)) {
+                    el = BytesLoc(cat("((const uint8_t *)(", v.elems, ") + ", i, " * ",
+                                      FixedSize(elem), ")"), elem, lv);
+                } else {
+                    el = BytesLoc(cur, elem, lv);
+                }
+                RenderLoc(out, el, elem, true, c, ln);
+                if (!cur.empty()) L(cur, " += ", SizeX(elem, cur), ";");
+                ind--;
+                L("}");
+                RenderLit(out, "]");
+                return;
+            }
+            case TY_STRUCT: {
+                auto si = SI(t);
+                string name;
+                t->Dump(name);
+                RenderLit(out, cat(name, " { "));
+                auto first = true;
+                for (auto i = 0; i < (int)si->st->fields.size(); i++) {
+                    if (si->st->fields[i].ispad) continue;
+                    if (!first) RenderLit(out, ", ");
+                    first = false;
+                    RenderLoc(out, FieldLocAt(lv, i), si->ftypes[i], true, c, ln);
+                }
+                RenderLit(out, " }");
+                return;
+            }
+            case TY_VARIANT: {
+                auto ei = EIVar(t);
+                auto vi = VarIdx(ei->en, t->var->variant);
+                auto &v = ei->en->variants[vi];
+                if (v.fields.empty()) {
+                    RenderLit(out, cat(ei->en->name, ".", v.name));
+                    return;
+                }
+                RenderLit(out, cat(v.name, " { "));
+                auto first = true;
+                for (auto i = 0; i < (int)v.fields.size(); i++) {
+                    if (v.fields[i].ispad) continue;
+                    if (!first) RenderLit(out, ", ");
+                    first = false;
+                    RenderLoc(out, FieldLocAt(lv, i), ei->vftypes[vi][i], true, c, ln);
+                }
+                RenderLit(out, " }");
+                return;
+            }
+            case TY_ENUM: {
+                auto ei = EIOf(t);
+                auto varmode = t->enu->varmode;
+                auto ts = TagSize(ei->en);
+                string tag;
+                if (lv.val) tag = cat(lv.s, ".tag");
+                else if (varmode) tag = cat("*(", IntCT(TagStore(ei->en)), " *)(", lv.s, ")");
+                else tag = cat("((", CT(t), " *)(", lv.s, "))->tag");
+                L("switch (", tag, ") {");
+                for (size_t vi = 0; vi < ei->en->variants.size(); vi++) {
+                    L("case ", TagConst(ei, (int)vi), ": {");
+                    ind++;
+                    auto vt = VariantType(t, (int)vi);
+                    Loc pl;
+                    if (!ei->en->variants[vi].fields.empty()) {
+                        if (lv.val) {
+                            pl = lv;
+                            pl.t = vt;
+                            pl.s = cat(lv.s, ".u.v_", Sanitize(ei->en->variants[vi].name));
+                        } else if (varmode) {
+                            pl = BytesLoc(cat("((", lv.s, ") + ", ts, ")"), vt, lv);
+                        } else {
+                            pl = BytesLoc(cat("((uint8_t *)&((", CT(t), " *)(", lv.s, "))->u.v_",
+                                              Sanitize(ei->en->variants[vi].name), ")"), vt, lv);
+                        }
+                    } else {
+                        pl = lv;
+                        pl.t = vt;
+                    }
+                    RenderLoc(out, pl, vt, nested, c, ln);
+                    L("break;");
+                    ind--;
+                    L("}");
+                }
+                L("default: break;");
+                L("}");
+                return;
+            }
+            default:
+                Fail(ln, cat("cannot render a value of type ", Mangle(t)));
+        }
+    }
+
+    // A user `format(out, v)` overload applied to the value at lv.
+    void EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln) {
+        assert(!out.hdr.empty() && !out.stk.empty());
+        MarkFlush();
+        auto r = T();
+        L("gs_rref ", r, " = { (gs_rhdr *)&", out.hdr, ", ", out.stk, " };");
+        auto pt = sp->argtypes[1];
+        string arg;
+        if (pt->kind == TY_REF) {
+            auto sub = pt->ref->sub;
+            if (IsFatPointee(sub)) {
+                if (lv.hdr.empty() || lv.stk.empty())
+                    Fail(ln, "a format overload by reference needs a resizable with its own header");
+                auto rr = T();
+                L("gs_rref ", rr, " = { (gs_rhdr *)&", lv.hdr, ", ", lv.stk, " };");
+                arg = rr;
+            } else if (IsBytesT(sub)) {
+                arg = lv.val ? cat("(uint8_t *)&", lv.s) : lv.s;
+            } else {
+                arg = lv.val ? cat("&", lv.s) : cat("(", CT(sub), " *)(", lv.s, ")");
+            }
+        } else {
+            arg = LoadLoc(lv, pt, ln);
+        }
+        auto &ki = sinfo[sp];
+        L(ki.cname, "(", r, ", ", arg, ki.needssp ? ", gs_sp" : "", ");");
+        MarkReload();   // The callee grew the builder's stack.
+    }
+
+    // A value rendered into a builder of its own: the print and str paths.
+    Loc RenderToTemp(Node *a, Call *c) {
+        auto b = TempBuilder();
+        auto lv = GenLoc(a);
+        RenderLoc(b, lv, a->exprtype, false, c, a->line);
+        return b;
+    }
+
+    void EmitOutArg(Node *a, Call *c) {
         auto t = a->exprtype;
+        if (!SimpleText(c, t)) {
+            auto b = RenderToTemp(a, c);
+            L("gs_out_bytes(", b.hdr, ".base, ", b.hdr, ".len);");
+            return;
+        }
         if (t->kind == TY_INT) {
             if (t->intstorage == IS_U64) L("gs_out_uint(", GenX(a), ");");
             else L("gs_out_int((int64_t)(", GenX(a), "));");
@@ -5413,14 +5699,29 @@ struct CodeGen {
     // the bytes are written straight at its stack top (the reservation has
     // room for them); a limited array formats into a buffer first, so the
     // capacity check comes before anything lands in it.
-    void EmitFormatInto(Loc lv, Node *a, Line ln) {
+    void EmitFormatInto(Loc lv, Node *a, Line ln, Call *c) {
         auto v = ArrayView(lv, ln);
         auto limited = lv.t->arr->akind == A_LIMITED;
         auto t = a->exprtype;
+        if (!SimpleText(c, t) && !limited) {
+            // An aggregate renders straight into the resizable.
+            Loc out = lv;
+            out.lenlv = v.lenlv;
+            if (out.hdr.empty()) Fail(ln, "internal: format destination without a header");
+            RenderLoc(out, GenLoc(a), t, false, c, ln);
+            return;
+        }
         auto bytes = t->kind == TY_ARRAY || t->kind == TY_SLICE;
         auto n = T();
         string src;   // Where the bytes to append sit, when not already at the top.
-        if (bytes) {
+        if (!SimpleText(c, t)) {
+            // Into a limited array: rendered aside, then copied under the
+            // capacity check like any bytes.
+            auto b = RenderToTemp(a, c);
+            L("int64_t ", n, " = ", b.hdr, ".len;");
+            src = cat(b.hdr, ".base");
+            bytes = true;
+        } else if (bytes) {
             auto se = GenSrcElems(a);
             L("int64_t ", n, " = ", se.n, ";");
             src = cat("(const uint8_t *)(", se.elems, ")");
@@ -5453,7 +5754,7 @@ struct CodeGen {
     // the receiving header -- or into a length prefix reserved in front of the
     // elements when the destination is a value slot (a u8[] element or field),
     // exactly as a named result lands there (§7.3).
-    vector<string> EmitStr(vector<Node *> &an, Dst d0, Line ln) {
+    vector<string> EmitStr(Call *c, vector<Node *> &an, Dst d0, Line ln) {
         EmitCoreTypes();
         string stk = d0.s, lenlv = d0.lenlv, pref, hdr;
         IntStorage ls = IS_U32;
@@ -5479,7 +5780,11 @@ struct CodeGen {
         for (auto a : an) {
             auto t = a->exprtype;
             auto n = T();
-            if (t->kind == TY_ARRAY || t->kind == TY_SLICE) {
+            if (!SimpleText(c, t)) {
+                auto b = RenderToTemp(a, c);
+                L("int64_t ", n, " = ", b.hdr, ".len;");
+                L("memcpy(", Top(stk), ", ", b.hdr, ".base, (size_t)", n, ");");
+            } else if (t->kind == TY_ARRAY || t->kind == TY_SLICE) {
                 auto se = GenSrcElems(a);
                 L("int64_t ", n, " = ", se.n, ";");
                 L("memcpy(", Top(stk), ", (const uint8_t *)(", se.elems, "), (size_t)", n, ");");

@@ -79,8 +79,8 @@ fn main() {
     // Two sentinels: the list is never empty, so no link is null in practice.
     let hi = pool.alloc_index(Node { key: -1, val: 0 });
     let ti = pool.alloc_index(Node { key: -1, val: 0 });
-    pool[hi].next .= &pool[ti];
-    pool[ti].prev .= &pool[hi];
+    pool[hi].next .= pool[ti];
+    pool[ti].prev .= pool[hi];
     var count = 0;
     var hits = 0;
     var misses = 0;

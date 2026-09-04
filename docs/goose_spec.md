@@ -333,9 +333,17 @@ by a newline; `format(out, a, b, …)` appends them to `out`, any growable
 `u8` array; `str(a, b, …)` builds a fresh `u8[>..]` of them, constructed at
 its destination like any resizable result (§7.3), so `words.push(str("item",
 i))` writes straight into the element. A character literal is an integer
-(§2), so `str('x')` is `"120"`; a byte is appended with `push`. Aggregates
-(structs, ADTs, arrays of other element types) gain a text form in a later
-revision.
+(§2), so `str('x')` is `"120"`; a byte is appended with `push`.
+
+Every other value type renders structurally, so `print(v)` shows any value:
+an array or slice of other elements as `[1, 2, 3]`, a struct or ADT variant
+as its positional literal with the type name (`vec3<f32> { 1, 2, 3 }`,
+`Circle { 1.5 }`, a payload-less variant as `Shape.Dot`), a reference as
+its pointee and a null optional as `null`; a `u8` array nested inside an
+aggregate is quoted and escaped. A user overload `fn format(out: u8[>..]&,
+v: T)` (taking `T` by value or by reference) renders a `T` through itself
+instead, wherever a `T` occurs in an argument, so a type can choose its own
+text once for all three builtins.
 
 ### 3.8 References
 

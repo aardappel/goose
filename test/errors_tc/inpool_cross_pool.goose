@@ -6,5 +6,5 @@ var cspare: CNode[>..] = [];
 fn main() {
     cpool.push(CNode { key: 1 });
     cspare.push(CNode { key: 2 });
-    cpool[0].next .= &cspare[0];
+    cpool[0].next .= cspare[0];
 }

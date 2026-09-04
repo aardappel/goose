@@ -4,5 +4,5 @@ var gx = 1;
 var gh = Holder { r: gx };
 fn main() {
     var local = 2;
-    gh.r .= &local;
+    gh.r .= local;
 }

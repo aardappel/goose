@@ -84,8 +84,8 @@ fn main_inpool_lru() {
     // own offset in the pool, which only a literal built there has.
     let hi = kpool.alloc_index(KNode { key: -1, prev: self, next: self });
     let ti = kpool.alloc_index(KNode { key: -1, prev: self, next: self });
-    kpool[hi].next .= &kpool[ti];
-    kpool[ti].prev .= &kpool[hi];
+    kpool[hi].next .= kpool[ti];
+    kpool[ti].prev .= kpool[hi];
     print(hi);                           // 0
     print(ti);                           // 1
     for k in 4 { kadd(k + 1); }

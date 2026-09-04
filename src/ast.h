@@ -419,6 +419,9 @@ NODE(Call)
     vector<VarDef *> fvparams;          //   its parameter bindings.
     SFunction *fvtarget = nullptr;      //   the named fn a plain `return` inside exits.
     vector<TypeExpr *> rettypes;        // All return values (exprtype is rettypes[0] or void).
+    // print/str/format: the user `format` overloads rendering the types that
+    // occur in the arguments, by type (§3.7).
+    vector<pair<TypeExpr *, FnSpec *>> fmtspecs;
     bool standalone = false;            // A whole statement, initializer or assignment rhs (§5.1).
     Call(Line l, Node *_callee) : Node(l), callee(_callee) {}
 NODE_END

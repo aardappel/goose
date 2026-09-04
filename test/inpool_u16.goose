@@ -13,13 +13,13 @@ fn main_inpool_u16() {
     // 65,540 — past what a u16 offset reaches.
     for i in 6553 { upool.push(UNode { v: i }); }
     print(upool.len);                    // 6554
-    upool[0].link .= &upool[6553];       // The last offset that fits.
+    upool[0].link .= upool[6553];       // The last offset that fits.
     let last = upool[0].link;
     assert(last);
     print(last.v);                       // 6552
     upool.push(UNode { v: 2, link: upool[0] });
     print(upool.len);                    // 6555
-    upool[0].link .= &upool[6554];       // Aborts: the offset needs 17 bits.
+    upool[0].link .= upool[6554];       // Aborts: the offset needs 17 bits.
     print(0);                            // Not reached.
 }
 

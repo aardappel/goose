@@ -110,7 +110,7 @@ fn refs() {
     guard opt else { return; }
     print(opt);
     var rebound: i64& = arr[0];
-    rebound .= &arr[1];                  // .= rebinds the reference itself.
+    rebound .= arr[1];                  // .= rebinds the reference itself.
     rebound = 9;
     print(rebound + arr[1]);
 }
@@ -148,10 +148,10 @@ fn transparency() {
     add_through(r, 1);            // &r re-derives the same reference.
     print(a);
     var b = OptBox { };            // Optional field defaults to null.
-    b.o .= &a;                     // Rebind a field.
+    b.o .= a;                     // Rebind a field.
     b.o .= null;
     var o: i64? = null;
-    o .= &a;
+    o .= a;
     print(o);                      // Narrowed by the non-null rebind.
     if o != null { print(o + 1); }
 }
@@ -607,7 +607,7 @@ var gheld = GHolder { r: gint };        // Global-rooted ref into a global.
 fn globals() {
     gcounter += gname.len;
     gvec = gvec + Float3 { 1.0, 1.0, 1.0 };
-    gheld.r .= &gcounter;                // Rebind: same-depth store, fine.
+    gheld.r .= gcounter;                // Rebind: same-depth store, fine.
     gheld.r = 7;                         // Transparent: writes gcounter.
     print(gheld.r + gcounter);
 }
