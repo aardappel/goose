@@ -464,14 +464,39 @@ struct CodeGen {
             "switch", "typedef", "union", "unsigned", "void", "volatile", "while", "main",
             "bool", "true", "false", "NULL", "memcpy", "memmove", "memset", "printf", "free",
             "malloc", "abort", "exit",
+            // libc and libm names the runtime's headers bring into scope.
+            "abs", "labs", "llabs", "div", "ldiv", "atoi", "atol", "atof", "strtol", "strtoul",
+            "strtod", "rand", "srand", "system", "getenv", "qsort", "bsearch", "calloc",
+            "realloc", "clock", "time", "difftime", "mktime", "sleep", "exp", "exp2", "log",
+            "log2", "log10", "log1p", "expm1", "pow", "sqrt", "cbrt", "hypot", "sin", "cos",
+            "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "floor", "ceil",
+            "round", "trunc", "fabs", "fmod", "modf", "frexp", "ldexp", "fmin", "fmax", "nan",
+            "remove", "rename", "tmpfile", "fopen", "fclose", "fread", "fwrite", "fgetc",
+            "fputc", "fgets", "fputs", "fflush", "fseek", "ftell", "getc", "putc", "getchar",
+            "putchar", "puts", "gets", "scanf", "sscanf", "sprintf", "snprintf", "perror",
+            "strlen", "strcmp", "strncmp", "strcpy", "strncpy", "strcat", "strchr", "strrchr",
+            "strstr", "strtok", "strerror", "memcmp", "memchr", "tolower", "toupper",
+            "isalpha", "isdigit", "isspace", "isupper", "islower", "isalnum", "raise",
+            "signal", "assert", "errno", "stdin", "stdout", "stderr", "alloca", "index",
+            "read", "write", "open", "close",
+            // windows.h macros.
+            "min", "max",
         };
         return words.count(s) != 0;
+    }
+
+    // A user name shaped like a generated temporary or label (t12, L3).
+    static bool TempLike(const string &s) {
+        if (s.size() < 2 || (s[0] != 't' && s[0] != 'L')) return false;
+        for (size_t i = 1; i < s.size(); i++) if (!isdigit((unsigned char)s[i])) return false;
+        return true;
     }
 
     string Sanitize(string_view name) {
         string s(name);
         if (s.empty()) s = "_";
-        if (CReserved(s) || s.compare(0, 3, "gs_") == 0 || s.compare(0, 3, "GS_") == 0)
+        if (CReserved(s) || TempLike(s) || s.compare(0, 3, "gs_") == 0 ||
+            s.compare(0, 3, "GS_") == 0)
             s += "_";
         return s;
     }
@@ -2402,6 +2427,9 @@ struct CodeGen {
     }
 
     static string FltStr(double v, bool f32) {
+        // A folded NaN or infinity has no literal spelling; math.h's macros.
+        if (v != v) return "NAN";
+        if (std::isinf(v)) return v > 0 ? "INFINITY" : "(-INFINITY)";
         string s;
         CatOne(s, v);
         if (s.find('.') == string::npos && s.find('e') == string::npos &&
@@ -2728,7 +2756,9 @@ struct CodeGen {
         auto vt = n->exprtype;
         if (vt->kind == TY_INT && vt->intstorage == IS_VARINT) vt = ast.inttypes[IS_I64];
         L(CT(vt), " ", t, ";");
-        GenAny(n, Dst { 1, t });
+        // The type rides along: a spliced body may deliver a reference where
+        // the checked value had already decayed (NeedsDeref).
+        GenAny(n, Dst { 1, t, vt });
         return t;
     }
 
