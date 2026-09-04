@@ -212,25 +212,24 @@ Element restrictions:
 
 Growth operations (`push`, `append`, …) exist only on resizable arrays and on
 limited arrays (`[..k]`, `[..]`) up to capacity (exceeding capacity aborts).
-Shrink operations (`pop`, `resize` downward, `clear`) exist on `[>..<]` and
-limited arrays anywhere, and on a grow-only `[>..]` exactly where the
-compiler can see that no reference or slice into it is live (§5.1); they
+Shrink operations (`pop`, `resize` downward, `clear`) exist on limited
+arrays anywhere, on `[>..<]` wherever no variable in scope refers into it
+(§5.2), and on a grow-only `[>..]` exactly where the compiler can see that
+no reference or slice into it is live (§5.1); they
 abort when they would shrink below empty (`pop` on an empty array, `resize`
 to a negative length).
 
 Built-in members: `.len` (always, returns `i64`), `.cap` (limited arrays),
-`.push(v)` (returns a reference to the new element on grow-only and limited
-arrays — the idiomatic way to link up just-built data; on grow-shrink arrays
-it returns nothing, since no interior references exist there, §5.2),
+`.push(v)` (returns a reference to the new element on resizable and limited
+arrays — the idiomatic way to link up just-built data),
 `.append(src)` (src an array/slice of the element type), `.pop()`,
 `.resize(n, v)` (grow with fill value `v`, or shrink), `.resize(n)` (shrink
 only), `.clear()` per the rules above, and `.index_of(r) -> i64` (fixed,
-limited and grow-only arrays of fixed-size elements): the index of the
+limited and resizable arrays of fixed-size elements): the index of the
 element `r` refers to, `(addr − base) / elemsize`. `r` must be rooted at the
 array *exactly* (§9.2), which is what makes the division whole and the
 result in range, so nothing is checked; a reference rooted elsewhere is a
-compile error. Grow-shrink arrays have no `index_of`, having no interior
-references to convert (§5.2). Growth always supplies element values — no
+compile error. Growth always supplies element values — no
 operation can expose uninitialized slots (§5.3). Per UFCS these are ordinary
 functions: `a.push(v)` is `push(a, v)`.
 
@@ -395,10 +394,10 @@ address plus the stack identity, passed as a fat reference or hidden
 argument. There is no surface syntax; this is purely an implementation
 choice per instantiation.
 
-**What references may point to.** Anything *except*:
-
-* the interior (elements/fields) of a grow-shrink array `[>..<]` (§5.2);
-* the interior of a fixed-mode ADT payload (§3.5).
+**What references may point to.** Anything except the interior of a
+fixed-mode ADT payload (§3.5). A reference into a grow-shrink array `[>..<]`
+lives in a variable only and must be out of scope at the array's next shrink
+(§5.2).
 
 References into a grow-only resizable `[>..]` remain valid for as long as
 they can be named: grown memory never moves, and the array shrinks only
@@ -540,8 +539,9 @@ but writes through a slice are legal when its provenance is writable (§9.5).
   is always safe.
 * Slices of variable-element arrays iterate only (no indexing); the count is
   an element count.
-* Slices obey the same creation restrictions as interior references (§3.8):
-  no slices of grow-shrink arrays.
+* Slices obey the same restrictions as interior references (§3.8): a slice
+  of a grow-shrink array lives in a variable and must be out of scope at the
+  array's next shrink (§5.2).
 * A slice of a grow-only resizable taken before growth remains valid (it just
   doesn't see the new elements).
 
@@ -719,25 +719,41 @@ are (§9.2): a live value of any type containing references counts as a holder
 unless the array is declared deeper than it, as does a `var` reference that
 the same-depth rebinding rule could retarget into the array. The operations
 themselves are the grow-shrink ones: a stack-top move and a length store.
+Assigning the array whole (`a = …`) replaces its elements and is a shrink
+under the same rule.
 
 ### 5.2 Grow-shrink `[>..<]`
 
 * Fixed-size elements only.
-* `pop()` returns the element by value; `resize`/`clear` allowed.
-* **No interior references or slices into it may ever be created.** Access is
-  by whole-array reference + indexing (bounds-checked against current
-  length). Rationale: after a pop, that stack-top memory can later be reused
-  by *different types* (other locals, other pushes), so references into it
-  cannot be allowed to survive; the coarse ban needs zero analysis. Flow-
-  sensitive relaxations are future work (TODO).
-* The difference from a grow-only local's shrink (§5.1) is only who proves
-  the absence of references: there the compiler does, per site, so shrinking
-  is a statement-level operation on a local; here the type does, so a
-  grow-shrink array may be shrunk from anywhere, through a reference, at any
-  time.
-* Iterating with `for` uses indices under the hood (the `&x` binding form is
-  unavailable); mutating length during iteration is legal and merely a logic
-  hazard (bounds checks keep it safe).
+* `pop()` returns the element by value; `resize`/`clear` allowed, from
+  anywhere: on a local, through a reference, on a global, on a struct's
+  tail. Assigning the array whole is a shrink too.
+* References and slices into it are created like any other (§3.8, §3.10),
+  and are **held by variables only**: bound to a local, passed down,
+  returned — never stored into a field, element, or global. Rationale: after
+  a pop, that stack-top memory can later be reused by *different types*
+  (other locals, other pushes), so no reference into it may outlive the next
+  shrink; keeping such references out of storage is what makes the next rule
+  a scan of the variables in scope.
+* **A shrink is an error while any variable in scope may refer into the
+  array** — the test a grow-only local's shrink applies (§5.1). The error is
+  at the shrink and names the variable and where it was bound, so either end
+  can be changed: end the slice's block before the shrink, or move the
+  shrink. What differs from §5.1 is a shrink through a reference or of a
+  global, which cannot see the callers' variables: each function
+  specialization records what it shrinks — which globals, and which
+  parameters' pointees, directly or through its own callees — and a call is
+  an error while a variable in scope refers into an argument or global the
+  callee shrinks. A call into a recursive cycle still being checked counts
+  as shrinking every grow-shrink array it can reach. Function values run
+  inline, so a shrink inside a block is checked against the block's own
+  enclosing scopes.
+* `push` returns a reference to the new element, and `index_of` works, as on
+  grow-only arrays.
+* Iterating with `for` uses indices under the hood; the `&x` binding is a
+  variable in scope, so a shrink inside such a loop is an error, while
+  mutating the length inside a by-value `for x` loop is legal and merely a
+  logic hazard (bounds checks keep it safe).
 
 ### 5.3 Limited arrays `[..k]` / `[..]`
 
@@ -938,8 +954,9 @@ Built-in iteration only (no iterator protocol):
 * `for x in arr` — element copies (fixed-size elements), at the element's
   type.
 * `for &x in arr` — element references (required form for variable-size
-  elements, whose walk is sequential; also the mutation form). Unavailable
-  for `[>..<]` (§5.2).
+  elements, whose walk is sequential; also the mutation form). Over a
+  `[>..<]`, the binding is a reference in scope: no shrink inside the loop
+  (§5.2).
 * `for x, i in arr` / `for &x, i in arr` — with index (`i: i64`).
 
 All array-family types and slices are iterable. Custom access patterns are
@@ -1725,11 +1742,11 @@ The newest, highest-priority items first:
     "reference the owning variable" restriction goes away. Variable-size
     prefixes and resizable-class ADTs keep the bytes-on-stack shape behind
     a base pointer.
-0j. **Slices of grow-shrink arrays** — decided (`stdlib_design.md` §8.7),
-    superseding TODO 4: creating a slice or reference into a `[>..<]` is
-    legal; a shrink while one is still live is an error at the shrink,
-    citing the slice's creation and its next use; such slices may be passed
-    down and returned but not stored into containers. Amends §5.2 and §3.10.
+0j. **Slices of grow-shrink arrays** — DONE, see §5.2 (superseding TODO 4):
+    a slice or reference into a `[>..<]` is created like any other and held
+    by variables only; a shrink is an error while one is in scope, naming
+    it and where it was bound; specializations record what they shrink so
+    that calls are checked the same way.
 
 0a. **Mixed-signedness ergonomics in practice** — §6.1's unification
     deliberately rejects `u32 + i32`, and `u64` against anything signed
@@ -1798,13 +1815,9 @@ The newest, highest-priority items first:
    emerge.
 3. **Move operation for resizables** — assign-and-leave-source-empty, as the
    one sanctioned "move".
-4. **`[>..<]` interior-reference relaxation** — flow-sensitive analysis to
-   allow temporary references between shrinks. The mirror image is done: a
-   grow-only local takes `pop`, `resize` and `clear` where no reference or
-   slice into it is live (§5.1), and the same scope-based liveness test is
-   most of what this needs. What it does not answer is a shrink the analysis
-   cannot see — through a reference, or of a global — which is where the
-   grow-shrink type's blanket ban does its work.
+4. **`[>..<]` interior-reference relaxation** — DONE, see §5.2: the
+   scope-based test of §5.1, plus per-specialization shrink summaries for
+   the shrinks it cannot see directly (through a reference, or of a global).
 5. **Cycle store rule refinement** (§7.8) — the pass-down-only rule is
    conservative; explore per-activation reasoning.
 6. **"Current pool" implicit destinations** — allocation without naming the

@@ -38,7 +38,7 @@ enum BuiltinRecv {
     // Array kinds whose elements are at fixed strides *and* may be pointed
     // into, so a reference to one converts back to its index (§3.3). A
     // grow-shrink array admits no interior references at all (§5.2).
-    BR_INDEXABLE = BR_FIXED | BR_LIMITED | BR_GROW,
+    BR_INDEXABLE = BR_FIXED | BR_LIMITED | BR_GROW | BR_GROWSHRINK,
     // A grow-only array shrinks too, where the checker can see that nothing is
     // rooted in it (§5.1, CheckGrowShrink in typecheck.h).
     BR_SHRINKABLE = BR_LIMITED | BR_GROWSHRINK | BR_GROW,

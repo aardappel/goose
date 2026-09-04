@@ -107,7 +107,7 @@ reference parameter takes an explicit `&x`.
 
 | The function… | Parameter | Call sites | Works on |
 |---|---|---|---|
-| reads, or mutates elements in place without changing the length (`sort`, `reverse`, `fill`, `find`, `sum`, …) | `xs: T[:]` | `f(arr)`, `f(arr[1..])`, `f(slice)` | every array kind and slices (`[>..<]` once §8.7's slice rule lands) |
+| reads, or mutates elements in place without changing the length (`sort`, `reverse`, `fill`, `find`, `sum`, …) | `xs: T[:]` | `f(arr)`, `f(arr[1..])`, `f(slice)` | every array kind and slices |
 | changes the length (`push_n`, `insert_at`, `remove_at`, `retain`, `heap_push`, …) | `xs: A&` — `A` a generic bound to the whole array type | `f(arr)` (today `f(&arr)`) | every array kind that has the operations used |
 | takes a library type (`dictionary`, `rng`) | `d: dictionary<K, V>&` | `d.insert(k, v)` (today `insert(&d, k, v)`) | — |
 
@@ -129,9 +129,9 @@ Rationale, and what was ruled out:
   a fixed one by value, so `fn total(xs)` serves every kind; the library
   still prefers `T[:]` for read-only functions because it names the element
   type (`find -> T?`, `contains(xs, v: T)`) and accepts sub-ranges.
-* Grow-shrink arrays `[>..<]` cannot be sliced today (§5.2), so they cannot
-  reach the first row; the checker rule of §8.7 lifts that. Until then only
-  the length-changing functions apply to them.
+* Grow-shrink arrays `[>..<]` reach the first row like any other array now
+  that they can be sliced (§8.7); a shrink while such a slice is in scope is
+  the checker's error, not the library's concern.
 * Nothing is ever taken by value. §8.7's rule makes the language enforce
   that for every non-fixed type; until it is implemented it is a convention.
 
@@ -862,23 +862,25 @@ Decided in the reading above. It is language work to be done before the
 library starts (phase 0), so that the library is written against the new
 rules from its first line.
 
-**Slices of `[>..<]` — decided, with the error placement from the review.**
-Creating a slice or reference into a `[>..<]` becomes legal. A shrinking
-operation on that array (`pop`, `resize`, `clear`, whole assignment) while
-such a slice or reference is still *live* — used again on some later path —
-is a compile error at the shrink, citing where the slice was taken and where
-it is next used, so the programmer can fix either end. Liveness is the
-last-use information the checker keeps for named results (§7.3); inside a
-loop a shrink anywhere in the body counts against slices taken earlier in
-the body, since the next iteration would see them. Such a slice may be
-passed down and returned (the caller's copy of the same rule applies to
-what it receives) but not stored into a container, which would escape the
-analysis. The memory argument is that a live `[>..<]` owns its stack region
-exclusively (§1.3(2)), so even a slice that outlives a shrink would read
-type-safe reused memory exactly as a limited array's does (§5.3); the rule
-catches the logic error, not a memory one. Spec §5.2, §3.10 and TODO 4
-change accordingly. Until it lands, `[>..<]` reaches only the
-length-changing functions.
+**Slices of `[>..<]` — done (spec §5.2).** Creating a slice or reference
+into a `[>..<]` is legal. A shrinking operation on that array (`pop`,
+`resize`, `clear`, whole assignment) while a variable in scope may refer
+into it is a compile error at the shrink, naming the variable and where it
+was bound, so the programmer can fix either end: end the slice's block
+before the shrink, or move the shrink. Scope stands in for liveness, which
+is the same test a grow-only local's shrink already used (§5.1) and needs
+no last-use analysis; inside a loop it is exactly right, since a binding
+made earlier in the body is in scope at the shrink. Such a slice may be
+passed down and returned but not stored into a container (a field, an
+element, a global), which is what keeps every holder a variable the scan
+can see. The shrinks a scope scan cannot see — through a reference
+parameter, or of a global — are summarized per function specialization
+(which globals, which parameters' pointees, transitively through callees),
+and a call is checked against the summary the same way, so the error for a
+callee's shrink lands at the call. The memory argument stands: a live
+`[>..<]` owns its stack region exclusively (§1.3(2)), so the rule catches
+logic errors, not memory ones. The same pass closed the whole-assignment
+hole for grow-only arrays (B10).
 
 **References to resizable tails — decided representation; language work
 that precedes the library.** `&bag.items` is rejected today because a
@@ -974,6 +976,9 @@ Compiler bugs, with the shape that triggers each:
 | B5 | `count(dict[0])` where `dict: u8[..8][>..]` (slicing a limited-array element) | codegen assertion (`codegen.h:4625`) |
 | B6 | `var o: u8[>..] = a;` with `a: u8[:]` | "unsupported resizable construction from sl_u8" (from a string literal it works) |
 | B7 | `struct unit {}` used as an array element | the C has an empty struct |
+| B8 | `xs.push(f(3))` with `f` returning a fixed-size value, not inlined (-O0, or large) | the value is computed and dropped: nothing stored, length bumped — fixed |
+| B9 | an overload mismatch reported against an array-literal argument | the checker crashed printing the literal's synthesized array type — fixed |
+| B10 | `g = [9]` on a grow-only local while a slice of `g` is in scope; also through a `T[>..]&` parameter | accepted: whole assignment was not treated as a shrink — fixed (§5.1) |
 
 B1–B3 are the blocking ones: every fresh-array result in §4.5 and §4.8 goes
 through that path. B4 matters because `T[>..]&` parameters are everywhere in
