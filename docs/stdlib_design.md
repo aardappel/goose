@@ -742,10 +742,11 @@ with the return type inferred as usual (§7.1). The same rule makes `var
 names = [];` idiomatic user code. Until it exists, `map<U, T, F>` with
 `xs.map<f64>() { … }` is the phase-1 form.
 
-### 8.6 Where `import std;` looks
+### 8.6 Where `import std;` looks — done
 
 The search path of §3, a `--stdlib` flag and a `GOOSE_STDLIB` variable; the
-test runner points at the source tree's `stdlib/`.
+compiler finds the source tree's `stdlib/` from its own location, so the test
+runner needs no flag.
 
 ### 8.7 Checker and language changes
 
@@ -1011,7 +1012,12 @@ and slices, nested-tail references, generic aliases (§8.7).
 ## 10. Implementation plan
 
 Each phase ends with the test suite green at -O0 and -O2 under MSVC and
-clang, as `test/run_tests.ps1` already checks.
+clang, as `test/run_tests.ps1` already checks. Status: phases 0–3 are
+implemented and landed as the commits described in §8.7 and §9; the
+library lives in `stdlib/` with `test/stdlib_*.goose` and `docs/stdlib.md`.
+Two divergences from the text below: the value search is `position` (the
+builtin `index_of` took the name), and `format_replaced` names its
+parameters `old`/`with` (`from` is a keyword).
 
 **Phase 0 — compiler.** Bugs B1–B4 (B5–B7 as they are reached); the
 stdlib search path (§8.6); `abort`/`exit` (§8.3); `print`/`str`/`format`
