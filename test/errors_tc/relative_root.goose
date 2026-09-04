@@ -3,5 +3,5 @@ struct Cell { link: i64&<u16>? }
 var pool: Cell[>..] = [];
 var other = 5;
 fn main() {
-    pool.push(Cell { link: &other });
+    pool.push(Cell { link: other });
 }

@@ -4,6 +4,6 @@ fn shrink(q: i64[>..<]&) { q.pop(); }
 fn main() {
     var gs: i64[>..<] = [1, 2, 3];
     let s = gs[0..2];
-    shrink(&gs);
+    shrink(gs);
     print(s[0]);
 }

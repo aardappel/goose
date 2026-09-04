@@ -346,7 +346,8 @@ casts, never dangling.
 denotes a reference behaves as its pointee in every value context — reads,
 arithmetic, comparisons (`r1 == r2` compares the pointees), passing to a
 by-value parameter, `print(r)` — all operate on the target. There is no
-dereference operator and no `copy` builtin; the load is implicit.
+dereference operator; the load is implicit (`copy(r)` names a copy of the
+pointee where §4.1 asks for one).
 
 * Created with `&lvalue`. Lvalues are: local/global names, fields, indexed
   elements, dereferenced references, and (for reference creation) variable
@@ -362,13 +363,17 @@ dereference operator and no `copy` builtin; the load is implicit.
   fields, elements. On non-reference locations `.=` is an error.
 * Binding contexts keep the reference rather than loading through it: an
   initializer/argument/field whose *declared type* is a reference type binds
-  the reference value. Where a *variable's* type is inferred (`let x = r;`),
-  the reference decays to a pointee copy — except an explicit `&lvalue`
-  initializer, which infers the reference type. To bind a
-  reference-returning call, annotate: `let e: T& = pool.push(v);`. An
-  untyped parameter is an anonymous type variable and binds the argument's
-  exact type, reference or not, exactly as an explicit `<T>` does (§7.7):
-  `f(&x)` hands `f` a reference, `f(x)` a copy.
+  the reference value, and binds an lvalue of the pointee type by reference
+  without `&` (§4.1; writing the `&` warns). Where a *variable's* type is
+  inferred (`let x = r;`), a reference to a fixed-size value decays to a
+  pointee copy — except an explicit `&lvalue` initializer, which infers the
+  reference type — while a non-fixed lvalue binds by reference (`let w =
+  words[0];` names the element). To bind a reference-returning call,
+  annotate: `let e: T& = pool.push(v);`. An untyped parameter is an
+  anonymous type variable and binds the argument's exact type, reference or
+  not, exactly as an explicit `<T>` does (§7.7): for a fixed value `f(&x)`
+  hands `f` a reference and `f(x)` a copy; a non-fixed lvalue is a reference
+  either way.
 * References to `varint` fields are always read-only (varints are written
   only at construction, §3.6).
 
@@ -549,22 +554,43 @@ but writes through a slice are legal when its provenance is writable (§9.5).
 
 ## 4. Values, copying, and assignment
 
-### 4.1 Everything is a value
+### 4.1 Everything is a value; passing by size class
 
-Goose has uniform **by-value semantics**. Assignment, argument passing,
-returning, and pushing into arrays all *copy the full inline representation*
-of the value — however large that is. The only types whose copy is shallow
-are references and slices (the copy is the reference/slice itself, never the
-pointee).
+Goose has **value semantics**: a variable, field or element owns its value
+inline, and a destination (an assignment, an argument, a return, a push, a
+field initializer) receives a value of its own. How a value gets there
+depends on its size class (§1.1):
 
-There is no ownership transfer, no move semantics, no destructors, no `Drop`,
-no reference counting. Deallocation is exclusively scope exit resetting stack
-pointers. (A future *move* operation for resizable arrays — assign + leave
-source empty — is anticipated but not in v1.)
+* **Fixed-size values connect by value.** Scalars, structs, fixed arrays,
+  references and slices are copied — a reference or slice copy is the
+  reference/slice itself, never the pointee. Large fixed values copy
+  silently; there is no size threshold.
+* **Non-fixed values are never copied implicitly.** A variable- or
+  resizable-class *lvalue* (a variable, field or element) reaching a
+  destination binds by reference where the destination's type is a
+  reference or slice, an untyped parameter (§7.7), an un-annotated `let`/
+  `var`, or a `for` binding — and is an error at a value-typed destination.
+  A value-typed destination takes an **rvalue** (a literal, a call's result,
+  a constructing expression, built in place per §4.3) or an explicit
+  **`copy(x)`**, which is a fresh copy of the stored value, constructed at
+  the destination like any other rvalue. A function's own local is *moved*
+  by `return` (§7.3).
 
-Copies of variable/resizable values are real and cost O(size); they occur
-only at the well-defined construction contexts below, and idiomatic code
-passes large read-only data as slices instead.
+So `f(xs)` hands a `u8[][>..]` variable to `fn f(xs: u8[][:])`,
+`fn f(xs: u8[][>..]&)` and `fn f(xs)` alike by reference, `out.push(w)`
+needs `out.push(copy(w))` when `w` names storage, and `x.f(a)` (§7.1) reads
+as `f(x, a)` whatever `x`'s size class. `&x` is still how a reference to a
+*fixed* value is spelled at an untyped destination (`let r = &n;`,
+`f(&n)` into an untyped parameter); wherever the destination's own type is
+a reference it is redundant, and a redundant `&` is a warning.
+
+There is no ownership transfer beyond the return move, no destructors, no
+`Drop`, no reference counting. Deallocation is exclusively scope exit
+resetting stack pointers. (A `move` operation for resizable arrays —
+assign + leave source empty — is anticipated but not in v1.)
+
+Copies of variable/resizable values are real and cost O(size); with
+`copy` they are also visible at the site that pays for them.
 
 Shadowing: an inner scope may re-declare a name (a distinct variable).
 
@@ -609,6 +635,10 @@ Literal forms usable in any construction context:
   constructed (`Node { prev: self, next: self }`, §3.9) — the one way to give
   such a field a value before anything else it could point at exists;
 * string literals (§3.7);
+* `copy(x)`: a fresh copy of the stored value `x` names (or the pointee of a
+  reference), constructed at the destination like any rvalue -- the one
+  way a non-fixed value reaches a value-typed destination from storage
+  (§4.1). Copying a temporary is an error, since it is fresh already.
 * `default<T>()`, for any fixed-size `T`: the value a `T` has before anything
   is written to it — numbers 0, `false`, null optionals, empty slices and
   empty limited arrays, variant 0 of an ADT — with declared field defaults
@@ -646,8 +676,8 @@ only by `.=`, §3.8):
 
 * fixed-size lvalues declared `var`: assignable (plain overwrite copy);
 * whole resizable arrays (top of their stack): assignable — semantically
-  clear-then-copy; the bump pointer resets to the array's element start and
-  the new contents are copied in;
+  clear-then-construct; the bump pointer resets to the array's element start
+  and the new contents are built in (from an rvalue or `copy(x)`, §4.1);
 * limited arrays `[..k]`/`[..]`: assignable if the new length fits capacity;
 * fixed-mode ADT lvalues: assignable, including with a different variant;
 * **not** assignable: variable-class lvalues (`T[]` locals/fields/elements,
@@ -951,12 +981,12 @@ Built-in iteration only (no iterator protocol):
   §6.1 and `i` runs at that type (an `i32` range gives a genuinely 32-bit
   loop variable).
 * `for i in n` — sugar for `0..n`; `i` has `n`'s type.
-* `for x in arr` — element copies (fixed-size elements), at the element's
-  type.
-* `for &x in arr` — element references (required form for variable-size
-  elements, whose walk is sequential; also the mutation form). Over a
-  `[>..<]`, the binding is a reference in scope: no shrink inside the loop
-  (§5.2).
+* `for x in arr` — element copies for fixed-size elements, at the element's
+  type; element references for non-fixed ones (§4.1), whose walk is
+  sequential.
+* `for &x in arr` — element references (the mutation form for fixed-size
+  elements; redundant, and a warning, for non-fixed ones). Over a `[>..<]`,
+  the binding is a reference in scope: no shrink inside the loop (§5.2).
 * `for x, i in arr` / `for &x, i in arr` — with index (`i: i64`).
 
 All array-family types and slices are iterable. Custom access patterns are
@@ -1000,18 +1030,17 @@ only global initializers have ordered semantics (§11.1).
 
 ### 7.2 Parameter passing
 
-Uniform with `=`: **all parameters pass by value** (full inline copy).
-References/slices are values too, so "by reference" is spelled explicitly on
-*both* ends: `T&` in the signature, `&x` at the call site — forgetting both
-is a (possibly slow) copy, forgetting one is a type error, never a silent
-semantic change. (The one shorthand is array→slice at call sites, §3.10,
-which is cheap and copy-free by definition.)
-
-By-value passing of a variable/resizable argument reserves the statically
-assigned stack region for that parameter at the call site, constructs/copies
-the value there (§4.3), and the callee owns it like any local. This is a
-deliberate, visible cost; slices are the idiom for large read-only data,
-references for mutation.
+Uniform with `=` (§4.1): the parameter's type is the destination, and the
+argument connects to it by size class. A fixed-size argument is copied into
+a by-value parameter and bound by a reference-typed one (`fn inc(n: i64&)`
+takes `inc(n)`; `inc(&n)` says the same and warns). A non-fixed lvalue
+argument binds by reference to a reference, slice or untyped parameter and
+is an error at a by-value one — `f(copy(xs))` spells the copy, `f(make())`
+constructs the result in the parameter's slot (§4.3). Array→slice at call
+sites (§3.10) is the one shape change, cheap and copy-free by definition.
+A by-value non-fixed parameter reserves the statically assigned stack region
+for the value at the call site, constructs it there, and the callee owns it
+like any local.
 
 ### 7.3 Return values and result placement
 
@@ -1725,15 +1754,11 @@ fn parse(src: u8[:]) -> Expr.., u8[] { ...; return parse_expr(&l), ""; }
 Collected from the design discussion; each needs future resolution work.
 The newest, highest-priority items first:
 
-0h. **Passing by size class** — decided, pending implementation
-    (`stdlib_design.md` §8.7), and scheduled before the standard library.
-    Fixed values connect to destinations by value as today; non-fixed
-    values are never copied implicitly — a reference-typed, untyped or
-    generic destination binds them by reference, a value destination takes
-    an rvalue or an explicit `copy(x)` constructed in place. `&` becomes
-    redundant wherever the destination's type is a reference, and a
-    redundant `&` is a warning. Rewrites §4.1, §4.4, §7.2, the §3.8 binding
-    paragraph and §7.5's implementation note.
+0h. **Passing by size class** — DONE, see §4.1 (and §7.2, §3.8, §6.5):
+    fixed values connect to destinations by value; non-fixed lvalues bind
+    by reference at reference-typed, untyped and un-annotated destinations
+    and are an error at value-typed ones, which take an rvalue or an
+    explicit `copy(x)`; a redundant `&` is a warning.
 0i. **Resizable tails get their own frame header** — decided, pending
     implementation (`stdlib_design.md` §8.7), likewise before the library.
     A resizable-tailed struct is a frame object of its fixed prefix fields

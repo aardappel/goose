@@ -4,6 +4,6 @@ fn wipe(b: u8[>..]&) { b.clear(); }
 fn main() {
     var buf: u8[>..] = [];
     buf.push(1);
-    wipe(&buf);
+    wipe(buf);
     print(buf.len);
 }

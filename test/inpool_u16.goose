@@ -17,7 +17,7 @@ fn main_inpool_u16() {
     let last = upool[0].link;
     assert(last);
     print(last.v);                       // 6552
-    upool.push(UNode { v: 2, link: &upool[0] });
+    upool.push(UNode { v: 2, link: upool[0] });
     print(upool.len);                    // 6555
     upool[0].link .= &upool[6554];       // Aborts: the offset needs 17 bits.
     print(0);                            // Not reached.

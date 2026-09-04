@@ -82,8 +82,8 @@ fn compose(p: Xf&, l: Xf&, w: Xf&) {
 }
 
 recursive fn update(n: SNode&, parent: Xf&) {
-    compose(parent, &n.local, &n.world);
-    for i in n.kids.len { update(n.kids[i], &n.world); }
+    compose(parent, n.local, n.world);
+    for i in n.kids.len { update(n.kids[i], n.world); }
 }
 
 fn main() {
@@ -95,7 +95,7 @@ fn main() {
         for &n in pool {
             if n.id % 7 == f % 7 { n.local.t.x = step; n.local.t.z = 8.0 - step; }
         }
-        update(root, &IDENT);
+        update(root, IDENT);
         // Where everything ended up, as an integer: exact in f32, summed in i64.
         for &n in pool {
             total += (n.world.t.x + n.world.t.y + n.world.t.z) as i64;

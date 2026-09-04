@@ -73,13 +73,13 @@ fn make_str(n: i64) -> u8[>..] {                     // Nonfixed return (NRVO sh
 
 fn use_params() {
     var x = 10;
-    bump(&x);
+    bump(x);
     x = x.doubled();                                 // UFCS receiver becomes param 0.
     let arr = [1, 2, 3, 4];
     print(total_op(arr) + arr.len);                     // .len of a fixed array folds.
     print(takes_string("hello"));
     var v: i64[>..] = [];
-    grow(&v);
+    grow(v);
     print(v.len);
     print(x);
     let s = make_str(3);
@@ -319,7 +319,7 @@ fn outer2_op(x: i64) -> i64 { deep_big(x) + deep_big(x + 1) }
 fn step(i: i64&) -> bool { i += 1; i < 5 }
 fn whilecond() -> i64 {
     var i = 0;
-    while step(&i) { }                               // Inlined body inside the condition.
+    while step(i) { }                               // Inlined body inside the condition.
     i
 }
 
@@ -470,12 +470,12 @@ recursive fn rec_odd(k: i64) -> i64 { if k == 0 { return 0; } return rec_even(k 
 // non-fixed local of its own (§7.8), and copy the bytes at every level.
 recursive fn rec_bytes(s: u8[], k: i64) -> i64 {
     if k == 0 { return s.len; }
-    return rec_bytes(s, k - 1) + 1;
+    return rec_bytes(copy(s), k - 1) + 1;
 }
 
 fn recursion_op() {
     var pool: RecNode[>..] = [];
-    let root: RecNode& = rec_build(&pool, 3, 1);
+    let root: RecNode& = rec_build(pool, 3, 1);
     print(pool.len);                                 // 15
     print(rec_sum(root, 3));                         // 32
     rec_mark(root, 3);

@@ -156,7 +156,7 @@ recursive fn eval(e: Expr.Bin&) -> u64 {
 fn run_one(src: u8[:]) -> u64, i64 {
     var pool: Expr..[>..] = [];
     pos = 0;
-    let root: Expr..& = parse_expr(&pool, src);
+    let root: Expr..& = parse_expr(pool, src);
     skip(src);
     guard pos == src.len else { return 0, E_TOKEN; }
     return eval(root), 0;
@@ -173,8 +173,8 @@ fn main() {
         seed = xs_next(seed);
         text.clear();                    // Last input's slices died with the iteration.
         let depth = 3 + xs_mod(seed, 4);
-        let s = gen(&text, depth, seed >> 8);
-        let n = corrupt(&text, s);
+        let s = gen(text, depth, seed >> 8);
+        let n = corrupt(text, s);
         chars += n;
         let v, err = run_one(text[0..n]);
         if err == 0 { ok++; sum = sum * 31 + v; } else { errs[err] += 1; }

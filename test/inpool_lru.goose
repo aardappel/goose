@@ -73,7 +73,7 @@ fn korder() -> i64 {
 fn kadd(key: i64) {
     let i = kpool.alloc_index(KNode { key: key, prev: self, next: self });
     let n = &kpool[i];
-    kfront(&kpool[0], n);
+    kfront(kpool[0], n);
     kslots[kfind(key)] = KSlot { key: key, node: n };
 }
 
@@ -96,7 +96,7 @@ fn main_inpool_lru() {
     let m = kslots[kfind(2)].node;
     assert(m);
     kunlink(m);
-    kfront(&kpool[hi], m);
+    kfront(kpool[hi], m);
     print(korder());                     // 2431
     // Evict it: index_of is what turns the link back into a freelist index.
     let at = kfind(2);

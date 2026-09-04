@@ -54,7 +54,7 @@ fn main() {
     }
     var total = 0;
     for p in PASSES {
-        for &e in log {
+        for e in log {
             total += (match e {
                 Tick    => 1,
                 Move m  => m.id + m.dx + m.dy,

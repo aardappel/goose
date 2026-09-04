@@ -132,8 +132,8 @@ Rationale, and what was ruled out:
 * Grow-shrink arrays `[>..<]` reach the first row like any other array now
   that they can be sliced (§8.7); a shrink while such a slice is in scope is
   the checker's error, not the library's concern.
-* Nothing is ever taken by value. §8.7's rule makes the language enforce
-  that for every non-fixed type; until it is implemented it is a convention.
+* Nothing non-fixed is ever taken by value: the language enforces it (spec
+  §4.1), so a library function that wants its own copy says `copy(x)`.
 
 ### 2.2 Results
 

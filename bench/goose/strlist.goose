@@ -35,7 +35,7 @@ fn main() {
     // Scan the list repeatedly: length and first/last character of each word.
     var total = 0;
     for p in PASSES {
-        for &w in words { total += w.len + w[0] + w[w.len - 1]; }
+        for w in words { total += w.len + w[0] + w[w.len - 1]; }
     }
     print(words.len);
     print(total);

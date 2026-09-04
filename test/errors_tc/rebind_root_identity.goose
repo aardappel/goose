@@ -9,7 +9,7 @@ fn main() {
     poolA.push(Node { key: 1 });
     poolA.push(Node { key: 2 });
     poolB.push(Node { key: 3 });
-    var n: Node& = &poolA[1];
+    var n: Node& = poolA[1];
     for i in 2 {
         poolA[0].next .= n;
         n .= &poolB[0];

@@ -254,6 +254,7 @@ struct Val {
     bool strlit = false;         // String literal: adaptable to u8 array types.
     bool emptyarr = false;       // [] with as yet unknown element type.
     bool isnull = false;         // The null literal: adaptable to any optional.
+    bool lvalue = false;         // Denotes storage (a variable, field or element), not a temporary.
     // A signed value the compiler knows cannot be negative, which is what
     // lets it meet a u64 in a comparison (§6.1). Deliberately syntactic --
     // a literal, a .len/.cap, or a `let` bound to one -- so that whether a
@@ -376,6 +377,7 @@ NODE(Unary)
     BCE_MARK
     TType op;                   // T_MINUS, T_NOT, T_BITNOT, T_BITAND (ref-of).
     Node *child;
+    bool synth = false;         // A `&` the checker inserted (§4.1), not written by the user.
     Unary(Line l, TType _op, Node *_child) : Node(l), op(_op), child(_child) {}
 NODE_END
 

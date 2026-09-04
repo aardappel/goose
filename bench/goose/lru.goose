@@ -124,7 +124,7 @@ fn main() {
         if f {
             f.val += 1;
             unlink(f);
-            link_front(&pool[hi], f);
+            link_front(pool[hi], f);
             hits++;
             continue;
         }
@@ -145,7 +145,7 @@ fn main() {
         let ni = pool.alloc_index(Node { key: key as i32, val: (key % 1000) as i32 });
         let n = &pool[ni];
         slots[ins] = Slot { key: key as i32, node: n };
-        link_front(&pool[hi], n);
+        link_front(pool[hi], n);
         count++;
     }
     // Walk the list from most to least recent, so the order is checked too.

@@ -27,8 +27,8 @@ fn main() {
     var marks: Item&[>..] = [];
     var spare: Item[>..] = [];
     var spare_marks: Item&[>..] = [];
-    fill(&items, &marks, 12345, N - N / 4);
-    fill(&spare, &spare_marks, 6789, N / 4);
+    fill(items, marks, 12345, N - N / 4);
+    fill(spare, spare_marks, 6789, N / 4);
     var total = 0;
     for it in items { total += it.key; }
     for it in spare { total += it.key; }

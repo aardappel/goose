@@ -11,6 +11,6 @@ recursive fn f(pool: Cell[>..]&, r: i64&, n: i64) {
 fn main() {
     var p: Cell[>..] = [];
     var x = 5;
-    f(&p, &x, 3);
+    f(p, &x, 3);
     print(p.len);
 }

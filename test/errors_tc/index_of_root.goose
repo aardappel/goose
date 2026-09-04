@@ -6,5 +6,5 @@ var ispare: INode[>..] = [];
 fn main() {
     ipool.push(INode { key: 1 });
     ispare.push(INode { key: 2 });
-    print(ipool.index_of(&ispare[0]));
+    print(ipool.index_of(ispare[0]));
 }
