@@ -1281,6 +1281,45 @@ fn text_builtins() {
     print(str(0.1), str(), str(false));                // 0.1false
 }
 
+// --- `var x = []`: the element type from the first push/append/assignment --
+
+fn doubled_pa<T, F>(xs: T[:]) {
+    var out = [];                        // Completed by the push below.
+    for x in xs { out.push(F(x)); }
+    return out;
+}
+
+fn twice_pa(x: i64) -> i64 { x * 2 }
+
+fn pending_arrays() {
+    var ns = [];
+    ns.push(3);
+    ns.push(4);
+    print(ns.len + ns[1]);               // 6
+    ns.push(twice_pa(5));                // A call result constructed at the top.
+    print(ns[2]);                        // 10
+    var words = [];
+    words.push("ab");                    // A string literal makes it u8[][>..].
+    words.push("cde");
+    var n = 0;
+    for &w in words { n += w.len; }
+    print(n);                            // 5
+    let ys = doubled_pa([1, 2, 3]) { it * 2 };
+    print(ys[2]);                        // 6
+    var zs = [];
+    zs = ys;                             // Completed by the assignment.
+    print(zs.len);                       // 3
+    var txt = [];
+    format(&txt, "n=", 5);               // Completed by format: u8[>..].
+    print(txt);                          // n=5
+    var fl = [];
+    fl.append([1.5, 2.5]);               // Completed by append: f64[>..].
+    print(fl[1]);                        // 2.5
+    print(count_pa([]));                 // 0: a `[]` literal argument adapts as before.
+}
+
+fn count_pa(xs: i64[]) -> i64 { xs.len }
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -1328,6 +1367,7 @@ fn main_codegen_exec() {
     untyped_refs();
     defaults_builtin();
     text_builtins();
+    pending_arrays();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

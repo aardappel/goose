@@ -589,7 +589,11 @@ runtime commits skipped address ranges explicitly (Appendix C.4).
 Literal forms usable in any construction context:
 
 * array literals `[1, 2, 3]`; `[]` where the element type is known from
-  context; `[v; n]` fill form for fixed arrays;
+  context, or as the whole initializer of a `var` local (`var out = [];`),
+  which makes the local a grow-only `T[>..]` whose `T` is fixed by the first
+  `push`, `append`, `format` or whole assignment into it — a string literal
+  pushed into one makes it a `u8[][>..]` — and must be fixed before the local
+  is otherwise used or its scope ends; `[v; n]` fill form for fixed arrays;
 * struct literals `X { a: 1, b: 2 }` (named) or `X { 1, 2 }` (positional, in
   declaration order; no mixing). Named initializers must also appear in
   declaration order (out-of-order names are a compile error: values construct
