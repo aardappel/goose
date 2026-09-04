@@ -6694,7 +6694,7 @@ inline string Binary::CgX(CodeGen &cg) {
                 x = cg.GenX(other);
             }
             auto addr = ot->kind == TY_REF && cg.IsFatPointee(ot->ref->sub)
-                            ? cat(x, ".addr") : x;
+                            ? cat(x, ".hdr") : x;
             return cat("(", addr, op == T_EQ ? " == NULL)" : " != NULL)");
         }
     }
