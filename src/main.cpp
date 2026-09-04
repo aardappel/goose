@@ -25,9 +25,33 @@ string DirOf(const string &path) {
     return pos == string::npos ? "" : path.substr(0, pos + 1);
 }
 
+static bool FileExists(const string &path) {
+    auto f = fopen(path.c_str(), "rb");
+    if (f) fclose(f);
+    return f != nullptr;
+}
+
+// Where the standard library lives (§11.1): an explicit --stdlib or
+// GOOSE_STDLIB, else the `stdlib/` directory of the source tree the compiler
+// was built in, found by walking up from the executable.
+string gs_stdlibdir;
+string gs_argv0;
+vector<string> StdlibDirs() {
+    vector<string> dirs;
+    if (!gs_stdlibdir.empty()) dirs.push_back(cat(gs_stdlibdir, "/"));
+    if (auto env = getenv("GOOSE_STDLIB")) dirs.push_back(cat(env, "/"));
+    auto exedir = DirOf(gs_argv0);
+    dirs.push_back(cat(exedir, "stdlib/"));
+    dirs.push_back(cat(exedir, "../stdlib/"));
+    dirs.push_back(cat(exedir, "../../stdlib/"));
+    dirs.push_back(cat(exedir, "../../../stdlib/"));
+    dirs.push_back("stdlib/");
+    return dirs;
+}
+
 // Parses a root file and, transitively, everything it imports (each file once).
-// `import a.b;` resolves relative to the root file's directory, `import .a.b;`
-// relative to the importing file's.
+// `import a.b;` resolves relative to the root file's directory, then in the
+// standard library; `import .a.b;` relative to the importing file's.
 void ParseProgram(Ast &ast, const string &rootpath) {
     auto rootdir = DirOf(rootpath);
     vector<string> queue = { rootpath };
@@ -45,6 +69,12 @@ void ParseProgram(Ast &ast, const string &rootpath) {
         parser.ParseTop();
         for (auto &imp : parser.imports) {
             auto imppath = cat(imp.relative ? DirOf(path) : rootdir, imp.path, ".goose");
+            if (!imp.relative && !FileExists(imppath)) {
+                for (auto &dir : StdlibDirs()) {
+                    auto cand = cat(dir, imp.path, ".goose");
+                    if (FileExists(cand)) { imppath = cand; break; }
+                }
+            }
             if (loaded.insert(imppath).second) queue.push_back(imppath);
         }
     }
@@ -133,6 +163,7 @@ void GenRuntimeHeader(const char *argv0) {
 }
 
 int Main(int argc, char **argv) {
+    gs_argv0 = argv[0];
     string filename, outfile;
     auto dump = false, tokens = false, parseonly = false, specs = false, nocgen = false;
     auto nobce = false, bcetest = false, norfcheck = false;
@@ -154,6 +185,7 @@ int Main(int argc, char **argv) {
         else if (arg == "-O2") optlevel = 2;
         else if (arg == "-o" && i + 1 < argc) outfile = argv[++i];
         else if (arg == "--include" && i + 1 < argc) gs_includes.push_back(argv[++i]);
+        else if (arg == "--stdlib" && i + 1 < argc) gs_stdlibdir = argv[++i];
         else if (!arg.empty() && arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg.c_str());
             return 1;
@@ -164,7 +196,7 @@ int Main(int argc, char **argv) {
     if (filename.empty()) {
         fprintf(stderr, "usage: goose [--dump] [--parse] [--tokens] [--specs] [--check] "
                         "[--no-bce] [--bce-test] [--unsafe-no-rf-check] [-O0|-O1|-O2] "
-                        "[-o out.c] [--include header.h]... file.goose | --gen-runtime-header\n");
+                        "[-o out.c] [--include header.h]... [--stdlib dir] file.goose | --gen-runtime-header\n");
         return 1;
     }
     try {

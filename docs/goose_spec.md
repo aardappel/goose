@@ -1638,7 +1638,9 @@ roots, and a caller's facts reach a callee body once it is inlined.
 ### 11.1 Modules and globals
 
 * One program, compiled whole. `import a.b.c;` includes the file `a/b/c.goose`
-  once, resolved relative to the *main file being compiled*; the form
+  once, resolved relative to the *main file being compiled*, then in the
+  standard library's directory (`--stdlib <dir>`, else `GOOSE_STDLIB`, else
+  the `stdlib/` of the source tree the compiler was built in); the form
   `import .a.b;` (leading dot) resolves relative to the *importing file*
   instead. All declarations are public in v1; name collisions are errors (no
   namespacing yet). Top-level declarations are order-independent.
