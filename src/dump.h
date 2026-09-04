@@ -157,19 +157,25 @@ inline bool EndsInBlock(const Node *n) {
     return false;
 }
 
-inline void Block::Dump(string &s, int ind) const {
-    s += "{";
-    for (auto st : stmts) {
+// The statements and tail of a block, one per line, through the closing
+// brace; Block and FunVal share the shape.
+inline void DumpBlockBody(string &s, const Block *b, int ind) {
+    for (auto st : b->stmts) {
         NL(s, ind + 1);
         st->Dump(s, ind + 1);
         if (!EndsInBlock(st)) s += ";";
     }
-    if (tail) {
+    if (b->tail) {
         NL(s, ind + 1);
-        tail->Dump(s, ind + 1);
+        b->tail->Dump(s, ind + 1);
     }
     NL(s, ind);
     s += "}";
+}
+
+inline void Block::Dump(string &s, int ind) const {
+    s += "{";
+    DumpBlockBody(s, this, ind);
 }
 
 inline void IntLit::Dump(string &s, int) const {
@@ -417,18 +423,7 @@ inline void FunVal::Dump(string &s, int ind) const {
         }
         s += " =>";
     }
-    // Reuse the block dumper body by hand: FunVal wraps a Block.
-    for (auto st : body->stmts) {
-        NL(s, ind + 1);
-        st->Dump(s, ind + 1);
-        if (!EndsInBlock(st)) s += ";";
-    }
-    if (body->tail) {
-        NL(s, ind + 1);
-        body->tail->Dump(s, ind + 1);
-    }
-    NL(s, ind);
-    s += "}";
+    DumpBlockBody(s, body, ind);
 }
 
 inline void VarDecl::Dump(string &s, int ind) const {

@@ -3,6 +3,22 @@
    queues (the compiler defines GS_NEED_THREADS 1 before the runtime paste).
    This is the one part of the runtime allowed to allocate internally. */
 
+/* hardware_threads() sizes worker pools, and a program that spawns none may
+   still ask; it needs nothing below. */
+#ifdef _WIN32
+static int64_t gs_hardware_threads(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (int64_t)si.dwNumberOfProcessors;
+}
+#else
+#include <unistd.h>
+static int64_t gs_hardware_threads(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? (int64_t)n : 1;
+}
+#endif
+
 #if GS_NEED_THREADS
 
 #ifdef _WIN32
@@ -16,12 +32,6 @@ typedef CONDITION_VARIABLE gs_cond;
 #define gs_cond_wait(c, m) SleepConditionVariableSRW((c), (m), INFINITE, 0)
 #define gs_cond_signal(c)  WakeConditionVariable(c)
 
-static int64_t gs_hardware_threads(void) {
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    return (int64_t)si.dwNumberOfProcessors;
-}
-
 #else  /* posix */
 
 #include <pthread.h>
@@ -34,11 +44,6 @@ typedef pthread_cond_t gs_cond;
 #define gs_mutex_unlock(m) pthread_mutex_unlock(m)
 #define gs_cond_wait(c, m) pthread_cond_wait((c), (m))
 #define gs_cond_signal(c)  pthread_cond_signal(c)
-
-static int64_t gs_hardware_threads(void) {
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    return n > 0 ? (int64_t)n : 1;
-}
 
 #endif
 
@@ -169,21 +174,5 @@ static gs_qnode *gs_qpoll(gs_queue *q) {
     gs_mutex_unlock(&q->mutex);
     return n;
 }
-
-#else  /* !GS_NEED_THREADS: hardware_threads stays available. */
-
-#ifdef _WIN32
-static int64_t gs_hardware_threads(void) {
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    return (int64_t)si.dwNumberOfProcessors;
-}
-#else
-#include <unistd.h>
-static int64_t gs_hardware_threads(void) {
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    return n > 0 ? (int64_t)n : 1;
-}
-#endif
 
 #endif  /* GS_NEED_THREADS */

@@ -172,7 +172,6 @@ struct TypeCheck {
 
     bool ConstInt(Node *n, int64_t &v) {
         if (auto i = Is<IntLit>(n)) { v = i->val; return true; }
-        if (auto b = Is<BoolLit>(n)) { (void)b; return false; }
         if (auto u = Is<Unary>(n)) {
             int64_t c;
             if (!ConstInt(u->child, c)) return false;
@@ -290,12 +289,6 @@ struct TypeCheck {
         for (auto sp = frames.back().lexspec; sp; sp = sp->lexparent)
             for (auto &[n, t] : sp->bindings) if (n == name) return t;
         return nullptr;
-    }
-
-    bool IsFnValName(string_view name) {
-        for (auto sp = frames.back().lexspec; sp; sp = sp->lexparent)
-            for (auto &[n, fv] : sp->fnvals) if (n == name) return true;
-        return false;
     }
 
     const FnValBind *LookupFnVal(string_view name) {
@@ -961,18 +954,8 @@ struct TypeCheck {
     }
 
     SFunction *LookupLocalFn(string_view name) {
-        // A frame's scopes are [f.scopebase, next frame's scopebase).
-        for (auto fi = (int)frames.size() - 1; fi >= 0;) {
-            auto &f = frames[fi];
-            auto scopelimit = fi == (int)frames.size() - 1 ? (int)scopes.size()
-                                                           : frames[fi + 1].scopebase;
-            for (auto i = (int)localfns.size() - 1; i >= 0; i--) {
-                auto &[si, sf] = localfns[i];
-                if (si >= f.scopebase && si < scopelimit && sf->name == name) return sf;
-            }
-            fi = f.lexframe;
-        }
-        return nullptr;
+        FnSpec *env;
+        return LookupLocalFnEnv(name, env);
     }
 
     // Snapshot of assigned/narrowed for every variable currently in scope.
@@ -1124,11 +1107,6 @@ struct TypeCheck {
         if (t->kind != TY_REF) return nullptr;
         if (t->ref->optional) return nullptr;
         return t->ref->sub;
-    }
-
-    // Fixed-size element check for indexable access.
-    bool SequentialElems(TypeExpr *arr) {
-        return ClassOf(arr->arr->sub) != SC_FIXED;
     }
 
     // Positions that accept any integer type (indices, slice bounds, sizes,
@@ -1437,26 +1415,23 @@ struct TypeCheck {
             auto lv = LValueBase(ix->obj);
             DerefLValue(lv, ix->obj);
             SliceProvenance(lv, ix->obj);
+            TypeExpr *elem;
             if (lv.type->kind == TY_SLICE) {
-                if (ClassOf(lv.type->sub) != SC_FIXED)
-                    Error(n, "slices of variable-size elements cannot be indexed, only iterated");
-                CheckIntAny(ix->idx);
-                lv.type = lv.type->sub;
-                lv.var = nullptr;
-                lv.fromstorage = true;
-                n->exprtype = lv.type;
-                return lv;
+                elem = lv.type->sub;
+            } else {
+                if (lv.type->kind != TY_ARRAY)
+                    Error(n, cat("cannot index a value of type ", TypeStr(lv.type)));
+                RequireComplete(lv.type, n->line);
+                elem = lv.type->arr->sub;
             }
-            if (lv.type->kind != TY_ARRAY)
-                Error(n, cat("cannot index a value of type ", TypeStr(lv.type)));
-            RequireComplete(lv.type, n->line);
-            if (SequentialElems(lv.type))
-                Error(n, "arrays of variable-size elements cannot be indexed, only iterated");
+            if (ClassOf(elem) != SC_FIXED)
+                Error(n, cat(lv.type->kind == TY_SLICE ? "slices" : "arrays",
+                             " of variable-size elements cannot be indexed, only iterated"));
             CheckIntAny(ix->idx);
-            lv.type = lv.type->arr->sub;
+            lv.type = elem;
             lv.var = nullptr;
             lv.fromstorage = true;
-            if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT) lv.isvarint = true;
+            lv.isvarint = elem->kind == TY_INT && elem->intstorage == IS_VARINT;
             n->exprtype = lv.type;
             return lv;
         }
@@ -1541,42 +1516,33 @@ struct TypeCheck {
     // Field / builtin-property resolution on an lvalue path.
     void ResolveMemberLValue(LVal &lv, Dot *d) {
         auto t = lv.type;
+        // Steps the path into the named field of a field run; a frame
+        // object's resizable tail has a header of its own to address (C.2).
+        auto step = [&](const vector<Field> &fields, const vector<TypeExpr *> &ftypes,
+                        bool frameobj) {
+            for (auto i = 0; i < (int)fields.size(); i++) {
+                auto &f = fields[i];
+                if (f.ispad || f.name != d->name) continue;
+                d->fieldidx = i;
+                if (f.isconst) lv.writable = false;
+                lv.type = ftypes[i];
+                lv.var = nullptr;
+                lv.fromstorage = true;
+                lv.fotail = frameobj && ClassOf(lv.type) == SC_RESIZABLE;
+                lv.isvarint = lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT;
+                return true;
+            }
+            return false;
+        };
         if (t->kind == TY_STRUCT) {
             auto inst = GetStructInst(t);
-            auto st = inst->st;
-            for (auto i = 0; i < (int)st->fields.size(); i++) {
-                auto &f = st->fields[i];
-                if (!f.ispad && f.name == d->name) {
-                    d->fieldidx = i;
-                    if (f.isconst) lv.writable = false;
-                    lv.type = inst->ftypes[i];
-                    lv.var = nullptr;
-                    lv.fromstorage = true;
-                    lv.fotail = inst->frameobj && ClassOf(lv.type) == SC_RESIZABLE;
-                    if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT)
-                        lv.isvarint = true;
-                    return;
-                }
-            }
-            Error(d, cat("struct ", st->name, " has no field ", d->name));
+            if (step(inst->st->fields, inst->ftypes, inst->frameobj)) return;
+            Error(d, cat("struct ", inst->st->name, " has no field ", d->name));
         }
         if (t->kind == TY_VARIANT) {
             auto inst = GetEnumInst(t->var->adt);
             auto vi = VariantIndex(inst->en, t->var->variant);
-            auto &fields = t->var->variant->fields;
-            for (auto i = 0; i < (int)fields.size(); i++) {
-                auto &f = fields[i];
-                if (!f.ispad && f.name == d->name) {
-                    d->fieldidx = i;
-                    if (f.isconst) lv.writable = false;
-                    lv.type = inst->vftypes[vi][i];
-                    lv.var = nullptr;
-                    lv.fromstorage = true;
-                    if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT)
-                        lv.isvarint = true;
-                    return;
-                }
-            }
+            if (step(t->var->variant->fields, inst->vftypes[vi], false)) return;
             Error(d, cat("variant ", inst->en->name, ".", t->var->variant->name,
                          " has no field ", d->name));
         }
@@ -1687,41 +1653,30 @@ struct TypeCheck {
         if (auto c = Is<Call>(n); c && c->builtin == B_COPY) n = c->args[0];
     }
 
-    Val CheckValue(Node *&n, TypeExpr *expected) {
+    // A value meeting a destination of type `expected` (null or void: none).
+    // Argument position (`callsite`) additionally allows the array→slice
+    // coercion (§3.10), and leaves the redundant-& warning to the call's own
+    // resolution, where an explicit & may have picked the overload.
+    Val CheckValue(Node *&n, TypeExpr *expected, bool callsite = false) {
         auto v = CheckV(n, expected);
         UnwrapCopy(n);
         if (!expected || expected->kind == TY_VOID) {
             v = DecayRef(v);
         } else {
-            if (expected->kind == TY_REF && UserRefOf(n))
+            if (!callsite && expected->kind == TY_REF && UserRefOf(n))
                 Warn(n, cat("redundant &: ", ExprStr(Is<Unary>(n)->child),
                             " binds by reference here without it (§4.1)"));
             if (BindsRef(v, expected)) n = AutoRef(n, v);
             RequireCopyable(v, n, expected);
             if (!KeepsRef(v, expected)) v = DecayRef(v);
-            MustFit(v, n, expected, false);
+            MustFit(v, n, expected, callsite);
             NoRelRefCopy(n, expected);
         }
         n->exprtype = v.type;
         return v;
     }
 
-    // Argument position: additionally allows the array→slice coercion (§3.10).
-    Val CheckArg(Node *&n, TypeExpr *expected) {
-        auto v = CheckV(n, expected);
-        UnwrapCopy(n);
-        if (expected) {
-            if (BindsRef(v, expected)) n = AutoRef(n, v);
-            RequireCopyable(v, n, expected);
-            if (!KeepsRef(v, expected)) v = DecayRef(v);
-            MustFit(v, n, expected, true);
-            NoRelRefCopy(n, expected);
-        } else {
-            v = DecayRef(v);
-        }
-        n->exprtype = v.type;
-        return v;
-    }
+    Val CheckArg(Node *&n, TypeExpr *expected) { return CheckValue(n, expected, true); }
 
     // An operand of an operator: always the pointee.
     Val Operand(Node *n) {
@@ -2272,21 +2227,17 @@ struct TypeCheck {
         auto aflow = SaveFlow();
         RestoreFlow(entry);
         Val ev = VoidVal();
-        FlowState bflow;
-        if (x->elseb) {
-            NarrowCond(x->cond, false);
-            if (auto ei = Is<IfExpr>(x->elseb)) ev = CheckIf(ei, expected, wantvalue);
-            else ev = CheckBlockVal((Block *)x->elseb, expected, wantvalue, SK_PLAIN);
-            x->elseb->exprtype = ev.type;
-            bflow = SaveFlow();
-            RestoreFlow(entry);
-        } else {
-            if (wantvalue)
-                Error(x, "an if used as a value requires an else branch");
-            NarrowCond(x->cond, false);
-            bflow = SaveFlow();
-            RestoreFlow(entry);
+        NarrowCond(x->cond, false);
+        if (auto ei = Is<IfExpr>(x->elseb)) {
+            ev = CheckIf(ei, expected, wantvalue);
+        } else if (x->elseb) {
+            ev = CheckBlockVal((Block *)x->elseb, expected, wantvalue, SK_PLAIN);
+        } else if (wantvalue) {
+            Error(x, "an if used as a value requires an else branch");
         }
+        if (x->elseb) x->elseb->exprtype = ev.type;
+        auto bflow = SaveFlow();
+        RestoreFlow(entry);
         MergeFlow(aflow, bflow);
         if (!wantvalue) return VoidVal();
         return MergeVals(tv, aflow.reachable, ev, bflow.reachable, x, wantvalue);
@@ -2452,11 +2403,7 @@ struct TypeCheck {
         } else {
             Error(m, cat("cannot match on a value of type ", TypeStr(st)));
         }
-        if (!first) {
-            auto save = SaveFlow();
-            (void)save;
-            RestoreFlow(acc);
-        }
+        if (!first) RestoreFlow(acc);
         reachable = resultreach;
         if (!wantvalue) return VoidVal();
         if (!result.type) result.type = ast.voidtype;
@@ -2731,8 +2678,7 @@ struct TypeCheck {
         FnSpec *env = nullptr;          // Lexical parent for nested functions.
     };
 
-    Val CheckCall(Call *c, TypeExpr *expected) {
-        (void)expected;
+    Val CheckCall(Call *c) {
         // A node may be re-checked in argument phase 2; reset annotations.
         c->spec = nullptr;
         c->dispatch.clear();
@@ -2787,6 +2733,9 @@ struct TypeCheck {
         return CheckBuiltin(c, *bd, c->args, nullptr);
     }
 
+    // A nested function visible from the current point, with the lexical
+    // environment of the frame that declares it. A frame's scopes are
+    // [f.scopebase, next frame's scopebase).
     SFunction *LookupLocalFnEnv(string_view name, FnSpec *&env) {
         for (auto fi = (int)frames.size() - 1; fi >= 0;) {
             auto &f = frames[fi];
@@ -2950,7 +2899,7 @@ struct TypeCheck {
             for (size_t i = 0; i < c->args.size(); i++) c->args[i] = argnodes[i + off];
         }
         c->spec = spec;
-        return CallResult(c, spec, argvals, best.paramtypes);
+        return CallResult(c, spec, argvals);
     }
 
     bool TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, MatchInfo &mi, string &why) {
@@ -3181,8 +3130,6 @@ struct TypeCheck {
     // Returns a Val with null type when no dispatch position exists.
     Val TryDispatch(Call *c, vector<SFunction *> &cands, vector<Node *> &argnodes,
                     vector<Val> &argvals, string_view name) {
-        Val novv;
-        novv.type = nullptr;
         auto found = -1;
         vector<MatchInfo> matches;  // Per variant, for the found position.
         TypeExpr *enumtype = nullptr;
@@ -3231,7 +3178,7 @@ struct TypeCheck {
             enumtype = et;
             byref = isref;
         }
-        if (found < 0) return novv;
+        if (found < 0) return Val {};
         // Specialize every arm; return types and the other parameters must
         // agree across the set.
         c->dispatcharg = found;
@@ -3271,7 +3218,7 @@ struct TypeCheck {
                 if ((int)i != found) CheckArg(argnodes[i], matches[0].paramtypes[i]);
             curdst = savedst;
         }
-        return CallResult(c, first, argvals, matches[0].paramtypes);
+        return CallResult(c, first, argvals);
     }
 
     // ------------------------------------------------------------------
@@ -3602,7 +3549,7 @@ struct TypeCheck {
             auto tail = spec->body->tail;
             auto asvalue = !(spec->retsknown && spec->rets.empty());
             if (auto fi = Is<IfExpr>(tail); fi && !fi->elseb) asvalue = false;
-            if (auto g = Is<Guard>(tail)) { (void)g; asvalue = false; }
+            if (Is<Guard>(tail)) asvalue = false;
             if (!asvalue) {
                 CheckStmtExpr(tail);
                 if (reachable && spec->retsknown && !spec->rets.empty())
@@ -3694,7 +3641,7 @@ struct TypeCheck {
         tspec->checkedreturn = true;
     }
 
-    Val CallResult(Call *c, FnSpec *spec, vector<Val> &argvals, vector<TypeExpr *> &paramtypes) {
+    Val CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
         c->rettypes = spec->rets;
         lastcallrets.clear();
         for (size_t i = 0; i < spec->rets.size(); i++) {
@@ -3736,7 +3683,6 @@ struct TypeCheck {
             }
             lastcallrets.push_back(v);
         }
-        (void)paramtypes;
         if (spec->rets.empty()) return VoidVal();
         return lastcallrets[0];
     }
@@ -3825,7 +3771,7 @@ struct TypeCheck {
                     if (!fields[i].ispad && fields[i].name == fi.name) { idx = i; break; }
                 if (idx < 0) Error(fi.val, cat(what, " has no field ", fi.name));
                 if (got[idx]) Error(fi.val, cat("duplicate initializer for field ", fi.name));
-                // Declaration order is required (S4.2): values construct
+                // Declaration order is required (§4.2): values construct
                 // front-to-back, so out-of-order names would obfuscate either
                 // evaluation order or cost.
                 for (auto i = idx + 1; i < (int)fields.size(); i++)
@@ -4055,7 +4001,7 @@ struct TypeCheck {
         // writes the pointee; rebinding is `.=`.
         if (IsPlainRef(lv.type)) {
             if (a->op == T_ASSIGN) PointeeAssign(a, lv);
-            else CompoundAssign(a, lv, lv.type->ref->sub, PointeeWritable(lv, a));
+            else CompoundAssign(a, lv.type->ref->sub, PointeeWritable(lv, a));
             a->pointee = true;
             return;
         }
@@ -4063,7 +4009,7 @@ struct TypeCheck {
             Error(a, "optional value must be narrowed before writing through it, "
                      "or rebound with .=");
         if (a->op != T_ASSIGN) {
-            CompoundAssign(a, lv, lv.type, lv.writable);
+            CompoundAssign(a, lv.type, lv.writable);
             if (lv.var) RequireAssigned(lv.var, a);
             return;
         }
@@ -4228,8 +4174,7 @@ struct TypeCheck {
         vd->refrootfrom = rv.rootfrom;
     }
 
-    void CompoundAssign(Assign *a, LVal &lv, TypeExpr *st, bool writable) {
-        (void)lv;
+    void CompoundAssign(Assign *a, TypeExpr *st, bool writable) {
         if (!writable)
             Error(a, "cannot assign through this path (let, or non-writable "
                      "provenance, §9.5)");
@@ -4264,7 +4209,7 @@ struct TypeCheck {
     }
 
     // ------------------------------------------------------------------
-    // Builtins (§12) and array members (§3.3, §5.4).
+    // Builtins (§3.7, §9.3, §11.2) and array members (§3.3, §5.4).
 
     // One entry for every builtin (builtins.h), for both spellings — f(a, b)
     // and a.f(b) arrive with a uniform argument list (receiver first). The
@@ -5527,7 +5472,7 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
 inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     // EnumName.Variant: a payload-less variant constant (§3.5).
     if (auto id = Is<Ident>(obj)) {
-        if (!tc.LookupVar(id->name) && !tc.IsFnValName(id->name)) {
+        if (!tc.LookupVar(id->name) && !tc.LookupFnVal(id->name)) {
             auto eit = tc.ast.enummap.find(id->name);
             if (eit != tc.ast.enummap.end()) return tc.CheckVariantConst(this, eit->second);
         }
@@ -5585,9 +5530,7 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     return v;
 }
 
-inline Val Call::Check(TypeCheck &tc, TypeExpr *expected) {
-    return tc.CheckCall(this, expected);
-}
+inline Val Call::Check(TypeCheck &tc, TypeExpr *) { return tc.CheckCall(this); }
 
 inline Val Index::Check(TypeCheck &tc, TypeExpr *) {
     auto lv = tc.CheckLValue(this);

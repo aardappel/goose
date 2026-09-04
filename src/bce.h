@@ -9,7 +9,7 @@
 // (len(place)), and one-shot bases for expressions the operation itself
 // bounds, with facts of the form `l <= r + c`. Queries are shortest paths
 // over the fact graph (Bellman-Ford with saturating weights), extended by
-// always-true axioms: sub-64-bit integer storage ranges, `0 <= len <= 2^61`
+// always-true axioms: sub-64-bit integer storage ranges, `0 <= len <= 2^48`
 // (an array length is bounded by the address space), and the invariants
 // inferred below.
 //
@@ -385,7 +385,7 @@ struct BCE {
             auto &b = nodes[i];
             if (b.kind == BK_LEN) {
                 edges.push_back({ 0, (int)i, 0 });         // 0 <= len.
-                edges.push_back({ (int)i, 0, LENMAX });    // len <= 2^61.
+                edges.push_back({ (int)i, 0, LENMAX });    // len <= 2^48 (§10.4).
             } else if (b.kind == BK_VAR) {
                 auto v = varof[b.id];
                 auto t = v->type;

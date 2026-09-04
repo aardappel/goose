@@ -9,6 +9,9 @@ param([string]$exe = "$PSScriptRoot\..\build\Debug\goose.exe", [switch]$nocgen)
 
 $failures = 0
 $utf8 = New-Object System.Text.UTF8Encoding($false)
+# Native output is decoded as UTF-8, so a dump holding a non-ASCII string
+# literal survives the roundtrip write below byte for byte.
+[Console]::OutputEncoding = $utf8
 
 & $exe --tokens "$PSScriptRoot\lexer_tokens.goose" | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "FAIL lex lexer_tokens.goose"; $failures++ }

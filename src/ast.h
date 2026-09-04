@@ -401,8 +401,6 @@ NODE(Dot)
     Dot(Line l, Node *_obj, string_view _name) : Node(l), obj(_obj), name(_name) {}
 NODE_END
 
-struct FunVal;
-
 NODE(Call)
     BCE_WALK
     BCE_MARK
@@ -466,21 +464,12 @@ NODE(RangeExpr)                 // Only inside for-headers.
 NODE_END
 
 // A { stmt* expr? } sequence; tail is the value-producing trailing expression.
-struct Block : Node {
+NODE(Block)
+    BCE_WALK
     vector<Node *> stmts;
     Node *tail = nullptr;
     Block(Line l) : Node(l) {}
-    void Dump(string &s, int ind) const override;
-    Node *Clone(Ast &ast) const override;
-    void Children(const function<void(Node *)> &f) const override;
-    Val Check(TypeCheck &tc, TypeExpr *expected) override;
-    Node *Cp1(Inliner &inl) const override;
-    Node *Opt(Optimizer &opt) override;
-    BCE_WALK
-    string CgX(CodeGen &cg) override;
-    void CgAny(CodeGen &cg, const Dst &d) override;
-    void CgStmt(CodeGen &cg) override;
-};
+NODE_END
 
 NODE(IfExpr)
     BCE_WALK
@@ -574,22 +563,13 @@ NODE_END
 
 // A function value: trailing block or block with named params. Non-escaping,
 // compile-time entity; participates in calls only.
-struct FunVal : Node {
+NODE(FunVal)
+    BCE_WALK
     vector<Param> params;       // Empty param list = implicit "it".
     bool explicit_params = false;
     Block *body;
     FunVal(Line l, Block *_body) : Node(l), body(_body) {}
-    void Dump(string &s, int ind) const override;
-    Node *Clone(Ast &ast) const override;
-    void Children(const function<void(Node *)> &f) const override;
-    Val Check(TypeCheck &tc, TypeExpr *expected) override;
-    Node *Cp1(Inliner &inl) const override;
-    Node *Opt(Optimizer &opt) override;
-    BCE_WALK
-    string CgX(CodeGen &cg) override;
-    void CgAny(CodeGen &cg, const Dst &d) override;
-    void CgStmt(CodeGen &cg) override;
-};
+NODE_END
 
 // let/var declarations, local and global.
 NODE(VarDecl)

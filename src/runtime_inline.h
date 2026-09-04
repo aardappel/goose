@@ -457,7 +457,6 @@ static float gs_f2f32chk(double d) {
 
 typedef struct {
     uint8_t *top;
-    uint8_t *base;
 } gs_stack;
 
 /* The program's arguments, for stdlib/os.goose (runtime_os.h). */
@@ -580,7 +579,7 @@ static void gs_stks_grow(int64_t n) {
     if (n > GS_MAX_STACKS) gs_panic("too many data stacks (deep call nesting?)");
     while (gs_nstks < n) {
         gs_stack *s = &gs_stks[gs_nstks++];
-        s->base = s->top = gs_reserve_region((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP);
+        s->top = gs_reserve_region((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP);
     }
 }
 
@@ -593,7 +592,7 @@ static gs_stack *gs_new_stack_block(void) {
 }
 
 static void gs_stack_init(gs_stack *s) {
-    s->base = s->top = gs_reserve_region((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP);
+    s->top = gs_reserve_region((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP);
 }
 
 static void gs_rt_init(void) {
@@ -626,9 +625,9 @@ static int64_t gs_uleb_size(const uint8_t *p) {
 }
 
 /* An inline array's length prefix is one byte unless the array holds 128
+   elements or more, so the two macros below are what the compiler emits for
 )GSRT"
-R"GSRT(   elements or more, so the two macros below are what the compiler emits for
-   it: a load, a test, and the byte. The continuation is a call the caller's
+R"GSRT(   it: a load, a test, and the byte. The continuation is a call the caller's
    loop does not contain, and reaching it means there is a large array to
    walk, against which the call costs nothing. Both read the pointer twice,
    which the emitting sites already assume (they form the element address
@@ -711,7 +710,7 @@ static int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n) {
     return (int64_t)(d - dst);
 }
 
-/* print(...) (§12): each argument's text, then a newline. stdout is
+/* print(...) (§3.7): each argument's text, then a newline. stdout is
    unbuffered (gs_rt_init), so every piece is its own write; revisit if print
    throughput ever matters. */
 
@@ -732,6 +731,22 @@ R"GSRT(/* Goose runtime — threads and typed queues (§11.2). Prepended after
    queues (the compiler defines GS_NEED_THREADS 1 before the runtime paste).
    This is the one part of the runtime allowed to allocate internally. */
 
+/* hardware_threads() sizes worker pools, and a program that spawns none may
+   still ask; it needs nothing below. */
+#ifdef _WIN32
+static int64_t gs_hardware_threads(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (int64_t)si.dwNumberOfProcessors;
+}
+#else
+#include <unistd.h>
+static int64_t gs_hardware_threads(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? (int64_t)n : 1;
+}
+#endif
+
 #if GS_NEED_THREADS
 
 #ifdef _WIN32
@@ -745,12 +760,6 @@ typedef CONDITION_VARIABLE gs_cond;
 #define gs_cond_wait(c, m) SleepConditionVariableSRW((c), (m), INFINITE, 0)
 #define gs_cond_signal(c)  WakeConditionVariable(c)
 
-static int64_t gs_hardware_threads(void) {
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    return (int64_t)si.dwNumberOfProcessors;
-}
-
 #else  /* posix */
 
 #include <pthread.h>
@@ -763,11 +772,6 @@ typedef pthread_cond_t gs_cond;
 #define gs_mutex_unlock(m) pthread_mutex_unlock(m)
 #define gs_cond_wait(c, m) pthread_cond_wait((c), (m))
 #define gs_cond_signal(c)  pthread_cond_signal(c)
-
-static int64_t gs_hardware_threads(void) {
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    return n > 0 ? (int64_t)n : 1;
-}
 
 #endif
 
@@ -898,22 +902,6 @@ static gs_qnode *gs_qpoll(gs_queue *q) {
     gs_mutex_unlock(&q->mutex);
     return n;
 }
-
-#else  /* !GS_NEED_THREADS: hardware_threads stays available. */
-
-#ifdef _WIN32
-static int64_t gs_hardware_threads(void) {
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    return (int64_t)si.dwNumberOfProcessors;
-}
-#else
-#include <unistd.h>
-static int64_t gs_hardware_threads(void) {
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    return n > 0 ? (int64_t)n : 1;
-}
-#endif
 
 #endif  /* GS_NEED_THREADS */
 )GSRT"
