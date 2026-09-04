@@ -212,7 +212,7 @@ int Main(int argc, char **argv) {
     gs_argv0 = argv[0];
     string filename, outfile;
     auto dump = false, tokens = false, parseonly = false, specs = false, nocgen = false;
-    auto nobce = false, bcetest = false, norfcheck = false;
+    auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
     auto optlevel = 1;
     for (int i = 1; i < argc; i++) {
         string arg = argv[i];
@@ -223,6 +223,7 @@ int Main(int argc, char **argv) {
         else if (arg == "--check") nocgen = true;
         else if (arg == "--no-bce") nobce = true;
         else if (arg == "--bce-test") bcetest = true;
+        else if (arg == "--bce-lines") bcelines = true;
         // Unsound; a measurement aid only (see CodeGen::norfcheck).
         else if (arg == "--unsafe-no-rf-check") norfcheck = true;
         else if (arg == "--gen-runtime-header") { GenRuntimeHeader(argv[0]); return 0; }
@@ -241,7 +242,7 @@ int Main(int argc, char **argv) {
     }
     if (filename.empty()) {
         fprintf(stderr, "usage: goose [--dump] [--parse] [--tokens] [--specs] [--check] "
-                        "[--no-bce] [--bce-test] [--unsafe-no-rf-check] [-O0|-O1|-O2] "
+                        "[--no-bce] [--bce-test] [--bce-lines] [--unsafe-no-rf-check] [-O0|-O1|-O2] "
                         "[-o out.c] [--include header.h]... [--stdlib dir] file.goose | --gen-runtime-header\n");
         return 1;
     }
@@ -284,6 +285,12 @@ int Main(int argc, char **argv) {
             printf("bce: elided %d/%d index and %d/%d slice checks\n",
                    bce.idxelided, bce.idxtotal, bce.slelided, bce.sltotal);
         }
+        // Per-line outcomes, for comparing two builds of the pass.
+        if (bcelines)
+            for (auto &[where, counts] : bce.lineout)
+                printf("bce-line: %s:%d: %d elided, %d kept\n",
+                       ast.sources[where.first].first.c_str(), where.second, counts.first,
+                       counts.second);
         if (bcetest) {
             auto fails = bce.VerifyAnnotations();
             if (fails) {

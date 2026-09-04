@@ -1,11 +1,11 @@
 // The flat kernel of blur.goose with the image size stated once per call.
-// `blur` takes its buffers as fat references, and a reference parameter's
-// length is unknown inside the callee, so the analysis has nothing to compare
-// `y * W + x` against however well it reasons about the product itself. One
-// assert per call -- two comparisons against four million pixels -- supplies
-// the missing half, and all ten checks then disappear. This row measures what
-// the flat form costs when only the length fact is added, against blur.goose
-// (nothing elided) and blur_rows.goose (the same win through row slices).
+// `blur` takes its buffers as fat references, and before the analysis carried
+// a caller's length facts into a callee this assert -- two comparisons
+// against four million pixels -- was the only way the kernel could compare
+// `y * W + x` against anything. Today the same facts arrive from the call
+// sites and the assert is redundant, so this row is the control: it must
+// time the same as blur.goose, and it shows what an explicit precondition
+// costs when the compiler already knows it.
 
 import rng;
 

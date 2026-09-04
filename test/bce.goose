@@ -435,11 +435,11 @@ fn unsigned_modulo(s: i64[:], r: u64) -> i64 {
 
 // --- calls: what a callee can and cannot reach ------------------------------
 
-recursive fn opaque_call(x: i64) -> i64 {
+recursive fn pure_call(x: i64) -> i64 {
     if x <= 0 {
         return 0;
     }
-    return opaque_call(x - 1) + 1;
+    return pure_call(x - 1) + 1;
 }
 
 // A callee can never reach a local whose address is not taken.
@@ -448,7 +448,7 @@ fn call_local_loop() -> i64 {
     for i in 6 { v.push(i); }
     var s = 0;
     for i in v.len {
-        s += opaque_call(v[i]);               // bce:elide (the call cannot reach v)
+        s += pure_call(v[i]);                 // bce:elide (the call cannot reach v)
     }
     return s;
 }
@@ -479,7 +479,7 @@ fn global_loop() -> i64 {
         s += gv[i];                           // bce:elide (no calls in the body)
     }
     for i in gv.len {
-        s += opaque_call(gv[i]);              // bce:keep (a call may mutate a global)
+        s += pure_call(gv[i]);                // bce:elide (pure_call touches no global)
     }
     return s;
 }
@@ -541,6 +541,190 @@ fn sum_through_ref(p: i64[>..]&) -> i64 {
     for i in p.len {
         s += p[i];                            // bce:elide
     }
+    return s;
+}
+
+// --- calls: what a callee may do to the caller's arrays ---------------------
+// The callees here are called from more than one place and are too big to
+// inline at -O1, so their callers see them through their effect summaries,
+// not as spliced bodies.
+
+// Reads and writes elements only: its callers' length facts survive it.
+fn scale_shift(a: i64[>..]&, m: i64, d: i64) {
+    for i in a.len {
+        a[i] = a[i] * m + d;                      // bce:elide
+    }
+    for i in a.len {
+        if a[i] < 0 { a[i] = 0; }                 // bce:elide
+    }
+}
+
+// Resizes its argument: a caller knows nothing about the length afterwards.
+fn grow_by(a: i64[>..]&, k: i64) {
+    for i in k {
+        a.push(i * 2);
+        a.push(i * 2 + 1);
+    }
+    for i in a.len {
+        if a[i] > 1000 { a[i] = 1000; }           // bce:elide
+    }
+}
+
+var gcount: i64[>..] = [];
+
+// Resizes a global: a caller iterating that global loses its bound.
+fn count_one(x: i64) {
+    gcount.push(x);
+    for i in gcount.len {
+        if gcount[i] < 0 { gcount[i] = 0; }       // bce:elide
+    }
+    for i in gcount.len {
+        if gcount[i] > 1000 { gcount[i] = 1000; } // bce:elide
+    }
+}
+
+fn callee_effects(extra: i64) -> i64 {
+    var v: i64[>..] = [];
+    for i in 8 { v.push(i + 1); }
+    scale_shift(v, 2, 0);
+    var s = v[7];                                 // bce:elide (scale_shift cannot resize v)
+    grow_by(v, extra);
+    s += v[7];                                    // bce:keep (grow_by resizes v; the summary has no direction)
+    var w: i64[>..] = [];
+    for i in 4 { w.push(i); }
+    scale_shift(w, 1, 1);
+    grow_by(w, extra);
+    for i in w.len {
+        scale_shift(w, 2, 0);
+        s += w[i];                                // bce:elide (the body's call cannot resize w)
+    }
+    for i in w.len {
+        grow_by(w, 1);
+        s += w[i];                                // bce:keep (the body's call may resize w)
+    }
+    gcount.push(5);
+    gcount.push(6);
+    count_one(7);
+    for i in gcount.len {
+        s += gcount[i] + pure_call(i);            // bce:elide (pure_call touches no global)
+    }
+    for i in gcount.len {
+        count_one(i);
+        s += gcount[i];                           // bce:keep (count_one resizes gcount)
+    }
+    return s;
+}
+
+// A nested function's writes to the enclosing locals are its effects.
+fn nested_effects() -> i64 {
+    var v: i64[>..] = [];
+    for i in 8 { v.push(i); }
+    fn grow_v(k: i64) {
+        for j in k {
+            v.push(j * 2);
+            v.push(j * 2 + 1);
+        }
+        for j in v.len {
+            if v[j] > 1000 { v[j] = 1000; }
+        }
+    }
+    fn sum_v(k: i64) -> i64 {
+        var t = 0;
+        for j in k {
+            for x in v { t += x * j; }
+            for x in v { t += x; }
+        }
+        return t;
+    }
+    var s = 0;
+    for i in v.len {
+        s += sum_v(1) + sum_v(2);
+        s += v[i];                                // bce:elide (sum_v cannot resize v)
+    }
+    for i in v.len {
+        grow_v(1);
+        grow_v(2);
+        s += v[i];                                // bce:keep (grow_v resizes v)
+    }
+    return s;
+}
+
+// --- calls: lengths carried into the callee ---------------------------------
+// What a kernel sees at entry is the meet of what its call sites proved
+// about the arguments, so every site has to agree for a fact to arrive.
+
+// Every site passes sixteen elements: `a.len == 16` holds at entry, and the
+// row-major stencil needs nothing else.
+fn stencil(a: i64[>..]&) -> i64 {
+    var s = 0;
+    for y in 1..3 {
+        for x in 1..3 {
+            let i = y * 4 + x;
+            s += a[i - 4 - 1] + a[i] + a[i + 4 + 1];   // bce:elide (every site passes 16 elements)
+        }
+    }
+    return s;
+}
+
+// One site's length is unknown, so the meet proves nothing.
+fn stencil_unknown(a: i64[>..]&) -> i64 {
+    var s = 0;
+    for y in 1..3 {
+        for x in 1..3 {
+            let i = y * 4 + x;
+            s += a[i - 4 - 1] + a[i] + a[i + 4 + 1];   // bce:keep (one site's length is unknown)
+        }
+    }
+    return s;
+}
+
+// Parameters relate to each other: `n` is the array's length at every site.
+fn fill_to(a: i64[>..]&, n: i64) -> i64 {
+    var s = 0;
+    for i in n {
+        a[i] = i * 3;                             // bce:elide (n == a.len at every site)
+    }
+    for i in n {
+        s += a[i];                                // bce:elide
+    }
+    return s;
+}
+
+// Different lengths meet in a lower bound: sixteen at one site, eight at
+// the other.
+fn at_least_eight(a: i64[>..]&) -> i64 {
+    var s = a[a.len - 8];                         // bce:elide (every site passes at least 8)
+    for i in 8 {
+        s += a[i];                                // bce:elide
+    }
+    if a.len > 8 {
+        s += a[15];                               // bce:keep (more than 8 is not 16)
+    }
+    return s;
+}
+
+// A recursive callee's own call site is analyzed after the callee, so the
+// meet is never complete and it gets nothing.
+recursive fn rec_sum(a: i64[>..]&, i: i64) -> i64 {
+    if i >= 8 { return 0; }
+    return a[i] + rec_sum(a, i + 1);              // bce:keep (a site inside the cycle is not yet analyzed)
+}
+
+fn carried_lengths(extra: i64) -> i64 {
+    var g: i64[>..] = [];
+    for i in 16 { g.push(i); }
+    var h: i64[>..] = [];
+    for i in 16 { h.push(i * 2); }
+    var u: i64[>..] = [];
+    for i in 16 { u.push(i); }
+    if extra > 0 { u.push(1); }                   // Length unknown from here on.
+    var e: i64[>..] = [];
+    for i in 8 { e.push(i + 1); }
+    var s = stencil(g) + stencil(h);
+    s += stencil_unknown(g) + stencil_unknown(u);
+    s += fill_to(g, g.len) + fill_to(e, e.len);
+    s += at_least_eight(g) + at_least_eight(e);
+    s += rec_sum(e, 0);
     return s;
 }
 
@@ -664,8 +848,8 @@ fn main() {
     print(row_slices());                      // 42
     print(product_signed());                  // 40
     print(sum_two_counters());                // 48
-    print(product_unbounded(ks));             // 4
-    print(sum_unbounded(ks));                 // 20
+    print(product_unbounded(kk));             // 4
+    print(sum_unbounded(kk));                 // 20
     print(limited_ops(kz));                   // 13
     print(limited_conditional_shrink());      // 20
     print(growshrink_loop());                 // 45
@@ -691,6 +875,9 @@ fn main() {
     print(gcursor_read(data));                // 1
     print(grown_then_scanned());              // 5
     print(sum_through_ref(data));            // 36
+    print(callee_effects(kz));                // 329
+    print(nested_effects());                  // 952
+    print(carried_lengths(kz));               // 1215
     print(field_place());                     // 13
     print(pool_loop());                       // 51
     print(keep_unknown(data, kk));            // 3

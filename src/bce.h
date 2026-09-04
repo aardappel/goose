@@ -60,6 +60,23 @@
 // parameters use the specialization's root classes, where distinct classes
 // are provably distinct roots. Unknown callees kill everything reachable.
 //
+// Calls into user code are summarized rather than assumed hostile. A first
+// pass computes, per specialization, the storage its body may resize or
+// overwrite beyond its own locals -- by parameter index for what it reaches
+// through a reference parameter, by variable for globals and captured outer
+// locals -- and the integers it may write, as a fixpoint over the call
+// graph (a callee's effects, translated to the arguments, are its caller's).
+// A call then kills exactly the places those effects can name, so a length
+// fact survives a call to a kernel that only reads and writes elements. In
+// the other direction, every call site records what it proves about the
+// arguments -- constant bounds on a passed array's length, and how the
+// passed lengths and integers relate -- and a specialization whose every
+// site has been analyzed enters with the meet of those facts about its
+// parameters: `blur(&a, &b)` from a caller that knows both lengths makes
+// `src.len == W * W` a fact inside `blur`. Specializations are analyzed
+// callers first for that; a site inside a recursive cycle is not analyzed
+// yet when its callee is, and such a callee simply gets nothing.
+//
 // Loops: a body is first walked in a kills-only mode to invalidate whatever
 // any earlier iteration may have changed, then walked for real; while-loop
 // condition facts re-establish at every body entry. Invariants (v >= 0,
@@ -329,6 +346,65 @@ struct BCE {
     }
 
     // ------------------------------------------------------------------
+    // Interprocedural state.
+
+    // What a body may do to storage its caller can see: resize or overwrite
+    // it (params, vars), or write an integer in it (intparams, intvars). A
+    // parameter stands for its root class -- every argument bound to a
+    // member of the class -- and a write the analysis cannot attribute to
+    // any of these makes the summary opaque, which a caller treats as the
+    // blanket kill.
+    struct Effects {
+        set<int> params, intparams;
+        set<VarDef *> vars, intvars;
+        bool opaque = false, intopaque = false;
+        bool operator==(const Effects &o) const {
+            return params == o.params && intparams == o.intparams && vars == o.vars &&
+                   intvars == o.intvars && opaque == o.opaque && intopaque == o.intopaque;
+        }
+        void Merge(const Effects &o) {
+            params.insert(o.params.begin(), o.params.end());
+            intparams.insert(o.intparams.begin(), o.intparams.end());
+            vars.insert(o.vars.begin(), o.vars.end());
+            intvars.insert(o.intvars.begin(), o.intvars.end());
+            opaque = opaque || o.opaque;
+            intopaque = intopaque || o.intopaque;
+        }
+    };
+    map<FnSpec *, Effects> effects;
+    Effects *effsum = nullptr;   // Where the current walk records effects, while summarizing.
+    set<VarDef *> ownvars;       // Variables this body declares, parameters included.
+    map<VarDef *, vector<int>> classparams;   // Parameter root class -> member indices.
+
+    // The call graph over live specializations: callees per caller, the
+    // number of ordinary call sites per callee, and the callees also reached
+    // some way a site cannot describe (a thread spawn, print's format
+    // overloads), plus the order every callee precedes its callers in.
+    map<FnSpec *, vector<FnSpec *>> callees;
+    map<FnSpec *, int> nsites;
+    set<FnSpec *> opaquesites;
+    vector<FnSpec *> calleesfirst;
+
+    // A specialization's interface bases, in the order its site matrix uses
+    // them: the constant zero first, then one per parameter that is a
+    // machine integer (its value) or an array, slice, or reference to one
+    // (its length).
+    struct Iface {
+        vector<pair<bool, int>> bases;   // (is a length, parameter index); [0] is zero.
+    };
+    map<FnSpec *, Iface> ifaces;
+
+    // What the analyzed call sites of one specialization jointly prove about
+    // its interface bases: c[X * n + Y] is the weakest `X <= Y + c` any site
+    // established, INF where some site could not, over `seen` sites.
+    struct Sites {
+        int seen = 0;
+        bool viable = true;
+        vector<int64_t> c;
+    };
+    map<FnSpec *, Sites> sites;
+
+    // ------------------------------------------------------------------
     // The query: prove l <= r + c from facts + axioms, by shortest path.
 
     bool Query(Base l, Base r, int64_t c) {
@@ -339,11 +415,18 @@ struct BCE {
     // The smallest c for which `l <= r + c` is provable, INF when nothing is.
     int64_t Dist(Base l, Base r) {
         if (l == r) return 0;
-        vector<Base> nodes { Zero(), l, r };
+        return DistsFrom(l, { r })[0];
+    }
+
+    // Shortest paths from `l` to each base in `to`: one run serves every
+    // target, which is what relating a call's arguments pairwise needs.
+    vector<int64_t> DistsFrom(Base l, const vector<Base> &to) {
+        vector<Base> nodes { Zero(), l };
         auto add = [&](const Base &b) {
             for (auto &x : nodes) if (x == b) return;
             nodes.push_back(b);
         };
+        for (auto &b : to) add(b);
         for (auto &f : flow.facts) { add(f.l); add(f.r); }
         // Length bases contributed by granted v <= len(P) invariants.
         if (!lelen.empty())
@@ -393,7 +476,9 @@ struct BCE {
             }
             if (!changed) break;
         }
-        return dist[idx(r)];
+        vector<int64_t> r;
+        for (auto &b : to) r.push_back(dist[idx(b)]);
+        return r;
     }
 
     // ------------------------------------------------------------------
@@ -720,6 +805,7 @@ struct BCE {
     // delta when one is known, possible aliases the directional bump. Returns
     // the receiver's place id (or -1).
     int GrowShrinkKill(Node *recv, int dir, int64_t exact = INT64_MIN) {
+        if (recv) NoteStorage(ExprTarget(recv));
         auto failidx = false;
         auto pid = recv ? PlaceOf(recv, &failidx) : -1;
         // A receiver reached through an element (a[i].f.push(...)) can only
@@ -735,16 +821,21 @@ struct BCE {
     }
 
     void StorageWriteKill(int tk, VarDef *tu, VarDef *chainroot) {
+        NoteStorage(UltTarget(tk, tu));
         for (size_t i = 0; i < places.size(); i++)
             if (AffectedByWrite((int)i, -1, tk, tu, chainroot)) BumpPlace((int)i, 0);
     }
 
     void RebindKill(VarDef *root) {
+        NoteStorage(OwnerTarget(root));
         for (size_t i = 0; i < places.size(); i++)
             if (places[i].rootv == root) BumpPlace((int)i, 0);
     }
 
+    // The blanket kill for a call whose effects are unknown.
     void KillByCall(bool anyrefarg) {
+        NoteStorage({ TG_OPAQUE });
+        NoteInt({ TG_OPAQUE });
         for (size_t i = 0; i < places.size(); i++) {
             auto &P = places[i];
             if (P.ultkind == UK_STATIC) continue;
@@ -754,6 +845,366 @@ struct BCE {
         }
         for (auto v : intvars)
             if (v->isglobal || v->captured || addrof.count(v)) BumpVar(v);
+    }
+
+    // ------------------------------------------------------------------
+    // Effects: where a write lands, as the caller of this body sees it.
+
+    enum TargetKind { TG_NONE, TG_OWN, TG_VAR, TG_CLASS, TG_OPAQUE };
+    struct Target { TargetKind kind = TG_OPAQUE; VarDef *v = nullptr; };
+
+    // Storage owned by variable v: this body's own variables are its
+    // business, anything else is a global or a captured outer local.
+    Target OwnerTarget(VarDef *v) {
+        if (!v) return { TG_OPAQUE };
+        if (v->isglobal || !ownvars.count(v)) return { TG_VAR, v };
+        return { TG_OWN, v };
+    }
+
+    // Storage as UltOf classifies it: static data is nothing to report, a
+    // synthetic class root stands for whatever its arguments name, and a
+    // missing root is storage unknown here.
+    Target UltTarget(int k, VarDef *u) {
+        if (k == UK_STATIC) return { TG_NONE };
+        if (k == UK_OWNED) return OwnerTarget(u);
+        return u ? Target { TG_CLASS, u } : Target { TG_OPAQUE };
+    }
+
+    // A receiver or lvalue chain, followed down through fields and elements
+    // to its root variable -- unless a stored reference is read on the way
+    // (a reference-typed field or element), whose pointee is unknown.
+    Target ExprTarget(Node *n) {
+        for (auto cur = n;;) {
+            if (auto id = Is<Ident>(cur)) {
+                auto v = id->vdef;
+                if (!v) return { TG_OPAQUE };
+                if (v->type && (v->type->kind == TY_REF || v->type->kind == TY_SLICE)) {
+                    auto [k, u] = UltOf(v);
+                    return UltTarget(k, u);
+                }
+                return OwnerTarget(v);
+            }
+            Node *obj = nullptr;
+            if (auto d = Is<Dot>(cur)) obj = d->obj;
+            else if (auto ix = Is<Index>(cur)) obj = ix->obj;
+            else return { TG_OPAQUE };
+            if (!Is<Ident>(obj) && obj->exprtype && obj->exprtype->kind == TY_REF)
+                return { TG_OPAQUE };
+            cur = obj;
+        }
+    }
+
+    // The storage an argument hands a callee: the lvalue behind `&`, the
+    // pointee of a reference or slice variable, the array a slice
+    // expression views. A literal is a temporary; a stored reference read
+    // out of a field, or a reference-returning call, is unknown.
+    Target ArgTarget(Node *a) {
+        if (auto u = Is<Unary>(a); u && u->op == T_BITAND) return ExprTarget(u->child);
+        if (Is<Ident>(a)) return ExprTarget(a);
+        if (auto se = Is<SliceExpr>(a)) return ExprTarget(se->obj);
+        if (Is<ArrayLit>(a) || Is<StrLit>(a)) return { TG_NONE };
+        return { TG_OPAQUE };
+    }
+
+    // A class root that is no parameter's (the checker's sentinel roots)
+    // names storage this summary cannot describe.
+    void NoteClass(set<int> &into, bool &opaque, VarDef *cls) {
+        auto it = classparams.find(cls);
+        if (it == classparams.end()) { opaque = true; return; }
+        into.insert(it->second.begin(), it->second.end());
+    }
+
+    void NoteStorage(const Target &t) {
+        if (!effsum) return;
+        switch (t.kind) {
+            case TG_VAR:    effsum->vars.insert(t.v); break;
+            case TG_CLASS:  NoteClass(effsum->params, effsum->opaque, t.v); break;
+            case TG_OPAQUE: effsum->opaque = true; break;
+            default:        break;
+        }
+    }
+
+    void NoteInt(const Target &t) {
+        if (!effsum) return;
+        switch (t.kind) {
+            case TG_VAR:    effsum->intvars.insert(t.v); break;
+            case TG_CLASS:  NoteClass(effsum->intparams, effsum->intopaque, t.v); break;
+            case TG_OPAQUE: effsum->intopaque = true; break;
+            default:        break;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Applying a callee's effects at a call.
+
+    // A write into the storage place recvpid names, by the aliasing rules of
+    // a direct write to it.
+    void KillPlaceWrite(int recvpid) {
+        for (size_t i = 0; i < places.size(); i++)
+            if (AffectedByWrite((int)i, recvpid, UK_OPAQUE, nullptr, nullptr)) BumpPlace((int)i, 0);
+    }
+
+    // A write into storage one of this body's parameter root classes names.
+    // No class names one of this body's own variables (the arguments were
+    // formed before it ran), so storage an own local owns survives, and
+    // anything reached through a reference or owned by a global or an outer
+    // local may be hit.
+    void KillClassWrite() {
+        for (size_t i = 0; i < places.size(); i++) {
+            auto &P = places[i];
+            auto hit = P.ultkind == UK_OPAQUE ||
+                       (P.ultkind == UK_OWNED && OwnerTarget(P.ultv).kind == TG_VAR);
+            if (hit) BumpPlace((int)i, 0);
+        }
+    }
+
+    void KillReachableInts() {
+        for (auto v : intvars) if (Reach(v)) BumpVar(v);
+    }
+
+    // A callee's resize or overwrite of the storage behind one of its
+    // reference parameters, at the argument bound to it.
+    void KillArgStorage(Node *a) {
+        auto t = ArgTarget(a);
+        NoteStorage(t);
+        auto lv = a;
+        if (auto u = Is<Unary>(a); u && u->op == T_BITAND) lv = u->child;
+        switch (t.kind) {
+            case TG_NONE:
+                return;
+            case TG_OWN: case TG_VAR: {
+                // The argument's own place is the precise target; a struct
+                // or a slice argument has none, so all of the variable goes.
+                auto pid = Is<SliceExpr>(lv) ? -1 : PlaceOf(lv);
+                if (pid >= 0) KillPlaceWrite(pid);
+                else StorageWriteKill(UK_OWNED, t.v, t.v);
+                return;
+            }
+            case TG_CLASS:
+                KillClassWrite();
+                return;
+            default:
+                StorageWriteKill(UK_OPAQUE, nullptr, nullptr);
+                return;
+        }
+    }
+
+    // A callee's write of the integer behind one of its reference
+    // parameters. Only a variable is a tracked base: the argument names one
+    // directly or through a reference variable, or a stored reference read
+    // on the way could lead to any reachable one.
+    void KillArgInt(Node *a) {
+        auto lv = a;
+        if (auto u = Is<Unary>(a); u && u->op == T_BITAND) lv = u->child;
+        if (auto id = Is<Ident>(lv); id && id->vdef) {
+            auto v = id->vdef;
+            if (ScalarIntVar(v)) {
+                NoteInt(OwnerTarget(v));
+                BumpVar(v);
+                return;
+            }
+            if (!v->type || v->type->kind != TY_REF) return;
+            auto [k, u] = UltOf(v);
+            if (k == UK_STATIC) return;
+            if (k == UK_OWNED) {
+                if (ScalarIntVar(u)) {
+                    NoteInt(OwnerTarget(u));
+                    BumpVar(u);
+                }
+                return;
+            }
+            NoteInt(UltTarget(k, u));
+            KillReachableInts();
+            return;
+        }
+        auto t = ExprTarget(lv);
+        if (t.kind == TG_OPAQUE || t.kind == TG_CLASS) {
+            NoteInt(t);
+            KillReachableInts();
+        }
+    }
+
+    // The receiver and arguments of a call, aligned with the callee's
+    // parameters (a UFCS receiver is the first, §7.1). Function-value
+    // arguments are compile-time only and follow the real ones.
+    static vector<Node *> ArgNodes(Call *c) {
+        vector<Node *> an;
+        if (auto d = Is<Dot>(c->callee)) an.push_back(d->obj);
+        for (auto a : c->args) an.push_back(a);
+        return an;
+    }
+
+    // Kills for a call with known effects, each translated to what it names
+    // here: a parameter's to the argument bound to it, a global's or outer
+    // local's to that variable. The translated effects are recorded on the
+    // same paths, so a summary includes what the body's callees do.
+    void ApplyEffects(const Effects &e, const vector<Node *> &an) {
+        if (e.opaque) { KillByCall(true); return; }
+        for (auto j : e.params) {
+            if (j >= (int)an.size()) { KillByCall(true); return; }
+            KillArgStorage(an[j]);
+        }
+        for (auto v : e.vars) StorageWriteKill(UK_OWNED, v, v);
+        if (e.intopaque) {
+            NoteInt({ TG_OPAQUE });
+            KillReachableInts();
+            return;
+        }
+        for (auto j : e.intparams) {
+            if (j >= (int)an.size()) {
+                NoteInt({ TG_OPAQUE });
+                KillReachableInts();
+                return;
+            }
+            KillArgInt(an[j]);
+        }
+        for (auto v : e.intvars) {
+            NoteInt(OwnerTarget(v));
+            BumpVar(v);
+        }
+    }
+
+    // Kills for a call into user code: the summarized effects of its target
+    // (of every target, for a tag dispatch), or the blanket kill where there
+    // is no summary to consult.
+    void CallKills(Call *c) {
+        Effects e;
+        auto known = c->spec || !c->dispatch.empty();
+        auto merge = [&](FnSpec *sp) {
+            auto it = effects.find(sp);
+            if (it == effects.end()) known = false;
+            else e.Merge(it->second);
+        };
+        if (c->spec) merge(c->spec);
+        for (auto d : c->dispatch) merge(d);
+        if (!known) { KillByCall(true); return; }
+        ApplyEffects(e, ArgNodes(c));
+    }
+
+    // ------------------------------------------------------------------
+    // Call sites: what a caller proves about the arguments it passes.
+
+    static bool LenTrackable(TypeExpr *t) {
+        if (t && t->kind == TY_REF) t = t->ref->sub;
+        return t && (t->kind == TY_SLICE || (t->kind == TY_ARRAY && t->arr->akind != A_FIXED));
+    }
+
+    const Iface &InterfaceOf(FnSpec *sp) {
+        auto it = ifaces.find(sp);
+        if (it != ifaces.end()) return it->second;
+        auto &f = ifaces[sp];
+        f.bases.push_back({ false, -1 });
+        for (size_t j = 0; j < sp->params.size(); j++) {
+            auto p = sp->params[j];
+            if (ScalarIntVar(p)) f.bases.push_back({ false, (int)j });
+            else if (LenTrackable(p->type)) f.bases.push_back({ true, (int)j });
+        }
+        return f;
+    }
+
+    // The length a slice or reference variable takes from the place it is
+    // bound to: `let w = &a` and `let v = s` name arrays whose length the
+    // facts may already know. This is what carries a length through the
+    // parameter bindings of an inlined call.
+    Term BoundLenOf(Node *init) {
+        if (auto u = Is<Unary>(init); u && u->op == T_BITAND) init = u->child;
+        if (!Is<Ident>(init) && !Is<Dot>(init)) return {};
+        return LenTermOf(init);
+    }
+
+    // The length of the array an argument passes, in the caller's current
+    // state -- the callee reads it at entry, after every argument has been
+    // evaluated. Behind `&` or a reference variable it is the place's
+    // length; a slice expression's is what its bounds just stated; a
+    // literal's is its element count.
+    Term ArgLenTerm(Node *a, const Term &slen) {
+        if (auto u = Is<Unary>(a); u && u->op == T_BITAND) a = u->child;
+        if (Is<SliceExpr>(a)) return slen;
+        if (auto t = FreshLenOf(a); t.ok) return t;
+        return LenTermOf(a);
+    }
+
+    // Records what this site proves about each target's interface bases,
+    // as the meet with what earlier sites proved (see Sites). `ints` holds
+    // each integer argument's term as sampled right after its evaluation,
+    // which is the value the callee receives.
+    void RecordSite(Call *c, const vector<Node *> &an, const vector<Term> &ints,
+                    const vector<Term> &slens) {
+        auto record = [&](FnSpec *sp) {
+            auto &S = sites[sp];
+            S.seen++;
+            if (!S.viable) return;
+            auto &bases = InterfaceOf(sp).bases;
+            auto n = (int)bases.size();
+            if (n <= 1 || an.size() < sp->params.size()) { S.viable = false; return; }
+            if (S.c.empty()) S.c.assign(n * n, INT64_MIN);
+            vector<Term> terms(n);
+            terms[0] = Term { true, Zero(), 0 };
+            for (auto k = 1; k < n; k++) {
+                auto [islen, j] = bases[k];
+                terms[k] = islen ? ArgLenTerm(an[j], slens[j]) : ints[j];
+            }
+            auto anyfinite = false;
+            for (auto x = 0; x < n; x++) {
+                vector<Base> to;
+                vector<int> ys;
+                if (terms[x].ok)
+                    for (auto y = 0; y < n; y++)
+                        if (y != x && terms[y].ok) {
+                            to.push_back(terms[y].b);
+                            ys.push_back(y);
+                        }
+                auto d = to.empty() ? vector<int64_t> {} : DistsFrom(terms[x].b, to);
+                for (auto y = 0; y < n; y++) {
+                    if (y == x) continue;
+                    auto &cell = S.c[x * n + y];
+                    auto cv = INF;
+                    auto yit = std::find(ys.begin(), ys.end(), y);
+                    // `bx <= by + d` for the bases is `X - offx <= Y - offy + d`.
+                    if (yit != ys.end() && d[yit - ys.begin()] != INF)
+                        cv = SatAdd(d[yit - ys.begin()], terms[x].off - terms[y].off);
+                    if (cv > cell) cell = cv;
+                    if (cell != INF) anyfinite = true;
+                }
+            }
+            if (!anyfinite) S.viable = false;
+        };
+        if (c->spec) record(c->spec);
+        for (auto d : c->dispatch) record(d);
+    }
+
+    // Grants a specialization, at entry, what all of its call sites proved
+    // about its parameters -- once every site has been analyzed, and only
+    // when nothing reaches it any other way.
+    void SeedEntryFacts(FnSpec *sp) {
+        if (opaquesites.count(sp)) return;
+        auto sit = sites.find(sp);
+        auto nit = nsites.find(sp);
+        if (sit == sites.end() || nit == nsites.end()) return;
+        auto &S = sit->second;
+        if (!S.viable || S.seen == 0 || S.seen != nit->second) return;
+        auto &bases = InterfaceOf(sp).bases;
+        auto n = (int)bases.size();
+        vector<Base> bs(n);
+        vector<bool> ok(n, true);
+        bs[0] = Zero();
+        for (auto k = 1; k < n; k++) {
+            auto [islen, j] = bases[k];
+            auto p = sp->params[j];
+            if (islen) {
+                auto pid = PlaceOfVar(p);
+                ok[k] = pid >= 0;
+                if (pid >= 0) bs[k] = LenBase(pid);
+            } else {
+                bs[k] = VarBase(p);
+            }
+        }
+        for (auto x = 0; x < n; x++)
+            for (auto y = 0; y < n; y++) {
+                auto cv = S.c[x * n + y];
+                if (x != y && ok[x] && ok[y] && cv != INF && cv != INT64_MIN)
+                    AddFactB(bs[x], bs[y], cv);
+            }
     }
 
     // ------------------------------------------------------------------
@@ -822,6 +1273,7 @@ struct BCE {
     }
 
     void ShiftWrite(VarDef *v, int64_t c) {
+        NoteInt(OwnerTarget(v));
         if (mode == M_RECORD) RecordShift(v, c);
         if (mode == M_KILLS) { BumpVar(v); return; }
         if (c == 0) return;
@@ -829,6 +1281,7 @@ struct BCE {
     }
 
     void SetWrite(VarDef *v, Node *rhs, bool isdecl) {
+        NoteInt(OwnerTarget(v));
         auto t = mode == M_KILLS ? Term {} : TermOf(rhs);
         if (mode == M_RECORD) {
             if (t.ok && t.b == VarBase(v)) RecordShift(v, t.off);
@@ -845,6 +1298,7 @@ struct BCE {
     }
 
     void VarKillWrite(VarDef *v) {
+        if (ScalarIntVar(v)) NoteInt(OwnerTarget(v));
         if (mode == M_RECORD) RecordSet(v, Term {}, false);
         BumpVar(v, false);
     }
@@ -900,8 +1354,12 @@ struct BCE {
         if (!scalar) StorageWriteKill(tk, tu, nullptr);
         if (pt && pt->kind == TY_INT) {
             if (tk == UK_OWNED) {
-                if (tu->type && tu->type->kind == TY_INT) BumpVar(tu, false);
+                if (tu->type && tu->type->kind == TY_INT) {
+                    NoteInt(OwnerTarget(tu));
+                    BumpVar(tu, false);
+                }
             } else {
+                NoteInt(UltTarget(tk, tu));
                 for (auto v : intvars) if (Reach(v)) BumpVar(v, false);
             }
         }
@@ -1270,13 +1728,29 @@ struct BCE {
         ge0.clear();
         lelen.clear();
         mono.clear();
+        ownvars.clear();
+        classparams.clear();
+    }
+
+    void NoteOwn(VarDef *v) { if (v) ownvars.insert(v); }
+
+    // Fresh per-body state plus the prescan: the parameters are the body's
+    // own variables, grouped by root class for the effect summary.
+    void SetupSpec(FnSpec *sp) {
+        ResetSpecState();
+        for (size_t j = 0; j < sp->params.size(); j++) {
+            auto p = sp->params[j];
+            ownvars.insert(p);
+            if (p->type && (p->type->kind == TY_REF || p->type->kind == TY_SLICE) && p->ref.root)
+                classparams[p->ref.root].push_back((int)j);
+        }
+        Mark(sp->body);
     }
 
     void RunSpec(FnSpec *sp) {
         if (!sp->body) return;   // An extern fn (§7.10).
-        ResetSpecState();
+        SetupSpec(sp);
         for (auto &[v, ok] : gge0) if (ok) ge0.insert(v);
-        Mark(sp->body);
         // Whole-body kill summary: which places and variables any path can
         // invalidate or re-bind.
         set<int> bumped, shrunk;
@@ -1316,6 +1790,7 @@ struct BCE {
         if (!cands.empty()) {
             mode = M_RECORD;
             flow = Flow {};
+            SeedEntryFacts(sp);
             derived.clear();
             Walk(sp->body);
             for (auto &[v, c] : cands) {
@@ -1329,8 +1804,113 @@ struct BCE {
         }
         mode = M_JUDGE;
         flow = Flow {};
+        SeedEntryFacts(sp);
         derived.clear();
         Walk(sp->body);
+    }
+
+    // ------------------------------------------------------------------
+    // Whole-program drivers: the call graph, the effect summaries.
+
+    // Call sites in one tree, for the caller `from` (null for a global
+    // initializer or field default): the graph edges, the site counts, and
+    // the optimizer-style use count that checks them.
+    void ScanCalls(Node *n, FnSpec *from, map<FnSpec *, int> &uses) {
+        if (!n) return;
+        if (auto c = Is<Call>(n)) {
+            if (c->spec) {
+                if (c->builtin < 0) {
+                    nsites[c->spec]++;
+                    uses[c->spec]++;
+                    if (from) callees[from].push_back(c->spec);
+                } else {
+                    opaquesites.insert(c->spec);   // A thread's entry point (thread_spawn).
+                }
+            }
+            for (auto &fs : c->fmtspecs) {
+                opaquesites.insert(fs.second);
+                uses[fs.second]++;
+            }
+            for (auto d : c->dispatch) {
+                nsites[d]++;
+                uses[d]++;
+                if (from) callees[from].push_back(d);
+            }
+            ScanCalls(c->callee, from, uses);
+            for (auto a : c->args) ScanCalls(a, from, uses);
+            ScanCalls(c->fvbody, from, uses);
+            return;   // c->trailing is an unchecked template.
+        }
+        n->Children([&](Node *ch) { ScanCalls(ch, from, uses); });
+    }
+
+    void BuildCallGraph() {
+        map<FnSpec *, int> uses;
+        for (auto sp : ast.fnspecs)
+            if (sp->live && sp->body) ScanCalls(sp->body, sp, uses);
+        for (auto g : ast.globals)
+            for (auto i : g->inits) ScanCalls(i, nullptr, uses);
+        for (auto si : ast.structinsts)
+            for (auto d : si->defaults) ScanCalls(d, nullptr, uses);
+        for (auto ei : ast.enuminsts)
+            for (auto &vd : ei->vdefaults)
+                for (auto d : vd) ScanCalls(d, nullptr, uses);
+        // The optimizer's count is the authority on how a specialization is
+        // reached: a use this scan did not see is one it cannot describe.
+        for (auto sp : ast.fnspecs)
+            if (sp->live && uses[sp] != sp->uses) opaquesites.insert(sp);
+        set<FnSpec *> visited;
+        function<void(FnSpec *)> visit = [&](FnSpec *sp) {
+            if (!visited.insert(sp).second) return;
+            for (auto c : callees[sp]) visit(c);
+            calleesfirst.push_back(sp);
+        };
+        for (auto sp : ast.fnspecs) if (sp->live) visit(sp);
+    }
+
+    // One body's effects given its callees' current summaries: the
+    // kills-only walk, recording.
+    Effects SummarizeSpec(FnSpec *sp) {
+        SetupSpec(sp);
+        Effects e;
+        effsum = &e;
+        flow = Flow {};
+        mode = M_KILLS;
+        Walk(sp->body);
+        mode = M_JUDGE;
+        effsum = nullptr;
+        return e;
+    }
+
+    // Effect summaries for every live specialization, to a fixpoint: a
+    // body's summary only grows as its callees' do, so a round that changes
+    // nothing is the answer, and recursion converges the same way from
+    // empty. An extern fn (§7.10) has no body to walk: it may resize or
+    // write whatever it is handed by reference, and reaches nothing else.
+    void ComputeEffects() {
+        for (auto sp : ast.fnspecs) {
+            if (!sp->live) continue;
+            auto &e = effects[sp];
+            if (sp->body) continue;
+            for (size_t j = 0; j < sp->argtypes.size(); j++)
+                if (sp->argtypes[j]->kind == TY_REF) {
+                    e.params.insert((int)j);
+                    e.intparams.insert((int)j);
+                }
+        }
+        for (auto changed = true; changed;) {
+            changed = false;
+            for (auto sp : calleesfirst) {
+                if (!sp->body) continue;
+                auto e = SummarizeSpec(sp);
+                auto &cur = effects[sp];
+                e.Merge(cur);
+                if (!(e == cur)) {
+                    cur = e;
+                    changed = true;
+                }
+            }
+        }
     }
 
     // Seeds gge0 from the globals' initializers, then drops every candidate
@@ -1349,8 +1929,7 @@ struct BCE {
         // Any address-taking anywhere admits writes this pass cannot see.
         for (auto sp : ast.fnspecs) {
             if (!sp->live || !sp->body) continue;
-            ResetSpecState();
-            Mark(sp->body);
+            SetupSpec(sp);
             for (auto v : addrof) gaddr.insert(v);
         }
         for (auto &[v, ok] : gge0) if (gaddr.count(v)) ok = false;
@@ -1359,8 +1938,7 @@ struct BCE {
             auto any = false;
             for (auto &[v, ok] : gge0) if (ok) any = true;
             if (!any) return;
-            ResetSpecState();
-            Mark(sp->body);
+            SetupSpec(sp);
             for (auto &[v, ok] : gge0)
                 if (ok) {
                     cands[v].declseen = true;
@@ -1379,9 +1957,13 @@ struct BCE {
     }
 
     void RunAll() {
+        BuildCallGraph();
+        ComputeEffects();
         ValidateGlobalInvariants();
-        for (auto sp : ast.fnspecs)
-            if (sp->live && sp->body) RunSpec(sp);
+        // Callers first: a specialization's entry facts come from its call
+        // sites, which have to have been judged.
+        for (auto it = calleesfirst.rbegin(); it != calleesfirst.rend(); ++it)
+            if ((*it)->live && (*it)->body) RunSpec(*it);
         // Global initializers and shared field defaults: judged with no
         // surrounding context (defaults are shared across construction sites).
         ResetSpecState();
@@ -1468,6 +2050,7 @@ inline void Call::BceMark(BCE &b) {
     // `trailing` is an unchecked template; the instance that runs is fvbody.
     b.Mark(callee);
     for (auto a : args) b.Mark(a);
+    for (auto p : fvparams) b.NoteOwn(p);
     b.Mark(fvbody);
 }
 
@@ -1488,6 +2071,7 @@ inline void MatchExpr::BceMark(BCE &b) {
     for (auto &arm : arms) {
         if (arm.pat.byref) b.MarkAddr(scrutinee);
         b.NoteVar(arm.binder);
+        b.NoteOwn(arm.binder);
     }
     Node::BceMark(b);
 }
@@ -1496,11 +2080,16 @@ inline void ForLoop::BceMark(BCE &b) {
     if (byref) b.MarkAddr(iter);
     b.NoteVar(vdef);
     b.NoteVar(idxdef);
+    b.NoteOwn(vdef);
+    b.NoteOwn(idxdef);
     Node::BceMark(b);
 }
 
 inline void VarDecl::BceMark(BCE &b) {
-    for (auto d : defs) b.NoteVar(d);
+    for (auto d : defs) {
+        b.NoteVar(d);
+        b.NoteOwn(d);
+    }
     if (defs.size() == 1 && inits.size() == 1 && defs[0]) b.wdecl.insert(defs[0]);
     else for (auto d : defs) if (d) b.wbad.insert(d);
     Node::BceMark(b);
@@ -1591,11 +2180,30 @@ inline bool SliceExpr::BceWalk(BCE &b) {
 
 inline bool Call::BceWalk(BCE &b) {
     Node *recv = nullptr;
+    // A call into user code is a site (RecordSite): each integer argument's
+    // term is sampled as it is evaluated, a slice argument's length as its
+    // bounds state it. The C backend may read a plain variable argument
+    // after a later argument's call has run, so the integer samples are only
+    // trusted when evaluating the arguments moved nothing.
+    auto site = b.mode == BCE::M_JUDGE && builtin < 0 && !fvbody && (spec || !dispatch.empty());
+    vector<BCE::Term> ints, slens;
+    auto gen0 = b.nextgen;
+    auto walkarg = [&](Node *a) {
+        b.Walk(a);
+        if (!site) return;
+        auto t = a->exprtype;
+        auto isint = t && t->kind == TY_INT && t->intstorage != IS_U64 &&
+                     t->intstorage != IS_VARINT;
+        ints.push_back(isint ? b.TermOf(a) : BCE::Term {});
+        slens.push_back(Is<SliceExpr>(a) ? b.slicelen : BCE::Term {});
+    };
     if (auto d = Is<Dot>(callee)) {
         recv = d->obj;
-        b.Walk(recv);
+        walkarg(recv);
     }
-    for (auto a : args) b.Walk(a);
+    for (auto a : args) walkarg(a);
+    if (site && b.nextgen != gen0)
+        for (auto &t : ints) t = BCE::Term {};
     if (builtin >= 0) {
         auto rn = recv ? recv : (args.empty() ? nullptr : args[0]);
         // The first non-receiver argument, in either call spelling.
@@ -1650,21 +2258,25 @@ inline bool Call::BceWalk(BCE &b) {
         return true;
     }
     if (fvbody) {
-        // The function value runs inside the callee, possibly repeatedly and
-        // after arbitrary callee effects: analyze it from scratch.
-        auto saved = std::move(b.flow);
-        b.flow = BCE::Flow {};
-        b.loopdepth++;
-        for (auto p : fvparams) if (p) b.BumpVar(p, false);   // Re-bound per call.
-        b.Walk(fvbody);
-        b.loopdepth--;
-        b.flow = std::move(saved);
+        // The function value is this body's own code, bound to the call's
+        // arguments: its checks are judged from scratch (it runs inside the
+        // callee, possibly repeatedly and after arbitrary callee effects),
+        // and its kills are exactly its own.
+        if (b.mode != BCE::M_KILLS) {
+            auto saved = std::move(b.flow);
+            b.flow = BCE::Flow {};
+            b.loopdepth++;
+            for (auto p : fvparams) if (p) b.BumpVar(p, false);   // Re-bound per call.
+            b.Walk(fvbody);
+            b.loopdepth--;
+            b.flow = std::move(saved);
+        }
+        for (auto p : fvparams) if (p) b.BumpVar(p, false);
+        b.StripKills(fvbody);
+        return true;
     }
-    auto anyref = false;
-    auto reft = [](Node *a) { return a->exprtype && a->exprtype->kind == TY_REF; };
-    if (recv && reft(recv)) anyref = true;
-    for (auto a : args) anyref = anyref || reft(a);
-    b.KillByCall(anyref);
+    if (site) b.RecordSite(this, BCE::ArgNodes(this), ints, slens);
+    b.CallKills(this);
     return true;
 }
 
@@ -1977,10 +2589,14 @@ inline bool VarDecl::BceWalk(BCE &b) {
         auto v = defs[0];
         auto lt = b.mode != BCE::M_KILLS && v->type && v->type->kind == TY_ARRAY
                       ? b.FreshLenOf(inits[0]) : BCE::Term {};
-        // A slice binding takes the length its bounds just stated.
+        // A slice binding takes the length its bounds just stated; a slice
+        // or reference bound to a place, that place's.
         if (b.mode != BCE::M_KILLS && v->type && v->type->kind == TY_SLICE &&
             Is<SliceExpr>(inits[0]))
             lt = b.slicelen;
+        else if (b.mode != BCE::M_KILLS && v->type &&
+                 (v->type->kind == TY_SLICE || v->type->kind == TY_REF))
+            lt = b.BoundLenOf(inits[0]);
         if (BCE::ScalarIntVar(v)) {
             b.SetWrite(v, inits[0], true);
         } else if (b.loopdepth > 0 && v->type &&
@@ -2004,10 +2620,22 @@ inline bool Assign::BceWalk(BCE &b) {
     b.WalkLvalParts(lval);
     b.Walk(rhs);
     if (op == T_DOTASSIGN) {
+        // A rebound field or element slot lies in storage behind the chain's
+        // root, which the summary reports even where no place tracks it.
+        if (!Is<Ident>(lval)) b.NoteStorage(b.ExprTarget(lval));
         auto ch = b.ChainOf(lval);
         if (ch.kind == BCE::CH_INDEX) return true;   // Element ref slots: no tracked places.
-        if (ch.kind == BCE::CH_OK) b.RebindKill(ch.root);
-        else b.StorageWriteKill(BCE::UK_OPAQUE, nullptr, nullptr);
+        if (ch.kind != BCE::CH_OK) {
+            b.StorageWriteKill(BCE::UK_OPAQUE, nullptr, nullptr);
+            return true;
+        }
+        b.RebindKill(ch.root);
+        // A reference variable rebound to a place has that place's length.
+        if (b.mode != BCE::M_KILLS && Is<Ident>(lval)) {
+            auto lt = b.BoundLenOf(rhs);
+            auto pid = lt.ok ? b.PlaceOfVar(ch.root) : -1;
+            if (pid >= 0) b.ExactLenIs(pid, lt);
+        }
         return true;
     }
     if (pointee) {
@@ -2034,9 +2662,8 @@ inline bool Assign::BceWalk(BCE &b) {
         auto t = v->type;
         auto fresh = b.mode != BCE::M_KILLS && t && t->kind == TY_ARRAY && op == T_ASSIGN
                          ? b.FreshLenOf(rhs) : BCE::Term {};
-        if (b.mode != BCE::M_KILLS && t && t->kind == TY_SLICE && op == T_ASSIGN &&
-            Is<SliceExpr>(rhs))
-            fresh = b.slicelen;
+        if (b.mode != BCE::M_KILLS && t && t->kind == TY_SLICE && op == T_ASSIGN)
+            fresh = Is<SliceExpr>(rhs) ? b.slicelen : b.BoundLenOf(rhs);
         if (t && t->kind == TY_SLICE) b.RebindKill(v);
         else if (t && t->kind != TY_FLT && t->kind != TY_BOOL && t->kind != TY_INT)
             b.StorageWriteKill(BCE::UK_OWNED, v, v);

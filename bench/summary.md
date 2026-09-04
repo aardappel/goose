@@ -42,9 +42,11 @@ under v145, where nine bounds checks per pixel stop the loop vectorising at
 all. Under clang the checks are free -- it vectorises around them exactly as
 LLVM does for Rust's own checked row -- and the same Goose source runs at 271
 ms against Rust's 291. What separates the backends is measured directly in
-`notes.md`: one `assert` on the length inside the kernel proves all ten checks
-and takes the v145 row from 141 to 77 ms at W=2048, and writing the kernel over
-row slices takes it to 32, level with Rust and with C++ under `__restrict`.
+`notes.md`: proving the ten checks takes the v145 row from 141 to 77 ms at
+W=2048, and writing the kernel over row slices takes it to 33, level with Rust
+and with C++ under `__restrict`. Since these tables were measured the compiler
+carries the image's length from `main` into the kernel by itself, so the flat
+row now proves its checks without the `assert` and runs at the 77.
 
 **Memory is the least ambiguous column: 1.9x smaller than idiomatic C++, 1.3x
 smaller than expert C++, 1.2x smaller than Rust.** Where the layouts are
