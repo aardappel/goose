@@ -2369,6 +2369,14 @@ struct CodeGen {
             if (lv.t->kind == TY_REF) DerefLoc(lv, ix->line);
             return IndexLoc(lv, ix->idx, ix->line, ix->nobc);
         }
+        // `&path` addressed as a location is the path itself: going through a
+        // reference temporary would spell the value's stack a second way,
+        // behind the top the function may be keeping in a local (see the
+        // note on data-stack top caching).
+        if (auto u = Is<Unary>(n); u && u->op == T_BITAND &&
+            (Is<Ident>(u->child) || Is<Dot>(u->child) || Is<Index>(u->child)) &&
+            u->child->exprtype && u->child->exprtype->kind != TY_REF)
+            return GenLoc(u->child);
         // Any other expression: an addressed temporary (TC's LValueBase).
         Loc l;
         l.t = n->exprtype;
@@ -4820,30 +4828,14 @@ struct CodeGen {
         for (auto a : c->args) an.push_back(a);
         auto ln = c->line;
         switch ((BuiltinKind)c->builtin) {
-            case B_PRINT: {
-                auto t = an[0]->exprtype;
-                if (t->kind == TY_INT) {
-                    if (t->intstorage == IS_U64)
-                        L("gs_print_uint(", GenX(an[0]), ");");
-                    else
-                        L("gs_print_int((int64_t)(", GenX(an[0]), "));");
-                    return {};
-                }
-                if (t->kind == TY_FLT) {
-                    L("gs_print_flt((double)(", GenX(an[0]), "));");
-                    return {};
-                }
-                if (t->kind == TY_BOOL) { L("gs_print_bool(", GenX(an[0]), ");"); return {}; }
-                if (t->kind == TY_SLICE) {
-                    auto x = GenPure(an[0]);
-                    L("gs_print_bytes(", x, ".data, ", x, ".len);");
-                    return {};
-                }
-                assert(t->kind == TY_ARRAY);
+            case B_PRINT:
+                for (auto a : an) EmitOutArg(a);
+                L("gs_out_nl();");
+                return {};
+            case B_STR: return EmitStr(an, d0, ln);
+            case B_FORMAT: {
                 auto lv = RecvLoc(an[0]);
-                auto v = ArrayView(lv, ln);
-                L("gs_print_bytes(", v.typedelems ? v.elems : cat("(uint8_t *)(", v.elems, ")"),
-                  ", ", v.len, ");");
+                for (size_t i = 1; i < an.size(); i++) EmitFormatInto(lv, an[i], ln);
                 return {};
             }
             case B_ASSERT: {
@@ -5098,6 +5090,125 @@ struct CodeGen {
             default:
                 Fail(ln, cat("builtin not implemented: ", builtindefs[c->builtin].name));
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Text forms (§3.7): print, str and format share them. A scalar's text
+    // comes from a gs_fmt_* runtime helper writing at most GS_FMT_MAX bytes;
+    // a u8 array or slice contributes its bytes as they are.
+
+    // One print argument to stdout.
+    void EmitOutArg(Node *a) {
+        auto t = a->exprtype;
+        if (t->kind == TY_INT) {
+            if (t->intstorage == IS_U64) L("gs_out_uint(", GenX(a), ");");
+            else L("gs_out_int((int64_t)(", GenX(a), "));");
+        } else if (t->kind == TY_FLT) {
+            L("gs_out_flt((double)(", GenX(a), "));");
+        } else if (t->kind == TY_BOOL) {
+            L("gs_out_bool(", GenX(a), ");");
+        } else {
+            auto se = GenSrcElems(a);
+            L("gs_out_bytes((const uint8_t *)(", se.elems, "), ", se.n, ");");
+        }
+    }
+
+    // The C expression formatting scalar `a` at `dst`, yielding the byte count.
+    string FmtCall(Node *a, const string &dst) {
+        auto t = a->exprtype;
+        if (t->kind == TY_INT) {
+            if (t->intstorage == IS_U64) return cat("gs_fmt_u64(", dst, ", ", GenX(a), ")");
+            return cat("gs_fmt_i64(", dst, ", (int64_t)(", GenX(a), "))");
+        }
+        if (t->kind == TY_FLT) return cat("gs_fmt_f64(", dst, ", (double)(", GenX(a), "))");
+        assert(t->kind == TY_BOOL);
+        return cat("gs_fmt_bool(", dst, ", ", GenX(a), ")");
+    }
+
+    // Appends the text of `a` to the growable u8 array at lv. On a resizable
+    // the bytes are written straight at its stack top (the reservation has
+    // room for them); a limited array formats into a buffer first, so the
+    // capacity check comes before anything lands in it.
+    void EmitFormatInto(Loc lv, Node *a, Line ln) {
+        auto v = ArrayView(lv, ln);
+        auto limited = lv.t->arr->akind == A_LIMITED;
+        auto t = a->exprtype;
+        auto bytes = t->kind == TY_ARRAY || t->kind == TY_SLICE;
+        auto n = T();
+        string src;   // Where the bytes to append sit, when not already at the top.
+        if (bytes) {
+            auto se = GenSrcElems(a);
+            L("int64_t ", n, " = ", se.n, ";");
+            src = cat("(const uint8_t *)(", se.elems, ")");
+        } else if (limited) {
+            src = T();
+            L("uint8_t ", src, "[GS_FMT_MAX];");
+            L("int64_t ", n, " = ", FmtCall(a, src), ";");
+        } else {
+            L("int64_t ", n, " = ", FmtCall(a, Top(lv.stk)), ";");
+        }
+        if (limited) {
+            auto capx = lv.val ? cat(ArrSize(lv.t->arr))
+                               : cat("(int64_t)*(uint32_t *)(", lv.s, ")");
+            auto ol = T();
+            L("int64_t ", ol, " = ", v.len, ";");
+            L("if (", ol, " + ", n, " > ", capx, ") gs_abort(GS_E_CAPACITY, ", LocArgs(ln), ");");
+            L("memcpy(", v.typedelems ? cat(v.elems, " + ", ol) : cat("(", v.elems, ") + ", ol),
+              ", ", src, ", (size_t)", n, ");");
+            L(v.lenlv, " = (", LenCast(lv), ")(", ol, " + ", n, ");");
+            return;
+        }
+        assert(!lv.stk.empty());
+        if (bytes) L("memcpy(", Top(lv.stk), ", ", src, ", (size_t)", n, ");");
+        Bump(lv.stk, n);
+        L(v.lenlv, " += ", n, ";");
+    }
+
+    // str(a, b, ...): the arguments' text as a fresh u8[>..] at the
+    // destination. The elements go to the destination's top and the count to
+    // the receiving header -- or into a length prefix reserved in front of the
+    // elements when the destination is a value slot (a u8[] element or field),
+    // exactly as a named result lands there (§7.3).
+    vector<string> EmitStr(vector<Node *> &an, Dst d0, Line ln) {
+        EmitCoreTypes();
+        string stk = d0.s, lenlv = d0.lenlv, pref, hdr;
+        IntStorage ls = IS_U32;
+        if (d0.k != 2) {
+            // No destination of its own: a temporary on a statement stack.
+            stk = AllocStk(false);
+            hdr = T();
+            L("gs_rhdr ", hdr, " = { ", Top(stk), ", 0 };");
+            SaveBase(false, stk, cat(hdr, ".base"));
+            lenlv = cat(hdr, ".len");
+        } else if (lenlv.empty()) {
+            if (!d0.t || d0.t->kind != TY_ARRAY || d0.t->arr->akind != A_VAR)
+                Fail(ln, "str() needs a resizable or variable-array destination");
+            ls = LenStore(d0.t->arr);
+            pref = T();
+            L("uint8_t *", pref, " = ", Top(stk), ";");
+            Bump(stk, cat(PrefixBytes(ls)));
+        }
+        auto elems = T();
+        L("uint8_t *", elems, " = ", Top(stk), ";");
+        auto cnt = T();
+        L("int64_t ", cnt, " = 0;");
+        for (auto a : an) {
+            auto t = a->exprtype;
+            auto n = T();
+            if (t->kind == TY_ARRAY || t->kind == TY_SLICE) {
+                auto se = GenSrcElems(a);
+                L("int64_t ", n, " = ", se.n, ";");
+                L("memcpy(", Top(stk), ", (const uint8_t *)(", se.elems, "), (size_t)", n, ");");
+            } else {
+                L("int64_t ", n, " = ", FmtCall(a, Top(stk)), ";");
+            }
+            Bump(stk, n);
+            L(cnt, " += ", n, ";");
+        }
+        if (!pref.empty()) EmitPrefixPatch(pref, ls, stk, cnt, elems);
+        else L(lenlv, " = ", cnt, ";");
+        if (!hdr.empty()) return { hdr };
+        return {};
     }
 
     vector<string> EmitPush(Call *c, vector<Node *> &an, Line ln) {

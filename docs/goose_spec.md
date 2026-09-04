@@ -325,6 +325,19 @@ implicitly copyable into any of these representations and usable as `u8[:]`
 slices directly (with non-writable provenance, §9.5). No encoding is
 enforced; UTF-8 is a library-level convention.
 
+**Text.** Every scalar, `bool`, and `u8` array or slice has a text form:
+integers in decimal, floats in the shortest form that reads back to the same
+value, `true`/`false`, and a `u8` array's bytes as they are. Three builtins
+produce it, each taking any number of arguments and inserting nothing
+between them: `print(a, b, …)` writes the forms to standard output followed
+by a newline; `format(out, a, b, …)` appends them to `out`, any growable
+`u8` array; `str(a, b, …)` builds a fresh `u8[>..]` of them, constructed at
+its destination like any resizable result (§7.3), so `words.push(str("item",
+i))` writes straight into the element. A character literal is an integer
+(§2), so `str('x')` is `"120"`; a byte is appended with `push`. Aggregates
+(structs, ADTs, arrays of other element types) gain a text form in a later
+revision.
+
 ### 3.8 References
 
 `T&` is a reference to a `T`: one machine address, no pointer arithmetic, no
@@ -1609,9 +1622,9 @@ machinery this needs.)
 ## 12. Deliberately out of scope for v1
 
 Standard library contents (beyond: `print(x)` for scalars and u8-arrays/
-slices, `assert`, `abort`, `exit`, `default<T>()`, `hardware_threads`, and
-the math types of §6.1 are assumed; the library's design is in
-`stdlib_design.md`); FFI details (an `extern fn`
+slices — with `str` and `format`, §3.7 —, `assert`, `abort`, `exit`,
+`default<T>()`, `hardware_threads`, and the math types of §6.1 are assumed;
+the library's design is in `stdlib_design.md`); FFI details (an `extern fn`
 C boundary is assumed to exist, unchecked by nature); error-value
 conventions (§7.9); move operations for resizables; multiple resizables per
 struct; two-way growth arrays; inline compaction / copying GC for pools;
