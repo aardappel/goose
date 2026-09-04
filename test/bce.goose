@@ -453,12 +453,13 @@ fn call_local_loop() -> i64 {
     return s;
 }
 
-fn reset_it(p: i64[>..]&) {
+// Only a grow-shrink array can be emptied through a reference (§5.1, §5.2).
+fn reset_it(p: i64[>..<]&) {
     p = [];
 }
 
 fn call_shrink_loop() -> i64 {
-    var v: i64[>..] = [];
+    var v: i64[>..<] = [];
     for i in 6 { v.push(i + 2); }
     var s = 0;
     for i in v.len {

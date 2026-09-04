@@ -67,7 +67,6 @@ struct TypeCheck {
         bool writable = false;       // Whole path admits writes.
         bool reusable = false;
         bool sequential = false;     // Variable-size element: not addressable.
-        bool ingrowshrink = false;   // Interior of a [>..<]: no refs/slices (§5.2).
         bool isvarint = false;       // varint field: read-only refs, not assignable.
     };
 
@@ -109,6 +108,7 @@ struct TypeCheck {
     struct Dest {
         VarDef *root = nullptr;
         bool exact = false;
+        bool varbind = false;  // A reference/slice variable itself: a binding, not a store.
     };
     Dest curdst;
     VarDef *temproot = nullptr;  // Sentinel root for refs read out of temporaries.
@@ -856,6 +856,27 @@ struct TypeCheck {
     // outlives (conservative).
     VarDef *RefRootOf(VarDef *vd) { return vd->refrootknown ? vd->refroot : temproot; }
 
+    // A grow-shrink array anywhere in a value of type t: the array itself, or
+    // the tail of a struct (elements are never resizable, §3.3).
+    bool ContainsGrowShrink(TypeExpr *t) {
+        switch (t->kind) {
+            case TY_ARRAY: return t->arr->akind == A_GROWSHRINK;
+            case TY_STRUCT: {
+                auto inst = GetStructInst(t);
+                for (auto ft : inst->ftypes)
+                    if (ft && ContainsGrowShrink(ft)) return true;
+                return false;
+            }
+            default: return false;
+        }
+    }
+
+    // Whether references rooted at r may point into a grow-shrink array
+    // (§5.2): r holds one, or stands for a call-site root that does.
+    bool IsGrowShrinkRoot(VarDef *r) {
+        return r && (r->growshrink || (r->type && ContainsGrowShrink(r->type)));
+    }
+
     // Reading a reference variable's root as an identity. A loop body is
     // checked once, so a read here sees the value a later rebind in the same
     // loop leaves behind; noting the read lets that rebind reject the root
@@ -1413,7 +1434,6 @@ struct TypeCheck {
             if (SequentialElems(lv.type))
                 Error(n, "arrays of variable-size elements cannot be indexed, only iterated");
             CheckIntAny(ix->idx);
-            if (lv.type->arr->akind == A_GROWSHRINK) lv.ingrowshrink = true;
             lv.type = lv.type->arr->sub;
             lv.var = nullptr;
             lv.fromstorage = true;
@@ -1649,6 +1669,12 @@ struct TypeCheck {
                               ", which does not outlive the destination (§9.2)");
                 return false;
             }
+            if (!curdst.varbind && IsGrowShrinkRoot(root)) {
+                fitfail = cat("storing a reference into ", root->name,
+                              ", which holds a grow-shrink array: such a reference lives in a "
+                              "variable, is passed down or returned, and is never stored (§5.2)");
+                return false;
+            }
             auto spec = CurRealFrame().spec;
             if (root && !root->isglobal && !root->poolclass && spec &&
                 (spec->incycle || spec->sf->isrec)) {
@@ -1715,7 +1741,6 @@ struct TypeCheck {
                 auto at = t;
                 if (IsPlainRef(t) && t->ref->sub->kind == TY_ARRAY) at = t->ref->sub;
                 if (!callsite || at->kind != TY_ARRAY) return false;
-                if (at->arr->akind == A_GROWSHRINK) return false;  // §3.10.
                 if (!TypeEq(at->arr->sub, dt->sub)) return false;
                 v.type = dt;
                 return true;
@@ -1853,8 +1878,6 @@ struct TypeCheck {
     Val CheckRefOf(Unary *x) {
         auto lv = CheckLValue(x->child);
         if (lv.var) RequireAssigned(lv.var, x);
-        if (lv.ingrowshrink)
-            Error(x, "no references into the interior of a grow-shrink array (§5.2)");
         // A reference to a resizable value points at its owning header (C.2),
         // which only whole variables have.
         if (!lv.var && lv.type->kind != TY_REF && ClassOf(lv.type) == SC_RESIZABLE)
@@ -2424,8 +2447,6 @@ struct TypeCheck {
                 auto elem = t->kind == TY_ARRAY ? t->arr->sub : t->sub;
                 x->iterkind = t->kind == TY_ARRAY ? IK_ARRAY : IK_SLICE;
                 if (x->byref) {
-                    if (t->kind == TY_ARRAY && t->arr->akind == A_GROWSHRINK)
-                        Error(x, "no reference bindings into a grow-shrink array (§5.2)");
                     bindtype = RefTo(elem, x->line);
                 } else {
                     if (ClassOf(elem) != SC_FIXED)
@@ -2718,6 +2739,7 @@ struct TypeCheck {
             Error(c, cat("no matching overload for call to ", name, failures));
         }
         auto spec = GetOrCreateSpec(best, argvals, c);
+        ApplyCalleeShrinks(c, spec, argvals, name);
         // Phase 2: re-check arguments against the resolved parameter types.
         // Arguments construct into fresh parameter slots, not curdst.
         {
@@ -3013,6 +3035,7 @@ struct TypeCheck {
             armvals[found] = argvals[found];
             armvals[found].type = byref ? RefTo(vt, c->line) : vt;
             auto spec = GetOrCreateSpec(mi, armvals, c);
+            ApplyCalleeShrinks(c, spec, armvals, name);
             if (first) {
                 if (spec->rets.size() != first->rets.size())
                     Error(c, cat("case functions of ", name, " disagree on return counts"));
@@ -3059,6 +3082,7 @@ struct TypeCheck {
             ra.writable = argvals[i].writable;
             ra.reusable = argvals[i].reusable;
             ra.exact = argvals[i].rootexact;
+            ra.growshrink = IsGrowShrinkRoot(r);
             if (ra.exact) ra.pool = PoolOf(r);
             if (!r) {
                 ra.cls = 0;
@@ -3246,6 +3270,7 @@ struct TypeCheck {
                         rv->classfrom = argvals ? CanonRoot((*argvals)[i].root) : nullptr;
                         rv->poolclass = true;
                         rv->classpool = ra.pool;
+                        rv->growshrink = ra.growshrink;
                         classroots[ra.cls] = rv;
                     }
                     // Members of one class share a root, so they agree on the
@@ -3667,6 +3692,7 @@ struct TypeCheck {
             auto d = MakeDef(i);
             auto savedst = curdst;
             curdst = Dest { d, true };
+            curdst.varbind = ann && (ann->kind == TY_REF || ann->kind == TY_SLICE);
             Val v;
             auto refinit = Is<Unary>(vd->inits[i]);
             if (!ann && refinit && refinit->op == T_BITAND) {
@@ -3768,8 +3794,23 @@ struct TypeCheck {
                 Error(a, "cannot infer the element type of this array from this value");
             CompletePending(target, selem, a->line);
         }
+        // Assigning a resizable array whole replaces its elements: a shrink
+        // to anything referring into it (§5.1, §5.2).
+        if (target->kind == TY_ARRAY && (!lv.var || lv.var->assigned)) {
+            auto root = lv.var ? lv.var : CanonRoot(lv.root);
+            if (target->arr->akind == A_GROW) {
+                if (!root || !root->type)
+                    Error(a, "cannot assign a grow-only array through a reference: a shrink of "
+                             "a grow-only array applies to a local of the function that owns "
+                             "it (§5.1)");
+                GrowOnlyShrinkAt(a, true, "assign", root);
+            } else if (target->arr->akind == A_GROWSHRINK) {
+                ShrinkGrowShrink(a, cat("assign ", ExprStr(a->lval)), root, ExprStr(a->lval));
+            }
+        }
         auto savedst = curdst;
         curdst = Dest { lv.root, lv.rootexact };
+        curdst.varbind = lv.var && (target->kind == TY_REF || target->kind == TY_SLICE);
         auto v = CheckValue(a->rhs, target);
         curdst = savedst;
         if (v.type->kind == TY_VOID && reachable)
@@ -3803,6 +3844,7 @@ struct TypeCheck {
         }
         auto savedst = curdst;
         curdst = lv.var ? Dest { lv.var, true } : Dest { lv.root, lv.rootexact };
+        curdst.varbind = lv.var != nullptr;
         auto v = CheckV(a->rhs, target);
         auto wasplain = IsPlainRef(v.type);
         MustFit(v, a->rhs, target, false);
@@ -3844,6 +3886,12 @@ struct TypeCheck {
         if (pt->kind == TY_INT && pt->intstorage == IS_VARINT)
             Error(a, "varint fields are written only at construction (§3.6)");
         AssignableClassCheck(pt, a);
+        if (pt->kind == TY_ARRAY && pt->arr->akind == A_GROW)
+            Error(a, "cannot assign a grow-only array through a reference: a shrink of a "
+                     "grow-only array applies to a local of the function that owns it (§5.1)");
+        if (pt->kind == TY_ARRAY && pt->arr->akind == A_GROWSHRINK)
+            ShrinkGrowShrink(a, cat("assign ", ExprStr(a->lval)),
+                             CanonRoot(lv.var ? RefRootOf(lv.var) : lv.root), ExprStr(a->lval));
         auto savedst = curdst;
         curdst = lv.var ? Dest { RefRootOf(lv.var), RefExactOf(lv.var) }
                         : Dest { lv.root, lv.rootexact };
@@ -4110,11 +4158,16 @@ struct TypeCheck {
         // it (§5.1); pop and resize also need an element the shrink can find,
         // which a sequential array has not got.
         if (ak == A_GROW && (d.kind == B_POP || d.kind == B_RESIZE || d.kind == B_CLEAR)) {
-            CheckGrowShrink(c, d.name, args[0], rv);
+            CheckGrowShrink(c, c->standalone, d.name, args[0], rv.type);
             if (d.kind != B_CLEAR && ClassOf(elem) != SC_FIXED)
                 Error(c, cat(".", d.name, " needs fixed-size elements: ", TypeStr(rv.type),
                              " is sequential (§3.3)"));
         }
+        // A grow-shrink array shrinks from anywhere, provided nothing in scope
+        // refers into it (§5.2).
+        if (ak == A_GROWSHRINK && (d.kind == B_POP || d.kind == B_RESIZE || d.kind == B_CLEAR))
+            ShrinkGrowShrink(c, cat(d.name, " ", ExprStr(args[0])), CanonRoot(rv.root),
+                             ExprStr(args[0]));
         // resize has two forms (§3.3); a target below zero is caught at runtime.
         if (d.kind == B_RESIZE) {
             CheckIntAny(args[1]);
@@ -4181,9 +4234,6 @@ struct TypeCheck {
                 v.root = temproot;
                 break;
             case 'r':
-                // push returns a reference to the new element — except into a
-                // grow-shrink array, which admits no interior references (§5.2).
-                if (d.kind == B_PUSH && ak == A_GROWSHRINK) break;
                 v.type = RefTo(elem, c->line);
                 v.root = rv.root;
                 v.rootexact = rv.rootexact;
@@ -4218,12 +4268,19 @@ struct TypeCheck {
     // conservative wherever they are: a value whose type contains references
     // at all counts as a possible holder, and so does a `var` reference the
     // same-depth rebinding rule (§9.2) could retarget into the array.
-    void CheckGrowShrink(Call *c, const char *op, Node *recv, const Val &rv) {
+    void CheckGrowShrink(Node *at, bool standalone, const char *op, Node *recv,
+                         TypeExpr *rtype) {
         auto id = Is<Ident>(recv);
         auto vd = id ? id->vdef : nullptr;
-        if (!vd || rv.type->kind != TY_ARRAY)
-            Error(c, cat(op, " on a grow-only array names the array's own variable, not a "
-                         "reference or an element of another value (§5.1)"));
+        if (!vd || rtype->kind != TY_ARRAY)
+            Error(at, cat(op, " on a grow-only array names the array's own variable, not a "
+                          "reference or an element of another value (§5.1)"));
+        GrowOnlyShrinkAt(at, standalone, op, vd);
+    }
+
+    // A shrink of the grow-only array (or value holding one) that local vd
+    // owns: only where nothing in scope can still refer into it (§5.1).
+    void GrowOnlyShrinkAt(Node *c, bool standalone, const char *op, VarDef *vd) {
         if (vd->isglobal || vd->isparam || !frames.back().spec ||
             vd->ownerspec != frames.back().spec)
             Error(c, cat("cannot ", op, " ", vd->name,
@@ -4232,7 +4289,7 @@ struct TypeCheck {
         if (vd->reusable)
             Error(c, cat("cannot ", op, " reusable pool ", vd->name,
                          ": its slots stay live for the freelist (§5.4)"));
-        if (!c->standalone)
+        if (!standalone)
             Error(c, cat("cannot ", op, " ", vd->name,
                          " inside a larger expression: a reference taken earlier in it may "
                          "still be live, so bind the result first (§5.1)"));
@@ -4260,6 +4317,91 @@ struct TypeCheck {
             }
             Error(c, cat("cannot ", op, " ", vd->name, " while ", v->name,
                          " is in scope: it may hold a reference or slice into it (§5.1)"));
+        }
+    }
+
+    string ExprStr(Node *n) {
+        string s;
+        n->Dump(s, 0);
+        return s;
+    }
+
+    // A shrink of the grow-shrink array rooted at root (§5.2): no variable in
+    // scope may refer into it. Such references are held only by variables
+    // (they cannot be stored), so the scan is exact, up to a `var` reference
+    // the same-depth rebinding rule could have retargeted into it.
+    void CheckShrinkHolders(Node *at, const string &op, VarDef *root, const string &what) {
+        VisibleVars([&](VarDef *v) {
+            if (v == root || !v->type) return;
+            if (v->type->kind != TY_REF && v->type->kind != TY_SLICE) return;
+            // A reference to the whole array (or the value holding it) is the
+            // path to it, not something a shrink invalidates.
+            if (v->type->kind == TY_REF && ContainsGrowShrink(v->type->ref->sub)) return;
+            auto r = RefRootOf(v);
+            auto holds = r == root || (v->isvar && Depth(r) == Depth(root)) ||
+                         (!v->refrootknown && Depth(v) >= Depth(root));
+            if (!holds) return;
+            Error(at, cat("cannot ", op, " while ", v->name, " (bound at ", Where(v->line),
+                          ") is in scope: it may refer into ", what, " (§5.2)"));
+        });
+    }
+
+    // Records a shrink for the callers' sake (§5.2): of a global, on the
+    // specialization being checked; through a parameter class, on the
+    // specialization that owns those parameters (a function value's body may
+    // shrink through its enclosing function's).
+    void NoteShrink(VarDef *root) {
+        if (root->isglobal) {
+            if (auto spec = CurRealFrame().spec) spec->shrinkglobals.insert(root);
+            return;
+        }
+        if (root->type) return;  // A local: its owner sees every shrink directly.
+        for (auto fi = (int)frames.size() - 1; fi >= 0; fi--) {
+            auto spec = frames[fi].spec;
+            if (!spec) continue;
+            auto found = false;
+            for (size_t i = 0; i < spec->params.size(); i++) {
+                if (RefRootOf(spec->params[i]) != root) continue;
+                spec->shrinkparams.insert((int)i);
+                found = true;
+            }
+            if (found) return;
+        }
+    }
+
+    void ShrinkGrowShrink(Node *at, const string &op, VarDef *root, const string &what) {
+        if (!root) return;
+        CheckShrinkHolders(at, op, root, what);
+        NoteShrink(root);
+    }
+
+    // The callee's shrinks of grow-shrink arrays (§5.2) are the caller's:
+    // nothing in scope may refer into an argument it shrinks through or a
+    // global it shrinks, and both are recorded for the caller's own callers.
+    // A back edge's summary is incomplete, so it counts as shrinking every
+    // grow-shrink array it can reach.
+    void ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name) {
+        auto pending = spec->inprogress;
+        for (size_t i = 0; i < argvals.size() && i < spec->argtypes.size(); i++) {
+            auto pt = spec->argtypes[i];
+            auto shrinks = pending ? pt->kind == TY_REF && ContainsGrowShrink(pt->ref->sub)
+                                   : spec->shrinkparams.count((int)i) > 0;
+            if (!shrinks) continue;
+            auto root = CanonRoot(argvals[i].root);
+            if (!root) continue;
+            ShrinkGrowShrink(at, cat("call ", name, ", which shrinks ", root->name), root,
+                             string(root->name));
+        }
+        if (pending) {
+            for (auto g : ast.globals)
+                for (auto vd : g->defs)
+                    if (vd->type && ContainsGrowShrink(vd->type))
+                        ShrinkGrowShrink(at, cat("call ", name, ", which may shrink ", vd->name),
+                                         vd, string(vd->name));
+        } else {
+            for (auto vd : spec->shrinkglobals)
+                ShrinkGrowShrink(at, cat("call ", name, ", which shrinks ", vd->name), vd,
+                                 string(vd->name));
         }
     }
 
@@ -5077,8 +5219,6 @@ inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
             tc.Error(this, "slices of variable-size elements can only be re-sliced "
                            "whole ([..])");
     } else if (lv.type->kind == TY_ARRAY) {
-        if (lv.type->arr->akind == A_GROWSHRINK)
-            tc.Error(this, "no slices of grow-shrink arrays (§5.2)");
         elem = lv.type->arr->sub;
         if (tc.ClassOf(elem) != SC_FIXED && (lo || hi))
             tc.Error(this, "arrays of variable-size elements can only be sliced "

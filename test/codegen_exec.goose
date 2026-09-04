@@ -1320,6 +1320,31 @@ fn pending_arrays() {
 
 fn count_pa(xs: i64[]) -> i64 { xs.len }
 
+fn head2_gs(q: i64[>..<]&) -> i64[:] { q[0..2] }
+fn drop_last_gs(q: i64[>..<]&) { q.pop(); }
+fn sum_gs(xs: i64[:]) -> i64 {
+    var n = 0;
+    for x in xs { n += x; }
+    return n;
+}
+
+fn growshrink_slices() {
+    var q: i64[>..<] = [1, 2, 3, 4];
+    block { let s = q[1..3]; print(s[0] + s[1]); }   // 5
+    block { let r = &q[3]; r = 40; }
+    q.pop();                                   // Nothing in scope refers into q.
+    print(q.len);                              // 3
+    for &x in q { x += 1; }                    // 2, 3, 4
+    print(q[0] + q[1] + q[2]);                 // 9
+    block { let r2: i64& = q.push(7); r2 = 8; }   // push returns a reference.
+    print(q[3]);                               // 8
+    print(q.index_of(&q[2]));                  // 2
+    print(sum_gs(q[..]));                      // 17: a slice argument.
+    block { let h = head2_gs(&q); print(h.len); }    // 2: a returned slice.
+    drop_last_gs(&q);                          // A shrink through a reference.
+    print(q.len);                              // 3
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -1368,6 +1393,7 @@ fn main_codegen_exec() {
     defaults_builtin();
     text_builtins();
     pending_arrays();
+    growshrink_slices();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

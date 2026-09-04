@@ -777,6 +777,9 @@ struct VarDef {
     // The global pool every call site's argument for this class is rooted in
     // (§3.9); null where there is none, which is the usual case.
     VarDef *classpool = nullptr;
+    // Synthetic class roots only: the call-site root holds a grow-shrink
+    // array, so the shrink rules follow the class into the body (§5.2).
+    bool growshrink = false;
     // For variables of reference/slice type: the provenance of the reference
     // value they hold, fixed at first binding (see typecheck.h header note).
     // A null-initialized optional has no commitment yet (refrootknown false).
@@ -828,6 +831,9 @@ struct RootArg {
     int cls = 0;
     bool writable = true;
     bool reusable = false;
+    // The argument's root holds a grow-shrink array (§5.2). Part of the key:
+    // a body is checked against its shrink rules only where they apply.
+    bool growshrink = false;
     // Val::rootexact of the argument, ANDed over every call site that reaches
     // the specialization. Deliberately not part of the key: within the callee
     // a class always names one array (typecheck.h keeps an inexactly rooted
@@ -844,7 +850,7 @@ struct RootArg {
     VarDef *pool = nullptr;
     bool operator==(const RootArg &o) const {
         return cls == o.cls && writable == o.writable && reusable == o.reusable &&
-               pool == o.pool;
+               growshrink == o.growshrink && pool == o.pool;
     }
 };
 
@@ -875,6 +881,10 @@ struct FnSpec {
     bool has_nonfixed_local = false;
     Line nonfixedline;             // First nonfixed local, for cycle diagnostics.
     set<SFunction *> needs;        // `return from` targets that must enclose every call.
+    // Grow-shrink arrays the body may shrink, itself or through its callees
+    // (§5.2): globals, and the indices of parameters whose pointee is shrunk.
+    set<VarDef *> shrinkglobals;
+    set<int> shrinkparams;
     int id = 0;                    // Unique, for diagnostics/codegen naming.
     // Filled by the optimizer (optimize.h):
     int uses = 0;                  // Call sites in live code (tag-dispatch entries included).
