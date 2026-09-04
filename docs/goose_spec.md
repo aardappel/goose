@@ -591,7 +591,17 @@ Literal forms usable in any construction context:
   non-optional relative-reference field pointing at the very value being
   constructed (`Node { prev: self, next: self }`, §3.9) — the one way to give
   such a field a value before anything else it could point at exists;
-* string literals (§3.7).
+* string literals (§3.7);
+* `default<T>()`, for any fixed-size `T`: the value a `T` has before anything
+  is written to it — numbers 0, `false`, null optionals, empty slices and
+  empty limited arrays, variant 0 of an ADT — with declared field defaults
+  (§3.2) applied wherever a struct or payload declares them, so an invariant
+  a declaration encodes as a default survives being filled in by generic
+  code (a `sum`'s accumulator, a hash table's empty slots). A type that
+  contains a non-optional reference without a declared default has no
+  default value, and `default<T>()` for it is a compile error. (The zero
+  value a missed `qpoll` yields, §11.2, is the all-zero-bytes value; the two
+  agree except where a field declares a non-zero default.)
 
 ### 4.3 The copy-free construction guarantee
 
@@ -1599,8 +1609,9 @@ machinery this needs.)
 ## 12. Deliberately out of scope for v1
 
 Standard library contents (beyond: `print(x)` for scalars and u8-arrays/
-slices, `assert`, `abort`, `exit`, `hardware_threads`, and the math types
-of §6.1 are assumed; the library's design is in `stdlib_design.md`); FFI details (an `extern fn`
+slices, `assert`, `abort`, `exit`, `default<T>()`, `hardware_threads`, and
+the math types of §6.1 are assumed; the library's design is in
+`stdlib_design.md`); FFI details (an `extern fn`
 C boundary is assumed to exist, unchecked by nature); error-value
 conventions (§7.9); move operations for resizables; multiple resizables per
 struct; two-way growth arrays; inline compaction / copying GC for pools;
