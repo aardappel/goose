@@ -35,6 +35,10 @@ enum BuiltinRecv {
     BR_GROW = 1 << 3, BR_GROWSHRINK = 1 << 4, BR_SLICE = 1 << 5,
     BR_ANY = BR_FIXED | BR_VAR | BR_LIMITED | BR_GROW | BR_GROWSHRINK | BR_SLICE,
     BR_GROWABLE = BR_LIMITED | BR_GROW | BR_GROWSHRINK,
+    // Array kinds whose elements are at fixed strides *and* may be pointed
+    // into, so a reference to one converts back to its index (§3.3). A
+    // grow-shrink array admits no interior references at all (§5.2).
+    BR_INDEXABLE = BR_FIXED | BR_LIMITED | BR_GROW,
     // A grow-only array shrinks too, where the checker can see that nothing is
     // rooted in it (§5.1, CheckGrowShrink in typecheck.h).
     BR_SHRINKABLE = BR_LIMITED | BR_GROWSHRINK | BR_GROW,
@@ -52,6 +56,7 @@ enum BuiltinRecv {
     F(B_QPOLL,            "qpoll",            0,  0,   "",   "",  0,              BF_TYARGS | BF_CUSTOM) \
     F(B_LEN,              "len",              1,  1,   "",   "i", BR_ANY,         BF_MEMBER | BF_PROPERTY) \
     F(B_CAP,              "cap",              1,  1,   "",   "i", BR_LIMITED,     BF_MEMBER | BF_PROPERTY) \
+    F(B_INDEX_OF,         "index_of",         2,  2,   "",   "i", BR_INDEXABLE,   BF_MEMBER | BF_CUSTOM) \
     F(B_PUSH,             "push",             2,  2,   "e",  "r", BR_GROWABLE,    BF_MEMBER | BF_WRITE | BF_CUSTOM) \
     F(B_APPEND,           "append",           2,  2,   "a",  "",  BR_GROWABLE,    BF_MEMBER | BF_WRITE) \
     F(B_POP,              "pop",              1,  1,   "",   "e", BR_SHRINKABLE,  BF_MEMBER | BF_WRITE) \

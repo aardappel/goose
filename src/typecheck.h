@@ -3833,6 +3833,29 @@ struct TypeCheck {
             if (args.size() == 3) ElemArg(args[2], elem, rv);
             return VoidVal();
         }
+        // index_of recovers the element index a reference stands for (§3.3).
+        // The reference must be an element of this very array, which is what
+        // an exact root at the receiver says (§9.2); the distance is then a
+        // whole number of elements and inside the length, so the division is
+        // exact and nothing has to be bounds-checked.
+        if (d.kind == B_INDEX_OF) {
+            if (ClassOf(elem) != SC_FIXED)
+                Error(c, cat(".index_of needs fixed-size elements: ", TypeStr(rv.type),
+                             " is sequential (§3.3)"));
+            auto av = CheckV(args[1], nullptr);
+            args[1]->exprtype = av.type;
+            if (!IsPlainRef(av.type) || !TypeEq(av.type->ref->sub, elem))
+                Error(c, cat(".index_of takes a reference to an element of ", TypeStr(rv.type),
+                             ", got ", TypeStr(av.type)));
+            if (!av.rootexact || CanonRoot(av.root) != CanonRoot(rv.root)) {
+                auto why = av.rootexact ? string() : ReadBackWhy(av.type, av.rootfrom);
+                Error(c, cat(".index_of needs a reference rooted at the array itself (§3.3); ",
+                             !why.empty() ? why
+                             : cat("this one is rooted at ",
+                                   av.root ? CanonRoot(av.root)->name
+                                           : string_view("static data"))));
+            }
+        }
         // Signature-driven arguments.
         auto base = (d.flags & BF_MEMBER) ? 1 : 0;
         for (auto i = 0; d.args[i]; i++) {

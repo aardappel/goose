@@ -4813,6 +4813,16 @@ struct CodeGen {
             }
             case B_PUSH: return EmitPush(c, an, ln);
             case B_APPEND: EmitAppend(c, an, ln); return {};
+            case B_INDEX_OF: {
+                // The checker proved the reference is an element of this very
+                // array (§3.3), so the distance is a whole number of elements
+                // inside the length: an exact divide, nothing to check.
+                auto lv = RecvLoc(an[0]);
+                auto v = ArrayView(lv, ln);
+                auto rx = GenX(an[1]);
+                return { cat("(((uint8_t *)(", rx, ") - (uint8_t *)(", v.elems, ")) / ",
+                             FixedSize(v.elem), ")") };
+            }
             case B_POP: {
                 auto lv = RecvLoc(an[0]);
                 auto v = ArrayView(lv, ln);
