@@ -1673,6 +1673,29 @@ fn parse(src: u8[:]) -> Expr.., u8[] { ...; return parse_expr(&l), ""; }
 Collected from the design discussion; each needs future resolution work.
 The newest, highest-priority items first:
 
+0h. **Passing by size class** — decided, pending implementation
+    (`stdlib_design.md` §8.7), and scheduled before the standard library.
+    Fixed values connect to destinations by value as today; non-fixed
+    values are never copied implicitly — a reference-typed, untyped or
+    generic destination binds them by reference, a value destination takes
+    an rvalue or an explicit `copy(x)` constructed in place. `&` becomes
+    redundant wherever the destination's type is a reference, and a
+    redundant `&` is a warning. Rewrites §4.1, §4.4, §7.2, the §3.8 binding
+    paragraph and §7.5's implementation note.
+0i. **Resizable tails get their own frame header** — decided, pending
+    implementation (`stdlib_design.md` §8.7), likewise before the library.
+    A resizable-tailed struct is a frame object of its fixed prefix fields
+    plus the tail's `{ base, len }` header, with only the tail's elements on
+    the data stack, so `&s.tail` is an ordinary reference and C.2's
+    "reference the owning variable" restriction goes away. Variable-size
+    prefixes and resizable-class ADTs keep the bytes-on-stack shape behind
+    a base pointer.
+0j. **Slices of grow-shrink arrays** — decided (`stdlib_design.md` §8.7),
+    superseding TODO 4: creating a slice or reference into a `[>..<]` is
+    legal; a shrink while one is still live is an error at the shrink,
+    citing the slice's creation and its next use; such slices may be passed
+    down and returned but not stored into containers. Amends §5.2 and §3.10.
+
 0a. **Mixed-signedness ergonomics in practice** — §6.1's unification
     deliberately rejects `u32 + i32`, and `u64` against anything signed
     outside the comparison rule now in §6.1. Watch whether real code (hash
