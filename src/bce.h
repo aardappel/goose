@@ -223,6 +223,38 @@ struct BCE {
         return { UK_OPAQUE, nullptr };
     }
 
+    // The place of the array or slice of type t (a reference's pointee
+    // included) at `path` under `root`; -1 where there is nothing to track.
+    int PlaceFor(VarDef *root, const vector<int> &path, TypeExpr *t) {
+        if (t && t->kind == TY_REF) t = t->ref->sub;
+        auto slice = t && t->kind == TY_SLICE;
+        auto arr = t && t->kind == TY_ARRAY && t->arr->akind != A_FIXED;
+        if (!slice && !arr) return -1;
+        auto key = pair<VarDef *, vector<int>>(root, path);
+        auto it = placeids.find(key);
+        if (it != placeids.end()) return it->second;
+        Place P;
+        P.rootv = root;
+        P.path = path;
+        auto midcross = std::find(path.begin(), path.end(), -1) != path.end();
+        P.refcrossed = midcross || (root->type && root->type->kind == TY_REF);
+        if (!P.refcrossed) {
+            P.ultkind = UK_OWNED;
+            P.ultv = root;
+        } else if (midcross) {
+            P.ultkind = UK_OPAQUE;   // Reads a stored reference: target root unknown here.
+        } else {
+            auto [k, u] = UltOf(root);
+            P.ultkind = k;
+            P.ultv = u;
+        }
+        P.lenmut = arr && t->arr->akind != A_VAR;
+        auto id = (int)places.size();
+        places.push_back(P);
+        placeids[key] = id;
+        return id;
+    }
+
     int PlaceOf(Node *n, bool *failidx = nullptr) {
         vector<int> path;
         VarDef *root = nullptr;
@@ -239,64 +271,12 @@ struct BCE {
         }
         if (!root) return -1;
         std::reverse(path.begin(), path.end());
-        auto t = n->exprtype;
-        if (t && t->kind == TY_REF) t = t->ref->sub;
-        auto slice = t && t->kind == TY_SLICE;
-        auto arr = t && t->kind == TY_ARRAY && t->arr->akind != A_FIXED;
-        if (!slice && !arr) return -1;
-        auto key = pair<VarDef *, vector<int>>(root, path);
-        auto it = placeids.find(key);
-        if (it != placeids.end()) return it->second;
-        Place P;
-        P.rootv = root;
-        P.path = path;
-        auto midcross = std::find(path.begin(), path.end(), -1) != path.end();
-        P.refcrossed = midcross || (root->type && (root->type->kind == TY_REF));
-        if (!P.refcrossed) {
-            P.ultkind = UK_OWNED;
-            P.ultv = root;
-        } else if (midcross) {
-            P.ultkind = UK_OPAQUE;   // Reads a stored reference: target root unknown here.
-        } else {
-            auto [k, u] = UltOf(root);
-            P.ultkind = k;
-            P.ultv = u;
-        }
-        P.lenmut = arr && t->arr->akind != A_VAR;
-        auto id2 = (int)places.size();
-        places.push_back(P);
-        placeids[key] = id2;
-        return id2;
+        return PlaceFor(root, path, n->exprtype);
     }
 
     // The place a variable's own array/slice value occupies (used at
     // declarations and whole-variable assignments, where no obj node exists).
-    int PlaceOfVar(VarDef *v) {
-        if (!v || !v->type) return -1;
-        auto t = v->type;
-        if (t->kind == TY_REF) t = t->ref->sub;
-        if (t->kind != TY_SLICE && (t->kind != TY_ARRAY || t->arr->akind == A_FIXED))
-            return -1;
-        auto key = pair<VarDef *, vector<int>>(v, {});
-        auto it = placeids.find(key);
-        if (it != placeids.end()) return it->second;
-        Place P;
-        P.rootv = v;
-        P.refcrossed = v->type->kind == TY_REF;
-        if (!P.refcrossed) {
-            P.ultkind = UK_OWNED;
-            P.ultv = v;
-        } else {
-            auto [k, u] = UltOf(v);
-            P.ultkind = k;
-            P.ultv = u;
-        }
-        P.lenmut = t->kind == TY_ARRAY && t->arr->akind != A_VAR;
-        auto id2 = (int)places.size();
-        places.push_back(P);
-        placeids[key] = id2;
-        return id2;
-    }
+    int PlaceOfVar(VarDef *v) { return v ? PlaceFor(v, {}, v->type) : -1; }
 
     // The exact length of a fresh array value, when its construction states
     // it: a literal's element count, a [v; n] fill count, [..cap]'s zero, a
@@ -321,7 +301,6 @@ struct BCE {
     set<VarDef *> wbad;       // A write shape that defeats invariant tracking.
     struct WKinds { bool inc = false, dec = false, setw = false; };
     map<VarDef *, WKinds> wkinds;
-    set<int> specpids;        // Places referenced by this spec.
     map<VarDef *, set<int>> relpids;   // Var -> places it indexes or bounds.
 
     struct Cand {
@@ -1067,10 +1046,8 @@ struct BCE {
         }
     }
 
-    void NotePlace(Node *n) {
-        auto pid = PlaceOf(n);
-        if (pid >= 0) specpids.insert(pid);
-    }
+    // Names the place ahead of the walks, so a kill summary can report it.
+    void NotePlace(Node *n) { PlaceOf(n); }
 
     // Which variable an index/bound expression pivots on, for relating it to
     // the array it indexes when selecting `v <= len(P)` invariant candidates.
@@ -1280,20 +1257,24 @@ struct BCE {
     // ------------------------------------------------------------------
     // Per-specialization driver.
 
-    void RunSpec(FnSpec *sp) {
-        if (!sp->body) return;   // An extern fn (§7.10).
+    // Everything the prescan and the walks collect for one body.
+    void ResetSpecState() {
         addrof.clear();
         intvars.clear();
         wdecl.clear();
         wbad.clear();
         wkinds.clear();
-        specpids.clear();
         relpids.clear();
         derived.clear();
         cands.clear();
         ge0.clear();
         lelen.clear();
         mono.clear();
+    }
+
+    void RunSpec(FnSpec *sp) {
+        if (!sp->body) return;   // An extern fn (§7.10).
+        ResetSpecState();
         for (auto &[v, ok] : gge0) if (ok) ge0.insert(v);
         Mark(sp->body);
         // Whole-body kill summary: which places and variables any path can
@@ -1368,12 +1349,7 @@ struct BCE {
         // Any address-taking anywhere admits writes this pass cannot see.
         for (auto sp : ast.fnspecs) {
             if (!sp->live || !sp->body) continue;
-            addrof.clear();
-            intvars.clear();
-            wdecl.clear();
-            wbad.clear();
-            wkinds.clear();
-            relpids.clear();
+            ResetSpecState();
             Mark(sp->body);
             for (auto v : addrof) gaddr.insert(v);
         }
@@ -1383,17 +1359,7 @@ struct BCE {
             auto any = false;
             for (auto &[v, ok] : gge0) if (ok) any = true;
             if (!any) return;
-            addrof.clear();
-            intvars.clear();
-            wdecl.clear();
-            wbad.clear();
-            wkinds.clear();
-            relpids.clear();
-            derived.clear();
-            cands.clear();
-            ge0.clear();
-            lelen.clear();
-            mono.clear();
+            ResetSpecState();
             Mark(sp->body);
             for (auto &[v, ok] : gge0)
                 if (ok) {
@@ -1418,12 +1384,7 @@ struct BCE {
             if (sp->live && sp->body) RunSpec(sp);
         // Global initializers and shared field defaults: judged with no
         // surrounding context (defaults are shared across construction sites).
-        addrof.clear();
-        intvars.clear();
-        cands.clear();
-        ge0.clear();
-        lelen.clear();
-        mono.clear();
+        ResetSpecState();
         mode = M_JUDGE;
         for (auto g : ast.globals)
             for (auto i : g->inits) {

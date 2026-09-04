@@ -113,6 +113,14 @@ struct TypeCheck {
         bool varbind = false;  // A reference/slice variable itself: a binding, not a store.
     };
     Dest curdst;
+    // The destination in force while a scope runs; the enclosing one returns
+    // on exit, an error's throw included.
+    struct DestScope {
+        TypeCheck &tc;
+        Dest saved;
+        DestScope(TypeCheck &t, Dest d) : tc(t), saved(t.curdst) { tc.curdst = d; }
+        ~DestScope() { tc.curdst = saved; }
+    };
     VarDef *temproot = nullptr;  // Sentinel root for refs read out of temporaries.
     VarDef *cycleroot = nullptr; // Sentinel root for a back edge's result whose root
                                  // the cycle's returns do not determine (§7.8).
@@ -554,9 +562,8 @@ struct TypeCheck {
             return;
         }
         auto savereach = reachable;
-        auto savedst = curdst;
+        DestScope ds(*this, Dest {});
         reachable = true;
-        curdst = Dest {};
         auto sp = ast.NewFnSpec();  // Bindings holder for the pseudo frame.
         sp->bindings = bindings;
         Frame f;
@@ -572,7 +579,6 @@ struct TypeCheck {
         }
         frames.pop_back();
         reachable = savereach;
-        curdst = savedst;
     }
 
     SizeClass ClassOf(TypeExpr *t) {
@@ -1513,6 +1519,22 @@ struct TypeCheck {
         lv.rootfrom = rb.from;
     }
 
+    // The value a field or element location yields: the load, re-rooted by
+    // the read-back rule, and writable by design where it is a reference or
+    // slice (§9.5's laundering; see the header note).
+    Val ContainerRead(LVal lv) {
+        ReadBackLVal(lv);
+        Val v;
+        v.type = LoadType(lv.type);
+        v.root = lv.root;
+        v.rootexact = lv.rootexact;
+        v.rootfrom = lv.rootfrom;
+        v.writable = v.type->kind == TY_REF || v.type->kind == TY_SLICE ? true : lv.writable;
+        v.reusable = lv.reusable;
+        v.lvalue = v.type->kind != TY_REF;
+        return v;
+    }
+
     // Field / builtin-property resolution on an lvalue path.
     void ResolveMemberLValue(LVal &lv, Dot *d) {
         auto t = lv.type;
@@ -1677,6 +1699,12 @@ struct TypeCheck {
     }
 
     Val CheckArg(Node *&n, TypeExpr *expected) { return CheckValue(n, expected, true); }
+
+    // The same, with `d` as the destination the value constructs into.
+    Val CheckValueAt(Node *&n, TypeExpr *expected, Dest d, bool callsite = false) {
+        DestScope ds(*this, d);
+        return CheckValue(n, expected, callsite);
+    }
 
     // An operand of an operator: always the pointee.
     Val Operand(Node *n) {
@@ -2687,14 +2715,10 @@ struct TypeCheck {
         lastcallrets.clear();
         // Arguments construct into parameter slots, not whatever destination
         // encloses this call; member ops re-set curdst for element pushes.
-        auto savedst = curdst;
-        curdst = Dest {};
-        Val v;
-        if (auto d = Is<Dot>(c->callee)) v = CheckUfcsCall(c, d);
-        else if (auto id = Is<Ident>(c->callee)) v = CheckNamedCall(c, id);
-        else Error(c, "this expression cannot be called");
-        curdst = savedst;
-        return v;
+        DestScope ds(*this, Dest {});
+        if (auto d = Is<Dot>(c->callee)) return CheckUfcsCall(c, d);
+        if (auto id = Is<Ident>(c->callee)) return CheckNamedCall(c, id);
+        Error(c, "this expression cannot be called");
     }
 
     Val CheckNamedCall(Call *c, Ident *id) {
@@ -2872,8 +2896,7 @@ struct TypeCheck {
         // Phase 2: re-check arguments against the resolved parameter types.
         // Arguments construct into fresh parameter slots, not curdst.
         {
-            auto savedst = curdst;
-            curdst = Dest {};
+            DestScope ds(*this, Dest {});
             for (size_t i = 0; i < best.paramtypes.size(); i++) {
                 // A slice parameter takes the array itself: the reference the
                 // argument loop made of it is undone, so the coercion is the
@@ -2890,7 +2913,6 @@ struct TypeCheck {
                                           " is passed by reference without it (§4.1)"));
                 CheckArg(argnodes[i], best.paramtypes[i]);
             }
-            curdst = savedst;
         }
         // Arguments the re-check rebound by reference replace the originals.
         {
@@ -3212,11 +3234,9 @@ struct TypeCheck {
         // Phase 2 for the non-dispatch args (before CallResult, so nested
         // calls cannot clobber lastcallrets); the dispatch arg keeps its type.
         {
-            auto savedst = curdst;
-            curdst = Dest {};
+            DestScope ds(*this, Dest {});
             for (size_t i = 0; i < matches[0].paramtypes.size(); i++)
                 if ((int)i != found) CheckArg(argnodes[i], matches[0].paramtypes[i]);
-            curdst = savedst;
         }
         return CallResult(c, first, argvals);
     }
@@ -3472,9 +3492,8 @@ struct TypeCheck {
         f.callline = callline;
         frames.push_back(f);
         auto savereach = reachable;
-        auto savedst = curdst;
+        DestScope ds(*this, Dest {});
         reachable = true;
-        curdst = Dest {};
         PushScope(SK_FN);
         // Parameters. For reference/slice parameters, a synthetic root
         // VarDef per call-site root class carries the caller-side depth.
@@ -3576,7 +3595,6 @@ struct TypeCheck {
         PopScope();
         frames.pop_back();
         reachable = savereach;
-        curdst = savedst;
         spec->inprogress = false;
         spec->checked = true;
     }
@@ -3919,26 +3937,28 @@ struct TypeCheck {
                           (int64_t)vd->inits.size(), " initializer(s)"));
         for (size_t i = 0; i < vd->names.size(); i++) {
             auto d = MakeDef(i);
-            auto savedst = curdst;
-            curdst = Dest { d, true };
-            curdst.varbind = ann && (ann->kind == TY_REF || ann->kind == TY_SLICE);
             Val v;
-            auto refinit = Is<Unary>(vd->inits[i]);
-            if (!ann && refinit && refinit->op == T_BITAND) {
-                // `let r = &x;` keeps the reference (an explicit &); every
-                // other un-annotated initializer decays to the pointee.
-                v = CheckV(vd->inits[i], nullptr);
-                vd->inits[i]->exprtype = v.type;
-                if (IsPlainRef(v.type) && ClassOf(v.type->ref->sub) != SC_FIXED)
-                    Warn(vd->inits[i], cat("redundant &: ", ExprStr(refinit->child),
-                                           " binds by reference without it (§4.1)"));
-            } else {
-                v = CheckValue(vd->inits[i], ann);
-                // An un-annotated binding of a non-fixed lvalue is a reference
-                // to it (§4.1), like an untyped parameter's.
-                if (!ann && IsNonFixedLValue(v)) vd->inits[i] = AutoRef(vd->inits[i], v);
+            {
+                // The new variable's storage is the destination; a reference
+                // or slice variable binds a value rather than storing one.
+                DestScope ds(*this, Dest { d, true, ann && (ann->kind == TY_REF ||
+                                                            ann->kind == TY_SLICE) });
+                auto refinit = Is<Unary>(vd->inits[i]);
+                if (!ann && refinit && refinit->op == T_BITAND) {
+                    // `let r = &x;` keeps the reference (an explicit &); every
+                    // other un-annotated initializer decays to the pointee.
+                    v = CheckV(vd->inits[i], nullptr);
+                    vd->inits[i]->exprtype = v.type;
+                    if (IsPlainRef(v.type) && ClassOf(v.type->ref->sub) != SC_FIXED)
+                        Warn(vd->inits[i], cat("redundant &: ", ExprStr(refinit->child),
+                                               " binds by reference without it (§4.1)"));
+                } else {
+                    v = CheckValue(vd->inits[i], ann);
+                    // An un-annotated binding of a non-fixed lvalue is a
+                    // reference to it (§4.1), like an untyped parameter's.
+                    if (!ann && IsNonFixedLValue(v)) vd->inits[i] = AutoRef(vd->inits[i], v);
+                }
             }
-            curdst = savedst;
             if (v.emptyarr && !ann) {
                 // `var out = [];` -- a grow-only array whose element type the
                 // first push, append or assignment into it supplies (§4.2).
@@ -4043,11 +4063,9 @@ struct TypeCheck {
                 ShrinkGrowShrink(a, cat("assign ", ExprStr(a->lval)), root, ExprStr(a->lval));
             }
         }
-        auto savedst = curdst;
-        curdst = Dest { lv.root, lv.rootexact };
-        curdst.varbind = lv.var && (target->kind == TY_REF || target->kind == TY_SLICE);
-        auto v = CheckValue(a->rhs, target);
-        curdst = savedst;
+        auto v = CheckValueAt(a->rhs, target,
+                              Dest { lv.root, lv.rootexact,
+                                     lv.var && (target->kind == TY_REF || target->kind == TY_SLICE) });
         if (v.type->kind == TY_VOID && reachable)
             Error(a, "the right-hand side has no value");
         if (lv.var) {
@@ -4077,18 +4095,20 @@ struct TypeCheck {
             Error(a, "cannot assign through this path (let, or non-writable "
                      "provenance, §9.5)");
         }
-        auto savedst = curdst;
-        curdst = lv.var ? Dest { lv.var, true } : Dest { lv.root, lv.rootexact };
-        curdst.varbind = lv.var != nullptr;
-        auto v = CheckV(a->rhs, target);
-        if (UserRefOf(a->rhs))
-            Warn(a->rhs, cat("redundant &: ", ExprStr(Is<Unary>(a->rhs)->child),
-                             " binds by reference here without it (§4.1)"));
-        if (BindsRef(v, target)) a->rhs = AutoRef(a->rhs, v);
-        auto wasplain = IsPlainRef(v.type);
-        MustFit(v, a->rhs, target, false);
+        Val v;
+        bool wasplain;
+        {
+            DestScope ds(*this, lv.var ? Dest { lv.var, true, true }
+                                       : Dest { lv.root, lv.rootexact });
+            v = CheckV(a->rhs, target);
+            if (UserRefOf(a->rhs))
+                Warn(a->rhs, cat("redundant &: ", ExprStr(Is<Unary>(a->rhs)->child),
+                                 " binds by reference here without it (§4.1)"));
+            if (BindsRef(v, target)) a->rhs = AutoRef(a->rhs, v);
+            wasplain = IsPlainRef(v.type);
+            MustFit(v, a->rhs, target, false);
+        }
         a->rhs->exprtype = v.type;
-        curdst = savedst;
         if (lv.var) {
             if (!lv.var->refrootknown) BindRefProvenance(lv.var, v);
             else if (!v.isnull) CheckRefRebindRoot(a, lv.var, v);
@@ -4131,11 +4151,8 @@ struct TypeCheck {
         if (pt->kind == TY_ARRAY && pt->arr->akind == A_GROWSHRINK)
             ShrinkGrowShrink(a, cat("assign ", ExprStr(a->lval)),
                              CanonRoot(lv.var ? RefRootOf(lv.var) : lv.root), ExprStr(a->lval));
-        auto savedst = curdst;
-        curdst = lv.var ? Dest { RefRootOf(lv.var), RefExactOf(lv.var) }
-                        : Dest { lv.root, lv.rootexact };
-        auto v = CheckValue(a->rhs, pt);
-        curdst = savedst;
+        auto v = CheckValueAt(a->rhs, pt, lv.var ? Dest { RefRootOf(lv.var), RefExactOf(lv.var) }
+                                                 : Dest { lv.root, lv.rootexact });
         if (v.type->kind == TY_VOID && reachable)
             Error(a, "the right-hand side has no value");
     }
@@ -4264,11 +4281,11 @@ struct TypeCheck {
                 if (args.size() != 1 + spec->argtypes.size())
                     Error(c, cat("thread_spawn(", wsf->name, ", ...) takes ",
                                  (int64_t)spec->argtypes.size(), " worker argument(s)"));
-                auto savedst = curdst;
-                curdst = Dest {};
-                for (size_t i = 0; i < spec->argtypes.size(); i++)
-                    CheckArg(args[1 + i], spec->argtypes[i]);
-                curdst = savedst;
+                {
+                    DestScope ds(*this, Dest {});
+                    for (size_t i = 0; i < spec->argtypes.size(); i++)
+                        CheckArg(args[1 + i], spec->argtypes[i]);
+                }
                 c->spec = spec;
                 Val v;
                 v.type = ast.inttypes[IS_I64];
@@ -4738,10 +4755,7 @@ struct TypeCheck {
     // Element construction targets the array's storage (relative references
     // in the element must derive from the same root, §3.9).
     void ElemArg(Node *&n, TypeExpr *elem, Val &rv) {
-        auto savedst = curdst;
-        curdst = Dest { rv.root, rv.rootexact };
-        CheckArg(n, elem);
-        curdst = savedst;
+        CheckValueAt(n, elem, Dest { rv.root, rv.rootexact }, true);
     }
 
     FnSpec *EnsureThreadSpec(SFunction *sf, Line l) {
@@ -4811,10 +4825,8 @@ struct TypeCheck {
             }
         }
         {
-            auto savedst = curdst;
-            curdst = Dest {};
+            DestScope ds(*this, Dest {});
             for (size_t i = 0; i < ptypes.size(); i++) CheckArg(c->args[i], ptypes[i]);
-            curdst = savedst;
         }
         // Check the body inline, with lookups chaining to the definer.
         Frame f;
@@ -5511,34 +5523,13 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     lv.rootfrom = ov.rootfrom;
     lv.writable = ov.writable;
     tc.ResolveMemberLValue(lv, this);
-    // A reference read out of a container is re-rooted (§9.5) and writable by
-    // design (§9.5 laundering; see the header note).
-    tc.ReadBackLVal(lv);
-    Val v;
-    v.type = tc.LoadType(lv.type);
-    v.root = lv.root;
-    v.rootexact = lv.rootexact;
-    v.rootfrom = lv.rootfrom;
-    v.writable = v.type->kind == TY_REF || v.type->kind == TY_SLICE ? true : lv.writable;
-    v.lvalue = v.type->kind != TY_REF;
-    return v;
+    return tc.ContainerRead(lv);
 }
 
 inline Val Call::Check(TypeCheck &tc, TypeExpr *) { return tc.CheckCall(this); }
 
 inline Val Index::Check(TypeCheck &tc, TypeExpr *) {
-    auto lv = tc.CheckLValue(this);
-    tc.ReadBackLVal(lv);
-    Val v;
-    v.type = tc.LoadType(lv.type);
-    v.root = lv.root;
-    v.rootexact = lv.rootexact;
-    v.rootfrom = lv.rootfrom;
-    // Container-read laundering, as for fields above (§9.5).
-    v.writable = v.type->kind == TY_REF || v.type->kind == TY_SLICE ? true : lv.writable;
-    v.reusable = lv.reusable;
-    v.lvalue = v.type->kind != TY_REF;
-    return v;
+    return tc.ContainerRead(tc.CheckLValue(this));
 }
 
 inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
