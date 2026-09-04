@@ -811,6 +811,10 @@ struct StructInst {
     SizeClass sclass = SC_FIXED;
     bool flat = true;
     bool validated = false;        // Guards against recursive by-value nesting.
+    // Resizable-tailed with an all-fixed prefix free of relative references:
+    // a frame object (C.2), whose fixed fields and tail header live in the
+    // owning frame and whose tail alone occupies the data stack.
+    bool frameobj = false;
 };
 
 // An enum type with concrete generic arguments.

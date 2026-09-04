@@ -228,6 +228,31 @@ struct CodeGen {
     bool IsResz(TypeExpr *t) { return Cls(t) == SC_RESIZABLE; }
     bool IsBytesT(TypeExpr *t) { return Cls(t) != SC_FIXED; }
     bool IsFatPointee(TypeExpr *t) { return IsResz(t); }
+    // A resizable-tailed struct with an all-fixed prefix is a frame object
+    // (C.2): a C struct of its fixed fields plus its tail's own gs_rhdr (or
+    // nested frame object), held in the owning frame like a fixed value;
+    // only the innermost tail's elements occupy a data stack. A gs_rref to
+    // one carries the object's address in `hdr`.
+    bool IsFrameObj(TypeExpr *t) { return t->kind == TY_STRUCT && SI(t)->frameobj; }
+    int TailIdx(StructInst *si) {
+        auto last = -1;
+        for (auto i = 0; i < (int)si->st->fields.size(); i++)
+            if (!si->st->fields[i].ispad) last = i;
+        return last;
+    }
+    // The innermost tail's gs_rhdr lvalue within frame object `obj`.
+    string FoTailHdr(TypeExpr *t, const string &obj) {
+        auto si = SI(t);
+        auto ti = TailIdx(si);
+        auto s = cat(obj, ".", Sanitize(si->st->fields[ti].name));
+        auto ft = si->ftypes[ti];
+        return IsFrameObj(ft) ? FoTailHdr(ft, s) : s;
+    }
+    TypeExpr *FoTailArr(TypeExpr *t) {
+        auto si = SI(t);
+        auto ft = si->ftypes[TailIdx(si)];
+        return IsFrameObj(ft) ? FoTailArr(ft) : ft;
+    }
     bool IsFatRef(TypeExpr *t) {
         return t->kind == TY_REF && t->ref->lenstorage < 0 && IsFatPointee(t->ref->sub);
     }
@@ -631,17 +656,28 @@ struct CodeGen {
     set<string> cdefined;    // Mangled names whose C body has been emitted.
 
     void EmitCFields(string &d, const vector<Field> &fields, const vector<TypeExpr *> &ftypes) {
-        auto lo = LayoutFields(fields, ftypes);
+        // A frame object's tail is not part of the packed layout: it is the
+        // tail's own header (or nested frame object) after the fixed fields.
+        auto n = fields.size();
+        while (n > 0 && ftypes[n - 1] && IsResz(ftypes[n - 1])) n--;
+        vector<Field> pre(fields.begin(), fields.begin() + n);
+        vector<TypeExpr *> pret(ftypes.begin(), ftypes.begin() + n);
+        auto lo = LayoutFields(pre, pret);
         auto npad = 0;
-        for (size_t i = 0; i < fields.size(); i++) {
+        for (size_t i = 0; i < n; i++) {
             auto &f = fields[i];
             if (f.ispad) {
-                auto next = i + 1 < fields.size() ? lo.offs[i + 1] : lo.size;
-                auto n = next - lo.offs[i];
-                if (n > 0) Append(d, "    uint8_t gs_pad", npad++, "[", n, "];\n");
+                auto next = i + 1 < n ? lo.offs[i + 1] : lo.size;
+                auto sz = next - lo.offs[i];
+                if (sz > 0) Append(d, "    uint8_t gs_pad", npad++, "[", sz, "];\n");
                 continue;
             }
             Append(d, "    ", CT(ftypes[i]), " ", Sanitize(f.name), ";\n");
+        }
+        for (auto i = n; i < fields.size(); i++) {
+            EmitCoreTypes();
+            Append(d, "    ", IsFrameObj(ftypes[i]) ? CT(ftypes[i]) : string("gs_rhdr"), " ",
+                   Sanitize(fields[i].name), ";\n");
         }
     }
 
@@ -1445,9 +1481,10 @@ struct CodeGen {
                 EmitCoreTypes();
                 add(cat("gs_pref ", pn));
             } else if (IsResz(pt)) {
-                // By-value resizable: the header by value plus its stack (C.3).
+                // By-value resizable: the header (or frame object) by value
+                // plus its stack (C.3).
                 EmitCoreTypes();
-                add(cat("gs_rhdr ", pn));
+                add(cat(IsFrameObj(pt) ? CT(pt) : string("gs_rhdr"), " ", pn));
                 add(cat("gs_stack *", pn, "_stk"));
                 if (decls) vstk[vd] = cat(pn, "_stk");
             } else if (IsBytesT(pt)) {
@@ -1465,7 +1502,7 @@ struct CodeGen {
                 add(cat("gs_pref ", fn));
             } else if (IsResz(ft)) {
                 EmitCoreTypes();
-                add(cat("gs_rhdr *", fn));
+                add(cat(IsFrameObj(ft) ? CT(ft) : string("gs_rhdr"), " *", fn));
                 add(cat("gs_stack *", fn, "_stk"));
                 if (decls) {
                     vstk[fv] = cat(fn, "_stk");
@@ -1482,9 +1519,13 @@ struct CodeGen {
             if (IsResz(sp->rets[i]) || (er && i == 0)) {
                 // Elements go to the destination stack; the count comes back
                 // through the length out-parameter (C.3's element-run form —
-                // always for resizables, on demand for variable arrays).
+                // always for resizables, on demand for variable arrays), or
+                // the whole frame object through its out-parameter.
                 add(cat("gs_stack *gs_dst", i));
-                add(cat("int64_t *gs_rl", i));
+                if (IsResz(sp->rets[i]) && IsFrameObj(sp->rets[i]))
+                    add(cat(CT(sp->rets[i]), " *gs_rl", i));
+                else
+                    add(cat("int64_t *gs_rl", i));
             } else if (IsBytesT(sp->rets[i])) {
                 add(cat("gs_stack *gs_dst", i));
             } else if ((int)i != si.cret) {
@@ -1533,6 +1574,7 @@ struct CodeGen {
         IntStorage ls = IS_U32;   // The prefix's length storage.
         bool prefix = false;      // Reserve prefix bytes and patch the count.
         bool inlined = false;     // Bound by an InlineBlock, not by DetectNrvo.
+        bool fo = false;          // A frame object: lenlv receives the whole object.
         string pref, hdr;         // Reserved prefix address, header name (BindLocal).
     };
     unordered_map<const VarDef *, NrvoDest> nrvo;
@@ -1943,6 +1985,7 @@ struct CodeGen {
         bool val = false;
         bool ispref = false;   // s is a gs_pref-typed lvalue (pool reference).
         string stk, lenlv, fl, flstk;
+        string hdr;            // The resizable's own header/frame-object lvalue, when it has one.
         // A loop-hoisted view of the array behind this reference (see `views`):
         // set on the reference by VarLoc, and, for the length, carried across
         // the deref to the pointee, where ArrayView reads it instead of memory.
@@ -1969,6 +2012,23 @@ struct CodeGen {
     bool NeedsDeref(TypeExpr *have, TypeExpr *want) {
         return have && want && have->kind == TY_REF && !have->ref->optional &&
                have->ref->lenstorage < 0 && want->kind != TY_REF && want->kind != TY_VOID;
+    }
+
+    // The pointee of a fat reference `x` as a location.
+    Loc FatRefLoc(const string &x, TypeExpr *sub) {
+        Loc lv;
+        lv.t = sub;
+        lv.stk = cat(x, ".stk");
+        if (IsFrameObj(sub)) {
+            lv.val = true;
+            lv.s = cat("(*(", CT(sub), " *)", x, ".hdr)");
+            lv.hdr = lv.s;
+        } else {
+            lv.s = cat(x, ".hdr->base");
+            lv.lenlv = cat(x, ".hdr->len");
+            lv.hdr = cat("(*", x, ".hdr)");
+        }
+        return lv;
     }
 
     Loc BytesLoc(const string &ptr, TypeExpr *t, const Loc &from) {
@@ -2030,10 +2090,15 @@ struct CodeGen {
             return;
         }
         auto rv = lv.s;   // The lvalue text reads as the reference value.
+        if (IsFatPointee(r.sub) && IsFrameObj(r.sub)) {
+            lv = FatRefLoc(rv, r.sub);
+            return;
+        }
         if (IsFatPointee(r.sub)) {
             Loc nl;
             nl.t = r.sub;
             nl.val = false;
+            nl.hdr = cat("(*", rv, ".hdr)");
             nl.s = lv.hbase.empty() ? cat(rv, ".hdr->base") : lv.hbase;
             // Growth writes the header even where the reads come from a hoist.
             nl.lenlv = cat(rv, ".hdr->len");
@@ -2097,12 +2162,19 @@ struct CodeGen {
             return l;
         }
         if (IsResz(vd->type)) {
-            // A gs_rhdr in the frame (or a pointer to one, when captured).
+            // A gs_rhdr or frame object in the frame (or a pointer to one,
+            // when captured).
             auto hdr = fvptr.count(vd) ? cat("(*", name, ")") : name;
+            l.hdr = hdr;
+            l.stk = VStkOf(vd);
+            if (IsFrameObj(vd->type)) {
+                l.val = true;
+                l.s = hdr;
+                return l;
+            }
             l.val = false;
             l.s = PoolBaseOr(vd, cat(hdr, ".base"));
             l.lenlv = cat(hdr, ".len");
-            l.stk = VStkOf(vd);
             return l;
         }
         if (IsBytesT(vd->type)) {
@@ -2401,14 +2473,23 @@ struct CodeGen {
         EmitCoreTypes();
         auto stk = AllocStk(false);
         auto h = T();
+        Loc l;
+        l.t = n->exprtype;
+        l.stk = stk;
+        l.hdr = h;
+        if (IsFrameObj(n->exprtype)) {
+            L(CT(n->exprtype), " ", h, ";");
+            SaveBase(false, stk, cat(FoTailHdr(n->exprtype, h), ".base"));
+            GenAny(n, Dst { 2, stk, n->exprtype, h });
+            l.val = true;
+            l.s = h;
+            return l;
+        }
         L("gs_rhdr ", h, " = { ", Top(stk), ", 0 };");
         SaveBase(false, stk, cat(h, ".base"));
         GenAny(n, Dst { 2, stk, n->exprtype, cat(h, ".len") });
-        Loc l;
-        l.t = n->exprtype;
         l.s = cat(h, ".base");
         l.lenlv = cat(h, ".len");
-        l.stk = stk;
         return l;
     }
 
@@ -2421,6 +2502,19 @@ struct CodeGen {
                 Loc r = lv;
                 r.t = ft;
                 r.s = cat(lv.s, ".", Sanitize(si->st->fields[d->fieldidx].name));
+                r.hbase.clear();
+                r.hlen.clear();
+                r.lenlv.clear();
+                if (IsResz(ft)) {
+                    // A frame object's tail: its own header (or a nested
+                    // frame object) is the member.
+                    r.hdr = r.s;
+                    if (!IsFrameObj(ft)) {
+                        r.val = false;
+                        r.lenlv = cat(r.s, ".len");
+                        r.s = cat(r.s, ".base");
+                    }
+                }
                 return r;
             }
             return BytesLoc(FieldPtr(lv.s, si->st->fields, si->ftypes, d->fieldidx), ft, lv);
@@ -2559,7 +2653,7 @@ struct CodeGen {
             auto stk = VStkOf(id->vdef);
             assert(!stk.empty());
             auto t = T();
-            L("gs_rref ", t, " = { &", HdrLv(id->vdef), ", ", stk, " };");
+            L("gs_rref ", t, " = { (gs_rhdr *)&", HdrLv(id->vdef), ", ", stk, " };");
             return t;
         }
         auto lv = GenLoc(child);
@@ -2567,9 +2661,17 @@ struct CodeGen {
             if (lv.t->ref->lenstorage >= 0) return LoadLoc(lv, nullptr, ln);
             return lv.s;
         }
-        if (IsFatPointee(lv.t))
-            Fail(ln, "a reference to a nested resizable value is unsupported; "
-                     "reference the owning variable");
+        if (IsFatPointee(lv.t)) {
+            // A frame object's tail (or a nested frame object) has a header
+            // of its own to point at.
+            if (lv.hdr.empty() || lv.stk.empty())
+                Fail(ln, "a reference to a resizable value nested in a variable-size "
+                         "prefix or an ADT payload is unsupported; reference the owning "
+                         "variable");
+            auto t = T();
+            L("gs_rref ", t, " = { (gs_rhdr *)&", lv.hdr, ", ", lv.stk, " };");
+            return t;
+        }
         if (!lv.val) return lv.s;
         return cat("&", lv.s);
     }
@@ -3212,12 +3314,7 @@ struct CodeGen {
             if (IsFix(sub)) {
                 EmitValStore(stk, want, GenXD(n, want));
             } else if (IsFatPointee(sub)) {
-                auto x = GenX(n);
-                Loc lv;
-                lv.t = sub;
-                lv.s = cat(x, ".hdr->base");
-                lv.lenlv = cat(x, ".hdr->len");
-                EmitRzCopy(lv, sub, stk, lenlv, n->line);
+                EmitRzCopy(FatRefLoc(GenX(n), sub), sub, stk, lenlv, n->line);
             } else {
                 auto x = GenX(n);
                 auto sz = T();
@@ -3241,11 +3338,7 @@ struct CodeGen {
             auto rt = c->rettypes.empty() ? nullptr : c->rettypes[0];
             if (rt && rt->kind == TY_REF && et->kind != TY_REF && IsBytesT(rt->ref->sub)) {
                 if (IsFatPointee(rt->ref->sub)) {
-                    Loc lv;
-                    lv.t = rt->ref->sub;
-                    lv.s = cat(rets[0], ".hdr->base");
-                    lv.lenlv = cat(rets[0], ".hdr->len");
-                    EmitRzCopy(lv, et, stk, lenlv, n->line);
+                    EmitRzCopy(FatRefLoc(rets[0], rt->ref->sub), et, stk, lenlv, n->line);
                 } else {
                     auto sz = T();
                     L("int64_t ", sz, " = ", SizeX(et, rets[0]), ";");
@@ -3386,6 +3479,18 @@ struct CodeGen {
     // elements; the count goes to the receiving header.
     void EmitRzCopy(Loc lv, TypeExpr *et, const string &stk, const string &lenlv, Line ln) {
         assert(!lenlv.empty());
+        if (IsFrameObj(et)) {
+            // The frame object copies as a C value; the innermost tail's
+            // elements follow it onto the stack behind a fresh base.
+            assert(lv.val);
+            auto src = T();
+            L(CT(et), " ", src, " = ", lv.s, ";");
+            L(lenlv, " = ", src, ";");
+            auto dh = FoTailHdr(et, lenlv), sh = FoTailHdr(et, src);
+            L(dh, ".base = ", Top(stk), ";");
+            EmitCopyElems(stk, FoTailArr(et)->arr->sub, cat(sh, ".base"), cat(sh, ".len"));
+            return;
+        }
         int64_t prefix = 0;
         TypeExpr *elem = nullptr;
         if (!RzShape(et, prefix, elem))
@@ -3780,7 +3885,46 @@ struct CodeGen {
         }
         assert(et->kind == TY_STRUCT);
         auto si = SI(et);
+        if (IsFrameObj(et)) {
+            if (!selfbase.empty()) Fail(sl->line, "self references in a frame object are unsupported");
+            GenFrameObjLit(sl, si, stk, lenlv);
+            return;
+        }
         GenFieldInits(sl, si->st->fields, si->ftypes, si->defaults, stk, lenlv, selfbase);
+    }
+
+    // A frame object literal: fixed fields as C members of the receiving
+    // object `obj`, the tail's header pointed at the stack top before its
+    // elements are built there.
+    void GenFrameObjLit(StructLit *sl, StructInst *si, const string &stk, const string &obj) {
+        assert(!obj.empty());
+        auto &fields = si->st->fields;
+        for (size_t i = 0; i < fields.size(); i++) {
+            if (fields[i].ispad) continue;
+            Node *init = nullptr;
+            for (size_t k = 0; k < sl->fieldindices.size(); k++)
+                if (sl->fieldindices[k] == (int)i) init = sl->inits[k].val;
+            auto ft = si->ftypes[i];
+            if (!init && i < si->defaults.size()) init = si->defaults[i];
+            auto flv = cat(obj, ".", Sanitize(fields[i].name));
+            if (IsResz(ft)) {
+                assert(init);
+                if (IsFrameObj(ft)) {
+                    GenConstruct(init, stk, ft, flv);
+                } else {
+                    L(flv, ".base = ", Top(stk), ";");
+                    L(flv, ".len = 0;");
+                    GenConstruct(init, stk, ft, cat(flv, ".len"));
+                }
+                continue;
+            }
+            if (!init || Is<NullLit>(init)) {
+                assert(ft->kind == TY_REF && ft->ref->optional);
+                L("memset(&", flv, ", 0, sizeof(", flv, "));");
+                continue;
+            }
+            GenAny(init, Dst { 1, flv, ft });
+        }
     }
 
     void GenFieldInits(StructLit *sl, const vector<Field> &fields,
@@ -3931,6 +4075,13 @@ struct CodeGen {
             } else {
                 stk = AllocStk(true);
             }
+            if (IsFrameObj(t)) {
+                L(CT(t), " ", name, ";");
+                if (nit == nrvo.end()) SaveBase(true, stk, cat(FoTailHdr(t, name), ".base"));
+                vstk[d] = stk;
+                GenConstruct(init, stk, t, name);
+                return;
+            }
             L("gs_rhdr ", name, " = { ", Top(stk), ", 0 };");
             // The destination outlives us: no watermark to restore there.
             if (nit == nrvo.end()) SaveBase(true, stk, cat(name, ".base"));
@@ -4071,8 +4222,10 @@ struct CodeGen {
             if (IsResz(rt) || (emiter && i == 0)) {
                 auto id = Is<Ident>(vals[i]);
                 if (id && id->vdef && nrvovars.count(id->vdef)) {
-                    // Built at the destination; only the count travels.
-                    L("*gs_rl", i, " = ", HdrLv(id->vdef), ".len;");
+                    // Built at the destination; only the count (or the frame
+                    // object) travels.
+                    if (IsFrameObj(rt)) L("*gs_rl", i, " = ", HdrLv(id->vdef), ";");
+                    else L("*gs_rl", i, " = ", HdrLv(id->vdef), ".len;");
                     continue;
                 }
                 GenConstruct(vals[i], cat("gs_dst", i), rt, cat("(*gs_rl", i, ")"));
@@ -4136,6 +4289,7 @@ struct CodeGen {
     // the count goes to the receiving header, or into the prefix reserved in
     // front of the elements when the destination is a value slot.
     void EmitNrvoFinish(const NrvoDest &nd) {
+        if (nd.fo) { L(nd.lenlv, " = ", nd.hdr, ";"); return; }
         if (!nd.prefix) { L(nd.lenlv, " = ", nd.hdr, ".len;"); return; }
         EmitPrefixPatch(nd.pref, nd.ls, nd.stk, cat(nd.hdr, ".len"), cat(nd.hdr, ".base"));
     }
@@ -4309,13 +4463,20 @@ struct CodeGen {
         }
         if (IsResz(pt)) {
             // By-value resizable argument: construct into a fresh slot and
-            // pass the header by value with its stack (§7.2, C.3).
+            // pass the header (or frame object) by value with its stack
+            // (§7.2, C.3).
             EmitCoreTypes();
             auto stk = AllocStk(false);
             auto h = T();
-            L("gs_rhdr ", h, " = { ", Top(stk), ", 0 };");
-            SaveBase(false, stk, cat(h, ".base"));
-            GenConstruct(node, stk, pt, cat(h, ".len"));
+            if (IsFrameObj(pt)) {
+                L(CT(pt), " ", h, ";");
+                SaveBase(false, stk, cat(FoTailHdr(pt, h), ".base"));
+                GenConstruct(node, stk, pt, h);
+            } else {
+                L("gs_rhdr ", h, " = { ", Top(stk), ", 0 };");
+                SaveBase(false, stk, cat(h, ".base"));
+                GenConstruct(node, stk, pt, cat(h, ".len"));
+            }
             args.push_back(h);
             args.push_back(stk);
             return;
@@ -4392,6 +4553,13 @@ struct CodeGen {
                     stk = dd.s;
                     lenlv = dd.lenlv;
                     retex[i] = "";
+                } else if (IsFrameObj(rt)) {
+                    stk = AllocStk(false);
+                    auto h = T();
+                    L(CT(rt), " ", h, ";");
+                    SaveBase(false, stk, cat(FoTailHdr(rt, h), ".base"));
+                    lenlv = h;
+                    retex[i] = h;
                 } else {
                     stk = AllocStk(false);
                     auto h = T();
@@ -5472,6 +5640,7 @@ struct CodeGen {
                     nd.ls = LenStore(sp->rets[j]->arr);
                 } else {
                     nd.lenlv = cat("(*gs_rl", j, ")");
+                    nd.fo = IsFrameObj(cand->type);
                 }
                 nrvo[cand] = nd;
             }
@@ -5500,6 +5669,7 @@ struct CodeGen {
                          TEq(ct->arr->sub, d.t->arr->sub);
             if (!TEq(ct, d.t) && !elems) return nullptr;
             nd.lenlv = d.lenlv;
+            nd.fo = IsFrameObj(ct);
         } else {
             // A value receiver: the elements need a length prefix in front of
             // them. Its storage is the one the call itself would have written
@@ -5873,8 +6043,8 @@ struct CodeGen {
                 if (IsResz(d->type)) {
                     EmitCoreTypes();
                     auto stk = Unique(cat("gs_gstk_", name));
-                    Append(data, "static gs_rhdr ", name, ";\nstatic gs_stack ", stk,
-                           ";\n");
+                    Append(data, "static ", IsFrameObj(d->type) ? CT(d->type) : string("gs_rhdr"),
+                           " ", name, ";\nstatic gs_stack ", stk, ";\n");
                     gstks[d] = cat("(&", stk, ")");
                     reg(gstks[d]);
                     if (d->reusable) {
@@ -5923,8 +6093,7 @@ struct CodeGen {
                     auto d = g->defs[i];
                     if (IsResz(d->type)) {
                         InitGlobalStack(d);
-                        dsts.push_back(Dst { 2, gstks[d], d->type,
-                                             cat(gnames[d], ".len") });
+                        dsts.push_back(Dst { 2, gstks[d], d->type, GlobalLenLv(d) });
                     } else if (IsBytesT(d->type)) {
                         InitGlobalStack(d);
                         dsts.push_back(Dst { 2, gstks[d] });
@@ -5942,8 +6111,7 @@ struct CodeGen {
                     if (gstatic.count(d)) continue;   // Initialized at its declaration.
                     if (IsResz(d->type)) {
                         InitGlobalStack(d);
-                        GenConstruct(g->inits[i], gstks[d], d->type,
-                                     cat(gnames[d], ".len"));
+                        GenConstruct(g->inits[i], gstks[d], d->type, GlobalLenLv(d));
                     } else if (IsBytesT(d->type)) {
                         InitGlobalStack(d);
                         GenConstruct(g->inits[i], gstks[d]);
@@ -5966,10 +6134,18 @@ struct CodeGen {
         code += "}\n\n";
     }
 
+    // A resizable global's receiving lvalue: its header's count, or the
+    // whole frame object.
+    string GlobalLenLv(VarDef *d) {
+        return IsFrameObj(d->type) ? gnames[d] : cat(gnames[d], ".len");
+    }
+
     void InitGlobalStack(VarDef *d) {
         auto stk = gstks[d];
         L("gs_stack_init(", stk, ");");
-        if (IsResz(d->type)) {
+        if (IsResz(d->type) && IsFrameObj(d->type)) {
+            // The tail header is set when the value is constructed.
+        } else if (IsResz(d->type)) {
             L(gnames[d], ".base = ", Top(stk), ";");
             L(gnames[d], ".len = 0;");
         } else {
@@ -6603,7 +6779,14 @@ inline void VarDecl::CgStmt(CodeGen &cg) {
             auto d = defs[i];
             auto rt = c->rettypes[i];
             auto name = cg.LocalName(d);
-            if (cg.IsResz(rt)) {
+            if (cg.IsResz(rt) && cg.IsFrameObj(rt)) {
+                cg.EmitCoreTypes();
+                auto stk = cg.AllocStk(true);
+                cg.L(cg.CT(rt), " ", name, ";");
+                cg.SaveBase(true, stk, cat(cg.FoTailHdr(rt, name), ".base"));
+                cg.vstk[d] = stk;
+                dsts.push_back(Dst { 2, stk, d->type, name });
+            } else if (cg.IsResz(rt)) {
                 cg.EmitCoreTypes();
                 auto stk = cg.AllocStk(true);
                 cg.L("gs_rhdr ", name, " = { ", cg.Top(stk), ", 0 };");
@@ -6682,6 +6865,12 @@ inline void Assign::CgStmt(CodeGen &cg) {
     if (cg.IsResz(t)) {
         // Whole-resizable assignment: clear (top back to the value start),
         // then construct the new contents in place (§4.4).
+        if (cg.IsFrameObj(t)) {
+            assert(lv.val && !lv.stk.empty());
+            cg.L(cg.TopW(lv.stk), " = ", cg.FoTailHdr(t, lv.s), ".base;");
+            cg.GenConstruct(rhs, lv.stk, lv.t, lv.s);
+            return;
+        }
         assert(!lv.val && !lv.stk.empty() && !lv.lenlv.empty());
         cg.L(cg.TopW(lv.stk), " = ", lv.s, ";");
         cg.GenConstruct(rhs, lv.stk, lv.t, lv.lenlv);

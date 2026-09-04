@@ -67,6 +67,7 @@ struct TypeCheck {
         bool writable = false;       // Whole path admits writes.
         bool reusable = false;
         bool sequential = false;     // Variable-size element: not addressable.
+        bool fotail = false;         // A frame object's resizable tail: has its own header (C.2).
         bool isvarint = false;       // varint field: read-only refs, not assignable.
     };
 
@@ -482,6 +483,19 @@ struct TypeCheck {
                 inst->sclass = SC_VARIABLE;
             }
             inst->flat = inst->flat && IsFlat(ft);
+        }
+        if (inst->sclass == SC_RESIZABLE) {
+            auto fo = true;
+            for (auto i = 0; i < (int)st->fields.size(); i++) {
+                if (st->fields[i].ispad) continue;
+                auto ft = inst->ftypes[i];
+                if (i == lastreal)
+                    fo &= ft->kind == TY_ARRAY ||
+                          (ft->kind == TY_STRUCT && GetStructInst(ft)->frameobj);
+                else
+                    fo &= ClassOf(ft) == SC_FIXED && !HasRelRefT(ft);
+            }
+            inst->frameobj = fo;
         }
         inst->validated = true;
         CheckFieldDefaults(st->fields, inst->ftypes, inst->defaults, bindings);
@@ -1538,6 +1552,7 @@ struct TypeCheck {
                     lv.type = inst->ftypes[i];
                     lv.var = nullptr;
                     lv.fromstorage = true;
+                    lv.fotail = inst->frameobj && ClassOf(lv.type) == SC_RESIZABLE;
                     if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT)
                         lv.isvarint = true;
                     return;
@@ -1601,6 +1616,9 @@ struct TypeCheck {
     // (§4.1): the node becomes `&node`, as if written, so every later pass
     // sees an ordinary reference argument.
     Node *AutoRef(Node *n, Val &v) {
+        if (!Referenceable(n, v))
+            Error(n, "cannot reference a resizable value nested in a variable-size prefix "
+                     "or an ADT payload; reference the owning variable instead");
         auto u = ast.New<Unary>(n->line, T_BITAND, n);
         u->synth = true;
         v.type = RefTo(v.type, n->line);
@@ -1617,6 +1635,18 @@ struct TypeCheck {
     bool IsNonFixedLValue(const Val &v) {
         return v.lvalue && v.type->kind != TY_REF && v.type->kind != TY_SLICE &&
                ClassOf(v.type) != SC_FIXED;
+    }
+
+    // Whether a resizable-valued path has a header of its own to reference
+    // (C.2): a variable, or the tail of a frame object.
+    bool Referenceable(Node *n, const Val &v) {
+        if (ClassOf(v.type) != SC_RESIZABLE) return true;
+        if (Is<Ident>(n)) return true;
+        auto d = Is<Dot>(n);
+        if (!d || !d->obj->exprtype) return false;
+        auto ot = d->obj->exprtype;
+        if (ot->kind == TY_REF) ot = ot->ref->sub;
+        return ot->kind == TY_STRUCT && GetStructInst(ot)->frameobj;
     }
 
     bool UserRefOf(Node *n) {
@@ -1957,11 +1987,13 @@ struct TypeCheck {
     Val CheckRefOf(Unary *x) {
         auto lv = CheckLValue(x->child);
         if (lv.var) RequireAssigned(lv.var, x);
-        // A reference to a resizable value points at its owning header (C.2),
-        // which only whole variables have.
-        if (!lv.var && lv.type->kind != TY_REF && ClassOf(lv.type) == SC_RESIZABLE)
-            Error(x, "cannot reference a nested resizable value; reference the owning "
-                     "variable instead");
+        // A reference to a resizable value points at its header (C.2): a whole
+        // variable's, or a frame object's tail's; a resizable nested in any
+        // other shape (a variable-size prefix, an ADT payload) has none.
+        if (!lv.var && !lv.fotail && lv.type->kind != TY_REF &&
+            ClassOf(lv.type) == SC_RESIZABLE)
+            Error(x, "cannot reference a resizable value nested in a variable-size prefix "
+                     "or an ADT payload; reference the owning variable instead");
         if (lv.type->kind == TY_REF) {
             Val v;
             v.type = LoadType(lv.type);  // Relative refs load as plain (§3.9).
@@ -2793,10 +2825,9 @@ struct TypeCheck {
         // `&a` before any candidate sees it. The user's own `&` on one is
         // redundant.
         auto byref = [&](Node *&a, Val &v) {
-            // A nested resizable has no reference of its own (C.2): it stays
-            // a value, which a slice parameter still takes whole.
-            if (IsNonFixedLValue(v) && (Is<Ident>(a) || ClassOf(v.type) != SC_RESIZABLE))
-                a = AutoRef(a, v);
+            // A resizable without a header of its own (C.2) stays a value,
+            // which a slice parameter still takes whole.
+            if (IsNonFixedLValue(v) && Referenceable(a, v)) a = AutoRef(a, v);
             else if (UserRefOf(a) && IsPlainRef(v.type) && ClassOf(v.type->ref->sub) != SC_FIXED)
                 Warn(a, cat("redundant &: ", ExprStr(Is<Unary>(a)->child),
                             " is passed by reference without it (§4.1)"));

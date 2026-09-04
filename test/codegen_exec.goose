@@ -1376,6 +1376,55 @@ fn passing_rules() {
     print(s);                        // made
 }
 
+struct BagFo { n: i64, items: i64[>..] }
+struct NestFo { tag: i64, bag: BagFo }
+
+fn grow_fo(xs: i64[>..]&) { xs.push(9); }
+fn count_fo(xs: i64[:]) -> i64 { xs.len }
+fn make_bag_fo(k: i64) -> BagFo {
+    var b = BagFo { n: k, items: [] };
+    for i in k { b.items.push(i); }
+    return b;
+}
+fn total_fo(b: BagFo&) -> i64 {
+    var s = b.n;
+    for x in b.items { s += x; }
+    return s;
+}
+fn take_fo(b: BagFo) -> i64 { b.items.len + b.n }
+
+var gbag_fo: BagFo = BagFo { n: 1, items: [5] };
+
+// A resizable-tailed struct is a frame object (C.2): its tail has a header
+// of its own, so the tail can be referenced, sliced, and grown through a
+// reference like a standalone resizable.
+fn frame_objects() {
+    var bag = BagFo { n: 10, items: [1, 2, 3] };
+    bag.items.push(4);
+    print(bag.items.len);                 // 4
+    grow_fo(bag.items);                   // A reference to the tail.
+    print(bag.items[4]);                  // 9
+    print(count_fo(bag.items));           // 5: a slice of the tail.
+    print(total_fo(bag));                 // 29
+    let b2 = copy(bag);
+    bag.items.push(100);
+    print(b2.items.len, bag.items.len);   // 56
+    var mb = make_bag_fo(3);
+    print(total_fo(mb));                  // 6
+    print(take_fo(make_bag_fo(2)));       // 4
+    bag = make_bag_fo(1);
+    print(bag.items.len, bag.n);          // 11
+    var nest = NestFo { tag: 7, bag: BagFo { n: 2, items: [8] } };
+    nest.bag.items.push(9);
+    print(nest.tag + nest.bag.n + nest.bag.items[1]);   // 18
+    grow_fo(nest.bag.items);
+    print(nest.bag.items.len);            // 3
+    let r: BagFo& = nest.bag;
+    print(r.items[0]);                    // 8
+    gbag_fo.items.push(6);
+    print(gbag_fo.items.len + gbag_fo.n); // 3
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -1426,6 +1475,7 @@ fn main_codegen_exec() {
     pending_arrays();
     growshrink_slices();
     passing_rules();
+    frame_objects();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

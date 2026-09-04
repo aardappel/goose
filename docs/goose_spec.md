@@ -1759,14 +1759,10 @@ The newest, highest-priority items first:
     by reference at reference-typed, untyped and un-annotated destinations
     and are an error at value-typed ones, which take an rvalue or an
     explicit `copy(x)`; a redundant `&` is a warning.
-0i. **Resizable tails get their own frame header** — decided, pending
-    implementation (`stdlib_design.md` §8.7), likewise before the library.
-    A resizable-tailed struct is a frame object of its fixed prefix fields
-    plus the tail's `{ base, len }` header, with only the tail's elements on
-    the data stack, so `&s.tail` is an ordinary reference and C.2's
-    "reference the owning variable" restriction goes away. Variable-size
-    prefixes and resizable-class ADTs keep the bytes-on-stack shape behind
-    a base pointer.
+0i. **Resizable tails get their own frame header** — DONE, see C.2: a
+    resizable-tailed struct with an all-fixed prefix is a frame object, so
+    `&s.tail` is an ordinary reference; variable-size prefixes and
+    resizable-class ADTs keep the bytes-on-stack shape.
 0j. **Slices of grow-shrink arrays** — DONE, see §5.2 (superseding TODO 4):
     a slice or reference into a `[>..<]` is created like any other and held
     by variables only; a shrink is an error while one is in scope, naming
@@ -1907,23 +1903,32 @@ state exists.
 * Slice: `{ data: T*, len: int64 }` (len = element count).
 
 **Resizable values.** A resizable's element region always tops its data
-stack (§1.3(2)); where its length lives depends on nesting:
+stack (§1.3(2)). A resizable array is represented as a header in the owning
+frame — `{ base: byte*, len: int64 }` — plus the element region on the data
+stack. `&v` yields the header's address (a fat reference is that pointer
+plus the stack identity); with the stack identity known statically (or
+carried as a fat reference / hidden argument), push compiles to
+`*(T*)S.top = e; S.top += size; h.len++`.
 
-* *Nested* (tail of a struct / ADT payload on a data stack): the length
-  field is inline, immediately before the elements (it is below them on the
-  stack, so growth never moves it; reserved when construction reaches it,
-  backpatched when the count is known).
-* *Outermost* (a local, global, or by-value param): the value is represented
-  as a header in the owning frame — `{ base: byte*, len: int64 }` — plus the
-  element region on the data stack. `&v` yields the header's address (a fat
-  reference is that pointer plus the stack identity); with the stack
-  identity known statically (or carried as a fat reference / hidden
-  argument), push compiles to `*(T*)S.top = e; S.top += size; h.len++`.
-  Since only whole variables have headers, a reference to a *nested*
-  resizable value (`&s.tail`) is a compile error — reference the owning
-  variable. (The current implementation always uses the header form; the
-  nested inline-length case above does not arise, because resizable-tailed
-  values are themselves resizable-class and so always outermost.)
+A resizable-tailed struct whose other fields are fixed-size (and hold no
+relative reference) is a **frame object**: a C struct of those fields
+followed by the tail's own header (or, for a tail that is itself such a
+struct, its frame object), held in the owning frame exactly as a fixed
+value would be, with only the innermost tail's elements on the data stack.
+`&s` is the object's address plus the stack identity, `&s.tail` the tail
+header's, so a tail can be referenced, sliced and grown through a
+reference like any standalone resizable; `s.f` through either is a plain
+member access. Copying, passing by value and returning such a value move
+the frame object where an array moves its header (C.3) and the elements
+where an array moves its elements. Nesting composes: a struct whose tail is
+a frame object embeds it.
+
+The two shapes that are not frame objects keep the bytes-on-stack form
+behind a base pointer: a struct with a *variable-size* prefix (a `u8[]`
+field before the tail) and a resizable-class ADT, whose payload shape is
+per variant. Their header's `base` is the value's start on the data stack
+and `len` the tail's count; a reference to such a nested tail is a compile
+error — reference the owning variable.
 
 ### C.3 Calling convention
 

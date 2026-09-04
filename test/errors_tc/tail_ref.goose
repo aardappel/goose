@@ -1,9 +1,8 @@
-// References to nested resizable values are rejected: a resizable's header
-// lives with its owning variable (C.2).
-struct Tailed { count: i64, items: i64[>..] }
+// A resizable behind a variable-size prefix is not a frame object (C.2):
+// it has no header of its own to reference (a fixed prefix would).
+struct Named { name: u8[], items: i64[>..] }
 fn main() {
-    var t = Tailed { count: 0, items: [1] };
-    let r: i64[>..]& = &t.items;
+    var v = Named { name: "x", items: [1] };
+    let r = &v.items;
     r.push(2);
-    print(t.items.len);
 }
