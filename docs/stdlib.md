@@ -5,7 +5,7 @@ Five modules under `stdlib/`, found by `import std;` (and `dictionary`,
 through `--stdlib <dir>` / `GOOSE_STDLIB`. Everything is written in Goose
 except the C behind `os` (`src/runtime/runtime_os.h`) and libm behind
 `math`, both reached through `extern fn` (spec §7.10). The design and its
-rationale are in `stdlib_design.md`; this is the reference.
+rationale are in `design/stdlib_design.md`; this is the reference.
 
 Conventions that hold throughout:
 

@@ -1,4 +1,5 @@
-// The Goose standard library: `std` (docs/stdlib.md, docs/stdlib_design.md).
+// The Goose standard library: `std` (docs/stdlib.md; the design is
+// docs/design/stdlib_design.md).
 // Functions over the language's own types; nothing here allocates, and
 // nothing non-fixed is ever taken by value (spec §4.1). Fresh arrays come
 // back as T[>..] and land in the caller's destination (§7.3); "maybe an
