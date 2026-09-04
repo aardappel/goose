@@ -1253,6 +1253,34 @@ fn defaults_builtin() {
     print(arr[1].n);                     // 7
 }
 
+// --- print / str / format: text forms (§3.7) ---------------------------------
+
+fn text_builtins() {
+    print("x = ", 42, ", y = ", 2.5, " ", true);      // x = 42, y = 2.5 true
+    print();                                           // (empty line)
+    let s = str("n", 7, "!");
+    print(s);                                          // n7!
+    print(s.len);                                      // 3
+    var out: u8[>..] = [];
+    format(&out, "a", 1);
+    out.format(-2, "b", 3.5);
+    print(out);                                        // a1-2b3.5
+    var words: u8[][>..] = [];
+    words.push(str("w", 1));                           // A u8[] element: length prefix.
+    words.push(str(2));
+    for &w in words { print(w); }                      // w1, 2
+    var lim: u8[..8] = [];
+    format(&lim, 12, "ab");                            // Capacity-checked.
+    print(lim.len);                                    // 4
+    print(lim);                                        // 12ab
+    var acc: u8[>..] = "[";
+    acc.append(str(9, 9));                             // Contiguous with acc's elements.
+    print(acc);                                        // [99
+    let u: u64 = 18446744073709551615;
+    print(u, " ", 1.0e300, " ", 0.1);                  // 18446744073709551615 1e+300 0.1
+    print(str(0.1), str(), str(false));                // 0.1false
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -1299,6 +1327,7 @@ fn main_codegen_exec() {
     growshrink_local();
     untyped_refs();
     defaults_builtin();
+    text_builtins();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

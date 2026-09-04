@@ -656,26 +656,44 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
 }
 
 /* ---------------------------------------------------------------------------
-   print (§12). One value per call, newline-terminated. */
+   Text forms (§3.7): the gs_fmt_* functions write a value's text at dst and
+   return the byte count (at most GS_FMT_MAX); print/str/format are built on
+   them. A float takes the shortest form that still round-trips. */
 
-static void gs_print_int(int64_t v) { printf("%lld\n", (long long)v); }
+#define GS_FMT_MAX 32
 
-static void gs_print_uint(uint64_t v) { printf("%llu\n", (unsigned long long)v); }
-
-static void gs_print_flt(double v) {
-    /* Shortest form that still round-trips. */
-    char buf[40];
-    snprintf(buf, sizeof(buf), "%.15g", v);
-    if (strtod(buf, NULL) != v) snprintf(buf, sizeof(buf), "%.17g", v);
-    printf("%s\n", buf);
+static int64_t gs_fmt_i64(uint8_t *dst, int64_t v) {
+    return (int64_t)snprintf((char *)dst, GS_FMT_MAX, "%lld", (long long)v);
 }
 
-static void gs_print_bool(int64_t v) { fputs(v ? "true\n" : "false\n", stdout); }
-
-static void gs_print_bytes(const uint8_t *p, int64_t len) {
-    fwrite(p, 1, (size_t)len, stdout);
-    fputc('\n', stdout);
+static int64_t gs_fmt_u64(uint8_t *dst, uint64_t v) {
+    return (int64_t)snprintf((char *)dst, GS_FMT_MAX, "%llu", (unsigned long long)v);
 }
+
+static int64_t gs_fmt_f64(uint8_t *dst, double v) {
+    int n = snprintf((char *)dst, GS_FMT_MAX, "%.15g", v);
+    if (strtod((char *)dst, NULL) != v) n = snprintf((char *)dst, GS_FMT_MAX, "%.17g", v);
+    return n;
+}
+
+static int64_t gs_fmt_bool(uint8_t *dst, int64_t v) {
+    memcpy(dst, v ? "true" : "false", v ? 4 : 5);
+    return v ? 4 : 5;
+}
+
+/* print(...) (§12): each argument's text, then a newline. stdout is
+   unbuffered (gs_rt_init), so every piece is its own write; revisit if print
+   throughput ever matters. */
+
+static void gs_out_int(int64_t v) { printf("%lld", (long long)v); }
+static void gs_out_uint(uint64_t v) { printf("%llu", (unsigned long long)v); }
+static void gs_out_flt(double v) {
+    uint8_t buf[GS_FMT_MAX];
+    fwrite(buf, 1, (size_t)gs_fmt_f64(buf, v), stdout);
+}
+static void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
+static void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
+static void gs_out_nl(void) { fputc('\n', stdout); }
 )GSRT"
     ) },
     { "runtime_threads.h", string_view(

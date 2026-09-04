@@ -3853,15 +3853,22 @@ struct TypeCheck {
                          " argument(s), ", (int64_t)args.size(), " given"));
         // The fully custom builtins first.
         switch (d.kind) {
-            case B_PRINT: {
-                auto av = CheckValue(args[0], nullptr);
-                auto t = av.type;
-                auto ok = t->kind == TY_INT || t->kind == TY_FLT || t->kind == TY_BOOL;
-                if (t->kind == TY_ARRAY) ok = IsU8(t->arr->sub);
-                if (t->kind == TY_SLICE) ok = IsU8(t->sub);
-                if (!ok)
-                    Error(c, cat("print takes scalars and u8 arrays/slices, not ", TypeStr(t)));
+            case B_PRINT:
+                for (auto a : args) CheckPrintable(c, d.name, a);
                 return VoidVal();
+            case B_STR: {
+                // str(a, b, ...): a fresh u8[>..] holding the arguments' text,
+                // built at the destination like any resizable result (§7.3).
+                for (auto a : args) CheckPrintable(c, d.name, a);
+                auto t = ast.NewType(TY_ARRAY, c->line);
+                t->arr = ast.NewDetail<TypeArray>();
+                t->arr->sub = ast.inttypes[IS_U8];
+                t->arr->akind = A_GROW;
+                c->rettypes.push_back(t);
+                Val v;
+                v.type = t;
+                v.root = temproot;
+                return v;
             }
             case B_ASSERT:
                 CheckCond(args[0]);
@@ -3983,6 +3990,14 @@ struct TypeCheck {
             if ((d.flags & BF_REUSABLE) && !rv.reusable)
                 Error(c, cat(".", d.name, " exists on reusable pools only (§5.4)"));
         }
+        // format(out, a, b, ...): the arguments' text appended to a growable
+        // u8 array (§3.7).
+        if (d.kind == B_FORMAT) {
+            if (!IsU8(elem))
+                Error(c, cat(".format appends text to u8 arrays, not ", TypeStr(rv.type)));
+            for (size_t i = 1; i < args.size(); i++) CheckPrintable(c, d.name, args[i]);
+            return VoidVal();
+        }
         // A grow-only array shrinks only where nothing can still be rooted in
         // it (§5.1); pop and resize also need an element the shrink can find,
         // which a sequential array has not got.
@@ -4069,6 +4084,17 @@ struct TypeCheck {
             default: assert(false);
         }
         return v;
+    }
+
+    // An argument of print/str/format: something with a text form (§3.7) --
+    // for now the scalars, bool, and u8 arrays and slices.
+    void CheckPrintable(Call *c, const char *what, Node *a) {
+        auto av = CheckValue(a, nullptr);
+        auto t = av.type;
+        auto ok = t->kind == TY_INT || t->kind == TY_FLT || t->kind == TY_BOOL;
+        if (t->kind == TY_ARRAY) ok = IsU8(t->arr->sub);
+        if (t->kind == TY_SLICE) ok = IsU8(t->sub);
+        if (!ok) Error(c, cat(what, " takes scalars and u8 arrays/slices, not ", TypeStr(t)));
     }
 
     // A shrink (`pop`, `resize` down, `clear`) of a grow-only array (§5.1).

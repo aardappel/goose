@@ -46,7 +46,9 @@ enum BuiltinRecv {
 
 //        enum            name                min max  args  rets recv            flags
 #define BUILTINS \
-    F(B_PRINT,            "print",            1,  1,   "",   "",  0,              BF_CUSTOM) \
+    F(B_PRINT,            "print",            0, 99,   "",   "",  0,              BF_CUSTOM) \
+    F(B_STR,              "str",              0, 99,   "",   "",  0,              BF_CUSTOM) \
+    F(B_FORMAT,           "format",           1, 99,   "",   "",  BR_GROWABLE,    BF_MEMBER | BF_WRITE | BF_CUSTOM) \
     F(B_ASSERT,           "assert",           1,  1,   "",   "",  0,              BF_CUSTOM) \
     F(B_ABORT,            "abort",            1,  1,   "",   "",  0,              BF_CUSTOM) \
     F(B_EXIT,             "exit",             1,  1,   "",   "",  0,              BF_CUSTOM) \
