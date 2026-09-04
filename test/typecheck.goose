@@ -689,7 +689,19 @@ fn shadowing(n: i64) {
     print(x);
 }
 
+// One overload set holding a fnval-generic candidate and a plain one: each
+// call resolves to its own, and the other's mismatch is described (its
+// reason names a literal's synthesized array type) without incident.
+fn ovl_g<T, F>(xs: T[:]) -> i64 {
+    var n = 0;
+    for x in xs { n += F(x); }
+    return n;
+}
+fn ovl_g(v: i64) -> i64 { v * 2 }
+
 fn main_typecheck() {
+    assert(ovl_g(3) == 6);
+    assert(ovl_g([1, 2]) { it + 1 } == 5);
     storage();
     f32widen();
     varints();
