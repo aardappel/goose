@@ -1197,9 +1197,10 @@ the uniform non-mutating way.
 
 Non-recursive call graphs are the default and require nothing. Recursion is
 opt-in and annotated: the entry function of every recursive cycle is marked
-`recursive fn` (exact annotation verbosity TBD, TODO 12), all functions in the
-cycle need fully explicit signatures (no inference across the cycle
-back-edge), and — the key restriction — **no function in the cycle may
+`recursive fn` (the keyword alone: roots and destinations follow from the
+entry call as for any specialization, §7.7), all functions in the cycle need
+fully explicit signatures (no inference across the cycle back-edge), and —
+the key restriction — **no function in the cycle may
 declare locals requiring a new data-stack assignment**. Growable data used
 by recursive code must be owned outside the cycle and passed in (references,
 slices, reusable pools). The compiler checks this in call-graph order;
@@ -1718,17 +1719,22 @@ machinery this needs.)
 
 ---
 
-## 12. Deliberately out of scope for v1
+## 12. Builtins, the standard library, and what v1 leaves out
 
-Standard library contents (beyond: `print(x)` for scalars and u8-arrays/
-slices — with `str` and `format`, §3.7 —, `assert`, `abort`, `exit`,
-`default<T>()`, `hardware_threads`, and the math types of §6.1 are assumed;
-the library's design is in `stdlib_design.md`); FFI details (an `extern fn`
-C boundary is assumed to exist, unchecked by nature); error-value
-conventions (§7.9); move operations for resizables; multiple resizables per
-struct; two-way growth arrays; inline compaction / copying GC for pools;
-mixed-type pools; SIMD/alignment annotations; dynamic stacks; labeled
-break.
+The language's own functions are few: `print`, `str` and `format` (§3.7);
+`assert`, `abort` and `exit` (§9.3); `copy` (§4.1) and `default<T>()`
+(§4.2); the array members of §3.3 and §5.4; and `thread_spawn`,
+`thread_wait`, `hardware_threads` and the queue operations of §11.2.
+Everything else is the standard library: Goose source under `stdlib/`,
+reached by `import` (§11.1) and documented in `stdlib.md` (the design it
+came from is `stdlib_design.md`). The math types of §6.1 are its `vec`
+module; the C behind `math` and `os` enters through `extern fn` (§7.10).
+
+Deliberately out of scope for v1: error-value conventions (§7.9); move
+operations for resizables; multiple resizables per struct; two-way growth
+arrays; inline compaction / copying GC for pools; mixed-type pools;
+SIMD/alignment annotations; dynamic stacks; labeled break; namespacing
+(§11.1).
 
 ---
 
@@ -1801,22 +1807,8 @@ fn parse(src: u8[:]) -> Expr.., u8[] { ...; return parse_expr(&l), ""; }
 ## Appendix B. TODO / open items
 
 Collected from the design discussion; each needs future resolution work.
-The newest, highest-priority items first:
-
-0h. **Passing by size class** — DONE, see §4.1 (and §7.2, §3.8, §6.5):
-    fixed values connect to destinations by value; non-fixed lvalues bind
-    by reference at reference-typed, untyped and un-annotated destinations
-    and are an error at value-typed ones, which take an rvalue or an
-    explicit `copy(x)`; a redundant `&` is a warning.
-0i. **Resizable tails get their own frame header** — DONE, see C.2: a
-    resizable-tailed struct with an all-fixed prefix is a frame object, so
-    `&s.tail` is an ordinary reference; variable-size prefixes and
-    resizable-class ADTs keep the bytes-on-stack shape.
-0j. **Slices of grow-shrink arrays** — DONE, see §5.2 (superseding TODO 4):
-    a slice or reference into a `[>..<]` is created like any other and held
-    by variables only; a shrink is an error while one is in scope, naming
-    it and where it was bound; specializations record what they shrink so
-    that calls are checked the same way.
+The newest, highest-priority items first; items since resolved are kept at
+the end, each with where its resolution lives.
 
 0a. **Mixed-signedness ergonomics in practice** — §6.1's unification
     deliberately rejects `u32 + i32`, and `u64` against anything signed
@@ -1865,29 +1857,11 @@ The newest, highest-priority items first:
     (Container-read writability laundering, one-root-per-reference-variable,
     and the single agreed return root are now deliberate language rules,
     §9.2/§9.5.)
-0g. **Recursive results' roots at back edges** — DONE (§7.8, cycle return
-    roots): a cycle's return roots are the fixpoint over its returns,
-    computed before any body is checked, so a back edge's result carries a
-    real root wherever the fixpoint determines one and an outlives-nothing
-    root (pass-down-only) where it does not. What remains is the precision of
-    the scan itself: it reads returns of `X.push(…)`/`&X[…]`, of reference
-    variables, and of calls to uniquely named functions, and gives up on
-    anything else (overload sets, function values, nested functions), which
-    only ever costs a back-edge result its usability, never soundness.
-
-1. **varint format benchmark** — DONE, see `varint_bench/results.md`:
-   ULEB128 adopted (§3.6). Break-even vs the best branchless format sits at
-   ~70–75% single-byte values (a cliff, not a slope); above it ULEB wins
-   ~3x, below it loses up to ~3x. Revisit only if a per-field format choice
-   is ever wanted for unpredictable-length data.
 2. **Error propagation sugar** — `return from` is the mechanism; revisit
    whether a convention/sugar layer (a `try`-alike) is wanted once idioms
    emerge.
 3. **Move operation for resizables** — assign-and-leave-source-empty, as the
    one sanctioned "move".
-4. **`[>..<]` interior-reference relaxation** — DONE, see §5.2: the
-   scope-based test of §5.1, plus per-specialization shrink summaries for
-   the shrinks it cannot see directly (through a reference, or of a global).
 5. **Cycle store rule refinement** (§7.8) — the pass-down-only rule is
    conservative; explore per-activation reasoning.
 6. **"Current pool" implicit destinations** — allocation without naming the
@@ -1903,19 +1877,56 @@ The newest, highest-priority items first:
     performance; consider opt-in aligned types if so. Related: narrow-lane
     elementwise ops (§6.1) should vectorize now that arithmetic runs at the
     element width; verify with the particle/sum benchmarks.
-11. **FFI** — `extern fn` boundary rules (what types may cross; flat types
-    again?).
-12. **Open syntax details** — trailing-block parameter form (`it` vs
-    `x =>`); `recursive fn` annotation verbosity (how much of the signature/
-    roots/destinations must be spelled).
 13. **Labels for `break`** — if early-out patterns demand them.
-14. **Stdlib math types** — `float3` etc.; which named ops are overloads vs
-    generic-over-structural-shape.
 15. **Wasm fallback** — index-based reference representation details.
 16. **Relative-reference region tracking** — copies of values containing
     *self-relative* references are currently rejected outright (§3.9; the
     `in pool` form already copies); track the region an offset ranges over so
     whole-region copies (and serialization moves) can be proven safe.
+
+### Resolved
+
+0h. **Passing by size class** — DONE, see §4.1 (and §7.2, §3.8, §6.5):
+    fixed values connect to destinations by value; non-fixed lvalues bind
+    by reference at reference-typed, untyped and un-annotated destinations
+    and are an error at value-typed ones, which take an rvalue or an
+    explicit `copy(x)`; a redundant `&` is a warning.
+0i. **Resizable tails get their own frame header** — DONE, see C.2: a
+    resizable-tailed struct with an all-fixed prefix is a frame object, so
+    `&s.tail` is an ordinary reference; variable-size prefixes and
+    resizable-class ADTs keep the bytes-on-stack shape.
+0j. **Slices of grow-shrink arrays** — DONE, see §5.2 (superseding TODO 4):
+    a slice or reference into a `[>..<]` is created like any other and held
+    by variables only; a shrink is an error while one is in scope, naming
+    it and where it was bound; specializations record what they shrink so
+    that calls are checked the same way.
+0g. **Recursive results' roots at back edges** — DONE (§7.8, cycle return
+    roots): a cycle's return roots are the fixpoint over its returns,
+    computed before any body is checked, so a back edge's result carries a
+    real root wherever the fixpoint determines one and an outlives-nothing
+    root (pass-down-only) where it does not. What remains is the precision of
+    the scan itself: it reads returns of `X.push(…)`/`&X[…]`, of reference
+    variables, and of calls to uniquely named functions, and gives up on
+    anything else (overload sets, function values, nested functions), which
+    only ever costs a back-edge result its usability, never soundness.
+1. **varint format benchmark** — DONE, see `varint_bench/results.md`:
+   ULEB128 adopted (§3.6). Break-even vs the best branchless format sits at
+   ~70–75% single-byte values (a cliff, not a slope); above it ULEB wins
+   ~3x, below it loses up to ~3x. Revisit only if a per-field format choice
+   is ever wanted for unpredictable-length data.
+4. **`[>..<]` interior-reference relaxation** — DONE, see §5.2: the
+   scope-based test of §5.1, plus per-specialization shrink summaries for
+   the shrinks it cannot see directly (through a reference, or of a global).
+11. **FFI** — DONE, see §7.10: `extern fn` binds a Goose signature to a C
+    function, and what crosses is the flat fixed-size types by value,
+    references and slices to them, and `u8[>..]&` builders; everything else
+    is rejected at the declaration.
+12. **Open syntax details** — DONE: both trailing-block parameter forms
+    exist (the implicit `it` and `x =>`, §7.6), and `recursive fn` is the
+    keyword alone on a cycle's entry function (§7.8).
+14. **Stdlib math types** — DONE, see `stdlib.md` (`vec`): `vec2/3/4<T>`
+    with `float3` and friends as aliases; the named ops are overloads per
+    size, and elementwise arithmetic is the language's (§6.1).
 
 ---
 
@@ -2030,8 +2041,8 @@ field       := "let"? ident ":" type ("=" expr)? | "pad" intlit?
 typealias   := "type" ident "=" type ";"
 generics    := "<" ident (":" type)? ("," ident (":" type)?)* ">"
 
-fndecl      := "recursive"? ("fn" | "thread_fn") ident generics?
-               "(" params? ")" ("->" rettypes)? blockexpr
+fndecl      := ("extern" strlit?)? "recursive"? ("fn" | "thread_fn") ident
+               generics? "(" params? ")" ("->" rettypes)? (blockexpr | ";")
 params      := param ("," param)* ","?
 param       := "var"? ident (":" type)?          // untyped => generic
 rettypes    := type ("," type)*                  // no parens in declarations
