@@ -387,7 +387,7 @@ fn whole_assign_kills(extra: i64) -> i64 {
     w.push(5);
     w.push(6);
     guard v.len > 1 else { return 0; }
-    v = w;
+    v = copy(w);
     return v[1];                              // bce:keep (assignment resizes v)
 }
 
@@ -464,7 +464,7 @@ fn call_shrink_loop() -> i64 {
     var s = 0;
     for i in v.len {
         s += v[i];                            // bce:keep (reset_it may empty v)
-        if v.len > 99 { reset_it(&v); }
+        if v.len > 99 { reset_it(v); }
     }
     return s;
 }
@@ -690,7 +690,7 @@ fn main() {
     gcursor_back(kz);
     print(gcursor_read(data));                // 1
     print(grown_then_scanned());              // 5
-    print(sum_through_ref(&data));            // 36
+    print(sum_through_ref(data));            // 36
     print(field_place());                     // 13
     print(pool_loop());                       // 51
     print(keep_unknown(data, kk));            // 3

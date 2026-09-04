@@ -166,7 +166,7 @@ recursive fn eval(e: Expr.Bin&) -> u64 {
 fn run_one() -> u64, i64 {
     var pool: Expr..[>..] = [];
     pos = 0;
-    let root: Expr..& = parse_expr(&pool);
+    let root: Expr..& = parse_expr(pool);
     skip();
     guard pos == text.len else { return 0, E_TOKEN; }
     return eval(root), 0;

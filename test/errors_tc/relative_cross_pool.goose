@@ -13,7 +13,7 @@ fn main() {
     for &c in other {
         if linked == 0 {
             linked = 1;
-            store(&pool, &c.v);
+            store(pool, &c.v);
         }
     }
 }

@@ -95,7 +95,7 @@ fn main() {
         if xs_mod(r >> 40, 16) == 0 {
             // An invalidation: drop the entry if it is cached.
             if fi >= 0 {
-                unlink(&pool[fi]);
+                unlink(pool[fi]);
                 map_remove(at);
                 pool.free(fi);
                 count--;
@@ -107,7 +107,7 @@ fn main() {
             let n = &pool[fi];
             n.val += 1;
             unlink(n);
-            link_front(&pool[hi], n);
+            link_front(pool[hi], n);
             hits++;
             continue;
         }
@@ -128,7 +128,7 @@ fn main() {
         }
         let ni = pool.alloc_index(Node { key: key as i32, val: (key % 1000) as i32 });
         slots[ins] = Slot { key: key as i32, idx: ni as i32 };
-        link_front(&pool[hi], &pool[ni]);
+        link_front(pool[hi], pool[ni]);
         count++;
     }
     // Walk the list from most to least recent, so the order is checked too.

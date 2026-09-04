@@ -58,7 +58,7 @@ fn main() {
     var slots: Slot[>..] = [];
     for s in nslots { slots.push(Slot { key: text[0..0], count: 0 }); }
     var distinct = 0;
-    for &w in words {
+    for w in words {
         let key: u8[:] = w[..];
         var idx = fnv(key) & mask;
         loop {

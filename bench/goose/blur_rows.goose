@@ -38,8 +38,8 @@ fn main() {
         b.push(0);
     }
     for p in PASSES / 2 {
-        blur(&a, &b);
-        blur(&b, &a);
+        blur(a, b);
+        blur(b, a);
     }
     var total = 0;
     for v in a { total += v; }

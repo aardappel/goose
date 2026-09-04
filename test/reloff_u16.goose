@@ -12,7 +12,7 @@ fn main_reloff_u16() {
     // past the 32,767 a u16 offset reaches.
     for i in 3999 { pool.push(RNode { v: i }); }
     print(pool.len);                     // 4000
-    let last: RNode& = &pool[3999];
+    let last: RNode& = pool[3999];
     print(last.v);                       // 3998
     last.link .= first;                  // Aborts: the offset needs 17 bits.
     print(0);                            // Not reached.

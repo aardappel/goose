@@ -44,7 +44,7 @@ fn parse_expr(l: Lexer&) -> Expr.. {
 
 fn parse(src: u8[:]) -> Expr.., u8[] {
     var l = Lexer { pos: 0, limit: src.len };
-    return parse_expr(&l), "";
+    return parse_expr(l), "";
 }
 
 fn main_spec_examples() {

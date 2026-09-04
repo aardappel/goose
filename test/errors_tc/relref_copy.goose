@@ -4,7 +4,7 @@ struct Cell { v: i64 = 0, link: i64&<u16>? }
 fn main() {
     var pool: Cell[>..] = [];
     let a: Cell& = pool.push(Cell { v: 1 });
-    pool.push(Cell { v: 2, link: &a.v });
+    pool.push(Cell { v: 2, link: a.v });
     let copy = pool[0];
     print(copy.v);
 }

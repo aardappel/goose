@@ -13,6 +13,6 @@ recursive fn build(a: Cell[>..]&, b: Cell[>..]&, n: i64) -> Cell& {
 fn main() {
     var p: Cell[>..] = [];
     var q: Cell[>..] = [];
-    let r: Cell& = build(&p, &q, 3);
+    let r: Cell& = build(p, q, 3);
     print(r.v);
 }

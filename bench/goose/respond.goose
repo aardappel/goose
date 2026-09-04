@@ -85,7 +85,7 @@ fn render(out: u8[>..]&, r: Resp&) {
     out.append(",\"items\":[");
     var total = 0;
     var first = true;
-    for &it in r.items {
+    for it in r.items {
         if !first { out.push(','); }
         first = false;
         out.append("{\"sku\":");
@@ -114,7 +114,7 @@ fn handle(seed: u64) -> u64, i64 {
     let n = 1 + xs_mod(r, 8);
     let resp = Resp { id: xs_mod(r >> 4, 1000000), user: name_of(r >> 8), items: make_items(r >> 16, n) };
     var out: u8[>..] = [];
-    render(&out, &resp);
+    render(out, resp);
     return fnv(out[..]), out.len;
 }
 

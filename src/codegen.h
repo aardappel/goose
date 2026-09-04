@@ -3228,6 +3228,11 @@ struct CodeGen {
             return;
         }
         if (IsCtl(n)) { GenAny(n, Dst { 2, stk, want, lenlv }); return; }
+        if (auto c = Is<Call>(n); c && c->builtin == B_COPY) {
+            // copy(x): the stored value's bytes, as an implicit copy once was.
+            GenConstruct(c->args[0], stk, want, lenlv);
+            return;
+        }
         if (auto c = Is<Call>(n)) {
             auto rets = EmitCall(c, Dst { 2, stk, want, lenlv });
             if (rets.empty() || IsVoidT(et)) return;
@@ -4856,6 +4861,7 @@ struct CodeGen {
             case B_EXIT:
                 L("gs_exit(", GenX(an[0]), ");");
                 return {};
+            case B_COPY: return { GenXD(an[0], c->exprtype) };
             case B_DEFAULT: {
                 auto t = c->rettypes[0];
                 auto tv = T();

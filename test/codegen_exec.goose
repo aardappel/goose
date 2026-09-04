@@ -64,7 +64,7 @@ fn appends() {
     vs.push("one");
     vs.append(vs);                       // Append itself: sequential copy.
     var lens = 0;
-    for &w in vs { lens += w.len; }
+    for w in vs { lens += w.len; }
     print(lens);                         // 6
     var g2: i64[>..] = [];
     g2.append(fwd_arr());                // Element-run through a forward.
@@ -123,7 +123,7 @@ fn growclear() {
         words.clear();
         words.push("alpha");
         words.push("beta");
-        for &w in words { n += w.len + i; }
+        for w in words { n += w.len + i; }
     }
     print(n);                            // (5+4) + (5+1+4+1) = 20
     words.clear();
@@ -173,12 +173,12 @@ fn flip(m: Mode&) {
 
 fn fixed_adts() {
     var m: Mode = Mode.Off {};
-    flip(&m);
-    flip(&m);
+    flip(m);
+    flip(m);
     print(match m { Blink b => b.on * 10 + b.off, _ => -1 });   // 52
     let m2: Mode = Mode.Blink { on: 5, off: 2 };
     print(m == m2);                      // true
-    flip(&m);
+    flip(m);
     print(match m { Off => 1, _ => 0 }); // 1
 }
 
@@ -227,7 +227,7 @@ fn self_links() {
     ringpool[hi].prev .= &ringpool[ti];
     ringpool[ti].next .= &ringpool[hi];
     ringpool[ti].prev .= &ringpool[hi];
-    var cur: Ring& = &ringpool[hi];
+    var cur: Ring& = ringpool[hi];
     var walk = 0;
     for i in 5 { walk = walk * 10 + cur.v; cur .= cur.next; }
     print(walk);                         // 12121
@@ -258,15 +258,15 @@ fn rel_inplace() {
     a.push(RelCell { v: 1 });
     a.push(RelCell { v: 2 });
     a.push(RelCell { v: 3 });
-    a[2] = RelCell { v: 30, link: &a[1] };   // Element assignment.
+    a[2] = RelCell { v: 30, link: a[1] };   // Element assignment.
     let l = a[2].link;
     if l { print(l.v * 10 + a[2].v); }   // 2*10+30 = 50
-    relink(&a[0], &a[2]);
+    relink(a[0], a[2]);
     let m = a[0].link;
     if m { print(m.v + a[0].v); }        // 30+9 = 39
     var p: RelPair[>..] = [];
     p.push(RelPair { one: RelCell { v: 1 }, two: RelCell { v: 2 } });
-    p[0].two = RelCell { v: 7, link: &p[0].one };   // Struct-typed field.
+    p[0].two = RelCell { v: 7, link: p[0].one };   // Struct-typed field.
     let n = p[0].two.link;
     if n { print(n.v * 10 + p[0].two.v); }   // 1*10+7 = 17
 }
@@ -274,10 +274,10 @@ fn rel_inplace() {
 fn rel_pool() {
     reusable var pool: RelSlot[>..] = [];
     let a = pool.alloc_index(RelSlot { n: 1 });
-    let b = pool.alloc_index(RelSlot { n: 2, up: &pool[a] });   // Built in the slot.
+    let b = pool.alloc_index(RelSlot { n: 2, up: pool[a] });   // Built in the slot.
     let u = pool[b].up;
     if u { print(u.n * 10 + pool[b].n); }   // 12
-    let c: RelSlot& = pool.alloc_ref(RelSlot { n: 3, up: &pool[b] });
+    let c: RelSlot& = pool.alloc_ref(RelSlot { n: 3, up: pool[b] });
     let w = c.up;
     if w { print(w.n * 10 + c.n); }      // 23
 }
@@ -396,7 +396,7 @@ recursive fn refpick(pool: RCell[>..]&, n: i64) -> RCell& {
 
 fn refroot(n: i64) -> i64 {
     var pool: RCell[>..] = [];
-    let c: RCell& = refpick(&pool, n);
+    let c: RCell& = refpick(pool, n);
     return c.v + pool.len;
 }
 
@@ -517,7 +517,7 @@ fn msgs() {
     var q: Msg..[>..] = [];
     q.push(Msg.Text { body: "hi" });
     q.push(Msg.Ping);
-    for &m in q {
+    for m in q {
         match m {
             Ping   => print(0),
             Text t => print(t.body.len),   // By-value copy of the payload.
@@ -565,8 +565,8 @@ fn globals2() {
     print(gnext);                        // 42
     gtext.push('!');
     print(gtext);                        // g!
-    let h = RHold { p: &galias };
-    print(hpush(&h, 'm'));               // 3
+    let h = RHold { p: galias };
+    print(hpush(h, 'm'));               // 3
     print(galias);                       // amz
 }
 
@@ -599,10 +599,10 @@ fn seqvar() {
     var src: u8[][>..] = [];
     src.push("aa");
     src.push("bbb");
-    let copy: u8[][] = src;              // Variable array of variable elements.
+    let copied: u8[][] = copy(src);              // Variable array of variable elements.
     var n = 0;
-    for &w in copy { n += w.len; }
-    print(n + copy.len);                 // 5 + 2 = 7
+    for w in copied { n += w.len; }
+    print(n + copied.len);                 // 5 + 2 = 7
 }
 
 // --- sized locals, widening, per-width arithmetic (§6.1–§6.3) ----------------
@@ -750,11 +750,11 @@ fn layouts() {
     print(c.q);                          // 4
     let plain: VItem[] = vitems(2);      // The callee's own length storage.
     var s = 0;
-    for &it in plain { s += it.n * 10 + it.name.len; }
+    for it in plain { s += it.n * 10 + it.name.len; }
     print(s);                            // 12 + 22 = 34
     let bag = VBag { id: 9, items: vitems(3) };   // A u32-length result in a varint-length slot.
     s = bag.id;
-    for &it in bag.items { s += it.n * 10 + it.name.len; }
+    for it in bag.items { s += it.n * 10 + it.name.len; }
     print(s);                            // 9 + 12 + 22 + 32 = 75
     var links: VLink[>..] = [];
     let root: VLink& = links.push(VLink { v: 1, kids: [] });
@@ -764,7 +764,7 @@ fn layouts() {
     root.kids.push(b);
     print(root.kids[0].v * 10 + root.kids[1].v);   // 23
     var first = VSelf { v: 5 };
-    var second = VSelf { v: 7, next: &first };
+    var second = VSelf { v: 7, next: first };
     let nx = second.next;
     if nx { print(nx.v + second.v); }    // 12
 }
@@ -791,7 +791,7 @@ fn looptops() {
     for &x in xs { x = x * 3; s += x; }  // Elements only: the memory form.
     print(s);                            // 3 * 15 = 45
     for i in 3 { xs.push(100 + i); }     // A second region on the same stack.
-    for i in 2 { add_two(&xs, 200 + i * 2); }   // Grown by a callee instead.
+    for i in 2 { add_two(xs, 200 + i * 2); }   // Grown by a callee instead.
     for &x in xs { s += x; }
     print(s + xs.len);                   // 45 + 1154 + 13 = 1212
     var ys: i64[>..] = [];
@@ -845,7 +845,7 @@ recursive fn pfill(p: PSlot[>..]&, n: i64) -> i64 {
 
 fn reftops() {
     var pool: RNode[>..] = [];
-    let root: RNode& = rbuild(&pool, 3);
+    let root: RNode& = rbuild(pool, 3);
     print(pool.len);                     // 22
     var tags = 0;
     for &n in pool { tags += n.tag; }
@@ -854,7 +854,7 @@ fn reftops() {
     print(nodes);                        // 15 of the 22 are on the tree
     print(digest);                       // 1325
     reusable var slots: PSlot[>..] = [];
-    print(pfill(&slots, 3));             // 0 + 1 + 2 fresh, then 3 reused = 6
+    print(pfill(slots, 3));             // 0 + 1 + 2 fresh, then 3 reused = 6
     print(slots.len);                    // 4
     var ns = 0;
     for &s in slots { ns += s.n; }
@@ -897,7 +897,7 @@ fn lru_add(key: i64) {
     let i = lrupool.alloc_index(LruNode { key: key, idx: -1 });
     let n = &lrupool[i];
     n.idx = i as! i32;
-    lru_front(&lrupool[0], n);
+    lru_front(lrupool[0], n);
     lruslots.push(LruSlot { key: key, node: n });
 }
 
@@ -928,7 +928,7 @@ fn lru_slots() {
     let m = lruslots[1].node;
     assert(m);
     lru_unlink(m);
-    lru_front(&lrupool[hi], m);
+    lru_front(lrupool[hi], m);
     print(lru_order());                  // 2431
     // Evict it; the freed slot comes back on the next alloc, still a valid
     // LruNode (§5.4).
@@ -958,7 +958,7 @@ fn inpool_varint() {
     assert(u);
     print(u.v);                          // 7
     var walk = 0;
-    for &n in vpool { walk = walk * 10 + n.v; }
+    for n in vpool { walk = walk * 10 + n.v; }
     print(walk);                         // 78
 }
 
@@ -967,7 +967,7 @@ fn inpool_wide() {
     wpool.push(WNode { v: 6 });
     wpool[1].link .= &wpool[0];
     var st: WSlot[..4] = [];
-    st.push(WSlot { key: 1, node: &wpool[1] });
+    st.push(WSlot { key: 1, node: wpool[1] });
     // A value whose relative fields all name a pool copies: `pop` returns one.
     let top = st.pop();
     let n = top.node;
@@ -987,10 +987,10 @@ struct FSlot { key: i64 }
 
 fn index_of_kinds() {
     let f: FSlot[3] = [FSlot { key: 1 }, FSlot { key: 2 }, FSlot { key: 3 }];
-    print(f.index_of(&f[2]));            // 2
+    print(f.index_of(f[2]));            // 2
     var l: FSlot[..4] = [FSlot { key: 9 }];
     l.push(FSlot { key: 8 });
-    print(l.index_of(&l[1]));            // 1
+    print(l.index_of(l[1]));            // 1
 }
 
 // --- array views through references ------------------------------------------
@@ -1015,12 +1015,12 @@ fn tailgrow(a: i64[>..]&, n: i64) {
 fn loopviews() {
     var s: i64[>..] = [1, 2, 3, 4];
     var d: i64[>..] = [0, 0, 0, 0];
-    stencil(&s, &d);
+    stencil(s, d);
     var t = 0;
     for x in d { t += x; }
     print(t);                            // (1+4+3) + (2+6+4) = 20
     print(s.len * 10 + s[4]);            // 54: the push landed after [1, 2, 3, 4]
-    tailgrow(&s, 3);
+    tailgrow(s, 3);
     t = 0;
     for x in s { t += x; }
     print(t);                            // 1+2+3+4+4 + 5+6+7 = 32
@@ -1113,10 +1113,10 @@ fn inlined_results() {
     print(w.n);                          // 3
     var nlist: u8[varint][>..] = [];
     nlist.push(nr_pushed());             // A push destination.
-    for &e in nlist { print(e); }        // xyz
+    for e in nlist { print(e); }        // xyz
     let ps = nr_pairs(2);
     var acc = 0;
-    for &p in ps { acc += p.a.len * 10 + p.b.len; }
+    for p in ps { acc += p.a.len * 10 + p.b.len; }
     print(acc);                          // 82
     var g: u8[>..] = nr_grown();         // A resizable receiver: only the count.
     print(g);                            // ABCDEF
@@ -1140,7 +1140,7 @@ fn lenprefixes() {
     let bag = VBag { id: 0, items: vlong() };
     var chars = 0;
     var ns = 0;
-    for &it in bag.items { chars += it.name.len; ns += it.n; }
+    for it in bag.items { chars += it.name.len; ns += it.n; }
     print(bag.items.len);                // 131
     print(chars);                        // 130 * 2 + 130 = 390
     print(ns);                           // 130 * 1 + 2 = 132
@@ -1184,7 +1184,7 @@ recursive fn rmark(n: BNode&, d: i64) {                // Valueless base case.
 
 fn basecases() {
     var pool: BNode[>..] = [];
-    let root: BNode& = bbuild(&pool, 3, 1);
+    let root: BNode& = bbuild(pool, 3, 1);
     print(pool.len);                     // A complete tree of depth 3: 15
     print(rsum(root, 3));                // Values 1..15: 120
     rmark(root, 3);
@@ -1227,9 +1227,9 @@ fn untyped_refs() {
     bump_any(&a);
     print(a);                            // 42
     var q: i64[>..<] = [7, 8];
-    print(first_any(&q));                // 7
+    print(first_any(q));                // 7
     q.push(9);
-    print(first_any(&q) + q.len);        // 10
+    print(first_any(q) + q.len);        // 10
 }
 
 // --- default<T>(): zero values with declared field defaults applied (§4.2) --
@@ -1268,7 +1268,7 @@ fn text_builtins() {
     var words: u8[][>..] = [];
     words.push(str("w", 1));                           // A u8[] element: length prefix.
     words.push(str(2));
-    for &w in words { print(w); }                      // w1, 2
+    for w in words { print(w); }                      // w1, 2
     var lim: u8[..8] = [];
     format(&lim, 12, "ab");                            // Capacity-checked.
     print(lim.len);                                    // 4
@@ -1302,12 +1302,12 @@ fn pending_arrays() {
     words.push("ab");                    // A string literal makes it u8[][>..].
     words.push("cde");
     var n = 0;
-    for &w in words { n += w.len; }
+    for w in words { n += w.len; }
     print(n);                            // 5
     let ys = doubled_pa([1, 2, 3]) { it * 2 };
     print(ys[2]);                        // 6
     var zs = [];
-    zs = ys;                             // Completed by the assignment.
+    zs = copy(ys);                             // Completed by the assignment.
     print(zs.len);                       // 3
     var txt = [];
     format(&txt, "n=", 5);               // Completed by format: u8[>..].
@@ -1338,11 +1338,42 @@ fn growshrink_slices() {
     print(q[0] + q[1] + q[2]);                 // 9
     block { let r2: i64& = q.push(7); r2 = 8; }   // push returns a reference.
     print(q[3]);                               // 8
-    print(q.index_of(&q[2]));                  // 2
+    print(q.index_of(q[2]));                  // 2
     print(sum_gs(q[..]));                      // 17: a slice argument.
-    block { let h = head2_gs(&q); print(h.len); }    // 2: a returned slice.
-    drop_last_gs(&q);                          // A shrink through a reference.
+    block { let h = head2_gs(q); print(h.len); }    // 2: a returned slice.
+    drop_last_gs(q);                          // A shrink through a reference.
     print(q.len);                              // 3
+}
+
+fn grow_pr(b: BagPr&) { b.items.push(7); }
+fn total_pr(xs: i64[:]) -> i64 { var n = 0; for x in xs { n += x; } return n; }
+fn untyped_len_pr(xs) -> i64 { xs.len }
+fn inc_pr(n: i64&) { n += 1; }
+fn make_pr() -> u8[] { "made" }
+struct BagPr { items: i64[>..] }
+
+fn passing_rules() {
+    var b = BagPr { items: [1, 2, 3] };
+    b.grow_pr();                     // UFCS: a non-fixed receiver binds by reference.
+    print(total_pr(b.items));        // 13: an array to a slice parameter.
+    var words: u8[][>..] = ["ab", "cde"];
+    print(untyped_len_pr(words));    // 2: an untyped parameter binds by reference.
+    for w in words { print(w.len); } // 2, 3: non-fixed elements bind by reference.
+    var n = 1;
+    inc_pr(n);                       // A fixed lvalue binds to a reference parameter.
+    print(n);                        // 2
+    let r: i64& = n;                 // An annotated reference needs no &.
+    r = 5;
+    print(n);                        // 5
+    var items2: i64[>..] = copy(b.items);
+    items2.push(9);
+    print(items2.len, b.items.len);  // 54
+    var out: u8[][>..] = [];
+    for w in words { out.push(copy(w)); }
+    out.push(make_pr());             // An rvalue constructs in place.
+    print(out.len);                  // 3
+    let s = make_pr();
+    print(s);                        // made
 }
 
 fn main_codegen_exec() {
@@ -1394,6 +1425,7 @@ fn main_codegen_exec() {
     text_builtins();
     pending_arrays();
     growshrink_slices();
+    passing_rules();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

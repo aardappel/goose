@@ -420,12 +420,12 @@ fn main_parser_all() {
     struct_literals();
     let arr = [9, 8, 7];
     print(references_and_slices(arr));
-    print(optionals(&arr[0]));
+    print(optionals(arr[0]));
     calls_and_ufcs();
     function_values();
     print(nested_functions(2));
     print(control(5));
-    print(guards(&arr[1], 1));
+    print(guards(arr[1], 1));
     print(matches(Shape.Point {}, Shape.Circle { r: 2.0 }, 5, 'q'));
     print(dispatch(Shape.Rect { w: 2.0, h: 3.0 }));
     print(early(1) + outer(2));

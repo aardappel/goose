@@ -103,6 +103,7 @@ struct TypeCheck {
     // this point, which are in no variable and so invisible to the liveness
     // scan of CheckGrowShrink.
     bool invalue = false;
+    bool inreturn = false;   // Checking a return's values: the function's own locals move.
     // The destination of the value under construction (for reference stores):
     // its root plus whether that root is the destination storage's owner.
     struct Dest {
@@ -153,6 +154,10 @@ struct TypeCheck {
     }
 
     [[noreturn]] void Error(const Node *n, const string &msg) { Error(n->line, msg); }
+
+    void Warn(const Node *n, const string &msg) {
+        fprintf(stderr, "%s: warning: %s\n", Where(n->line).c_str(), msg.c_str());
+    }
 
     string TypeStr(const TypeExpr *t) {
         string s;
@@ -1592,11 +1597,77 @@ struct TypeCheck {
         return false;
     }
 
-    Val CheckValue(Node *n, TypeExpr *expected) {
+    // An lvalue of a reference destination's pointee type binds by reference
+    // (§4.1): the node becomes `&node`, as if written, so every later pass
+    // sees an ordinary reference argument.
+    Node *AutoRef(Node *n, Val &v) {
+        auto u = ast.New<Unary>(n->line, T_BITAND, n);
+        u->synth = true;
+        v.type = RefTo(v.type, n->line);
+        v.lvalue = false;
+        u->exprtype = v.type;
+        return u;
+    }
+
+    bool BindsRef(const Val &v, TypeExpr *dt) {
+        return dt->kind == TY_REF && v.lvalue && v.type->kind != TY_REF &&
+               v.type->kind != TY_SLICE && !v.isnull && TypeEq(v.type, dt->ref->sub);
+    }
+
+    bool IsNonFixedLValue(const Val &v) {
+        return v.lvalue && v.type->kind != TY_REF && v.type->kind != TY_SLICE &&
+               ClassOf(v.type) != SC_FIXED;
+    }
+
+    bool UserRefOf(Node *n) {
+        auto u = Is<Unary>(n);
+        return u && u->op == T_BITAND && !u->synth;
+    }
+
+    // A non-fixed value reaches a value destination only as an rvalue or an
+    // explicit copy (§4.1): an lvalue, or a reference to one, is never copied
+    // implicitly. A function's own local is moved by `return`.
+    void RequireCopyable(const Val &v, Node *n, TypeExpr *dt) {
+        if (!reachable) return;
+        if (dt->kind == TY_REF || dt->kind == TY_SLICE || dt->kind == TY_VOID) return;
+        if (ClassOf(dt) == SC_FIXED) return;
+        auto src = IsPlainRef(v.type) ? v.type->ref->sub : v.type;
+        if (ClassOf(src) == SC_FIXED) return;
+        if (!v.lvalue && !IsPlainRef(v.type)) return;
+        if (inreturn && v.lvalue)
+            if (auto id = Is<Ident>(n); id && id->vdef && !id->vdef->isglobal &&
+                                        id->vdef->ownerspec == frames.back().spec)
+                return;
+        auto u = Is<Unary>(n);
+        auto what = ExprStr(u && u->op == T_BITAND ? u->child : n);
+        Error(n, cat(what, " is not fixed-size and is not copied implicitly (§4.1): pass copy(",
+                     what, ") for a copy, or bind it by reference"));
+    }
+
+    // Argument nodes the checker rebound (by reference, or a copy() unwrapped)
+    // replace the originals: the receiver, then the call's own arguments.
+    void WriteBackArgs(Call *c, Dot *d, vector<Node *> &argnodes) {
+        d->obj = argnodes[0];
+        for (size_t i = 0; i < c->args.size(); i++) c->args[i] = argnodes[i + 1];
+    }
+
+    // copy(x) checked: the node becomes x itself, the stored value codegen
+    // copies at the destination like any lvalue source.
+    void UnwrapCopy(Node *&n) {
+        if (auto c = Is<Call>(n); c && c->builtin == B_COPY) n = c->args[0];
+    }
+
+    Val CheckValue(Node *&n, TypeExpr *expected) {
         auto v = CheckV(n, expected);
+        UnwrapCopy(n);
         if (!expected || expected->kind == TY_VOID) {
             v = DecayRef(v);
         } else {
+            if (expected->kind == TY_REF && UserRefOf(n))
+                Warn(n, cat("redundant &: ", ExprStr(Is<Unary>(n)->child),
+                            " binds by reference here without it (§4.1)"));
+            if (BindsRef(v, expected)) n = AutoRef(n, v);
+            RequireCopyable(v, n, expected);
             if (!KeepsRef(v, expected)) v = DecayRef(v);
             MustFit(v, n, expected, false);
             NoRelRefCopy(n, expected);
@@ -1606,9 +1677,12 @@ struct TypeCheck {
     }
 
     // Argument position: additionally allows the array→slice coercion (§3.10).
-    Val CheckArg(Node *n, TypeExpr *expected) {
+    Val CheckArg(Node *&n, TypeExpr *expected) {
         auto v = CheckV(n, expected);
+        UnwrapCopy(n);
         if (expected) {
+            if (BindsRef(v, expected)) n = AutoRef(n, v);
+            RequireCopyable(v, n, expected);
             if (!KeepsRef(v, expected)) v = DecayRef(v);
             MustFit(v, n, expected, true);
             NoRelRefCopy(n, expected);
@@ -1648,6 +1722,11 @@ struct TypeCheck {
     // roots).
     bool FitsAt(Val &v, TypeExpr *dt, bool callsite) {
         auto t = v.type;
+        // An lvalue at a reference destination is the reference to it (§4.1).
+        if (BindsRef(v, dt)) {
+            t = v.type = RefTo(t, dt->line);
+            v.lvalue = false;
+        }
         // The null literal fits any optional (plain or relative).
         if (v.isnull) {
             if (dt->kind == TY_REF && dt->ref->optional) { v.type = dt; return true; }
@@ -2446,11 +2525,16 @@ struct TypeCheck {
             } else if (t->kind == TY_ARRAY || t->kind == TY_SLICE) {
                 auto elem = t->kind == TY_ARRAY ? t->arr->sub : t->sub;
                 x->iterkind = t->kind == TY_ARRAY ? IK_ARRAY : IK_SLICE;
+                // Non-fixed elements bind by reference either way (§4.1).
+                if (!x->byref && ClassOf(elem) != SC_FIXED) {
+                    x->byref = true;
+                } else if (x->byref && ClassOf(elem) != SC_FIXED) {
+                    Warn(x, "redundant &: elements of this type bind by reference without it "
+                            "(§4.1)");
+                }
                 if (x->byref) {
                     bindtype = RefTo(elem, x->line);
                 } else {
-                    if (ClassOf(elem) != SC_FIXED)
-                        Error(x, "variable-size elements require the &x binding form");
                     if (HasRelRefT(elem))
                         Error(x, "elements containing relative references require the "
                                  "&x binding form (copies are not supported)");
@@ -2626,7 +2710,8 @@ struct TypeCheck {
                 if (sf->isthread)
                     Error(c, cat("thread_fn ", id->name, " is spawned with thread_spawn, "
                                  "not called"));
-            return ResolveCall(c, cands, env, id->name, nullptr, nullptr);
+            Node *nopre = nullptr;
+            return ResolveCall(c, cands, env, id->name, nullptr, nopre);
         }
         auto bd = LookupBuiltin(id->name);
         if (!bd) Error(c, cat("unknown function: ", id->name));
@@ -2669,7 +2754,9 @@ struct TypeCheck {
             vector<Node *> argnodes = { d->obj };
             for (auto a : c->args) argnodes.push_back(a);
             d->member = bd->kind;
-            return CheckBuiltin(c, *bd, argnodes, &ov);
+            auto v = CheckBuiltin(c, *bd, argnodes, &ov);
+            WriteBackArgs(c, d, argnodes);
+            return v;
         }
         if (rt->kind == TY_STRUCT) {
             for (auto &f : rt->struc->st->fields)
@@ -2688,7 +2775,9 @@ struct TypeCheck {
         if (bd && !(bd->flags & BF_PROPERTY)) {
             vector<Node *> argnodes = { d->obj };
             for (auto a : c->args) argnodes.push_back(a);
-            return CheckBuiltin(c, *bd, argnodes, &ov);
+            auto v = CheckBuiltin(c, *bd, argnodes, &ov);
+            WriteBackArgs(c, d, argnodes);
+            return v;
         }
         if (bd) Error(c, cat(".", d->name, " is a property, not a call"));
         Error(c, cat("unknown function or member: ", d->name));
@@ -2697,17 +2786,32 @@ struct TypeCheck {
     // Phase 1 checks arguments bottom-up for resolution; phase 2 re-checks
     // each against its concrete parameter type (adapting literals etc.).
     Val ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *env, string_view name,
-                    Val *preval, Node *prenode) {
+                    Val *preval, Node *&prenode) {
         vector<Node *> argnodes;
         vector<Val> argvals;
+        // A non-fixed lvalue argument passes by reference (§4.1): it becomes
+        // `&a` before any candidate sees it. The user's own `&` on one is
+        // redundant.
+        auto byref = [&](Node *&a, Val &v) {
+            // A nested resizable has no reference of its own (C.2): it stays
+            // a value, which a slice parameter still takes whole.
+            if (IsNonFixedLValue(v) && (Is<Ident>(a) || ClassOf(v.type) != SC_RESIZABLE))
+                a = AutoRef(a, v);
+            else if (UserRefOf(a) && IsPlainRef(v.type) && ClassOf(v.type->ref->sub) != SC_FIXED)
+                Warn(a, cat("redundant &: ", ExprStr(Is<Unary>(a)->child),
+                            " is passed by reference without it (§4.1)"));
+        };
         if (prenode) {
+            auto v = *preval;
+            byref(prenode, v);
             argnodes.push_back(prenode);
-            argvals.push_back(*preval);
+            argvals.push_back(v);
         }
-        for (auto a : c->args) {
-            argnodes.push_back(a);
+        for (auto &a : c->args) {
             auto v = CheckV(a, nullptr);
             RequireComplete(v.type, a->line);
+            byref(a, v);
+            argnodes.push_back(a);
             a->exprtype = v.type;
             argvals.push_back(v);
         }
@@ -2745,9 +2849,29 @@ struct TypeCheck {
         {
             auto savedst = curdst;
             curdst = Dest {};
-            for (size_t i = 0; i < best.paramtypes.size(); i++)
+            for (size_t i = 0; i < best.paramtypes.size(); i++) {
+                // A slice parameter takes the array itself: the reference the
+                // argument loop made of it is undone, so the coercion is the
+                // plain array-to-slice one.
+                if (best.paramtypes[i]->kind == TY_SLICE)
+                    if (auto u = Is<Unary>(argnodes[i]); u && u->synth) argnodes[i] = u->child;
+                // A `&` at a parameter declared as a reference is redundant
+                // (§4.1) -- unless it picked this overload.
+                auto &p = best.sf->params[i];
+                if (UserRefOf(argnodes[i]) && cands.size() == 1 && p.type &&
+                    !HasGenerics(p.type) && p.type->kind == TY_REF &&
+                    ClassOf(p.type->ref->sub) == SC_FIXED)
+                    Warn(argnodes[i], cat("redundant &: ", ExprStr(Is<Unary>(argnodes[i])->child),
+                                          " is passed by reference without it (§4.1)"));
                 CheckArg(argnodes[i], best.paramtypes[i]);
+            }
             curdst = savedst;
+        }
+        // Arguments the re-check rebound by reference replace the originals.
+        {
+            size_t off = 0;
+            if (prenode) { prenode = argnodes[0]; off = 1; }
+            for (size_t i = 0; i < c->args.size(); i++) c->args[i] = argnodes[i + off];
         }
         c->spec = spec;
         return CallResult(c, spec, argvals, best.paramtypes);
@@ -3327,7 +3451,8 @@ struct TypeCheck {
             } else {
                 auto expected = spec->retsknown && spec->rets.size() == 1 ? spec->rets[0]
                                                                           : nullptr;
-                auto tv = CheckValue(tail, expected);
+                auto tv = CheckValue(spec->body->tail, expected);
+                tail = spec->body->tail;
                 if (reachable) {
                     if (tv.type->kind == TY_VOID) {
                         if (spec->retsknown && !spec->rets.empty())
@@ -3484,6 +3609,7 @@ struct TypeCheck {
         auto expectone = [&](size_t i) -> TypeExpr * {
             return tspec->retsknown && i < tspec->rets.size() ? tspec->rets[i] : nullptr;
         };
+        inreturn = true;
         if (r->vals.size() == 1) {
             auto v = CheckValue(r->vals[0], tspec->retsknown && tspec->rets.size() == 1
                                                 ? tspec->rets[0] : nullptr);
@@ -3500,6 +3626,7 @@ struct TypeCheck {
                 vals.push_back(v);
             }
         }
+        inreturn = false;
         if (vals.empty() && tspec->retsknown && !tspec->rets.empty())
             Error(r, cat("function ", frames[tf].sf->name, " must return value(s)"));
         if (!vals.empty() || !tspec->retsknown) {
@@ -3700,8 +3827,14 @@ struct TypeCheck {
                 // other un-annotated initializer decays to the pointee.
                 v = CheckV(vd->inits[i], nullptr);
                 vd->inits[i]->exprtype = v.type;
+                if (IsPlainRef(v.type) && ClassOf(v.type->ref->sub) != SC_FIXED)
+                    Warn(vd->inits[i], cat("redundant &: ", ExprStr(refinit->child),
+                                           " binds by reference without it (§4.1)"));
             } else {
                 v = CheckValue(vd->inits[i], ann);
+                // An un-annotated binding of a non-fixed lvalue is a reference
+                // to it (§4.1), like an untyped parameter's.
+                if (!ann && IsNonFixedLValue(v)) vd->inits[i] = AutoRef(vd->inits[i], v);
             }
             curdst = savedst;
             if (v.emptyarr && !ann) {
@@ -4063,6 +4196,20 @@ struct TypeCheck {
                 }
                 return first;
             }
+            case B_COPY: {
+                // copy(x): a fresh value from stored one (§4.1), for the
+                // destinations that never copy implicitly.
+                auto av = CheckV(args[0], nullptr);
+                args[0]->exprtype = av.type;
+                if (av.type->kind == TY_SLICE)
+                    Error(c, "copy takes a value or a reference, not a slice");
+                if (!av.lvalue && !IsPlainRef(av.type))
+                    Error(c, "copy of a temporary: the value is fresh already");
+                auto v = DecayRef(av);
+                v.lvalue = false;
+                c->rettypes.push_back(v.type);
+                return v;
+            }
             case B_DEFAULT: {
                 // default<T>(): the value a T has before anything is written
                 // to it, declared field defaults applied (§4.2).
@@ -4184,6 +4331,11 @@ struct TypeCheck {
                 Error(c, cat(".index_of needs fixed-size elements: ", TypeStr(rv.type),
                              " is sequential (§3.3)"));
             auto av = CheckV(args[1], nullptr);
+            if (av.lvalue && av.type->kind != TY_REF && TypeEq(av.type, elem))
+                args[1] = AutoRef(args[1], av);
+            else if (UserRefOf(args[1]))
+                Warn(args[1], cat("redundant &: ", ExprStr(Is<Unary>(args[1])->child),
+                                  " is passed by reference without it (§4.1)"));
             args[1]->exprtype = av.type;
             if (!IsPlainRef(av.type) || !TypeEq(av.type->ref->sub, elem))
                 Error(c, cat(".index_of takes a reference to an element of ", TypeStr(rv.type),
@@ -4200,7 +4352,7 @@ struct TypeCheck {
         // Signature-driven arguments.
         auto base = (d.flags & BF_MEMBER) ? 1 : 0;
         for (auto i = 0; d.args[i]; i++) {
-            auto an = args[base + i];
+            auto &an = args[base + i];
             switch (d.args[i]) {
                 case 'i': CheckIntAny(an); break;
                 case 'f': CheckValue(an, ast.flttypes[FS_F64]); break;
@@ -4407,7 +4559,7 @@ struct TypeCheck {
 
     // Element construction targets the array's storage (relative references
     // in the element must derive from the same root, §3.9).
-    void ElemArg(Node *n, TypeExpr *elem, Val &rv) {
+    void ElemArg(Node *&n, TypeExpr *elem, Val &rv) {
         auto savedst = curdst;
         curdst = Dest { rv.root, rv.rootexact };
         CheckArg(n, elem);
@@ -4443,7 +4595,8 @@ struct TypeCheck {
             Error(c, "a function value call cannot itself take a trailing block");
         if (fb.named) {
             vector<SFunction *> cands = { fb.named };
-            return ResolveCall(c, cands, fb.env, fb.named->name, nullptr, nullptr);
+            Node *nopre = nullptr;
+            return ResolveCall(c, cands, fb.env, fb.named->name, nullptr, nopre);
         }
         auto fv = fb.fv;
         vector<Val> argvals;
@@ -4513,7 +4666,7 @@ struct TypeCheck {
         if (auto tail = c->fvbody->tail) {
             auto fi = Is<IfExpr>(tail);
             if ((fi && !fi->elseb) || Is<Guard>(tail)) CheckStmtExpr(tail);
-            else v = CheckValue(tail, nullptr);
+            else v = CheckValue(c->fvbody->tail, nullptr);
         }
         c->fvbody->exprtype = v.type;
         PopScope();
@@ -4798,6 +4951,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
             v.writable = vd->isvar;
             v.reusable = vd->reusable;
             v.nonneg = vd->nonneg;
+            v.lvalue = true;
         }
         return v;
     }
@@ -4868,7 +5022,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         v.type = tc.FixedArrayOf(tc.ast.voidtype, 0, line);
         return v;
     }
-    for (auto e : elems) {
+    for (auto &e : elems) {
         auto ev = tc.CheckValue(e, elem);
         if (!elem) elem = ev.type;
     }
@@ -5187,6 +5341,7 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     v.rootexact = lv.rootexact;
     v.rootfrom = lv.rootfrom;
     v.writable = v.type->kind == TY_REF || v.type->kind == TY_SLICE ? true : lv.writable;
+    v.lvalue = v.type->kind != TY_REF && v.type->kind != TY_SLICE;
     return v;
 }
 
@@ -5205,6 +5360,7 @@ inline Val Index::Check(TypeCheck &tc, TypeExpr *) {
     // Container-read laundering, as for fields above (§9.5).
     v.writable = v.type->kind == TY_REF || v.type->kind == TY_SLICE ? true : lv.writable;
     v.reusable = lv.reusable;
+    v.lvalue = v.type->kind != TY_REF && v.type->kind != TY_SLICE;
     return v;
 }
 

@@ -17,7 +17,7 @@ fn headtail(xs: i64[:]) -> i64[:], i64 {
 // A returned reference into a by-reference parameter maps back to the
 // caller's argument root.
 fn pick_rt(xs: i64[..8]&, i: i64) -> i64& {
-    &xs[i]
+    xs[i]
 }
 
 // The same function body, instantiated for a writable and a non-writable
@@ -31,15 +31,15 @@ fn total(xs: u8[:]) -> i64 {
 fn main_roots() {
     var pool: Cell[>..] = [];
     let c0: Cell& = pool.push(Cell { v: 7 });
-    store(&pool, &c0.v);
+    store(pool, c0.v);
     var data = [1, 2, 3];
     let rest, head = headtail(data);
     print(rest.len + head);
     var lim: i64[..8] = [4, 5, 6];
-    let r: i64& = pick_rt(&lim, 1);   // Annotated: binds the returned reference.
+    let r: i64& = pick_rt(lim, 1);   // Annotated: binds the returned reference.
     r = 9;
     print(r + lim[1]);
-    let picked = pick_rt(&lim, 2);    // Un-annotated: decays to an i64 copy.
+    let picked = pick_rt(lim, 2);    // Un-annotated: decays to an i64 copy.
     print(picked);
     var buf: u8[..4] = [1, 2];
     print(total("bytes") + total(buf[..]));

@@ -41,7 +41,7 @@ fn half(f: F2&) -> f64 { f.a * 0.5 }
 fn f32widen() {
     var f = F2 { a: 1.5, b: 2.5 };
     print(samef(f.a, 1.0));             // T binds f32; the literal adapts in.
-    print(pickf(f.a, f.b) + half(&f));  // f32 results widen into the f64 returns.
+    print(pickf(f.a, f.b) + half(f));  // f32 results widen into the f64 returns.
 }
 
 // --- varint fields and compact strings --------------------------------------
@@ -102,14 +102,14 @@ fn refs() {
     r += 2;
     r++;
     let readback = r;                    // And reads it (a plain i64 copy).
-    add_through(&a, 10);                 // Writable provenance: a is var.
+    add_through(a, 10);                 // Writable provenance: a is var.
     var arr = [1, 2, 3];
     for &x in arr { x = x * 2; }         // The mutation idiom.
     print(a + arr[0] + readback);
-    var opt: i64? = &a;
+    var opt: i64? = a;
     guard opt else { return; }
     print(opt);
-    var rebound: i64& = &arr[0];
+    var rebound: i64& = arr[0];
     rebound .= &arr[1];                  // .= rebinds the reference itself.
     rebound = 9;
     print(rebound + arr[1]);
@@ -145,7 +145,7 @@ fn transparency() {
     g.len.print();                 // ...and builtins work via UFCS.
     var a = 5;
     let r = &a;
-    add_through(&r, 1);            // &r re-derives the same reference.
+    add_through(r, 1);            // &r re-derives the same reference.
     print(a);
     var b = OptBox { };            // Optional field defaults to null.
     b.o .= &a;                     // Rebind a field.
@@ -195,7 +195,7 @@ fn push_through(v: f64[>..]&) { v.push(4.0); }
 
 fn grow_via_ref() {
     var g: f64[>..] = [1.0];
-    push_through(&g);
+    push_through(g);
     print(g.len);
 }
 
@@ -253,8 +253,8 @@ fn use_pool(pool: Slot[>..]&) -> i64 {
 
 fn pools() {
     reusable var local: Slot[>..] = [];
-    print(use_pool(&local));
-    print(use_pool(&gpool));
+    print(use_pool(local));
+    print(use_pool(gpool));
 }
 
 // --- relative references within one pool (§3.9, A.2) ------------------------
@@ -271,7 +271,7 @@ fn build_tree() {
     // link parents with tiny relative references (A.2).
     let leaf: Sexp..& = spool.push(Sexp.Sym { name: "leaf" });
     spool.push(Sexp.List { kid: leaf });   // Same root: relative store fits.
-    for &s in spool {
+    for s in spool {
         match s {
             Sym &sy => print(sy.name.len),     // &-binder: variable mode only.
             // Relative-reference payloads bind by reference (copies of values
@@ -302,7 +302,7 @@ fn inpool_refs() {
     ispare.push(INode { key: 3 });
     // A 4-byte link from the slot array into the pool. The destination's own
     // root is irrelevant here; only where the value points is.
-    islots.push(ISlot { key: 1, node: &ipool[0] });
+    islots.push(ISlot { key: 1, node: ipool[0] });
     // Two globals can hold an INode, so a plain reference read back out of
     // islots would name neither (§9.5); an `in ipool` one names ipool.
     let n = islots[0].node;
@@ -311,7 +311,7 @@ fn inpool_refs() {
     print(ipool.index_of(n));            // 0
     // A parameter's pool travels with its root class, so both ends still
     // resolve to ipool inside ilink.
-    ilink(n, &ipool[1]);
+    ilink(n, ipool[1]);
     let m = ipool[0].next;
     assert(m);
     print(m.key);                        // 2
@@ -321,7 +321,7 @@ fn inpool_refs() {
     let c = islots[1].node;
     assert(c);
     print(c.key);                        // 1
-    print(ispare.index_of(&ispare[0]));  // 0
+    print(ispare.index_of(ispare[0]));  // 0
 }
 
 // --- cycle return roots (§7.8) ----------------------------------------------
@@ -381,10 +381,10 @@ fn cycleroots() {
     ptext.clear();
     ptext.append("(1+(2+3))+4");
     ppos = 0;
-    let root: PNode..& = pexpr(&pool);
+    let root: PNode..& = pexpr(pool);
     print(psum(root));                   // 10, with no node per paren.
     print(pool.len);                     // Seven: four literals, three sums.
-    print(psum(pchain(&pool, 4)));       // 1+2+3+4.
+    print(psum(pchain(pool, 4)));       // 1+2+3+4.
 }
 
 // --- variable-size elements: sequential arrays ------------------------------
@@ -404,7 +404,7 @@ fn words(text: u8[:]) -> u8[][>..] {
 fn sequential() {
     let ws = words("feed the goose");
     var n = 0;
-    for &w, i in ws { n += w.len + i; }
+    for w, i in ws { n += w.len + i; }
     print(n);
 }
 
@@ -523,7 +523,7 @@ fn casedispatch() {
     let num: Node..& = npool.push(Node.Num { v: 2.0 });
     npool.push(Node.Neg { of: num });
     var total = 0.0;
-    for &n in npool { total = total + eval(n); }
+    for n in npool { total = total + eval(n); }
     print(total);
 }
 
@@ -602,7 +602,7 @@ var gvec = Float3 { 0.0, 0.0, 0.0 };
 
 var gint = 5;
 struct GHolder { r: i64& }
-var gheld = GHolder { r: &gint };        // Global-rooted ref into a global.
+var gheld = GHolder { r: gint };        // Global-rooted ref into a global.
 
 fn globals() {
     gcounter += gname.len;
@@ -708,11 +708,11 @@ fn main_typecheck() {
     elementwise();
     equality();
     refs();
-    print(narrowing(&gcounter, &gcounter));
-    print(assert_narrow(&gcounter));
-    assert(abort_narrow(&gcounter) == gcounter);
+    print(narrowing(gcounter, gcounter));
+    print(assert_narrow(gcounter));
+    assert(abort_narrow(gcounter) == gcounter);
     transparency();
-    print(nulls(&gcounter));
+    print(nulls(gcounter));
     print(nulls(null));
     limited();
     growonly();

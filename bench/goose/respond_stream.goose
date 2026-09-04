@@ -54,9 +54,9 @@ fn handle(seed: u64) -> u64, i64 {
     let n = 1 + xs_mod(r0, 8);
     var out: u8[>..] = [];
     out.append("{\"id\":");
-    emit_int(&out, xs_mod(r0 >> 4, 1000000));
+    emit_int(out, xs_mod(r0 >> 4, 1000000));
     out.append(",\"user\":");
-    emit_name(&out, r0 >> 8);
+    emit_name(out, r0 >> 8);
     out.append(",\"items\":[");
     var total = 0;
     var r = r0 >> 16;
@@ -66,16 +66,16 @@ fn handle(seed: u64) -> u64, i64 {
         let qty = 1 + xs_mod(r >> 8, 5);
         let price = 100 + xs_mod(r >> 16, 99900);
         out.append("{\"sku\":");
-        emit_sku(&out, r);
+        emit_sku(out, r);
         out.append(",\"qty\":");
-        emit_int(&out, qty);
+        emit_int(out, qty);
         out.append(",\"price\":");
-        emit_int(&out, price);
+        emit_int(out, price);
         out.push('}');
         total += qty * price;
     }
     out.append("],\"total\":");
-    emit_int(&out, total);
+    emit_int(out, total);
     out.push('}');
     return fnv(out[..]), out.len;
 }

@@ -4,6 +4,6 @@ fn trim(q: i64[>..<]&) { shrink(q); }
 fn main() {
     var gs: i64[>..<] = [1, 2, 3];
     let s = gs[0..2];
-    trim(&gs);
+    trim(gs);
     print(s[0]);
 }

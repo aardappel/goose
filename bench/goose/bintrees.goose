@@ -33,14 +33,14 @@ recursive fn check(n: TNode&) -> i64 {
 // Build, check, discard: the pool is a local, so the discard is free.
 fn tree_check(depth: i64) -> i64 {
     var pool: TNode[>..] = [];
-    let root: TNode& = make(&pool, depth);
+    let root: TNode& = make(pool, depth);
     return check(root);
 }
 
 fn main() {
     print(tree_check(MAXDEPTH + 1));     // The stretch tree.
     var long: TNode[>..] = [];
-    let lroot: TNode& = make(&long, MAXDEPTH);
+    let lroot: TNode& = make(long, MAXDEPTH);
     var d = MINDEPTH;
     while d <= MAXDEPTH {
         let iters = 1 << (MAXDEPTH - d + MINDEPTH);
