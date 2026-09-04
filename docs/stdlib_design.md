@@ -1017,7 +1017,11 @@ implemented and landed as the commits described in §8.7 and §9; the
 library lives in `stdlib/` with `test/stdlib_*.goose` and `docs/stdlib.md`.
 Two divergences from the text below: the value search is `position` (the
 builtin `index_of` took the name), and `format_replaced` names its
-parameters `old`/`with` (`from` is a keyword).
+parameters `old`/`with` (`from` is a keyword). The acceptance rows: at the
+small size, `strlist_std` (each_split) runs at 48 ms against the
+hand-written 49, `words_std` (each_split + hash) at 142 against 140, and
+`words_dictionary` at 152 against the purpose-built table's 140 -- the
+library's string pieces are free, the general dictionary costs 8%.
 
 **Phase 0 — compiler.** Bugs B1–B4 (B5–B7 as they are reached); the
 stdlib search path (§8.6); `abort`/`exit` (§8.3); `print`/`str`/`format`

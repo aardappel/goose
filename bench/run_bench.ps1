@@ -83,7 +83,8 @@ $benchmarks = @(
        summary = 'Against the two rows that own their bytes the way Goose does, Goose is 2.7-2.9x faster than vector<string> and 2.8x faster than Rust Vec<String>, on 3.1x and 2.2x less memory. Against the borrowing rows it is 9-12% ahead of Rust Vec<&str> and 7-21% ahead of hand-rolled C++ offsets -- but those are views into a text buffer they cannot outlive, which the Goose list is not. Borrowing is the Rust default rather than an optimisation someone has to be talked into, so Vec<&str> is what a Rust programmer writes first; ownership is the question worth asking of it.'
        what = "Split a text into N words, keep them as a list, scan it four times."
        sizes = @(200000, 2000000, 8000000)
-       goose = @(@{ label = "goose inline strings, owned"; file = "strlist.goose" })
+       goose = @(@{ label = "goose inline strings, owned"; file = "strlist.goose" },
+                 @{ label = "goose std each_split"; file = "strlist_std.goose" })
        cpp = @(@{ label = "cpp vector<string>"; file = "strlist.cpp"; variant = 0; tier = "idiomatic" },
                @{ label = "cpp vector<string_view>"; file = "strlist.cpp"; variant = 1; tier = "expert" },
                @{ label = "cpp flat offsets"; file = "strlist.cpp"; variant = 2; tier = "expert" })
@@ -143,7 +144,9 @@ $benchmarks = @(
        summary = 'Goose is level with a hand-rolled open-addressed table in Rust (1,951-1,809 ms against 2,028) on 21% less memory than it, and 1.4-1.5x faster than HashMap<&str> on 4% less. Both languages get borrowed keys from their idiomatic map -- that is the Rust default, and the thing a C++ programmer has to be talked into -- so the HashMap gap is the hash function: std SipHash-1-3 is keyed and DoS-resistant by policy, which costs about 35% here, and which the Rust community answers with a third-party hasher crate that this std-only suite does not use.'
        what = "Count word frequencies over a text of N words."
        sizes = @(500000, 4000000, 16000000)
-       goose = @(@{ label = "goose slices + open addressing"; file = "words.goose" })
+       goose = @(@{ label = "goose slices + open addressing"; file = "words.goose" },
+                 @{ label = "goose std each_split + hash"; file = "words_std.goose" },
+                 @{ label = "goose std dictionary"; file = "words_dictionary.goose" })
        cpp = @(@{ label = "cpp unordered_map<string>"; file = "words.cpp"; variant = 0; tier = "idiomatic" },
                @{ label = "cpp unordered_map<string_view>"; file = "words.cpp"; variant = 1; tier = "idiomatic" },
                @{ label = "cpp open addressing"; file = "words.cpp"; variant = 2; tier = "expert" })
