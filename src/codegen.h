@@ -294,14 +294,21 @@ struct CodeGen {
         }
     }
 
-    // The signed C type behind a relative reference's unsigned width spelling.
-    static const char *RelCT(IntStorage s) {
+    // The C type behind a relative reference's unsigned width spelling:
+    // signed for a self-relative offset, which runs both ways from its own
+    // field, unsigned for an `in pool` one, which is a distance from the
+    // pool's base (§3.9).
+    static const char *RelCT(IntStorage s, bool uns = false) {
         switch (IntSize(s)) {
-            case 1: return "int8_t";
-            case 2: return "int16_t";
-            case 4: return "int32_t";
-            default: return "int64_t";
+            case 1: return uns ? "uint8_t" : "int8_t";
+            case 2: return uns ? "uint16_t" : "int16_t";
+            case 4: return uns ? "uint32_t" : "int32_t";
+            default: return uns ? "uint64_t" : "int64_t";
         }
+    }
+
+    static const char *RelCT(TypeExpr *rt) {
+        return RelCT((IntStorage)rt->ref->lenstorage, rt->ref->pool != nullptr);
     }
 
     IntStorage TagStore(SEnum *en) { return en->variants.size() <= 256 ? IS_U8 : IS_U16; }
@@ -1793,6 +1800,33 @@ struct CodeGen {
     unordered_map<const VarDef *, string> gstks;
     unordered_map<const VarDef *, pair<string, string>> gpools;
 
+    // The base an `in pool` offset is measured from (§3.9), per function: the
+    // pool's element region, which its stack's reservation fixes once and
+    // growth never moves. A byte store through a `uint8_t *` may alias the
+    // header in C, so reading `pool.base` per access would reload it after
+    // every relative store; each function that needs it loads it once into a
+    // local instead, emitted at entry by EmitSpec.
+    vector<pair<const VarDef *, string>> poolbases;
+    set<const VarDef *> poolglobals;   // Globals some `in pool` type names.
+
+    string PoolBase(const VarDef *pool) {
+        // Global initializers run in declaration order, and a pool's base is
+        // only set when its own initializer does: there is no point in the
+        // function to hoist a load to, so read the header there.
+        if (!curspec) return cat(gnames[pool], ".base");
+        for (auto &p : poolbases) if (p.first == pool) return p.second;
+        auto name = Unique2(cat("gs_pb_", Sanitize(pool->name)));
+        poolbases.push_back({ pool, name });
+        return name;
+    }
+
+    // A pool's element region is the same address its `in pool` offsets
+    // measure from, so element access reads the local too rather than the
+    // header a relative store may have made the C compiler reload.
+    string PoolBaseOr(const VarDef *vd, const string &hdrbase) {
+        return poolglobals.count(vd) ? PoolBase(vd) : hdrbase;
+    }
+
     string LocalName(VarDef *vd) {
         assert(!vd->isglobal);
         auto it = vnames.find(vd);
@@ -1872,28 +1906,43 @@ struct CodeGen {
         return l;
     }
 
+    // The slot's own address and the offset it holds, for a relative
+    // reference loc. The stored offset is signed for the self-relative form
+    // and unsigned for the `in pool` one, despite both widths being spelled
+    // unsigned (S3.9); an int64 holds either.
+    void RelParts(const Loc &lv, string &faddr, string &off) {
+        auto &r = *lv.t->ref;
+        if (r.lenstorage == IS_VARINT) {
+            assert(!lv.val);
+            faddr = lv.s;
+            off = cat(r.pool ? "gs_uleb_read(" : "gs_zig_read(", lv.s, ")");
+        } else if (lv.val) {
+            faddr = cat("((uint8_t *)&", lv.s, ")");
+            off = cat("(int64_t)(", RelCT(lv.t), ")", lv.s);
+        } else {
+            faddr = lv.s;
+            off = cat("(int64_t)*(", RelCT(lv.t), " *)(", lv.s, ")");
+        }
+    }
+
+    // What a relative offset is measured from (S3.9): the offset field's own
+    // address, or, for an `in pool` reference, the pool's base biased by one
+    // so that a target at the base still encodes non-zero and 0 stays null.
+    string RelOrigin(TypeExpr *rt, const string &faddr) {
+        if (!rt->ref->pool) return faddr;
+        return cat("(", PoolBase(rt->ref->pool), " - 1)");
+    }
+
     // Loads the value of a loc holding a (plain or relative) reference and
     // steps to the pointee. Optional locs never get here (narrowing).
     void DerefLoc(Loc &lv, Line ln) {
         assert(lv.t->kind == TY_REF);
         auto &r = *lv.t->ref;
         if (r.lenstorage >= 0) {
-            // Relative: base = the offset field's own address. The stored
-            // offset is signed despite the unsigned width spelling (S3.9).
             string faddr, off;
-            if (r.lenstorage == IS_VARINT) {
-                assert(!lv.val);
-                faddr = lv.s;
-                off = cat("gs_zig_read(", lv.s, ")");
-            } else if (lv.val) {
-                faddr = cat("((uint8_t *)&", lv.s, ")");
-                off = cat("(int64_t)(", RelCT((IntStorage)r.lenstorage), ")", lv.s);
-            } else {
-                faddr = lv.s;
-                off = cat("(int64_t)*(", RelCT((IntStorage)r.lenstorage), " *)(", lv.s, ")");
-            }
+            RelParts(lv, faddr, off);
             auto p = T();
-            L("uint8_t *", p, " = ", faddr, " + ", off, ";");
+            L("uint8_t *", p, " = ", RelOrigin(lv.t, faddr), " + ", off, ";");
             auto nl = BytesLoc(p, r.sub, lv);
             lv = nl;
             return;
@@ -1950,7 +1999,7 @@ struct CodeGen {
                 auto &p = pit != vpool.end() ? pit->second : git->second;
                 auto hdr = fvptr.count(vd) ? cat("(*", name, ")") : name;
                 l.val = false;
-                l.s = cat(hdr, ".base");
+                l.s = PoolBaseOr(vd, cat(hdr, ".base"));
                 l.lenlv = cat(hdr, ".len");
                 l.stk = VStkOf(vd);
                 l.fl = p.first;
@@ -1969,7 +2018,7 @@ struct CodeGen {
             // A gs_rhdr in the frame (or a pointer to one, when captured).
             auto hdr = fvptr.count(vd) ? cat("(*", name, ")") : name;
             l.val = false;
-            l.s = cat(hdr, ".base");
+            l.s = PoolBaseOr(vd, cat(hdr, ".base"));
             l.lenlv = cat(hdr, ".len");
             l.stk = VStkOf(vd);
             return l;
@@ -2325,23 +2374,14 @@ struct CodeGen {
             // a zero offset is the null of the optional form (§3.9).
             auto &r = *lv.t->ref;
             string faddr, off;
-            if (r.lenstorage == IS_VARINT) {
-                assert(!lv.val);
-                faddr = lv.s;
-                off = cat("gs_zig_read(", lv.s, ")");
-            } else if (lv.val) {
-                faddr = cat("((uint8_t *)&", lv.s, ")");
-                off = cat("(int64_t)(", RelCT((IntStorage)r.lenstorage), ")", lv.s);
-            } else {
-                faddr = lv.s;
-                off = cat("(int64_t)*(", RelCT((IntStorage)r.lenstorage), " *)(", lv.s, ")");
-            }
+            RelParts(lv, faddr, off);
+            auto org = RelOrigin(lv.t, faddr);
             auto ov = T(), p = T();
             L("int64_t ", ov, " = ", off, ";");
             // Offset 0 is null only for the optional spelling (§3.9); a
             // non-optional slot holds a reference, so the address is the sum.
-            if (r.optional) L("uint8_t *", p, " = ", ov, " ? ", faddr, " + ", ov, " : NULL;");
-            else L("uint8_t *", p, " = ", faddr, " + ", ov, ";");
+            if (r.optional) L("uint8_t *", p, " = ", ov, " ? ", org, " + ", ov, " : NULL;");
+            else L("uint8_t *", p, " = ", org, " + ", ov, ";");
             // Relative references never point at resizables: pool elements
             // are at most variable-class (S3.3).
             assert(!IsFatPointee(r.sub));
@@ -2838,39 +2878,54 @@ struct CodeGen {
         }
     }
 
-    // Writes a plain-reference value into the relative-reference slot at
-    // `fa` (§3.9): self-relative signed offset, range-checked. Fixed widths
-    // only; the varint form exists only in the stack-top variant below.
+    // The range check a store of `off` into a relative slot of width `w`
+    // needs (§3.9). The self-relative form is signed and bounded by the span
+    // of the root array; the `in pool` form is unsigned and bounded by the
+    // pool, so its width covers 2^N - 1 bytes of one. Either way a root on a
+    // data stack is inside one reservation of GS_STACK_RESERVE bytes (guard
+    // region behind it, so nothing past it is ever written), and a fixed root
+    // is at most `relrootmax`. The check is emitted only where one of those
+    // exceeds the width; GS_STACK_RESERVE is a C macro, so that half of the
+    // test is left to the C preprocessor.
     //
-    // `inroot` says `fa` is the slot's real address inside the root array,
-    // which holds everywhere except the literal-temp path in
-    // StructLit::CgX. The offset then cannot exceed the root's span: a root
-    // on a data stack is inside one reservation of GS_STACK_RESERVE bytes
-    // (guard region behind it, so nothing past it is ever written), and a
-    // fixed root is at most `relrootmax` bytes. The check is emitted only
-    // where one of those exceeds the width; GS_STACK_RESERVE is a C macro,
-    // so that half of the test is left to the C preprocessor.
+    // `inroot` says the slot address is its real one inside the root array,
+    // which holds everywhere except the literal-temp path in StructLit::CgX.
+    void EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln, bool inroot) {
+        auto w = (IntStorage)rt->ref->lenstorage;
+        auto bits = IntSize(w) * 8;
+        if (bits >= 64) return;
+        if (rt->ref->pool) {
+            L("#if GS_STACK_RESERVE >= (1ull << ", bits, ")");
+            L("if ((uint64_t)", off, " > ", (1ull << bits) - 1, "ull) gs_abort(GS_E_RELOFF, ",
+              LocArgs(ln), ");");
+            L("#endif");
+            return;
+        }
+        auto guarded = inroot && relrootmax <= (1ll << (bits - 1));
+        if (guarded) L("#if GS_STACK_RESERVE > (1ull << ", bits - 1, ")");
+        L("if (", off, " < -(1LL << ", bits - 1, ") || ", off, " >= (1LL << ",
+          bits - 1, ")) gs_abort(GS_E_RELOFF, ",
+          LocArgs(ln), ");");
+        if (guarded) L("#endif");
+    }
+
+    // Writes a plain-reference value into the relative-reference slot at
+    // `fa` (§3.9), range-checked. Fixed widths only; the varint form exists
+    // only in the stack-top variant below.
     void EmitRelStoreAt(const string &fa, TypeExpr *rt, const string &rv, Line ln,
                         bool inroot) {
         auto w = (IntStorage)rt->ref->lenstorage;
         assert(w != IS_VARINT);
         assert(!IsFatPointee(rt->ref->sub));
         auto addr = cat("(uint8_t *)(", rv, ")");
+        auto org = RelOrigin(rt, fa);
         auto off = T();
         if (rt->ref->optional)
-            L("int64_t ", off, " = ", addr, " ? (int64_t)(", addr, " - (", fa, ")) : 0;");
+            L("int64_t ", off, " = ", addr, " ? (int64_t)(", addr, " - (", org, ")) : 0;");
         else
-            L("int64_t ", off, " = (int64_t)(", addr, " - (", fa, "));");
-        auto bits = IntSize(w) * 8;
-        if (bits < 64) {
-            auto guarded = inroot && relrootmax <= (1ll << (bits - 1));
-            if (guarded) L("#if GS_STACK_RESERVE > (1ull << ", bits - 1, ")");
-            L("if (", off, " < -(1LL << ", bits - 1, ") || ", off, " >= (1LL << ",
-              bits - 1, ")) gs_abort(GS_E_RELOFF, ",
-              LocArgs(ln), ");");
-            if (guarded) L("#endif");
-        }
-        L("*(", RelCT(w), " *)(", fa, ") = (", RelCT(w), ")", off, ";");
+            L("int64_t ", off, " = (int64_t)(", addr, " - (", org, "));");
+        EmitRelRangeCheck(rt, off, ln, inroot);
+        L("*(", RelCT(rt), " *)(", fa, ") = (", RelCT(rt), ")", off, ";");
     }
 
     void EmitRelStore(const string &stk, TypeExpr *rt, const string &rv, Line ln) {
@@ -2880,12 +2935,14 @@ struct CodeGen {
         if (w == IS_VARINT) {
             assert(!IsFatPointee(rt->ref->sub));
             auto addr = cat("(uint8_t *)(", rv, ")");
+            auto org = RelOrigin(rt, fa);
             auto off = T();
             if (rt->ref->optional)
-                L("int64_t ", off, " = ", addr, " ? (int64_t)(", addr, " - ", fa, ") : 0;");
+                L("int64_t ", off, " = ", addr, " ? (int64_t)(", addr, " - (", org, ")) : 0;");
             else
-                L("int64_t ", off, " = (int64_t)(", addr, " - ", fa, ");");
-            Bump(stk, cat("gs_zig_write(", fa, ", ", off, ")"));
+                L("int64_t ", off, " = (int64_t)(", addr, " - (", org, "));");
+            Bump(stk, rt->ref->pool ? cat("gs_uleb_write(", fa, ", (uint64_t)", off, ")")
+                                    : cat("gs_zig_write(", fa, ", ", off, ")"));
             (void)ln;
         } else {
             EmitRelStoreAt(fa, rt, rv, ln, true);
@@ -2894,18 +2951,33 @@ struct CodeGen {
     }
 
     // `self` in a literal field (§3.9): the slot at `fa` gets the offset back
-    // to the start of the value under construction, which for a fixed layout
-    // is minus the field's own byte offset in it. Such an offset is the same
-    // wherever the value lives, so unlike other relative references it
-    // survives being built in a temp and copied into place.
-    void EmitRelSelfAt(const string &fa, TypeExpr *rt, int64_t fieldoff, Line ln) {
+    // to the start of the value under construction. For a self-relative field
+    // that is minus its own byte offset in the value, the same wherever the
+    // value lives, so unlike other relative references it survives being
+    // built in a temp and copied into place. For an `in pool` field it is the
+    // value's own position in the pool, which the checker admits only where
+    // the literal is being built inside that pool.
+    void EmitRelSelfAt(const string &fa, TypeExpr *rt, int64_t fieldoff, Line ln,
+                       bool inroot = true) {
         auto w = (IntStorage)rt->ref->lenstorage;
         assert(w != IS_VARINT);
         auto bits = IntSize(w) * 8;
+        if (rt->ref->pool) {
+            if (!inroot)
+                Fail(ln, cat("self in a ", IntStorageName(w), " in ", rt->ref->pool->name,
+                             " field needs the value's final address, which this literal is "
+                             "not being built at"));
+            auto off = T();
+            L("int64_t ", off, " = (int64_t)((", fa, ") - ", fieldoff, " - (",
+              RelOrigin(rt, fa), "));");
+            EmitRelRangeCheck(rt, off, ln, true);
+            L("*(", RelCT(rt), " *)(", fa, ") = (", RelCT(rt), ")", off, ";");
+            return;
+        }
         if (bits < 64 && fieldoff > (1LL << (bits - 1)))
             Fail(ln, cat("self at byte offset ", fieldoff, " does not fit a ",
                          IntStorageName(w), "-width relative reference"));
-        L("*(", RelCT(w), " *)(", fa, ") = (", RelCT(w), ")", -fieldoff, ";");
+        L("*(", RelCT(rt), " *)(", fa, ") = (", RelCT(rt), ")", -fieldoff, ";");
     }
 
     void EmitRelSelfStore(const string &stk, TypeExpr *rt, int64_t fieldoff, Line ln) {
@@ -3466,7 +3538,8 @@ struct CodeGen {
                 }
                 if (ft->kind == TY_REF && ft->ref->lenstorage >= 0) {
                     if (Is<SelfRef>(init))
-                        EmitRelSelfAt(cat("(uint8_t *)&", path), ft, baseoff + lo.offs[i], sl->line);
+                        EmitRelSelfAt(cat("(uint8_t *)&", path), ft, baseoff + lo.offs[i],
+                                      sl->line, inroot);
                     else
                         EmitRelStoreAt(cat("(uint8_t *)&", path), ft, GenX(init), sl->line, inroot);
                     continue;
@@ -5358,6 +5431,7 @@ struct CodeGen {
         views.clear();
         vstk.clear();
         vpool.clear();
+        poolbases.clear();
         fvptr.clear();
         fnused.clear();
         nrvovars.clear();
@@ -5465,6 +5539,10 @@ struct CodeGen {
         for (size_t i = 0; i < toporder.size(); i++)
             if (!topfnlocal[i].empty())
                 Append(code, "    uint8_t *", topfnlocal[i], " = ", toporder[i], "->top;\n");
+        // Every global pool's stack is reserved by gs_init_globals, which
+        // main runs before anything else, so these are final on entry.
+        for (auto &p : poolbases)
+            Append(code, "    uint8_t *", p.second, " = ", gnames[p.first], ".base;\n");
         code += bodyout;
         code += "}\n\n";
         curspec = nullptr;
@@ -5705,6 +5783,8 @@ struct CodeGen {
     string result;   // Everything after the runtime paste.
 
     CodeGen(Ast &_ast, bool _norfcheck = false) : ast(_ast), norfcheck(_norfcheck) {
+        for (auto t : ast.alltypes)
+            if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
         ComputeRelRootMax();
         CollectSpecs();
         // Zero means "no long-distance return in flight", which is also the

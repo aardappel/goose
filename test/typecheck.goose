@@ -274,6 +274,49 @@ fn build_tree() {
     }
 }
 
+// --- relative references measured from a named pool (§3.9) -----------------
+// `in ipool` puts the pool in the type: the offset spans ipool rather than the
+// distance from the field, so a link from another array into the pool is
+// expressible, a value holding only such links copies, and any load yields an
+// ordinary INode& rooted at ipool exactly.
+
+struct INode { key: i64, next: INode&<u32 in ipool>? }
+struct ISlot { key: i64, node: INode&<u32 in ipool>? }
+
+var ipool: INode[>..] = [];
+var ispare: INode[>..] = [];             // Same element type: two candidates.
+var islots: ISlot[>..] = [];
+
+fn ilink(a: INode&, b: INode&) { a.next .= b; }
+
+fn inpool_refs() {
+    ipool.push(INode { key: 1 });
+    ipool.push(INode { key: 2 });
+    ispare.push(INode { key: 3 });
+    // A 4-byte link from the slot array into the pool. The destination's own
+    // root is irrelevant here; only where the value points is.
+    islots.push(ISlot { key: 1, node: &ipool[0] });
+    // Two globals can hold an INode, so a plain reference read back out of
+    // islots would name neither (§9.5); an `in ipool` one names ipool.
+    let n = islots[0].node;
+    assert(n);
+    print(n.key);                        // 1
+    print(ipool.index_of(n));            // 0
+    // A parameter's pool travels with its root class, so both ends still
+    // resolve to ipool inside ilink.
+    ilink(n, &ipool[1]);
+    let m = ipool[0].next;
+    assert(m);
+    print(m.key);                        // 2
+    // A slot copies by value: its offsets do not depend on where it sits.
+    let s = islots[0];
+    islots.push(s);
+    let c = islots[1].node;
+    assert(c);
+    print(c.key);                        // 1
+    print(ispare.index_of(&ispare[0]));  // 0
+}
+
 // --- cycle return roots (§7.8) ----------------------------------------------
 // A cycle's return roots are the fixpoint over its returns, computed before
 // any body is checked, so a back edge into a function that has returned
@@ -658,6 +701,7 @@ fn main_typecheck() {
     print(pop_scratch());                // 163
     pools();
     build_tree();
+    inpool_refs();
     cycleroots();
     sequential();
     generic_data();

@@ -106,7 +106,8 @@ gains are large; under v145 they are within noise except `lru`.
   works in all of those cases, since it only needs the lifetime bound.
 * **References in the map, measured.** With exact read-back roots, `lru`
   can hold `Node&?` in its map slots and relink through them
-  (`bench/goose/lru_refslots.goose`). Under self-relative it is *slower*
+  (measured as `lru_refslots.goose`, since removed). Under self-relative it
+  is *slower*
   than the index form, 1.11-1.13x under v145 and 1.09x under clang: the
   slots double to 16 bytes, each node carries its index for `free`, and the
   relative stores still subtract the field address. This is the shape
@@ -183,3 +184,18 @@ the name is in scope at the declaration of the field's struct only when the
 struct is declared inside the function, which suggests the pool-named form
 is mostly a global-pool feature, and that is where the relink-heavy
 structures live.
+
+## Outcome
+
+C, built: `T&<u32 in pool>` where `pool` is a global grow-only array (spec
+3.9). The pool is named at the field's declaration and is part of the type,
+so a store measures from that global's base and a load is rooted there
+exactly -- no fixpoint over parameter classes and no hidden arguments; a
+call site passing a reference rooted in a different pool is simply a
+different specialization, as every other root difference already is. The
+`in pool` form is restricted to global pools, which is where the note
+expected the relink-heavy structures to be; a local or parameter pool keeps
+the self-relative form. `lru` was rewritten onto it, with the map holding
+`Node&<u32 in pool>?` in 8-byte slots and `pool.free(pool.index_of(n))`
+(spec 3.3) where it used to hold an index; the index form is kept as
+`lru_indices.goose`.

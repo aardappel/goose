@@ -51,7 +51,7 @@ enum TypeKind {
     TY_FN,          // Static function value type; bare `fn` has has_sig false.
     TY_ARRAY,       // The array family minus slices; akind picks the flavor.
     TY_SLICE,       // T[:] — a reference + count; kin of TY_REF, not TY_ARRAY.
-    TY_REF,         // T& / T&<w> (self-relative offset of width w) / optional T?.
+    TY_REF,         // T& / T&<w> / T&<w in pool> (relative offset) / optional T?.
     TY_VARIANT,     // T.Name — variant type of an ADT.
     TY_VOID,        // Typecheck-created: the "type" of statements and valueless blocks.
 };
@@ -132,6 +132,12 @@ struct TypeRef : TypeDetail {        // TY_REF
     TypeExpr *sub = nullptr;         // Pointee.
     int lenstorage = -1;             // Relative offset IntStorage; -1 = plain address.
     bool optional = false;           // T? — nullable (`T&?` and `T?` are the same type).
+    // `T&<u32 in pool>`: the offset is measured from the named global pool's
+    // base instead of from the field itself (§3.9). The name is what the
+    // parser saw; typecheck resolves it once, and the pool is part of the
+    // type's identity from then on.
+    string_view poolname;
+    VarDef *pool = nullptr;
 };
 
 struct TypeVariant : TypeDetail {    // TY_VARIANT
@@ -768,6 +774,9 @@ struct VarDef {
     // class are rooted outside any cycle and exempt from the cycle store rule.
     VarDef *classfrom = nullptr;
     bool poolclass = false;
+    // The global pool every call site's argument for this class is rooted in
+    // (§3.9); null where there is none, which is the usual case.
+    VarDef *classpool = nullptr;
     // For variables of reference/slice type: the provenance of the reference
     // value they hold, fixed at first binding (see typecheck.h header note).
     // A null-initialized optional has no commitment yet (refrootknown false).
@@ -826,8 +835,16 @@ struct RootArg {
     // bit -- codegen's proof that two classes are *different* arrays -- runs
     // after every call site has been seen.
     bool exact = true;
+    // The global pool the argument is exactly rooted in, where that global is
+    // named by some `T&<w in pool>` type in the program (§3.9); null
+    // otherwise, which is every argument of a program that has no such type.
+    // Unlike `exact` this *is* part of the key: a relative store measures from
+    // this pool's base, so a call site passing a different one is a different
+    // specialization rather than a fact to weaken afterwards.
+    VarDef *pool = nullptr;
     bool operator==(const RootArg &o) const {
-        return cls == o.cls && writable == o.writable && reusable == o.reusable;
+        return cls == o.cls && writable == o.writable && reusable == o.reusable &&
+               pool == o.pool;
     }
 };
 

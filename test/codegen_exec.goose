@@ -939,6 +939,46 @@ fn lru_slots() {
     print(lrupool.len);                  // 6: the freed slot was reused
 }
 
+// --- relative references measured from a named pool (§3.9) ------------------
+
+// A varint link: the pool's elements are variable-size, so it is walked
+// rather than indexed, and the offset is the unsigned LEB position in it.
+struct VarNode { v: i64, up: VarNode&<varint in vpool>? }
+var vpool: VarNode[>..] = [];
+
+// A u64 link never needs a range check: no reservation reaches 2^64 bytes.
+struct WNode { v: i64, link: WNode&<u64 in wpool>? }
+struct WSlot { key: i64, node: WNode&<u64 in wpool>? }
+var wpool: WNode[>..] = [];
+
+fn inpool_varint() {
+    let root: VarNode& = vpool.push(VarNode { v: 7 });
+    let kid: VarNode& = vpool.push(VarNode { v: 8, up: root });
+    let u = kid.up;
+    assert(u);
+    print(u.v);                          // 7
+    var walk = 0;
+    for &n in vpool { walk = walk * 10 + n.v; }
+    print(walk);                         // 78
+}
+
+fn inpool_wide() {
+    wpool.push(WNode { v: 5 });
+    wpool.push(WNode { v: 6 });
+    wpool[1].link .= &wpool[0];
+    var st: WSlot[..4] = [];
+    st.push(WSlot { key: 1, node: &wpool[1] });
+    // A value whose relative fields all name a pool copies: `pop` returns one.
+    let top = st.pop();
+    let n = top.node;
+    assert(n);
+    print(n.v);                          // 6
+    let up = n.link;
+    assert(up);
+    print(up.v);                         // 5
+    print(wpool.index_of(n));            // 1
+}
+
 // --- index_of on plain arrays (§3.3) -----------------------------------------
 // Not a pool feature: any fixed-stride array converts a reference to one of
 // its own elements back into the index.
@@ -1213,6 +1253,8 @@ fn main_codegen_exec() {
     looptops();
     reftops();
     lru_slots();
+    inpool_varint();
+    inpool_wide();
     index_of_kinds();
     loopviews();
     inlined_results();
