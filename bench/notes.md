@@ -132,9 +132,9 @@ measures both together, which matters on exactly one row and is stated there.
 
 | benchmark | index checks elided | slice | v145 gain | clang gain |
 |---|---|---|---:|---:|
-| blur_assert | 10/10 | 0/0 | **+75%** | **+345%** |
-| blur_rows | 10/10 | 0/4 | **+147%** | +6% |
-| blur | 0/10 | 0/0 | -5% | **+303%** |
+| blur | 10/10 | 0/0 | **+75%** | **+327%** |
+| blur_assert | 10/10 | 0/0 | **+73%** | **+350%** |
+| blur_rows | 10/10 | 4/4 | **+142%** | -2% |
 | graph_csr | 10/20 | 0/0 | 0% | **+31%** |
 | graph | 4/8 | 0/0 | +5% | +11% |
 | scene | 12/12 | 0/0 | +6% | +1% |
@@ -158,13 +158,13 @@ best of four:
 
 | | v145 | clang |
 |---|---:|---:|
-| `blur`: `src[y*W + x]`, nothing elided | 141 | 33 |
-| `blur_assert`: the same plus `assert(src.len == W * W)`, 10/10 | 77 | 29 |
-| `blur_rows`: row slices with a length assert each, 10/10 | 32 | 30 |
-| any of the three with `--no-bce` | 134-79 | 131 |
+| `blur`: `src[y*W + x]`, 10/10 from the caller's lengths | 77 | 31 |
+| `blur_assert`: the same plus a now redundant `assert(src.len == W * W)`, 10/10 | 78 | 30 |
+| `blur_rows`: row slices with a length assert each, 10/10 | 33 | 31 |
+| any of the three with `--no-bce` | 135-80 | 133 |
 
 Under v145 the nine checks per pixel are what blocks vectorisation: proving
-them away is worth 1.85x on the flat kernel and another 2.4x on the row-slice
+them away is worth 1.75x on the flat kernel and another 2.4x on the row-slice
 form, and where they are kept the loop stays scalar however the array is
 reached. Under clang the checks cost nothing at all -- it vectorises the
 checked loop as fast as the unchecked one, exactly as it does for the Rust
@@ -172,15 +172,23 @@ checked loop as fast as the unchecked one, exactly as it does for the Rust
 and runs at the speed of the checkless `windows` row. What clang needs instead
 is the *loop-view hoist*: `src` and `dst` are fat references, so without it
 every access reloads `src.hdr->base` and `src.hdr->len` and a byte store
-through `dst` may alias those loads. That is the +303% on the `blur` row, where
-no check is elided at all, and it is why the flat kernel is level with flat
-Rust under clang and 7x behind it under v145.
+through `dst` may alias those loads. That is nearly all of the +327% on the
+`blur` row: the round before this one measured the same row at 33 ms with none
+of its checks elided, against 131 with the pass off. It is why the flat kernel
+was level with flat Rust under clang while 7x behind it under v145.
 
-`blur` stays at 0/10 under v145 for one reason: `src.len == W * W` is a fact
-about the caller's array that `blur(src: u8[>..]&, ...)` never sees. One
-`assert(src.len == W * W)` at the top of the kernel proves all ten and takes
-the row from 141 to 77 ms; carrying such lengths across calls is the first
-item on the compiler list below.
+`blur` proves its ten checks through its call sites. `src.len == W * W` is a
+fact about the caller's array, and `blur(src: u8[>..]&, ...)` is not inlined,
+so the analysis carries it across the call: every call site of a
+specialization records what it proves about the lengths and integers it
+passes, and the body enters with the meet of those facts (spec 10.5). What
+keeps the fact alive at the sites in the first place is that the call itself
+no longer kills it: a callee's effects on its callers' arrays are summarized,
+and a kernel that only reads and writes elements has none, so the second call
+in `blur(a, b); blur(b, a)` knows as much as the first. The `assert` in
+`blur_assert.goose` is redundant now, and the two rows time the same; the row
+slices in `blur_rows.goose` also lose their four slice checks, since the
+slice's upper bound is measured against a length the kernel now knows.
 
 **Every check that survives elsewhere is an index that came out of memory.**
 `dist[u]` where `u = q[qh]`, `dist[w]` where `w = cur.to`, `out[cursor[s]]` in
@@ -527,9 +535,10 @@ ahead for a reason Rust has no version of, not because the loop is tighter:
 (0.77x), `bintrees` under clang (0.81x), and `blur`'s flat form under v145.
 In three of the four the C++ row built by the *same* toolchain loses in the
 same direction, so it is what MSVC or clang makes of a C shape, not what Goose
-asked for; `blur` under v145 is the bounds checks, which is a Goose pass and is
-item 1 below. Nothing here is closed by changing the language, and the ceiling
-is visible: each of these rows is already level under the other backend.
+asked for; `blur` under v145 was the bounds checks, which is a Goose pass and
+has since proven them (see the bounds-check section). Nothing here is closed by
+changing the language, and the ceiling is visible: each of these rows is
+already level under the other backend.
 
 **Design cost, paid on purpose.** The bounds checks that survive are indices
 loaded out of a data structure, which is exactly where a check is not
@@ -539,20 +548,17 @@ are not gaps to close.
 
 **What would extend the lead, in order:**
 
-1. **Carry array lengths across calls** (item 1 below). Under v145 it is
-   worth 1.85x on the flat image kernel, and it is the difference between
-   "Goose is fast if you write it in row slices" and "Goose is fast".
-2. **Identify a reference parameter's root class with its pool outside a
-   recursive cycle** (item 2 below). Narrow links are the memory advantage,
+1. **Identify a reference parameter's root class with its pool outside a
+   recursive cycle** (item 1 below). Narrow links are the memory advantage,
    and today a structure linked by them can only be built by functions inside
    the cycle that builds it. Lifting that makes the advantage available to
    ordinary code rather than to parsers.
-3. **Cross-array narrow links, everywhere they typecheck.** `T&<u32 in pool>`
+2. **Cross-array narrow links, everywhere they typecheck.** `T&<u32 in pool>`
    already lets a side table hold 4-byte links into a pool instead of indices
    -- that is what `lru`'s map does, and a grow-only array of such links works
    the same way, so `sexp`'s root list is a candidate. The idiom deserves to
    be the default advice for a side table, not an `lru` special case.
-4. **Keep looking for places a root requirement is not really needed.** A
+3. **Keep looking for places a root requirement is not really needed.** A
    sentinel-ended chain does not force plain 8-byte links, because null needs
    no root -- that alone is 1.3x of `sexp`'s memory. The same question is
    worth asking of every rule that currently demands an exact root: what does
@@ -560,24 +566,24 @@ are not gaps to close.
 
 ## Compiler work, in order of measured payoff
 
-1. **Carry array lengths across calls.** `blur` keeps its nine checks per
-   pixel only because `src.len == W * W` is known in `main` and not inside
-   `blur(src: u8[>..]&, ...)`. One assert inside the kernel proves all ten and
-   is worth 1.85x under v145 (141 to 77 ms) and 1.11x under clang; the fix is
-   either an interprocedural length fact for reference parameters, or the
-   analysis treating a caller-side `assert` as a precondition of the callee.
-2. **Identify a reference parameter's root class with the pool it came
+The first item of the previous round, carrying array lengths across calls, is
+done: a call site's facts about the arguments reach the callee's entry, and a
+call kills only what the callee can actually resize, so `blur` proves all ten
+checks from what `main` knows and runs at the asserted kernel's speed under
+both toolchains (1.75x under v145, 141 to 77 ms). What remains:
+
+1. **Identify a reference parameter's root class with the pool it came
    from, outside a recursive cycle too.** A non-recursive function that takes
    a `Node?` and stores it into a `Node&<u32>?` field of the same pool is
    rejected today, though the identical code inside a `recursive` cycle is
    accepted; the cycle machinery already computes what is needed. This is what
    stops a linked structure's helper functions from being factored out of the
    cycle that builds it.
-3. **Specialise the library's element loops.** `push_n` costs 2-3% against the
+2. **Specialise the library's element loops.** `push_n` costs 2-3% against the
    `for` loop it replaces and blocks a bounds-check elision downstream, which
    is the whole reason two benchmarks kept their loops. The generic form
    should compile to what the loop compiles to.
-4. **Inline a base case that is not the first statement** (`scene`,
+3. **Inline a base case that is not the first statement** (`scene`,
    `interp`), and match expression-bodied folds (`if c { 0 } else { 1 + f(x) }`)
    in tail-recursion elimination.
 

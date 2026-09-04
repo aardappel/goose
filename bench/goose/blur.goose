@@ -3,11 +3,12 @@
 // of nine loads per pixel, and nothing for Goose's memory model to win on:
 // this row is here to lose, and to measure by how much. Each access is
 // `src[y * W + x]` with x and y loop counters, which is what everyone writes
-// first; the bounds-check analysis cannot prove those indices (it reasons
-// in differences, not products), so all nine checks per pixel stay, and a
-// backend that would have vectorised the C++ loop has to keep them too.
-// blur_rows.goose is the same kernel written over row slices, which is the
-// form the analysis can prove.
+// first. The bounds-check analysis proves all nine from two facts it carries
+// into the kernel from its call sites: both buffers are W * W long, which
+// `main`'s push loop established, and neither call changes that, since
+// `blur` only reads and writes elements. blur_rows.goose is the same kernel
+// written over row slices, blur_assert.goose the same with the length fact
+// stated inside the kernel, which used to be the only way to reach it.
 
 import rng;
 
