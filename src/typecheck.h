@@ -3824,6 +3824,14 @@ struct TypeCheck {
                 CheckCond(args[0]);
                 NarrowCond(args[0], true);  // assert(r) narrows onwards (§3.8).
                 return VoidVal();
+            case B_ABORT: case B_EXIT:
+                // Both end the program (§9.3), so the code after them is
+                // unreachable: this is what lets a `guard ... else` diverge
+                // with an abort (§6.4).
+                if (d.kind == B_ABORT) CheckArg(args[0], u8slice);
+                else CheckIntAny(args[0]);
+                reachable = false;
+                return VoidVal();
             case B_THREAD_SPAWN: {
                 auto wid = Is<Ident>(args[0]);
                 SFunction *wsf = nullptr;

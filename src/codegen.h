@@ -4769,6 +4769,14 @@ struct CodeGen {
                 L("if (!(", x, ")) gs_abort(GS_E_ASSERT, ", LocArgs(ln), ");");
                 return {};
             }
+            case B_ABORT: {
+                auto x = GenPure(an[0]);
+                L("gs_abort_msg(", x, ".data, ", x, ".len, ", LocArgs(ln), ");");
+                return {};
+            }
+            case B_EXIT:
+                L("gs_exit(", GenX(an[0]), ");");
+                return {};
             case B_HARDWARE_THREADS: return { "gs_hardware_threads()" };
             case B_THREAD_WAIT: {
                 usesthreads = true;

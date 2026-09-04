@@ -48,6 +48,8 @@ enum BuiltinRecv {
 #define BUILTINS \
     F(B_PRINT,            "print",            1,  1,   "",   "",  0,              BF_CUSTOM) \
     F(B_ASSERT,           "assert",           1,  1,   "",   "",  0,              BF_CUSTOM) \
+    F(B_ABORT,            "abort",            1,  1,   "",   "",  0,              BF_CUSTOM) \
+    F(B_EXIT,             "exit",             1,  1,   "",   "",  0,              BF_CUSTOM) \
     F(B_HARDWARE_THREADS, "hardware_threads", 0,  0,   "",   "i", 0,              0) \
     F(B_THREAD_SPAWN,     "thread_spawn",     1, 99,   "",   "i", 0,              BF_CUSTOM) \
     F(B_THREAD_WAIT,      "thread_wait",      1,  1,   "i",  "",  0,              0) \

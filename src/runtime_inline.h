@@ -108,6 +108,21 @@ static GS_NORETURN void gs_abort(int err, const char *file, int line) {
     exit(1);
 }
 
+/* The program's own abort(msg) (§9.3): the message is Goose bytes, not a C
+   string, so it goes out with an explicit length. */
+static GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char *file,
+                                     int line) {
+    fputs("goose runtime error: ", stderr);
+    fwrite(msg, 1, (size_t)len, stderr);
+    fprintf(stderr, " (%s:%d)\n", file, line);
+    exit(1);
+}
+
+static GS_NORETURN void gs_exit(int64_t code) {
+    fflush(stdout);
+    exit((int)code);
+}
+
 static int64_t gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
     fprintf(stderr, "goose runtime error: index %lld out of bounds (length %lld) "
             "(%s:%d)\n", (long long)i, (long long)n, file, line);
@@ -206,7 +221,8 @@ static T gs_mul_##SFX(T a, T b) { \
     return (T)r; } \
 static T gs_neg_##SFX(T a) { \
     int64_t r = -(int64_t)a; \
-    if (r < MIN || r > MAX) gs_ovf(); \
+)GSRT"
+R"GSRT(    if (r < MIN || r > MAX) gs_ovf(); \
     return (T)r; } \
 static T gs_shl_##SFX(T a, int64_t n) { \
     return (T)((uint64_t)a << (n & (BITS - 1))); } \
@@ -217,8 +233,7 @@ static T gs_shr_##SFX(T a, int64_t n) { \
    plain C unsigned arithmetic, truncated back to the width. */
 #define GS_INTOPS_U(SFX, T, MAX, BITS) \
 static T gs_add_##SFX(T a, T b) { return (T)(a + b); } \
-)GSRT"
-R"GSRT(static T gs_sub_##SFX(T a, T b) { return (T)(a - b); } \
+static T gs_sub_##SFX(T a, T b) { return (T)(a - b); } \
 static T gs_mul_##SFX(T a, T b) { return (T)((uint64_t)a * (uint64_t)b); } \
 static T gs_shl_##SFX(T a, int64_t n) { \
     return (T)((uint64_t)a << (n & (BITS - 1))); } \
@@ -388,7 +403,8 @@ static uint64_t gs_f2uchk(double d) {
 static double gs_i2fchk(int64_t v) {
     double d = (double)v;
     if ((int64_t)d != v || d >= 9223372036854775808.0)
-        gs_panic("as conversion changes the value (debug)");
+)GSRT"
+R"GSRT(        gs_panic("as conversion changes the value (debug)");
     return d;
 }
 static double gs_u2fchk(uint64_t v) {
@@ -403,8 +419,7 @@ static float gs_f2f32chk(double d) {
     return f;
 }
 #define GS_RANGE(v, lo, hi) gs_rangechk((v), (lo), (hi))
-)GSRT"
-R"GSRT(#define GS_RANGE_U(v, hi)   gs_rangechk_u((v), (hi))
+#define GS_RANGE_U(v, hi)   gs_rangechk_u((v), (hi))
 #define GS_F2I(d)    gs_f2ichk(d)
 #define GS_F2U(d)    gs_f2uchk(d)
 #define GS_I2F(v)    gs_i2fchk(v)
@@ -606,7 +621,8 @@ static int64_t gs_uleb_size(const uint8_t *p) {
    walk, against which the call costs nothing. Both read the pointer twice,
    which the emitting sites already assume (they form the element address
    from the same text). A varint *value*, by contrast, is whatever the
-   program stored, so scalar fields and relative offsets keep the loop above
+)GSRT"
+R"GSRT(   program stored, so scalar fields and relative offsets keep the loop above
    inline, where the compilers peel the first byte themselves. */
 
 static GS_NOINLINE int64_t gs_uleb_read_slow(const uint8_t *p) {
@@ -620,8 +636,7 @@ static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
 #define GS_ULEB_READ(p) ((*(p) & 0x80) ? gs_uleb_read_slow(p) : (int64_t)*(p))
 #define GS_ULEB_SIZE(p) ((*(p) & 0x80) ? gs_uleb_size_slow(p) : (int64_t)1)
 
-)GSRT"
-R"GSRT(static int64_t gs_uleb_write(uint8_t *p, uint64_t v) {
+static int64_t gs_uleb_write(uint8_t *p, uint64_t v) {
     uint8_t *q = p;
     for (;;) {
         uint8_t b = v & 0x7f;
