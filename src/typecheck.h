@@ -3532,11 +3532,6 @@ struct TypeCheck {
             }
             spec->retsknown = true;
         }
-        spec->retroots.resize(16, nullptr);
-        spec->retrootexact.resize(16, false);
-        spec->retwritable.resize(16, false);
-        spec->retrootseeded.resize(16, false);
-        spec->retrootset.resize(16, false);
         // A cycle's back edges reach this specialization before any of its own
         // returns are checked, so predict their roots first (§7.8).
         if (sf->isrec && spec->retsknown) Cycles().Seed(spec);
@@ -3606,6 +3601,7 @@ struct TypeCheck {
                               tspec->sf ? tspec->sf->name : string_view("?"), " has ",
                               (int64_t)tspec->rets.size()));
         }
+        if (tspec->retroots.size() < tspec->rets.size()) tspec->retroots.resize(tspec->rets.size());
         for (size_t i = 0; i < vals.size(); i++) {
             auto rt = tspec->rets[i];
             auto rk = rt->kind;
@@ -3624,19 +3620,18 @@ struct TypeCheck {
             if (root && root == cycleroot)
                 Error(at, "returning the result of a recursive call whose returned "
                           "reference's root the cycle's returns do not determine (§7.8)");
-            if (i < tspec->retroots.size() && i < tspec->retrootseeded.size()) {
-                if (tspec->retrootset[i] && tspec->retroots[i] != root)
-                    Error(at, "returns disagree on the returned reference's root "
-                              "(not yet supported; use one source)");
-                tspec->retrootset[i] = true;
-                if (auto bad = Cycles().ReturnConflict(tspec, i, root, vals[i].rootexact);
-                    !bad.empty())
-                    Error(at, bad);
-                tspec->retroots[i] = root;
-                tspec->retrootexact[i] = vals[i].rootexact;
-                tspec->retwritable[i] = vals[i].writable;
-                tspec->retrootseeded[i] = false;
-            }
+            auto &rr = tspec->retroots[i];
+            if (rr.set && rr.root != root)
+                Error(at, "returns disagree on the returned reference's root "
+                          "(not yet supported; use one source)");
+            rr.set = true;
+            if (auto bad = Cycles().ReturnConflict(tspec, i, root, vals[i].rootexact);
+                !bad.empty())
+                Error(at, bad);
+            rr.root = root;
+            rr.exact = vals[i].rootexact;
+            rr.writable = vals[i].writable;
+            rr.seeded = false;
         }
         tspec->checkedreturn = true;
     }
@@ -3648,25 +3643,24 @@ struct TypeCheck {
             Val v;
             v.type = spec->rets[i];
             if (v.type->kind == TY_REF || v.type->kind == TY_SLICE) {
-                auto rr = i < spec->retroots.size() ? spec->retroots[i] : nullptr;
-                auto rex = i < spec->retrootexact.size() && spec->retrootexact[i];
-                v.writable = i < spec->retwritable.size() && spec->retwritable[i];
+                auto ri = i < spec->retroots.size() ? spec->retroots[i] : RetRoot {};
+                auto rr = ri.root;
+                v.writable = ri.writable;
                 if (!rr) {
                     // A back edge whose target has neither recorded nor
                     // predicted this root: unknown, which is not static data.
-                    auto known = spec->checkedreturn ||
-                                 (i < spec->retrootseeded.size() && spec->retrootseeded[i]);
+                    auto known = spec->checkedreturn || ri.seeded;
                     v.root = spec->inprogress && !known ? cycleroot : nullptr;
                 } else if (!rr->isglobal && !rr->ownerspec) {
                     // A synthetic per-class parameter root: map back to this
                     // call site's argument root.
                     v.root = rr;
-                    v.rootexact = rex;
+                    v.rootexact = ri.exact;
                     for (size_t p = 0; p < spec->params.size(); p++) {
                         if (spec->params[p]->refroot == rr) {
                             if (p < argvals.size()) {
                                 v.root = CanonRoot(argvals[p].root);
-                                v.rootexact = rex && argvals[p].rootexact;
+                                v.rootexact = ri.exact && argvals[p].rootexact;
                                 v.rootfrom = argvals[p].rootfrom;
                                 v.writable = argvals[p].writable;
                             }
@@ -3675,7 +3669,7 @@ struct TypeCheck {
                     }
                 } else {
                     v.root = rr;  // A global or a captured outer local.
-                    v.rootexact = rex;
+                    v.rootexact = ri.exact;
                 }
             } else {
                 v.root = temproot;

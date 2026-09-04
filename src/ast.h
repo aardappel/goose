@@ -845,6 +845,18 @@ struct RootArg {
     }
 };
 
+// One return value's reference root, for the callers to map (§9.2), and
+// the cycle fixpoint's prediction of it (§7.8).
+struct RetRoot {
+    VarDef *root = nullptr;    // Param VarDef, global, or null = static data.
+    bool exact = false;        // Val::rootexact of the returned reference.
+    bool writable = false;
+    bool set = false;          // A non-null return has recorded its root.
+    bool seeded = false;       // `root` is the cycle fixpoint's prediction and no
+                               // return has been checked yet; the prediction is
+                               // verified as they are.
+};
+
 // One monomorphic specialization of a function: the unit of typechecking and
 // of later codegen. Owns nothing; body is a clone with annotations filled.
 struct FnSpec {
@@ -857,14 +869,7 @@ struct FnSpec {
     Block *body = nullptr;         // Cloned, annotated copy of sf->body.
     vector<VarDef *> params;
     vector<TypeExpr *> rets;       // TY_VOID-free: empty = no return values.
-    vector<VarDef *> retroots;     // Per ret: root if ref/slice-typed (param VarDef,
-                                   // global, or null = static), else null.
-    vector<bool> retrootexact;     // Per ret: Val::rootexact of the returned reference.
-    vector<bool> retwritable;
-    vector<bool> retrootset;       // Per ret: a non-null return has recorded its root.
-    vector<bool> retrootseeded;    // Per ret: retroots holds the cycle fixpoint's
-                                   // predicted root and no return has been checked yet
-                                   // (§7.8); the prediction is verified as they are.
+    vector<RetRoot> retroots;      // Per ret, from the first return checked or seeded.
     bool retsknown = false;
     bool checkedreturn = false;    // A return with values has been recorded.
     bool checked = false;
