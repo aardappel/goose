@@ -882,9 +882,8 @@ callee's shrink lands at the call. The memory argument stands: a live
 logic errors, not memory ones. The same pass closed the whole-assignment
 hole for grow-only arrays (B10).
 
-**References to resizable tails — decided representation; language work
-that precedes the library.** `&bag.items` is rejected today because a
-resizable-tailed struct is
+**References to resizable tails — done (spec C.2).** `&bag.items` was
+rejected because a resizable-tailed struct was
 one frame header `{ base, len }` whose `base` is the *struct's* start on the
 data stack (static prefix fields, then tail elements) and whose `len` is
 the tail's count; a `T[>..]&` is a pointer to a header whose `base` must be
@@ -911,7 +910,11 @@ today's bytes-on-stack shape behind a base pointer in the frame object: a
 already refuses to copy), and a resizable-class ADT, whose payload shape is
 per variant. Spec C.2 changes from "outermost values have a frame header"
 to "a resizable-class value's fixed part lives in the owning frame, and
-every resizable tail has its own header there".
+every resizable tail has its own header there". Implemented as described:
+`StructInst::frameobj` marks the shape, codegen's `IsFrameObj` routes
+locals, parameters, returns, globals, copies, literals and references
+through the frame object, and the checker's "nested resizable" error is
+left only for the variable-size-prefix and ADT shapes.
 
 **Untyped parameters bind exact types — done.** `TryMatch` decayed a
 reference argument to its pointee before binding an untyped parameter, so
