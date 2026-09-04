@@ -52,7 +52,7 @@
 // stated when it fits the expression's own width, since §6.2 arithmetic wraps
 // there in release builds.
 //
-// Aliasing uses the checker's reference provenance (VarDef::refroot chains):
+// Aliasing uses the checker's reference provenance (VarDef::ref.root chains):
 // a write or grow/shrink kills the length bases of every place it may name.
 // Storage is unreachable to a callee, and to unknown references, unless its
 // owner is a global, is captured, or has its address taken (creating any
@@ -217,8 +217,8 @@ struct BCE {
             auto t = v->type;
             if (!t) return { UK_OPAQUE, v };
             if (t->kind != TY_REF && t->kind != TY_SLICE) return { UK_OWNED, v };
-            if (!v->refrootknown || !v->refrootexact) return { UK_OPAQUE, nullptr };
-            v = v->refroot;
+            if (!v->refrootknown || !v->ref.rootexact) return { UK_OPAQUE, nullptr };
+            v = v->ref.root;
         }
         return { UK_OPAQUE, nullptr };
     }
