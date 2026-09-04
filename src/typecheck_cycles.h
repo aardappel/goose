@@ -313,13 +313,13 @@ struct CycleRoots {
         if (!anyref) return;
         ReturnRootDescs(spec->sf);
         auto &ds = spec->sf->retdescs;
-        for (size_t i = 0; i < spec->rets.size() && i < spec->retroots.size(); i++) {
+        if (spec->retroots.size() < spec->rets.size()) spec->retroots.resize(spec->rets.size());
+        for (size_t i = 0; i < spec->rets.size(); i++) {
             auto rk = spec->rets[i]->kind;
             if (rk != TY_REF && rk != TY_SLICE) continue;
-            auto exact = false;
-            spec->retroots[i] = i < ds.size() ? ResolveDesc(spec, ds[i], exact) : cycleroot;
-            if (i < spec->retrootexact.size()) spec->retrootexact[i] = exact;
-            spec->retrootseeded[i] = true;
+            auto &rr = spec->retroots[i];
+            rr.root = i < ds.size() ? ResolveDesc(spec, ds[i], rr.exact) : cycleroot;
+            rr.seeded = true;
         }
     }
 
@@ -327,14 +327,14 @@ struct CycleRoots {
     // wrong with a checked return whose root contradicts it, empty when it
     // agrees. A sentinel prediction promised nothing to contradict.
     string ReturnConflict(FnSpec *spec, size_t i, VarDef *root, bool exact) {
-        if (spec->checkedreturn || i >= spec->retroots.size() ||
-            i >= spec->retrootseeded.size() || !spec->retrootseeded[i]) return {};
-        auto seeded = spec->retroots[i];
-        if (seeded == cycleroot) return {};
-        if (seeded == root) {
+        if (spec->checkedreturn || i >= spec->retroots.size() || !spec->retroots[i].seeded)
+            return {};
+        auto &rr = spec->retroots[i];
+        if (rr.root == cycleroot) return {};
+        if (rr.root == root) {
             // A back edge may already have stored the result relatively on the
             // strength of the prediction's exactness (§3.9).
-            if (!exact && i < spec->retrootexact.size() && spec->retrootexact[i])
+            if (!exact && rr.exact)
                 return cat("this return's reference only outlives ",
                            root ? root->name : string_view("static data"),
                            ", but the recursive cycle's returns give storage it owns "
@@ -344,7 +344,7 @@ struct CycleRoots {
         return cat("this return's reference is rooted at ",
                    root ? root->name : string_view("static data"),
                    ", but the recursive cycle's returns give ",
-                   seeded ? seeded->name : string_view("static data"),
+                   rr.root ? rr.root->name : string_view("static data"),
                    " (§7.8); use one source");
     }
 };
