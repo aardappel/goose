@@ -2743,7 +2743,13 @@ struct TypeCheck {
                     Error(c, cat("thread_fn ", id->name, " is spawned with thread_spawn, "
                                  "not called"));
             Node *nopre = nullptr;
-            return ResolveCall(c, cands, env, id->name, nullptr, nopre);
+            // A user function set sharing a builtin's name (a `format`
+            // overload, §3.7) takes the calls it matches; the builtin the rest.
+            auto bd = LookupBuiltin(id->name);
+            auto nomatch = false;
+            auto v = ResolveCall(c, cands, env, id->name, nullptr, nopre, bd ? &nomatch : nullptr);
+            if (!nomatch) return v;
+            return CheckBuiltin(c, *bd, c->args, nullptr);
         }
         auto bd = LookupBuiltin(id->name);
         if (!bd) Error(c, cat("unknown function: ", id->name));
@@ -2818,7 +2824,7 @@ struct TypeCheck {
     // Phase 1 checks arguments bottom-up for resolution; phase 2 re-checks
     // each against its concrete parameter type (adapting literals etc.).
     Val ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *env, string_view name,
-                    Val *preval, Node *&prenode) {
+                    Val *preval, Node *&prenode, bool *nomatch = nullptr) {
         vector<Node *> argnodes;
         vector<Val> argvals;
         // A non-fixed lvalue argument passes by reference (§4.1): it becomes
@@ -2840,6 +2846,12 @@ struct TypeCheck {
         }
         for (auto &a : c->args) {
             auto v = CheckV(a, nullptr);
+            // A pending array (`var out = []`) is completed by the builtin
+            // sharing this name (push, append, format), never by user code.
+            if (nomatch && IsPendingArray(v.type)) {
+                *nomatch = true;
+                return Val {};
+            }
             RequireComplete(v.type, a->line);
             byref(a, v);
             argnodes.push_back(a);
@@ -2871,6 +2883,10 @@ struct TypeCheck {
             // Tag dispatch (§8.2): the match-as-overload-set form.
             auto v = TryDispatch(c, cands, argnodes, argvals, name);
             if (v.type) return v;
+            if (nomatch) {   // The caller has a builtin of this name to fall back on.
+                *nomatch = true;
+                return Val {};
+            }
             Error(c, cat("no matching overload for call to ", name, failures));
         }
         auto spec = GetOrCreateSpec(best, argvals, c);
@@ -4096,6 +4112,10 @@ struct TypeCheck {
         curdst = lv.var ? Dest { lv.var, true } : Dest { lv.root, lv.rootexact };
         curdst.varbind = lv.var != nullptr;
         auto v = CheckV(a->rhs, target);
+        if (UserRefOf(a->rhs))
+            Warn(a->rhs, cat("redundant &: ", ExprStr(Is<Unary>(a->rhs)->child),
+                             " binds by reference here without it (§4.1)"));
+        if (BindsRef(v, target)) a->rhs = AutoRef(a->rhs, v);
         auto wasplain = IsPlainRef(v.type);
         MustFit(v, a->rhs, target, false);
         a->rhs->exprtype = v.type;
@@ -4513,15 +4533,88 @@ struct TypeCheck {
         return v;
     }
 
-    // An argument of print/str/format: something with a text form (§3.7) --
-    // for now the scalars, bool, and u8 arrays and slices.
+    // An argument of print/str/format (§3.7): every value type has a text
+    // form -- scalars and bool as text, u8 arrays and slices as their bytes
+    // (quoted inside an aggregate), other arrays as [a, b], structs and
+    // variants as their positional literal, references as their pointee,
+    // null as null. A user overload fn format(out: u8[>..]&, v: T) renders a
+    // T instead wherever one occurs; its specialization is recorded on the
+    // call for codegen.
     void CheckPrintable(Call *c, const char *what, Node *a) {
         auto av = CheckValue(a, nullptr);
-        auto t = av.type;
-        auto ok = t->kind == TY_INT || t->kind == TY_FLT || t->kind == TY_BOOL;
-        if (t->kind == TY_ARRAY) ok = IsU8(t->arr->sub);
-        if (t->kind == TY_SLICE) ok = IsU8(t->sub);
-        if (!ok) Error(c, cat(what, " takes scalars and u8 arrays/slices, not ", TypeStr(t)));
+        vector<TypeExpr *> seen;
+        CheckRenderable(c, what, av.type, a, seen);
+    }
+
+    void CheckRenderable(Call *c, const char *what, TypeExpr *t, Node *at,
+                         vector<TypeExpr *> &seen) {
+        for (auto s : seen) if (TypeEq(s, t)) return;   // Recursion through references.
+        seen.push_back(t);
+        if (UserFormat(c, t)) return;
+        switch (t->kind) {
+            case TY_INT: case TY_FLT: case TY_BOOL: return;
+            case TY_ARRAY: CheckRenderable(c, what, t->arr->sub, at, seen); return;
+            case TY_SLICE: CheckRenderable(c, what, t->sub, at, seen); return;
+            case TY_REF: CheckRenderable(c, what, t->ref->sub, at, seen); return;
+            case TY_STRUCT: {
+                auto si = GetStructInst(t);
+                for (auto ft : si->ftypes) if (ft) CheckRenderable(c, what, ft, at, seen);
+                return;
+            }
+            case TY_ENUM: {
+                auto ei = GetEnumInst(t);
+                for (auto &vf : ei->vftypes)
+                    for (auto ft : vf) if (ft) CheckRenderable(c, what, ft, at, seen);
+                return;
+            }
+            case TY_VARIANT: {
+                auto ei = GetEnumInst(t->var->adt);
+                auto vi = VariantIndex(ei->en, t->var->variant);
+                for (auto ft : ei->vftypes[vi]) if (ft) CheckRenderable(c, what, ft, at, seen);
+                return;
+            }
+            default:
+                Error(at, cat(what, " cannot render a value of type ", TypeStr(t)));
+        }
+    }
+
+    // The user's `format` overload for t, instantiated for a builder rooted
+    // anywhere and a T by value or by reference (the two parameter shapes
+    // such an overload takes), once per print call.
+    FnSpec *UserFormat(Call *c, TypeExpr *t) {
+        for (auto &fs : c->fmtspecs) if (TypeEq(fs.first, t)) return fs.second;
+        auto fit = ast.functionmap.find("format");
+        if (fit == ast.functionmap.end()) return nullptr;
+        for (auto sf : fit->second) {
+            if (sf->params.size() != 2 || !sf->params[0].type || !sf->params[1].type ||
+                !sf->generics.empty() || sf->isnested)
+                continue;
+            auto pt1 = Subst(sf->params[1].type);
+            auto p1 = IsPlainRef(pt1) ? pt1->ref->sub : pt1;
+            if (!TypeEq(p1, t)) continue;
+            auto pt0 = Subst(sf->params[0].type);
+            if (!IsPlainRef(pt0) || !IsArrayKind(pt0->ref->sub, A_GROW) ||
+                !IsU8(pt0->ref->sub->arr->sub))
+                continue;
+            vector<Val> argvals(2);
+            argvals[0].type = pt0;
+            argvals[0].root = temproot;
+            argvals[0].rootexact = true;
+            argvals[0].writable = true;
+            argvals[1].type = pt1;
+            argvals[1].root = temproot;
+            argvals[1].rootexact = true;
+            argvals[1].writable = true;
+            MatchInfo mi;
+            mi.sf = sf;
+            mi.env = nullptr;
+            string why;
+            if (!TryMatch(sf, c, argvals, mi, why)) continue;
+            auto sp = GetOrCreateSpec(mi, argvals, c);
+            c->fmtspecs.push_back({ t, sp });
+            return sp;
+        }
+        return nullptr;
     }
 
     // A shrink (`pop`, `resize` down, `clear`) of a grow-only array (§5.1).

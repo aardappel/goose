@@ -12,6 +12,6 @@ fn main() {
     var n: Node& = poolA[1];
     for i in 2 {
         poolA[0].next .= n;
-        n .= &poolB[0];
+        n .= poolB[0];
     }
 }

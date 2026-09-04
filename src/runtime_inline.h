@@ -685,6 +685,25 @@ static int64_t gs_fmt_bool(uint8_t *dst, int64_t v) {
     return v ? 4 : 5;
 }
 
+/* A u8 array inside an aggregate: quoted, with the escapes Goose reads. */
+static int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n) {
+    uint8_t *d = dst;
+    *d++ = '"';
+    for (int64_t i = 0; i < n; i++) {
+        uint8_t c = s[i];
+        switch (c) {
+            case '"': *d++ = '\\'; *d++ = '"'; break;
+            case '\\': *d++ = '\\'; *d++ = '\\'; break;
+            case '\n': *d++ = '\\'; *d++ = 'n'; break;
+            case '\r': *d++ = '\\'; *d++ = 'r'; break;
+            case '\t': *d++ = '\\'; *d++ = 't'; break;
+            default: *d++ = c; break;
+        }
+    }
+    *d++ = '"';
+    return (int64_t)(d - dst);
+}
+
 /* print(...) (§12): each argument's text, then a newline. stdout is
    unbuffered (gs_rt_init), so every piece is its own write; revisit if print
    throughput ever matters. */

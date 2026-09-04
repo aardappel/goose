@@ -223,10 +223,10 @@ fn self_links() {
     print(ringpool[hi].prev.v * 10 + ringpool[hi].next.v);   // 11
     // Two sentinels closed into a circle once both exist.
     let ti = ringpool.alloc_index(Ring { v: 2, prev: self, next: self });
-    ringpool[hi].next .= &ringpool[ti];
-    ringpool[hi].prev .= &ringpool[ti];
-    ringpool[ti].next .= &ringpool[hi];
-    ringpool[ti].prev .= &ringpool[hi];
+    ringpool[hi].next .= ringpool[ti];
+    ringpool[hi].prev .= ringpool[ti];
+    ringpool[ti].next .= ringpool[hi];
+    ringpool[ti].prev .= ringpool[hi];
     var cur: Ring& = ringpool[hi];
     var walk = 0;
     for i in 5 { walk = walk * 10 + cur.v; cur .= cur.next; }
@@ -918,8 +918,8 @@ fn lru_slots() {
     // Two sentinels, so no link is ever null.
     let hi = lrupool.alloc_index(LruNode { key: -1, idx: 0 });
     let ti = lrupool.alloc_index(LruNode { key: -1, idx: 1 });
-    lrupool[hi].next .= &lrupool[ti];
-    lrupool[ti].prev .= &lrupool[hi];
+    lrupool[hi].next .= lrupool[ti];
+    lrupool[ti].prev .= lrupool[hi];
     for k in 4 { lru_add(k + 1); }
     print(lrupool.len);                  // 6: two sentinels and four nodes
     print(lru_order());                  // 4321
@@ -965,7 +965,7 @@ fn inpool_varint() {
 fn inpool_wide() {
     wpool.push(WNode { v: 5 });
     wpool.push(WNode { v: 6 });
-    wpool[1].link .= &wpool[0];
+    wpool[1].link .= wpool[0];
     var st: WSlot[..4] = [];
     st.push(WSlot { key: 1, node: wpool[1] });
     // A value whose relative fields all name a pool copies: `pop` returns one.
@@ -1262,7 +1262,7 @@ fn text_builtins() {
     print(s);                                          // n7!
     print(s.len);                                      // 3
     var out: u8[>..] = [];
-    format(&out, "a", 1);
+    format(out, "a", 1);
     out.format(-2, "b", 3.5);
     print(out);                                        // a1-2b3.5
     var words: u8[][>..] = [];
@@ -1310,7 +1310,7 @@ fn pending_arrays() {
     zs = copy(ys);                             // Completed by the assignment.
     print(zs.len);                       // 3
     var txt = [];
-    format(&txt, "n=", 5);               // Completed by format: u8[>..].
+    format(txt, "n=", 5);               // Completed by format: u8[>..].
     print(txt);                          // n=5
     var fl = [];
     fl.append([1.5, 2.5]);               // Completed by append: f64[>..].
@@ -1471,6 +1471,39 @@ fn externs() {
     print(getenv_ex("GOOSE_NO_SUCH_VARIABLE_", v), v.len);   // false0
 }
 
+struct PtAg { x: i64, y: f64 }
+struct NamedAg { name: u8[], p: PtAg, tags: i64[3] }
+enum ShapeAg { Dot, Circle { r: f64 }, Rect { w: i64, h: i64 } }
+struct MoneyAg { cents: i64 }
+fn format(out: u8[>..]&, m: MoneyAg) { format(out, "$", m.cents / 100, ".", m.cents % 100); }
+struct WalletAg { owner: u8[], cash: MoneyAg }
+
+// Aggregates render as their positional literal, strings quoted inside
+// them, references as their pointee, and a type with a user format
+// overload through it wherever it occurs (§3.7).
+fn aggregate_print() {
+    print(PtAg { 1, 2.5 });                                   // PtAg { 1, 2.5 }
+    let n = NamedAg { name: "bob", p: PtAg { 3, 4.0 }, tags: [7, 8, 9] };
+    print(n);                                                 // NamedAg { "bob", PtAg { 3, 4 }, [7, 8, 9] }
+    var pts: PtAg[>..] = [PtAg { 1, 1.0 }, PtAg { 2, 2.0 }];
+    print(pts);                                               // [PtAg { 1, 1 }, PtAg { 2, 2 }]
+    var words: u8[][>..] = ["a b", "c"];
+    print(words);                                             // ["a b", "c"]
+    var o: PtAg? = null;
+    print(o);                                                 // null
+    o .= n.p;
+    print(o);                                                 // PtAg { 3, 4 }
+    var sh: ShapeAg[>..] = [ShapeAg.Dot, ShapeAg.Circle { r: 1.5 }, ShapeAg.Rect { w: 2, h: 3 }];
+    print(sh);                                                // [ShapeAg.Dot, Circle { 1.5 }, Rect { 2, 3 }]
+    print(MoneyAg { 1234 });                                  // $12.34
+    print(WalletAg { owner: "ann", cash: MoneyAg { 250 } });  // WalletAg { "ann", $2.50 }
+    let s = str("v=", PtAg { 5, 6.0 });
+    print(s.len, " ", s);                                     // 15 v=PtAg { 5, 6 }
+    var out: u8[>..] = [];
+    format(out, "[", MoneyAg { 5 }, "]");
+    print(out);                                               // [$0.5]
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -1524,6 +1557,7 @@ fn main_codegen_exec() {
     frame_objects();
     bug_fixes();
     externs();
+    aggregate_print();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

@@ -11,6 +11,6 @@ fn main() {
     var pool: Node[>..] = [];
     pool.push(Node { key: 1 });
     pool.push(Node { key: 2 });
-    pool[0].plain .= &pool[1];
+    pool[0].plain .= pool[1];
     relink(pool);
 }

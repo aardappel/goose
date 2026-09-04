@@ -75,8 +75,8 @@ fn main() {
     // pointing at themselves and are joined right after.
     let hi = pool.alloc_index(Node { key: -1, val: 0, prev: self, next: self });
     let ti = pool.alloc_index(Node { key: -1, val: 0, prev: self, next: self });
-    pool[hi].next .= &pool[ti];
-    pool[ti].prev .= &pool[hi];
+    pool[hi].next .= pool[ti];
+    pool[ti].prev .= pool[hi];
     var count = 0;
     var hits = 0;
     var misses = 0;

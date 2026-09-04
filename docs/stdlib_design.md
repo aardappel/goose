@@ -15,7 +15,7 @@ Changes since revision 3, from the review:
 * The tail representation — a frame object with the tail's own header — is
   decided, likewise before the library.
 * The `[>..<]` slice rule, the `format` names and the extern plumbing are
-  confirmed. One question remains (§12).
+  confirmed. The last question (§12) was resolved as uniform binding.
 
 Revision 3 had withdrawn the binder-parameter idea in favour of the passing
 rule, renamed `write` to `format` (with `write_*` reserved for I/O), settled
@@ -658,8 +658,8 @@ string", which Goose does in place and should encourage: `words.push(str(
   the same resolution as any call.
 
 This is codegen per type, the same walk equality already does, and it is
-the single most useful debugging affordance Lobster has. Scalars and
-strings ship first; aggregates and user overloads follow.
+the single most useful debugging affordance Lobster has. Done: scalars and
+strings, then aggregates and user overloads (spec §3.7).
 
 ### 8.2 `default<T>()`
 
@@ -1095,7 +1095,11 @@ rather than a gap:
 
 ---
 
-## 12. Questions (round 4)
+## 12. Questions (round 4) — resolved
+
+Resolved as recommended: uniform, and implemented that way (spec §4.1); a
+struct-literal field, `.=` and every other reference-typed destination bind
+an lvalue without `&`, and a redundant `&` warns.
 
 1. **Implicit reference binding outside calls.** The rule binds an lvalue
    to a reference-typed destination without `&` for call arguments,

@@ -161,6 +161,10 @@ struct Optimizer {
                 if (c->builtin < 0) c->spec->uses++;  // thread_spawn is not a call site.
                 Reach(c->spec);
             }
+            for (auto &fs : c->fmtspecs) {   // User format overloads print reaches (§3.7).
+                fs.second->uses++;
+                Reach(fs.second);
+            }
             for (auto d : c->dispatch) { d->uses++; Reach(d); }
             ReachTree(c->callee);
             for (auto a : c->args) ReachTree(a);
@@ -627,6 +631,7 @@ inline Node *Call::Cp1(Inliner &inl) const {
     c->builtin = builtin;
     c->fvtarget = fvtarget;
     c->rettypes = rettypes;
+    c->fmtspecs = fmtspecs;
     for (auto p : fvparams) c->fvparams.push_back(inl.Remap(p));
     c->fvbody = fvbody ? inl.CpBlock(fvbody) : nullptr;
     return c;
