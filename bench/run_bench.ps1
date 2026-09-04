@@ -176,7 +176,7 @@ $benchmarks = @(
        summary = 'The clearest loss in the suite, and an informative one: Goose 3,568/3,035 ms against the C++ arena 2,309/2,154 and Rust''s open-addressed arena 2,170, on the smallest memory of the three (133 MB against 181 and 137). The textbook std::list + unordered_map is 2.6-2.9x slower than Goose and Rust''s HashMap row 1.3-1.5x, so the shape wins; it is the links that lose. The same Goose program with i32 index links runs in 2,397 ms and with plain 8-byte references in 2,557: the self-relative encoding -- an offset computed and range-checked on every relink, six per hit -- costs 1.5x on a workload that does nothing but relink, in exchange for 16-byte nodes. The reusable pool is not the cost: the index variant frees and reuses through the same freelist.'
        what = "An LRU cache of capacity N/8 under N skewed lookups, with an invalidation every 16th operation."
        sizes = @(2000000, 8000000, 32000000)
-       goose = @(@{ label = "goose reusable pool + relative refs"; file = "lru.goose" })
+       goose = @(@{ label = "goose reusable pool + pool-relative refs"; file = "lru.goose" })
        cpp = @(@{ label = "cpp list + unordered_map"; file = "lru.cpp"; variant = 0; tier = "idiomatic" },
                @{ label = "cpp arena + open addressing"; file = "lru.cpp"; variant = 1; tier = "expert" })
        rust = @(@{ label = "rust HashMap + arena"; file = "lru_hashmap.rs" },
