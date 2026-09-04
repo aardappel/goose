@@ -1,24 +1,26 @@
 **Over sixteen benchmarks Goose runs at about 3.2x the speed of idiomatic C++,
 about 1.15x the speed of hand-optimised C++, and ahead of idiomatic Rust
-(1.04x under v145, 1.08x under clang), on 1.9x, 1.3x and 1.2x less memory.**
+(1.04x under v145, 1.10x under clang), on 1.9x, 1.3x and 1.2x less memory.**
 This round changed the compiler, not the benchmarks: thirteen optimizations
 and language items from `plan.md` landed (`notes.md` has the per-row A/B,
 `adoption.md` the per-item verdicts), and only the Goose rows moved. Against
 the six larger benchmarks' *arena* Rust rows, which last round Goose lost
-three of, it now wins two (`respond` 1.23-1.35x, `blur` 1.09x under clang),
-ties two (`bintrees` 0.95x under v145, `scene` 0.99x under clang) and still
-loses two (`calc` 0.82x, `lru` 0.69x under v145 and 0.84x under clang); it
+three of, it now wins three under clang (`respond` 1.35x, `blur` 1.09x,
+`lru` 1.05x), ties two (`bintrees` 0.95x under v145, `scene` 0.99x under
+clang) and still loses `calc` (0.82x) and, under v145, `lru` (0.69x); it
 beats every idiomatic C++ and idiomatic Rust shape on all six.
 
 **The losses, taken apart, are still three different things, and two of them
-shrank.** `lru` is the relative references: an offset computed from two
-addresses on every relink and a null test plus an add on every load. The
-range check on the store is gone this round (a `u32` link into a stack under
-2 GB cannot overflow), which is the 1.13x on the row, and the rest of the gap
-to Rust's 2,296 ms is the encoding itself; an experimental pool-relative
-encoding halves what remains under clang (`adoption.md` 3.1), and the
-language question of what a compressed reference should mean is where that
-stops. `bintrees` was the backend, and the backend caught up: inlining the
+shrank.** `lru` was the relative references: an offset computed from two
+addresses on every relink. Two things changed it. The range check on the
+store is gone (a `u32` link into a stack under 2 GB cannot overflow), and
+the links are now *pool-relative* -- spec 3.9's `in pool` form, offsets from
+the pool's base rather than from the field, which also lets the map hold
+4-byte references into the pool instead of indices. Under clang that puts
+the row level with the Rust arena (2,133 against 2,237 ms) and the C++ one;
+under v145, which schedules the base add worse, it stays 1.45x behind, and
+that is now a backend gap rather than an encoding one. `bintrees` was the
+backend, and the backend caught up: inlining the
 base case, keeping the pool's stack top in a register through the fat
 reference and eliminating the accumulator tail call take Goose from 360 to
 244 ms under v145 against the Rust arena's 232 and the C++ arena's 387;
