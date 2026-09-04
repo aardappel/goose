@@ -263,6 +263,11 @@ struct CodeGen {
         auto ft = si->ftypes[TailIdx(si)];
         return IsFrameObj(ft) ? FoTailArr(ft) : ft;
     }
+    // The bytes of a frame object before its innermost tail header, which is
+    // the C struct's last member: the fixed fields at every nesting level.
+    string FoPrefixSize(TypeExpr *t) {
+        return cat("(sizeof(", CT(t), ") - sizeof(gs_rhdr))");
+    }
     bool IsFatRef(TypeExpr *t) {
         return t->kind == TY_REF && t->ref->lenstorage < 0 && IsResz(t->ref->sub);
     }
@@ -5134,16 +5139,31 @@ struct CodeGen {
                 auto t = an[0]->exprtype;
                 auto q = QueueFor(t);
                 if (IsResz(t)) {
-                    // Serialize as [int64 len][elements] on a scratch stack.
+                    // The image of a resizable is [int64 count][fixed fields]
+                    // [tail elements], built on a scratch stack: a frame
+                    // object's fixed fields are the bytes before its innermost
+                    // tail header, any other shape's the static prefix
+                    // EmitRzCopy walks.
                     auto src = GenLoc(an[0]);
                     if (src.t->kind == TY_REF) DerefLoc(src, ln);
                     string stk;
                     auto base = BytesTemp(stk);
-                    auto lenv = T();
-                    L("int64_t ", lenv, ";");
-                    EmitValStore(stk, ast.inttypes[IS_I64], "0");
-                    EmitRzCopy(src, t, stk, lenv, ln);
-                    L("*(int64_t *)", base, " = ", lenv, ";");
+                    if (IsFrameObj(t)) {
+                        assert(src.val);
+                        auto th = FoTailHdr(t, src.s);
+                        EmitValStore(stk, ast.inttypes[IS_I64], cat(th, ".len"));
+                        auto pre = FoPrefixSize(t);
+                        L("memcpy(", Top(stk), ", &", src.s, ", ", pre, ");");
+                        Bump(stk, pre);
+                        EmitCopyElems(stk, FoTailArr(t)->arr->sub, cat(th, ".base"),
+                                      cat(th, ".len"));
+                    } else {
+                        auto lenv = T();
+                        L("int64_t ", lenv, ";");
+                        EmitValStore(stk, ast.inttypes[IS_I64], "0");
+                        EmitRzCopy(src, t, stk, lenv, ln);
+                        L("*(int64_t *)", base, " = ", lenv, ";");
+                    }
                     L("gs_qput(&", q, ", ", base, ", ", Top(stk), " - ", base, ");");
                 } else if (IsBytesT(t)) {
                     auto p = GenPtr(an[0]);
@@ -5167,30 +5187,43 @@ struct CodeGen {
                     L("uint8_t ", got, " = ", nn, " != NULL;");
                 }
                 if (IsResz(t)) {
-                    // The queued image is [int64 len][elements]: elements go
-                    // to the destination, the count to the receiving header.
+                    // The image is [int64 count][fixed fields][tail elements]
+                    // (see qput). The elements go to the destination's top;
+                    // the count, and a frame object's fixed fields, to the
+                    // receiving header or frame object (a temporary without
+                    // a receiver).
                     EmitCoreTypes();
                     string stk = d0.k == DK_STACK && !d0.lenlv.empty() ? d0.s : "";
                     string lenlv = d0.k == DK_STACK ? d0.lenlv : "";
                     string hv;
                     if (stk.empty()) {
-                        stk = AllocStk(false);
-                        hv = T();
-                        L("gs_rhdr ", hv, " = { ", Top(stk), ", 0 };");
-                        SaveBase(false, stk, cat(hv, ".base"));
-                        lenlv = cat(hv, ".len");
+                        hv = RzTemp(t, stk);
+                        lenlv = RzLenLv(t, hv);
                     }
-                    if (poll) {
+                    auto fo = IsFrameObj(t);
+                    auto cnt = fo ? cat(FoTailHdr(t, lenlv), ".len") : lenlv;
+                    auto image = cat("(uint8_t *)(", nn, " + 1) + 8");
+                    auto n = cat("(", nn, "->size - 8)");
+                    if (fo) {
+                        // The zero value until the image is read (a missed poll
+                        // leaves it), with the tail header at the top, where
+                        // the elements land.
+                        L("memset(&", lenlv, ", 0, sizeof(", lenlv, "));");
+                        L(FoTailHdr(t, lenlv), ".base = ", Top(stk), ";");
+                    } else if (poll) {
                         L(lenlv, " = 0;");
-                        L("if (", nn, ") {");
-                    } else {
-                        L("{");
                     }
+                    L(poll ? cat("if (", nn, ") {") : string("{"));
                     ind++;
-                    L(lenlv, " = *(int64_t *)(", nn, " + 1);");
-                    L("memcpy(", Top(stk), ", (uint8_t *)(", nn, " + 1) + 8, (size_t)(",
-                      nn, "->size - 8));");
-                    Bump(stk, cat("(", nn, "->size - 8)"));
+                    if (fo) {
+                        auto pre = FoPrefixSize(t);
+                        L("memcpy(&", lenlv, ", ", image, ", ", pre, ");");
+                        image = cat(image, " + ", pre);
+                        n = cat("(", nn, "->size - 8 - ", pre, ")");
+                    }
+                    L(cnt, " = *(int64_t *)(", nn, " + 1);");
+                    L("memcpy(", Top(stk), ", ", image, ", (size_t)", n, ");");
+                    Bump(stk, n);
                     L("free(", nn, ");");
                     ind--;
                     L("}");
