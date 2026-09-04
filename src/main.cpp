@@ -56,6 +56,8 @@ void ParseProgram(Ast &ast, const string &rootpath) {
     auto rootdir = DirOf(rootpath);
     vector<string> queue = { rootpath };
     set<string> loaded = { rootpath };
+    map<string, int> fileof;                 // Resolved path -> index in ast.sources.
+    vector<vector<string>> importsof;        // Per source, the paths it imports.
     while (!queue.empty()) {
         auto path = queue.back();
         queue.pop_back();
@@ -64,6 +66,8 @@ void ParseProgram(Ast &ast, const string &rootpath) {
             throw CompileError { cat("cannot open file: ", path) };
         auto fileidx = (int)ast.sources.size();
         ast.sources.emplace_back(path, std::move(contents));
+        fileof[path] = fileidx;
+        importsof.emplace_back();
         auto &[filename, source] = ast.sources.back();
         Parser parser(ast, filename, source->c_str(), fileidx);
         parser.ParseTop();
@@ -75,9 +79,35 @@ void ParseProgram(Ast &ast, const string &rootpath) {
                     if (FileExists(cand)) { imppath = cand; break; }
                 }
             }
+            importsof[fileidx].push_back(imppath);
             if (loaded.insert(imppath).second) queue.push_back(imppath);
         }
     }
+    // Globals initialize in import order: everything a file imports runs before
+    // the file's own, so a global initializer may name an imported global
+    // (`let IDENT = Xf { ..., t: float3_0 }`). Files parse in worklist order,
+    // which is not that, so rank them by a post-order walk of the import graph
+    // and stable-sort the initialization list by rank. A file in an import
+    // cycle is visited once, and its rank is then whatever the walk reached
+    // first, which is all that order can mean there.
+    vector<int> rank(ast.sources.size(), 0);
+    vector<char> state(ast.sources.size(), 0);   // 0 unvisited, 1 on the stack, 2 ranked.
+    auto next = 0;
+    std::function<void(int)> visit = [&](int f) {
+        if (state[f]) return;
+        state[f] = 1;
+        for (auto &p : importsof[f]) {
+            auto it = fileof.find(p);
+            if (it != fileof.end()) visit(it->second);
+        }
+        state[f] = 2;
+        rank[f] = next++;
+    };
+    for (size_t i = 0; i < ast.sources.size(); i++) visit((int)i);
+    std::stable_sort(ast.globals.begin(), ast.globals.end(),
+                     [&](VarDecl *a, VarDecl *b) {
+                         return rank[a->line.fileidx] < rank[b->line.fileidx];
+                     });
     ResolveTypeNames(ast);
 }
 

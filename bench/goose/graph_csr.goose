@@ -7,6 +7,7 @@
 // two more arrays to get there.
 
 import rng;
+import std;
 
 let V = 1000000;                         // BENCH_N
 let DEG = 8;
@@ -27,14 +28,14 @@ fn main() {
         start[u + 1] = start[u + 1] + 1;
     }
     for v in V { start[v + 1] = start[v + 1] + start[v]; }
-    var fill: i32[>..] = [];
-    for v in V + 1 { fill.push(start[v]); }
+    var cursor: i32[>..] = [];
+    for v in V + 1 { cursor.push(start[v]); }
     var out: i32[>..] = [];
     for e in ne { out.push(0); }
     for e in ne {
         let s = esrc[e];
-        out[fill[s]] = edst[e];
-        fill[s] = fill[s] + 1;
+        out[cursor[s]] = edst[e];
+        cursor[s] = cursor[s] + 1;
     }
     // BFS, identical to graph.goose apart from how the edges are reached.
     var dist: i32[>..] = [];
@@ -45,7 +46,7 @@ fn main() {
     for s in SOURCES {
         seed = xs_next(seed);
         let src = xs_mod(seed, V);
-        for v in V { dist[v] = -1; }
+        fill(dist, -1);
         q.clear();
         dist[src] = 0;
         q.push(src as i32);

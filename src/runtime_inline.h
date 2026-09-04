@@ -17,6 +17,13 @@ R"GSRT(/* Goose runtime — prepended verbatim to every compiler-generated C fil
    shared machinery lives here (data stacks, varints, printing, aborts,
    threads/queues in runtime_threads.h). */
 
+/* The OS layer (runtime_os.h) calls fopen and getenv, which the Microsoft
+   CRT deprecates in favour of its own _s variants; the portable ones are
+   what this runtime uses everywhere. */
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS 1
+#endif
+
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -213,7 +220,8 @@ static T gs_add_##SFX(T a, T b) { \
     return (T)r; } \
 static T gs_sub_##SFX(T a, T b) { \
     int64_t r = (int64_t)a - (int64_t)b; \
-    if (r < MIN || r > MAX) gs_ovf(); \
+)GSRT"
+R"GSRT(    if (r < MIN || r > MAX) gs_ovf(); \
     return (T)r; } \
 static T gs_mul_##SFX(T a, T b) { \
     int64_t r = (int64_t)a * (int64_t)b; \
@@ -226,8 +234,7 @@ static T gs_neg_##SFX(T a) { \
 static T gs_shl_##SFX(T a, int64_t n) { \
     return (T)((uint64_t)a << (n & (BITS - 1))); } \
 static T gs_shr_##SFX(T a, int64_t n) { \
-)GSRT"
-R"GSRT(    return (T)((int64_t)a >> (n & (BITS - 1))); }
+    return (T)((int64_t)a >> (n & (BITS - 1))); }
 
 /* Unsigned types wrap modulo 2^width by definition (§6.2) in every build:
    plain C unsigned arithmetic, truncated back to the width. */
@@ -395,7 +402,8 @@ static int64_t gs_f2ichk(double d) {
 }
 static uint64_t gs_f2uchk(double d) {
     if (!(d >= 0 && d < 18446744073709551616.0))
-        gs_panic("as conversion out of range (debug)");
+)GSRT"
+R"GSRT(        gs_panic("as conversion out of range (debug)");
     uint64_t v = (uint64_t)d;
     if ((double)v != d) gs_panic("as conversion changes the value (debug)");
     return v;
@@ -414,8 +422,7 @@ static double gs_u2fchk(uint64_t v) {
 }
 static float gs_f2f32chk(double d) {
     float f = (float)d;
-)GSRT"
-R"GSRT(    if ((double)f != d) gs_panic("as conversion changes the value (debug)");
+    if ((double)f != d) gs_panic("as conversion changes the value (debug)");
     return f;
 }
 #define GS_RANGE(v, lo, hi) gs_rangechk((v), (lo), (hi))
@@ -619,7 +626,8 @@ static int64_t gs_uleb_size(const uint8_t *p) {
 }
 
 /* An inline array's length prefix is one byte unless the array holds 128
-   elements or more, so the two macros below are what the compiler emits for
+)GSRT"
+R"GSRT(   elements or more, so the two macros below are what the compiler emits for
    it: a load, a test, and the byte. The continuation is a call the caller's
    loop does not contain, and reaching it means there is a large array to
    walk, against which the call costs nothing. Both read the pointer twice,
@@ -637,8 +645,7 @@ static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
 }
 
 #define GS_ULEB_READ(p) ((*(p) & 0x80) ? gs_uleb_read_slow(p) : (int64_t)*(p))
-)GSRT"
-R"GSRT(#define GS_ULEB_SIZE(p) ((*(p) & 0x80) ? gs_uleb_size_slow(p) : (int64_t)1)
+#define GS_ULEB_SIZE(p) ((*(p) & 0x80) ? gs_uleb_size_slow(p) : (int64_t)1)
 
 static int64_t gs_uleb_write(uint8_t *p, uint64_t v) {
     uint8_t *q = p;

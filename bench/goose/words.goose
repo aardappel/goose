@@ -6,15 +6,10 @@
 // std::string inside the map node.
 
 import rng;
+import std;
 
 let N = 2000000;                         // BENCH_N
 let MAXW = 20;
-
-fn fnv(s: u8[:]) -> u64 {
-    var h = 0xcbf29ce484222325;
-    for c in s { h = (h ^ c) * 0x100000001b3; }
-    h
-}
 
 struct Slot { key: u8[:], count: i32 }
 
@@ -42,25 +37,19 @@ fn main() {
         text.append(dict[k]);
         text.push(' ');
     }
-    // Split: one contiguous block of variable-size strings.
+    // Split: one contiguous block of variable-size strings; the trailing
+    // separator yields an empty part, which is not a word.
     var words: u8[][>..] = [];
-    var i = 0;
-    while i < text.len {
-        let start = i;
-        while i < text.len && text[i] != ' ' { i++; }
-        words.push(text[start..i]);
-        while i < text.len && text[i] == ' ' { i++; }
-    }
+    each_split(text, ' ') { if it.len > 0 { words.push(it); } };
     // Count, in an open-addressed map whose keys are slices into the text.
-    var nslots = 16;
-    while nslots < vocab * 4 { nslots *= 2; }
+    let nslots = max(16, next_pow2(vocab * 4));
     let mask = (nslots - 1) as u64;
     var slots: Slot[>..] = [];
-    for s in nslots { slots.push(Slot { key: text[0..0], count: 0 }); }
+    push_n(slots, Slot { key: text[0..0], count: 0 }, nslots);
     var distinct = 0;
     for w in words {
         let key: u8[:] = w[..];
-        var idx = fnv(key) & mask;
+        var idx = hash(key) & mask;
         loop {
             if slots[idx].count == 0 {
                 slots[idx].key = key;

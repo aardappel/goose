@@ -571,17 +571,26 @@ fn make_heap<A, F>(xs: A&) {
 // Plain rendering is the builtin `format`; these add control and parsing.
 
 // Digits of v in the base (2..36), right-aligned in `width` with `pad`.
+// Base ten has its own loop: dividing by the constant is a multiply, where
+// dividing by the `base` parameter is a real division per digit.
 fn format_uint(out: u8[>..]&, v: u64, base: i64, width: i64, padc: u8) {
     var digits: u8[..64] = [];
     var x = v;
-    let b = base as u64;
     if x == 0 { digits.push('0'); }
-    while x > 0 {
-        let d = (x % b) as i64;
-        var c: u8 = 0;
-        if d < 10 { c = ('0' + d) as u8; } else { c = ('a' + d - 10) as u8; }
-        digits.push(c);
-        x = x / b;
+    if base == 10 {
+        while x > 0 {
+            digits.push(('0' + (x % 10) as i64) as u8);
+            x = x / 10;
+        }
+    } else {
+        let b = base as u64;
+        while x > 0 {
+            let d = (x % b) as i64;
+            var c: u8 = 0;
+            if d < 10 { c = ('0' + d) as u8; } else { c = ('a' + d - 10) as u8; }
+            digits.push(c);
+            x = x / b;
+        }
     }
     var padn = width - digits.len;
     while padn > 0 {

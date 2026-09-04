@@ -1,7 +1,12 @@
 // stdlib/vec.goose: the component-combining functions and the aliases.
 import vec;
 
+// A global initialized from an imported module's global: imported globals
+// initialize first, whatever order the files were parsed in.
+let ORIGIN = float3_0;
+
 fn main() {
+    print(ORIGIN.x, ORIGIN.y, ORIGIN.z);                          // 000
     let a = float3 { 1.0, 2.0, 3.0 };
     let b = float3 { 4.0, 5.0, 6.0 };
     print(dot(a, b));                                             // 32

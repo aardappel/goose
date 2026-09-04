@@ -18,19 +18,18 @@
 // produces a bit-identical checksum.
 
 import rng;
+import vec;
 
 let DEPTH = 13;                          // BENCH_N
 let FRAMES = 16;
 let MAXKIDS = 4;
 
-struct F3 { x: f32, y: f32, z: f32 }
-struct Xf { m: f32[9], t: F3 }
+struct Xf { m: f32[9], t: float3 }
 struct SNode { id: i32, local: Xf, world: Xf, kids: (SNode&<u32>)[..MAXKIDS] }
 
 var pool: SNode[>..] = [];
 
-let IDENT = Xf { m: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-                 t: F3 { x: 0.0, y: 0.0, z: 0.0 } };
+let IDENT = Xf { m: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], t: float3_0 };
 
 // One of twelve axis-aligned rotations, from the seed.
 fn rotation(seed: u64) -> f32[9] {
@@ -53,9 +52,9 @@ recursive fn build(depth: i64, seed: u64) -> SNode& {
     let r = xs_next(seed);
     let nd: SNode& = pool.push(SNode {
         id: pool.len as i32,
-        local: Xf { m: rotation(r), t: F3 { x: xs_mod(r >> 16, 9) as f32,
-                                            y: xs_mod(r >> 24, 9) as f32,
-                                            z: xs_mod(r >> 32, 9) as f32 } },
+        local: Xf { m: rotation(r), t: float3 { xs_mod(r >> 16, 9) as f32,
+                                               xs_mod(r >> 24, 9) as f32,
+                                               xs_mod(r >> 32, 9) as f32 } },
         world: IDENT,
         kids: [] });
     if depth == 0 { return nd; }
@@ -83,7 +82,7 @@ fn compose(p: Xf&, l: Xf&, w: Xf&) {
 
 recursive fn update(n: SNode&, parent: Xf&) {
     compose(parent, n.local, n.world);
-    for i in n.kids.len { update(n.kids[i], n.world); }
+    for k in n.kids { update(k, n.world); }
 }
 
 fn main() {

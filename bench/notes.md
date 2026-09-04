@@ -54,13 +54,13 @@ Measured with `size_of` and `sizeof`, or read off the packed declarations:
 |---|---:|---:|---:|
 | `tree` node | 12 arena / 24 `Box` | 12 arena / 24 `unique_ptr` | 12 |
 | `interp` node | 12 | 12, both `variant` and union | 5 leaf, 9 binary |
-| `sexp` node | 24 arena / 32 + heap | 24 arena / 64 + heap | variable, text inline |
+| `sexp` node | 24 arena / 32 + heap | 24 arena / 64 + heap | variable, text inline, 4-byte links |
 | `records` event | 32 + heap for `Say` | 48 + heap / 24 buffer | variable |
 | string header | `String` 24, `&str` 16 | `std::string` 32 | none: inline varint |
 | `lru` node | 16 arena, both rows | 16 arena / 24 `std::list` node + a map node, each malloc'd | 16 |
 | `lru` map slot | 8 (`HashMap` adds control bytes) | 8 / a 32-byte `unordered_map` node | 8 |
 | `scene` node | 120 arena / 128 + a `Vec` per node | 120 arena / 128 + a `vector` per node | 117 |
-| `calc` node | 12 arena / 24 `Box` + heap | 16 arena / 32 `unique_ptr` + heap | 2-3 number, 3 negate, 6 binary, 9 paren |
+| `calc` node | 12 arena / 24 `Box` + heap | 16 arena / 32 `unique_ptr` + heap | 2-3 number, 3 negate, 3 paren, 6 binary |
 | `bintrees` node | 8 arena / 16 `Box` + heap | 8 arena / 16 `new` + heap | 8 |
 | `respond` item | 24 `String` + 16 + heap | 32 `std::string` + 8 + heap | sku inline, 1 + 6 + 2 varint bytes |
 
@@ -72,44 +72,53 @@ one of the 16M elements is sized for `Say` whether it is a `Say` or not, and the
 text is a second allocation on top. That is the thing no amount of Rust skill
 removes, and it is what `records_fixed.goose` is the control for.
 
-The new rows add two layouts worth a sentence. A `scene` node in Goose is a
-117-byte record whose four child links are 4-byte offsets in a limited array
-inside the record (spec 5.3, 3.9): the whole scene is one contiguous,
-position-independent block. The arena rows in both other languages reach the
-same 120 bytes with `uint32` indices -- and their idiomatic rows pay a heap
-`vector`/`Vec` per node for the children on top of 128. A `calc` binary node
-is 6 bytes: a tag, an operator byte and two 2-byte relative references,
-because a per-input tree never spans more than a few hundred bytes; the
-arenas' `u32` links make it 12-16 and the owning-pointer rows 24-32 plus a
-heap block per node.
+Three of the Goose layouts have no counterpart at all. A `sexp` node is as big
+as its variant needs, with its symbol bytes inline behind a varint length and
+its two links 4-byte offsets into the pool -- 1.3x smaller than the same
+program with 8-byte links, which is what a language that cannot make a null
+link relative would be stuck with. A `scene` node is a 117-byte record whose
+four child links are 4-byte offsets in a limited array inside the record (spec
+5.3, 3.9), so the whole scene is one contiguous, position-independent block;
+the arena rows in both other languages reach the same 120 bytes with `uint32`
+indices, and their idiomatic rows pay a heap `vector`/`Vec` per node for the
+children on top of 128. A `calc` binary node is 6 bytes -- a tag, an operator
+byte and two 2-byte relative references, because a per-input tree never spans
+more than a few hundred bytes -- where the arenas' `u32` links make it 12-16
+and the owning-pointer rows 24-32 plus a heap block per node.
 
 ## Reading the toolchain table
 
 The two backends are within 10% on most rows and neither dominates. The gaps
 that remain:
 
-* **clang vectorises what v145 does not.** `blur cpp row pointers` is the
-  largest gap in the suite at 1.81x (552 vs 305 ms): the `__restrict` rows
-  vectorise under clang and stay scalar under v145. `particles cpp SoA` is
-  the same story at 1.64x. The Goose `blur_rows` form is 1.15x for the same
-  reason, and it is the one place where the bounds-check pass matters more
-  under v145 than under clang (see the next section).
-* **v145 is better at `std::vector::push_back`.** `push cpp vector+reserve` is
-  0.64 -- v145 196 ms against clang 306. clang also trails on both `interp`
-  arena rows.
-* **clang is consistently 10-20% ahead on string, hash and float-and-pointer
-  work**: `words`, `strlist`, `records variant+string`, `sexp unique_ptr`,
-  `respond` (both C++ rows, 1.17-1.22x), `calc cpp arena` (1.15x), and
-  `scene`, where it is 1.24x on the Goose row and 1.09x on the C++ arena.
-* On Goose's own rows: `records` and `interp` favour v145 (0.89 and 0.90),
-  everything string-shaped favours clang by 4-8%, `lru` favours clang by
-  1.53x (its pool-relative loads are a base-plus-offset that clang schedules
-  and v145 does not), and `blur` in its flat form is the largest gap in the
-  suite at
-  7.6x (2,026 against 268 ms), because the hoisted views let clang vectorise
-  around the checks that v145 will not. Two conclusions change with the
-  backend: `scene` is a tie against Rust under clang and a 19% loss under
-  v145, and `bintrees` is a tie under v145 and a 19% loss under clang.
+* **clang vectorises what v145 does not.** Goose's flat `blur` is the largest
+  gap in the suite at 7.5x (2,042 against 271 ms), and the next two are the
+  C++ `__restrict` row of the same kernel at 1.83x and `particles cpp SoA` at
+  1.60x. The Goose `blur_rows` form is 1.15x for the same reason. What the
+  bounds-check section takes apart is that these are two different effects
+  wearing one number: v145 will not vectorise a checked loop at all, and clang
+  will, but neither hoists a fat reference's header out of a loop that stores
+  through another one.
+* **v145 is better at recursion into a bump allocator, and at
+  `std::vector::push_back`.** `bintrees` reads 0.82 on the Goose row and 0.72
+  on the C++ `new`/`delete` one; `push cpp vector+reserve` is 0.64 (197 ms
+  against 306). clang also trails on both `interp` arena rows and on `sum`.
+* **clang is consistently 5-25% ahead on string, hash, allocator and
+  float-and-pointer work**: `words` (1.18 on both hand-rolled and
+  `unordered_map`), `strlist` (1.05-1.09), `records variant+string` (1.14),
+  `sexp unique_ptr` (1.14), `respond` (1.14 and 1.23 on the two C++ rows),
+  `calc cpp arena` (1.16), and `scene`, where it is 1.24 on the Goose row and
+  1.10 on the C++ arena.
+* On Goose's own rows: `records` and `interp` favour v145 (0.89 and 0.94), the
+  string- and pool-shaped rows favour clang by 6-10%, `graph`'s CSR row by
+  1.19, and `lru` by 1.70 -- its pool-relative loads are a base-plus-offset
+  that clang schedules and v145 does not.
+
+Four conclusions change with the backend, which is why every ratio in this
+report is given per backend: against the best safe Rust row, `lru` is 0.68x
+under v145 and 1.16x under clang, `graph` 0.99x and 1.18x, `scene` 0.77x and
+0.95x, and `bintrees` 0.98x and 0.81x -- the last of those the only one where
+v145 is the favourable side.
 
 ## Bounds-check elimination, measured
 
@@ -118,246 +127,150 @@ The compiler proves most index and slice checks away (spec 10.5).
 toolchains, at the size baked into each source file rather than the report's
 `large` one. `--no-bce` switches off more than the checks: the loop-view hoist
 decides whether a loop's array length is invariant by asking BCE's kill
-summary, so with the pass off the view is re-read every iteration too; the A/B
-measures both together.
+summary, so with the pass off the view is re-read every iteration too. The A/B
+measures both together, which matters on exactly one row and is stated there.
 
-| benchmark | index checks elided | slice |
-|---|---|---|
-| sexp | 11/12 | 0/1 |
-| graph_csr | 11/21 | 0/0 |
-| graph | 5/9 | 0/0 |
-| words | 2/10 | 3/3 |
-| strlist | 2/4 | 1/1 |
-| records | 0/1 | 0/0 |
-| calc | 20/22 | 0/0 |
-| scene | 12/13 | 0/0 |
-| respond | 1/1 | 3/3 |
-| lru | 0/19 | 0/0 |
-| blur | 0/10 | 0/0 |
-| blur_rows | 10/10 | 0/4 |
-| sum, push, tree, interp, particles, bintrees | no index expressions at all | |
+| benchmark | index checks elided | slice | v145 gain | clang gain |
+|---|---|---|---:|---:|
+| blur_assert | 10/10 | 0/0 | **+75%** | **+345%** |
+| blur_rows | 10/10 | 0/4 | **+147%** | +6% |
+| blur | 0/10 | 0/0 | -5% | **+303%** |
+| graph_csr | 10/20 | 0/0 | 0% | **+31%** |
+| graph | 4/8 | 0/0 | +5% | +11% |
+| scene | 12/12 | 0/0 | +6% | +1% |
+| sexp | 11/12 | 0/1 | +4% | +1% |
+| calc | 20/22 | 0/0 | +1% | +1% |
+| records | 0/1 | 0/0 | +1% | -1% |
+| respond | 1/1 | 3/3 | 0% | 0% |
+| strlist | 0/2 | 1/2 | -1% | +5% |
+| words | 0/8 | 3/4 | -12% | -5% |
+| lru | 0/15 | 0/0 | -13% | +10% |
+| sum, push, tree, interp, particles, bintrees | no index expressions at all | | | |
 
-What the A/B is worth, per side, best of the reps: `graph_csr` +5 to +17%
-under v145 and +0 to +4% under clang, `blur_rows` **+138% under v145 and
-nothing under clang**, and everything else inside noise: `graph` +0.8% and
-+1.1%, `sexp` +2.2% and -1.8%, `strlist` +0.6% and +3.7%, `words` -2.8% and
--3.8%, `records_var` -0.6% and +1.6%, `scene` -1.4% and +2.6%, `calc` -1.7% and
-+1.1%, `respond` +0.5% and +0.3%, `blur` 0.0% and -2.9%. `lru` reads -14% and
--12% -- the pass-on binary *slower* -- with the two C files byte-identical
-(nothing is elided in it), which puts the noise floor of that cache-bound row
-at about 15% and says nothing about the pass.
+`lru` and `words` read the pass-on binary *slower*, and `lru`'s two C files are
+byte-identical (nothing is elided in it), so that -13% is the noise floor of a
+cache-bound random-access row rather than a result. Everything between -5% and
++6% is in the same category.
 
-`blur_rows` is the first row where the pass is worth more than a few points,
-and the two backends explain it between them. Three variants of the kernel at
-W=2048, 16 passes, ms, best of three:
+**The rows where it matters are the image kernel and the CSR traversal**, and
+the two backends want different things from the pass. At W=2048, 16 passes, ms,
+best of four:
 
 | | v145 | clang |
 |---|---:|---:|
-| `blur`: `src[y*W + x]` through the array reference (0/10 elided) | 133 | 131 |
-| the same over a whole-array slice taken once (0/10 elided) | 132 | 31 |
-| `blur_rows`: row slices with `assert(len == W)` (10/10 elided) | 33 | 31 |
+| `blur`: `src[y*W + x]`, nothing elided | 141 | 33 |
+| `blur_assert`: the same plus `assert(src.len == W * W)`, 10/10 | 77 | 29 |
+| `blur_rows`: row slices with a length assert each, 10/10 | 32 | 30 |
+| any of the three with `--no-bce` | 134-79 | 131 |
 
-Under v145 the nine checks per pixel are what blocks vectorisation: with the
-checks gone the loop runs 4x faster, and where they are kept it does not
-matter whether the array is reached through a reference or a slice. Under
-clang the checks cost nothing -- it vectorises the checked slice loop as
-fast as the unchecked one, exactly as it does for the Rust `blur_index` row
-(10 `panic_bounds_check` sites in the asm and the same time as the checkless
-`windows` row) -- and the 4x is lost somewhere else: `src` and `dst` are fat
-references, every access reloads `src.hdr->base` and `src.hdr->len`, and a
-byte store through `dst` may alias those loads, so clang cannot hoist them.
-Both problems have since been taken up in the compiler. The loop-view hoist
-now reaches an array behind a fat reference when the loop body cannot change
-its length, which is the 6.9x on the `blur` row under clang this round; and
-the analysis proves `i * c + j` with `j < c` wherever `c * c` is a known
-length (`scene` went from 9/13 to 12/13). `blur` itself stays at 0/10 under
-v145, because `src.len == W * W` is a fact about the caller's array that
-`blur(src: u8[>..]&, ...)` never sees: one `assert(src.len == W * W)` at the
-top of the kernel proves all ten (the `blur_assert` variant, 2.1x under v145,
-7.0x under clang), and carrying such lengths across calls is the first item
-on the compiler list below.
+Under v145 the nine checks per pixel are what blocks vectorisation: proving
+them away is worth 1.85x on the flat kernel and another 2.4x on the row-slice
+form, and where they are kept the loop stays scalar however the array is
+reached. Under clang the checks cost nothing at all -- it vectorises the
+checked loop as fast as the unchecked one, exactly as it does for the Rust
+`blur_index` row, which keeps ten `panic_bounds_check` sites in its assembly
+and runs at the speed of the checkless `windows` row. What clang needs instead
+is the *loop-view hoist*: `src` and `dst` are fat references, so without it
+every access reloads `src.hdr->base` and `src.hdr->len` and a byte store
+through `dst` may alias those loads. That is the +303% on the `blur` row, where
+no check is elided at all, and it is why the flat kernel is level with flat
+Rust under clang and 7x behind it under v145.
+
+`blur` stays at 0/10 under v145 for one reason: `src.len == W * W` is a fact
+about the caller's array that `blur(src: u8[>..]&, ...)` never sees. One
+`assert(src.len == W * W)` at the top of the kernel proves all ten and takes
+the row from 141 to 77 ms; carrying such lengths across calls is the first
+item on the compiler list below.
 
 **Every check that survives elsewhere is an index that came out of memory.**
-`dist[u]` where `u = q[qh]`, `dist[w]` where `w = cur.to`, `out[fill[s]]` in
-the CSR fill, `pool[slots[at].idx]` throughout `lru`, `n.kids[i]` in `scene`
-(the loop bound is the same length, but the recursive call in the body is an
-unknown callee that may reach `n`, so the fact is killed). The analysis gets
+`dist[u]` where `u = q[qh]`, `dist[w]` where `w = cur.to`, `out[cursor[s]]` in
+the CSR fill, `pool[slots[at].node]` throughout `lru`. The analysis gets
 everything derived from loop counters, lengths, constant masks and reductions,
 and nothing that was loaded from a data structure -- which is what
-`test/bce.goose` documents. `blur` added a second class, an index that is a
-*product* of two counters; the difference-constraint domain now carries
-one-shot product and two-term-sum bases for that idiom, so `y * W + x < W * W`
-is provable wherever `W * W` is a known length.
+`test/bce.goose` documents. `blur` adds a second class, an index that is a
+*product* of two counters; the difference-constraint domain carries one-shot
+product and two-term-sum bases for that idiom, which is also what takes `scene`
+to 12/12.
 
-Four rewrites were tried last round to see whether any natural form unlocks
-the loaded-index checks, and none is worth adopting: making `graph`'s arrays
-globals (still 5/9: the invariant would have to hold on array *contents*),
-deriving `words`'s mask from `slots.len` (3/10), using the documented `%`
-reduction (3/10: the range fact does not survive the loop back-edge), and one
-`assert` at the top of the probe loop (9/10) -- all four timing within noise
-of each other, because those checks are perfectly predicted branches on values
-already in registers. This round the contents invariants themselves were
-implemented and measured (`adoption.md` 2.5c): `graph` 5/9 to 8/9, `graph_csr`
-11/21 to 17/21, and no measurable time on either row, so the branch was
-dropped. The blur measurement above is the counterexample: a check per load
-in a loop that would otherwise vectorise is not free at all.
+Rewrites were tried to see whether any natural form unlocks the loaded-index
+checks, and none is worth adopting: making `graph`'s arrays globals (the
+invariant would have to hold on array *contents*), deriving `words`'s mask
+from `slots.len`, using the documented `%` reduction (the range fact does not
+survive the loop back-edge), and one `assert` at the top of the probe loop --
+all four timing within noise of each other, because those checks are perfectly
+predicted branches on values already in registers. Array-contents invariants
+themselves were implemented and measured, and bought elisions on the two
+`graph` rows with no measurable time on either, so they were dropped. The
+`blur` measurement above is the counterexample: a check per load in a loop that
+would otherwise vectorise is not free at all.
 
-## What this round changed in the compiler
+## What the standard library costs the benchmarks
 
-Thirteen of the sixteen items in `plan.md` landed, each built and measured on
-its own branch first; `adoption.md` has the per-item numbers, code size and
-verdicts. Baseline `caf3b65` against the landed compiler on every Goose row
-of the suite, `large`, best of five interleaved, both toolchains, at the
-2 GB reservation that is now the harness default:
+Eight of the sixteen benchmarks reach into `stdlib/` wherever the library says
+what the hand-written code said. Each adoption was measured on its own, at the
+`large` size, both toolchains, best of three interleaved runs, against the
+hand-written form it replaced (above 1.00 means the library form is faster):
 
-| row | v145 | clang | row | v145 | clang |
-|---|---:|---:|---|---:|---:|
-| sum | 0.99 | 0.99 | particles | 1.00 | 1.06 |
-| push | 1.00 | 1.01 | particles_scalar | 1.00 | 1.07 |
-| strlist | 1.00 | 0.98 | sexp | 1.00 | 1.05 |
-| records_var | 1.04 | 1.09 | lru | **1.13** | **1.14** |
-| records_fixed | 1.01 | 1.00 | scene | 1.01 | 0.99 |
-| tree | 1.05 | 0.98 | calc | 1.04 | 1.06 |
-| interp | 1.00 | 0.99 | bintrees | **1.53** | **1.37** |
-| graph | 1.03 | 1.01 | respond | 1.08 | 1.09 |
-| graph_csr | 0.99 | 1.06 | respond_stream | 1.00 | 1.00 |
-| words | 1.01 | 1.03 | blur | **0.94** | **6.85** |
-| | | | blur_rows | 1.00 | 1.00 |
+| row | what it uses | v145 | clang |
+|---|---|---:|---:|
+| `strlist` | `each_split` | 1.04 | 1.07 |
+| `words` | `each_split`, `hash`, `next_pow2`, `push_n` | 1.01 | 1.03 |
+| `graph`, `graph_csr` | `fill` | 0.98 | 1.04 |
+| `lru` | `next_pow2`, `push_n` | 1.03 | 0.98 |
+| `sexp` | `format_int` | 1.00 | 1.01 |
+| `respond`, `respond_stream` | `hash` | 1.00 | 1.00 |
+| `particles`, `particles_scalar`, `scene` | `vec`'s `float3` | 0.99 | 1.00 |
 
-Where it comes from. `bintrees` is three optimizer items on the same
-recursion -- the base case inlined at each self-call, the pool's stack top
-cached through the fat reference, accumulator tail-recursion elimination --
-and it lands on the Rust arena under v145. `lru` is the range check no longer
-emitted for a `u32` link into a stack under 2 GB, plus tops no longer cached
-for stacks only callees grow. `respond` and `records` are inlined named
-results built at their destination instead of copied. `calc` and `sexp` are
-the `return from` discriminant moved out of every call's out-parameter into
-one thread-local, and a one-byte fast path for length prefixes. The float
-kernels recover last round's 6% clang loss because a stack's top is now
-cached only across the loops that grow it. `blur` under clang is the
-loop-view hoist reaching fat references; under v145 the same row is 6%
-slower, because the nine checks stay (above) and the hoisted views are two
-more live values.
+So the library is free where it was adopted, and on two rows slightly better
+than the loop it replaced. `words` additionally keeps a whole second row,
+`words_dictionary.goose`, which throws the hand-rolled table away and counts
+into `dictionary<u8[:], i32>`: that one is a data-structure comparison, not a
+notation one, and the per-benchmark table has it.
 
-Landed without a suite change: `self` as a relative-reference initializer
-(sentinel-linked lists with non-optional links; `lru_nonopt` 1.10x under
-v145), `pop`, `resize` and `clear()` on a grow-only local where nothing can
-be rooted in it (spec 5.1 now defines grow-only as "never shrinks while a
-reference or slice into it can be live"), the return roots of a recursive
-cycle computed before its back edges (which
-retires the Paren workaround below and closes a soundness hole), and three
-pre-existing codegen bugs the branches surfaced. Two items were implemented,
-measured and dropped: array-contents invariants (nothing measurable) and
-merged tag dispatch (1%).
+Three things were measured and *not* adopted, which is the other half of the
+result:
 
-After the round, three things followed from it. The pool-relative question
-was settled at the language level (`docs/relative_references.md`): spec 3.9
-gained the `in pool` form -- an offset from a named global pool's base,
-with `index_of` to turn a reference back into a pool index -- and `lru` was
-rewritten onto it (see "Where Goose loses"). A reference read back out of a
-container is now rooted at the storage that can own it, exactly where one
-candidate can (§9.5), which is what the `in pool` store rule needs and what
-removed the laundering finding below. And `pop`/`resize` joined `clear` on
-grow-only locals.
+* **`format_int` in `respond` and `respond_stream`** costs 3-5% under v145
+  against the hand-written digit loop, and nothing under clang. Most of the
+  original gap was `format_uint` dividing by its `base` parameter -- a real
+  division per digit where the hand-written loop divides by the constant 10 --
+  and giving base ten its own loop in the library recovered about half of it.
+  What is left is the extra call layer and the padding branch on a row that
+  renders four numbers per request and does nothing else expensive. `sexp`,
+  which formats one number per node among much other work, does not notice.
+* **`push_n` in `graph` and `graph_csr`** costs 2-3%: the generic `push` loop
+  does not compile to the specialised one, and it also makes the destination
+  array's length unprovable to the bounds-check pass a few statements later.
+  `fill` alone, which is where the readability was, is free.
+* **`push_n` of a value containing self-relative references** does not compile
+  at all -- `push_n<A, T>(xs: A&, v: T, n: i64)` takes its value by value, and
+  such a value cannot be copied (spec 3.9). `graph`'s edge-head fill stays a
+  loop for that reason. A `T&` parameter would not help either: the library
+  would still be copying out of it.
 
-## What writing the benchmarks changed in the compiler
-
-Nothing in that round was an optimisation. Writing the six new benchmarks
-found one typechecker restriction that made two of them inexpressible and five
-codegen bugs, all fixed in this commit and all covered by tests
-(`test/errors_tc/cycle_pool_swap.goose`, `cycle_local_store.goose`, and the
-`layouts()` section of `test/codegen_exec.goose`):
-
-* **Pool parameters may be stored inside a recursive cycle.** The cycle store
-  rule (spec 7.8) was implemented as "only globals", so a recursive builder
-  could only build into a global pool: `calc`'s per-input arena and
-  `bintrees`' per-tree arena could not be written with references at all. A
-  reference parameter whose pointee is resizable-class cannot point at any
-  cycle function's own storage (no cycle function may own one), so such a
-  parameter root class is now exempt; the back edge must pass the same pools
-  the entry call did, which the checker enforces.
-* **Pushing a reference into a limited array of relative references stored
-  the raw pointer** (`scene`'s `nd.kids.push(c)`); it stores the offset now.
-* **An inlined call used directly as a varint field initialiser** hit an
-  assertion in codegen (the value temp took the varint's storage type).
-* **A `T[]` call result landing in a `T[varint]` slot kept the callee's
-  layout** (`respond`'s `items: make_items(...)`), and the same mismatch
-  through the inliner wrote the wrong prefix; the receiver now re-prefixes the
-  element run. While fixing it: a resizable local returned by NRVO as a
-  variable array had never had its length prefix written in the non-inlined
-  value form -- latent in every `fn f() -> u8[]` with a `u8[>..]` local that
-  was too big to inline.
-* **A fixed struct holding a plain reference to its own type** (`lru`'s
-  plain-reference variant, `struct Node { next: Node? }`) emitted a C typedef
-  that used its own name before declaring it. Struct-like types now get a
-  forward typedef when first named, so a pointer to one needs only the name.
-
-The existing ten benchmarks were re-run through the same compiler and every
-row landed within the documented noise of the previous update: the Goose rows
-within 4% at the `large` size, the arena and CSR rows likewise, the
-malloc-bound rows by up to 19% (`interp cpp virtual`), which is the
-reproducibility caveat below rather than a change. The machine itself was
-slower to start a process this time -- the empty-program floor was 13 ms
-against 4.6, for Goose and C++ alike -- which moved every `small` cell by
-about 8 ms and nothing else.
-
-Last round's per-commit A/B of the codegen work (`171bf6a` to `dc992a2`)
-stands: caching each data stack's top in a local (`432f8ce`) was worth 6-14%
-on the push-heavy rows under both backends and cost both float kernels about
-6% under clang, and dropping the null test on non-optional relative loads
-(`a8c9f69`) about 5% on `push` under v145. Those numbers were measured with
-`-falign-loops=32` on both sides and are not repeated here.
-
-## Recommended compiler work, in order of measured payoff
-
-Last round's list of eight is done: six landed (the view hoist through
-references, product indices, per-loop top caching, cheaper relative links,
-cycle return roots, tail-recursion elimination), and two were implemented,
-measured and dropped (contents invariants, dispatch merging). `plan.md` is
-the analysis behind this round and `adoption.md` the per-item outcome. What
-remains, with what it is worth:
-
-1. **Carry array lengths across calls.** `blur` keeps its nine checks per
-   pixel under v145 (2.1x on that row) only because `src.len == W * W` is
-   known in `main` and not inside `blur`; either an interprocedural length
-   fact for reference parameters, or the analysis treating a caller-side
-   `assert` as a precondition of the callee.
-2. **Decide what a compressed reference denotes.** Pool-relative offsets
-   (`--relref-base` on `opt/pool-relative`) recover 1.41x on `lru` under
-   clang and 1.18x on `graph`, cost hot recursion 4-7% where the base must
-   travel as a hidden argument, and can decode a reference read back out of a
-   container only where the read-back rule (spec 9.5) names one candidate
-   pool. The principled form makes the pool part of the reference's type,
-   which needs no such derivation; that is a language decision, not a
-   compiler one.
-3. **Inline a base case that is not the first statement** (`scene`,
-   `interp`), and match expression-bodied folds (`if c { 0 } else { 1 + f(x) }`)
-   in tail-recursion elimination.
-
-Three plausible-sounding ideas were measured earlier and should **not** be
-done: dropping `#pragma pack(1)` where the layout is already gap-free (no
-difference on either backend), fusing an *optional* relative-reference load
-with its null test (both backends get worse), and rewriting benchmark code so
-the bounds-check pass can prove loaded indices (buys nothing).
+The library also has to be reachable from the benchmarks' own names. There is
+one namespace, so a local named `fill` shadows `std`'s and the error lands at
+the call rather than at the declaration; `graph_csr`'s CSR write cursor is
+called `cursor` for that reason, which is also what it is.
 
 ## Where Goose loses
 
-**Relinking through self-relative references was the clearest loss; pool-
-relative links close it under clang.** `lru` is the first benchmark in the
-suite that mutates links rather than building them once. With self-relative
-links and index slots it was 1.5x behind the Rust and C++ arenas; with spec
-3.9's `in pool` form -- 4-byte offsets from the pool's base in the nodes and
-in the 8-byte map slots, `pool.free(pool.index_of(n))` closing the loop --
-the row is 3,255/2,133 ms against the Rust arena's 2,237 and the C++
-arena's 2,413/2,261: level with both under clang, 1.45x behind under v145,
+**Relinking through relative references is the mutation-heavy case, and the
+pool-relative form is what makes it competitive.** `lru` is the one benchmark
+in the suite that mutates links rather than building them once. With
+self-relative links and index slots it is 1.5x behind the Rust and C++ arenas;
+with spec 3.9's `in pool` form -- 4-byte offsets from the pool's base in the
+nodes and in the 8-byte map slots, `pool.free(pool.index_of(n))` closing the
+loop -- the row is 3,751/2,205 ms against the Rust arena's 2,563 and the C++
+arena's 2,568/2,382: 1.16x ahead of both under clang, 1.46x behind under v145,
 on the least memory of the three. The index form is kept as
 `lru_indices.goose`; back to back it is level under v145 and 1.31x slower
-under clang. The same program written more ways last round, at the `large`
-size, all with the map holding indices:
+under clang. The same program written more ways, at the `large` size, all with
+the map holding indices:
 
 | links | node | v145 | clang |
 |---|---:|---:|---:|
-| `Node&<u32>?` self-relative (the row) | 16 | 3,738 | 3,189 |
+| `Node&<u32>?` self-relative | 16 | 3,738 | 3,189 |
 | `Node&<u64>?` self-relative, no range check | 20 | 3,573 | 2,881 |
 | `Node?` plain references | 24 | 2,557 | 2,352 |
 | `i32` indices, `pool[i]` bounds-checked (the Rust shape) | 16 | 2,397 | 2,266 |
@@ -375,45 +288,39 @@ benchmarks (`tree`, `interp`, `sexp`, `scene`, `bintrees`) the same links cost
 nothing measurable against indices, so this is specifically the relink
 pattern. The pool-relative form replaces the field-address subtraction with
 one from a base held in a register, and the load with `base + off`; clang
-schedules that far better than v145, which is the 1.45x that remains, now a
-backend gap. The build-once benchmarks keep self-relative links, whose
-position independence they want and whose cost against indices there is
-nothing measurable.
+schedules that far better than v145, which is the 1.70x between the two
+backends on this row and the whole of what is left. The build-once benchmarks
+keep self-relative links, whose position independence they want and whose cost
+against indices there is nothing measurable.
 
-**Recursive construction was where the C backends fell behind rustc, and
-three optimizer items closed most of it.** `bintrees` builds and discards
-34M nodes in recursive calls; last round Goose and the C++ vector arena
-landed together (353-397 ms) with the Rust arena 1.6x ahead of both. With
-the base case inlined at each self-call, the pool's stack top held in a
-register through the fat reference, and the accumulator tail call turned
-into a loop, Goose is at 244 ms under v145 against the Rust arena's 232 and
-the C++ arena's 387; under clang, which already did the tail call, 286
-against 232. `tree` -- the same node built once and summed eight times --
-has Goose 7% ahead of the Rust arena. `calc` is the same story at a smaller
-scale, 0.82x of the Rust arena from 0.78x: the `return from` discriminant
-now lives in one thread-local instead of travelling through every call
-(4%), and what remains is the global cursor and a varint decode on values
-that mostly need two bytes, where the one-byte decode fast path buys nothing.
+**Recursive construction is where the C backends can fall behind rustc.**
+`bintrees` builds and discards 34M nodes in recursive calls: Goose lands at
+232 ms under v145 against the Rust arena's 228 and the C++ arena's 388, and at
+282 under clang against the same 228. The C++ arena is behind Goose under both
+backends, so what the clang column measures is what LLVM makes of rustc's
+recursion against what it makes of the same shape written in C. `tree` -- the
+same node built once and summed eight times -- has Goose 3-5% ahead of the
+Rust arena. `calc` is the same story at a smaller scale, 0.82-0.86x of the
+Rust arena: what remains there is the global cursor, the `return from`
+discriminant and a varint decode on values that mostly need two bytes.
 
-**Flat scalar kernels lose to C++ on aliasing under v145 and to nobody on
-data.** `blur` in its obvious form is 1.9x behind flat C++ under v145 and
-level with flat Rust under clang (268 against 292 ms), for the two
-backend-specific reasons the bounds-check section takes apart, and level
+**Flat scalar kernels lose to v145's refusal to vectorise a checked loop, and
+to nobody on data.** `blur` in its obvious form is 1.9x behind flat C++ under
+v145 and 1.07x *ahead* of flat Rust under clang (271 against 291 ms), for the
+two backend-specific reasons the bounds-check section takes apart, and level
 with both once written over row slices. `particles` is 2-5% behind Rust on
-identical memory; last round's stack-top caching cost is gone (the top is
-cached only across loops that grow the array now) and what is left is
-within the noise of the row. There is no Goose advantage on either and the
-design did not predict one.
+identical memory, which is within the noise of the row. There is no Goose
+advantage on either and the design did not predict one.
 
 **Pointer-linked adjacency loses to CSR, in all three languages.** On `graph`
-the one-pass linked build is 5-6x slower to traverse than two-pass
+the one-pass linked build is 5x slower to traverse than two-pass
 count-then-fill, in every language. The Goose CSR row exists to show this is
 a data-structure effect rather than a language one, and Goose writes CSR
-level with both.
+level with both -- 943/794 ms against C++'s 882/855 and Rust's 935.
 
 **And v145 is a worse backend for the float-and-pointer mix than clang.**
-`scene` is level with the Rust arena under clang and 24% behind under v145,
-with the C++ arena 9% behind its own clang build on the same row; padding the
+`scene` is 5% behind the Rust arena under clang and 30% behind under v145,
+with the C++ arena 10% behind its own clang build on the same row; padding the
 117-byte node to 120 changes nothing, so it is not the packed layout.
 
 ## Caveats on these numbers
@@ -435,81 +342,64 @@ with the C++ arena 9% behind its own clang build on the same row; padding the
   are the ones the headline ratio rests on.** Running the whole harness twice
   back to back, the Goose rows land within 3% of themselves, and so do the
   arena and CSR rows in every language -- but the malloc-bound rows move by up
-  to 23%. A change in the "vs idiomatic" geometric mean of less than about
-  10% between rounds means nothing at all, and a single suite run is not
-  enough to attribute a change to the compiler; that wants a per-commit A/B
-  built from the same sources minutes apart, with `-falign-loops=32` under
-  clang so a shifted hot loop cannot masquerade as a codegen change.
+  to 23%. A difference in the "vs idiomatic" geometric mean of less than about
+  10% means nothing at all, and a single suite run is not enough to attribute
+  a change to the compiler; that wants a per-commit A/B built from the same
+  sources minutes apart, with `-falign-loops=32` under clang so a shifted hot
+  loop cannot masquerade as a codegen change.
 * This CPU has a very large L3, so `small` and `medium` can sit entirely in
   cache. The `large` rows are the ones that stress the memory subsystem, and
   `calc`, `respond` and `bintrees` never leave it by design: their working
   set is one input, one request, one tree.
-* The process-start floor is not constant between runs: 13 ms this time
-  against 4.6 last time, for every language alike. It is inside every `small`
-  cell, so read those as differences from the floor, and read ratios only at
-  `large`.
+* The process-start floor is not constant between runs, and it is inside every
+  `small` cell, so read those as differences from the floor and read ratios
+  only at `large`.
 * Rust rows are a single rustc time, not one per backend. rustc is LLVM, so
   the clang column is the one they are most directly comparable with; the
   Goose-vs-Rust ratios are reported against both Goose builds anyway.
 
-## What writing these taught us about the language
+## What the benchmarks say about the language
 
-Findings from implementing and maintaining the benchmarks, independent of how
-fast anything ran. The six new benchmarks were chosen to reach the parts of
-the language the first ten did not -- `reusable` pools, per-input arenas
-inside recursion, `return from` as a taken error path, inline child arrays,
-DTOs with nested variable-size parts -- and most of what follows came out of
-that.
+Findings from writing and maintaining the sixteen benchmarks, independent of
+how fast anything ran. Between them they reach `reusable` pools, per-input
+arenas inside recursion, `return from` as a taken error path, inline child
+arrays, DTOs with nested variable-size parts, and the standard library.
 
-**Fixed this round:** a reference read back out of a container is rooted at
-the storage that can own it -- a candidate variable of the enclosing scope
-that holds its pointee type by value -- rather than at the container, so a
-sole candidate is that pool exactly and the reference still links relatively
-into it (measured first as a variant of `lru` with plain `Node&?` in 16-byte
-slots: 1.11-1.13x slower under v145 and 1.09x under clang than indices, for
-the bigger slots and nodes, which is why the map's links became
-pool-relative rather than plain).
+**What works without friction:** grow-only pools with interior references,
+relative references inside a single root, variable-mode ADTs with inline
+variable-size payloads, case functions as the dispatch mechanism, `reusable`
+pools with sentinel-linked lists, limited arrays of relative references inside
+pool elements, a DTO with a variable-size string and an inline list of
+variable-size records built by a function returning straight into the field,
+`return ... from` taken on a third of all inputs from three levels of
+recursion, per-input local pools reset by scope exit, and a recursive builder
+building into a pool it is handed by reference.
 
-**Fixed the round before:** a recursive cycle's return roots are known before
-its back edges (spec 7.8), so a mutually recursive parser can store the result
-of a back-edge call relatively -- `calc` no longer needs its Paren node
-(`calc_noparen.goose`, 1.04-1.09x; the row keeps it so the node counts match
-the other languages); a grow-only local may be popped, resized or cleared
-where nothing can be rooted in it, so a per-iteration scratch buffer or a
-phase-by-phase stack can also be sliced; `self`
-constructs a self-referential sentinel, so a linked list can be non-optional
-throughout; a struct literal with relative-reference fields assigned into an
-element, or built through `alloc_index`, now measures its offsets from the
-final address.
+**What still bites:**
 
-**Fixed two rounds before** (details in the compiler section above): recursive
-builders can build into a pool passed by reference; references push correctly
-into limited arrays of relative references; call results and inlined values
-land in `varint`-length slots with the right layout; a fixed struct may refer
-to its own type.
-
-**Fixed earlier, by the sized-integer change:** `varint` fields accept
-computed values; compound assignment to narrower storage works; field
-initialisers need no `as` from a value the compiler can see is in range.
-
-**Still open, re-verified against the current compiler:**
-
-* **A `null`-reachable optional is rooted at static data**, which is why
-  `sexp`'s links are still plain 8-byte references.
 * **Inline child arrays need their count at construction.** The A.2 shape
   `(T&<u32>)[varint]` is only reachable when the children exist before the
   parent is built and their number is known; a builder that discovers them
   as it goes uses a limited `[..k]` array inside a fixed-size node (`scene`,
   17 bytes for four links) or sibling links (`sexp`).
-* **Elements that are relative references iterate by index.** `for k in
-  n.kids` is a copy of a relative reference and is rejected; `for &k` yields a
-  reference to the slot, so the loop is written `for i in n.kids.len {
-  f(n.kids[i]) }`.
+* **A plain reference parameter cannot be stored relatively outside a
+  recursive cycle.** `fn link(prev: Node?) { pool.push(Node { next: prev }) }`
+  is rejected at any call site that passes a pool-rooted reference: the
+  parameter's root is its own per-call-site class, and nothing identifies that
+  class with the global the argument came from. Inside a `recursive` cycle the
+  pool-class machinery (spec 7.8) does make the identification, which is why
+  `sexp`'s parser can do exactly this. The same identification outside a cycle
+  is the natural fix.
 * **Arithmetic at the operands' width bites on `u8` data.** The first version
   of `blur` summed nine `u8` taps in `u8` and was a very fast non-blur; every
   tap needs `as u16`. C promotes to `int` silently and Rust would panic in a
   debug build; Goose wraps, as the spec says it will (6.2), but nothing in the
   source points at it.
+* **A negative literal through a generic parameter takes `i64`.**
+  `push_n(dist, -1, V)` on an `i32[>..]` fails inside the library, where the
+  bound `T` is `i64` and the push does not narrow; `push_n(dist, -1 as i32, V)`
+  works, and a plain `0` binds fine. The literal's type should follow the
+  destination through the instantiation.
 * **Two parses to know about.** `x as u64 & mask` reads `u64&` as a reference
   type (parenthesise the cast), and an `if`/`else if` chain that ends without
   an `else` in tail position is an error (write early returns).
@@ -522,23 +412,11 @@ initialisers need no `as` from a value the compiler can see is in range.
   links into the pool; `lru` on it is level with the arenas under clang. The
   encoding is a per-field decision: self-relative for blobs and for local
   pools, `in pool` for relink-heavy structures in a global pool.
-* **A fixed struct can hold references to its own type** (`struct Node {
-  next: Node? }`) -- the generated C had declared such a struct after its own
-  first use and did not compile; fixed this round with a forward typedef.
 * **Thread queues cannot carry a relative-reference structure** (not flat,
   TODO 9), and save/load needs the whole-region copy of TODO 16, so the two
   design.md advantages that remain unbenchmarked are unbenchmarkable today.
 
-**What worked without any friction:** grow-only pools with interior references,
-relative references inside a single root, variable-mode ADTs with inline
-variable-size payloads, case functions as the dispatch mechanism, `reusable`
-pools with sentinel-linked lists, limited arrays of relative references inside
-pool elements, a DTO with a variable-size string and an inline list of
-variable-size records built by a function returning straight into the field,
-`return ... from` taken on a third of all inputs from three levels of
-recursion, and per-input local pools reset by scope exit.
-
-## What writing the Rust benchmarks taught us
+## What the Rust implementations say about Rust
 
 Findings from implementing the suite in Rust, independent of how fast
 anything ran. The headline is that Rust is a much closer competitor than C++ on
@@ -611,7 +489,101 @@ complete before parsing starts.
 **LLVM removes what the Goose pass cannot, and keeps what it can.** Rust's
 `blur_index` row keeps ten `panic_bounds_check` sites in its assembly and
 runs as fast as the checkless `windows` row, because LLVM vectorises around
-them; the Goose flat row under the same LLVM is 4x slower for a different
-reason (the fat-reference reloads above). Conversely the Goose row-slice form
+them; the Goose flat row under v145 is 4x slower for a different reason (the
+nine checks stop MSVC vectorising at all). Conversely the Goose row-slice form
 elides everything at compile time and MSVC, which does not vectorise checked
 loops, then runs it 4x faster.
+
+## Where the Goose-Rust gap comes from, and where it can still move
+
+The sixteen rows split three ways by *why* the Rust comparison lands where it
+does, and only two of the three are worth working on.
+
+**Structural, and already banked.** Every row where Goose is clearly ahead is
+ahead for a reason Rust has no version of, not because the loop is tighter:
+
+* *Variable-mode enums.* `records` is 2.0-2.3x faster on 4.0x less memory
+  because an element costs its own variant rather than the largest one, and a
+  `Say`'s text is inline rather than a second allocation. `interp` and `sexp`
+  are the same property in a tree. Rust's enum is the best fixed-tag ADT of
+  the three languages and still pays max-payload per element; there is no
+  amount of skill that changes it.
+* *Variable-size parts inside a fixed-size parent.* `respond` builds a DTO
+  whose string, item list and per-item sku are all inline, renders it with no
+  allocation anywhere, and lands level with the streaming rows that never
+  build the object. The Rust DTO allocates per string and per list, per
+  request.
+* *References into a container that is still growing.* `push` has no safe Rust
+  spelling at all; `tree`, `graph`, `scene`, `bintrees` and `calc` have one
+  only as `u32` indices. Goose gets the arena's layout with the pointer
+  version's types.
+* *Links narrower than a pointer.* `sexp`'s nodes link with 4-byte offsets,
+  `calc`'s with 2-byte ones, `scene`'s four child links live in a 17-byte
+  array inside the node. Rust's arena reaches 4 bytes too -- as an index,
+  which is untyped, needs a sentinel slot, and goes stale silently when the
+  pool is reused.
+
+**Backend, not language.** `lru` under v145 (0.68x), `scene` under v145
+(0.77x), `bintrees` under clang (0.81x), and `blur`'s flat form under v145.
+In three of the four the C++ row built by the *same* toolchain loses in the
+same direction, so it is what MSVC or clang makes of a C shape, not what Goose
+asked for; `blur` under v145 is the bounds checks, which is a Goose pass and is
+item 1 below. Nothing here is closed by changing the language, and the ceiling
+is visible: each of these rows is already level under the other backend.
+
+**Design cost, paid on purpose.** The bounds checks that survive are indices
+loaded out of a data structure, which is exactly where a check is not
+redundant; `calc`'s `return from` discriminant is a real error path that the
+C++ error-code row also pays and the exception row pays far more for. These
+are not gaps to close.
+
+**What would extend the lead, in order:**
+
+1. **Carry array lengths across calls** (item 1 below). Under v145 it is
+   worth 1.85x on the flat image kernel, and it is the difference between
+   "Goose is fast if you write it in row slices" and "Goose is fast".
+2. **Identify a reference parameter's root class with its pool outside a
+   recursive cycle** (item 2 below). Narrow links are the memory advantage,
+   and today a structure linked by them can only be built by functions inside
+   the cycle that builds it. Lifting that makes the advantage available to
+   ordinary code rather than to parsers.
+3. **Cross-array narrow links, everywhere they typecheck.** `T&<u32 in pool>`
+   already lets a side table hold 4-byte links into a pool instead of indices
+   -- that is what `lru`'s map does, and a grow-only array of such links works
+   the same way, so `sexp`'s root list is a candidate. The idiom deserves to
+   be the default advice for a side table, not an `lru` special case.
+4. **Keep looking for places a root requirement is not really needed.** A
+   sentinel-ended chain does not force plain 8-byte links, because null needs
+   no root -- that alone is 1.3x of `sexp`'s memory. The same question is
+   worth asking of every rule that currently demands an exact root: what does
+   the *representation* actually require?
+
+## Compiler work, in order of measured payoff
+
+1. **Carry array lengths across calls.** `blur` keeps its nine checks per
+   pixel only because `src.len == W * W` is known in `main` and not inside
+   `blur(src: u8[>..]&, ...)`. One assert inside the kernel proves all ten and
+   is worth 1.85x under v145 (141 to 77 ms) and 1.11x under clang; the fix is
+   either an interprocedural length fact for reference parameters, or the
+   analysis treating a caller-side `assert` as a precondition of the callee.
+2. **Identify a reference parameter's root class with the pool it came
+   from, outside a recursive cycle too.** A non-recursive function that takes
+   a `Node?` and stores it into a `Node&<u32>?` field of the same pool is
+   rejected today, though the identical code inside a `recursive` cycle is
+   accepted; the cycle machinery already computes what is needed. This is what
+   stops a linked structure's helper functions from being factored out of the
+   cycle that builds it.
+3. **Specialise the library's element loops.** `push_n` costs 2-3% against the
+   `for` loop it replaces and blocks a bounds-check elision downstream, which
+   is the whole reason two benchmarks kept their loops. The generic form
+   should compile to what the loop compiles to.
+4. **Inline a base case that is not the first statement** (`scene`,
+   `interp`), and match expression-bodied folds (`if c { 0 } else { 1 + f(x) }`)
+   in tail-recursion elimination.
+
+Ideas that were measured and should **not** be done: array-contents invariants
+for the bounds-check pass (more elisions, no measurable time), merging tag
+dispatch (1%), dropping `#pragma pack(1)` where the layout is already gap-free
+(no difference on either backend), fusing an *optional* relative-reference load
+with its null test (both backends get worse), and rewriting benchmark code so
+the bounds-check pass can prove loaded indices (buys nothing).

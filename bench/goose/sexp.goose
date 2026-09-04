@@ -8,24 +8,26 @@
 // means the walk sees each list's children in reverse source order, which the
 // C++ rows reproduce exactly so the checksums line up.
 //
-// The links are plain references rather than relative ones -- forced by the
-// current implementation rather than chosen (see the notes in bench/notes.md)
-// -- which costs this benchmark memory it should not have to spend.
+// Every link is a 4-byte self-relative offset into the pool, including the
+// sentinel end of a sibling chain: a null relative reference is the zero
+// offset, which needs no root, so a chain that ends in null is still
+// relative throughout (spec 3.9).
 //
 // The parser carries a `return from` error path (spec 7.9) it never takes on
 // this input, which is the honest thing to measure: real parsers have one,
 // and it costs a discriminant check on every return in the cycle.
 
 import rng;
+import std;
 
 let N = 200000;                          // BENCH_N
 let DEPTH = 4;
 let PASSES = 4;
 
 enum Sexp {
-    Sym  { name: u8[varint], next: Sexp..? },
-    Num  { v: varint, next: Sexp..? },
-    List { first: Sexp..?, next: Sexp..? },
+    Sym  { name: u8[varint], next: Sexp..&<u32>? },
+    Num  { v: varint, next: Sexp..&<u32>? },
+    List { first: Sexp..&<u32>?, next: Sexp..&<u32>? },
 }
 
 var text: u8[>..] = [];
@@ -34,15 +36,6 @@ var pool: Sexp..[>..] = [];
 var roots: Sexp..&[>..] = [];
 
 // --- generation --------------------------------------------------------------
-
-fn emit_num(v: i64) {
-    var d = v;
-    if d == 0 { text.push('0'); return; }
-    var tmp: u8[..24] = [];
-    while d > 0 { tmp.push(('0' + d % 10) as! u8); d /= 10; }
-    var i = tmp.len;
-    while i > 0 { i--; text.push(tmp[i] as u8); }
-}
 
 fn emit_sym(seed: u64) {
     var r = seed;
@@ -57,7 +50,7 @@ recursive fn gen(depth: i64, seed: u64) -> u64 {
     var r = xs_next(seed);
     if depth == 0 || xs_mod(r, 4) == 0 {
         if xs_mod(r >> 8, 2) == 0 { emit_sym(r); }
-        else { emit_num(xs_mod(r >> 16, 100000)); }
+        else { format_int(text, xs_mod(r >> 16, 100000), 10, 0, ' '); }
         text.push(' ');
         return r;
     }

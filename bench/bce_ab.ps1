@@ -11,13 +11,18 @@
 
 param(
     [string[]] $Names = @("graph", "graph_csr", "words", "strlist", "sexp", "records_var",
-                          "lru", "scene", "calc", "respond", "blur", "blur_rows"),
+                          "lru", "scene", "calc", "respond", "blur", "blur_assert",
+                          "blur_rows"),
     [int]      $Reps = 4,
     [string]   $Exe = "$PSScriptRoot\..\build\Debug\goose.exe",
     [string]   $Dir = "$PSScriptRoot\gen\bce"
 )
 
 $ErrorActionPreference = "Stop"
+# The C compilers below redirect their output into a log; under "Stop",
+# PowerShell 5.1 turns each redirected stderr line from a native exe into a
+# terminating error, so one compiler warning would abort the run.
+$quiet = "Continue"
 
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $vsroot = & $vswhere -latest -prerelease -property installationPath 2>$null
@@ -45,6 +50,7 @@ function Time-It([string]$path, [int]$reps) {
 }
 
 $rows = @()
+$ErrorActionPreference = $quiet
 foreach ($n in $Names) {
     Copy-Item "$PSScriptRoot\goose\$n.goose" $Dir -Force
     $row = @{ name = $n; stat = "" }

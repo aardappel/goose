@@ -10,12 +10,12 @@
 // backend does with association or FMA.
 
 import rng;
+import vec;
 
 let N = 200000;                          // BENCH_N
 let STEPS = 200;
 
-struct F3 { x: f32, y: f32, z: f32 }
-struct P { pos: F3, vel: F3 }
+struct P { pos: float3, vel: float3 }
 
 fn main() {
     var ps: P[>..] = [];
@@ -28,8 +28,7 @@ fn main() {
         let vx = (xs_mod(r >> 36, 256) - 128) as f32 / 16.0;
         let vy = (xs_mod(r >> 44, 256) - 128) as f32 / 16.0;
         let vz = (xs_mod(r >> 52, 256) - 128) as f32 / 16.0;
-        ps.push(P { pos: F3 { x: px, y: py, z: pz },
-                    vel: F3 { x: vx, y: vy, z: vz } });
+        ps.push(P { pos: float3 { px, py, pz }, vel: float3 { vx, vy, vz } });
     }
     for s in STEPS {
         for &p in ps {

@@ -1558,6 +1558,36 @@ fn main_codegen_exec() {
     bug_fixes();
     externs();
     aggregate_print();
+    relref_arrays();
+}
+
+// Relative references in a grow-only array of their own, and by-value
+// iteration of one (§3.9): the element stores the offset from its own slot
+// (here from the pool base), and binding it by value decodes it back.
+struct RRNode { id: i32, next: RRNode&<u32>? }
+var rrpool: RRNode[>..] = [];
+var rrrefs: (RRNode&<u32 in rrpool>)[>..] = [];
+
+fn relref_arrays() {
+    let a: RRNode& = rrpool.push(RRNode { id: 4 });
+    let b: RRNode& = rrpool.push(RRNode { id: 5, next: a });
+    rrrefs.push(a);
+    rrrefs.push(b);
+    var t = 0;
+    for r in rrrefs { t += r.id; }
+    print(t);                            // 9
+    var u = 0;
+    for i in rrrefs.len { u += rrrefs[i].id; }
+    print(u);                            // 9
+    // A sentinel end: null in a relative slot needs no root of its own, so a
+    // link that arrives as a null argument still stores relatively.
+    print(a.next == null, b.next != null);   // truetrue
+    let c: RRNode& = rr_link(null, 6);
+    print(c.next == null, c.id);         // true6
+}
+
+fn rr_link(prev: RRNode?, id: i32) -> RRNode& {
+    return rrpool.push(RRNode { id: id, next: prev });
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

@@ -33,7 +33,7 @@ let E_DIV0 = 4;
 enum Expr {
     Num { v: varint },
     Neg { of: Expr..&<u16> },
-    Paren { of: Expr..& },
+    Paren { of: Expr..&<u16> },
     Bin { op: u8, l: Expr..&<u16>, r: Expr..&<u16> },
 }
 
