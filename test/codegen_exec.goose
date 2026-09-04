@@ -939,6 +939,20 @@ fn lru_slots() {
     print(lrupool.len);                  // 6: the freed slot was reused
 }
 
+// --- index_of on plain arrays (§3.3) -----------------------------------------
+// Not a pool feature: any fixed-stride array converts a reference to one of
+// its own elements back into the index.
+
+struct FSlot { key: i64 }
+
+fn index_of_kinds() {
+    let f: FSlot[3] = [FSlot { key: 1 }, FSlot { key: 2 }, FSlot { key: 3 }];
+    print(f.index_of(&f[2]));            // 2
+    var l: FSlot[..4] = [FSlot { key: 9 }];
+    l.push(FSlot { key: 8 });
+    print(l.index_of(&l[1]));            // 1
+}
+
 // --- array views through references ------------------------------------------
 
 fn stencil(src: i64[>..]&, dst: i64[>..]&) {
@@ -1199,6 +1213,7 @@ fn main_codegen_exec() {
     looptops();
     reftops();
     lru_slots();
+    index_of_kinds();
     loopviews();
     inlined_results();
     lenprefixes();

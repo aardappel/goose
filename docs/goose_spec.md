@@ -224,9 +224,15 @@ arrays — the idiomatic way to link up just-built data; on grow-shrink arrays
 it returns nothing, since no interior references exist there, §5.2),
 `.append(src)` (src an array/slice of the element type), `.pop()`,
 `.resize(n, v)` (grow with fill value `v`, or shrink), `.resize(n)` (shrink
-only), `.clear()` per the rules above. Growth always supplies element
-values — no operation can expose uninitialized slots (§5.3). Per UFCS these
-are ordinary functions: `a.push(v)` is `push(a, v)`.
+only), `.clear()` per the rules above, and `.index_of(r) -> i64` (fixed,
+limited and grow-only arrays of fixed-size elements): the index of the
+element `r` refers to, `(addr − base) / elemsize`. `r` must be rooted at the
+array *exactly* (§9.2), which is what makes the division whole and the
+result in range, so nothing is checked; a reference rooted elsewhere is a
+compile error. Grow-shrink arrays have no `index_of`, having no interior
+references to convert (§5.2). Growth always supplies element values — no
+operation can expose uninitialized slots (§5.3). Per UFCS these are ordinary
+functions: `a.push(v)` is `push(a, v)`.
 
 ### 3.4 Placement rules (what may contain what)
 
@@ -679,7 +685,8 @@ own stack, counted in N):
   else a fresh `push`.
 * `a.alloc_ref(v) -> T&` — same, returning `&a[i]`.
 * `a.free(i)` — records slot `i` for reuse. The element remains a valid,
-  live value of its type forever.
+  live value of its type forever. Where the code holds references rather
+  than indices, `a.free(a.index_of(r))` (§3.3) is what turns one back.
 
 Semantics, not just implementation: *all elements remain valid at all times*.
 A reference to a freed-then-reused slot reads a different (same-typed) value —
