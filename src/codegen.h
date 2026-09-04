@@ -849,6 +849,88 @@ struct CodeGen {
     }
 
     // ------------------------------------------------------------------
+    // default<T>() (§4.2): all-zero bytes are the default of every fixed type
+    // -- numbers, false, null, empty slices and limited arrays, variant 0 --
+    // except where a field declares its own default, which is written over
+    // the zeroes afterwards.
+
+    // Does any field at any depth of a fixed type declare a default value?
+    bool HasFieldDefaults(TypeExpr *t) {
+        auto any = [&](const vector<Field> &fs, const vector<TypeExpr *> &fts) {
+            for (size_t i = 0; i < fs.size(); i++) {
+                if (fs[i].ispad) continue;
+                if (fs[i].defaultval || HasFieldDefaults(fts[i])) return true;
+            }
+            return false;
+        };
+        switch (t->kind) {
+            case TY_STRUCT: { auto si = SI(t); return any(si->st->fields, si->ftypes); }
+            case TY_ENUM: {
+                if (t->enu->varmode) return false;
+                auto ei = EIOf(t);
+                return any(ei->en->variants[0].fields, ei->vftypes[0]);
+            }
+            case TY_VARIANT: {
+                auto ei = EIVar(t);
+                auto vi = VarIdx(ei->en, t->var->variant);
+                return any(ei->en->variants[vi].fields, ei->vftypes[vi]);
+            }
+            case TY_ARRAY: return t->arr->akind == A_FIXED && HasFieldDefaults(t->arr->sub);
+            default: return false;
+        }
+    }
+
+    // Writes the default value of fixed type t into the C lvalue lv.
+    void EmitDefaultInto(const string &lv, TypeExpr *t) {
+        L("memset(&", lv, ", 0, sizeof(", lv, "));");
+        EmitDefaultFields(lv, t);
+    }
+
+    // The declared field defaults of t, over an already zeroed lv.
+    void EmitDefaultFields(const string &lv, TypeExpr *t) {
+        if (!HasFieldDefaults(t)) return;
+        auto fields = [&](const string &base, const vector<Field> &fs,
+                          const vector<TypeExpr *> &fts, const vector<Node *> &defaults) {
+            for (size_t i = 0; i < fs.size(); i++) {
+                if (fs[i].ispad) continue;
+                auto path = cat(base, ".", Sanitize(fs[i].name));
+                if (i < defaults.size() && defaults[i]) GenAny(defaults[i], Dst { 1, path, fts[i] });
+                else EmitDefaultFields(path, fts[i]);
+            }
+        };
+        switch (t->kind) {
+            case TY_STRUCT: {
+                auto si = SI(t);
+                fields(lv, si->st->fields, si->ftypes, si->defaults);
+                return;
+            }
+            case TY_ENUM: {
+                auto ei = EIOf(t);
+                if (ei->en->variants[0].fields.empty()) return;
+                fields(cat(lv, ".u.v_", Sanitize(ei->en->variants[0].name)),
+                       ei->en->variants[0].fields, ei->vftypes[0], ei->vdefaults[0]);
+                return;
+            }
+            case TY_VARIANT: {
+                auto ei = EIVar(t);
+                auto vi = VarIdx(ei->en, t->var->variant);
+                fields(lv, ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi]);
+                return;
+            }
+            case TY_ARRAY: {
+                auto iv = T();
+                L("for (int64_t ", iv, " = 0; ", iv, " < ", ArrSize(t->arr), "; ", iv, "++) {");
+                ind++;
+                EmitDefaultFields(cat(lv, ".e[", iv, "]"), t->arr->sub);
+                ind--;
+                L("}");
+                return;
+            }
+            default: return;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Structural equality (§4.5): gs_eq_<mangle>. Fixed values pass by value,
     // bytes values as pointers. Gap-free fixed types shortcut to memcmp.
 
@@ -4777,6 +4859,13 @@ struct CodeGen {
             case B_EXIT:
                 L("gs_exit(", GenX(an[0]), ");");
                 return {};
+            case B_DEFAULT: {
+                auto t = c->rettypes[0];
+                auto tv = T();
+                L(CT(t), " ", tv, ";");
+                EmitDefaultInto(tv, t);
+                return { tv };
+            }
             case B_HARDWARE_THREADS: return { "gs_hardware_threads()" };
             case B_THREAD_WAIT: {
                 usesthreads = true;

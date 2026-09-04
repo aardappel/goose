@@ -629,6 +629,49 @@ struct TypeCheck {
         return 0;
     }
 
+    // Does a fixed-size type have a default value (§4.2)? Everything does
+    // except a non-optional reference, which has nothing to point at, and so
+    // anything containing one without a declared field default.
+    bool HasDefault(TypeExpr *t, string &why) {
+        auto fields = [&](const vector<Field> &fs, const vector<TypeExpr *> &fts) {
+            for (size_t i = 0; i < fs.size(); i++) {
+                if (fs[i].ispad || fs[i].defaultval) continue;
+                if (!HasDefault(fts[i], why)) {
+                    why = cat("field ", fs[i].name, " has no declared default and ", why);
+                    return false;
+                }
+            }
+            return true;
+        };
+        switch (t->kind) {
+            case TY_INT: case TY_FLT: case TY_BOOL: case TY_SLICE: return true;
+            case TY_REF:
+                if (t->ref->optional) return true;
+                why = cat(TypeStr(t), " is a non-optional reference");
+                return false;
+            case TY_STRUCT: {
+                auto inst = GetStructInst(t);
+                return fields(inst->st->fields, inst->ftypes);
+            }
+            case TY_ENUM: {
+                // Variant 0 is the default variant.
+                auto inst = GetEnumInst(t);
+                return fields(inst->en->variants[0].fields, inst->vftypes[0]);
+            }
+            case TY_VARIANT: {
+                auto inst = GetEnumInst(t->var->adt);
+                auto vi = VariantIndex(inst->en, t->var->variant);
+                return fields(t->var->variant->fields, inst->vftypes[vi]);
+            }
+            case TY_ARRAY:
+                if (t->arr->akind == A_LIMITED) return true;   // Empty.
+                return HasDefault(t->arr->sub, why);
+            default:
+                why = cat(TypeStr(t), " has no default value");
+                return false;
+        }
+    }
+
     // Is this a type an uninitialized `var x: T;` may have: fixed-size, so a
     // later whole-value assignment fully constructs it.
     bool UninitOK(TypeExpr *t) { return ClassOf(t) == SC_FIXED; }
@@ -3883,6 +3926,24 @@ struct TypeCheck {
                     lastcallrets.push_back(b2);
                 }
                 return first;
+            }
+            case B_DEFAULT: {
+                // default<T>(): the value a T has before anything is written
+                // to it, declared field defaults applied (§4.2).
+                if (c->tyargs.size() != 1)
+                    Error(c, "default<T>() needs exactly one explicit type argument");
+                auto t = Subst(c->tyargs[0]);
+                ValidateType(t, c->line, VT_LOCAL);
+                if (ClassOf(t) != SC_FIXED)
+                    Error(c, cat("default<T>() needs a fixed-size type, not ", TypeStr(t)));
+                string why;
+                if (!HasDefault(t, why))
+                    Error(c, cat("default<", TypeStr(t), ">() does not exist: ", why));
+                c->rettypes.push_back(t);
+                Val v;
+                v.type = t;
+                v.rootexact = true;   // A null optional or an empty slice: static.
+                return v;
             }
             default: break;
         }

@@ -1232,6 +1232,27 @@ fn untyped_refs() {
     print(first_any(&q) + q.len);        // 10
 }
 
+// --- default<T>(): zero values with declared field defaults applied (§4.2) --
+
+struct DefA { n: i64 = 7, f: f32, o: i64?, s: u8[:], lim: u8[..4], arr: i32[2] }
+struct DefB { a: DefA, k: u8 = 3 }
+enum DefE { Off { v: i16 = -2 }, On { x: i64 } }
+
+fn defaults_builtin() {
+    let d = default<DefB>();
+    print(d.a.n + d.k);                  // 10
+    print(d.a.f);                        // 0
+    print(d.a.o == null);                // true
+    print(d.a.s.len + d.a.lim.len + d.a.arr.len);   // 0 + 0 + 2 = 2
+    print(d.a.arr[1]);                   // 0
+    let e = default<DefE>();
+    print(match e { Off o => o.v, On x => x.x });   // -2 (variant 0, its default)
+    print(default<i64>() + default<u8>());          // 0
+    print(default<bool>());              // false
+    let arr = default<DefA[2]>();
+    print(arr[1].n);                     // 7
+}
+
 fn main_codegen_exec() {
     lenstores();
     limited_dyn();
@@ -1277,6 +1298,7 @@ fn main_codegen_exec() {
     basecases();
     growshrink_local();
     untyped_refs();
+    defaults_builtin();
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).
