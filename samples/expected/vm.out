@@ -1,0 +1,39 @@
+countdown:
+  0  push 3
+  1  store 0
+  2  load 0
+  3  jz 11
+  4  load 0
+  5  print
+  6  load 0
+  7  push 1
+  8  sub
+  9  store 0
+ 10  jump 2
+ 11  halt
+  out: 3
+  out: 2
+  out: 1
+ran 32 instructions
+factorial:
+  0  push 1
+  1  store 1
+  2  push 10
+  3  store 0
+  4  load 0
+  5  jz 15
+  6  load 1
+  7  load 0
+  8  mul
+  9  store 1
+ 10  load 0
+ 11  push 1
+ 12  sub
+ 13  store 0
+ 14  jump 4
+ 15  load 1
+ 16  print
+ 17  halt
+  out: 3628800
+ran 119 instructions
+an instruction is 9 bytes: a tag and the largest operand

@@ -1,0 +1,16 @@
+answer=42 count=2 byte=255 ratio=0.75 single=1.5 yes=true
+0 297 42
+2 1
+[10, 2, 3, 4] 8 [0, 1, 4, 9, 16] [1, 2] 3 hi 2/8 [7, 8, 9]
+hello x1 2.5 (12 bytes)
+[1, 4, 9] [9, 16] 14 30 19
+Player { "gus", Point { 1.5, 2.5 }, 70, true }
+gus at 1.5,2.5 hp 70
+healthy fine
+standing
+81 [20, 4, 6, 8] 0
+3 true 0 false
+first >= 5 is 9
+true
+[100, 2, 4, 9, 16] 1
+9 2.5

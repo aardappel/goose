@@ -1,0 +1,15 @@
+100000 items, first weight 99.5
+round 0: 10000 bytes of scratch
+round 1: 10000 bytes of scratch
+round 2: 10000 bytes of scratch
+line 1 of 3
+line 2 of 3
+line 3 of 3
+5 words, 25 bytes of text, 45 bytes in total (4-byte lengths)
+[1, 2, 3] [1, 2, 3, 4] 1
+[0, 10] popped 90
+row0: [0] (1/8)
+row1: [10, 11] (2/8)
+row2: [20, 21, 22] (3/8)
+slots 0 1 0, pool length 2
+pool length 3

@@ -1,0 +1,16 @@
+'42' -> 42
+' 7 ' -> 7
+'-3' is not an age
+'abc' is not an age
+'200' is not an age
+found linus, age 20
+nobody is not a user
+ada is now 37
+loaded 2 users
+  ada 36
+  linus 20
+error: line 2: expected name,age
+error: line 2: empty name
+error: line 1: bad age 'x'
+error: line 1: name too long
+done

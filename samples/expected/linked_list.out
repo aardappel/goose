@@ -1,0 +1,8 @@
+built: 5 10 20 30 40 50   (7 slots)
+evens removed: 5 10 30 50   (7 slots)
+three more: 5 10 30 50 7 8 9   (8 slots)
+popped 5 and 10
+after pops: 30 50 7 8 9   (8 slots)
+9 moved to front: 9 30 50 7 8   (8 slots)
+backwards: 8 7 50 30 9
+a node is 16 bytes: the value and two 4-byte links

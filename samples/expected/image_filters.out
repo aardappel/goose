@@ -1,0 +1,5 @@
+histogram of the blurred image: [353, 42631, 34437, 29441, 33654, 32587, 13992, 9513]
+histogram of the edges: [90195, 95939, 3588, 2008, 1644, 1349, 893, 992]
+4721 strong edge pixels of 196608
+blurred.pgm: true (196623 bytes)
+edges.pgm: true (196623 bytes)

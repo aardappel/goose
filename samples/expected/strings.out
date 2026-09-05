@@ -1,0 +1,25 @@
+Hello, world! 42 2.5 [20 bytes]
+pi=3.14159 e=2.71828
+00ff   11111111 0.667
+'key = some value' -> 'key' / 'some value'
+true true -1
+6 parts: ["alice", "30", "paris", "", "bob", "25"]
+ONE|TWO|THREE|
+alice | 30 | paris |  | bob | 25
+  text 'alice'
+  number 30
+  text 'paris'
+  text ''
+  text 'bob'
+  number 25
+-2500 true
+255 true
+["alpha", "bravo", "charlie", "delta"]
+-1 1 true
+the cog sog on the mog
+mixed case
+6 bytes, 206 first byte
+3 code points; shifted: βγδ
+97 ABC 97
+[ada (36), grace (45), linus (20)]
+ada (37) 5/16

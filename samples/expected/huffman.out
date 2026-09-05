@@ -1,0 +1,13 @@
+24 distinct symbols in 416 bytes
+47 nodes, 564 bytes of tree
+'a' x22: 0100
+'e' x47: 011
+'i' x27: 1010
+'o' x26: 1000
+'s' x28: 1100
+'t' x34: 1110
+'space' x84: 00
+',' x13: 10010
+1662 bits = 208 bytes; 50% of the original
+round trip ok: true
+it was the best of times, it was the wor

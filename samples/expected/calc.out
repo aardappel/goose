@@ -1,0 +1,20 @@
+calc: expressions, `name = expr`, `quit`
+> 7
+> 9
+> 1024
+> 1.414214
+> -6
+> 7
+> 15
+> 5.5
+> 6.283185
+> 3
+> 28.274334
+> 28.274334
+> error: division by zero
+> error: unexpected '*'
+> error: expected ')'
+> error: unexpected character '$'
+> error: unknown variable 'z'
+> 2.5
+> bye

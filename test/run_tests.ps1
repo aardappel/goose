@@ -219,6 +219,11 @@ foreach ($f in Get-ChildItem "$PSScriptRoot\errors_tc\*.goose") {
     else { Write-Host "ok   tc-error $($f.Name)" }
 }
 
+# The samples: compiled, built, run and compared with their expected output
+# (or only typechecked without a C compiler), by their own runner.
+& powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\..\samples\run_samples.ps1" -exe $exe @(if ($nocgen) { "-nocgen" })
+if ($LASTEXITCODE -ne 0) { $failures++ }
+
 if ($failures) { Write-Host "$failures FAILURE(S)"; exit 1 }
 Write-Host "all tests passed"
 # Explicit, so the script's status is its own and not the last native command's

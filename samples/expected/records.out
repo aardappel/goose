@@ -1,0 +1,16 @@
+7 orders, 14 items, $601.64 in total
+biggest order #1005 at $259.98
+Order { 1005, "bob", [Item { "SKU-900", 2, 12999 }] }
+
+customer  orders  total
+bob            2  $284.98
+alice          2  $209.96
+carol          2  $105.71
+dave           1  $0.99
+
+SKU-12: 13 sold
+SKU-441: 7 sold
+SKU-7: 6 sold
+SKU-13: 3 sold
+SKU-900: 3 sold
+SKU-1: 1 sold

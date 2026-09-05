@@ -1,0 +1,10 @@
+1000 inserts, 442 distinct keys, 5304 bytes of tree
+height 20, min 0, max 499
+1000 keys in order, first ten [0, 0, 1, 1, 2, 2, 2, 2, 3, 5]
+sorted: true
+17 present, seen 1 times
+42 present, seen 1 times
+250 present, seen 2 times
+499 present, seen 2 times
+keys in 240..260: [240, 241, 242, 243, 244, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 258, 259, 260]
+100 sorted inserts: height 100

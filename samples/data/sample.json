@@ -1,0 +1,20 @@
+{
+  "name": "goose samples",
+  "version": 4,
+  "stable": false,
+  "ratio": 0.75,
+  "tags": ["fast", "safe", "flat"],
+  "nested": {
+    "depth": 2,
+    "empty": {},
+    "list": [1, 2.5, -3e2, true, null, "x\ty", []],
+    "quote": "she said \"hi\"\nand left"
+  },
+  "matrix": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+  "unicode": "café ✓",
+  "authors": [
+    { "name": "ada", "born": 1815 },
+    { "name": "grace", "born": 1906 },
+    { "name": "linus", "born": 1969 }
+  ]
+}

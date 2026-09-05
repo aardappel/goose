@@ -1,0 +1,17 @@
+42 3 5 1.5
+int 7; float 2.5; 6 ints, first 4; 4 ints, first 15
+int 6
+gaps [4, 7, 1, 7, 19]
+biggest gap 19 at 4
+28 -1
+[4, 8, 16, 42] [16, 64, 225, 256, 529, 1764] 108 true 2
+top earner grace
+  grace eng 135
+  ada eng 120
+  ken ops 95
+  linus ops 90
+eng budget 255 over 2 people
+  ada
+  grace
+  ken
+  linus
