@@ -82,8 +82,22 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
     v.type = LoadType(lv.type);
     v.SetProv(lv);
     if (v.type->kind == TY_REF || v.type->kind == TY_SLICE) v.writable = true;
+    else if (HoldsPlainRef(v.type)) {
+        // What a holder read out of a container points at is bounded by
+        // the container: everything stored into it had to outlive it.
+        v.holderroot = CanonRoot(lv.root);
+        v.holderexact = false;
+        v.holderset = true;
+        v.holderfrom = CanonRoot(lv.root);
+    }
     v.lvalue = v.type->kind != TY_REF;
     return v;
+}
+
+// The root bounding the references inside a holder value: what was
+// derived for it, else the value's own root (a temporary's outlives nothing).
+inline VarDef *TypeCheck::HolderRootOf(const Val &v) {
+    return v.holderset ? v.holderroot : v.root;
 }
 
 // Field / builtin-property resolution on an lvalue path.
@@ -217,6 +231,12 @@ inline void TypeCheck::WriteBackArgs(Call *c, Dot *d, vector<Node *> &argnodes) 
 
 // copy(x) checked: the node becomes x itself, the stored value codegen
 // copies at the destination like any lvalue source.
+// The whole of array-valued n as a slice: `n[..]`, synthesized for an
+// equality between array kinds (§4.5).
+inline Node *TypeCheck::WholeSlice(Node *n) {
+    return ast.New<SliceExpr>(n->line, n);
+}
+
 inline void TypeCheck::UnwrapCopy(Node *&n) {
     if (auto c = Is<Call>(n); c && c->builtin == B_COPY) n = c->args[0];
 }
@@ -269,6 +289,7 @@ inline Val TypeCheck::Operand(Node *n) {
 inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt, bool callsite) {
     if (!reachable) return;  // A diverging operand fits anything.
     fitfail.clear();
+    fitnode = n;
     if (!FitsAt(v, dt, callsite)) {
         if (!fitfail.empty()) Error(n, fitfail);
         Error(n, cat("expected a value of type ", TypeStr(dt), ", got ", TypeStr(v.type),
@@ -297,9 +318,15 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
         fitfail = cat("null is only a value of optional types, not ", TypeStr(dt));
         return false;
     }
-    if ((dt->kind == TY_REF || dt->kind == TY_SLICE) &&
-        (t->kind == TY_REF || t->kind == TY_SLICE) && !callsite && curdst.root) {
-        auto root = CanonRoot(v.root);
+    // The store rule (§9.2) applies to a reference or slice, and to a value
+    // holding references or slices by value (a struct with a slice field),
+    // whose contents are bounded by its holder root.
+    auto isrs = [](TypeExpr *x) { return x->kind == TY_REF || x->kind == TY_SLICE; };
+    auto holder = !isrs(dt) && !isrs(t) && HoldsPlainRef(dt);
+    // Argument slots pass no destination (parameters die before their
+    // arguments' roots); an element or field being constructed does.
+    if (((isrs(dt) && isrs(t)) || holder) && curdst.root) {
+        auto root = CanonRoot(holder ? HolderRootOf(v) : v.root);
         if (root && root == cycleroot) {
             fitfail = "storing the result of a recursive call whose returned "
                       "reference's root the cycle's returns do not determine "
@@ -312,7 +339,11 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
                           ", which does not outlive the destination (§9.2)");
             return false;
         }
-        if (!curdst.varbind && GrowShrinkCanHold(root, PointeeOf(t))) {
+        vector<TypeExpr *> pointees;
+        if (holder) RefPointees(t, pointees); else pointees.push_back(PointeeOf(t));
+        auto intogs = false;
+        for (auto pt : pointees) intogs |= GrowShrinkCanHold(root, pt);
+        if (!curdst.varbind && intogs) {
             fitfail = cat("storing a reference into ", root->name,
                           ", which holds a grow-shrink array: such a reference lives in a "
                           "variable, is passed down or returned, and is never stored (§5.2)");
@@ -323,11 +354,27 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
         // an activation that outlives this one, as the first binding did.
         auto spec = CurRealFrame().spec;
         auto ownvar = curdst.varbind && curdst.root && curdst.root->ownerspec == spec;
-        if (root && !root->isglobal && !root->poolclass && spec && !ownvar &&
+        // A local of an enclosing function outside the cycle (a free
+        // variable, §7.5) outlives every activation of it, like a global.
+        auto outer = root && root->ownerspec && root->ownerspec != spec &&
+                     !root->ownerspec->incycle && !root->ownerspec->sf->isrec;
+        if (root && !root->isglobal && !root->poolclass && spec && !ownvar && !outer &&
             (spec->incycle || spec->sf->isrec)) {
             fitfail = "references may only be passed down, not stored, inside a "
                       "recursive cycle (§7.8)";
             return false;
+        }
+        if (holder) {
+            // A literal's fields were each recorded as they were stored; a
+            // whole-value event for it would only be a looser copy.
+            if (!Is<StructLit>(fitnode) && !Is<ArrayLit>(fitnode)) {
+                Val hv = v;
+                hv.root = root;
+                hv.rootexact = v.holderset && v.holderexact;
+                RecordStore(CanonRoot(curdst.root), hv, nullptr, curdst.varbind, v.holderfrom);
+            }
+        } else {
+            RecordStore(CanonRoot(curdst.root), v, PointeeOf(t), curdst.varbind);
         }
     }
     if (TypeEq(t, dt)) { v.type = dt; return true; }
@@ -358,7 +405,12 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
             }
             return false;
         case TY_FLT:
-            if (t->kind != TY_FLT) return false;
+            if (t->kind != TY_FLT) {
+                if (v.ck == CK_INT)
+                    fitfail = cat("an integer literal where ", TypeStr(dt),
+                                  " is expected: write ", ConstStr(v), ".0");
+                return false;
+            }
             // Literals adapt to f32; f32 widens to f64.
             if (IsF32(dt)) { if (v.ck != CK_FLT) return false; }
             else if (!IsF32(t)) return false;

@@ -253,7 +253,12 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
     auto saveex = ownexclude;
     ownexclude = &sf->generics;
     auto paramsok = [&]() {
-        for (size_t i = 0; i < P; i++) {
+        // A literal argument adapts to whatever type the other arguments
+        // give a type parameter (§3.1), so they unify last.
+        vector<size_t> order;
+        for (size_t i = 0; i < P; i++) if (argvals[i].ck == CK_NONE) order.push_back(i);
+        for (size_t i = 0; i < P; i++) if (argvals[i].ck != CK_NONE) order.push_back(i);
+        for (auto i : order) {
             auto &p = sf->params[i];
             auto &av = argvals[i];
             if (!p.type) {
@@ -560,12 +565,18 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     vector<VarDef *> distinct;
     for (size_t i = 0; i < mi.paramtypes.size(); i++) {
         auto pt = mi.paramtypes[i];
-        if (pt->kind != TY_REF && pt->kind != TY_SLICE) continue;
-        auto r = CanonRoot(argvals[i].root);
+        auto isrs = pt->kind == TY_REF || pt->kind == TY_SLICE;
+        // A by-value parameter holding references (§9.2's holder values)
+        // is keyed by the root bounding its contents, as the spec's
+        // "implicitly generic over those fields' roots" says.
+        auto holder = !isrs && HoldsPlainRef(pt);
+        if (!isrs && !holder) continue;
+        auto r = CanonRoot(holder ? HolderRootOf(argvals[i]) : argvals[i].root);
         RootArg ra;
         ra.writable = argvals[i].writable;
         ra.reusable = argvals[i].reusable;
-        ra.exact = argvals[i].rootexact;
+        ra.exact = holder ? argvals[i].holderset && argvals[i].holderexact
+                          : argvals[i].rootexact;
         ra.growshrink = IsGrowShrinkRoot(r);
         if (ra.exact) ra.pool = PoolOf(r);
         if (!r) {
@@ -711,7 +722,7 @@ inline void TypeCheck::ValidateNeeds(FnSpec *spec, Node *callnode) {
 inline CycleRoots TypeCheck::Cycles() {
     return CycleRoots(ast, cycleroot, [this](VarDef *vd, bool isref) {
         return CanonRoot(isref ? RefRootOf(vd) : vd);
-    });
+    }, [this](string_view name) { return LookupVar(name); });
 }
 
 // A fixed-size value C takes by value (§7.10): a scalar, bool, or a flat
@@ -790,6 +801,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     auto sf = spec->sf;
     if (sf->isextern) { CheckExternSpec(spec); return; }
     spec->inprogress = true;
+    spec->eventstart = storeevents.size();
     Frame f;
     f.sf = sf;
     f.spec = spec;
@@ -799,6 +811,8 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     f.varbase = (int)vars.size();
     f.callline = callline;
     frames.push_back(f);
+    auto savepending = std::move(pendingshrinks);
+    pendingshrinks.clear();
     auto savereach = reachable;
     DestScope ds(*this, Dest {});
     reachable = true;
@@ -848,6 +862,34 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
             vd->ref.rootexact = true;
             vd->ref.writable = ra.writable;
             vd->ref.reusable = ra.reusable;
+        } else if (HoldsPlainRef(pt)) {
+            // A holder parameter: its contents are bounded by the class
+            // root its call sites agreed on.
+            auto &ra = spec->roots[rootidx++];
+            VarDef *cr = nullptr;
+            if (ra.cls != 0) {
+                if (!classroots[ra.cls]) {
+                    auto rv = ast.NewVarDef();
+                    rv->name = p.name;
+                    rv->depth = argvals ? Depth(CanonRoot(HolderRootOf((*argvals)[i]))) : 0;
+                    rv->classfrom = argvals ? CanonRoot(HolderRootOf((*argvals)[i])) : nullptr;
+                    rv->growshrink = ra.growshrink;
+                    classroots[ra.cls] = rv;
+                }
+                classroots[ra.cls]->poolclass = false;
+                cr = classroots[ra.cls];
+            }
+            vd->contentroot = cr;
+            vd->contentexact = true;
+            vd->contentset = true;
+            vd->ref.root = cr;   // So a returned holder maps back at the call site.
+            vd->refrootknown = true;
+            // Its contents are whatever the call site's value pointed at:
+            // bounded by the class root, as an event of its own.
+            Val hv;
+            hv.root = cr;
+            hv.rootexact = true;
+            RecordStore(vd, hv, nullptr, false);
         }
         spec->params.push_back(vd);
     }
@@ -901,6 +943,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     }
     if (!spec->retsknown) spec->retsknown = true;
     PopScope();
+    pendingshrinks = std::move(savepending);
     frames.pop_back();
     reachable = savereach;
     spec->inprogress = false;
@@ -931,10 +974,13 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
     for (size_t i = 0; i < vals.size(); i++) {
         auto rt = tspec->rets[i];
         auto rk = rt->kind;
-        if (rk != TY_REF && rk != TY_SLICE) continue;
+        auto holder = rk != TY_REF && rk != TY_SLICE && HoldsPlainRef(rt);
+        if (rk != TY_REF && rk != TY_SLICE && !holder) continue;
         // A null return names no root: it agrees with every other return.
         if (vals[i].isnull) continue;
-        auto root = CanonRoot(vals[i].root);
+        // A holder value's contents must outlive the caller like a
+        // returned reference would.
+        auto root = CanonRoot(holder ? HolderRootOf(vals[i]) : vals[i].root);
         // Anything whose storage the callee's frame owns dies on return;
         // reference parameters' pointee roots are synthetic per-class
         // VarDefs (no ownerspec), so they pass and map at the call site.
@@ -968,7 +1014,9 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
     for (size_t i = 0; i < spec->rets.size(); i++) {
         Val v;
         v.type = spec->rets[i];
-        if (v.type->kind == TY_REF || v.type->kind == TY_SLICE) {
+        auto holder = v.type->kind != TY_REF && v.type->kind != TY_SLICE &&
+                      HoldsPlainRef(v.type);
+        if (v.type->kind == TY_REF || v.type->kind == TY_SLICE || holder) {
             auto ri = i < spec->retroots.size() ? spec->retroots[i] : RetRoot {};
             auto rr = ri.root;
             v.writable = ri.writable;
@@ -985,8 +1033,11 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
                 for (size_t p = 0; p < spec->params.size(); p++) {
                     if (spec->params[p]->ref.root == rr) {
                         if (p < argvals.size()) {
-                            v.root = CanonRoot(argvals[p].root);
-                            v.rootexact = ri.exact && argvals[p].rootexact;
+                            auto pt = spec->argtypes[p];
+                            auto ph = pt->kind != TY_REF && pt->kind != TY_SLICE;
+                            v.root = CanonRoot(ph ? HolderRootOf(argvals[p]) : argvals[p].root);
+                            v.rootexact = ri.exact && (ph ? argvals[p].holderexact
+                                                          : argvals[p].rootexact);
                             v.rootfrom = argvals[p].rootfrom;
                             v.writable = argvals[p].writable;
                         }
@@ -996,6 +1047,16 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
             } else {
                 v.root = rr;  // A global or a captured outer local.
                 v.rootexact = ri.exact;
+            }
+            if (holder) {
+                // The bound travels as the holder root; the value itself is
+                // a temporary.
+                v.holderroot = v.root;
+                v.holderexact = v.rootexact;
+                v.holderset = true;
+                v.root = temproot;
+                v.rootexact = false;
+                v.writable = false;
             }
         } else {
             v.root = temproot;
@@ -1108,7 +1169,8 @@ inline void TypeCheck::CheckInits(StructLit *sl, vector<Field> &fields, vector<T
         got[idx] = true;
         sl->fieldindices.push_back(idx);
         if (Is<SelfRef>(fi.val)) { CheckSelfInit(fi.val, ftypes[idx], selft); continue; }
-        CheckValue(fi.val, ftypes[idx]);
+        auto fv = CheckValue(fi.val, ftypes[idx]);
+        NoteLitElem(fv, ftypes[idx]);
     }
     for (auto i = 0; i < (int)fields.size(); i++) {
         if (fields[i].ispad || got[i]) continue;

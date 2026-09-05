@@ -435,7 +435,7 @@ inline void VarDecl::Dump(string &s, int ind) const {
     }
     if (type) { s += ": "; type->Dump(s); }
     for (size_t i = 0; i < inits.size(); i++) {
-        s += i ? ", " : " = ";
+        s += i ? ", " : byref ? " .= " : " = ";
         inits[i]->Dump(s, ind);
     }
 }

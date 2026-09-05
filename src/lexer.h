@@ -18,13 +18,14 @@ namespace goose {
     F(T_LCURLY,   "{")   F(T_RCURLY,   "}") \
     F(T_COMMA,    ",")   F(T_SEMI,     ";")  F(T_COLON, ":")  F(T_QUESTION, "?") \
     F(T_DOT,      ".")   F(T_DOTDOT,   "..") F(T_DOTASSIGN, ".=") \
+    F(T_DOTEQ,    ".==") F(T_DOTNEQ,   ".!=") \
     F(T_PLUS,     "+")   F(T_MINUS,    "-")  F(T_MUL,   "*")  F(T_DIV, "/")  F(T_MOD, "%") \
     F(T_PLUSEQ,   "+=")  F(T_MINUSEQ,  "-=") F(T_MULEQ, "*=") F(T_DIVEQ, "/=") F(T_MODEQ, "%=") \
     F(T_ANDEQ,    "&=")  F(T_OREQ,     "|=") F(T_XOREQ, "^=") \
     F(T_INC,      "++")  F(T_DEC,      "--") \
     F(T_ASSIGN,   "=")   F(T_EQ,       "==") F(T_NEQ,   "!=") \
     F(T_LT,       "<")   F(T_GT,       ">")  F(T_LTEQ,  "<=") F(T_GTEQ, ">=") \
-    F(T_SHL,      "<<")  F(T_SHR,      ">>") \
+    F(T_SHL,      "<<")  F(T_SHR,      ">>") F(T_SHLEQ, "<<=") F(T_SHREQ, ">>=") \
     F(T_NOT,      "!")   F(T_BITNOT,   "~") \
     F(T_BITAND,   "&")   F(T_BITOR,    "|")  F(T_XOR,   "^") \
     F(T_ANDAND,   "&&")  F(T_OROR,     "||") \
@@ -39,7 +40,7 @@ namespace goose {
     F(T_IF,       "if")        F(T_ELSE,     "else")    F(T_WHILE,  "while") \
     F(T_FOR,      "for")       F(T_IN,       "in")      F(T_LOOP,   "loop") \
     F(T_BLOCK,    "block")     F(T_GUARD,    "guard")   F(T_MATCH,  "match") \
-    F(T_RETURN,   "return")    F(T_FROM,     "from")    F(T_BREAK,  "break") \
+    F(T_RETURN,   "return")    F(T_BREAK,  "break") \
     F(T_CONTINUE, "continue")  F(T_AS,       "as") \
     F(T_TRUE,     "true")      F(T_FALSE,    "false")   F(T_NULLLIT, "null") \
     F(T_SELF,     "self") \
@@ -140,6 +141,8 @@ struct Lexer {
 
             case '.':
                 if (*p == '.') { p++; Set(T_DOTDOT); }
+                else if (*p == '=' && p[1] == '=') { p += 2; Set(T_DOTEQ); }
+                else if (*p == '!' && p[1] == '=') { p += 2; Set(T_DOTNEQ); }
                 else if (*p == '=') { p++; Set(T_DOTASSIGN); }
                 else Set(T_DOT);
                 return;
@@ -170,11 +173,13 @@ struct Lexer {
                 return;
             case '<':
                 if (*p == '=') { p++; Set(T_LTEQ); }
+                else if (*p == '<' && p[1] == '=') { p += 2; Set(T_SHLEQ); }
                 else if (*p == '<') { p++; Set(T_SHL); }
                 else Set(T_LT);
                 return;
             case '>':
                 if (*p == '=') { p++; Set(T_GTEQ); }
+                else if (*p == '>' && p[1] == '=') { p += 2; Set(T_SHREQ); }
                 else if (*p == '>') { p++; Set(T_SHR); }
                 else Set(T_GT);
                 return;

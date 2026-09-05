@@ -21,6 +21,7 @@ inline void TypeCheck::PushScope(int kind, Node *node) {
 
 inline void TypeCheck::PopScope() {
     auto &s = scopes.back();
+    if (s.kind == SK_LOOP) ResolvePendingShrinks((int)scopes.size() - 1);
     // A `var x = []` that nothing ever pushed into has no type to give
     // codegen; the scope ending is the last chance to say so.
     for (auto i = s.varbase; i < (int)vars.size(); i++)
@@ -121,6 +122,20 @@ inline Prov TypeCheck::RefProvOf(VarDef *vd) {
     Prov p = vd->ref;
     p.root = RefRootOf(vd);
     p.rootexact = RefExactOf(vd);
+    if (!vd->refrootknown && vd->type && vd->type->kind == TY_REF && vd->type->ref->optional) {
+        // Bound only to null so far (or bound later in a loop body this
+        // use precedes): what it can point at is whatever can hold the
+        // pointee type at its own depth or outside, exactly when that is
+        // one variable -- the read-back rule's answer (§9.5).
+        vector<VarDef *> cands;
+        auto hasstatic = false;
+        RootCandidates(LoadType(vd->type->ref->sub), Depth(vd), false, cands, hasstatic);
+        if (!cands.empty()) {
+            p.root = cands[0];
+            for (auto c : cands) if (Depth(c) > Depth(p.root)) p.root = c;
+            p.rootexact = cands.size() == 1 && !hasstatic;
+        }
+    }
     return p;
 }
 
@@ -248,6 +263,47 @@ inline void TypeCheck::CollectAssignedNames(Node *n, set<string_view> &out) {
     n->Children([&](Node *c) { CollectAssignedNames(c, out); });
 }
 
+// The variables a loop body writes anywhere -- assigned whole, or through
+// a field, element or member call -- whose contents a read earlier in the
+// body cannot rely on: the next iteration sees the write.
+inline void TypeCheck::CollectAssignedBases(Node *n, set<string_view> &out) {
+    if (!n) return;
+    auto base = [&](Node *l) {
+        for (;;) {
+            if (auto d = Is<Dot>(l)) { l = d->obj; continue; }
+            if (auto ix = Is<Index>(l)) { l = ix->obj; continue; }
+            if (auto sl = Is<SliceExpr>(l)) { l = sl->obj; continue; }
+            if (auto u = Is<Unary>(l); u && u->op == T_BITAND) { l = u->child; continue; }
+            break;
+        }
+        if (auto id = Is<Ident>(l)) out.insert(id->name);
+    };
+    if (auto a = Is<Assign>(n)) base(a->lval);
+    if (auto c = Is<Call>(n))
+        if (auto d = Is<Dot>(c->callee)) base(d->obj);
+    n->Children([&](Node *c) { CollectAssignedBases(c, out); });
+}
+
+// A holder value bound to a new variable: the variable's contents are the
+// value's, and the binding is a store like any other for the shrink rules.
+inline void TypeCheck::NoteHolderBinding(VarDef *d, const Val &v) {
+    Val hv = v;
+    hv.root = CanonRoot(HolderRootOf(v));
+    hv.rootexact = v.holderset && v.holderexact;
+    RecordStore(d, hv, nullptr, false, v.holderfrom);
+}
+
+inline void TypeCheck::PushLoopAssigned(Node *body) {
+    set<string_view> names;
+    CollectAssignedBases(body, names);
+    loopassigned.push_back(std::move(names));
+}
+
+inline bool TypeCheck::AssignedInEnclosingLoop(VarDef *vd) {
+    for (auto &s : loopassigned) if (s.count(vd->name)) return true;
+    return false;
+}
+
 inline void TypeCheck::KillNarrowingsAssignedIn(Node *body) {
     set<string_view> names;
     CollectAssignedNames(body, names);
@@ -269,11 +325,30 @@ inline TypeExpr *TypeCheck::RefTo(TypeExpr *t, Line l) {
 // Merges the values of two branches (for roots: the deeper — i.e. more
 // conservative — root wins; writability must hold in both).
 inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at,
-                                bool wantvalue) {
+                                bool wantvalue, Node *anode, Node *bnode) {
     if (!areach) return b;
     if (!breach) return a;
     Val v;
-    v.type = UnifyBranch(a.type, b.type, at, wantvalue);
+    // An integer constant in one branch adapts to the other branch's
+    // integer type, as it would at any typed destination (§3.1).
+    auto adapt = [&](const Val &c, Node *cn, const Val &o) {
+        if (c.ck != CK_INT || o.ck == CK_INT || !o.type || o.type->kind != TY_INT ||
+            !c.type || c.type->kind != TY_INT || TypeEq(c.type, o.type) ||
+            !FitsIntStorage(c.ival, c.uns, o.type->intstorage))
+            return false;
+        if (cn) RetypeConstBranch(cn, o.type);
+        return true;
+    };
+    if (adapt(a, anode, b)) { v.type = b.type; }
+    else if (adapt(b, bnode, a)) { v.type = a.type; }
+    else v.type = UnifyBranch(a.type, b.type, at, wantvalue);
+    // A holder value from either branch: the deeper bound wins.
+    if (a.holderset || b.holderset) {
+        auto ar = HolderRootOf(a), br = HolderRootOf(b);
+        v.holderset = true;
+        v.holderroot = Depth(ar) >= Depth(br) ? ar : br;
+        v.holderexact = a.holderexact && b.holderexact && ar == br;
+    }
     v.isnull = a.isnull && b.isnull;   // Both null: still a null, which names no root.
     v.root = Depth(a.root) >= Depth(b.root) ? a.root : b.root;
     v.rootexact = a.rootexact && b.rootexact && CanonRoot(a.root) == CanonRoot(b.root);
@@ -281,6 +356,19 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     v.writable = a.writable && b.writable;
     v.reusable = a.reusable && b.reusable;
     return v;
+}
+
+// A branch that was an integer constant now has the merged type: the
+// constant node and the blocks down to it.
+inline void TypeCheck::RetypeConstBranch(Node *n, TypeExpr *t) {
+    if (!n) return;
+    n->exprtype = t;
+    if (auto b = Is<Block>(n)) { RetypeConstBranch(b->tail, t); return; }
+    if (auto e = Is<EarlyBlock>(n)) { RetypeConstBranch(e->body, t); return; }
+    if (auto i = Is<IfExpr>(n)) {
+        RetypeConstBranch(i->thenb, t);
+        RetypeConstBranch(i->elseb, t);
+    }
 }
 
 inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
@@ -304,7 +392,7 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
     RestoreFlow(entry);
     MergeFlow(aflow, bflow);
     if (!wantvalue) return VoidVal();
-    return MergeVals(tv, aflow.reachable, ev, bflow.reachable, x, wantvalue);
+    return MergeVals(tv, aflow.reachable, ev, bflow.reachable, x, wantvalue, x->thenb, x->elseb);
 }
 
 inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue, int scopekind,
@@ -339,6 +427,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
     }
     auto entry = SaveFlow();
     Val result;
+    Node *resultnode = nullptr;   // The arm `result` came from, while it is one arm's.
     auto resultreach = false;
     auto first = true;
     FlowState acc;
@@ -354,11 +443,14 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
         PopScope();
         if (first) {
             result = av;
+            resultnode = arm.body;
             resultreach = aflow.reachable;
             acc = aflow;
             first = false;
         } else {
-            result = MergeVals(result, resultreach, av, aflow.reachable, m, wantvalue);
+            result = MergeVals(result, resultreach, av, aflow.reachable, m, wantvalue,
+                               resultnode, arm.body);
+            resultnode = nullptr;
             resultreach = resultreach || aflow.reachable;
             // Accumulate the join of all arms' flow.
             auto save = SaveFlow();
@@ -422,6 +514,14 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                     binder->type = vt;  // Payload copy, any mode (§8.1).
                     binder->isvar = false;
                     NoteNonfixedLocal(vt, m->line, !frames.back().spec);
+                    if (HoldsPlainRef(vt)) {
+                        // A copied payload holding references: its contents
+                        // are the scrutinee's.
+                        Val hv;
+                        hv.root = CanonRoot(sv.root);
+                        hv.rootexact = false;
+                        RecordStore(binder, hv, nullptr, false, CanonRoot(sv.root));
+                    }
                 }
                 arm.binder = binder;
             }
@@ -495,12 +595,14 @@ inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue)
     (void)expected;
     ValueRegion vr(*this, wantvalue);
     KillNarrowingsAssignedIn(x->body);
+    PushLoopAssigned(x->body);
     auto entry = SaveFlow();
     PushScope(SK_LOOP, x);
     for (auto st : x->body->stmts) CheckStmt(st);
     if (x->body->tail) CheckStmtExpr(x->body->tail);
     auto sc = scopes.back();
     PopScope();
+    loopassigned.pop_back();
     RestoreFlow(entry);
     KillNarrowingsAssignedIn(x->body);
     reachable = sc.hasbreak;  // A loop only exits via break.
@@ -513,13 +615,19 @@ inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue)
 inline void TypeCheck::CheckWhile(While *x) {
     CheckCond(x->cond);
     auto entry = SaveFlow();
-    NarrowCond(x->cond, true);
+    // Narrowings from before the loop that the body reassigns do not hold
+    // on the second iteration; the condition's own do, since it runs
+    // before every iteration, and a rebind inside the body un-narrows from
+    // that point on.
     KillNarrowingsAssignedIn(x->body);
+    PushLoopAssigned(x->body);
+    NarrowCond(x->cond, true);
     PushScope(SK_LOOP, x);
     for (auto st : x->body->stmts) CheckStmt(st);
     if (x->body->tail) CheckStmtExpr(x->body->tail);
     auto sc = scopes.back();
     PopScope();
+    loopassigned.pop_back();
     RestoreFlow(entry);
     KillNarrowingsAssignedIn(x->body);
     if (sc.breaktype)
@@ -580,9 +688,17 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     }
     auto entry = SaveFlow();
     KillNarrowingsAssignedIn(x->body);
+    PushLoopAssigned(x->body);
     PushScope(SK_LOOP, x);
     auto vd = NewVar(x->var, bindtype, x->line, false);
     vd->assigned = true;
+    if (bindtype->kind != TY_REF && bindtype->kind != TY_SLICE && HoldsPlainRef(bindtype)) {
+        // A holder element copied out: its contents are the array's.
+        Val hv;
+        hv.root = CanonRoot(iterprov.root);
+        hv.rootexact = false;
+        RecordStore(vd, hv, nullptr, false, CanonRoot(iterprov.root));
+    }
     if (bindtype->kind == TY_REF || bindtype->kind == TY_SLICE) {
         // A relative-reference or slice element bound by value was read
         // out of the array, so where it points follows the read-back rule
@@ -607,6 +723,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     if (x->body->tail) CheckStmtExpr(x->body->tail);
     auto sc = scopes.back();
     PopScope();
+    loopassigned.pop_back();
     RestoreFlow(entry);
     KillNarrowingsAssignedIn(x->body);
     if (sc.breaktype)
@@ -736,6 +853,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             Error(vd, "function values are compile-time only and cannot be stored (§7.6)");
         d->type = t;
         if (v && (t->kind == TY_REF || t->kind == TY_SLICE)) BindRefProvenance(d, *v);
+        else if (v && HoldsPlainRef(t)) NoteHolderBinding(d, *v);
         if (vd->reusable) {
             if (!vd->isvar) Error(vd, "reusable requires var");
             if (!IsArrayKind(t, A_GROW) || ClassOf(t->arr->sub) != SC_FIXED)
@@ -771,8 +889,9 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         for (size_t i = 0; i < vd->names.size(); i++) {
             auto d = MakeDef(i);
             d->assigned = true;
-            // Reference returns decay in inference, like everywhere.
-            auto rv = DecayRef(rets[i]);
+            // Reference returns decay in inference, like everywhere, unless
+            // the declaration binds by reference (`.=`).
+            auto rv = vd->byref ? rets[i] : DecayRef(rets[i]);
             Finish(d, rv.type, &rv);
         }
         return;
@@ -789,7 +908,20 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             DestScope ds(*this, Dest { d, true, ann && (ann->kind == TY_REF ||
                                                         ann->kind == TY_SLICE) });
             auto refinit = Is<Unary>(vd->inits[i]);
-            if (!ann && refinit && refinit->op == T_BITAND) {
+            if (vd->byref && !ann) {
+                // `let r .= e;` binds a reference to e: an lvalue by
+                // reference, a reference or slice value as it is (§3.8).
+                v = CheckV(vd->inits[i], nullptr);
+                if (v.isnull) Error(vd->inits[i], "null needs an annotated optional type");
+                if (v.lvalue && v.type->kind != TY_REF && v.type->kind != TY_SLICE) {
+                    vd->inits[i] = AutoRef(vd->inits[i], v);
+                } else if (v.type->kind != TY_REF && v.type->kind != TY_SLICE) {
+                    Error(vd->inits[i], ".= binds a reference: the initializer must be a "
+                                        "reference, a slice, or storage (a variable, field "
+                                        "or element)");
+                }
+                vd->inits[i]->exprtype = v.type;
+            } else if (!ann && refinit && refinit->op == T_BITAND) {
                 // `let r = &x;` keeps the reference (an explicit &); every
                 // other un-annotated initializer decays to the pointee.
                 v = CheckV(vd->inits[i], nullptr);
@@ -1034,11 +1166,15 @@ inline void TypeCheck::CompoundAssign(Assign *a, TypeExpr *st, bool writable) {
         Error(a, "cannot assign through this path (let, or non-writable "
                  "provenance, §9.5)");
     auto isbit = a->op == T_ANDEQ || a->op == T_OREQ || a->op == T_XOREQ;
-    if (st->kind == TY_INT && st->intstorage != IS_VARINT) {
+    auto isshift = a->op == T_SHLEQ || a->op == T_SHREQ;
+    if (st->kind == TY_INT && st->intstorage != IS_VARINT && isshift) {
+        // A shift count is any integer type, masked to the width (§6.2).
+        CheckIntAny(a->rhs);
+    } else if (st->kind == TY_INT && st->intstorage != IS_VARINT) {
         // The update computes at the target's type; the operand must
         // reach it implicitly (literal fit or widening, §6.3).
         CheckValue(a->rhs, st);
-    } else if (st->kind == TY_FLT && !isbit) {
+    } else if (st->kind == TY_FLT && !isbit && !isshift) {
         CheckValue(a->rhs, st);
     } else if (st->kind == TY_INT) {
         Error(a, "varint fields are written only at construction (§3.6)");

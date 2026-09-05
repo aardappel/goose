@@ -144,7 +144,9 @@ A grammar sketch and precedence table are in Appendix D.
   `i64`; writable only at construction.
 * `f32 f64` — IEEE floats, likewise usable everywhere. `f32` arithmetic
   stays 32-bit; `f32` widens to `f64` implicitly (§6.3), never the reverse.
-  Float literals adapt to either type.
+  Float literals adapt to either type; an integer literal never adapts to a
+  float type (`let x: f64 = 2;` is an error asking for `2.0`), so a float
+  expression reads as one.
 * `bool` — 1-byte storage, values `true`/`false`. Produced by comparisons;
   required by `if`/`while` conditions (no int-to-bool coercion).
 
@@ -329,7 +331,8 @@ integers in decimal, floats in the shortest form that reads back to the same
 value, `true`/`false`, and a `u8` array's bytes as they are. Three builtins
 produce it, each taking any number of arguments and inserting nothing
 between them: `print(a, b, …)` writes the forms to standard output followed
-by a newline; `format(out, a, b, …)` appends them to `out`, any growable
+by a newline, as one write, so lines printed by different threads (§11)
+never interleave; `format(out, a, b, …)` appends them to `out`, any growable
 `u8` array; `str(a, b, …)` builds a fresh `u8[>..]` of them, constructed at
 its destination like any resizable result (§7.3), so `words.push(str("item",
 i))` writes straight into the element. A character literal is an integer
@@ -368,7 +371,21 @@ pointee where §4.1 asks for one).
 * Rebinding: the special assignment `r .= &x` updates the reference *value*
   itself (the one thing transparency cannot express). `.=` applies to any
   reference-typed location — variables (subject to their `let`/`var`),
-  fields, elements. On non-reference locations `.=` is an error.
+  fields, elements. On non-reference locations `.=` is an error. The
+  declaration form `let r .= e;` / `var r .= e;` binds `r` to `e` by
+  reference whatever `e` is — an lvalue of any size class (`var cur .=
+  pool[0];` names the element, no `&`), a reference-returning call (`let e
+  .= pool.push(v);`), a narrowed optional — and is how a reference variable
+  is declared without spelling its type: the `.=` says the binding is a
+  reference, exactly as the rebind does. `let` on a reference variable says
+  it does not rebind, not that its pointee is const: `let r .= xs[i]; r =
+  5;` writes the element (§9.5).
+* Identity: `r1 .== r2` and `r1 .!= r2` compare the references themselves —
+  the same address or not — the one comparison transparency cannot express
+  (`==` compares the pointees). Both operands are references to one pointee
+  type, or `null` for an optional; storage (a variable, field or element)
+  is taken by reference, as `.=` takes it, so `n .== pool[head]` asks
+  whether `n` names that element.
 * Binding contexts keep the reference rather than loading through it: an
   initializer/argument/field whose *declared type* is a reference type binds
   the reference value, and binds an lvalue of the pointee type by reference
@@ -376,8 +393,9 @@ pointee where §4.1 asks for one).
   inferred (`let x = r;`), a reference to a fixed-size value decays to a
   pointee copy — except an explicit `&lvalue` initializer, which infers the
   reference type — while a non-fixed lvalue binds by reference (`let w =
-  words[0];` names the element). To bind a reference-returning call,
-  annotate: `let e: T& = pool.push(v);`. An untyped parameter is an
+  words[0];` names the element). To bind a reference-returning call, use
+  `.=` (`let e .= pool.push(v);`) or annotate (`let e: T& = pool.push(v);`).
+  An untyped parameter is an
   anonymous type variable and binds the argument's exact type, reference or
   not, exactly as an explicit `<T>` does (§7.7): for a fixed value `f(&x)`
   hands `f` a reference and `f(x)` a copy; a non-fixed lvalue is a reference
@@ -393,11 +411,15 @@ integer. Applied to a type that is already a reference, `?` simply makes
 that reference nullable (`T&?` ≡ `T?`). The literal `null` is the empty
 value of any optional type; an optional struct field with no declared
 default defaults to null. Optionals are *not* transparent: access requires
-narrowing via `if`/`guard`/`assert(r)`/`== null`/`!= null` tests (flow
-typing: inside the guarded region the value behaves as `T&`; narrowing is
-killed by rebinding the variable). `o .= &x` / `o .= null` rebind an
-optional; a rebind to a plain reference narrows it, a rebind to anything
-possibly null un-narrows it.
+narrowing via `if`/`while`/`guard`/`assert(r)`/`== null`/`!= null` tests.
+Flow typing: inside the guarded region the optional *is* a `T&` in every
+respect — transparent, writable through, bound by `.=` (`if n { let m .= n;
+… }`) — and a `while` condition narrows its body the same way even when the
+body rebinds the variable, since the test runs again before each iteration
+(`while n { …; n .= n.next; }`). Elsewhere narrowing is killed by rebinding
+the variable. `o .= &x` / `o .= null` rebind an optional; a rebind to a
+plain reference narrows it, a rebind to anything possibly null un-narrows
+it.
 
 **What references may point to.** Anything except the interior of a
 fixed-mode ADT payload (§3.5). A reference into a grow-shrink array `[>..<]`
@@ -585,8 +607,9 @@ So `f(xs)` hands a `u8[][>..]` variable to `fn f(xs: u8[][:])`,
 `fn f(xs: u8[][>..]&)` and `fn f(xs)` alike by reference, `out.push(w)`
 needs `out.push(copy(w))` when `w` names storage, and `x.f(a)` (§7.1) reads
 as `f(x, a)` whatever `x`'s size class. `&x` is still how a reference to a
-*fixed* value is spelled at an untyped destination (`let r = &n;`,
-`f(&n)` into an untyped parameter); wherever the destination's own type is
+*fixed* value is spelled at an untyped destination (`let r = &n;`, or
+equivalently `let r .= n;`, §3.8; `f(&n)` into an untyped parameter);
+wherever the destination's own type is
 a reference it is redundant, and a redundant `&` is a warning.
 
 There is no ownership transfer beyond the return move, no destructors, no
@@ -703,7 +726,10 @@ large ones cheap.
 type: scalars and bools by value; structs and fixed arrays memberwise (pad
 and ADT padding bytes excluded — semantic comparison is per-member; memcmp
 is a valid optimization only for gap-free layouts); array-family values and
-slices by length then elements (sequential walk for variable elements); ADTs
+slices by length then elements (sequential walk for variable elements) —
+two operands of *different* array kinds compare too, as slices, whenever
+their slices would have one type (§3.10): a `u8[>..]` field against a
+string literal, a `u8[..32]` against a `u8[:]`, with no `[..]` needed; ADTs
 by tag then payload.
 
 References and slices follow a *top-level rule*: as the direct operands of
@@ -712,7 +738,8 @@ References and slices follow a *top-level rule*: as the direct operands of
 a compared composite they compare by identity (the reference address, the
 slice's address+length): recursing through them would turn `==` into an
 unbounded pointer traversal. Optionals compare as nullable references
-(`o == null` is the null test). Ordering `< <= > >=` exists on the numeric
+(`o == null` is the null test); `.==`/`.!=` compare two references by
+address rather than by pointee (§3.8). Ordering `< <= > >=` exists on the numeric
 types only, with operands unified per §6.1.
 
 ---
@@ -737,29 +764,45 @@ on the length holds across every `push`.
 This is the workhorse type: arenas, pools, string builders, tree storage, and
 scratch that is refilled or popped between phases.
 
-**When a grow-only local may shrink.** The receiver must be a *local* of the
-function being compiled — not a global, not a field, not an array reached
-through a reference, whose holders lie outside anything the check can see —
-and not a `reusable` pool (§5.4: its freelist keeps every slot live). The
-call must stand on its own: a statement, the initializer of a declaration, or
-the right-hand side of an assignment to a variable, so that no reference
-taken earlier in the same expression outlives the shrink; and not inside a
-block, `if`, `match` or loop that produces a value, whose enclosing expression
-may hold such references too. At the shrink, no variable in an open scope may
-hold a reference or slice rooted at the array. Scopes are what make this
-usable: what a loop body or a nested block took out of the buffer is gone at
-its end, so a scratch buffer refilled per iteration, or a stack popped between
-phases, can hand out slices of itself — "reusable scratch" and "structure I
-can point into" are the same type. The test is conservative wherever roots
-are (§9.2): a live value whose type contains plain references or slices
-counts as a holder unless the array is declared deeper than it, as does a
-`var` reference that the same-depth rebinding rule could retarget into the
-array — in both cases only where the array's elements can contain the
-pointee type at all. A value linked by relative references alone (a node
-pool) points within its own root and is never a holder. The operations
-themselves are the grow-shrink ones: a stack-top move and a length store.
-Assigning the array whole (`a = …`) replaces its elements and is a shrink
-under the same rule.
+**When a grow-only array may shrink.** The receiver is the array's variable,
+a reference variable or parameter bound to the whole array, or a global —
+not an element of a larger value, and not a `reusable` pool (§5.4: its
+freelist keeps every slot live). The call must stand on its own: a
+statement, the initializer of a declaration, or the right-hand side of an
+assignment to a variable, so that no reference taken earlier in the same
+expression outlives the shrink; and not inside a block, `if`, `match` or
+loop that produces a value, whose enclosing expression may hold such
+references too. At the shrink, nothing in an open scope may refer into the
+array: no reference or slice variable rooted at it (a `var` reference the
+same-depth rebinding rule (§9.2) could retarget into it counts, as does one
+not bound yet further down a loop body), and no value that *holds* a
+reference into it — a struct with a reference field, an array of slices, a
+`let` copy of an element of such. Values hold references only where a store
+put them, and every store the checker has seen is on record (§9.2), so this
+half of the test is exact to the store: the error names the holder and the
+line where a reference into the array was stored into it, and it fires for
+a store *later* in a loop body too, which the next iteration reaches. A
+value whose type cannot hold a reference to anything the array's elements
+contain by value is never a holder, nor is one linked by relative
+references alone (a node pool): those point within their own root. Scopes
+are what make this usable: what a loop body or a nested block took out of
+the buffer is gone at its end, so a scratch buffer refilled per iteration,
+or a stack popped between phases, can hand out slices of itself —
+"reusable scratch" and "structure I can point into" are the same type. The
+operations themselves are the grow-shrink ones: a stack-top move and a
+length store. Assigning the array whole (`a = …`) replaces its elements and
+is a shrink under the same rule.
+
+Through a reference or of a global, a shrink cannot see the callers'
+variables, so it is checked at every level: each function specialization
+records which globals, and which parameters' pointees, it shrinks — directly
+or through its own callees — and what its calls stored into those pointees,
+and a call is checked as if it performed those shrinks and stores in the
+caller. A global receiver additionally counts every other global whose type
+can hold a reference to something the array can contain as holding one,
+since its stores may come from functions not yet checked. A call into a
+recursive cycle still being checked counts as shrinking every array a
+function of the cycle textually shrinks.
 
 ### 5.2 Grow-shrink `[>..<]`
 
@@ -778,18 +821,15 @@ under the same rule.
   pointee type the array's elements cannot contain — a slice key read back
   out of a dictionary's slots — stores like any other.
 * **A shrink is an error while any variable in scope may refer into the
-  array** — the test a grow-only local's shrink applies (§5.1). The error is
-  at the shrink and names the variable and where it was bound, so either end
-  can be changed: end the slice's block before the shrink, or move the
-  shrink. What differs from §5.1 is a shrink through a reference or of a
-  global, which cannot see the callers' variables: each function
-  specialization records what it shrinks — which globals, and which
-  parameters' pointees, directly or through its own callees — and a call is
-  an error while a variable in scope refers into an argument or global the
-  callee shrinks. A call into a recursive cycle still being checked counts
-  as shrinking every grow-shrink array it can reach. Function values run
-  inline, so a shrink inside a block is checked against the block's own
-  enclosing scopes.
+  array** — the test a grow-only shrink applies (§5.1), call summaries for
+  a shrink through a reference or of a global included, minus the store
+  record: references into a grow-shrink array live in variables only, so
+  the variables in scope are the whole answer. The error is at the shrink
+  and names the variable and where it was bound, so either end can be
+  changed: end the slice's block before the shrink, or move the shrink. A
+  call into a recursive cycle still being checked counts as shrinking every
+  grow-shrink array it can reach. Function values run inline, so a shrink
+  inside a block is checked against the block's own enclosing scopes.
 * `push` returns a reference to the new element, and `index_of` works, as on
   grow-only arrays.
 * Iterating with `for` uses indices under the hood; the `&x` binding is a
@@ -845,10 +885,14 @@ tree-mutation workloads that would otherwise need an allocator.
 C/Rust set: `+ - * / %` (`%` is Euclidean on integers, §6.2; on floats it is
 C `fmod`), comparisons, `! && ||`
 (short-circuit, `bool` only), bitwise `~ & | ^ << >>` (on integers),
-assignment statements `=`, `+=` etc. on assignable lvalues, `.=` (reference
-rebinding, §3.8), and `++`/`--` as statements on integer lvalues (no
-expression form). Precedence: Appendix D. Range expressions `a..b` appear
-only in slicing brackets, `for` headers, and match arms.
+assignment statements `=`, `+=` etc. (the compound form of every binary
+operator, shifts included) on assignable lvalues, `.=` (reference
+rebinding, §3.8), reference identity `.==`/`.!=` (§3.8), and `++`/`--` as
+statements on integer lvalues (no expression form). Precedence is Rust's
+(Appendix D): the bitwise operators bind tighter than comparisons, so `x &
+mask != 0` is `(x & mask) != 0`, and shifts bind tighter than `&`. Range
+expressions `a..b` appear only in slicing brackets, `for` headers, and
+match arms.
 
 **Operand unification.** A binary numeric operator's operands must reach
 *one common type*, which is also the result type, found as follows: equal
@@ -945,7 +989,8 @@ or not.
 * **Never implicit**: narrowing; same-width signedness changes (`i32 ↔ u32`);
   anything signed into any unsigned type (a negative value can hide in any
   signed operand — so `u32→i64` is silent but `i32→u64` is not); `u64` into
-  any signed type; `f64 → f32`; and int ↔ float in either direction.
+  any signed type; `f64 → f32`; and int ↔ float in either direction — an
+  integer *literal* included: `2.0`, not `2`, where a float is expected.
 * `x as T` — explicit conversion between any two numeric types,
   **range-checked in debug** (abort on value change), truncates/wraps/
   rounds-toward-zero silently in release.
@@ -975,7 +1020,9 @@ continue
 
 `block { }` exists to promote early-out style anywhere, not just at function
 top level. `break` binds to the innermost `loop`/`while`/`for`/`block`;
-labels are not in v1. All `break E` of one construct must agree on E's type.
+labels are not in v1. All `break E` of one construct must agree on E's
+type; as at any destination (§3.1), an integer literal in one arm adapts to
+the other arm's type (`if c { x } else { 0 }` has `x`'s type).
 A bare `{ … }` in expression position — a match arm of several statements,
 say — is only a scope: `break` inside it still leaves the enclosing loop.
 
@@ -1175,7 +1222,10 @@ the block is `{ generic(it) }` and that type depends on the instantiation.
 **Call-site type arguments.** Type arguments are inferred from the argument
 types whenever they appear in the parameter list: `fn foo<T>(x: T)` is
 called as `foo(1)`, never `foo<i64>(1)` — the typechecker must support this
-for both `<T>`-style and untyped (implicitly generic) parameters. An
+for both `<T>`-style and untyped (implicitly generic) parameters. Where
+several arguments mention one type variable, the typed ones bind it and a
+literal then adapts (`max(n, 0)` with `n: u32` is the `u32` instantiation),
+so an `i64` literal never fixes the type by coming first. An
 explicit list `f<i64>(x)` is allowed, and *needed* only when no argument
 mentions the parameter (e.g. `qget<i64>()`). Syntactically, `f<` commits to
 a type argument list only when the `<…>` is immediately followed by `(`,
@@ -1215,7 +1265,12 @@ References rooted outside the cycle are
 unrestricted — in particular a pool handed to the cycle by reference (a
 parameter whose pointee is resizable-class, which no cycle function can own),
 so a recursive builder can push into a caller's local pool and link what it
-pushed. Because the cycle's functions are checked once against the entry
+pushed. A local of an enclosing function outside the cycle — a free variable
+(§7.5) of a nested `recursive fn` — outlives every activation the same way,
+so a parser keeps its pool, its key table and its input as locals of a
+non-recursive `parse`, and the nested recursive functions store, link and
+return references rooted at them freely. Because the cycle's functions are
+checked once against the entry
 call's roots, every recursive call must pass such a pool by the same
 reference the entry call did: swapping two pools, or passing a different one,
 at a back edge is a compile error. (Further refinements are future work,
@@ -1226,8 +1281,9 @@ not have been checked yet, so the root of its result cannot come from them.
 Instead, **the return roots of a cycle are the fixpoint over the returns of
 the functions in it**, computed before any of their bodies are checked: a
 return of `X.push(…)`, `X.alloc_ref(…)` or `&X[…]` gives the root of `X` (a
-global, or a parameter, whose root each specialization already has from its
-call site); a return of a reference variable gives the root of what it was
+global, a free variable, or a parameter, whose root each specialization
+already has from its call site); a return of a reference variable gives the
+root of what it was
 bound to; a return of `g(…)` gives `g`'s return root, mapped through the
 argument that carries it; iterating settles the mutual definitions. A cycle
 function may therefore `return` the result of a back-edge call, and a
@@ -1411,6 +1467,10 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
 
 * **Store**: `r` may be stored into a location owned by root `L` only if
   `scope(root(r)) ⊇ scope(L)` — the pointee provably outlives the container.
+  A value that *holds* references (a struct with a reference field, an
+  array of slices, an ADT payload with one) stores under the same rule for
+  what it holds: its root is that of the references stored into it, and each
+  such store is on record for the shrink rules (§5.1).
 * **Return**: a returned reference's root must be visible to the caller (a
   caller-supplied root, a global, or the function's own in-place-constructed
   return value).
@@ -1472,8 +1532,11 @@ is an inferred provenance attribute*, tracked per instantiation exactly like
 roots, with zero syntax:
 
 * Non-writable provenances: static data (string literals, constants), and
-  anything derived from a `let` binding or `let` field — `let` is genuinely,
-  transitively const.
+  anything derived from a `let` binding of a value or a `let` field — `let`
+  is genuinely, transitively const for the value it names. A `let` binding
+  of a reference or slice names the reference: it does not rebind, and
+  writes through it follow the pointee's own provenance (`let r .= xs[i]; r
+  = 0;` writes an element of a `var` array, §3.8).
 * A write through a non-writable reference/slice (or a shrink/grow operation
   through one) is a compile error at the offending instantiation.
 * Everything else is writable. Slices remain the read idiom by convention,
@@ -1507,6 +1570,12 @@ element types a literal can supply. Then, by where `C`'s own root lies:
    is exact when there is exactly one candidate in all.
 3. **A reference parameter's pointee, or itself inexact.** The owner may be
    caller storage this function cannot enumerate: the root is `C`'s, inexact.
+
+An optional variable bound only to `null` so far (`var best: Node? = null;`
+before the loop that binds it) has no binding to take a root from; a use of
+it there takes the answer the read-back rule gives a local container: the
+innermost candidate for its pointee type at its own depth or outside, exact
+when there is exactly one.
 
 A relative reference `T&<w>` read out of `C` points within `C`'s own root
 array by construction (§3.9), so it takes `C`'s root and `C`'s exactness
@@ -1876,9 +1945,6 @@ the end, each with where its resolution lives.
     (`dist[out[k]]`, `bench/goose/graph_csr.goose`) keeps its check — see
     0e. Release-mode wrapping (§6.2) is deliberate and stays, so the
     analysis proves absence of wrap explicitly where it needs to.
-0b. **Reference address identity** — references are transparent (§3.8), so
-    `r1 == r2` compares pointees; there is currently no way to ask whether
-    two references alias the same address (a `same_ref(a, b)` builtin?).
 0c. **Pointee writes through optionals** — a narrowed optional writes
     through fine, but there is no way to write through an optional without
     narrowing; and rebinding to a plain reference first (`let r: T& = o;`)
@@ -1887,8 +1953,9 @@ the end, each with where its resolution lives.
     still exceed the spec: long-distance returns (§7.9) only carry
     references to globals/static data (precise rule: rooted at or above the
     target's frame), and the recursive-cycle store rule (§7.8) admits only
-    globals and pool parameters as roots of stored references — a reference
-    to a caller's fixed-size local is still pass-down-only inside a cycle.
+    globals, free variables and pool parameters as roots of stored
+    references — a reference to a caller's fixed-size local is still
+    pass-down-only inside a cycle.
     (Container-read writability laundering, one-root-per-reference-variable,
     and the single agreed return root are now deliberate language rules,
     §9.2/§9.5.)
@@ -1918,8 +1985,16 @@ the end, each with where its resolution lives.
     *self-relative* references are currently rejected outright (§3.9; the
     `in pool` form already copies); track the region an offset ranges over so
     whole-region copies (and serialization moves) can be proven safe.
+17. **Serialization of relative-reference structures** — `to_bytes(a)` and
+    `from_bytes<T[>..]>(bytes)` with a verifier generated per element type,
+    FlatBuffers-style, so a loaded image is a checked value rather than a
+    trusted one: `docs/design/serialization.md`.
 
 ### Resolved
+
+0b. **Reference address identity** — DONE, see §3.8: `r1 .== r2` /
+    `r1 .!= r2` compare references by address; `==` stays the pointee
+    comparison.
 
 0h. **Passing by size class** — DONE, see §4.1 (and §7.2, §3.8, §6.5):
     fixed values connect to destinations by value; non-fixed lvalues bind
@@ -2100,8 +2175,8 @@ postfix     := "[" expr "]"                      // fixed array (const expr)
 
 stmt        := decl | assign | incdec | exprstmt
 decl        := "reusable"? ("let" | "var") identlist (":" type)?
-               ("=" exprlist)? ";"
-assign      := lvalue assignop expr ";"          // = .= += -= *= /= %= &= |= ^=
+               (("=" | ".=") exprlist)? ";"     // .= binds by reference (§3.8)
+assign      := lvalue assignop expr ";"          // = .= += -= *= /= %= &= |= ^= <<= >>=
 incdec      := lvalue ("++" | "--") ";"
 exprstmt    := expr ";"
 
@@ -2122,8 +2197,8 @@ binary      := (precedence climbing; tightest → loosest)
    postfixe := primary ( "(" args ")" trailingblock?
              | "[" sliceargs "]" | "." ident | "as" "!"? type )*
    unary    := ("-" | "!" | "~" | "&") unary
-   levels   := * / %  →  + -  →  << >>  →  < <= > >=  →  == !=
-             →  &  →  ^  →  |  →  &&  →  ||
+   levels   := * / %  →  + -  →  << >>  →  &  →  ^  →  |
+             →  < <= > >=  →  == != .== .!=  →  &&  →  ||
 primary     := literal | ident | "null" | "self" | "(" expr ")"
              | arraylit | structlit | genericcall
 genericcall := ident tyargs "(" args ")" trailingblock?
@@ -2144,7 +2219,9 @@ commits to a type argument list only when followed by `(`, `{`, or
 `<` in type context only; `a..b` ranges exist only in `for` headers, slice
 brackets, and match arms; multiple return types in a function *type* (not a
 declaration header) require parens around the list; `T&?` parses to the
-same type as `T?`, and `?` on an already-optional type is an error.
+same type as `T?`, and `?` on an already-optional type is an error; `from`
+is not reserved — `return E from f` is recognized by the identifier that
+follows it, so `from` remains usable as a name.
 
 ---
 
@@ -2185,3 +2262,12 @@ What the current compiler does where the text above leaves it a choice.
   array declared in a loop body, passed to an inlined callee), and exploits
   the indeterminate bytes of a copied partially-written struct. Neither
   changes what the program means.
+* **The store record.** Every store of a reference, slice, or value holding
+  one into a variable, field, element or global is logged with the stored
+  value's root, exactness, and source container, program-wide; a
+  specialization also summarizes the stores into its parameters' pointees,
+  replayed onto the caller's containers at each call. A grow-only shrink
+  (§5.1) asks this record whether any value in scope holds a reference into
+  the array, following source links (a copy holds what its source holds; a
+  global source is judged by its type), and a shrink inside a loop is
+  re-asked at the loop's end for stores the rest of the body made.

@@ -96,34 +96,37 @@ inline FnSpec *TypeCheck::UserFormat(Call *c, TypeExpr *t) {
 // A shrink (`pop`, `resize` down, `clear`) of a grow-only array (§5.1).
 // Everything below the stack top belongs to the array's elements for as
 // long as it lives, so handing part of the region back is safe exactly
-// when nothing can still point into it: the receiver is a local of the
-// function being checked (not a global, not a field, not reached through a
-// reference -- those have holders this pass cannot see); the call stands on
-// its own (a statement, an initializer, or the right-hand side of an
-// assignment to a variable), so no reference taken earlier in the same
-// expression outlives it; and no live value can hold a reference or slice
-// rooted at the array. Roots are only known per variable, so the scan is
-// conservative wherever they are: a value whose type contains references
-// at all counts as a possible holder, and so does a `var` reference the
-// same-depth rebinding rule (§9.2) could retarget into the array.
+// when nothing can still point into it: the call stands on its own (a
+// statement, an initializer, or the right-hand side of an assignment to a
+// variable), so no reference taken earlier in the same expression outlives
+// it; no reference or slice variable in scope points into the array; and
+// no container in scope had a reference into it stored, which every store
+// the checker has seen is on record for (storeevents). The receiver is
+// named directly, or through a reference variable or parameter, in which
+// case the array behind the reference is what shrinks.
 inline void TypeCheck::CheckGrowShrink(Node *at, bool standalone, const char *op, Node *recv,
                                        TypeExpr *rtype) {
     auto id = Is<Ident>(recv);
     auto vd = id ? id->vdef : nullptr;
-    if (!vd || rtype->kind != TY_ARRAY)
-        Error(at, cat(op, " on a grow-only array names the array's own variable, not a "
-                      "reference or an element of another value (§5.1)"));
+    auto at_type = rtype->kind == TY_REF ? rtype->ref->sub : rtype;
+    if (!vd || at_type->kind != TY_ARRAY)
+        Error(at, cat(op, " on a grow-only array names the array's variable, or a "
+                      "reference to it, not an element of another value (§5.1)"));
+    // Through a reference variable or parameter: the array it points at.
+    if (vd->type && vd->type->kind == TY_REF) vd = CanonRoot(RefRootOf(vd));
+    if (!vd || vd == temproot)
+        Error(at, cat(op, " through a reference whose array is not known (§5.1)"));
     GrowOnlyShrinkAt(at, standalone, op, vd);
 }
 
-// A shrink of the grow-only array (or value holding one) that local vd
-// owns: only where nothing in scope can still refer into it (§5.1).
-inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const char *op, VarDef *vd) {
-    if (vd->isglobal || vd->isparam || !frames.back().spec ||
-        vd->ownerspec != frames.back().spec)
-        Error(c, cat("cannot ", op, " ", vd->name,
-                     ": a shrink of a grow-only array applies to a local of the function "
-                     "that owns it (§5.1)"));
+// A grow-only array shrinks wherever nothing can still point into it: a
+// local of this function, a caller's array reached through a reference
+// parameter, a global, or an enclosing function's local. Everything in
+// scope is scanned; a shrink through a parameter or of a global is also
+// recorded for the callers, whose own scopes are scanned at the call.
+inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &op, VarDef *vd) {
+    if (!frames.back().spec)
+        Error(c, cat("cannot ", op, " ", vd->name, " in a global initializer (§5.1)"));
     if (vd->reusable)
         Error(c, cat("cannot ", op, " reusable pool ", vd->name,
                      ": its slots stay live for the freelist (§5.4)"));
@@ -143,7 +146,10 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const char *op
             // first binding: a `var` may since have been rebound to any
             // root at the same depth, and one not bound yet can still
             // commit to this array further down a loop body. A pointee
-            // the array cannot contain by value rules the variable out.
+            // the array cannot contain by value rules the variable out,
+            // and so does a reference to a whole resizable value, which
+            // is the path to an array rather than a pointer into one.
+            if (t->kind == TY_REF && ClassOf(t->ref->sub) == SC_RESIZABLE) continue;
             auto of = PointeeOf(t);
             if (of && vd->type && !CanContain(LoadType(vd->type), of)) continue;
             auto root = RefRootOf(v);
@@ -152,15 +158,307 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const char *op
             if (!holds) continue;
         } else {
             // Any other value holds references only where a store put
-            // them, which the outlives rule permits only into storage the
-            // array outlives (§9.2); a type without a plain reference or
-            // slice in it (flat, or linked by relative references only)
-            // has no room for one.
-            if (!HoldsPlainRef(t) || Depth(v) < Depth(vd)) continue;
+            // them, and every store this function can see is on record
+            // (§9.2); a type without a plain reference or slice in it
+            // (flat, or linked by relative references only) has no room
+            // for one.
+            if (!HoldsPlainRef(t)) continue;
+            Line where;
+            if (!HolderMayPointInto(v, vd, 0, &where)) continue;
+            Error(c, cat("cannot ", op, " ", vd->name, " while ", v->name,
+                         " is in scope: a reference into it was stored there at ",
+                         Where(where), " (§5.1)"));
         }
         Error(c, cat("cannot ", op, " ", vd->name, " while ", v->name,
                      " is in scope: it may hold a reference or slice into it (§5.1)"));
     }
+    if (vd->isglobal) {
+        // What other globals hold cannot be enumerated from here: any one
+        // whose type can hold a reference to something this array can
+        // contain counts as holding one.
+        for (auto g : ast.globals) {
+            for (auto gd : g->defs) {
+                if (gd == vd || !gd->type || !HoldsPlainRef(gd->type)) continue;
+                vector<TypeExpr *> ps;
+                RefPointees(gd->type, ps);
+                for (auto pt : ps)
+                    if (CanContain(LoadType(vd->type), pt))
+                        Error(c, cat("cannot ", op, " ", vd->name, ": global ", gd->name,
+                                     " may hold a reference into it (§5.1)"));
+            }
+        }
+    }
+    if (vd->isglobal || !vd->type) NoteShrink(vd);
+    // Inside a loop, a store later in the body reaches this shrink on the
+    // next iteration: those are checked when the outermost loop ends.
+    auto loopscope = -1;
+    for (auto i = frames.back().scopebase; i < (int)scopes.size(); i++)
+        if (scopes[i].kind == SK_LOOP) { loopscope = i; break; }
+    if (loopscope >= 0) {
+        PendingShrink ps;
+        ps.at = c;
+        ps.op = op;
+        ps.vd = vd;
+        ps.eventstart = storeevents.size();
+        ps.loopscope = loopscope;
+        // A holder declared inside the loop is fresh every iteration; only
+        // one declared outside it carries a store to the next.
+        for (auto v : vars)
+            if (v != vd && v->type && v->type->kind != TY_REF && v->type->kind != TY_SLICE &&
+                HoldsPlainRef(v->type) && Depth(v) <= loopscope)
+                ps.holders.push_back(v);
+        pendingshrinks.push_back(ps);
+    }
+}
+
+// A field or element of a literal that is a reference, slice or holder:
+// its root joins the literal's.
+inline void TypeCheck::NoteLitElem(const Val &v, TypeExpr *t) {
+    if (!t) return;
+    auto isrs = t->kind == TY_REF || t->kind == TY_SLICE;
+    if (!isrs && !HoldsPlainRef(t)) return;
+    if (v.isnull) return;
+    auto r = CanonRoot(isrs ? v.root : HolderRootOf(v));
+    auto exact = isrs ? v.rootexact : v.holderset && v.holderexact;
+    if (!litdeep.set || Depth(r) > Depth(litdeep.root)) {
+        litdeep.exact = exact && (!litdeep.set || litdeep.root == r);
+        litdeep.root = r;
+    } else if (litdeep.root != r) {
+        litdeep.exact = false;
+    }
+    litdeep.set = true;
+}
+
+inline void TypeCheck::HolderFromLit(Val &v) {
+    if (!v.type || !HoldsPlainRef(v.type)) return;
+    v.holderset = true;
+    v.holderroot = litdeep.set ? litdeep.root : nullptr;
+    v.holderexact = litdeep.set && litdeep.exact;
+}
+
+inline void TypeCheck::RecordStore(VarDef *container, const Val &v, TypeExpr *pointee,
+                                   bool varbind, VarDef *src) {
+    if (!container || varbind) return;
+    StoreEvent e;
+    e.container = container;
+    e.root = CanonRoot(v.root);
+    e.src = src == container ? nullptr : src;
+    // A reference read back out of a container inexactly (§9.5) points
+    // at whatever was stored into that container: its stores are the
+    // precise answer, where a bound would implicate every sibling.
+    if (!e.src && !v.rootexact && v.rootfrom && CanonRoot(v.rootfrom) != container)
+        e.src = CanonRoot(v.rootfrom);
+    e.exact = v.rootexact;
+    e.pointee = pointee;
+    if (fitnode) e.at = fitnode->line;
+    storeevents.push_back(e);
+    // A store into a caller's storage (through a reference parameter's
+    // class root) is the caller's to know: kept on the specialization for
+    // its call sites to map back.
+    if (!container->type && !container->isglobal)
+        if (auto spec = CurRealFrame().spec) spec->classevents.push_back(e);
+    // The container's contents: the deepest root stored into it so far.
+    if (container->type && container->type->kind != TY_REF && container->type->kind != TY_SLICE) {
+        if (!container->contentset || Depth(e.root) > Depth(container->contentroot)) {
+            container->contentexact = e.exact && (!container->contentset ||
+                                                  container->contentroot == e.root);
+            container->contentroot = e.root;
+        } else if (container->contentroot != e.root) {
+            container->contentexact = false;
+        }
+        container->contentset = true;
+    }
+}
+
+// What the callee stored into the caller's containers, as the caller's
+// own events: a store through reference parameter p into something
+// rooted at parameter q becomes a store into argument p's root of a value
+// rooted at argument q's. A callee still being checked (a back edge) may
+// have stored any reference argument into any container argument.
+inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Node *at) {
+    auto argroot = [&](size_t q) -> pair<VarDef *, bool> {
+        auto pt = spec->argtypes[q];
+        auto ph = pt->kind != TY_REF && pt->kind != TY_SLICE;
+        return { CanonRoot(ph ? HolderRootOf(argvals[q]) : argvals[q].root),
+                 ph ? argvals[q].holderset && argvals[q].holderexact : argvals[q].rootexact };
+    };
+    auto paramof = [&](VarDef *cr) -> int {
+        for (size_t p = 0; p < spec->params.size() && p < argvals.size(); p++)
+            if (cr && spec->params[p]->ref.root == cr) return (int)p;
+        return -1;
+    };
+    auto push = [&](VarDef *container, VarDef *r, bool exact, TypeExpr *pointee, VarDef *src) {
+        if (!container) return;
+        StoreEvent e;
+        e.container = container;
+        e.root = r;
+        e.src = src == container ? nullptr : src;
+        e.exact = exact;
+        e.pointee = pointee;
+        e.at = at->line;
+        storeevents.push_back(e);
+        if (!container->type && !container->isglobal)
+            if (auto cur = CurRealFrame().spec) cur->classevents.push_back(e);
+    };
+    // A class root of the callee, as seen from here: the argument's root.
+    auto mapped = [&](VarDef *cr, bool &exact) -> VarDef * {
+        auto q = paramof(cr);
+        if (q < 0) return cr;
+        auto [qr, qe] = argroot(q);
+        exact = exact && qe;
+        return qr;
+    };
+    if (spec->inprogress) {
+        for (size_t p = 0; p < spec->argtypes.size() && p < argvals.size(); p++) {
+            auto pt = spec->argtypes[p];
+            if (pt->kind != TY_REF || !HoldsPlainRef(pt->ref->sub)) continue;
+            for (size_t q = 0; q < spec->argtypes.size() && q < argvals.size(); q++) {
+                auto qt = spec->argtypes[q];
+                if (qt->kind != TY_REF && qt->kind != TY_SLICE && !HoldsPlainRef(qt)) continue;
+                auto [r, exact] = argroot(q);
+                push(CanonRoot(argvals[p].root), r, false,
+                     qt->kind == TY_REF || qt->kind == TY_SLICE ? PointeeOf(qt) : nullptr,
+                     nullptr);
+                (void)exact;
+            }
+        }
+        return;
+    }
+    // A function value's body, checked inside the callee, stores values
+    // rooted at the callee's parameters into its own lexical containers:
+    // those roots are this call's arguments.
+    for (auto i = spec->eventstart; i < storeevents.size(); i++) {
+        auto &e = storeevents[i];
+        auto exact = e.exact;
+        e.root = mapped(e.root, exact);
+        e.src = mapped(e.src, exact);
+        e.exact = exact;
+    }
+    for (auto &e : spec->classevents) {
+        auto p = paramof(e.container);
+        if (p < 0) continue;
+        auto pt = spec->argtypes[p];
+        if (pt->kind != TY_REF) continue;   // A by-value parameter is the callee's own copy.
+        auto exact = e.exact;
+        auto r = mapped(e.root, exact);
+        auto src = mapped(e.src, exact);
+        push(CanonRoot(argvals[p].root), r, exact, e.pointee, src);
+    }
+}
+
+// Whether a store into `holder`, from event `from` on, may have put a
+// reference into `arr` there: one rooted at it exactly, or one bounded by
+// a root the array outlives whose pointee the array's elements can hold.
+inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, size_t from, Line *where) {
+    set<VarDef *> seen;
+    return HolderMayPointInto(holder, arr, from, where, seen);
+}
+
+inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, size_t from, Line *where,
+                                          set<VarDef *> &seen) {
+    if (!seen.insert(holder).second) return false;
+    for (auto i = from; i < storeevents.size(); i++) {
+        auto &e = storeevents[i];
+        if (e.container != holder) continue;
+        auto hit = false;
+        if (e.src && e.src->isglobal) {
+            // A global's stores may come from functions not checked yet, so
+            // its type decides: any reference it can hold to something the
+            // array can contain.
+            vector<TypeExpr *> ps;
+            if (e.src->type) RefPointees(e.src->type, ps);
+            for (auto pt : ps) hit |= CanContain(LoadType(arr->type), pt);
+        } else if (e.src) {
+            // A copy of another container's contents: whatever that one
+            // holds, from its own first event on.
+            hit = HolderMayPointInto(e.src, arr, 0, where, seen);
+        } else if (e.exact) {
+            hit = e.root == arr;
+        } else if (e.root) {
+            hit = Depth(arr) <= Depth(e.root) &&
+                  (!e.pointee || CanContain(LoadType(arr->type), e.pointee));
+        }
+        if (hit) { if (!e.src) *where = e.at; return true; }
+    }
+    return false;
+}
+
+inline void TypeCheck::ResolvePendingShrinks(int scopeidx) {
+    for (size_t i = 0; i < pendingshrinks.size();) {
+        auto &ps = pendingshrinks[i];
+        if (ps.loopscope < scopeidx) { i++; continue; }
+        for (auto h : ps.holders) {
+            Line where;
+            if (!HolderMayPointInto(h, ps.vd, ps.eventstart, &where)) continue;
+            Error(ps.at, cat("cannot ", ps.op, " ", ps.vd->name, " while ", h->name,
+                             " is in scope: a reference into it is stored there at ",
+                             Where(where), ", which the next iteration reaches (§5.1)"));
+        }
+        pendingshrinks.erase(pendingshrinks.begin() + (long)i);
+    }
+}
+
+// The pointee types of the plain references and slices a value of type t
+// can hold: what a reference into some other array would be a reference
+// to. Relative references point into their own root or a named pool.
+inline void TypeCheck::RefPointees(TypeExpr *t, vector<TypeExpr *> &out) {
+    switch (t->kind) {
+        case TY_REF:
+            if (t->ref->lenstorage < 0) out.push_back(LoadType(t->ref->sub));
+            return;
+        case TY_SLICE: out.push_back(t->sub); return;
+        case TY_STRUCT: {
+            auto inst = GetStructInst(t);
+            for (auto ft : inst->ftypes) if (ft) RefPointees(ft, out);
+            return;
+        }
+        case TY_ENUM: {
+            auto inst = GetEnumInst(t);
+            for (auto &vf : inst->vftypes) for (auto ft : vf) if (ft) RefPointees(ft, out);
+            return;
+        }
+        case TY_VARIANT: {
+            auto inst = GetEnumInst(t->var->adt);
+            auto vi = VariantIndex(t->var->adt->enu->en, t->var->variant);
+            for (auto ft : inst->vftypes[vi]) if (ft) RefPointees(ft, out);
+            return;
+        }
+        case TY_ARRAY: RefPointees(t->arr->sub, out); return;
+        default: return;
+    }
+}
+
+// Whether root r is (or stands for a call-site root that is) a grow-only
+// array: the receiver of a §5.1 shrink rather than a §5.2 one.
+inline bool TypeCheck::IsGrowOnlyRootVar(VarDef *r) {
+    auto v = r;
+    while (v && !v->type && v->classfrom) v = v->classfrom;
+    return v && v->type && IsArrayKind(v->type, A_GROW);
+}
+
+// The globals and parameters a function's body textually shrinks: what a
+// call into a cycle still being checked is taken to shrink (§5.1).
+inline void TypeCheck::SyntacticShrinks(SFunction *sf) {
+    if (sf->shrinkscanned || !sf->body) return;
+    sf->shrinkscanned = true;
+    auto note = [&](Node *recv) {
+        auto id = Is<Ident>(recv);
+        if (!id) return;
+        for (size_t i = 0; i < sf->params.size(); i++)
+            if (sf->params[i].name == id->name) { sf->shrinkparamidx.push_back((int)i); return; }
+        if (ast.globalmap.count(id->name)) sf->shrinkglobalnames.push_back(id->name);
+    };
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n) return;
+        if (auto c = Is<Call>(n)) {
+            if (auto d = Is<Dot>(c->callee); d && (d->name == "pop" || d->name == "resize" ||
+                                                    d->name == "clear"))
+                note(d->obj);
+        }
+        if (auto a = Is<Assign>(n); a && a->op == T_ASSIGN) note(a->lval);
+        n->Children([&](Node *ch) { walk(ch); });
+    };
+    walk(sf->body);
 }
 
 // A shrink of the grow-shrink array rooted at root (§5.2): no variable in
@@ -226,26 +524,56 @@ inline void TypeCheck::ShrinkGrowShrink(Node *at, const string &op, VarDef *root
 inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &argvals,
                                           string_view name) {
     auto pending = spec->inprogress;
+    // A grow-only root takes the §5.1 scan (variables and recorded
+    // stores), a grow-shrink one the §5.2 scan (variables only).
+    auto shrink = [&](VarDef *root, const string &what) {
+        if (IsGrowOnlyRootVar(root)) GrowOnlyShrinkAt(at, true, what, root);
+        else ShrinkGrowShrink(at, cat(what, " ", root->name), root, string(root->name));
+    };
+    if (pending) SyntacticShrinks(spec->sf);
+    ApplyCalleeStores(spec, argvals, at);
     for (size_t i = 0; i < argvals.size() && i < spec->argtypes.size(); i++) {
         auto pt = spec->argtypes[i];
-        auto shrinks = pending ? pt->kind == TY_REF && ContainsGrowShrink(pt->ref->sub)
-                               : spec->shrinkparams.count((int)i) > 0;
-        if (!shrinks) continue;
         auto root = CanonRoot(argvals[i].root);
         if (!root) continue;
-        ShrinkGrowShrink(at, cat("call ", name, ", which shrinks ", root->name), root,
-                         string(root->name));
+        bool shrinks;
+        if (!pending) {
+            shrinks = spec->shrinkparams.count((int)i) > 0;
+        } else if (IsGrowOnlyRootVar(root)) {
+            // A back edge's summary is incomplete; a grow-only argument
+            // counts as shrunk where the callee textually shrinks it.
+            shrinks = false;
+            for (auto pi : spec->sf->shrinkparamidx) shrinks |= pi == (int)i;
+        } else {
+            shrinks = pt->kind == TY_REF && ContainsGrowShrink(pt->ref->sub);
+        }
+        if (shrinks) shrink(root, cat("call ", name, ", which shrinks"));
     }
     if (pending) {
-        for (auto g : ast.globals)
-            for (auto vd : g->defs)
-                if (vd->type && ContainsGrowShrink(vd->type))
+        // Every grow-shrink global, and every grow-only global some function
+        // still being checked textually shrinks.
+        for (auto g : ast.globals) {
+            for (auto vd : g->defs) {
+                if (!vd->type) continue;
+                if (ContainsGrowShrink(vd->type)) {
                     ShrinkGrowShrink(at, cat("call ", name, ", which may shrink ", vd->name),
                                      vd, string(vd->name));
+                } else if (IsArrayKind(vd->type, A_GROW)) {
+                    auto textual = false;
+                    for (auto &fr : frames) {
+                        if (!fr.spec || !fr.spec->inprogress) continue;
+                        SyntacticShrinks(fr.spec->sf);
+                        for (auto gn : fr.spec->sf->shrinkglobalnames) textual |= gn == vd->name;
+                    }
+                    if (textual)
+                        GrowOnlyShrinkAt(at, true, cat("call ", name, ", which may shrink ",
+                                                       vd->name), vd);
+                }
+            }
+        }
     } else {
         for (auto vd : spec->shrinkglobals)
-            ShrinkGrowShrink(at, cat("call ", name, ", which shrinks ", vd->name), vd,
-                             string(vd->name));
+            shrink(vd, cat("call ", name, ", which shrinks"));
     }
 }
 

@@ -647,7 +647,10 @@ struct TypeCheck {
     void RetypeOperands(Node *left, Node *right, Val &lv, Val &rv, TypeExpr *ct);
     bool ElementwiseOK(TypeExpr *t);
     Val CheckVariantConst(Dot *d, SEnum *en);
-    Val MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at, bool wantvalue);
+    Val MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at, bool wantvalue,
+                  Node *anode = nullptr, Node *bnode = nullptr);
+    void RetypeConstBranch(Node *n, TypeExpr *t);
+    Node *WholeSlice(Node *n);
     Val CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue);
     Val CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue, int scopekind,
                       Node *scopenode = nullptr);
@@ -748,7 +751,48 @@ struct TypeCheck {
                          vector<TypeExpr *> &seen);
     FnSpec *UserFormat(Call *c, TypeExpr *t);
     void CheckGrowShrink(Node *at, bool standalone, const char *op, Node *recv, TypeExpr *rtype);
-    void GrowOnlyShrinkAt(Node *c, bool standalone, const char *op, VarDef *vd);
+    void GrowOnlyShrinkAt(Node *c, bool standalone, const string &op, VarDef *vd);
+
+    // Every store of a reference, slice or holder value into a container
+    // (ast.h StoreEvent), program-wide: a function value's body stores into
+    // its lexical function's containers while being checked in another frame.
+    vector<StoreEvent> storeevents;
+    // A shrink inside a loop is also checked against the stores the rest
+    // of the loop body makes, which the next iteration would reach; the
+    // check waits for the outermost enclosing loop to end.
+    struct PendingShrink {
+        Node *at = nullptr;
+        string op;
+        VarDef *vd = nullptr;
+        vector<VarDef *> holders;
+        size_t eventstart = 0;
+        int loopscope = 0;
+    };
+    vector<PendingShrink> pendingshrinks;
+    Node *fitnode = nullptr;         // The node MustFit is fitting, for RecordStore.
+    // The deepest root among the references a literal under construction
+    // holds: its holder root (§9.2), accumulated by CheckInits and the
+    // array-literal element loop for the literal being checked.
+    struct LitDeep { VarDef *root = nullptr; bool exact = false; bool set = false; };
+    LitDeep litdeep;
+    void NoteLitElem(const Val &v, TypeExpr *t);
+    void HolderFromLit(Val &v);
+    void RecordStore(VarDef *container, const Val &v, TypeExpr *pointee, bool varbind,
+                     VarDef *src = nullptr);
+    bool HolderMayPointInto(VarDef *holder, VarDef *arr, size_t from, Line *where,
+                            set<VarDef *> &seen);
+    vector<set<string_view>> loopassigned;   // Per enclosing loop: names its body writes.
+    void CollectAssignedBases(Node *n, set<string_view> &out);
+    void PushLoopAssigned(Node *body);
+    bool AssignedInEnclosingLoop(VarDef *vd);
+    bool HolderMayPointInto(VarDef *holder, VarDef *arr, size_t from, Line *where);
+    void ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Node *at);
+    void NoteHolderBinding(VarDef *d, const Val &v);
+    void ResolvePendingShrinks(int scopeidx);
+    bool IsGrowOnlyRootVar(VarDef *r);
+    void SyntacticShrinks(SFunction *sf);
+    void RefPointees(TypeExpr *t, vector<TypeExpr *> &out);
+    VarDef *HolderRootOf(const Val &v);
 
     string ExprStr(Node *n) {
         string s;

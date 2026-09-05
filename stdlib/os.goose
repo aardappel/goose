@@ -24,12 +24,16 @@ extern "gs_os_arg_count" fn arg_count() -> i64;
 extern "gs_os_arg" fn arg(i: i64, out: u8[>..]&);              // appends argument i (0 = the program)
 extern "gs_os_getenv" fn env(name: u8[:], out: u8[>..]&) -> bool;
 
-fn args() -> u8[][>..] {
-    var out: u8[][>..] = [];
+// The bytes behind args(): grow-only, so the slices handed out stay valid
+// however many times it is called.
+var argv_text: u8[>..] = [];
+
+fn args() -> u8[:][>..] {
+    var out: u8[:][>..] = [];
     for i in arg_count() {
-        var a: u8[>..] = [];
-        arg(i, a);
-        out.push(copy(a));
+        let start = argv_text.len;
+        arg(i, argv_text);
+        out.push(argv_text[start..]);
     }
     return out;
 }

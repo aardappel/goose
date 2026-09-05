@@ -10,10 +10,12 @@
 // it outlives nothing, so such a result may only be passed down, never stored
 // or returned.
 //
-// The scan is purely syntactic, so it needs no checker state beyond the two
-// things it cannot derive itself: the sentinel, and what root the checker has
-// recorded for one of its variables (RootOfVar). Its per-function results are
-// cached on SFunction (ast.h), so a fresh instance per use is correct.
+// The scan is purely syntactic, so it needs no checker state beyond the three
+// things it cannot derive itself: the sentinel, what root the checker has
+// recorded for one of its variables (RootOfVar), and which variable a free
+// variable's name denotes from the specialization being seeded (FreeVar). Its
+// per-function results are cached on SFunction (ast.h), so a fresh instance
+// per use is correct.
 #pragma once
 
 namespace goose {
@@ -22,13 +24,16 @@ struct CycleRoots {
     // The checker's root for one of its own VarDefs: the pointee's root when
     // the variable holds a reference or slice, its own storage otherwise.
     using RootOfVar = function<VarDef *(VarDef *vd, bool isref)>;
+    // The variable a name resolves to through the lexical parent chain.
+    using FreeVar = function<VarDef *(string_view name)>;
 
     Ast &ast;
     VarDef *cycleroot;
     RootOfVar rootof;
+    FreeVar freevar;
 
-    CycleRoots(Ast &_ast, VarDef *_cycleroot, RootOfVar _rootof)
-        : ast(_ast), cycleroot(_cycleroot), rootof(_rootof) {}
+    CycleRoots(Ast &_ast, VarDef *_cycleroot, RootOfVar _rootof, FreeVar _freevar)
+        : ast(_ast), cycleroot(_cycleroot), rootof(_rootof), freevar(_freevar) {}
 
     static RootDesc UnknownDesc() {
         RootDesc d;
@@ -88,7 +93,7 @@ struct CycleRoots {
             if (fv->explicit_params) for (auto &p : fv->params) BindSlot(f, p.name).opaque = true;
             else BindSlot(f, "it").opaque = true;
         } else if (auto fd = Is<FnDecl>(n)) {
-            f->localfns.push_back(fd->sf->name);
+            f->localfns.push_back(fd->sf);
         }
         n->Children([&](Node *c) { CollectBinds(f, c); });
     }
@@ -149,7 +154,29 @@ struct CycleRoots {
             d.param = (int)i;
             return d;
         }
+        // A free variable: a local or parameter of an enclosing function,
+        // which outlives every activation of this one.
+        for (auto o = f->outer; o; o = o->outer) {
+            EnsureBinds(o);
+            auto b = FindBind(o, id->name);
+            auto isparam = false;
+            for (auto &p : o->params) isparam |= p.name == id->name;
+            if ((b && b->declared) || isparam) {
+                RootDesc d;
+                d.kind = RD_FREE;
+                d.name = id->name;
+                return d;
+            }
+        }
         return GlobalDesc(id->name);
+    }
+
+    // Whether name is one of f's own locals or parameters.
+    bool OwnName(SFunction *f, string_view name) {
+        EnsureBinds(f);
+        if (auto b = FindBind(f, name); b && b->declared) return true;
+        for (auto &p : f->params) if (p.name == name) return true;
+        return false;
     }
 
     // A path's root is its base's (a reference read out of a container is
@@ -177,23 +204,34 @@ struct CycleRoots {
             return UnknownDesc();
         }
         for (auto a : c->args) args.push_back(a);
-        EnsureBinds(f);
-        for (auto nm : f->localfns) if (nm == name) return UnknownDesc();
-        auto fit = ast.functionmap.find(name);
-        if (auto bd = LookupBuiltin(name)) {
-            // A member builtin wins over a same-named function at a.f() sites
-            // when the receiver is an array, which the scan cannot tell.
-            if (fit != ast.functionmap.end()) return UnknownDesc();
-            if ((bd->kind != B_PUSH && bd->kind != B_ALLOC_REF) || args.empty())
-                return UnknownDesc();
-            return ScanBase(f, args[0], busy, depth);
+        // A nested function declared in this function or an enclosing one
+        // shadows builtins and top-level functions.
+        SFunction *callee = nullptr;
+        for (auto o = f; o && !callee; o = o->outer) {
+            EnsureBinds(o);
+            for (auto lf : o->localfns) if (lf->name == name) { callee = lf; break; }
         }
-        if (fit == ast.functionmap.end() || fit->second.size() != 1) return UnknownDesc();
-        auto callee = fit->second[0];
+        if (!callee) {
+            auto fit = ast.functionmap.find(name);
+            if (auto bd = LookupBuiltin(name)) {
+                // A member builtin wins over a same-named function at a.f()
+                // sites when the receiver is an array, which the scan cannot
+                // tell.
+                if (fit != ast.functionmap.end()) return UnknownDesc();
+                if ((bd->kind != B_PUSH && bd->kind != B_ALLOC_REF) || args.empty())
+                    return UnknownDesc();
+                return ScanBase(f, args[0], busy, depth);
+            }
+            if (fit == ast.functionmap.end() || fit->second.size() != 1) return UnknownDesc();
+            callee = fit->second[0];
+        }
         EnrollDescs(callee);
         if (callee->retdescs.empty()) return UnknownDesc();
         auto cd = callee->retdescs[0];
         if (cd.kind == RD_NONE || cd.kind == RD_GLOBAL) return cd;
+        // A callee's free variable is this function's too, unless it is
+        // this function's own local, which is storage it owns.
+        if (cd.kind == RD_FREE) return OwnName(f, cd.name) ? UnknownDesc() : cd;
         // The callee's result is rooted at one of its own parameters: follow
         // the argument this call site passes there.
         if (cd.kind == RD_PARAM && cd.param < (int)args.size())
@@ -234,9 +272,7 @@ struct CycleRoots {
     vector<RootDesc> ComputeDescs(SFunction *f) {
         vector<RootDesc> ds(f->has_rets ? f->rets.size() : 0);
         if (ds.empty()) return ds;
-        // A nested function's free variables resolve outside its own body,
-        // which this scan does not follow.
-        if (f->isnested || f->isthread || !f->body) {
+        if (f->isthread || !f->body) {
             for (auto &d : ds) d = UnknownDesc();
             return ds;
         }
@@ -303,6 +339,14 @@ struct CycleRoots {
             }
         }
         if (d.kind == RD_GLOBAL) { exact = true; return RootOfGlobal(d.glob); }
+        if (d.kind == RD_FREE) {
+            auto vd = freevar(d.name);
+            if (!vd) return cycleroot;
+            if (vd->isglobal) { exact = true; return RootOfGlobal(vd); }
+            auto isref = vd->type && (vd->type->kind == TY_REF || vd->type->kind == TY_SLICE);
+            exact = isref ? vd->refrootknown && vd->ref.rootexact : true;
+            return rootof(vd, isref);
+        }
         return cycleroot;
     }
 
@@ -328,6 +372,13 @@ struct CycleRoots {
                 if (d.kind == RD_GLOBAL) rr.writable = d.glob && d.glob->isvar;
                 else if (d.kind == RD_PARAM && d.param < (int)spec->params.size())
                     rr.writable = spec->params[d.param]->ref.writable;
+                else if (d.kind == RD_FREE) {
+                    if (auto vd = freevar(d.name)) {
+                        auto isref = vd->type && (vd->type->kind == TY_REF ||
+                                                  vd->type->kind == TY_SLICE);
+                        rr.writable = isref ? vd->ref.writable : vd->isvar;
+                    }
+                }
             }
             rr.seeded = true;
         }

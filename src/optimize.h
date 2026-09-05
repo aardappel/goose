@@ -742,6 +742,7 @@ inline Node *VarDecl::Cp1(Inliner &inl) const {
     auto c = inl.ast.New<VarDecl>(line, isvar);
     c->reusable = reusable;
     c->isglobal = isglobal;
+    c->byref = byref;
     c->names = names;
     c->type = type;
     for (auto i : inits) c->inits.push_back(inl.Cp(i));

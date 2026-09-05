@@ -707,7 +707,10 @@ inline TypeCheck::ReadBack TypeCheck::ReadBackRoot(TypeExpr *rt, VarDef *croot, 
     // Case 3: the container came from a caller, or its own root is only a
     // bound -- storage this function cannot enumerate may be behind it.
     auto global = croot->isglobal;
-    if (!global && (!cexact || croot->ownerspec != CurRealFrame().spec)) return rb;
+    if (!global && (!cexact || croot->ownerspec != CurRealFrame().spec)) {
+        rb.from = croot;   // Read out of it; its stores say what it holds.
+        return rb;
+    }
     // Only globals outlive globals (§11.1), so a global container's
     // pointee is owned by a global or by static data, whatever local scope
     // is open here. A local container's was reachable from this frame and

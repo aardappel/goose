@@ -30,6 +30,8 @@ struct Parser {
     bool stmt_level = false;
     bool stmt_ended = false;
 
+    SFunction *curfn = nullptr;      // The function whose body is being parsed.
+
     Parser(Ast &_ast, string_view filename, const char *source, int _fileidx)
         : ast(_ast), lex(filename, source), fileidx(_fileidx) {}
 
@@ -227,6 +229,7 @@ struct Parser {
         ast.functions.push_back(sf);
         sf->line = line;
         sf->isnested = nested;
+        sf->outer = curfn;
         if (lex.tok == T_EXTERN) {
             sf->isextern = true;
             if (nested) Error("extern fn must be declared at top level");
@@ -270,7 +273,10 @@ struct Parser {
             if (sf->cname.empty()) sf->cname = string(sf->name);
             Expect(T_SEMI, "extern declaration");
         } else {
+            auto savefn = curfn;
+            curfn = sf;
             sf->body = ParseBlockExpr("function body");
+            curfn = savefn;
         }
         // Only the root file's `fn main` is the program entry; an imported
         // file's main is ignored entirely (§11.1), letting a runnable file
@@ -301,7 +307,10 @@ struct Parser {
             if (!IsNext(T_COMMA)) break;
         }
         if (IsNext(T_COLON)) vd->type = ParseType();
-        if (IsNext(T_ASSIGN)) {
+        // `x .= e` declares a reference bound to e, where `x = e` would
+        // copy a fixed-size pointee (§3.8).
+        if (IsNext(T_DOTASSIGN)) vd->byref = true;
+        if (vd->byref || IsNext(T_ASSIGN)) {
             for (;;) {
                 auto init = ParseExpr();
                 Standalone(init);
@@ -572,13 +581,16 @@ struct Parser {
                 lex.Next();
                 auto sub = EnterSub();
                 auto r = New<Return>(line);
-                if (lex.tok != T_SEMI && lex.tok != T_FROM && lex.tok != T_RCURLY) {
+                if (lex.tok != T_SEMI && lex.tok != T_RCURLY && !AtReturnFrom()) {
                     for (;;) {
                         r->vals.push_back(ParseExpr());
                         if (!IsNext(T_COMMA)) break;
                     }
                 }
-                if (IsNext(T_FROM)) r->from = ExpectIdent("return from");
+                if (AtReturnFrom()) {
+                    lex.Next();
+                    r->from = ExpectIdent("return from");
+                }
                 LeaveSub(sub);
                 return r;
             }
@@ -699,20 +711,34 @@ struct Parser {
         return n;
     }
 
+    // Bitwise operators bind tighter than comparisons (as in Rust, unlike
+    // C), so `x & mask != 0` tests the masked bits (Appendix D).
     int BinPrec(TType t) {
         switch (t) {
             case T_MUL: case T_DIV: case T_MOD:                return 10;
             case T_PLUS: case T_MINUS:                         return 9;
             case T_SHL: case T_SHR:                            return 8;
-            case T_LT: case T_GT: case T_LTEQ: case T_GTEQ:    return 7;
-            case T_EQ: case T_NEQ:                             return 6;
-            case T_BITAND:                                     return 5;
-            case T_XOR:                                        return 4;
-            case T_BITOR:                                      return 3;
+            case T_BITAND:                                     return 7;
+            case T_XOR:                                        return 6;
+            case T_BITOR:                                      return 5;
+            case T_LT: case T_GT: case T_LTEQ: case T_GTEQ:    return 4;
+            case T_EQ: case T_NEQ: case T_DOTEQ: case T_DOTNEQ: return 3;
             case T_ANDAND:                                     return 2;
             case T_OROR:                                       return 1;
             default:                                           return 0;
         }
+    }
+
+    // `from` is a keyword only in `return ... from f` (§7.9): the identifier
+    // `from` followed by another identifier. Elsewhere it is an ordinary
+    // name, so `from`/`to` parameters stay available.
+    bool AtReturnFrom() {
+        if (lex.tok != T_IDENT || lex.attr != "from") return false;
+        Lexer save = lex;
+        lex.Next();
+        auto isfrom = lex.tok == T_IDENT;
+        lex = save;
+        return isfrom;
     }
 
     Node *ParseBinary(int minprec) {
@@ -1085,7 +1111,7 @@ struct Parser {
                 switch (lex.tok) {
                     case T_ASSIGN: case T_DOTASSIGN: case T_PLUSEQ: case T_MINUSEQ:
                     case T_MULEQ: case T_DIVEQ: case T_MODEQ: case T_ANDEQ: case T_OREQ:
-                    case T_XOREQ: {
+                    case T_XOREQ: case T_SHLEQ: case T_SHREQ: {
                         auto op = lex.tok;
                         lex.Next();
                         auto rhs = ParseExpr();

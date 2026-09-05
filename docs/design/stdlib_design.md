@@ -406,9 +406,9 @@ fn make_heap<A>(xs: A&)                          // O(n) heapify
 ```
 
 Each instantiates only for array kinds that have the operations it uses
-(`remove_at` on a grow-only array is an instantiation error naming the
-missing `pop`). A `[>..<]` is the expected heap and queue container; a
-limited `[..k]` inside a struct works too.
+(a grow-only array pops through the reference wherever nothing in the
+caller points into it, spec §5.1). A `[>..<]` is the expected heap and
+queue container; a limited `[..k]` inside a struct works too.
 
 ### 4.8 Strings
 
@@ -585,7 +585,7 @@ fn read_stdin(out: u8[>..]&)                         // everything until EOF
 fn write_stdout(s: u8[:])
 fn write_stderr(s: u8[:])
 fn flush_stdout()
-fn args() -> u8[][>..]                               // Goose over extern arg_count()/arg(i, out)
+fn args() -> u8[:][>..]                              // slices of a global buffer, over extern arg_count()/arg(i, out)
 fn env(name: u8[:], out: u8[>..]&) -> bool
 fn time() -> f64                                     // seconds since the epoch
 fn clock() -> f64                                    // monotonic, high resolution

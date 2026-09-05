@@ -166,6 +166,7 @@ inline Node *VarDecl::Clone(Ast &ast) const {
     auto vd = ast.New<VarDecl>(line, isvar);
     vd->reusable = reusable;
     vd->isglobal = isglobal;
+    vd->byref = byref;
     vd->names = names;
     vd->type = type;
     CloneNodes(ast, inits, vd->inits);

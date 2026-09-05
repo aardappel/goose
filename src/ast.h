@@ -269,6 +269,16 @@ struct Val : Prov {
     // a literal, a .len/.cap, or a `let` bound to one -- so that whether a
     // comparison compiles never depends on how much the optimizer proved.
     bool nonneg = false;
+    // For a value whose type holds plain references or slices (§9.2's
+    // holder values): the root bounding what those references point at,
+    // and whether it is exact. `holderset` says it was derived at all;
+    // an underived one is taken as the value's own root.
+    VarDef *holderroot = nullptr;
+    bool holderexact = false;
+    bool holderset = false;
+    // The variable or container the holder value was read out of, whose
+    // store events describe its contents exactly.
+    VarDef *holderfrom = nullptr;
     FnValBind fnv;               // When type is TY_FN.
 };
 
@@ -587,6 +597,7 @@ NODE(VarDecl)
     bool isvar;                 // var vs let.
     bool reusable = false;
     bool isglobal = false;
+    bool byref = false;         // `x .= e`: bound by reference, no decay (§3.8).
     vector<string_view> names;  // let a, b = f();
     TypeExpr *type = nullptr;
     vector<Node *> inits;       // Empty for uninitialized locals.
@@ -636,16 +647,18 @@ NODE_END
 
 // A returned reference's root as the syntactic cycle scan (§7.8,
 // typecheck_cycles.h) can name it before any body is checked: one of the
-// function's own reference parameters' root classes, or a global. RD_NONE is
-// "no return contributes yet" (the fixpoint's optimistic bottom), RD_UNKNOWN
-// its top.
-enum RootDescKind { RD_NONE, RD_PARAM, RD_GLOBAL, RD_UNKNOWN };
+// function's own reference parameters' root classes, a global, or a local of
+// an enclosing function (a free variable of a nested function, §7.5). RD_NONE
+// is "no return contributes yet" (the fixpoint's optimistic bottom),
+// RD_UNKNOWN its top.
+enum RootDescKind { RD_NONE, RD_PARAM, RD_GLOBAL, RD_FREE, RD_UNKNOWN };
 struct RootDesc {
     RootDescKind kind = RD_NONE;
     int param = 0;              // RD_PARAM: index into SFunction::params.
     VarDef *glob = nullptr;     // RD_GLOBAL.
+    string_view name;           // RD_FREE: the enclosing function's variable.
     bool operator==(const RootDesc &o) const {
-        return kind == o.kind && param == o.param && glob == o.glob;
+        return kind == o.kind && param == o.param && glob == o.glob && name == o.name;
     }
     bool operator!=(const RootDesc &o) const { return !(*this == o); }
 };
@@ -669,11 +682,18 @@ struct SFunction {
     vector<Param> params;
     vector<TypeExpr *> rets;    // Empty + !has_rets = inferred/none.
     bool has_rets = false;
+    // The globals and parameters the body textually shrinks (pop, resize,
+    // clear, whole-array assignment): what a back edge into a cycle still
+    // being checked is taken to shrink (§5.1). Filled on first use.
+    bool shrinkscanned = false;
+    vector<string_view> shrinkglobalnames;
+    vector<int> shrinkparamidx;
     bool isrec = false;         // Declared with `recursive`.
     bool isthread = false;
     bool isextern = false;      // A C function behind a Goose signature (§7.10); no body.
     string cname;               // Its C symbol (the Goose name unless spelled out).
     bool isnested = false;
+    SFunction *outer = nullptr;     // The function a nested one is declared in.
     Block *body = nullptr;
     vector<FnSpec *> specs;     // Specializations (typecheck), owned by Ast.
     // Cycle return-root prediction (typecheck_cycles.h, §7.8).
@@ -681,7 +701,7 @@ struct SFunction {
     int descstate = 0;              // 0 unscanned, 1 in the running fixpoint, 2 settled.
     bool bindsscanned = false;
     vector<LocalBind> locals;       // Body bindings, by name.
-    vector<string_view> localfns;   // Nested functions: not scanned, so unresolvable.
+    vector<SFunction *> localfns;   // Nested functions declared in the body.
 };
 
 struct SStruct {
@@ -786,6 +806,13 @@ struct VarDef {
     // outside of: a later rebind in that loop is observed by that read on the
     // next iteration, so it may no longer change the root (typecheck.h).
     bool refidentityused = false;
+    // For variables whose type holds plain references or slices by value
+    // (a struct with a slice field, an array of such): the deepest root
+    // among the references stored into it so far, which bounds what a copy
+    // of the value may point at (§9.2). Set by every store into it.
+    VarDef *contentroot = nullptr;
+    bool contentexact = false;
+    bool contentset = false;
     // Flow state during checking:
     bool assigned = false;
     TypeExpr *narrowed = nullptr;  // T? narrowed to T& in the current region.
@@ -853,6 +880,21 @@ struct RootArg {
 
 // One return value's reference root, for the callers to map (§9.2), and
 // the cycle fixpoint's prediction of it (§7.8).
+// A reference, slice or holder value stored into a container (§9.2): what
+// the shrink rules (§5.1) consult to know whether the container may point
+// into an array.
+struct StoreEvent {
+    VarDef *container = nullptr;
+    // What was stored: a reference to something rooted at `root`, or (a
+    // copy of) the contents of container `src` -- a holder value read out
+    // of it, whose own events say what it points at.
+    VarDef *root = nullptr;      // Null: static data.
+    VarDef *src = nullptr;
+    bool exact = false;
+    TypeExpr *pointee = nullptr; // Null: unknown (a holder value's contents).
+    Line at;
+};
+
 struct RetRoot {
     VarDef *root = nullptr;    // Param VarDef, global, or null = static data.
     bool exact = false;        // Val::rootexact of the returned reference.
@@ -888,6 +930,10 @@ struct FnSpec {
     // (§5.2): globals, and the indices of parameters whose pointee is shrunk.
     set<VarDef *> shrinkglobals;
     set<int> shrinkparams;
+    // Stores into the caller's storage, through reference parameters'
+    // class roots (§5.1): the call sites map them onto their arguments.
+    vector<StoreEvent> classevents;
+    size_t eventstart = 0;         // storeevents.size() when the body's check began.
     int id = 0;                    // Unique, for diagnostics/codegen naming.
     // Filled by the optimizer (optimize.h):
     int uses = 0;                  // Call sites in live code (tag-dispatch entries included).

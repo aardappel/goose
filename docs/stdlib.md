@@ -13,8 +13,10 @@ Conventions that hold throughout:
   array kind and every slice coerces to it: `sort(arr)`, `sort(arr[1..])`.
 * A function that changes the length takes `xs: A&`, the whole array by
   reference, and instantiates for whatever array kind it is given, provided
-  that kind has the operations used (`remove_at` on a grow-only array is a
-  compile error naming the missing `pop`).
+  that kind has the operations used. A grow-only array shrinks through the
+  reference wherever nothing in the caller points into it (spec §5.1), so
+  `remove_at(xs, i)` works on a `[>..]` local; the checker reports the
+  call while a slice of `xs` is in scope.
 * Nothing non-fixed is taken by value (spec §4.1): `f(xs)` binds by
   reference; a function wanting its own copy says `copy(xs)`.
 * Fresh arrays come back as `T[>..]`, built straight into the caller's
@@ -285,7 +287,7 @@ fn read_line(out: u8[>..]&) -> bool                  // stdin, newline stripped;
 fn read_stdin(out: u8[>..]&)                         // everything until end of input
 fn write_stdout(s: u8[:])   fn write_stderr(s: u8[:])   fn flush_stdout()
 fn arg_count() -> i64       fn arg(i: i64, out: u8[>..]&)
-fn args() -> u8[][>..]                               // argument 0 is the program
+fn args() -> u8[:][>..]                              // indexable; argument 0 is the program
 fn env(name: u8[:], out: u8[>..]&) -> bool
 fn time() -> f64                                     // seconds since the epoch
 fn clock() -> f64                                    // monotonic, high resolution

@@ -44,10 +44,16 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
     for (auto a : c->args) an.push_back(a);
     auto ln = c->line;
     switch ((BuiltinKind)c->builtin) {
-        case B_PRINT:
-            for (auto a : an) EmitOutArg(a, c);
+        case B_PRINT: {
+            // The whole line is rendered before any of it is written, so
+            // an argument that prints on its own (a call) cannot interleave
+            // with it (§3.7).
+            auto b = TempBuilder();
+            for (auto a : an) EmitFormatInto(b, a, ln, c);
+            L("gs_out_bytes(", b.hdr, ".base, ", b.hdr, ".len);");
             L("gs_out_nl();");
             return {};
+        }
         case B_STR: return EmitStr(c, an, d0, ln);
         case B_FORMAT: {
             auto lv = RecvLoc(an[0]);

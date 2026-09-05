@@ -92,6 +92,25 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
             v.reusable = vd->reusable;
             v.nonneg = vd->nonneg;
             v.lvalue = true;
+            if (tc.HoldsPlainRef(v.type)) {
+                // What the references inside point at: a global's contents
+                // are rooted at globals or static data; a let's were fixed
+                // by its initializer; anything else is bounded by the
+                // variable itself, which its contents outlive.
+                // A var's contents are what was stored so far in program
+                // order, unless a loop around this read writes it: the next
+                // iteration's contents are then unknown here.
+                v.holderset = true;
+                v.holderfrom = vd;
+                if (vd->isglobal) {
+                    v.holderroot = nullptr;
+                } else if (vd->contentset && (!vd->isvar || !tc.AssignedInEnclosingLoop(vd))) {
+                    v.holderroot = vd->contentroot;
+                    v.holderexact = vd->contentexact;
+                } else {
+                    v.holderroot = vd;
+                }
+            }
         }
         return v;
     }
@@ -168,9 +187,12 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         v.type = tc.FixedArrayOf(tc.ast.voidtype, 0, line);
         return v;
     }
+    auto savedeep = tc.litdeep;
+    tc.litdeep = {};
     for (auto &e : elems) {
         auto ev = tc.CheckValue(e, elem);
         if (!elem) elem = ev.type;
+        tc.NoteLitElem(ev, elem);
     }
     if (elem->kind == TY_VOID) tc.Error(this, "cannot infer array element type");
     if (wantcount >= 0 && (int64_t)elems.size() != wantcount)
@@ -184,6 +206,8 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         v.type = expected->kind == TY_ARRAY
                      ? expected : tc.FixedArrayOf(elem, (int64_t)elems.size(), line);
         v.root = expected->kind == TY_SLICE ? tc.temproot : nullptr;
+        tc.HolderFromLit(v);
+        tc.litdeep = savedeep;
         return v;
     }
     v.type = tc.FixedArrayOf(elem, (int64_t)elems.size(), line);
@@ -212,7 +236,11 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
         v.type = expected && expected->kind == TY_ENUM && expected->enu->en == ei->en &&
                          tc.TypeArgsEq(expected->enu->args, t->var->adt->enu->args)
                      ? expected : t;
+        auto savedeep = tc.litdeep;
+        tc.litdeep = {};
         tc.CheckInits(this, var->fields, ei->vftypes[vi], ei->en->name, v.type);
+        tc.HolderFromLit(v);
+        tc.litdeep = savedeep;
         return v;
     }
     if (t->kind == TY_STRUCT) {
@@ -255,9 +283,13 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
         }
         auto inst = tc.GetStructInst(t);
         sinst = inst;
+        auto savedeep = tc.litdeep;
+        tc.litdeep = {};
         tc.CheckInits(this, st->fields, inst->ftypes, st->name, t);
         Val v;
         v.type = t;
+        tc.HolderFromLit(v);
+        tc.litdeep = savedeep;
         return v;
     }
     tc.Error(this, cat("cannot construct a value of type ", tc.TypeStr(t), " with a literal"));
@@ -319,6 +351,29 @@ inline Val Unary::Check(TypeCheck &tc, TypeExpr *) {
 }
 
 inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
+    if (op == T_DOTEQ || op == T_DOTNEQ) {
+        // Reference identity (§4.5): the addresses, never the pointees. Each
+        // side is a reference (plain or optional) or null, or storage taken
+        // by reference as a `.=` binding takes it; the pointee types agree.
+        auto lv = tc.CheckV(left, nullptr);
+        auto rv = tc.CheckV(right, nullptr);
+        if (lv.lvalue && lv.type->kind != TY_REF && lv.type->kind != TY_SLICE)
+            left = tc.AutoRef(left, lv);
+        if (rv.lvalue && rv.type->kind != TY_REF && rv.type->kind != TY_SLICE)
+            right = tc.AutoRef(right, rv);
+        left->exprtype = lv.type;
+        right->exprtype = rv.type;
+        auto isref = [&](const Val &v) { return v.isnull || v.type->kind == TY_REF; };
+        if (!isref(lv) || !isref(rv))
+            tc.Error(this, cat(TName(op), " compares references by address; got ",
+                               tc.TypeStr(lv.type), " and ", tc.TypeStr(rv.type)));
+        if (!lv.isnull && !rv.isnull && !tc.TypeEq(lv.type->ref->sub, rv.type->ref->sub))
+            tc.Error(this, cat(TName(op), " needs references to the same type, got ",
+                               tc.TypeStr(lv.type), " and ", tc.TypeStr(rv.type)));
+        Val v;
+        v.type = tc.ast.booltype;
+        return v;
+    }
     if (op == T_ANDAND || op == T_OROR) {
         tc.CheckCond(left);
         auto snap = tc.SaveFlow();
@@ -364,6 +419,26 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
             }
             if (lt->kind == TY_FN || lt->kind == TY_VOID)
                 tc.Error(this, "these values cannot be compared");
+            // Two arrays or slices of one element type compare as slices,
+            // whatever their kinds (§4.5): `name == "x"`, `a[..] == b`.
+            auto elemof = [](TypeExpr *t) -> TypeExpr * {
+                if (t->kind == TY_SLICE) return t->sub;
+                if (t->kind == TY_ARRAY) return t->arr->sub;
+                return nullptr;
+            };
+            if (!tc.TypeEq(lt, rt) && elemof(lt) && elemof(rt) &&
+                tc.TypeEq(elemof(lt), elemof(rt))) {
+                if (lt->kind != TY_SLICE) {
+                    left = tc.WholeSlice(left);
+                    lv = tc.Operand(left);
+                    lt = tc.LoadType(lv.type);
+                }
+                if (rt->kind != TY_SLICE) {
+                    right = tc.WholeSlice(right);
+                    rv = tc.Operand(right);
+                    rt = tc.LoadType(rv.type);
+                }
+            }
             if (!tc.TypeEq(lt, rt))
                 tc.Error(this, cat("== requires operands of the same type, got ",
                                    tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
@@ -423,6 +498,11 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
             if (tc.TypeEq(lt, rt) && tc.ElementwiseOK(lt)) {
                 v.type = lt;
                 return v;
+            }
+            if ((lt->kind == TY_FLT && rv.ck == CK_INT) || (rt->kind == TY_FLT && lv.ck == CK_INT)) {
+                auto &c = lv.ck == CK_INT ? lv : rv;
+                tc.Error(this, cat("an integer literal in a float expression: write ",
+                                   tc.ConstStr(c), ".0"));
             }
             tc.Error(this, cat("operator ", TName(op), " cannot be applied to ",
                                tc.TypeStr(lt), " and ", tc.TypeStr(rt)));

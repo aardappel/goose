@@ -76,6 +76,25 @@ inline string Unary::CgX(CodeGen &cg) {
 }
 
 inline string Binary::CgX(CodeGen &cg) {
+    if (op == T_DOTEQ || op == T_DOTNEQ) {
+        // Reference identity: the addresses (a fat reference's header
+        // pointer); null is the null address.
+        auto side = [&](Node *n) -> string {
+            if (Is<NullLit>(n)) return "NULL";
+            string x;
+            TypeExpr *t = n->exprtype;
+            if (auto id = Is<Ident>(n); id && id->vdef && id->vdef->type->kind == TY_REF) {
+                x = cg.VarLoc(id->vdef).s;
+                t = id->vdef->type;
+            } else {
+                x = cg.GenX(n);
+            }
+            return t->kind == TY_REF && cg.IsResz(t->ref->sub) ? cat(x, ".hdr") : x;
+        };
+        auto l = side(left);
+        auto r = side(right);
+        return cat("(uint8_t)((void *)(", l, ") ", op == T_DOTEQ ? "==" : "!=", " (void *)(", r, "))");
+    }
     if (op == T_ANDAND || op == T_OROR) {
         // Short-circuit with left-to-right statement emission: the right
         // operand's statements may only run when the left allows.
@@ -648,6 +667,12 @@ inline void Assign::CgStmt(CodeGen &cg) {
                           cg.LocArgs(line), ");");
                 break;
             case T_ANDEQ: cg.L(lv.s, " = (", cg.CT(lv.t), ")(", lv.s, " & (", r, "));"); break;
+            case T_SHLEQ:
+                cg.L(lv.s, " = gs_shl_", sfx, "(", lv.s, ", (int64_t)(", r, "));");
+                break;
+            case T_SHREQ:
+                cg.L(lv.s, " = gs_shr_", sfx, "(", lv.s, ", (int64_t)(", r, "));");
+                break;
             case T_OREQ:  cg.L(lv.s, " = (", cg.CT(lv.t), ")(", lv.s, " | (", r, "));"); break;
             case T_XOREQ: cg.L(lv.s, " = (", cg.CT(lv.t), ")(", lv.s, " ^ (", r, "));"); break;
             default: assert(false);
