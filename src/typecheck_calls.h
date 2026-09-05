@@ -252,6 +252,20 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
     // enclosing bindings while unifying (the recursive-generic case).
     auto saveex = ownexclude;
     ownexclude = &sf->generics;
+    // A literal argument to a parameter whose type is a bare type variable,
+    // or that is untyped, stays a literal inside the specialization (§7.7):
+    // the variable binds to the literal's default type, and the parameter
+    // reads as the constant. Not on a recursive call: the specialization
+    // in progress takes the committed type, so recursion on a literal
+    // terminates.
+    auto inrecursion = false;
+    for (auto spec : sf->specs) inrecursion |= spec->inprogress;
+    auto owngeneric = [&](TypeExpr *t) {
+        if (!t || t->kind != TY_GENERIC) return false;
+        for (auto &g : sf->generics) if (g.name == t->named->name) return true;
+        return false;
+    };
+    set<string_view> litbound;   // Type variables bound by literals alone.
     auto paramsok = [&]() {
         // A literal argument adapts to whatever type the other arguments
         // give a type parameter (§3.1), so they unify last.
@@ -261,6 +275,19 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
         for (auto i : order) {
             auto &p = sf->params[i];
             auto &av = argvals[i];
+            auto isconst = false;
+            if (av.ck != CK_NONE && !p.isvar && !sf->isextern && !inrecursion) {
+                if (!p.type) {
+                    isconst = true;
+                } else if (owngeneric(p.type)) {
+                    auto name = p.type->named->name;
+                    auto bound = false;
+                    for (auto &[n, t] : mi.bindings) bound |= n == name;
+                    isconst = !bound || litbound.count(name);
+                    if (isconst) litbound.insert(name);
+                }
+            }
+            if (isconst) mi.consts.push_back({ (int)i, ConstArg { av.ck, av.ival, av.uns, av.fval } });
             if (!p.type) {
                 // Untyped parameter: an anonymous type variable (§7.1),
                 // bound to the argument's exact type — a reference
@@ -606,6 +633,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     for (auto spec : sf->specs) {
         if (spec->lexparent != mi.env) continue;
         if (!TypeArgsEq(spec->argtypes, mi.paramtypes)) continue;
+        if (spec->consts != mi.consts) continue;
         if (spec->fnvals.size() != mi.fnvals.size()) continue;
         auto fvok = true;
         for (size_t i = 0; i < mi.fnvals.size(); i++)
@@ -636,6 +664,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     spec->lexparent = mi.env;
     spec->argtypes = mi.paramtypes;
     spec->roots = roots;
+    spec->consts = mi.consts;
     spec->fnvals = mi.fnvals;
     spec->bindings = mi.bindings;
     sf->specs.push_back(spec);
@@ -828,6 +857,13 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
         auto vd = NewVar(p.name, pt, sf->line, p.isvar);
         vd->isparam = true;
         vd->assigned = true;
+        for (auto &[ci, ca] : spec->consts) {
+            if (ci != (int)i) continue;
+            vd->constck = ca.ck;
+            vd->constival = ca.ival;
+            vd->constuns = ca.uns;
+            vd->constfval = ca.fval;
+        }
         if (pt->kind == TY_REF || pt->kind == TY_SLICE) {
             auto &ra = spec->roots[rootidx++];
             if (ra.cls == 0) {
@@ -908,7 +944,8 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     // The body: statements plus a value-producing tail (treated exactly
     // like `return tail`). An else-less if tail cannot be a value, so a
     // void function may end in one.
-    for (auto st : spec->body->stmts) CheckStmt(st);
+    BlockScope bs(*this, spec->body);
+    CheckStmts(spec->body);
     if (spec->body->tail) {
         auto tail = spec->body->tail;
         auto asvalue = !(spec->retsknown && spec->rets.empty());

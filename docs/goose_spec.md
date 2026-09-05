@@ -772,26 +772,33 @@ statement, the initializer of a declaration, or the right-hand side of an
 assignment to a variable, so that no reference taken earlier in the same
 expression outlives the shrink; and not inside a block, `if`, `match` or
 loop that produces a value, whose enclosing expression may hold such
-references too. At the shrink, nothing in an open scope may refer into the
-array: no reference or slice variable rooted at it (a `var` reference the
-same-depth rebinding rule (§9.2) could retarget into it counts, as does one
-not bound yet further down a loop body), and no value that *holds* a
-reference into it — a struct with a reference field, an array of slices, a
-`let` copy of an element of such. Values hold references only where a store
-put them, and every store the checker has seen is on record (§9.2), so this
-half of the test is exact to the store: the error names the holder and the
-line where a reference into the array was stored into it, and it fires for
-a store *later* in a loop body too, which the next iteration reaches. A
-value whose type cannot hold a reference to anything the array's elements
-contain by value is never a holder, nor is one linked by relative
-references alone (a node pool): those point within their own root. Scopes
-are what make this usable: what a loop body or a nested block took out of
-the buffer is gone at its end, so a scratch buffer refilled per iteration,
-or a stack popped between phases, can hand out slices of itself —
-"reusable scratch" and "structure I can point into" are the same type. The
-operations themselves are the grow-shrink ones: a stack-top move and a
-length store. Assigning the array whole (`a = …`) replaces its elements and
-is a shrink under the same rule.
+references too. At the shrink, nothing *live* may refer into the array: no
+reference or slice variable rooted at it (a `var` reference the same-depth
+rebinding rule (§9.2) could retarget into it counts, as does one not bound
+yet further down a loop body), and no value that *holds* a reference into
+it — a struct with a reference field, an array of slices, a `let` copy of
+an element of such. Values hold references only where a store put them,
+and every store the checker has seen is on record (§9.2), so this half of
+the test is exact to the store: the error names the holder and the line
+where a reference into the array was stored into it. A value whose type
+cannot hold a reference to anything the array's elements contain by value
+is never a holder, nor is one linked by relative references alone (a node
+pool): those point within their own root.
+
+A variable is live at the shrink when it can be read again afterwards:
+it is named later in its own block or in an enclosing block it was
+declared in, or anywhere in a loop that contains the shrink and that the
+variable was declared outside of, since the next iteration runs the rest of
+the body again. "Named" is syntactic — any mention, a call of a nested
+function that mentions it included — so the test never depends on what
+the optimizer proved. A reference whose last use is behind the shrink is
+dead, and its block need not end: `let w = line[..5]; print(w);
+line.clear();` is fine, and a scratch buffer refilled per iteration, or a
+stack popped between phases, hands out slices of itself freely — "reusable
+scratch" and "structure I can point into" are the same type. The operations
+themselves are the grow-shrink ones: a stack-top move and a length store.
+Assigning the array whole (`a = …`) replaces its elements and is a shrink
+under the same rule.
 
 Through a reference or of a global, a shrink cannot see the callers'
 variables, so it is checked at every level: each function specialization
@@ -820,13 +827,14 @@ function of the cycle textually shrinks.
   point *into* the array: one merely rooted at a value that holds one, whose
   pointee type the array's elements cannot contain — a slice key read back
   out of a dictionary's slots — stores like any other.
-* **A shrink is an error while any variable in scope may refer into the
-  array** — the test a grow-only shrink applies (§5.1), call summaries for
-  a shrink through a reference or of a global included, minus the store
-  record: references into a grow-shrink array live in variables only, so
-  the variables in scope are the whole answer. The error is at the shrink
-  and names the variable and where it was bound, so either end can be
-  changed: end the slice's block before the shrink, or move the shrink. A
+* **A shrink is an error while any live variable may refer into the
+  array** — the test a grow-only shrink applies (§5.1), its liveness rule
+  and its call summaries for a shrink through a reference or of a global
+  included, minus the store record: references into a grow-shrink array
+  live in variables only, so the variables still in use are the whole
+  answer. The error is at the shrink and names the variable and where it
+  was bound, so either end can be changed: use the slice for the last time
+  before the shrink, or move the shrink. A
   call into a recursive cycle still being checked counts as shrinking every
   grow-shrink array it can reach. Function values run inline, so a shrink
   inside a block is checked against the block's own enclosing scopes.
@@ -1233,6 +1241,20 @@ by `{` for a struct literal (`Pair<i64> { … }`), or by `.ident {` for a
 variant literal (`Opt<i64>.Some { … }`); otherwise `<` is the comparison
 operator.
 
+**Literal arguments.** Where a literal is the only thing binding a type
+variable — the parameter is untyped, or its type is a bare `T` no typed
+argument mentions — the variable takes the literal's default type (§3.1),
+and inside the specialization the parameter *is* the literal: each use of
+it adapts as the literal would have, so `push_n(flags, 1, n)` with `fn
+push_n<A, T>(xs: A&, v: T, n: i64)` pushes a `u8` into a `u8[>..]`, and
+`fill(small, -7, 2)` an `i16` into an `i16[..4]`, with no suffix or cast at
+the call. The rule is the one literals already follow, applied through
+the call: `let y = v;` inside commits `y` to `i64` exactly as `let y = 1;`
+would. Each distinct literal value is its own specialization (the value
+is part of its key), and a recursive call passes the committed default
+type instead, so recursion on a literal terminates. `var` parameters and
+`extern` functions take literals as ordinary values.
+
 Passing arrays by reference is the generic way to write mutating range
 algorithms (each array-family type instantiates its own copy); slices are
 the uniform non-mutating way.
@@ -1487,6 +1509,17 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   the variable inexact, since it no longer names one array; and since a loop
   body is checked once, such a rebind is rejected outright when the
   variable's root has already been used as an identity earlier in that loop.
+  A variable declared before a loop and bound only inside it (`var last:
+  Node? = null;` before `loop { if last { last.next .= child; } … last .=
+  child; }`) is bound *ahead* of the loop: the body is scanned for its
+  `.=` targets, and where every one of them resolves syntactically to one
+  root — a container's element or field, a `push` or `alloc_ref` into it,
+  a call whose return root is known (§7.8's scan), a reference variable
+  bound to such — the variable has that root, exactly where the root's
+  storage is its own, for the whole body; the first real rebind confirms
+  it and supplies the rest of the provenance. Where the scan cannot tell,
+  nothing changes, and a use before the rebind sees the read-back rule's
+  answer (§9.5).
 * All `return`s of one function must agree on the returned reference's root
   (v1 simplification; use one source or split the function).
 * Inside recursive cycles the stricter §7.8 cycle store rule applies.
@@ -2271,3 +2304,13 @@ What the current compiler does where the text above leaves it a choice.
   the array, following source links (a copy holds what its source holds; a
   global source is judged by its type), and a shrink inside a loop is
   re-asked at the loop's end for stores the rest of the body made.
+* **Liveness at a shrink.** The checker keeps the statement index of every
+  open block; a holder is live when its name occurs in a later statement
+  of an open block at or inside its scope, in that block's tail, or
+  anywhere in an enclosing loop it outlives. Nested functions in scope are
+  followed by name from the calls in that code.
+* **Literal arguments** (§7.7) are part of a specialization's key (index
+  and value); the parameter variable carries the constant, a read of it is
+  the literal's value in the checker, and codegen emits the literal at the
+  type the use adapted it to. The C parameter stays in the signature,
+  unused.

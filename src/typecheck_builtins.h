@@ -155,7 +155,7 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
             auto root = RefRootOf(v);
             auto holds = root == vd || (v->isvar && Depth(root) == Depth(vd)) ||
                          (!v->refrootknown && Depth(v) >= Depth(vd));
-            if (!holds) continue;
+            if (!holds || !UsedAfter(v)) continue;
         } else {
             // Any other value holds references only where a store put
             // them, and every store this function can see is on record
@@ -164,13 +164,13 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
             // for one.
             if (!HoldsPlainRef(t)) continue;
             Line where;
-            if (!HolderMayPointInto(v, vd, 0, &where)) continue;
+            if (!HolderMayPointInto(v, vd, 0, &where) || !UsedAfter(v)) continue;
             Error(c, cat("cannot ", op, " ", vd->name, " while ", v->name,
-                         " is in scope: a reference into it was stored there at ",
+                         " is still used: a reference into it was stored there at ",
                          Where(where), " (§5.1)"));
         }
         Error(c, cat("cannot ", op, " ", vd->name, " while ", v->name,
-                     " is in scope: it may hold a reference or slice into it (§5.1)"));
+                     " is still used: it may hold a reference or slice into it (§5.1)"));
     }
     if (vd->isglobal) {
         // What other globals hold cannot be enumerated from here: any one
@@ -480,9 +480,9 @@ inline void TypeCheck::CheckShrinkHolders(Node *at, const string &op, VarDef *ro
         auto r = RefRootOf(v);
         auto holds = r == root || (v->isvar && Depth(r) == Depth(root)) ||
                      (!v->refrootknown && Depth(v) >= Depth(root));
-        if (!holds) return;
+        if (!holds || !UsedAfter(v)) return;
         Error(at, cat("cannot ", op, " while ", v->name, " (bound at ", Where(v->line),
-                      ") is in scope: it may refer into ", what, " (§5.2)"));
+                      ") is still used: it may refer into ", what, " (§5.2)"));
     });
 }
 
@@ -656,7 +656,8 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
     c->fvtarget = fb.env ? fb.env->sf : nullptr;
     c->fvbody = (Block *)fv->body->Clone(ast);
     ValueRegion vr(*this, true);   // The body runs inside this call's expression.
-    for (auto st : c->fvbody->stmts) CheckStmt(st);
+    BlockScope bs(*this, c->fvbody);
+    CheckStmts(c->fvbody);
     Val v = VoidVal();
     if (auto tail = c->fvbody->tail) {
         auto fi = Is<IfExpr>(tail);

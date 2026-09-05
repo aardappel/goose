@@ -52,6 +52,17 @@ inline string StrLit::CgX(CodeGen &cg) {
 
 inline string Ident::CgX(CodeGen &cg) {
     assert(vdef);   // Named-function values never reach runtime.
+    // A literal argument (§7.7) reads as the literal, at the type this use
+    // adapted it to.
+    if (vdef->constck == CK_INT) {
+        if (vdef->constival < 0 && exprtype && exprtype->kind == TY_INT &&
+            exprtype->intstorage == IS_U64)
+            return cat((uint64_t)vdef->constival, "ULL");
+        return CodeGen::IntStr(vdef->constival);
+    }
+    if (vdef->constck == CK_FLT)
+        return CodeGen::FltStr(vdef->constfval, exprtype && exprtype->kind == TY_FLT &&
+                                                exprtype->fltstorage == FS_F32);
     return cg.LoadLoc(cg.VarLoc(vdef), exprtype, line);
 }
 

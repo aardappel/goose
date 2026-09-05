@@ -880,6 +880,66 @@ inline void TypeCheck::CheckSelfInit(Node *n, TypeExpr *ft, TypeExpr *selft) {
 // ------------------------------------------------------------------
 // Statements.
 
+inline void TypeCheck::CheckStmts(Block *b) {
+    for (size_t i = 0; i < b->stmts.size(); i++) {
+        blockpos.back().idx = i;
+        CheckStmt(b->stmts[i]);
+    }
+    blockpos.back().idx = b->stmts.size();
+}
+
+// Whether the code under n names `name`: a variable use, or a call of a
+// nested function whose body does. Syntactic, so a shadowing declaration
+// counts too, which only errs on the safe side.
+inline bool TypeCheck::MentionsName(Node *n, string_view name, set<SFunction *> &seen) {
+    if (!n) return false;
+    if (auto id = Is<Ident>(n); id && id->name == name) return true;
+    if (auto fd = Is<FnDecl>(n)) {
+        if (fd->sf->body && seen.insert(fd->sf).second &&
+            MentionsName(fd->sf->body, name, seen))
+            return true;
+    }
+    if (auto c = Is<Call>(n)) {
+        string_view callee;
+        if (auto id = Is<Ident>(c->callee)) callee = id->name;
+        else if (auto d = Is<Dot>(c->callee)) callee = d->name;
+        if (!callee.empty()) {
+            for (auto &[si, sf] : localfns)
+                if (sf->name == callee && sf->body && seen.insert(sf).second &&
+                    MentionsName(sf->body, name, seen))
+                    return true;
+        }
+    }
+    auto hit = false;
+    n->Children([&](Node *ch) { hit = hit || MentionsName(ch, name, seen); });
+    return hit;
+}
+
+// Whether variable v can be read again after the statement being checked
+// (§5.1): later in an open block at or inside v's scope, or anywhere in a
+// loop that contains this point and that v was declared outside of, whose
+// next iteration runs the earlier part of the body again.
+inline bool TypeCheck::UsedAfter(VarDef *v) {
+    set<SFunction *> seen;
+    for (auto i = 0; i < (int)scopes.size(); i++) {
+        if (scopes[i].kind != SK_LOOP) continue;
+        // A `for` binding is rebound by the loop itself at every iteration.
+        if (auto fl = Is<ForLoop>(scopes[i].node); fl && (fl->vdef == v || fl->idxdef == v))
+            return true;
+        if (Depth(v) <= i && scopes[i].node && MentionsName(scopes[i].node, v->name, seen))
+            return true;
+    }
+    for (auto &bp : blockpos) {
+        if (bp.scopeidx < Depth(v) - 1) continue;
+        for (auto i = bp.idx + 1; i < bp.block->stmts.size(); i++)
+            if (MentionsName(bp.block->stmts[i], v->name, seen)) return true;
+        if (bp.idx < bp.block->stmts.size() && bp.block->tail &&
+            MentionsName(bp.block->tail, v->name, seen))
+            return true;
+    }
+    return false;
+}
+
 inline void TypeCheck::CheckStmt(Node *n) {
     if (auto vd = Is<VarDecl>(n)) { CheckVarDecl(vd, false); return; }
     if (auto a = Is<Assign>(n)) { CheckAssign(a); return; }

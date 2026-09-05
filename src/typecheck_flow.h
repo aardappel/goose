@@ -297,6 +297,75 @@ inline void TypeCheck::PushLoopAssigned(Node *body) {
     set<string_view> names;
     CollectAssignedBases(body, names);
     loopassigned.push_back(std::move(names));
+    PrebindLoopRefs(body);
+}
+
+// A reference variable declared outside a loop and bound only inside it
+// (`var last: Node? = null;` before the loop) would be rootless at a use
+// earlier in the body than its rebind. The body is scanned for its `.=`
+// targets ahead of the loop, and where every rebind resolves to one root
+// syntactically, the variable takes that root now (§9.2); the first real
+// binding then confirms it and supplies the full provenance.
+inline void TypeCheck::PrebindLoopRefs(Node *body) {
+    auto sf = frames.back().sf;
+    if (!sf || !sf->body) return;
+    map<string_view, vector<Node *>> targets;
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n) return;
+        if (auto a = Is<Assign>(n); a && a->op == T_DOTASSIGN)
+            if (auto id = Is<Ident>(a->lval)) targets[id->name].push_back(a->rhs);
+        n->Children([&](Node *c) { walk(c); });
+    };
+    walk(body);
+    for (auto &[name, rhss] : targets) {
+        auto vd = LookupVar(name);
+        if (!vd || vd->isglobal || vd->refrootknown || !vd->type || vd->type->kind != TY_REF)
+            continue;
+        if (vd->ownerspec != frames.back().spec) continue;
+        auto cy = Cycles();
+        RootDesc d;
+        for (auto rhs : rhss) {
+            if (Is<NullLit>(rhs)) continue;
+            vector<string_view> busy;
+            d = CycleRoots::JoinDesc(d, cy.ScanExpr(sf, rhs, busy, 0));
+        }
+        VarDef *root = nullptr;
+        auto exact = false;
+        if (!ResolvePrebind(d, root, exact)) continue;
+        vd->ref.root = CanonRoot(root);
+        vd->ref.rootexact = exact;
+        vd->ref.rootfrom = nullptr;
+        vd->refrootknown = true;
+        vd->refprebound = true;
+    }
+}
+
+// The variable a scanned root names from here, and whether it owns the
+// storage exactly.
+inline bool TypeCheck::ResolvePrebind(const RootDesc &d, VarDef *&root, bool &exact) {
+    auto ofvar = [&](VarDef *v) {
+        if (!v) return false;
+        auto isref = v->type && (v->type->kind == TY_REF || v->type->kind == TY_SLICE);
+        if (isref) {
+            if (!v->refrootknown) return false;
+            root = RefRootOf(v);
+            exact = v->ref.rootexact;
+        } else {
+            root = v;
+            exact = true;
+        }
+        return true;
+    };
+    switch (d.kind) {
+        case RD_GLOBAL: return ofvar(d.glob);
+        case RD_LOCAL: case RD_FREE: return ofvar(LookupVar(d.name));
+        case RD_PARAM: {
+            auto spec = frames.back().spec;
+            if (!spec || d.param >= (int)spec->params.size()) return false;
+            return ofvar(spec->params[d.param]);
+        }
+        default: return false;
+    }
 }
 
 inline bool TypeCheck::AssignedInEnclosingLoop(VarDef *vd) {
@@ -399,7 +468,8 @@ inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue
                                     Node *scopenode) {
     ValueRegion vr(*this, wantvalue);
     PushScope(scopekind, scopenode);
-    for (auto st : b->stmts) CheckStmt(st);
+    BlockScope bs(*this, b);
+    CheckStmts(b);
     Val v = VoidVal();
     if (b->tail) {
         if (wantvalue) v = CheckValue(b->tail, expected);
@@ -573,7 +643,8 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
 inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wantvalue) {
     ValueRegion vr(*this, wantvalue);
     PushScope(SK_BLOCK, x);
-    for (auto st : x->body->stmts) CheckStmt(st);
+    BlockScope bs(*this, x->body);
+    CheckStmts(x->body);
     Val v = VoidVal();
     if (x->body->tail) {
         if (wantvalue) v = CheckValue(x->body->tail, expected);
@@ -623,8 +694,11 @@ inline void TypeCheck::CheckWhile(While *x) {
     PushLoopAssigned(x->body);
     NarrowCond(x->cond, true);
     PushScope(SK_LOOP, x);
-    for (auto st : x->body->stmts) CheckStmt(st);
-    if (x->body->tail) CheckStmtExpr(x->body->tail);
+    {
+        BlockScope bs(*this, x->body);
+        CheckStmts(x->body);
+        if (x->body->tail) CheckStmtExpr(x->body->tail);
+    }
     auto sc = scopes.back();
     PopScope();
     loopassigned.pop_back();
@@ -719,8 +793,11 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         idx->assigned = true;
         x->idxdef = idx;
     }
-    for (auto st : x->body->stmts) CheckStmt(st);
-    if (x->body->tail) CheckStmtExpr(x->body->tail);
+    {
+        BlockScope bs(*this, x->body);
+        CheckStmts(x->body);
+        if (x->body->tail) CheckStmtExpr(x->body->tail);
+    }
     auto sc = scopes.back();
     PopScope();
     loopassigned.pop_back();
@@ -1086,8 +1163,16 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
     }
     a->rhs->exprtype = v.type;
     if (lv.var) {
-        if (!lv.var->refrootknown) BindRefProvenance(lv.var, v);
-        else if (!v.isnull) CheckRefRebindRoot(a, lv.var, v);
+        if (!lv.var->refrootknown) {
+            BindRefProvenance(lv.var, v);
+        } else if (lv.var->refprebound && !v.isnull && CanonRoot(v.root) == lv.var->ref.root) {
+            // The root the loop scan predicted; this binding's provenance
+            // is the real one.
+            BindRefProvenance(lv.var, v);
+            lv.var->refprebound = false;
+        } else if (!v.isnull) {
+            CheckRefRebindRoot(a, lv.var, v);
+        }
         lv.var->assigned = true;
         // Rebinding an optional settles its nullness — narrowed only when
         // the new value is provably non-null (a plain reference).

@@ -647,16 +647,17 @@ NODE_END
 
 // A returned reference's root as the syntactic cycle scan (§7.8,
 // typecheck_cycles.h) can name it before any body is checked: one of the
-// function's own reference parameters' root classes, a global, or a local of
-// an enclosing function (a free variable of a nested function, §7.5). RD_NONE
-// is "no return contributes yet" (the fixpoint's optimistic bottom),
-// RD_UNKNOWN its top.
-enum RootDescKind { RD_NONE, RD_PARAM, RD_GLOBAL, RD_FREE, RD_UNKNOWN };
+// function's own reference parameters' root classes, a global, a local of
+// an enclosing function (a free variable of a nested function, §7.5), or the
+// function's own local storage (meaningful to the function itself, never to
+// a caller). RD_NONE is "no return contributes yet" (the fixpoint's
+// optimistic bottom), RD_UNKNOWN its top.
+enum RootDescKind { RD_NONE, RD_PARAM, RD_GLOBAL, RD_FREE, RD_LOCAL, RD_UNKNOWN };
 struct RootDesc {
     RootDescKind kind = RD_NONE;
     int param = 0;              // RD_PARAM: index into SFunction::params.
     VarDef *glob = nullptr;     // RD_GLOBAL.
-    string_view name;           // RD_FREE: the enclosing function's variable.
+    string_view name;           // RD_FREE / RD_LOCAL: the variable's name.
     bool operator==(const RootDesc &o) const {
         return kind == o.kind && param == o.param && glob == o.glob && name == o.name;
     }
@@ -672,6 +673,7 @@ struct LocalBind {
     TypeExpr *type = nullptr;   // Declared type; only ref/slice ones carry a root.
     vector<Node *> binds;       // Initializers and `.=`/`=` right-hand sides.
     bool declared = false;
+    bool byref = false;         // Declared with `.=`: a reference whatever its type.
     bool opaque = false;
 };
 
@@ -802,6 +804,9 @@ struct VarDef {
     // and counts as writable until it makes one.
     Prov ref { .writable = true };
     bool refrootknown = false;
+    // The root came from a scan of a loop body's rebinds ahead of the loop
+    // (§9.2), not from a binding; the first real binding replaces it.
+    bool refprebound = false;
     // A read of this variable's exact root inside a loop it was declared
     // outside of: a later rebind in that loop is observed by that read on the
     // next iteration, so it may no longer change the root (typecheck.h).
@@ -813,6 +818,13 @@ struct VarDef {
     VarDef *contentroot = nullptr;
     bool contentexact = false;
     bool contentset = false;
+    // A literal argument bound to a bare type variable stays a literal
+    // inside the specialization (§7.7): a read of the parameter is this
+    // constant, adapting at each use as the literal would.
+    ConstKind constck = CK_NONE;
+    int64_t constival = 0;
+    bool constuns = false;
+    double constfval = 0;
     // Flow state during checking:
     bool assigned = false;
     TypeExpr *narrowed = nullptr;  // T? narrowed to T& in the current region.
@@ -907,11 +919,23 @@ struct RetRoot {
 
 // One monomorphic specialization of a function: the unit of typechecking and
 // of later codegen. Owns nothing; body is a clone with annotations filled.
+// A literal argument a specialization is made for (§7.7): part of its key.
+struct ConstArg {
+    ConstKind ck = CK_NONE;
+    int64_t ival = 0;
+    bool uns = false;
+    double fval = 0;
+    bool operator==(const ConstArg &o) const {
+        return ck == o.ck && ival == o.ival && uns == o.uns && fval == o.fval;
+    }
+};
+
 struct FnSpec {
     SFunction *sf = nullptr;
     FnSpec *lexparent = nullptr;   // Defining specialization, for nested fns.
     vector<TypeExpr *> argtypes;   // Concrete parameter types (the key, with the below).
     vector<RootArg> roots;         // Per reference/slice-typed parameter.
+    vector<pair<int, ConstArg>> consts;  // Parameter index -> the literal it is.
     vector<pair<string_view, FnValBind>> fnvals;  // Generic name -> bound function value.
     vector<pair<string_view, TypeExpr *>> bindings;  // Generic name -> concrete type.
     Block *body = nullptr;         // Cloned, annotated copy of sf->body.

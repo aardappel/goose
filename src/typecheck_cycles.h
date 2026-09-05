@@ -77,6 +77,7 @@ struct CycleRoots {
                 if (b.declared) b.opaque = true;   // Two declarations of one name.
                 b.declared = true;
                 b.type = vd->type;
+                b.byref = vd->byref;
                 if (vd->inits.size() == vd->names.size()) b.binds.push_back(vd->inits[i]);
                 else b.opaque = true;              // Multi-value or absent initializer.
             }
@@ -130,11 +131,31 @@ struct CycleRoots {
         if (!id) return UnknownDesc();
         EnsureBinds(f);
         if (auto b = FindBind(f, id->name)) {
-            // Only a reference or slice variable carries a root the caller can
-            // name; anything else is rooted at storage this function owns.
-            if (b->opaque || !b->type ||
-                (b->type->kind != TY_REF && b->type->kind != TY_SLICE))
-                return UnknownDesc();
+            if (b->opaque) return UnknownDesc();
+            // A reference variable is rooted where its bindings point; a
+            // value variable is storage this function owns. A variable
+            // declared without a type is a reference only where the
+            // declaration says so (`.=`, an `&` initializer), and storage
+            // only where its initializer plainly builds a value.
+            auto isref = b->byref ||
+                         (b->type && (b->type->kind == TY_REF || b->type->kind == TY_SLICE));
+            if (!isref && !b->type)
+                for (auto e : b->binds)
+                    if (auto u = Is<Unary>(e); u && u->op == T_BITAND) isref = true;
+            if (!isref) {
+                auto value = b->type != nullptr;
+                if (!value && !b->binds.empty()) {
+                    value = true;
+                    for (auto e : b->binds)
+                        value &= Is<IntLit>(e) || Is<FltLit>(e) || Is<StrLit>(e) ||
+                                 Is<BoolLit>(e) || Is<StructLit>(e) || Is<ArrayLit>(e);
+                }
+                if (!value) return UnknownDesc();
+                RootDesc d;
+                d.kind = RD_LOCAL;
+                d.name = id->name;
+                return d;
+            }
             for (auto nm : busy) if (nm == id->name) return UnknownDesc();
             busy.push_back(id->name);
             RootDesc d;
@@ -179,16 +200,63 @@ struct CycleRoots {
         return false;
     }
 
-    // A path's root is its base's (a reference read out of a container is
-    // rooted at the container, §9.5).
+    // The declared type of the variable `name` denotes in f: a local's
+    // annotation, a parameter's type, an enclosing function's, or a
+    // global's. Null where there is none to read.
+    TypeExpr *DeclaredType(SFunction *f, string_view name) {
+        for (auto o = f; o; o = o->outer) {
+            EnsureBinds(o);
+            if (auto b = FindBind(o, name); b && b->declared) return b->opaque ? nullptr : b->type;
+            for (auto &p : o->params) if (p.name == name) return p.type;
+        }
+        auto git = ast.globalmap.find(name);
+        if (git == ast.globalmap.end() || git->second->defs.size() != 1) return nullptr;
+        return git->second->defs[0]->type;
+    }
+
+    // A path's root is its base's as long as the path stays inside the
+    // base's own storage: elements, fields, and relative references, which
+    // point within the same root (§3.9). A plain reference or slice read
+    // out of the base points elsewhere (§9.5), and so does a step the
+    // declared types cannot follow.
     RootDesc ScanBase(SFunction *f, Node *n, vector<string_view> &busy, int depth) {
+        vector<Node *> steps;   // Innermost step first.
         for (;;) {
-            if (auto d = Is<Dot>(n)) { n = d->obj; continue; }
-            if (auto ix = Is<Index>(n)) { n = ix->obj; continue; }
-            if (auto se = Is<SliceExpr>(n)) { n = se->obj; continue; }
+            if (auto d = Is<Dot>(n)) { steps.push_back(n); n = d->obj; continue; }
+            if (auto ix = Is<Index>(n)) { steps.push_back(n); n = ix->obj; continue; }
+            if (auto se = Is<SliceExpr>(n)) { steps.push_back(n); n = se->obj; continue; }
             break;
         }
-        return ScanExpr(f, n, busy, depth + 1);
+        auto d = ScanExpr(f, n, busy, depth + 1);
+        if (steps.empty() || d.kind == RD_UNKNOWN || d.kind == RD_NONE) return d;
+        auto id = Is<Ident>(n);
+        auto t = id ? DeclaredType(f, id->name) : nullptr;
+        if (!t) return UnknownDesc();
+        if (t->kind == TY_REF) t = t->ref->sub;   // A reference variable: its pointee.
+        for (auto it = steps.rbegin(); it != steps.rend(); ++it) {
+            if (auto dot = Is<Dot>(*it)) {
+                if (t->kind != TY_STRUCT) return UnknownDesc();
+                TypeExpr *ft = nullptr;
+                for (auto &fl : t->struc->st->fields)
+                    if (!fl.ispad && fl.name == dot->name) ft = fl.type;
+                if (!ft) return UnknownDesc();
+                t = ft;
+            } else if (Is<SliceExpr>(*it)) {
+                if (t->kind != TY_ARRAY && t->kind != TY_SLICE) return UnknownDesc();
+            } else {
+                if (t->kind == TY_ARRAY) t = t->arr->sub;
+                else if (t->kind == TY_SLICE) t = t->sub;
+                else return UnknownDesc();
+            }
+            if (!t) return UnknownDesc();
+            if (t->kind == TY_REF) {
+                if (t->ref->lenstorage < 0) return UnknownDesc();
+                t = t->ref->sub;
+            }
+            if (t->kind == TY_SLICE || t->kind == TY_GENERIC || t->kind == TY_UNRESOLVED)
+                return UnknownDesc();
+        }
+        return d;
     }
 
     RootDesc ScanCall(SFunction *f, Call *c, vector<string_view> &busy, int depth) {
@@ -230,8 +298,16 @@ struct CycleRoots {
         auto cd = callee->retdescs[0];
         if (cd.kind == RD_NONE || cd.kind == RD_GLOBAL) return cd;
         // A callee's free variable is this function's too, unless it is
-        // this function's own local, which is storage it owns.
-        if (cd.kind == RD_FREE) return OwnName(f, cd.name) ? UnknownDesc() : cd;
+        // this function's own local, which is then its own storage. The
+        // callee's own locals mean nothing here.
+        if (cd.kind == RD_FREE) {
+            if (!OwnName(f, cd.name)) return cd;
+            RootDesc d;
+            d.kind = RD_LOCAL;
+            d.name = cd.name;
+            return d;
+        }
+        if (cd.kind == RD_LOCAL) return UnknownDesc();
         // The callee's result is rooted at one of its own parameters: follow
         // the argument this call site passes there.
         if (cd.kind == RD_PARAM && cd.param < (int)args.size())

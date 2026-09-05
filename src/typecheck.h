@@ -98,6 +98,27 @@ struct TypeCheck {
 
     vector<Frame> frames;
     vector<Scope> scopes;
+    // The open blocks, outermost first, and the statement each is at: a
+    // shrink asks whether a holder is mentioned again after that point
+    // (UsedAfter, §5.1).
+    struct BlockPos {
+        Block *block = nullptr;
+        size_t idx = 0;             // The statement being checked; stmts.size() at the tail.
+        int scopeidx = 0;           // The block's own scope.
+    };
+    vector<BlockPos> blockpos;
+    // Checks a block's statements, keeping blockpos current; the tail is
+    // the caller's to check, inside the same BlockScope.
+    struct BlockScope {
+        TypeCheck &tc;
+        BlockScope(TypeCheck &_tc, Block *b) : tc(_tc) {
+            tc.blockpos.push_back({ b, 0, (int)tc.scopes.size() - 1 });
+        }
+        ~BlockScope() { tc.blockpos.pop_back(); }
+    };
+    void CheckStmts(Block *b);
+    bool MentionsName(Node *n, string_view name, set<SFunction *> &seen);
+    bool UsedAfter(VarDef *v);
     vector<VarDef *> vars;                            // All in-scope variables, all frames.
     vector<pair<int, SFunction *>> localfns;          // Nested fns, with their scope index.
     bool reachable = true;
@@ -680,6 +701,7 @@ struct TypeCheck {
         vector<pair<string_view, TypeExpr *>> bindings;
         vector<pair<string_view, FnValBind>> fnvals;
         vector<TypeExpr *> paramtypes;  // Concrete, one per declared parameter.
+        vector<pair<int, ConstArg>> consts;  // Literal arguments kept as constants (§7.7).
         FnSpec *env = nullptr;          // Lexical parent for nested functions.
     };
 
@@ -784,6 +806,8 @@ struct TypeCheck {
     vector<set<string_view>> loopassigned;   // Per enclosing loop: names its body writes.
     void CollectAssignedBases(Node *n, set<string_view> &out);
     void PushLoopAssigned(Node *body);
+    void PrebindLoopRefs(Node *body);
+    bool ResolvePrebind(const RootDesc &d, VarDef *&root, bool &exact);
     bool AssignedInEnclosingLoop(VarDef *vd);
     bool HolderMayPointInto(VarDef *holder, VarDef *arr, size_t from, Line *where);
     void ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Node *at);
