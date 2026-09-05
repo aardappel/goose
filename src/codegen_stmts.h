@@ -409,6 +409,25 @@ inline void CodeGen::EnsureFromChannels(SFunction *t) {
 inline string CodeGen::CallVal0(Call *c, const string &r0) {
     auto rt = c->rettypes.empty() ? nullptr : c->rettypes[0];
     auto et = c->exprtype;
+    if (rt && rt->kind == TY_ARRAY && IsResz(rt) && et && et->kind == TY_SLICE) {
+        // A resizable result passed where a slice is expected (§3.10): the
+        // temporary's elements, sliced whole; the temporary lives to the
+        // end of the statement like any other.
+        auto s = T();
+        L(CT(et), " ", s, " = { (", IsBytesT(et->sub) ? string("uint8_t") : CT(et->sub),
+          " *)", r0, ".base, ", r0, ".len };");
+        return s;
+    }
+    if (rt && rt->kind == TY_ARRAY && rt->arr->akind == A_FIXED && et && et->kind == TY_SLICE) {
+        // A fixed-array result passed where a slice is expected (§3.10):
+        // held in a temp of the statement's scope and sliced whole.
+        auto tv = T();
+        L(CT(rt), " ", tv, " = ", r0, ";");
+        auto s = T();
+        L(CT(et), " ", s, " = { (", IsBytesT(et->sub) ? string("uint8_t") : CT(et->sub),
+          " *)", tv, ".e, ", ArrSize(rt->arr), " };");
+        return s;
+    }
     if (rt && rt->kind == TY_REF && rt->ref->lenstorage < 0 && et &&
         et->kind != TY_REF && et->kind != TY_VOID) {
         if (IsResz(rt->ref->sub) || IsBytesT(rt->ref->sub)) return r0;

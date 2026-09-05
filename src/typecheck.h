@@ -443,6 +443,7 @@ struct TypeCheck {
                             vector<pair<string_view, TypeExpr *>> &bindings);
     SizeClass ClassOf(TypeExpr *t);
     bool IsFlat(TypeExpr *t);
+    bool HoldsPlainRef(TypeExpr *t);
     int VariantIndex(SEnum *en, SVariant *v);
     bool HasDefault(TypeExpr *t, string &why);
 
@@ -496,6 +497,8 @@ struct TypeCheck {
 
     bool ContainsGrowShrink(TypeExpr *t);
     bool IsGrowShrinkRoot(VarDef *r);
+    bool GrowShrinkCanHold(VarDef *r, TypeExpr *of);
+    bool GrowShrinkContains(TypeExpr *t, TypeExpr *of);
     bool RefExactOf(VarDef *vd);
     void BindProv(VarDef *vd, const Prov &p);
     void BindRefProvenance(VarDef *vd, const Val &v);
@@ -910,7 +913,13 @@ struct TypeCheck {
             function<void(Node *)> walk = [&](Node *n) {
                 if (!n) return;
                 if (auto id = Is<Ident>(n)) {
-                    if (id->vdef && id->vdef->isglobal)
+                    // A `let` global of flat fixed type is a constant (it
+                    // can hold no reference and is never written), so
+                    // reading it shares nothing mutable.
+                    auto g = id->vdef;
+                    auto constant = g && !g->isvar && g->type && IsFlat(g->type) &&
+                                    ClassOf(g->type) == SC_FIXED;
+                    if (g && g->isglobal && !constant)
                         Error(n, cat("thread programs may not access globals (§11.2): ",
                                      id->name, " (reached from thread_fn ",
                                      entry->sf->name, ")"));

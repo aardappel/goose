@@ -99,9 +99,9 @@ Literals:
   constructing; it exists to initialize non-optional relative-reference
   fields (§3.9, §4.2).
 
-The language is **expression-oriented**: `if`, `match`, and `block` are
-expressions; a block's value is its trailing expression. Assignment and
-`++`/`--` are *statements*, not expressions.
+The language is **expression-oriented**: `if`, `match`, `block` and a bare
+`{ … }` block are expressions; a block's value is its trailing expression.
+Assignment and `++`/`--` are *statements*, not expressions.
 
 **Statement termination.** Expression statements end with `;`, but a
 statement that *is* a block-ended construct — `if`, `match`, `block`, the
@@ -633,7 +633,8 @@ Literal forms usable in any construction context:
   in the positional form, any of them in the named form;
 * `[..cap]` — an empty limited array `T[..]` with the given construction-time
   capacity (`cap` a runtime expression); the reserved slots stay
-  uninitialized (§5.3, C.4);
+  uninitialized (§5.3, C.4). An array or string literal constructing a
+  limited array of static capacity must fit it (a compile error otherwise);
 * variant literals `Shape.Circle { r: 1.0 }`;
 * `self`, inside a struct or variant literal only, as the initializer of a
   non-optional relative-reference field pointing at the very value being
@@ -750,9 +751,12 @@ usable: what a loop body or a nested block took out of the buffer is gone at
 its end, so a scratch buffer refilled per iteration, or a stack popped between
 phases, can hand out slices of itself — "reusable scratch" and "structure I
 can point into" are the same type. The test is conservative wherever roots
-are (§9.2): a live value of any type containing references counts as a holder
-unless the array is declared deeper than it, as does a `var` reference that
-the same-depth rebinding rule could retarget into the array. The operations
+are (§9.2): a live value whose type contains plain references or slices
+counts as a holder unless the array is declared deeper than it, as does a
+`var` reference that the same-depth rebinding rule could retarget into the
+array — in both cases only where the array's elements can contain the
+pointee type at all. A value linked by relative references alone (a node
+pool) points within its own root and is never a holder. The operations
 themselves are the grow-shrink ones: a stack-top move and a length store.
 Assigning the array whole (`a = …`) replaces its elements and is a shrink
 under the same rule.
@@ -769,7 +773,10 @@ under the same rule.
   a pop, that stack-top memory can later be reused by *different types*
   (other locals, other pushes), so no reference into it may outlive the next
   shrink; keeping such references out of storage is what makes the next rule
-  a scan of the variables in scope.
+  a scan of the variables in scope. The rule is about references that can
+  point *into* the array: one merely rooted at a value that holds one, whose
+  pointee type the array's elements cannot contain — a slice key read back
+  out of a dictionary's slots — stores like any other.
 * **A shrink is an error while any variable in scope may refer into the
   array** — the test a grow-only local's shrink applies (§5.1). The error is
   at the shrink and names the variable and where it was bound, so either end
@@ -957,6 +964,7 @@ while c { s }
 for v in e { s }             // see §6.5
 loop { s }                   // infinite; exit via break
 block { s }                  // early-out construct: break E exits with value E
+{ s }                        // a plain scope with a value; not a break target
 guard c else { s }           // s must diverge; after the guard, c holds
 guard c;                     // shorthand: exit the innermost valueless construct
 match e { ... }              // §8
@@ -968,6 +976,8 @@ continue
 `block { }` exists to promote early-out style anywhere, not just at function
 top level. `break` binds to the innermost `loop`/`while`/`for`/`block`;
 labels are not in v1. All `break E` of one construct must agree on E's type.
+A bare `{ … }` in expression position — a match arm of several statements,
+say — is only a scope: `break` inside it still leaves the enclosing loop.
 
 `guard c else { s }`: the block runs when `c` is false and must diverge
 (`return`, `break`, `continue`, or a call that never returns: `abort(msg)`,
@@ -1198,7 +1208,10 @@ depth for them (aborting past its limit).
 same local are statically indistinguishable, so the §9.2 depth check is not
 sufficient there. Therefore: a reference whose root is a local of a cycle
 function may be passed *down* as an argument, but may not be stored into any
-location, nor returned. References rooted outside the cycle are
+location, nor returned. Rebinding one of the activation's own reference
+variables (`cur .= cur.next`) is not such a store: the variable dies with
+the activation, and what it is bound to came from one that outlives it.
+References rooted outside the cycle are
 unrestricted — in particular a pool handed to the cycle by reference (a
 parameter whose pointee is resizable-class, which no cycle function can own),
 so a recursive builder can push into a caller's local pool and link what it
@@ -1698,6 +1711,8 @@ the Linda tuple-space / coordination style.
 * A thread program may not access globals — that would be shared mutable
   memory between programs; the typechecker rejects it for every function a
   `thread_fn` reaches. Data enters through the spawn arguments and queues.
+  The exception is a `let` global of flat fixed type: a constant, which
+  holds no reference and is never written, so reading it shares nothing.
 * Args and queue elements must be **flat** types (§1.1); values are copied
   in and out, which is cheap because Goose values are contiguous.
 * **Typed queues**: conceptually one queue per flat element type;
@@ -2161,3 +2176,12 @@ What the current compiler does where the text above leaves it a choice.
 * **Queue images** (§11.2) are one contiguous byte image per value; a
   resizable's is its count, its fixed fields and its tail's elements, built
   on a scratch stack at `qput` and unpacked at the receiver's destination.
+* **C locals at function scope.** Every aggregate-typed C local (a struct,
+  array, slice or header) is declared at the top of its C function rather
+  than in the block that uses it, and a literal temporary with unused
+  limited-array slots is zero-initialized. Both work around MSVC 19.44–19.51,
+  which at any optimization level miscompiles a read through a copy of a
+  struct holding the address of a block-scoped local (a slice of a fixed
+  array declared in a loop body, passed to an inlined callee), and exploits
+  the indeterminate bytes of a copied partially-written struct. Neither
+  changes what the program means.

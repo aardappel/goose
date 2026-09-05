@@ -63,7 +63,10 @@ typedef struct {
     #endif
 } gs_thread;
 
-static gs_thread *gs_threads;
+/* Records are allocated one by one: a worker keeps a pointer to its own for
+   its whole life, so the registry that indexes them may grow, but they may
+   not move. */
+static gs_thread **gs_threads;
 static int64_t gs_numthreads, gs_capthreads;
 static gs_mutex gs_threads_mutex = GS_MUTEX_INIT;
 
@@ -89,11 +92,13 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
     gs_mutex_lock(&gs_threads_mutex);
     if (gs_numthreads == gs_capthreads) {
         gs_capthreads = gs_capthreads ? gs_capthreads * 2 : 16;
-        gs_threads = (gs_thread *)realloc(gs_threads, (size_t)gs_capthreads * sizeof(gs_thread));
+        gs_threads = (gs_thread **)realloc(gs_threads, (size_t)gs_capthreads * sizeof(gs_thread *));
         if (!gs_threads) gs_panic("out of memory spawning thread");
     }
-    gs_thread *t = &gs_threads[gs_numthreads];
-    int64_t id = gs_numthreads++;
+    gs_thread *t = (gs_thread *)malloc(sizeof(gs_thread));
+    if (!t) gs_panic("out of memory spawning thread");
+    int64_t id = gs_numthreads;
+    gs_threads[gs_numthreads++] = t;
     t->entry = entry;
     t->args = (uint8_t *)malloc(argsize ? (size_t)argsize : 1);
     if (!t->args) gs_panic("out of memory spawning thread");
@@ -112,7 +117,7 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
 static void gs_thread_wait(int64_t id, const char *file, int line) {
     gs_mutex_lock(&gs_threads_mutex);
     if (id < 0 || id >= gs_numthreads) gs_abort(GS_E_THREADID, file, line);
-    gs_thread t = gs_threads[id];
+    gs_thread t = *gs_threads[id];
     gs_mutex_unlock(&gs_threads_mutex);
     #ifdef _WIN32
         WaitForSingleObject(t.handle, INFINITE);

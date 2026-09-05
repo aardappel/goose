@@ -134,6 +134,41 @@ inline void CodeGen::EmitRelSelfStore(const string &stk, TypeExpr *rt, int64_t f
 
 // Does a fixed type contain relative references at any depth? Literals of
 // such types must construct in their final location, not via a temp.
+// Whether a fixed value of type t can hold bytes nothing ever wrote: the
+// unused slots of a limited array (§5.3), at any depth. A C temporary of
+// such a type is zero-initialized before a literal fills it, since copying
+// a struct with indeterminate bytes is what MSVC 19.51 exploits to
+// miscompile the reads of the bytes that were written.
+inline bool CodeGen::HasUninitSlots(TypeExpr *t) {
+    switch (t->kind) {
+        case TY_STRUCT: {
+            auto si = SI(t);
+            for (size_t i = 0; i < si->st->fields.size(); i++)
+                if (!si->st->fields[i].ispad && HasUninitSlots(si->ftypes[i])) return true;
+            return false;
+        }
+        case TY_ENUM: {
+            if (t->enu->varmode) return false;
+            auto ei = EIOf(t);
+            for (size_t vi = 0; vi < ei->en->variants.size(); vi++)
+                if (HasUninitSlots(VariantType(t, (int)vi))) return true;
+            return false;
+        }
+        case TY_VARIANT: {
+            auto ei = EIVar(t);
+            auto vi = VarIdx(ei->en, t->var->variant);
+            for (size_t i = 0; i < ei->en->variants[vi].fields.size(); i++)
+                if (!ei->en->variants[vi].fields[i].ispad &&
+                    HasUninitSlots(ei->vftypes[vi][i])) return true;
+            return false;
+        }
+        case TY_ARRAY:
+            if (t->arr->akind == A_LIMITED) return true;
+            return t->arr->akind == A_FIXED && HasUninitSlots(t->arr->sub);
+        default: return false;
+    }
+}
+
 inline bool CodeGen::HasRelRef(TypeExpr *t) {
     switch (t->kind) {
         case TY_REF: return t->ref->lenstorage >= 0;
@@ -353,8 +388,16 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         return;
     }
     if (auto s = Is<StrLit>(n)) {
-        assert(et->kind == TY_ARRAY && et->arr->akind == A_VAR && lenlv.empty());
-        EmitLenStore(stk, LenStore(et->arr), cat(s->val.size()));
+        assert(et->kind == TY_ARRAY && lenlv.empty());
+        if (et->arr->akind == A_LIMITED) {
+            // Runtime capacity: chosen as the literal's length (v1).
+            L("*(uint32_t *)", Top(stk), " = ", s->val.size(), ";");
+            L("*(uint32_t *)(", Top(stk), " + 4) = ", s->val.size(), ";");
+            Bump(stk, "8");
+        } else {
+            assert(et->arr->akind == A_VAR);
+            EmitLenStore(stk, LenStore(et->arr), cat(s->val.size()));
+        }
         if (!s->val.empty()) {
             L("memcpy(", Top(stk), ", ", StrRaw(s->val), ", ", s->val.size(), ");");
             Bump(stk, cat(s->val.size()));

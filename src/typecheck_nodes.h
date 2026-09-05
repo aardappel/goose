@@ -59,6 +59,10 @@ inline Val StrLit::Check(TypeCheck &tc, TypeExpr *expected) {
                 tc.ArraySize(expected->arr) != (int64_t)val.size())
                 tc.Error(this, cat("string literal of length ", (int64_t)val.size(),
                                    " does not fit ", tc.TypeStr(expected)));
+            if (expected->arr->akind == A_LIMITED && expected->arr->sizeexpr &&
+                tc.ArraySize(expected->arr) < (int64_t)val.size())
+                tc.Error(this, cat("string literal of length ", (int64_t)val.size(),
+                                   " exceeds the capacity of ", tc.TypeStr(expected)));
             v.type = expected;
             return v;
         }
@@ -134,9 +138,12 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     }
     TypeExpr *elem = nullptr;
     int64_t wantcount = -1;
+    int64_t capacity = -1;   // A limited array's static capacity, which the literal must fit.
     if (expected && expected->kind == TY_ARRAY) {
         elem = expected->arr->sub;
         if (expected->arr->akind == A_FIXED) wantcount = tc.ArraySize(expected->arr);
+        if (expected->arr->akind == A_LIMITED && expected->arr->sizeexpr)
+            capacity = tc.ArraySize(expected->arr);
     } else if (expected && expected->kind == TY_SLICE) {
         elem = expected->sub;
     }
@@ -147,6 +154,9 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         if (!elem) elem = ev.type;
         if (wantcount >= 0 && cnt != wantcount)
             tc.Error(this, cat("fill count ", cnt, " does not match array size ", wantcount));
+        if (capacity >= 0 && cnt > capacity)
+            tc.Error(this, cat("fill count ", cnt, " exceeds the capacity of ",
+                               tc.TypeStr(expected)));
         v.type = expected && expected->kind == TY_ARRAY
                      ? expected : tc.FixedArrayOf(elem, cnt, line);
         return v;
@@ -165,6 +175,9 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     if (elem->kind == TY_VOID) tc.Error(this, "cannot infer array element type");
     if (wantcount >= 0 && (int64_t)elems.size() != wantcount)
         tc.Error(this, cat((int64_t)elems.size(), " element(s) do not fill ",
+                           tc.TypeStr(expected)));
+    if (capacity >= 0 && (int64_t)elems.size() > capacity)
+        tc.Error(this, cat((int64_t)elems.size(), " element(s) exceed the capacity of ",
                            tc.TypeStr(expected)));
     if (expected && (expected->kind == TY_ARRAY || expected->kind == TY_SLICE)) {
         // A literal in slice position materializes a temporary fixed array.

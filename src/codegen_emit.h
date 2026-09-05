@@ -215,6 +215,73 @@ inline string CodeGen::EnsureEr(FnSpec *sp) {
     return name;
 }
 
+// Moves every declaration of an aggregate-typed C local (a struct, array,
+// slice or header typedef; never a scalar or a pointer) out of a finished
+// body into a block of declarations for the function's opening brace,
+// leaving an initializer behind as an assignment. MSVC 19.44 through 19.51
+// at any optimization level miscompiles a read through a *copy* of a
+// struct that holds the address of a block-scoped local -- the local's
+// stores are treated as dead -- and a slice of a fixed array declared in
+// a loop body, passed to an inlined callee, is exactly that shape. A local
+// declared at function scope is handled correctly, and every name is
+// unique within its function (Unique2), which is what makes the move safe.
+inline string CodeGen::HoistAggregateDecls(string &b) {
+    static const unordered_set<string> keep = {
+        "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t", "uint32_t",
+        "uint64_t", "float", "double", "int", "char", "size_t", "void", "return", "goto",
+        "break", "continue", "else", "do", "case", "default", "static", "const", "extern",
+        "volatile", "register", "unsigned", "signed", "long", "short", "struct", "union",
+        "enum", "typedef", "if", "for", "while", "switch",
+    };
+    auto isid = [](char c) { return isalnum((unsigned char)c) || c == '_'; };
+    string decls, out;
+    out.reserve(b.size());
+    size_t pos = 0;
+    while (pos < b.size()) {
+        auto nl = b.find('\n', pos);
+        if (nl == string::npos) nl = b.size();
+        string_view line(b.data() + pos, nl - pos);
+        pos = nl + 1;
+        size_t i = 0;
+        while (i < line.size() && line[i] == ' ') i++;
+        auto indent = i;
+        auto ts = i;
+        while (i < line.size() && isid(line[i])) i++;
+        string type(line.substr(ts, i - ts));
+        bool hoist = false;
+        string name, init;
+        if (!type.empty() && !isdigit((unsigned char)type[0]) && !keep.count(type) &&
+            i < line.size() && line[i] == ' ') {
+            i++;
+            auto ns = i;
+            while (i < line.size() && isid(line[i])) i++;
+            name = string(line.substr(ns, i - ns));
+            if (!name.empty() && !isdigit((unsigned char)name[0])) {
+                auto rest = line.substr(i);
+                if (rest == ";") hoist = true;
+                else if (rest.size() > 4 && rest.substr(0, 3) == " = " && rest.back() == ';') {
+                    init = string(rest.substr(3, rest.size() - 4));
+                    hoist = true;
+                }
+            }
+        }
+        if (!hoist) {
+            out.append(line);
+            out += '\n';
+            continue;
+        }
+        Append(decls, "    ", type, " ", name, ";\n");
+        if (!init.empty()) {
+            // A brace initializer becomes a compound literal (C99).
+            out.append(indent, ' ');
+            if (init[0] == '{') Append(out, name, " = (", type, ")", init, ";\n");
+            else Append(out, name, " = ", init, ";\n");
+        }
+    }
+    b = out;
+    return decls;
+}
+
 inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     curspec = sp;
     curinfo = &sinfo[sp];
@@ -281,8 +348,10 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     PlanTopCaches();
     auto bodyout = ExpandTopMarkers(body);
     assert(bodyout.find("@@gs") == string::npos);
+    auto decls = HoistAggregateDecls(bodyout);
     Append(code, "static ", SigRet(sp), " ", er ? ernames[sp] : curinfo->cname, "(",
            params, ") {\n");
+    code += decls;
     if (stkmax > 0)
         Append(code, "    GS_ENSURE(", spexpr, " + ", stkmax, ");\n");
     // A whole-body cache loads once the stacks are known to exist; a
@@ -482,7 +551,9 @@ inline void CodeGen::EmitGlobalInit() {
     }
     EmitExitRestores(0);
     cscopes.clear();
+    auto decls = HoistAggregateDecls(body);
     Append(code, "static void gs_init_globals(void) {\n");
+    code += decls;
     if (stkmax > 0) Append(code, "    GS_ENSURE(", stkmax, ");\n");
     code += body;
     code += "}\n\n";

@@ -535,6 +535,14 @@ struct Parser {
                 if (stmt_level) stmt_ended = true;
                 return e;
             }
+            case T_LCURLY: {
+                // A bare block as an expression -- a match arm of several
+                // statements, say -- is an ordinary scope, not a `break`
+                // target: `break` inside it still leaves the enclosing loop.
+                auto e = ParseBlockExpr("block");
+                if (stmt_level) stmt_ended = true;
+                return e;
+            }
             case T_WHILE: {
                 lex.Next();
                 auto cond = ParseScrutinee();

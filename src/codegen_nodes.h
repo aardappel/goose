@@ -40,10 +40,11 @@ inline string StrLit::CgX(CodeGen &cg) {
         cg.L(cg.CT(et), " ", t, " = { ", cg.StrRaw(val), ", ", val.size(), " };");
         return t;
     }
-    // A fixed u8[k] array value.
-    assert(et->kind == TY_ARRAY && et->arr->akind == A_FIXED);
+    // A fixed u8[k] or static-capacity u8[..k] array value.
+    assert(et->kind == TY_ARRAY && (et->arr->akind == A_FIXED || et->arr->akind == A_LIMITED));
     auto t = cg.T();
-    cg.L(cg.CT(et), " ", t, ";");
+    cg.L(cg.CT(et), " ", t, et->arr->akind == A_LIMITED ? " = {0};" : ";");
+    if (et->arr->akind == A_LIMITED) cg.L(t, ".len = ", val.size(), ";");
     if (!val.empty())
         cg.L("memcpy(", t, ".e, ", cg.StrRaw(val), ", ", val.size(), ");");
     return t;
@@ -296,7 +297,7 @@ inline string Call::CgX(CodeGen &cg) {
 // not survive the copy.
 inline string StructLit::CgX(CodeGen &cg) {
     auto tv = cg.T();
-    cg.L(cg.CT(exprtype), " ", tv, ";");
+    cg.L(cg.CT(exprtype), " ", tv, cg.HasUninitSlots(exprtype) ? " = {0};" : ";");
     cg.StructLitAt(this, tv, false);
     return tv;
 }

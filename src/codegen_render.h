@@ -265,7 +265,9 @@ inline void CodeGen::EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln) {
         arg = LoadLoc(lv, pt, ln);
     }
     auto &ki = sinfo[sp];
-    L(ki.cname, "(", r, ", ", arg, ki.needssp ? ", gs_sp" : "", ");");
+    // The callee's stacks start above everything live here, the builder's
+    // and the value's included, like any other call's (SpTop).
+    L(ki.cname, "(", r, ", ", arg, ki.needssp ? cat(", ", SpTop()) : "", ");");
     MarkReload();   // The callee grew the builder's stack.
 }
 

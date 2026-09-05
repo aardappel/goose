@@ -711,6 +711,21 @@ inline string CodeGen::GenRefVal(Node *child, Line ln) {
 // GenX, loading the pointee when an optimizer splice left a reference
 // where the context's checked type had already decayed.
 inline string CodeGen::GenXD(Node *n, TypeExpr *want) {
+    auto nt = n->exprtype;
+    if (want && nt && want->kind == TY_SLICE && nt->kind == TY_ARRAY &&
+        nt->arr->akind == A_FIXED) {
+        // A fixed-array value reaching a slice destination (a spliced
+        // callee body's result, §3.10): a copy on a statement-scoped temp
+        // stack, sliced whole, so the slice outlives whatever C block the
+        // value was produced in.
+        string stk;
+        auto base = BytesTemp(stk);
+        GenAny(n, Dst { DK_STACK, stk });
+        auto t = T();
+        L(CT(want), " ", t, " = { (", IsBytesT(want->sub) ? string("uint8_t") : CT(want->sub),
+          " *)", base, ", ", ArrSize(nt->arr), " };");
+        return t;
+    }
     if (NeedsDeref(n->exprtype, want)) {
         auto sub = n->exprtype->ref->sub;
         if (want->kind == TY_SLICE && sub->kind == TY_ARRAY) {
@@ -784,7 +799,7 @@ inline string CodeGen::GenFixedArrayLit(ArrayLit *al) {
     }
     assert(et->kind == TY_ARRAY);
     auto tv = T();
-    L(CT(et), " ", tv, ";");
+    L(CT(et), " ", tv, HasUninitSlots(et) ? " = {0};" : ";");
     FixedArrayLitAt(al, tv, false);
     return tv;
 }

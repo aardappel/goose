@@ -319,6 +319,16 @@ struct CycleRoots {
             if (rk != TY_REF && rk != TY_SLICE) continue;
             auto &rr = spec->retroots[i];
             rr.root = i < ds.size() ? ResolveDesc(spec, ds[i], rr.exact) : cycleroot;
+            // Writability follows the root (§9.5): a global's storage is
+            // writable when the global is a `var`, a parameter's when the
+            // argument behind it was; a sentinel promises nothing.
+            rr.writable = false;
+            if (i < ds.size()) {
+                auto &d = ds[i];
+                if (d.kind == RD_GLOBAL) rr.writable = d.glob && d.glob->isvar;
+                else if (d.kind == RD_PARAM && d.param < (int)spec->params.size())
+                    rr.writable = spec->params[d.param]->ref.writable;
+            }
             rr.seeded = true;
         }
     }

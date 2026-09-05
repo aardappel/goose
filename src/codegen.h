@@ -447,6 +447,7 @@ struct CodeGen {
     static string_view LabelHere(string_view line);
     static string_view NextLine(const string &b, size_t &i, size_t &ind0);
     string ExpandTopMarkers(const string &b);
+    string HoistAggregateDecls(string &b);
     void PushSc(int kind);
     void EmitRestores(const CScope &s);
     void PopSc();
@@ -630,6 +631,7 @@ struct CodeGen {
                        bool inroot = true);
     void EmitRelSelfStore(const string &stk, TypeExpr *rt, int64_t fieldoff, Line ln);
     bool HasRelRef(TypeExpr *t);
+    bool HasUninitSlots(TypeExpr *t);
 
     // Byte span of the largest fixed value that can be a relative
     // reference's root array (§3.9). Roots are variables, so this is the

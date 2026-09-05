@@ -222,6 +222,39 @@ inline bool TypeCheck::IsFlat(TypeExpr *t) {
     }
 }
 
+// Whether a value of type t can hold a plain reference or a slice at any
+// depth -- the only kinds that can point into an arbitrary array. A
+// self-relative reference points within its own root array and an
+// `in pool` one into its named global pool, so a structure linked only by
+// those (a node pool) can never hold a reference into some other local.
+inline bool TypeCheck::HoldsPlainRef(TypeExpr *t) {
+    switch (t->kind) {
+        case TY_REF: return t->ref->lenstorage < 0;
+        case TY_SLICE: return true;
+        case TY_STRUCT: {
+            auto inst = GetStructInst(t);
+            if (inst->flat) return false;
+            for (auto ft : inst->ftypes) if (ft && HoldsPlainRef(ft)) return true;
+            return false;
+        }
+        case TY_ENUM: {
+            auto inst = GetEnumInst(t);
+            if (inst->flat) return false;
+            for (auto &vf : inst->vftypes)
+                for (auto ft : vf) if (ft && HoldsPlainRef(ft)) return true;
+            return false;
+        }
+        case TY_ARRAY: return HoldsPlainRef(t->arr->sub);
+        case TY_VARIANT: {
+            auto inst = GetEnumInst(t->var->adt);
+            auto vi = VariantIndex(t->var->adt->enu->en, t->var->variant);
+            for (auto ft : inst->vftypes[vi]) if (ft && HoldsPlainRef(ft)) return true;
+            return false;
+        }
+        default: return false;
+    }
+}
+
 inline int TypeCheck::VariantIndex(SEnum *en, SVariant *v) {
     for (size_t i = 0; i < en->variants.size(); i++)
         if (&en->variants[i] == v) return (int)i;
@@ -499,6 +532,7 @@ inline void TypeCheck::NoRelRefCopy(Node *n, TypeExpr *t) {
     if (!reachable || !t) return;
     if (t->kind == TY_REF || t->kind == TY_SLICE || !HasRelRefT(t)) return;
     if (Is<StructLit>(n) || Is<ArrayLit>(n)) return;   // Constructed in place.
+    if (auto d = Is<Dot>(n); d && d->variantconst) return;   // A payload-less variant: a tag.
     Error(n, cat("copying a value of type ", TypeStr(t), ", which contains self-relative "
                  "references, is not supported; construct it in place"));
 }

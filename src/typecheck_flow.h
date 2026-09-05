@@ -59,6 +59,38 @@ inline bool TypeCheck::IsGrowShrinkRoot(VarDef *r) {
     return r && (r->growshrink || (r->type && ContainsGrowShrink(r->type)));
 }
 
+// Whether a grow-shrink array inside a value of type t can hold an `of`
+// by value: the storage a reference to `of` rooted at that value could
+// point into and a shrink could then reuse.
+inline bool TypeCheck::GrowShrinkContains(TypeExpr *t, TypeExpr *of) {
+    switch (t->kind) {
+        case TY_ARRAY:
+            if (t->arr->akind == A_GROWSHRINK) return CanContain(t->arr->sub, of);
+            return GrowShrinkContains(t->arr->sub, of);
+        case TY_STRUCT: {
+            auto inst = GetStructInst(t);
+            for (auto ft : inst->ftypes)
+                if (ft && GrowShrinkContains(ft, of)) return true;
+            return false;
+        }
+        default: return false;
+    }
+}
+
+// Whether a reference to `of` rooted at r may point into a grow-shrink
+// array (§5.2): r holds one, or stands for a caller's root that does, and
+// that array's elements can contain an `of`. A slice key read back out of
+// a dictionary's slots points into text the caller keeps, never into the
+// slots themselves, so it is not the kind of reference the rule is about.
+inline bool TypeCheck::GrowShrinkCanHold(VarDef *r, TypeExpr *of) {
+    if (!IsGrowShrinkRoot(r)) return false;
+    if (!of) return true;
+    auto v = r;
+    while (v && !v->type && v->classfrom) v = v->classfrom;
+    if (!v || !v->type) return true;   // Storage this frame cannot see: assume it can.
+    return GrowShrinkContains(v->type, of);
+}
+
 // Reading a reference variable's root as an identity. A loop body is
 // checked once, so a read here sees the value a later rebind in the same
 // loop leaves behind; noting the read lets that rebind reject the root
@@ -242,6 +274,7 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     if (!breach) return a;
     Val v;
     v.type = UnifyBranch(a.type, b.type, at, wantvalue);
+    v.isnull = a.isnull && b.isnull;   // Both null: still a null, which names no root.
     v.root = Depth(a.root) >= Depth(b.root) ? a.root : b.root;
     v.rootexact = a.rootexact && b.rootexact && CanonRoot(a.root) == CanonRoot(b.root);
     v.rootfrom = a.rootfrom ? a.rootfrom : b.rootfrom;
@@ -550,12 +583,13 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     PushScope(SK_LOOP, x);
     auto vd = NewVar(x->var, bindtype, x->line, false);
     vd->assigned = true;
-    if (bindtype->kind == TY_REF) {
-        // A relative-reference element bound by value was read out of the
-        // array, so where it points follows the read-back rule (§9.5),
-        // not the array's own root.
-        if (!x->byref && elemtype && elemtype->kind == TY_REF &&
-            elemtype->ref->lenstorage >= 0) {
+    if (bindtype->kind == TY_REF || bindtype->kind == TY_SLICE) {
+        // A relative-reference or slice element bound by value was read
+        // out of the array, so where it points follows the read-back rule
+        // (§9.5), not the array's own root.
+        if (!x->byref && elemtype &&
+            ((elemtype->kind == TY_REF && elemtype->ref->lenstorage >= 0) ||
+             elemtype->kind == TY_SLICE)) {
             auto rb = ReadBackRoot(elemtype, CanonRoot(iterprov.root), iterprov.rootexact);
             iterprov.root = rb.root;
             iterprov.rootexact = rb.exact;
@@ -668,6 +702,11 @@ inline void TypeCheck::CheckContinue(Node *n) {
 // other values are computed and discarded.
 inline void TypeCheck::CheckStmtExpr(Node *n) {
     if (auto x = Is<IfExpr>(n)) { CheckIf(x, nullptr, false); n->exprtype = ast.voidtype; return; }
+    if (auto x = Is<Block>(n)) {
+        CheckBlockVal(x, nullptr, false, SK_PLAIN);
+        n->exprtype = ast.voidtype;
+        return;
+    }
     if (auto x = Is<MatchExpr>(n)) { CheckMatch(x, nullptr, false); n->exprtype = ast.voidtype; return; }
     if (auto x = Is<EarlyBlock>(n)) { CheckEarlyBlock(x, nullptr, false); n->exprtype = ast.voidtype; return; }
     if (auto x = Is<LoopExpr>(n)) { CheckLoop(x, nullptr, false); n->exprtype = ast.voidtype; return; }
@@ -906,10 +945,9 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
     {
         DestScope ds(*this, lv.var ? Dest { lv.var, true, true }
                                    : Dest { lv.root, lv.rootexact });
+        // `r .= &x` is the documented spelling of a rebind (§3.8), so an
+        // explicit & is not redundant here as it is at a binding destination.
         v = CheckV(a->rhs, target);
-        if (UserRefOf(a->rhs))
-            Warn(a->rhs, cat("redundant &: ", ExprStr(Is<Unary>(a->rhs)->child),
-                             " binds by reference here without it (§4.1)"));
         if (BindsRef(v, target)) a->rhs = AutoRef(a->rhs, v);
         wasplain = IsPlainRef(v.type);
         MustFit(v, a->rhs, target, false);
@@ -1268,7 +1306,12 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         if (!IsPlainRef(av.type) || !TypeEq(av.type->ref->sub, elem))
             Error(c, cat(".index_of takes a reference to an element of ", TypeStr(rv.type),
                          ", got ", TypeStr(av.type)));
-        if (!av.rootexact || CanonRoot(av.root) != CanonRoot(rv.root)) {
+        // A reference parameter in a pool class points into that global
+        // pool (§3.9), so it is rooted there as exactly as a local one.
+        auto recvroot = CanonRoot(rv.root);
+        auto sameroot = CanonRoot(av.root) == recvroot ||
+                        (recvroot && recvroot->isglobal && PoolOf(av.root) == recvroot);
+        if (!av.rootexact || !sameroot) {
             auto why = av.rootexact ? string() : ReadBackWhy(av.type, av.rootfrom);
             Error(c, cat(".index_of needs a reference rooted at the array itself (§3.3); ",
                          !why.empty() ? why

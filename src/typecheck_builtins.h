@@ -142,7 +142,10 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const char *op
             // A recorded root is exact only while the variable keeps its
             // first binding: a `var` may since have been rebound to any
             // root at the same depth, and one not bound yet can still
-            // commit to this array further down a loop body.
+            // commit to this array further down a loop body. A pointee
+            // the array cannot contain by value rules the variable out.
+            auto of = PointeeOf(t);
+            if (of && vd->type && !CanContain(LoadType(vd->type), of)) continue;
             auto root = RefRootOf(v);
             auto holds = root == vd || (v->isvar && Depth(root) == Depth(vd)) ||
                          (!v->refrootknown && Depth(v) >= Depth(vd));
@@ -150,8 +153,10 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const char *op
         } else {
             // Any other value holds references only where a store put
             // them, which the outlives rule permits only into storage the
-            // array outlives (§9.2); flat types have no room for one.
-            if (IsFlat(t) || Depth(v) < Depth(vd)) continue;
+            // array outlives (§9.2); a type without a plain reference or
+            // slice in it (flat, or linked by relative references only)
+            // has no room for one.
+            if (!HoldsPlainRef(t) || Depth(v) < Depth(vd)) continue;
         }
         Error(c, cat("cannot ", op, " ", vd->name, " while ", v->name,
                      " is in scope: it may hold a reference or slice into it (§5.1)"));
@@ -170,6 +175,10 @@ inline void TypeCheck::CheckShrinkHolders(Node *at, const string &op, VarDef *ro
         // A reference to the whole array (or the value holding it) is the
         // path to it, not something a shrink invalidates.
         if (v->type->kind == TY_REF && ContainsGrowShrink(v->type->ref->sub)) return;
+        // Nor is one whose pointee the array's elements cannot contain: a
+        // slice of text rooted at a dictionary keyed by slices points at
+        // the text, whatever else it might be rebound to.
+        if (!GrowShrinkCanHold(root, PointeeOf(v->type))) return;
         auto r = RefRootOf(v);
         auto holds = r == root || (v->isvar && Depth(r) == Depth(root)) ||
                      (!v->refrootknown && Depth(v) >= Depth(root));

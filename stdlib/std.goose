@@ -653,6 +653,11 @@ fn parse_int(s: u8[:], base: i64) -> i64, bool {
     return v, true;
 }
 
+// 10^0 .. 10^22: every one exact in binary64, which is what makes one
+// multiply or divide by it correctly rounded.
+let parse_flt_pow10: f64[23] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
+                                1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22];
+
 // A decimal float with optional sign, fraction and exponent; false otherwise.
 fn parse_flt(s: u8[:]) -> f64, bool {
     var i = 0;
@@ -661,19 +666,23 @@ fn parse_flt(s: u8[:]) -> f64, bool {
         neg = s[0] == '-';
         i = 1;
     }
-    var v = 0.0;
+    // The significant digits as one integer (the first 19 fit a u64), with
+    // the decimal exponent adjusted for digits after the point and for any
+    // dropped beyond the 19th, so the value is mant * 10^exp10.
+    var mant: u64 = 0;
+    var mdigits = 0;
+    var exp10 = 0;
     var digits = 0;
     while i < s.len && s[i] >= '0' && s[i] <= '9' {
-        v = v * 10.0 + ((s[i] - '0') as f64);
+        if mdigits < 19 { mant = mant * 10 + (s[i] - '0') as u64; mdigits += 1; }
+        else { exp10 += 1; }
         digits += 1;
         i += 1;
     }
     if i < s.len && s[i] == '.' {
         i += 1;
-        var scale = 0.1;
         while i < s.len && s[i] >= '0' && s[i] <= '9' {
-            v += ((s[i] - '0') as f64) * scale;
-            scale *= 0.1;
+            if mdigits < 19 { mant = mant * 10 + (s[i] - '0') as u64; mdigits += 1; exp10 -= 1; }
             digits += 1;
             i += 1;
         }
@@ -689,15 +698,22 @@ fn parse_flt(s: u8[:]) -> f64, bool {
         var e = 0;
         var edigits = 0;
         while i < s.len && s[i] >= '0' && s[i] <= '9' {
-            e = e * 10 + ((s[i] - '0') as i64);
+            if e < 100000 { e = e * 10 + ((s[i] - '0') as i64); }
             edigits += 1;
             i += 1;
         }
         if edigits == 0 { return 0.0, false; }
-        var m = 1.0;
-        for k in e { m *= 10.0; }
-        if eneg { v /= m; } else { v *= m; }
+        exp10 += if eneg { -e } else { e };
     }
+    // A mantissa below 2^53 converts exactly and a power of ten up to 10^22
+    // is exact in binary64, so one multiply or divide is correctly rounded
+    // (Clinger's fast path); longer inputs and larger exponents scale in
+    // steps and may be off by an ulp.
+    var v = mant as f64;
+    var e = exp10;
+    while e > 22 { v *= 1e22; e -= 22; }
+    while e < -22 { v /= 1e22; e += 22; }
+    if e > 0 { v *= parse_flt_pow10[e]; } else if e < 0 { v /= parse_flt_pow10[-e]; }
     if i != s.len { return 0.0, false; }
     if neg { v = -v; }
     return v, true;

@@ -228,6 +228,13 @@ inline void TypeCheck::UnwrapCopy(Node *&n) {
 inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite) {
     auto v = CheckV(n, expected);
     UnwrapCopy(n);
+    if (!v.type) {
+        // A block that never produces (it returns, breaks or aborts on
+        // every path) is bottom: it fits any destination, and there is no
+        // value to adapt.
+        n->exprtype = ast.voidtype;
+        return v;
+    }
     if (!expected || expected->kind == TY_VOID) {
         v = DecayRef(v);
     } else {
@@ -305,14 +312,18 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
                           ", which does not outlive the destination (§9.2)");
             return false;
         }
-        if (!curdst.varbind && IsGrowShrinkRoot(root)) {
+        if (!curdst.varbind && GrowShrinkCanHold(root, PointeeOf(t))) {
             fitfail = cat("storing a reference into ", root->name,
                           ", which holds a grow-shrink array: such a reference lives in a "
                           "variable, is passed down or returned, and is never stored (§5.2)");
             return false;
         }
+        // Rebinding one of this activation's own variables is not a store
+        // that could outlive it: what the variable is bound to came from
+        // an activation that outlives this one, as the first binding did.
         auto spec = CurRealFrame().spec;
-        if (root && !root->isglobal && !root->poolclass && spec &&
+        auto ownvar = curdst.varbind && curdst.root && curdst.root->ownerspec == spec;
+        if (root && !root->isglobal && !root->poolclass && spec && !ownvar &&
             (spec->incycle || spec->sf->isrec)) {
             fitfail = "references may only be passed down, not stored, inside a "
                       "recursive cycle (§7.8)";
