@@ -5,7 +5,7 @@
 // nowhere in sight.
 //
 // Build and run (from this directory):
-//   goose -o sieve.c sieve.goose && cl sieve.c && sieve
+//   goose -o sieve.c 07_sieve.goose && cl sieve.c && sieve
 
 import std;
 import os;
@@ -13,7 +13,8 @@ import os;
 let N = 10000000;
 
 fn main() {
-    // One byte per candidate, all "prime" until crossed out.
+    // One byte per candidate, all "prime" until crossed out: ten million
+    // bytes in one block, filled in place by resize.
     var flags: u8[>..] = [];
     flags.resize(N + 1, 1);
     flags[0] = 0;

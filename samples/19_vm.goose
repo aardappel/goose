@@ -6,7 +6,7 @@
 // hand: a countdown loop and an iterative factorial.
 //
 // Build and run (from this directory):
-//   goose -o vm.c vm.goose && cl vm.c && vm
+//   goose -o vm.c 19_vm.goose && cl vm.c && vm
 
 import std;
 
@@ -52,7 +52,8 @@ fn disassemble(code: Op[:]) {
 
 // Runs code from instruction 0 until Halt; returns the number of
 // instructions executed. The operand stack is a grow-shrink array, the
-// locals a small fixed array.
+// locals a small fixed array. The `match` is a switch on the tag byte with
+// the operand read in place, and a jump is an index store.
 fn run(code: Op[:]) -> i64 {
     var stack: i64[>..<] = [];
     var locals: i64[8] = [0; 8];

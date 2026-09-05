@@ -4,7 +4,7 @@
 // samples assume what this one shows.
 //
 // Build and run (from this directory):
-//   goose -o tour.c tour.goose && cl tour.c && tour
+//   goose -o tour.c 01_tour.goose && cl tour.c && tour
 
 // A function taking a slice accepts every array kind and any sub-range of
 // one, without a copy: the slice is a reference to the elements plus a count.
@@ -69,8 +69,10 @@ fn main() {
     var fixed: i32[4] = [1, 2, 3, 4];
     fixed[0] = 10;
     let zeros: f64[8] = [0.0; 8];        // fill form
-    // The grow-only array is the workhorse: a push is a pointer bump, nothing
-    // is ever moved, and references into it stay valid as it grows.
+    // The grow-only array is the workhorse: a push is a pointer bump on the
+    // data stack, nothing is ever moved or reallocated, and references into
+    // it stay valid as it grows -- the promise a vector<T> cannot make, and
+    // the one the data-structure samples build on.
     var grow: i64[>..] = [];
     for i in 5 { grow.push(i * i); }
     // A grow-shrink array also pops: the natural stack and queue.
@@ -86,8 +88,9 @@ fn main() {
     print(fixed, " ", zeros.len, " ", grow, " ", stack, " ", top, " ",
           small, " ", small.len, "/", small.cap, " ", frozen);
 
-    // A string is a u8 array. A literal is static data, and `format`, `str`
-    // and `print` render anything as text.
+    // A string is a u8 array: no string type, no allocation. A literal is
+    // static data, a builder is a growable u8 array, and `format`, `str`
+    // and `print` render anything as text into one of those.
     var s: u8[>..] = [];
     s.append("hello");
     s.push(' ');
@@ -103,6 +106,8 @@ fn main() {
     print(middle, " ", last_two, " ", total(middle), " ", total(grow), " ", total(fixed_sum(fixed)));
 
     // --- structs -----------------------------------------------------------
+    // A Player is one flat value: the name's bytes live inside it, not behind
+    // a pointer, so an array of players is one contiguous block.
     var p = Player { name: "gus", pos: Point { 1.0, 2.0 } };
     p.hp -= 30;
     p.pos = p.pos + Point { 0.5, 0.5 };  // arithmetic is elementwise on same-typed structs
@@ -110,6 +115,8 @@ fn main() {
     print(p.name, " at ", p.pos.x, ",", p.pos.y, " hp ", p.hp);
 
     // --- control flow as expressions ---------------------------------------
+    // `if` and `match` are expressions: no ternary, no temporary assigned in
+    // each branch.
     let kind = if p.hp > 50 { "healthy" } else { "hurt" };
     let level = match p.hp { 0 => "dead", 1..50 => "low", _ => "fine" };
     print(kind, " ", level);
@@ -136,6 +143,8 @@ fn main() {
     print(acc, " ", fixed, " ", n);
 
     // --- several results, optionals, references ----------------------------
+    // Two results come back together, as part of the calling convention:
+    // no tuple type, nothing packed and unpacked.
     let q, ok = divide(7, 2);
     let q2, ok2 = divide(1, 0);
     print(q, " ", ok, " ", q2, " ", ok2);

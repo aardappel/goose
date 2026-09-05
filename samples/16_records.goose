@@ -7,11 +7,14 @@
 // customer with a dictionary keyed by slices into the orders.
 //
 // Build and run (from this directory):
-//   goose -o records.c records.goose && cl records.c && records
+//   goose -o records.c 16_records.goose && cl records.c && records
 
 import std;
 import dictionary;
 
+// varint fields are as wide as their value needs: an item with a short SKU
+// and small numbers is about ten bytes, and an order is its items laid end
+// to end after its header. Nothing here is a pointer.
 struct Item { sku: u8[varint], qty: varint, cents: varint }
 struct Order { id: varint, customer: u8[varint], items: Item[varint] }
 struct Row { name: u8[:], total: i64, orders: i32 }

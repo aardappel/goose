@@ -7,7 +7,7 @@
 // an overload set: the virtual-call idiom.
 //
 // Build and run (from this directory):
-//   goose -o shapes.c shapes.goose && cl shapes.c && shapes
+//   goose -o shapes.c 05_shapes.goose && cl shapes.c && shapes
 
 import math;
 
@@ -57,7 +57,9 @@ fn scaled(s: Shape, k: f64) -> Shape {
 
 fn main() {
     // --- fixed mode: an ordinary array of enum values ----------------------
-    // Each element is 1 tag byte + the largest payload (three f64s): 25 bytes.
+    // Each element is 1 tag byte + the largest payload (three f64s): 25 bytes,
+    // the layout a Rust enum or a C++ variant also has; `match` reads the
+    // payload in place, with no boxing and no virtual call.
     var shapes: Shape[>..] = [];
     shapes.push(Shape.Circle { r: 1.0 });
     shapes.push(Shape.Rect { w: 2.0, h: 3.0 });
@@ -91,7 +93,7 @@ fn main() {
     for s in packed {                    // variable-size elements bind by reference
         match s {
             Dot => block { dots++; },
-            Rect &r => block { r.w += 1.0; widest = r.w; },   // a reference into the payload
+            Rect &r => block { r.w += 1.0; widest = r.w; },   // edits the payload in place, inside the array
             _ => block {},
         }
         print(name(s), " ", area(s));

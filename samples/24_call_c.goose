@@ -7,7 +7,7 @@
 // string builder, which C appends to. The C for this sample is call_c.h.
 //
 // Build and run (from this directory):
-//   goose --include call_c.h -o call_c.c call_c.goose && cl call_c.c && call_c
+//   goose --include call_c.h -o call_c.c 24_call_c.goose && cl call_c.c && call_c
 
 import std;
 

@@ -7,7 +7,7 @@
 // decimal with repeated division.
 //
 // Build and run (from this directory):
-//   goose -o bignum.c bignum.goose && cl bignum.c && bignum
+//   goose -o bignum.c 08_bignum.goose && cl bignum.c && bignum
 
 import std;
 
@@ -29,7 +29,7 @@ fn from_int(v: u64) -> u32[>..] {
 fn mul_add_small(n: u32[>..]&, m: u32, a: u32) {
     var carry = a as u64;
     for &limb in n {
-        let t = limb as u64 * m as u64 + carry;
+        let t = limb as u64 * m as u64 + carry;   // a 64-bit multiply; u32 * u32 would wrap at 32
         limb = t as! u32;                // the low half stays, the rest carries
         carry = t >> 32;
     }
@@ -87,8 +87,8 @@ fn div_small(n: u32[>..]&, d: u32) -> u32 {
 // reverse the chunks into the output.
 fn format(out: u8[>..]&, n: u32[>..]&) {
     if n.len == 0 { out.push('0'); return; }
-    var work = copy(n);
-    var chunks: u32[>..] = [];
+    var work = copy(n);                  // the one copy, since division consumes its input
+    var chunks: u32[>..] = [];           // nine decimal digits per entry, freed with the call
     while work.len > 0 { chunks.push(div_small(work, 1000000000)); }
     var first = true;
     each_rev(chunks) { c =>

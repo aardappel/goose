@@ -6,7 +6,7 @@
 // through the library's heap_push/heap_pop with a comparator block.
 //
 // Build and run (from this directory):
-//   goose -o maze.c maze.goose && cl maze.c && maze
+//   goose -o maze.c 11_maze.goose && cl maze.c && maze
 
 import std;
 
@@ -37,6 +37,8 @@ fn find_char(c: u8) -> i64 {
 // Breadth-first: every edge costs one, so the first visit is the shortest.
 // `parent` records how each cell was reached, for drawing the path.
 fn bfs(start: i64, goal: i64, parent: i32[>..]&) -> i64 {
+    // The queue never pops: a read head walks it while pushes extend it, so
+    // it is a grow-only array, freed whole when the function returns.
     var queue: i32[>..] = [];
     queue.push(start as i32);
     parent[start] = start as i32;
@@ -64,7 +66,7 @@ fn bfs(start: i64, goal: i64, parent: i32[>..]&) -> i64 {
 fn dijkstra(start: i64, goal: i64, parent: i32[>..]&) -> i32 {
     var dist: i32[>..] = [];
     dist.resize(grid.len, 1000000);
-    var heap: Entry[>..<] = [];
+    var heap: Entry[>..<] = [];          // grow-shrink: heap_pop shrinks it
     dist[start] = 0;
     parent[start] = start as i32;
     heap.heap_push(Entry { cost: 0, at: start as i32 }) { a, b => a.cost < b.cost };

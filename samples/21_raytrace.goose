@@ -7,7 +7,7 @@
 // printed so the run shows something without one.
 //
 // Build and run (from this directory):
-//   goose -o raytrace.c raytrace.goose && cl raytrace.c && raytrace
+//   goose -o raytrace.c 21_raytrace.goose && cl raytrace.c && raytrace
 
 import std;
 import vec;
@@ -24,6 +24,8 @@ let SKY = float3 { 0.55, 0.7, 0.95 };
 
 var spheres: Sphere[>..] = [];
 
+// float3 is three f32s in a plain struct, passed and returned by value; the
+// elementwise operators used below are the language's, not overloads.
 fn scale(v: float3, k: f32) -> float3 { float3 { v.x * k, v.y * k, v.z * k } }
 
 // The nearest intersection along the ray, and whether there was one.
@@ -88,7 +90,8 @@ fn main() {
     spheres.push(Sphere { center: float3 { 0.6, -0.7, 2.6 }, radius: 0.3, color: float3 { 0.3, 0.4, 0.95 }, shine: 0.0 });
 
     // The image: one byte per channel, row by row, built straight into the
-    // buffer that becomes the file.
+    // buffer that becomes the file -- the header is formatted into the same
+    // bytes, so writing the file is one call with no assembly step.
     var img: u8[>..] = [];
     format(img, "P6 ", W, " ", H, " 255\n");
     let t0 = clock();

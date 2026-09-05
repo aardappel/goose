@@ -1,4 +1,4 @@
-/* The C side of call_c.goose: three functions with the argument shapes an
+/* The C side of 24_call_c.goose: three functions with the argument shapes an
    `extern fn` can pass. The header is included after the generated type
    declarations, so it can use the slice and struct typedefs Goose emits
    (sl_u8, sl_i32, the packed struct for `Stats`). */

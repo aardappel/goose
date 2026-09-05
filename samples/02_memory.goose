@@ -4,7 +4,7 @@
 // through the consequences one at a time, with the numbers to show for it.
 //
 // Build and run (from this directory):
-//   goose -o memory.c memory.goose && cl memory.c && memory
+//   goose -o memory.c 02_memory.goose && cl memory.c && memory
 
 import std;
 
@@ -48,8 +48,9 @@ fn main() {
     }
 
     // 4. Nested containers stay flat. An array of strings is one block:
-    //    lengths and bytes back to back, no pointer per string. Dropping it
-    //    is the same pointer reset as dropping an array of integers.
+    //    lengths and bytes back to back, no pointer per string, where a
+    //    vector<string> is an allocation per element. Dropping it is the
+    //    same pointer reset as dropping an array of integers.
     var words: u8[][>..] = [];
     for i in 5 { words.push(str("word", i)); }   // built straight into the element
     var bytes = 0;

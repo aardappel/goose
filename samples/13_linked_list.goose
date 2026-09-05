@@ -7,7 +7,7 @@
 // insertion and removal is the same four stores, with no special cases.
 //
 // Build and run (from this directory):
-//   goose -o linked_list.c linked_list.goose && cl linked_list.c && linked_list
+//   goose -o linked_list.c 13_linked_list.goose && cl linked_list.c && linked_list
 
 import std;
 
@@ -19,6 +19,9 @@ let head = pool.alloc_index(Node { val: 0, prev: self, next: self });
 
 // Inserts a node holding v after p, and returns it.
 fn insert_after(p: Node&, v: i64) -> Node& {
+    // alloc_ref takes a free slot if there is one, else pushes; the links
+    // are stored as offsets from the pool's base, so a node holds no
+    // addresses at all.
     let n .= pool.alloc_ref(Node { val: v, prev: p, next: p.next });
     n.next.prev .= n;
     p.next .= n;

@@ -7,7 +7,7 @@
 // own growable data of its own.
 //
 // Build and run (from this directory):
-//   goose -o bst.c bst.goose && cl bst.c && bst
+//   goose -o bst.c 14_bst.goose && cl bst.c && bst
 
 import std;
 
@@ -17,6 +17,7 @@ struct Node { key: i32, count: i32 = 1, left: Node&<u32>?, right: Node&<u32>? }
 fn insert(pool: Node[>..]&, key: i32) {
     if pool.len == 0 { pool.push(Node { key: key }); return; }
     var cur .= pool[0];                  // .= binds the element; = would copy it
+    // The walk retargets that one reference; a null child is the offset 0.
     loop {
         if key == cur.key { cur.count += 1; return; }
         if key < cur.key {

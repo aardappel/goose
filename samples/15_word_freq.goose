@@ -5,7 +5,7 @@
 // final report point into it.
 //
 // Build and run (from this directory):
-//   goose -o word_freq.c word_freq.goose && cl word_freq.c && word_freq [file]
+//   goose -o word_freq.c 15_word_freq.goose && cl word_freq.c && word_freq [file]
 
 import std;
 import dictionary;
@@ -24,7 +24,8 @@ fn main() {
     to_lower(text);
 
     // Count. `update` inserts 0 on a first sighting and then runs the block
-    // on the stored value, so one lookup does both.
+    // on the stored value, so one lookup does both. A key is a slice, an
+    // address and a length into `text`: the dictionary stores no strings.
     var counts = dictionary<u8[:], i32> {};
     var total = 0;
     var longest = text[0..0];
@@ -40,7 +41,8 @@ fn main() {
         if word.len > longest.len { longest = word; }
     }
 
-    // Into an array of rows, sorted by count and then alphabetically.
+    // Into an array of rows, sorted by count and then alphabetically. A row
+    // is a slice and a count, so sorting moves no text either.
     var rows: Entry[>..] = [];
     counts.each() { w, n => rows.push(Entry { word: w, count: n }); };
     sort(rows) { a, b => a.count > b.count || (a.count == b.count && compare(a.word, b.word) < 0) };

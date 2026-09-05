@@ -6,11 +6,13 @@
 // recursion, and nothing is allocated anywhere.
 //
 // Build and run (from this directory):
-//   goose -o sudoku.c sudoku.goose && cl sudoku.c && sudoku
+//   goose -o sudoku.c 10_sudoku.goose && cl sudoku.c && sudoku
 
 import std;
 import os;
 
+// Three fixed arrays inline: 135 bytes and no pointers, so a Board copies as
+// a memcpy and the solver edits it in place through one reference.
 struct Board { cells: u8[81], rows: u16[9], cols: u16[9], boxes: u16[9] }
 
 var guesses = 0;

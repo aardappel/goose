@@ -8,7 +8,7 @@
 // timing is measured too, for the comparison.
 //
 // Build and run (from this directory):
-//   goose -o mandelbrot_threads.c mandelbrot_threads.goose && cl mandelbrot_threads.c && mandelbrot_threads
+//   goose -o mandelbrot_threads.c 23_mandelbrot_threads.goose && cl mandelbrot_threads.c && mandelbrot_threads
 
 import std;
 import os;
@@ -18,7 +18,7 @@ let H = 36;
 let MAXITER = 20000;
 
 struct Job { y: i32 }                    // -1: no more work, exit
-struct Row { y: i32, cells: u8[] }        // a flat value: it crosses whole
+struct Row { y: i32, cells: u8[] }        // a flat value: it crosses the queue as one copy
 
 // Iterations until |z| > 2, or MAXITER.
 fn iterate(cx: f64, cy: f64) -> i64 {
@@ -51,7 +51,7 @@ thread_fn worker() {
     loop {
         let job = qget<Job>();
         guard job.y >= 0;
-        qput(Row { y: job.y, cells: render_row(job.y) });
+        qput(Row { y: job.y, cells: render_row(job.y) });   // one flat value, copied once into the queue
     }
 }
 

@@ -43,7 +43,9 @@ function Normalized([string]$path) {
 }
 
 foreach ($f in Get-ChildItem "$PSScriptRoot\*.goose") {
-    $name = [IO.Path]::GetFileNameWithoutExtension($f.Name)
+    # The number prefix orders the files for reading; outputs, data and
+    # headers go by the bare name.
+    $name = [IO.Path]::GetFileNameWithoutExtension($f.Name) -replace '^\d+_', ''
     $cfile = "$gendir\$name.c"
     $efile = "$gendir\$name.exe"
     $gargs = @("-O2")

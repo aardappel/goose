@@ -5,7 +5,7 @@
 // and never copies a byte it does not have to.
 //
 // Build and run (from this directory):
-//   goose -o strings.c strings.goose && cl strings.c && strings
+//   goose -o strings.c 03_strings.goose && cl strings.c && strings
 
 import std;
 
@@ -19,13 +19,15 @@ fn format(out: u8[>..]&, p: Person) {
 
 fn main() {
     // --- building ----------------------------------------------------------
+    // A builder is a grow-only byte array on the data stack: appending is a
+    // pointer bump, nothing is reallocated, and it goes away with the scope.
     var s: u8[>..] = [];                 // the builder: append, push, format
     s.append("Hello");
     s.push(',');
     s.push(' ');
     format(s, "world! ", 6 * 7, " ", 2.5);
     print(s, " [", s.len, " bytes]");
-    let joined = str("pi=", 3.14159, " e=", 2.71828);   // a fresh string
+    let joined = str("pi=", 3.14159, " e=", 2.71828);   // a fresh string, built straight into joined
     print(joined);
     // Padded and based numbers, fixed decimals.
     var t: u8[>..] = [];
@@ -46,6 +48,8 @@ fn main() {
     print(starts_with(body, "key"), " ", ends_with(body, "value"), " ", find(body, "zzz"));
 
     // --- splitting -----------------------------------------------------------
+    // split returns an array of slices into its input: a few bytes per part
+    // and no text copied, where most languages hand back a list of strings.
     let csv = "alice,30,paris,,bob,25";
     let parts = split(csv, ',');         // an array of slices, all into csv
     print(parts.len, " parts: ", parts);
@@ -108,6 +112,8 @@ fn main() {
     print("abc"[0], " ", caps, " ", str('a'));
 
     // --- inline strings in structs -----------------------------------------
+    // A Person is one flat value: the name's bytes live in the struct, so an
+    // array of them is a single block, sortable and copyable as plain data.
     var people: Person[>..] = [];
     people.push(Person { name: "ada", age: 36 });
     people.push(Person { name: "grace", age: 45 });

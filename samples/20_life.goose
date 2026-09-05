@@ -7,7 +7,7 @@
 // larger random grid for a while and counts what is left.
 //
 // Build and run (from this directory):
-//   goose -o life.c life.goose && cl life.c && life
+//   goose -o life.c 20_life.goose && cl life.c && life
 
 import std;
 

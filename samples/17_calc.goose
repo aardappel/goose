@@ -10,7 +10,7 @@
 // and lands the message at the one place that reports it.
 //
 // Build and run (from this directory):
-//   goose -o calc.c calc.goose && cl calc.c && calc < data/calc.stdin
+//   goose -o calc.c 17_calc.goose && cl calc.c && calc < data/calc.stdin
 // or run it without redirection and type expressions at the prompt.
 
 import std;

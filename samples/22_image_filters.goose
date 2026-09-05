@@ -3,11 +3,11 @@
 // PGM file. The kernels take the three source rows and the destination row
 // as slices whose lengths are asserted once per row, so inside the pixel
 // loop every index is a loop counter plus a constant against a known
-// length: the compiler proves all the bounds checks away and the C
-// backend sees the same loop it would see from C.
+// length: the compiler proves the pixel loops' bounds checks away and the
+// C backend sees the same loop it would see from C.
 //
 // Build and run (from this directory):
-//   goose -o image_filters.c image_filters.goose && cl image_filters.c && image_filters
+//   goose -o image_filters.c 22_image_filters.goose && cl image_filters.c && image_filters
 
 import std;
 import math;

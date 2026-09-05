@@ -6,7 +6,7 @@
 // locals, so the scratch buffer belongs to the caller and is passed in.
 //
 // Build and run (from this directory):
-//   goose -o sorting.c sorting.goose && cl sorting.c && sorting
+//   goose -o sorting.c 09_sorting.goose && cl sorting.c && sorting
 
 import std;
 import os;
@@ -24,7 +24,8 @@ fn insertion_sort(xs: i32[:]) {
 }
 
 // Sorts xs using tmp (at least as long) as scratch. Both halves are
-// sub-slices, so no index arithmetic leaks into the merge.
+// sub-slices, so no index arithmetic leaks into the merge, and a call costs
+// only native stack: nothing is allocated per level.
 recursive fn merge_sort(xs: i32[:], tmp: i32[:]) {
     if xs.len <= 16 { insertion_sort(xs); return; }
     let mid = xs.len / 2;

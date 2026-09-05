@@ -5,7 +5,7 @@
 // there are no function pointers and nothing is boxed.
 //
 // Build and run (from this directory):
-//   goose -o functions.c functions.goose && cl functions.c && functions
+//   goose -o functions.c 06_functions.goose && cl functions.c && functions
 
 import std;
 
@@ -70,7 +70,9 @@ fn main() {
     print("biggest gap ", max(gaps), " at ", max_by(gaps) { it });
     print(first_multiple_of_7(10, 40), " ", first_multiple_of_7(10, 12));
 
-    // The standard library is written this way too.
+    // The standard library is written this way too. filter and map build
+    // their result straight into the variable receiving it: no intermediate
+    // array, no allocation, and the block is inlined into their loop.
     let evens = xs.filter() { it % 2 == 0 };
     let squares = xs.map() { it * it };
     let total = fold(xs, 0) { acc, x => acc + x };

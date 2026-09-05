@@ -12,7 +12,7 @@
 // back to the top.
 //
 // Build and run (from this directory):
-//   goose -o json.c json.goose && cl json.c && json [file.json]
+//   goose -o json.c 18_json.goose && cl json.c && json [file.json]
 
 import std;
 import os;
@@ -157,6 +157,9 @@ fn parse(text: u8[:]) -> Node?, u8[>..] {
             if is_obj { return pool.push(Node { next: null, key: key, val: Json.Obj { first: first, count: count } }); }
             return pool.push(Node { next: null, key: key, val: Json.Arr { first: first, count: count } });
         }
+        // A leaf is one push: the node is built at the end of the pool, the
+        // decoded string straight into its payload, the key's bytes copied
+        // in -- no intermediate node value anywhere.
         if c == '"' { return pool.push(Node { next: null, key: key, val: Json.Str { s: parse_string() } }); }
         if c == 't' { parse_word("true"); return pool.push(Node { next: null, key: key, val: Json.Bool { v: true } }); }
         if c == 'f' { parse_word("false"); return pool.push(Node { next: null, key: key, val: Json.Bool { v: false } }); }

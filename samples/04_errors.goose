@@ -5,7 +5,7 @@
 // in one place. Plus the ones that end the program: assert and abort.
 //
 // Build and run (from this directory):
-//   goose -o errors.c errors.goose && cl errors.c && errors
+//   goose -o errors.c 04_errors.goose && cl errors.c && errors
 
 import std;
 
@@ -26,14 +26,16 @@ fn find_user(users: User[:], name: u8[:]) -> User? {
 }
 
 // 3. return-from: any failure inside the nested parsing below returns from
-//    `load` directly, unwinding parse_record and parse_field with it. The
-//    error is the last result, by convention; "" means none.
+//    `load` directly, unwinding parse_record and parse_field with it. Those
+//    two return plain values and carry no error type, and the happy path
+//    pays nothing for the possibility. The error is the last result, by
+//    convention; "" means none.
 fn load(text: u8[:]) -> User[>..], u8[] {
     var users: User[>..] = [];
     var lineno = 0;
     each_split(text, '\n') {
         lineno++;
-        if it.len > 0 { users.push(parse_record(it, lineno)); }
+        if it.len > 0 { users.push(parse_record(it, lineno)); }   // built straight into the element
     };
     return users, "";
 }

@@ -6,7 +6,7 @@
 // grow-shrink array of node indices heap-ordered by weight.
 //
 // Build and run (from this directory):
-//   goose -o huffman.c huffman.goose && cl huffman.c && huffman
+//   goose -o huffman.c 12_huffman.goose && cl huffman.c && huffman
 
 import std;
 
@@ -50,7 +50,9 @@ fn main() {
     print(heap.len, " distinct symbols in ", TEXT.len, " bytes");
 
     // 3. Merge the two lightest until one tree remains. The new node links
-    //    to its children by offset within the same array it is pushed into.
+    //    to its children by offset within the same array it is pushed into:
+    //    a 2-byte link instead of an 8-byte pointer, and a tree that can be
+    //    copied or written out as one block of bytes.
     while heap.len > 1 {
         let a = heap.heap_pop() { a, b => nodes[a].weight < nodes[b].weight } as i64;
         let b = heap.heap_pop() { a, b => nodes[a].weight < nodes[b].weight } as i64;
@@ -75,7 +77,8 @@ fn main() {
     }
 
     // 5. Encode: append each code's bits, most significant first, into a
-    //    byte array; `nbits` is the real length.
+    //    byte array; `nbits` is the real length. `&` binds tighter than
+    //    `==`, so the bit test needs no extra parentheses.
     var packed: u8[>..] = [];
     var nbits = 0;
     for c in TEXT {
