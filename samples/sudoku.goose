@@ -62,7 +62,7 @@ recursive fn solve(b: Board&) -> bool {
     if bestn == 0 { return false; }      // a cell with no options: dead end
     let cands = candidates(b, best);
     for d in 1..10 {
-        guard (cands & bit(d as! u8)) != 0 else { continue; }
+        guard cands & bit(d as! u8) != 0 else { continue; }
         guesses++;
         place(b, best, d as! u8);
         if solve(b) { return true; }

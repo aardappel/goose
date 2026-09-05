@@ -94,7 +94,7 @@ fn main() {
         budget += e.salary;
         seen++;
     }
-    for &e in staff { if e.dept[..] == "eng" { spend(e); } }
+    for &e in staff { if e.dept == "eng" { spend(e); } }
     print("eng budget ", budget, " over ", seen, " people");
 
     // A named function as a value, where a block would be too long.

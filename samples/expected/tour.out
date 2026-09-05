@@ -12,5 +12,5 @@ standing
 3 true 0 false
 first >= 5 is 9
 true
-[100, 2, 4, 9, 16] 1
+[100, 2, 4, 9, 16] 1 true
 9 2.5

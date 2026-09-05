@@ -145,12 +145,14 @@ fn main() {
     if big { print("first >= 5 is ", big); } else { print("none"); }
     let none = first_at_least(grow, 100);
     print(none == null);
-    // A reference reads and writes as its target; `.=` retargets it.
-    var r = &grow[0];
+    // A reference reads and writes as its target; `.=` binds it (where `=`
+    // would copy the element) and retargets it, and `.==` asks whether two
+    // references name the same target.
+    var r .= grow[0];
     r = 100;
-    r .= &grow[1];
+    r .= grow[1];
     r += 1;
-    print(grow, " ", grow.index_of(r));
+    print(grow, " ", grow.index_of(r), " ", r .== grow[1]);
     print(larger(3, 9), " ", larger(2.5, 1.5));
 }
 

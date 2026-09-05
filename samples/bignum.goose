@@ -13,19 +13,20 @@ import std;
 
 let BASE: u64 = 4294967296;              // 2^32
 
-// A number is its limbs; the value 0 is an empty array. Grow-shrink, since
-// normalizing pops leading zero limbs, and nothing ever points into a
-// number. Fresh results are built into whatever receives them, so
+// A number is its limbs; the value 0 is an empty array. Grow-only is
+// enough: normalizing pops leading zero limbs, which a grow-only array
+// allows wherever nothing in scope refers into it, and nothing ever points
+// into a number. Fresh results are built into whatever receives them, so
 // `let f = factorial(100)` allocates nothing on the way.
-fn from_int(v: u64) -> u32[>..<] {
-    var n: u32[>..<] = [];
+fn from_int(v: u64) -> u32[>..] {
+    var n: u32[>..] = [];
     var x = v;
     while x > 0 { n.push(x as! u32); x = x >> 32; }
     return n;
 }
 
 // n = n * m + a, in place: one pass over the limbs with a running carry.
-fn mul_add_small(n: u32[>..<]&, m: u32, a: u32) {
+fn mul_add_small(n: u32[>..]&, m: u32, a: u32) {
     var carry = a as u64;
     for &limb in n {
         let t = limb as u64 * m as u64 + carry;
@@ -35,8 +36,8 @@ fn mul_add_small(n: u32[>..<]&, m: u32, a: u32) {
     if carry > 0 { n.push(carry as! u32); }
 }
 
-fn add(a: u32[:], b: u32[:]) -> u32[>..<] {
-    var r: u32[>..<] = [];
+fn add(a: u32[:], b: u32[:]) -> u32[>..] {
+    var r: u32[>..] = [];
     var carry: u64 = 0;
     for i in max(a.len, b.len) {
         let x: u64 = if i < a.len { a[i] } else { 0 };
@@ -50,8 +51,8 @@ fn add(a: u32[:], b: u32[:]) -> u32[>..<] {
 }
 
 // Schoolbook multiplication: r[i + j] accumulates a[i] * b[j].
-fn mul(a: u32[:], b: u32[:]) -> u32[>..<] {
-    var r: u32[>..<] = [];
+fn mul(a: u32[:], b: u32[:]) -> u32[>..] {
+    var r: u32[>..] = [];
     r.resize(a.len + b.len, 0);
     for i in a.len {
         var carry: u64 = 0;
@@ -67,7 +68,9 @@ fn mul(a: u32[:], b: u32[:]) -> u32[>..<] {
 }
 
 // n / d in place, returning the remainder: the step decimal printing needs.
-fn div_small(n: u32[>..<]&, d: u32) -> u32 {
+// The pop through the reference is checked at each call, against what the
+// caller has in scope.
+fn div_small(n: u32[>..]&, d: u32) -> u32 {
     var rem: u64 = 0;
     var i = n.len;
     while i > 0 {
@@ -82,10 +85,10 @@ fn div_small(n: u32[>..<]&, d: u32) -> u32 {
 
 // Decimal text: peel off nine digits at a time from a working copy, then
 // reverse the chunks into the output.
-fn format(out: u8[>..]&, n: u32[>..<]&) {
+fn format(out: u8[>..]&, n: u32[>..]&) {
     if n.len == 0 { out.push('0'); return; }
     var work = copy(n);
-    var chunks: u32[>..<] = [];
+    var chunks: u32[>..] = [];
     while work.len > 0 { chunks.push(div_small(work, 1000000000)); }
     var first = true;
     each_rev(chunks) { c =>
@@ -94,13 +97,13 @@ fn format(out: u8[>..]&, n: u32[>..<]&) {
     };
 }
 
-fn factorial(k: i64) -> u32[>..<] {
+fn factorial(k: i64) -> u32[>..] {
     var n = from_int(1);
     for i in 2..k + 1 { mul_add_small(n, i as u32, 0); }
     return n;
 }
 
-fn fib(k: i64) -> u32[>..<] {
+fn fib(k: i64) -> u32[>..] {
     var a = from_int(0);
     var b = from_int(1);
     for i in k {
@@ -111,13 +114,13 @@ fn fib(k: i64) -> u32[>..<] {
     return a;
 }
 
-fn pow2(k: i64) -> u32[>..<] {
+fn pow2(k: i64) -> u32[>..] {
     var n = from_int(1);
     for i in k { mul_add_small(n, 2, 0); }
     return n;
 }
 
-fn digits(n: u32[>..<]&) -> i64 { str(n).len }
+fn digits(n: u32[>..]&) -> i64 { str(n).len }
 
 fn main() {
     let f100 = factorial(100);

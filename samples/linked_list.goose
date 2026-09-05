@@ -19,7 +19,7 @@ let head = pool.alloc_index(Node { val: 0, prev: self, next: self });
 
 // Inserts a node holding v after p, and returns it.
 fn insert_after(p: Node&, v: i64) -> Node& {
-    let n: Node& = pool.alloc_ref(Node { val: v, prev: p, next: p.next });
+    let n .= pool.alloc_ref(Node { val: v, prev: p, next: p.next });
     n.next.prev .= n;
     p.next .= n;
     return n;
@@ -35,22 +35,23 @@ fn remove(n: Node&) {
 
 fn push_front(v: i64) -> Node& { insert_after(pool[head], v) }
 fn push_back(v: i64) -> Node& { insert_after(pool[head].prev, v) }
-fn is_end(n: Node&) -> bool { pool.index_of(n) == head }
+// The sentinel test is an identity test: `==` on references compares the
+// nodes they point at, `.==` the references themselves.
+fn is_end(n: Node&) -> bool { n .== pool[head] }
 
 fn pop_front() -> i64 {
-    let n: Node& = pool[head].next;
+    let n .= pool[head].next;
     assert(!is_end(n));
     let v = n.val;
     remove(n);
     return v;
 }
 
-// Visits every node, front to back. Identity is by slot, since `==` on
-// references compares the values they point at.
+// Visits every node, front to back.
 fn each<F>() {
-    var n: Node& = pool[head].next;
+    var n .= pool[head].next;
     while !is_end(n) {
-        let next: Node& = n.next;        // read before F, which may remove n
+        let next .= n.next;              // read before F, which may remove n
         F(n);
         n .= next;
     }
@@ -85,9 +86,9 @@ fn main() {
 
     // Move-to-front, the operation an LRU cache is made of: unlink and
     // relink through the references, without touching the pool's length.
-    var n: Node& = pool[head].next;
+    var n .= pool[head].next;
     while !is_end(n) {
-        let next: Node& = n.next;
+        let next .= n.next;
         if n.val == 9 {
             n.prev.next .= n.next;
             n.next.prev .= n.prev;
@@ -102,7 +103,7 @@ fn main() {
 
     // Walk backwards through the prev links.
     var back: u8[>..] = [];
-    var b: Node& = pool[head].prev;
+    var b .= pool[head].prev;
     while !is_end(b) { format(back, " ", b.val); b .= b.prev; }
     print("backwards:", back);
     print("a node is ", 8 + 4 + 4, " bytes: the value and two 4-byte links");

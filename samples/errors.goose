@@ -21,7 +21,7 @@ fn parse_age(s: u8[:]) -> i32, bool {
 // 2. An optional: a reference to the element, or null. The caller must
 //    narrow it with if/guard before touching it.
 fn find_user(users: User[:], name: u8[:]) -> User? {
-    for &u in users { if u.name[..] == name { return u; } }
+    for &u in users { if u.name == name { return u; } }
     return null;
 }
 

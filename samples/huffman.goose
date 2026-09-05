@@ -58,7 +58,7 @@ fn main() {
                           left: nodes[a], right: nodes[b] });
         heap.heap_push((nodes.len - 1) as i32) { a, b => nodes[a].weight < nodes[b].weight };
     }
-    let root: Node& = nodes[heap.pop()];
+    let root .= nodes[heap.pop()];
     print(nodes.len, " nodes, ", nodes.len * 12, " bytes of tree");
 
     // 4. Codes.
@@ -84,7 +84,7 @@ fn main() {
         while k > 0 {
             k--;
             if nbits % 8 == 0 { packed.push(0); }
-            if ((code.bits >> k) & 1) == 1 { packed[nbits / 8] |= (0x80 >> (nbits % 8)) as! u8; }
+            if (code.bits >> k) & 1 == 1 { packed[nbits / 8] |= (0x80 >> (nbits % 8)) as! u8; }
             nbits++;
         }
     }
@@ -92,7 +92,7 @@ fn main() {
 
     // 6. Decode: walk from the root, one bit per step, emitting at leaves.
     var out: u8[>..] = [];
-    var cur: Node& = root;
+    var cur .= root;
     for i in nbits {
         let bit = (packed[i / 8] >> (7 - i % 8)) & 1;
         let next = if bit == 0 { cur.left } else { cur.right };
@@ -103,6 +103,6 @@ fn main() {
             cur .= root;
         }
     }
-    print("round trip ok: ", out[..] == TEXT);
+    print("round trip ok: ", out == TEXT);
     print(out[..40]);
 }

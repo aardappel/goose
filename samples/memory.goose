@@ -14,6 +14,8 @@ struct Item { id: i32, weight: f32 }
 // no pointer, so a struct holding one is still one flat value.
 struct Row { label: u8[..12], cells: i32[..8] }
 
+fn reset(buf: u8[>..]&) { buf.clear(); }
+
 fn main() {
     // 1. A grow-only array never moves its elements. A reference taken
     //    early stays valid however much is pushed afterwards, which is what
@@ -33,12 +35,14 @@ fn main() {
         print("round ", round, ": ", scratch.len, " bytes of scratch");
     }
 
-    // 3. Or keep one buffer and clear it. A grow-only local may shrink at
-    //    a point where no reference or slice into it is in scope, so a
-    //    reused line buffer costs nothing per line.
+    // 3. Or keep one buffer and clear it. A grow-only array may shrink at
+    //    a point where nothing in scope refers into it -- the compiler
+    //    knows every place a reference into it was stored, and names the
+    //    holder if one is live -- so a reused line buffer costs nothing
+    //    per line, here through a helper that clears its argument.
     var line: u8[>..] = [];
     for i in 3 {
-        line.clear();
+        reset(line);
         format(line, "line ", i + 1, " of 3");
         print(line);
     }

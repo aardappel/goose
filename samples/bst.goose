@@ -16,7 +16,7 @@ struct Node { key: i32, count: i32 = 1, left: Node&<u32>?, right: Node&<u32>? }
 // The tree is the pool plus the convention that slot 0 is the root.
 fn insert(pool: Node[>..]&, key: i32) {
     if pool.len == 0 { pool.push(Node { key: key }); return; }
-    var cur: Node& = pool[0];
+    var cur .= pool[0];                  // .= binds the element; = would copy it
     loop {
         if key == cur.key { cur.count += 1; return; }
         if key < cur.key {
@@ -34,7 +34,7 @@ fn insert(pool: Node[>..]&, key: i32) {
 
 fn find(pool: Node[>..]&, key: i32) -> Node? {
     guard pool.len > 0 else { return null; }
-    var cur: Node& = pool[0];
+    var cur .= pool[0];
     loop {
         if key == cur.key { return cur; }
         let next = if key < cur.key { cur.left } else { cur.right };
@@ -44,7 +44,7 @@ fn find(pool: Node[>..]&, key: i32) -> Node? {
 }
 
 fn min_key(pool: Node[>..]&) -> i32 {
-    var cur: Node& = pool[0];
+    var cur .= pool[0];
     loop {
         let l = cur.left;
         guard l;                         // leaves the loop when null
@@ -54,7 +54,7 @@ fn min_key(pool: Node[>..]&) -> i32 {
 }
 
 fn max_key(pool: Node[>..]&) -> i32 {
-    var cur: Node& = pool[0];
+    var cur .= pool[0];
     loop {
         let r = cur.right;
         guard r;

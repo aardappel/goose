@@ -79,7 +79,7 @@ fn main() {
     var rows: Row[>..] = [];
     per.each() { name, total => rows.push(Row { name: name, total: total, orders: 0 }); };
     for &r in rows {
-        for o in book { if o.customer[..] == r.name { r.orders += 1; } }
+        for o in book { if o.customer == r.name { r.orders += 1; } }
     }
     sort(rows) { a, b => a.total > b.total };
     print("");

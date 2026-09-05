@@ -5,8 +5,11 @@
 // pool, so the parsed document is a single contiguous block that could be
 // copied or saved as it is. Children are parsed (and pushed) before their
 // parent, and siblings are chained by patching the previous child's link.
-// Any syntax error, however deep, is one `return ... from parse` carrying
-// the message and position back to the top.
+// The parser's state -- the text, the cursor, a key buffer -- is a set of
+// locals of `parse`, and the functions nested inside it, the recursive
+// ones included, use them as free variables. Any syntax error, however
+// deep, is one `return ... from parse` carrying the message and position
+// back to the top.
 //
 // Build and run (from this directory):
 //   goose -o json.c json.goose && cl json.c && json [file.json]
@@ -27,144 +30,141 @@ enum Json {
     Obj { first: Node&<u32>?, count: varint },
 }
 
-var text: u8[>..<] = [];                 // grow-shrink: cleared per document
-var pos = 0;
 var pool: Node[>..] = [];
-// Object keys are decoded here before their values are parsed.
-var keys: u8[>..<] = [];
 
 // --- parsing -----------------------------------------------------------
 
-fn skip_space() {
-    while pos < text.len && (text[pos] == ' ' || text[pos] == '\n' || text[pos] == '\r' || text[pos] == '\t') { pos++; }
-}
+// The root node, or null and a message. A function in the recursive cycle
+// cannot own a growable value, but the cycle lives inside this function,
+// whose locals outlive every activation of it: the key buffer is one.
+fn parse(text: u8[:]) -> Node?, u8[>..] {
+    var pos = 0;
+    var keys: u8[>..] = [];              // object keys, decoded before their values
 
-fn fail(what: u8[:]) -> u8[>..] { str(what, " at byte ", pos) }
-
-fn expect(c: u8) {
-    skip_space();
-    if pos < text.len && text[pos] == c { pos++; return; }
-    var msg: u8[>..] = [];
-    format(msg, "expected '");
-    msg.push(c);                         // the byte itself: str(c) would print its number
-    msg.push('\'');
-    return null, fail(msg) from parse;
-}
-
-fn hex_digit(c: u8) -> i64 {
-    if c >= '0' && c <= '9' { return c - '0'; }
-    if c >= 'a' && c <= 'f' { return c - 'a' + 10; }
-    if c >= 'A' && c <= 'F' { return c - 'A' + 10; }
-    return null, fail("bad hex digit") from parse;
-}
-
-// A string's decoded bytes, built straight into the field that receives
-// them. Not part of the recursive cycle, so it may own a builder.
-fn parse_string() -> u8[>..] {
-    expect('"');
-    var s: u8[>..] = [];
-    loop {
-        guard pos < text.len else { return null, fail("unterminated string") from parse; }
-        let c = text[pos];
-        pos++;
-        if c == '"' { break; }
-        if c != '\\' { s.push(c); continue; }
-        guard pos < text.len else { return null, fail("bad escape") from parse; }
-        let e = text[pos];
-        pos++;
-        if e == 'n' { s.push('\n'); }
-        else if e == 't' { s.push('\t'); }
-        else if e == 'r' { s.push('\r'); }
-        else if e == 'u' {
-            guard pos + 4 <= text.len else { return null, fail("bad \\u escape") from parse; }
-            var cp = 0;
-            for i in 4 { cp = cp * 16 + hex_digit(text[pos + i]); }
-            pos += 4;
-            push_utf8(s, cp);
-        }
-        else { s.push(e); }              // \" \\ \/ and the rest
+    fn skip_space() {
+        while pos < text.len && (text[pos] == ' ' || text[pos] == '\n' || text[pos] == '\r' || text[pos] == '\t') { pos++; }
     }
-    return s;
-}
 
-fn parse_number() -> f64 {
-    let start = pos;
-    while pos < text.len && ((text[pos] >= '0' && text[pos] <= '9') || text[pos] == '-' ||
-                             text[pos] == '+' || text[pos] == '.' || text[pos] == 'e' || text[pos] == 'E') { pos++; }
-    let v, ok = parse_flt(text[start..pos]);
-    guard ok else { return null, fail("bad number") from parse; }
-    return v;
-}
+    fn fail(what: u8[:]) -> u8[>..] { str(what, " at byte ", pos) }
 
-fn parse_word(w: u8[:]) {
-    guard pos + w.len <= text.len && text[pos..pos + w.len] == w else { return null, fail("unexpected token") from parse; }
-    pos += w.len;
-}
-
-// One child of a container: an object member (key, colon, value) or an
-// array element. Keys are decoded into `keys` first, since a function in
-// a recursive cycle cannot own a growable local; the node copies its key.
-recursive fn parse_child(is_obj: bool) -> Node& {
-    if is_obj {
-        let start = keys.len;
-        keys.append(parse_string());
-        expect(':');
-        return parse_value(keys[start..]);
-    }
-    return parse_value("");
-}
-
-// One value, pushed onto the pool as a node with the given key; the node
-// it returns is what the caller links into its own chain.
-recursive fn parse_value(key: u8[:]) -> Node& {
-    skip_space();
-    guard pos < text.len else { return null, fail("unexpected end of input") from parse; }
-    let c = text[pos];
-    if c == '{' || c == '[' {
-        let is_obj = c == '{';
-        let close = if is_obj { '}' } else { ']' };
-        pos++;
+    fn expect(c: u8) {
         skip_space();
-        guard pos < text.len else { return null, fail("unclosed container") from parse; }
-        var first: Node? = null;
-        var count = 0;
-        if text[pos] != close {
-            // The first child, then the rest, each linked from the previous
-            // one: the link is a fixed-width relative reference, so it can
-            // be stored after the node was pushed.
-            var head: Node& = parse_child(is_obj);   // var: the chain is written through it
-            first .= head;
-            var last: Node& = head;
-            count = 1;
-            loop {
-                skip_space();
-                guard pos < text.len else { return null, fail("unclosed container") from parse; }
-                if text[pos] == close { break; }
-                expect(',');
-                var child: Node& = parse_child(is_obj);
-                last.next .= child;
-                last .= child;
-                count++;
-            }
-        }
-        pos++;
-        if is_obj { return pool.push(Node { next: null, key: key, val: Json.Obj { first: first, count: count } }); }
-        return pool.push(Node { next: null, key: key, val: Json.Arr { first: first, count: count } });
+        if pos < text.len && text[pos] == c { pos++; return; }
+        var msg: u8[>..] = [];
+        format(msg, "expected '");
+        msg.push(c);                     // the byte itself: str(c) would print its number
+        msg.push('\'');
+        return null, fail(msg) from parse;
     }
-    if c == '"' { return pool.push(Node { next: null, key: key, val: Json.Str { s: parse_string() } }); }
-    if c == 't' { parse_word("true"); return pool.push(Node { next: null, key: key, val: Json.Bool { v: true } }); }
-    if c == 'f' { parse_word("false"); return pool.push(Node { next: null, key: key, val: Json.Bool { v: false } }); }
-    if c == 'n' { parse_word("null"); return pool.push(Node { next: null, key: key, val: Json.Null }); }
-    return pool.push(Node { next: null, key: key, val: Json.Num { v: parse_number() } });
-}
 
-// The root node, or null and a message.
-fn parse(src: u8[:]) -> Node?, u8[>..] {
-    text.clear();
-    text.append(src);
-    pos = 0;
-    keys.clear();
-    let root: Node& = parse_value("");
+    fn hex_digit(c: u8) -> i64 {
+        if c >= '0' && c <= '9' { return c - '0'; }
+        if c >= 'a' && c <= 'f' { return c - 'a' + 10; }
+        if c >= 'A' && c <= 'F' { return c - 'A' + 10; }
+        return null, fail("bad hex digit") from parse;
+    }
+
+    // A string's decoded bytes, built straight into the field that receives
+    // them. Not part of the recursive cycle, so it may own a builder.
+    fn parse_string() -> u8[>..] {
+        expect('"');
+        var s: u8[>..] = [];
+        loop {
+            guard pos < text.len else { return null, fail("unterminated string") from parse; }
+            let c = text[pos];
+            pos++;
+            if c == '"' { break; }
+            if c != '\\' { s.push(c); continue; }
+            guard pos < text.len else { return null, fail("bad escape") from parse; }
+            let e = text[pos];
+            pos++;
+            if e == 'n' { s.push('\n'); }
+            else if e == 't' { s.push('\t'); }
+            else if e == 'r' { s.push('\r'); }
+            else if e == 'u' {
+                guard pos + 4 <= text.len else { return null, fail("bad \\u escape") from parse; }
+                var cp = 0;
+                for i in 4 { cp = cp * 16 + hex_digit(text[pos + i]); }
+                pos += 4;
+                push_utf8(s, cp);
+            }
+            else { s.push(e); }          // \" \\ \/ and the rest
+        }
+        return s;
+    }
+
+    fn parse_number() -> f64 {
+        let start = pos;
+        while pos < text.len && ((text[pos] >= '0' && text[pos] <= '9') || text[pos] == '-' ||
+                                 text[pos] == '+' || text[pos] == '.' || text[pos] == 'e' || text[pos] == 'E') { pos++; }
+        let v, ok = parse_flt(text[start..pos]);
+        guard ok else { return null, fail("bad number") from parse; }
+        return v;
+    }
+
+    fn parse_word(w: u8[:]) {
+        guard pos + w.len <= text.len && text[pos..pos + w.len] == w else { return null, fail("unexpected token") from parse; }
+        pos += w.len;
+    }
+
+    // One child of a container: an object member (key, colon, value) or an
+    // array element. The key is decoded into `keys` and handed down as a
+    // slice of it; the node copies its bytes.
+    recursive fn parse_child(is_obj: bool) -> Node& {
+        if is_obj {
+            let start = keys.len;
+            keys.append(parse_string());
+            expect(':');
+            return parse_value(keys[start..]);
+        }
+        return parse_value("");
+    }
+
+    // One value, pushed onto the pool as a node with the given key; the
+    // node it returns is what the caller links into its own chain.
+    recursive fn parse_value(key: u8[:]) -> Node& {
+        skip_space();
+        guard pos < text.len else { return null, fail("unexpected end of input") from parse; }
+        let c = text[pos];
+        if c == '{' || c == '[' {
+            let is_obj = c == '{';
+            let close = if is_obj { '}' } else { ']' };
+            pos++;
+            skip_space();
+            guard pos < text.len else { return null, fail("unclosed container") from parse; }
+            var first: Node? = null;
+            var count = 0;
+            if text[pos] != close {
+                // The first child, then the rest, each linked from the
+                // previous one: the link is a fixed-width relative
+                // reference, so it can be stored after the node was pushed.
+                let head .= parse_child(is_obj);
+                first .= head;
+                var last .= head;
+                count = 1;
+                loop {
+                    skip_space();
+                    guard pos < text.len else { return null, fail("unclosed container") from parse; }
+                    if text[pos] == close { break; }
+                    expect(',');
+                    let child .= parse_child(is_obj);
+                    last.next .= child;
+                    last .= child;
+                    count++;
+                }
+            }
+            pos++;
+            if is_obj { return pool.push(Node { next: null, key: key, val: Json.Obj { first: first, count: count } }); }
+            return pool.push(Node { next: null, key: key, val: Json.Arr { first: first, count: count } });
+        }
+        if c == '"' { return pool.push(Node { next: null, key: key, val: Json.Str { s: parse_string() } }); }
+        if c == 't' { parse_word("true"); return pool.push(Node { next: null, key: key, val: Json.Bool { v: true } }); }
+        if c == 'f' { parse_word("false"); return pool.push(Node { next: null, key: key, val: Json.Bool { v: false } }); }
+        if c == 'n' { parse_word("null"); return pool.push(Node { next: null, key: key, val: Json.Null }); }
+        return pool.push(Node { next: null, key: key, val: Json.Num { v: parse_number() } });
+    }
+
+    let root .= parse_value("");
     skip_space();
     guard pos == text.len else { return null, fail("trailing input") from parse; }
     return root, str("");
@@ -204,8 +204,7 @@ recursive fn render_children(first: Node?, keyed: bool, out: u8[>..]&, indent: i
     out.push(open);
     var c = first;
     var i = 0;
-    loop {
-        guard c;                         // narrowed to a plain reference below
+    while c {                            // a plain reference inside the loop
         if i > 0 { out.push(','); }
         if indent >= 0 { newline(out, indent + 1); }
         if keyed { quote(out, c.key); out.push(':'); if indent >= 0 { out.push(' '); } }
@@ -224,9 +223,8 @@ fn member(n: Node&, key: u8[:]) -> Node? {
     match n.val {
         Obj &o => {
             var c = o.first;
-            loop {
-                guard c;
-                if c.key[..] == key { return c; }
+            while c {
+                if c.key == key { return c; }
                 c .= c.next;
             }
             null
@@ -241,8 +239,7 @@ fn element(n: Node&, i: i64) -> Node? {
         Arr &a => {
             var c = a.first;
             var k = 0;
-            loop {
-                guard c;
+            while c {
                 if k == i { return c; }
                 c .= c.next;
                 k++;
