@@ -41,6 +41,7 @@ add_executable(goose
     src/runtime_inline.h
     src/runtime/runtime.h
     src/runtime/runtime_threads.h
+    src/runtime/runtime_os.h
 )
 
 if(MSVC)
@@ -49,5 +50,8 @@ if(MSVC)
     target_compile_options(goose PRIVATE /W4 /permissive- /utf-8 /EHsc /bigobj)
     target_compile_definitions(goose PRIVATE _CRT_SECURE_NO_WARNINGS)
 else()
-    target_compile_options(goose PRIVATE -Wall -Wextra)
+    # -Wmissing-field-initializers (in -Wextra) fires on every aggregate
+    # initialised with a prefix of its fields, which is deliberate throughout:
+    # the rest are value-initialised.
+    target_compile_options(goose PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 endif()

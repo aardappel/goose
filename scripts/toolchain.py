@@ -131,7 +131,8 @@ class CC:
     `cc` and `cxx` are the drivers for the two languages: the same executable
     under MSVC, which switches on the source extension, and a pair under the
     gcc-style drivers, where the C driver would link a C++ program without its
-    standard library."""
+    standard library. `cxx` is None where only the C driver is installed, which
+    is enough for everything except the C++ benchmark rows."""
     name: str
     cc: str
     cxx: str
@@ -142,6 +143,8 @@ class CC:
                 warn="default", strict_decls=False, extra=(), log=None):
         """Compile and link `sources` into the executable `out`. Returns
         (ok, combined output), and writes that output to `log` when given."""
+        if cpp and not self.cxx:
+            return False, f"no C++ compiler alongside {self.cc}\n"
         if isinstance(sources, (str, Path)):
             sources = [sources]
         sources = [str(s) for s in sources]
@@ -243,8 +246,11 @@ def find_ccs():
                                 f"clang-cl {ver} (bundled with VS)")
         return found
     for name, ccname, cxxname in (("gcc", "gcc", "g++"), ("clang", "clang", "clang++")):
+        # The C++ driver is optional: only the benchmark suite's C++ rows need
+        # it, and a machine with just cc can still build and run everything the
+        # compiler generates.
         cc, cxx = shutil.which(ccname), shutil.which(cxxname)
-        if not cc or not cxx:
+        if not cc:
             continue
         if name == "gcc" and not _is_real_gcc(cc):
             continue

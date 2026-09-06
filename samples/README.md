@@ -8,9 +8,10 @@ doing the work. Each file is one program with a comment at the top saying
 what it demonstrates. The files are numbered in reading order, which is
 the order below; the first six are the ones the rest assume.
 
-Build and run any of them from this directory (the C compiler can be `cl`,
-`clang` or `gcc`):
+Build and run any of them from this directory, with whichever C compiler is
+to hand:
 
+    goose -o tour.c 01_tour.goose && cc tour.c -o tour -lm -pthread && ./tour
     goose -o tour.c 01_tour.goose && cl tour.c && tour
 
 `run_samples.py` compiles and runs them all and compares their output with

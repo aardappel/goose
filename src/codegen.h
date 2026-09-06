@@ -861,7 +861,13 @@ struct CodeGen {
             externs += ExternProto(sp);
         }
         string includes;
-        for (auto &inc : gs_includes) Append(includes, "#include \"", inc, "\"\n");
+        for (auto inc : gs_includes) {
+            // Forward slashes even for a Windows path: a backslash inside a
+            // header name is undefined, and every C compiler on Windows takes
+            // the slash form.
+            for (auto &c : inc) if (c == '\\') c = '/';
+            Append(includes, "#include \"", inc, "\"\n");
+        }
         Append(result, "\n/* ---- types ---- */\n#pragma pack(push, 1)\n", tdecls, pdata,
                "#pragma pack(pop)\n\n/* ---- data ---- */\n", data,
                "\n/* ---- runtime (extern support) ---- */\n", gs_runtime_os_text,
