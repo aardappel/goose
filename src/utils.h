@@ -9,9 +9,11 @@ inline void CatOne(string &s, const char *v)   { s += v; }
 inline void CatOne(string &s, const string &v) { s += v; }
 inline void CatOne(string &s, char v)          { s += v; }
 inline void CatOne(string &s, bool v)          { s += v ? "true" : "false"; }
-inline void CatOne(string &s, int64_t v)       { s += to_string(v); }
-inline void CatOne(string &s, uint64_t v)      { s += to_string(v); }
-inline void CatOne(string &s, int v)           { s += to_string(v); }
+// Every other integer, whatever it is spelled as here: size_t is unsigned long
+// on the LP64 systems and unsigned long long on Windows, so a fixed set of
+// overloads leaves it ambiguous on one platform or the other.
+template<typename T> requires (is_integral_v<T> && !is_same_v<T, char> && !is_same_v<T, bool>)
+void CatOne(string &s, T v)                    { s += to_string(v); }
 inline void CatOne(string &s, double v) {
     // %.17g roundtrips, but prefer the shortest form that still does.
     char buf[32];

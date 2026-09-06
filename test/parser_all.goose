@@ -395,7 +395,7 @@ fn misc() {
     gcounter_pa += 1;
     let spawned = thread_spawn(worker_pa, 1);
     thread_wait(spawned);
-    print(hardware_threads());
+    print(hardware_threads() >= 1);      // true
 }
 
 fn edge_cases() {
