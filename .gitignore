@@ -2,3 +2,4 @@
 bench/gen
 samples/*.ppm
 samples/*.pgm
+__pycache__

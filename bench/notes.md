@@ -123,7 +123,7 @@ v145 is the favourable side.
 ## Bounds-check elimination, measured
 
 The compiler proves most index and slice checks away (spec 10.5).
-`bench/bce_ab.ps1` builds each benchmark with and without `--no-bce` under both
+`bench/bce_ab.py` builds each benchmark with and without `--no-bce` under both
 toolchains, at the size baked into each source file rather than the report's
 `large` one. `--no-bce` switches off more than the checks: the loop-view hoist
 decides whether a loop's array length is invariant by asking BCE's kill

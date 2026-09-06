@@ -13,8 +13,8 @@ Build and run any of them from this directory (the C compiler can be `cl`,
 
     goose -o tour.c 01_tour.goose && cl tour.c && tour
 
-`run_samples.ps1` compiles and runs them all and compares their output with
-`expected/`; `test/run_tests.ps1` calls it, so they are compiled and run as
+`run_samples.py` compiles and runs them all and compares their output with
+`expected/`; `test/run_tests.py` calls it, so they are compiled and run as
 part of the test suite.
 
 ## Foundations

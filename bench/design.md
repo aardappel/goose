@@ -120,7 +120,7 @@ else's to discover:
   backend nothing. Any in-place transform over two array arguments is where this shows.
 * Bounds checks on everything non-fixed, like Rust, unlike C++. The compiler now
   proves most of them away (10.5), and `--no-bce` gives a direct A/B for what the
-  rest cost -- `bench/bce_ab.ps1` runs it. The checked number stays the headline:
+  rest cost -- `bench/bce_ab.py` runs it. The checked number stays the headline:
   that is the honest safe vs safe comparison against Rust, with C++ as the unsafe
   baseline.
 * Copies are real. By-value semantics with no move operation (4.1, TODO 3) means idioms
@@ -193,7 +193,7 @@ real error path a quarter of the time), `bintrees` (the Benchmarks Game's
 allocator benchmark, for recognisability), `respond` (a web handler's DTO
 with a string and a list of records, built and rendered per request), and
 `blur` (an image stencil: flat scalar work, bounds checks and no aliasing
-information, included to lose). `bench/run_bench.ps1` builds and runs them at
+information, included to lose). `bench/run_bench.py` builds and runs them at
 three sizes each, checks that every implementation of a benchmark prints the
 same checksum, and writes `bench/results.md`; the commentary that file ends
 with lives in `bench/notes.md`.
