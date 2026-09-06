@@ -205,8 +205,6 @@ struct CodeGen {
 
     set<string> used;
 
-    static bool CReserved(const string &s);
-    static bool TempLike(const string &s);
     string Sanitize(string_view name);
     string Unique(string base);
 

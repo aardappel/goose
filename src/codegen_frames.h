@@ -102,7 +102,6 @@ inline void CodeGen::CollectSpecs() {
     for (auto sp : livespecs) {
         auto &si = sinfo[sp];
         auto base = Sanitize(sp->sf->name);
-        if (sp->sf->name == "main") base = "gs_main";
         if (namecount[sp->sf->name] > 1) Append(base, "_", sp->id);
         si.cname = Unique(base);
         si.hasrf = !sp->needs.empty();

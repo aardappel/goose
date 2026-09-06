@@ -316,116 +316,21 @@ inline int64_t CodeGen::FixedSize(TypeExpr *t) {
 // Naming: one global identifier space for types, functions, globals, and
 // static data; per-function spaces for locals seeded from it.
 
-inline bool CodeGen::CReserved(const string &s) {
-    static const set<string> words = {
-        // C keywords, and the names the generated program takes for itself.
-        "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
-        "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long", "register",
-        "restrict", "return", "short", "signed", "sizeof", "static", "struct", "switch",
-        "typedef", "union", "unsigned", "void", "volatile", "while",
-        "main", "bool", "true", "false", "NULL", "errno", "stdin", "stdout", "stderr", "assert",
-        // Everything the headers the generated C includes already claim, as a
-        // macro or as a declaration: <stdint.h>, <stddef.h>, <string.h>,
-        // <stdio.h>, <stdlib.h> and <math.h> on every platform, and
-        // <sys/mman.h>, <unistd.h>, <signal.h>, <pthread.h> and <time.h> on
-        // the POSIX side. The list is longer than it looks it needs to be
-        // because it is not MSVC's headers that decide it: glibc declares
-        // random(), index() and y1() where MSVC declares none of them, so a
-        // Goose function by one of those names builds on Windows and fails to
-        // build on Linux unless it is renamed here.
-        "a64l", "abort", "abs", "access", "acct", "acos", "acosf", "acosh", "acoshf", "acoshl",
-        "acosl", "alarm", "alloca", "arc4random", "asctime", "asin", "asinf", "asinh", "asinhf",
-        "asinhl", "asinl", "asprintf", "atan", "atan2", "atan2f", "atan2l", "atanf", "atanh",
-        "atanhf", "atanhl", "atanl", "atexit", "atof", "atoi", "atol", "atoll", "bcmp", "bcopy",
-        "be16toh", "be32toh", "be64toh", "brk", "bsearch", "bzero", "calloc", "cbrt", "cbrtf",
-        "cbrtl", "ceil", "ceilf", "ceill", "chdir", "chown", "chroot", "clearenv", "clearerr",
-        "clock", "close", "closefrom", "confstr", "copysign", "copysignf", "copysignl", "cos",
-        "cosf", "cosh", "coshf", "coshl", "cosl", "crypt", "ctermid", "ctime", "daemon",
-        "difftime", "div", "dprintf", "drand48", "drem", "dremf", "dreml", "dup", "dup2",
-        "dysize", "ecvt", "endusershell", "erand48", "erf", "erfc", "erfcf", "erfcl", "erff",
-        "erfl", "execl", "execle", "execlp", "execv", "execve", "execvp", "exit", "exp", "exp2",
-        "exp2f", "exp2l", "expf", "expl", "expm1", "expm1f", "expm1l", "fabs", "fabsf", "fabsl",
-        "faccessat", "fchdir", "fchown", "fchownat", "fclose", "fcvt", "fdatasync", "fdim",
-        "fdimf", "fdiml", "fdopen", "feof", "ferror", "fexecve", "fflush", "ffs", "ffsl",
-        "ffsll", "fgetc", "fgetpos", "fgets", "fileno", "finite", "finitef", "finitel",
-        "flockfile", "floor", "floorf", "floorl", "fma", "fmaf", "fmal", "fmax", "fmaxf",
-        "fmaxl", "fmemopen", "fmin", "fminf", "fminl", "fmod", "fmodf", "fmodl", "fopen",
-        "fopencookie", "fork", "fpathconf", "fpclassify", "fprintf", "fputc", "fputs", "fread",
-        "free", "freopen", "frexp", "frexpf", "frexpl", "fscanf", "fseek", "fseeko", "fsetpos",
-        "fsync", "ftell", "ftello", "ftruncate", "ftrylockfile", "funlockfile", "fwrite",
-        "gamma", "gammaf", "gammal", "gcvt", "getc", "getchar", "getcwd", "getdelim",
-        "getdomainname", "getdtablesize", "getegid", "getentropy", "getenv", "geteuid",
-        "getgid", "getgroups", "gethostid", "gethostname", "getline", "getloadavg", "getlogin",
-        "getopt", "getpagesize", "getpass", "getpgid", "getpgrp", "getpid", "getppid", "gets",
-        "getsid", "getsubopt", "getuid", "getusershell", "getw", "getwd", "gmtime", "gsignal",
-        "htobe16", "htobe32", "htobe64", "htole16", "htole32", "htole64", "hypot", "hypotf",
-        "hypotl", "ilogb", "ilogbf", "ilogbl", "index", "initstate", "isalnum", "isalpha",
-        "isatty", "isdigit", "isfinite", "isgreater", "isgreaterequal", "isinf", "isinff",
-        "isinfl", "isless", "islessequal", "islessgreater", "islower", "isnan", "isnanf",
-        "isnanl", "isnormal", "isspace", "isunordered", "isupper", "j0", "j0f", "j0l", "j1",
-        "j1f", "j1l", "jn", "jnf", "jnl", "jrand48", "kill", "killpg", "l64a", "labs", "lchown",
-        "lcong48", "ldexp", "ldexpf", "ldexpl", "ldiv", "le16toh", "le32toh", "le64toh",
-        "lgamma", "lgammaf", "lgammal", "link", "linkat", "linux", "llabs", "lldiv", "llrint",
-        "llrintf", "llrintl", "llround", "llroundf", "llroundl", "localtime", "lockf", "log",
-        "log10", "log10f", "log10l", "log1p", "log1pf", "log1pl", "log2", "log2f", "log2l",
-        "logb", "logbf", "logbl", "logf", "logl", "lrand48", "lrint", "lrintf", "lrintl",
-        "lround", "lroundf", "lroundl", "lseek", "madvise", "malloc", "mblen", "mbstowcs",
-        "mbtowc", "memccpy", "memchr", "memcmp", "memcpy", "memmem", "memmove", "mempcpy",
-        "memset", "mincore", "mkdtemp", "mkstemp", "mkstemps", "mktemp", "mktime", "mlock",
-        "mlockall", "mmap", "modf", "modff", "modfl", "mprotect", "mrand48", "msync", "munlock",
-        "munlockall", "munmap", "nan", "nanf", "nanl", "nanosleep", "nearbyint", "nearbyintf",
-        "nearbyintl", "nextafter", "nextafterf", "nextafterl", "nexttoward", "nexttowardf",
-        "nexttowardl", "nice", "nrand48", "offsetof", "open", "pathconf", "pause", "pclose",
-        "perror", "pipe", "popen", "pow", "powf", "powl", "pread", "printf", "profil",
-        "pselect", "psiginfo", "psignal", "putc", "putchar", "putenv", "puts", "putw", "pwrite",
-        "qecvt", "qfcvt", "qgcvt", "qsort", "raise", "rand", "random", "read", "readlink",
-        "readlinkat", "realloc", "reallocarray", "realpath", "remainder", "remainderf",
-        "remainderl", "remove", "remquo", "remquof", "remquol", "rename", "renameat", "revoke",
-        "rewind", "rindex", "rint", "rintf", "rintl", "rmdir", "round", "roundf", "roundl",
-        "rpmatch", "sbrk", "scalb", "scalbf", "scalbl", "scalbln", "scalblnf", "scalblnl",
-        "scalbn", "scalbnf", "scalbnl", "scanf", "seed48", "select", "setbuf", "setbuffer",
-        "setdomainname", "setegid", "setenv", "seteuid", "setgid", "sethostid", "sethostname",
-        "setlinebuf", "setlogin", "setpgid", "setpgrp", "setregid", "setreuid", "setsid",
-        "setstate", "setuid", "setusershell", "setvbuf", "sigaction", "sigaddset",
-        "sigaltstack", "sigblock", "sigdelset", "sigemptyset", "sigfillset", "siggetmask",
-        "siginterrupt", "sigismember", "sigmask", "signal", "signbit", "significand",
-        "significandf", "significandl", "sigpending", "sigprocmask", "sigqueue", "sigreturn",
-        "sigsetmask", "sigstack", "sigsuspend", "sigtimedwait", "sigwait", "sigwaitinfo", "sin",
-        "sinf", "sinh", "sinhf", "sinhl", "sinl", "sleep", "snprintf", "sprintf", "sqrt",
-        "sqrtf", "sqrtl", "srand", "srand48", "srandom", "sscanf", "ssignal", "stpcpy",
-        "stpncpy", "strcasecmp", "strcasestr", "strcat", "strchr", "strchrnul", "strcmp",
-        "strcoll", "strcpy", "strcspn", "strdup", "strerror", "strftime", "strlcat", "strlcpy",
-        "strlen", "strncasecmp", "strncat", "strncmp", "strncpy", "strndup", "strnlen",
-        "strpbrk", "strrchr", "strsep", "strsignal", "strspn", "strstr", "strtod", "strtof",
-        "strtok", "strtol", "strtold", "strtoll", "strtoq", "strtoul", "strtoull", "strtouq",
-        "strxfrm", "symlink", "symlinkat", "sync", "syscall", "sysconf", "system", "tan",
-        "tanf", "tanh", "tanhf", "tanhl", "tanl", "tcgetpgrp", "tcsetpgrp", "tempnam", "tgamma",
-        "tgammaf", "tgammal", "time", "timegm", "timelocal", "tmpfile", "tmpnam", "tolower",
-        "toupper", "trunc", "truncate", "truncf", "truncl", "ttyname", "ttyslot", "tzset",
-        "ualarm", "ungetc", "unix", "unlink", "unlinkat", "unsetenv", "usleep", "valloc",
-        "vasprintf", "vdprintf", "vfork", "vfprintf", "vfscanf", "vhangup", "vprintf", "vscanf",
-        "vsnprintf", "vsprintf", "vsscanf", "wcstombs", "wctomb", "write", "y0", "y0f", "y0l",
-        "y1", "y1f", "y1l", "yn", "ynf", "ynl",
-        // windows.h macros.
-        "min", "max",
-    };
-    return words.count(s) != 0;
-}
-
-// A user name shaped like a generated temporary or label (t12, L3).
-inline bool CodeGen::TempLike(const string &s) {
-    if (s.size() < 2 || (s[0] != 't' && s[0] != 'L')) return false;
-    for (size_t i = 1; i < s.size(); i++) if (!isdigit((unsigned char)s[i])) return false;
-    return true;
-}
-
+// A name from the program as a C identifier. Every one of them carries the
+// same suffix, which is what keeps the generated file free of collisions
+// without a list of names to avoid: not the C keywords, not the runtime's own
+// gs_ names, not the temporaries and labels below, and -- the reason a list
+// could never be right -- not whatever the platform's headers happen to
+// declare or define as a macro, which is not the same set on Windows as it is
+// on Linux or macOS. Struct fields and enum variants get it too: those live in
+// their own C namespace, but a macro does not respect namespaces.
+//
+// The one name that crosses into real C untouched is an `extern fn`'s symbol,
+// which is the C name the declaration gives and never comes through here.
 inline string CodeGen::Sanitize(string_view name) {
     string s(name);
     if (s.empty()) s = "_";
-    if (CReserved(s) || TempLike(s) || s.compare(0, 3, "gs_") == 0 ||
-        s.compare(0, 3, "GS_") == 0)
-        s += "_";
-    return s;
+    return s + "_g";
 }
 
 inline string CodeGen::Unique(string base) {

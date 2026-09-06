@@ -1382,7 +1382,12 @@ extras, and a prototype is emitted from the declaration unless the runtime
 defines the symbol (the `os` library's `gs_os_*` functions, in
 `src/runtime/runtime_os.h`). User C reaches the program through
 `--include <header>`, emitted after the generated type declarations so a
-header can implement shims against the generated typedefs.
+header can implement shims against the generated typedefs. Every name that
+comes from the program appears in the C with a `_g` suffix -- a struct `Stats`
+with a field `lo` is `Stats_g` with `lo_g` -- which is what keeps the generated
+file clear of the C keywords and of whatever the platform's headers declare,
+without depending on a list of names to avoid. An `extern fn`'s own symbol is
+the exception: that is the C name the declaration gives, unchanged.
 
 What crosses (layouts per C.2): the integer and float scalars and `bool`;
 any flat fixed-size struct or fixed array, by value as its packed C type;
