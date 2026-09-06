@@ -1,0 +1,47 @@
+# Builds the compiler and runs the whole suite -- parse, roundtrip, typecheck,
+# error tests, generated C at -O0 and -O2 through two C front ends, and the
+# samples -- on all three desktop platforms. The runners bring the compilers
+# the test script looks for: MSVC and its bundled clang on Windows, gcc and
+# clang on Ubuntu, Apple clang on macOS.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes the running job's answer stale.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      # One platform failing is a result about that platform, not a reason to
+      # stop finding out about the others.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # CMAKE_BUILD_TYPE is what the single-config generators read and --config
+      # is what the Visual Studio generator reads; passing both builds Debug
+      # (asserts on) everywhere.
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build --config Debug
+
+      - name: Test
+        run: python test/run_tests.py

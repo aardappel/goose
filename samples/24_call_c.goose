@@ -7,7 +7,8 @@
 // string builder, which C appends to. The C for this sample is call_c.h.
 //
 // Build and run (from this directory):
-//   goose --include call_c.h -o call_c.c 24_call_c.goose && cl call_c.c && call_c
+//   goose --include call_c.h -o call_c.c 24_call_c.goose
+//   cc call_c.c -o call_c -lm -pthread && ./call_c   (or: cl call_c.c && call_c)
 
 import std;
 
@@ -16,7 +17,9 @@ struct Stats { lo: i32, hi: i32, mean: f64 }
 // libm directly, without the math module: the string is the C symbol.
 extern "cbrt" fn cube_root(x: f64) -> f64;
 extern fn hypot(x: f64, y: f64) -> f64;
-extern "labs" fn c_abs(x: i32) -> i32;
+// `abs` rather than `labs`: C's `long` is 32 bits on Windows and 64 on Linux
+// and macOS, so it has no one Goose type, where `int` is i32 everywhere.
+extern "abs" fn c_abs(x: i32) -> i32;
 
 // From call_c.h: a slice in, a scalar out.
 extern fn crc32_bytes(s: u8[:]) -> u32;

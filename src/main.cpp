@@ -47,6 +47,54 @@ static bool FileExists(const string &path) {
     return f != nullptr;
 }
 
+// A path split on either separator, with "." and cancelled "x/.." dropped. An
+// absolute path keeps a leading empty component ("/a" -> {"", "a"}), so two
+// absolute paths share it and an absolute and a relative one never do.
+static vector<string> PathParts(const string &path) {
+    vector<string> parts;
+    string cur;
+    for (size_t i = 0; i <= path.size(); i++) {
+        auto c = i < path.size() ? path[i] : '/';
+        if (c != '/' && c != '\\') { cur += c; continue; }
+        if (cur == "." || (cur.empty() && !parts.empty())) {}
+        else if (cur == ".." && !parts.empty() && parts.back() != "..") parts.pop_back();
+        else parts.push_back(cur);
+        cur.clear();
+    }
+    return parts;
+}
+
+// `path` as reached from `dir`. Returns it unchanged where no relative path
+// exists or one cannot be computed by name alone: an absolute path against a
+// relative directory or the other way round, two absolute paths under
+// different Windows drives, or a leftover ".." that only the filesystem could
+// resolve.
+static string RelativeTo(const string &path, const string &dir) {
+    auto p = PathParts(path), d = PathParts(dir);
+    if (p.empty()) return path;
+    auto updir = [](const vector<string> &parts) {
+        for (auto &part : parts) if (part == "..") return true;
+        return false;
+    };
+    if (updir(p) || updir(d)) return path;
+    // A leading "" (rooted) or "C:" (drive) both sit in the first component.
+    auto rooted = [](const vector<string> &parts) {
+        return !parts.empty() && (parts[0].empty() || parts[0].back() == ':');
+    };
+    if (rooted(p) != rooted(d)) return path;
+    if (rooted(p) && p[0] != d[0]) return path;
+    // The last component of `path` is the file itself, never a shared directory.
+    size_t i = 0;
+    while (i + 1 < p.size() && i < d.size() && p[i] == d[i]) i++;
+    string rel;
+    for (size_t up = i; up < d.size(); up++) rel += "../";
+    for (; i < p.size(); i++) {
+        rel += p[i];
+        if (i + 1 < p.size()) rel += '/';
+    }
+    return rel;
+}
+
 // Where the standard library lives (§11.1): an explicit --stdlib or
 // GOOSE_STDLIB, else the `stdlib/` directory of the source tree the compiler
 // was built in, found by walking up from the executable.
@@ -300,6 +348,18 @@ int Main(int argc, char **argv) {
             printf("bce-test: all annotations verified\n");
         }
         if (nocgen) return 0;
+        if (outfile.empty()) {
+            auto dot = filename.find_last_of('.');
+            outfile = cat(dot == string::npos ? filename : filename.substr(0, dot), ".c");
+        }
+        // A quoted include resolves against the including file's own directory
+        // first, so the --include headers are written relative to where the .c
+        // goes: the generated file then compiles wherever the tree sits,
+        // instead of carrying this machine's absolute paths. A name that is
+        // not a file from here is one the C compiler is meant to find on its
+        // own include path, and is left alone.
+        for (auto &inc : gs_includes)
+            if (FileExists(inc)) inc = RelativeTo(inc, DirOf(outfile));
         // The extern-support runtime is written against the generated types,
         // so codegen splices it in after them rather than up front.
         for (auto &rf : runtime_files)
@@ -314,10 +374,6 @@ int Main(int argc, char **argv) {
             Append(out, "/* ==== ", rf.name, " ==== */\n", rf.text, "\n");
         }
         out += cg.result;
-        if (outfile.empty()) {
-            auto dot = filename.find_last_of('.');
-            outfile = cat(dot == string::npos ? filename : filename.substr(0, dot), ".c");
-        }
         auto f = fopen(outfile.c_str(), "wb");
         if (!f) throw CompileError { cat("cannot write output file: ", outfile) };
         fwrite(out.data(), 1, out.size(), f);
