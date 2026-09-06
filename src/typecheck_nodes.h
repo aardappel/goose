@@ -85,14 +85,11 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
         if (t->kind == TY_REF || t->kind == TY_SLICE) {
             v.SetProv(tc.RefProvOf(vd));
             v.lvalue = t->kind == TY_SLICE;   // A slice variable is storage; a reference is the pointee's path.
-        } else if (vd->constck != CK_NONE) {
-            // A literal argument: the parameter is the literal (§7.7), a
-            // constant that adapts where it is used and is no storage.
-            v.ck = vd->constck;
-            v.ival = vd->constival;
-            v.uns = vd->constuns;
-            v.fval = vd->constfval;
-            v.nonneg = v.ck == CK_INT ? (v.uns || v.ival >= 0) : v.fval >= 0;
+        } else if (vd->unsized) {
+            // A literal parameter (§7.7): a constant of unknown value, no
+            // storage, adapting where it is used.
+            v.unsized = true;
+            v.unsizedparam = vd->unsizedorigin ? vd->unsizedorigin : vd;
         } else {
             v.root = vd;
             v.rootexact = true;

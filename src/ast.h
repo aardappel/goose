@@ -263,6 +263,11 @@ struct Val : Prov {
     bool strlit = false;         // String literal: adaptable to u8 array types.
     bool emptyarr = false;       // [] with as yet unknown element type.
     bool isnull = false;         // The null literal: adaptable to any optional.
+    // A literal parameter read inside its specialization (§7.7): a constant
+    // of unknown value at its nominal type, adapting to any type of its
+    // kind; the parameter it came from is where the adaptation is recorded.
+    bool unsized = false;
+    VarDef *unsizedparam = nullptr;
     bool lvalue = false;         // Denotes storage (a variable, field or element), not a temporary.
     // A signed value the compiler knows cannot be negative, which is what
     // lets it meet a u64 in a comparison (§6.1). Deliberately syntactic --
@@ -818,13 +823,10 @@ struct VarDef {
     VarDef *contentroot = nullptr;
     bool contentexact = false;
     bool contentset = false;
-    // A literal argument bound to a bare type variable stays a literal
-    // inside the specialization (§7.7): a read of the parameter is this
-    // constant, adapting at each use as the literal would.
-    ConstKind constck = CK_NONE;
-    int64_t constival = 0;
-    bool constuns = false;
-    double constfval = 0;
+    // A literal parameter (§7.7): reads as a constant of unknown value.
+    // A function-value parameter bound from one stands for that one.
+    bool unsized = false;
+    VarDef *unsizedorigin = nullptr;
     // Flow state during checking:
     bool assigned = false;
     TypeExpr *narrowed = nullptr;  // T? narrowed to T& in the current region.
@@ -919,15 +921,18 @@ struct RetRoot {
 
 // One monomorphic specialization of a function: the unit of typechecking and
 // of later codegen. Owns nothing; body is a clone with annotations filled.
-// A literal argument a specialization is made for (§7.7): part of its key.
-struct ConstArg {
-    ConstKind ck = CK_NONE;
-    int64_t ival = 0;
-    bool uns = false;
-    double fval = 0;
-    bool operator==(const ConstArg &o) const {
-        return ck == o.ck && ival == o.ival && uns == o.uns && fval == o.fval;
-    }
+// A literal parameter's contact with a type (§7.7): what the literal at
+// each call site must fit.
+struct LitAdapt {
+    int param = 0;
+    TypeExpr *type = nullptr;
+    Line at;
+};
+// A literal parameter passed on as a literal: the callee's contacts apply.
+struct LitFlow {
+    int param = 0;
+    FnSpec *to = nullptr;
+    int toparam = 0;
 };
 
 struct FnSpec {
@@ -935,7 +940,9 @@ struct FnSpec {
     FnSpec *lexparent = nullptr;   // Defining specialization, for nested fns.
     vector<TypeExpr *> argtypes;   // Concrete parameter types (the key, with the below).
     vector<RootArg> roots;         // Per reference/slice-typed parameter.
-    vector<pair<int, ConstArg>> consts;  // Parameter index -> the literal it is.
+    vector<int> litparams;         // Parameters that are literals (§7.7): part of the key.
+    vector<LitAdapt> litadapts;    // The types those parameters adapted to in the body.
+    vector<LitFlow> litflows;      // Where they were passed on as literals.
     vector<pair<string_view, FnValBind>> fnvals;  // Generic name -> bound function value.
     vector<pair<string_view, TypeExpr *>> bindings;  // Generic name -> concrete type.
     Block *body = nullptr;         // Cloned, annotated copy of sf->body.

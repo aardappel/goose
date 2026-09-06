@@ -401,10 +401,16 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     // An integer constant in one branch adapts to the other branch's
     // integer type, as it would at any typed destination (§3.1).
     auto adapt = [&](const Val &c, Node *cn, const Val &o) {
-        if (c.ck != CK_INT || o.ck == CK_INT || !o.type || o.type->kind != TY_INT ||
-            !c.type || c.type->kind != TY_INT || TypeEq(c.type, o.type) ||
-            !FitsIntStorage(c.ival, c.uns, o.type->intstorage))
+        if (!o.type || o.type->kind != TY_INT || !c.type || c.type->kind != TY_INT ||
+            TypeEq(c.type, o.type) || o.ck == CK_INT || o.unsized)
             return false;
+        if (c.unsized) {
+            // A literal parameter adapts to the other branch like a
+            // constant (§7.7).
+            RecordLitAdapt(c, o.type, at->line);
+        } else if (c.ck != CK_INT || !FitsIntStorage(c.ival, c.uns, o.type->intstorage)) {
+            return false;
+        }
         if (cn) RetypeConstBranch(cn, o.type);
         return true;
     };

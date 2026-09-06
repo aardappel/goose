@@ -252,42 +252,44 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
     // enclosing bindings while unifying (the recursive-generic case).
     auto saveex = ownexclude;
     ownexclude = &sf->generics;
-    // A literal argument to a parameter whose type is a bare type variable,
-    // or that is untyped, stays a literal inside the specialization (§7.7):
-    // the variable binds to the literal's default type, and the parameter
-    // reads as the constant. Not on a recursive call: the specialization
-    // in progress takes the committed type, so recursion on a literal
-    // terminates.
-    auto inrecursion = false;
-    for (auto spec : sf->specs) inrecursion |= spec->inprogress;
+    // A literal argument (or a literal parameter passed on) to a parameter
+    // whose type is a bare type variable no typed argument binds, or that
+    // is untyped, stays a literal inside the specialization (§7.7): the
+    // variable binds to the literal's default type, and the parameter
+    // reads as a constant of unknown value that adapts where it is used.
     auto owngeneric = [&](TypeExpr *t) {
         if (!t || t->kind != TY_GENERIC) return false;
         for (auto &g : sf->generics) if (g.name == t->named->name) return true;
         return false;
     };
+    auto isliteral = [](const Val &av) { return av.ck != CK_NONE || av.unsized; };
     set<string_view> litbound;   // Type variables bound by literals alone.
+    // Trying a candidate records nothing: the chosen overload's
+    // argument re-check does.
+    auto saverecord = litrecord;
+    litrecord = false;
     auto paramsok = [&]() {
         // A literal argument adapts to whatever type the other arguments
         // give a type parameter (§3.1), so they unify last.
         vector<size_t> order;
-        for (size_t i = 0; i < P; i++) if (argvals[i].ck == CK_NONE) order.push_back(i);
-        for (size_t i = 0; i < P; i++) if (argvals[i].ck != CK_NONE) order.push_back(i);
+        for (size_t i = 0; i < P; i++) if (!isliteral(argvals[i])) order.push_back(i);
+        for (size_t i = 0; i < P; i++) if (isliteral(argvals[i])) order.push_back(i);
         for (auto i : order) {
             auto &p = sf->params[i];
             auto &av = argvals[i];
-            auto isconst = false;
-            if (av.ck != CK_NONE && !p.isvar && !sf->isextern && !inrecursion) {
+            auto unsized = false;
+            if (isliteral(av) && !p.isvar && !sf->isextern) {
                 if (!p.type) {
-                    isconst = true;
+                    unsized = true;
                 } else if (owngeneric(p.type)) {
                     auto name = p.type->named->name;
                     auto bound = false;
                     for (auto &[n, t] : mi.bindings) bound |= n == name;
-                    isconst = !bound || litbound.count(name);
-                    if (isconst) litbound.insert(name);
+                    unsized = !bound || litbound.count(name);
+                    if (unsized) litbound.insert(name);
                 }
             }
-            if (isconst) mi.consts.push_back({ (int)i, ConstArg { av.ck, av.ival, av.uns, av.fval } });
+            if (unsized) mi.litparams.push_back((int)i);
             if (!p.type) {
                 // Untyped parameter: an anonymous type variable (§7.1),
                 // bound to the argument's exact type — a reference
@@ -316,6 +318,7 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
         return true;
     }();
     ownexclude = saveex;
+    litrecord = saverecord;
     if (!paramsok) return false;
     // Leftover generics bind function values, in order (§7.6).
     vector<string_view> unbound;
@@ -633,7 +636,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     for (auto spec : sf->specs) {
         if (spec->lexparent != mi.env) continue;
         if (!TypeArgsEq(spec->argtypes, mi.paramtypes)) continue;
-        if (spec->consts != mi.consts) continue;
+        if (spec->litparams != mi.litparams) continue;
         if (spec->fnvals.size() != mi.fnvals.size()) continue;
         auto fvok = true;
         for (size_t i = 0; i < mi.fnvals.size(); i++)
@@ -657,6 +660,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
             ValidatePoolArgs(spec, argvals, callnode);
         }
         ValidateNeeds(spec, callnode);
+        NoteLitArgs(spec, argvals, callnode);
         return spec;
     }
     auto spec = ast.NewFnSpec();
@@ -664,12 +668,69 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     spec->lexparent = mi.env;
     spec->argtypes = mi.paramtypes;
     spec->roots = roots;
-    spec->consts = mi.consts;
+    spec->litparams = mi.litparams;
     spec->fnvals = mi.fnvals;
     spec->bindings = mi.bindings;
     sf->specs.push_back(spec);
+    NoteLitArgs(spec, argvals, callnode);
     CheckSpecBody(spec, &argvals, callnode->line);
     return spec;
+}
+
+// A literal parameter's adaptation to a type (§7.7), recorded on the
+// specialization that owns the parameter.
+inline void TypeCheck::RecordLitAdapt(const Val &v, TypeExpr *t, Line at) {
+    if (!litrecord || !v.unsizedparam) return;
+    auto vd = v.unsizedparam;
+    auto spec = vd->ownerspec;
+    if (!spec) return;
+    for (size_t i = 0; i < spec->params.size(); i++) {
+        if (spec->params[i] != vd) continue;
+        for (auto &la : spec->litadapts)
+            if (la.param == (int)i && TypeEq(la.type, t)) return;
+        spec->litadapts.push_back(LitAdapt { (int)i, t, at });
+    }
+}
+
+// The literal arguments of a call: a literal is checked against the
+// parameter's adaptations once the program is checked; a literal
+// parameter passed on adds the callee's adaptations to its own.
+inline void TypeCheck::NoteLitArgs(FnSpec *spec, vector<Val> &argvals, Node *at) {
+    for (auto li : spec->litparams) {
+        if (li >= (int)argvals.size()) continue;
+        auto &av = argvals[li];
+        if (av.ck != CK_NONE) {
+            litchecks.push_back(LitCheck { spec, li, av, at });
+        } else if (av.unsized && av.unsizedparam && av.unsizedparam->ownerspec) {
+            auto from = av.unsizedparam->ownerspec;
+            for (size_t i = 0; i < from->params.size(); i++)
+                if (from->params[i] == av.unsizedparam)
+                    from->litflows.push_back(LitFlow { (int)i, spec, li });
+        }
+    }
+}
+
+inline void TypeCheck::VerifyLiterals() {
+    for (auto &lc : litchecks) {
+        set<pair<FnSpec *, int>> seen;
+        vector<pair<FnSpec *, int>> todo { { lc.spec, lc.param } };
+        while (!todo.empty()) {
+            auto [spec, param] = todo.back();
+            todo.pop_back();
+            if (!seen.insert({ spec, param }).second) continue;
+            for (auto &la : spec->litadapts) {
+                if (la.param != param || la.type->kind != TY_INT || lc.lit.ck != CK_INT) continue;
+                if (FitsIntStorage(lc.lit.ival, lc.lit.uns, la.type->intstorage)) continue;
+                Error(lc.at, cat("argument ", (int64_t)lc.param + 1, " of ", lc.spec->sf->name,
+                                 ": constant ", ConstStr(lc.lit), " does not fit ",
+                                 TypeStr(la.type), ", which parameter ",
+                                 spec->sf->params[param].name, " takes at ", Where(la.at),
+                                 " (§7.7)"));
+            }
+            for (auto &lf : spec->litflows)
+                if (lf.param == param) todo.push_back({ lf.to, lf.toparam });
+        }
+    }
 }
 
 inline void TypeCheck::ValidateCycle(FnSpec *spec, Node *callnode) {
@@ -857,13 +918,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
         auto vd = NewVar(p.name, pt, sf->line, p.isvar);
         vd->isparam = true;
         vd->assigned = true;
-        for (auto &[ci, ca] : spec->consts) {
-            if (ci != (int)i) continue;
-            vd->constck = ca.ck;
-            vd->constival = ca.ival;
-            vd->constuns = ca.uns;
-            vd->constfval = ca.fval;
-        }
+        for (auto li : spec->litparams) if (li == (int)i) vd->unsized = true;
         if (pt->kind == TY_REF || pt->kind == TY_SLICE) {
             auto &ra = spec->roots[rootidx++];
             if (ra.cls == 0) {

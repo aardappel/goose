@@ -1244,15 +1244,22 @@ operator.
 **Literal arguments.** Where a literal is the only thing binding a type
 variable — the parameter is untyped, or its type is a bare `T` no typed
 argument mentions — the variable takes the literal's default type (§3.1),
-and inside the specialization the parameter *is* the literal: each use of
-it adapts as the literal would have, so `push_n(flags, 1, n)` with `fn
+and inside the specialization the parameter is a *literal parameter*: a
+constant of unknown value that adapts wherever the bare parameter meets a
+type, as the literal would have, so `push_n(flags, 1, n)` with `fn
 push_n<A, T>(xs: A&, v: T, n: i64)` pushes a `u8` into a `u8[>..]`, and
-`fill(small, -7, 2)` an `i16` into an `i16[..4]`, with no suffix or cast at
-the call. The rule is the one literals already follow, applied through
-the call: `let y = v;` inside commits `y` to `i64` exactly as `let y = 1;`
-would. Each distinct literal value is its own specialization (the value
-is part of its key), and a recursive call passes the committed default
-type instead, so recursion on a literal terminates. `var` parameters and
+`fill(small, -7, 2)` an `i16` into an `i16[..4]`, with no suffix or cast
+at the call. The value is not part of the specialization: every call with
+a literal shares one body, checked once with the value unknown, and the
+body records each type the parameter adapted to (in itself, in a callee
+it passed the parameter on to as a literal, and in a block it handed it
+to). Each call's literal is then checked against every recorded type —
+`push_n(flags, 300, n)` is an error naming the `push` that takes a `u8` —
+once the whole program is checked and the records are complete. What the
+body cannot do with an unknown value it cannot do with a literal
+parameter: `[0; n]` needs a constant, and `v + 1` is an ordinary `i64`
+expression, exactly as `let y = v;` commits `y` to `i64`, so a recursive
+call on `v + 1` passes a typed value and terminates. `var` parameters and
 `extern` functions take literals as ordinary values.
 
 Passing arrays by reference is the generic way to write mutating range
@@ -2309,8 +2316,13 @@ What the current compiler does where the text above leaves it a choice.
   of an open block at or inside its scope, in that block's tail, or
   anywhere in an enclosing loop it outlives. Nested functions in scope are
   followed by name from the calls in that code.
-* **Literal arguments** (§7.7) are part of a specialization's key (index
-  and value); the parameter variable carries the constant, a read of it is
-  the literal's value in the checker, and codegen emits the literal at the
-  type the use adapted it to. The C parameter stays in the signature,
-  unused.
+* **Literal parameters** (§7.7). Which parameters are literals is part of
+  the specialization key, their values are not. A read of one is a value
+  with no constant folding but the literal's adaptability; every
+  adaptation of the bare parameter is recorded on the specialization with
+  its line, a literal parameter passed on as a literal records a link to
+  the callee's parameter, and each call site's literal is verified against
+  the closure of those records after the whole program is checked. The
+  parameter is passed at its nominal type (`int64_t`, `double`) and each
+  use casts to the type it adapted to, which the verification proved
+  exact.

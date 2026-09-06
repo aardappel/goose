@@ -651,6 +651,11 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
         vd->assigned = true;
         if (ptypes[i]->kind == TY_REF || ptypes[i]->kind == TY_SLICE)
             BindRefProvenance(vd, argvals[i]);
+        // A literal parameter handed to the block stays one inside it.
+        if (argvals[i].unsized && !params[i].type && !params[i].isvar) {
+            vd->unsized = true;
+            vd->unsizedorigin = argvals[i].unsizedparam;
+        }
         c->fvparams.push_back(vd);
     }
     c->fvtarget = fb.env ? fb.env->sf : nullptr;

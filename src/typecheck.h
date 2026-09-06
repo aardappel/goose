@@ -177,6 +177,9 @@ struct TypeCheck {
             if (f.spec) {
                 for (size_t j = 0; j < f.spec->argtypes.size(); j++) {
                     if (j) s += ", ";
+                    auto lit = false;
+                    for (auto li : f.spec->litparams) lit |= li == (int)j;
+                    if (lit) s += "literal ";
                     f.spec->argtypes[j]->Dump(s);
                 }
             }
@@ -701,9 +704,25 @@ struct TypeCheck {
         vector<pair<string_view, TypeExpr *>> bindings;
         vector<pair<string_view, FnValBind>> fnvals;
         vector<TypeExpr *> paramtypes;  // Concrete, one per declared parameter.
-        vector<pair<int, ConstArg>> consts;  // Literal arguments kept as constants (§7.7).
+        vector<int> litparams;          // Literal arguments to type variables (§7.7).
         FnSpec *env = nullptr;          // Lexical parent for nested functions.
     };
+
+    // Literal parameters (§7.7). A literal at a call site is checked against
+    // every type the parameter adapted to, in the callee and in anything it
+    // passed the literal on to, once the whole program is checked and those
+    // records are complete.
+    struct LitCheck {
+        FnSpec *spec = nullptr;
+        int param = 0;
+        Val lit;
+        Node *at = nullptr;
+    };
+    vector<LitCheck> litchecks;
+    bool litrecord = true;   // Off while overloads are tried: only the chosen one records.
+    void RecordLitAdapt(const Val &v, TypeExpr *t, Line at);
+    void NoteLitArgs(FnSpec *spec, vector<Val> &argvals, Node *at);
+    void VerifyLiterals();
 
     Val CheckCall(Call *c);
     Val CheckNamedCall(Call *c, Ident *id);
@@ -925,6 +944,7 @@ struct TypeCheck {
         // reached code, since no call-site facts were available.
         for (auto sf : ast.functions) CheckUnreached(sf);
         SettleParamRootExactness();
+        VerifyLiterals();
     }
 
     // Checking is over, so every call site of every specialization has been

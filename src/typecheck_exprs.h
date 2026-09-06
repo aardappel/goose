@@ -381,6 +381,13 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
     switch (dt->kind) {
         case TY_INT:
             if (t->kind != TY_INT) return false;
+            // A literal parameter adapts to any integer type; whether the
+            // literal fits is each call site's question (§7.7).
+            if (v.unsized) {
+                RecordLitAdapt(v, dt, fitnode ? fitnode->line : Line {});
+                v.type = dt;
+                return true;
+            }
             // A constant adapts to any integer type its value fits.
             if (v.ck == CK_INT) {
                 if (FitsIntStorage(v.ival, v.uns, dt->intstorage)) {
@@ -409,11 +416,15 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
                 if (v.ck == CK_INT)
                     fitfail = cat("an integer literal where ", TypeStr(dt),
                                   " is expected: write ", ConstStr(v), ".0");
+                else if (v.unsized)
+                    fitfail = cat("an integer literal argument where ", TypeStr(dt),
+                                  " is expected: pass a float literal");
                 return false;
             }
             // Literals adapt to f32; f32 widens to f64.
-            if (IsF32(dt)) { if (v.ck != CK_FLT) return false; }
+            if (IsF32(dt)) { if (v.ck != CK_FLT && !v.unsized) return false; }
             else if (!IsF32(t)) return false;
+            if (v.unsized) RecordLitAdapt(v, dt, fitnode ? fitnode->line : Line {});
             v.type = dt;
             return true;
         case TY_ARRAY: {
@@ -710,6 +721,16 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
                                          TypeExpr *rt, bool cmp) {
     if (IsIntT(lt) && IsIntT(rt)) {
         if (TypeEq(lt, rt)) return lt;
+        // A literal parameter adapts to a typed operand, as a constant
+        // does; meeting a constant, it stays at its own type (§7.7).
+        if (lv.unsized && !rv.unsized && rv.ck == CK_NONE) {
+            RecordLitAdapt(lv, rt, at->line);
+            return rt;
+        }
+        if (rv.unsized && !lv.unsized && lv.ck == CK_NONE) {
+            RecordLitAdapt(rv, lt, at->line);
+            return lt;
+        }
         if (lv.ck == CK_INT && rv.ck == CK_INT) {
             if (lv.uns || rv.uns) {
                 if ((!lv.uns && lv.ival < 0) || (!rv.uns && rv.ival < 0))
@@ -759,6 +780,14 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
         if (TypeEq(lt, rt)) return lt;
         // One side is f32, the other f64: a literal adapts to the typed
         // side, otherwise f32 widens (§6.3).
+        if (lv.unsized && !rv.unsized && rv.ck == CK_NONE) {
+            RecordLitAdapt(lv, rt, at->line);
+            return rt;
+        }
+        if (rv.unsized && !lv.unsized && lv.ck == CK_NONE) {
+            RecordLitAdapt(rv, lt, at->line);
+            return lt;
+        }
         if (lv.ck == CK_FLT) return rt;
         if (rv.ck == CK_FLT) return lt;
         return ast.flttypes[FS_F64];
