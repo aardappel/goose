@@ -1836,11 +1836,23 @@ the Linda tuple-space / coordination style.
   re-specializes it per program, exactly like a template instantiation.
 * Worker count is decided **at runtime** (no static maximum):
   `thread_spawn(worker, args…) -> i64` reserves a fresh stack block, copies
-  the args, starts the worker, and returns its id. `hardware_threads() ->
-  i64` exists for sizing. `thread_wait(id)` blocks until that worker
-  returns — enabling both scoped fork/join parallelism and orderly shutdown
-  (send quit messages, then wait). Workers still running when `main`
-  returns are killed.
+  the args, starts the worker, and returns its id. IDs increase monotonically
+  and are never reused. `hardware_threads() -> i64` exists for sizing.
+  `thread_wait(id)` blocks until that worker's body has returned and all of
+  its Goose storage has been released — enabling both scoped fork/join
+  parallelism and orderly shutdown (send quit messages, then wait). Repeated
+  waits on a completed id return immediately; multiple workers may wait for
+  the same id. A negative or never-issued id, or a worker waiting for itself,
+  aborts with a runtime diagnostic.
+* A worker's return releases its copied arguments, stack block, every reserved
+  and committed data-stack region, and active-worker record, whether or not
+  anyone waits for it. The runtime retains no per-completed-worker record or
+  native handle. Native threads are detached; their final native stack/TLS
+  teardown occurs when the runtime entry wrapper returns, immediately after
+  publishing Goose cleanup completion. A child worker owns its storage
+  independently and may outlive the worker that spawned it. Queued messages
+  belong to their queues and remain available to receivers after the sender
+  exits. Workers still running when `main` returns are killed.
 * A thread program may not access globals — that would be shared mutable
   memory between programs; the typechecker rejects it for every function a
   `thread_fn` reaches. Data enters through the spawn arguments and queues.

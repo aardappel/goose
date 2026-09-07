@@ -89,6 +89,7 @@ enum {
     GS_E_RESIZENEG,    /* resize to a negative length */
     GS_E_POP,          /* pop on empty array */
     GS_E_THREADID,     /* thread_wait on an unknown thread id */
+    GS_E_THREADSELF,   /* a worker cannot wait for itself */
     GS_E_TAG,          /* corrupt ADT tag (debug builds only) */
     GS_E_ENDIAN,       /* serialization on a big-endian host */
 };
@@ -103,6 +104,7 @@ static const char *gs_errmsgs[] = {
     "resize to a negative length",
     "pop on empty array",
     "thread_wait on an unknown thread id",
+    "thread_wait on the current thread",
     "corrupt ADT tag",
     "serialization needs a little-endian host (not supported yet)",
 };
@@ -221,11 +223,11 @@ static T gs_add_##SFX(T a, T b) { \
     if (r < MIN || r > MAX) gs_ovf(); \
     return (T)r; } \
 static T gs_sub_##SFX(T a, T b) { \
-    int64_t r = (int64_t)a - (int64_t)b; \
+)GSRT"
+R"GSRT(    int64_t r = (int64_t)a - (int64_t)b; \
     if (r < MIN || r > MAX) gs_ovf(); \
     return (T)r; } \
-)GSRT"
-R"GSRT(static T gs_mul_##SFX(T a, T b) { \
+static T gs_mul_##SFX(T a, T b) { \
     int64_t r = (int64_t)a * (int64_t)b; \
     if (r < MIN || r > MAX) gs_ovf(); \
     return (T)r; } \
@@ -409,10 +411,10 @@ static uint64_t gs_f2uchk(double d) {
     if ((double)v != d) gs_panic("as conversion changes the value (debug)");
     return v;
 }
-static double gs_i2fchk(int64_t v) {
-    double d = (double)v;
 )GSRT"
-R"GSRT(    if ((int64_t)d != v || d >= 9223372036854775808.0)
+R"GSRT(static double gs_i2fchk(int64_t v) {
+    double d = (double)v;
+    if ((int64_t)d != v || d >= 9223372036854775808.0)
         gs_panic("as conversion changes the value (debug)");
     return d;
 }
@@ -465,11 +467,14 @@ typedef struct {
 static int gs_argc;
 static char **gs_argv;
 
-/* Every reserved region, so the Windows fault handler can tell "commit more"
-   from a genuine crash, and so overruns into the gap abort with a message. */
+/* Every region owned by the current thread program, so the Windows fault
+   handler can tell "commit more" from a genuine crash and guard-gap overruns
+   abort with a message. Goose workers cannot access another thread's storage.
+   Keeping this registry thread-local avoids both races with fault handlers
+   and signal-unsafe locks when a different worker allocates or exits. */
 typedef struct { uint8_t *base; size_t size; } gs_region;
-static gs_region gs_regions[GS_MAX_STACKS * 4];
-static volatile long gs_nregions = 0;
+static GS_TLS gs_region gs_regions[GS_MAX_STACKS * 4];
+static GS_TLS volatile long gs_nregions;
 
 #ifdef _WIN32
 
@@ -486,7 +491,7 @@ static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
     uint8_t *hit = (uint8_t *)ep->ExceptionRecord->ExceptionInformation[1];
     for (long i = 0; i < gs_nregions; i++) {
         gs_region r = gs_regions[i];
-        if (hit >= r.base && hit < r.base + r.size) {
+        if ((uintptr_t)hit - (uintptr_t)r.base < r.size) {
             /* Within the usable part: commit another chunk (clamped to the
                region) and resume. Within the gap: a data stack overran. */
             if (hit < r.base + r.size - GS_STACK_GAP) {
@@ -504,19 +509,30 @@ static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+/* Installed once by main, before any worker can start. */
+static void gs_regions_init(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    gs_page_size = si.dwPageSize;
+    if (!AddVectoredExceptionHandler(1, gs_fault_filter))
+        gs_panic("cannot install data stack fault handler");
+}
+
 static uint8_t *gs_reserve_region(size_t size) {
-    if (!gs_page_size) {
-        SYSTEM_INFO si;
-        GetSystemInfo(&si);
-        gs_page_size = si.dwPageSize;
-        AddVectoredExceptionHandler(1, gs_fault_filter);
-    }
+    if (gs_nregions == GS_MAX_STACKS * 4)
+        gs_panic("too many data stack regions");
     uint8_t *p = (uint8_t *)VirtualAlloc(0, size, MEM_RESERVE, PAGE_READWRITE);
     if (!p) gs_panic("cannot reserve data stack address space");
-    long i = InterlockedIncrement(&gs_nregions) - 1;
+    long i = gs_nregions;
     gs_regions[i].base = p;
     gs_regions[i].size = size;
+    gs_nregions = i + 1;  /* Publish only the initialized descriptor. */
     return p;
+}
+
+static void gs_release_region(gs_region r) {
+    if (!VirtualFree(r.base, 0, MEM_RELEASE))
+        gs_panic("cannot release data stack address space");
 }
 
 #else  /* posix */
@@ -526,33 +542,36 @@ static uint8_t *gs_reserve_region(size_t size) {
 #include <signal.h>
 
 static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
-    (void)sig; (void)ctx;
+    (void)ctx;
     uint8_t *hit = (uint8_t *)info->si_addr;
     for (long i = 0; i < gs_nregions; i++) {
         gs_region r = gs_regions[i];
-        if (hit >= r.base && hit < r.base + r.size) {
+        if ((uintptr_t)hit - (uintptr_t)r.base < r.size) {
             static const char msg[] = "goose runtime error: data stack overflow\n";
             ssize_t w = write(2, msg, sizeof(msg) - 1);
             (void)w;
             _exit(1);
         }
     }
-    signal(SIGSEGV, SIG_DFL);  /* Not ours: recrash with default handling. */
+    signal(sig, SIG_DFL);  /* Not ours: recrash with default handling. */
+}
+
+static void gs_regions_init(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = gs_fault_handler;
+    sa.sa_flags = SA_SIGINFO;
+    if (sigaction(SIGSEGV, &sa, NULL))
+        gs_panic("cannot install data stack fault handler");
+    #ifdef SIGBUS
+        if (sigaction(SIGBUS, &sa, NULL))
+            gs_panic("cannot install data stack fault handler");
+    #endif
 }
 
 static uint8_t *gs_reserve_region(size_t size) {
-    static int handler_installed = 0;
-    if (!handler_installed) {
-        handler_installed = 1;
-        struct sigaction sa;
-        memset(&sa, 0, sizeof(sa));
-        sa.sa_sigaction = gs_fault_handler;
-        sa.sa_flags = SA_SIGINFO;
-        sigaction(SIGSEGV, &sa, NULL);
-        #ifdef SIGBUS
-            sigaction(SIGBUS, &sa, NULL);
-        #endif
-    }
+    if (gs_nregions == GS_MAX_STACKS * 4)
+        gs_panic("too many data stack regions");
     /* Commit-on-touch via overcommit; the gap at the end stays PROT_NONE. */
     void *p = mmap(NULL, size, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS
@@ -561,11 +580,19 @@ static uint8_t *gs_reserve_region(size_t size) {
                    #endif
                    , -1, 0);
     if (p == MAP_FAILED) gs_panic("cannot reserve data stack address space");
-    mprotect((uint8_t *)p + size - GS_STACK_GAP, GS_STACK_GAP, PROT_NONE);
-    long i = __sync_fetch_and_add(&gs_nregions, 1);
+    if (mprotect((uint8_t *)p + size - GS_STACK_GAP, GS_STACK_GAP, PROT_NONE)) {
+        munmap(p, size);
+        gs_panic("cannot protect data stack guard gap");
+    }
+    long i = gs_nregions;
     gs_regions[i].base = (uint8_t *)p;
     gs_regions[i].size = size;
+    gs_nregions = i + 1;
     return (uint8_t *)p;
+}
+
+static void gs_release_region(gs_region r) {
+    if (munmap(r.base, r.size)) gs_panic("cannot release data stack address space");
 }
 
 #endif
@@ -597,11 +624,30 @@ static void gs_stack_init(gs_stack *s) {
     s->top = gs_reserve_region((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP);
 }
 
+/* Workers own all their registered regions (globals belong to main). No
+   Goose reference to these mappings may outlive the worker. Unregister
+   before unmapping, then discard the now-useless bump pointers. */
+static void gs_free_thread_stacks(void) {
+    while (gs_nregions) {
+        long i = gs_nregions - 1;
+        gs_region r = gs_regions[i];
+        gs_nregions = i;
+        gs_regions[i].base = NULL;
+)GSRT"
+R"GSRT(        gs_regions[i].size = 0;
+        gs_release_region(r);
+    }
+    free(gs_stks);
+    gs_stks = NULL;
+    gs_nstks = 0;
+}
+
 static void gs_rt_init(void) {
     // Unbuffered stdout: output is never lost to an abort or a killed run,
     // and interleaves correctly with stderr diagnostics. Revisit if print
     // throughput ever matters.
     setvbuf(stdout, NULL, _IONBF, 0);
+    gs_regions_init();
     gs_stks = gs_new_stack_block();
     gs_nstks = 0;
 }
@@ -634,8 +680,7 @@ static int64_t gs_uleb_size(const uint8_t *p) {
    which the emitting sites already assume (they form the element address
    from the same text). A varint *value*, by contrast, is whatever the
    program stored, so scalar fields and relative offsets keep the loop above
-)GSRT"
-R"GSRT(   inline, where the compilers peel the first byte themselves. */
+   inline, where the compilers peel the first byte themselves. */
 
 static GS_NOINLINE int64_t gs_uleb_read_slow(const uint8_t *p) {
     return gs_uleb_read(p);
@@ -814,6 +859,7 @@ typedef CONDITION_VARIABLE gs_cond;
 #define gs_mutex_unlock(m) ReleaseSRWLockExclusive(m)
 #define gs_cond_wait(c, m) SleepConditionVariableSRW((c), (m), INFINITE, 0)
 #define gs_cond_signal(c)  WakeConditionVariable(c)
+#define gs_cond_broadcast(c) WakeAllConditionVariable(c)
 
 #else  /* posix */
 
@@ -827,31 +873,30 @@ typedef pthread_cond_t gs_cond;
 #define gs_mutex_unlock(m) pthread_mutex_unlock(m)
 #define gs_cond_wait(c, m) pthread_cond_wait((c), (m))
 #define gs_cond_signal(c)  pthread_cond_signal(c)
+#define gs_cond_broadcast(c) pthread_cond_broadcast(c)
 
 #endif
 
 /* ---------------------------------------------------------------------------
    Workers. Each runs its thread program on a fresh stack block; flat argument
    values are packed by the caller into one contiguous buffer and unpacked by
-   a compiler-generated entry thunk. Ids index a growable registry; workers
-   still running at exit are killed by process teardown (§11.2). */
+   a compiler-generated entry thunk. Only active workers have records. IDs
+   increase monotonically, so an issued ID absent from the active list has
+   completed; neither repeated waits nor unjoined workers retain resources.
+   Workers still running at process exit are killed by teardown (§11.2). */
 
-typedef struct {
+typedef struct gs_thread {
+    struct gs_thread *next;
+    int64_t id;
     void (*entry)(uint8_t *args);
     uint8_t *args;
-    #ifdef _WIN32
-        HANDLE handle;
-    #else
-        pthread_t handle;
-    #endif
 } gs_thread;
 
-/* Records are allocated one by one: a worker keeps a pointer to its own for
-   its whole life, so the registry that indexes them may grow, but they may
-   not move. */
-static gs_thread **gs_threads;
-static int64_t gs_numthreads, gs_capthreads;
+static gs_thread *gs_threads;
+static int64_t gs_numthreads;
 static gs_mutex gs_threads_mutex = GS_MUTEX_INIT;
+static gs_cond gs_threads_done = GS_COND_INIT;
+static GS_TLS int64_t gs_current_thread_id = -1;
 
 #ifdef _WIN32
 static DWORD WINAPI gs_thread_main(LPVOID p)
@@ -860,10 +905,23 @@ static void *gs_thread_main(void *p)
 #endif
 {
     gs_thread *t = (gs_thread *)p;
+    gs_current_thread_id = t->id;
     gs_stks = gs_new_stack_block();
     gs_nstks = 0;
     t->entry(t->args);
     free(t->args);
+    gs_free_thread_stacks();
+
+    /* Publish completion only after all Goose storage has been released.
+       No waiter retains a pointer to this record. The detached native thread
+       releases its own final OS stack/TLS state on returning below. */
+    gs_mutex_lock(&gs_threads_mutex);
+    gs_thread **slot = &gs_threads;
+    while (*slot != t) slot = &(*slot)->next;
+    *slot = t->next;
+    free(t);
+    gs_cond_broadcast(&gs_threads_done);
+    gs_mutex_unlock(&gs_threads_mutex);
     #ifdef _WIN32
         return 0;
     #else
@@ -872,27 +930,48 @@ static void *gs_thread_main(void *p)
 }
 
 static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64_t argsize) {
-    gs_mutex_lock(&gs_threads_mutex);
-    if (gs_numthreads == gs_capthreads) {
-        gs_capthreads = gs_capthreads ? gs_capthreads * 2 : 16;
-        gs_threads = (gs_thread **)realloc(gs_threads, (size_t)gs_capthreads * sizeof(gs_thread *));
-        if (!gs_threads) gs_panic("out of memory spawning thread");
-    }
+    if (argsize < 0 || (uint64_t)argsize > SIZE_MAX)
+        gs_panic("invalid thread argument size");
     gs_thread *t = (gs_thread *)malloc(sizeof(gs_thread));
     if (!t) gs_panic("out of memory spawning thread");
-    int64_t id = gs_numthreads;
-    gs_threads[gs_numthreads++] = t;
     t->entry = entry;
     t->args = (uint8_t *)malloc(argsize ? (size_t)argsize : 1);
-    if (!t->args) gs_panic("out of memory spawning thread");
-    memcpy(t->args, args, (size_t)argsize);
+    if (!t->args) {
+        free(t);
+        gs_panic("out of memory spawning thread");
+    }
+    if (argsize) memcpy(t->args, args, (size_t)argsize);
+    gs_mutex_lock(&gs_threads_mutex);
+    if (gs_numthreads == INT64_MAX) gs_panic("thread id space exhausted");
+    int64_t id = gs_numthreads++;
+    t->id = id;
+    t->next = gs_threads;
+    gs_threads = t;
+    int failed;
     #ifdef _WIN32
-        t->handle = CreateThread(NULL, 0, gs_thread_main, t, 0, NULL);
-        if (!t->handle) gs_panic("cannot create thread");
+        HANDLE handle = CreateThread(NULL, 0, gs_thread_main, t, 0, NULL);
+        failed = handle == NULL;
+        /* Closing the handle does not stop the worker. Completion is tracked
+           above, so callers never need to retain or join a native handle. */
+        if (handle && !CloseHandle(handle)) gs_panic("cannot close thread handle");
     #else
-        if (pthread_create(&t->handle, NULL, gs_thread_main, t))
-            gs_panic("cannot create thread");
+        pthread_t handle;
+        pthread_attr_t attr;
+        failed = pthread_attr_init(&attr);
+        if (!failed) {
+            failed = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+            if (!failed) failed = pthread_create(&handle, &attr, gs_thread_main, t);
+            pthread_attr_destroy(&attr);
+        }
     #endif
+    if (failed) {
+        gs_threads = t->next;
+        --gs_numthreads;
+        gs_mutex_unlock(&gs_threads_mutex);
+        free(t->args);
+        free(t);
+        gs_panic("cannot create thread");
+    }
     gs_mutex_unlock(&gs_threads_mutex);
     return id;
 }
@@ -900,13 +979,14 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
 static void gs_thread_wait(int64_t id, const char *file, int line) {
     gs_mutex_lock(&gs_threads_mutex);
     if (id < 0 || id >= gs_numthreads) gs_abort(GS_E_THREADID, file, line);
-    gs_thread t = *gs_threads[id];
+    if (id == gs_current_thread_id) gs_abort(GS_E_THREADSELF, file, line);
+    for (;;) {
+        gs_thread *t = gs_threads;
+        while (t && t->id != id) t = t->next;
+        if (!t) break;
+        gs_cond_wait(&gs_threads_done, &gs_threads_mutex);
+    }
     gs_mutex_unlock(&gs_threads_mutex);
-    #ifdef _WIN32
-        WaitForSingleObject(t.handle, INFINITE);
-    #else
-        pthread_join(t.handle, NULL);
-    #endif
 }
 
 /* ---------------------------------------------------------------------------

@@ -77,6 +77,7 @@ enum {
     GS_E_RESIZENEG,    /* resize to a negative length */
     GS_E_POP,          /* pop on empty array */
     GS_E_THREADID,     /* thread_wait on an unknown thread id */
+    GS_E_THREADSELF,   /* a worker cannot wait for itself */
     GS_E_TAG,          /* corrupt ADT tag (debug builds only) */
     GS_E_ENDIAN,       /* serialization on a big-endian host */
 };
@@ -91,6 +92,7 @@ static const char *gs_errmsgs[] = {
     "resize to a negative length",
     "pop on empty array",
     "thread_wait on an unknown thread id",
+    "thread_wait on the current thread",
     "corrupt ADT tag",
     "serialization needs a little-endian host (not supported yet)",
 };
@@ -451,11 +453,14 @@ typedef struct {
 static int gs_argc;
 static char **gs_argv;
 
-/* Every reserved region, so the Windows fault handler can tell "commit more"
-   from a genuine crash, and so overruns into the gap abort with a message. */
+/* Every region owned by the current thread program, so the Windows fault
+   handler can tell "commit more" from a genuine crash and guard-gap overruns
+   abort with a message. Goose workers cannot access another thread's storage.
+   Keeping this registry thread-local avoids both races with fault handlers
+   and signal-unsafe locks when a different worker allocates or exits. */
 typedef struct { uint8_t *base; size_t size; } gs_region;
-static gs_region gs_regions[GS_MAX_STACKS * 4];
-static volatile long gs_nregions = 0;
+static GS_TLS gs_region gs_regions[GS_MAX_STACKS * 4];
+static GS_TLS volatile long gs_nregions;
 
 #ifdef _WIN32
 
@@ -472,7 +477,7 @@ static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
     uint8_t *hit = (uint8_t *)ep->ExceptionRecord->ExceptionInformation[1];
     for (long i = 0; i < gs_nregions; i++) {
         gs_region r = gs_regions[i];
-        if (hit >= r.base && hit < r.base + r.size) {
+        if ((uintptr_t)hit - (uintptr_t)r.base < r.size) {
             /* Within the usable part: commit another chunk (clamped to the
                region) and resume. Within the gap: a data stack overran. */
             if (hit < r.base + r.size - GS_STACK_GAP) {
@@ -490,19 +495,30 @@ static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+/* Installed once by main, before any worker can start. */
+static void gs_regions_init(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    gs_page_size = si.dwPageSize;
+    if (!AddVectoredExceptionHandler(1, gs_fault_filter))
+        gs_panic("cannot install data stack fault handler");
+}
+
 static uint8_t *gs_reserve_region(size_t size) {
-    if (!gs_page_size) {
-        SYSTEM_INFO si;
-        GetSystemInfo(&si);
-        gs_page_size = si.dwPageSize;
-        AddVectoredExceptionHandler(1, gs_fault_filter);
-    }
+    if (gs_nregions == GS_MAX_STACKS * 4)
+        gs_panic("too many data stack regions");
     uint8_t *p = (uint8_t *)VirtualAlloc(0, size, MEM_RESERVE, PAGE_READWRITE);
     if (!p) gs_panic("cannot reserve data stack address space");
-    long i = InterlockedIncrement(&gs_nregions) - 1;
+    long i = gs_nregions;
     gs_regions[i].base = p;
     gs_regions[i].size = size;
+    gs_nregions = i + 1;  /* Publish only the initialized descriptor. */
     return p;
+}
+
+static void gs_release_region(gs_region r) {
+    if (!VirtualFree(r.base, 0, MEM_RELEASE))
+        gs_panic("cannot release data stack address space");
 }
 
 #else  /* posix */
@@ -512,33 +528,36 @@ static uint8_t *gs_reserve_region(size_t size) {
 #include <signal.h>
 
 static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
-    (void)sig; (void)ctx;
+    (void)ctx;
     uint8_t *hit = (uint8_t *)info->si_addr;
     for (long i = 0; i < gs_nregions; i++) {
         gs_region r = gs_regions[i];
-        if (hit >= r.base && hit < r.base + r.size) {
+        if ((uintptr_t)hit - (uintptr_t)r.base < r.size) {
             static const char msg[] = "goose runtime error: data stack overflow\n";
             ssize_t w = write(2, msg, sizeof(msg) - 1);
             (void)w;
             _exit(1);
         }
     }
-    signal(SIGSEGV, SIG_DFL);  /* Not ours: recrash with default handling. */
+    signal(sig, SIG_DFL);  /* Not ours: recrash with default handling. */
+}
+
+static void gs_regions_init(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = gs_fault_handler;
+    sa.sa_flags = SA_SIGINFO;
+    if (sigaction(SIGSEGV, &sa, NULL))
+        gs_panic("cannot install data stack fault handler");
+    #ifdef SIGBUS
+        if (sigaction(SIGBUS, &sa, NULL))
+            gs_panic("cannot install data stack fault handler");
+    #endif
 }
 
 static uint8_t *gs_reserve_region(size_t size) {
-    static int handler_installed = 0;
-    if (!handler_installed) {
-        handler_installed = 1;
-        struct sigaction sa;
-        memset(&sa, 0, sizeof(sa));
-        sa.sa_sigaction = gs_fault_handler;
-        sa.sa_flags = SA_SIGINFO;
-        sigaction(SIGSEGV, &sa, NULL);
-        #ifdef SIGBUS
-            sigaction(SIGBUS, &sa, NULL);
-        #endif
-    }
+    if (gs_nregions == GS_MAX_STACKS * 4)
+        gs_panic("too many data stack regions");
     /* Commit-on-touch via overcommit; the gap at the end stays PROT_NONE. */
     void *p = mmap(NULL, size, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS
@@ -547,11 +566,19 @@ static uint8_t *gs_reserve_region(size_t size) {
                    #endif
                    , -1, 0);
     if (p == MAP_FAILED) gs_panic("cannot reserve data stack address space");
-    mprotect((uint8_t *)p + size - GS_STACK_GAP, GS_STACK_GAP, PROT_NONE);
-    long i = __sync_fetch_and_add(&gs_nregions, 1);
+    if (mprotect((uint8_t *)p + size - GS_STACK_GAP, GS_STACK_GAP, PROT_NONE)) {
+        munmap(p, size);
+        gs_panic("cannot protect data stack guard gap");
+    }
+    long i = gs_nregions;
     gs_regions[i].base = (uint8_t *)p;
     gs_regions[i].size = size;
+    gs_nregions = i + 1;
     return (uint8_t *)p;
+}
+
+static void gs_release_region(gs_region r) {
+    if (munmap(r.base, r.size)) gs_panic("cannot release data stack address space");
 }
 
 #endif
@@ -583,11 +610,29 @@ static void gs_stack_init(gs_stack *s) {
     s->top = gs_reserve_region((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP);
 }
 
+/* Workers own all their registered regions (globals belong to main). No
+   Goose reference to these mappings may outlive the worker. Unregister
+   before unmapping, then discard the now-useless bump pointers. */
+static void gs_free_thread_stacks(void) {
+    while (gs_nregions) {
+        long i = gs_nregions - 1;
+        gs_region r = gs_regions[i];
+        gs_nregions = i;
+        gs_regions[i].base = NULL;
+        gs_regions[i].size = 0;
+        gs_release_region(r);
+    }
+    free(gs_stks);
+    gs_stks = NULL;
+    gs_nstks = 0;
+}
+
 static void gs_rt_init(void) {
     // Unbuffered stdout: output is never lost to an abort or a killed run,
     // and interleaves correctly with stderr diagnostics. Revisit if print
     // throughput ever matters.
     setvbuf(stdout, NULL, _IONBF, 0);
+    gs_regions_init();
     gs_stks = gs_new_stack_block();
     gs_nstks = 0;
 }

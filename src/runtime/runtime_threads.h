@@ -31,6 +31,7 @@ typedef CONDITION_VARIABLE gs_cond;
 #define gs_mutex_unlock(m) ReleaseSRWLockExclusive(m)
 #define gs_cond_wait(c, m) SleepConditionVariableSRW((c), (m), INFINITE, 0)
 #define gs_cond_signal(c)  WakeConditionVariable(c)
+#define gs_cond_broadcast(c) WakeAllConditionVariable(c)
 
 #else  /* posix */
 
@@ -44,31 +45,30 @@ typedef pthread_cond_t gs_cond;
 #define gs_mutex_unlock(m) pthread_mutex_unlock(m)
 #define gs_cond_wait(c, m) pthread_cond_wait((c), (m))
 #define gs_cond_signal(c)  pthread_cond_signal(c)
+#define gs_cond_broadcast(c) pthread_cond_broadcast(c)
 
 #endif
 
 /* ---------------------------------------------------------------------------
    Workers. Each runs its thread program on a fresh stack block; flat argument
    values are packed by the caller into one contiguous buffer and unpacked by
-   a compiler-generated entry thunk. Ids index a growable registry; workers
-   still running at exit are killed by process teardown (§11.2). */
+   a compiler-generated entry thunk. Only active workers have records. IDs
+   increase monotonically, so an issued ID absent from the active list has
+   completed; neither repeated waits nor unjoined workers retain resources.
+   Workers still running at process exit are killed by teardown (§11.2). */
 
-typedef struct {
+typedef struct gs_thread {
+    struct gs_thread *next;
+    int64_t id;
     void (*entry)(uint8_t *args);
     uint8_t *args;
-    #ifdef _WIN32
-        HANDLE handle;
-    #else
-        pthread_t handle;
-    #endif
 } gs_thread;
 
-/* Records are allocated one by one: a worker keeps a pointer to its own for
-   its whole life, so the registry that indexes them may grow, but they may
-   not move. */
-static gs_thread **gs_threads;
-static int64_t gs_numthreads, gs_capthreads;
+static gs_thread *gs_threads;
+static int64_t gs_numthreads;
 static gs_mutex gs_threads_mutex = GS_MUTEX_INIT;
+static gs_cond gs_threads_done = GS_COND_INIT;
+static GS_TLS int64_t gs_current_thread_id = -1;
 
 #ifdef _WIN32
 static DWORD WINAPI gs_thread_main(LPVOID p)
@@ -77,10 +77,23 @@ static void *gs_thread_main(void *p)
 #endif
 {
     gs_thread *t = (gs_thread *)p;
+    gs_current_thread_id = t->id;
     gs_stks = gs_new_stack_block();
     gs_nstks = 0;
     t->entry(t->args);
     free(t->args);
+    gs_free_thread_stacks();
+
+    /* Publish completion only after all Goose storage has been released.
+       No waiter retains a pointer to this record. The detached native thread
+       releases its own final OS stack/TLS state on returning below. */
+    gs_mutex_lock(&gs_threads_mutex);
+    gs_thread **slot = &gs_threads;
+    while (*slot != t) slot = &(*slot)->next;
+    *slot = t->next;
+    free(t);
+    gs_cond_broadcast(&gs_threads_done);
+    gs_mutex_unlock(&gs_threads_mutex);
     #ifdef _WIN32
         return 0;
     #else
@@ -89,27 +102,48 @@ static void *gs_thread_main(void *p)
 }
 
 static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64_t argsize) {
-    gs_mutex_lock(&gs_threads_mutex);
-    if (gs_numthreads == gs_capthreads) {
-        gs_capthreads = gs_capthreads ? gs_capthreads * 2 : 16;
-        gs_threads = (gs_thread **)realloc(gs_threads, (size_t)gs_capthreads * sizeof(gs_thread *));
-        if (!gs_threads) gs_panic("out of memory spawning thread");
-    }
+    if (argsize < 0 || (uint64_t)argsize > SIZE_MAX)
+        gs_panic("invalid thread argument size");
     gs_thread *t = (gs_thread *)malloc(sizeof(gs_thread));
     if (!t) gs_panic("out of memory spawning thread");
-    int64_t id = gs_numthreads;
-    gs_threads[gs_numthreads++] = t;
     t->entry = entry;
     t->args = (uint8_t *)malloc(argsize ? (size_t)argsize : 1);
-    if (!t->args) gs_panic("out of memory spawning thread");
-    memcpy(t->args, args, (size_t)argsize);
+    if (!t->args) {
+        free(t);
+        gs_panic("out of memory spawning thread");
+    }
+    if (argsize) memcpy(t->args, args, (size_t)argsize);
+    gs_mutex_lock(&gs_threads_mutex);
+    if (gs_numthreads == INT64_MAX) gs_panic("thread id space exhausted");
+    int64_t id = gs_numthreads++;
+    t->id = id;
+    t->next = gs_threads;
+    gs_threads = t;
+    int failed;
     #ifdef _WIN32
-        t->handle = CreateThread(NULL, 0, gs_thread_main, t, 0, NULL);
-        if (!t->handle) gs_panic("cannot create thread");
+        HANDLE handle = CreateThread(NULL, 0, gs_thread_main, t, 0, NULL);
+        failed = handle == NULL;
+        /* Closing the handle does not stop the worker. Completion is tracked
+           above, so callers never need to retain or join a native handle. */
+        if (handle && !CloseHandle(handle)) gs_panic("cannot close thread handle");
     #else
-        if (pthread_create(&t->handle, NULL, gs_thread_main, t))
-            gs_panic("cannot create thread");
+        pthread_t handle;
+        pthread_attr_t attr;
+        failed = pthread_attr_init(&attr);
+        if (!failed) {
+            failed = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+            if (!failed) failed = pthread_create(&handle, &attr, gs_thread_main, t);
+            pthread_attr_destroy(&attr);
+        }
     #endif
+    if (failed) {
+        gs_threads = t->next;
+        --gs_numthreads;
+        gs_mutex_unlock(&gs_threads_mutex);
+        free(t->args);
+        free(t);
+        gs_panic("cannot create thread");
+    }
     gs_mutex_unlock(&gs_threads_mutex);
     return id;
 }
@@ -117,13 +151,14 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
 static void gs_thread_wait(int64_t id, const char *file, int line) {
     gs_mutex_lock(&gs_threads_mutex);
     if (id < 0 || id >= gs_numthreads) gs_abort(GS_E_THREADID, file, line);
-    gs_thread t = *gs_threads[id];
+    if (id == gs_current_thread_id) gs_abort(GS_E_THREADSELF, file, line);
+    for (;;) {
+        gs_thread *t = gs_threads;
+        while (t && t->id != id) t = t->next;
+        if (!t) break;
+        gs_cond_wait(&gs_threads_done, &gs_threads_mutex);
+    }
     gs_mutex_unlock(&gs_threads_mutex);
-    #ifdef _WIN32
-        WaitForSingleObject(t.handle, INFINITE);
-    #else
-        pthread_join(t.handle, NULL);
-    #endif
 }
 
 /* ---------------------------------------------------------------------------
