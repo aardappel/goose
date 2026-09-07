@@ -882,7 +882,10 @@ own stack, counted in N):
   else a fresh `push`.
 * `a.alloc_ref(v) -> T&` — same, returning `&a[i]`.
 * `a.free(i)` — records slot `i` for reuse. The element remains a valid,
-  live value of its type forever. Where the code holds references rather
+  live value of its type forever. The index must lie in `[0, a.len)`;
+  otherwise the operation aborts with the ordinary array-index out-of-bounds
+  diagnostic, in every build, before changing the freelist. The index
+  expression is evaluated once. Where the code holds references rather
   than indices, `a.free(a.index_of(r))` (§3.3) is what turns one back.
 
 Semantics, not just implementation: *all elements remain valid at all times*.
@@ -1551,6 +1554,7 @@ Aborts (message + exit; not catchable):
 * array/slice indexing out of bounds (elided wherever the compiler proves it
   cannot fire, §10.5; can be disabled wholesale in a designated unsafe-fast
   build);
+* a reusable pool's `free(i)` with an index outside `[0, pool.len)`;
 * limited-array capacity overflow;
 * shrinking below empty (`pop` on an empty array, `resize` to a negative
   length);

@@ -332,8 +332,14 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
         case B_FREE: {
             auto lv = RecvLoc(an[0]);
             assert(!lv.fl.empty());
-            auto x = GenX(an[1]);
-            L("*(int64_t *)", Top(lv.flstk), " = ", x, ";");
+            // A freelist entry will become an unchecked element address at
+            // allocation, so only an existing slot may enter it. Evaluate
+            // the argument once, then use the ordinary array bounds check
+            // (including its unsigned comparison for negative/large indices).
+            auto x = GenPure(an[1]);
+            auto i = T();
+            L("int64_t ", i, " = GS_IDX(", x, ", ", lv.lenlv, ", ", LocArgs(ln), ");");
+            L("*(int64_t *)", Top(lv.flstk), " = ", i, ";");
             L(TopW(lv.flstk), " += 8;");
             L(lv.fl, ".len++;");
             return {};
