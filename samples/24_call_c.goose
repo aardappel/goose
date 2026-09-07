@@ -29,7 +29,11 @@ extern fn stats_of(xs: i32[:], out: Stats&);
 extern fn c_version(out: u8[>..]&);
 
 fn main() {
-    print(cube_root(27.0), " ", hypot(3.0, 4.0), " ", c_abs(-42));
+    // libm may return a neighboring representable value for cbrt(27), so
+    // give the display a precision instead of depending on its last bit.
+    var cube: u8[>..] = [];
+    format_flt(cube, cube_root(27.0), 3);
+    print(cube, " ", hypot(3.0, 4.0), " ", c_abs(-42));
 
     // Any u8 array or slice is a u8[:] at the call: a literal, a builder,
     // a sub-range.
