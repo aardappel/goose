@@ -233,12 +233,18 @@ def find_ccs():
     found = {}
     root = msvc_root()
     if root:
-        line = _first_line(["cl"], stderr_too=True)
         toolset = os.environ.get("VCToolsVersion", "?")
-        ver = _version_of(line)
         name = _toolset_name(toolset)
-        found[name] = CC(name, "cl", "cl", "msvc",
-                         f"MSVC {ver} (toolset {toolset})")
+        # Use the compiler imported by vcvars explicitly. A parent process can
+        # retain a different PATH spelling on Windows; advertising a bare `cl`
+        # that subprocess cannot resolve turns discovery into a later crash.
+        vc_tools = Path(os.environ.get("VCToolsInstallDir", root / "VC" / "Tools" / "MSVC" / toolset))
+        clpath = vc_tools / "bin" / "Hostx64" / "x64" / "cl.exe"
+        cl = str(clpath) if clpath.exists() else shutil.which("cl")
+        if cl:
+            ver = _version_of(_first_line([cl], stderr_too=True))
+            found[name] = CC(name, cl, cl, "msvc",
+                             f"MSVC {ver} (toolset {toolset})")
         clangcl = root / "VC" / "Tools" / "Llvm" / "x64" / "bin" / "clang-cl.exe"
         if clangcl.exists():
             ver = _version_of(_first_line([str(clangcl), "--version"]))
