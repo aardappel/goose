@@ -471,6 +471,12 @@ struct TypeCheck {
     int VariantIndex(SEnum *en, SVariant *v);
     bool HasDefault(TypeExpr *t, string &why);
 
+    // Serialization (docs/design/serialization.md): what to_bytes will write
+    // out, and the stricter question of what from_bytes can verify its way
+    // back to. Both walk the element type; `why` explains a refusal.
+    bool ImageSafe(TypeExpr *t, string &why);
+    bool VerifiableElem(TypeExpr *t, TypeExpr *elem, string &why);
+
     // Is this a type an uninitialized `var x: T;` may have: fixed-size, so a
     // later whole-value assignment fully constructs it.
     bool UninitOK(TypeExpr *t) { return ClassOf(t) == SC_FIXED; }

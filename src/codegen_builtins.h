@@ -74,6 +74,8 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             L("gs_exit(", GenX(an[0]), ");");
             return {};
         case B_COPY: return { GenXD(an[0], c->exprtype) };
+        case B_TO_BYTES: return EmitToBytes(an, d0, ln);
+        case B_FROM_BYTES: return EmitFromBytes(c, an, d0, ln);
         case B_DEFAULT: {
             auto t = c->rettypes[0];
             auto tv = T();
@@ -529,6 +531,114 @@ inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
     Append(b, "    ", ki.cname, "(", argstr, ");\n}\n\n");
     code += b;
     return name;
+}
+
+// ------------------------------------------------------------------
+// Serialization (docs/design/serialization.md): to_bytes writes an array's
+// element region out, from_bytes verifies one back in.
+
+// The destination a resizable builtin result is built at, in the three
+// shapes §7.3 admits: the caller's header, a value slot that takes a length
+// prefix in front of the elements, or a fresh temporary when the result has
+// no destination of its own. `elems` is where the elements start.
+inline CodeGen::RzDest CodeGen::OpenRzDest(TypeExpr *t, Dst d0, Line ln, const char *what) {
+    EmitCoreTypes();
+    RzDest rd;
+    rd.stk = d0.s;
+    rd.lenlv = d0.lenlv;
+    if (d0.k != DK_STACK) {
+        rd.hdr = RzTemp(t, rd.stk);
+        rd.lenlv = RzLenLv(t, rd.hdr);
+    } else if (rd.lenlv.empty()) {
+        if (!d0.t || d0.t->kind != TY_ARRAY || d0.t->arr->akind != A_VAR)
+            Fail(ln, cat(what, "() needs a resizable or variable-array destination"));
+        rd.ls = LenStore(d0.t->arr);
+        rd.pref = T();
+        L("uint8_t *", rd.pref, " = ", Top(rd.stk), ";");
+        Bump(rd.stk, cat(PrefixBytes(rd.ls)));
+    }
+    rd.elems = T();
+    L("uint8_t *", rd.elems, " = ", Top(rd.stk), ";");
+    return rd;
+}
+
+inline void CodeGen::CloseRzDest(RzDest &rd, const string &count) {
+    if (!rd.pref.empty()) EmitPrefixPatch(rd.pref, rd.ls, rd.stk, count, rd.elems);
+    else L(rd.lenlv, " = ", count, ";");
+}
+
+// to_bytes(a): the element region copied into a fresh u8[>..]. Copying
+// rather than viewing keeps the image independent of the array's later
+// growth, and is what makes the result an ordinary resizable value.
+inline vector<string> CodeGen::EmitToBytes(vector<Node *> &an, Dst d0, Line ln) {
+    auto nt = an[0]->exprtype;
+    auto rt = nt->kind == TY_REF ? nt->ref->sub : nt;
+    auto elem = rt->kind == TY_SLICE ? rt->sub : rt->arr->sub;
+    SrcElems se;
+    if (rt->kind == TY_ARRAY || nt->kind == TY_REF) {
+        // The receiver as a location, through a reference where it is one;
+        // GenSrcElems is for the value forms it does not reach.
+        auto v = ArrayView(RecvLoc(an[0]), ln);
+        auto cnt = T();
+        L("int64_t ", cnt, " = ", v.len, ";");
+        se.elems = v.elems;
+        se.n = cnt;
+    } else {
+        se = GenSrcElems(an[0]);
+    }
+    auto src = T();
+    L("const uint8_t *", src, " = (const uint8_t *)(", se.elems, ");");
+    auto sz = T();
+    if (IsFix(elem)) {
+        L("int64_t ", sz, " = (", se.n, ") * ", FixedSize(elem), ";");
+    } else {
+        // Variable elements: an element count says nothing about the byte
+        // span, so walk it -- the same walk print and == use.
+        auto i = T();
+        L("int64_t ", sz, " = 0;");
+        L("for (int64_t ", i, " = 0; ", i, " < (", se.n, "); ", i, "++) ", sz, " += ",
+          SizeFn(elem), "(", src, " + ", sz, ");");
+    }
+    auto rd = OpenRzDest(GrowU8(), d0, ln, "to_bytes");
+    L("memcpy(", Top(rd.stk), ", ", src, ", (size_t)", sz, ");");
+    Bump(rd.stk, sz);
+    CloseRzDest(rd, sz);
+    return rd.hdr.empty() ? vector<string> {} : vector<string> { rd.hdr };
+}
+
+// from_bytes<T[>..]>(bytes): the verifier over the image, then a copy of it
+// into the result's element region. A rejected image leaves the array empty,
+// and the bool says which happened.
+inline vector<string> CodeGen::EmitFromBytes(Call *c, vector<Node *> &an, Dst d0, Line ln) {
+    auto t = c->rettypes[0];
+    auto elem = t->arr->sub;
+    auto sl = GenPure(an[0]);
+    auto vf = VerifyFn(elem);
+    string bm = "NULL";
+    if (!IsFix(elem) && HasRelRefAny(elem)) {
+        // One bit per image byte: where a variable element starts, which is
+        // what the framing pass hands the link pass. Its own stack, so the
+        // scratch is gone at the end of the statement.
+        string bstk;
+        bm = BytesTemp(bstk);
+        auto bn = T();
+        L("int64_t ", bn, " = (", sl, ".len + 7) / 8;");
+        L("memset(", bm, ", 0, (size_t)", bn, ");");
+        Bump(bstk, bn);
+    }
+    auto cnt = T();
+    L("int64_t ", cnt, " = ", vf, "(", sl, ".data, ", sl, ".len, ", bm, ");");
+    auto ok = T();
+    L("uint8_t ", ok, " = ", cnt, " >= 0;");
+    auto rd = OpenRzDest(t, d0, ln, "from_bytes");
+    L("if (", ok, ") {");
+    ind++;
+    L("memcpy(", Top(rd.stk), ", ", sl, ".data, (size_t)", sl, ".len);");
+    Bump(rd.stk, cat(sl, ".len"));
+    ind--;
+    L("}");
+    CloseRzDest(rd, cat("(", ok, " ? ", cnt, " : 0)"));
+    return { rd.hdr, ok };
 }
 
 }  // namespace goose

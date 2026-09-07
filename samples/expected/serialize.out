@@ -1,0 +1,14 @@
+indexed 262 words from data/alice.txt
+image 9694 bytes = 262 nodes x 37
+loaded true, 262 nodes, same size true
+  alice = 9
+  rabbit = 6
+  down = 12
+  think = 5
+  curiosity = 1
+  nonexistentword = 0
+answers match true, depth 17 = 17
+compact 2498 bytes for 262 nodes, reload true totals true
+tampered link false, nodes 0
+edited count true, still a tree true
+truncated false, extended false, empty true 0

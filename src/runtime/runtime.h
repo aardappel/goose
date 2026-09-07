@@ -651,6 +651,46 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
 }
 
 /* ---------------------------------------------------------------------------
+   Verified loading (docs/design/serialization.md): what the generated
+   gs_verify_<T> walkers are built from. The bytes are untrusted until the
+   walk finishes, so every read here is bounded by the image end and reports
+   a malformed encoding instead of running past it. */
+
+/* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
+   payload bits above the 64th. The result is the byte count. */
+static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
+    uint64_t v = 0;
+    int shift = 0;
+    const uint8_t *q = p;
+    for (;;) {
+        uint8_t b;
+        if (q >= end) return 0;
+        b = *q++;
+        if (shift > 63 || (shift == 63 && (b & 0x7e))) return 0;
+        v |= (uint64_t)(b & 0x7f) << shift;
+        if (!(b & 0x80)) break;
+        shift += 7;
+    }
+    *out = v;
+    return (int64_t)(q - p);
+}
+
+/* The same for a signed (zigzag) varint: a value field or a self-relative
+   offset of varint width (3.6). */
+static int64_t gs_zig_check(const uint8_t *p, const uint8_t *end, int64_t *out) {
+    uint64_t u = 0;
+    int64_t k = gs_uleb_check(p, end, &u);
+    if (k) *out = (int64_t)((u >> 1) ^ (0u - (u & 1)));
+    return k;
+}
+
+/* Element starts, one bit per image byte: the framing pass sets them and the
+   link pass asks whether an offset is one. Only images of variable-size
+   elements need it -- for fixed ones a start is a multiple of the size. */
+#define GS_BM_SET(bm, i) ((bm)[(uint64_t)(i) >> 3] |= (uint8_t)(1u << ((i) & 7)))
+#define GS_BM_GET(bm, i) (((bm)[(uint64_t)(i) >> 3] >> ((i) & 7)) & 1)
+
+/* ---------------------------------------------------------------------------
    Text forms (§3.7): the gs_fmt_* functions write a value's text at dst and
    return the byte count (at most GS_FMT_MAX); print/str/format are built on
    them. A float takes the shortest form that still round-trips. */

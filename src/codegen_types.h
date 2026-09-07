@@ -743,6 +743,406 @@ inline int64_t CodeGen::ZeroSize(TypeExpr *t) {
     }
 }
 
+// The fewest bytes any value of this type can occupy: what bounds the
+// element count a length field may claim, before a single element is walked.
+inline int64_t CodeGen::MinBytes(TypeExpr *t) {
+    if (IsFix(t)) return FixedSize(t);
+    auto fields = [&](const vector<Field> &fs, const vector<TypeExpr *> &fts) {
+        int64_t n = 0;
+        for (size_t i = 0; i < fs.size(); i++) {
+            if (fs[i].ispad) { if (fs[i].padsize > 0) n += fs[i].padsize; continue; }
+            n += MinBytes(fts[i]);
+        }
+        return n;
+    };
+    switch (t->kind) {
+        case TY_INT: case TY_REF: return 1;   // varint / varint-width relative ref
+        case TY_ARRAY:
+            switch (t->arr->akind) {
+                case A_VAR:     return PrefixBytes(LenStore(t->arr));
+                case A_LIMITED: return 8;     // runtime capacity: [cap][len]
+                default:        return 0;
+            }
+        case TY_STRUCT: {
+            auto si = SI(t);
+            return fields(si->st->fields, si->ftypes);
+        }
+        case TY_VARIANT: {
+            auto ei = EIVar(t);
+            auto vi = VarIdx(ei->en, t->var->variant);
+            return fields(ei->en->variants[vi].fields, ei->vftypes[vi]);
+        }
+        case TY_ENUM: {
+            auto ei = EIOf(t);
+            int64_t m = INT64_MAX;
+            for (size_t vi = 0; vi < ei->en->variants.size(); vi++)
+                m = std::min(m, MinBytes(VariantType(t, (int)vi)));
+            return TagSize(ei->en) + m;
+        }
+        default: return 0;
+    }
+}
+
+// ------------------------------------------------------------------
+// The verifier from_bytes runs over an untrusted image
+// (docs/design/serialization.md §5).
+
+// Does a value of this type hold a relative reference at any depth? Unlike
+// HasRelRef this looks through variable-size types too, since an image's
+// elements are exactly the types HasRelRef does not reach.
+inline bool CodeGen::HasRelRefAny(TypeExpr *t) {
+    auto fields = [&](const vector<Field> &fs, const vector<TypeExpr *> &fts) {
+        for (size_t i = 0; i < fs.size(); i++)
+            if (!fs[i].ispad && HasRelRefAny(fts[i])) return true;
+        return false;
+    };
+    switch (t->kind) {
+        case TY_REF: return t->ref->lenstorage >= 0;
+        case TY_STRUCT: {
+            auto si = SI(t);
+            return fields(si->st->fields, si->ftypes);
+        }
+        case TY_ENUM: {
+            auto ei = EIOf(t);
+            for (size_t vi = 0; vi < ei->en->variants.size(); vi++)
+                if (HasRelRefAny(VariantType(t, (int)vi))) return true;
+            return false;
+        }
+        case TY_VARIANT: {
+            auto ei = EIVar(t);
+            auto vi = VarIdx(ei->en, t->var->variant);
+            return fields(ei->en->variants[vi].fields, ei->vftypes[vi]);
+        }
+        case TY_ARRAY: return HasRelRefAny(t->arr->sub);
+        default: return false;
+    }
+}
+
+// Whether the verifier has anything to say about a value of this type, or
+// can simply skip its bytes: a fixed value with no ADT tag to range-check,
+// no limited-array length to bound and no relative reference to follow is
+// opaque payload either way.
+inline bool CodeGen::NeedsVerifyWalk(TypeExpr *t) {
+    if (!IsFix(t)) return true;
+    auto fields = [&](const vector<Field> &fs, const vector<TypeExpr *> &fts) {
+        for (size_t i = 0; i < fs.size(); i++)
+            if (!fs[i].ispad && NeedsVerifyWalk(fts[i])) return true;
+        return false;
+    };
+    switch (t->kind) {
+        case TY_REF:  return t->ref->lenstorage >= 0;
+        case TY_ENUM: return true;                     // the tag is range-checked
+        case TY_ARRAY:
+            return t->arr->akind == A_LIMITED || NeedsVerifyWalk(t->arr->sub);
+        case TY_STRUCT: {
+            auto si = SI(t);
+            return fields(si->st->fields, si->ftypes);
+        }
+        case TY_VARIANT: {
+            auto ei = EIVar(t);
+            auto vi = VarIdx(ei->en, t->var->variant);
+            return fields(ei->en->variants[vi].fields, ei->vftypes[vi]);
+        }
+        default: return false;
+    }
+}
+
+inline void CodeGen::VNeed(string &b, const string &q, const string &bytes) {
+    Append(b, "    if (n - ", q, " < ", bytes, ") return -1;\n");
+}
+
+// gs_verify_<T>(p, n, bm): the element count of the image at p, or -1 if
+// those bytes are not one (serialization.md §3). Fixed elements start at
+// multiples of their size, so their links are checked in the same pass that
+// frames them; variable ones need the framing pass to record the starts in
+// `bm` before a second pass can check a link against them.
+inline string CodeGen::VerifyFn(TypeExpr *elem) {
+    auto m = Mangle(elem);
+    auto name = cat("gs_verify_", m);
+    if (verifyfns.count(m)) return name;
+    verifyfns.insert(m);
+    Append(protos, "static int64_t ", name, "(const uint8_t *p, int64_t n, uint8_t *bm);\n");
+    vtmpn = 0;
+    string b;
+    Append(b, "static int64_t ", name, "(const uint8_t *p, int64_t n, uint8_t *bm) {\n");
+    // A type whose values can occupy no bytes has no recoverable element
+    // count: only the empty image is one of its arrays.
+    if (MinBytes(elem) <= 0) {
+        Append(b, "    (void)p; (void)bm;\n    return n == 0 ? 0 : -1;\n}\n\n");
+        code += b;
+        return name;
+    }
+    auto fixed = IsFix(elem);
+    auto rel = HasRelRefAny(elem);
+    Append(b, "    const uint8_t *e = p + n;\n");
+    Append(b, "    int64_t q = 0, cnt = 0;\n");
+    Append(b, "    (void)e; (void)bm;\n");
+    Append(b, "    while (q < n) {\n");
+    if (!fixed && rel) Append(b, "        GS_BM_SET(bm, q);\n");
+    EmitVerifyWalk(b, elem, elem, "q", fixed && rel);
+    Append(b, "        cnt++;\n");
+    Append(b, "    }\n");
+    Append(b, "    if (q != n) return -1;\n");
+    if (!fixed && rel) {
+        Append(b, "    q = 0;\n");
+        Append(b, "    while (q < n) {\n");
+        EmitVerifyWalk(b, elem, elem, "q", true);
+        Append(b, "    }\n");
+    }
+    Append(b, "    return cnt;\n}\n\n");
+    code += b;
+    return name;
+}
+
+// One self-relative reference at field offset `q` holding `off`: the target
+// must be the start of an element of the image, and, where the reference is
+// typed at a variant of the element ADT, an element carrying that tag (§3
+// step 3). Offset 0 is null, and only an optional reference may hold it.
+inline void CodeGen::EmitVerifyLink(string &b, TypeExpr *rt, TypeExpr *elem, const string &q,
+                                    const string &off) {
+    auto v = VTmp();
+    // A reference typed at a variant addresses the *payload*, which is the
+    // element start past the tag; everything else addresses the start.
+    auto pt = rt->ref->sub;
+    auto variant = pt->kind == TY_VARIANT && elem->kind == TY_ENUM;
+    int64_t skip = 0, vi = 0;
+    IntStorage ts = IS_U8;
+    if (variant) {
+        auto ei = EIVar(pt);
+        vi = VarIdx(ei->en, pt->var->variant);
+        ts = TagStore(ei->en);
+        skip = IntSize(ts);
+    }
+    if (rt->ref->optional) Append(b, "    if (", off, " != 0) {\n");
+    else                   Append(b, "    {\n");
+    Append(b, "        int64_t ", v, " = ", q, " + ", off, skip ? cat(" - ", skip) : string(),
+           ";\n");
+    if (IsFix(elem))
+        Append(b, "        if (", v, " < 0 || ", v, " >= n || ", v, " % ",
+               std::max<int64_t>(FixedSize(elem), 1), ") return -1;\n");
+    else
+        Append(b, "        if (", v, " < 0 || ", v, " >= n || !GS_BM_GET(bm, ", v,
+               ")) return -1;\n");
+    if (variant)
+        Append(b, "        if (n - ", v, " < ", skip, " || *(const ", IntCT(ts), " *)(p + ",
+               v, ") != ", vi, ") return -1;\n");
+    Append(b, "    }\n");
+}
+
+// A run of fields. `lo` is the packed layout of a fixed struct or variant,
+// whose field offsets may include alignment padding a sequential walk would
+// miss; bytes layouts have none and pass null.
+inline void CodeGen::EmitVerifyFields(string &b, const vector<Field> &fields,
+                                      const vector<TypeExpr *> &ftypes, const Layout *lo,
+                                      int64_t total, TypeExpr *elem, const string &q,
+                                      bool links) {
+    string start;
+    if (lo) {
+        start = VTmp();
+        Append(b, "    int64_t ", start, " = ", q, ";\n");
+        VNeed(b, q, cat(total));
+    }
+    for (size_t i = 0; i < fields.size(); i++) {
+        auto &f = fields[i];
+        if (f.ispad) {
+            if (!lo && f.padsize > 0) Append(b, "    ", q, " += ", f.padsize, ";\n");
+            continue;
+        }
+        if (lo && !NeedsVerifyWalk(ftypes[i])) continue;
+        if (lo) Append(b, "    ", q, " = ", start, " + ", lo->offs[i], ";\n");
+        EmitVerifyWalk(b, ftypes[i], elem, q, links);
+    }
+    if (lo) Append(b, "    ", q, " = ", start, " + ", total, ";\n");
+}
+
+// The checks and cursor advance for one value of type t at byte offset `q`
+// of the image; any failure returns -1 from the enclosing verifier.
+inline void CodeGen::EmitVerifyWalk(string &b, TypeExpr *t, TypeExpr *elem, const string &q,
+                                    bool links) {
+    if (!NeedsVerifyWalk(t)) {
+        auto sz = FixedSize(t);
+        if (sz > 0) {
+            VNeed(b, q, cat(sz));
+            Append(b, "    ", q, " += ", sz, ";\n");
+        }
+        return;
+    }
+    switch (t->kind) {
+        case TY_INT: {   // varint field: only its length matters to the walk
+            auto v = VTmp();
+            Append(b, "    { uint64_t ", v, "u; int64_t ", v, " = gs_uleb_check(p + ", q,
+                   ", e, &", v, "u); if (!", v, ") return -1; ", q, " += ", v, "; }\n");
+            return;
+        }
+        case TY_REF: {
+            // The framing pass only has to get past the offset; the link
+            // pass is the one that needs its value.
+            auto w = (IntStorage)t->ref->lenstorage;
+            auto v = VTmp();
+            Append(b, "    {\n");
+            if (w == IS_VARINT) {
+                if (links) {
+                    Append(b, "        int64_t ", v, "o;\n");
+                    Append(b, "        int64_t ", v, "k = gs_zig_check(p + ", q, ", e, &", v,
+                           "o);\n");
+                } else {
+                    Append(b, "        uint64_t ", v, "u;\n");
+                    Append(b, "        int64_t ", v, "k = gs_uleb_check(p + ", q, ", e, &", v,
+                           "u);\n");
+                    Append(b, "        (void)", v, "u;\n");
+                }
+                Append(b, "        if (!", v, "k) return -1;\n");
+            } else {
+                Append(b, "        if (n - ", q, " < ", IntSize(w), ") return -1;\n");
+                if (links)
+                    Append(b, "        int64_t ", v, "o = (int64_t)*(const ", RelCT(t),
+                           " *)(p + ", q, ");\n");
+            }
+            if (links) EmitVerifyLink(b, t, elem, q, cat(v, "o"));
+            Append(b, "        ", q, " += ", w == IS_VARINT ? cat(v, "k") : cat(IntSize(w)),
+                   ";\n");
+            Append(b, "    }\n");
+            return;
+        }
+        case TY_ARRAY: {
+            auto &a = *t->arr;
+            switch (a.akind) {
+                case A_FIXED: {
+                    auto i = VTmp();
+                    Append(b, "    for (int64_t ", i, " = 0; ", i, " < ", ArrSize(t->arr),
+                           "; ", i, "++) {\n");
+                    EmitVerifyWalk(b, a.sub, elem, q, links);
+                    Append(b, "    }\n");
+                    return;
+                }
+                case A_VAR: {
+                    auto ls = LenStore(t->arr);
+                    auto v = VTmp();
+                    Append(b, "    {\n");
+                    Append(b, "        int64_t ", v, "n;\n");
+                    if (ls == IS_VARINT) {
+                        Append(b, "        uint64_t ", v, "u;\n");
+                        Append(b, "        int64_t ", v, "k = gs_uleb_check(p + ", q, ", e, &",
+                               v, "u);\n");
+                        Append(b, "        if (!", v, "k || ", v, "u > (uint64_t)INT64_MAX) "
+                               "return -1;\n");
+                        Append(b, "        ", v, "n = (int64_t)", v, "u; ", q, " += ", v,
+                               "k;\n");
+                    } else {
+                        Append(b, "        if (n - ", q, " < ", IntSize(ls), ") return -1;\n");
+                        Append(b, "        ", v, "n = (int64_t)*(const ", IntCT(ls), " *)(p + ",
+                               q, "); ", q, " += ", IntSize(ls), ";\n");
+                    }
+                    Append(b, "        if (", v, "n < 0 || ", v, "n > (n - ", q, ") / ",
+                           std::max<int64_t>(MinBytes(a.sub), 1), ") return -1;\n");
+                    if (!NeedsVerifyWalk(a.sub)) {
+                        Append(b, "        ", q, " += ", v, "n * ", FixedSize(a.sub), ";\n");
+                    } else {
+                        auto i = VTmp();
+                        Append(b, "        for (int64_t ", i, " = 0; ", i, " < ", v, "n; ", i,
+                               "++) {\n");
+                        EmitVerifyWalk(b, a.sub, elem, q, links);
+                        Append(b, "        }\n");
+                    }
+                    Append(b, "    }\n");
+                    return;
+                }
+                case A_LIMITED: {
+                    // Slots past the length were never written (§5.3), so
+                    // only the live ones are walked; the cursor still skips
+                    // the whole capacity.
+                    auto v = VTmp();
+                    auto esz = std::max<int64_t>(FixedSize(a.sub), 1);
+                    auto stat = IsFix(t);
+                    Append(b, "    {\n");
+                    Append(b, "        int64_t ", v, "s = ", q, ", ", v, "n;\n");
+                    if (stat) {
+                        auto ls = LenStore(t->arr);
+                        Append(b, "        if (n - ", q, " < ", FixedSize(t), ") return -1;\n");
+                        Append(b, "        ", v, "n = (int64_t)*(const ", IntCT(ls), " *)(p + ",
+                               q, ");\n");
+                        Append(b, "        if (", v, "n < 0 || ", v, "n > ", ArrSize(t->arr),
+                               ") return -1;\n");
+                        Append(b, "        ", q, " += ", IntSize(ls), ";\n");
+                    } else {
+                        Append(b, "        int64_t ", v, "c;\n");
+                        Append(b, "        if (n - ", q, " < 8) return -1;\n");
+                        Append(b, "        ", v, "c = (int64_t)*(const uint32_t *)(p + ", q,
+                               ");\n");
+                        Append(b, "        ", v, "n = (int64_t)*(const uint32_t *)(p + ", q,
+                               " + 4);\n");
+                        Append(b, "        if (", v, "n > ", v, "c || ", v, "c > (n - ", q,
+                               " - 8) / ", esz, ") return -1;\n");
+                        Append(b, "        ", q, " += 8;\n");
+                    }
+                    if (NeedsVerifyWalk(a.sub)) {
+                        auto i = VTmp();
+                        Append(b, "        for (int64_t ", i, " = 0; ", i, " < ", v, "n; ", i,
+                               "++) {\n");
+                        EmitVerifyWalk(b, a.sub, elem, q, links);
+                        Append(b, "        }\n");
+                    }
+                    if (stat)
+                        Append(b, "        ", q, " = ", v, "s + ", FixedSize(t), ";\n");
+                    else
+                        Append(b, "        ", q, " = ", v, "s + 8 + ", v, "c * ",
+                               FixedSize(a.sub), ";\n");
+                    Append(b, "    }\n");
+                    return;
+                }
+                default: assert(false); return;
+            }
+        }
+        case TY_STRUCT: {
+            auto si = SI(t);
+            auto fix = IsFix(t);
+            EmitVerifyFields(b, si->st->fields, si->ftypes, fix ? &StructLayout(si) : nullptr,
+                             fix ? FixedSize(t) : 0, elem, q, links);
+            return;
+        }
+        case TY_VARIANT: {
+            auto ei = EIVar(t);
+            auto vi = VarIdx(ei->en, t->var->variant);
+            auto fix = IsFix(t);
+            EmitVerifyFields(b, ei->en->variants[vi].fields, ei->vftypes[vi],
+                             fix ? &VariantLayout(ei, vi) : nullptr, fix ? FixedSize(t) : 0,
+                             elem, q, links);
+            return;
+        }
+        case TY_ENUM: {
+            // The tag is range-checked in both modes: a `match` compiles to
+            // a C switch with no default, so an out-of-range one would be a
+            // jump into nothing.
+            auto ei = EIOf(t);
+            auto ts = TagStore(ei->en);
+            auto nv = (int64_t)ei->en->variants.size();
+            auto fix = !t->enu->varmode;
+            auto v = VTmp();
+            Append(b, "    {\n");
+            if (fix) Append(b, "        int64_t ", v, "s = ", q, ";\n");
+            Append(b, "        int64_t ", v, "t;\n");
+            Append(b, "        if (n - ", q, " < ", fix ? FixedSize(t) : IntSize(ts),
+                   ") return -1;\n");
+            Append(b, "        ", v, "t = (int64_t)*(const ", IntCT(ts), " *)(p + ", q, ");\n");
+            Append(b, "        if ((uint64_t)", v, "t >= ", nv, "u) return -1;\n");
+            Append(b, "        ", q, " += ", IntSize(ts), ";\n");
+            Append(b, "        switch (", v, "t) {\n");
+            for (int64_t i = 0; i < nv; i++) {
+                auto vt = VariantType(t, (int)i);
+                Append(b, "        case ", i, ": {\n");
+                if (!fix || NeedsVerifyWalk(vt)) EmitVerifyWalk(b, vt, elem, q, links);
+                Append(b, "        } break;\n");
+            }
+            Append(b, "        default: return -1;\n");
+            Append(b, "        }\n");
+            if (fix) Append(b, "        ", q, " = ", v, "s + ", FixedSize(t), ";\n");
+            Append(b, "    }\n");
+            return;
+        }
+        default: assert(false); return;
+    }
+}
+
 // ------------------------------------------------------------------
 // default<T>() (§4.2): all-zero bytes are the default of every fixed type
 // -- numbers, false, null, empty slices and limited arrays, variant 0 --

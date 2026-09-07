@@ -480,7 +480,11 @@ array/pool* as the location storing it.
   match payloads by reference. (TODO 16: track the region a relative
   reference ranges over, so provably whole-region copies can be allowed.)
 * Because they are position-independent, structures linked by self-relative
-  references are trivially serializable / mappable.
+  references are trivially serializable / mappable: `to_bytes(a)` writes an
+  array's element region out and `from_bytes<T[>..]>(bytes)` verifies one
+  back in (§12, `design/serialization.md`). Verifying is what keeps the
+  arriving bytes from being the one place a reference could enter the
+  program unproven (§9.4).
 
 **Pool-relative (`in pool`).** `pool` names a *global* `var` (or `reusable
 var`) of a grow-only resizable type (`[>..]`) whose storage can hold a `T`
@@ -1570,6 +1574,15 @@ extent of "dangling"; it can produce a logic bug, never memory corruption,
 never a type confusion, never OOB. This is the deliberate trade that buys
 allocator-free speed.
 
+Bytes arriving from outside the program are the one place this could have
+been worse, and are not: `from_bytes` (§12) verifies an image before it is a
+value -- the framing, every tag, every length, and every self-relative link
+landing on an element start of that same image -- so a corrupt or hostile
+one is a `false` and an empty array, never a reference the checker did not
+prove. What it verifies is *safety*, not integrity: an image whose data
+bytes were edited still describes a well-formed structure, and a checksum,
+not the verifier, is what says the file is the one that was written.
+
 ### 9.5 Writability
 
 Reference and slice types carry no const/mut markers. Instead, *writability
@@ -1859,6 +1872,8 @@ The language's own functions:
 | `default<T>() -> T` | the value a fixed-size `T` has before anything is written to it (§4.2) |
 | `hardware_threads() -> i64`, `thread_spawn(worker, args…) -> i64`, `thread_wait(id)` | workers (§11.2) |
 | `qput(v)`, `qget<T>() -> T`, `qpoll<T>() -> T, bool` | the typed queues (§11.2) |
+| `to_bytes(a) -> u8[>..]` | an array's element region as bytes (§3.9, `design/serialization.md`) |
+| `from_bytes<T[>..]>(b: u8[:]) -> T[>..], bool` | a *verified* array from an untrusted image; empty and `false` if it is not one |
 
 And the array members, ordinary functions of their receiver per UFCS
 (`a.push(v)` is `push(a, v)`):
@@ -2030,11 +2045,6 @@ the end, each with where its resolution lives.
     *self-relative* references are currently rejected outright (§3.9; the
     `in pool` form already copies); track the region an offset ranges over so
     whole-region copies (and serialization moves) can be proven safe.
-17. **Serialization of relative-reference structures** — `to_bytes(a)` and
-    `from_bytes<T[>..]>(bytes)` with a verifier generated per element type,
-    FlatBuffers-style, so a loaded image is a checked value rather than a
-    trusted one: `docs/design/serialization.md`.
-
 ### Resolved
 
 0b. **Reference address identity** — DONE, see §3.8: `r1 .== r2` /
@@ -2082,6 +2092,14 @@ the end, each with where its resolution lives.
 14. **Stdlib math types** — DONE, see `stdlib.md` (`vec`): `vec2/3/4<T>`
     with `float3` and friends as aliases; the named ops are overloads per
     size, and elementwise arithmetic is the language's (§6.1).
+17. **Serialization of relative-reference structures** — DONE, see §12 and
+    `docs/design/serialization.md`: `to_bytes(a)` copies an array's element
+    region into a fresh `u8[>..]`, `from_bytes<T[>..]>(bytes)` verifies an
+    image and returns the array plus a bool. The verifier is generated per
+    element type next to the size and equality walkers, and a rejected image
+    yields an empty array, never an unproven reference (§9.4). What v1 does
+    not admit: references into a *field* of an element, and `from_bytes`
+    into anything but `T[>..]`.
 
 ---
 

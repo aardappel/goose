@@ -249,6 +249,28 @@ struct CodeGen {
     void EmitSizeWalk(string &b, TypeExpr *t, const string &q);
     void EmitSizeElems(string &b, TypeExpr *elem, const string &q);
     int64_t ZeroSize(TypeExpr *t);
+    int64_t MinBytes(TypeExpr *t);
+
+    // ------------------------------------------------------------------
+    // The verifier from_bytes runs over an untrusted image
+    // (docs/design/serialization.md §5): a generated per-element-type
+    // gs_verify_<mangle>(p, n, bm), the same walker shape as the size and
+    // equality functions, returning the element count or -1.
+
+    set<string> verifyfns;
+    int vtmpn = 0;
+
+    string VTmp() { return cat("v", vtmpn++); }
+    bool HasRelRefAny(TypeExpr *t);
+    bool NeedsVerifyWalk(TypeExpr *t);
+    string VerifyFn(TypeExpr *elem);
+    void VNeed(string &b, const string &q, const string &bytes);
+    void EmitVerifyWalk(string &b, TypeExpr *t, TypeExpr *elem, const string &q, bool links);
+    void EmitVerifyFields(string &b, const vector<Field> &fields,
+                          const vector<TypeExpr *> &ftypes, const Layout *lo, int64_t total,
+                          TypeExpr *elem, const string &q, bool links);
+    void EmitVerifyLink(string &b, TypeExpr *rt, TypeExpr *elem, const string &q,
+                        const string &off);
 
     // ------------------------------------------------------------------
     // default<T>() (§4.2): all-zero bytes are the default of every fixed type
@@ -780,6 +802,20 @@ struct CodeGen {
     string FmtCall(Node *a, const string &dst);
     void EmitFormatInto(Loc lv, Node *a, Line ln, Call *c);
     vector<string> EmitStr(Call *c, vector<Node *> &an, Dst d0, Line ln);
+    vector<string> EmitToBytes(vector<Node *> &an, Dst d0, Line ln);
+    vector<string> EmitFromBytes(Call *c, vector<Node *> &an, Dst d0, Line ln);
+
+    // The u8[>..] / T[>..] destination a builtin result is built at: the
+    // caller's when it has one, else a fresh temporary named by `hdr`. A
+    // value slot (a u8[] field or element) has no length lvalue, and takes
+    // the count in a prefix reserved in front of the elements instead.
+    struct RzDest {
+        string stk, lenlv, hdr, pref, elems;
+        IntStorage ls = IS_U32;
+    };
+
+    RzDest OpenRzDest(TypeExpr *t, Dst d0, Line ln, const char *what);
+    void CloseRzDest(RzDest &rd, const string &count);
     vector<string> EmitPush(Call *c, vector<Node *> &an, Line ln);
     void EmitAppend(vector<Node *> &an, Line ln);
     vector<string> EmitAlloc(Call *c, vector<Node *> &an, Line ln);

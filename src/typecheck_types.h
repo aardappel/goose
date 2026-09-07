@@ -255,6 +255,95 @@ inline bool TypeCheck::HoldsPlainRef(TypeExpr *t) {
     }
 }
 
+// Whether a value of type t is meaningful as bytes on their own
+// (docs/design/serialization.md §4): plain references and slices are
+// addresses, and an `in pool` offset is measured from a named global's base,
+// so none of the three survives leaving the program. Self-relative
+// references do, which is the whole point.
+inline bool TypeCheck::ImageSafe(TypeExpr *t, string &why) {
+    auto fields = [&](const vector<TypeExpr *> &fts) {
+        for (auto ft : fts) if (ft && !ImageSafe(ft, why)) return false;
+        return true;
+    };
+    switch (t->kind) {
+        case TY_SLICE:
+            why = cat(TypeStr(t), " is a slice, which is an address");
+            return false;
+        case TY_REF:
+            if (t->ref->lenstorage < 0) {
+                why = cat(TypeStr(t), " is a plain reference, which is an address");
+                return false;
+            }
+            if (t->ref->pool) {
+                why = cat(TypeStr(t), " is measured from ", t->ref->pool->name,
+                          ", not from the image");
+                return false;
+            }
+            return true;
+        case TY_STRUCT: {
+            auto inst = GetStructInst(t);
+            return inst->flat || fields(inst->ftypes);
+        }
+        case TY_ENUM: {
+            auto inst = GetEnumInst(t);
+            if (inst->flat) return true;
+            for (auto &vf : inst->vftypes) if (!fields(vf)) return false;
+            return true;
+        }
+        case TY_VARIANT: {
+            auto inst = GetEnumInst(t->var->adt);
+            return fields(inst->vftypes[VariantIndex(t->var->adt->enu->en, t->var->variant)]);
+        }
+        case TY_ARRAY: return ImageSafe(t->arr->sub, why);
+        case TY_FN:
+            why = "function values are addresses";
+            return false;
+        default: return true;
+    }
+}
+
+// The extra thing a *verifier* needs on top of ImageSafe (§3 step 3): every
+// self-relative reference in the image must point at an element start, so
+// its pointee has to be the element type itself, or one variant of it. A
+// reference into a field of an element would need every valid address of
+// that type enumerated, which v1 does not do.
+inline bool TypeCheck::VerifiableElem(TypeExpr *t, TypeExpr *elem, string &why) {
+    auto fields = [&](const vector<TypeExpr *> &fts) {
+        for (auto ft : fts) if (ft && !VerifiableElem(ft, elem, why)) return false;
+        return true;
+    };
+    switch (t->kind) {
+        case TY_REF: {
+            if (!ImageSafe(t, why)) return false;
+            auto p = t->ref->sub;
+            if (TypeEq(p, elem)) return true;
+            if (p->kind == TY_VARIANT && elem->kind == TY_ENUM &&
+                p->var->adt->kind == TY_ENUM && p->var->adt->enu->en == elem->enu->en &&
+                TypeArgsEq(p->var->adt->enu->args, elem->enu->args))
+                return true;
+            why = cat(TypeStr(t), " points at ", TypeStr(p), ", not at an element of the "
+                      "array or one of its variants");
+            return false;
+        }
+        case TY_STRUCT: {
+            auto inst = GetStructInst(t);
+            return inst->flat || fields(inst->ftypes);
+        }
+        case TY_ENUM: {
+            auto inst = GetEnumInst(t);
+            if (inst->flat) return true;
+            for (auto &vf : inst->vftypes) if (!fields(vf)) return false;
+            return true;
+        }
+        case TY_VARIANT: {
+            auto inst = GetEnumInst(t->var->adt);
+            return fields(inst->vftypes[VariantIndex(t->var->adt->enu->en, t->var->variant)]);
+        }
+        case TY_ARRAY: return VerifiableElem(t->arr->sub, elem, why);
+        default: return ImageSafe(t, why);
+    }
+}
+
 inline int TypeCheck::VariantIndex(SEnum *en, SVariant *v) {
     for (size_t i = 0; i < en->variants.size(); i++)
         if (&en->variants[i] == v) return (int)i;

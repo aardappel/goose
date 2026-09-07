@@ -1403,6 +1403,36 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             c->rettypes.push_back(v.type);
             return v;
         }
+        case B_FROM_BYTES: {
+            // from_bytes<T[>..]>(bytes): the image verified and copied into
+            // a fresh array (docs/design/serialization.md §4). The result is
+            // rooted at its own variable like any resizable one, so nothing
+            // in §9 has to know it came from outside; the bool is the
+            // verifier's verdict, and a rejected image leaves the array empty.
+            if (c->tyargs.size() != 1)
+                Error(c, "from_bytes<T[>..]>(bytes) needs exactly one explicit type argument");
+            auto t = Subst(c->tyargs[0]);
+            ValidateType(t, c->line, VT_LOCAL);
+            if (t->kind != TY_ARRAY || t->arr->akind != A_GROW)
+                Error(c, cat("from_bytes builds a grow-only array (T[>..]), not ", TypeStr(t)));
+            auto el = t->arr->sub;
+            if (el->kind == TY_VOID) Error(c, "from_bytes needs a known element type");
+            string why;
+            if (!VerifiableElem(el, el, why))
+                Error(c, cat("from_bytes<", TypeStr(t), "> has no verifier: ", why));
+            CheckArg(args[0], u8slice);
+            c->rettypes.push_back(t);
+            c->rettypes.push_back(ast.booltype);
+            Val first;
+            first.type = t;
+            first.root = temproot;
+            Val ok;
+            ok.type = ast.booltype;
+            lastcallrets.clear();
+            lastcallrets.push_back(first);
+            lastcallrets.push_back(ok);
+            return first;
+        }
         case B_DEFAULT: {
             // default<T>(): the value a T has before anything is written
             // to it, declared field defaults applied (§4.2).
@@ -1485,6 +1515,23 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             RequireComplete(rt, c->line);
         }
         elem = rt->arr->sub;
+    }
+    // to_bytes(a): the element region as a fresh u8[>..]
+    // (docs/design/serialization.md §4). A copy rather than a view, so the
+    // image is independent of the array's later growth.
+    if (d.kind == B_TO_BYTES) {
+        string why;
+        if (!ImageSafe(elem, why))
+            Error(c, cat("to_bytes cannot write ", TypeStr(rv.type), " out: ", why));
+        auto t = ast.NewType(TY_ARRAY, c->line);
+        t->arr = ast.NewDetail<TypeArray>();
+        t->arr->sub = ast.inttypes[IS_U8];
+        t->arr->akind = A_GROW;
+        c->rettypes.push_back(t);
+        Val v;
+        v.type = t;
+        v.root = temproot;
+        return v;
     }
     // format(out, a, b, ...): the arguments' text appended to a growable
     // u8 array (§3.7).

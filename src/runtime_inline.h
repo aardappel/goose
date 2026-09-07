@@ -220,14 +220,14 @@ static T gs_add_##SFX(T a, T b) { \
     return (T)r; } \
 static T gs_sub_##SFX(T a, T b) { \
     int64_t r = (int64_t)a - (int64_t)b; \
-)GSRT"
-R"GSRT(    if (r < MIN || r > MAX) gs_ovf(); \
+    if (r < MIN || r > MAX) gs_ovf(); \
     return (T)r; } \
 static T gs_mul_##SFX(T a, T b) { \
     int64_t r = (int64_t)a * (int64_t)b; \
     if (r < MIN || r > MAX) gs_ovf(); \
     return (T)r; } \
-static T gs_neg_##SFX(T a) { \
+)GSRT"
+R"GSRT(static T gs_neg_##SFX(T a) { \
     int64_t r = -(int64_t)a; \
     if (r < MIN || r > MAX) gs_ovf(); \
     return (T)r; } \
@@ -402,8 +402,7 @@ static int64_t gs_f2ichk(double d) {
 }
 static uint64_t gs_f2uchk(double d) {
     if (!(d >= 0 && d < 18446744073709551616.0))
-)GSRT"
-R"GSRT(        gs_panic("as conversion out of range (debug)");
+        gs_panic("as conversion out of range (debug)");
     uint64_t v = (uint64_t)d;
     if ((double)v != d) gs_panic("as conversion changes the value (debug)");
     return v;
@@ -415,7 +414,8 @@ static double gs_i2fchk(int64_t v) {
     return d;
 }
 static double gs_u2fchk(uint64_t v) {
-    double d = (double)v;
+)GSRT"
+R"GSRT(    double d = (double)v;
     if (d >= 18446744073709551616.0 || (uint64_t)d != v)
         gs_panic("as conversion changes the value (debug)");
     return d;
@@ -626,8 +626,7 @@ static int64_t gs_uleb_size(const uint8_t *p) {
 
 /* An inline array's length prefix is one byte unless the array holds 128
    elements or more, so the two macros below are what the compiler emits for
-)GSRT"
-R"GSRT(   it: a load, a test, and the byte. The continuation is a call the caller's
+   it: a load, a test, and the byte. The continuation is a call the caller's
    loop does not contain, and reaching it means there is a large array to
    walk, against which the call costs nothing. Both read the pointer twice,
    which the emitting sites already assume (they form the element address
@@ -639,7 +638,8 @@ static GS_NOINLINE int64_t gs_uleb_read_slow(const uint8_t *p) {
     return gs_uleb_read(p);
 }
 
-static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
+)GSRT"
+R"GSRT(static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
     return gs_uleb_size(p);
 }
 
@@ -664,6 +664,46 @@ static int64_t gs_zig_read(const uint8_t *p) {
 static int64_t gs_zig_write(uint8_t *p, int64_t v) {
     return gs_uleb_write(p, ((uint64_t)v << 1) ^ (uint64_t)(v >> 63));
 }
+
+/* ---------------------------------------------------------------------------
+   Verified loading (docs/design/serialization.md): what the generated
+   gs_verify_<T> walkers are built from. The bytes are untrusted until the
+   walk finishes, so every read here is bounded by the image end and reports
+   a malformed encoding instead of running past it. */
+
+/* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
+   payload bits above the 64th. The result is the byte count. */
+static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
+    uint64_t v = 0;
+    int shift = 0;
+    const uint8_t *q = p;
+    for (;;) {
+        uint8_t b;
+        if (q >= end) return 0;
+        b = *q++;
+        if (shift > 63 || (shift == 63 && (b & 0x7e))) return 0;
+        v |= (uint64_t)(b & 0x7f) << shift;
+        if (!(b & 0x80)) break;
+        shift += 7;
+    }
+    *out = v;
+    return (int64_t)(q - p);
+}
+
+/* The same for a signed (zigzag) varint: a value field or a self-relative
+   offset of varint width (3.6). */
+static int64_t gs_zig_check(const uint8_t *p, const uint8_t *end, int64_t *out) {
+    uint64_t u = 0;
+    int64_t k = gs_uleb_check(p, end, &u);
+    if (k) *out = (int64_t)((u >> 1) ^ (0u - (u & 1)));
+    return k;
+}
+
+/* Element starts, one bit per image byte: the framing pass sets them and the
+   link pass asks whether an offset is one. Only images of variable-size
+   elements need it -- for fixed ones a start is a multiple of the size. */
+#define GS_BM_SET(bm, i) ((bm)[(uint64_t)(i) >> 3] |= (uint8_t)(1u << ((i) & 7)))
+#define GS_BM_GET(bm, i) (((bm)[(uint64_t)(i) >> 3] >> ((i) & 7)) & 1)
 
 /* ---------------------------------------------------------------------------
    Text forms (§3.7): the gs_fmt_* functions write a value's text at dst and

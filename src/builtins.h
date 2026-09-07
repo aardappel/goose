@@ -59,6 +59,8 @@ enum BuiltinRecv {
     F(B_QPOLL,            "qpoll",            0,  0,   "",   "",  0,              BF_TYARGS | BF_CUSTOM) \
     F(B_DEFAULT,          "default",          0,  0,   "",   "",  0,              BF_TYARGS | BF_CUSTOM) \
     F(B_COPY,             "copy",             1,  1,   "",   "",  0,              BF_CUSTOM) \
+    F(B_TO_BYTES,         "to_bytes",         1,  1,   "",   "",  BR_ANY,         BF_MEMBER | BF_CUSTOM) \
+    F(B_FROM_BYTES,       "from_bytes",       1,  1,   "",   "",  0,              BF_TYARGS | BF_CUSTOM) \
     F(B_LEN,              "len",              1,  1,   "",   "i", BR_ANY,         BF_MEMBER | BF_PROPERTY) \
     F(B_CAP,              "cap",              1,  1,   "",   "i", BR_LIMITED,     BF_MEMBER | BF_PROPERTY) \
     F(B_INDEX_OF,         "index_of",         2,  2,   "",   "i", BR_INDEXABLE,   BF_MEMBER | BF_CUSTOM) \

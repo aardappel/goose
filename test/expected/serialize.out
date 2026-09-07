@@ -1,0 +1,26 @@
+4 nodes, 48 bytes
+true 4 true
+5 11
+wild false 0
+mid false
+cut false
+empty true 0
+ring true 2 7 8
+slice true 1 8
+knot true 2 1
+shape true 3 9
+badtag false 0
+cell true 3 2 1 2
+overlen false
+rec true 2 54 true
+badcap false
+pad true 2 20 100
+recv 8 6 4 2
+ints true 4 4
+sexp true 4 24 true
+over false
+biglen false
+item true 2 22
+retag false
+dest 48 48 4 48 4
+mutations true true true
