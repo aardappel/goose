@@ -399,6 +399,16 @@ inline CodeGen::Loc CodeGen::IndexLoc(Loc lv, Node *idxnode, Line ln, bool nobc)
     if (lv.t->kind == TY_REF) DerefLoc(lv, ln);
     auto v = ArrayView(lv, ln);
     auto idx = GenPure(idxnode);
+    if (lv.t->kind == TY_SLICE) {
+        // MSVC /O2 can discard stores through a copied slice header while
+        // retaining earlier values in its fixed-array owner (typecheck's
+        // slices() exercises this after Goose inlining). Loading the base
+        // into a scalar pointer avoids that aggregate-alias miscompilation;
+        // native optimizers still hoist it when the slice is loop-invariant.
+        auto p = T();
+        L(IsBytesT(v.elem) ? "uint8_t" : CT(v.elem), " *", p, " = ", v.elems, ";");
+        v.elems = p;
+    }
     string ix;
     auto il = Is<IntLit>(idxnode);
     auto statlen = lv.t->kind == TY_ARRAY && lv.t->arr->akind == A_FIXED
