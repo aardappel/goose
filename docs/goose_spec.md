@@ -481,10 +481,12 @@ array/pool* as the location storing it.
   reference ranges over, so provably whole-region copies can be allowed.)
 * Because they are position-independent, structures linked by self-relative
   references are trivially serializable / mappable: `to_bytes(a)` writes an
-  array's element region out and `from_bytes<T[>..]>(bytes)` verifies one
-  back in (§12, `design/serialization.md`). Verifying is what keeps the
-  arriving bytes from being the one place a reference could enter the
-  program unproven (§9.4).
+  array's image out, `bytes_of(a)` views it without copying, and
+  `from_bytes<T[>..]>(bytes)` verifies one back in (§12,
+  `design/serialization.md`). Verifying is what keeps the arriving bytes from
+  being the one place a reference could enter the program unproven (§9.4),
+  and is also why a `bytes_of` view is never writable: bytes written through
+  it would be links the checker never proved.
 
 **Pool-relative (`in pool`).** `pool` names a *global* `var` (or `reusable
 var`) of a grow-only resizable type (`[>..]`) whose storage can hold a `T`
@@ -1872,8 +1874,9 @@ The language's own functions:
 | `default<T>() -> T` | the value a fixed-size `T` has before anything is written to it (§4.2) |
 | `hardware_threads() -> i64`, `thread_spawn(worker, args…) -> i64`, `thread_wait(id)` | workers (§11.2) |
 | `qput(v)`, `qget<T>() -> T`, `qpoll<T>() -> T, bool` | the typed queues (§11.2) |
-| `to_bytes(a) -> u8[>..]` | an array's element region as bytes (§3.9, `design/serialization.md`) |
-| `from_bytes<T[>..]>(b: u8[:]) -> T[>..], bool` | a *verified* array from an untrusted image; empty and `false` if it is not one |
+| `to_bytes(a) -> u8[>..]`, `to_bytes(a, out)` | an array's image — a varint byte count then its element region — fresh, or appended to a growable `u8` array (§3.9, `design/serialization.md`) |
+| `bytes_of(a) -> u8[:]` | the element region alone, as a view: no copy, and never writable |
+| `from_bytes<T[>..]>(b: u8[:]) -> T[>..], bool` | a *verified* array from an untrusted image; empty and `false` if it is not one. Also builds `T[>..<]` and the `T[]` family |
 
 And the array members, ordinary functions of their receiver per UFCS
 (`a.push(v)` is `push(a, v)`):
@@ -2097,9 +2100,13 @@ the end, each with where its resolution lives.
     region into a fresh `u8[>..]`, `from_bytes<T[>..]>(bytes)` verifies an
     image and returns the array plus a bool. The verifier is generated per
     element type next to the size and equality walkers, and a rejected image
-    yields an empty array, never an unproven reference (§9.4). What v1 does
-    not admit: references into a *field* of an element, and `from_bytes`
-    into anything but `T[>..]`.
+    yields an empty array, never an unproven reference (§9.4). An image is
+    little-endian by definition and carries a varint byte count in front, so
+    a reader of a stream can size its read; `bytes_of(a)` is the payload as a
+    view, for a save that copies nothing. What v1 does not admit: references
+    into a *field* of an element, `from_bytes` into a fixed or limited array,
+    and a big-endian host (which aborts rather than writing bytes only it can
+    read).
 
 ---
 

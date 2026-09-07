@@ -75,6 +75,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             return {};
         case B_COPY: return { GenXD(an[0], c->exprtype) };
         case B_TO_BYTES: return EmitToBytes(an, d0, ln);
+        case B_BYTES_OF: return EmitBytesOf(c, an, ln);
         case B_FROM_BYTES: return EmitFromBytes(c, an, d0, ln);
         case B_DEFAULT: {
             auto t = c->rettypes[0];
@@ -534,25 +535,96 @@ inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
 }
 
 // ------------------------------------------------------------------
-// Serialization (docs/design/serialization.md): to_bytes writes an array's
-// element region out, from_bytes verifies one back in.
+// Serialization (docs/design/serialization.md): to_bytes and bytes_of write
+// an array's element region out, from_bytes verifies one back in.
 
-// The destination a resizable builtin result is built at, in the three
+// An image is little-endian by definition (§7 of the design), which every
+// target this compiles for is; the test folds away, and exists so that a
+// big-endian host fails loudly rather than writing bytes only it can read.
+inline void CodeGen::EmitLeCheck(Line ln) {
+    EmitCoreTypes();
+    L("if (!gs_is_le()) gs_abort(GS_E_ENDIAN, ", LocArgs(ln), ");");
+}
+
+// The element region of a to_bytes/bytes_of receiver: a byte pointer, and
+// the byte count -- which for variable elements is a walk, since an element
+// count says nothing about the span.
+inline void CodeGen::PayloadOf(Node *n, Line ln, string &src, string &sz) {
+    auto nt = n->exprtype;
+    auto rt = nt->kind == TY_REF ? nt->ref->sub : nt;
+    auto elem = rt->kind == TY_SLICE ? rt->sub : rt->arr->sub;
+    SrcElems se;
+    if (rt->kind == TY_ARRAY || nt->kind == TY_REF) {
+        // The receiver as a location, through a reference where it is one;
+        // GenSrcElems is for the value forms it does not reach.
+        auto v = ArrayView(RecvLoc(n), ln);
+        auto cnt = T();
+        L("int64_t ", cnt, " = ", v.len, ";");
+        se.elems = v.elems;
+        se.n = cnt;
+    } else {
+        se = GenSrcElems(n);
+    }
+    src = T();
+    L("const uint8_t *", src, " = (const uint8_t *)(", se.elems, ");");
+    sz = T();
+    if (IsFix(elem)) {
+        L("int64_t ", sz, " = (", se.n, ") * ", FixedSize(elem), ";");
+    } else {
+        auto i = T();
+        L("int64_t ", sz, " = 0;");
+        L("for (int64_t ", i, " = 0; ", i, " < (", se.n, "); ", i, "++) ", sz, " += ",
+          SizeFn(elem), "(", src, " + ", sz, ");");
+    }
+}
+
+// `n` bytes at `src` appended to a growable u8 array, in the two shapes
+// format appends text to: a resizable writes at its stack top, a limited
+// array copies under a capacity check.
+inline void CodeGen::AppendBytes(const Loc &lv, const string &src, const string &n, Line ln) {
+    auto v = ArrayView(lv, ln);
+    if (lv.t->arr->akind == A_LIMITED) {
+        auto capx = lv.val ? cat(ArrSize(lv.t->arr))
+                           : cat("(int64_t)*(uint32_t *)(", lv.s, ")");
+        auto ol = T();
+        L("int64_t ", ol, " = ", v.len, ";");
+        L("if (", ol, " + ", n, " > ", capx, ") gs_abort(GS_E_CAPACITY, ", LocArgs(ln), ");");
+        L("memcpy(", v.typedelems ? cat(v.elems, " + ", ol) : cat("(", v.elems, ") + ", ol),
+          ", ", src, ", (size_t)", n, ");");
+        L(v.lenlv, " = (", LenCast(lv), ")(", ol, " + ", n, ");");
+        return;
+    }
+    L("memcpy(", Top(lv.stk), ", ", src, ", (size_t)", n, ");");
+    Bump(lv.stk, n);
+    L(v.lenlv, " += ", n, ";");
+}
+
+// The destination a resizable or variable builtin result is built at, in the
 // shapes §7.3 admits: the caller's header, a value slot that takes a length
 // prefix in front of the elements, or a fresh temporary when the result has
 // no destination of its own. `elems` is where the elements start.
 inline CodeGen::RzDest CodeGen::OpenRzDest(TypeExpr *t, Dst d0, Line ln, const char *what) {
     EmitCoreTypes();
     RzDest rd;
+    auto resz = IsResz(t);
     rd.stk = d0.s;
     rd.lenlv = d0.lenlv;
     if (d0.k != DK_STACK) {
-        rd.hdr = RzTemp(t, rd.stk);
-        rd.lenlv = RzLenLv(t, rd.hdr);
-    } else if (rd.lenlv.empty()) {
-        if (!d0.t || d0.t->kind != TY_ARRAY || d0.t->arr->akind != A_VAR)
-            Fail(ln, cat(what, "() needs a resizable or variable-array destination"));
-        rd.ls = LenStore(d0.t->arr);
+        if (resz) {
+            rd.hdr = RzTemp(t, rd.stk);
+            rd.lenlv = RzLenLv(t, rd.hdr);
+        } else {
+            rd.hdr = BytesTemp(rd.stk);   // a bytes value: its base pointer
+        }
+    }
+    if (rd.lenlv.empty()) {
+        // A value slot: the count goes into a length prefix reserved in front
+        // of the elements, in the slot's own length storage where the
+        // destination has one and the result's otherwise.
+        auto at = d0.t && d0.t->kind == TY_ARRAY && d0.t->arr->akind == A_VAR ? d0.t
+                  : resz ? nullptr : t;
+        if (!at) Fail(ln, cat(what, "() needs a resizable or variable-array destination"));
+        rd.ls = LenStore(at->arr);
         rd.pref = T();
         L("uint8_t *", rd.pref, " = ", Top(rd.stk), ";");
         Bump(rd.stk, cat(PrefixBytes(rd.ls)));
@@ -567,74 +639,94 @@ inline void CodeGen::CloseRzDest(RzDest &rd, const string &count) {
     else L(rd.lenlv, " = ", count, ";");
 }
 
-// to_bytes(a): the element region copied into a fresh u8[>..]. Copying
-// rather than viewing keeps the image independent of the array's later
-// growth, and is what makes the result an ordinary resizable value.
+// bytes_of(a): the element region as a u8[:], no copy. The view is never
+// writable at the language level (§9.5), so the const the payload pointer
+// carries is dropped here rather than expressed in the slice type.
+inline vector<string> CodeGen::EmitBytesOf(Call *c, vector<Node *> &an, Line ln) {
+    EmitLeCheck(ln);
+    string src, sz;
+    PayloadOf(an[0], ln, src, sz);
+    auto s = T();
+    L(CT(c->rettypes[0]), " ", s, " = { (uint8_t *)", src, ", ", sz, " };");
+    return { s };
+}
+
+// to_bytes(a): the image -- a varint byte count, then the element region --
+// as a fresh u8[>..], or appended to a builder the caller owns so that its
+// own header can go in front. Copying rather than viewing keeps the image
+// independent of the array's later growth.
 inline vector<string> CodeGen::EmitToBytes(vector<Node *> &an, Dst d0, Line ln) {
-    auto nt = an[0]->exprtype;
-    auto rt = nt->kind == TY_REF ? nt->ref->sub : nt;
-    auto elem = rt->kind == TY_SLICE ? rt->sub : rt->arr->sub;
-    SrcElems se;
-    if (rt->kind == TY_ARRAY || nt->kind == TY_REF) {
-        // The receiver as a location, through a reference where it is one;
-        // GenSrcElems is for the value forms it does not reach.
-        auto v = ArrayView(RecvLoc(an[0]), ln);
-        auto cnt = T();
-        L("int64_t ", cnt, " = ", v.len, ";");
-        se.elems = v.elems;
-        se.n = cnt;
-    } else {
-        se = GenSrcElems(an[0]);
-    }
-    auto src = T();
-    L("const uint8_t *", src, " = (const uint8_t *)(", se.elems, ");");
-    auto sz = T();
-    if (IsFix(elem)) {
-        L("int64_t ", sz, " = (", se.n, ") * ", FixedSize(elem), ";");
-    } else {
-        // Variable elements: an element count says nothing about the byte
-        // span, so walk it -- the same walk print and == use.
-        auto i = T();
-        L("int64_t ", sz, " = 0;");
-        L("for (int64_t ", i, " = 0; ", i, " < (", se.n, "); ", i, "++) ", sz, " += ",
-          SizeFn(elem), "(", src, " + ", sz, ");");
+    EmitLeCheck(ln);
+    string src, sz;
+    PayloadOf(an[0], ln, src, sz);
+    auto pfx = T(), pn = T();
+    L("uint8_t ", pfx, "[10];");
+    L("int64_t ", pn, " = gs_uleb_write(", pfx, ", (uint64_t)", sz, ");");
+    if (an.size() > 1) {
+        auto out = RecvLoc(an[1]);
+        AppendBytes(out, pfx, pn, ln);
+        AppendBytes(out, src, sz, ln);
+        return {};
     }
     auto rd = OpenRzDest(GrowU8(), d0, ln, "to_bytes");
+    L("memcpy(", Top(rd.stk), ", ", pfx, ", (size_t)", pn, ");");
+    Bump(rd.stk, pn);
     L("memcpy(", Top(rd.stk), ", ", src, ", (size_t)", sz, ");");
     Bump(rd.stk, sz);
-    CloseRzDest(rd, sz);
+    auto tot = T();
+    L("int64_t ", tot, " = ", pn, " + ", sz, ";");
+    CloseRzDest(rd, tot);
     return rd.hdr.empty() ? vector<string> {} : vector<string> { rd.hdr };
 }
 
-// from_bytes<T[>..]>(bytes): the verifier over the image, then a copy of it
-// into the result's element region. A rejected image leaves the array empty,
-// and the bool says which happened.
+// from_bytes<T[...]>(bytes): the framing prefix, then the verifier over the
+// payload, then a copy of it into the result's element region. A rejected
+// image leaves the array empty, and the bool says which happened.
 inline vector<string> CodeGen::EmitFromBytes(Call *c, vector<Node *> &an, Dst d0, Line ln) {
+    EmitLeCheck(ln);
     auto t = c->rettypes[0];
     auto elem = t->arr->sub;
     auto sl = GenPure(an[0]);
     auto vf = VerifyFn(elem);
+    // The prefix has to account for exactly the rest of the slice: it is what
+    // a stream reader sizes its read from, and the first thing here that can
+    // say these bytes are not an image at all.
+    auto pay = T(), pn = T(), ok = T(), uv = T(), kv = T();
+    L("const uint8_t *", pay, " = ", sl, ".data;");
+    L("int64_t ", pn, " = 0;");
+    L("uint8_t ", ok, " = 0;");
+    L("uint64_t ", uv, " = 0;");
+    L("int64_t ", kv, " = gs_uleb_check(", sl, ".data, ", sl, ".data + ", sl, ".len, &",
+      uv, ");");
+    L("if (", kv, " && ", uv, " <= (uint64_t)INT64_MAX && (int64_t)", uv, " == ", sl,
+      ".len - ", kv, ") {");
+    ind++;
+    L(pay, " += ", kv, "; ", pn, " = (int64_t)", uv, "; ", ok, " = 1;");
+    ind--;
+    L("}");
     string bm = "NULL";
     if (!IsFix(elem) && HasRelRefAny(elem)) {
-        // One bit per image byte: where a variable element starts, which is
+        // One bit per payload byte: where a variable element starts, which is
         // what the framing pass hands the link pass. Its own stack, so the
-        // scratch is gone at the end of the statement.
+        // scratch is gone at the end of the statement -- and an image needing
+        // more of that stack than it reserves is one this cannot verify,
+        // which is a false rather than a guard-page abort.
         string bstk;
         bm = BytesTemp(bstk);
         auto bn = T();
-        L("int64_t ", bn, " = (", sl, ".len + 7) / 8;");
+        L("int64_t ", bn, " = (", pn, " + 7) / 8;");
+        L("if (", bn, " > GS_BM_MAX) { ", bn, " = 0; ", ok, " = 0; }");
         L("memset(", bm, ", 0, (size_t)", bn, ");");
         Bump(bstk, bn);
     }
     auto cnt = T();
-    L("int64_t ", cnt, " = ", vf, "(", sl, ".data, ", sl, ".len, ", bm, ");");
-    auto ok = T();
-    L("uint8_t ", ok, " = ", cnt, " >= 0;");
+    L("int64_t ", cnt, " = ", ok, " ? ", vf, "(", pay, ", ", pn, ", ", bm, ") : -1;");
+    L(ok, " = ", cnt, " >= 0;");
     auto rd = OpenRzDest(t, d0, ln, "from_bytes");
     L("if (", ok, ") {");
     ind++;
-    L("memcpy(", Top(rd.stk), ", ", sl, ".data, (size_t)", sl, ".len);");
-    Bump(rd.stk, cat(sl, ".len"));
+    L("memcpy(", Top(rd.stk), ", ", pay, ", (size_t)", pn, ");");
+    Bump(rd.stk, pn);
     ind--;
     L("}");
     CloseRzDest(rd, cat("(", ok, " ? ", cnt, " : 0)"));

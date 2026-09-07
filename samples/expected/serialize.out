@@ -1,5 +1,6 @@
 indexed 262 words from data/alice.txt
-image 9694 bytes = 262 nodes x 37
+image 9696 bytes = 262 nodes x 37 + 2
+prefix says 9694 bytes after 2, file has 9694
 loaded true, 262 nodes, same size true
   alice = 9
   rabbit = 6
@@ -8,7 +9,8 @@ loaded true, 262 nodes, same size true
   curiosity = 1
   nonexistentword = 0
 answers match true, depth 17 = 17
-compact 2498 bytes for 262 nodes, reload true totals true
+compact 2500 bytes for 262 nodes, reload true totals true
 tampered link false, nodes 0
 edited count true, still a tree true
-truncated false, extended false, empty true 0
+truncated false, extended false, empty true 0, no prefix false
+message 9700 bytes, tag GSX1, reload true true

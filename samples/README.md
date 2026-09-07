@@ -76,4 +76,4 @@ part of the test suite.
 
 | Sample | What it shows |
 |---|---|
-| [25_serialize](25_serialize.goose) | A word index saved and loaded as raw bytes: `to_bytes` writes the element region, `from_bytes` verifies an untrusted image before it becomes a value. Fixed nodes with 4-byte links and a compact variable-size form of the same tree; tampered, truncated and extended files rejected. |
+| [25_serialize](25_serialize.goose) | A word index saved and loaded as raw bytes: `bytes_of` views the element region without copying it, `to_bytes` builds the framed image, `from_bytes` verifies an untrusted one before it becomes a value. Fixed nodes with 4-byte links and a compact variable-size form of the same tree; tampered, truncated and extended files rejected. |

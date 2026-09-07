@@ -78,6 +78,7 @@ enum {
     GS_E_POP,          /* pop on empty array */
     GS_E_THREADID,     /* thread_wait on an unknown thread id */
     GS_E_TAG,          /* corrupt ADT tag (debug builds only) */
+    GS_E_ENDIAN,       /* serialization on a big-endian host */
 };
 
 static const char *gs_errmsgs[] = {
@@ -91,6 +92,7 @@ static const char *gs_errmsgs[] = {
     "pop on empty array",
     "thread_wait on an unknown thread id",
     "corrupt ADT tag",
+    "serialization needs a little-endian host (not supported yet)",
 };
 
 static GS_NORETURN void gs_panic(const char *msg) {
@@ -686,9 +688,22 @@ static int64_t gs_zig_check(const uint8_t *p, const uint8_t *end, int64_t *out) 
 
 /* Element starts, one bit per image byte: the framing pass sets them and the
    link pass asks whether an offset is one. Only images of variable-size
-   elements need it -- for fixed ones a start is a multiple of the size. */
+   elements need it -- for fixed ones a start is a multiple of the size. The
+   bitmap is one data stack's worth of scratch, so the largest image that can
+   be verified is eight times a stack's reservation; from_bytes rejects a
+   larger one rather than growing into the guard region. */
 #define GS_BM_SET(bm, i) ((bm)[(uint64_t)(i) >> 3] |= (uint8_t)(1u << ((i) & 7)))
 #define GS_BM_GET(bm, i) (((bm)[(uint64_t)(i) >> 3] >> ((i) & 7)) & 1)
+#define GS_BM_MAX ((int64_t)(GS_STACK_RESERVE))
+
+/* An image is little-endian by definition (serialization.md 7), which every
+   target this compiles for is. The test is a constant to any optimizer; it is
+   here so that a big-endian host fails loudly instead of writing bytes that
+   only it can read back. */
+static int gs_is_le(void) {
+    const uint16_t one = 1;
+    return *(const uint8_t *)&one == 1;
+}
 
 /* ---------------------------------------------------------------------------
    Text forms (§3.7): the gs_fmt_* functions write a value's text at dst and

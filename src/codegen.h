@@ -802,6 +802,10 @@ struct CodeGen {
     string FmtCall(Node *a, const string &dst);
     void EmitFormatInto(Loc lv, Node *a, Line ln, Call *c);
     vector<string> EmitStr(Call *c, vector<Node *> &an, Dst d0, Line ln);
+    void EmitLeCheck(Line ln);
+    void PayloadOf(Node *n, Line ln, string &src, string &sz);
+    void AppendBytes(const Loc &lv, const string &src, const string &n, Line ln);
+    vector<string> EmitBytesOf(Call *c, vector<Node *> &an, Line ln);
     vector<string> EmitToBytes(vector<Node *> &an, Dst d0, Line ln);
     vector<string> EmitFromBytes(Call *c, vector<Node *> &an, Dst d0, Line ln);
 

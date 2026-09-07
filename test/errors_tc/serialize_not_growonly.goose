@@ -1,7 +1,7 @@
-// from_bytes builds a grow-only array: its result is rooted at its own
-// variable exactly as a pushed-into one is.
+// from_bytes builds an array whose contents are an element run plus a count.
+// A limited array would need the count to match a capacity no image carries.
 fn load(bytes: u8[:]) -> i64 {
-    var a, ok = from_bytes<i64[]>(bytes);
+    var a, ok = from_bytes<i64[..8]>(bytes);
     return if ok { a.len } else { -1 };
 }
 

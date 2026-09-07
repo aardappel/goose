@@ -150,18 +150,28 @@ fn main() {
     print("indexed ", index.len, " words from ", path);
 
     // Saving is a write of the element region. There is no serializer to
-    // write and no schema to keep in step: `to_bytes` copies the bytes the
-    // program has been using all along.
+    // write and no schema to keep in step: the bytes the program has been
+    // using all along are the file. `bytes_of` is a *view* of them -- no
+    // copy at all -- and the framing prefix `from_bytes` wants is a ULEB
+    // byte count, so the save is a tiny header and then the payload.
+    let payload = index.bytes_of();
+    var head: u8[>..] = [];
+    format_uleb(head, payload.len);
+    guard write_file("index.gsx", head) && append_file("index.gsx", payload)
+    else { print("cannot write"); exit(1); }
+    print("image ", head.len + payload.len, " bytes = ", index.len, " nodes x ",
+          payload.len / index.len, " + ", head.len);
+
+    // The same image built as one value instead, for the checks below.
     var image: u8[>..] = index.to_bytes();
-    print("image ", image.len, " bytes = ", index.len, " nodes x ",
-          image.len / index.len);
-    guard write_file("index.gsx", image) else { print("cannot write"); exit(1); }
 
     // Loading is a read, a verify and a copy. What comes back is an ordinary
     // array rooted at `loaded`: it indexes, it grows, references into it are
     // ordinary references, and §9 needs no new rule for it.
     var file: u8[>..] = [];
     guard read_file("index.gsx", file) else { print("cannot re-read"); exit(1); }
+    let n, k = parse_uleb(file[0..]);
+    print("prefix says ", n, " bytes after ", k, ", file has ", file.len - k);
     let t0 = clock();
     var loaded, ok = from_bytes<Node[>..]>(file);
     let t1 = clock();
@@ -192,7 +202,8 @@ fn main() {
     // the file, following it would be a wild read. Here it is a `false`.
     var tampered: u8[>..] = [];
     tampered.append(image);
-    tampered[29] = tampered[29] ^ 0x40;         // inside the first link field
+    let pfx = image.len - payload.len;          // the framing prefix
+    tampered[pfx + 29] = tampered[pfx + 29] ^ 0x40;   // inside the first link
     var bad, bok = from_bytes<Node[>..]>(tampered);
     print("tampered link ", bok, ", nodes ", bad.len);
 
@@ -202,7 +213,7 @@ fn main() {
     // `from_bytes` promises.
     var edited: u8[>..] = [];
     edited.append(image);
-    edited[25] = edited[25] ^ 0x01;             // inside the first count
+    edited[pfx + 25] = edited[pfx + 25] ^ 0x01;      // inside the first count
     var ed, eok = from_bytes<Node[>..]>(edited);
     print("edited count ", eok, ", still a tree ", ed.len == index.len);
 
@@ -215,8 +226,20 @@ fn main() {
     grown.append(image);
     grown.push(0);
     var g1, gok = from_bytes<Node[>..]>(grown);
-    var e1, eok2 = from_bytes<Node[>..]>("");
-    print("truncated ", cok, ", extended ", gok, ", empty ", eok2, " ", e1.len);
+    var empty: Node[>..] = [];
+    var e1, eok2 = from_bytes<Node[>..]>(empty.to_bytes());
+    var z1, zok = from_bytes<Node[>..]>("");
+    print("truncated ", cok, ", extended ", gok, ", empty ", eok2, " ", e1.len,
+          ", no prefix ", zok);
+
+    // The image is an ordinary resizable result, so it also goes straight
+    // into a message with a header of its own -- one copy, not two.
+    var msg: u8[>..] = [];
+    msg.append("GSX1");
+    index.to_bytes(msg);
+    var wire, wok = from_bytes<Node[>..]>(msg[4..]);
+    print("message ", msg.len, " bytes, tag ", msg[0..4], ", reload ", wok, " ",
+          wire.len == index.len);
 
     delete_file("index.gsx");
     format_stderr("verify+copy of ", image.len, " bytes: ", (t1 - t0) * 1000.0,

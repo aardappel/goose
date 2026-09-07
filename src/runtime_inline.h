@@ -90,6 +90,7 @@ enum {
     GS_E_POP,          /* pop on empty array */
     GS_E_THREADID,     /* thread_wait on an unknown thread id */
     GS_E_TAG,          /* corrupt ADT tag (debug builds only) */
+    GS_E_ENDIAN,       /* serialization on a big-endian host */
 };
 
 static const char *gs_errmsgs[] = {
@@ -103,6 +104,7 @@ static const char *gs_errmsgs[] = {
     "pop on empty array",
     "thread_wait on an unknown thread id",
     "corrupt ADT tag",
+    "serialization needs a little-endian host (not supported yet)",
 };
 
 static GS_NORETURN void gs_panic(const char *msg) {
@@ -222,12 +224,12 @@ static T gs_sub_##SFX(T a, T b) { \
     int64_t r = (int64_t)a - (int64_t)b; \
     if (r < MIN || r > MAX) gs_ovf(); \
     return (T)r; } \
-static T gs_mul_##SFX(T a, T b) { \
+)GSRT"
+R"GSRT(static T gs_mul_##SFX(T a, T b) { \
     int64_t r = (int64_t)a * (int64_t)b; \
     if (r < MIN || r > MAX) gs_ovf(); \
     return (T)r; } \
-)GSRT"
-R"GSRT(static T gs_neg_##SFX(T a) { \
+static T gs_neg_##SFX(T a) { \
     int64_t r = -(int64_t)a; \
     if (r < MIN || r > MAX) gs_ovf(); \
     return (T)r; } \
@@ -409,13 +411,13 @@ static uint64_t gs_f2uchk(double d) {
 }
 static double gs_i2fchk(int64_t v) {
     double d = (double)v;
-    if ((int64_t)d != v || d >= 9223372036854775808.0)
+)GSRT"
+R"GSRT(    if ((int64_t)d != v || d >= 9223372036854775808.0)
         gs_panic("as conversion changes the value (debug)");
     return d;
 }
 static double gs_u2fchk(uint64_t v) {
-)GSRT"
-R"GSRT(    double d = (double)v;
+    double d = (double)v;
     if (d >= 18446744073709551616.0 || (uint64_t)d != v)
         gs_panic("as conversion changes the value (debug)");
     return d;
@@ -632,14 +634,14 @@ static int64_t gs_uleb_size(const uint8_t *p) {
    which the emitting sites already assume (they form the element address
    from the same text). A varint *value*, by contrast, is whatever the
    program stored, so scalar fields and relative offsets keep the loop above
-   inline, where the compilers peel the first byte themselves. */
+)GSRT"
+R"GSRT(   inline, where the compilers peel the first byte themselves. */
 
 static GS_NOINLINE int64_t gs_uleb_read_slow(const uint8_t *p) {
     return gs_uleb_read(p);
 }
 
-)GSRT"
-R"GSRT(static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
+static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
     return gs_uleb_size(p);
 }
 
@@ -701,9 +703,22 @@ static int64_t gs_zig_check(const uint8_t *p, const uint8_t *end, int64_t *out) 
 
 /* Element starts, one bit per image byte: the framing pass sets them and the
    link pass asks whether an offset is one. Only images of variable-size
-   elements need it -- for fixed ones a start is a multiple of the size. */
+   elements need it -- for fixed ones a start is a multiple of the size. The
+   bitmap is one data stack's worth of scratch, so the largest image that can
+   be verified is eight times a stack's reservation; from_bytes rejects a
+   larger one rather than growing into the guard region. */
 #define GS_BM_SET(bm, i) ((bm)[(uint64_t)(i) >> 3] |= (uint8_t)(1u << ((i) & 7)))
 #define GS_BM_GET(bm, i) (((bm)[(uint64_t)(i) >> 3] >> ((i) & 7)) & 1)
+#define GS_BM_MAX ((int64_t)(GS_STACK_RESERVE))
+
+/* An image is little-endian by definition (serialization.md 7), which every
+   target this compiles for is. The test is a constant to any optimizer; it is
+   here so that a big-endian host fails loudly instead of writing bytes that
+   only it can read back. */
+static int gs_is_le(void) {
+    const uint16_t one = 1;
+    return *(const uint8_t *)&one == 1;
+}
 
 /* ---------------------------------------------------------------------------
    Text forms (§3.7): the gs_fmt_* functions write a value's text at dst and

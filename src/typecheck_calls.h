@@ -608,6 +608,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         ra.exact = holder ? argvals[i].holderset && argvals[i].holderexact
                           : argvals[i].rootexact;
         ra.growshrink = IsGrowShrinkRoot(r);
+        ra.byteview = argvals[i].byteview;
         if (ra.exact) ra.pool = PoolOf(r);
         if (!r) {
             ra.cls = 0;
@@ -953,6 +954,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
             vd->ref.rootexact = true;
             vd->ref.writable = ra.writable;
             vd->ref.reusable = ra.reusable;
+            vd->ref.byteview = ra.byteview;
         } else if (HoldsPlainRef(pt)) {
             // A holder parameter: its contents are bounded by the class
             // root its call sites agreed on.

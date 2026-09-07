@@ -1413,8 +1413,15 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                 Error(c, "from_bytes<T[>..]>(bytes) needs exactly one explicit type argument");
             auto t = Subst(c->tyargs[0]);
             ValidateType(t, c->line, VT_LOCAL);
-            if (t->kind != TY_ARRAY || t->arr->akind != A_GROW)
-                Error(c, cat("from_bytes builds a grow-only array (T[>..]), not ", TypeStr(t)));
+            // The kinds whose contents are exactly an element run plus a
+            // count: a resizable's count lives in its header, a variable
+            // array's in a length prefix the construction writes. A fixed or
+            // limited array would need the count to match a capacity the
+            // image does not carry, so those are rejected.
+            auto ak = t->kind == TY_ARRAY ? t->arr->akind : A_FIXED;
+            if (t->kind != TY_ARRAY || (ak != A_GROW && ak != A_GROWSHRINK && ak != A_VAR))
+                Error(c, cat("from_bytes builds a resizable or variable array "
+                             "(T[>..], T[>..<], T[]), not ", TypeStr(t)));
             auto el = t->arr->sub;
             if (el->kind == TY_VOID) Error(c, "from_bytes needs a known element type");
             string why;
@@ -1516,13 +1523,44 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         }
         elem = rt->arr->sub;
     }
-    // to_bytes(a): the element region as a fresh u8[>..]
-    // (docs/design/serialization.md §4). A copy rather than a view, so the
-    // image is independent of the array's later growth.
-    if (d.kind == B_TO_BYTES) {
+    // The serialization pair (docs/design/serialization.md §4). to_bytes
+    // builds the image -- a varint byte count then the element region --
+    // either as a fresh u8[>..] or appended to a builder the caller owns, so
+    // its own header can go in front. bytes_of is the element region alone,
+    // as a view: no copy, and no framing of its own.
+    if (d.kind == B_TO_BYTES || d.kind == B_BYTES_OF) {
         string why;
         if (!ImageSafe(elem, why))
-            Error(c, cat("to_bytes cannot write ", TypeStr(rv.type), " out: ", why));
+            Error(c, cat(d.name, " cannot write ", TypeStr(rv.type), " out: ", why));
+        if (d.kind == B_BYTES_OF) {
+            Val v;
+            v.type = u8slice;
+            v.SetProv(rv);
+            // The bytes of a live structure: reading them is what they are
+            // for, and writing them would forge the relative references the
+            // checker otherwise proves (§3.9), so the view is never writable.
+            v.writable = false;
+            v.reusable = false;
+            v.byteview = true;
+            c->rettypes.push_back(v.type);
+            return v;
+        }
+        if (args.size() == 2) {
+            auto ov = CheckV(args[1], nullptr);
+            args[1]->exprtype = ov.type;
+            auto ot = ov.type;
+            if (IsPlainRef(ot)) ot = ot->ref->sub;
+            auto ok = ot->kind == TY_ARRAY && IsU8(ot->arr->sub) &&
+                      (ot->arr->akind == A_GROW || ot->arr->akind == A_GROWSHRINK ||
+                       ot->arr->akind == A_LIMITED);
+            if (!ok)
+                Error(c, cat("to_bytes(a, out) appends to a growable u8 array, not ",
+                             TypeStr(ov.type)));
+            if (!ov.writable)
+                Error(c, "cannot append through a non-writable value (let, or "
+                         "non-writable provenance, §9.5)");
+            return VoidVal();
+        }
         auto t = ast.NewType(TY_ARRAY, c->line);
         t->arr = ast.NewDetail<TypeArray>();
         t->arr->sub = ast.inttypes[IS_U8];

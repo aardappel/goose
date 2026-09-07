@@ -1,10 +1,10 @@
-4 nodes, 48 bytes
+4 nodes, 49 bytes, prefix 1
 true 4 true
 5 11
 wild false 0
 mid false
 cut false
-empty true 0
+empty 1 true 0 false
 ring true 2 7 8
 slice true 1 8
 knot true 2 1
@@ -12,15 +12,20 @@ shape true 3 9
 badtag false 0
 cell true 3 2 1 2
 overlen false
-rec true 2 54 true
+rec true 2 55 true
 badcap false
-pad true 2 20 100
-recv 8 6 4 2
+pad true 2 21 100
+recv 9 7 5 3
 ints true 4 4
-sexp true 4 24 true
+framed 53 GSX1 true 4
+limited 49
+view 48 true 4 48 1
+kinds true 4 true 4 true 4 44
+prefix false
+sexp true 4 25 true
 over false
 biglen false
 item true 2 22
 retag false
-dest 48 48 4 48 4
+dest 49 49 4 49 4
 mutations true true true

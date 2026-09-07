@@ -1,5 +1,5 @@
-// to_bytes / from_bytes (docs/design/serialization.md): an array of
-// self-relative structure written out as bytes, and verified back in.
+// to_bytes / bytes_of / from_bytes (docs/design/serialization.md): an array
+// of self-relative structure written out as bytes, and verified back in.
 //
 // The point of the verifier is that a *hostile* image can never produce a
 // reference the checker did not prove valid, so most of this file is about
@@ -7,6 +7,8 @@
 // section mutates a good image every way a short loop can and walks whatever
 // survives, asserting through `index_of` that every link it followed really
 // does land on an element of the array it came from.
+
+import std;
 
 // --- fixed elements ---------------------------------------------------------
 
@@ -35,7 +37,11 @@ fn fixed_elements() {
     var pool: Tree[>..] = [];
     build(pool);
     var img: u8[>..] = pool.to_bytes();
-    print(pool.len, " nodes, ", img.len, " bytes");     // 4 nodes, 48 bytes
+    // The image is a varint byte count then the element region, so a reader
+    // of a stream sizes its read from the front of it.
+    let pfx = img.len - pool.bytes_of().len;
+    print(pool.len, " nodes, ", img.len, " bytes, prefix ", pfx);
+                                                        // 4 nodes, 49 bytes, prefix 1
 
     var back, ok = from_bytes<Tree[>..]>(img);
     print(ok, " ", back.len, " ", tsum(back) == tsum(pool));   // true 4 true
@@ -49,26 +55,30 @@ fn fixed_elements() {
 
     // A link that leaves the image: the offset field of the last node.
     var wild: u8[>..] = pool.to_bytes();
-    wild[40] = 200;
+    wild[pfx + 40] = 200;
     var w, wok = from_bytes<Tree[>..]>(wild);
     print("wild ", wok, " ", w.len);                    // wild false 0
 
     // A link that lands inside an element rather than on its start.
     var mid: u8[>..] = pool.to_bytes();
-    mid[40] = mid[40] + 1;
+    mid[pfx + 40] = mid[pfx + 40] + 1;
     var m, mok = from_bytes<Tree[>..]>(mid);
     print("mid ", mok);                                 // mid false
 
-    // A byte length that is not a whole number of elements.
+    // A byte length the prefix no longer accounts for.
     var cut: u8[>..] = pool.to_bytes();
     cut.pop();
     var c2, cok = from_bytes<Tree[>..]>(cut);
     print("cut ", cok);                                 // cut false
 
-    // The empty image is a valid empty array.
-    var none: u8[>..] = [];
-    var e, eok = from_bytes<Tree[>..]>(none);
-    print("empty ", eok, " ", e.len);                   // empty true 0
+    // An empty array is one prefix byte; a slice with no prefix at all is
+    // not an image of anything.
+    var none: Tree[>..] = [];
+    var ni: u8[>..] = none.to_bytes();
+    var e, eok = from_bytes<Tree[>..]>(ni);
+    var z, zok = from_bytes<Tree[>..]>("");
+    print("empty ", ni.len, " ", eok, " ", e.len, " ", zok);
+                                                        // empty 1 true 0 false
 }
 
 // --- self, and links that are never null ------------------------------------
@@ -126,7 +136,7 @@ fn adt_elements() {
     for &s in back { sum += area(s); }
     print("shape ", ok, " ", back.len, " ", sum);       // shape true 3 9
 
-    img[0] = 9;                                         // a tag out of range
+    img[img.len - 27] = 9;                              // a tag out of range
     var b2, ok2 = from_bytes<Shape[>..]>(img);
     print("badtag ", ok2, " ", b2.len);                 // badtag false 0
 }
@@ -149,7 +159,7 @@ fn limited_fields() {
           r.kids[0].k, " ", r.kids[1].k);                 // cell true 3 2 1 2
 
     // A stored length above the capacity is not a value of the type.
-    img[2] = 9;
+    img[img.len - pool.bytes_of().len + 2] = 9;
     var b2, ok2 = from_bytes<Cell[>..]>(img);
     print("overlen ", ok2);                             // overlen false
 }
@@ -192,7 +202,7 @@ fn variable_elements() {
     var img: u8[>..] = pool.to_bytes();
     var back, ok = from_bytes<Sexp..[>..]>(img);
     print("sexp ", ok, " ", back.len, " ", img.len, " ",
-          sdigest(back) == sdigest(pool));            // sexp true 4 24 true
+          sdigest(back) == sdigest(pool));            // sexp true 4 25 true
 
     // One byte past the end: the framing walk no longer ends at the end.
     var over: u8[>..] = pool.to_bytes();
@@ -202,7 +212,7 @@ fn variable_elements() {
 
     // A varint length that claims more bytes than the image holds.
     var big: u8[>..] = pool.to_bytes();
-    big[1] = 100;
+    big[big.len - pool.bytes_of().len + 1] = 100;
     var g, gok = from_bytes<Sexp..[>..]>(big);
     print("biglen ", gok);                              // biglen false
 }
@@ -235,7 +245,7 @@ fn variant_pointees() {
     print("item ", ok, " ", back.len, " ", n);          // item true 2 22
 
     // Retagging the target makes the link point at a Ref, not a Word.
-    img[0] = 1;
+    img[img.len - pool.bytes_of().len] = 1;
     var b2, ok2 = from_bytes<Item..[>..]>(img);
     print("retag ", ok2);                               // retag false
 }
@@ -270,10 +280,10 @@ fn nested() {
     var img: u8[>..] = pool.to_bytes();
     var back, ok = from_bytes<Rec[>..]>(img);
     print("rec ", ok, " ", back.len, " ", img.len, " ",
-          recsum(back) == recsum(pool));            // rec true 2 54 true
+          recsum(back) == recsum(pool));            // rec true 2 55 true
 
     // A stored capacity that would run past the end of the image.
-    img[10] = 200;
+    img[img.len - pool.bytes_of().len + 10] = 200;
     var b2, ok2 = from_bytes<Rec[>..]>(img);
     print("badcap ", ok2);                          // badcap false
 
@@ -285,7 +295,7 @@ fn nested() {
     let pl = pback[1].l;
     guard pl else { print("unreachable"); return; }
     print("pad ", pok, " ", pback.len, " ", pimg.len, " ", pl.b);
-                                                    // pad true 2 20 100
+                                                    // pad true 2 21 100
 }
 
 fn receivers() {
@@ -296,9 +306,57 @@ fn receivers() {
     var lim: i16[..8] = [8, 9];
     var gs: i16[>..<] = [10];
     print("recv ", f.to_bytes().len, " ", v.to_bytes().len, " ",
-          lim.to_bytes().len, " ", gs.to_bytes().len);   // recv 8 6 4 2
+          lim.to_bytes().len, " ", gs.to_bytes().len);   // recv 9 7 5 3
     var back, ok = from_bytes<i16[>..]>(f.to_bytes());
     print("ints ", ok, " ", back.len, " ", back[3]);     // ints true 4 4
+}
+
+// --- framing, builders, views, and the other destination kinds --------------
+
+fn framing() {
+    var pool: Tree[>..] = [];
+    build(pool);
+
+    // to_bytes(a, out) appends the image to a builder the caller owns, so
+    // its own header can go in front and nothing is copied twice.
+    var msg: u8[>..] = [];
+    msg.append("GSX1");
+    pool.to_bytes(msg);
+    var back, ok = from_bytes<Tree[>..]>(msg[4..]);
+    print("framed ", msg.len, " ", msg[0..4], " ", ok, " ", back.len);
+                                                        // framed 53 GSX1 true 4
+
+    // A limited builder takes it too, under its capacity check.
+    var small: u8[..64] = [];
+    to_bytes(pool, small);
+    print("limited ", small.len);                       // limited 49
+
+    // bytes_of is the element region as a view: no copy, and the length the
+    // framing prefix would have carried. The prefix is the stdlib's ULEB, so
+    // a save can write a header and the payload without an image in between.
+    let raw = pool.bytes_of();
+    var head: u8[>..] = [];
+    format_uleb(head, raw.len);
+    var file: u8[>..] = [];
+    file.append(head);
+    file.append(raw);
+    var f2, fok = from_bytes<Tree[>..]>(file);
+    let v, k = parse_uleb(file[0..]);
+    print("view ", raw.len, " ", fok, " ", f2.len, " ", v, " ", k);
+                                                        // view 48 true 4 48 1
+
+    // The kinds whose contents are an element run plus a count.
+    var img: u8[>..] = pool.to_bytes();
+    var gs, gok = from_bytes<Tree[>..<]>(img);
+    var va, vok = from_bytes<Tree[]>(img);
+    var vv, wok = from_bytes<Tree[varint]>(img);
+    print("kinds ", gok, " ", gs.len, " ", vok, " ", va.len, " ", wok, " ",
+          vv.len, " ", va[3].v);                        // kinds true 4 true 4 true 4 44
+
+    // A prefix that does not account for exactly the rest is not an image.
+    img[0] = img[0] + 1;
+    var b2, bok = from_bytes<Tree[>..]>(img);
+    print("prefix ", bok);                              // prefix false
 }
 
 // --- destinations -----------------------------------------------------------
@@ -321,7 +379,7 @@ fn destinations() {
     let flat: u8[] = pool.to_bytes();
     let s = Saved { name: "tree", blob: pool.to_bytes() };
     print("dest ", flat.len, " ", s.blob.len, " ", nodes_in(pool.to_bytes()), " ",
-          image_of(pool).len, " ", nodes_in(s.blob));   // dest 48 48 4 48 4
+          image_of(pool).len, " ", nodes_in(s.blob));   // dest 49 49 4 49 4
 }
 
 // --- mutations --------------------------------------------------------------
@@ -420,6 +478,7 @@ fn main() {
     limited_fields();
     nested();
     receivers();
+    framing();
     variable_elements();
     variant_pointees();
     destinations();

@@ -184,6 +184,8 @@ fn format_flt(out: u8[>..]&, v: f64, decimals: i64)        // fixed decimals, ro
 fn parse_int(s: u8[:]) -> i64, bool                        // optional sign, whole string
 fn parse_int(s: u8[:], base: i64) -> i64, bool
 fn parse_flt(s: u8[:]) -> f64, bool                        // sign, fraction, exponent
+fn format_uleb(out: u8[>..]&, v: i64)                     // LEB128 (3.6), 1-10 bytes
+fn parse_uleb(s: u8[:]) -> i64, i64                       // value and byte count; 0, 0 if malformed
 fn compare(a: u8[:], b: u8[:]) -> i64                      // bytewise: -1, 0, 1
 fn trim(s: u8[:]) -> u8[:]                                 // ASCII whitespace; a sub-slice
 fn trim_start(s: u8[:]) -> u8[:]                           fn trim_end(s: u8[:]) -> u8[:]
@@ -206,6 +208,18 @@ format(line, "x=");
 format_int(line, x, 16, 8, '0');
 each_split(text, '\n') { handle(trim(it)); };
 let n, ok = parse_int(trim(field));
+```
+
+`format_uleb`/`parse_uleb` are the framing prefix an image carries
+(`design/serialization.md`): writing a save's header by hand is what lets its
+payload be a `bytes_of` view rather than a copy, and reading the prefix is
+how a stream reader knows how many bytes an image still needs.
+
+```goose
+let payload = pool.bytes_of();            // a view, nothing copied
+var head: u8[>..] = [];
+format_uleb(head, payload.len);
+write_file(path, head); append_file(path, payload);
 ```
 
 ## dictionary

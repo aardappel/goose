@@ -2222,6 +2222,12 @@ inline bool Call::BceWalk(BCE &b) {
             case B_ALLOC_INDEX: case B_ALLOC_REF: case B_FORMAT:
                 b.GrowShrinkKill(rn, 1);
                 break;
+            case B_TO_BYTES:
+                // to_bytes(a, out) appends the image to `out`, which is the
+                // argument rather than the receiver; the one-argument form
+                // builds a fresh value and grows nothing.
+                if (arg0) b.GrowShrinkKill(arg0, 1);
+                break;
             case B_POP: {
                 // A pop that returns proves its own precondition: popping an
                 // empty array aborts (§9.3), so the length was at least one

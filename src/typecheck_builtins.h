@@ -151,7 +151,10 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
             // is the path to an array rather than a pointer into one.
             if (t->kind == TY_REF && ClassOf(t->ref->sub) == SC_RESIZABLE) continue;
             auto of = PointeeOf(t);
-            if (of && vd->type && !CanContain(LoadType(vd->type), of)) continue;
+            // A bytes_of view is over the element region itself, so it
+            // survives this filter however unrelated its pointee looks.
+            if (!v->ref.byteview && of && vd->type && !CanContain(LoadType(vd->type), of))
+                continue;
             auto root = RefRootOf(v);
             auto holds = root == vd || (v->isvar && Depth(root) == Depth(vd)) ||
                          (!v->refrootknown && Depth(v) >= Depth(vd));
@@ -476,7 +479,9 @@ inline void TypeCheck::CheckShrinkHolders(Node *at, const string &op, VarDef *ro
         // Nor is one whose pointee the array's elements cannot contain: a
         // slice of text rooted at a dictionary keyed by slices points at
         // the text, whatever else it might be rebound to.
-        if (!GrowShrinkCanHold(root, PointeeOf(v->type))) return;
+        // A bytes_of view is over the element region itself, so the
+        // pointee-type filter would dismiss exactly the case it is for.
+        if (!v->ref.byteview && !GrowShrinkCanHold(root, PointeeOf(v->type))) return;
         auto r = RefRootOf(v);
         auto holds = r == root || (v->isvar && Depth(r) == Depth(root)) ||
                      (!v->refrootknown && Depth(v) >= Depth(root));

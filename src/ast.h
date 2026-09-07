@@ -246,6 +246,11 @@ struct Prov {
     VarDef *rootfrom = nullptr;  // Inexact read-back: the container, for diagnostics.
     bool writable = false;       // Writable provenance (§9.5).
     bool reusable = false;       // Root is a reusable pool (§5.4).
+    // A `bytes_of` view (docs/design/serialization.md): a u8 slice over the
+    // element region of an array of some other type. The shrink scans of §5.1
+    // and §5.2 otherwise dismiss a slice whose pointee the root's elements
+    // cannot contain -- true of every other slice, and exactly wrong here.
+    bool byteview = false;
     void SetProv(const Prov &p) { *this = p; }
 };
 
@@ -872,6 +877,10 @@ struct RootArg {
     // The argument's root holds a grow-shrink array (§5.2). Part of the key:
     // a body is checked against its shrink rules only where they apply.
     bool growshrink = false;
+    // The argument is a bytes_of view (Prov::byteview). Part of the key for
+    // the same reason growshrink is: the shrink scans dismiss a slice whose
+    // pointee the root cannot hold, and this is the one that survives that.
+    bool byteview = false;
     // Val::rootexact of the argument, ANDed over every call site that reaches
     // the specialization. Deliberately not part of the key: within the callee
     // a class always names one array (typecheck.h keeps an inexactly rooted
@@ -888,7 +897,7 @@ struct RootArg {
     VarDef *pool = nullptr;
     bool operator==(const RootArg &o) const {
         return cls == o.cls && writable == o.writable && reusable == o.reusable &&
-               growshrink == o.growshrink && pool == o.pool;
+               growshrink == o.growshrink && byteview == o.byteview && pool == o.pool;
     }
 };
 
