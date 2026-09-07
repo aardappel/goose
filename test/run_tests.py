@@ -5,7 +5,15 @@ their first line, checks that error tests fail in the right phase, and (when a
 C compiler is available) compiles and runs the generated C at -O0 and -O2,
 comparing the two runs and any blessed output in expected/<name>.out.
 expected/<name>.aborts marks tests whose run is expected to end in a runtime
-abort (nonzero exit) after printing their expected stdout.
+abort (nonzero exit) after printing their expected stdout. Each nonblank line
+in expected/<name>.stderr must occur in stderr, so an unrelated crash cannot
+satisfy an expected abort; the same markers validate parser/typecheck errors.
+A first-line `runtime-debug` marker adds a targeted
+GS_DEBUG=1 run, alongside the existing codegen_exec debug coverage.
+
+Profiles keep the CI coverage deliberate: baseline compares Goose/native C
+-O0 and -O2 plus the targeted debug-runtime runs; sanitize uses Goose -O2 and
+Clang -O1 with ASan/UBSan on Linux, including the samples and C runtime tests.
 
   python test/run_tests.py [--exe path/to/goose] [--nocgen]
 """
@@ -50,7 +58,43 @@ class Runner:
         """The compiler under test, as (exit code, stdout, stderr). Both
         streams are captured rather than shown, so a failing step can print
         what happened without having to run the compiler a second time."""
-        return tc.run_capture([self.exe] + [str(a) for a in args])
+        result = tc.run_capture([self.exe] + [str(a) for a in args])
+        if tc.sanitizer_failure(result[2]):
+            self.fail(f"compiler sanitizer {args[-1]}", result[2])
+        return result
+
+    def run_expected(self, exe, name, label):
+        """Validate termination and diagnostics before comparing stdout."""
+        code, out, err = tc.run_capture([exe])
+        aborts = (HERE / "expected" / f"{name}.aborts").exists()
+        if tc.sanitizer_failure(err):
+            self.fail(f"sanitizer {label}", err)
+            return None
+        if (aborts and code == 0) or (not aborts and code != 0):
+            self.fail(f"run {label} (exit {code})", err)
+            return None
+        if not self.check_stderr(name, label, err):
+            return None
+        return joined(out)
+
+    def check_stderr(self, name, label, err):
+        stderr_file = HERE / "expected" / f"{name}.stderr"
+        if stderr_file.exists():
+            markers = [line.strip() for line in tc.decode(stderr_file.read_bytes()).splitlines()
+                       if line.strip()]
+            if not markers or any(marker not in err for marker in markers):
+                self.fail(f"expected-stderr {label}", err)
+                return False
+        return True
+
+    def check_stdout(self, name, label, out):
+        expfile = HERE / "expected" / f"{name}.out"
+        if expfile.exists():
+            want = joined(tc.decode(expfile.read_bytes()))
+            if out != want:
+                self.fail(f"expected-output {label}", f"--- got:\n{out}\n--- want:\n{want}")
+                return False
+        return True
 
 
 def main():
@@ -59,10 +103,28 @@ def main():
     ap.add_argument("--exe", help="the goose compiler to test")
     ap.add_argument("--nocgen", action="store_true",
                     help="skip everything that needs a C compiler")
+    ap.add_argument("--profile", choices=("baseline", "sanitize"), default="baseline",
+                    help="baseline: native O0/O2; sanitize: Linux Clang ASan/UBSan at O1")
+    ap.add_argument("--cc", choices=("native", "clang", "gcc", "msvc"),
+                    help="require this C toolchain instead of optional auto-discovery")
+    ap.add_argument("--require-clang", action="store_true",
+                    help="fail if the baseline's second C-front-end check is unavailable")
     args = ap.parse_args()
+
+    if args.nocgen and (args.cc or args.require_clang or args.profile != "baseline"):
+        ap.error("--nocgen cannot be combined with a required toolchain or sanitizer profile")
+    if args.profile == "sanitize" and (not sys.platform.startswith("linux") or
+                                        args.cc not in (None, "clang")):
+        ap.error("the sanitize profile requires Linux and Clang")
 
     tc.setup_console()
     exe = tc.find_goose(args.exe)
+    cc = None if args.nocgen else tc.test_cc("clang" if args.profile == "sanitize" else args.cc)
+    clang = None if args.nocgen or args.profile == "sanitize" else tc.find_clang_c()
+    if args.require_clang and not clang:
+        ap.error("requested secondary C front end is unavailable: clang")
+    extra = tc.SANITIZER_FLAGS if args.profile == "sanitize" else ()
+    print(f"profile: {args.profile}; C backend: {cc.desc if cc else 'none'}")
     r = Runner(exe)
     builddir = tc.REPO_ROOT / "build"
     builddir.mkdir(parents=True, exist_ok=True)
@@ -117,19 +179,18 @@ def main():
         r.ok("bce-test bce.goose")
 
     # --- codegen: generate C, compile, run, compare ------------------------
-    cc = None if args.nocgen else next(iter(tc.find_ccs().values()), None)
     if not cc:
         print("skip codegen run tests (no C compiler found or --nocgen)")
     else:
-        gendir = builddir / "gen"
+        gendir = builddir / "gen" / args.profile
         gendir.mkdir(parents=True, exist_ok=True)
         for f in tests:
             if "parse-only" in first_line(f):
                 continue
             name = f.stem
-            aborts = (HERE / "expected" / f"{name}.aborts").exists()
             runs, bad = {}, False
-            for ol in ("0", "2"):
+            levels = ("0", "2") if args.profile == "baseline" else ("2",)
+            for ol in levels:
                 cfile = gendir / f"{name}-O{ol}.c"
                 efile = gendir / f"{name}-O{ol}{tc.EXE_SUFFIX}"
                 code, out, err = r.goose(f"-O{ol}", "-o", cfile, f)
@@ -137,59 +198,85 @@ def main():
                     r.fail(f"cgen -O{ol} {f.name}", out + err)
                     bad = True
                     continue
-                ok, log = cc.compile(cfile, efile, log=gendir / f"{name}-O{ol}.cc.log")
+                ok, log = cc.compile(cfile, efile,
+                                     opt=int(ol) if args.profile == "baseline" else 1,
+                                     extra=extra, strict_decls=True,
+                                     log=gendir / f"{name}-O{ol}.cc.log")
                 if not ok:
                     r.fail(f"cc -O{ol} {f.name}", "\n".join(log.splitlines()[:8]))
                     bad = True
                     continue
-                code, out, err = tc.run_capture([efile])
-                if (aborts and code == 0) or (not aborts and code != 0):
-                    r.fail(f"run -O{ol} {f.name} (exit {code})",
-                           "\n".join(err.splitlines()[:3]))
+                out = r.run_expected(efile, name, f"-O{ol} {f.name}")
+                if out is None:
                     bad = True
                     continue
-                runs[ol] = joined(out)
+                runs[ol] = out
             if bad:
                 continue
-            if runs["0"] != runs["2"]:
+            if len(set(runs.values())) != 1:
                 r.fail(f"cgen-output-differs-by-O {f.name}")
                 continue
-            expfile = HERE / "expected" / f"{name}.out"
-            if expfile.exists():
-                want = joined(tc.decode(expfile.read_bytes()))
-                if runs["0"] != want:
-                    r.fail(f"cgen-expected {f.name}",
-                           f"--- got:\n{runs['0']}\n--- want:\n{want}")
-                    continue
+            if not r.check_stdout(name, f.name, runs["2"]):
+                continue
             r.ok(f"cgen+run {f.name}")
 
-        # One debug-checked build (-DGS_DEBUG=1: overflow and `as` range
-        # aborts, 9.3) of the codegen coverage test; its output must not change.
-        want = joined(tc.decode((HERE / "expected" / "codegen_exec.out").read_bytes()))
-        r.goose("-O0", "-o", gendir / "cgdbg.c", HERE / "codegen_exec.goose")
-        ok, log = cc.compile(gendir / "cgdbg.c", gendir / f"cgdbg{tc.EXE_SUFFIX}",
-                             defines=["GS_DEBUG=1"], log=gendir / "cgdbg.cc.log")
+        # GS_DEBUG changes language overflow/cast checks, independently of
+        # native optimization. Cover its helpers under O2 without multiplying
+        # every test by a second runtime mode. Sanitizers run these same
+        # selected fixtures, so neither kind of check masks the other.
+        debug_tests = [f for f in tests if f.stem == "codegen_exec" or
+                       "runtime-debug" in first_line(f)]
+        for f in debug_tests:
+            name = f.stem
+            src = gendir / f"{name}-debug.c"
+            out_exe = gendir / f"{name}-debug{tc.EXE_SUFFIX}"
+            code, out, err = r.goose("-O2", "-o", src, f)
+            if code != 0:
+                r.fail(f"cgen-debug {f.name}", out + err)
+                continue
+            ok, log = cc.compile(src, out_exe, opt=2 if args.profile == "baseline" else 1,
+                                 defines=["GS_DEBUG=1"], extra=extra, strict_decls=True,
+                                 log=gendir / f"{name}-debug.cc.log")
+            if not ok:
+                r.fail(f"cgen-debug-cc {f.name}", "\n".join(log.splitlines()[:8]))
+                continue
+            out = r.run_expected(out_exe, name, f"debug {f.name}")
+            if out is not None and r.check_stdout(name, f"debug {f.name}", out):
+                r.ok(f"cgen-debug {f.name}")
+
+        # Direct runtime lifecycle checks use small region limits and allocator
+        # instrumentation that cannot be expressed by a Goose program. Keep
+        # this one focused native test in both profiles.
+        name = "runtime_threads_lifecycle"
+        src = HERE / f"{name}.c"
+        out_exe = gendir / f"{name}{tc.EXE_SUFFIX}"
+        ok, log = cc.compile(src, out_exe, opt=2 if args.profile == "baseline" else 1,
+                             extra=extra, strict_decls=True,
+                             log=gendir / f"{name}.cc.log")
         if not ok:
-            r.fail("cgen-debug-cc codegen_exec.goose", "\n".join(log.splitlines()[:8]))
+            r.fail(f"runtime-cc {name}", log)
         else:
-            code, out, err = tc.run_capture([gendir / f"cgdbg{tc.EXE_SUFFIX}"])
-            if code != 0 or joined(out) != want:
-                r.fail(f"cgen-debug codegen_exec.goose (exit {code})")
-            else:
-                r.ok("cgen-debug codegen_exec.goose")
+            out = r.run_expected(out_exe, name, name)
+            if out is not None and r.check_stdout(name, name, out):
+                r.ok(f"runtime {name}")
 
         # The same coverage test through clang, release and debug. A compiler
         # that accepts more C than the standard does is not what checks the
         # generated C is actually valid: a call to a function defined only in
         # debug builds compiled silently under MSVC and broke every clang
         # release build.
-        clang = tc.find_clang_c()
-        if not clang:
+        if args.profile == "sanitize":
+            pass  # The full generated-C suite already ran through Clang.
+        elif not clang:
             print("skip cgen-clang (no clang found)")
         else:
             src = gendir / "cgclang.c"
-            r.goose("-O2", "-o", src, HERE / "codegen_exec.goose")
+            code, out, err = r.goose("-O2", "-o", src, HERE / "codegen_exec.goose")
+            if code != 0:
+                r.fail("cgen-clang codegen_exec.goose", out + err)
             for label in ("release", "debug"):
+                if code != 0:
+                    break
                 out_exe = gendir / f"cgclang-{label}{tc.EXE_SUFFIX}"
                 ok, log = clang.compile(src, out_exe, opt=1, warn="off", strict_decls=True,
                                         defines=["GS_DEBUG=1"] if label == "debug" else [],
@@ -198,17 +285,15 @@ def main():
                     r.fail(f"cgen-clang-{label} codegen_exec.goose",
                            "\n".join(log.splitlines()[:8]))
                     continue
-                code, out, err = tc.run_capture([out_exe])
-                if code != 0 or joined(out) != want:
-                    r.fail(f"cgen-clang-{label}-output codegen_exec.goose (exit {code})")
-                else:
+                out = r.run_expected(out_exe, "codegen_exec", f"clang-{label} codegen_exec.goose")
+                if out is not None and r.check_stdout("codegen_exec", f"clang-{label}", out):
                     r.ok(f"cgen-clang-{label} codegen_exec.goose")
 
     for f in sorted((HERE / "errors").glob("*.goose")):
         code, out, err = r.goose("--parse", f)
         if code == 0:
             r.fail(f"expected-error {f.name}")
-        else:
+        elif r.check_stderr(f.stem, f"parse error {f.name}", err):
             r.ok(f"error {f.name}")
 
     # Typecheck error tests: must parse, must fail the typechecker.
@@ -217,10 +302,10 @@ def main():
         if code != 0:
             r.fail(f"tc-error-parses {f.name}", out + err)
             continue
-        code, out, err = r.goose(f)
+        code, out, err = r.goose("--check", f)
         if code == 0:
             r.fail(f"expected-tc-error {f.name}")
-        else:
+        elif r.check_stderr(f.stem, f"typecheck error {f.name}", err):
             r.ok(f"tc-error {f.name}")
 
     # The samples: compiled, built, run and compared with their expected output
@@ -229,6 +314,10 @@ def main():
              "--exe", str(exe)]
     if args.nocgen:
         sargs.append("--nocgen")
+    else:
+        sargs += ["--profile", args.profile]
+        if args.cc:
+            sargs += ["--cc", args.cc]
     if subprocess.run(sargs).returncode != 0:
         r.failures += 1
 

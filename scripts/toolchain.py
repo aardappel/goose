@@ -287,6 +287,38 @@ def find_clang_c():
     return CC("clang", p, shutil.which("clang++") or p, "gcc", f"clang {ver}")
 
 
+def test_cc(name=None):
+    """Select a test backend; an explicitly requested one must be available."""
+    found = find_ccs()
+    if name in (None, "native"):
+        cc = next(iter(found.values()), None)
+    elif name == "clang":
+        cc = find_clang_c()
+    elif name == "msvc":
+        cc = next((c for c in found.values()
+                   if c.style == "msvc" and c.name != "clang"), None)
+    else:
+        cc = found.get(name)
+    if name and cc is None:
+        sys.exit(f"requested C toolchain is unavailable: {name}")
+    return cc
+
+
+# Packed Goose fields deliberately use unaligned scalar accesses. Keep the
+# remaining UBSan checks, and make every finding fatal, including in programs
+# which are themselves expected to abort. ASan still checks the compiler and
+# runtime's C allocations; it cannot see logical object boundaries inside a
+# Goose virtual-memory arena.
+SANITIZER_FLAGS = ("-fsanitize=address,undefined", "-fno-sanitize=alignment",
+                   "-fno-sanitize-recover=all", "-fno-omit-frame-pointer", "-g")
+
+
+def sanitizer_failure(stderr):
+    """Do not mistake a sanitizer crash for an expected language error."""
+    return bool(re.search(r"AddressSanitizer|LeakSanitizer|UndefinedBehaviorSanitizer|"
+                          r"(?m:^.*?:\d+:\d+: runtime error:)", stderr))
+
+
 def find_rustc():
     """rustup installs into ~/.cargo/bin and puts it on the PATH of shells
     started afterwards, which is not necessarily this one."""

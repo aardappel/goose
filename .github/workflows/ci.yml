@@ -1,6 +1,9 @@
 # Builds the compiler and runs the whole suite -- parse, roundtrip, typecheck,
-# error tests, generated C at -O0 and -O2 through two C front ends, and the
-# samples -- on all three desktop platforms. The runners bring the compilers
+# error tests, Goose/native C at -O0 and -O2, targeted GS_DEBUG=1 tests, a
+# second C-front-end probe, and samples -- on all three desktop platforms.
+# One additional Linux profile instruments the compiler and generated C;
+# sanitizer x platform x optimization x runtime mode is deliberately not a matrix.
+# The runners bring the compilers
 # the test script looks for: MSVC and its bundled clang on Windows, gcc and
 # clang on Ubuntu, Apple clang on macOS.
 name: CI
@@ -17,7 +20,7 @@ concurrency:
 
 jobs:
   test:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.os }} / baseline
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -44,4 +47,36 @@ jobs:
         run: cmake --build build --config Debug
 
       - name: Test
-        run: python test/run_tests.py
+        run: python test/run_tests.py --profile baseline --cc native --require-clang
+
+  sanitize:
+    name: Linux / ASan + UBSan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CC: clang
+      CXX: clang++
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # Instrument the C++ compiler as well as the C it emits. -O1 keeps
+      # useful sanitizer stacks and compiler build time modest. Generated C
+      # disables only alignment checks because Goose deliberately packs data;
+      # the compiler itself retains the full undefined-behavior checks.
+      - name: Configure instrumented compiler
+        run: >-
+          cmake -S . -B build-sanitize -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
+
+      - name: Build instrumented compiler
+        run: cmake --build build-sanitize --parallel 2
+
+      - name: Test compiler, generated C, runtime lifecycle and samples
+        run: python test/run_tests.py --exe build-sanitize/goose --profile sanitize --cc clang

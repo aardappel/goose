@@ -38,13 +38,24 @@ def main():
                     help="rewrite expected/*.out from these runs")
     ap.add_argument("--nocgen", action="store_true",
                     help="only typecheck the samples, do not build or run them")
+    ap.add_argument("--profile", choices=("baseline", "sanitize"), default="baseline",
+                    help="sanitize: require Linux Clang and instrument generated C with ASan/UBSan")
+    ap.add_argument("--cc", choices=("native", "clang", "gcc", "msvc"),
+                    help="require this C toolchain instead of optional auto-discovery")
     args = ap.parse_args()
+
+    if args.nocgen and (args.cc or args.profile != "baseline"):
+        ap.error("--nocgen cannot be combined with a required toolchain or sanitizer profile")
+    if args.profile == "sanitize" and (not sys.platform.startswith("linux") or
+                                        args.cc not in (None, "clang")):
+        ap.error("the sanitize profile requires Linux and Clang")
 
     tc.setup_console()
     exe = tc.find_goose(args.exe)
-    cc = None if args.nocgen else next(iter(tc.find_ccs().values()), None)
+    cc = None if args.nocgen else tc.test_cc("clang" if args.profile == "sanitize" else args.cc)
+    extra = tc.SANITIZER_FLAGS if args.profile == "sanitize" else ()
 
-    gendir = tc.REPO_ROOT / "build" / "gen" / "samples"
+    gendir = tc.REPO_ROOT / "build" / "gen" / args.profile / "samples"
     gendir.mkdir(parents=True, exist_ok=True)
     (HERE / "expected").mkdir(exist_ok=True)
 
@@ -69,7 +80,8 @@ def main():
         if not cc:
             print(f"ok   sample-check {f.name}")
             continue
-        ok, log = cc.compile(cfile, efile, opt=2, log=gendir / f"{name}.cc.log")
+        ok, log = cc.compile(cfile, efile, opt=2 if args.profile == "baseline" else 1,
+                             extra=extra, strict_decls=True, log=gendir / f"{name}.cc.log")
         if not ok:
             print("\n".join(log.splitlines()[:8]))
             print(f"FAIL sample-cc {f.name}")
@@ -81,7 +93,7 @@ def main():
                                         stdin_path=infile if infile.exists() else None)
         tc.write_text(outfile, out)
         tc.write_text(errfile, err)
-        if code != 0:
+        if code != 0 or tc.sanitizer_failure(err):
             print("\n".join(err.splitlines()[:3]))
             print(f"FAIL sample-run {f.name} (exit {code})")
             failures += 1
