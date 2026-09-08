@@ -526,12 +526,30 @@ inline void LoopExpr::CgAny(CodeGen &cg, const Dst &d) {
 
 inline void InlineBlock::CgAny(CodeGen &cg, const Dst &d) {
     auto named = cg.OpenIbNrvo(this, d);
+    // An ordinary call evaluates its arguments in the caller's scope. Keep
+    // that lifetime when inlining: a slice/reference argument can borrow a
+    // temporary, and the returned value may still borrow it after this body
+    // exits (or while a later argument is evaluated). Actual callee locals
+    // and its statement temporaries retain their ordinary inner scopes.
+    size_t first = 0;
+    while (first < body->stmts.size()) {
+        auto arg = Is<VarDecl>(body->stmts[first]);
+        if (!arg || !arg->inline_arg) break;
+        cg.GenStmt2(arg);
+        ++first;
+    }
     cg.PushSc(CodeGen::SC_IB);
     auto si = (int)cg.cscopes.size() - 1;
     cg.cscopes[si].ibsf = sf;
     cg.cscopes[si].brklbl = cg.Lbl();
     cg.cscopes[si].dst = d;
-    cg.GenAny(body, d);
+    cg.PushSc(CodeGen::SC_PLAIN);
+    cg.L("{");
+    cg.ind++;
+    cg.GenBlockInner(body, d, first);
+    cg.PopSc();
+    cg.ind--;
+    cg.L("}");
     auto brk = cg.cscopes.back().usedbrk;
     auto lbl = cg.cscopes.back().brklbl;
     cg.PopSc();
@@ -641,7 +659,7 @@ inline void VarDecl::CgStmt(CodeGen &cg) {
         return;
     }
     for (size_t i = 0; i < defs.size(); i++)
-        cg.BindLocal(defs[i], i < inits.size() ? inits[i] : nullptr);
+        cg.BindLocal(defs[i], i < inits.size() ? inits[i] : nullptr, !inline_arg);
 }
 
 inline void Assign::CgStmt(CodeGen &cg) {

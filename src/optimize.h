@@ -518,6 +518,7 @@ inline Node *Optimizer::TryInline(Call *c) {
         inl.vmap[pv] = nv;
         facts[nv] = f;
         auto vd = ast.New<VarDecl>(c->line, pv->isvar);
+        vd->inline_arg = true;
         vd->names.push_back(pv->name);
         vd->defs.push_back(nv);
         vd->inits.push_back(arg);
@@ -743,6 +744,7 @@ inline Node *VarDecl::Cp1(Inliner &inl) const {
     c->reusable = reusable;
     c->isglobal = isglobal;
     c->byref = byref;
+    c->inline_arg = inline_arg;
     c->names = names;
     c->type = type;
     for (auto i : inits) c->inits.push_back(inl.Cp(i));

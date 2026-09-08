@@ -700,7 +700,7 @@ struct CodeGen {
 
     bool termjump = false;   // The last emitted statement left via goto/return.
 
-    void GenBlockInner(Block *b, Dst d);
+    void GenBlockInner(Block *b, Dst d, size_t first = 0);
     void GenStmt(Node *n);
 
     // ------------------------------------------------------------------
@@ -716,7 +716,7 @@ struct CodeGen {
     // ------------------------------------------------------------------
     // Declarations and assignment.
 
-    void BindLocal(VarDef *d, Node *init);
+    void BindLocal(VarDef *d, Node *init, bool forlocal = true);
     string GenPrefVal(Node *n);
     string Unique2(const string &base);
     void GenRelAssign(Loc lv, Node *rhs, Line ln);

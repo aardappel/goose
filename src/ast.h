@@ -608,6 +608,7 @@ NODE(VarDecl)
     bool reusable = false;
     bool isglobal = false;
     bool byref = false;         // `x .= e`: bound by reference, no decay (§3.8).
+    bool inline_arg = false;    // Synthesized call argument: caller-scope storage.
     vector<string_view> names;  // let a, b = f();
     TypeExpr *type = nullptr;
     vector<Node *> inits;       // Empty for uninitialized locals.
@@ -633,8 +634,10 @@ NODE(IncDec)
 NODE_END
 
 // Created by the optimizer (optimize.h), never by the parser: an inlined call
-// body spliced into the caller. Parameter bindings are ordinary VarDecls at
-// the top of body. Value semantics for codegen: a Return inside whose target
+// body spliced into the caller. Parameter bindings are marked VarDecls at
+// the top of body, evaluated in the caller's scope before entering the inline
+// body so temporary argument storage also outlives a borrowed return value.
+// Value semantics for codegen: a Return inside whose target
 // == sf exits this block with its value(s) as the block's value; normal
 // completion yields the body's tail value. Returns with other targets pass
 // through (they exit an enclosing InlineBlock or the real function).

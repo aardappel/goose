@@ -8,8 +8,8 @@ namespace goose {
 // The last emitted statement left via goto/return.
 
 // A Block's contents without emitting the braces/scope (the caller did).
-inline void CodeGen::GenBlockInner(Block *b, Dst d) {
-    for (auto st : b->stmts) GenStmt(st);
+inline void CodeGen::GenBlockInner(Block *b, Dst d, size_t first) {
+    for (auto i = first; i < b->stmts.size(); ++i) GenStmt(b->stmts[i]);
     if (b->tail && !IsVoidT(b->tail->exprtype) && d.k != DK_DISCARD) GenAny(b->tail, d);
     else if (b->tail) GenAny(b->tail, Dst {});
 }
@@ -73,7 +73,7 @@ inline void CodeGen::GenBreakPath(Node *val) {
 // ------------------------------------------------------------------
 // Declarations and assignment.
 
-inline void CodeGen::BindLocal(VarDef *d, Node *init) {
+inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
     auto name = LocalName(d);
     auto t = d->type;
     if (IsResz(t)) {
@@ -95,25 +95,25 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init) {
             }
             nd.hdr = name;
         } else {
-            stk = AllocStk(true);
+            stk = AllocStk(forlocal);
         }
         if (IsFrameObj(t)) {
             L(CT(t), " ", name, ";");
-            if (nit == nrvo.end()) SaveBase(true, stk, cat(FoTailHdr(t, name), ".base"));
+            if (nit == nrvo.end()) SaveBase(forlocal, stk, cat(FoTailHdr(t, name), ".base"));
             vstk[d] = stk;
             GenConstruct(init, stk, t, name);
             return;
         }
         L("gs_rhdr ", name, " = { ", Top(stk), ", 0 };");
         // The destination outlives us: no watermark to restore there.
-        if (nit == nrvo.end()) SaveBase(true, stk, cat(name, ".base"));
+        if (nit == nrvo.end()) SaveBase(forlocal, stk, cat(name, ".base"));
         vstk[d] = stk;
         if (d->reusable) {
             // Companion freelist: free slot indices on their own stack.
-            auto flstk = AllocStk(true);
+            auto flstk = AllocStk(forlocal);
             auto fln = Unique2(cat(name, "_fl"));
             L("gs_rhdr ", fln, " = { ", Top(flstk), ", 0 };");
-            SaveBase(true, flstk, cat(fln, ".base"));
+            SaveBase(forlocal, flstk, cat(fln, ".base"));
             vpool[d] = { fln, flstk };
         }
         GenConstruct(init, stk, t, cat(name, ".len"));
@@ -121,9 +121,9 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init) {
     }
     if (IsBytesT(t)) {
         assert(init);
-        auto stk = AllocStk(true);
+        auto stk = AllocStk(forlocal);
         L("uint8_t *", name, " = ", Top(stk), ";");
-        SaveBase(true, stk, name);
+        SaveBase(forlocal, stk, name);
         vstk[d] = stk;
         GenConstruct(init, stk, t);
         return;
