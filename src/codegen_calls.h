@@ -64,15 +64,16 @@ inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
     usedexterns.insert(sp);
     auto an = CallArgNodes(c, sp->argtypes.size());
     string argstr;
-    // A builder argument (`u8[>..]&`) is appended to by the C side through
-    // its stack's top, so a cached top is written back before the call and
-    // read again after it, as for a call into Goose code.
+    // A builder argument (`u8[>..]&`, or a value holding one) is appended
+    // to by the C side through its stack's top, so a cached top is written
+    // back before the call and read again after it, as for a call into
+    // Goose code.
     auto grows = false;
     for (size_t i = 0; i < an.size(); i++) {
         auto pt = sp->argtypes[i];
         if (i) argstr += ", ";
         argstr += pt->kind == TY_REF ? GenX(an[i]) : GenXD(an[i], pt);
-        if (pt->kind == TY_REF && IsResz(pt->ref->sub)) grows = true;
+        if (HoldsFatRef(pt)) grows = true;
     }
     if (grows) MarkFlush();
     vector<string> rets;

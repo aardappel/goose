@@ -30,7 +30,8 @@ inline void CodeGen::ComputeGlobalTouch() {
         function<void(Node *)> walk = [&](Node *n) {
             if (!n) return;
             if (auto id = Is<Ident>(n))
-                if (auto v = id->vdef; v && v->isglobal && v->type && IsBytesT(v->type))
+                if (auto v = id->vdef; v && v->isglobal && v->type &&
+                    (IsBytesT(v->type) || HoldsFatRef(v->type)))
                     g.insert(v);
             if (auto c = Is<Call>(n)) walk(c->fvbody);
             n->Children([&](Node *ch) { walk(ch); });
@@ -61,14 +62,14 @@ inline void CodeGen::ComputeGlobalTouch() {
 }
 
 // A pool or fat-reference argument carries its stack inside the value, so
-// the argument text does not name it; such a call syncs everything.
+// the argument text does not name it, and neither does the text of a struct,
+// a payload, an array or a captured variable that holds one; such a call
+// syncs everything.
 inline bool CodeGen::PassesOpaqueStack(FnSpec *sp) {
-    for (size_t i = 0; i < sp->argtypes.size(); i++) {
-        if (IsPoolParam(sp, i)) return true;
-        auto pt = sp->argtypes[i];
-        if (pt->kind == TY_REF && IsResz(pt->ref->sub)) return true;
-    }
-    for (auto fv : sinfo[sp].freevars) if (fv->reusable) return true;
+    for (size_t i = 0; i < sp->argtypes.size(); i++)
+        if (IsPoolParam(sp, i) || HoldsFatRef(sp->argtypes[i])) return true;
+    for (auto fv : sinfo[sp].freevars)
+        if (fv->reusable || (fv->type && HoldsFatRef(fv->type))) return true;
     return false;
 }
 
@@ -82,6 +83,9 @@ inline string CodeGen::SyncReach(FnSpec *callee, const vector<string> &args) {
     string s;
     for (auto &a : args) { s += a; s += '\x01'; }
     for (auto d : gtouch[callee]) {
+        // A fat reference held in a global reaches whichever stack it was
+        // bound to, which no name in the callee says.
+        if (HoldsFatRef(d->type)) return "*";
         auto it = gstks.find(d);
         if (it != gstks.end()) { s += it->second; s += '\x01'; }
         // A reusable pool's freelist is a second stack the same name

@@ -167,6 +167,8 @@ struct CodeGen {
     TypeExpr *FoTailArr(TypeExpr *t);
     string FoPrefixSize(TypeExpr *t);
     bool IsFatRef(TypeExpr *t);
+    bool HoldsFatRef(TypeExpr *t);
+    bool HoldsFatRefIn(TypeExpr *t, set<const void *> &open);
     bool IsOpt(TypeExpr *t) { return t->kind == TY_REF && t->ref->optional; }
     bool IsVoidT(TypeExpr *t) { return !t || t->kind == TY_VOID; }
     bool IsU8T(TypeExpr *t) { return t->kind == TY_INT && t->intstorage == IS_U8; }
@@ -322,9 +324,11 @@ struct CodeGen {
     bool IsPoolParam(FnSpec *sp, size_t i);
 
     // Which globals with dedicated data stacks a specialization may touch, its
-    // callees included. A call can only move a stack it can name: one handed to
-    // it as an argument, or a global it (transitively) mentions. Everything
-    // else the caller has cached stays cached across the call.
+    // callees included, plus the globals holding a fat reference, whose stack
+    // is whichever one that reference is bound to. A call can only move a
+    // stack it can name: one handed to it as an argument, or a global it
+    // (transitively) mentions. Everything else the caller has cached stays
+    // cached across the call.
     unordered_map<FnSpec *, set<const VarDef *>> gtouch;
 
     void ComputeGlobalTouch();

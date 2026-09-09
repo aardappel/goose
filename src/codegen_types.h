@@ -139,6 +139,50 @@ inline bool CodeGen::IsFatRef(TypeExpr *t) {
     return t->kind == TY_REF && t->ref->lenstorage < 0 && IsResz(t->ref->sub);
 }
 
+// Whether a value of type `t` carries a data stack inside it: a fat
+// reference, or one reachable from the value -- in a field, a payload, an
+// element, or behind a slice or a plain reference. Code handed such a value
+// can grow that stack without the value's name saying which stack it is
+// (PassesOpaqueStack, SyncReach). A nominal type reached again on the way
+// through itself has no further fat reference to offer, so `open` cuts the
+// recursion there.
+inline bool CodeGen::HoldsFatRef(TypeExpr *t) {
+    set<const void *> open;
+    return HoldsFatRefIn(t, open);
+}
+
+inline bool CodeGen::HoldsFatRefIn(TypeExpr *t, set<const void *> &open) {
+    auto fields = [&](const void *key, const vector<Field> &fs,
+                      const vector<TypeExpr *> &fts) {
+        if (!open.insert(key).second) return false;
+        for (size_t i = 0; i < fs.size(); i++)
+            if (!fs[i].ispad && HoldsFatRefIn(fts[i], open)) return true;
+        return false;
+    };
+    switch (t->kind) {
+        case TY_REF: return IsFatRef(t) || HoldsFatRefIn(t->ref->sub, open);
+        case TY_SLICE: return HoldsFatRefIn(t->sub, open);
+        case TY_ARRAY: return HoldsFatRefIn(t->arr->sub, open);
+        case TY_STRUCT: {
+            auto si = SI(t);
+            return fields(si, si->st->fields, si->ftypes);
+        }
+        case TY_ENUM: {
+            auto ei = EIOf(t);
+            if (!open.insert(ei).second) return false;
+            for (size_t vi = 0; vi < ei->en->variants.size(); vi++)
+                if (HoldsFatRefIn(VariantType(t, (int)vi), open)) return true;
+            return false;
+        }
+        case TY_VARIANT: {
+            auto ei = EIVar(t);
+            auto vi = VarIdx(ei->en, t->var->variant);
+            return fields(&ei->vftypes[vi], ei->en->variants[vi].fields, ei->vftypes[vi]);
+        }
+        default: return false;
+    }
+}
+
 // The stored length-field type of an array (A_VAR: declared or u32
 // default; A_LIMITED with static capacity: smallest fitting type).
 inline IntStorage CodeGen::LenStore(TypeArray *a) {
