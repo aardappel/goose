@@ -526,6 +526,21 @@ inline Node *Optimizer::TryInline(Call *c) {
         decls.push_back(vd);
     }
     auto body = inl.CpBlock(K->body);
+    // A copied variable's provenance still names the variables of the body
+    // it was copied from; point it at their copies, so that an analysis
+    // following a copied reference to its root (BCE's aliasing) lands on the
+    // variable the copied body declares. A root the copy does not own -- an
+    // outer local, a parameter's class root -- stays as it is.
+    auto remap = [&](VarDef *&r) {
+        auto it = r ? inl.vmap.find(r) : inl.vmap.end();
+        if (it != inl.vmap.end()) r = it->second;
+    };
+    for (auto &kv : inl.vmap) {
+        auto nv = kv.second;
+        remap(nv->ref.root);
+        remap(nv->ref.rootfrom);
+        remap(nv->contentroot);
+    }
     body->stmts.insert(body->stmts.begin(), decls.begin(), decls.end());
     auto ib = ast.New<InlineBlock>(c->line, K->sf, K, body);
     ib->exprtype = c->exprtype;

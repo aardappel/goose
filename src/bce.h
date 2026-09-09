@@ -240,6 +240,42 @@ struct BCE {
         return { UK_OPAQUE, nullptr };
     }
 
+    // Whether the field or element `cur` reads holds a reference or a slice,
+    // so that what lies beyond it on a chain is the pointee of a stored
+    // reference: storage the chain's root does not own. The node's own type
+    // says so where the checker kept the reference; a decayed read falls
+    // back to the declared field or element type, and a generic field whose
+    // instantiation is not at hand counts as one.
+    static bool ReadsStoredRef(Node *cur) {
+        auto isref = [](TypeExpr *t) {
+            return t && (t->kind == TY_REF || t->kind == TY_SLICE);
+        };
+        if (isref(cur->exprtype)) return true;
+        auto d = Is<Dot>(cur);
+        auto ix = Is<Index>(cur);
+        auto obj = d ? d->obj : ix ? ix->obj : nullptr;
+        auto t = obj ? obj->exprtype : nullptr;
+        if (!t) return false;
+        if (t->kind == TY_REF) t = t->ref->sub;
+        if (ix) {
+            if (t->kind == TY_ARRAY) return isref(t->arr->sub);
+            return t->kind == TY_SLICE && isref(t->sub);
+        }
+        if (d->fieldidx < 0) return false;
+        TypeExpr *ft = nullptr;
+        if (t->kind == TY_STRUCT) {
+            auto inst = t->struc->inst;
+            ft = inst ? inst->ftypes[d->fieldidx] : t->struc->st->fields[d->fieldidx].type;
+        } else if (t->kind == TY_VARIANT) {
+            auto v = t->var->variant;
+            ft = v->fields[d->fieldidx].type;
+            if (auto inst = t->var->adt->enu->inst)
+                for (size_t vi = 0; vi < inst->en->variants.size(); vi++)
+                    if (&inst->en->variants[vi] == v) ft = inst->vftypes[vi][d->fieldidx];
+        }
+        return ft && (isref(ft) || ft->kind == TY_GENERIC);
+    }
+
     // The place of the array or slice of type t (a reference's pointee
     // included) at `path` under `root`; -1 where there is nothing to track.
     int PlaceFor(VarDef *root, const vector<int> &path, TypeExpr *t) {
@@ -272,18 +308,30 @@ struct BCE {
         return id;
     }
 
-    int PlaceOf(Node *n, bool *failidx = nullptr) {
+    // `crossed` reports a stored reference read on the way, whether or not
+    // a place came of it.
+    int PlaceOf(Node *n, bool *failidx = nullptr, bool *crossed = nullptr) {
         vector<int> path;
         VarDef *root = nullptr;
         for (auto cur = n;;) {
             if (auto id = Is<Ident>(cur)) { root = id->vdef; break; }
             if (auto d = Is<Dot>(cur); d && d->fieldidx >= 0) {
+                // A field holding a reference is a crossing of its own: the
+                // place lies wherever that reference points, not in the
+                // object the field belongs to.
+                if (ReadsStoredRef(d)) {
+                    path.push_back(-1);
+                    if (crossed) *crossed = true;
+                }
                 path.push_back(d->fieldidx);
                 if (d->obj->exprtype && d->obj->exprtype->kind == TY_REF) path.push_back(-1);
                 cur = d->obj;
                 continue;
             }
-            if (failidx && Is<Index>(cur)) *failidx = true;
+            if (Is<Index>(cur)) {
+                if (failidx) *failidx = true;
+                if (crossed && ReadsStoredRef(cur)) *crossed = true;
+            }
             return -1;
         }
         if (!root) return -1;
@@ -806,11 +854,13 @@ struct BCE {
     // the receiver's place id (or -1).
     int GrowShrinkKill(Node *recv, int dir, int64_t exact = INT64_MIN) {
         if (recv) NoteStorage(ExprTarget(recv));
-        auto failidx = false;
-        auto pid = recv ? PlaceOf(recv, &failidx) : -1;
+        auto failidx = false, crossed = false;
+        auto pid = recv ? PlaceOf(recv, &failidx, &crossed) : -1;
         // A receiver reached through an element (a[i].f.push(...)) can only
-        // be an element-interior array, which no tracked place names.
-        if (pid < 0 && failidx) return -1;
+        // be an element-interior array, which no tracked place names --
+        // unless a reference read on the way led out of the element, to
+        // whatever reachable array it points at.
+        if (pid < 0 && failidx && !crossed) return -1;
         for (size_t i = 0; i < places.size(); i++) {
             if (!places[i].lenmut) continue;
             if (!AffectedByWrite((int)i, pid, UK_OPAQUE, nullptr, nullptr)) continue;
@@ -872,8 +922,10 @@ struct BCE {
 
     // A receiver or lvalue chain, followed down through fields and elements
     // to its root variable -- unless a stored reference is read on the way
-    // (a reference-typed field or element), whose pointee is unknown.
-    Target ExprTarget(Node *n) {
+    // (a reference-typed field or element), whose pointee is unknown. The
+    // chain's head counts as read too, except for `slot`: the location
+    // itself, which a rebind writes, rather than what it points at.
+    Target ExprTarget(Node *n, bool slot = false) {
         for (auto cur = n;;) {
             if (auto id = Is<Ident>(cur)) {
                 auto v = id->vdef;
@@ -888,8 +940,7 @@ struct BCE {
             if (auto d = Is<Dot>(cur)) obj = d->obj;
             else if (auto ix = Is<Index>(cur)) obj = ix->obj;
             else return { TG_OPAQUE };
-            if (!Is<Ident>(obj) && obj->exprtype && obj->exprtype->kind == TY_REF)
-                return { TG_OPAQUE };
+            if ((cur != n || !slot) && ReadsStoredRef(cur)) return { TG_OPAQUE };
             cur = obj;
         }
     }
@@ -2628,7 +2679,7 @@ inline bool Assign::BceWalk(BCE &b) {
     if (op == T_DOTASSIGN) {
         // A rebound field or element slot lies in storage behind the chain's
         // root, which the summary reports even where no place tracks it.
-        if (!Is<Ident>(lval)) b.NoteStorage(b.ExprTarget(lval));
+        if (!Is<Ident>(lval)) b.NoteStorage(b.ExprTarget(lval, true));
         auto ch = b.ChainOf(lval);
         if (ch.kind == BCE::CH_INDEX) return true;   // Element ref slots: no tracked places.
         if (ch.kind != BCE::CH_OK) {
