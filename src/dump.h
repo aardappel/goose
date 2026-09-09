@@ -69,9 +69,9 @@ inline void TypeExpr::Dump(string &s) const {
         case TY_INT:  s += IntStorageName(intstorage); break;
         case TY_FLT:  s += FltStorageName(fltstorage); break;
         case TY_BOOL: s += "bool"; break;
-        case TY_STRUCT: s += struc->st->name; ArgsDump(struc->args); break;
+        case TY_STRUCT: s += struc->st->qname; ArgsDump(struc->args); break;
         case TY_ENUM:
-            s += enu->en->name;
+            s += enu->en->qname;
             ArgsDump(enu->args);
             if (enu->varmode) s += "..";
             break;
@@ -409,7 +409,7 @@ inline void Continue::Dump(string &s, int) const { s += "continue"; }
 
 // Optimizer output only (--specs); this form does not reparse.
 inline void InlineBlock::Dump(string &s, int ind) const {
-    Append(s, "inline ", sf->name, "#", spec->id, " ");
+    Append(s, "inline ", sf->qname, "#", spec->id, " ");
     body->Dump(s, ind);
 }
 
@@ -429,6 +429,9 @@ inline void FunVal::Dump(string &s, int ind) const {
 inline void VarDecl::Dump(string &s, int ind) const {
     if (reusable) s += "reusable ";
     s += isvar ? "var " : "let ";
+    // A namespaced global dumps with its qualifier: the dump merges every
+    // file into one, so declarations carry their namespace themselves.
+    if (isglobal && !ns.empty()) Append(s, ns, "::");
     for (size_t i = 0; i < names.size(); i++) {
         if (i) s += ", ";
         s += names[i];
@@ -477,7 +480,7 @@ inline void FnDecl::Dump(string &s, int ind) const {
     }
     if (sf->isrec) s += "recursive ";
     s += sf->isthread ? "thread_fn " : "fn ";
-    s += sf->name;
+    s += sf->isnested ? sf->name : sf->qname;   // See VarDecl::Dump.
     DumpGenerics(s, sf->generics);
     s += "(";
     for (size_t i = 0; i < sf->params.size(); i++) {
@@ -503,7 +506,7 @@ inline void FnDecl::Dump(string &s, int ind) const {
 }
 
 inline void StructDecl::Dump(string &s, int ind) const {
-    Append(s, "struct ", st->name);
+    Append(s, "struct ", st->qname);
     DumpGenerics(s, st->generics);
     s += " {";
     DumpFields(s, st->fields, ind);
@@ -512,7 +515,7 @@ inline void StructDecl::Dump(string &s, int ind) const {
 }
 
 inline void EnumDecl::Dump(string &s, int ind) const {
-    Append(s, "enum ", en->name);
+    Append(s, "enum ", en->qname);
     DumpGenerics(s, en->generics);
     s += " {";
     for (auto &v : en->variants) {
@@ -531,7 +534,7 @@ inline void EnumDecl::Dump(string &s, int ind) const {
 }
 
 inline void AliasDecl::Dump(string &s, int) const {
-    Append(s, "type ", al->name, " = ");
+    Append(s, "type ", al->qname, " = ");
     al->type->Dump(s);
     s += ";";
 }

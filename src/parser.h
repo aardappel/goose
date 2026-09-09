@@ -32,6 +32,14 @@ struct Parser {
 
     SFunction *curfn = nullptr;      // The function whose body is being parsed.
 
+    // Namespaces (docs/design/namespaces.md): the file's `namespace` directive,
+    // and the namespace of the declaration being parsed -- the file's, or the
+    // one a qualified declaration name spells -- which every name reference
+    // written inside it records as where it resolves first.
+    string_view filens;
+    string_view curns;
+    bool declseen = false;           // The directive must come before any declaration.
+
     Parser(Ast &_ast, string_view filename, const char *source, int _fileidx)
         : ast(_ast), lex(filename, source), fileidx(_fileidx) {}
 
@@ -81,7 +89,34 @@ struct Parser {
         auto t = ast.NewType(TY_UNRESOLVED, line);
         t->named = ast.NewDetail<TypeName>();
         t->named->name = name;
+        t->named->ns = curns;
         return t;
+    }
+
+    // A reference to a declaration: `name`, `ns::name`, or `::name`. The
+    // qualified spellings are interned as one string (Ident::name).
+    string_view ParseQualifiedName(const char *context) {
+        if (IsNext(T_COLONCOLON)) return ast.Intern(cat("::", ExpectIdent(context)));
+        auto name = ExpectIdent(context);
+        if (!IsNext(T_COLONCOLON)) return name;
+        return ast.Intern(cat(name, "::", ExpectIdent(context)));
+    }
+
+    // A top-level declaration's name: `name` in the file's namespace, or
+    // `ns::name` / `::name` placing it in that namespace instead, which is
+    // how a dump carries every file's namespace in one file. The rest of
+    // the declaration is then parsed as written in that namespace.
+    string_view ParseDeclName(const char *context) {
+        auto name = lex.tok == T_COLONCOLON ? string_view {} : ExpectIdent(context);
+        if (IsNext(T_COLONCOLON)) {
+            curns = name;
+            name = ExpectIdent(context);
+        }
+        return name;
+    }
+
+    string QualifiedStr(string_view ns, string_view name) {
+        return ns.empty() ? string(name) : cat(ns, "::", name);
     }
 
     // ------------------------------------------------------------------
@@ -93,7 +128,19 @@ struct Parser {
 
     void ParseTopDecl() {
         auto line = CurLine();
+        curns = filens;
         switch (lex.tok) {
+            case T_NAMESPACE: {
+                // `namespace name;`: at most once, ahead of the declarations
+                // (imports may come either side of it).
+                lex.Next();
+                if (!filens.empty()) Error("namespace declared twice in this file");
+                if (declseen) Error("the namespace declaration must precede all declarations");
+                filens = ExpectIdent("namespace declaration");
+                Expect(T_SEMI, "namespace declaration");
+                curns = filens;
+                return;
+            }
             case T_IMPORT: {
                 lex.Next();
                 Import imp;
@@ -106,19 +153,25 @@ struct Parser {
                 imports.push_back(imp);
                 return;
             }
+            default: break;
+        }
+        declseen = true;
+        switch (lex.tok) {
             case T_STRUCT: ParseStructDecl(); return;
             case T_ENUM:   ParseEnumDecl();   return;
             case T_TYPE: {
                 lex.Next();
                 auto al = new SAlias();
                 ast.aliases.push_back(al);
-                al->name = ExpectIdent("type alias");
+                al->name = ParseDeclName("type alias");
+                al->ns = curns;
+                al->qname = ast.QualifiedName(al->ns, al->name);
                 al->line = line;
-                CheckFreshTypeName(al->name);
+                CheckFreshTypeName(al->ns, al->name);
                 Expect(T_ASSIGN, "type alias");
                 al->type = ParseType();
                 Expect(T_SEMI, "type alias");
-                ast.aliasmap[al->name] = al;
+                ast.NS(al->ns).aliasmap[al->name] = al;
                 ast.topdecls.push_back(New<AliasDecl>(line, al));
                 return;
             }
@@ -138,8 +191,9 @@ struct Parser {
         }
     }
 
-    void CheckFreshTypeName(string_view name) {
-        if (ast.TypeNameExists(name)) Error(cat("type name already declared: ", name));
+    void CheckFreshTypeName(string_view ns, string_view name) {
+        if (auto n = ast.FindNS(ns); n && n->TypeNameExists(name))
+            Error(cat("type name already declared: ", QualifiedStr(ns, name)));
     }
 
     void ParseGenerics(vector<GenericParam> &generics) {
@@ -160,14 +214,16 @@ struct Parser {
         lex.Next();
         auto st = new SStruct();
         ast.structs.push_back(st);
-        st->name = ExpectIdent("struct declaration");
+        st->name = ParseDeclName("struct declaration");
+        st->ns = curns;
+        st->qname = ast.QualifiedName(st->ns, st->name);
         st->line = line;
-        CheckFreshTypeName(st->name);
+        CheckFreshTypeName(st->ns, st->name);
         ParseGenerics(st->generics);
         Expect(T_LCURLY, "struct declaration");
         ParseFieldList(st->fields, "struct body");
         Expect(T_RCURLY, "struct declaration");
-        ast.structmap[st->name] = st;
+        ast.NS(st->ns).structmap[st->name] = st;
         ast.topdecls.push_back(New<StructDecl>(line, st));
     }
 
@@ -200,9 +256,11 @@ struct Parser {
         lex.Next();
         auto en = new SEnum();
         ast.enums.push_back(en);
-        en->name = ExpectIdent("enum declaration");
+        en->name = ParseDeclName("enum declaration");
+        en->ns = curns;
+        en->qname = ast.QualifiedName(en->ns, en->name);
         en->line = line;
-        CheckFreshTypeName(en->name);
+        CheckFreshTypeName(en->ns, en->name);
         ParseGenerics(en->generics);
         Expect(T_LCURLY, "enum declaration");
         while (lex.tok != T_RCURLY) {
@@ -219,7 +277,7 @@ struct Parser {
             if (!IsNext(T_COMMA)) break;
         }
         Expect(T_RCURLY, "enum declaration");
-        ast.enummap[en->name] = en;
+        ast.NS(en->ns).enummap[en->name] = en;
         ast.topdecls.push_back(New<EnumDecl>(line, en));
     }
 
@@ -247,7 +305,15 @@ struct Parser {
         } else {
             Expect(T_FN, "function declaration");
         }
-        sf->name = ExpectIdent("function declaration");
+        if (nested) {
+            sf->name = ExpectIdent("function declaration");
+            if (lex.tok == T_COLONCOLON)
+                Error("a nested function cannot be declared into a namespace");
+        } else {
+            sf->name = ParseDeclName("function declaration");
+        }
+        sf->ns = curns;
+        sf->qname = ast.QualifiedName(sf->ns, sf->name);
         ParseGenerics(sf->generics);
         Expect(T_LPAREN, "function declaration");
         while (lex.tok != T_RPAREN) {
@@ -282,7 +348,7 @@ struct Parser {
         // file's main is ignored entirely (§11.1), letting a runnable file
         // double as an importable library.
         if (!nested && !(sf->name == "main" && fileidx != 0))
-            ast.functionmap[sf->name].push_back(sf);
+            ast.NS(sf->ns).functionmap[sf->name].push_back(sf);
         return New<FnDecl>(line, sf);
     }
 
@@ -303,9 +369,11 @@ struct Parser {
         vd->reusable = reusable;
         vd->isglobal = isglobal;
         for (;;) {
-            vd->names.push_back(ExpectIdent("variable declaration"));
+            vd->names.push_back(isglobal ? ParseDeclName("global declaration")
+                                         : ExpectIdent("variable declaration"));
             if (!IsNext(T_COMMA)) break;
         }
+        vd->ns = curns;
         if (IsNext(T_COLON)) vd->type = ParseType();
         // `x .= e` declares a reference bound to e, where `x = e` would
         // copy a fixed-size pointee (§3.8).
@@ -322,8 +390,10 @@ struct Parser {
             if (vd->inits.empty()) Error("global declarations require an initializer");
             if (vd->names.size() != 1) Error("global declarations declare a single name");
             auto name = vd->names[0];
-            if (ast.globalmap.count(name)) Error(cat("global name already declared: ", name));
-            ast.globalmap[name] = vd;
+            auto &ns = ast.NS(vd->ns);
+            if (ns.globalmap.count(name))
+                Error(cat("global name already declared: ", QualifiedStr(vd->ns, name)));
+            ns.globalmap[name] = vd;
             ast.globals.push_back(vd);
         }
         return vd;
@@ -377,8 +447,10 @@ struct Parser {
                         r->ref->lenstorage = ParseLengthStorage("relative reference width");
                         // `T&<u32 in pool>`: offsets measured from a named
                         // global pool rather than from the field (§3.9).
-                        if (IsNext(T_IN))
-                            r->ref->poolname = ExpectIdent("relative reference pool");
+                        if (IsNext(T_IN)) {
+                            r->ref->poolname = ParseQualifiedName("relative reference pool");
+                            r->ref->poolns = curns;
+                        }
                         ExpectClosingAngle("relative reference width");
                     }
                     t = r;
@@ -460,9 +532,8 @@ struct Parser {
             return t;
         }
         switch (lex.tok) {
-            case T_IDENT: {
-                auto t = NewUnresolvedType(lex.attr, line);
-                lex.Next();
+            case T_IDENT: case T_COLONCOLON: {
+                auto t = NewUnresolvedType(ParseQualifiedName("type"), line);
                 if (IsNext(T_LT)) {
                     for (;;) {
                         t->named->args.push_back(ParseType());
@@ -589,7 +660,8 @@ struct Parser {
                 }
                 if (AtReturnFrom()) {
                     lex.Next();
-                    r->from = ExpectIdent("return from");
+                    r->from = ParseQualifiedName("return from");
+                    r->ns = curns;
                 }
                 LeaveSub(sub);
                 return r;
@@ -736,7 +808,7 @@ struct Parser {
         if (lex.tok != T_IDENT || lex.attr != "from") return false;
         Lexer save = lex;
         lex.Next();
-        auto isfrom = lex.tok == T_IDENT;
+        auto isfrom = lex.tok == T_IDENT || lex.tok == T_COLONCOLON;
         lex = save;
         return isfrom;
     }
@@ -799,7 +871,7 @@ struct Parser {
                         vt->var->name = name;
                         e = ParseStructLitBody(vt, line);
                     } else {
-                        e = New<Dot>(line, e, name);
+                        e = New<Dot>(line, e, name, curns);
                     }
                     continue;
                 }
@@ -905,16 +977,16 @@ struct Parser {
                 return e;
             }
             case T_LBRACKET: return ParseArrayLit(line);
-            case T_IDENT: {
-                auto name = lex.attr;
-                lex.Next();
+            case T_IDENT: case T_COLONCOLON: {
+                auto name = ParseQualifiedName("expression");
                 if (lex.tok == T_LT) {
                     // Possibly f<T>(...), Name<T> { ... }, or the variant
                     // literal Name<T>.Variant { ... }; backtrack if not.
                     vector<TypeExpr *> tyargs;
                     if (TryParseTyArgs(tyargs)) {
                         if (IsNext(T_LPAREN))
-                            return ParseCallRest(New<Ident>(line, name), std::move(tyargs), line);
+                            return ParseCallRest(New<Ident>(line, name, curns), std::move(tyargs),
+                                                 line);
                         auto t = NewUnresolvedType(name, line);
                         t->named->args = std::move(tyargs);
                         if (IsNext(T_DOT)) {
@@ -930,7 +1002,7 @@ struct Parser {
                 if (lex.tok == T_LCURLY && !no_struct_lit) {
                     return ParseStructLitBody(NewUnresolvedType(name, line), line);
                 }
-                return New<Ident>(line, name);
+                return New<Ident>(line, name, curns);
             }
             default:
                 Error(cat("expression expected, found \'", TokStr(), "\'"));

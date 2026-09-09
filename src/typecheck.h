@@ -173,7 +173,7 @@ struct TypeCheck {
         for (auto i = (int)frames.size() - 1; i > 0; i--) {
             auto &f = frames[i];
             if (!f.sf || f.isfunval) continue;
-            Append(s, "\n  in ", f.sf->isthread ? "thread_fn " : "fn ", f.sf->name, "(");
+            Append(s, "\n  in ", f.sf->isthread ? "thread_fn " : "fn ", f.sf->qname, "(");
             if (f.spec) {
                 for (size_t j = 0; j < f.spec->argtypes.size(); j++) {
                     if (j) s += ", ";
@@ -235,10 +235,8 @@ struct TypeCheck {
         }
         if (auto id = Is<Ident>(n)) {
             // A `let` global with a constant initializer is a named constant.
-            auto git = ast.globalmap.find(id->name);
-            if (git == ast.globalmap.end()) return false;
-            auto vd = git->second;
-            if (vd->isvar || vd->inits.size() != 1) return false;
+            auto vd = ast.LookupGlobal(id->name, id->ns);
+            if (!vd || vd->isvar || vd->inits.size() != 1) return false;
             return ConstInt(vd->inits[0], v);
         }
         return false;
@@ -534,7 +532,8 @@ struct TypeCheck {
     void BindRefProvenance(VarDef *vd, const Val &v);
     Prov RefProvOf(VarDef *vd);
     VarDef *NewVar(string_view name, TypeExpr *type, Line l, bool isvar);
-    VarDef *LookupVar(string_view name);
+    VarDef *LookupVar(string_view name, string_view ns);
+    string_view CurNs();
     int FrameOfSpec(FnSpec *sp);
     SFunction *LookupLocalFn(string_view name);
 
@@ -797,6 +796,7 @@ struct TypeCheck {
     void CheckRenderable(Call *c, const char *what, TypeExpr *t, Node *at,
                          vector<TypeExpr *> &seen);
     FnSpec *UserFormat(Call *c, TypeExpr *t);
+    FnSpec *UserFormatIn(Call *c, TypeExpr *t, string_view ns);
     void CheckGrowShrink(Node *at, bool standalone, const char *op, Node *recv, TypeExpr *rtype);
     void GrowOnlyShrinkAt(Node *c, bool standalone, const string &op, VarDef *vd);
 
@@ -921,10 +921,8 @@ struct TypeCheck {
         // gets here again once a specialization substitutes it.
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool && !HasGenerics(t->ref->sub)) ValidatePool(t);
-        auto mit = ast.functionmap.find("main");
-        if (mit == ast.functionmap.end() || mit->second.size() != 1)
-            throw CompileError { "program needs exactly one fn main()" };
-        auto mainsf = mit->second[0];
+        auto mainsf = ast.MainFunction();
+        if (!mainsf) throw CompileError { "program needs exactly one global fn main()" };
         if (!mainsf->params.empty() || mainsf->has_rets || !mainsf->generics.empty() ||
             mainsf->isthread)
             Error(mainsf->line, "fn main() takes no parameters and returns nothing");

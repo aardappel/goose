@@ -118,6 +118,12 @@ Type syntax is postfix throughout: `T[k]` array of T, `T&` reference to T,
 `T[:]` slice of T, `T?` optional T, `T&<u8>` relative reference,
 `T&<u8 in pool>` one measured from a named pool, `Shape..` variable-mode ADT.
 
+`ns::name` names a declaration of namespace `ns` (§11.1) wherever a
+declaration can be named -- a type, a call, a global, a `return … from`
+target, a pool; `::name` names a global one explicitly. The `::` token is
+distinct from `.`, so `image::Shape.Circle` is the variant of a namespaced
+enum.
+
 Evaluation order is left-to-right everywhere (operands, arguments, field
 initializers — which named struct literals keep aligned with construction
 order by requiring declaration order, §4.2). Overlapping copies have
@@ -346,7 +352,9 @@ its pointee and a null optional as `null`; a `u8` array nested inside an
 aggregate is quoted and escaped. A user overload `fn format(out: u8[>..]&,
 v: T)` (taking `T` by value or by reference) renders a `T` through itself
 instead, wherever a `T` occurs in an argument, so a type can choose its own
-text once for all three builtins.
+text once for all three builtins. The overload is looked up in the
+namespace `T` is declared in, then globally (§11.1): rendering follows the
+type, not the namespace of the code printing it.
 
 ### 3.8 References
 
@@ -1344,6 +1352,12 @@ return E from f     // f = a named function on every compile-time call path
                     //     from f to this statement
 ```
 
+`f` is resolved where the returning function is written -- a nested function
+in scope, else the name's overload set by the rules of §11.1 (`from
+image::parse` is explicit) -- and the target is the innermost enclosing call
+of a function in that set. An unrelated function that merely shares the leaf
+name never catches the return.
+
 Returns `E` as the result of the innermost active call of `f`, unwinding all
 frames in between. It is the language's opt-in, lightweight "exception"
 mechanism (e.g. a deep parser/loader error doing `return err from
@@ -1395,7 +1409,10 @@ header can implement shims against the generated typedefs. Every name that
 comes from the program appears in the C with a `_g` suffix -- a struct `Stats`
 with a field `lo` is `Stats_g` with `lo_g` -- which is what keeps the generated
 file clear of the C keywords and of whatever the platform's headers declare,
-without depending on a list of names to avoid. An `extern fn`'s own symbol is
+without depending on a list of names to avoid. A namespaced declaration
+`ns::x` (§11.1) is `ns_x_g` followed by the namespace's length --
+`image::Pixel` is `image_Pixel_g5` -- so `a::b_c` and `a_b::c` stay apart and
+no namespaced name coincides with a global one. An `extern fn`'s own symbol is
 the exception: that is the C name the declaration gives, unchanged.
 
 What crosses (layouts per C.2): the integer and float scalars and `bool`;
@@ -1801,8 +1818,30 @@ the caller's own facts about `src` intact.
   standard library's directory (`--stdlib <dir>`, else `GOOSE_STDLIB`, else
   the `stdlib/` of the source tree the compiler was built in); the form
   `import .a.b;` (leading dot) resolves relative to the *importing file*
-  instead. All declarations are public in v1; name collisions are errors (no
-  namespacing yet). Top-level declarations are order-independent.
+  instead. All declarations are public in v1; a name collision within one
+  namespace is an error. Top-level declarations are order-independent.
+* **Namespaces** (docs/design/namespaces.md). `namespace image;`, at most
+  once and before a file's declarations, places them in namespace `image`;
+  a file without it declares into the global namespace, and several files
+  may declare the same namespace. An import loads a file; it neither creates
+  a namespace nor brings a namespace's names into scope. From elsewhere a
+  declaration is `image::Pixel`, `image::brightness(p)`,
+  `image::Shape.Circle { r: 1.0 }`, `image::pool`; `::name` selects a
+  global declaration (or builtin) that a namespaced one shadows. A
+  declaration may spell its namespace itself (`fn image::brightness(…)`,
+  `fn ::main()` inside a namespaced file); the qualifier decides the
+  declaration's namespace entirely, names inside it included. An
+  unqualified name resolves lexically first (locals, parameters, type
+  parameters, nested functions), then in the current declaration's
+  namespace, then in the global namespace and the builtins. A function
+  name's overload set is that of the first namespace in this order that
+  declares the name at all; sets never merge across namespaces (a
+  namespaced `hash` overload reaches the global integer ones as
+  `::hash(x)`). UFCS follows the same rule for the calling code's
+  namespace, a generic body resolves names where it is defined, and the
+  `format` hook is the one type-directed exception (§3.7). Namespaces
+  affect only name resolution, type identity and generated C names
+  (§7.10): no runtime representation, no privacy, no re-exports.
 * Globals are declared like locals (`let`/`var`, any type including
   resizable). Semantically the whole program runs inside an implicit
   outermost scope owning them: they participate in the depth check (§9.2) as
@@ -1813,11 +1852,12 @@ the caller's own facts about `src` intact.
   natural whole-program arena).
   `let` globals of flat fixed type with compile-time-evaluable initializers
   live in static data.
-* Entry point: `fn main() { }`. Only the *root* file's `main` is the entry;
-  a `fn main` in an imported file is ignored entirely (not an entry, not
-  callable, no collision). A runnable file can thus double as an importable
-  library: give it `fn main_x() { ... }` plus a `fn main() { main_x(); }`
-  wrapper, and importers call `main_x` directly.
+* Entry point: `fn main() { }`, in the global namespace. Only the *root*
+  file's `main` is the entry; a `fn main` in an imported file is ignored
+  entirely (not an entry, not callable, no collision). A runnable file can
+  thus double as an importable library: give it `fn main_x() { ... }` plus a
+  `fn main() { main_x(); }` wrapper, and importers call `main_x` directly. A
+  namespaced file does the same with `fn ::main() { ns::main_x(); }`.
 
 ### 11.2 Concurrency
 
@@ -1916,8 +1956,8 @@ came from is `design/stdlib_design.md`). The math types of §6.1 are its
 Deliberately out of scope for v1: error-value conventions (§7.9); move
 operations for resizables; multiple resizables per struct; two-way growth
 arrays; inline compaction / copying GC for pools; mixed-type pools;
-SIMD/alignment annotations; dynamic stacks; labeled break; namespacing
-(§11.1).
+SIMD/alignment annotations; dynamic stacks; labeled break; namespace
+privacy, re-exports and nesting (§11.1).
 
 ---
 
@@ -2226,25 +2266,29 @@ unmapped gap after each region turns runaway growth into a safe abort.
 ## Appendix D. Grammar sketch (informative)
 
 ```
-program     := topdecl*
+program     := namespace? topdecl*             // imports may precede namespace
+namespace   := "namespace" ident ";"
 topdecl     := import | struct | enum | typealias | fndecl | globaldecl
 import      := "import" "."? ident ("." ident)* ";"
-struct      := "struct" ident generics? "{" fieldlist "}"
-enum        := "enum" ident generics? "{" variant ("," variant)* ","? "}"
+declname    := ident | ident "::" ident | "::" ident   // the namespace, else the file's
+qname       := ident | ident "::" ident | "::" ident   // a declaration reference
+struct      := "struct" declname generics? "{" fieldlist "}"
+enum        := "enum" declname generics? "{" variant ("," variant)* ","? "}"
 variant     := ident ( "{" fieldlist "}" )?
 fieldlist   := field ("," field)* ","?
 field       := "let"? ident ":" type ("=" expr)? | "pad" intlit?
-typealias   := "type" ident "=" type ";"
+typealias   := "type" declname "=" type ";"
 generics    := "<" ident (":" type)? ("," ident (":" type)?)* ">"
 
-fndecl      := ("extern" strlit?)? "recursive"? ("fn" | "thread_fn") ident
+fndecl      := ("extern" strlit?)? "recursive"? ("fn" | "thread_fn") declname
                generics? "(" params? ")" ("->" rettypes)? (blockexpr | ";")
+                                                 // nested: ident only
 params      := param ("," param)* ","?
 param       := "var"? ident (":" type)?          // untyped => generic
 rettypes    := type ("," type)*                  // no parens in declarations
-globaldecl  := "reusable"? ("let" | "var") ident (":" type)? "=" expr ";"
+globaldecl  := "reusable"? ("let" | "var") declname (":" type)? "=" expr ";"
 
-type        := prim | ident tyargs? | "(" type ")" | type postfix
+type        := prim | qname tyargs? | "(" type ")" | type postfix
 prim        := "bool"|"varint"|"i8"|…|"u64"|"f32"|"f64"
              | "fn" ( "(" types? ")" ("->" (type | "(" types ")"))? )?
 tyargs      := "<" type ("," type)* ","? ">"
@@ -2254,7 +2298,7 @@ postfix     := "[" expr "]"                      // fixed array (const expr)
              | "[" ".." expr? "]"                // limited (const expr)
              | "[" ">" ".." "<"? "]"             // resizable
              | "[" ":" "]"                       // slice
-             | "&" ("<" uint ("in" ident)? ">")?  // reference / relative
+             | "&" ("<" uint ("in" qname)? ">")?  // reference / relative
              | "?"                               // optional (any type)
              | ".."                              // variable-mode ADT
              | "." ident                         // variant type
@@ -2273,7 +2317,7 @@ guardstmt   := "guard" expr ("else" blockexpr | ";")
 loops       := ("while" expr | "for" forbind "in" iter | "loop") blockexpr
 forbind     := "&"? ident ("," ident)?
 iter        := expr | expr ".." expr
-jumps       := "return" exprlist? ("from" ident)? | "break" expr? | "continue"
+jumps       := "return" exprlist? ("from" qname)? | "break" expr? | "continue"
 matchexpr   := "match" expr "{" arm ("," arm)* ","? "}"
 arm         := pattern "=>" expr
 pattern     := ident ("&"? ident)? | "-"? intlit (".." "-"? intlit)? | "_"
@@ -2285,14 +2329,14 @@ binary      := (precedence climbing; tightest → loosest)
    unary    := ("-" | "!" | "~" | "&") unary
    levels   := * / %  →  + -  →  << >>  →  &  →  ^  →  |
              →  < <= > >=  →  == != .== .!=  →  &&  →  ||
-primary     := literal | ident | "null" | "self" | "(" expr ")"
+primary     := literal | qname | "null" | "self" | "(" expr ")"
              | arraylit | structlit | genericcall
-genericcall := ident tyargs "(" args ")" trailingblock?
+genericcall := qname tyargs "(" args ")" trailingblock?
 trailingblock := "{" (params "=>")? stmt* expr? "}"
 sliceargs   := expr | bound? ".." bound?         // bound := "^"? expr
 args        := (expr ("," expr)* ","?)?
 arraylit    := "[" (exprlist ","? | expr ";" expr)? "]"
-structlit   := (ident tyargs? | varianttype) "{" (fieldinit ("," fieldinit)* ","?)? "}"
+structlit   := (qname tyargs? | varianttype) "{" (fieldinit ("," fieldinit)* ","?)? "}"
 fieldinit   := (ident ":")? expr
 ```
 

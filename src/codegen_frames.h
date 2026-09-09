@@ -102,11 +102,11 @@ inline void CodeGen::CollectSpecs() {
     // Names: suffix whenever the goose name maps to more than one live
     // spec (overloads or multiple specializations).
     map<string_view, int> namecount;
-    for (auto sp : livespecs) namecount[sp->sf->name]++;
+    for (auto sp : livespecs) namecount[sp->sf->qname]++;
     for (auto sp : livespecs) {
         auto &si = sinfo[sp];
-        auto base = Sanitize(sp->sf->name);
-        if (namecount[sp->sf->name] > 1) Append(base, "_", sp->id);
+        auto base = Sanitize(sp->sf->ns, sp->sf->name);
+        if (namecount[sp->sf->qname] > 1) Append(base, "_", sp->id);
         si.cname = Unique(base);
         si.hasrf = !sp->needs.empty();
         auto ri = 0;

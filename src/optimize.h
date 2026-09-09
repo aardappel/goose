@@ -368,9 +368,8 @@ struct Optimizer {
             default: nc = 16; ncu = 96; break;
         }
         // Reachability and use counts from the roots.
-        auto mit = ast.functionmap.find("main");
-        if (mit != ast.functionmap.end() && !mit->second[0]->specs.empty())
-            Reach(mit->second[0]->specs[0]);
+        auto mainsf = ast.MainFunction();
+        if (mainsf && !mainsf->specs.empty()) Reach(mainsf->specs[0]);
         for (auto sf : ast.functions)
             if (sf->isthread && !sf->specs.empty()) Reach(sf->specs[0]);
         for (auto g : ast.globals)
@@ -416,8 +415,7 @@ struct Optimizer {
         // inlined (or folded away) go dead, so codegen can skip them.
         for (auto sp : ast.fnspecs) { sp->live = false; sp->uses = 0; }
         postorder.clear();
-        if (mit != ast.functionmap.end() && !mit->second[0]->specs.empty())
-            Reach(mit->second[0]->specs[0]);
+        if (mainsf && !mainsf->specs.empty()) Reach(mainsf->specs[0]);
         for (auto sf : ast.functions)
             if (sf->isthread && !sf->specs.empty()) Reach(sf->specs[0]);
         for (auto g : ast.globals)
@@ -434,7 +432,7 @@ struct Optimizer {
             if (!sp->live) continue;
             Append(s, "// spec ", sp->id, ": uses ", sp->uses, ", nodes ", sp->nodecount,
                    sp->noinline ? ", noinline" : "", "\n");
-            Append(s, "fn ", sp->sf->name, "(");
+            Append(s, "fn ", sp->sf->qname, "(");
             for (size_t i = 0; i < sp->params.size(); i++) {
                 if (i) s += ", ";
                 Append(s, sp->params[i]->name, ": ");
@@ -594,7 +592,7 @@ inline Node *Ident::Cp1(Inliner &inl) const {
             return inl.o.CloneLit(it->second, exprtype);
         }
     }
-    auto c = inl.ast.New<Ident>(line, name);
+    auto c = inl.ast.New<Ident>(line, name, ns);
     c->vdef = inl.Remap(vdef);
     c->fnref = fnref;
     return c;
@@ -628,7 +626,7 @@ inline Node *Binary::Cp1(Inliner &inl) const {
 }
 
 inline Node *Dot::Cp1(Inliner &inl) const {
-    auto c = inl.ast.New<Dot>(line, inl.Cp(obj), name);
+    auto c = inl.ast.New<Dot>(line, inl.Cp(obj), name, ns);
     c->fieldidx = fieldidx;
     c->member = member;
     c->variantconst = variantconst;
@@ -746,6 +744,7 @@ inline Node *Return::Cp1(Inliner &inl) const {
     auto r = inl.ast.New<Return>(line);
     for (auto v : vals) r->vals.push_back(inl.Cp(v));
     r->from = from;
+    r->ns = ns;
     r->target = target;
     return r;
 }

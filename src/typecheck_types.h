@@ -636,14 +636,14 @@ inline void TypeCheck::NoRelRefCopy(Node *n, TypeExpr *t) {
 inline void TypeCheck::ResolvePools() {
     for (auto t : ast.alltypes) {
         if (t->kind != TY_REF || t->ref->poolname.empty()) continue;
-        auto git = ast.globalmap.find(t->ref->poolname);
-        if (git == ast.globalmap.end() || git->second->defs.empty())
+        auto g = ast.LookupGlobal(t->ref->poolname, t->ref->poolns);
+        if (!g || g->defs.empty())
             Error(t->line, cat("in ", t->ref->poolname,
                                ": a relative reference's pool must be a global variable; a "
                                "local or parameter pool has no name at this declaration, so "
                                "use the self-relative form ", TypeStr(t->ref->sub), "&<",
                                IntStorageName(t->ref->lenstorage), "> instead (§3.9)"));
-        t->ref->pool = git->second->defs[0];
+        t->ref->pool = g->defs[0];
         poolglobals.insert(t->ref->pool);
     }
 }
@@ -846,7 +846,7 @@ inline string TypeCheck::ReadBackWhy(TypeExpr *rt, VarDef *from) {
 
 inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
     if (auto id = Is<Ident>(n)) {
-        auto vd = LookupVar(id->name);
+        auto vd = LookupVar(id->name, id->ns);
         if (!vd) Error(n, cat("unknown variable: ", id->name));
         id->vdef = vd;
         LVal lv;

@@ -172,7 +172,6 @@ void ParseProgram(Ast &ast, const string &rootpath) {
                      [&](VarDecl *a, VarDecl *b) {
                          return rank[a->line.fileidx] < rank[b->line.fileidx];
                      });
-    ResolveTypeNames(ast);
 }
 
 void DumpTokens(const string &path) {
@@ -302,13 +301,15 @@ int Main(int argc, char **argv) {
         Ast ast;
         ParseProgram(ast, filename);
         if (dump) {
-            // Dump is parse-level output: no typecheck, so parse-only test
-            // files can roundtrip.
+            // Dump is parse-level output: no name resolution or typecheck,
+            // so parse-only test files can roundtrip, and every name shows
+            // as written.
             string s;
             ast.Dump(s);
             fputs(s.c_str(), stdout);
             return 0;
         }
+        ResolveTypeNames(ast);
         if (parseonly) {
             printf("parsed ok: %d top-level declarations, %d file(s)\n",
                    (int)ast.topdecls.size(), (int)ast.sources.size());
@@ -371,7 +372,8 @@ int Main(int argc, char **argv) {
                          ". Do not edit.\n"
                          "   Names from the program carry a _g suffix, which keeps them clear of\n"
                          "   the C keywords, of the runtime's gs_ names and of whatever this\n"
-                         "   platform's headers declare; an --include header names them that way. */\n\n",
+                         "   platform's headers declare; a namespaced name ns::x is ns_x_g followed\n"
+                         "   by the namespace's length. An --include header names them that way. */\n\n",
                          cg.predefs);
         for (auto &rf : runtime_files) {
             if (string_view(rf.name) == "runtime_os.h") continue;

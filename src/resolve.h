@@ -3,8 +3,9 @@
 // TY_UNRESOLVED is rewritten in place: struct and enum names become TY_STRUCT /
 // TY_ENUM, alias uses are substituted with the aliased type, and anything else
 // becomes TY_GENERIC — a generic type parameter, or an unknown name, which
-// typecheck decides since it knows scopes. After this pass no TY_UNRESOLVED
-// remains and aliases do not exist as types.
+// typecheck decides since it knows scopes. A qualified name (`ns::Name`) can
+// only be a declaration, so an unknown one is an error here. After this pass
+// no TY_UNRESOLVED remains and aliases do not exist as types.
 #pragma once
 
 namespace goose {
@@ -20,22 +21,24 @@ inline void ResolveTypeNames(Ast &ast) {
     for (auto t : ast.alltypes) {
         if (t->kind != TY_UNRESOLVED) continue;
         auto nm = t->named;
-        if (auto s = ast.structmap.find(nm->name); s != ast.structmap.end()) {
+        if (auto s = ast.LookupStruct(nm->name, nm->ns)) {
             if (nm->varmode)
                 ErrorAt(t, cat("struct ", nm->name, " has no variable mode (.. applies to enums)"));
             auto d = ast.NewDetail<TypeStruct>();
-            d->st = s->second;
+            d->st = s;
             d->args = std::move(nm->args);
             t->kind = TY_STRUCT;
             t->struc = d;
-        } else if (auto e = ast.enummap.find(nm->name); e != ast.enummap.end()) {
+        } else if (auto e = ast.LookupEnum(nm->name, nm->ns)) {
             auto d = ast.NewDetail<TypeEnum>();
-            d->en = e->second;
+            d->en = e;
             d->args = std::move(nm->args);
             d->varmode = nm->varmode;
             t->kind = TY_ENUM;
             t->enu = d;
-        } else if (!ast.aliasmap.count(nm->name)) {
+        } else if (!ast.LookupAlias(nm->name, nm->ns)) {
+            if (SplitName(nm->name, nm->ns).qualified)
+                ErrorAt(t, cat("unknown type: ", nm->name));
             t->kind = TY_GENERIC;  // Keeps its TypeName detail, varmode included.
         }
         // Alias uses stay TY_UNRESOLVED for the substitution loop below.
@@ -53,7 +56,7 @@ inline void ResolveTypeNames(Ast &ast) {
         for (auto depth = 0; target->kind == TY_UNRESOLVED; depth++) {
             if (depth > (int)ast.aliases.size())
                 ErrorAt(t, cat("type alias cycle involving: ", use->name));
-            target = ast.aliasmap.find(target->named->name)->second->type;
+            target = ast.LookupAlias(target->named->name, target->named->ns)->type;
         }
         if (use->varmode) {
             switch (target->kind) {
@@ -70,6 +73,7 @@ inline void ResolveTypeNames(Ast &ast) {
                 case TY_GENERIC: {
                     auto d = ast.NewDetail<TypeName>();
                     d->name = target->named->name;
+                    d->ns = target->named->ns;
                     d->args = target->named->args;
                     d->varmode = true;
                     t->kind = TY_GENERIC;

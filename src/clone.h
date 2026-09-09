@@ -27,7 +27,7 @@ inline Node *BoolLit::Clone(Ast &ast) const { return ast.New<BoolLit>(line, val)
 inline Node *NullLit::Clone(Ast &ast) const { return ast.New<NullLit>(line); }
 inline Node *SelfRef::Clone(Ast &ast) const { return ast.New<SelfRef>(line); }
 inline Node *StrLit::Clone(Ast &ast) const { return ast.New<StrLit>(line, val); }
-inline Node *Ident::Clone(Ast &ast) const { return ast.New<Ident>(line, name); }
+inline Node *Ident::Clone(Ast &ast) const { return ast.New<Ident>(line, name, ns); }
 
 inline Node *ArrayLit::Clone(Ast &ast) const {
     auto a = ast.New<ArrayLit>(line);
@@ -54,7 +54,7 @@ inline Node *Binary::Clone(Ast &ast) const {
 }
 
 inline Node *Dot::Clone(Ast &ast) const {
-    return ast.New<Dot>(line, obj->Clone(ast), name);
+    return ast.New<Dot>(line, obj->Clone(ast), name, ns);
 }
 
 inline Node *Call::Clone(Ast &ast) const {
@@ -139,6 +139,7 @@ inline Node *Return::Clone(Ast &ast) const {
     auto r = ast.New<Return>(line);
     CloneNodes(ast, vals, r->vals);
     r->from = from;
+    r->ns = ns;
     return r;
 }
 

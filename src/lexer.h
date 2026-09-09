@@ -17,6 +17,7 @@ namespace goose {
     F(T_LBRACKET, "[")   F(T_RBRACKET, "]") \
     F(T_LCURLY,   "{")   F(T_RCURLY,   "}") \
     F(T_COMMA,    ",")   F(T_SEMI,     ";")  F(T_COLON, ":")  F(T_QUESTION, "?") \
+    F(T_COLONCOLON, "::") \
     F(T_DOT,      ".")   F(T_DOTDOT,   "..") F(T_DOTASSIGN, ".=") \
     F(T_DOTEQ,    ".==") F(T_DOTNEQ,   ".!=") \
     F(T_PLUS,     "+")   F(T_MINUS,    "-")  F(T_MUL,   "*")  F(T_DIV, "/")  F(T_MOD, "%") \
@@ -32,7 +33,8 @@ namespace goose {
     F(T_ARROW,    "->")  F(T_FATARROW, "=>")
 
 #define TOKENS_KEYWORDS \
-    F(T_IMPORT,   "import")    F(T_STRUCT,   "struct")  F(T_ENUM,   "enum") \
+    F(T_IMPORT,   "import")    F(T_NAMESPACE, "namespace") \
+    F(T_STRUCT,   "struct")    F(T_ENUM,     "enum") \
     F(T_TYPE,     "type")      F(T_FN,       "fn")      F(T_THREADFN, "thread_fn") \
     F(T_RECURSIVE, "recursive") F(T_LET,     "let")     F(T_VAR,    "var") \
     F(T_EXTERN,   "extern") \
@@ -135,7 +137,9 @@ struct Lexer {
             case '}': Set(T_RCURLY);   return;
             case ',': Set(T_COMMA);    return;
             case ';': Set(T_SEMI);     return;
-            case ':': Set(T_COLON);    return;
+            case ':':
+                if (*p == ':') { p++; Set(T_COLONCOLON); } else Set(T_COLON);
+                return;
             case '?': Set(T_QUESTION); return;
             case '~': Set(T_BITNOT);   return;
 

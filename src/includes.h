@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>

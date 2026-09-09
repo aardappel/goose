@@ -28,7 +28,7 @@ inline Val TypeCheck::CheckCall(Call *c) {
 }
 
 inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id) {
-    if (LookupVar(id->name))
+    if (LookupVar(id->name, id->ns))
         Error(c, cat(id->name, " is a variable, not a function"));
     if (auto fb = LookupFnVal(id->name)) {
         id->vdef = nullptr;
@@ -36,12 +36,11 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id) {
     }
     FnSpec *env = nullptr;
     vector<SFunction *> cands;
-    if (auto nf = LookupLocalFnEnv(id->name, env)) {
-        cands.push_back(nf);
-    } else {
-        auto fit = ast.functionmap.find(id->name);
-        if (fit != ast.functionmap.end()) cands = fit->second;
-    }
+    if (auto nf = LookupLocalFnEnv(id->name, env)) cands.push_back(nf);
+    else cands = ast.LookupFunctions(id->name, id->ns);
+    // The builtins are global: `::f` reaches one past a namespaced f, and
+    // `ns::f` never names one.
+    auto bd = LookupBuiltin(GlobalLeaf(id->name));
     if (!cands.empty()) {
         for (auto sf : cands)
             if (sf->isthread)
@@ -50,13 +49,11 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id) {
         Node *nopre = nullptr;
         // A user function set sharing a builtin's name (a `format`
         // overload, §3.7) takes the calls it matches; the builtin the rest.
-        auto bd = LookupBuiltin(id->name);
         auto nomatch = false;
         auto v = ResolveCall(c, cands, env, id->name, nullptr, nopre, bd ? &nomatch : nullptr);
         if (!nomatch) return v;
         return CheckBuiltin(c, *bd, c->args, nullptr);
     }
-    auto bd = LookupBuiltin(id->name);
     if (!bd) Error(c, cat("unknown function: ", id->name));
     if (bd->flags & BF_PROPERTY)
         Error(c, cat(id->name, " is a property (use a.", id->name, "), not a call"));
@@ -111,12 +108,8 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d) {
     }
     FnSpec *env = nullptr;
     vector<SFunction *> cands;
-    if (auto nf = LookupLocalFnEnv(d->name, env)) {
-        cands.push_back(nf);
-    } else {
-        auto fit = ast.functionmap.find(d->name);
-        if (fit != ast.functionmap.end()) cands = fit->second;
-    }
+    if (auto nf = LookupLocalFnEnv(d->name, env)) cands.push_back(nf);
+    else cands = ast.LookupFunctions(d->name, d->ns);
     if (!cands.empty()) return ResolveCall(c, cands, env, d->name, &ov, d->obj);
     if (bd && !(bd->flags & BF_PROPERTY)) {
         vector<Node *> argnodes = { d->obj };
@@ -813,7 +806,7 @@ inline void TypeCheck::ValidateNeeds(FnSpec *spec, Node *callnode) {
 inline CycleRoots TypeCheck::Cycles() {
     return CycleRoots(ast, cycleroot, [this](VarDef *vd, bool isref) {
         return CanonRoot(isref ? RefRootOf(vd) : vd);
-    }, [this](string_view name) { return LookupVar(name); });
+    }, [this](string_view name) { return LookupVar(name, CurNs()); });
 }
 
 // A fixed-size value C takes by value (§7.10): a scalar, bool, or a flat
@@ -1168,11 +1161,20 @@ inline void TypeCheck::CheckReturn(Return *r) {
     // lexically enclosing named function (§7.6, §7.9).
     auto tf = -1;
     if (!r->from.empty()) {
-        for (auto i = (int)frames.size() - 1; i >= 1; i--)
-            if (!frames[i].isfunval && frames[i].sf && frames[i].sf->name == r->from) {
-                tf = i;
-                break;
-            }
+        // `f` resolves in this function's definition context: a nested
+        // function in scope, else the overload set the name reaches from
+        // here (docs/design/namespaces.md). The target is the innermost
+        // enclosing call of any of those declarations, so an unrelated
+        // function sharing the leaf name cannot catch the return.
+        FnSpec *env = nullptr;
+        vector<SFunction *> targets;
+        if (auto nf = LookupLocalFnEnv(r->from, env)) targets.push_back(nf);
+        else targets = ast.LookupFunctions(r->from, r->ns);
+        if (targets.empty()) Error(r, cat("return from ", r->from, ": unknown function"));
+        for (auto i = (int)frames.size() - 1; i >= 1 && tf < 0; i--) {
+            if (frames[i].isfunval || !frames[i].sf) continue;
+            for (auto t : targets) if (frames[i].sf == t) tf = i;
+        }
         if (tf < 0)
             Error(r, cat("return from ", r->from, ": no enclosing call of ", r->from,
                          " on this compile-time call path"));

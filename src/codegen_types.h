@@ -377,6 +377,16 @@ inline string CodeGen::Sanitize(string_view name) {
     return s + "_g";
 }
 
+// A namespaced declaration (docs/design/namespaces.md): the namespace, the
+// leaf, the suffix above, then the namespace's length. The digits are what
+// keep the mapping injective -- `a::b_c` and `a_b::c` differ in them, and no
+// global name's C form ends in a digit -- without a list of characters to
+// replace.
+inline string CodeGen::Sanitize(string_view ns, string_view name) {
+    if (ns.empty()) return Sanitize(name);
+    return cat(ns, "_", name, "_g", ns.size());
+}
+
 inline string CodeGen::Unique(string base) {
     if (!used.count(base)) { used.insert(base); return base; }
     for (auto n = 2;; n++) {
@@ -397,12 +407,12 @@ inline string CodeGen::Mangle(TypeExpr *t) {
         case TY_FLT: return t->fltstorage == FS_F32 ? "f32" : "f64";
         case TY_BOOL: return "b";
         case TY_STRUCT: {
-            auto s = Sanitize(t->struc->st->name);
+            auto s = Sanitize(t->struc->st->ns, t->struc->st->name);
             for (auto a : t->struc->args) Append(s, "_", Mangle(a));
             return s;
         }
         case TY_ENUM: {
-            auto s = Sanitize(t->enu->en->name);
+            auto s = Sanitize(t->enu->en->ns, t->enu->en->name);
             for (auto a : t->enu->args) Append(s, "_", Mangle(a));
             if (t->enu->varmode) s += "_vm";
             return s;
@@ -598,7 +608,7 @@ inline void CodeGen::EnsureTagEnum(EnumInst *ei) {
     if (tagenums.count(ei)) return;
     tagenums.insert(ei);
     // Use the base (mode-less) mangle as the constant prefix.
-    string base = Sanitize(ei->en->name);
+    string base = Sanitize(ei->en->ns, ei->en->name);
     for (auto a : ei->args) Append(base, "_", Mangle(a));
     tagprefix[ei] = base;
     string d = "enum {\n";

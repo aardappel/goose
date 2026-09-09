@@ -67,7 +67,7 @@ struct CycleRoots {
         for (auto &p : f->params)
             if (auto b = FindBind(f, p.name)) b->opaque = true;
         for (auto &b : f->locals)
-            if (!b.declared || ast.globalmap.count(b.name)) b.opaque = true;
+            if (!b.declared || ast.LookupGlobal(b.name, f->ns)) b.opaque = true;
     }
 
     void CollectBinds(SFunction *f, Node *n) {
@@ -108,11 +108,9 @@ struct CycleRoots {
 
     // Only single-name globals: LookupVar resolves a multi-name declaration's
     // uses to its first VarDef, which the scan will not second-guess.
-    RootDesc GlobalDesc(string_view name) {
-        auto git = ast.globalmap.find(name);
-        if (git == ast.globalmap.end()) return UnknownDesc();
-        auto g = git->second;
-        if (g->names.size() != 1 || g->defs.size() != 1) return UnknownDesc();
+    RootDesc GlobalDesc(string_view name, string_view ns) {
+        auto g = ast.LookupGlobal(name, ns);
+        if (!g || g->names.size() != 1 || g->defs.size() != 1) return UnknownDesc();
         RootDesc d;
         d.kind = RD_GLOBAL;
         d.glob = g->defs[0];
@@ -189,7 +187,7 @@ struct CycleRoots {
                 return d;
             }
         }
-        return GlobalDesc(id->name);
+        return GlobalDesc(id->name, id->ns);
     }
 
     // Whether name is one of f's own locals or parameters.
@@ -209,9 +207,8 @@ struct CycleRoots {
             if (auto b = FindBind(o, name); b && b->declared) return b->opaque ? nullptr : b->type;
             for (auto &p : o->params) if (p.name == name) return p.type;
         }
-        auto git = ast.globalmap.find(name);
-        if (git == ast.globalmap.end() || git->second->defs.size() != 1) return nullptr;
-        return git->second->defs[0]->type;
+        auto g = ast.LookupGlobal(name, f->ns);
+        return g && g->defs.size() == 1 ? g->defs[0]->type : nullptr;
     }
 
     // A path's root is its base's as long as the path stays inside the
@@ -261,13 +258,15 @@ struct CycleRoots {
 
     RootDesc ScanCall(SFunction *f, Call *c, vector<string_view> &busy, int depth) {
         // The argument list resolution builds: a UFCS receiver is argument 0.
-        string_view name;
+        string_view name, ns;
         vector<Node *> args;
         if (auto d = Is<Dot>(c->callee)) {
             name = d->name;
+            ns = d->ns;
             args.push_back(d->obj);
         } else if (auto id = Is<Ident>(c->callee)) {
             name = id->name;
+            ns = id->ns;
         } else {
             return UnknownDesc();
         }
@@ -280,18 +279,18 @@ struct CycleRoots {
             for (auto lf : o->localfns) if (lf->name == name) { callee = lf; break; }
         }
         if (!callee) {
-            auto fit = ast.functionmap.find(name);
-            if (auto bd = LookupBuiltin(name)) {
+            auto &cands = ast.LookupFunctions(name, ns);
+            if (auto bd = LookupBuiltin(GlobalLeaf(name))) {
                 // A member builtin wins over a same-named function at a.f()
                 // sites when the receiver is an array, which the scan cannot
                 // tell.
-                if (fit != ast.functionmap.end()) return UnknownDesc();
+                if (!cands.empty()) return UnknownDesc();
                 if ((bd->kind != B_PUSH && bd->kind != B_ALLOC_REF) || args.empty())
                     return UnknownDesc();
                 return ScanBase(f, args[0], busy, depth);
             }
-            if (fit == ast.functionmap.end() || fit->second.size() != 1) return UnknownDesc();
-            callee = fit->second[0];
+            if (cands.size() != 1) return UnknownDesc();
+            callee = cands[0];
         }
         EnrollDescs(callee);
         if (callee->retdescs.empty()) return UnknownDesc();
@@ -332,7 +331,10 @@ struct CycleRoots {
         if (auto r = Is<Return>(n)) {
             // `return … from g` exits another frame entirely; only a `from`
             // naming this function targets it (its innermost activation).
-            if (r->from.empty() || r->from == f->name) {
+            // The return is in f's own body, so an unqualified name
+            // resolves in f's namespace first: a leaf match there is f.
+            auto ref = SplitName(r->from, r->ns);
+            if (r->from.empty() || (ref.leaf == f->name && ref.ns == f->ns)) {
                 if (r->vals.size() != ds.size()) {
                     usable = false;
                 } else {

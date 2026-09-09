@@ -509,7 +509,7 @@ inline vector<string> CodeGen::EmitThreadSpawn(Call *c, vector<Node *> &an) {
 inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
     auto it = thunks.find(sp);
     if (it != thunks.end()) return it->second;
-    auto name = Unique(cat("gs_tmain_", Sanitize(sp->sf->name)));
+    auto name = Unique(cat("gs_tmain_", Sanitize(sp->sf->ns, sp->sf->name)));
     thunks[sp] = name;
     Append(protos, "static void ", name, "(uint8_t *p);\n");
     auto &ki = sinfo[sp];

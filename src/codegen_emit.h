@@ -459,7 +459,7 @@ inline void CodeGen::EmitGlobalDecls() {
         auto perdef = g->inits.size() == g->defs.size();
         for (size_t di = 0; di < g->defs.size(); di++) {
             auto d = g->defs[di];
-            auto name = Unique(Sanitize(d->name));
+            auto name = Unique(Sanitize(g->ns, d->name));
             gnames[d] = name;
             // Registered as they are created; see CacheableStk.
             auto reg = [&](const string &s) { gstkexprs.insert(s); };
@@ -586,9 +586,8 @@ inline void CodeGen::InitGlobalStack(VarDef *d) {
 
 inline void CodeGen::EmitMain() {
     FnSpec *mainspec = nullptr;
-    auto mit = ast.functionmap.find("main");
-    if (mit != ast.functionmap.end() && !mit->second[0]->specs.empty())
-        mainspec = mit->second[0]->specs[0];
+    if (auto mainsf = ast.MainFunction(); mainsf && !mainsf->specs.empty())
+        mainspec = mainsf->specs[0];
     Append(code, "int main(int argc, char **argv) {\n    gs_argc = argc;\n    gs_argv = argv;\n"
                  "    gs_rt_init();\n    gs_init_globals();\n");
     if (mainspec && sinfo.count(mainspec)) {

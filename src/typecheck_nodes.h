@@ -76,7 +76,7 @@ inline Val StrLit::Check(TypeCheck &tc, TypeExpr *expected) {
 }
 
 inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
-    if (auto vd = tc.LookupVar(name)) {
+    if (auto vd = tc.LookupVar(name, ns)) {
         vdef = vd;
         tc.RequireAssigned(vd, this);
         Val v;
@@ -135,14 +135,13 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
         v.fnv.env = tc.frames.back().lexspec;
         return v;
     }
-    auto fit = tc.ast.functionmap.find(name);
-    if (fit != tc.ast.functionmap.end()) {
-        if (fit->second.size() != 1)
+    if (auto &cands = tc.ast.LookupFunctions(name, ns); !cands.empty()) {
+        if (cands.size() != 1)
             tc.Error(this, cat("overloaded function ", name, " cannot be a function value"));
-        fnref = fit->second[0];
+        fnref = cands[0];
         Val v;
         v.type = tc.fntype;
-        v.fnv.named = fit->second[0];
+        v.fnv.named = cands[0];
         return v;
     }
     tc.Error(this, cat("unknown identifier: ", name));
@@ -521,10 +520,9 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
 inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     // EnumName.Variant: a payload-less variant constant (§3.5).
     if (auto id = Is<Ident>(obj)) {
-        if (!tc.LookupVar(id->name) && !tc.LookupFnVal(id->name)) {
-            auto eit = tc.ast.enummap.find(id->name);
-            if (eit != tc.ast.enummap.end()) return tc.CheckVariantConst(this, eit->second);
-        }
+        if (!tc.LookupVar(id->name, id->ns) && !tc.LookupFnVal(id->name))
+            if (auto en = tc.ast.LookupEnum(id->name, id->ns))
+                return tc.CheckVariantConst(this, en);
     }
     auto ov = tc.CheckV(obj, nullptr);
     obj->exprtype = ov.type;

@@ -153,8 +153,8 @@ inline VarDef *TypeCheck::NewVar(string_view name, TypeExpr *type, Line l, bool 
 
 // Name lookup: current frame's scopes innermost-out, then the lexical
 // parent chain (free variables of nested fns / function values, §7.5),
-// then globals.
-inline VarDef *TypeCheck::LookupVar(string_view name) {
+// then globals, in the namespace order of docs/design/namespaces.md.
+inline VarDef *TypeCheck::LookupVar(string_view name, string_view ns) {
     for (auto fi = (int)frames.size() - 1; fi >= 0;) {
         auto &f = frames[fi];
         auto limit = fi == (int)frames.size() - 1 ? (int)vars.size()
@@ -167,10 +167,17 @@ inline VarDef *TypeCheck::LookupVar(string_view name) {
         }
         fi = f.lexframe;
     }
-    auto git = ast.globalmap.find(name);
-    if (git != ast.globalmap.end() && !git->second->defs.empty())
-        return git->second->defs[0];
-    return nullptr;
+    auto g = ast.LookupGlobal(name, ns);
+    return g && !g->defs.empty() ? g->defs[0] : nullptr;
+}
+
+// The namespace of the function being checked (a function value's is its
+// definer's): where names the checker looks up without a node of their own
+// resolve first.
+inline string_view TypeCheck::CurNs() {
+    for (auto i = (int)frames.size() - 1; i >= 0; i--)
+        if (frames[i].sf) return frames[i].sf->ns;
+    return {};
 }
 
 // The frame whose vars the above may address next: used to find a spec's
@@ -318,7 +325,7 @@ inline void TypeCheck::PrebindLoopRefs(Node *body) {
     };
     walk(body);
     for (auto &[name, rhss] : targets) {
-        auto vd = LookupVar(name);
+        auto vd = LookupVar(name, CurNs());
         if (!vd || vd->isglobal || vd->refrootknown || !vd->type || vd->type->kind != TY_REF)
             continue;
         if (vd->ownerspec != frames.back().spec) continue;
@@ -358,7 +365,7 @@ inline bool TypeCheck::ResolvePrebind(const RootDesc &d, VarDef *&root, bool &ex
     };
     switch (d.kind) {
         case RD_GLOBAL: return ofvar(d.glob);
-        case RD_LOCAL: case RD_FREE: return ofvar(LookupVar(d.name));
+        case RD_LOCAL: case RD_FREE: return ofvar(LookupVar(d.name, CurNs()));
         case RD_PARAM: {
             auto spec = frames.back().spec;
             if (!spec || d.param >= (int)spec->params.size()) return false;
@@ -1340,11 +1347,9 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         case B_THREAD_SPAWN: {
             auto wid = Is<Ident>(args[0]);
             SFunction *wsf = nullptr;
-            if (wid) {
-                auto fit = ast.functionmap.find(wid->name);
-                if (fit != ast.functionmap.end())
-                    for (auto sf : fit->second) if (sf->isthread) wsf = sf;
-            }
+            if (wid)
+                for (auto sf : ast.LookupFunctions(wid->name, wid->ns))
+                    if (sf->isthread) wsf = sf;
             if (!wsf) Error(c, "thread_spawn's first argument names a thread_fn");
             wid->fnref = wsf;
             wid->exprtype = fntype;

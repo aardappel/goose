@@ -56,11 +56,22 @@ inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, N
 
 // The user's `format` overload for t, instantiated for a builder rooted
 // anywhere and a T by value or by reference (the two parameter shapes
-// such an overload takes), once per print call.
+// such an overload takes), once per print call. The overloads tried are
+// those of the type's own namespace, then the global ones: rendering
+// follows the type, not the namespace of whoever prints it
+// (docs/design/namespaces.md).
 inline FnSpec *TypeCheck::UserFormat(Call *c, TypeExpr *t) {
     for (auto &fs : c->fmtspecs) if (TypeEq(fs.first, t)) return fs.second;
-    auto fit = ast.functionmap.find("format");
-    if (fit == ast.functionmap.end()) return nullptr;
+    auto tns = NominalNs(t);
+    if (auto sp = UserFormatIn(c, t, tns)) return sp;
+    return tns.empty() ? nullptr : UserFormatIn(c, t, {});
+}
+
+inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns) {
+    auto n = ast.FindNS(ns);
+    if (!n) return nullptr;
+    auto fit = n->functionmap.find("format");
+    if (fit == n->functionmap.end()) return nullptr;
     for (auto sf : fit->second) {
         if (sf->params.size() != 2 || !sf->params[0].type || !sf->params[1].type ||
             !sf->generics.empty() || sf->isnested)
@@ -449,7 +460,7 @@ inline void TypeCheck::SyntacticShrinks(SFunction *sf) {
         if (!id) return;
         for (size_t i = 0; i < sf->params.size(); i++)
             if (sf->params[i].name == id->name) { sf->shrinkparamidx.push_back((int)i); return; }
-        if (ast.globalmap.count(id->name)) sf->shrinkglobalnames.push_back(id->name);
+        if (ast.LookupGlobal(id->name, id->ns)) sf->shrinkglobalnames.push_back(id->name);
     };
     function<void(Node *)> walk = [&](Node *n) {
         if (!n) return;
