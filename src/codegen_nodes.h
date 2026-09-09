@@ -916,7 +916,9 @@ inline void Continue::CgStmt(CodeGen &cg) {
         if (cg.cscopes[i].kind == CodeGen::SC_FN) break;
     }
     assert(si >= 0);
-    cg.EmitExitRestores(si + 1);
+    // Through the loop scope itself: the label is past the body's own
+    // restores, and a local declared after this point has no base yet.
+    cg.EmitExitRestores(si);
     cg.cscopes[si].usedcnt = true;
     cg.L("goto ", cg.cscopes[si].cntlbl, ";");
     cg.termjump = true;

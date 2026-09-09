@@ -24,10 +24,12 @@ inline void CodeGen::GenStmt(Node *n) {
 }
 
 // ------------------------------------------------------------------
-// Loops. Shape: for (<init>; ; <incr>) { [cond exit] body cnt:; restores }
+// Loops. Shape: for (<init>; ; <incr>) { [cond exit] body restores cnt:; }
 // Goose break/continue always leave via gotos with explicit watermark
 // restores; C break/continue are never emitted for them, so nesting
-// inside generated switches stays safe.
+// inside generated switches stays safe. Every exit path restores only
+// the watermarks of declarations it ran past, so the continue label
+// sits after the fallthrough restores rather than sharing them.
 
 inline void CodeGen::GenLoopBody(const function<void()> &condexit, Block *bodyb, Dst d,
                                  const string &forhead) {
@@ -43,8 +45,8 @@ inline void CodeGen::GenLoopBody(const function<void()> &condexit, Block *bodyb,
     for (auto st : bodyb->stmts) GenStmt(st);
     if (bodyb->tail) GenStmt(bodyb->tail);
     auto &sc = cscopes.back();
-    if (sc.usedcnt) L(sc.cntlbl, ":;");
     EmitRestores(sc);
+    if (sc.usedcnt) L(sc.cntlbl, ":;");
     ind--;
     L("}");
     auto usedbrk = sc.usedbrk;
