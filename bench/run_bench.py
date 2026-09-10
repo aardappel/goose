@@ -24,7 +24,9 @@ way as well: compiled and run inside the compiler, with no C file and no
 external toolchain. Those go in a table of their own at the end. They are not
 comparable with the C++ and Rust rows -- the time includes compiling the
 program, and TinyCC is a one-pass compiler that does not optimize -- so they
-are kept out of every comparison against another language.
+are kept out of every comparison against another language. That time also
+includes the compiler's own front end, so pass `--exe` a release build of it
+or those rows measure an unoptimized compiler.
 
   python bench/run_bench.py                          # everything
   python bench/run_bench.py --only tree,sexp         # re-measure a subset; the report
@@ -1076,11 +1078,12 @@ def main():
         W("run, against the compiler compiling and running it in one process through")
         W("TinyCC. Each cell is `compiled / JIT` in ms.")
         W()
-        W("The JIT number includes compiling the program, and TinyCC is a one-pass")
-        W("compiler with no optimizer, so this is not a measurement of Goose against")
-        W("another language -- it is what the convenience of not needing a C toolchain")
-        W("costs. The memory columns are the peak working set; the JIT one holds the")
-        W("compiler, the generated C and the program at once.")
+        W("The JIT number covers the compiler's own front end and TinyCC compiling the")
+        W("program as well as running it, and TinyCC is a one-pass compiler with no")
+        W("optimizer, so this is not a measurement of Goose against another language --")
+        W("it is what the convenience of needing no C toolchain costs. The memory columns")
+        W("are the peak working set; the JIT one holds the compiler, the generated C and")
+        W("the program at once.")
         W()
         hdr, sep = "| benchmark | implementation |", "|---|---|"
         for sz in active_sizes:

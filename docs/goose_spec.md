@@ -2419,7 +2419,8 @@ What the current compiler does where the text above leaves it a choice.
   program. Nothing about the generated C differs between the two, and `-D`
   is written into that C rather than passed to a backend so that stays
   true. TinyCC does not optimize and cannot place thread-local storage in
-  an in-memory run, so a program using workers (§11.2) is refused there.
+  an in-memory run, so a program using workers (§11.2) is refused there
+  (docs/design/jit_backend.md).
 * **Fat references.** A callee that grows a resizable through a reference
   (`push` through a `f64[>..]&`) must know which data stack to bump. The
   compiler does not pin that stack per call site (§10.2): every reference

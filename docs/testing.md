@@ -33,7 +33,8 @@ A test the backend cannot run yet is reported as a skip, not a failure: either
 because the compiler refuses the program outright (`JIT mode does not support`)
 or because the test's first line says `no-jit`, which is for the few cases
 where TinyCC's own C library answers differently from the ones the expected
-output was blessed against.
+output was blessed against. What the backend cannot do yet, and what could be
+done about it, is `docs/design/jit_backend.md`.
 
 An explicitly requested compiler must exist; CI does not silently skip it.
 Expected aborts use `.aborts` alongside normal `.out` expectations. Optional
