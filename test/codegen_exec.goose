@@ -577,7 +577,7 @@ fn empties() {
     print(e.len);                        // 0
     var g: f64[>..] = [];
     print(g.len);                        // 0
-    let s: u8[:] = "";
+    let s: const u8[:] = "";
     print(s.len);                        // 0
     print("");                           // (empty line)
 }
@@ -1445,7 +1445,7 @@ fn bug_fixes() {
     var g: i64[>..] = [1, 2, 3];
     let r = g;                           // A reference: g is not fixed-size.
     print(sum_bf(r));                    // 6: a reference to an array as a slice.
-    let sl: u8[:] = "hello";
+    let sl: const u8[:] = "hello";
     var o: u8[>..] = sl;                 // A resizable built from a slice value.
     o.push(33);
     print(o);                            // hello!
@@ -1461,7 +1461,7 @@ fn bug_fixes() {
 
 extern fn sqrt(x: f64) -> f64;
 extern "fabs" fn abs_ex(x: f64) -> f64;
-extern "gs_os_getenv" fn getenv_ex(name: u8[:], out: u8[>..]&) -> bool;
+extern "gs_os_getenv" fn getenv_ex(name: const u8[:], out: u8[>..]&) -> bool;
 
 // extern fns (§7.10): libm through the emitted prototypes, and a
 // runtime-defined one taking a slice and a builder reference.
@@ -1489,7 +1489,7 @@ fn aggregate_print() {
     print(pts);                                               // [PtAg { 1, 1 }, PtAg { 2, 2 }]
     var words: u8[][>..] = ["a b", "c"];
     print(words);                                             // ["a b", "c"]
-    var o: PtAg? = null;
+    var o: const PtAg? = null;
     print(o);                                                 // null
     o .= n.p;
     print(o);                                                 // PtAg { 3, 4 }

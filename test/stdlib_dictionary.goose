@@ -31,13 +31,13 @@ fn main() {
     print(ok);                                                            // true
     d.clear();
     print(d.count, " ", d.contains(14));                                  // 0 false
-    var sd = dictionary<u8[:], i32> {};
+    var sd = dictionary<const u8[:], i32> {};
     let text = "the cat and the dog and the bird";
     each_split(text, ' ') { sd.update(it, 0) { it += 1; } };
     block { let the = sd.get("the"); if the { print(the); } }             // 3
     block { let and = sd.get("and"); if and { print(and); } }             // 2
     print(sd.count);                                                      // 5
-    var kd = dictionary<key, u8[:]> {};
+    var kd = dictionary<key, const u8[:]> {};
     kd.insert(key { 1, 2 }, "x");
     kd.insert(key { 2, 1 }, "y");
     block { let kx = kd.get(key { 1, 2 }); if kx { print(kx); } }         // x

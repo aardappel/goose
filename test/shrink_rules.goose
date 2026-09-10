@@ -7,7 +7,7 @@
 import std;
 import dictionary;
 
-struct Entry { word: u8[:], count: i32 }
+struct Entry { word: const u8[:], count: i32 }
 
 var log: u8[>..] = [];
 
@@ -24,7 +24,7 @@ fn note(s: u8[:]) {
 
 fn main_shrink_rules() {
     let text = "the cat and the dog and the bird";
-    var counts = dictionary<u8[:], i32> {};
+    var counts = dictionary<const u8[:], i32> {};
     each_split(text, ' ') { counts.update(it, 0) { it += 1; } };
     // `rows` holds slices into `text`, not into `line`, so the buffer
     // clears freely although rows is in scope.

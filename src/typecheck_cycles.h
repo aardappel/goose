@@ -447,14 +447,15 @@ struct CycleRoots {
             rr.writable = false;
             if (i < ds.size()) {
                 auto &d = ds[i];
-                if (d.kind == RD_GLOBAL) rr.writable = d.glob && d.glob->isvar;
+                if (d.kind == RD_GLOBAL)
+                    rr.writable = d.glob && !(d.glob->type && d.glob->type->cq);
                 else if (d.kind == RD_PARAM && d.param < (int)spec->params.size())
                     rr.writable = spec->params[d.param]->ref.writable;
                 else if (d.kind == RD_FREE) {
                     if (auto vd = freevar(d.name)) {
                         auto isref = vd->type && (vd->type->kind == TY_REF ||
                                                   vd->type->kind == TY_SLICE);
-                        rr.writable = isref ? vd->ref.writable : vd->isvar;
+                        rr.writable = isref ? vd->ref.writable : !(vd->type && vd->type->cq);
                     }
                 }
             }

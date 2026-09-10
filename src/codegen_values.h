@@ -855,10 +855,14 @@ inline string CodeGen::StrRaw(const string &v) {
     auto it = strdata.find(v);
     if (it != strdata.end()) return it->second;
     auto name = Unique(cat("gs_str", strdata.size()));
-    Append(pdata, "static uint8_t ", name, "[", v.size() ? v.size() : 1, "] = ", CStr(v),
+    // The checker admits no write to a literal (§9.5), so the data is C
+    // const and a hole in the analysis faults rather than corrupting; the
+    // cast keeps the slice and copy sites at their plain pointer type.
+    Append(pdata, "static const uint8_t ", name, "[", v.size() ? v.size() : 1, "] = ", CStr(v),
            ";\n");
-    strdata[v] = name;
-    return name;
+    auto expr = cat("((uint8_t *)", name, ")");
+    strdata[v] = expr;
+    return expr;
 }
 
 inline string CodeGen::GenStrBytes(StrLit *s) {
@@ -882,10 +886,10 @@ inline string CodeGen::GenStrBytes(StrLit *s) {
         } while (v);
         enc.assign((char *)lenbuf, nn);
         enc += s->val;
-        Append(pdata, "static uint8_t ", name, "[", enc.size(), "] = ", CStr(enc),
+        Append(pdata, "static const uint8_t ", name, "[", enc.size(), "] = ", CStr(enc),
                ";\n");
     } else {
-        Append(pdata, "static struct { ", IntCT(ls), " len; uint8_t s[",
+        Append(pdata, "static const struct { ", IntCT(ls), " len; uint8_t s[",
                s->val.size() ? s->val.size() : 1, "]; } ", name, " = { ",
                s->val.size(), ", ", CStr(s->val), " };\n");
     }

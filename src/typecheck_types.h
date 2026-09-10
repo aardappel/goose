@@ -145,6 +145,7 @@ inline void TypeCheck::CheckFieldDefaults(vector<Field> &fields, vector<TypeExpr
     }
     auto savereach = reachable;
     DestScope ds(*this, Dest {});
+    SlotScope ss(*this, true);   // A default lands in the field it declares.
     reachable = true;
     auto sp = ast.NewFnSpec();  // Bindings holder for the pseudo frame.
     sp->bindings = bindings;
@@ -545,11 +546,15 @@ inline bool TypeCheck::IsArrayKind(TypeExpr *t, ArrayKind k) {
 // as ordinary references (§3.9).
 inline TypeExpr *TypeCheck::LoadType(TypeExpr *t) {
     if (t->kind == TY_INT && t->intstorage == IS_VARINT) return ast.inttypes[IS_I64];
+    // A const value loads as a copy, which is plain; a const reference or
+    // slice loads as itself, its qualifier being about the pointee.
+    if (t->cq && t->kind != TY_REF && t->kind != TY_SLICE) return ast.PlainOf(t);
     if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
         auto r = ast.NewType(TY_REF, t->line);
         r->ref = ast.NewDetail<TypeRef>();
         r->ref->sub = t->ref->sub;
         r->ref->optional = t->ref->optional;
+        r->cq = t->cq;
         return r;
     }
     return t;
@@ -854,7 +859,13 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         lv.var = vd;
         lv.root = vd;
         lv.rootexact = true;
-        lv.writable = vd->isvar;
+        // Contents are writable unless the type says const or the binding
+        // is a copy (§9.5); `let` only keeps the binding from being
+        // reassigned (§4.4).
+        lv.writable = !vd->copybind && !(vd->type && vd->type->cq);
+        lv.letbound = !vd->isvar;
+        lv.letname = vd->name;
+        lv.copyof = vd->copybind ? vd : nullptr;
         lv.reusable = vd->reusable;
         n->exprtype = vd->type;
         return lv;
@@ -883,6 +894,8 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
             Error(n, cat(lv.type->kind == TY_SLICE ? "slices" : "arrays",
                          " of variable-size elements cannot be indexed, only iterated"));
         CheckIntAny(ix->idx);
+        if (lv.type->cq) lv.writable = false;   // An element of a const value.
+        lv.letbound = false;
         lv.type = elem;
         lv.var = nullptr;
         lv.fromstorage = true;

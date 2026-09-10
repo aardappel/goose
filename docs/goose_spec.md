@@ -117,6 +117,10 @@ field lists, match arms.
 Type syntax is postfix throughout: `T[k]` array of T, `T&` reference to T,
 `T[:]` slice of T, `T?` optional T, `T&<u8>` relative reference,
 `T&<u8 in pool>` one measured from a named pool, `Shape..` variable-mode ADT.
+One prefix, `const`, qualifies the first reference or slice built on the
+base type: `const T&` and `const T[:]` are a reference and a slice through
+which the pointee, or the elements, cannot be written (§9.5); `const
+(u8[:])&` parenthesizes to reach an outer one.
 
 `ns::name` names a declaration of namespace `ns` (§11.1) wherever a
 declaration can be named -- a type, a call, a global, a `return … from`
@@ -177,8 +181,9 @@ struct X { a: i8[3], b: i32, c: i64 = 0 }
   ignored by `==`. In variable-class layouts (where offsets are dynamic)
   `pad n` still inserts n bytes, but bare `pad` has no defined alignment to
   aim for and inserts nothing.
-* Fields are mutable by default; `let` before a field name makes it
-  const-after-construction (transitively, via writability §9.5).
+* Fields are mutable by default; `let` before a field name means the field
+  is not assigned after construction (§4.4), and `const f: T` is `let f:
+  const T`: its contents are read-only too (§9.5).
 * A field may declare a default value (`c: i64 = 0` above); constructors may
   then omit it (§4.2).
 * Layout is declaration order; variable/resizable fields obey §3.4.
@@ -328,9 +333,10 @@ References to `varint` fields are always read-only (§3.8).
 There is no built-in string type. A "string" is any array-family type with
 element `u8`: `u8[]` (immutable flat string), `u8[varint]` (compact), `u8[>..]`
 (string builder), etc. String literals are static constant `u8` data,
-implicitly copyable into any of these representations and usable as `u8[:]`
-slices directly (with non-writable provenance, §9.5). No encoding is
-enforced; UTF-8 is a library-level convention.
+implicitly copyable into any of these representations and usable directly
+as slices, of type `const u8[:]` (§9.5): read-only through the type, so a
+literal is stored only in a slot declared `const`. No encoding is enforced;
+UTF-8 is a library-level convention.
 
 **Text.** Every scalar, `bool`, and `u8` array or slice has a text form:
 integers in decimal, floats in the shortest form that reads back to the same
@@ -727,8 +733,12 @@ only by `.=`, §3.8):
   variable-mode ADT lvalues, `varint` fields) — these are frozen at
   construction; rebuild the container instead.
 
-`let` forbids assignment through that name/field, and makes references
-derived from it non-writable (§9.5). Definite assignment is enforced: no
+`let` forbids assigning that name or field as a whole, and nothing more:
+the *contents* of a `let` array or struct are as writable as their type
+says (`let xs = [1, 2, 3]; xs[0] = 9;` is fine), and so is what a reference
+to it reaches. Contents are made read-only by the type, `const T` (§9.5),
+and `const x = e;` declares a `let` of type `const T`: neither reassigned
+nor written into. Definite assignment is enforced: no
 reads of uninitialized locals; every declaration either has an initializer
 or is provably assigned on all paths before use. Fixed arrays require full
 initialization (every slot is indexable); the `[v; n]` fill literal makes
@@ -1070,7 +1080,9 @@ Built-in iteration only (no iterator protocol):
 * `for i in n` — sugar for `0..n`; `i` has `n`'s type.
 * `for x in arr` — element copies for fixed-size elements, at the element's
   type; element references for non-fixed ones (§4.1), whose walk is
-  sequential. An element that *is* a relative reference (§3.9) binds as the
+  sequential. A copy is not written (`x.f = 1` is an error naming `&x`):
+  the write would update the copy and nothing else. An element that *is* a
+  relative reference (§3.9) binds as the
   loaded plain reference, exactly as indexing it gives; an element with
   relative references *inside* it cannot be copied out of its root at all,
   and needs the `&x` form.
@@ -1097,8 +1109,9 @@ fn also_generic(a, b) { ... }        // untyped params are generic
 
 * Free functions only. No methods, no impl blocks. UFCS: `x.f(a)` is exactly
   `f(x, a)`; resolution tries fields/built-in members first, then functions.
-* Parameters are immutable bindings by default; `var` makes the (by-value)
-  parameter a mutable local.
+* Parameters are `let` bindings by default (not reassigned; their contents
+  are as writable as their type says, §4.4); `var` makes the (by-value)
+  parameter a reassignable local.
 * A parameter with no type annotation is generic (Lobster-style); explicit
   `<T>` parameters express same-type constraints and let signatures name
   types. Return types may be omitted where inferrable (required across
@@ -1423,7 +1436,8 @@ any flat fixed-size struct or fixed array, by value as its packed C type;
 Returns are one such value or nothing. Everything else — varints,
 references inside structs, variable and resizable values by value, slices
 of variable elements, optionals — is rejected at the declaration.
-Writability is checked at the call site as for `push` (§9.5).
+A parameter of reference or slice type is what it says (§9.5): a read-only
+argument needs it declared `const`.
 
 ## 8. ADTs in use
 
@@ -1448,8 +1462,9 @@ match n { 0 => "zero", 1..10 => "small", _ => "big" }
   required; pattern values must fit the scrutinee's type.
 * Arm binders are explicit about copy vs reference, like the rest of the
   language: `Circle c =>` binds the payload *by value* — a copy, potentially
-  a large one for variable-size payloads — and `Circle &c =>` binds it *by
-  reference* (the `for &x` spelling; `Circle& c` is the same tokens).
+  a large one for variable-size payloads, and not written, as a `for` copy
+  is not (§6.5) — and `Circle &c =>` binds it *by reference* (the `for &x`
+  spelling; `Circle& c` is the same tokens).
 * `&`-binders are legal only on **variable-mode** payloads (whether the
   scrutinee is a value or a reference): a fixed-mode value may be
   overwritten with another variant — inside the arm included — so a
@@ -1608,27 +1623,50 @@ not the verifier, is what says the file is the one that was written.
 
 ### 9.5 Writability
 
-Reference and slice types carry no const/mut markers. Instead, *writability
-is an inferred provenance attribute*, tracked per instantiation exactly like
-roots, with zero syntax:
+Everything is writable unless its type says otherwise. Any type may be
+qualified `const` (§2): a `const i64[3]` or `const Point` is a value whose
+contents cannot be written into (its elements, its fields, and whatever a
+reference to it reaches), and `const T&` / `const T[:]` are a reference and
+a slice through which the pointee, or the elements, cannot be written: no
+assignment, compound assignment, `++`, or growing/shrinking operation
+through it compiles. Assigning a `const` value as a whole is the binding's
+business (`let`, §4.4), and a copy of one is a fresh, writable value.
+`const` is shallow: a reference read out of a field of a `const Box&` is as
+writable as the field's own type says. Every value of reference or slice
+type is either read-only or writable, and where that comes from is
+*inferred*, per instantiation, exactly like roots, with no annotation
+needed:
 
-* Non-writable provenances: static data (string literals, constants), and
-  anything derived from a `let` binding of a value or a `let` field — `let`
-  is genuinely, transitively const for the value it names. A `let` binding
-  of a reference or slice names the reference: it does not rebind, and
-  writes through it follow the pointee's own provenance (`let r .= xs[i]; r
-  = 0;` writes an element of a `var` array, §3.8).
-* A write through a non-writable reference/slice (or a shrink/grow operation
-  through one) is a compile error at the offending instantiation.
-* Everything else is writable. Slices remain the read idiom by convention,
-  not by rule.
-* Provenance is tracked through *direct* derivation paths (variables,
-  fields, `&`, slicing, calls), not through storage round-trips: a
-  reference stored into a container and read back out is writable regardless
-  of its original provenance. This laundering is deliberate — the struct
-  definition (its `let` fields) is the source of truth for what may be
-  written through paths *it* controls, and the loophole is this pragmatic
-  language's const-cast.
+* Read-only: a string literal (`const u8[:]`, §3.7); `&x` and `x[..]` of a
+  `const` value, of a field of one, or of a by-value `for`/`match` binding
+  (§6.5) — these are `const T&` and `const T[:]`; a `bytes_of` view (§12);
+  and whatever is read out of a slot declared `const`. A `let` binding *of*
+  a reference or slice names the reference: it does not rebind, and writes
+  through it follow the value's own constness (`let r .= xs[i]; r = 0;`
+  writes an element of a `var` array, §3.8).
+* Writable: everything else — `&x` and `x[..]` of a `var` or of a plain
+  `let`, and whatever is read out of a slot that is not `const`.
+* **Parameters and results are generic over constness.** A parameter
+  declared `u8[:]` or `T&` takes a read-only or a writable argument, and the
+  specialization is checked with the argument's constness (a write through
+  a parameter given a literal is an error at that instantiation); one
+  declared `const u8[:]` is read-only whatever it is given, which is what a
+  function that only reads its input documents. A declared result type
+  likewise names the shape, and the constness of a call's result is that of
+  what the function returns (a `u8[:]` result of `return s` for a `const
+  u8[:]` parameter is read-only at that call); `-> const u8[:]` makes it
+  read-only always. Adding `const` is implicit everywhere (`u8[:]` fits
+  `const u8[:]`); dropping it is never.
+* **Slots say what they hold.** A field, an element, a global, an annotated
+  variable and an assignment target are *slots*, and a read-only reference
+  or slice is stored in a slot only if the slot's type is `const`: `struct
+  Named { name: const u8[:] }` holds a literal, `struct Buf { bytes: u8[:] }`
+  does not, and `views: const u8[:][>..]` takes either kind of view. So
+  what is read out of a slot is exactly as writable as the slot's type says,
+  and nothing is laundered through storage: a `u8[:]` field that could be
+  written through can only ever have been given a writable slice.
+* An `extern fn` (§7.10) is a C function and its parameters are what they
+  say: a read-only argument needs the parameter declared `const`.
 
 **Read-back roots.** A container names a scope, not the storage its contents
 point into, so the root of a reference or slice of pointee type `T` read out
@@ -1675,7 +1713,8 @@ function that mutates its slice argument compiles in one calling context and
 errors in another. The call-graph-order compiler always reports such errors
 with the full compile-time call chain, so the origin (e.g. "this slice came
 from a string literal at …") is visible. This buys most of const-correctness
-with none of the type-soup churn.
+with none of the type-soup churn: `const` is written where a slot must
+accept read-only data, and nowhere else.
 
 ---
 
@@ -1850,8 +1889,10 @@ the caller's own facts about `src` intact.
   one from a module it imports; their initializers may call functions), and a
   global resizable simply owns a stack's bottom for the program's life (a
   natural whole-program arena).
-  `let` globals of flat fixed type with compile-time-evaluable initializers
-  live in static data.
+  `const` globals of flat fixed type with compile-time-evaluable
+  initializers live in static data; the initializer of any `let` or
+  `const` global is a named constant a compile-time size may use
+  (`i64[N]`).
 * Entry point: `fn main() { }`, in the global namespace. Only the *root*
   file's `main` is the entry; a `fn main` in an imported file is ignored
   entirely (not an entry, not callable, no collision). A runnable file can
@@ -1896,8 +1937,9 @@ the Linda tuple-space / coordination style.
 * A thread program may not access globals — that would be shared mutable
   memory between programs; the typechecker rejects it for every function a
   `thread_fn` reaches. Data enters through the spawn arguments and queues.
-  The exception is a `let` global of flat fixed type: a constant, which
-  holds no reference and is never written, so reading it shares nothing.
+  The exception is a `const` global of flat fixed type: a constant, which
+  holds no reference and is never written — its contents are read-only
+  through every path and reference (§9.5) — so reading it shares nothing.
 * Args and queue elements must be **flat** types (§1.1); values are copied
   in and out, which is cheap because Goose values are contiguous.
 * **Typed queues**: conceptually one queue per flat element type;
@@ -2276,7 +2318,7 @@ struct      := "struct" declname generics? "{" fieldlist "}"
 enum        := "enum" declname generics? "{" variant ("," variant)* ","? "}"
 variant     := ident ( "{" fieldlist "}" )?
 fieldlist   := field ("," field)* ","?
-field       := "let"? ident ":" type ("=" expr)? | "pad" intlit?
+field       := ("let" | "const")? ident ":" type ("=" expr)? | "pad" intlit?
 typealias   := "type" declname "=" type ";"
 generics    := "<" ident (":" type)? ("," ident (":" type)?)* ">"
 
@@ -2286,9 +2328,10 @@ fndecl      := ("extern" strlit?)? "recursive"? ("fn" | "thread_fn") declname
 params      := param ("," param)* ","?
 param       := "var"? ident (":" type)?          // untyped => generic
 rettypes    := type ("," type)*                  // no parens in declarations
-globaldecl  := "reusable"? ("let" | "var") declname (":" type)? "=" expr ";"
+globaldecl  := "reusable"? ("let" | "var" | "const") declname (":" type)? "=" expr ";"
 
-type        := prim | qname tyargs? | "(" type ")" | type postfix
+type        := "const"? (prim | qname tyargs? | "(" type ")") postfix*
+                                                 // const: the first & or [:] (§9.5)
 prim        := "bool"|"varint"|"i8"|…|"u64"|"f32"|"f64"
              | "fn" ( "(" types? ")" ("->" (type | "(" types ")"))? )?
 tyargs      := "<" type ("," type)* ","? ">"
@@ -2304,7 +2347,7 @@ postfix     := "[" expr "]"                      // fixed array (const expr)
              | "." ident                         // variant type
 
 stmt        := decl | assign | incdec | exprstmt
-decl        := "reusable"? ("let" | "var") identlist (":" type)?
+decl        := "reusable"? ("let" | "var" | "const") identlist (":" type)?
                (("=" | ".=") exprlist)? ";"     // .= binds by reference (§3.8)
 assign      := lvalue assignop expr ";"          // = .= += -= *= /= %= &= |= ^= <<= >>=
 incdec      := lvalue ("++" | "--") ";"

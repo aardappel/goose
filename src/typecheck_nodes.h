@@ -34,6 +34,7 @@ inline Val BoolLit::Check(TypeCheck &tc, TypeExpr *) {
 inline Val NullLit::Check(TypeCheck &tc, TypeExpr *expected) {
     Val v;
     v.isnull = true;
+    v.writable = true;   // Nothing to write: fits a writable slot or parameter.
     // Its own type only matters when nothing adapts it; FitsAt checks isnull.
     v.type = expected && expected->kind == TY_REF && expected->ref->optional
                  ? expected : tc.nulltype;
@@ -47,6 +48,8 @@ inline Val SelfRef::Check(TypeCheck &tc, TypeExpr *) {
                    "relative-reference field of the literal containing it (§3.9)");
 }
 
+// A string literal is a `const u8[:]` into static data (§3.7), copyable
+// into any u8 array type.
 inline Val StrLit::Check(TypeCheck &tc, TypeExpr *expected) {
     Val v;
     v.strlit = true;
@@ -67,11 +70,11 @@ inline Val StrLit::Check(TypeCheck &tc, TypeExpr *expected) {
             return v;
         }
         if (expected->kind == TY_SLICE && tc.IsU8(expected->sub)) {
-            v.type = expected;
+            v.type = tc.cu8slice;
             return v;
         }
     }
-    v.type = tc.u8slice;
+    v.type = tc.cu8slice;
     return v;
 }
 
@@ -93,23 +96,22 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
         } else {
             v.root = vd;
             v.rootexact = true;
-            v.writable = vd->isvar;
+            v.writable = !vd->copybind && !(vd->type && vd->type->cq);
             v.reusable = vd->reusable;
             v.nonneg = vd->nonneg;
             v.lvalue = true;
             if (tc.HoldsPlainRef(v.type)) {
                 // What the references inside point at: a global's contents
-                // are rooted at globals or static data; a let's were fixed
-                // by its initializer; anything else is bounded by the
-                // variable itself, which its contents outlive.
-                // A var's contents are what was stored so far in program
-                // order, unless a loop around this read writes it: the next
-                // iteration's contents are then unknown here.
+                // are rooted at globals or static data; anything else is
+                // bounded by the variable itself, which its contents
+                // outlive. The contents are what was stored so far in
+                // program order, unless a loop around this read writes
+                // them: the next iteration's contents are then unknown here.
                 v.holderset = true;
                 v.holderfrom = vd;
                 if (vd->isglobal) {
                     v.holderroot = nullptr;
-                } else if (vd->contentset && (!vd->isvar || !tc.AssignedInEnclosingLoop(vd))) {
+                } else if (vd->contentset && !tc.AssignedInEnclosingLoop(vd)) {
                     v.holderroot = vd->contentroot;
                     v.holderexact = vd->contentexact;
                 } else {
@@ -173,6 +175,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     if (fillval) {
         auto cnt = tc.ConstIntOrError(fillcount, "array fill count");
         if (cnt < 0) tc.Error(this, "array fill count cannot be negative");
+        TypeCheck::SlotScope ss(tc, true);
         auto ev = tc.CheckValue(fillval, elem);
         if (!elem) elem = ev.type;
         if (wantcount >= 0 && cnt != wantcount)
@@ -194,6 +197,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     auto savedeep = tc.litdeep;
     tc.litdeep = {};
     for (auto &e : elems) {
+        TypeCheck::SlotScope ss(tc, true);   // An element is a slot (§9.5).
         auto ev = tc.CheckValue(e, elem);
         if (!elem) elem = ev.type;
         tc.NoteLitElem(ev, elem);
@@ -443,7 +447,7 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
                     rt = tc.LoadType(rv.type);
                 }
             }
-            if (!tc.TypeEq(lt, rt))
+            if (!tc.TopConstEq(lt, rt))
                 tc.Error(this, cat("== requires operands of the same type, got ",
                                    tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
             v.type = tc.ast.booltype;
@@ -594,6 +598,7 @@ inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
     v.type = tc.SliceOf(elem, line);
     v.SetProv(lv);
     v.reusable = false;   // A view of a pool is not the pool.
+    v.type->cq = !v.writable;   // A slice of read-only storage is a `const T[:]` (§9.5).
     return v;
 }
 

@@ -237,6 +237,7 @@ inline void TypeCheck::NarrowCond(Node *cond, bool sense) {
             auto r = ast.NewType(TY_REF, cond->line);
             r->ref = ast.NewDetail<TypeRef>();
             r->ref->sub = t->ref->sub;
+            r->cq = t->cq;
             id->vdef->narrowed = r;
         }
         return;
@@ -596,6 +597,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                                             "(&", arm.pat.binder, ")"));
                     binder->type = vt;  // Payload copy, any mode (§8.1).
                     binder->isvar = false;
+                    binder->copybind = true;
                     NoteNonfixedLocal(vt, m->line, !frames.back().spec);
                     if (HoldsPlainRef(vt)) {
                         // A copied payload holding references: its contents
@@ -779,6 +781,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     PushScope(SK_LOOP, x);
     auto vd = NewVar(x->var, bindtype, x->line, false);
     vd->assigned = true;
+    vd->copybind = (x->iterkind == IK_ARRAY || x->iterkind == IK_SLICE) && !x->byref;
     if (bindtype->kind != TY_REF && bindtype->kind != TY_SLICE && HoldsPlainRef(bindtype)) {
         // A holder element copied out: its contents are the array's.
         Val hv;
@@ -797,6 +800,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
             iterprov.root = rb.root;
             iterprov.rootexact = rb.exact;
             iterprov.rootfrom = rb.from;
+            if (elemtype->cq) iterprov.writable = false;
         }
         BindProv(vd, iterprov);
     }
@@ -925,6 +929,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
     if (vd->type) {
         ann = Subst(vd->type);
         ValidateType(ann, vd->line, global ? VT_GLOBAL : VT_LOCAL);
+        if (vd->isconst) ann = ast.ConstOf(ann);   // `const x: T` is `let x: const T`.
     }
     auto MakeDef = [&](size_t i) -> VarDef * {
         if (global) return vd->defs[i];  // Pre-created by the driver.
@@ -938,12 +943,17 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         return d;
     };
     auto Finish = [&](VarDef *d, TypeExpr *t, const Val *v) {
+        if (vd->isconst) t = ast.ConstOf(t);
         if (t->kind == TY_VOID) Error(vd, "initializer has no value");
         if (t->kind == TY_FN)
             Error(vd, "function values are compile-time only and cannot be stored (§7.6)");
         d->type = t;
-        if (v && (t->kind == TY_REF || t->kind == TY_SLICE)) BindRefProvenance(d, *v);
-        else if (v && HoldsPlainRef(t)) NoteHolderBinding(d, *v);
+        if (v && (t->kind == TY_REF || t->kind == TY_SLICE)) {
+            BindRefProvenance(d, *v);
+            if (t->cq) d->ref.writable = false;
+        } else if (v && HoldsPlainRef(t)) {
+            NoteHolderBinding(d, *v);
+        }
         if (vd->reusable) {
             if (!vd->isvar) Error(vd, "reusable requires var");
             if (!IsArrayKind(t, A_GROW) || ClassOf(t->arr->sub) != SC_FIXED)
@@ -994,9 +1004,11 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         Val v;
         {
             // The new variable's storage is the destination; a reference
-            // or slice variable binds a value rather than storing one.
+            // or slice variable binds a value rather than storing one. An
+            // annotated variable is a typed slot for constness (§9.5).
             DestScope ds(*this, Dest { d, true, ann && (ann->kind == TY_REF ||
                                                         ann->kind == TY_SLICE) });
+            SlotScope ss(*this, ann != nullptr);
             auto refinit = Is<Unary>(vd->inits[i]);
             if (vd->byref && !ann) {
                 // `let r .= e;` binds a reference to e: an lvalue by
@@ -1090,6 +1102,8 @@ inline void TypeCheck::CheckAssign(Assign *a) {
         Error(a, "optional value must be narrowed before writing through it, "
                  "or rebound with .=");
     if (a->op != T_ASSIGN) {
+        NoCopyWrite(a, lv);
+        NoLetAssign(a, lv);
         CompoundAssign(a, lv.type, lv.writable);
         if (lv.var) RequireAssigned(lv.var, a);
         return;
@@ -1099,9 +1113,11 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     if (lv.var && !lv.var->assigned) {
         // First assignment of an uninitialized local constructs it.
     } else {
+        NoCopyWrite(a, lv);
+        NoLetAssign(a, lv);
         if (!lv.writable)
-            Error(a, "cannot assign through this path (let, or non-writable "
-                     "provenance, §9.5)");
+            Error(a, "cannot assign through this path (const, or a read-only "
+                     "instantiation, §9.5)");
         AssignableClassCheck(target, a);
     }
     if (IsPendingArray(target)) {
@@ -1130,6 +1146,7 @@ inline void TypeCheck::CheckAssign(Assign *a) {
             ShrinkGrowShrink(a, cat("assign ", ExprStr(a->lval)), root, ExprStr(a->lval));
         }
     }
+    SlotScope ss(*this, true);
     auto v = CheckValueAt(a->rhs, target,
                           Dest { lv.root, lv.rootexact,
                                  lv.var && (target->kind == TY_REF || target->kind == TY_SLICE) });
@@ -1158,9 +1175,11 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
     if (lv.var) {
         if (!lv.var->isvar && lv.var->assigned)
             Error(a, cat("cannot rebind let ", lv.var->name));
-    } else if (!lv.writable) {
-        Error(a, "cannot assign through this path (let, or non-writable "
-                 "provenance, §9.5)");
+    } else {
+        NoLetAssign(a, lv);
+        if (!lv.writable)
+            Error(a, "cannot assign through this path (const, or a read-only "
+                     "instantiation, §9.5)");
     }
     Val v;
     bool wasplain;
@@ -1169,6 +1188,7 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
                                    : Dest { lv.root, lv.rootexact });
         // `r .= &x` is the documented spelling of a rebind (§3.8), so an
         // explicit & is not redundant here as it is at a binding destination.
+        SlotScope ss(*this, true);
         v = CheckV(a->rhs, target);
         if (BindsRef(v, target)) a->rhs = AutoRef(a->rhs, v);
         wasplain = IsPlainRef(v.type);
@@ -1194,6 +1214,7 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
                 auto r = ast.NewType(TY_REF, a->line);
                 r->ref = ast.NewDetail<TypeRef>();
                 r->ref->sub = target->ref->sub;
+                r->cq = target->cq;
                 lv.var->narrowed = r;
             } else {
                 lv.var->narrowed = nullptr;
@@ -1208,8 +1229,9 @@ inline bool TypeCheck::PointeeWritable(LVal &lv, Node *at) {
         RequireAssigned(lv.var, at);
         return lv.var->ref.writable;
     }
-    // Container-read: laundered writable by design (§9.5).
-    return true;
+    // Read out of a slot: writable unless the slot's type says const, the
+    // only way a read-only reference got into it (§9.5).
+    return !lv.type->cq;
 }
 
 inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv) {
@@ -1225,6 +1247,7 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv) {
     if (pt->kind == TY_ARRAY && pt->arr->akind == A_GROWSHRINK)
         ShrinkGrowShrink(a, cat("assign ", ExprStr(a->lval)),
                          CanonRoot(lv.var ? RefRootOf(lv.var) : lv.root), ExprStr(a->lval));
+    SlotScope ss(*this, true);
     auto v = CheckValueAt(a->rhs, pt, lv.var ? Dest { RefRootOf(lv.var), RefExactOf(lv.var) }
                                              : Dest { lv.root, lv.rootexact });
     if (v.type->kind == TY_VOID && reachable)
@@ -1259,10 +1282,25 @@ inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
     vd->ref.rootfrom = rv.rootfrom;
 }
 
+// A `let` binding or field is not assigned as a whole (§4.4).
+inline void TypeCheck::NoLetAssign(Node *at, const LVal &lv) {
+    if (lv.letbound && !lv.copyof)
+        Error(at, cat("cannot assign to let ", lv.letname, " (§4.4)"));
+}
+
+// A by-value `for` or `match` binding is a copy of the element: a write
+// would update the copy and nothing else (§6.5, §8.1).
+inline void TypeCheck::NoCopyWrite(Node *at, const LVal &lv) {
+    if (lv.copyof)
+        Error(at, cat("cannot write ", lv.copyof->name, ": a by-value binding is a copy "
+                      "of the element; bind it by reference (&", lv.copyof->name,
+                      ") to write the element (§6.5)"));
+}
+
 inline void TypeCheck::CompoundAssign(Assign *a, TypeExpr *st, bool writable) {
     if (!writable)
-        Error(a, "cannot assign through this path (let, or non-writable "
-                 "provenance, §9.5)");
+        Error(a, "cannot assign through this path (const, or a read-only "
+                 "instantiation, §9.5)");
     auto isbit = a->op == T_ANDEQ || a->op == T_OREQ || a->op == T_XOREQ;
     auto isshift = a->op == T_SHLEQ || a->op == T_SHREQ;
     if (st->kind == TY_INT && st->intstorage != IS_VARINT && isshift) {
@@ -1288,11 +1326,13 @@ inline void TypeCheck::CheckIncDec(IncDec *x) {
     if (IsPlainRef(lv.type)) {
         st = lv.type->ref->sub;
         writable = PointeeWritable(lv, x);
-    } else if (lv.var) {
-        RequireAssigned(lv.var, x);
+    } else {
+        NoCopyWrite(x, lv);
+        NoLetAssign(x, lv);
+        if (lv.var) RequireAssigned(lv.var, x);
     }
-    if (!writable) Error(x, "cannot modify through this path (let, or non-writable "
-                            "provenance, §9.5)");
+    if (!writable) Error(x, "cannot modify through this path (const, or a read-only "
+                            "instantiation, §9.5)");
     if (!IsIntT(st))
         Error(x, cat(TName(x->op), " requires an integer lvalue, got ", TypeStr(st)));
 }
@@ -1461,6 +1501,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             Val v;
             v.type = t;
             v.rootexact = true;   // A null optional or an empty slice: static.
+            v.writable = true;    // And nothing to write, so it fits any slot (§9.5).
             return v;
         }
         default: break;
@@ -1497,7 +1538,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             Error(c, cat(".", d.name, " is not available on ", TypeStr(rv.type)));
         if ((d.flags & BF_WRITE) && !rv.writable)
             Error(c, cat("cannot .", d.name, " through a non-writable value "
-                         "(let, or non-writable provenance, §9.5)"));
+                         "(let, const, or a read-only instantiation, §9.5)"));
         if ((d.flags & BF_REUSABLE) && !rv.reusable)
             Error(c, cat(".", d.name, " exists on reusable pools only (§5.4)"));
     }
@@ -1539,7 +1580,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             Error(c, cat(d.name, " cannot write ", TypeStr(rv.type), " out: ", why));
         if (d.kind == B_BYTES_OF) {
             Val v;
-            v.type = u8slice;
+            v.type = cu8slice;   // A read-only view, in its type too (§9.5).
             v.SetProv(rv);
             // The bytes of a live structure: reading them is what they are
             // for, and writing them would forge the relative references the

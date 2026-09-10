@@ -596,6 +596,7 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
 // Element construction targets the array's storage (relative references
 // in the element must derive from the same root, §3.9).
 inline void TypeCheck::ElemArg(Node *&n, TypeExpr *elem, Val &rv) {
+    SlotScope ss(*this, true);
     CheckValueAt(n, elem, Dest { rv.root, rv.rootexact }, true);
 }
 
@@ -665,8 +666,10 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
     for (size_t i = 0; i < params.size(); i++) {
         auto vd = NewVar(params[i].name, ptypes[i], c->line, params[i].isvar);
         vd->assigned = true;
-        if (ptypes[i]->kind == TY_REF || ptypes[i]->kind == TY_SLICE)
+        if (ptypes[i]->kind == TY_REF || ptypes[i]->kind == TY_SLICE) {
             BindRefProvenance(vd, argvals[i]);
+            if (ptypes[i]->cq) vd->ref.writable = false;
+        }
         // A literal parameter handed to the block stays one inside it.
         if (argvals[i].unsized && !params[i].type && !params[i].isvar) {
             vd->unsized = true;

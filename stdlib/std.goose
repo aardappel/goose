@@ -777,9 +777,11 @@ fn trim_end(s: u8[:]) -> u8[:] {
 }
 fn trim(s: u8[:]) -> u8[:] { trim_end(trim_start(s)) }
 
-// The parts between separators, as slices into s; empty parts are kept.
-fn split(s: u8[:], sep: u8) -> u8[:][>..] {
-    var out: u8[:][>..] = [];
+// The parts between separators, as slices into s; empty parts are kept. The
+// parts are read-only views, so the same function serves a literal and a
+// buffer alike (§9.5).
+fn split(s: u8[:], sep: u8) -> const u8[:][>..] {
+    var out: const u8[:][>..] = [];
     var start = 0;
     for c, i in s {
         if c == sep {

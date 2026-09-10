@@ -13,9 +13,9 @@
 import std;
 import os;
 
-let W = 78;
-let H = 36;
-let MAXITER = 20000;
+const W = 78;
+const H = 36;
+const MAXITER = 20000;
 
 struct Job { y: i32 }                    // -1: no more work, exit
 struct Row { y: i32, cells: u8[] }        // a flat value: it crosses the queue as one copy

@@ -49,9 +49,19 @@ inline void DumpGenerics(string &s, const vector<GenericParam> &generics) {
 }
 
 inline void TypeExpr::Dump(string &s) const {
-    // A fn type used as the base of a postfix chain needs parens to re-parse.
+    // `const` binds to the first reference or slice of the chain, else to
+    // the whole type, so a base needs parens when it is const itself or when
+    // this node is const and the base has a reference or slice the `const`
+    // would otherwise reach first: `(const i64[3])&`, `const (u8[:])&`,
+    // `const (u8[:])[3]`. A fn type base needs them to re-parse at all.
+    auto chainhasrs = [](const TypeExpr *p) {
+        for (; p; p = p->kind == TY_ARRAY ? p->arr->sub : nullptr)
+            if (p->kind == TY_REF || p->kind == TY_SLICE) return true;
+        return false;
+    };
+    if (cq) s += "const ";
     auto SubDump = [&](const TypeExpr *inner) {
-        auto parens = inner->kind == TY_FN;
+        auto parens = inner->kind == TY_FN || inner->cq || (cq && chainhasrs(inner));
         if (parens) s += "(";
         inner->Dump(s);
         if (parens) s += ")";
@@ -428,7 +438,7 @@ inline void FunVal::Dump(string &s, int ind) const {
 
 inline void VarDecl::Dump(string &s, int ind) const {
     if (reusable) s += "reusable ";
-    s += isvar ? "var " : "let ";
+    s += isconst ? "const " : isvar ? "var " : "let ";
     // A namespaced global dumps with its qualifier: the dump merges every
     // file into one, so declarations carry their namespace themselves.
     if (isglobal && !ns.empty()) Append(s, ns, "::");
@@ -461,9 +471,17 @@ inline void DumpFields(string &s, const vector<Field> &fields, int ind) {
             s += "pad";
             if (f.padsize >= 0) Append(s, " ", f.padsize);
         } else {
-            if (f.isconst) s += "let ";
+            // `let f: const T` is written back as its sugar, `const f: T`.
+            auto sugar = f.isconst && f.type->cq;
+            if (f.isconst) s += sugar ? "const " : "let ";
             Append(s, f.name, ": ");
-            f.type->Dump(s);
+            if (sugar) {
+                TypeExpr plain = *f.type;
+                plain.cq = false;
+                plain.Dump(s);
+            } else {
+                f.type->Dump(s);
+            }
             if (f.defaultval) {
                 s += " = ";
                 f.defaultval->Dump(s, ind + 1);

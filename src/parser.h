@@ -180,7 +180,7 @@ struct Parser {
                 ast.topdecls.push_back(fd);
                 return;
             }
-            case T_REUSABLE: case T_LET: case T_VAR: {
+            case T_REUSABLE: case T_LET: case T_VAR: case T_CONST: {
                 auto vd = ParseVarDecl(true);
                 Expect(T_SEMI, "global declaration");
                 ast.topdecls.push_back(vd);
@@ -237,13 +237,16 @@ struct Parser {
                     lex.Next();
                 }
             } else {
-                f.isconst = IsNext(T_LET);
+                // `const f: T` is `let f: const T` (§3.2).
+                auto constq = IsNext(T_CONST);
+                f.isconst = constq || IsNext(T_LET);
                 f.name = ExpectIdent(context);
                 for (auto &prev : fields)
                     if (!prev.ispad && prev.name == f.name)
                         Error(cat("duplicate field name: ", f.name));
                 Expect(T_COLON, context);
                 f.type = ParseType();
+                if (constq) f.type = ast.ConstOf(f.type);
                 if (IsNext(T_ASSIGN)) f.defaultval = ParseExpr();
             }
             fields.push_back(f);
@@ -361,11 +364,13 @@ struct Parser {
     VarDecl *ParseVarDecl(bool isglobal) {
         auto line = CurLine();
         auto reusable = IsNext(T_REUSABLE);
-        bool isvar;
+        bool isvar, isconst = false;
         if (IsNext(T_VAR)) isvar = true;
         else if (IsNext(T_LET)) isvar = false;
-        else { Error("let or var expected"); }
+        else if (IsNext(T_CONST)) { isvar = false; isconst = true; }
+        else { Error("let, var or const expected"); }
         auto vd = New<VarDecl>(line, isvar);
+        vd->isconst = isconst;
         vd->reusable = reusable;
         vd->isglobal = isglobal;
         for (;;) {
@@ -403,7 +408,17 @@ struct Parser {
     // Types.
 
     TypeExpr *ParseType() {
+        // `const` qualifies the first reference or slice built on the base
+        // type (§9.5): `const u8[:]` is a slice of read-only bytes, `const
+        // Foo&` a reference to a read-only Foo, `const (u8[:])&` a reference
+        // to a read-only slice value. Where no reference or slice follows,
+        // the value's contents are read-only: `const i64[3]`.
+        auto constq = IsNext(T_CONST);
         auto t = ParseTypePrimary();
+        auto qualify = [&](TypeExpr *n) {
+            n->cq = constq;
+            constq = false;
+        };
         // Postfix type operators, applied left to right.
         for (;;) {
             auto line = CurLine();
@@ -414,6 +429,7 @@ struct Parser {
                         Expect(T_RBRACKET, "slice type");
                         auto sl = ast.NewType(TY_SLICE, line);
                         sl->sub = t;
+                        qualify(sl);
                         t = sl;
                         continue;
                     }
@@ -443,6 +459,7 @@ struct Parser {
                     auto r = ast.NewType(TY_REF, line);
                     r->ref = ast.NewDetail<TypeRef>();
                     r->ref->sub = t;
+                    qualify(r);
                     if (IsNext(T_LT)) {
                         r->ref->lenstorage = ParseLengthStorage("relative reference width");
                         // `T&<u32 in pool>`: offsets measured from a named
@@ -467,6 +484,7 @@ struct Parser {
                         o->ref = ast.NewDetail<TypeRef>();
                         o->ref->sub = t;
                         o->ref->optional = true;
+                        qualify(o);
                         t = o;
                     }
                     continue;
@@ -490,6 +508,7 @@ struct Parser {
                     continue;
                 }
                 default:
+                    if (constq) t = ast.ConstOf(t);
                     return t;
             }
         }
@@ -1164,7 +1183,7 @@ struct Parser {
             stmt_ended = false;
             if (IsNext(T_RCURLY)) break;
             switch (lex.tok) {
-                case T_LET: case T_VAR: case T_REUSABLE: {
+                case T_LET: case T_VAR: case T_CONST: case T_REUSABLE: {
                     auto vd = ParseVarDecl(false);
                     Expect(T_SEMI, "variable declaration");
                     b->stmts.push_back(vd);

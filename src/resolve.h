@@ -85,8 +85,10 @@ inline void ResolveTypeNames(Ast &ast) {
             }
         } else {
             auto line = t->line;
+            auto cq = t->cq;
             *t = *target;
             t->line = line;
+            t->cq = t->cq || cq;   // `const Alias` keeps its qualifier.
         }
     }
 

@@ -6,7 +6,7 @@ import sub.mod;
 
 // --- constant expressions in array sizes ----------------------------------
 
-let N = 4;
+const N = 4;
 type ByN = i64[N];
 type ByExpr = f64[N * 2 + 1];
 type CapByN = i64[..N];

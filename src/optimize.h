@@ -755,6 +755,7 @@ inline Node *Break::Cp1(Inliner &inl) const {
 
 inline Node *VarDecl::Cp1(Inliner &inl) const {
     auto c = inl.ast.New<VarDecl>(line, isvar);
+    c->isconst = isconst;
     c->reusable = reusable;
     c->isglobal = isglobal;
     c->byref = byref;

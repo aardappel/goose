@@ -213,6 +213,18 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
             CheckArg(argnodes[i], best.paramtypes[i]);
         }
     }
+    // A C function's parameters are what they say (§7.10): a read-only
+    // reference or slice needs the parameter declared const.
+    if (best.sf->isextern) {
+        for (size_t i = 0; i < best.paramtypes.size() && i < argvals.size(); i++) {
+            auto pt = best.paramtypes[i];
+            if ((pt->kind != TY_REF && pt->kind != TY_SLICE) || pt->cq || argvals[i].writable)
+                continue;
+            Error(argnodes[i], cat("extern fn ", name, ": parameter ", best.sf->params[i].name,
+                                   " of type ", TypeStr(pt), " takes a writable value; a "
+                                   "read-only one needs the parameter declared const (§9.5)"));
+        }
+    }
     // Arguments the re-check rebound by reference replace the originals.
     {
         size_t off = 0;
@@ -342,7 +354,7 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
 // none ([] and null literals).
 inline TypeExpr *TypeCheck::NaturalType(const Val &av) {
     if (av.emptyarr || av.isnull) return nullptr;
-    if (av.strlit) return u8slice;
+    if (av.strlit) return cu8slice;
     return av.type;
 }
 
@@ -398,7 +410,7 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
     }
     auto ct = SubstOwn(pt, b);
     if (!ct || HasGenerics(ct)) return nullptr;
-    if (TypeEq(at, ct)) {
+    if (TopConstEq(at, ct)) {
         if (hadgen) tier = std::max(tier, 1);
         return ct;
     }
@@ -596,7 +608,8 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         if (!isrs && !holder) continue;
         auto r = CanonRoot(holder ? HolderRootOf(argvals[i]) : argvals[i].root);
         RootArg ra;
-        ra.writable = argvals[i].writable;
+        // A `const` parameter is read-only whatever the argument (§9.5).
+        ra.writable = argvals[i].writable && !pt->cq;
         ra.reusable = argvals[i].reusable;
         ra.exact = holder ? argvals[i].holderset && argvals[i].holderexact
                           : argvals[i].rootexact;
@@ -1106,7 +1119,7 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
         if (v.type->kind == TY_REF || v.type->kind == TY_SLICE || holder) {
             auto ri = i < spec->retroots.size() ? spec->retroots[i] : RetRoot {};
             auto rr = ri.root;
-            v.writable = ri.writable;
+            v.writable = ri.writable && !v.type->cq;
             if (!rr) {
                 // A back edge whose target has neither recorded nor
                 // predicted this root: unknown, which is not static data.
@@ -1195,6 +1208,7 @@ inline void TypeCheck::CheckReturn(Return *r) {
         return tspec->retsknown && i < tspec->rets.size() ? tspec->rets[i] : nullptr;
     };
     inreturn = true;
+    SlotScope ss(*this, false);   // A result's constness is the returns' (§9.5).
     if (r->vals.size() == 1) {
         auto v = CheckValue(r->vals[0], tspec->retsknown && tspec->rets.size() == 1
                                             ? tspec->rets[0] : nullptr);
@@ -1265,6 +1279,7 @@ inline void TypeCheck::CheckInits(StructLit *sl, vector<Field> &fields, vector<T
         got[idx] = true;
         sl->fieldindices.push_back(idx);
         if (Is<SelfRef>(fi.val)) { CheckSelfInit(fi.val, ftypes[idx], selft); continue; }
+        SlotScope ss(*this, true);
         auto fv = CheckValue(fi.val, ftypes[idx]);
         NoteLitElem(fv, ftypes[idx]);
     }

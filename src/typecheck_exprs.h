@@ -42,6 +42,7 @@ inline void TypeCheck::DerefLValue(LVal &lv, Node *at) {
     }
     lv.type = lv.type->ref->sub;
     lv.var = nullptr;
+    lv.letbound = false;
     if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT) lv.isvarint = true;
 }
 
@@ -71,17 +72,19 @@ inline void TypeCheck::ReadBackLVal(LVal &lv) {
     lv.root = rb.root;
     lv.rootexact = rb.exact;
     lv.rootfrom = rb.from;
+    if (lv.type->cq) lv.writable = false;   // A `const` slot's contents (§9.5).
 }
 
 // The value a field or element location yields: the load, re-rooted by
-// the read-back rule, and writable by design where it is a reference or
-// slice (§9.5's laundering; see the header note).
+// the read-back rule, and, where it is a reference or slice, as writable
+// as the slot's type says: only a writable value can have been stored in
+// a slot that is not `const` (§9.5).
 inline Val TypeCheck::ContainerRead(LVal lv) {
     ReadBackLVal(lv);
     Val v;
     v.type = LoadType(lv.type);
     v.SetProv(lv);
-    if (v.type->kind == TY_REF || v.type->kind == TY_SLICE) v.writable = true;
+    if (v.type->kind == TY_REF || v.type->kind == TY_SLICE) v.writable = !lv.type->cq;
     else if (HoldsPlainRef(v.type)) {
         // What a holder read out of a container points at is bounded by
         // the container: everything stored into it had to outlive it.
@@ -111,7 +114,9 @@ inline void TypeCheck::ResolveMemberLValue(LVal &lv, Dot *d) {
             auto &f = fields[i];
             if (f.ispad || f.name != d->name) continue;
             d->fieldidx = i;
-            if (f.isconst) lv.writable = false;
+            if (lv.type->cq) lv.writable = false;   // A field of a const value.
+            lv.letbound = f.isconst;
+            lv.letname = f.name;
             lv.type = ftypes[i];
             lv.var = nullptr;
             lv.fromstorage = true;
@@ -169,7 +174,8 @@ inline Node *TypeCheck::AutoRef(Node *n, Val &v) {
                  "or an ADT payload; reference the owning variable instead");
     auto u = ast.New<Unary>(n->line, T_BITAND, n);
     u->synth = true;
-    v.type = RefTo(v.type, n->line);
+    v.type = RefTo(ast.PlainOf(v.type), n->line);
+    v.type->cq = !v.writable;   // The reference carries a const value's qualifier.
     v.lvalue = false;
     u->exprtype = v.type;
     return u;
@@ -307,9 +313,11 @@ inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt, bool callsite) {
 // roots).
 inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
     auto t = v.type;
-    // An lvalue at a reference destination is the reference to it (§4.1).
+    // An lvalue at a reference destination is the reference to it (§4.1),
+    // a `const T&` where the lvalue is read-only (§9.5).
     if (BindsRef(v, dt)) {
-        t = v.type = RefTo(t, dt->line);
+        t = v.type = RefTo(ast.PlainOf(t), dt->line);
+        v.type->cq = !v.writable;
         v.lvalue = false;
     }
     // The null literal fits any optional (plain or relative).
@@ -322,6 +330,17 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
     // holding references or slices by value (a struct with a slice field),
     // whose contents are bounded by its holder root.
     auto isrs = [](TypeExpr *x) { return x->kind == TY_REF || x->kind == TY_SLICE; };
+    // Constness (§9.5): a read-only reference or slice lands in a slot only
+    // if the slot's type says `const`, which is what a later read of the
+    // slot then sees; a parameter or result takes either and is read-only
+    // in that instantiation.
+    if (isrs(dt) && isrs(t) && !v.writable && !dt->cq && constslot) {
+        fitfail = cat("storing a read-only ", dt->kind == TY_SLICE ? "slice" : "reference",
+                      " of type ", TypeStr(t),
+                      t->cq ? "" : " (read-only in this instantiation)",
+                      " in a slot of type ", TypeStr(dt), " (§9.5); declare the slot const");
+        return false;
+    }
     auto holder = !isrs(dt) && !isrs(t) && HoldsPlainRef(dt);
     // Argument slots pass no destination (parameters die before their
     // arguments' roots); an element or field being constructed does.
@@ -446,6 +465,13 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
             return true;
         }
         case TY_SLICE: {
+            // The same slice type but for constness: adding `const` is
+            // implicit, and dropping it was rejected above for a slot and
+            // is the read-only instantiation everywhere else (§9.5).
+            if (t->kind == TY_SLICE && TypeEq(t->sub, dt->sub)) {
+                v.type = dt;
+                return true;
+            }
             // Whole-array argument to a slice parameter, call sites only;
             // through a reference the pointee array is sliced in place.
             auto at = t;
@@ -505,6 +531,8 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
             }
             // T& widens to T?.
             if (dt->ref->optional && !t->ref->optional) { v.type = dt; return true; }
+            // The same reference type but for constness (as for slices).
+            if (dt->ref->optional == t->ref->optional) { v.type = dt; return true; }
             return false;
         }
         case TY_ENUM: {
@@ -570,6 +598,7 @@ inline TypeExpr *TypeCheck::UnifyBranch(TypeExpr *a, TypeExpr *b, Node *at, bool
     if (!a) return b;
     if (!b) return a;
     if (TypeEq(a, b)) return a;
+    if (TopConstEq(a, b)) return a->cq ? a : b;   // Read-only in one branch: in both.
     if (a->kind == TY_INT && b->kind == TY_INT) {
         if (ImplicitInt(a->intstorage, b->intstorage)) return b;
         if (ImplicitInt(b->intstorage, a->intstorage)) return a;
@@ -616,9 +645,10 @@ inline Val TypeCheck::CheckRefOf(Unary *x) {
         return v;
     }
     Val v;
-    v.type = RefTo(lv.type, x->line);
+    v.type = RefTo(ast.PlainOf(lv.type), x->line);
     v.SetProv(lv);
     v.writable = lv.writable && !lv.isvarint;
+    v.type->cq = !v.writable;   // `&x` of a const value is a `const T&` (§9.5).
     return v;
 }
 

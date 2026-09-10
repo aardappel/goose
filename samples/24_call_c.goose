@@ -22,7 +22,7 @@ extern fn hypot(x: f64, y: f64) -> f64;
 extern "abs" fn c_abs(x: i32) -> i32;
 
 // From call_c.h: a slice in, a scalar out.
-extern fn crc32_bytes(s: u8[:]) -> u32;
+extern fn crc32_bytes(s: const u8[:]) -> u32;
 // A slice in, a struct filled through a reference.
 extern fn stats_of(xs: i32[:], out: Stats&);
 // A builder the C side appends to.

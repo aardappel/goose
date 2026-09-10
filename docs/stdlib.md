@@ -189,7 +189,7 @@ fn parse_uleb(s: u8[:]) -> i64, i64                       // value and byte coun
 fn compare(a: u8[:], b: u8[:]) -> i64                      // bytewise: -1, 0, 1
 fn trim(s: u8[:]) -> u8[:]                                 // ASCII whitespace; a sub-slice
 fn trim_start(s: u8[:]) -> u8[:]                           fn trim_end(s: u8[:]) -> u8[:]
-fn split(s: u8[:], sep: u8) -> u8[:][>..]                  // slices into s; empty parts kept
+fn split(s: u8[:], sep: u8) -> const u8[:][>..]            // read-only slices into s; empty parts kept
 fn each_split<F>(s: u8[:], sep: u8)                        // F(part); no array built
 fn each_split<F>(s: u8[:], sep: u8[:])
 fn join<T>(out: u8[>..]&, parts: T[:], sep: u8[:])         // T any u8 array/slice type
@@ -239,7 +239,8 @@ fn each<K, V, F>(d: dictionary<K, V>&)                          // F(key, val&);
 
 Open addressing with linear probing, power-of-two capacity, backward-shift
 deletion. Keys and values are fixed-size; a key type needs `hash` and `==`.
-Strings are keyed as `u8[:]` slices into text the caller keeps, or as inline
+Strings are keyed as `u8[:]` slices into text the caller keeps (`const u8[:]`
+where the keys are literals or views of a `let`, §9.5), or as inline
 `u8[..k]`. A set is `dictionary<K, bool>`.
 
 The slot array is grow-shrink, so a reference into it — a `get` or
@@ -292,17 +293,17 @@ fn is_nan(x: f64) -> bool     fn is_inf(x: f64) -> bool
 A deliberately thin layer over `src/runtime/runtime_os.h`:
 
 ```goose
-fn read_file(path: u8[:], out: u8[>..]&) -> bool     // appends the whole file
-fn write_file(path: u8[:], data: u8[:]) -> bool
-fn append_file(path: u8[:], data: u8[:]) -> bool
-fn file_exists(path: u8[:]) -> bool
-fn delete_file(path: u8[:]) -> bool
+fn read_file(path: const u8[:], out: u8[>..]&) -> bool     // appends the whole file
+fn write_file(path: const u8[:], data: const u8[:]) -> bool
+fn append_file(path: const u8[:], data: const u8[:]) -> bool
+fn file_exists(path: const u8[:]) -> bool
+fn delete_file(path: const u8[:]) -> bool
 fn read_line(out: u8[>..]&) -> bool                  // stdin, newline stripped; false at end
 fn read_stdin(out: u8[>..]&)                         // everything until end of input
-fn write_stdout(s: u8[:])   fn write_stderr(s: u8[:])   fn flush_stdout()
+fn write_stdout(s: const u8[:])   fn write_stderr(s: const u8[:])   fn flush_stdout()
 fn arg_count() -> i64       fn arg(i: i64, out: u8[>..]&)
 fn args() -> u8[:][>..]                              // indexable; argument 0 is the program
-fn env(name: u8[:], out: u8[>..]&) -> bool
+fn env(name: const u8[:], out: u8[>..]&) -> bool
 fn time() -> f64                                     // seconds since the epoch
 fn clock() -> f64                                    // monotonic, high resolution
 fn time_ns() -> i64         fn clock_ns() -> i64

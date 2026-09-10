@@ -6,23 +6,23 @@
 import std;
 
 // Files.
-extern "gs_os_read_file" fn read_file(path: u8[:], out: u8[>..]&) -> bool;      // appends the whole file
-extern "gs_os_write_file" fn write_file(path: u8[:], data: u8[:]) -> bool;
-extern "gs_os_append_file" fn append_file(path: u8[:], data: u8[:]) -> bool;
-extern "gs_os_file_exists" fn file_exists(path: u8[:]) -> bool;
-extern "gs_os_remove_file" fn delete_file(path: u8[:]) -> bool;
+extern "gs_os_read_file" fn read_file(path: const u8[:], out: u8[>..]&) -> bool;      // appends the whole file
+extern "gs_os_write_file" fn write_file(path: const u8[:], data: const u8[:]) -> bool;
+extern "gs_os_append_file" fn append_file(path: const u8[:], data: const u8[:]) -> bool;
+extern "gs_os_file_exists" fn file_exists(path: const u8[:]) -> bool;
+extern "gs_os_remove_file" fn delete_file(path: const u8[:]) -> bool;
 
 // Standard streams.
 extern "gs_os_read_line" fn read_line(out: u8[>..]&) -> bool;    // one line of stdin, no newline; false at end
 extern "gs_os_read_stdin" fn read_stdin(out: u8[>..]&);          // everything until end of input
-extern "gs_os_write_stdout" fn write_stdout(s: u8[:]);
-extern "gs_os_write_stderr" fn write_stderr(s: u8[:]);
+extern "gs_os_write_stdout" fn write_stdout(s: const u8[:]);
+extern "gs_os_write_stderr" fn write_stderr(s: const u8[:]);
 extern "gs_os_flush_stdout" fn flush_stdout();
 
 // Arguments and environment.
 extern "gs_os_arg_count" fn arg_count() -> i64;
 extern "gs_os_arg" fn arg(i: i64, out: u8[>..]&);              // appends argument i (0 = the program)
-extern "gs_os_getenv" fn env(name: u8[:], out: u8[>..]&) -> bool;
+extern "gs_os_getenv" fn env(name: const u8[:], out: u8[>..]&) -> bool;
 
 // The bytes behind args(): grow-only, so the slices handed out stay valid
 // however many times it is called.

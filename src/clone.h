@@ -165,6 +165,7 @@ inline Node *FunVal::Clone(Ast &ast) const {
 
 inline Node *VarDecl::Clone(Ast &ast) const {
     auto vd = ast.New<VarDecl>(line, isvar);
+    vd->isconst = isconst;
     vd->reusable = reusable;
     vd->isglobal = isglobal;
     vd->byref = byref;

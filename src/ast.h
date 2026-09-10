@@ -158,6 +158,10 @@ struct TypeVariant : TypeDetail {    // TY_VARIANT
 struct TypeExpr {
     TypeKind kind;
     Line line;
+    // `const T` (§9.5): a value whose contents are read-only, or, on a
+    // reference or slice, one whose pointee or elements are. Part of the
+    // type's identity (TypeEq); a C type does not carry it.
+    bool cq = false;
     union {                          // Active member selected by kind:
         IntStorage intstorage;       //   TY_INT
         FltStorage fltstorage;       //   TY_FLT
@@ -617,6 +621,7 @@ NODE(VarDecl)
     BCE_WALK
     BCE_MARK
     bool isvar;                 // var vs let.
+    bool isconst = false;       // `const x`: a let whose type is `const` (§4.4).
     bool reusable = false;
     bool isglobal = false;
     bool byref = false;         // `x .= e`: bound by reference, no decay (§3.8).
@@ -818,7 +823,11 @@ struct VarDef {
     string_view name;
     TypeExpr *type = nullptr;   // Concrete (post-substitution) declared type.
     Line line;
-    bool isvar = false;         // Assignable, and derived references writable.
+    bool isvar = false;         // Reassignable (§4.4).
+    // A by-value `for` or `match` binding: a copy of the element, which a
+    // write would silently update instead of the element, so none is
+    // allowed (§6.5, §8.1).
+    bool copybind = false;
     bool isglobal = false;
     bool isparam = false;
     bool reusable = false;
@@ -1121,6 +1130,28 @@ struct Ast {
         auto t = new TypeExpr(kind, line);
         alltypes.push_back(t);
         return t;
+    }
+
+    // The same type with its contents read-only (§9.5): a fresh node, since
+    // a primitive type's node is shared.
+    TypeExpr *ConstOf(TypeExpr *t) {
+        if (t->cq) return t;
+        auto n = NewType(t->kind, t->line);
+        *n = *t;
+        n->cq = true;
+        return n;
+    }
+
+    // The same type without its own qualifier: what a load of a const value
+    // yields (a copy), and the pointee of a reference to one, whose
+    // constness the reference carries instead. A reference or slice keeps
+    // its qualifier, which is about its own pointee.
+    TypeExpr *PlainOf(TypeExpr *t) {
+        if (!t->cq || t->kind == TY_REF || t->kind == TY_SLICE) return t;
+        auto n = NewType(t->kind, t->line);
+        *n = *t;
+        n->cq = false;
+        return n;
     }
 
     template<typename T> T *NewDetail() {

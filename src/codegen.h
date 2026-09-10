@@ -614,9 +614,9 @@ struct CodeGen {
     string GenPtr(Node *n, string *stkout = nullptr);
 
     // ------------------------------------------------------------------
-    // String literals: static byte data. As a slice: { data, len }. As a
-    // u8[...] value: a static [lenfield][bytes] image (emitted writable, since
-    // §9.5's laundering makes writes through read-back references legal).
+    // String literals: static byte data, C const since nothing can write it
+    // (§9.5). As a slice: { data, len }. As a u8[...] value: a static
+    // [lenfield][bytes] image.
 
     unordered_map<string, string> strdata;   // text -> raw byte array name.
     unordered_map<string, string> strval;                 // mangle+text -> value name.

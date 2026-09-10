@@ -67,6 +67,11 @@ struct TypeCheck {
     struct LVal : Prov {
         TypeExpr *type = nullptr;    // The location's own type (varints undecoded).
         VarDef *var = nullptr;       // Set when the path is a bare variable name.
+        // The location is a `let` binding or field itself, which is not
+        // assigned as a whole (§4.4); its contents are another matter.
+        bool letbound = false;
+        string_view letname;
+        VarDef *copyof = nullptr;    // The path starts at a by-value binding (VarDef::copybind).
         bool fromstorage = false;    // Reached by a field or element step, so a
                                      // reference read out of it is a read-back (§9.5).
         bool fotail = false;         // A frame object's resizable tail: has its own header (C.2).
@@ -136,6 +141,18 @@ struct TypeCheck {
         bool varbind = false;  // A reference/slice variable itself: a binding, not a store.
     };
     Dest curdst;
+    // Whether the value being checked lands in a typed slot -- a field, an
+    // element, an annotated variable, an assignment target -- whose declared
+    // constness a read-only reference or slice must match (§9.5). A call
+    // argument or a return value is not one: a parameter's or result's
+    // constness is inferred per instantiation.
+    bool constslot = false;
+    struct SlotScope {
+        TypeCheck &tc;
+        bool saved;
+        SlotScope(TypeCheck &t, bool slot) : tc(t), saved(t.constslot) { tc.constslot = slot; }
+        ~SlotScope() { tc.constslot = saved; }
+    };
     // The destination in force while a scope runs; the enclosing one returns
     // on exit, an error's throw included.
     struct DestScope {
@@ -148,7 +165,8 @@ struct TypeCheck {
     VarDef *cycleroot = nullptr; // Sentinel root for a back edge's result whose root
                                  // the cycle's returns do not determine (§7.8).
     TypeExpr *fntype = nullptr;  // Shared type of function values.
-    TypeExpr *u8slice = nullptr; // The natural type of a string literal.
+    TypeExpr *u8slice = nullptr; // A slice of u8.
+    TypeExpr *cu8slice = nullptr; // `const u8[:]`: the type of a string literal (§3.7).
     TypeExpr *nulltype = nullptr;  // Placeholder type of a bare null literal.
 
     // ------------------------------------------------------------------
@@ -236,6 +254,7 @@ struct TypeCheck {
         if (auto id = Is<Ident>(n)) {
             // A `let` global with a constant initializer is a named constant.
             auto vd = ast.LookupGlobal(id->name, id->ns);
+            // The initializer of a `let` or `const` global is the constant.
             if (!vd || vd->isvar || vd->inits.size() != 1) return false;
             return ConstInt(vd->inits[0], v);
         }
@@ -263,7 +282,7 @@ struct TypeCheck {
 
     bool TypeEq(TypeExpr *a, TypeExpr *b) {
         if (a == b) return true;
-        if (a->kind != b->kind) return false;
+        if (a->kind != b->kind || a->cq != b->cq) return false;
         switch (a->kind) {
             case TY_INT:  return a->intstorage == b->intstorage;
             case TY_FLT:  return a->fltstorage == b->fltstorage;
@@ -293,8 +312,9 @@ struct TypeCheck {
                     default: return true;
                 }
             }
-            case TY_SLICE: return TypeEq(a->sub, b->sub);
+            case TY_SLICE: return a->cq == b->cq && TypeEq(a->sub, b->sub);
             case TY_REF:
+                if (a->cq != b->cq) return false;
                 // The pool is part of a relative reference's identity: offsets
                 // measured from different bases are different encodings (§3.9).
                 return TypeEq(a->ref->sub, b->ref->sub) && a->ref->optional == b->ref->optional &&
@@ -304,6 +324,17 @@ struct TypeCheck {
             case TY_GENERIC: return a->named->name == b->named->name;
             default: assert(false); return false;
         }
+    }
+
+    // Equal but for the constness of the type itself: what a parameter or
+    // result accepts, since its constness is inferred per instantiation, and
+    // what a copy of a value drops (§9.5). Constness nested deeper is part
+    // of the type.
+    bool TopConstEq(TypeExpr *a, TypeExpr *b) {
+        if (a->cq == b->cq) return TypeEq(a, b);
+        TypeExpr ta = *a, tb = *b;
+        ta.cq = tb.cq = false;
+        return TypeEq(&ta, &tb);
     }
 
     bool TypeArgsEq(vector<TypeExpr *> &a, vector<TypeExpr *> &b) {
@@ -330,8 +361,14 @@ struct TypeCheck {
     }
 
     // Substitutes generic parameter names in t using the current lexical
-    // bindings; returns t itself when nothing changed.
+    // bindings; returns t itself when nothing changed. A `const T` keeps its
+    // qualifier whatever T is bound to.
     TypeExpr *Subst(TypeExpr *t) {
+        auto n = SubstRaw(t);
+        return t->cq && !n->cq ? ast.ConstOf(n) : n;
+    }
+
+    TypeExpr *SubstRaw(TypeExpr *t) {
         switch (t->kind) {
             case TY_GENERIC: {
                 auto b = LookupBindingOuter(t->named->name);
@@ -386,6 +423,7 @@ struct TypeCheck {
                 if (sub == t->sub) return t;
                 auto n = ast.NewType(TY_SLICE, t->line);
                 n->sub = sub;
+                n->cq = t->cq;
                 return n;
             }
             case TY_REF: {
@@ -395,6 +433,7 @@ struct TypeCheck {
                 n->ref = ast.NewDetail<TypeRef>();
                 *n->ref = *t->ref;
                 n->ref->sub = sub;
+                n->cq = t->cq;
                 return n;
             }
             case TY_VARIANT: {
@@ -650,7 +689,10 @@ struct TypeCheck {
     void UnwrapCopy(Node *&n);
     Val CheckValue(Node *&n, TypeExpr *expected, bool callsite = false);
 
-    Val CheckArg(Node *&n, TypeExpr *expected) { return CheckValue(n, expected, true); }
+    Val CheckArg(Node *&n, TypeExpr *expected) {
+        SlotScope ss(*this, false);
+        return CheckValue(n, expected, true);
+    }
 
     Val CheckValueAt(Node *&n, TypeExpr *expected, Dest d, bool callsite = false);
     Val Operand(Node *n);
@@ -786,6 +828,8 @@ struct TypeCheck {
     void PointeeAssign(Assign *a, LVal &lv);
     void CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv);
     void CompoundAssign(Assign *a, TypeExpr *st, bool writable);
+    void NoLetAssign(Node *at, const LVal &lv);
+    void NoCopyWrite(Node *at, const LVal &lv);
     void CheckIncDec(IncDec *x);
 
     // ------------------------------------------------------------------
@@ -876,6 +920,8 @@ struct TypeCheck {
         fntype = ast.NewType(TY_FN, Line {});
         fntype->fn = ast.NewDetail<TypeFn>();
         u8slice = SliceOf(ast.inttypes[IS_U8], Line {});
+        cu8slice = SliceOf(ast.inttypes[IS_U8], Line {});
+        cu8slice->cq = true;
         nulltype = ast.NewType(TY_REF, Line {});
         nulltype->ref = ast.NewDetail<TypeRef>();
         nulltype->ref->sub = ast.voidtype;
@@ -1005,11 +1051,11 @@ struct TypeCheck {
             function<void(Node *)> walk = [&](Node *n) {
                 if (!n) return;
                 if (auto id = Is<Ident>(n)) {
-                    // A `let` global of flat fixed type is a constant (it
-                    // can hold no reference and is never written), so
-                    // reading it shares nothing mutable.
+                    // A `const` global of flat fixed type is a constant: it
+                    // can hold no reference, and no path or reference can
+                    // write it (§9.5), so reading it shares nothing mutable.
                     auto g = id->vdef;
-                    auto constant = g && !g->isvar && g->type && IsFlat(g->type) &&
+                    auto constant = g && g->type && g->type->cq && IsFlat(g->type) &&
                                     ClassOf(g->type) == SC_FIXED;
                     if (g && g->isglobal && !constant)
                         Error(n, cat("thread programs may not access globals (§11.2): ",
