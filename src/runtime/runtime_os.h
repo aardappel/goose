@@ -128,9 +128,21 @@ static uint8_t gs_os_getenv(sl_u8 name, gs_rref out) {
 
 /* Wall-clock time in nanoseconds since the Unix epoch. */
 static int64_t gs_os_time_ns(void) {
+    /* Neither branch uses C11's timespec_get: the Microsoft C runtime tcc
+       links against does not have it, and glibc hides it from a compiler
+       announcing C99, which tcc also is. */
+#ifdef _WIN32
+    /* Windows counts 100 ns ticks from 1601; the offset to the Unix epoch is
+       a constant. */
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    return (int64_t)(t - 116444736000000000ull) * 100;
+#else
     struct timespec ts;
-    timespec_get(&ts, TIME_UTC);
+    clock_gettime(CLOCK_REALTIME, &ts);
     return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+#endif
 }
 
 /* A monotonic clock in nanoseconds, for measuring intervals. */

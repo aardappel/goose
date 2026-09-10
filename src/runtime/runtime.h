@@ -772,10 +772,28 @@ static int64_t gs_fmt_u64(uint8_t *dst, uint64_t v) {
     return (int64_t)snprintf((char *)dst, GS_FMT_MAX, "%llu", (unsigned long long)v);
 }
 
+/* C99 asks for at least two exponent digits; the older Microsoft C runtime
+   (which is what tcc links against on Windows) always writes three. Trim the
+   padding, so a float's text form is the language's and not the backend's. */
+static int gs_fmt_exp(char *s, int n) {
+    char *e = (char *)memchr(s, 'e', (size_t)n);
+    if (!e) return n;
+    char *d = e + 2;                    /* past the 'e' and the exponent sign */
+    char *p = d;
+    int digits = n - (int)(d - s);
+    while (digits > 2 && *p == '0') p++, digits--;
+    if (p != d) {
+        memmove(d, p, (size_t)digits);
+        n = (int)(d - s) + digits;
+        s[n] = 0;
+    }
+    return n;
+}
+
 static int64_t gs_fmt_f64(uint8_t *dst, double v) {
     int n = snprintf((char *)dst, GS_FMT_MAX, "%.15g", v);
     if (strtod((char *)dst, NULL) != v) n = snprintf((char *)dst, GS_FMT_MAX, "%.17g", v);
-    return n;
+    return gs_fmt_exp((char *)dst, n);
 }
 
 static int64_t gs_fmt_bool(uint8_t *dst, int64_t v) {

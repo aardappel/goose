@@ -787,10 +787,28 @@ static int64_t gs_fmt_u64(uint8_t *dst, uint64_t v) {
     return (int64_t)snprintf((char *)dst, GS_FMT_MAX, "%llu", (unsigned long long)v);
 }
 
+/* C99 asks for at least two exponent digits; the older Microsoft C runtime
+   (which is what tcc links against on Windows) always writes three. Trim the
+   padding, so a float's text form is the language's and not the backend's. */
+static int gs_fmt_exp(char *s, int n) {
+    char *e = (char *)memchr(s, 'e', (size_t)n);
+    if (!e) return n;
+    char *d = e + 2;                    /* past the 'e' and the exponent sign */
+    char *p = d;
+    int digits = n - (int)(d - s);
+    while (digits > 2 && *p == '0') p++, digits--;
+    if (p != d) {
+        memmove(d, p, (size_t)digits);
+        n = (int)(d - s) + digits;
+        s[n] = 0;
+    }
+    return n;
+}
+
 static int64_t gs_fmt_f64(uint8_t *dst, double v) {
     int n = snprintf((char *)dst, GS_FMT_MAX, "%.15g", v);
     if (strtod((char *)dst, NULL) != v) n = snprintf((char *)dst, GS_FMT_MAX, "%.17g", v);
-    return n;
+    return gs_fmt_exp((char *)dst, n);
 }
 
 static int64_t gs_fmt_bool(uint8_t *dst, int64_t v) {
@@ -827,7 +845,8 @@ static void gs_out_flt(double v) {
     uint8_t buf[GS_FMT_MAX];
     fwrite(buf, 1, (size_t)gs_fmt_f64(buf, v), stdout);
 }
-static void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
+)GSRT"
+R"GSRT(static void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
 static void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
 static void gs_out_nl(void) { fputc('\n', stdout); }
 )GSRT"
@@ -1184,9 +1203,21 @@ static uint8_t gs_os_getenv(sl_u8 name, gs_rref out) {
 
 /* Wall-clock time in nanoseconds since the Unix epoch. */
 static int64_t gs_os_time_ns(void) {
+    /* Neither branch uses C11's timespec_get: the Microsoft C runtime tcc
+       links against does not have it, and glibc hides it from a compiler
+       announcing C99, which tcc also is. */
+#ifdef _WIN32
+    /* Windows counts 100 ns ticks from 1601; the offset to the Unix epoch is
+       a constant. */
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    return (int64_t)(t - 116444736000000000ull) * 100;
+#else
     struct timespec ts;
-    timespec_get(&ts, TIME_UTC);
+    clock_gettime(CLOCK_REALTIME, &ts);
     return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+#endif
 }
 
 /* A monotonic clock in nanoseconds, for measuring intervals. */

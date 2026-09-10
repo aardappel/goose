@@ -39,10 +39,26 @@ add_executable(goose
     src/codegen_emit.h
     src/codegen_nodes.h
     src/runtime_inline.h
+    src/jit.h
     src/runtime/runtime.h
     src/runtime/runtime_threads.h
     src/runtime/runtime_os.h
 )
+
+# The optional in-process C backend. Present only when the TinyCC submodule has
+# been checked out (`git submodule update --init`); the compiler builds and
+# behaves exactly the same without it, minus JIT mode.
+option(GOOSE_LIBTCC "Build the in-process TinyCC backend when the submodule is present" ON)
+if(GOOSE_LIBTCC AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinycc/libtcc.h")
+    enable_language(C)
+    include(cmake/libtcc.cmake)
+endif()
+if(GOOSE_HAVE_LIBTCC)
+    target_link_libraries(goose PRIVATE libtcc)
+    add_dependencies(goose tcc_runtime)
+    target_compile_definitions(goose PRIVATE
+        GOOSE_HAVE_LIBTCC=1 GOOSE_TCC_LIB_PATH="${TCC_STAGE}")
+endif()
 
 if(MSVC)
     # /bigobj: the compiler is one translation unit of header-inline

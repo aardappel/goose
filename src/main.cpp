@@ -33,8 +33,13 @@
 #include "codegen_emit.h"
 #include "codegen_nodes.h"
 #include "runtime_inline.h"
+#include "jit.h"
 
 namespace goose {
+
+// Where the compiler's own progress lines go. In JIT mode the program shares
+// this process's stdout, so they move to stderr and leave it to the program.
+FILE *gs_msgs = stdout;
 
 string DirOf(const string &path) {
     auto pos = path.find_last_of("/\\");
@@ -260,9 +265,16 @@ int Main(int argc, char **argv) {
     string filename, outfile;
     auto dump = false, tokens = false, parseonly = false, specs = false, nocgen = false;
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
+    auto forcejit = false;
     auto optlevel = 1;
+    vector<string> cdefines, progargs;
     for (int i = 1; i < argc; i++) {
         string arg = argv[i];
+        // Everything past `--` belongs to the program being run, not here.
+        if (arg == "--") {
+            for (int j = i + 1; j < argc; j++) progargs.push_back(argv[j]);
+            break;
+        }
         if (arg == "--dump") dump = true;
         else if (arg == "--tokens") tokens = true;
         else if (arg == "--parse") parseonly = true;
@@ -273,6 +285,7 @@ int Main(int argc, char **argv) {
         else if (arg == "--bce-lines") bcelines = true;
         // Unsound; a measurement aid only (see CodeGen::norfcheck).
         else if (arg == "--unsafe-no-rf-check") norfcheck = true;
+        else if (arg == "--jit") forcejit = true;
         else if (arg == "--gen-runtime-header") { GenRuntimeHeader(argv[0]); return 0; }
         else if (arg == "-O0") optlevel = 0;
         else if (arg == "-O1") optlevel = 1;
@@ -280,6 +293,10 @@ int Main(int argc, char **argv) {
         else if (arg == "-o" && i + 1 < argc) outfile = argv[++i];
         else if (arg == "--include" && i + 1 < argc) gs_includes.push_back(argv[++i]);
         else if (arg == "--stdlib" && i + 1 < argc) gs_stdlibdir = argv[++i];
+        // A -D lands in the generated C itself rather than on some backend's
+        // command line, so a JIT run and a compiled one see the same source.
+        else if (arg == "-D" && i + 1 < argc) cdefines.push_back(argv[++i]);
+        else if (arg.rfind("-D", 0) == 0 && arg.size() > 2) cdefines.push_back(arg.substr(2));
         else if (!arg.empty() && arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg.c_str());
             return 1;
@@ -290,9 +307,21 @@ int Main(int argc, char **argv) {
     if (filename.empty()) {
         fprintf(stderr, "usage: goose [--dump] [--parse] [--tokens] [--specs] [--check] "
                         "[--no-bce] [--bce-test] [--bce-lines] [--unsafe-no-rf-check] [-O0|-O1|-O2] "
-                        "[-o out.c] [--include header.h]... [--stdlib dir] file.goose | --gen-runtime-header\n");
+                        "[-o out.c] [--jit] [-DNAME=VALUE]... [--include header.h]... [--stdlib dir] "
+                        "file.goose [-- program args...] | --gen-runtime-header\n");
+        fprintf(stderr, "without -o the program is compiled and run in this process%s.\n",
+                have_jit ? " by TinyCC" : " -- unavailable in this build, so the .c is written");
         return 1;
     }
+    // With no output file the program is compiled into this process and run,
+    // which is what --jit asks for explicitly. A build without the backend
+    // keeps writing the .c next to the source instead.
+    auto jit = forcejit || (outfile.empty() && have_jit);
+    if (outfile.empty() && !jit) {
+        auto dot = filename.find_last_of('.');
+        outfile = cat(dot == string::npos ? filename : filename.substr(0, dot), ".c");
+    }
+    if (jit) gs_msgs = stderr;
     try {
         if (tokens) {
             DumpTokens(filename);
@@ -311,8 +340,8 @@ int Main(int argc, char **argv) {
         }
         ResolveTypeNames(ast);
         if (parseonly) {
-            printf("parsed ok: %d top-level declarations, %d file(s)\n",
-                   (int)ast.topdecls.size(), (int)ast.sources.size());
+            fprintf(gs_msgs, "parsed ok: %d top-level declarations, %d file(s)\n",
+                    (int)ast.topdecls.size(), (int)ast.sources.size());
             return 0;
         }
         TypeCheckProgram(ast);
@@ -322,45 +351,43 @@ int Main(int argc, char **argv) {
             opt.DumpSpecs(s);
             fputs(s.c_str(), stdout);
         }
-        printf("typechecked ok: %d specialization(s), %d struct/%d enum instance(s); "
-               "optimized -O%d: %d inlined, %d base case(s), %d folded, %d propagated, "
-               "%d tail loop(s)\n",
-               (int)ast.fnspecs.size(), (int)ast.structinsts.size(),
-               (int)ast.enuminsts.size(), optlevel, opt.inlined, opt.basecases,
-               opt.folded, opt.propagated, opt.tailloops);
+        fprintf(gs_msgs, "typechecked ok: %d specialization(s), %d struct/%d enum instance(s); "
+                "optimized -O%d: %d inlined, %d base case(s), %d folded, %d propagated, "
+                "%d tail loop(s)\n",
+                (int)ast.fnspecs.size(), (int)ast.structinsts.size(),
+                (int)ast.enuminsts.size(), optlevel, opt.inlined, opt.basecases,
+                opt.folded, opt.propagated, opt.tailloops);
         BCE bce(ast);
         if (!nobce) {
             bce.RunAll();
-            printf("bce: elided %d/%d index and %d/%d slice checks\n",
-                   bce.idxelided, bce.idxtotal, bce.slelided, bce.sltotal);
+            fprintf(gs_msgs, "bce: elided %d/%d index and %d/%d slice checks\n",
+                    bce.idxelided, bce.idxtotal, bce.slelided, bce.sltotal);
         }
         // Per-line outcomes, for comparing two builds of the pass.
         if (bcelines)
             for (auto &[where, counts] : bce.lineout)
-                printf("bce-line: %s:%d: %d elided, %d kept\n",
-                       ast.sources[where.first].first.c_str(), where.second, counts.first,
-                       counts.second);
+                fprintf(gs_msgs, "bce-line: %s:%d: %d elided, %d kept\n",
+                        ast.sources[where.first].first.c_str(), where.second,
+                        counts.first, counts.second);
         if (bcetest) {
             auto fails = bce.VerifyAnnotations();
             if (fails) {
                 fprintf(stderr, "bce-test: %d annotation failure(s)\n", fails);
                 return 1;
             }
-            printf("bce-test: all annotations verified\n");
+            fprintf(gs_msgs, "bce-test: all annotations verified\n");
         }
         if (nocgen) return 0;
-        if (outfile.empty()) {
-            auto dot = filename.find_last_of('.');
-            outfile = cat(dot == string::npos ? filename : filename.substr(0, dot), ".c");
-        }
         // A quoted include resolves against the including file's own directory
         // first, so the --include headers are written relative to where the .c
         // goes: the generated file then compiles wherever the tree sits,
         // instead of carrying this machine's absolute paths. A name that is
         // not a file from here is one the C compiler is meant to find on its
-        // own include path, and is left alone.
-        for (auto &inc : gs_includes)
-            if (FileExists(inc)) inc = RelativeTo(inc, DirOf(outfile));
+        // own include path, and is left alone. A JIT run has no file to be
+        // relative to and resolves them from the working directory.
+        if (!outfile.empty())
+            for (auto &inc : gs_includes)
+                if (FileExists(inc)) inc = RelativeTo(inc, DirOf(outfile));
         // The extern-support runtime is written against the generated types,
         // so codegen splices it in after them rather than up front.
         for (auto &rf : runtime_files)
@@ -375,16 +402,37 @@ int Main(int argc, char **argv) {
                          "   platform's headers declare; a namespaced name ns::x is ns_x_g followed\n"
                          "   by the namespace's length. An --include header names them that way. */\n\n",
                          cg.predefs);
+        // -D goes into the source rather than onto a backend's command line,
+        // so both backends compile the same text.
+        for (auto &d : cdefines) {
+            auto eq = d.find('=');
+            Append(out, "#define ", eq == string::npos ? d : d.substr(0, eq), " ",
+                   eq == string::npos ? string("1") : d.substr(eq + 1), "\n");
+        }
         for (auto &rf : runtime_files) {
             if (string_view(rf.name) == "runtime_os.h") continue;
             Append(out, "/* ==== ", rf.name, " ==== */\n", rf.text, "\n");
         }
         out += cg.result;
-        auto f = fopen(outfile.c_str(), "wb");
-        if (!f) throw CompileError { cat("cannot write output file: ", outfile) };
-        fwrite(out.data(), 1, out.size(), f);
-        fclose(f);
-        printf("wrote %s (%d bytes)\n", outfile.c_str(), (int)out.size());
+        if (!outfile.empty()) {
+            auto f = fopen(outfile.c_str(), "wb");
+            if (!f) throw CompileError { cat("cannot write output file: ", outfile) };
+            fwrite(out.data(), 1, out.size(), f);
+            fclose(f);
+            fprintf(gs_msgs, "wrote %s (%d bytes)\n", outfile.c_str(), (int)out.size());
+        }
+        if (jit) {
+            // TinyCC's in-memory runner rejects a thread-local section, and
+            // the runtime keeps each worker's data stacks in one.
+            if (cg.usesthreads)
+                throw CompileError { "JIT mode does not support threads yet (TinyCC cannot "
+                                     "place thread-local storage in an in-memory run); "
+                                     "compile with -o and a C compiler instead" };
+            // The program shares this process, so its exit code becomes ours
+            // and whatever it wrote is already on the same streams.
+            fflush(gs_msgs);
+            return RunJit(out, JitLibPath(DirOf(gs_argv0)), filename, progargs);
+        }
     } catch (CompileError &e) {
         fprintf(stderr, "%s\n", e.msg.c_str());
         return 1;

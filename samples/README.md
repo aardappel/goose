@@ -14,9 +14,14 @@ to hand:
     goose -o tour.c 01_tour.goose && cc tour.c -o tour -lm -pthread && ./tour
     goose -o tour.c 01_tour.goose && cl tour.c && tour
 
+A compiler built with the TinyCC backend needs neither of those: with no `-o`
+it compiles the program into its own process and runs it there.
+
+    goose 01_tour.goose
+
 `run_samples.py` compiles and runs them all and compares their output with
-`expected/`; `test/run_tests.py` calls it, so they are compiled and run as
-part of the test suite.
+`expected/`, both ways where the backend is available; `test/run_tests.py`
+calls it, so they are compiled and run as part of the test suite.
 
 ## Foundations
 

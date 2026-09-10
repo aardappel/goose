@@ -6,8 +6,12 @@ data/<name>.stdin as its stdin when that file exists, and a sample's C header
 (<name>.h, see call_c) is passed with --include. Timings and machine-dependent
 facts go to stderr, which is not compared.
 
+A compiler built with the TinyCC backend also runs every sample a second way,
+in JIT mode -- built and run inside the compiler process, with no C file and no
+external toolchain -- and compares that against the same expected output.
+
 Used by test/run_tests.py; runnable on its own:
-  python samples/run_samples.py [--exe path/to/goose] [--bless]
+  python samples/run_samples.py [--exe path/to/goose] [--bless] [--no-jit]
 --bless rewrites the expected outputs from the current runs.
 """
 
@@ -42,6 +46,8 @@ def main():
                     help="sanitize: require Linux Clang and instrument generated C with ASan/UBSan")
     ap.add_argument("--cc", choices=("native", "clang", "gcc", "msvc"),
                     help="require this C toolchain instead of optional auto-discovery")
+    ap.add_argument("--no-jit", action="store_true",
+                    help="skip the in-process TinyCC runs even where they are available")
     args = ap.parse_args()
 
     if args.nocgen and (args.cc or args.profile != "baseline"):
@@ -54,22 +60,46 @@ def main():
     exe = tc.find_goose(args.exe)
     cc = None if args.nocgen else tc.test_cc("clang" if args.profile == "sanitize" else args.cc)
     extra = tc.SANITIZER_FLAGS if args.profile == "sanitize" else ()
+    # Blessing rewrites the expected outputs from the compiled run, so the
+    # JIT comparison against them has nothing to say until that has happened.
+    jit = not args.no_jit and not args.bless and tc.have_jit(exe)
 
     gendir = tc.REPO_ROOT / "build" / "gen" / args.profile / "samples"
     gendir.mkdir(parents=True, exist_ok=True)
     (HERE / "expected").mkdir(exist_ok=True)
 
-    failures = 0
+    failures, jitskips = 0, []
     for f in sorted(HERE.glob("*.goose")):
         # The number prefix orders the files for reading; outputs, data and
         # headers go by the bare name.
         name = re.sub(r"^\d+_", "", f.stem)
         cfile = gendir / f"{name}.c"
         efile = gendir / (name + tc.EXE_SUFFIX)
+        infile = HERE / "data" / f"{name}.stdin"
+        expfile = HERE / "expected" / f"{name}.out"
         gargs = ["-O2"]
         header = HERE / f"{name}.h"
         if header.exists():
             gargs += ["--include", str(header)]
+        if jit:
+            # Same source, same expected output, no C file and no external
+            # compiler: the sample built and run inside the compiler process.
+            code, out, err = tc.run_capture([exe] + gargs + ["--jit", str(f)], cwd=HERE,
+                                            stdin_path=infile if infile.exists() else None)
+            if code != 0 and tc.JIT_UNSUPPORTED in err:
+                jitskips.append(f.name)
+            elif code != 0 or tc.sanitizer_failure(err):
+                print("\n".join(err.splitlines()[:3]))
+                print(f"FAIL sample-jit {f.name} (exit {code})")
+                failures += 1
+            else:
+                want = normalized(expfile)
+                if want is not None and out.rstrip("\n") != want.rstrip("\n"):
+                    print(f"FAIL sample-jit-expected {f.name}")
+                    print(f"--- got:\n{out}\n--- want:\n{want}")
+                    failures += 1
+                else:
+                    print(f"ok   sample-jit {f.name}")
         gargs += ["-o", str(cfile)] if cc else ["--check"]
         code, out, err = tc.run_capture([exe] + gargs + [str(f)])
         if code != 0:
@@ -87,7 +117,6 @@ def main():
             print(f"FAIL sample-cc {f.name}")
             failures += 1
             continue
-        infile = HERE / "data" / f"{name}.stdin"
         outfile, errfile = gendir / f"{name}.out", gendir / f"{name}.err"
         code, out, err = tc.run_capture([efile], cwd=HERE,
                                         stdin_path=infile if infile.exists() else None)
@@ -99,7 +128,6 @@ def main():
             failures += 1
             continue
         got = normalized(outfile)
-        expfile = HERE / "expected" / f"{name}.out"
         if args.bless:
             tc.write_text(expfile, got)
             print(f"ok   sample-blessed {f.name}")
@@ -112,6 +140,8 @@ def main():
             continue
         print(f"ok   sample {f.name}")
 
+    if jitskips:
+        print("skip JIT for sample(s) the backend cannot run yet: " + ", ".join(jitskips))
     if failures:
         print(f"{failures} SAMPLE FAILURE(S)")
         return 1

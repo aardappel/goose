@@ -2409,6 +2409,17 @@ follows it, so `from` remains usable as a name.
 
 What the current compiler does where the text above leaves it a choice.
 
+* **Two C backends.** The generated C is normally written to a file for a C
+  compiler to build (`-o out.c`). Where the compiler was built with TinyCC
+  (the `third_party/tinycc` submodule), giving no output file compiles that
+  same C inside the compiler's own process instead and calls its `main`, so
+  a program runs with no C toolchain present and no file written. The
+  program shares the process: its exit status becomes the compiler's, and
+  the compiler's own progress lines move to stderr to leave stdout to the
+  program. Nothing about the generated C differs between the two, and `-D`
+  is written into that C rather than passed to a backend so that stays
+  true. TinyCC does not optimize and cannot place thread-local storage in
+  an in-memory run, so a program using workers (§11.2) is refused there.
 * **Fat references.** A callee that grows a resizable through a reference
   (`push` through a `f64[>..]&`) must know which data stack to bump. The
   compiler does not pin that stack per call site (§10.2): every reference

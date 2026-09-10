@@ -19,6 +19,13 @@ in-process timer available to all languages; the startup floor is measured
 separately and printed alongside, so the reader can see how much of a short
 run is process creation.
 
+Where the compiler has the TinyCC backend, every Goose row is measured a second
+way as well: compiled and run inside the compiler, with no C file and no
+external toolchain. Those go in a table of their own at the end. They are not
+comparable with the C++ and Rust rows -- the time includes compiling the
+program, and TinyCC is a one-pass compiler that does not optimize -- so they
+are kept out of every comparison against another language.
+
   python bench/run_bench.py                          # everything
   python bench/run_bench.py --only tree,sexp         # re-measure a subset; the report
                                                      # still shows everything measured
@@ -59,6 +66,11 @@ SIZE_NAMES = ["small", "medium", "large"]
 # Rust is not built by the C/C++ toolchains, so its measurements are filed under
 # a toolchain of their own and its rows carry one time, not one per backend.
 RUST_TC = "rustc"
+
+# The in-process TinyCC backend, filed the same way: one time per Goose row,
+# under a key that is deliberately not one of the C toolchains, so it stays out
+# of every cross-language comparison.
+JIT_TC = "goose-jit"
 
 # --- manifest ----------------------------------------------------------------
 # sizes:  the value substituted for the `// BENCH_N` line, in small, medium,
@@ -486,7 +498,17 @@ class Harness:
         # The Goose source is sized once per (benchmark, size) and compiled to
         # C once; each toolchain then builds that same C, so the two rows
         # differ only in the backend.
+        self.sized = set()
         self.generated = set()
+
+    def goose_source(self, file, n, base):
+        """The benchmark's Goose source with its size baked in, written once
+        per (benchmark, size). Both backends start from this same file."""
+        gsrc = GENDIR / f"{base}.goose"
+        if base not in self.sized:
+            write_sized(GOOSEDIR / file, gsrc, n, GOOSE_N)
+            self.sized.add(base)
+        return gsrc
 
     def build_goose(self, file, n, tag, tcname):
         base = re.sub(re.escape("_" + tcname) + "$", "", tag)
@@ -495,8 +517,7 @@ class Harness:
         # but only within one run: a stale .c left over from a previous run
         # would silently benchmark the previous version of the source.
         if base not in self.generated:
-            gsrc = GENDIR / f"{base}.goose"
-            write_sized(GOOSEDIR / file, gsrc, n, GOOSE_N)
+            gsrc = self.goose_source(file, n, base)
             code, out, err = tc.run_capture([self.args.exe, "-O2", "-o", cfile, gsrc])
             tc.write_text(GENDIR / f"{base}.goose.log", out + err)
             if code != 0:
@@ -530,7 +551,7 @@ class Harness:
         return (exe, None) if code == 0 else (None, f"rustc failed, see {tag}.rs.log")
 
 
-def measure_exe(exe, reps):
+def measure_exe(exe, reps, args=()):
     """Best time and worst peak over `reps` runs.
 
     Two discarded warm-up runs first: a freshly written executable is paged in
@@ -539,12 +560,12 @@ def measure_exe(exe, reps):
     clang-linked binaries far harder than MSVC-linked ones, so without this the
     toolchain comparison would measure the virus scanner."""
     for _ in range(2):
-        r = tc.run_measured(exe)
+        r = tc.run_measured(exe, args)
         if r.code != 0:
             return {"ok": False, "note": f"exit {r.code}: {r.err.splitlines()[0] if r.err else ''}"}
     best, peak, out = None, 0, None
     for _ in range(reps):
-        r = tc.run_measured(exe)
+        r = tc.run_measured(exe, args)
         if r.code != 0:
             return {"ok": False, "note": f"exit {r.code}: {r.err.splitlines()[0] if r.err else ''}"}
         if best is None or r.ms < best:
@@ -554,9 +575,11 @@ def measure_exe(exe, reps):
     return {"ok": True, "ms": best, "peak": peak, "out": out}
 
 
-def measure_baseline(harness):
+def measure_baseline(harness, jit):
     """What an empty program of each kind costs, so the reader can discount
-    process startup from the small sizes."""
+    process startup from the small sizes. The JIT floor is the same empty
+    program compiled and run in one go, which is compilation as much as
+    startup: it is what every JIT row below pays before doing any work."""
     tcname = harness.active[0]
     cc = harness.ccs[tcname]
     g = GENDIR / "baseline_goose.goose"
@@ -567,8 +590,12 @@ def measure_baseline(harness):
     c = GENDIR / "baseline_cpp.cpp"
     tc.write_text(c, '#include <cstdio>\nint main(){printf("0\\n");}\n')
     cc.compile(c, GENDIR / ("baseline_cpp" + tc.EXE_SUFFIX), opt=2, cpp=True)
-    return {k: measure_exe(GENDIR / ("baseline_" + k + tc.EXE_SUFFIX), 5)
-            for k in ("goose", "cpp")}
+    out = {k: measure_exe(GENDIR / ("baseline_" + k + tc.EXE_SUFFIX), 5)
+           for k in ("goose", "cpp")}
+    if jit:
+        out["jit"] = measure_exe(harness.args.exe, 5,
+                                 ["-O2", "--jit", f"-D{STACK_RESERVE}", g])
+    return out
 
 
 # --- report helpers ----------------------------------------------------------
@@ -600,6 +627,8 @@ def main():
     ap.add_argument("--skip-build", action="store_true", help="re-run what is already built")
     ap.add_argument("--report-only", action="store_true",
                     help="regenerate the report from saved measurements")
+    ap.add_argument("--no-jit", action="store_true",
+                    help="skip the in-process TinyCC measurements")
     args = ap.parse_args()
 
     tc.setup_console()
@@ -620,6 +649,7 @@ def main():
     descs = {k: {"desc": ccs[k].desc, "opt": "/O2" if ccs[k].style == "msvc" else "-O2"}
              for k in ccs}
 
+    jit = not (args.no_jit or args.report_only) and tc.have_jit(args.exe)
     rustc = tc.find_rustc()
     have_rust = bool(rustc) and RUSTDIR.is_dir()
     rust_version = tc.decode(tc.run_capture([rustc, "--version"])[1]).strip() if have_rust else None
@@ -634,10 +664,11 @@ def main():
     if not selected:
         sys.exit(f"no benchmarks matched --only {args.only}")
 
-    print("toolchains: " + "  |  ".join(descs[k]["desc"] for k in active))
+    print("toolchains: " + "  |  ".join(descs[k]["desc"] for k in active)
+          + ("  |  goose --jit (TinyCC)" if jit else ""))
     print(f"sizes: {', '.join(sizes)}   reps: {args.reps}\n")
 
-    baseline = None if (args.skip_build or args.report_only) else measure_baseline(harness)
+    baseline = None if (args.skip_build or args.report_only) else measure_baseline(harness, jit)
 
     results = {}      # results[bench][impl][toolchain][size] = measurement
     mismatch = {}
@@ -703,6 +734,24 @@ def main():
                     else:
                         print(f"  {im['label']:<32} {sname:<7} {tcname:<5} "
                               f"RUN FAIL: {m['note']}")
+                # The same source through the in-process backend: one run that
+                # compiles and executes, so the time carries the compilation
+                # and the peak carries the compiler. The checksums still have
+                # to agree with every built row.
+                if jit and im["kind"] == "goose":
+                    base = f"{b['name']}_{sname}_{slug}"
+                    gsrc = harness.goose_source(im["file"], n, base)
+                    results[b["name"]][im["label"]].setdefault(JIT_TC, {})
+                    m = measure_exe(args.exe, args.reps,
+                                    ["-O2", "--jit", f"-D{STACK_RESERVE}", gsrc])
+                    results[b["name"]][im["label"]][JIT_TC][sname] = m
+                    if m["ok"]:
+                        checks[f"{im['label']} [{JIT_TC}]"] = m["out"]
+                        print(f"  {im['label']:<32} {sname:<7} {'jit':<5} "
+                              f"{tc.num(m['ms']):>9} ms  {tc.num(m['peak'] / (1 << 20)):>8} MB")
+                    else:
+                        print(f"  {im['label']:<32} {sname:<7} {'jit':<5} "
+                              f"RUN FAIL: {m['note']}")
             # Every implementation, under every toolchain, must agree.
             measured.add(f"{b['name']}/{sname}")
             if len(set(checks.values())) > 1:
@@ -742,6 +791,10 @@ def main():
 
     def get_m(bench, label, tcname, size):
         return results.get(bench, {}).get(label, {}).get(tcname, {}).get(size)
+
+    # Saved measurements outlive the run that made them, so the report asks
+    # what is in them rather than what this run had available.
+    jit_measured = any(JIT_TC in impl for b in results.values() for impl in b.values())
 
     active_sizes = [s for s in SIZE_NAMES if s in sizes]
     md = []
@@ -797,6 +850,8 @@ def main():
         W(f"| {tcname} | {descs[tcname]['desc']}, `{descs[tcname]['opt']}` "
           "(C++20 for the C++ rows) |")
     W("| Goose | `goose -O2` to C, then each toolchain above on that C |")
+    if jit_measured:
+        W("| Goose JIT | `goose -O2 --jit`: TinyCC in the compiler's own process, no C file |")
     W("| Rust | " + (f"{rust_version}, `-O -C codegen-units=1`" if have_rust
                      else "not installed -- rows pending") + " |")
     W()
@@ -825,7 +880,7 @@ def main():
     # -- filed under `rustc` alone -- are picked up the same way as the others.
     def best_mem(bench, labels, size):
         peaks = [m["peak"] for l in labels if l in results[bench]
-                 for tcname in results[bench][l]
+                 for tcname in results[bench][l] if tcname != JIT_TC
                  for m in [get_m(bench, l, tcname, size)] if m and m.get("ok")]
         return min(peaks) if peaks else None
 
@@ -1003,6 +1058,63 @@ def main():
         else:
             W("No row differs by more than 5%.")
         W()
+
+    # --- Goose AOT vs Goose JIT ----------------------------------------------
+    # Deliberately its own table. A JIT cell is one process that compiles the
+    # program and then runs it, against a cell that is a run of something built
+    # earlier by an optimizing compiler, so the two are only comparable with
+    # each other and never with the C++ or Rust rows above.
+
+    aot_tc = active[0] if active else None
+    jit_rows = [] if not jit_measured else [
+                (b, g["label"]) for b in selected for g in b["goose"]
+                if results.get(b["name"], {}).get(g["label"], {}).get(JIT_TC)]
+    if jit_rows and aot_tc:
+        W("## Goose: compiled vs JIT")
+        W()
+        W(f"The same Goose source two ways: built by `{aot_tc}` from the generated C and")
+        W("run, against the compiler compiling and running it in one process through")
+        W("TinyCC. Each cell is `compiled / JIT` in ms.")
+        W()
+        W("The JIT number includes compiling the program, and TinyCC is a one-pass")
+        W("compiler with no optimizer, so this is not a measurement of Goose against")
+        W("another language -- it is what the convenience of not needing a C toolchain")
+        W("costs. The memory columns are the peak working set; the JIT one holds the")
+        W("compiler, the generated C and the program at once.")
+        W()
+        hdr, sep = "| benchmark | implementation |", "|---|---|"
+        for sz in active_sizes:
+            hdr += f" {sz} |"
+            sep += "---:|"
+        hdr += " JIT/compiled (large) | large MB compiled / JIT |"
+        sep += "---:|---:|"
+        W(hdr)
+        W(sep)
+        ratios = []
+        for b, label in jit_rows:
+            row = f"| {b['name']} | {label} |"
+            for sz in active_sizes:
+                a, j = get_m(b["name"], label, aot_tc, sz), get_m(b["name"], label, JIT_TC, sz)
+                row += f" {fmt_ms(a)} / {fmt_ms(j)} |"
+            a = get_m(b["name"], label, aot_tc, "large")
+            j = get_m(b["name"], label, JIT_TC, "large")
+            if a and j and a.get("ok") and j.get("ok"):
+                ratios.append(j["ms"] / a["ms"])
+                row += f" {tc.num(j['ms'] / a['ms'], 2)}x |"
+            else:
+                row += " -- |"
+            row += f" {fmt_mb(a)} / {fmt_mb(j)} |"
+            W(row)
+        gm = geomean(ratios)
+        W("| **geometric mean** | |" + " |" * len(active_sizes) +
+          (f" **{tc.num(gm, 2)}x** |" if gm else " -- |") + " |")
+        W()
+        if baseline and baseline.get("jit"):
+            W(f"Floor for a JIT row (an empty program compiled and run, best of 5): "
+              f"{tc.num(baseline['jit']['ms'])} ms / "
+              f"{tc.num(baseline['jit']['peak'] / (1 << 20))} MB. That is almost all")
+            W("compilation, and every JIT cell above carries it.")
+            W()
 
     # The numbers above are generated; what they mean is written by hand in
     # notes.md and carried through verbatim.

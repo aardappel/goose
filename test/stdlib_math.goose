@@ -1,3 +1,5 @@
+// no-jit: tcc's own libm defines log2 as log(x)*log2(e), which is a few ulp
+// off the exact answers this compares against.
 // stdlib/math.goose: libm through extern fns, both widths, and the rest.
 import math;
 

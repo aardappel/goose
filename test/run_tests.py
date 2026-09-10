@@ -11,11 +11,17 @@ satisfy an expected abort; the same markers validate parser/typecheck errors.
 A first-line `runtime-debug` marker adds a targeted
 GS_DEBUG=1 run, alongside the existing codegen_exec debug coverage.
 
+A compiler built with the TinyCC backend runs the same programs a second way,
+in JIT mode: no C file and no external compiler, the generated C built and run
+inside the compiler process. Those runs are compared with the same blessed
+outputs. A first-line `no-jit` marker leaves a test out of them, and a program
+the backend refuses outright is counted as a skip, not a failure.
+
 Profiles keep the CI coverage deliberate: baseline compares Goose/native C
 -O0 and -O2 plus the targeted debug-runtime runs; sanitize uses Goose -O2 and
 Clang -O1 with ASan/UBSan on Linux, including the samples and C runtime tests.
 
-  python test/run_tests.py [--exe path/to/goose] [--nocgen]
+  python test/run_tests.py [--exe path/to/goose] [--nocgen] [--no-jit]
 """
 
 import argparse
@@ -63,9 +69,15 @@ class Runner:
             self.fail(f"compiler sanitizer {args[-1]}", result[2])
         return result
 
-    def run_expected(self, exe, name, label):
+    def run_expected(self, argv, name, label):
+        """Run a program and validate it. `argv` is the built executable, or
+        the compiler running the program in JIT mode; in both cases stdout is
+        the program's alone, since the compiler's own progress lines move to
+        stderr when it runs a program."""
+        return self.check_run(name, label, *tc.run_capture([str(a) for a in argv]))
+
+    def check_run(self, name, label, code, out, err):
         """Validate termination and diagnostics before comparing stdout."""
-        code, out, err = tc.run_capture([exe])
         aborts = (HERE / "expected" / f"{name}.aborts").exists()
         if tc.sanitizer_failure(err):
             self.fail(f"sanitizer {label}", err)
@@ -109,6 +121,8 @@ def main():
                     help="require this C toolchain instead of optional auto-discovery")
     ap.add_argument("--require-clang", action="store_true",
                     help="fail if the baseline's second C-front-end check is unavailable")
+    ap.add_argument("--no-jit", action="store_true",
+                    help="skip the in-process TinyCC runs even where they are available")
     args = ap.parse_args()
 
     if args.nocgen and (args.cc or args.require_clang or args.profile != "baseline"):
@@ -124,7 +138,12 @@ def main():
     if args.require_clang and not clang:
         ap.error("requested secondary C front end is unavailable: clang")
     extra = tc.SANITIZER_FLAGS if args.profile == "sanitize" else ()
-    print(f"profile: {args.profile}; C backend: {cc.desc if cc else 'none'}")
+    # Not under the sanitizers: the program runs inside the compiler process and
+    # is not itself instrumented, and its runtime allocations are still held
+    # when the compiler exits, which LeakSanitizer reports against the compiler.
+    jit = not args.no_jit and args.profile != "sanitize" and tc.have_jit(exe)
+    print(f"profile: {args.profile}; C backend: {cc.desc if cc else 'none'}; "
+          f"JIT backend: {'TinyCC' if jit else 'none'}")
     r = Runner(exe)
     builddir = tc.REPO_ROOT / "build"
     builddir.mkdir(parents=True, exist_ok=True)
@@ -206,7 +225,7 @@ def main():
                     r.fail(f"cc -O{ol} {f.name}", "\n".join(log.splitlines()[:8]))
                     bad = True
                     continue
-                out = r.run_expected(efile, name, f"-O{ol} {f.name}")
+                out = r.run_expected([efile], name, f"-O{ol} {f.name}")
                 if out is None:
                     bad = True
                     continue
@@ -240,7 +259,7 @@ def main():
             if not ok:
                 r.fail(f"cgen-debug-cc {f.name}", "\n".join(log.splitlines()[:8]))
                 continue
-            out = r.run_expected(out_exe, name, f"debug {f.name}")
+            out = r.run_expected([out_exe], name, f"debug {f.name}")
             if out is not None and r.check_stdout(name, f"debug {f.name}", out):
                 r.ok(f"cgen-debug {f.name}")
 
@@ -256,7 +275,7 @@ def main():
         if not ok:
             r.fail(f"runtime-cc {name}", log)
         else:
-            out = r.run_expected(out_exe, name, name)
+            out = r.run_expected([out_exe], name, name)
             if out is not None and r.check_stdout(name, name, out):
                 r.ok(f"runtime {name}")
 
@@ -285,9 +304,61 @@ def main():
                     r.fail(f"cgen-clang-{label} codegen_exec.goose",
                            "\n".join(log.splitlines()[:8]))
                     continue
-                out = r.run_expected(out_exe, "codegen_exec", f"clang-{label} codegen_exec.goose")
+                out = r.run_expected([out_exe], "codegen_exec", f"clang-{label} codegen_exec.goose")
                 if out is not None and r.check_stdout("codegen_exec", f"clang-{label}", out):
                     r.ok(f"cgen-clang-{label} codegen_exec.goose")
+
+    # --- JIT: the same programs, compiled and run inside the compiler --------
+    # No C file, no external toolchain: what this checks is that the generated
+    # C is portable enough for a third, very different C implementation, and
+    # that a program means the same when TinyCC builds it.
+    if not jit:
+        print("skip JIT run tests (sanitizer profile, --no-jit, or a compiler built "
+              "without the TinyCC backend)")
+    else:
+        skipped = []
+        for f in tests:
+            line = first_line(f)
+            if "parse-only" in line:
+                continue
+            if "no-jit" in line:
+                skipped.append(f.name)
+                continue
+            name, runs, bad = f.stem, {}, False
+            for ol in ("0", "2"):
+                code, out, err = r.goose(f"-O{ol}", "--jit", f)
+                # A refusal is the backend saying the program needs something
+                # it does not have yet, which is a gap to report, not a failure
+                # of this test.
+                if code != 0 and tc.JIT_UNSUPPORTED in err:
+                    skipped.append(f.name)
+                    bad = True
+                    break
+                out = r.check_run(name, f"jit -O{ol} {f.name}", code, out, err)
+                if out is None:
+                    bad = True
+                    continue
+                runs[ol] = out
+            if bad:
+                continue
+            if len(set(runs.values())) != 1:
+                r.fail(f"jit-output-differs-by-O {f.name}")
+            elif r.check_stdout(name, f"jit {f.name}", runs["2"]):
+                r.ok(f"jit {f.name}")
+        # GS_DEBUG selects the checked arithmetic and cast helpers; -D puts the
+        # define into the generated C itself, which is the only command line a
+        # JIT run has.
+        for f in [f for f in tests if f.stem == "codegen_exec" or
+                  "runtime-debug" in first_line(f)]:
+            if "no-jit" in first_line(f) or f.name in skipped:
+                continue
+            out = r.check_run(f.stem, f"jit-debug {f.name}",
+                              *r.goose("-O2", "--jit", "-DGS_DEBUG=1", f))
+            if out is not None and r.check_stdout(f.stem, f"jit-debug {f.name}", out):
+                r.ok(f"jit-debug {f.name}")
+        if skipped:
+            print(f"skip {len(skipped)} JIT test(s) the backend cannot run yet: "
+                  + ", ".join(sorted(set(skipped))))
 
     for f in sorted((HERE / "errors").glob("*.goose")):
         code, out, err = r.goose("--parse", f)
@@ -312,6 +383,8 @@ def main():
     # (or only typechecked without a C compiler), by their own runner.
     sargs = [sys.executable, str(tc.REPO_ROOT / "samples" / "run_samples.py"),
              "--exe", str(exe)]
+    if not jit:
+        sargs.append("--no-jit")
     if args.nocgen:
         sargs.append("--nocgen")
     else:
