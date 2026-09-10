@@ -45,7 +45,9 @@ A Goose program's memory consists of:
   (§10.3). Each data stack is a bump pointer. Growth never moves memory;
   references into a data stack are stable for the life of the data beneath
   them.
-* **Static data** — constants and literals.
+* **Static data** — string literals and `const` globals with compile-time
+  initializers: read-only, and so the one memory every program instance
+  (§11.2) shares.
 
 There is no general-purpose heap and no `malloc`. All dynamic allocation is
 expressed as values living on data stacks, owned by locals (or globals).
@@ -1888,7 +1890,9 @@ the caller's own facts about `src` intact.
   file and imported-file-first across files (so a global initializer may name
   one from a module it imports; their initializers may call functions), and a
   global resizable simply owns a stack's bottom for the program's life (a
-  natural whole-program arena).
+  natural whole-program arena). That outermost scope is a frame like any
+  other: a global's storage belongs to the program instance running it and
+  is never shared with another (§11.2).
   `const` globals of flat fixed type with compile-time-evaluable
   initializers live in static data; the initializer of any `let` or
   `const` global is a named constant a compile-time size may use
@@ -1934,12 +1938,15 @@ the Linda tuple-space / coordination style.
   independently and may outlive the worker that spawned it. Queued messages
   belong to their queues and remain available to receivers after the sender
   exits. Workers still running when `main` returns are killed.
-* A thread program may not access globals — that would be shared mutable
-  memory between programs; the typechecker rejects it for every function a
-  `thread_fn` reaches. Data enters through the spawn arguments and queues.
-  The exception is a `const` global of flat fixed type: a constant, which
-  holds no reference and is never written — its contents are read-only
-  through every path and reference (§9.5) — so reading it shares nothing.
+* A thread program is an instance of the program with globals of its own:
+  at `thread_spawn` every global the worker's program uses is copied from
+  the spawning instance, exactly as the arguments are, and the worker reads
+  and writes its copies from then on. Nothing is shared: a worker that
+  increments a global increments its own, and main's is what it was. A
+  global whose type is not **flat** (§1.1) cannot be copied and is an error
+  in any function a `thread_fn` reaches. `const` globals with compile-time
+  initializers are static data (§1.2), read-only and therefore shared as
+  they are.
 * Args and queue elements must be **flat** types (§1.1); values are copied
   in and out, which is cheap because Goose values are contiguous.
 * **Typed queues**: conceptually one queue per flat element type;
@@ -2413,9 +2420,14 @@ What the current compiler does where the text above leaves it a choice.
   function that uses data stacks takes its base index as a hidden argument
   and addresses its nonfixed locals at constant offsets from it, callees
   start above its in-use watermark, and stacks are reserved lazily as the
-  depth first reaches them. Globals own dedicated stacks outside the indexed
-  block, which is what lets thread programs (§11.2), each with a block of
-  its own, share every generated function.
+  depth first reaches them. The globals of a program instance, with the
+  dedicated stacks of the resizable ones, form one struct reached through a
+  single thread-local pointer (a plain one in a program without workers):
+  main's is a static instance, a worker's is allocated at its start and
+  filled from the spawn image, which carries the used globals behind the
+  arguments. The only C statics are string literals and `const` globals
+  with compile-time initializers. Every generated function is shared
+  between thread programs and the main program.
 * **Element-run results** (§7.3) exist for variable *array* results
   (`T[]`): an element-run receiver compiles the callee a second time in run
   form (raw elements plus a count out-parameter), so `v.append(f())` is

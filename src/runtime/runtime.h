@@ -588,6 +588,13 @@ static void gs_release_region(gs_region r) {
 static GS_TLS gs_stack *gs_stks;
 static GS_TLS int64_t gs_nstks;
 
+/* The current program instance's globals (goose_spec.md 11.1), a struct the
+   compiler lays out: main's is its one static instance, a worker's a fresh
+   copy of the globals its program uses, taken from the spawning instance
+   at spawn like the arguments (11.2). No global is shared between program
+   instances; the only C statics a program shares are read-only ones. */
+static GS_TLS void *gs_gl;
+
 #define GS(i) (&gs_stks[i])
 
 static void gs_stks_grow(int64_t n) {

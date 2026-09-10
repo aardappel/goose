@@ -1043,7 +1043,9 @@ struct TypeCheck {
         CheckSpecBody(spec, nullptr, sf->line);
     }
 
-    // Walks a thread program's call graph rejecting global accesses (§11.2).
+    // Walks a thread program's call graph: a worker's program has its own
+    // copy of every global it uses, taken at spawn (§11.2), which a value
+    // holding references cannot be.
     void CheckThreadGlobals(FnSpec *entry) {
         set<FnSpec *> seen;
         function<void(FnSpec *)> rec = [&](FnSpec *sp) {
@@ -1051,15 +1053,10 @@ struct TypeCheck {
             function<void(Node *)> walk = [&](Node *n) {
                 if (!n) return;
                 if (auto id = Is<Ident>(n)) {
-                    // A `const` global of flat fixed type is a constant: it
-                    // can hold no reference, and no path or reference can
-                    // write it (§9.5), so reading it shares nothing mutable.
                     auto g = id->vdef;
-                    auto constant = g && g->type && g->type->cq && IsFlat(g->type) &&
-                                    ClassOf(g->type) == SC_FIXED;
-                    if (g && g->isglobal && !constant)
-                        Error(n, cat("thread programs may not access globals (§11.2): ",
-                                     id->name, " (reached from thread_fn ",
+                    if (g && g->isglobal && g->type && !IsFlat(g->type))
+                        Error(n, cat("thread programs may access only flat globals (§11.2): ",
+                                     id->name, " holds references (reached from thread_fn ",
                                      entry->sf->name, ")"));
                 }
                 if (auto c = Is<Call>(n)) {

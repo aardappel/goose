@@ -460,38 +460,44 @@ inline void CodeGen::EmitGlobalDecls() {
         for (size_t di = 0; di < g->defs.size(); di++) {
             auto d = g->defs[di];
             auto name = Unique(Sanitize(g->ns, d->name));
-            gnames[d] = name;
             // Registered as they are created; see CacheableStk.
             auto reg = [&](const string &s) { gstkexprs.insert(s); };
+            // A member of the instance block (gs_globals_t), and its
+            // dedicated stack where it has one.
+            auto member = [&](const string &decl) { Append(gblock, "    ", decl, ";\n"); };
+            gnames[d] = cat("GS_GL->", name);
             if (IsResz(d->type)) {
                 EmitCoreTypes();
                 auto stk = Unique(cat("gs_gstk_", name));
-                Append(data, "static ", IsFrameObj(d->type) ? CT(d->type) : string("gs_rhdr"),
-                       " ", name, ";\nstatic gs_stack ", stk, ";\n");
-                gstks[d] = cat("(&", stk, ")");
+                member(cat(IsFrameObj(d->type) ? CT(d->type) : string("gs_rhdr"), " ", name));
+                member(cat("gs_stack ", stk));
+                gstks[d] = cat("(&GS_GL->", stk, ")");
                 reg(gstks[d]);
                 if (d->reusable) {
                     auto fln = Unique(cat(name, "_fl"));
                     auto flstk = Unique(cat("gs_gstk_", fln));
-                    Append(data, "static gs_rhdr ", fln, ";\nstatic gs_stack ", flstk,
-                           ";\n");
-                    gpools[d] = { fln, cat("(&", flstk, ")") };
+                    member(cat("gs_rhdr ", fln));
+                    member(cat("gs_stack ", flstk));
+                    gpools[d] = { cat("GS_GL->", fln), cat("(&GS_GL->", flstk, ")") };
                     reg(gpools[d].second);
                 }
             } else if (IsBytesT(d->type)) {
                 auto stk = Unique(cat("gs_gstk_", name));
-                Append(data, "static uint8_t *", name, ";\nstatic gs_stack ", stk,
-                       ";\n");
-                gstks[d] = cat("(&", stk, ")");
+                member(cat("uint8_t *", name));
+                member(cat("gs_stack ", stk));
+                gstks[d] = cat("(&GS_GL->", stk, ")");
                 reg(gstks[d]);
             } else {
                 string init;
-                if (perdef && !d->isvar && !PrefVar(d) &&
+                // A const global with a compile-time initializer is never
+                // written (§9.5): static data every instance shares.
+                if (perdef && d->type->cq && !PrefVar(d) &&
                     StaticInitX(g->inits[di], d->type, init)) {
                     Append(data, "static ", VarCT(d), " ", name, " = ", init, ";\n");
                     gstatic.insert(d);
+                    gnames[d] = name;
                 } else {
-                    Append(data, "static ", VarCT(d), " ", name, ";\n");
+                    member(cat(VarCT(d), " ", name));
                 }
             }
         }
@@ -589,7 +595,7 @@ inline void CodeGen::EmitMain() {
     if (auto mainsf = ast.MainFunction(); mainsf && !mainsf->specs.empty())
         mainspec = mainsf->specs[0];
     Append(code, "int main(int argc, char **argv) {\n    gs_argc = argc;\n    gs_argv = argv;\n"
-                 "    gs_rt_init();\n    gs_init_globals();\n");
+                 "    gs_rt_init();\n    gs_gl = &gs_globals_main;\n    gs_init_globals();\n");
     if (mainspec && sinfo.count(mainspec)) {
         auto &mi = sinfo[mainspec];
         Append(code, "    ", mi.cname, "(", mi.needssp ? "0" : "", ");\n");

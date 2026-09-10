@@ -95,31 +95,11 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             auto t = an[0]->exprtype;
             auto q = QueueFor(t);
             if (IsResz(t)) {
-                // The image of a resizable is [int64 count][fixed fields]
-                // [tail elements], built on a scratch stack: a frame
-                // object's fixed fields are the bytes before its innermost
-                // tail header, any other shape's the static prefix
-                // EmitRzCopy walks.
                 auto src = GenLoc(an[0]);
                 if (src.t->kind == TY_REF) DerefLoc(src, ln);
                 string stk;
                 auto base = BytesTemp(stk);
-                if (IsFrameObj(t)) {
-                    assert(src.val);
-                    auto th = FoTailHdr(t, src.s);
-                    EmitValStore(stk, ast.inttypes[IS_I64], cat(th, ".len"));
-                    auto pre = FoPrefixSize(t);
-                    L("memcpy(", Top(stk), ", &", src.s, ", ", pre, ");");
-                    Bump(stk, pre);
-                    EmitCopyElems(stk, FoTailArr(t)->arr->sub, cat(th, ".base"),
-                                  cat(th, ".len"));
-                } else {
-                    auto lenv = T();
-                    L("int64_t ", lenv, ";");
-                    EmitValStore(stk, ast.inttypes[IS_I64], "0");
-                    EmitRzCopy(src, t, stk, lenv, ln);
-                    L("*(int64_t *)", base, " = ", lenv, ";");
-                }
+                EmitRzImage(src, t, stk, ln);
                 L("gs_qput(&", q, ", ", base, ", ", Top(stk), " - ", base, ");");
             } else if (IsBytesT(t)) {
                 auto p = GenPtr(an[0]);
@@ -495,6 +475,64 @@ inline vector<string> CodeGen::EmitAlloc(Call *c, vector<Node *> &an, Line ln) {
     return { e };
 }
 
+// The image of a resizable at the top of `stk`: a frame object's fixed
+// fields are the bytes before its innermost tail header, any other shape's
+// the static prefix EmitRzCopy walks.
+inline void CodeGen::EmitRzImage(Loc src, TypeExpr *t, const string &stk, Line ln) {
+    if (IsFrameObj(t)) {
+        assert(src.val);
+        auto th = FoTailHdr(t, src.s);
+        EmitValStore(stk, ast.inttypes[IS_I64], cat(th, ".len"));
+        auto pre = FoPrefixSize(t);
+        L("memcpy(", Top(stk), ", &", src.s, ", ", pre, ");");
+        Bump(stk, pre);
+        EmitCopyElems(stk, FoTailArr(t)->arr->sub, cat(th, ".base"), cat(th, ".len"));
+        return;
+    }
+    auto cntp = T();
+    L("int64_t *", cntp, " = (int64_t *)", Top(stk), ";");
+    auto lenv = T();
+    L("int64_t ", lenv, ";");
+    EmitValStore(stk, ast.inttypes[IS_I64], "0");
+    EmitRzCopy(src, t, stk, lenv, ln);
+    L("*", cntp, " = ", lenv, ";");
+}
+
+// The globals a thread program can name (CheckThreadGlobals admits flat
+// ones only), in declaration order: read-only static data is not among
+// them, since every instance shares it as it is.
+inline vector<VarDef *> &CodeGen::ThreadGlobals(FnSpec *entry) {
+    auto it = threadglobals.find(entry);
+    if (it != threadglobals.end()) return it->second;
+    set<FnSpec *> seen;
+    set<VarDef *> used;
+    function<void(FnSpec *)> rec = [&](FnSpec *sp) {
+        if (!sp || !sp->body || !seen.insert(sp).second) return;
+        function<void(Node *)> walk = [&](Node *n) {
+            if (!n) return;
+            if (auto id = Is<Ident>(n))
+                if (auto v = id->vdef; v && v->isglobal && !gstatic.count(v)) used.insert(v);
+            if (auto c = Is<Call>(n)) {
+                rec(c->spec);
+                for (auto d : c->dispatch) rec(d);
+                for (auto &fs : c->fmtspecs) rec(fs.second);
+                walk(c->fvbody);
+            }
+            n->Children([&](Node *ch) { walk(ch); });
+        };
+        walk(sp->body);
+    };
+    rec(entry);
+    auto &out = threadglobals[entry];
+    for (auto g : ast.globals)
+        for (auto d : g->defs) if (used.count(d)) out.push_back(d);
+    return out;
+}
+
+// thread_spawn(worker, args...): the arguments constructed contiguously,
+// then the worker program's globals as copies of this instance's, each as
+// [int64 size][image] (§11.2); the thunk unpacks them into the worker's
+// fresh instance.
 inline vector<string> CodeGen::EmitThreadSpawn(Call *c, vector<Node *> &an) {
     usesthreads = true;
     auto sp = c->spec;
@@ -502,10 +540,39 @@ inline vector<string> CodeGen::EmitThreadSpawn(Call *c, vector<Node *> &an) {
     string stk;
     auto base = BytesTemp(stk);
     for (size_t i = 0; i < sp->argtypes.size(); i++) GenConstruct(an[1 + i], stk);
+    for (auto d : ThreadGlobals(sp)) {
+        auto szp = T();
+        L("int64_t *", szp, " = (int64_t *)", Top(stk), ";");
+        Bump(stk, "8");
+        auto lv = VarLoc(d);
+        if (IsResz(d->type)) {
+            EmitRzImage(lv, d->type, stk, c->line);
+            if (d->reusable) {
+                // The pool's freelist follows: its count, then its indices.
+                auto &p = gpools[d];
+                EmitValStore(stk, ast.inttypes[IS_I64], cat(p.first, ".len"));
+                L("memcpy(", Top(stk), ", ", p.first, ".base, (size_t)(", p.first,
+                  ".len * 8));");
+                Bump(stk, cat(p.first, ".len * 8"));
+            }
+        } else if (IsBytesT(d->type)) {
+            auto n = T();
+            L("int64_t ", n, " = ", SizeX(d->type, lv.s), ";");
+            L("memcpy(", Top(stk), ", ", lv.s, ", (size_t)", n, ");");
+            Bump(stk, n);
+        } else {
+            L("memcpy(", Top(stk), ", &", lv.s, ", ", FixedSize(d->type), ");");
+            Bump(stk, cat(FixedSize(d->type)));
+        }
+        L("*", szp, " = ", Top(stk), " - (uint8_t *)(", szp, " + 1);");
+    }
     return { cat("gs_thread_spawn(", thunk, ", ", base, ", ", Top(stk), " - ", base,
                  ")") };
 }
 
+// The worker's entry: unpacks the arguments, then gives the thread a fresh
+// instance of the globals filled from the spawn image, runs the body, and
+// frees the instance (its stacks are released with the thread's others).
 inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
     auto it = thunks.find(sp);
     if (it != thunks.end()) return it->second;
@@ -533,9 +600,59 @@ inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
     }
     assert(ki.freevars.empty() && !ki.hasrf && sp->rets.empty());
     if (ki.needssp) args.push_back("0");
+    Append(b, "    gs_gl = calloc(1, sizeof(gs_globals_t));\n"
+              "    if (!gs_gl) gs_panic(\"out of memory copying globals\");\n");
+    for (auto d : ThreadGlobals(sp)) {
+        auto gn = gnames[d];
+        Append(b, "    {\n        int64_t sz = *(int64_t *)p; p += 8; uint8_t *img = p; p += sz;\n");
+        if (IsResz(d->type)) {
+            auto stk = gstks[d];
+            Append(b, "        gs_stack_init(", stk, ");\n");
+            if (IsFrameObj(d->type)) {
+                auto th = FoTailHdr(d->type, gn);
+                auto pre = FoPrefixSize(d->type);
+                Append(b, "        memcpy(&", gn, ", img + 8, ", pre, ");\n",
+                       "        ", th, ".base = ", stk, "->top;\n",
+                       "        ", th, ".len = *(int64_t *)img;\n",
+                       "        memcpy(", stk, "->top, img + 8 + ", pre, ", (size_t)(sz - 8 - ",
+                       pre, "));\n",
+                       "        ", stk, "->top += sz - 8 - ", pre, ";\n");
+            } else if (d->reusable) {
+                // [count][elements][freelist count][indices]: fixed-size
+                // elements, so the element bytes are the count's.
+                auto &p = gpools[d];
+                auto esz = FixedSize(d->type->arr->sub);
+                Append(b, "        int64_t cnt = *(int64_t *)img, ebytes = cnt * ", esz, ";\n",
+                       "        ", gn, ".base = ", stk, "->top;\n",
+                       "        ", gn, ".len = cnt;\n",
+                       "        memcpy(", stk, "->top, img + 8, (size_t)ebytes);\n",
+                       "        ", stk, "->top += ebytes;\n",
+                       "        gs_stack_init(", p.second, ");\n",
+                       "        ", p.first, ".base = ", p.second, "->top;\n",
+                       "        ", p.first, ".len = *(int64_t *)(img + 8 + ebytes);\n",
+                       "        memcpy(", p.second, "->top, img + 16 + ebytes, (size_t)(",
+                       p.first, ".len * 8));\n",
+                       "        ", p.second, "->top += ", p.first, ".len * 8;\n");
+            } else {
+                Append(b, "        ", gn, ".base = ", stk, "->top;\n",
+                       "        ", gn, ".len = *(int64_t *)img;\n",
+                       "        memcpy(", stk, "->top, img + 8, (size_t)(sz - 8));\n",
+                       "        ", stk, "->top += sz - 8;\n");
+            }
+        } else if (IsBytesT(d->type)) {
+            auto stk = gstks[d];
+            Append(b, "        gs_stack_init(", stk, ");\n",
+                   "        ", gn, " = ", stk, "->top;\n",
+                   "        memcpy(", stk, "->top, img, (size_t)sz);\n",
+                   "        ", stk, "->top += sz;\n");
+        } else {
+            Append(b, "        memcpy(&", gn, ", img, (size_t)sz);\n");
+        }
+        Append(b, "    }\n");
+    }
     string argstr;
     for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
-    Append(b, "    ", ki.cname, "(", argstr, ");\n}\n\n");
+    Append(b, "    ", ki.cname, "(", argstr, ");\n    free(gs_gl);\n}\n\n");
     code += b;
     return name;
 }

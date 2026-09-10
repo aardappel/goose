@@ -602,6 +602,13 @@ static void gs_release_region(gs_region r) {
 static GS_TLS gs_stack *gs_stks;
 static GS_TLS int64_t gs_nstks;
 
+/* The current program instance's globals (goose_spec.md 11.1), a struct the
+   compiler lays out: main's is its one static instance, a worker's a fresh
+   copy of the globals its program uses, taken from the spawning instance
+   at spawn like the arguments (11.2). No global is shared between program
+   instances; the only C statics a program shares are read-only ones. */
+static GS_TLS void *gs_gl;
+
 #define GS(i) (&gs_stks[i])
 
 static void gs_stks_grow(int64_t n) {
@@ -624,7 +631,8 @@ static void gs_stack_init(gs_stack *s) {
     s->top = gs_reserve_region((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP);
 }
 
-/* Workers own all their registered regions (globals belong to main). No
+)GSRT"
+R"GSRT(/* Workers own all their registered regions (globals belong to main). No
    Goose reference to these mappings may outlive the worker. Unregister
    before unmapping, then discard the now-useless bump pointers. */
 static void gs_free_thread_stacks(void) {
@@ -633,8 +641,7 @@ static void gs_free_thread_stacks(void) {
         gs_region r = gs_regions[i];
         gs_nregions = i;
         gs_regions[i].base = NULL;
-)GSRT"
-R"GSRT(        gs_regions[i].size = 0;
+        gs_regions[i].size = 0;
         gs_release_region(r);
     }
     free(gs_stks);

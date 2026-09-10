@@ -77,6 +77,15 @@ struct CodeGen {
     string tdecls;      // Packed typedefs.
     string pdata;       // Packed static data (string literals).
     string data;        // Queues, long-distance return channels, globals.
+    // The members of gs_globals_t, the program instance's globals (§11.1):
+    // every global that is not read-only static data, with the dedicated
+    // stacks of the resizable ones. Accessed through GS_GL, main's static
+    // instance directly or a worker's through the thread-local gs_gl.
+    string gblock;
+    // The globals a thread program uses, in declaration order: what a spawn
+    // copies into the worker's instance (EmitThreadSpawn, EnsureThreadThunk).
+    unordered_map<FnSpec *, vector<VarDef *>> threadglobals;
+    vector<VarDef *> &ThreadGlobals(FnSpec *entry);
     string protos;
     set<FnSpec *> usedexterns;   // Extern fns called by live code: prototypes.
     string code;        // Function bodies, size/eq helpers, thunks, main.
@@ -837,6 +846,9 @@ struct CodeGen {
 
     vector<string> EmitThreadSpawn(Call *c, vector<Node *> &an);
     string EnsureThreadThunk(FnSpec *sp);
+    // The image of a resizable value at a scratch stack's top: [int64 count]
+    // [fixed fields][tail elements] (queue elements and copied globals).
+    void EmitRzImage(Loc src, TypeExpr *t, const string &stk, Line ln);
 
     // ------------------------------------------------------------------
     // Function bodies.
@@ -893,6 +905,12 @@ struct CodeGen {
         EmitGlobalInit();
         EmitMain();
         if (usesthreads) predefs = "#define GS_NEED_THREADS 1\n";
+        // The instance block: with workers each thread reaches its own
+        // through gs_gl; without them there is only main's.
+        Append(data, "typedef struct {\n", gblock.empty() ? "    uint8_t gs_none;\n" : gblock,
+               "} gs_globals_t;\nstatic gs_globals_t gs_globals_main;\n",
+               usesthreads ? "#define GS_GL ((gs_globals_t *)gs_gl)\n"
+                           : "#define GS_GL (&gs_globals_main)\n");
         // Extern fns: the runtime's own C follows the types it is written
         // against, then user headers, then prototypes for whatever neither
         // defines.

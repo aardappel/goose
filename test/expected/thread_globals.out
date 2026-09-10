@@ -1,0 +1,6 @@
+main: 5 main [1, 2, 3] 1 shared? 1
+worker 1: 15 mainw [1, 2, 3] 1 shared? 2 100
+main: 5 main [1, 2, 3] 1 shared? 1
+worker 2: 27 mainw [2, 2, 3] 2 shared? 2 100
+worker 3: 57 mainww [3, 2, 3] 3 shared? 2 100
+main: 7 main [1, 2, 3] 1 shared? 1
