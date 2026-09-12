@@ -232,6 +232,8 @@ inline TypeCheck::FlowState TypeCheck::SaveFlow() {
     f.st.reserve(vars.size());
     for (auto v : vars) f.st.push_back({ v->assigned, v->narrowed });
     // Globals' narrowing participates too (assignment in branches).
+    for (auto g : ast.globals)
+        for (auto v : g->defs) f.globals.push_back({ v, v->narrowed });
     f.reachable = reachable;
     return f;
 }
@@ -241,6 +243,7 @@ inline void TypeCheck::RestoreFlow(const FlowState &f) {
         vars[i]->assigned = f.st[i].first;
         vars[i]->narrowed = f.st[i].second;
     }
+    for (auto [v, narrowed] : f.globals) v->narrowed = narrowed;
     reachable = f.reachable;
 }
 
@@ -257,6 +260,12 @@ inline void TypeCheck::MergeFlow(const FlowState &a, const FlowState &b) {
         else if (!b.reachable) n = aa.second;
         else if (aa.second && bb.second) n = aa.second;
         vars[i]->narrowed = n;
+    }
+    for (size_t i = 0; i < a.globals.size(); i++) {
+        auto [v, an] = a.globals[i];
+        auto bn = b.globals[i].second;
+        v->narrowed = !a.reachable ? bn : !b.reachable ? an
+                      : an && bn ? an : nullptr;
     }
     reachable = a.reachable || b.reachable;
 }
@@ -283,6 +292,7 @@ inline void TypeCheck::NarrowCond(Node *cond, bool sense) {
     if (auto b = Is<Binary>(cond)) {
         if ((b->op == T_ANDAND && sense) || (b->op == T_OROR && !sense)) {
             NarrowCond(b->left, sense);
+            for (auto v : b->rightkills) v->narrowed = nullptr;
             NarrowCond(b->right, sense);
             return;
         }
@@ -419,6 +429,13 @@ inline void TypeCheck::KillNarrowingsAssignedIn(Node *body) {
     set<string_view> names;
     CollectAssignedNames(body, names);
     for (auto v : vars) if (names.count(v->name)) v->narrowed = nullptr;
+    for (auto g : ast.globals)
+        for (auto v : g->defs)
+            for (auto name : names) {
+                auto ref = SplitName(name, CurNs());
+                if (ref.leaf == v->name && (!ref.qualified || ref.ns == g->ns))
+                    v->narrowed = nullptr;
+            }
 }
 
 // ------------------------------------------------------------------
@@ -735,13 +752,13 @@ inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue)
 }
 
 inline void TypeCheck::CheckWhile(While *x) {
+    // Narrowings from before the loop that the body reassigns do not hold
+    // on the second iteration, nor in the condition that runs again after
+    // it; the condition's own narrowings do, since it runs before every
+    // iteration, and a rebind inside the body un-narrows from that point on.
+    KillNarrowingsAssignedIn(x->body);
     CheckCond(x->cond);
     auto entry = SaveFlow();
-    // Narrowings from before the loop that the body reassigns do not hold
-    // on the second iteration; the condition's own do, since it runs
-    // before every iteration, and a rebind inside the body un-narrows from
-    // that point on.
-    KillNarrowingsAssignedIn(x->body);
     PushLoopAssigned(x->body);
     NarrowCond(x->cond, true);
     PushScope(SK_LOOP, x);

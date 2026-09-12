@@ -390,8 +390,18 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
         tc.CheckCond(left);
         auto snap = tc.SaveFlow();
         tc.NarrowCond(left, op == T_ANDAND);
+        auto mid = tc.SaveFlow();
         tc.CheckCond(right);
+        // The right operand may not run, and runs after the left test: what
+        // it un-narrows is un-narrowed after the condition, and the left test
+        // cannot narrow it for the region the condition guards.
+        rightkills.clear();
+        for (size_t i = 0; i < mid.st.size() && i < tc.vars.size(); i++)
+            if (mid.st[i].second && !tc.vars[i]->narrowed) rightkills.push_back(tc.vars[i]);
+        for (auto [gv, gn] : mid.globals)
+            if (gn && !gv->narrowed) rightkills.push_back(gv);
         tc.RestoreFlow(snap);
+        for (auto kv : rightkills) kv->narrowed = nullptr;
         Val v;
         v.type = tc.ast.booltype;
         return v;

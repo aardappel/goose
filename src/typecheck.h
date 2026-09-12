@@ -564,6 +564,7 @@ struct TypeCheck {
     // Snapshot of assigned/narrowed for every variable currently in scope.
     struct FlowState {
         vector<pair<bool, TypeExpr *>> st;
+        vector<pair<VarDef *, TypeExpr *>> globals;
         bool reachable = true;
     };
 

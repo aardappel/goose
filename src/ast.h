@@ -421,6 +421,8 @@ NODE(Binary)
     BCE_WALK
     TType op;
     Node *left, *right;
+    // Filled by typecheck for && and ||: optionals the right operand un-narrows.
+    vector<VarDef *> rightkills;
     Binary(Line l, TType _op, Node *_l, Node *_r) : Node(l), op(_op), left(_l), right(_r) {}
 NODE_END
 
