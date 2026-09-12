@@ -884,7 +884,14 @@ struct TypeCheck {
     void NoteHolderBinding(VarDef *d, const Val &v);
     void ResolvePendingShrinks(int scopeidx);
     bool IsGrowOnlyRootVar(VarDef *r);
-    void SyntacticShrinks(SFunction *sf);
+    // Raw-body shrink facts needed only while a recursive call is checked.
+    // Cache membership means scanned; an empty summary is a valid result.
+    struct ShrinkSummary {
+        vector<string_view> globals;
+        vector<int> params;
+    };
+    map<SFunction *, ShrinkSummary> shrinkcache;
+    const ShrinkSummary &SyntacticShrinks(SFunction *sf);
     void RefPointees(TypeExpr *t, vector<TypeExpr *> &out);
     VarDef *HolderRootOf(const Val &v);
 

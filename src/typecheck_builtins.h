@@ -452,15 +452,16 @@ inline bool TypeCheck::IsGrowOnlyRootVar(VarDef *r) {
 
 // The globals and parameters a function's body textually shrinks: what a
 // call into a cycle still being checked is taken to shrink (§5.1).
-inline void TypeCheck::SyntacticShrinks(SFunction *sf) {
-    if (sf->shrinkscanned || !sf->body) return;
-    sf->shrinkscanned = true;
+inline const TypeCheck::ShrinkSummary &TypeCheck::SyntacticShrinks(SFunction *sf) {
+    auto [it, fresh] = shrinkcache.try_emplace(sf);
+    auto &summary = it->second;
+    if (!fresh || !sf->body) return summary;
     auto note = [&](Node *recv) {
         auto id = Is<Ident>(recv);
         if (!id) return;
         for (size_t i = 0; i < sf->params.size(); i++)
-            if (sf->params[i].name == id->name) { sf->shrinkparamidx.push_back((int)i); return; }
-        if (ast.LookupGlobal(id->name, id->ns)) sf->shrinkglobalnames.push_back(id->name);
+            if (sf->params[i].name == id->name) { summary.params.push_back((int)i); return; }
+        if (ast.LookupGlobal(id->name, id->ns)) summary.globals.push_back(id->name);
     };
     function<void(Node *)> walk = [&](Node *n) {
         if (!n) return;
@@ -473,6 +474,7 @@ inline void TypeCheck::SyntacticShrinks(SFunction *sf) {
         n->Children([&](Node *ch) { walk(ch); });
     };
     walk(sf->body);
+    return summary;
 }
 
 // A shrink of the grow-shrink array rooted at root (§5.2): no variable in
@@ -546,7 +548,7 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
         if (IsGrowOnlyRootVar(root)) GrowOnlyShrinkAt(at, true, what, root);
         else ShrinkGrowShrink(at, cat(what, " ", root->name), root, string(root->name));
     };
-    if (pending) SyntacticShrinks(spec->sf);
+    auto pending_shrinks = pending ? &SyntacticShrinks(spec->sf) : nullptr;
     ApplyCalleeStores(spec, argvals, at);
     for (size_t i = 0; i < argvals.size() && i < spec->argtypes.size(); i++) {
         auto pt = spec->argtypes[i];
@@ -559,7 +561,7 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
             // A back edge's summary is incomplete; a grow-only argument
             // counts as shrunk where the callee textually shrinks it.
             shrinks = false;
-            for (auto pi : spec->sf->shrinkparamidx) shrinks |= pi == (int)i;
+            for (auto pi : pending_shrinks->params) shrinks |= pi == (int)i;
         } else {
             shrinks = pt->kind == TY_REF && ContainsGrowShrink(pt->ref->sub);
         }
@@ -578,8 +580,8 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
                     auto textual = false;
                     for (auto &fr : frames) {
                         if (!fr.spec || !fr.spec->inprogress) continue;
-                        SyntacticShrinks(fr.spec->sf);
-                        for (auto gn : fr.spec->sf->shrinkglobalnames) textual |= gn == vd->name;
+                        for (auto gn : SyntacticShrinks(fr.spec->sf).globals)
+                            textual |= gn == vd->name;
                     }
                     if (textual)
                         GrowOnlyShrinkAt(at, true, cat("call ", name, ", which may shrink ",

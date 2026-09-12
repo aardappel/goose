@@ -676,12 +676,6 @@ struct SFunction {
     vector<Param> params;
     vector<TypeExpr *> rets;    // Empty + !has_rets = inferred/none.
     bool has_rets = false;
-    // The globals and parameters the body textually shrinks (pop, resize,
-    // clear, whole-array assignment): what a back edge into a cycle still
-    // being checked is taken to shrink (§5.1). Filled on first use.
-    bool shrinkscanned = false;
-    vector<string_view> shrinkglobalnames;
-    vector<int> shrinkparamidx;
     bool isrec = false;         // Declared with `recursive`.
     bool isthread = false;
     bool isextern = false;      // A C function behind a Goose signature (§7.10); no body.
