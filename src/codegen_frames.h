@@ -22,43 +22,6 @@ inline bool CodeGen::IsPoolParam(FnSpec *sp, size_t i) {
            sp->argtypes[i]->ref->sub->arr->akind == A_GROW;
 }
 
-inline void CodeGen::ComputeGlobalTouch() {
-    for (auto sp : livespecs) {
-        auto &g = gtouch[sp];
-        function<void(Node *)> walk = [&](Node *n) {
-            if (!n) return;
-            if (auto id = Is<Ident>(n))
-                if (auto v = id->vdef; v && v->isglobal && v->type &&
-                    (IsBytesT(v->type) || HoldsFatRef(v->type)))
-                    g.insert(v);
-            if (auto c = Is<Call>(n)) walk(c->fvbody);
-            n->Children([&](Node *ch) { walk(ch); });
-        };
-        walk(sp->body);
-    }
-    // Every key exists now, so absorbing never rehashes under the reference.
-    for (auto changed = true; changed;) {
-        changed = false;
-        for (auto sp : livespecs) {
-            auto &g = gtouch[sp];
-            function<void(Node *)> walk = [&](Node *n) {
-                if (!n) return;
-                if (auto c = Is<Call>(n)) {
-                    auto absorb = [&](FnSpec *k) {
-                        if (!k || !gtouch.count(k)) return;
-                        for (auto v : gtouch[k]) if (g.insert(v).second) changed = true;
-                    };
-                    if (c->builtin < 0) absorb(c->spec);
-                    for (auto d : c->dispatch) absorb(d);
-                    walk(c->fvbody);
-                }
-                n->Children([&](Node *ch) { walk(ch); });
-            };
-            walk(sp->body);
-        }
-    }
-}
-
 // A pool or fat-reference argument carries its stack inside the value, so
 // the argument text does not name it, and neither does the text of a struct,
 // a payload, an array or a captured variable that holds one; such a call
@@ -80,7 +43,7 @@ inline string CodeGen::SyncReach(FnSpec *callee, const vector<string> &args) {
     if (!cachetops || reftops || PassesOpaqueStack(callee)) return "*";
     string s;
     for (auto &a : args) { s += a; s += '\x01'; }
-    for (auto d : gtouch[callee]) {
+    for (auto d : sinfo[callee].globals) {
         // A fat reference held in a global reaches whichever stack it was
         // bound to, which no name in the callee says.
         if (HoldsFatRef(d->type)) return "*";
@@ -112,92 +75,71 @@ inline void CodeGen::CollectSpecs() {
         for (auto t : sp->needs)
             if (!fromids.count(t)) fromids[t] = (int)fromids.size() + 1;
     }
-    // Free variables: every referenced VarDef another spec owns, in first-
-    // appearance order, then a fixpoint pulling in callees' lists.
+    // Scan each finished body once. The call edges are local to this
+    // analysis; only the summaries needed by emission survive it. Preserve
+    // first-appearance order for captures, which fixes the C parameter order.
+    unordered_map<FnSpec *, vector<FnSpec *>> callees;
     for (auto sp : livespecs) {
-        auto &fv = sinfo[sp].freevars;
+        auto &si = sinfo[sp];
+        auto &calls = callees[sp];
         set<const VarDef *> seen;
+        set<FnSpec *> seencalls;
+        for (auto pt : sp->argtypes) si.needssp |= IsBytesT(pt);
+        for (auto rt : sp->rets) si.needssp |= IsBytesT(rt);
         function<void(Node *)> walk = [&](Node *n) {
             if (!n) return;
-            auto add = [&](VarDef *v) {
+            if (auto id = Is<Ident>(n)) {
+                auto v = id->vdef;
                 if (v && v->ownerspec && v->ownerspec != sp && !v->isglobal &&
                     seen.insert(v).second)
-                    fv.push_back(v);
-            };
-            if (auto id = Is<Ident>(n)) add(id->vdef);
-            if (auto c = Is<Call>(n)) walk(c->fvbody);
+                    si.freevars.push_back(v);
+                if (v && v->isglobal && v->type &&
+                    (IsBytesT(v->type) || HoldsFatRef(v->type)))
+                    si.globals.insert(v);
+            }
+            if (n->exprtype && n->exprtype->kind != TY_VOID && n->exprtype->kind != TY_FN &&
+                n->exprtype->kind != TY_GENERIC && IsBytesT(n->exprtype))
+                si.needssp = true;
+            if (auto c = Is<Call>(n)) {
+                auto add = [&](FnSpec *k) {
+                    if (k && k != sp && sinfo.count(k) && seencalls.insert(k).second)
+                        calls.push_back(k);
+                };
+                if (c->builtin < 0) add(c->spec);
+                for (auto d : c->dispatch) add(d);
+                if ((c->builtin == B_QGET || c->builtin == B_QPOLL) &&
+                    !c->rettypes.empty() && IsBytesT(c->rettypes[0]))
+                    si.needssp = true;
+                walk(c->fvbody);
+            }
             n->Children([&](Node *ch) { walk(ch); });
         };
         walk(sp->body);
     }
+    // All three summaries follow the same call edges. Iterate together to
+    // handle recursion without repeatedly traversing the AST or retaining a
+    // separate global-touch table that must track the specialization table.
     for (auto changed = true; changed;) {
         changed = false;
         for (auto sp : livespecs) {
             auto &si = sinfo[sp];
             set<const VarDef *> seen(si.freevars.begin(), si.freevars.end());
-            function<void(Node *)> walk = [&](Node *n) {
-                if (!n) return;
-                if (auto c = Is<Call>(n)) {
-                    auto absorb = [&](FnSpec *k) {
-                        if (!k || k == sp || !sinfo.count(k)) return;
-                        // Copy: a recursive callee chain could reach our
-                        // own list while we grow it.
-                        auto kfv = sinfo[k].freevars;
-                        for (auto v : kfv) {
-                            if (v->ownerspec != sp && seen.insert(v).second) {
-                                si.freevars.push_back(v);
-                                changed = true;
-                            }
-                        }
-                    };
-                    if (c->builtin < 0) absorb(c->spec);
-                    for (auto d : c->dispatch) absorb(d);
-                    walk(c->fvbody);
+            for (auto callee : callees[sp]) {
+                auto &ki = sinfo[callee];
+                // Self edges were omitted, so growing our list cannot
+                // invalidate the callee's list as we read it.
+                for (auto v : ki.freevars)
+                    if (v->ownerspec != sp && seen.insert(v).second) {
+                        si.freevars.push_back(v);
+                        changed = true;
+                    }
+                for (auto v : ki.globals)
+                    if (si.globals.insert(v).second) changed = true;
+                if (ki.needssp && !si.needssp) {
+                    si.needssp = true;
+                    changed = true;
                 }
-                n->Children([&](Node *ch) { walk(ch); });
-            };
-            walk(sp->body);
-        }
-    }
-    // needssp: any nonfixed value anywhere in the body, or a callee that
-    // needs it. Iterate to a fixpoint (recursion makes one pass short).
-    auto ownneed = [&](FnSpec *sp) {
-        for (auto pt : sp->argtypes) if (IsBytesT(pt)) return true;
-        for (auto rt : sp->rets) if (IsBytesT(rt)) return true;
-        auto need = false;
-        function<void(Node *)> walk = [&](Node *n) {
-            if (!n || need) return;
-            if (n->exprtype && n->exprtype->kind != TY_VOID && n->exprtype->kind != TY_FN &&
-                n->exprtype->kind != TY_GENERIC && IsBytesT(n->exprtype)) {
-                need = true;
-                return;
             }
-            if (auto c = Is<Call>(n)) walk(c->fvbody);
-            n->Children([&](Node *ch) { walk(ch); });
-        };
-        walk(sp->body);
-        return need;
-    };
-    for (auto sp : livespecs) sinfo[sp].needssp = ownneed(sp);
-    for (auto changed = true; changed;) {
-        changed = false;
-        for (auto sp : livespecs) {
-            if (sinfo[sp].needssp) continue;
-            auto need = false;
-            function<void(Node *)> walk = [&](Node *n) {
-                if (!n || need) return;
-                if (auto c = Is<Call>(n)) {
-                    if (c->builtin < 0 && c->spec && sinfo.count(c->spec) &&
-                        sinfo[c->spec].needssp) need = true;
-                    for (auto d : c->dispatch) if (sinfo.count(d) && sinfo[d].needssp) need = true;
-                    if (c->builtin == B_QGET || c->builtin == B_QPOLL)
-                        if (c->rettypes.size() && IsBytesT(c->rettypes[0])) need = true;
-                    walk(c->fvbody);
-                }
-                n->Children([&](Node *ch) { walk(ch); });
-            };
-            walk(sp->body);
-            if (need) { sinfo[sp].needssp = true; changed = true; }
         }
     }
 }

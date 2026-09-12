@@ -319,6 +319,7 @@ struct CodeGen {
     struct SpecInfo {
         string cname;
         vector<VarDef *> freevars;
+        set<const VarDef *> globals; // Transitively touched stack/fat-reference globals.
         bool needssp = false;
         bool hasrf = false;
         int cret = -1;               // Ret index returned as the C value.
@@ -338,9 +339,6 @@ struct CodeGen {
     // stack it can name: one handed to it as an argument, or a global it
     // (transitively) mentions. Everything else the caller has cached stays
     // cached across the call.
-    unordered_map<FnSpec *, set<const VarDef *>> gtouch;
-
-    void ComputeGlobalTouch();
     bool PassesOpaqueStack(FnSpec *sp);
     string SyncReach(FnSpec *callee, const vector<string> &args);
     void CollectSpecs();
@@ -894,7 +892,6 @@ struct CodeGen {
         // state every propagating function's ordinary exit leaves behind.
         if (!fromids.empty()) data += "static GS_TLS int32_t gs_rf;\n";
         EmitGlobalDecls();
-        ComputeGlobalTouch();
         // Prototypes for every live specialization, then their bodies.
         for (auto sp : livespecs)
             Append(protos, "static ", SigRet(sp), " ", sinfo[sp].cname, "(",
