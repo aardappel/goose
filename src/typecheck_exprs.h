@@ -899,6 +899,7 @@ inline TypeExpr *TypeCheck::VariantTypeOf(TypeExpr *enumtype, SVariant *v, Line 
         t->var->adt = enumtype;
     }
     t->var->variant = v;
+    t->var->name = v->name;
     return t;
 }
 

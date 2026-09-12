@@ -151,7 +151,7 @@ inline void TypeExpr::Dump(string &s) const {
         case TY_VARIANT:
             SubDump(var->adt);
             s += ".";
-            s += var->adt->kind == TY_ENUM ? var->variant->name : var->name;
+            s += var->name;
             break;
         case TY_VOID: s += "void"; break;
     }

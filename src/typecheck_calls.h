@@ -478,10 +478,7 @@ inline bool TypeCheck::BindTypes(TypeExpr *pt, TypeExpr *at,
             if (at->kind != TY_REF) return false;
             return BindTypes(pt->ref->sub, at->ref->sub, b);
         case TY_VARIANT: {
-            // The template's union holds a bare name while its ADT is generic.
-            auto ptname = pt->var->adt->kind == TY_ENUM ? pt->var->variant->name
-                                                        : pt->var->name;
-            if (at->kind != TY_VARIANT || at->var->variant->name != ptname) return false;
+            if (at->kind != TY_VARIANT || at->var->name != pt->var->name) return false;
             return BindTypes(pt->var->adt, at->var->adt, b);
         }
         default:

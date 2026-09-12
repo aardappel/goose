@@ -146,13 +146,8 @@ struct TypeRef : TypeDetail {        // TY_REF
 
 struct TypeVariant : TypeDetail {    // TY_VARIANT
     TypeExpr *adt = nullptr;         // The ADT type this is a variant of.
-    union {
-        string_view name;            // The variant name as written — valid until adt
-                                     // resolves to an enum...
-        SVariant *variant;           // ...then resolution replaces it with the variant
-                                     // itself (which carries the name).
-    };
-    TypeVariant() : name() {}
+    string_view name;                // Stable through resolution and substitution.
+    SVariant *variant = nullptr;     // Resolved declaration; null until its ADT is known.
 };
 
 struct TypeExpr {

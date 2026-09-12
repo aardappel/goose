@@ -641,6 +641,7 @@ inline TypeExpr *CodeGen::VariantType(TypeExpr *enumtype, int vi) {
     }
     t->var->adt = base;
     t->var->variant = &ei->en->variants[vi];
+    t->var->name = t->var->variant->name;
     return varianttypes[key] = t;
 }
 

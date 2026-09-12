@@ -103,7 +103,7 @@ inline void ResolveTypeNames(Ast &ast) {
             if (v.name == name) { found = &v; break; }
         if (!found)
             ErrorAt(t, cat("enum ", adt->enu->en->name, " has no variant named ", name));
-        t->var->variant = found;  // Replaces the union's name member.
+        t->var->variant = found;  // Alias/const copies may share this detail.
     }
 }
 

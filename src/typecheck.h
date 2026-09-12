@@ -444,8 +444,8 @@ struct TypeCheck {
                 auto n = ast.NewType(TY_VARIANT, t->line);
                 n->var = ast.NewDetail<TypeVariant>();
                 n->var->adt = adt;
-                // The template kept the name form when the ADT was generic.
-                auto name = t->var->adt->kind == TY_ENUM ? t->var->variant->name : t->var->name;
+                auto name = t->var->name;
+                n->var->name = name;
                 SVariant *found = nullptr;
                 for (auto &v : adt->enu->en->variants) if (v.name == name) { found = &v; break; }
                 if (!found)
