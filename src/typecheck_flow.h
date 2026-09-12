@@ -714,6 +714,13 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                 if (!found->has_payload && found->fields.empty())
                     Error(arm.body, cat("variant ", arm.pat.variant, " has no payload to bind"));
                 auto vt = VariantTypeOf(enumtype, found, m->line);
+                // Packed resizable ADTs have one owning header, but no
+                // persistent header for a payload view (C.2). Do not let
+                // the backend manufacture a plain pointer or a stale copy.
+                if (ClassOf(vt) == SC_RESIZABLE)
+                    Error(arm.body, "binding a resizable ADT payload is not supported by "
+                                    "the C backend yet; match its tag without a payload "
+                                    "binder, or use a standalone resizable struct");
                 binder = ast.NewVarDef();
                 binder->name = arm.pat.binder;
                 binder->line = m->line;
@@ -724,10 +731,18 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                     // `Variant &b`: only variable-mode payloads may be
                     // bound by reference — a fixed-mode value may be
                     // overwritten with another variant, so references
-                    // into its payload are illegal (§3.5, §8.1).
+                    // into its payload are illegal (§3.5, §8.1). A
+                    // resizable value is assignable whole (§4.4), which
+                    // replaces its variant the same way.
                     if (!enumtype->enu->varmode)
                         Error(arm.body, cat("cannot bind the payload of fixed-mode ",
                                             enumtype->enu->en->name, " by reference "
+                                            "(§3.5); bind by value: ", arm.pat.variant,
+                                            " ", arm.pat.binder));
+                    if (ClassOf(enumtype) == SC_RESIZABLE)
+                        Error(arm.body, cat("cannot bind the payload of resizable ",
+                                            enumtype->enu->en->name, " by reference: a "
+                                            "whole assignment may replace its variant "
                                             "(§3.5); bind by value: ", arm.pat.variant,
                                             " ", arm.pat.binder));
                     binder->type = RefTo(vt, m->line);
@@ -1651,6 +1666,11 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             if (!av.lvalue && !IsPlainRef(av.type))
                 Error(c, "copy of a temporary: the value is fresh already");
             auto v = DecayRef(av);
+            if ((v.type->kind == TY_ENUM || v.type->kind == TY_VARIANT) &&
+                ClassOf(v.type) == SC_RESIZABLE)
+                Error(c, "copying a resizable ADT or variant is not supported by the "
+                         "C backend yet; construct a fresh value or pass the owning "
+                         "value by reference");
             v.lvalue = false;
             c->rettypes.push_back(v.type);
             return v;

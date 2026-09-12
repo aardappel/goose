@@ -548,6 +548,10 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
         byref = isref;
     }
     if (found < 0) return Val {};
+    if (ClassOf(enumtype) == SC_RESIZABLE)
+        Error(c, "dispatching a resizable ADT payload is not supported by the C backend "
+                 "yet; match its tag without a payload binder, or use a standalone "
+                 "resizable struct");
     // Specialize every arm; return types and the other parameters must
     // agree across the set.
     c->dispatcharg = found;

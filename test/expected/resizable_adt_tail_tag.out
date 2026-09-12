@@ -1,0 +1,6 @@
+local tB 4 3
+ref tB 4 3
+val tB 4 3
+local tA 7
+ref tA 7
+val tA 7
