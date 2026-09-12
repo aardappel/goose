@@ -194,30 +194,13 @@ struct BaseCaseInliner {
         vector<Node *> decls;
         for (size_t i = 0; i < K->params.size(); i++) {
             auto pv = K->params[i];
-            auto arg = c->args[i];
-            auto &f = o.facts[pv];
-            if (Optimizer::AsLiteral(arg) && Optimizer::ScalarType(pv->type) &&
-                f.writes == 0 && f.addrof == 0) {
-                inl.subst[pv] = arg;  // Constant argument: substitute, no binding.
-                continue;
-            }
-            auto nv = ast.NewVarDef();
-            *nv = *pv;
-            nv->ownerspec = o.curspec;
-            nv->isparam = false;
-            nv->captured = false;
-            inl.vmap[pv] = nv;
-            o.facts[nv] = f;
-            auto vd = ast.New<VarDecl>(c->line, pv->isvar);
-            vd->names.push_back(pv->name);
-            vd->defs.push_back(nv);
-            vd->inits.push_back(arg);
-            vd->exprtype = ast.voidtype;
+            auto vd = inl.BindArg(pv, c->args[i], c->line);
+            if (!vd) continue;
             decls.push_back(vd);
             // The recursing arm passes the binding on, so whichever arm runs,
             // the argument was evaluated exactly once and before the test.
             auto id = ast.New<Ident>(c->line, pv->name);
-            id->vdef = nv;
+            id->vdef = vd->defs[0];
             id->exprtype = pv->type;
             c->args[i] = id;
         }

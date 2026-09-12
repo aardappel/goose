@@ -445,6 +445,24 @@ struct Inliner {
         return nv;
     }
 
+    // Bind one runtime argument, or substitute an immutable scalar literal.
+    // Remap owns all copied-variable state, including the write/address facts
+    // that later folds use, for ordinary and recursive base-case inlining.
+    VarDecl *BindArg(VarDef *pv, Node *arg, Line ln) {
+        auto &f = o.facts[pv];
+        if (Optimizer::AsLiteral(arg) && Optimizer::ScalarType(pv->type) &&
+            f.writes == 0 && f.addrof == 0) {
+            subst[pv] = arg;
+            return nullptr;
+        }
+        auto vd = ast.New<VarDecl>(ln, pv->isvar);
+        vd->names.push_back(pv->name);
+        vd->defs.push_back(Remap(pv));
+        vd->inits.push_back(arg);
+        vd->exprtype = ast.voidtype;
+        return vd;
+    }
+
     Node *Cp(const Node *n) {
         auto r = n->Cp1(*this);
         r->exprtype = n->exprtype;
@@ -471,27 +489,10 @@ inline Node *Optimizer::TryInline(Call *c) {
     Inliner inl { *this, ast, K, curspec, {}, {} };
     vector<Node *> decls;
     for (size_t i = 0; i < K->params.size(); i++) {
-        auto pv = K->params[i];
-        auto arg = argnodes[i];
-        auto &f = facts[pv];
-        if (AsLiteral(arg) && ScalarType(pv->type) && f.writes == 0 && f.addrof == 0) {
-            inl.subst[pv] = arg;  // Constant argument: substitute, no binding.
-            continue;
+        if (auto vd = inl.BindArg(K->params[i], argnodes[i], c->line)) {
+            vd->inline_arg = true;
+            decls.push_back(vd);
         }
-        auto nv = ast.NewVarDef();
-        *nv = *pv;
-        nv->ownerspec = curspec;
-        nv->isparam = false;
-        nv->captured = false;
-        inl.vmap[pv] = nv;
-        facts[nv] = f;
-        auto vd = ast.New<VarDecl>(c->line, pv->isvar);
-        vd->inline_arg = true;
-        vd->names.push_back(pv->name);
-        vd->defs.push_back(nv);
-        vd->inits.push_back(arg);
-        vd->exprtype = ast.voidtype;
-        decls.push_back(vd);
     }
     auto body = inl.CpBlock(K->body);
     // A copied variable's provenance still names the variables of the body
