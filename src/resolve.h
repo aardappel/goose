@@ -44,6 +44,41 @@ inline void ResolveTypeNames(Ast &ast) {
         // Alias uses stay TY_UNRESOLVED for the substitution loop below.
     }
 
+    // Aliases expand structurally, so a cycle is invalid even when it passes
+    // through a reference, array, function signature or generic argument.
+    // Check before substitution can turn such a cycle into a recursive
+    // TypeExpr graph that later tree walks cannot traverse. Nominal struct
+    // and enum declarations are boundaries: their fields may refer back to
+    // the declaration legally, and are checked by the layout/lifetime passes.
+    unordered_map<SAlias *, int> aliasstate;  // 1 visiting, 2 complete.
+    function<void(TypeExpr *)> checkaliases = [&](TypeExpr *t) {
+        auto each = [&](const vector<TypeExpr *> &ts) {
+            for (auto child : ts) checkaliases(child);
+        };
+        switch (t->kind) {
+            case TY_UNRESOLVED: {
+                auto a = ast.LookupAlias(t->named->name, t->named->ns);
+                if (aliasstate[a] == 1)
+                    ErrorAt(t, cat("type alias cycle involving: ", t->named->name));
+                if (aliasstate[a] == 2) break;
+                aliasstate[a] = 1;
+                checkaliases(a->type);
+                aliasstate[a] = 2;
+                break;
+            }
+            case TY_ARRAY: checkaliases(t->arr->sub); break;
+            case TY_REF: checkaliases(t->ref->sub); break;
+            case TY_SLICE: checkaliases(t->sub); break;
+            case TY_VARIANT: checkaliases(t->var->adt); break;
+            case TY_STRUCT: each(t->struc->args); break;
+            case TY_ENUM: each(t->enu->args); break;
+            case TY_GENERIC: each(t->named->args); break;
+            case TY_FN: each(t->fn->args); each(t->fn->rets); break;
+            default: break;
+        }
+    };
+    for (auto a : ast.aliases) checkaliases(a->type);
+
     // Substitute alias uses: the use-site node becomes a copy of the target
     // type (sharing its detail), keeping its own source line for diagnostics.
     // A `..` on the use gets a fresh detail with the flag set instead.
