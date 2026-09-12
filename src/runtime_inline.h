@@ -54,6 +54,8 @@ R"GSRT(/* Goose runtime — prepended verbatim to every compiler-generated C fil
 #if GS_STACK_RESERVE > (1ull << 48)
 #error "GS_STACK_RESERVE exceeds the 2^48 limit (goose_spec.md 10.4)"
 #endif
+/* Every data stack has the same usable reservation and trailing guard gap. */
+#define GS_REGION_SIZE ((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP)
 
 #ifdef _MSC_VER
 #define GS_NORETURN __declspec(noreturn)
@@ -219,12 +221,12 @@ GS_DIVOPS_U(u32, uint32_t)
    intermediate result. */
 #define GS_INTOPS_S(SFX, T, MIN, MAX, BITS) \
 static T gs_add_##SFX(T a, T b) { \
-    int64_t r = (int64_t)a + (int64_t)b; \
+)GSRT"
+R"GSRT(    int64_t r = (int64_t)a + (int64_t)b; \
     if (r < MIN || r > MAX) gs_ovf(); \
     return (T)r; } \
 static T gs_sub_##SFX(T a, T b) { \
-)GSRT"
-R"GSRT(    int64_t r = (int64_t)a - (int64_t)b; \
+    int64_t r = (int64_t)a - (int64_t)b; \
     if (r < MIN || r > MAX) gs_ovf(); \
     return (T)r; } \
 static T gs_mul_##SFX(T a, T b) { \
@@ -406,13 +408,13 @@ static int64_t gs_f2ichk(double d) {
 }
 static uint64_t gs_f2uchk(double d) {
     if (!(d >= 0 && d < 18446744073709551616.0))
-        gs_panic("as conversion out of range (debug)");
+)GSRT"
+R"GSRT(        gs_panic("as conversion out of range (debug)");
     uint64_t v = (uint64_t)d;
     if ((double)v != d) gs_panic("as conversion changes the value (debug)");
     return v;
 }
-)GSRT"
-R"GSRT(static double gs_i2fchk(int64_t v) {
+static double gs_i2fchk(int64_t v) {
     double d = (double)v;
     if ((int64_t)d != v || d >= 9223372036854775808.0)
         gs_panic("as conversion changes the value (debug)");
@@ -472,8 +474,7 @@ static char **gs_argv;
    abort with a message. Goose workers cannot access another thread's storage.
    Keeping this registry thread-local avoids both races with fault handlers
    and signal-unsafe locks when a different worker allocates or exits. */
-typedef struct { uint8_t *base; size_t size; } gs_region;
-static GS_TLS gs_region gs_regions[GS_MAX_STACKS * 4];
+static GS_TLS uint8_t *gs_regions[GS_MAX_STACKS * 4];
 static GS_TLS volatile long gs_nregions;
 
 #ifdef _WIN32
@@ -490,15 +491,15 @@ static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
         return EXCEPTION_CONTINUE_SEARCH;
     uint8_t *hit = (uint8_t *)ep->ExceptionRecord->ExceptionInformation[1];
     for (long i = 0; i < gs_nregions; i++) {
-        gs_region r = gs_regions[i];
-        if ((uintptr_t)hit - (uintptr_t)r.base < r.size) {
+        uint8_t *base = gs_regions[i];
+        if ((uintptr_t)hit - (uintptr_t)base < GS_REGION_SIZE) {
             /* Within the usable part: commit another chunk (clamped to the
                region) and resume. Within the gap: a data stack overran. */
-            if (hit < r.base + r.size - GS_STACK_GAP) {
+            if (hit < base + GS_STACK_RESERVE) {
                 uint8_t *page = (uint8_t *)((size_t)hit & ~(gs_page_size - 1));
                 size_t n = GS_COMMIT_CHUNK;
-                if (page + n > r.base + r.size - GS_STACK_GAP)
-                    n = (size_t)(r.base + r.size - GS_STACK_GAP - page);
+                if (page + n > base + GS_STACK_RESERVE)
+                    n = (size_t)(base + GS_STACK_RESERVE - page);
                 if (VirtualAlloc(page, n, MEM_COMMIT, PAGE_READWRITE))
                     return EXCEPTION_CONTINUE_EXECUTION;
             }
@@ -518,20 +519,19 @@ static void gs_regions_init(void) {
         gs_panic("cannot install data stack fault handler");
 }
 
-static uint8_t *gs_reserve_region(size_t size) {
+static uint8_t *gs_reserve_region(void) {
     if (gs_nregions == GS_MAX_STACKS * 4)
         gs_panic("too many data stack regions");
-    uint8_t *p = (uint8_t *)VirtualAlloc(0, size, MEM_RESERVE, PAGE_READWRITE);
+    uint8_t *p = (uint8_t *)VirtualAlloc(0, GS_REGION_SIZE, MEM_RESERVE, PAGE_READWRITE);
     if (!p) gs_panic("cannot reserve data stack address space");
     long i = gs_nregions;
-    gs_regions[i].base = p;
-    gs_regions[i].size = size;
-    gs_nregions = i + 1;  /* Publish only the initialized descriptor. */
+    gs_regions[i] = p;
+    gs_nregions = i + 1;  /* Publish only the initialized entry. */
     return p;
 }
 
-static void gs_release_region(gs_region r) {
-    if (!VirtualFree(r.base, 0, MEM_RELEASE))
+static void gs_release_region(uint8_t *base) {
+    if (!VirtualFree(base, 0, MEM_RELEASE))
         gs_panic("cannot release data stack address space");
 }
 
@@ -545,8 +545,8 @@ static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
     (void)ctx;
     uint8_t *hit = (uint8_t *)info->si_addr;
     for (long i = 0; i < gs_nregions; i++) {
-        gs_region r = gs_regions[i];
-        if ((uintptr_t)hit - (uintptr_t)r.base < r.size) {
+        uint8_t *base = gs_regions[i];
+        if ((uintptr_t)hit - (uintptr_t)base < GS_REGION_SIZE) {
             static const char msg[] = "goose runtime error: data stack overflow\n";
             ssize_t w = write(2, msg, sizeof(msg) - 1);
             (void)w;
@@ -569,30 +569,29 @@ static void gs_regions_init(void) {
     #endif
 }
 
-static uint8_t *gs_reserve_region(size_t size) {
+static uint8_t *gs_reserve_region(void) {
     if (gs_nregions == GS_MAX_STACKS * 4)
         gs_panic("too many data stack regions");
     /* Commit-on-touch via overcommit; the gap at the end stays PROT_NONE. */
-    void *p = mmap(NULL, size, PROT_READ | PROT_WRITE,
+    void *p = mmap(NULL, GS_REGION_SIZE, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS
                    #ifdef MAP_NORESERVE
                        | MAP_NORESERVE
                    #endif
                    , -1, 0);
     if (p == MAP_FAILED) gs_panic("cannot reserve data stack address space");
-    if (mprotect((uint8_t *)p + size - GS_STACK_GAP, GS_STACK_GAP, PROT_NONE)) {
-        munmap(p, size);
+    if (mprotect((uint8_t *)p + GS_STACK_RESERVE, GS_STACK_GAP, PROT_NONE)) {
+        munmap(p, GS_REGION_SIZE);
         gs_panic("cannot protect data stack guard gap");
     }
     long i = gs_nregions;
-    gs_regions[i].base = (uint8_t *)p;
-    gs_regions[i].size = size;
+    gs_regions[i] = (uint8_t *)p;
     gs_nregions = i + 1;
     return (uint8_t *)p;
 }
 
-static void gs_release_region(gs_region r) {
-    if (munmap(r.base, r.size)) gs_panic("cannot release data stack address space");
+static void gs_release_region(uint8_t *base) {
+    if (munmap(base, GS_REGION_SIZE)) gs_panic("cannot release data stack address space");
 }
 
 #endif
@@ -615,7 +614,7 @@ static void gs_stks_grow(int64_t n) {
     if (n > GS_MAX_STACKS) gs_panic("too many data stacks (deep call nesting?)");
     while (gs_nstks < n) {
         gs_stack *s = &gs_stks[gs_nstks++];
-        s->top = gs_reserve_region((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP);
+        s->top = gs_reserve_region();
     }
 }
 
@@ -628,7 +627,7 @@ static gs_stack *gs_new_stack_block(void) {
 }
 
 static void gs_stack_init(gs_stack *s) {
-    s->top = gs_reserve_region((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP);
+    s->top = gs_reserve_region();
 }
 
 )GSRT"
@@ -638,11 +637,10 @@ R"GSRT(/* Workers own all their registered regions (globals belong to main). No
 static void gs_free_thread_stacks(void) {
     while (gs_nregions) {
         long i = gs_nregions - 1;
-        gs_region r = gs_regions[i];
+        uint8_t *base = gs_regions[i];
         gs_nregions = i;
-        gs_regions[i].base = NULL;
-        gs_regions[i].size = 0;
-        gs_release_region(r);
+        gs_regions[i] = NULL;
+        gs_release_region(base);
     }
     free(gs_stks);
     gs_stks = NULL;
@@ -845,9 +843,9 @@ static void gs_out_flt(double v) {
     uint8_t buf[GS_FMT_MAX];
     fwrite(buf, 1, (size_t)gs_fmt_f64(buf, v), stdout);
 }
+static void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
 )GSRT"
-R"GSRT(static void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
-static void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
+R"GSRT(static void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
 static void gs_out_nl(void) { fputc('\n', stdout); }
 )GSRT"
     ) },
