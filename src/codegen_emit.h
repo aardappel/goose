@@ -98,7 +98,10 @@ inline bool CodeGen::CanCacheTops(FnSpec *sp) {
 //    distinct: two exact roots that differ are two variables. An inexact
 //    root only bounds a lifetime (§9.5), so two of them may still be one
 //    stack, and two parameters in one class are not proven equal either;
-//    both cases would need one cache for two stacks;
+//    both cases would need one cache for two stacks. With more than one fat
+//    parameter every root must also be concrete (RootArg::concrete): a class
+//    standing for a caller's own parameter may otherwise name a global, or a
+//    variable that caller passes as another argument;
 //  * nothing else the body names can be one of those stacks: no global of
 //    a parameter's pointee type (a reference parameter may well be rooted
 //    at one, and the specialization key does not record which), no captured
@@ -107,6 +110,7 @@ inline bool CodeGen::CanCacheTops(FnSpec *sp) {
 inline bool CodeGen::RefTopsOk(FnSpec *sp) {
     set<const VarDef *> fatparams, classes;
     vector<TypeExpr *> pointees;
+    auto concrete = true;
     for (size_t i = 0; i < sp->params.size(); i++) {
         auto vd = sp->params[i];
         if (!IsFatRef(sp->argtypes[i])) continue;
@@ -115,8 +119,9 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp) {
             return false;
         fatparams.insert(vd);
         pointees.push_back(sp->argtypes[i]->ref->sub);
+        concrete &= i < sp->roots.size() && sp->roots[i].concrete;
     }
-    if (fatparams.empty()) return false;
+    if (fatparams.empty() || (fatparams.size() > 1 && !concrete)) return false;
     for (auto pt : sp->argtypes) if (IsResz(pt)) return false;
     for (auto rt : sp->rets) if (IsBytesT(rt)) return false;
     if (fromids.count(sp->sf)) return false;
@@ -135,13 +140,16 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp) {
         n->Children([&](Node *ch) { ibs(ch); });
     };
     ibs(sp->body);
-    // A reference to a resizable always names a whole variable (§3.8 has no
-    // spelling for a nested one), so a global with a dedicated stack can be
-    // what a parameter points at only if it has that parameter's pointee
-    // type; a global of any other type is a different stack.
+    // A frame object's tail has its own addressable header (C.2), but
+    // shares the owner's data stack. A parameter may therefore name the
+    // whole global, any nested frame-object tail, or the final array.
     auto maybeparam = [&](TypeExpr *gt) {
-        for (auto pt : pointees) if (TEq(pt, gt)) return true;
-        return false;
+        for (;;) {
+            for (auto pt : pointees) if (TEq(pt, gt)) return true;
+            if (!IsFrameObj(gt)) return false;
+            auto si = SI(gt);
+            gt = si->ftypes[TailIdx(si)];
+        }
     };
     auto check = [&](const VarDef *v) {
         if (!v || !v->type) return;

@@ -878,6 +878,17 @@ struct RootArg {
     // bit -- codegen's proof that two classes are *different* arrays -- runs
     // after every call site has been seen.
     bool exact = true;
+    // The argument is a different array from every other concrete argument at
+    // its call site: a global or a function's variable with no class of a
+    // parameter beside it, a variable created inside the activation whose
+    // classes are beside it, or one of those classes with nothing else beside
+    // them (GetOrCreateSpec). ANDed over call sites and not part of the key,
+    // like `exact`.
+    bool concrete = false;
+    // For a class: the specialization and index of each parameter it stood
+    // for at some call site. It stays concrete only while all of those are
+    // concrete and exact, which SettleParamRootExactness settles.
+    vector<pair<FnSpec *, int>> via;
     // The global pool the argument is exactly rooted in, where that global is
     // named by some `T&<w in pool>` type in the program (§3.9); null
     // otherwise, which is every argument of a program that has no such type.

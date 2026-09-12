@@ -992,6 +992,22 @@ struct TypeCheck {
                     spec->params[i]->ref.rootexact = false;
             }
         }
+        // A class passed on is concrete only while the parameter it stands for
+        // is both concrete and exact: two classes of a parameter that was
+        // inexactly rooted at some call may be one array there. Calls that
+        // pass classes around a cycle keep what the cycle's entry calls
+        // establish, so this removes facts until none changes.
+        for (auto changed = true; changed;) {
+            changed = false;
+            for (auto spec : ast.fnspecs)
+                for (auto &ra : spec->roots)
+                    for (auto [p, j] : ra.via)
+                        if (ra.concrete && (j >= (int)p->roots.size() || !p->roots[j].concrete ||
+                                            !p->roots[j].exact)) {
+                            ra.concrete = false;
+                            changed = true;
+                        }
+        }
     }
 
     void CheckUnreached(SFunction *sf) {

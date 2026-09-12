@@ -594,6 +594,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     auto sf = mi.sf;
     // Root classes: distinct roots of ref/slice args ordered by depth.
     vector<RootArg> roots(mi.paramtypes.size());
+    vector<VarDef *> argroots(mi.paramtypes.size(), nullptr);
     vector<VarDef *> distinct;
     for (size_t i = 0; i < mi.paramtypes.size(); i++) {
         auto pt = mi.paramtypes[i];
@@ -604,6 +605,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         auto holder = !isrs && HoldsPlainRef(pt);
         if (!isrs && !holder) continue;
         auto r = CanonRoot(holder ? HolderRootOf(argvals[i]) : argvals[i].root);
+        argroots[i] = r;
         auto &ra = roots[i];
         // A `const` parameter is read-only whatever the argument (§9.5).
         ra.writable = argvals[i].writable && !pt->cq;
@@ -636,6 +638,56 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
             ra.cls = idx + 1;
         }
     }
+    // A class of a parameter names whatever that parameter does, so it is as
+    // concrete as the parameter (`via`, settled after checking), provided
+    // nothing beside it here can be the same array. The classes must all be
+    // parameters of one specialization P: this call is in P's body, in a
+    // function nested in P, or in a function value written in P, and all of
+    // them see the classes of one activation of P. A variable of P or of a
+    // function nested in P lives inside that activation, so it is a different
+    // array from each of them; a global, a variable of P's lexical ancestors,
+    // another synthetic root or a class of a second specialization may be the
+    // same array as one of them.
+    vector<pair<FnSpec *, int>> classes(roots.size(), { nullptr, -1 });
+    for (size_t i = 0; i < roots.size(); i++)
+        for (auto fi = (int)frames.size() - 1; argroots[i] && !classes[i].first && fi >= 0; fi--)
+            for (size_t j = 0; frames[fi].spec && j < frames[fi].spec->params.size(); j++)
+                if (frames[fi].spec->params[j]->ref.root == argroots[i]) {
+                    classes[i] = { frames[fi].spec, (int)j };
+                    break;
+                }
+    auto within = [](FnSpec *s, FnSpec *p) {
+        for (; s; s = s->lexparent) if (s == p) return true;
+        return false;
+    };
+    auto fat = [&](size_t i) {
+        auto pt = mi.paramtypes[i];
+        return argroots[i] && pt->kind == TY_REF && pt->ref->lenstorage < 0 &&
+               ClassOf(pt->ref->sub) == SC_RESIZABLE;
+    };
+    FnSpec *owner = nullptr;
+    auto external = false;
+    for (size_t i = 0; i < roots.size(); i++) {
+        if (!fat(i) || !classes[i].first) continue;
+        external = external || (owner && classes[i].first != owner);
+        owner = classes[i].first;
+    }
+    for (size_t i = 0; i < roots.size(); i++) {
+        auto r = argroots[i];
+        if (owner && fat(i) && !classes[i].first && !(r->ownerspec && within(r->ownerspec, owner)))
+            external = true;
+    }
+    for (size_t i = 0; i < roots.size(); i++) {
+        auto r = argroots[i];
+        if (!r) continue;
+        if (classes[i].first) {
+            roots[i].concrete = !external;
+            roots[i].via.push_back(classes[i]);
+        } else {
+            roots[i].concrete = (r->isglobal || r->ownerspec) &&
+                                (!owner || (!external && r->ownerspec && within(r->ownerspec, owner)));
+        }
+    }
     for (auto spec : sf->specs) {
         if (spec->lexparent != mi.env) continue;
         if (!TypeArgsEq(spec->argtypes, mi.paramtypes)) continue;
@@ -652,10 +704,17 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         // the pool parameters that may be stored are checked below to be
         // the same ones the entry call passed.
         if (!rootsok && !spec->inprogress) continue;
-        // Exactness is not part of the key, so what the specialization
-        // records is what every call site that reaches it agrees on.
-        for (size_t i = 0; i < roots.size() && i < spec->roots.size(); i++)
-            spec->roots[i].exact = spec->roots[i].exact && roots[i].exact;
+        // Exactness and concreteness are not part of the key, so what the
+        // specialization records is what every call site that reaches it
+        // agrees on. A back edge with other classes than the key's passes
+        // arrays the key's classes do not describe.
+        for (size_t i = 0; i < roots.size() && i < spec->roots.size(); i++) {
+            auto &sr = spec->roots[i];
+            sr.exact = sr.exact && roots[i].exact;
+            sr.concrete = sr.concrete && roots[i].concrete && rootsok;
+            for (auto &v : roots[i].via)
+                if (find(sr.via.begin(), sr.via.end(), v) == sr.via.end()) sr.via.push_back(v);
+        }
         if (spec->inprogress) {
             ValidateCycle(spec, callnode);
             ValidatePoolArgs(spec, argvals, callnode);
