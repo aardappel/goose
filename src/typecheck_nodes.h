@@ -176,6 +176,11 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     if (fillval) {
         auto cnt = tc.ConstIntOrError(fillcount, "array fill count");
         if (cnt < 0) tc.Error(this, "array fill count cannot be negative");
+        // Later passes consume the evaluated count, not its unchecked source
+        // expression. In particular every construction path expects IntLit,
+        // even when the source used arithmetic or a named constant (§4.2).
+        fillcount = tc.ast.New<IntLit>(fillcount->line, cnt);
+        fillcount->exprtype = tc.ast.inttypes[IS_I64];
         TypeCheck::SlotScope ss(tc, true);
         auto ev = tc.CheckValue(fillval, elem);
         if (!elem) elem = ev.type;
