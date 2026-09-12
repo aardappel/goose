@@ -667,38 +667,6 @@ NODE_END
 // Symbols (top-level declarations). Wrapped in decl nodes so a module's
 // top-level items keep source order for dumping.
 
-// A returned reference's root as the syntactic cycle scan (§7.8,
-// typecheck_cycles.h) can name it before any body is checked: one of the
-// function's own reference parameters' root classes, a global, a local of
-// an enclosing function (a free variable of a nested function, §7.5), or the
-// function's own local storage (meaningful to the function itself, never to
-// a caller). RD_NONE is "no return contributes yet" (the fixpoint's
-// optimistic bottom), RD_UNKNOWN its top.
-enum RootDescKind { RD_NONE, RD_PARAM, RD_GLOBAL, RD_FREE, RD_LOCAL, RD_UNKNOWN };
-struct RootDesc {
-    RootDescKind kind = RD_NONE;
-    int param = 0;              // RD_PARAM: index into SFunction::params.
-    VarDef *glob = nullptr;     // RD_GLOBAL.
-    string_view name;           // RD_FREE / RD_LOCAL: the variable's name.
-    bool operator==(const RootDesc &o) const {
-        return kind == o.kind && param == o.param && glob == o.glob && name == o.name;
-    }
-    bool operator!=(const RootDesc &o) const { return !(*this == o); }
-};
-
-// One name a function body binds, for the same scan: what a `return v` of a
-// reference variable resolves to. A name bound twice, bound by a construct
-// whose value the scan does not model (loop variables, match payloads,
-// function-value parameters), or shadowing a parameter or global, is opaque.
-struct LocalBind {
-    string_view name;
-    TypeExpr *type = nullptr;   // Declared type; only ref/slice ones carry a root.
-    vector<Node *> binds;       // Initializers and `.=`/`=` right-hand sides.
-    bool declared = false;
-    bool byref = false;         // Declared with `.=`: a reference whatever its type.
-    bool opaque = false;
-};
-
 struct SFunction {
     string_view name;           // The leaf name, as lexical lookups and diagnostics use it.
     string_view ns;             // Its namespace, "" for the global one (docs/design/namespaces.md).
@@ -722,12 +690,6 @@ struct SFunction {
     SFunction *outer = nullptr;     // The function a nested one is declared in.
     Block *body = nullptr;
     vector<FnSpec *> specs;     // Specializations (typecheck), owned by Ast.
-    // Cycle return-root prediction (typecheck_cycles.h, §7.8).
-    vector<RootDesc> retdescs;      // Per return value.
-    int descstate = 0;              // 0 unscanned, 1 in the running fixpoint, 2 settled.
-    bool bindsscanned = false;
-    vector<LocalBind> locals;       // Body bindings, by name.
-    vector<SFunction *> localfns;   // Nested functions declared in the body.
 };
 
 struct SStruct {

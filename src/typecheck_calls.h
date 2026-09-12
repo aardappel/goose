@@ -811,7 +811,7 @@ inline void TypeCheck::ValidateNeeds(FnSpec *spec, Node *callnode) {
 // The §7.8 cycle return-root analysis, handed the one piece of checker
 // state it cannot derive from the syntax: the root a variable holds.
 inline CycleRoots TypeCheck::Cycles() {
-    return CycleRoots(ast, cycleroot, [this](VarDef *vd, bool isref) {
+    return CycleRoots(ast, cyclecache, cycleroot, [this](VarDef *vd, bool isref) {
         return CanonRoot(isref ? RefRootOf(vd) : vd);
     }, [this](string_view name) { return LookupVar(name, CurNs()); });
 }

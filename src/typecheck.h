@@ -797,6 +797,7 @@ struct TypeCheck {
     static VarDef *UltimateRoot(VarDef *v);
     void ValidatePoolArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode);
     void ValidateNeeds(FnSpec *spec, Node *callnode);
+    CycleRoots::Cache cyclecache;   // Syntactic predictions, needed only during this pass.
     CycleRoots Cycles();
     bool ExternValueOk(TypeExpr *t, string &why);
     bool ExternParamOk(TypeExpr *t, string &why);

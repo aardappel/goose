@@ -14,11 +14,43 @@
 // things it cannot derive itself: the sentinel, what root the checker has
 // recorded for one of its variables (RootOfVar), and which variable a free
 // variable's name denotes from the specialization being seeded (FreeVar). Its
-// per-function results are cached on SFunction (ast.h), so a fresh instance
-// per use is correct.
+// per-function results are cached in the typechecker, so syntax-only scratch
+// state is discarded before optimization and code generation.
 #pragma once
 
 namespace goose {
+
+// A returned reference's root as the syntactic cycle scan (§7.8,
+// typecheck_cycles.h) can name it before any body is checked: one of the
+// function's own reference parameters' root classes, a global, a local of
+// an enclosing function (a free variable of a nested function, §7.5), or the
+// function's own local storage (meaningful to the function itself, never to
+// a caller). RD_NONE is "no return contributes yet" (the fixpoint's
+// optimistic bottom), RD_UNKNOWN its top.
+enum RootDescKind { RD_NONE, RD_PARAM, RD_GLOBAL, RD_FREE, RD_LOCAL, RD_UNKNOWN };
+struct RootDesc {
+    RootDescKind kind = RD_NONE;
+    int param = 0;              // RD_PARAM: index into SFunction::params.
+    VarDef *glob = nullptr;     // RD_GLOBAL.
+    string_view name;           // RD_FREE / RD_LOCAL: the variable's name.
+    bool operator==(const RootDesc &o) const {
+        return kind == o.kind && param == o.param && glob == o.glob && name == o.name;
+    }
+    bool operator!=(const RootDesc &o) const { return !(*this == o); }
+};
+
+// One name a function body binds, for the same scan: what a `return v` of a
+// reference variable resolves to. A name bound twice, bound by a construct
+// whose value the scan does not model (loop variables, match payloads,
+// function-value parameters), or shadowing a parameter or global, is opaque.
+struct LocalBind {
+    string_view name;
+    TypeExpr *type = nullptr;   // Declared type; only ref/slice ones carry a root.
+    vector<Node *> binds;       // Initializers and `.=`/`=` right-hand sides.
+    bool declared = false;
+    bool byref = false;         // Declared with `.=`: a reference whatever its type.
+    bool opaque = false;
+};
 
 struct CycleRoots {
     // The checker's root for one of its own VarDefs: the pointee's root when
@@ -27,13 +59,29 @@ struct CycleRoots {
     // The variable a name resolves to through the lexical parent chain.
     using FreeVar = function<VarDef *(string_view name)>;
 
+    struct Bindings {
+        vector<LocalBind> locals;
+        vector<SFunction *> localfns;
+    };
+    struct Returns {
+        vector<RootDesc> values;
+        bool settled = false;
+    };
+    // Presence records the first scan/enrollment, without separate flags on
+    // SFunction. The checker owns these caches; each scan owns its worklist.
+    struct Cache {
+        unordered_map<SFunction *, Bindings> bindings;
+        unordered_map<SFunction *, Returns> returns;
+    };
+
     Ast &ast;
+    Cache &cache;
     VarDef *cycleroot;
     RootOfVar rootof;
     FreeVar freevar;
 
-    CycleRoots(Ast &_ast, VarDef *_cycleroot, RootOfVar _rootof, FreeVar _freevar)
-        : ast(_ast), cycleroot(_cycleroot), rootof(_rootof), freevar(_freevar) {}
+    CycleRoots(Ast &_ast, Cache &_cache, VarDef *_cycleroot, RootOfVar _rootof, FreeVar _freevar)
+        : ast(_ast), cache(_cache), cycleroot(_cycleroot), rootof(_rootof), freevar(_freevar) {}
 
     static RootDesc UnknownDesc() {
         RootDesc d;
@@ -50,23 +98,25 @@ struct CycleRoots {
     }
 
     LocalBind *FindBind(SFunction *f, string_view name) {
-        for (auto &b : f->locals) if (b.name == name) return &b;
+        auto it = cache.bindings.find(f);
+        if (it == cache.bindings.end()) return nullptr;
+        for (auto &b : it->second.locals) if (b.name == name) return &b;
         return nullptr;
     }
 
     LocalBind &BindSlot(SFunction *f, string_view name) {
         if (auto b = FindBind(f, name)) return *b;
-        f->locals.push_back(LocalBind { name });
-        return f->locals.back();
+        auto &locals = cache.bindings.at(f).locals;
+        locals.push_back(LocalBind { name });
+        return locals.back();
     }
 
     void EnsureBinds(SFunction *f) {
-        if (f->bindsscanned) return;
-        f->bindsscanned = true;
+        if (!cache.bindings.try_emplace(f).second) return;
         if (f->body) CollectBinds(f, f->body);
         for (auto &p : f->params)
             if (auto b = FindBind(f, p.name)) b->opaque = true;
-        for (auto &b : f->locals)
+        for (auto &b : cache.bindings.at(f).locals)
             if (!b.declared || ast.LookupGlobal(b.name, f->ns)) b.opaque = true;
     }
 
@@ -94,7 +144,7 @@ struct CycleRoots {
             if (fv->explicit_params) for (auto &p : fv->params) BindSlot(f, p.name).opaque = true;
             else BindSlot(f, "it").opaque = true;
         } else if (auto fd = Is<FnDecl>(n)) {
-            f->localfns.push_back(fd->sf);
+            cache.bindings.at(f).localfns.push_back(fd->sf);
         }
         n->Children([&](Node *c) { CollectBinds(f, c); });
     }
@@ -276,7 +326,7 @@ struct CycleRoots {
         SFunction *callee = nullptr;
         for (auto o = f; o && !callee; o = o->outer) {
             EnsureBinds(o);
-            for (auto lf : o->localfns) if (lf->name == name) { callee = lf; break; }
+            for (auto lf : cache.bindings.at(o).localfns) if (lf->name == name) { callee = lf; break; }
         }
         if (!callee) {
             auto &cands = ast.LookupFunctions(name, ns);
@@ -293,8 +343,9 @@ struct CycleRoots {
             callee = cands[0];
         }
         EnrollDescs(callee);
-        if (callee->retdescs.empty()) return UnknownDesc();
-        auto cd = callee->retdescs[0];
+        auto &ds = cache.returns.at(callee).values;
+        if (ds.empty()) return UnknownDesc();
+        auto cd = ds[0];
         if (cd.kind == RD_NONE || cd.kind == RD_GLOBAL) return cd;
         // A callee's free variable is this function's too, unless it is
         // this function's own local, which is then its own storage. The
@@ -320,9 +371,9 @@ struct CycleRoots {
     // Bring a function into that fixpoint on first sight, so its own returns
     // get scanned too.
     void EnrollDescs(SFunction *f) {
-        if (f->descstate) return;
-        f->descstate = 1;
-        f->retdescs.assign(f->has_rets ? f->rets.size() : 0, RootDesc {});
+        auto [it, inserted] = cache.returns.try_emplace(f);
+        if (!inserted) return;
+        it->second.values.resize(f->has_rets ? f->rets.size() : 0);
         descqueue.push_back(f);
         descchanged = true;
     }
@@ -377,7 +428,8 @@ struct CycleRoots {
     // round cap keeps a pathological program from spinning, at the cost of
     // predicting nothing for it.
     void ReturnRootDescs(SFunction *f) {
-        if (f->descstate == 2) return;
+        if (auto it = cache.returns.find(f); it != cache.returns.end() && it->second.settled)
+            return;
         descqueue.clear();
         EnrollDescs(f);
         auto settled = false;
@@ -386,16 +438,18 @@ struct CycleRoots {
             for (size_t i = 0; i < descqueue.size(); i++) {
                 auto g = descqueue[i];
                 auto nd = ComputeDescs(g);
-                if (nd != g->retdescs) {
-                    g->retdescs = nd;
+                auto &ds = cache.returns.at(g).values;
+                if (nd != ds) {
+                    ds = std::move(nd);
                     descchanged = true;
                 }
             }
             settled = !descchanged;
         }
         for (auto g : descqueue) {
-            if (!settled) for (auto &d : g->retdescs) d = UnknownDesc();
-            g->descstate = 2;
+            auto &result = cache.returns.at(g);
+            if (!settled) for (auto &d : result.values) d = UnknownDesc();
+            result.settled = true;
         }
         descqueue.clear();
     }
@@ -434,7 +488,7 @@ struct CycleRoots {
             anyref |= rt->kind == TY_REF || rt->kind == TY_SLICE;
         if (!anyref) return;
         ReturnRootDescs(spec->sf);
-        auto &ds = spec->sf->retdescs;
+        auto &ds = cache.returns.at(spec->sf).values;
         if (spec->retroots.size() < spec->rets.size()) spec->retroots.resize(spec->rets.size());
         for (size_t i = 0; i < spec->rets.size(); i++) {
             auto rk = spec->rets[i]->kind;
