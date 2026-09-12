@@ -97,6 +97,7 @@ struct TypeCheck {
         int fnbase = 0;              // Into localfns.
         Node *node = nullptr;        // The loop / `block` construct for SK_LOOP/SK_BLOCK.
         TypeExpr *breaktype = nullptr;
+        Val breakvalue;             // Roots and permissions of all valued exits.
         bool hasbreak = false;
         bool valuelessbreak = false;
     };

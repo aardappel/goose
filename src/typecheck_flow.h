@@ -671,7 +671,8 @@ inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wa
     x->body->exprtype = v.type ? v.type : ast.voidtype;
     reachable = reachable || sc.hasbreak;  // Exits via the tail or any break.
     if (!wantvalue) return VoidVal();
-    Val r = v;
+    Val r = sc.breaktype ? MergeVals(v, v.type != nullptr, sc.breakvalue, true,
+                                     x, wantvalue, x->body->tail, nullptr) : v;
     r.type = UnifyBranch(v.type, sc.breaktype, x, wantvalue);
     if (!r.type) r.type = ast.voidtype;
     return r;
@@ -692,9 +693,7 @@ inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue)
     RestoreFlow(entry);
     KillNarrowingsAssignedIn(x->body);
     reachable = sc.hasbreak;  // A loop only exits via break.
-    Val v;
-    if (wantvalue && sc.breaktype) v.type = sc.breaktype;
-    else v.type = ast.voidtype;
+    Val v = wantvalue && sc.breaktype ? sc.breakvalue : VoidVal();
     return v;
 }
 
@@ -889,7 +888,23 @@ inline void TypeCheck::CheckBreak(Break *b) {
         if (sc.valuelessbreak)
             Error(b, "this construct mixes valueless and valued breaks");
         auto v = CheckValue(b->val, scopes[si].breaktype);
+        // The construct's value is a new one: the break's type and what its
+        // references point at, never the operand's storage or literal form.
+        Val exit;
+        exit.SetProv(v);
+        exit.type = v.type;
+        exit.isnull = v.isnull;
+        exit.holderroot = v.holderroot;
+        exit.holderexact = v.holderexact;
+        exit.holderset = v.holderset;
+        exit.holderfrom = v.holderfrom;
+        exit.fnv = v.fnv;  // Which function it names, as static as its type (§7.6).
+        // Nothing after the break can complete a [] that took no element type
+        // here: the construct's value does not carry the literal form.
+        if (v.emptyarr) Error(b->val, "cannot infer array element type");
         auto &sc2 = scopes[si];  // CheckValue may not reallocate, but be safe.
+        sc2.breakvalue = MergeVals(sc2.breakvalue, sc2.breaktype != nullptr,
+                                  exit, true, b, true, nullptr, b->val);
         if (!sc2.breaktype) sc2.breaktype = v.type;
         sc2.hasbreak = true;
     } else {
