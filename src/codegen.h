@@ -522,6 +522,10 @@ struct CodeGen {
         TypeExpr *t = nullptr;
         bool val = false;
         bool ispref = false;   // s is a gs_pref-typed lvalue (pool reference).
+        // A reference on the way here can be rebound -- one held in a `var`
+        // variable, a field or an element (for a reference location, the
+        // reference itself) -- so evaluating s later may reach other storage.
+        bool viaref = false;
         string stk, lenlv, fl, flstk;
         string hdr;            // The resizable's own header/frame-object lvalue, when it has one.
         // A loop-hoisted view of the array behind this reference (see `views`):
@@ -582,6 +586,7 @@ struct CodeGen {
         ~ViewScope() { for (auto vd : added) cg.views.erase(vd); }
     };
 
+    string Snapshot(TypeExpr *t, const string &x);
     string GenPure(Node *n);
     static string IntStr(int64_t v);
     static string FltStr(double v, bool f32);

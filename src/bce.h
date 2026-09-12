@@ -2280,13 +2280,30 @@ inline bool Call::BceWalk(BCE &b) {
         recv = d->obj;
         walkarg(recv);
     }
+    // A push, append or resize changes the array its receiver named when it
+    // was evaluated, ahead of the other arguments (codegen resolves the
+    // receiver first). Once those arguments move the receiver's place -- a
+    // rebind on its path, a length change -- the place may name another
+    // array, so the operation only kills and states no length. The place is
+    // named before the arguments are walked, since kills only reach places
+    // that exist.
+    auto pinrecv = b.mode != BCE::M_KILLS &&
+                   (builtin == B_PUSH || builtin == B_APPEND || builtin == B_RESIZE);
+    auto recvpid = -1, recvgen = 0;
+    auto pin = [&](Node *rn) {
+        recvpid = b.PlaceOf(rn);
+        if (recvpid >= 0) recvgen = b.LenBase(recvpid).gen;
+    };
+    if (pinrecv && recv) pin(recv);
     // The generation just after each argument: a later argument that moves
     // anything leaves an earlier sample describing a different state.
     vector<decltype(b.nextgen)> argsgen;
     for (auto a : args) {
         walkarg(a);
         argsgen.push_back(b.nextgen);
+        if (pinrecv && !recv && argsgen.size() == 1) pin(a);
     }
+    auto recvmoved = recvpid >= 0 && b.LenBase(recvpid).gen != recvgen;
     auto moved = site && b.nextgen != gen0;
     if (moved) {
         for (auto &t : ints) t = BCE::Term {};
@@ -2299,12 +2316,14 @@ inline bool Call::BceWalk(BCE &b) {
                          : (args.size() > 1 ? args[1] : nullptr);
         switch (builtin) {
             case B_PUSH:
-                b.GrowShrinkKill(rn, 1, 1);
+                if (recvmoved) b.GrowShrinkKill(rn, 0);
+                else b.GrowShrinkKill(rn, 1, 1);
                 break;
             case B_APPEND: {
                 auto st = arg0 ? b.LenTermOf(arg0) : BCE::Term {};
-                b.GrowShrinkKill(rn, 1, st.ok && st.b.kind == BCE::BK_ZERO ? st.off
-                                                                          : INT64_MIN);
+                if (recvmoved) b.GrowShrinkKill(rn, 0);
+                else b.GrowShrinkKill(rn, 1, st.ok && st.b.kind == BCE::BK_ZERO ? st.off
+                                                                               : INT64_MIN);
                 break;
             }
             case B_ALLOC_INDEX: case B_ALLOC_REF: case B_FORMAT:
@@ -2335,7 +2354,8 @@ inline bool Call::BceWalk(BCE &b) {
                 // The count's term is only trusted when the fill value moved nothing.
                 size_t ai = recv ? 0 : 1;
                 auto countmoved = ai < argsgen.size() && argsgen[ai] != b.nextgen;
-                auto nt = b.mode == BCE::M_KILLS || countmoved ? BCE::Term {} : b.TermOf(arg0);
+                auto nt = b.mode == BCE::M_KILLS || countmoved || recvmoved ? BCE::Term {}
+                                                                            : b.TermOf(arg0);
                 auto pid = b.GrowShrinkKill(rn, 0);
                 if (pid >= 0) b.ExactLenIs(pid, nt);
                 break;

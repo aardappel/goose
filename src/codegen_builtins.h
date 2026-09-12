@@ -17,10 +17,48 @@ inline string CodeGen::QueueFor(TypeExpr *t) {
     return queues[m] = name;
 }
 
-// The receiver of a member operation, dereferenced, with its stack.
+// The receiver of a member operation, dereferenced, with its stack. The
+// arguments run after it and may rebind a reference it is reached through
+// (Loc::viaref), so such a receiver is resolved first: a reference is read
+// into a temporary, anything else to the addresses it names. A stack whose
+// top this body caches is named by a binding nothing rebinds, so it keeps
+// that name.
 inline CodeGen::Loc CodeGen::RecvLoc(Node *n) {
     auto lv = GenLoc(n);
-    if (lv.t->kind == TY_REF) DerefLoc(lv, n->line);
+    if (lv.t->kind == TY_REF) {
+        auto orig = lv;
+        DerefLoc(orig, n->line);
+        if (lv.viaref && lv.val && lv.t->ref->lenstorage < 0 && !lv.ispref &&
+            (orig.stk.empty() || !CacheableStk(orig.stk))) {
+            lv.s = Snapshot(lv.t, lv.s);
+            DerefLoc(lv, n->line);
+        } else {
+            lv = orig;
+        }
+        return lv;
+    }
+    if (!lv.viaref || (!lv.stk.empty() && CacheableStk(lv.stk))) return lv;
+    if (lv.val) {
+        auto p = T();
+        L(CT(lv.t), " *", p, " = &(", lv.s, ");");
+        lv.s = cat("(*", p, ")");
+    } else if (!IsResz(lv.t)) {
+        auto p = T();
+        L("uint8_t *", p, " = ", lv.s, ";");
+        lv.s = p;
+    } else {
+        assert(!lv.hdr.empty());
+        auto h = T();
+        L("gs_rhdr *", h, " = &(", lv.hdr, ");");
+        lv.hdr = cat("(*", h, ")");
+        lv.s = cat(h, "->base");
+        lv.lenlv = cat(h, "->len");
+    }
+    if (!lv.stk.empty()) {
+        auto s = T();
+        L("gs_stack *", s, " = ", lv.stk, ";");
+        lv.stk = s;
+    }
     return lv;
 }
 

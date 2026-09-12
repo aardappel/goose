@@ -103,7 +103,9 @@ inline string Binary::CgX(CodeGen &cg) {
             }
             return t->kind == TY_REF && cg.IsResz(t->ref->sub) ? cat(x, ".hdr") : x;
         };
-        auto l = side(left);
+        auto lx = side(left);
+        auto l = cg.T();
+        cg.L("void *", l, " = (void *)(", lx, ");");
         auto r = side(right);
         return cat("(uint8_t)((void *)(", l, ") ", op == T_DOTEQ ? "==" : "!=", " (void *)(", r, "))");
     }
@@ -151,23 +153,24 @@ inline string Binary::CgX(CodeGen &cg) {
             cg.Fail(line, "comparing resizable structs is unsupported");
         auto la = cg.GenLoc(left);
         if (la.t->kind == TY_REF) cg.DerefLoc(la, line);
+        // The left view is read before the right operand runs.
+        auto lvw = cg.ArrayView(la, line);
+        auto le = cg.T(), ln = cg.T();
+        cg.L(lvw.typedelems ? cg.CT(lvw.elem) : string("uint8_t"), " *", le, " = ", lvw.elems,
+             ";");
+        cg.L("int64_t ", ln, " = ", lvw.len, ";");
+        lvw.elems = le;
+        lvw.len = ln;
         auto ra = cg.GenLoc(right);
         if (ra.t->kind == TY_REF) cg.DerefLoc(ra, line);
-        auto lvw = cg.ArrayView(la, line), rvw = cg.ArrayView(ra, line);
+        auto rvw = cg.ArrayView(ra, line);
         auto eq = cg.GenRangeEq(lvw.elem, lvw.elems, lvw.len, rvw.elems, rvw.len);
         return op == T_EQ ? eq : cat("(uint8_t)(!", eq, ")");
     }
-    // Order of evaluation is left-to-right (§2): if the right operand
-    // needs statements, the left must land in a temp first.
-    auto leftfirst = cg.HasStmts(right);
-    string l, r;
-    if (leftfirst) {
-        l = cg.GenPureVal(left);
-        r = cg.GenVal(right);
-    } else {
-        l = cg.GenVal(left);
-        r = cg.GenVal(right);
-    }
+    // Order of evaluation is left-to-right (§2): the left operand lands in
+    // a temp before the right one runs.
+    auto l = cg.GenPureVal(left);
+    auto r = cg.GenVal(right);
     auto isint = lt->kind == TY_INT && lt->intstorage != IS_VARINT;
     auto isflt = lt->kind == TY_FLT;
     auto f32 = exprtype && exprtype->kind == TY_FLT &&
@@ -664,47 +667,71 @@ inline void VarDecl::CgStmt(CodeGen &cg) {
 
 inline void Assign::CgStmt(CodeGen &cg) {
     auto lv = cg.GenLoc(lval);
-    if (op == T_DOTASSIGN) { cg.GenRebind(this, lv); return; }
     if (pointee) cg.DerefLoc(lv, line);
+    // Resolve the destination before the RHS can rebind a reference or
+    // change an index used by its C lvalue expression. A resizable one is
+    // also its count and its stack, which a reference that can be rebound
+    // spells as `r.hdr->len` and `r.stk`. Stacks that top caching names
+    // cannot move and keep their spelling, so the cached tops still apply.
+    if (lv.val) {
+        auto p = cg.T();
+        cg.L(cg.CT(lv.t), " *", p, " = &(", lv.s, ");");
+        lv.s = cat("(*", p, ")");
+    } else if (!cg.IsResz(lv.t)) {
+        auto p = cg.T();
+        cg.L("uint8_t *", p, " = ", lv.s, ";");
+        lv.s = p;
+    } else if (lv.viaref && !lv.lenlv.empty()) {
+        auto p = cg.T();
+        cg.L("int64_t *", p, " = &(", lv.lenlv, ");");
+        lv.lenlv = cat("(*", p, ")");
+    }
+    if (lv.viaref && cg.IsResz(lv.t) && !lv.stk.empty() && !cg.CacheableStk(lv.stk)) {
+        auto s = cg.T();
+        cg.L("gs_stack *", s, " = ", lv.stk, ";");
+        lv.stk = s;
+    }
+    if (op == T_DOTASSIGN) { cg.GenRebind(this, lv); return; }
     // Compound operators: full-width int/flt locations only (TC).
     if (op != T_ASSIGN) {
         assert(lv.val);
+        auto old = cg.Snapshot(lv.t, lv.s);
         auto r = cg.GenX(rhs);
         auto sfx = lv.t->kind == TY_INT ? cg.IntSfx(lv.t->intstorage) : "";
         switch (op) {
             case T_PLUSEQ:
-                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", lv.s, " + (", r, ");");
-                else cg.L(lv.s, " = gs_add_", sfx, "(", lv.s, ", ", r, ");");
+                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", old, " + (", r, ");");
+                else cg.L(lv.s, " = gs_add_", sfx, "(", old, ", ", r, ");");
                 break;
             case T_MINUSEQ:
-                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", lv.s, " - (", r, ");");
-                else cg.L(lv.s, " = gs_sub_", sfx, "(", lv.s, ", ", r, ");");
+                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", old, " - (", r, ");");
+                else cg.L(lv.s, " = gs_sub_", sfx, "(", old, ", ", r, ");");
                 break;
             case T_MULEQ:
-                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", lv.s, " * (", r, ");");
-                else cg.L(lv.s, " = gs_mul_", sfx, "(", lv.s, ", ", r, ");");
+                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", old, " * (", r, ");");
+                else cg.L(lv.s, " = gs_mul_", sfx, "(", old, ", ", r, ");");
                 break;
             case T_DIVEQ:
-                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", lv.s, " / (", r, ");");
-                else cg.L(lv.s, " = gs_div_", sfx, "(", lv.s, ", ", r, ", ",
+                if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", old, " / (", r, ");");
+                else cg.L(lv.s, " = gs_div_", sfx, "(", old, ", ", r, ", ",
                           cg.LocArgs(line), ");");
                 break;
             case T_MODEQ:
                 if (lv.t->kind == TY_FLT)
-                    cg.L(lv.s, " = ", lv.t->fltstorage == FS_F32 ? "fmodf(" : "fmod(", lv.s,
+                    cg.L(lv.s, " = ", lv.t->fltstorage == FS_F32 ? "fmodf(" : "fmod(", old,
                       ", ", r, ");");
-                else cg.L(lv.s, " = gs_mod_", sfx, "(", lv.s, ", ", r, ", ",
+                else cg.L(lv.s, " = gs_mod_", sfx, "(", old, ", ", r, ", ",
                           cg.LocArgs(line), ");");
                 break;
-            case T_ANDEQ: cg.L(lv.s, " = (", cg.CT(lv.t), ")(", lv.s, " & (", r, "));"); break;
+            case T_ANDEQ: cg.L(lv.s, " = (", cg.CT(lv.t), ")(", old, " & (", r, "));"); break;
             case T_SHLEQ:
-                cg.L(lv.s, " = gs_shl_", sfx, "(", lv.s, ", (int64_t)(", r, "));");
+                cg.L(lv.s, " = gs_shl_", sfx, "(", old, ", (int64_t)(", r, "));");
                 break;
             case T_SHREQ:
-                cg.L(lv.s, " = gs_shr_", sfx, "(", lv.s, ", (int64_t)(", r, "));");
+                cg.L(lv.s, " = gs_shr_", sfx, "(", old, ", (int64_t)(", r, "));");
                 break;
-            case T_OREQ:  cg.L(lv.s, " = (", cg.CT(lv.t), ")(", lv.s, " | (", r, "));"); break;
-            case T_XOREQ: cg.L(lv.s, " = (", cg.CT(lv.t), ")(", lv.s, " ^ (", r, "));"); break;
+            case T_OREQ:  cg.L(lv.s, " = (", cg.CT(lv.t), ")(", old, " | (", r, "));"); break;
+            case T_XOREQ: cg.L(lv.s, " = (", cg.CT(lv.t), ")(", old, " ^ (", r, "));"); break;
             default: assert(false);
         }
         return;

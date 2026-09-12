@@ -72,7 +72,8 @@ inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
     for (size_t i = 0; i < an.size(); i++) {
         auto pt = sp->argtypes[i];
         if (i) argstr += ", ";
-        argstr += pt->kind == TY_REF ? GenX(an[i]) : GenXD(an[i], pt);
+        auto x = pt->kind == TY_REF ? GenX(an[i]) : GenXD(an[i], pt);
+        argstr += Snapshot(pt, x);
         if (HoldsFatRef(pt)) grows = true;
     }
     if (grows) MarkFlush();
@@ -135,7 +136,7 @@ inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &a
         args.push_back(base);
         return;
     }
-    args.push_back(GenXD(node, pt));
+    args.push_back(Snapshot(pt, GenXD(node, pt)));
 }
 
 // A free variable of the callee, from the caller's frame (or passed on).
