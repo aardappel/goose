@@ -123,9 +123,11 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
     }
     if (IsBytesT(t)) {
         assert(init);
-        auto stk = AllocStk(forlocal);
+        auto nit = nrvo.find(d);
+        auto stk = nit != nrvo.end() ? nit->second.stk : AllocStk(forlocal);
         L("uint8_t *", name, " = ", Top(stk), ";");
-        SaveBase(forlocal, stk, name);
+        // A named result lives at the destination, which outlives us.
+        if (nit == nrvo.end()) SaveBase(forlocal, stk, name);
         vstk[d] = stk;
         GenConstruct(init, stk, t);
         return;
