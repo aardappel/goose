@@ -107,6 +107,10 @@ inline void CodeGen::CollectSpecs() {
                 };
                 if (c->builtin < 0) add(c->spec);
                 for (auto d : c->dispatch) add(d);
+                // Formatting a user type calls its format overload, and print
+                // and thread_spawn assemble their text or packet on a stack.
+                for (auto &fs : c->fmtspecs) add(fs.second);
+                if (c->builtin == B_PRINT || c->builtin == B_THREAD_SPAWN) si.needssp = true;
                 if ((c->builtin == B_QGET || c->builtin == B_QPOLL) &&
                     !c->rettypes.empty() && IsBytesT(c->rettypes[0]))
                     si.needssp = true;
