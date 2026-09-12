@@ -167,6 +167,21 @@ inline bool EndsInBlock(const Node *n) {
     return false;
 }
 
+// Control expressions need their own parens as operands (§2); the outer
+// parens around a binary expression or cast do not group either operand.
+// A postfix receiver additionally groups unary expressions so (-x).f()
+// keeps its meaning, and literals: 0x10.double() lexes as a malformed hex
+// float, and a constant the optimizer folds for --specs can be negative.
+// Struct literals need grouping in scrutinee contexts.
+inline void DumpOperand(string &s, const Node *n, int ind, bool postfix = false) {
+    auto parens = EndsInBlock(n) || Is<StructLit>(n) || Is<Guard>(n) ||
+                  Is<Return>(n) || Is<Break>(n) || Is<Continue>(n) ||
+                  (postfix && (Is<Unary>(n) || Is<IntLit>(n) || Is<FltLit>(n)));
+    if (parens) s += "(";
+    n->Dump(s, ind);
+    if (parens) s += ")";
+}
+
 // The statements and tail of a block, one per line, through the closing
 // brace; Block and FunVal share the shape.
 inline void DumpBlockBody(string &s, const Block *b, int ind) {
@@ -240,28 +255,25 @@ inline void StructLit::Dump(string &s, int ind) const {
 inline void Unary::Dump(string &s, int ind) const {
     s += TName(op);
     // Parens around a nested unary keep e.g. - -x from dumping as the -- token.
-    auto parens = Is<Binary>(child) || Is<Unary>(child);
-    if (parens) s += "(";
-    child->Dump(s, ind);
-    if (parens) s += ")";
+    DumpOperand(s, child, ind, true);
 }
 
 inline void Binary::Dump(string &s, int ind) const {
     // Fully parenthesized: dumps double as a precedence test.
     s += "(";
-    left->Dump(s, ind);
+    DumpOperand(s, left, ind);
     Append(s, " ", TName(op), " ");
-    right->Dump(s, ind);
+    DumpOperand(s, right, ind);
     s += ")";
 }
 
 inline void Dot::Dump(string &s, int ind) const {
-    obj->Dump(s, ind);
+    DumpOperand(s, obj, ind, true);
     Append(s, ".", name);
 }
 
 inline void Call::Dump(string &s, int ind) const {
-    callee->Dump(s, ind);
+    DumpOperand(s, callee, ind, true);
     if (!tyargs.empty()) {
         s += "<";
         for (size_t i = 0; i < tyargs.size(); i++) {
@@ -283,14 +295,14 @@ inline void Call::Dump(string &s, int ind) const {
 }
 
 inline void Index::Dump(string &s, int ind) const {
-    obj->Dump(s, ind);
+    DumpOperand(s, obj, ind, true);
     s += "[";
     idx->Dump(s, ind);
     s += "]";
 }
 
 inline void SliceExpr::Dump(string &s, int ind) const {
-    obj->Dump(s, ind);
+    DumpOperand(s, obj, ind, true);
     s += "[";
     if (lo) {
         if (lo_from_end) s += "^";
@@ -306,7 +318,7 @@ inline void SliceExpr::Dump(string &s, int ind) const {
 
 inline void AsCast::Dump(string &s, int ind) const {
     s += "(";
-    child->Dump(s, ind);
+    DumpOperand(s, child, ind, true);
     s += unchecked ? " as! " : " as ";
     type->Dump(s);
     s += ")";
@@ -317,14 +329,14 @@ inline void NullLit::Dump(string &s, int) const { s += "null"; }
 inline void SelfRef::Dump(string &s, int) const { s += "self"; }
 
 inline void RangeExpr::Dump(string &s, int ind) const {
-    lo->Dump(s, ind);
+    DumpOperand(s, lo, ind);
     s += "..";
-    hi->Dump(s, ind);
+    DumpOperand(s, hi, ind);
 }
 
 inline void IfExpr::Dump(string &s, int ind) const {
     s += "if ";
-    cond->Dump(s, ind);
+    DumpOperand(s, cond, ind);
     s += " ";
     thenb->Dump(s, ind);
     if (elseb) {
@@ -335,7 +347,7 @@ inline void IfExpr::Dump(string &s, int ind) const {
 
 inline void MatchExpr::Dump(string &s, int ind) const {
     s += "match ";
-    scrutinee->Dump(s, ind);
+    DumpOperand(s, scrutinee, ind);
     s += " {";
     for (auto &arm : arms) {
         NL(s, ind + 1);
@@ -354,7 +366,25 @@ inline void MatchExpr::Dump(string &s, int ind) const {
                 break;
         }
         s += " => ";
-        arm.body->Dump(s, ind + 1);
+        // The arm's comma would read as a return value or as a break's value.
+        // A valueless one has no parenthesized form, so it gets the block a
+        // reparse then dumps the same way.
+        auto brk = Is<Break>(arm.body);
+        auto ret = Is<Return>(arm.body);
+        if ((brk && !brk->val) || (ret && ret->vals.empty() && ret->from.empty())) {
+            s += "{";
+            NL(s, ind + 2);
+            arm.body->Dump(s, ind + 2);
+            s += ";";
+            NL(s, ind + 1);
+            s += "}";
+        } else if (ret) {
+            s += "(";
+            arm.body->Dump(s, ind + 1);
+            s += ")";
+        } else {
+            arm.body->Dump(s, ind + 1);
+        }
         s += ",";
     }
     NL(s, ind);
@@ -368,7 +398,7 @@ inline void EarlyBlock::Dump(string &s, int ind) const {
 
 inline void While::Dump(string &s, int ind) const {
     s += "while ";
-    cond->Dump(s, ind);
+    DumpOperand(s, cond, ind);
     s += " ";
     body->Dump(s, ind);
 }
@@ -384,14 +414,14 @@ inline void ForLoop::Dump(string &s, int ind) const {
     s += var;
     if (!idxvar.empty()) Append(s, ", ", idxvar);
     s += " in ";
-    iter->Dump(s, ind);
+    DumpOperand(s, iter, ind);
     s += " ";
     body->Dump(s, ind);
 }
 
 inline void Guard::Dump(string &s, int ind) const {
     s += "guard ";
-    cond->Dump(s, ind);
+    DumpOperand(s, cond, ind);
     if (elseb) {
         s += " else ";
         elseb->Dump(s, ind);
@@ -411,7 +441,13 @@ inline void Break::Dump(string &s, int ind) const {
     s += "break";
     if (val) {
         s += " ";
+        // A return would read a following comma, such as a match arm's, as
+        // another of its values. A valueless one has no parenthesized form.
+        auto ret = Is<Return>(val);
+        auto parens = ret && !(ret->vals.empty() && ret->from.empty());
+        if (parens) s += "(";
         val->Dump(s, ind);
+        if (parens) s += ")";
     }
 }
 
