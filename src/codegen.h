@@ -433,13 +433,21 @@ struct CodeGen {
     // = e; top += n` with top in a register -- and the same marks carry it
     // across calls.
     vector<string> toporder;                  // Cacheable stacks, discovery order.
-    // Every growth or shrink, as parallel stack index and innermost enclosing
-    // loop (-1 for one outside every loop).
-    vector<int> growstk, growloop;
+    // A stack and its innermost enclosing loop (-1 means the whole body).
+    struct TopRegion { int stk, loop; };
+    vector<TopRegion> growth;                // Every growth or shrink.
     vector<int> loopparent;                   // Loop -> enclosing loop, or -1.
     vector<int> loopstack;                    // Loops open at this point of the emission.
-    vector<int> regstk, regloop;              // The regions, as stack and loop.
-    vector<string> topfnlocal;                // Stack -> its whole-body local, or "".
+    // Planning produces a value consumed only while finishing this body;
+    // emission does not retain a second mutable set of region state.
+    struct TopCachePlan {
+        vector<TopRegion> regions;
+        vector<string> fnlocals;             // Stack -> whole-body local, or "".
+        bool IsRegion(int k, int id) const {
+            for (auto r : regions) if (r.stk == k && r.loop == id) return true;
+            return false;
+        }
+    };
     bool cachetops = false;
     bool reftops = false;               // Caching reference parameters' stacks.
     set<string> refstkexprs;            // Their `<param>.stk` / `.flstk` spellings.
@@ -453,7 +461,6 @@ struct CodeGen {
 
     bool CacheableStk(const string &stk);
     int TopIdx(const string &stk);
-    bool IsRegion(int k, int id);
     string Top(const string &stk);
     string TopW(const string &stk);
 
@@ -467,12 +474,12 @@ struct CodeGen {
 
     int MarkLoopBegin();
     void MarkLoopEnd(int id);
-    void PlanTopCaches();
+    TopCachePlan PlanTopCaches();
     static bool LineIs(string_view s, const char *pfx);
     static string_view GotoTarget(string_view line);
     static string_view LabelHere(string_view line);
     static string_view NextLine(const string &b, size_t &i, size_t &ind0);
-    string ExpandTopMarkers(const string &b);
+    string ExpandTopMarkers(const string &b, const TopCachePlan &plan);
     string HoistAggregateDecls(string &b);
     void PushSc(int kind);
     void EmitRestores(const CScope &s);

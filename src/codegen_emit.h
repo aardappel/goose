@@ -168,13 +168,9 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp) {
 
 inline void CodeGen::ResetFnState() {
     toporder.clear();
-    growstk.clear();
-    growloop.clear();
+    growth.clear();
     loopparent.clear();
     loopstack.clear();
-    regstk.clear();
-    regloop.clear();
-    topfnlocal.clear();
     refstkexprs.clear();
     cachetops = false;
     reftops = false;
@@ -345,8 +341,8 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     cscopes.clear();
     // The regions and the markers resolve now that every stack this body
     // grows, and where it grows it, is known.
-    PlanTopCaches();
-    auto bodyout = ExpandTopMarkers(body);
+    auto plan = PlanTopCaches();
+    auto bodyout = ExpandTopMarkers(body, plan);
     assert(bodyout.find("@@gs") == string::npos);
     auto decls = HoistAggregateDecls(bodyout);
     Append(code, "static ", SigRet(sp), " ", er ? ernames[sp] : curinfo->cname, "(",
@@ -357,8 +353,8 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     // A whole-body cache loads once the stacks are known to exist; a
     // per-loop one declares and loads itself at its loop's edge.
     for (size_t i = 0; i < toporder.size(); i++)
-        if (!topfnlocal[i].empty())
-            Append(code, "    uint8_t *", topfnlocal[i], " = ", toporder[i], "->top;\n");
+        if (!plan.fnlocals[i].empty())
+            Append(code, "    uint8_t *", plan.fnlocals[i], " = ", toporder[i], "->top;\n");
     // Every global pool's stack is reserved by gs_init_globals, which
     // main runs before anything else, so these are final on entry.
     for (auto &p : poolbases)

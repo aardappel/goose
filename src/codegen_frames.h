@@ -241,12 +241,6 @@ inline int CodeGen::TopIdx(const string &stk) {
     return (int)toporder.size() - 1;
 }
 
-inline bool CodeGen::IsRegion(int k, int id) {
-    for (size_t i = 0; i < regstk.size(); i++)
-        if (regstk[i] == k && regloop[i] == id) return true;
-    return false;
-}
-
 // The lvalue for a stack's top, emitted as a placeholder: which form it
 // takes here depends on the regions, and those are only known once the
 // whole body is.
@@ -261,8 +255,7 @@ inline string CodeGen::Top(const string &stk) {
 // form is already in effect there.
 inline string CodeGen::TopW(const string &stk) {
     if (CacheableStk(stk)) {
-        growstk.push_back(TopIdx(stk));
-        growloop.push_back(loopstack.empty() ? -1 : loopstack.back());
+        growth.push_back({ TopIdx(stk), loopstack.empty() ? -1 : loopstack.back() });
     }
     return Top(stk);
 }
@@ -288,27 +281,24 @@ inline void CodeGen::MarkLoopEnd(int id) {
 // it, less any of those nested inside another. A growth outside every
 // loop takes the whole body instead, which is the extent the local is
 // live across in that case anyway.
-inline void CodeGen::PlanTopCaches() {
-    regstk.clear();
-    regloop.clear();
-    topfnlocal.assign(toporder.size(), string());
+inline CodeGen::TopCachePlan CodeGen::PlanTopCaches() {
+    TopCachePlan plan;
+    plan.fnlocals.resize(toporder.size());
     vector<int> fnwide(toporder.size(), 0);
-    for (size_t i = 0; i < growstk.size(); i++) {
-        if (growloop[i] < 0) fnwide[growstk[i]] = 1;
-        else if (!IsRegion(growstk[i], growloop[i])) {
-            regstk.push_back(growstk[i]);
-            regloop.push_back(growloop[i]);
-        }
+    for (auto g : growth) {
+        if (g.loop < 0) fnwide[g.stk] = 1;
+        else if (!plan.IsRegion(g.stk, g.loop)) plan.regions.push_back(g);
     }
-    for (size_t i = 0; i < regstk.size();) {
-        auto drop = fnwide[regstk[i]] != 0;
-        for (auto p = loopparent[regloop[i]]; !drop && p >= 0; p = loopparent[p])
-            drop = IsRegion(regstk[i], p);
+    for (size_t i = 0; i < plan.regions.size();) {
+        auto r = plan.regions[i];
+        auto drop = fnwide[r.stk] != 0;
+        for (auto p = loopparent[r.loop]; !drop && p >= 0; p = loopparent[p])
+            drop = plan.IsRegion(r.stk, p);
         if (!drop) { i++; continue; }
-        regstk.erase(regstk.begin() + i);
-        regloop.erase(regloop.begin() + i);
+        plan.regions.erase(plan.regions.begin() + i);
     }
-    for (size_t i = 0; i < toporder.size(); i++) if (fnwide[i]) topfnlocal[i] = T();
+    for (size_t i = 0; i < toporder.size(); i++) if (fnwide[i]) plan.fnlocals[i] = T();
+    return plan;
 }
 
 inline bool CodeGen::LineIs(string_view s, const char *pfx) {
@@ -352,7 +342,7 @@ inline string_view CodeGen::NextLine(const string &b, size_t &i, size_t &ind0) {
 // stands, a jump out of a region flushes it on the way, and every top
 // placeholder becomes the local in force there or the memory form.
 // A body that cached nothing still has its markers to remove.
-inline string CodeGen::ExpandTopMarkers(const string &b) {
+inline string CodeGen::ExpandTopMarkers(const string &b, const TopCachePlan &plan) {
     if (!cachetops) return b;
     // A region is the text between its loop's two markers, so a jump stays
     // inside it exactly when the line its label sits on does.
@@ -370,7 +360,7 @@ inline string CodeGen::ExpandTopMarkers(const string &b) {
             lbline.push_back((int)ln);
         }
     }
-    vector<string> active = topfnlocal;   // Empty: the memory form here.
+    vector<string> active = plan.fnlocals;   // Empty: the memory form here.
     vector<int> open;
     string out;
     for (size_t i = 0, ind0 = 0; i < b.size();) {
@@ -381,7 +371,7 @@ inline string CodeGen::ExpandTopMarkers(const string &b) {
             auto id = atoi(string(t.substr(1)).c_str());
             if (beg) open.push_back(id); else open.pop_back();
             for (size_t k = 0; k < toporder.size(); k++) {
-                if (!IsRegion((int)k, id)) continue;
+                if (!plan.IsRegion((int)k, id)) continue;
                 out.append(ind0, ' ');
                 if (beg) {
                     active[k] = T();
@@ -409,9 +399,9 @@ inline string CodeGen::ExpandTopMarkers(const string &b) {
             auto at = -1;
             for (size_t j = 0; j < lbname.size(); j++) if (lbname[j] == tgt) at = lbline[j];
             for (size_t k = 0; k < toporder.size(); k++) {
-                if (active[k].empty() || !topfnlocal[k].empty()) continue;
+                if (active[k].empty() || !plan.fnlocals[k].empty()) continue;
                 auto reg = -1;
-                for (auto id : open) if (IsRegion((int)k, id)) reg = id;
+                for (auto id : open) if (plan.IsRegion((int)k, id)) reg = id;
                 if (reg >= 0 && at > loopbeg[reg] && at < loopend[reg]) continue;
                 out.append(ind0, ' ');
                 Append(out, toporder[k], "->top = ", active[k], ";\n");
