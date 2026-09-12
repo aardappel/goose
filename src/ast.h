@@ -909,7 +909,7 @@ struct EnumInst {
     bool validated = false;
 };
 
-// Call-site facts about one reference/slice parameter, part of the
+// Call-site facts about one reference/slice or holder parameter, part of the
 // specialization key (§10.2): the relative-outlives class of its root among
 // the call's reference arguments (0 = static, 1 = outermost, ...), and the
 // provenance bits.
@@ -991,7 +991,9 @@ struct FnSpec {
     SFunction *sf = nullptr;
     FnSpec *lexparent = nullptr;   // Defining specialization, for nested fns.
     vector<TypeExpr *> argtypes;   // Concrete parameter types (the key, with the below).
-    vector<RootArg> roots;         // Per reference/slice-typed parameter.
+    // Aligned with argtypes/params; a parameter holding no roots has the
+    // default entry. Every pass uses the parameter index directly.
+    vector<RootArg> roots;
     vector<int> litparams;         // Parameters that are literals (§7.7): part of the key.
     vector<LitAdapt> litadapts;    // The types those parameters adapted to in the body.
     vector<LitFlow> litflows;      // Where they were passed on as literals.

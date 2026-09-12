@@ -319,7 +319,6 @@ struct CodeGen {
     struct SpecInfo {
         string cname;
         vector<VarDef *> freevars;
-        vector<int> refidx;          // Per param: index into spec->roots, or -1.
         bool needssp = false;
         bool hasrf = false;
         int cret = -1;               // Ret index returned as the C value.

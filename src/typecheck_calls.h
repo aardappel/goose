@@ -596,7 +596,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
 inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, Node *callnode) {
     auto sf = mi.sf;
     // Root classes: distinct roots of ref/slice args ordered by depth.
-    vector<RootArg> roots;
+    vector<RootArg> roots(mi.paramtypes.size());
     vector<VarDef *> distinct;
     for (size_t i = 0; i < mi.paramtypes.size(); i++) {
         auto pt = mi.paramtypes[i];
@@ -607,7 +607,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         auto holder = !isrs && HoldsPlainRef(pt);
         if (!isrs && !holder) continue;
         auto r = CanonRoot(holder ? HolderRootOf(argvals[i]) : argvals[i].root);
-        RootArg ra;
+        auto &ra = roots[i];
         // A `const` parameter is read-only whatever the argument (§9.5).
         ra.writable = argvals[i].writable && !pt->cq;
         ra.reusable = argvals[i].reusable;
@@ -638,7 +638,6 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
             }
             ra.cls = idx + 1;
         }
-        roots.push_back(ra);
     }
     for (auto spec : sf->specs) {
         if (spec->lexparent != mi.env) continue;
@@ -649,9 +648,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         for (size_t i = 0; i < mi.fnvals.size(); i++)
             fvok &= spec->fnvals[i].second == mi.fnvals[i].second;
         if (!fvok) continue;
-        auto rootsok = spec->roots.size() == roots.size();
-        for (size_t i = 0; rootsok && i < roots.size(); i++)
-            rootsok &= spec->roots[i] == roots[i];
+        auto rootsok = spec->roots == roots;
         // A back edge must reuse the in-progress spec whatever the roots
         // (§7.8): inside a cycle, references rooted at cycle locals may
         // not be stored or returned, so their identity is irrelevant, and
@@ -917,7 +914,6 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     // Parameters. For reference/slice parameters, a synthetic root
     // VarDef per call-site root class carries the caller-side depth.
     vector<VarDef *> classroots(spec->roots.size() + 1, nullptr);
-    auto rootidx = 0;
     for (size_t i = 0; i < sf->params.size(); i++) {
         auto &p = sf->params[i];
         auto pt = spec->argtypes[i];
@@ -927,7 +923,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
         vd->assigned = true;
         for (auto li : spec->litparams) if (li == (int)i) vd->unsized = true;
         if (pt->kind == TY_REF || pt->kind == TY_SLICE) {
-            auto &ra = spec->roots[rootidx++];
+            auto &ra = spec->roots[i];
             if (ra.cls == 0) {
                 vd->ref.root = nullptr;  // Static data.
             } else {
@@ -964,7 +960,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
         } else if (HoldsPlainRef(pt)) {
             // A holder parameter: its contents are bounded by the class
             // root its call sites agreed on.
-            auto &ra = spec->roots[rootidx++];
+            auto &ra = spec->roots[i];
             VarDef *cr = nullptr;
             if (ra.cls != 0) {
                 if (!classroots[ra.cls]) {
@@ -1311,6 +1307,7 @@ inline FnSpec *TypeCheck::EnsureThreadSpec(SFunction *sf, Line l) {
             Error(l, cat("thread_fn parameters must be flat (§11.2), not ", TypeStr(t)));
         spec->argtypes.push_back(t);
     }
+    spec->roots.resize(spec->argtypes.size());
     sf->specs.push_back(spec);
     CheckSpecBody(spec, nullptr, l);
     return spec;

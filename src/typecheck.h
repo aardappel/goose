@@ -1005,13 +1005,11 @@ struct TypeCheck {
     // arrays. Record the answer where they read it.
     void SettleParamRootExactness() {
         for (auto spec : ast.fnspecs) {
-            auto ri = 0;
             for (size_t i = 0; i < spec->params.size() && i < spec->argtypes.size(); i++) {
                 auto t = spec->argtypes[i];
                 if (t->kind != TY_REF && t->kind != TY_SLICE) continue;
-                if (ri < (int)spec->roots.size() && !spec->roots[ri].exact)
+                if (!spec->roots[i].exact)
                     spec->params[i]->ref.rootexact = false;
-                ri++;
             }
         }
     }
@@ -1030,14 +1028,14 @@ struct TypeCheck {
             auto t = Subst(p.type);
             ValidateType(t, sf->line, VT_PARAM);
             spec->argtypes.push_back(t);
+            RootArg ra;
             if (t->kind == TY_REF || t->kind == TY_SLICE) {
-                RootArg ra;
                 ra.cls = 0;
                 ra.writable = true;
                 ra.reusable = t->kind == TY_REF && IsArrayKind(t->ref->sub, A_GROW) &&
                               ClassOf(t->ref->sub->arr->sub) == SC_FIXED;
-                spec->roots.push_back(ra);
             }
+            spec->roots.push_back(ra);
         }
         sf->specs.push_back(spec);
         CheckSpecBody(spec, nullptr, sf->line);

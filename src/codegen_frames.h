@@ -17,9 +17,7 @@ namespace goose {
 // from` discriminant travels in the thread-local gs_rf, not the signature.
 
 inline bool CodeGen::IsPoolParam(FnSpec *sp, size_t i) {
-    auto &si = sinfo[sp];
-    auto ri = si.refidx[i];
-    return ri >= 0 && sp->roots[ri].reusable && sp->argtypes[i]->kind == TY_REF &&
+    return sp->roots[i].reusable && sp->argtypes[i]->kind == TY_REF &&
            sp->argtypes[i]->ref->sub->kind == TY_ARRAY &&
            sp->argtypes[i]->ref->sub->arr->akind == A_GROW;
 }
@@ -109,9 +107,6 @@ inline void CodeGen::CollectSpecs() {
         if (namecount[sp->sf->qname] > 1) Append(base, "_", sp->id);
         si.cname = Unique(base);
         si.hasrf = !sp->needs.empty();
-        auto ri = 0;
-        for (auto pt : sp->argtypes)
-            si.refidx.push_back(pt->kind == TY_REF || pt->kind == TY_SLICE ? ri++ : -1);
         for (size_t i = 0; i < sp->rets.size(); i++)
             if (si.cret < 0 && IsFix(sp->rets[i])) si.cret = (int)i;
         for (auto t : sp->needs)
