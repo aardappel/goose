@@ -306,13 +306,64 @@ inline void TypeCheck::NarrowCond(Node *cond, bool sense) {
     }
 }
 
-// Names assigned or rebound anywhere below n: loop bodies clear these
-// narrowings up front, since iteration 2 sees the assignment.
-inline void TypeCheck::CollectAssignedNames(Node *n, set<string_view> &out) {
+// Names rebound anywhere below n: loop bodies clear these narrowings up
+// front, since iteration 2 sees the rebind. A plain `=` writes through a
+// narrowed optional and leaves its nullness alone.
+inline void TypeCheck::CollectAssignedNames(Node *n, set<string_view> &out,
+                                            set<Node *> *seen,
+                                            const vector<SFunction *> &locals, bool outer) {
     if (!n) return;
-    if (auto a = Is<Assign>(n))
+    set<Node *> local;
+    if (!seen) seen = &local;
+    if (!seen->insert(n).second) return;
+    if (auto a = Is<Assign>(n); a && a->op == T_DOTASSIGN)
         if (auto id = Is<Ident>(a->lval)) out.insert(id->name);
-    n->Children([&](Node *c) { CollectAssignedNames(c, out); });
+    if (Is<FnDecl>(n)) return;  // Declaring an uncalled function has no effects.
+    if (auto b = Is<Block>(n)) {
+        auto nested = locals;
+        // A later local declaration cannot hide a call that precedes it.
+        // Track the same declaration order as CheckStmts while following
+        // only bodies reached by calls.
+        for (auto st : b->stmts) {
+            if (auto fd = Is<FnDecl>(st)) nested.push_back(fd->sf);
+            else CollectAssignedNames(st, out, seen, nested, outer);
+        }
+        CollectAssignedNames(b->tail, out, seen, nested, outer);
+        return;
+    }
+    auto localfn = [&](string_view name) -> SFunction * {
+        for (auto i = locals.rbegin(); i != locals.rend(); ++i)
+            if ((*i)->name == name) return *i;
+        return outer ? LookupLocalFn(name) : nullptr;
+    };
+    // The next iteration sees rebindings performed by callees too, even
+    // before their specializations have been checked for the first time.
+    if (auto c = Is<Call>(n)) {
+        vector<SFunction *> targets;
+        if (auto id = Is<Ident>(c->callee)) {
+            if (auto fb = outer ? LookupFnVal(id->name) : nullptr) {
+                if (fb->named) targets.push_back(fb->named);
+                else if (fb->fv) CollectAssignedNames(fb->fv->body, out, seen, locals, outer);
+            } else if (auto sf = localfn(id->name)) targets.push_back(sf);
+            else targets = ast.LookupFunctions(id->name, id->ns);
+        } else if (auto d = Is<Dot>(c->callee)) {
+            if (auto sf = localfn(d->name)) targets.push_back(sf);
+            else targets = ast.LookupFunctions(d->name, d->ns);
+        }
+        for (auto sf : targets) {
+            // A cached body may have bound its nested calls before a later
+            // scope shadowed those names. Its recorded effects still apply;
+            // scanning the source in the current environment cannot recover
+            // those earlier bindings.
+            for (auto spec : sf->specs)
+                for (auto vd : spec->reboundoptionals) out.insert(vd->name);
+            // Top-level functions cannot see the caller's local functions.
+            // Nested functions declared in their own bodies are still tracked.
+            if (sf->isnested) CollectAssignedNames(sf->body, out, seen, locals, outer);
+            else CollectAssignedNames(sf->body, out, seen, {}, false);
+        }
+    }
+    n->Children([&](Node *c) { CollectAssignedNames(c, out, seen, locals, outer); });
 }
 
 // The variables a loop body writes anywhere -- assigned whole, or through
@@ -436,6 +487,45 @@ inline void TypeCheck::KillNarrowingsAssignedIn(Node *body) {
                 if (ref.leaf == v->name && (!ref.qualified || ref.ns == g->ns))
                     v->narrowed = nullptr;
             }
+}
+
+inline set<VarDef *> TypeCheck::NarrowedOptionals() {
+    set<VarDef *> out;
+    for (auto v : vars) if (v->narrowed) out.insert(v);
+    for (auto g : ast.globals) for (auto v : g->defs) if (v->narrowed) out.insert(v);
+    return out;
+}
+
+// The optionals a checked body rebinds through the calls it made.
+inline void TypeCheck::CollectCheckedRebinds(Node *n, set<VarDef *> &out) {
+    if (!n || Is<FnDecl>(n)) return;
+    if (auto c = Is<Call>(n)) {
+        auto add = [&](FnSpec *sp) {
+            if (!sp) return;
+            out.insert(sp->reboundoptionals.begin(), sp->reboundoptionals.end());
+            if (sp->inprogress)
+                for (auto v : InProgressRebinds(sp)) out.insert(v);
+        };
+        add(c->spec);
+        for (auto d : c->dispatch) add(d);
+        for (auto &fs : c->fmtspecs) add(fs.second);
+        CollectCheckedRebinds(c->fvbody, out);
+    }
+    n->Children([&](Node *ch) { CollectCheckedRebinds(ch, out); });
+}
+
+// A fact assumed at the start of a loop body that the loop rebinds through a
+// call the name scan could not follow did not hold on the next iteration, and
+// does not hold after the loop.
+inline void TypeCheck::FinishLoopNarrowing(Node *loop, const set<VarDef *> &assumed) {
+    set<VarDef *> rebound;
+    CollectCheckedRebinds(loop, rebound);
+    for (auto v : rebound) {
+        if (assumed.count(v))
+            Error(loop, cat("optional ", v->name, " is rebound later in this loop, so its "
+                            "narrowing does not hold on the next iteration (§3.8)"));
+        v->narrowed = nullptr;
+    }
 }
 
 // ------------------------------------------------------------------
@@ -735,6 +825,7 @@ inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wa
 inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue) {
     ValueRegion vr(*this, wantvalue);
     KillNarrowingsAssignedIn(x->body);
+    auto assumed = NarrowedOptionals();
     PushLoopAssigned(x->body);
     auto entry = SaveFlow();
     PushScope(SK_LOOP, x);
@@ -746,19 +837,33 @@ inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue)
     loopassigned.pop_back();
     RestoreFlow(entry);
     KillNarrowingsAssignedIn(x->body);
+    FinishLoopNarrowing(x, assumed);
     reachable = sc.hasbreak;  // A loop only exits via break.
     Val v = wantvalue && sc.breaktype ? sc.breakvalue : VoidVal();
     return v;
 }
 
 inline void TypeCheck::CheckWhile(While *x) {
-    // Narrowings from before the loop that the body reassigns do not hold
-    // on the second iteration, nor in the condition that runs again after
-    // it; the condition's own narrowings do, since it runs before every
-    // iteration, and a rebind inside the body un-narrows from that point on.
+    // Narrowings from before the loop that the body or the condition rebinds
+    // do not hold on the second iteration, nor in the condition that runs
+    // again after it; the condition's own narrowings do, since it runs before
+    // every iteration, and a rebind inside the body un-narrows from that
+    // point on.
     KillNarrowingsAssignedIn(x->body);
+    KillNarrowingsAssignedIn(x->cond);
+    auto assumed = NarrowedOptionals();
     CheckCond(x->cond);
     auto entry = SaveFlow();
+    {
+        // What the condition narrows by itself holds in the body on every
+        // iteration, so only the narrowings from before the loop that it
+        // does not establish again are assumed across iterations.
+        auto keep = SaveFlow();
+        for (auto v : assumed) v->narrowed = nullptr;
+        NarrowCond(x->cond, true);
+        for (auto v : NarrowedOptionals()) assumed.erase(v);
+        RestoreFlow(keep);
+    }
     PushLoopAssigned(x->body);
     NarrowCond(x->cond, true);
     PushScope(SK_LOOP, x);
@@ -772,6 +877,7 @@ inline void TypeCheck::CheckWhile(While *x) {
     loopassigned.pop_back();
     RestoreFlow(entry);
     KillNarrowingsAssignedIn(x->body);
+    FinishLoopNarrowing(x, assumed);
     if (sc.breaktype)
         Error(x, "break with a value exits loop/block only, not while");
 }
@@ -830,6 +936,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     }
     auto entry = SaveFlow();
     KillNarrowingsAssignedIn(x->body);
+    auto assumed = NarrowedOptionals();
     PushLoopAssigned(x->body);
     PushScope(SK_LOOP, x);
     auto vd = NewVar(x->var, bindtype, x->line, false);
@@ -875,6 +982,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     loopassigned.pop_back();
     RestoreFlow(entry);
     KillNarrowingsAssignedIn(x->body);
+    FinishLoopNarrowing(x, assumed);
     if (sc.breaktype)
         Error(x, "break with a value exits loop/block only, not for");
 }
@@ -1305,6 +1413,9 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
         // Rebinding an optional settles its nullness — narrowed only when
         // the new value is provably non-null (a plain reference).
         if (target->ref->optional) {
+            auto spec = CurRealFrame().spec;
+            if (spec && lv.var->ownerspec != spec)
+                spec->reboundoptionals.insert(lv.var);
             if (!v.isnull && wasplain) {
                 auto r = ast.NewType(TY_REF, a->line);
                 r->ref = ast.NewDetail<TypeRef>();

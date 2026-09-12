@@ -98,6 +98,7 @@ inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns) {
         string why;
         if (!TryMatch(sf, c, argvals, mi, why)) continue;
         auto sp = GetOrCreateSpec(mi, argvals, c);
+        ApplyCalleeRebinds(sp);
         c->fmtspecs.push_back({ t, sp });
         return sp;
     }

@@ -961,6 +961,10 @@ struct FnSpec {
     // Aligned with argtypes/params; a parameter holding no roots has the
     // default entry. Every pass uses the parameter index directly.
     vector<RootArg> roots;
+    // Optional facts in the lexical environment at specialization entry.
+    vector<VarDef *> narrowedenv;
+    // External optional bindings this body (or a callee) may rebind.
+    set<VarDef *> reboundoptionals;
     vector<int> litparams;         // Parameters that are literals (§7.7): part of the key.
     vector<LitAdapt> litadapts;    // The types those parameters adapted to in the body.
     vector<LitFlow> litflows;      // Where they were passed on as literals.

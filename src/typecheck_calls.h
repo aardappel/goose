@@ -233,6 +233,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         for (size_t i = 0; i < c->args.size(); i++) c->args[i] = argnodes[i + off];
     }
     c->spec = spec;
+    ApplyCalleeRebinds(spec);
     return CallResult(c, spec, argvals);
 }
 
@@ -592,6 +593,8 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
                 HoldValue(argnodes[i], byreference ? argvals[i] : DecayRef(argvals[i]));
             }
     }
+    // Like an ordinary call's, the cases' rebinds follow the argument checks.
+    for (auto sp : c->dispatch) ApplyCalleeRebinds(sp);
     // The cases are alternatives of one call, like a match's arms: the result
     // is only as long-lived, exact and writable as every case's result. A case
     // checked without recording a root for a result only returns null there or
@@ -620,6 +623,9 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
 
 inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, Node *callnode) {
     auto sf = mi.sf;
+    vector<VarDef *> narrowedenv;
+    for (auto v : ExternalOptionals(mi.env, &mi.fnvals))
+        if (v->narrowed) narrowedenv.push_back(v);
     // Root classes: distinct roots of ref/slice args ordered by depth.
     vector<RootArg> roots(mi.paramtypes.size());
     vector<VarDef *> argroots(mi.paramtypes.size(), nullptr);
@@ -718,6 +724,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     }
     for (auto spec : sf->specs) {
         if (spec->lexparent != mi.env) continue;
+        if (!spec->inprogress && spec->narrowedenv != narrowedenv) continue;
         if (!TypeArgsEq(spec->argtypes, mi.paramtypes)) continue;
         if (spec->litparams != mi.litparams) continue;
         if (spec->fnvals.size() != mi.fnvals.size()) continue;
@@ -744,6 +751,10 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
                 if (find(sr.via.begin(), sr.via.end(), v) == sr.via.end()) sr.via.push_back(v);
         }
         if (spec->inprogress) {
+            for (auto v : spec->narrowedenv)
+                if (!v->narrowed)
+                    Error(callnode, cat("recursive call requires optional ", v->name,
+                                        " to remain narrowed (§3.8)"));
             ValidateCycle(spec, callnode);
             ValidatePoolArgs(spec, argvals, callnode);
         }
@@ -754,6 +765,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     auto spec = ast.NewFnSpec();
     spec->sf = sf;
     spec->lexparent = mi.env;
+    spec->narrowedenv = narrowedenv;
     spec->argtypes = mi.paramtypes;
     spec->roots = roots;
     spec->litparams = mi.litparams;
@@ -763,6 +775,101 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     NoteLitArgs(spec, argvals, callnode);
     CheckSpecBody(spec, &argvals, callnode->line);
     return spec;
+}
+
+// Only the callee's lexical environment is shared; ordinary caller locals
+// are separate from a non-nested function. Globals are always shared.
+inline vector<VarDef *> TypeCheck::ExternalOptionals(
+    FnSpec *env, const vector<pair<string_view, FnValBind>> *fnvals) {
+    vector<VarDef *> out;
+    set<VarDef *> seenvars;
+    set<FnSpec *> seenenvs;
+    auto add = [&](VarDef *v) {
+        if (v->type && v->type->kind == TY_REF && v->type->ref->optional &&
+            seenvars.insert(v).second)
+            out.push_back(v);
+    };
+    for (auto g : ast.globals) for (auto v : g->defs) add(v);
+    // A function value reaches the environment it was written in, whichever
+    // function it is handed to.
+    function<void(FnSpec *)> addenv = [&](FnSpec *e) {
+        if (!e || !seenenvs.insert(e).second) return;
+        for (auto fi = FrameOfSpec(e); fi >= 0; fi = frames[fi].lexframe) {
+            auto end = fi + 1 < (int)frames.size() ? frames[fi + 1].varbase : (int)vars.size();
+            for (auto i = frames[fi].varbase; i < end; i++) add(vars[i]);
+        }
+        for (auto sp = e; sp; sp = sp->lexparent)
+            for (auto &fv : sp->fnvals) addenv(fv.second.env);
+    };
+    addenv(env);
+    if (fnvals) for (auto &fv : *fnvals) addenv(fv.second.env);
+    return out;
+}
+
+inline void TypeCheck::ApplyCalleeRebinds(FnSpec *spec) {
+    // A recursive body's summary may be incomplete until the cycle has
+    // finished checking.
+    auto changed = spec->reboundoptionals;
+    if (spec->inprogress)
+        for (auto v : InProgressRebinds(spec)) changed.insert(v);
+    auto caller = CurRealFrame().spec;
+    for (auto v : changed) {
+        v->narrowed = nullptr;
+        if (caller && v->ownerspec != caller) caller->reboundoptionals.insert(v);
+    }
+}
+
+// What a call to a specialization still being checked may rebind: the
+// optionals it reaches that some `.=` names in code the call can run. That
+// code is found by name, without checking it: the body; the function values
+// bound to it, to its lexical parents, and to the environments those values
+// were written in; every function any of it names; the field defaults that
+// literals and default<T>() fill in; and the format overloads that printing
+// calls.
+inline vector<VarDef *> TypeCheck::InProgressRebinds(FnSpec *spec) {
+    set<string_view> names, callees = { "format" };
+    set<Node *> seen;
+    auto leaf = [](string_view name) { return SplitName(name, {}).leaf; };
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n || !seen.insert(n).second) return;
+        if (auto a = Is<Assign>(n); a && a->op == T_DOTASSIGN)
+            if (auto id = Is<Ident>(a->lval)) names.insert(leaf(id->name));
+        // A named function reaches a call through any expression that yields
+        // it, a block's tail or a break's value as much as an argument, so
+        // every name may be a callee.
+        if (auto id = Is<Ident>(n)) callees.insert(leaf(id->name));
+        if (auto c = Is<Call>(n))
+            if (auto d = Is<Dot>(c->callee)) callees.insert(d->name);
+        n->Children(walk);
+    };
+    walk(spec->sf->body);
+    // Field defaults run where no code names them. Every instance checks a
+    // copy of its declaration's default expressions.
+    for (auto st : ast.structs)
+        for (auto &f : st->fields) walk(f.defaultval);
+    for (auto en : ast.enums)
+        for (auto &v : en->variants)
+            for (auto &f : v.fields) walk(f.defaultval);
+    set<FnSpec *> envs;
+    function<void(FnSpec *)> addenv = [&](FnSpec *e) {
+        if (!e || !envs.insert(e).second) return;
+        for (auto sp = e; sp; sp = sp->lexparent)
+            for (auto &fv : sp->fnvals) {
+                if (fv.second.fv) walk(fv.second.fv->body);
+                if (fv.second.named) walk(fv.second.named->body);
+                addenv(fv.second.env);
+            }
+    };
+    addenv(spec);
+    for (size_t known = 0; known != callees.size();) {
+        known = callees.size();
+        for (auto sf : ast.functions) if (callees.count(sf->name)) walk(sf->body);
+    }
+    vector<VarDef *> out;
+    if (names.empty()) return out;
+    for (auto v : ExternalOptionals(spec->lexparent, &spec->fnvals))
+        if (names.count(v->name)) out.push_back(v);
+    return out;
 }
 
 // A literal parameter's adaptation to a type (§7.7), recorded on the
@@ -979,6 +1086,12 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     if (sf->isextern) { CheckExternSpec(spec); return; }
     spec->inprogress = true;
     spec->eventstart = storeevents.size();
+    // A caller learns nothing about optionals from where this body ends: its
+    // early returns never get there, and a cached body is not checked again.
+    // What it rebinds reaches callers through ApplyCalleeRebinds.
+    vector<pair<VarDef *, TypeExpr *>> outernarrowed;
+    for (auto v : vars) outernarrowed.push_back({ v, v->narrowed });
+    for (auto g : ast.globals) for (auto v : g->defs) outernarrowed.push_back({ v, v->narrowed });
     Frame f;
     f.sf = sf;
     f.spec = spec;
@@ -1134,6 +1247,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     heldtemps = std::move(saveheld);
     invalue = saveinvalue;
     frames.pop_back();
+    for (auto [v, n] : outernarrowed) v->narrowed = n;
     reachable = savereach;
     spec->inprogress = false;
 }

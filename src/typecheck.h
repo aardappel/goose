@@ -575,8 +575,16 @@ struct TypeCheck {
 
     void KillNarrow(VarDef *vd) { vd->narrowed = nullptr; }
 
-    void CollectAssignedNames(Node *n, set<string_view> &out);
+    void CollectAssignedNames(Node *n, set<string_view> &out, set<Node *> *seen = nullptr,
+                              const vector<SFunction *> &locals = {}, bool outer = true);
     void KillNarrowingsAssignedIn(Node *body);
+    vector<VarDef *> ExternalOptionals(FnSpec *env,
+                                       const vector<pair<string_view, FnValBind>> *fnvals = nullptr);
+    void ApplyCalleeRebinds(FnSpec *spec);
+    vector<VarDef *> InProgressRebinds(FnSpec *spec);
+    set<VarDef *> NarrowedOptionals();
+    void CollectCheckedRebinds(Node *n, set<VarDef *> &out);
+    void FinishLoopNarrowing(Node *loop, const set<VarDef *> &assumed);
 
     // ------------------------------------------------------------------
     // Small type constructors and views.
