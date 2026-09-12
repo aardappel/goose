@@ -96,6 +96,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
         } else {
             v.root = vd;
             v.rootexact = true;
+            v.byteview = vd->contentbyteview;
             v.writable = !vd->copybind && !(vd->type && vd->type->cq);
             v.reusable = vd->reusable;
             v.nonneg = vd->nonneg;

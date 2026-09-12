@@ -1036,6 +1036,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
                     !ra.exact)
                     classroots[ra.cls]->poolclass = false;
                 vd->ref.root = classroots[ra.cls];
+                classroots[ra.cls]->contentbyteview |= ra.byteview;
             }
             vd->refrootknown = true;
             // Every member of a class points into one array (see
@@ -1066,6 +1067,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
             vd->contentroot = cr;
             vd->contentexact = true;
             vd->contentset = true;
+            vd->contentbyteview = ra.byteview;
             vd->ref.root = cr;   // So a returned holder maps back at the call site.
             vd->refrootknown = true;
             // Its contents are whatever the call site's value pointed at:
@@ -1202,6 +1204,7 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         // paths; a cycle's initial prediction is not an actual return.
         rr.exact = exact && (!previous || rr.exact);
         rr.writable = vals[i].writable && (!previous || rr.writable);
+        rr.byteview = rr.byteview || vals[i].byteview;
         rr.seeded = false;
     }
     tspec->checkedreturn = true;
@@ -1219,6 +1222,15 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
             auto ri = i < spec->retroots.size() ? spec->retroots[i] : RetRoot {};
             auto rr = ri.root;
             v.writable = ri.writable && !v.type->cq;
+            // A back edge's returns are not all known yet: any u8 view the
+            // result holds, directly or inside a holder, may be a byte view.
+            auto u8view = false;
+            if (spec->inprogress) {
+                vector<TypeExpr *> ps;
+                if (holder) RefPointees(v.type, ps); else ps.push_back(PointeeOf(v.type));
+                for (auto pt : ps) u8view |= pt && IsU8(pt);
+            }
+            v.byteview = ri.byteview || u8view;
             if (!rr) {
                 // A back edge whose target has neither recorded nor
                 // predicted this root: unknown, which is not static data.

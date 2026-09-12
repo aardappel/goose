@@ -142,6 +142,8 @@ inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root
             if (growonly) {
                 if (of && root->type && !CanContain(LoadType(root->type), of)) continue;
             } else if (!GrowShrinkCanHold(root, of)) continue;
+        } else if (!MayBeViewed(root)) {
+            continue;
         }
         auto r = CanonRoot(v.root);
         // An inexact root bounds the lifetime: it may name any outer owner,
@@ -189,8 +191,10 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
             // survives this filter however unrelated its pointee looks.
             if (!v->ref.byteview && of && vd->type && !CanContain(LoadType(vd->type), of))
                 continue;
+            if (v->ref.byteview && !MayBeViewed(vd)) continue;
             auto root = RefRootOf(v);
             auto holds = root == vd || (v->isvar && Depth(root) == Depth(vd)) ||
+                         (!v->ref.rootexact && Depth(root) >= Depth(vd)) ||
                          (!v->refrootknown && Depth(v) >= Depth(vd));
             if (!holds || !UsedAfter(v)) continue;
         } else {
@@ -219,7 +223,7 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
                 vector<TypeExpr *> ps;
                 RefPointees(gd->type, ps);
                 for (auto pt : ps)
-                    if (CanContain(LoadType(vd->type), pt))
+                    if ((IsU8(pt) && MayBeViewed(vd)) || CanContain(LoadType(vd->type), pt))
                         Error(c, cat("cannot ", op, " ", vd->name, ": global ", gd->name,
                                      " may hold a reference into it (§5.1)"));
             }
@@ -264,6 +268,7 @@ inline void TypeCheck::NoteLitElem(LitDeep &deep, const Val &v, TypeExpr *t) {
         deep.exact = false;
     }
     deep.set = true;
+    deep.byteview = deep.byteview || v.byteview;
 }
 
 inline void TypeCheck::HolderFromLit(Val &v, const LitDeep &deep) {
@@ -271,6 +276,7 @@ inline void TypeCheck::HolderFromLit(Val &v, const LitDeep &deep) {
     v.holderset = true;
     v.holderroot = deep.set ? deep.root : nullptr;
     v.holderexact = deep.set && deep.exact;
+    v.byteview = deep.byteview;
 }
 
 inline void TypeCheck::RecordStore(VarDef *container, const Val &v, TypeExpr *pointee,
@@ -286,7 +292,9 @@ inline void TypeCheck::RecordStore(VarDef *container, const Val &v, TypeExpr *po
     if (!e.src && !v.rootexact && v.rootfrom && CanonRoot(v.rootfrom) != container)
         e.src = CanonRoot(v.rootfrom);
     e.exact = v.rootexact;
-    e.pointee = pointee;
+    e.pointee = v.byteview ? nullptr : pointee;
+    e.byteview = v.byteview;
+    container->contentbyteview |= v.byteview;
     if (fitnode) e.at = fitnode->line;
     storeevents.push_back(e);
     // A store into a caller's storage (through a reference parameter's
@@ -324,14 +332,25 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
             if (cr && spec->params[p]->ref.root == cr) return (int)p;
         return -1;
     };
-    auto push = [&](VarDef *container, VarDef *r, bool exact, TypeExpr *pointee, VarDef *src) {
+    auto push = [&](VarDef *container, VarDef *r, bool exact, TypeExpr *pointee, VarDef *src,
+                    bool byteview) {
         if (!container) return;
         StoreEvent e;
         e.container = container;
         e.root = r;
         e.src = src == container ? nullptr : src;
         e.exact = exact;
-        e.pointee = pointee;
+        e.pointee = byteview ? nullptr : pointee;
+        e.byteview = byteview;
+        container->contentbyteview |= byteview;
+        if (!container->contentset || Depth(r) > Depth(container->contentroot)) {
+            container->contentexact = exact && (!container->contentset ||
+                                                container->contentroot == r);
+            container->contentroot = r;
+        } else if (container->contentroot != r) {
+            container->contentexact = false;
+        }
+        container->contentset = true;
         e.at = at->line;
         storeevents.push_back(e);
         if (!container->type && !container->isglobal)
@@ -355,7 +374,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
                 auto [r, exact] = argroot(q);
                 push(CanonRoot(argvals[p].root), r, false,
                      qt->kind == TY_REF || qt->kind == TY_SLICE ? PointeeOf(qt) : nullptr,
-                     nullptr);
+                     nullptr, argvals[q].byteview);
                 (void)exact;
             }
         }
@@ -379,7 +398,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         auto exact = e.exact;
         auto r = mapped(e.root, exact);
         auto src = mapped(e.src, exact);
-        push(CanonRoot(argvals[p].root), r, exact, e.pointee, src);
+        push(CanonRoot(argvals[p].root), r, exact, e.pointee, src, e.byteview);
     }
 }
 
@@ -404,7 +423,8 @@ inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, size_t fr
             // array can contain.
             vector<TypeExpr *> ps;
             if (e.src->type) RefPointees(e.src->type, ps);
-            for (auto pt : ps) hit |= CanContain(LoadType(arr->type), pt);
+            for (auto pt : ps)
+                hit |= (IsU8(pt) && MayBeViewed(arr)) || CanContain(LoadType(arr->type), pt);
         } else if (e.src) {
             // A copy of another container's contents: whatever that one
             // holds, from its own first event on.
@@ -566,8 +586,10 @@ inline void TypeCheck::CheckShrinkHolders(Node *at, const string &op, VarDef *ro
         // A bytes_of view is over the element region itself, so the
         // pointee-type filter would dismiss exactly the case it is for.
         if (!v->ref.byteview && !GrowShrinkCanHold(root, PointeeOf(v->type))) return;
+        if (v->ref.byteview && !MayBeViewed(root)) return;
         auto r = RefRootOf(v);
         auto holds = r == root || (v->isvar && Depth(r) == Depth(root)) ||
+                     (!v->ref.rootexact && Depth(r) >= Depth(root)) ||
                      (!v->refrootknown && Depth(v) >= Depth(root));
         if (!holds || !UsedAfter(v)) return;
         Error(at, cat("cannot ", op, " while ", v->name, " (bound at ", Where(v->line),

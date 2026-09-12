@@ -548,6 +548,8 @@ struct TypeCheck {
     bool ContainsGrowShrink(TypeExpr *t);
     bool IsGrowShrinkRoot(VarDef *r);
     bool GrowShrinkCanHold(VarDef *r, TypeExpr *of);
+    bool MayBeViewed(VarDef *r);
+    bool Viewable(TypeExpr *t);
     bool GrowShrinkContains(TypeExpr *t, TypeExpr *of);
     bool RefExactOf(VarDef *vd);
     void BindProv(VarDef *vd, const Prov &p);
@@ -637,7 +639,7 @@ struct TypeCheck {
         VarDef *from = nullptr;   // The container, where candidates were enumerated.
     };
 
-    ReadBack ReadBackRoot(TypeExpr *rt, VarDef *croot, bool cexact);
+    ReadBack ReadBackRoot(TypeExpr *rt, VarDef *croot, bool cexact, bool byteview = false);
     string ReadBackWhy(TypeExpr *rt, VarDef *from);
 
     // ------------------------------------------------------------------
@@ -802,7 +804,12 @@ struct TypeCheck {
     // StructLit::Check at the end of this file.
 
     // The deepest lifetime root among one literal's initialized fields/elements.
-    struct LitDeep { VarDef *root = nullptr; bool exact = false; bool set = false; };
+    struct LitDeep {
+        VarDef *root = nullptr;
+        bool exact = false;
+        bool set = false;
+        bool byteview = false;
+    };
     LitDeep CheckInits(StructLit *sl, vector<Field> &fields, vector<TypeExpr *> &ftypes,
                        string_view what, TypeExpr *selft);
     void CheckSelfInit(Node *n, TypeExpr *ft, TypeExpr *selft);

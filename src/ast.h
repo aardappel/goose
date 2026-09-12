@@ -818,6 +818,7 @@ struct VarDef {
     VarDef *contentroot = nullptr;
     bool contentexact = false;
     bool contentset = false;
+    bool contentbyteview = false; // A stored reference may view raw typed storage.
     // A literal parameter (§7.7): reads as a constant of unknown value.
     // A function-value parameter bound from one stands for that one.
     bool unsized = false;
@@ -916,6 +917,7 @@ struct StoreEvent {
     VarDef *src = nullptr;
     bool exact = false;
     TypeExpr *pointee = nullptr; // Null: unknown (a holder value's contents).
+    bool byteview = false;
     Line at;
 };
 
@@ -923,6 +925,7 @@ struct RetRoot {
     VarDef *root = nullptr;    // Param VarDef, global, or null = static data.
     bool exact = false;        // Val::rootexact of the returned reference.
     bool writable = false;
+    bool byteview = false;
     bool set = false;          // A non-null return has recorded its root.
     bool seeded = false;       // `root` is the cycle fixpoint's prediction and no
                                // return has been checked yet; the prediction is

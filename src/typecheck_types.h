@@ -783,9 +783,17 @@ inline void TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, vec
 
 // The root of a reference/slice of type `rt` loaded out of a container
 // whose own root is (croot, cexact).
-inline TypeCheck::ReadBack TypeCheck::ReadBackRoot(TypeExpr *rt, VarDef *croot, bool cexact) {
+inline TypeCheck::ReadBack TypeCheck::ReadBackRoot(TypeExpr *rt, VarDef *croot, bool cexact,
+                                                bool byteview) {
     ReadBack rb;
     croot = CanonRoot(croot);
+    if (byteview) {
+        rb.root = croot && !croot->isglobal && croot->contentset &&
+                  !AssignedInEnclosingLoop(croot) ? croot->contentroot : croot;
+        rb.exact = false;
+        rb.from = croot;
+        return rb;
+    }
     rb.root = croot;
     // A relative reference points within its own root array by
     // construction (§3.9), so it inherits the container's root outright —
@@ -859,6 +867,7 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         lv.var = vd;
         lv.root = vd;
         lv.rootexact = true;
+        lv.byteview = vd->contentbyteview;
         // Contents are writable unless the type says const or the binding
         // is a copy (§9.5); `let` only keeps the binding from being
         // reassigned (§4.4).

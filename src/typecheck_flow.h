@@ -92,6 +92,40 @@ inline bool TypeCheck::GrowShrinkCanHold(VarDef *r, TypeExpr *of) {
     return GrowShrinkContains(v->type, of);
 }
 
+// Whether a byte view could ever cover this root's storage: bytes_of views
+// only image-safe elements, so a container of slices or references (a list
+// of strings, say) is never viewed, whatever its element type looks like. A
+// parameter class root has no type: it stands for every call site its
+// specialization serves, not only the one recorded in classfrom, so it may
+// always be viewed.
+inline bool TypeCheck::MayBeViewed(VarDef *r) {
+    if (!r || !r->type || r->type->kind == TY_REF || r->type->kind == TY_SLICE) return true;
+    return Viewable(LoadType(r->type));
+}
+
+inline bool TypeCheck::Viewable(TypeExpr *t) {
+    switch (t->kind) {
+        case TY_ARRAY: {
+            string why;
+            return ImageSafe(t->arr->sub, why) || Viewable(t->arr->sub);
+        }
+        case TY_STRUCT:
+            for (auto ft : GetStructInst(t)->ftypes) if (ft && Viewable(ft)) return true;
+            return false;
+        case TY_ENUM:
+            for (auto &vf : GetEnumInst(t)->vftypes)
+                for (auto ft : vf) if (ft && Viewable(ft)) return true;
+            return false;
+        case TY_VARIANT: {
+            auto inst = GetEnumInst(t->var->adt);
+            auto vi = VariantIndex(t->var->adt->enu->en, t->var->variant);
+            for (auto ft : inst->vftypes[vi]) if (ft && Viewable(ft)) return true;
+            return false;
+        }
+        default: return false;
+    }
+}
+
 // Reading a reference variable's root as an identity. A loop body is
 // checked once, so a read here sees the value a later rebind in the same
 // loop leaves behind; noting the read lets that rebind reject the root
@@ -438,6 +472,7 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     v.rootfrom = a.rootfrom ? a.rootfrom : b.rootfrom;
     v.writable = a.writable && b.writable;
     v.reusable = a.reusable && b.reusable;
+    v.byteview = a.byteview || b.byteview;
     return v;
 }
 
@@ -605,6 +640,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                         Val hv;
                         hv.root = CanonRoot(sv.root);
                         hv.rootexact = false;
+                        hv.byteview = sv.byteview;
                         RecordStore(binder, hv, nullptr, false, CanonRoot(sv.root));
                     }
                 }
@@ -787,6 +823,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         Val hv;
         hv.root = CanonRoot(iterprov.root);
         hv.rootexact = false;
+        hv.byteview = iterprov.byteview;
         RecordStore(vd, hv, nullptr, false, CanonRoot(iterprov.root));
     }
     if (bindtype->kind == TY_REF || bindtype->kind == TY_SLICE) {
@@ -796,7 +833,8 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         if (!x->byref && elemtype &&
             ((elemtype->kind == TY_REF && elemtype->ref->lenstorage >= 0) ||
              elemtype->kind == TY_SLICE)) {
-            auto rb = ReadBackRoot(elemtype, CanonRoot(iterprov.root), iterprov.rootexact);
+            auto rb = ReadBackRoot(elemtype, CanonRoot(iterprov.root), iterprov.rootexact,
+                                   iterprov.byteview);
             iterprov.root = rb.root;
             iterprov.rootexact = rb.exact;
             iterprov.rootfrom = rb.from;
@@ -1298,6 +1336,7 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv) {
 // note): re-assignments must carry the same root, or one at the same
 // scope depth (which is equivalent for the outlives check).
 inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
+    vd->ref.byteview = vd->ref.byteview || rv.byteview;
     auto nr = CanonRoot(rv.root);
     if (nr != vd->ref.root && Depth(nr) != Depth(vd->ref.root))
         Error(at, cat("re-binding ", vd->name, " with a reference rooted at a different "

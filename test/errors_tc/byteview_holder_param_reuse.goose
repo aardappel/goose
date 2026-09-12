@@ -1,0 +1,16 @@
+// Both calls share one specialization of put, so its holder parameter may
+// carry a byte view of a grow-shrink array even though the first call passes
+// a string.
+var names: const u8[:][>..<] = ["abcdefgh"];
+struct Keep { v: const u8[:] }
+fn put(h: Keep, out: Keep[>..]&) { out.push(h); }
+fn main() {
+    var q: i64[>..<] = [4702111234474983745];
+    var keep1: Keep[>..] = [];
+    var keep2: Keep[>..] = [];
+    put(Keep { names[0] }, keep1);
+    put(Keep { q.bytes_of() }, keep2);
+    q.clear();
+    q.push(6510615555426900570);
+    print(keep2[0].v);
+}

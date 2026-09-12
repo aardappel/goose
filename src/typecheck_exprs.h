@@ -72,7 +72,13 @@ inline void TypeCheck::SliceProvenance(LVal &lv, Node *at) {
 // of it is a read-back, so its root is re-derived (§9.5).
 inline void TypeCheck::ReadBackLVal(LVal &lv) {
     if (lv.type->kind != TY_REF && lv.type->kind != TY_SLICE) return;
-    auto rb = ReadBackRoot(lv.type, lv.root, lv.rootexact);
+    auto cr = CanonRoot(lv.root);
+    // A byte view can point at any typed storage. Its owner cannot be
+    // recovered by enumerating u8 containers. Global slots may have been
+    // filled by functions whose stores have not yet been checked.
+    lv.byteview = lv.byteview || (cr && cr->contentbyteview) ||
+                  (cr && cr->isglobal && lv.type->cq && IsU8(PointeeOf(lv.type)));
+    auto rb = ReadBackRoot(lv.type, lv.root, lv.rootexact, lv.byteview);
     lv.root = rb.root;
     lv.rootexact = rb.exact;
     lv.rootfrom = rb.from;
@@ -204,6 +210,7 @@ inline Val TypeCheck::DecayRef(Val v) {
     r.root = v.root;  // Compound pointee values: container info, harmless.
     r.rootexact = v.rootexact;
     r.rootfrom = v.rootfrom;
+    r.byteview = v.byteview && HoldsPlainRef(r.type);
     return r;
 }
 
@@ -411,7 +418,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
         }
         vector<TypeExpr *> pointees;
         if (holder) RefPointees(t, pointees); else pointees.push_back(PointeeOf(t));
-        auto intogs = false;
+        auto intogs = v.byteview && IsGrowShrinkRoot(root) && MayBeViewed(root);
         for (auto pt : pointees) intogs |= GrowShrinkCanHold(root, pt);
         if (!curdst.varbind && intogs) {
             fitfail = cat("storing a reference into ", root->name,
