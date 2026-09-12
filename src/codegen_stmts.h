@@ -394,7 +394,8 @@ inline void CodeGen::EnsureFromChannels(SFunction *t) {
     for (size_t i = 0; i < rets.size(); i++) {
         if (IsResz(rets[i])) {
             Append(data, "static GS_TLS gs_stack *gs_fdst_", tid, "_", i, ";\n");
-            Append(data, "static GS_TLS int64_t gs_lret_", tid, "_", i, ";\n");
+            Append(data, "static GS_TLS ", IsFrameObj(rets[i]) ? CT(rets[i]) : string("int64_t"),
+                   " gs_lret_", tid, "_", i, ";\n");
         } else if (IsBytesT(rets[i])) {
             Append(data, "static GS_TLS gs_stack *gs_fdst_", tid, "_", i, ";\n");
         } else {
