@@ -810,8 +810,10 @@ struct TypeCheck {
     // Struct and variant literals (§4.2). The per-node entry is
     // StructLit::Check at the end of this file.
 
-    void CheckInits(StructLit *sl, vector<Field> &fields, vector<TypeExpr *> &ftypes,
-                    string_view what, TypeExpr *selft);
+    // The deepest lifetime root among one literal's initialized fields/elements.
+    struct LitDeep { VarDef *root = nullptr; bool exact = false; bool set = false; };
+    LitDeep CheckInits(StructLit *sl, vector<Field> &fields, vector<TypeExpr *> &ftypes,
+                       string_view what, TypeExpr *selft);
     void CheckSelfInit(Node *n, TypeExpr *ft, TypeExpr *selft);
 
     // ------------------------------------------------------------------
@@ -862,12 +864,10 @@ struct TypeCheck {
     vector<PendingShrink> pendingshrinks;
     Node *fitnode = nullptr;         // The node MustFit is fitting, for RecordStore.
     // The deepest root among the references a literal under construction
-    // holds: its holder root (§9.2), accumulated by CheckInits and the
-    // array-literal element loop for the literal being checked.
-    struct LitDeep { VarDef *root = nullptr; bool exact = false; bool set = false; };
-    LitDeep litdeep;
-    void NoteLitElem(const Val &v, TypeExpr *t);
-    void HolderFromLit(Val &v);
+    // holds: its holder root (§9.2). Each literal owns its accumulator, so
+    // checking a nested literal cannot replace its enclosing literal's facts.
+    void NoteLitElem(LitDeep &deep, const Val &v, TypeExpr *t);
+    void HolderFromLit(Val &v, const LitDeep &deep);
     void RecordStore(VarDef *container, const Val &v, TypeExpr *pointee, bool varbind,
                      VarDef *src = nullptr);
     bool HolderMayPointInto(VarDef *holder, VarDef *arr, size_t from, Line *where,

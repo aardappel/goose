@@ -227,27 +227,27 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
 
 // A field or element of a literal that is a reference, slice or holder:
 // its root joins the literal's.
-inline void TypeCheck::NoteLitElem(const Val &v, TypeExpr *t) {
+inline void TypeCheck::NoteLitElem(LitDeep &deep, const Val &v, TypeExpr *t) {
     if (!t) return;
     auto isrs = t->kind == TY_REF || t->kind == TY_SLICE;
     if (!isrs && !HoldsPlainRef(t)) return;
     if (v.isnull) return;
     auto r = CanonRoot(isrs ? v.root : HolderRootOf(v));
     auto exact = isrs ? v.rootexact : v.holderset && v.holderexact;
-    if (!litdeep.set || Depth(r) > Depth(litdeep.root)) {
-        litdeep.exact = exact && (!litdeep.set || litdeep.root == r);
-        litdeep.root = r;
-    } else if (litdeep.root != r) {
-        litdeep.exact = false;
+    if (!deep.set || Depth(r) > Depth(deep.root)) {
+        deep.exact = exact && (!deep.set || deep.root == r);
+        deep.root = r;
+    } else if (deep.root != r) {
+        deep.exact = false;
     }
-    litdeep.set = true;
+    deep.set = true;
 }
 
-inline void TypeCheck::HolderFromLit(Val &v) {
+inline void TypeCheck::HolderFromLit(Val &v, const LitDeep &deep) {
     if (!v.type || !HoldsPlainRef(v.type)) return;
     v.holderset = true;
-    v.holderroot = litdeep.set ? litdeep.root : nullptr;
-    v.holderexact = litdeep.set && litdeep.exact;
+    v.holderroot = deep.set ? deep.root : nullptr;
+    v.holderexact = deep.set && deep.exact;
 }
 
 inline void TypeCheck::RecordStore(VarDef *container, const Val &v, TypeExpr *pointee,

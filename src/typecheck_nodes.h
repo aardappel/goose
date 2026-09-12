@@ -151,6 +151,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
 
 inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     Val v;
+    TypeCheck::LitDeep deep;
     if (capexpr) {
         // [..cap]: an empty limited array with a runtime capacity (§5.3).
         tc.CheckIntAny(capexpr);
@@ -178,6 +179,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         TypeCheck::SlotScope ss(tc, true);
         auto ev = tc.CheckValue(fillval, elem);
         if (!elem) elem = ev.type;
+        if (cnt) tc.NoteLitElem(deep, ev, elem);
         if (wantcount >= 0 && cnt != wantcount)
             tc.Error(this, cat("fill count ", cnt, " does not match array size ", wantcount));
         if (capacity >= 0 && cnt > capacity)
@@ -185,6 +187,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
                                tc.TypeStr(expected)));
         v.type = expected && expected->kind == TY_ARRAY
                      ? expected : tc.FixedArrayOf(elem, cnt, line);
+        tc.HolderFromLit(v, deep);
         return v;
     }
     if (elems.empty() && !elem) {
@@ -194,13 +197,11 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         v.type = tc.FixedArrayOf(tc.ast.voidtype, 0, line);
         return v;
     }
-    auto savedeep = tc.litdeep;
-    tc.litdeep = {};
     for (auto &e : elems) {
         TypeCheck::SlotScope ss(tc, true);   // An element is a slot (§9.5).
         auto ev = tc.CheckValue(e, elem);
         if (!elem) elem = ev.type;
-        tc.NoteLitElem(ev, elem);
+        tc.NoteLitElem(deep, ev, elem);
     }
     if (elem->kind == TY_VOID) tc.Error(this, "cannot infer array element type");
     if (wantcount >= 0 && (int64_t)elems.size() != wantcount)
@@ -214,11 +215,10 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         v.type = expected->kind == TY_ARRAY
                      ? expected : tc.FixedArrayOf(elem, (int64_t)elems.size(), line);
         v.root = expected->kind == TY_SLICE ? tc.temproot : nullptr;
-        tc.HolderFromLit(v);
-        tc.litdeep = savedeep;
-        return v;
+    } else {
+        v.type = tc.FixedArrayOf(elem, (int64_t)elems.size(), line);
     }
-    v.type = tc.FixedArrayOf(elem, (int64_t)elems.size(), line);
+    tc.HolderFromLit(v, deep);
     return v;
 }
 
@@ -244,11 +244,8 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
         v.type = expected && expected->kind == TY_ENUM && expected->enu->en == ei->en &&
                          tc.TypeArgsEq(expected->enu->args, t->var->adt->enu->args)
                      ? expected : t;
-        auto savedeep = tc.litdeep;
-        tc.litdeep = {};
-        tc.CheckInits(this, var->fields, ei->vftypes[vi], ei->en->name, v.type);
-        tc.HolderFromLit(v);
-        tc.litdeep = savedeep;
+        auto deep = tc.CheckInits(this, var->fields, ei->vftypes[vi], ei->en->name, v.type);
+        tc.HolderFromLit(v, deep);
         return v;
     }
     if (t->kind == TY_STRUCT) {
@@ -291,13 +288,10 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
         }
         auto inst = tc.GetStructInst(t);
         sinst = inst;
-        auto savedeep = tc.litdeep;
-        tc.litdeep = {};
-        tc.CheckInits(this, st->fields, inst->ftypes, st->name, t);
+        auto deep = tc.CheckInits(this, st->fields, inst->ftypes, st->name, t);
         Val v;
         v.type = t;
-        tc.HolderFromLit(v);
-        tc.litdeep = savedeep;
+        tc.HolderFromLit(v, deep);
         return v;
     }
     tc.Error(this, cat("cannot construct a value of type ", tc.TypeStr(t), " with a literal"));

@@ -1246,8 +1246,10 @@ inline void TypeCheck::CheckReturn(Return *r) {
 
 // `selft` is the type of the value this literal constructs (the enum type
 // for a variant literal in fixed enum mode), which is what `self` names.
-inline void TypeCheck::CheckInits(StructLit *sl, vector<Field> &fields, vector<TypeExpr *> &ftypes,
-                                  string_view what, TypeExpr *selft) {
+inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fields,
+                                               vector<TypeExpr *> &ftypes,
+                                               string_view what, TypeExpr *selft) {
+    LitDeep deep;
     auto named = !sl->inits.empty() && !sl->inits[0].name.empty();
     vector<bool> got(fields.size(), false);
     auto pos = 0;
@@ -1277,7 +1279,7 @@ inline void TypeCheck::CheckInits(StructLit *sl, vector<Field> &fields, vector<T
         if (Is<SelfRef>(fi.val)) { CheckSelfInit(fi.val, ftypes[idx], selft); continue; }
         SlotScope ss(*this, true);
         auto fv = CheckValue(fi.val, ftypes[idx]);
-        NoteLitElem(fv, ftypes[idx]);
+        NoteLitElem(deep, fv, ftypes[idx]);
     }
     for (auto i = 0; i < (int)fields.size(); i++) {
         if (fields[i].ispad || got[i]) continue;
@@ -1287,6 +1289,7 @@ inline void TypeCheck::CheckInits(StructLit *sl, vector<Field> &fields, vector<T
             Error(sl, cat("missing initializer for field ", fields[i].name, " of ", what,
                           " (it has no default)"));
     }
+    return deep;
 }
 
 // ------------------------------------------------------------------
