@@ -452,11 +452,14 @@ inline const VarDef *CodeGen::NamedResult(Block *fnbody, SFunction *target,
 // one nonfixed return position is allocated at that destination.
 inline void CodeGen::DetectNrvo(FnSpec *sp) {
     nrvo.clear();
-    if (sp->rets.empty()) return;
+    // A long-distance return into this function builds its value at the same
+    // destination, which a named result would already occupy.
+    if (sp->rets.empty() || fromids.count(sp->sf)) return;
     for (size_t j = 0; j < sp->rets.size(); j++) {
         if (!IsBytesT(sp->rets[j])) continue;
         auto cand = NamedResult(sp->body, sp->sf, sp->rets.size(), j);
-        auto ok = cand != nullptr;
+        // One local can be built at one destination only.
+        auto ok = cand != nullptr && !nrvo.count(cand);
         // The local's layout must be the return type's, or a resizable
         // whose elements become the returned variable array's (that
         // array's prefix is reserved ahead of them); anything else is

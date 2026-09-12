@@ -240,7 +240,8 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
         auto named = id && id->vdef ? nrvo.find(id->vdef) : nrvo.end();
         // Inline destinations belong to their own block; only DetectNrvo's
         // entries alias this function's return destinations.
-        auto direct = named != nrvo.end() && !named->second.inlined;
+        auto direct = named != nrvo.end() && !named->second.inlined &&
+                      named->second.stk == cat("gs_dst", i);
         if (IsResz(rt) || (emiter && i == 0)) {
             if (direct) {
                 // Built at the destination; only the count (or the frame
