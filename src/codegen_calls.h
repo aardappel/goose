@@ -433,25 +433,43 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
     auto varmode = enumtype->enu->varmode;
     auto ei = EIOf(enumtype);
     auto ts = TagSize(ei->en);
-    string p, sv, tag;
-    if (varmode || isref) {
-        if (isref) {
-            auto x = GenPure(sn);
-            p = varmode ? x : cat("((uint8_t *)", x, ")");
+    string p, copied, sv, tag;
+    auto scrutinee = [&]() {
+        if (varmode) {
+            if (isref) {
+                auto x = GenX(sn);
+                p = T();
+                L(CT(st), " ", p, " = ", x, ";");
+            } else {
+                p = GenPtr(sn);
+            }
+            // A reference input can also decay to a by-value case parameter.
+            // Copy its value now; reference cases retain the original pointer.
+            auto wantsvalue = false;
+            for (auto sp : c->dispatch)
+                wantsvalue |= sp->argtypes[pos]->kind != TY_REF;
+            if (wantsvalue) {
+                string stk;
+                copied = BytesTemp(stk);
+                auto sz = T();
+                L("int64_t ", sz, " = ", SizeX(enumtype, p), ";");
+                L("memcpy(", Top(stk), ", ", p, ", (size_t)", sz, ");");
+                Bump(stk, sz);
+            }
+            tag = cat("*(", IntCT(TagStore(ei->en)), " *)", p);
         } else {
-            p = GenPtr(sn);
+            auto value = GenXD(sn, enumtype);
+            sv = T();
+            L(CT(enumtype), " ", sv, " = ", value, ";");
+            tag = cat(sv, ".tag");
         }
-        tag = varmode ? cat("*(", IntCT(TagStore(ei->en)), " *)", p)
-                      : cat("((", CT(enumtype), " *)", p, ")->tag");
-    } else {
-        sv = GenPure(sn);
-        tag = cat(sv, ".tag");
-    }
-    // Non-dispatch arguments evaluate once, before the switch.
+    };
+    // Evaluate every argument in source order, including the dispatched
+    // argument; its position is not necessarily the first one.
     vector<string> shared(an.size());
     vector<string> sharedstk(an.size());
     for (size_t i = 0; i < an.size(); i++) {
-        if ((int)i == pos) continue;
+        if ((int)i == pos) { scrutinee(); continue; }
         auto pt = sp0->argtypes[i];
         if (IsPoolParam(sp0, i)) {
             shared[i] = GenPrefVal(an[i]);
@@ -468,7 +486,9 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
             shared[i] = base;
             sharedstk[i] = stk;
         } else {
-            shared[i] = GenPure(an[i]);
+            auto value = GenXD(an[i], pt);
+            shared[i] = T();
+            L(CT(pt), " ", shared[i], " = ", value, ";");
         }
     }
     // Shared return channels.
@@ -511,10 +531,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
         auto vt = VariantType(enumtype, (int)vi);
         auto byref = sp->argtypes[pos]->kind == TY_REF;
         string varg;
-        string payload = varmode ? cat("(", p, " + ", ts, ")")
-                       : isref ? cat("((uint8_t *)&((", CT(enumtype), " *)", p, ")->u.v_",
-                                     Sanitize(ei->en->variants[vi].name), ")")
-                               : "";
+        string payload = varmode ? cat("(", byref ? p : copied, " + ", ts, ")") : "";
         if (byref) {
             if (IsBytesT(vt)) varg = payload;
             else {
@@ -523,13 +540,9 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
                 varg = tv;
             }
         } else if (IsBytesT(vt)) {
-            string stk;
-            auto base = BytesTemp(stk);
-            auto sz = T();
-            L("int64_t ", sz, " = ", SizeX(vt, payload), ";");
-            L("memcpy(", Top(stk), ", ", payload, ", (size_t)", sz, ");");
-            Bump(stk, sz);
-            varg = base;
+            // The whole by-value enum was already copied before later
+            // arguments ran. Its payload is the callee's private value.
+            varg = payload;
         } else if (ei->en->variants[vi].fields.empty()) {
             auto tv = T();
             L(CT(vt), " ", tv, " = {0};");

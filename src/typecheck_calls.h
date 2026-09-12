@@ -583,7 +583,14 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
         DestScope ds(*this, Dest {});
         for (size_t i = 0; i < matches[0].paramtypes.size(); i++)
             if ((int)i != found) CheckArg(argnodes[i], matches[0].paramtypes[i]);
-            else HoldValue(argnodes[i], argvals[i]);
+            else {
+                // Value cases receive an enum snapshot before later arguments.
+                // A reference case retains the original storage instead.
+                auto byreference = false;
+                for (auto sp : c->dispatch)
+                    byreference |= sp->argtypes[i]->kind == TY_REF;
+                HoldValue(argnodes[i], byreference ? argvals[i] : DecayRef(argvals[i]));
+            }
     }
     return CallResult(c, first, argvals);
 }
