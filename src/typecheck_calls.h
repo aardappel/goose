@@ -592,7 +592,26 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
                 HoldValue(argnodes[i], byreference ? argvals[i] : DecayRef(argvals[i]));
             }
     }
-    return CallResult(c, first, argvals);
+    // The cases are alternatives of one call, like a match's arms: the result
+    // is only as long-lived, exact and writable as every case's result. A case
+    // checked without recording a root for a result only returns null there or
+    // never returns, and like such an arm it does not constrain the result.
+    vector<Val> results;
+    vector<bool> reached;
+    for (auto spec : c->dispatch) {
+        CallResult(c, spec, argvals);
+        results.resize(lastcallrets.size());
+        reached.resize(lastcallrets.size());
+        for (size_t r = 0; r < lastcallrets.size(); r++) {
+            auto reaches = spec->inprogress ||
+                           (r < spec->retroots.size() && spec->retroots[r].set);
+            results[r] = MergeVals(results[r], reached[r], lastcallrets[r], reaches, c, true,
+                                   nullptr, nullptr);
+            reached[r] = reached[r] || reaches;
+        }
+    }
+    lastcallrets = results;
+    return results.empty() ? VoidVal() : results[0];
 }
 
 // ------------------------------------------------------------------
@@ -1148,6 +1167,9 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         // A holder value's contents must outlive the caller like a
         // returned reference would.
         auto root = CanonRoot(holder ? HolderRootOf(vals[i]) : vals[i].root);
+        // What the result promises its callers is about that same pointee:
+        // a holder variable's own storage is exact, its contents may not be.
+        auto exact = holder ? vals[i].holderset && vals[i].holderexact : vals[i].rootexact;
         // Anything whose storage the callee's frame owns dies on return;
         // reference parameters' pointee roots are synthetic per-class
         // VarDefs (no ownerspec), so they pass and map at the call site.
@@ -1163,13 +1185,23 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         if (rr.set && rr.root != root)
             Error(at, "returns disagree on the returned reference's root "
                       "(not yet supported; use one source)");
+        // Once a back edge has reused this result, its promises may already
+        // have justified stores or writes. A later return cannot weaken them.
+        if (rr.usedexact && !exact)
+            Error(at, "this return weakens the reference root already used by the "
+                      "recursive cycle (§7.8); use one source");
+        if (rr.usedwritable && !vals[i].writable)
+            Error(at, "this return is read-only, but the recursive cycle already "
+                      "used a writable result; declare the result const (§9.5)");
+        auto previous = rr.set && !rr.seeded;
         rr.set = true;
-        if (auto bad = Cycles().ReturnConflict(tspec, i, root, vals[i].rootexact);
-            !bad.empty())
+        if (auto bad = Cycles().ReturnConflict(tspec, i, root, exact); !bad.empty())
             Error(at, bad);
         rr.root = root;
-        rr.exact = vals[i].rootexact;
-        rr.writable = vals[i].writable;
+        // A result may come from any return. Guarantees must hold on all
+        // paths; a cycle's initial prediction is not an actual return.
+        rr.exact = exact && (!previous || rr.exact);
+        rr.writable = vals[i].writable && (!previous || rr.writable);
         rr.seeded = false;
     }
     tspec->checkedreturn = true;
@@ -1206,7 +1238,7 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
                             v.rootexact = ri.exact && (ph ? argvals[p].holderexact
                                                           : argvals[p].rootexact);
                             v.rootfrom = argvals[p].rootfrom;
-                            v.writable = argvals[p].writable;
+                            v.writable = v.writable && argvals[p].writable;
                         }
                         break;
                     }
@@ -1228,6 +1260,10 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
         } else {
             v.root = temproot;
             v.writable = false;
+        }
+        if (spec->inprogress && i < spec->retroots.size()) {
+            spec->retroots[i].usedexact |= holder ? v.holderexact : v.rootexact;
+            spec->retroots[i].usedwritable |= v.writable;
         }
         lastcallrets.push_back(v);
     }

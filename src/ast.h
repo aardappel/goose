@@ -927,6 +927,10 @@ struct RetRoot {
     bool seeded = false;       // `root` is the cycle fixpoint's prediction and no
                                // return has been checked yet; the prediction is
                                // verified as they are.
+    // What a back edge's result was given while the returns were still being
+    // checked (§7.8): the returns checked after it may not take that back.
+    bool usedexact = false;
+    bool usedwritable = false;
 };
 
 // One monomorphic specialization of a function: the unit of typechecking and
