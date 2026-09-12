@@ -222,43 +222,15 @@ struct TypeCheck {
     // Constant expression evaluation: array sizes, match arm bounds, literal
     // fit. Understands literals, arithmetic, and `let` globals.
 
+    bool ConstIntValue(Node *n, Val &v, bool &literal, set<VarDecl *> &visiting);
+
     bool ConstInt(Node *n, int64_t &v) {
-        if (auto i = Is<IntLit>(n)) { v = i->val; return true; }
-        if (auto u = Is<Unary>(n)) {
-            int64_t c;
-            if (!ConstInt(u->child, c)) return false;
-            switch (u->op) {
-                case T_MINUS:  v = -c; return true;
-                case T_BITNOT: v = ~c; return true;
-                default: return false;
-            }
-        }
-        if (auto b = Is<Binary>(n)) {
-            int64_t l, r;
-            if (!ConstInt(b->left, l) || !ConstInt(b->right, r)) return false;
-            switch (b->op) {
-                case T_PLUS:   v = l + r; return true;
-                case T_MINUS:  v = l - r; return true;
-                case T_MUL:    v = l * r; return true;
-                case T_DIV:    if (!r) Error(n, "constant division by zero"); v = l / r; return true;
-                case T_MOD:    if (!r) Error(n, "constant division by zero");
-                               v = EuclidMod(l, r); return true;
-                case T_BITAND: v = l & r; return true;
-                case T_BITOR:  v = l | r; return true;
-                case T_XOR:    v = l ^ r; return true;
-                case T_SHL:    v = l << (r & 63); return true;
-                case T_SHR:    v = l >> (r & 63); return true;
-                default: return false;
-            }
-        }
-        if (auto id = Is<Ident>(n)) {
-            // A `let` global with a constant initializer is a named constant.
-            auto vd = ast.LookupGlobal(id->name, id->ns);
-            // The initializer of a `let` or `const` global is the constant.
-            if (!vd || vd->isvar || vd->inits.size() != 1) return false;
-            return ConstInt(vd->inits[0], v);
-        }
-        return false;
+        Val value;
+        bool literal;
+        set<VarDecl *> visiting;
+        if (!ConstIntValue(n, value, literal, visiting)) return false;
+        v = value.ival;   // Keep all 64 bits: u64 match patterns also use this path.
+        return true;
     }
 
     int64_t ConstIntOrError(Node *n, const char *context) {

@@ -834,6 +834,95 @@ inline void TypeCheck::RetypeOperands(Node *left, Node *right, Val &lv, Val &rv,
     right->exprtype = ct;
 }
 
+// Array extents and fill counts obey the same integer types as expressions
+// (§3.3, §6.1–6.2). Keep known values separate from literal adaptability:
+// a named u8 constant is known here, but N + 1 still computes at u8 width.
+// This runs even while type declarations are validated, before globals have
+// been checked, so resolve their initializers without evaluating runtime code
+// or attaching caller-local bindings to the shared expression nodes.
+inline bool TypeCheck::ConstIntValue(Node *n, Val &v, bool &literal,
+                                     set<VarDecl *> &visiting) {
+    if (auto i = Is<IntLit>(n)) {
+        v.type = ast.inttypes[i->uns ? IS_U64 : IS_I64];
+        v.ck = CK_INT;
+        v.ival = i->val;
+        v.uns = i->uns;
+        literal = true;
+        return true;
+    }
+    if (auto id = Is<Ident>(n)) {
+        auto g = ast.LookupGlobal(id->name, id->ns);
+        if (!g || g->isvar || g->inits.size() != 1) return false;
+        if (!visiting.insert(g).second)
+            Error(n, cat("cycle in constant initializer: ", id->name));
+        auto ok = ConstIntValue(g->inits[0], v, literal, visiting);
+        visiting.erase(g);
+        if (!ok) return false;
+        if (g->type) {
+            auto t = g->type;
+            if (!IsIntT(t)) return false;
+            if (!FitsIntStorage(v.ival, v.uns, t->intstorage))
+                Error(n, cat("constant ", ConstStr(v), " does not fit ", TypeStr(t)));
+            v.type = ast.PlainOf(t);
+            v.uns = t->intstorage == IS_U64 && v.ival < 0;
+        }
+        literal = false;
+        return true;
+    }
+    if (auto u = Is<Unary>(n)) {
+        if (u->op != T_MINUS && u->op != T_BITNOT) return false;
+        if (!ConstIntValue(u->child, v, literal, visiting)) return false;
+        auto s = v.type->intstorage;
+        if (u->op == T_MINUS) {
+            if (v.uns && (!literal || v.ival != INT64_MIN))
+                Error(n, "negated constant too large for i64");
+            if (!literal && IsUnsigned(s))
+                Error(n, cat("cannot negate a value of unsigned type ", TypeStr(v.type)));
+            if (!v.uns && v.ival == INT64_MIN)
+                Error(n, "signed overflow in constant expression");
+            v.ival = (int64_t)(0u - (uint64_t)v.ival);
+            if (literal) v.type = ast.inttypes[IS_I64];
+            v.uns = false;
+        } else {
+            v.ival = ~v.ival;
+            auto bits = IntBits(s);
+            if (IsUnsigned(s) && bits < 64)
+                v.ival = (int64_t)((uint64_t)v.ival & ((1ull << bits) - 1));
+            v.uns = s == IS_U64 && v.ival < 0;
+        }
+        if (!FitsIntStorage(v.ival, v.uns, v.type->intstorage))
+            Error(n, "signed overflow in constant expression");
+        return true;
+    }
+    if (auto b = Is<Binary>(n)) {
+        switch (b->op) {
+            case T_PLUS: case T_MINUS: case T_MUL: case T_DIV: case T_MOD:
+            case T_BITAND: case T_BITOR: case T_XOR: case T_SHL: case T_SHR: break;
+            default: return false;
+        }
+        Val l, r;
+        bool llit, rlit;
+        if (!ConstIntValue(b->left, l, llit, visiting) ||
+            !ConstIntValue(b->right, r, rlit, visiting)) return false;
+        if (b->op == T_SHL || b->op == T_SHR) {
+            v.type = l.type;
+        } else {
+            auto lf = l, rf = r;
+            if (!llit) lf.ck = CK_NONE;
+            if (!rlit) rf.ck = CK_NONE;
+            v.type = UnifyNumeric(n, b->op, lf, rf, l.type, r.type);
+        }
+        if (b->op == T_DIV && !IsUnsigned(v.type->intstorage) &&
+            l.ival == INT64_MIN && r.ival == -1)
+            Error(n, "constant division overflow");
+        FoldInt(b->op, l, r, v, n);
+        if (v.ck != CK_INT) Error(n, "signed overflow in constant expression");
+        literal = llit && rlit;
+        return true;
+    }
+    return false;
+}
+
 // All scalar leaves integers, or all floats; only structs and fixed
 // arrays compose; the value must be fixed-size (a constructed result).
 inline bool TypeCheck::ElementwiseOK(TypeExpr *t) {
