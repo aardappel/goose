@@ -1220,12 +1220,16 @@ inline void TypeCheck::CheckReturn(Return *r) {
     if (vals.empty() && tspec->retsknown && !tspec->rets.empty())
         Error(r, cat("function ", frames[tf].sf->name, " must return value(s)"));
     if (!vals.empty() || !tspec->retsknown) {
-        // For long-distance returns, references must not be rooted in
-        // frames that unwind; conservatively require globals/static.
+        // For long-distance returns, references, including those a returned
+        // value holds, must not be rooted in frames that unwind;
+        // conservatively require globals/static.
         if (tf != (int)frames.size() - 1 && !frames.back().isfunval) {
             for (auto &v : vals) {
                 auto rk = v.type->kind;
-                if ((rk == TY_REF || rk == TY_SLICE) && v.root && !v.root->isglobal)
+                auto isrs = rk == TY_REF || rk == TY_SLICE;
+                if (!isrs && !HoldsPlainRef(v.type)) continue;
+                auto root = isrs ? v.root : HolderRootOf(v);
+                if (root && !root->isglobal)
                     Error(r, "a long-distance return may only carry references to "
                              "globals or static data");
             }
