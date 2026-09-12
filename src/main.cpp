@@ -37,10 +37,6 @@
 
 namespace goose {
 
-// Where the compiler's own progress lines go. In JIT mode the program shares
-// this process's stdout, so they move to stderr and leave it to the program.
-FILE *gs_msgs = stdout;
-
 string DirOf(const string &path) {
     auto pos = path.find_last_of("/\\");
     return pos == string::npos ? "" : path.substr(0, pos + 1);
@@ -103,13 +99,11 @@ static string RelativeTo(const string &path, const string &dir) {
 // Where the standard library lives (§11.1): an explicit --stdlib or
 // GOOSE_STDLIB, else the `stdlib/` directory of the source tree the compiler
 // was built in, found by walking up from the executable.
-string gs_stdlibdir;
-string gs_argv0;
-vector<string> StdlibDirs() {
+vector<string> StdlibDirs(const string &stdlibdir, const string &argv0) {
     vector<string> dirs;
-    if (!gs_stdlibdir.empty()) dirs.push_back(cat(gs_stdlibdir, "/"));
+    if (!stdlibdir.empty()) dirs.push_back(cat(stdlibdir, "/"));
     if (auto env = getenv("GOOSE_STDLIB")) dirs.push_back(cat(env, "/"));
-    auto exedir = DirOf(gs_argv0);
+    auto exedir = DirOf(argv0);
     dirs.push_back(cat(exedir, "stdlib/"));
     dirs.push_back(cat(exedir, "../stdlib/"));
     dirs.push_back(cat(exedir, "../../stdlib/"));
@@ -121,7 +115,7 @@ vector<string> StdlibDirs() {
 // Parses a root file and, transitively, everything it imports (each file once).
 // `import a.b;` resolves relative to the root file's directory, then in the
 // standard library; `import .a.b;` relative to the importing file's.
-void ParseProgram(Ast &ast, const string &rootpath) {
+void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlibdirs) {
     auto rootdir = DirOf(rootpath);
     vector<string> queue = { rootpath };
     set<string> loaded = { rootpath };
@@ -143,7 +137,7 @@ void ParseProgram(Ast &ast, const string &rootpath) {
         for (auto &imp : parser.imports) {
             auto imppath = cat(imp.relative ? DirOf(path) : rootdir, imp.path, ".goose");
             if (!imp.relative && !FileExists(imppath)) {
-                for (auto &dir : StdlibDirs()) {
+                for (auto &dir : stdlibdirs) {
                     auto cand = cat(dir, imp.path, ".goose");
                     if (FileExists(cand)) { imppath = cand; break; }
                 }
@@ -261,13 +255,12 @@ void GenRuntimeHeader(const char *argv0) {
 }
 
 int Main(int argc, char **argv) {
-    gs_argv0 = argv[0];
-    string filename, outfile;
+    string filename, outfile, stdlibdir;
     auto dump = false, tokens = false, parseonly = false, specs = false, nocgen = false;
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
     auto forcejit = false;
     auto optlevel = 1;
-    vector<string> cdefines, progargs;
+    vector<string> cdefines, progargs, includes;
     for (int i = 1; i < argc; i++) {
         string arg = argv[i];
         // Everything past `--` belongs to the program being run, not here.
@@ -291,8 +284,8 @@ int Main(int argc, char **argv) {
         else if (arg == "-O1") optlevel = 1;
         else if (arg == "-O2") optlevel = 2;
         else if (arg == "-o" && i + 1 < argc) outfile = argv[++i];
-        else if (arg == "--include" && i + 1 < argc) gs_includes.push_back(argv[++i]);
-        else if (arg == "--stdlib" && i + 1 < argc) gs_stdlibdir = argv[++i];
+        else if (arg == "--include" && i + 1 < argc) includes.push_back(argv[++i]);
+        else if (arg == "--stdlib" && i + 1 < argc) stdlibdir = argv[++i];
         // A -D lands in the generated C itself rather than on some backend's
         // command line, so a JIT run and a compiled one see the same source.
         else if (arg == "-D" && i + 1 < argc) cdefines.push_back(argv[++i]);
@@ -321,14 +314,15 @@ int Main(int argc, char **argv) {
         auto dot = filename.find_last_of('.');
         outfile = cat(dot == string::npos ? filename : filename.substr(0, dot), ".c");
     }
-    if (jit) gs_msgs = stderr;
+    // The program shares stdout in JIT mode; progress goes to stderr.
+    auto msgs = jit ? stderr : stdout;
     try {
         if (tokens) {
             DumpTokens(filename);
             return 0;
         }
         Ast ast;
-        ParseProgram(ast, filename);
+        ParseProgram(ast, filename, StdlibDirs(stdlibdir, argv[0]));
         if (dump) {
             // Dump is parse-level output: no name resolution or typecheck,
             // so parse-only test files can roundtrip, and every name shows
@@ -340,7 +334,7 @@ int Main(int argc, char **argv) {
         }
         ResolveTypeNames(ast);
         if (parseonly) {
-            fprintf(gs_msgs, "parsed ok: %d top-level declarations, %d file(s)\n",
+            fprintf(msgs, "parsed ok: %d top-level declarations, %d file(s)\n",
                     (int)ast.topdecls.size(), (int)ast.sources.size());
             return 0;
         }
@@ -351,7 +345,7 @@ int Main(int argc, char **argv) {
             opt.DumpSpecs(s);
             fputs(s.c_str(), stdout);
         }
-        fprintf(gs_msgs, "typechecked ok: %d specialization(s), %d struct/%d enum instance(s); "
+        fprintf(msgs, "typechecked ok: %d specialization(s), %d struct/%d enum instance(s); "
                 "optimized -O%d: %d inlined, %d base case(s), %d folded, %d propagated, "
                 "%d tail loop(s)\n",
                 (int)ast.fnspecs.size(), (int)ast.structinsts.size(),
@@ -360,13 +354,13 @@ int Main(int argc, char **argv) {
         BCE bce(ast);
         if (!nobce) {
             bce.RunAll();
-            fprintf(gs_msgs, "bce: elided %d/%d index and %d/%d slice checks\n",
+            fprintf(msgs, "bce: elided %d/%d index and %d/%d slice checks\n",
                     bce.idxelided, bce.idxtotal, bce.slelided, bce.sltotal);
         }
         // Per-line outcomes, for comparing two builds of the pass.
         if (bcelines)
             for (auto &[where, counts] : bce.lineout)
-                fprintf(gs_msgs, "bce-line: %s:%d: %d elided, %d kept\n",
+                fprintf(msgs, "bce-line: %s:%d: %d elided, %d kept\n",
                         ast.sources[where.first].first.c_str(), where.second,
                         counts.first, counts.second);
         if (bcetest) {
@@ -375,7 +369,7 @@ int Main(int argc, char **argv) {
                 fprintf(stderr, "bce-test: %d annotation failure(s)\n", fails);
                 return 1;
             }
-            fprintf(gs_msgs, "bce-test: all annotations verified\n");
+            fprintf(msgs, "bce-test: all annotations verified\n");
         }
         if (nocgen) return 0;
         // A quoted include resolves against the including file's own directory
@@ -386,13 +380,14 @@ int Main(int argc, char **argv) {
         // own include path, and is left alone. A JIT run has no file to be
         // relative to and resolves them from the working directory.
         if (!outfile.empty())
-            for (auto &inc : gs_includes)
+            for (auto &inc : includes)
                 if (FileExists(inc)) inc = RelativeTo(inc, DirOf(outfile));
         // The extern-support runtime is written against the generated types,
         // so codegen splices it in after them rather than up front.
+        string_view runtime_os_text;
         for (auto &rf : runtime_files)
-            if (string_view(rf.name) == "runtime_os.h") gs_runtime_os_text = string(rf.text);
-        CodeGen cg(ast, norfcheck);
+            if (string_view(rf.name) == "runtime_os.h") runtime_os_text = rf.text;
+        CodeGen cg(ast, runtime_os_text, includes, norfcheck);
         // Assemble: compiler-set feature defines, the embedded runtime, then
         // the generated program.
         string out = cat("/* Generated by the Goose compiler from ", filename,
@@ -419,7 +414,7 @@ int Main(int argc, char **argv) {
             if (!f) throw CompileError { cat("cannot write output file: ", outfile) };
             fwrite(out.data(), 1, out.size(), f);
             fclose(f);
-            fprintf(gs_msgs, "wrote %s (%d bytes)\n", outfile.c_str(), (int)out.size());
+            fprintf(msgs, "wrote %s (%d bytes)\n", outfile.c_str(), (int)out.size());
         }
         if (jit) {
             // TinyCC's in-memory runner rejects a thread-local section, and
@@ -430,8 +425,8 @@ int Main(int argc, char **argv) {
                                      "compile with -o and a C compiler instead" };
             // The program shares this process, so its exit code becomes ours
             // and whatever it wrote is already on the same streams.
-            fflush(gs_msgs);
-            return RunJit(out, JitLibPath(DirOf(gs_argv0)), filename, progargs);
+            fflush(msgs);
+            return RunJit(out, JitLibPath(DirOf(argv[0])), filename, progargs);
         }
     } catch (CompileError &e) {
         fprintf(stderr, "%s\n", e.msg.c_str());

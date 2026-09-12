@@ -63,11 +63,6 @@ struct Dst {
     string lenlv;
 };
 
-// Set by the driver before codegen (§7.10): the runtime's extern-support C,
-// spliced after the generated types, and the user's --include headers.
-inline string gs_runtime_os_text;
-inline vector<string> gs_includes;
-
 struct CodeGen {
     Ast &ast;
 
@@ -883,7 +878,10 @@ struct CodeGen {
 
     string result;   // Everything after the runtime paste.
 
-    CodeGen(Ast &_ast, bool _norfcheck = false) : ast(_ast), norfcheck(_norfcheck) {
+    // Extern-support C and user headers are inputs to this emission, not
+    // process state that the driver must install before constructing us.
+    CodeGen(Ast &_ast, string_view runtime_os_text, const vector<string> &headers,
+            bool _norfcheck = false) : ast(_ast), norfcheck(_norfcheck) {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
         ComputeRelRootMax();
@@ -912,16 +910,16 @@ struct CodeGen {
         // against, then user headers, then prototypes for whatever neither
         // defines.
         string externs;
-        if (!usedexterns.empty() || !gs_runtime_os_text.empty()) {
+        if (!usedexterns.empty() || !runtime_os_text.empty()) {
             EmitCoreTypes();
             CT(MakeSliceT(ast.inttypes[IS_U8], Line {}));
         }
         for (auto sp : usedexterns) {
-            if (gs_runtime_os_text.find(cat(" ", sp->sf->cname, "(")) != string::npos) continue;
+            if (runtime_os_text.find(cat(" ", sp->sf->cname, "(")) != string_view::npos) continue;
             externs += ExternProto(sp);
         }
         string includes;
-        for (auto inc : gs_includes) {
+        for (auto inc : headers) {
             // Forward slashes even for a Windows path: a backslash inside a
             // header name is undefined, and every C compiler on Windows takes
             // the slash form.
@@ -930,7 +928,7 @@ struct CodeGen {
         }
         Append(result, "\n/* ---- types ---- */\n#pragma pack(push, 1)\n", tdecls, pdata,
                "#pragma pack(pop)\n\n/* ---- data ---- */\n", data,
-               "\n/* ---- runtime (extern support) ---- */\n", gs_runtime_os_text,
+               "\n/* ---- runtime (extern support) ---- */\n", runtime_os_text,
                "\n/* ---- includes ---- */\n", includes,
                "\n/* ---- extern prototypes ---- */\n", externs,
                "\n/* ---- prototypes ---- */\n", protos, "\n/* ---- code ---- */\n", code);
