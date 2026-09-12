@@ -107,6 +107,10 @@ struct TailRecursion {
         if (Optimizer::AsLiteral(n)) return true;
         auto id = Is<Ident>(n);
         if (!id || !id->vdef || id->vdef->isglobal) return false;
+        // An unchanged reference slot does not make the pointee immutable:
+        // the recursive call can write it through another parameter/alias.
+        // Scalar storage plus the address/write facts below is the proof.
+        if (!Optimizer::ScalarType(id->vdef->type)) return false;
         auto &f = facts[id->vdef];
         return f.writes == 0 && f.addrof == 0;
     }
