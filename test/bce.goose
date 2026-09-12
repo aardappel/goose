@@ -38,6 +38,18 @@ fn fixed_match(k: i64) -> i64 {
     }
 }
 
+// A fixed array's length is part of its type, so an index that shifts the
+// variable it reads cannot change it.
+fn fixed_shifting_index() -> i64 {
+    let a: i64[4] = [1, 2, 3, 4];
+    var k = 0;
+    var s = 0;
+    while k < 3 {
+        s += a[{ k += 1; k }];                // bce:elide
+    }
+    return s;
+}
+
 // --- loops over dynamic arrays ---------------------------------------------
 
 fn grow_loops() -> i64 {
@@ -830,6 +842,7 @@ fn main() {
     print(fixed_loop());                      // 10
     print(fixed_guarded(ks));                 // 7
     print(fixed_match(ks));                   // 7
+    print(fixed_shifting_index());            // 9
     print(grow_loops());                      // 180
     print(grow_during_loop());                // 3
     print(last_elem(data));                   // 8

@@ -637,8 +637,12 @@ struct BCE {
         return Term {};
     }
 
+    // An expression with a state-changing later operand cannot be rebuilt
+    // from the operands' current names: earlier values were already read.
+    set<Node *> effectfulterms;
+
     Term TermOf(Node *n) {
-        if (!n) return {};
+        if (!n || effectfulterms.count(n)) return {};
         if (auto i = Is<IntLit>(n)) {
             if (i->uns || i->val >= CCAP || i->val <= -CCAP) return {};
             return Term { true, Zero(), i->val };
@@ -1182,9 +1186,10 @@ struct BCE {
     // Records what this site proves about each target's interface bases,
     // as the meet with what earlier sites proved (see Sites). `ints` holds
     // each integer argument's term as sampled right after its evaluation,
-    // which is the value the callee receives.
+    // which is the value the callee receives. Lengths are read from the
+    // arguments' current state, which `moved` says a later argument changed.
     void RecordSite(Call *c, const vector<Node *> &an, const vector<Term> &ints,
-                    const vector<Term> &slens) {
+                    const vector<Term> &slens, bool moved) {
         auto record = [&](FnSpec *sp) {
             auto &S = sites[sp];
             S.seen++;
@@ -1197,7 +1202,7 @@ struct BCE {
             terms[0] = Term { true, Zero(), 0 };
             for (auto k = 1; k < n; k++) {
                 auto [islen, j] = bases[k];
-                terms[k] = islen ? ArgLenTerm(an[j], slens[j]) : ints[j];
+                terms[k] = islen ? (moved ? Term {} : ArgLenTerm(an[j], slens[j])) : ints[j];
             }
             auto anyfinite = false;
             for (auto x = 0; x < n; x++) {
@@ -1441,10 +1446,9 @@ struct BCE {
         else e.second++;
     }
 
-    void JudgeIndex(Index *ix) {
+    void JudgeIndex(Index *ix, const Term &lent) {
         if (mode != M_JUDGE) return;
         idxtotal++;
-        auto lent = LenTermOf(ix->obj);
         auto it = TermOf(ix->idx);
         auto ok = lent.ok && it.ok &&
                   Query(Zero(), it.b, it.off) &&
@@ -1610,12 +1614,7 @@ struct BCE {
     void WalkLvalParts(Node *n) {
         if (Is<Ident>(n)) return;
         if (auto d = Is<Dot>(n)) { Walk(d->obj); return; }
-        if (auto ix = Is<Index>(n)) {
-            Walk(ix->obj);
-            Walk(ix->idx);
-            JudgeIndex(ix);
-            return;
-        }
+        if (auto ix = Is<Index>(n)) { Walk(ix); return; }
         Walk(n);
     }
 
@@ -1791,6 +1790,7 @@ struct BCE {
         wkinds.clear();
         relpids.clear();
         derived.clear();
+        effectfulterms.clear();
         cands.clear();
         ge0.clear();
         lelen.clear();
@@ -2205,20 +2205,30 @@ inline bool Binary::BceWalk(BCE &b) {
         // facts and effects merge against the short-circuit path.
         b.Walk(left);
         auto after = b.flow;
-        b.CondFacts(left, op == T_ANDAND);
+        // Like an if/while condition, a short-circuit operand may have
+        // compared an earlier read against a later state-changing call.
+        if (!b.HasKillEffects(left)) b.CondFacts(left, op == T_ANDAND);
         b.Walk(right);
         b.flow = b.Meet(after, b.flow);
         return true;
     }
     b.Walk(left);
+    auto gen = b.nextgen;
     b.Walk(right);
+    if (b.mode != BCE::M_KILLS && b.nextgen != gen)
+        b.effectfulterms.insert(this);
     return true;
 }
 
 inline bool Index::BceWalk(BCE &b) {
     b.Walk(obj);
+    auto lent = b.mode == BCE::M_KILLS ? BCE::Term {} : b.LenTermOf(obj);
+    auto gen = b.nextgen;
     b.Walk(idx);
-    b.JudgeIndex(this);
+    // The receiver is evaluated before its index. A rebind or growth in
+    // the index must not replace that earlier receiver's length proof.
+    if (b.nextgen != gen && lent.b.kind != BCE::BK_ZERO) lent = BCE::Term {};
+    b.JudgeIndex(this, lent);
     return true;
 }
 
@@ -2250,8 +2260,9 @@ inline bool Call::BceWalk(BCE &b) {
     // A call into user code is a site (RecordSite): each integer argument's
     // term is sampled as it is evaluated, a slice argument's length as its
     // bounds state it. The C backend may read a plain variable argument
-    // after a later argument's call has run, so the integer samples are only
-    // trusted when evaluating the arguments moved nothing.
+    // after a later argument's call has run, and each length was read at its
+    // own argument, so both are only trusted when evaluating the arguments
+    // moved nothing.
     auto site = b.mode == BCE::M_JUDGE && builtin < 0 && !fvbody && (spec || !dispatch.empty());
     vector<BCE::Term> ints, slens;
     auto gen0 = b.nextgen;
@@ -2269,9 +2280,18 @@ inline bool Call::BceWalk(BCE &b) {
         recv = d->obj;
         walkarg(recv);
     }
-    for (auto a : args) walkarg(a);
-    if (site && b.nextgen != gen0)
+    // The generation just after each argument: a later argument that moves
+    // anything leaves an earlier sample describing a different state.
+    vector<decltype(b.nextgen)> argsgen;
+    for (auto a : args) {
+        walkarg(a);
+        argsgen.push_back(b.nextgen);
+    }
+    auto moved = site && b.nextgen != gen0;
+    if (moved) {
         for (auto &t : ints) t = BCE::Term {};
+        for (auto &t : slens) t = BCE::Term {};
+    }
     if (builtin >= 0) {
         auto rn = recv ? recv : (args.empty() ? nullptr : args[0]);
         // The first non-receiver argument, in either call spelling.
@@ -2312,7 +2332,10 @@ inline bool Call::BceWalk(BCE &b) {
                 break;
             }
             case B_RESIZE: {
-                auto nt = b.mode == BCE::M_KILLS ? BCE::Term {} : b.TermOf(arg0);
+                // The count's term is only trusted when the fill value moved nothing.
+                size_t ai = recv ? 0 : 1;
+                auto countmoved = ai < argsgen.size() && argsgen[ai] != b.nextgen;
+                auto nt = b.mode == BCE::M_KILLS || countmoved ? BCE::Term {} : b.TermOf(arg0);
                 auto pid = b.GrowShrinkKill(rn, 0);
                 if (pid >= 0) b.ExactLenIs(pid, nt);
                 break;
@@ -2349,7 +2372,7 @@ inline bool Call::BceWalk(BCE &b) {
         b.StripKills(fvbody);
         return true;
     }
-    if (site) b.RecordSite(this, BCE::ArgNodes(this), ints, slens);
+    if (site) b.RecordSite(this, BCE::ArgNodes(this), ints, slens, moved);
     b.CallKills(this);
     return true;
 }
@@ -2480,19 +2503,29 @@ inline bool ForLoop::BceWalk(BCE &b) {
         b.loopdepth--;
         return true;
     }
-    b.Walk(iter);
     // Range and count loops compare the variable against loop-entry snapshots,
     // so capture those terms before the body havoc; array and slice loops
     // re-read the length every iteration, so capture after.
     BCE::Term lot, hit;
     if (iterkind == IK_RANGE) {
         if (auto r = Is<RangeExpr>(iter)) {
+            // Codegen saves each endpoint when it is evaluated. In particular,
+            // the upper endpoint must not replace an earlier lower read.
+            b.Walk(r->lo);
             lot = b.TermOf(r->lo);
+            auto gen = b.nextgen;
+            b.Walk(r->hi);
             hit = b.TermOf(r->hi);
+            // A shift keeps its variable's generation, so an upper endpoint
+            // that moved anything may have changed what the lower term names.
+            if (b.nextgen != gen && lot.b.kind != BCE::BK_ZERO) lot = BCE::Term {};
         }
-    } else if (iterkind == IK_COUNT) {
-        lot = BCE::Term { true, BCE::Zero(), 0 };
-        hit = b.TermOf(iter);
+    } else {
+        b.Walk(iter);
+        if (iterkind == IK_COUNT) {
+            lot = BCE::Term { true, BCE::Zero(), 0 };
+            hit = b.TermOf(iter);
+        }
     }
     // Counted push loops `for _ in n { ...; a.push(x); ...; }`: when no other
     // statement can touch a's length and no break or continue skips an
