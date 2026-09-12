@@ -416,43 +416,48 @@ inline vector<string> CodeGen::EmitStr(Call *c, vector<Node *> &an, Dst d0, Line
 // ------------------------------------------------------------------
 // Function bodies.
 
+// Structural named-result discovery on the final body. Both real functions
+// and inlined bodies use it, so rewrites need not maintain an AST annotation.
+inline const VarDef *CodeGen::NamedResult(Block *fnbody, SFunction *target,
+                                         size_t nrets, size_t resultidx) {
+    // Only bindings BindLocal places: a multi-name receive wires a call's
+    // channels into locals of its own, which are not at a return destination.
+    set<const VarDef *> toplocals;
+    for (auto st : fnbody->stmts)
+        if (auto vd = Is<VarDecl>(st); vd && vd->defs.size() == 1)
+            toplocals.insert(vd->defs[0]);
+    const VarDef *cand = nullptr;
+    auto ok = true;
+    auto consider = [&](Node *val) {
+        auto id = Is<Ident>(val);
+        if (!id || !id->vdef || !toplocals.count(id->vdef)) { ok = false; return; }
+        if (cand && cand != id->vdef) { ok = false; return; }
+        cand = id->vdef;
+    };
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n || !ok) return;
+        if (auto r = Is<Return>(n); r && r->target == target) {
+            if (r->vals.size() != nrets) ok = false;
+            else consider(r->vals[resultidx]);
+        }
+        if (auto c = Is<Call>(n)) walk(c->fvbody);
+        n->Children([&](Node *ch) { walk(ch); });
+    };
+    walk(fnbody);
+    if (fnbody->tail && nrets == 1 && !IsVoidT(fnbody->tail->exprtype)) consider(fnbody->tail);
+    return ok ? cand : nullptr;
+}
+
 // Guaranteed NRVO (§7.3): a top-level local every return hands back in
 // one nonfixed return position is allocated at that destination.
 inline void CodeGen::DetectNrvo(FnSpec *sp) {
     nrvovars.clear();
     nrvo.clear();
     if (sp->rets.empty()) return;
-    // Only bindings BindLocal places: a multi-name receive wires the
-    // call's channels into locals of its own (VarDecl::CgStmt), which
-    // are not at a return destination.
-    set<const VarDef *> toplocals;
-    for (auto st : sp->body->stmts)
-        if (auto vd = Is<VarDecl>(st); vd && vd->defs.size() == 1)
-            toplocals.insert(vd->defs[0]);
     for (size_t j = 0; j < sp->rets.size(); j++) {
         if (!IsBytesT(sp->rets[j])) continue;
-        const VarDef *cand = nullptr;
-        auto ok = true;
-        auto consider = [&](Node *val) {
-            auto id = Is<Ident>(val);
-            if (!id || !id->vdef || !toplocals.count(id->vdef)) { ok = false; return; }
-            if (cand && cand != id->vdef) { ok = false; return; }
-            cand = id->vdef;
-        };
-        function<void(Node *)> walk = [&](Node *n) {
-            if (!n || !ok) return;
-            if (auto r = Is<Return>(n)) {
-                if (r->target == sp->sf) {
-                    if (r->vals.size() != sp->rets.size()) ok = false;
-                    else consider(r->vals[j]);
-                }
-            }
-            if (auto cc = Is<Call>(n)) walk(cc->fvbody);
-            n->Children([&](Node *ch) { walk(ch); });
-        };
-        walk(sp->body);
-        if (sp->body->tail && sp->rets.size() == 1 &&
-            !IsVoidT(sp->body->tail->exprtype)) consider(sp->body->tail);
+        auto cand = NamedResult(sp->body, sp->sf, sp->rets.size(), j);
+        auto ok = cand != nullptr;
         // The local's layout must be the return type's, or a resizable
         // whose elements become the returned variable array's (that
         // array's prefix is reserved ahead of them); anything else is

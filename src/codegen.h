@@ -853,6 +853,7 @@ struct CodeGen {
     // Function bodies.
 
     void DetectNrvo(FnSpec *sp);
+    const VarDef *NamedResult(Block *fnbody, SFunction *target, size_t nrets, size_t resultidx);
     const VarDef *OpenIbNrvo(InlineBlock *ib, const Dst &d);
     bool CanCacheTops(FnSpec *sp);
     bool RefTopsOk(FnSpec *sp);

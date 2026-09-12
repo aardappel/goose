@@ -16,8 +16,8 @@ namespace goose {
 // the receiving metadata. Applies where the local's raw elements are
 // exactly the ones the destination wants; returns the bound local, or null.
 inline const VarDef *CodeGen::OpenIbNrvo(InlineBlock *ib, const Dst &d) {
-    if (d.k != DK_STACK) return nullptr;
-    auto vd = ib->namedresult;
+    if (d.k != DK_STACK || !ib->spec || ib->spec->rets.size() != 1) return nullptr;
+    auto vd = NamedResult(ib->body, ib->sf, 1, 0);
     if (!vd || !IsResz(vd->type) || nrvo.count(vd)) return nullptr;
     auto ct = vd->type;
     NrvoDest nd;
