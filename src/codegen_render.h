@@ -451,7 +451,6 @@ inline const VarDef *CodeGen::NamedResult(Block *fnbody, SFunction *target,
 // Guaranteed NRVO (§7.3): a top-level local every return hands back in
 // one nonfixed return position is allocated at that destination.
 inline void CodeGen::DetectNrvo(FnSpec *sp) {
-    nrvovars.clear();
     nrvo.clear();
     if (sp->rets.empty()) return;
     for (size_t j = 0; j < sp->rets.size(); j++) {
@@ -472,7 +471,6 @@ inline void CodeGen::DetectNrvo(FnSpec *sp) {
             if (!same && !rzarr) ok = false;
         }
         if (ok && cand) {
-            nrvovars.insert(cand);
             NrvoDest nd;
             nd.stk = cat("gs_dst", j);
             if (rzarr) {

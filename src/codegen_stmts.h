@@ -236,9 +236,13 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
     assert(vals.size() == sp->rets.size());
     for (size_t i = 0; i < vals.size(); i++) {
         auto rt = sp->rets[i];
+        auto id = Is<Ident>(vals[i]);
+        auto named = id && id->vdef ? nrvo.find(id->vdef) : nrvo.end();
+        // Inline destinations belong to their own block; only DetectNrvo's
+        // entries alias this function's return destinations.
+        auto direct = named != nrvo.end() && !named->second.inlined;
         if (IsResz(rt) || (emiter && i == 0)) {
-            auto id = Is<Ident>(vals[i]);
-            if (id && id->vdef && nrvovars.count(id->vdef)) {
+            if (direct) {
                 // Built at the destination; only the count (or the frame
                 // object) travels.
                 if (IsFrameObj(rt)) L("*gs_rl", i, " = ", HdrLv(id->vdef), ";");
@@ -247,12 +251,11 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
             }
             GenConstruct(vals[i], cat("gs_dst", i), rt, cat("(*gs_rl", i, ")"));
         } else if (IsBytesT(rt)) {
-            auto id = Is<Ident>(vals[i]);
-            if (id && id->vdef && nrvovars.count(id->vdef)) {
+            if (direct) {
                 // In place already. A resizable local's elements sit at
                 // the destination behind the length prefix reserved for
                 // them at its declaration; the count goes in there now.
-                if (IsResz(id->vdef->type)) EmitNrvoFinish(nrvo[id->vdef]);
+                if (IsResz(id->vdef->type)) EmitNrvoFinish(named->second);
                 continue;
             }
             GenConstruct(vals[i], cat("gs_dst", i), rt);

@@ -181,7 +181,6 @@ inline void CodeGen::ResetFnState() {
     poolbases.clear();
     fvptr.clear();
     fnused.clear();
-    nrvovars.clear();
     nrvo.clear();
     fdstsaves.clear();
     cscopes.clear();

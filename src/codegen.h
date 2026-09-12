@@ -359,7 +359,6 @@ struct CodeGen {
     unordered_map<const VarDef *, string> vstk;    // Stack expr per nonfixed local.
     unordered_map<const VarDef *, pair<string, string>> vpool;  // fl base name, fl stack expr.
     set<const VarDef *> fvptr;           // Captured fixed vars arriving as pointers.
-    set<const VarDef *> nrvovars;        // Locals aliased to a return destination.
 
     // A named result built at its destination (§7.3): the local's elements are
     // written where the value ends up, so only its metadata travels at the
