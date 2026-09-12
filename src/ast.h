@@ -952,7 +952,6 @@ struct FnSpec {
     vector<RetRoot> retroots;      // Per ret, from the first return checked or seeded.
     bool retsknown = false;
     bool checkedreturn = false;    // A return with values has been recorded.
-    bool checked = false;
     bool inprogress = false;
     bool incycle = false;          // Part of a recursive cycle (§7.8).
     bool has_nonfixed_local = false;

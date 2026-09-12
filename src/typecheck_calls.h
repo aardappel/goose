@@ -884,7 +884,6 @@ inline void TypeCheck::CheckExternSpec(FnSpec *spec) {
     }
     spec->retsknown = true;
     spec->checkedreturn = true;
-    spec->checked = true;
     spec->inprogress = false;
 }
 
@@ -1040,7 +1039,6 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     frames.pop_back();
     reachable = savereach;
     spec->inprogress = false;
-    spec->checked = true;
 }
 
 // Shared by `return` statements and body tails: agree the values with
