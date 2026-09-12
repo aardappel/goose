@@ -1173,16 +1173,31 @@ struct Ast {
         return it == (n->*map).end() ? nullptr : &it->second;
     }
 
+    // Structs, enums and aliases share one type namespace. Choose the nearest
+    // declaration before inspecting its kind: a local alias must shadow a
+    // global struct just as a local struct would (§11.1).
+    template<typename T>
+    T *LookupType(unordered_map<string_view, T> Namespace::*map, string_view name,
+                  string_view usens) {
+        auto ref = SplitName(name, usens);
+        auto n = FindNS(ref.ns);
+        if ((!n || !n->TypeNameExists(ref.leaf)) && !ref.qualified && !ref.ns.empty())
+            n = FindNS("");
+        if (!n) return nullptr;
+        auto it = (n->*map).find(ref.leaf);
+        return it == (n->*map).end() ? nullptr : &it->second;
+    }
+
     SStruct *LookupStruct(string_view name, string_view usens) {
-        auto p = Lookup(&Namespace::structmap, name, usens);
+        auto p = LookupType(&Namespace::structmap, name, usens);
         return p ? *p : nullptr;
     }
     SEnum *LookupEnum(string_view name, string_view usens) {
-        auto p = Lookup(&Namespace::enummap, name, usens);
+        auto p = LookupType(&Namespace::enummap, name, usens);
         return p ? *p : nullptr;
     }
     SAlias *LookupAlias(string_view name, string_view usens) {
-        auto p = Lookup(&Namespace::aliasmap, name, usens);
+        auto p = LookupType(&Namespace::aliasmap, name, usens);
         return p ? *p : nullptr;
     }
     VarDecl *LookupGlobal(string_view name, string_view usens) {
