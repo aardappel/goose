@@ -454,7 +454,7 @@ inline void CodeGen::DetectNrvo(FnSpec *sp) {
     nrvo.clear();
     // A long-distance return into this function builds its value at the same
     // destination, which a named result would already occupy.
-    if (sp->rets.empty() || fromids.count(sp->sf)) return;
+    if (sp->rets.empty() || fromids.count(sp)) return;
     for (size_t j = 0; j < sp->rets.size(); j++) {
         if (!IsBytesT(sp->rets[j])) continue;
         auto cand = NamedResult(sp->body, sp->sf, sp->rets.size(), j);

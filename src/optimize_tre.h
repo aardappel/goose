@@ -366,8 +366,8 @@ struct TailRecursion {
             if (SelfCall(c)) selfcalls = true;
             // A `return ... from` us lands in the innermost active frame
             // (§7.9); folding frames away would move where it lands.
-            if (c->builtin < 0 && c->spec && c->spec->needs.count(sp->sf)) return false;
-            for (auto d : c->dispatch) if (d->needs.count(sp->sf)) return false;
+            if (c->builtin < 0 && c->spec && c->spec->needs.count(sp)) return false;
+            for (auto d : c->dispatch) if (d->needs.count(sp)) return false;
             ok = Applicable(c->callee, selfcalls) && Applicable(c->fvbody, selfcalls);
             for (auto a : c->args) ok = ok && Applicable(a, selfcalls);
             return ok;

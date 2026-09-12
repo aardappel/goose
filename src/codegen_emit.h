@@ -124,7 +124,7 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp) {
     if (fatparams.empty() || (fatparams.size() > 1 && !concrete)) return false;
     for (auto pt : sp->argtypes) if (IsResz(pt)) return false;
     for (auto rt : sp->rets) if (IsBytesT(rt)) return false;
-    if (fromids.count(sp->sf)) return false;
+    if (fromids.count(sp)) return false;
     for (auto fv : sinfo[sp].freevars)
         if (fv->reusable || (fv->type && (IsResz(fv->type) || IsFatRef(fv->type))))
             return false;
@@ -208,7 +208,7 @@ inline string CodeGen::EnsureEr(FnSpec *sp) {
     if (it != ernames.end()) return it->second;
     auto rt = sp->rets.size() == 1 ? sp->rets[0] : nullptr;
     auto ok = rt && rt->kind == TY_ARRAY && rt->arr->akind == A_VAR && sp->body &&
-              !fromids.count(sp->sf);
+              !fromids.count(sp);
     if (!ok) return ernames[sp] = "";
     auto name = Unique(cat(sinfo[sp].cname, "_er"));
     ernames[sp] = name;
@@ -310,11 +310,11 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     // destination: the callee-side copy at return is the specified cost
     // of operating on the whole value first (§7.3).
     if (!er) DetectNrvo(sp);
-    if (fromids.count(sp->sf)) {
+    if (fromids.count(sp)) {
         // This is a long-distance return target with nonfixed returns:
         // record our destinations for in-flight values (§7.9).
-        EnsureFromChannels(sp->sf);
-        auto tid = fromids[sp->sf];
+        EnsureFromChannels(sp);
+        auto tid = fromids[sp];
         for (size_t i = 0; i < sp->rets.size(); i++) {
             if (!IsBytesT(sp->rets[i])) continue;
             auto sav = T();

@@ -338,10 +338,10 @@ inline void CodeGen::EmitRfCheck(FnSpec *callee) {
     if (norfcheck) return;
     L("if (gs_rf) {");
     ind++;
-    auto caught = curspec && callee->needs.count(curspec->sf);
+    auto caught = curspec && callee->needs.count(curspec);
     if (caught) {
-        auto tid = fromids[curspec->sf];
-        EnsureFromChannels(curspec->sf);
+        auto tid = fromids[curspec];
+        EnsureFromChannels(curspec);
         L("if (gs_rf == ", tid, ") {");
         ind++;
         // The propagation ends here, so restore the "nothing in flight"

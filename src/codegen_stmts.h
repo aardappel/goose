@@ -341,10 +341,11 @@ inline void CodeGen::PropagateReturn(const string &rfval) {
 // Long-distance return site: values into the target's channels, then
 // propagate the discriminant.
 inline void CodeGen::GenFromReturn(Return *r) {
-    auto t = r->target;
+    auto t = r->targetspec;
+    assert(t);
     auto tid = fromids[t];
     EnsureFromChannels(t);
-    auto &rets = FromRets(t);
+    auto &rets = t->rets;
     assert(r->vals.size() == rets.size() ||
            (r->vals.size() == 1 && Is<Call>(r->vals[0])));
     if (r->vals.size() == rets.size()) {
@@ -378,22 +379,11 @@ inline void CodeGen::GenFromReturn(Return *r) {
     PropagateReturn(cat(tid));
 }
 
-inline vector<TypeExpr *> &CodeGen::FromRets(SFunction *t) {
-    auto it = fromrets.find(t);
-    if (it != fromrets.end()) return *it->second;
-    for (auto sp : t->specs)
-        if (sp->live) { fromrets[t] = &sp->rets; return sp->rets; }
-    // A target none of whose specs are live: any spec's types will do.
-    assert(!t->specs.empty());
-    fromrets[t] = &t->specs[0]->rets;
-    return t->specs[0]->rets;
-}
-
-inline void CodeGen::EnsureFromChannels(SFunction *t) {
+inline void CodeGen::EnsureFromChannels(FnSpec *t) {
     if (fromemitted.count(t)) return;
     fromemitted.insert(t);
     auto tid = fromids[t];
-    auto &rets = FromRets(t);
+    auto &rets = t->rets;
     for (size_t i = 0; i < rets.size(); i++) {
         if (IsResz(rets[i])) {
             Append(data, "static GS_TLS gs_stack *gs_fdst_", tid, "_", i, ";\n");

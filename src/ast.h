@@ -589,6 +589,7 @@ NODE(Return)
     string_view from;           // "return ... from f"; empty if absent. As written (Ident::name).
     string_view ns;             // The namespace `from` resolves in first (Ident::ns).
     SFunction *target = nullptr;  // Filled by typecheck (the fn this exits; `from` or own).
+    FnSpec *targetspec = nullptr; // Its concrete return contract and propagation channel.
     Return(Line l) : Node(l) {}
 NODE_END
 
@@ -980,7 +981,12 @@ struct FnSpec {
     bool incycle = false;          // Part of a recursive cycle (§7.8).
     bool has_nonfixed_local = false;
     Line nonfixedline;             // First nonfixed local, for cycle diagnostics.
-    set<SFunction *> needs;        // `return from` targets that must enclose every call.
+    set<FnSpec *> needs;           // Concrete `return from` targets enclosing every call.
+    // Calls that reused this spec, with the call path each was checked on: a
+    // target recorded later applies to those paths too. The call that created
+    // the spec needs no entry, since its path starts every path a target
+    // reaches the spec by.
+    vector<pair<Node *, vector<pair<SFunction *, FnSpec *>>>> neededges;
     // Grow-shrink arrays the body may shrink, itself or through its callees
     // (§5.2): global/captured roots, and indices of parameters whose pointee shrinks.
     set<VarDef *> shrinkexternals;

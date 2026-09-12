@@ -293,7 +293,7 @@ struct Optimizer {
                     // bound function values), or unwinding to us: our body
                     // must stay a real frame.
                     if (k->lexparent || !k->fnvals.empty()) noin = true;
-                    if (k->needs.count(sp->sf)) noin = true;
+                    if (k->needs.count(sp)) noin = true;
                 };
                 if (c->builtin < 0) callee(c->spec);
                 for (auto d : c->dispatch) callee(d);
@@ -716,6 +716,7 @@ inline Node *Return::Cp1(Inliner &inl) const {
     r->from = from;
     r->ns = ns;
     r->target = target;
+    r->targetspec = targetspec;
     return r;
 }
 

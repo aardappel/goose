@@ -323,8 +323,8 @@ struct CodeGen {
     vector<FnSpec *> livespecs;
 
     // Long-distance return targets (§7.9): id, per-ret TLS channels.
-    unordered_map<SFunction *, int> fromids;
-    set<SFunction *> fromemitted;
+    unordered_map<FnSpec *, int> fromids;
+    set<FnSpec *> fromemitted;
 
     bool IsPoolParam(FnSpec *sp, size_t i);
 
@@ -758,11 +758,7 @@ struct CodeGen {
     void PropagateReturn(const string &rfval);
     void GenFromReturn(Return *r);
 
-    // Channel types per target: the rets of its first live spec.
-    unordered_map<SFunction *, vector<TypeExpr *> *> fromrets;
-
-    vector<TypeExpr *> &FromRets(SFunction *t);
-    void EnsureFromChannels(SFunction *t);
+    void EnsureFromChannels(FnSpec *t);
 
     // ------------------------------------------------------------------
     // Calls. Returns one entry per return value: a C expression for fixed
