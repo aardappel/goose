@@ -718,8 +718,8 @@ struct BCE {
         auto rt = TermOf(b->right);
         if (!rt.ok) return {};
         auto m = TmpBase();
-        AddFactB(Zero(), m, 0);   // 0 <= result, unconditionally.
         if (b->op == T_MOD) {
+            AddFactB(Zero(), m, 0);   // Euclidean remainder is nonnegative.
             // A zero divisor aborts (§6.2), so a completed modulo has b != 0.
             // The upper bound is |b|, which is a term only when the divisor
             // is provably nonnegative or is a negative constant.
@@ -727,6 +727,10 @@ struct BCE {
             else if (rt.b.kind == BK_ZERO && rt.off < 0)
                 AddFactB(m, Zero(), SatSub(SatSub(0, rt.off), 1));
         } else if (Query(Zero(), rt.b, rt.off)) {
+            // A nonnegative mask clears the sign bit. A negative signed
+            // mask can preserve it, so it proves neither this lower bound
+            // nor the usual upper bound by itself.
+            AddFactB(Zero(), m, 0);
             AddFactB(m, rt.b, rt.off);
         }
         return Term { true, m, 0 };
