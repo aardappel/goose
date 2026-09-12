@@ -1292,7 +1292,7 @@ struct BCE {
         if (it == cands.end()) return;
         auto &st = it->second;
         if (isdecl) st.declseen = true;
-        st.ge0 = st.ge0 && t.ok && Query(Zero(), t.b, t.off);
+        st.ge0 = st.ge0 && NoWrap(t, v->type->intstorage) && Query(Zero(), t.b, t.off);
         for (auto pit = st.le.begin(); pit != st.le.end();)
             if (t.ok && Query(t.b, LenBase(*pit), SatSub(0, t.off))) ++pit;
             else pit = st.le.erase(pit);
@@ -1306,6 +1306,18 @@ struct BCE {
         auto it = lelen.find(v);
         if (it != lelen.end())
             for (auto pid : it->second) AddFactB(vb, LenBase(pid), 0);
+    }
+
+    // Whether base + off is the value computed at storage s, rather than one
+    // a release build wrapped around. Facts are clamped to CCAP, so a bound
+    // at the clamp is no bound at all for a 64-bit value.
+    bool NoWrap(const Term &t, IntStorage s) {
+        if (!t.ok || !t.off || t.b.kind == BK_ZERO) return t.ok;
+        auto [lo, hi] = RangeOf(s);
+        hi = std::min(hi, CCAP - 1);
+        lo = std::max(lo, 1 - CCAP);
+        return t.off > 0 ? Query(t.b, Zero(), SatSub(hi, t.off))
+                         : Query(Zero(), t.b, SatSub(t.off, lo));
     }
 
     void ShiftCore(VarDef *v, int64_t c) {
@@ -1345,7 +1357,7 @@ struct BCE {
         if (mode == M_KILLS) { BumpVar(v, false); return; }
         if (t.ok && t.b == VarBase(v)) { ShiftCore(v, t.off); return; }
         BumpVar(v, false);
-        if (t.ok) {
+        if (NoWrap(t, v->type->intstorage)) {
             auto nb = VarBase(v);
             AddFactB(nb, t.b, t.off);
             AddFactB(t.b, nb, SatSub(0, t.off));
@@ -2249,7 +2261,8 @@ inline bool Call::BceWalk(BCE &b) {
         auto t = a->exprtype;
         auto isint = t && t->kind == TY_INT && t->intstorage != IS_U64 &&
                      t->intstorage != IS_VARINT;
-        ints.push_back(isint ? b.TermOf(a) : BCE::Term {});
+        auto it = isint ? b.TermOf(a) : BCE::Term {};
+        ints.push_back(isint && b.NoWrap(it, t->intstorage) ? it : BCE::Term {});
         slens.push_back(Is<SliceExpr>(a) ? b.slicelen : BCE::Term {});
     };
     if (auto d = Is<Dot>(callee)) {
