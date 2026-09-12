@@ -130,6 +130,28 @@ inline void TypeCheck::CheckGrowShrink(Node *at, bool standalone, const char *op
     GrowOnlyShrinkAt(at, standalone, op, vd);
 }
 
+// Unnamed locations and views retained by an enclosing operation are live
+// just like named references. This also covers a reference assignment's
+// standalone RHS, where §5.1's syntax restriction alone is insufficient.
+inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root,
+                                        const string &what, bool growonly) {
+    for (auto &[node, v] : heldtemps) {
+        if (v.type->kind == TY_REF && ClassOf(v.type->ref->sub) == SC_RESIZABLE) continue;
+        auto of = PointeeOf(v.type);
+        if (!v.byteview) {
+            if (growonly) {
+                if (of && root->type && !CanContain(LoadType(root->type), of)) continue;
+            } else if (!GrowShrinkCanHold(root, of)) continue;
+        }
+        auto r = CanonRoot(v.root);
+        // An inexact root bounds the lifetime: it may name any outer owner,
+        // not just another owner at that exact scope depth.
+        if (r != root && (v.rootexact || Depth(r) < Depth(root))) continue;
+        Error(at, cat("cannot ", op, ": an earlier expression value at ", Where(node->line),
+                      " may still refer into ", what, growonly ? " (§5.1)" : " (§5.2)"));
+    }
+}
+
 // A grow-only array shrinks wherever nothing can still point into it: a
 // local of this function, a caller's array reached through a reference
 // parameter, a global, or an enclosing function's local. Everything in
@@ -149,6 +171,7 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
         Error(c, cat("cannot ", op, " ", vd->name,
                      " inside a value-producing expression: references taken earlier in "
                      "it may still be live (§5.1)"));
+    CheckHeldShrinks(c, op, vd, string(vd->name), true);
     for (auto v : vars) {
         if (v == vd || !v->type) continue;
         auto t = v->type;
@@ -202,7 +225,7 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
             }
         }
     }
-    if (vd->isglobal || !vd->type) NoteShrink(vd);
+    NoteShrink(vd);
     // Inside a loop, a store later in the body reaches this shrink on the
     // next iteration: those are checked when the outermost loop ends.
     auto loopscope = -1;
@@ -450,28 +473,75 @@ inline bool TypeCheck::IsGrowOnlyRootVar(VarDef *r) {
     return v && v->type && IsArrayKind(v->type, A_GROW);
 }
 
-// The globals and parameters a function's body textually shrinks: what a
-// call into a cycle still being checked is taken to shrink (§5.1).
+// The receivers a function's body textually shrinks: what a call into a
+// cycle still being checked is taken to shrink (§5.1). A parameter counts by
+// index; any other name counts as a capture, and as a global too where one
+// has that name. A local of the body that owns its array hides the name
+// until its block ends, while a name bound any other way may alias storage
+// outside the body and still counts.
 inline const TypeCheck::ShrinkSummary &TypeCheck::SyntacticShrinks(SFunction *sf) {
     auto [it, fresh] = shrinkcache.try_emplace(sf);
     auto &summary = it->second;
     if (!fresh || !sf->body) return summary;
+    // A declaration owns its arrays when it binds array literals, or
+    // uninitialized arrays, by value: any other initializer may bind existing
+    // storage (§4.1).
+    auto owned = [](VarDecl *vd) {
+        if (vd->byref || (vd->type && vd->type->kind != TY_ARRAY)) return false;
+        if (vd->inits.empty()) return vd->type != nullptr;
+        for (auto init : vd->inits) if (!Is<ArrayLit>(init)) return false;
+        return true;
+    };
+    vector<pair<string_view, bool>> locals;   // The body's bindings in scope, innermost last.
     auto note = [&](Node *recv) {
         auto id = Is<Ident>(recv);
         if (!id) return;
+        for (auto l = locals.rbegin(); l != locals.rend(); ++l) {
+            if (l->first != id->name) continue;
+            if (l->second) return;
+            break;
+        }
         for (size_t i = 0; i < sf->params.size(); i++)
             if (sf->params[i].name == id->name) { summary.params.push_back((int)i); return; }
         if (ast.LookupGlobal(id->name, id->ns)) summary.globals.push_back(id->name);
+        summary.captures.push_back(id->name);
     };
     function<void(Node *)> walk = [&](Node *n) {
         if (!n) return;
+        auto base = locals.size();
         if (auto c = Is<Call>(n)) {
             if (auto d = Is<Dot>(c->callee); d && (d->name == "pop" || d->name == "resize" ||
                                                     d->name == "clear"))
                 note(d->obj);
         }
         if (auto a = Is<Assign>(n); a && a->op == T_ASSIGN) note(a->lval);
-        n->Children([&](Node *ch) { walk(ch); });
+        if (auto fl = Is<ForLoop>(n)) {
+            walk(fl->iter);
+            locals.push_back({ fl->var, false });
+            locals.push_back({ fl->idxvar, false });
+            walk(fl->body);
+        } else if (auto m = Is<MatchExpr>(n)) {
+            walk(m->scrutinee);
+            for (auto &arm : m->arms) {
+                walk(arm.pat.lo);
+                walk(arm.pat.hi);
+                locals.push_back({ arm.pat.binder, false });
+                walk(arm.body);
+                locals.resize(base);
+            }
+        } else if (auto fv = Is<FunVal>(n)) {
+            locals.push_back({ "it", false });
+            for (auto &p : fv->params) locals.push_back({ p.name, false });
+            walk(fv->body);
+        } else {
+            n->Children([&](Node *ch) { walk(ch); });
+        }
+        // A declaration's names stay bound for the rest of its block.
+        if (auto vd = Is<VarDecl>(n)) {
+            for (auto name : vd->names) locals.push_back({ name, owned(vd) });
+        } else {
+            locals.resize(base);
+        }
     };
     walk(sf->body);
     return summary;
@@ -483,6 +553,7 @@ inline const TypeCheck::ShrinkSummary &TypeCheck::SyntacticShrinks(SFunction *sf
 // the same-depth rebinding rule could have retargeted into it.
 inline void TypeCheck::CheckShrinkHolders(Node *at, const string &op, VarDef *root,
                                           const string &what) {
+    CheckHeldShrinks(at, op, root, what, false);
     VisibleVars([&](VarDef *v) {
         if (v == root || !v->type) return;
         if (v->type->kind != TY_REF && v->type->kind != TY_SLICE) return;
@@ -504,16 +575,16 @@ inline void TypeCheck::CheckShrinkHolders(Node *at, const string &op, VarDef *ro
     });
 }
 
-// Records a shrink for the callers' sake (§5.2): of a global, on the
-// specialization being checked; through a parameter class, on the
-// specialization that owns those parameters (a function value's body may
-// shrink through its enclosing function's).
+// Records a shrink for callers (§5.2): globals and captured owners remain
+// external roots, while this specialization's parameter roots map at calls.
 inline void TypeCheck::NoteShrink(VarDef *root) {
-    if (root->isglobal) {
-        if (auto spec = CurRealFrame().spec) spec->shrinkglobals.insert(root);
+    auto current = CurRealFrame().spec;
+    if (!current) return;
+    if (root->type) {
+        if (root->isglobal || root->ownerspec != current)
+            current->shrinkexternals.insert(root);
         return;
     }
-    if (root->type) return;  // A local: its owner sees every shrink directly.
     for (auto fi = (int)frames.size() - 1; fi >= 0; fi--) {
         auto spec = frames[fi].spec;
         if (!spec) continue;
@@ -523,7 +594,10 @@ inline void TypeCheck::NoteShrink(VarDef *root) {
             spec->shrinkparams.insert((int)i);
             found = true;
         }
-        if (found) return;
+        if (found) {
+            if (spec != current) current->shrinkexternals.insert(root);
+            return;
+        }
     }
 }
 
@@ -536,7 +610,7 @@ inline void TypeCheck::ShrinkGrowShrink(Node *at, const string &op, VarDef *root
 
 // The callee's shrinks of grow-shrink arrays (§5.2) are the caller's:
 // nothing in scope may refer into an argument it shrinks through or a
-// global it shrinks, and both are recorded for the caller's own callers.
+// external owner it shrinks, and both are recorded for the caller's callers.
 // A back edge's summary is incomplete, so it counts as shrinking every
 // grow-shrink array it can reach.
 inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &argvals,
@@ -545,7 +619,8 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
     // A grow-only root takes the §5.1 scan (variables and recorded
     // stores), a grow-shrink one the §5.2 scan (variables only).
     auto shrink = [&](VarDef *root, const string &what) {
-        if (IsGrowOnlyRootVar(root)) GrowOnlyShrinkAt(at, true, what, root);
+        if (IsGrowOnlyRootVar(root))
+            GrowOnlyShrinkAt(at, Is<Call>(at) && Is<Call>(at)->standalone, what, root);
         else ShrinkGrowShrink(at, cat(what, " ", root->name), root, string(root->name));
     };
     auto pending_shrinks = pending ? &SyntacticShrinks(spec->sf) : nullptr;
@@ -568,6 +643,26 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
         if (shrinks) shrink(root, cat("call ", name, ", which shrinks"));
     }
     if (pending) {
+        // A nested recursive call can also reach its lexical parents' local
+        // storage, including arrays reached through captured parameters.
+        set<VarDef *> seen;
+        for (auto env = spec->lexparent; env; env = env->lexparent) {
+            for (auto vd : vars) {
+                if (vd->ownerspec != env || vd->isglobal || !vd->type) continue;
+                auto rt = vd->type;
+                auto root = vd;
+                if (IsPlainRef(rt)) {
+                    rt = rt->ref->sub;
+                    root = CanonRoot(RefRootOf(vd));
+                }
+                if (!root) continue;
+                auto may = ContainsGrowShrink(rt);
+                if (IsArrayKind(rt, A_GROW))
+                    for (auto external : pending_shrinks->captures) may |= external == vd->name;
+                if (may && seen.insert(root).second)
+                    shrink(root, cat("call ", name, ", which may shrink"));
+            }
+        }
         // Every grow-shrink global, and every grow-only global some function
         // still being checked textually shrinks.
         for (auto g : ast.globals) {
@@ -584,13 +679,14 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
                             textual |= gn == vd->name;
                     }
                     if (textual)
-                        GrowOnlyShrinkAt(at, true, cat("call ", name, ", which may shrink ",
+                        GrowOnlyShrinkAt(at, Is<Call>(at) && Is<Call>(at)->standalone,
+                                         cat("call ", name, ", which may shrink ",
                                                        vd->name), vd);
                 }
             }
         }
     } else {
-        for (auto vd : spec->shrinkglobals)
+        for (auto vd : spec->shrinkexternals)
             shrink(vd, cat("call ", name, ", which shrinks"));
     }
 }
@@ -650,6 +746,7 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
     }
     {
         DestScope ds(*this, Dest {});
+        TempScope argscope(*this);
         for (size_t i = 0; i < ptypes.size(); i++) CheckArg(c->args[i], ptypes[i]);
     }
     // Check the body inline, with lookups chaining to the definer.

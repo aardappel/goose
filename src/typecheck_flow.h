@@ -1101,7 +1101,29 @@ inline void TypeCheck::AssignableClassCheck(TypeExpr *t, Node *at) {
 }
 
 inline void TypeCheck::CheckAssign(Assign *a) {
+    TempScope temps(*this);
     auto lv = CheckLValue(a->lval);
+    auto held = lv;
+    auto throughref = a->op != T_DOTASSIGN && IsPlainRef(held.type);
+    if (throughref) DerefLValue(held, a->lval);
+    // A shrink only frees element storage. A field path from a variable, or
+    // from a reference to a resizable value, stays in that value's own
+    // storage (a frame object's prefix included). A path through an element,
+    // a slice or another reference stays live, and so does the pointee that
+    // `=` writes through a path ending in a reference.
+    auto owns = [&](TypeExpr *t) {
+        return t && t->kind != TY_SLICE &&
+               (t->kind != TY_REF || ClassOf(t->ref->sub) == SC_RESIZABLE);
+    };
+    auto infields = [&](Node *n) {
+        while (auto d = Is<Dot>(n)) {
+            n = d->obj;
+            if (!Is<Ident>(n) && !owns(n->exprtype)) return false;
+        }
+        auto id = Is<Ident>(n);
+        return id && id->vdef && owns(id->vdef->type);
+    };
+    if (throughref || !infields(a->lval)) HoldLocation(a->lval, held);
     if (a->op == T_DOTASSIGN) { CheckRebind(a, lv); return; }
     if (lv.isvarint)
         Error(a, "varint fields are written only at construction (§3.6)");
@@ -1559,6 +1581,19 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                          "(let, const, or a read-only instantiation, §9.5)"));
         if ((d.flags & BF_REUSABLE) && !rv.reusable)
             Error(c, cat(".", d.name, " exists on reusable pools only (§5.4)"));
+        if (args.size() > 1) {
+            // The builtin keeps its receiver location while later arguments
+            // run. Serialization also retains a view of the source elements.
+            auto held = rv;
+            if (d.kind == B_TO_BYTES || rt->kind == TY_SLICE)
+                held.type = SliceOf(elem, args[0]->line);
+            else if (held.type->kind != TY_REF)
+                held.type = RefTo(rt, args[0]->line);
+            if (held.root == temproot && rv.type->kind != TY_REF &&
+                rv.type->kind != TY_SLICE)
+                held.rootexact = true;
+            HoldValue(args[0], held);
+        }
     }
     // A pending `var x = []` receiver learns its element type from what
     // is first pushed or appended into it (§4.2).

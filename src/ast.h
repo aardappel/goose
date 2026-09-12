@@ -969,8 +969,8 @@ struct FnSpec {
     Line nonfixedline;             // First nonfixed local, for cycle diagnostics.
     set<SFunction *> needs;        // `return from` targets that must enclose every call.
     // Grow-shrink arrays the body may shrink, itself or through its callees
-    // (§5.2): globals, and the indices of parameters whose pointee is shrunk.
-    set<VarDef *> shrinkglobals;
+    // (§5.2): global/captured roots, and indices of parameters whose pointee shrinks.
+    set<VarDef *> shrinkexternals;
     set<int> shrinkparams;
     // Stores into the caller's storage, through reference parameters'
     // class roots (§5.1): the call sites map them onto their arguments.

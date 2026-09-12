@@ -1,0 +1,1 @@
+cannot call drop, which shrinks g inside a value-producing expression

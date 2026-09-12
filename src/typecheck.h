@@ -134,6 +134,15 @@ struct TypeCheck {
     // this point, which are in no variable and so invisible to the liveness
     // scan of CheckGrowShrink.
     bool invalue = false;
+    // Earlier references, views and assignment locations remain live while
+    // the rest of their expression evaluates, even without a named variable.
+    vector<pair<Node *, Val>> heldtemps;
+    struct TempScope {
+        TypeCheck &tc;
+        size_t base;
+        TempScope(TypeCheck &t) : tc(t), base(t.heldtemps.size()) {}
+        ~TempScope() { tc.heldtemps.resize(base); }
+    };
     bool inreturn = false;   // Checking a return's values: the function's own locals move.
     // The destination of the value under construction (for reference stores):
     // its root plus whether that root is the destination storage's owner.
@@ -642,6 +651,11 @@ struct TypeCheck {
     void ReadBackLVal(LVal &lv);
     Val ContainerRead(LVal lv);
     void ResolveMemberLValue(LVal &lv, Dot *d);
+    void HoldValue(Node *n, Val v, bool sequenceview = false);
+    void HoldLocation(Node *n, const LVal &lv);
+    void HoldSequence(Node *n, const LVal &lv, TypeExpr *elem);
+    void CheckHeldShrinks(Node *at, const string &op, VarDef *root,
+                          const string &what, bool growonly);
 
     // ------------------------------------------------------------------
     // Values: the per-node dispatch plus the implicit-conversion rules.
@@ -665,7 +679,9 @@ struct TypeCheck {
 
     Val CheckArg(Node *&n, TypeExpr *expected) {
         SlotScope ss(*this, false);
-        return CheckValue(n, expected, true);
+        auto v = CheckValue(n, expected, true);
+        HoldValue(n, v);
+        return v;
     }
 
     Val CheckValueAt(Node *&n, TypeExpr *expected, Dest d, bool callsite = false);
@@ -863,6 +879,7 @@ struct TypeCheck {
     struct ShrinkSummary {
         vector<string_view> globals;
         vector<int> params;
+        vector<string_view> captures;   // Every other receiver, a global's name included.
     };
     map<SFunction *, ShrinkSummary> shrinkcache;
     const ShrinkSummary &SyntacticShrinks(SFunction *sf);

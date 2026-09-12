@@ -13,6 +13,7 @@ namespace goose {
 // generic inference (§7.1, §7.7), and case-function tag dispatch (§8.2).
 
 inline Val TypeCheck::CheckCall(Call *c) {
+    TempScope argscope(*this);
     // A node may be re-checked in argument phase 2; reset annotations.
     c->spec = nullptr;
     c->dispatch.clear();
@@ -582,6 +583,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
         DestScope ds(*this, Dest {});
         for (size_t i = 0; i < matches[0].paramtypes.size(); i++)
             if ((int)i != found) CheckArg(argnodes[i], matches[0].paramtypes[i]);
+            else HoldValue(argnodes[i], argvals[i]);
     }
     return CallResult(c, first, argvals);
 }
@@ -962,6 +964,12 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     frames.push_back(f);
     auto savepending = std::move(pendingshrinks);
     pendingshrinks.clear();
+    // The caller's pending temporaries and value region are its own; the
+    // call site replays this body's shrinks against them.
+    auto saveheld = std::move(heldtemps);
+    heldtemps.clear();
+    auto saveinvalue = invalue;
+    invalue = false;
     auto savereach = reachable;
     DestScope ds(*this, Dest {});
     reachable = true;
@@ -1095,6 +1103,8 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     if (!spec->retsknown) spec->retsknown = true;
     PopScope();
     pendingshrinks = std::move(savepending);
+    heldtemps = std::move(saveheld);
+    invalue = saveinvalue;
     frames.pop_back();
     reachable = savereach;
     spec->inprogress = false;
@@ -1219,6 +1229,7 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
 }
 
 inline void TypeCheck::CheckReturn(Return *r) {
+    TempScope temps(*this);
     // Which function does this exit? `from f` names one on the current
     // compile-time path; a plain return inside a function value exits the
     // lexically enclosing named function (§7.6, §7.9).
@@ -1272,6 +1283,7 @@ inline void TypeCheck::CheckReturn(Return *r) {
         for (size_t i = 0; i < r->vals.size(); i++) {
             auto v = CheckValue(r->vals[i], expectone(i));
             if (v.type->kind == TY_VOID) Error(r, "cannot return a valueless expression");
+            HoldValue(r->vals[i], v);
             vals.push_back(v);
         }
     }
@@ -1307,6 +1319,7 @@ inline void TypeCheck::CheckReturn(Return *r) {
 inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fields,
                                                vector<TypeExpr *> &ftypes,
                                                string_view what, TypeExpr *selft) {
+    TempScope temps(*this);
     LitDeep deep;
     auto named = !sl->inits.empty() && !sl->inits[0].name.empty();
     vector<bool> got(fields.size(), false);
@@ -1338,6 +1351,7 @@ inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fi
         SlotScope ss(*this, true);
         auto fv = CheckValue(fi.val, ftypes[idx]);
         NoteLitElem(deep, fv, ftypes[idx]);
+        HoldValue(fi.val, fv);
     }
     for (auto i = 0; i < (int)fields.size(); i++) {
         if (fields[i].ispad || got[i]) continue;

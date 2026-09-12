@@ -150,6 +150,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
 }
 
 inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
+    TypeCheck::TempScope temps(tc);
     Val v;
     TypeCheck::LitDeep deep;
     if (capexpr) {
@@ -207,6 +208,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         auto ev = tc.CheckValue(e, elem);
         if (!elem) elem = ev.type;
         tc.NoteLitElem(deep, ev, elem);
+        tc.HoldValue(e, ev);
     }
     if (elem->kind == TY_VOID) tc.Error(this, "cannot infer array element type");
     if (wantcount >= 0 && (int64_t)elems.size() != wantcount)
@@ -358,14 +360,16 @@ inline Val Unary::Check(TypeCheck &tc, TypeExpr *) {
 }
 
 inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
+    TypeCheck::TempScope temps(tc);
     if (op == T_DOTEQ || op == T_DOTNEQ) {
         // Reference identity (§4.5): the addresses, never the pointees. Each
         // side is a reference (plain or optional) or null, or storage taken
         // by reference as a `.=` binding takes it; the pointee types agree.
         auto lv = tc.CheckV(left, nullptr);
-        auto rv = tc.CheckV(right, nullptr);
         if (lv.lvalue && lv.type->kind != TY_REF && lv.type->kind != TY_SLICE)
             left = tc.AutoRef(left, lv);
+        tc.HoldValue(left, lv);
+        auto rv = tc.CheckV(right, nullptr);
         if (rv.lvalue && rv.type->kind != TY_REF && rv.type->kind != TY_SLICE)
             right = tc.AutoRef(right, rv);
         left->exprtype = lv.type;
@@ -392,6 +396,7 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
         return v;
     }
     auto lv = tc.Operand(left);
+    tc.HoldValue(left, lv, true);
     auto rv = tc.Operand(right);
     auto lt = tc.LoadType(lv.type), rt = tc.LoadType(rv.type);
     Val v;
@@ -439,12 +444,14 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
                     left = tc.WholeSlice(left);
                     lv = tc.Operand(left);
                     lt = tc.LoadType(lv.type);
+                    tc.HoldValue(left, lv);
                 }
-                if (rt->kind != TY_SLICE) {
-                    right = tc.WholeSlice(right);
-                    rv = tc.Operand(right);
-                    rt = tc.LoadType(rv.type);
-                }
+                if (rt->kind != TY_SLICE) right = tc.WholeSlice(right);
+                // The adaptation can turn a copied fixed-array operand into
+                // a retained view. Recheck the RHS with that view live, as
+                // call arguments are rechecked after parameter adaptation.
+                rv = tc.Operand(right);
+                rt = tc.LoadType(rv.type);
             }
             if (!tc.TopConstEq(lt, rt))
                 tc.Error(this, cat("== requires operands of the same type, got ",
@@ -574,6 +581,7 @@ inline Val Index::Check(TypeCheck &tc, TypeExpr *) {
 }
 
 inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
+    TypeCheck::TempScope temps(tc);
     auto lv = tc.LValueBase(obj);
     tc.DerefLValue(lv, obj);
     tc.SliceProvenance(lv, obj);
@@ -591,6 +599,7 @@ inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
     } else {
         tc.Error(this, cat("cannot slice a value of type ", tc.TypeStr(lv.type)));
     }
+    tc.HoldSequence(obj, lv, elem);
     if (lo) tc.CheckIntAny(lo);
     if (hi) tc.CheckIntAny(hi);
     Val v;

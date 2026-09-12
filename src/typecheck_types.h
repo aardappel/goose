@@ -878,6 +878,7 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         return lv;
     }
     if (auto ix = Is<Index>(n)) {
+        TempScope temps(*this);
         auto lv = LValueBase(ix->obj);
         DerefLValue(lv, ix->obj);
         SliceProvenance(lv, ix->obj);
@@ -893,6 +894,7 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         if (ClassOf(elem) != SC_FIXED)
             Error(n, cat(lv.type->kind == TY_SLICE ? "slices" : "arrays",
                          " of variable-size elements cannot be indexed, only iterated"));
+        HoldSequence(ix->obj, lv, elem);
         CheckIntAny(ix->idx);
         if (lv.type->cq) lv.writable = false;   // An element of a const value.
         lv.letbound = false;

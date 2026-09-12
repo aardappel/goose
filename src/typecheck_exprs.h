@@ -20,6 +20,10 @@ inline TypeCheck::LVal TypeCheck::LValueBase(Node *n) {
     LVal lv;
     lv.type = v.type;
     lv.SetProv(v);
+    // A value result is materialized in its own temporary storage. References
+    // and slices instead retain the (possibly inexact) owner they borrow.
+    if (lv.root == temproot && v.type->kind != TY_REF && v.type->kind != TY_SLICE)
+        lv.rootexact = true;
     return lv;
 }
 
@@ -95,6 +99,53 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
     }
     v.lvalue = v.type->kind != TY_REF;
     return v;
+}
+
+// Values constructed in argument, literal and result slots own their copies.
+// References, slices and reference fields still retain borrows. Array operands
+// used as sequence views also borrow their elements until the operation ends.
+inline void TypeCheck::HoldValue(Node *n, Val v, bool sequenceview) {
+    if (!v.type) return;
+    auto t = v.type;
+    if (t->kind == TY_REF || t->kind == TY_SLICE) {
+        heldtemps.push_back({ n, v });
+        return;
+    }
+    if (sequenceview && t->kind == TY_ARRAY && ClassOf(t) != SC_FIXED) {
+        auto view = v;
+        view.type = SliceOf(t->arr->sub, n->line);
+        heldtemps.push_back({ n, view });
+    }
+    if (HoldsPlainRef(t)) {
+        vector<TypeExpr *> pointees;
+        RefPointees(t, pointees);
+        auto held = v;
+        held.root = HolderRootOf(v);
+        held.rootexact = v.holderset && v.holderexact;
+        held.rootfrom = v.holderfrom;
+        for (auto pt : pointees) {
+            held.type = RefTo(pt, n->line);
+            heldtemps.push_back({ n, held });
+        }
+    }
+}
+
+// An assignment has evaluated its destination address before its RHS. This
+// is a reference to the slot itself (including a reference/slice slot), not
+// a read-back of whatever value is currently stored there.
+inline void TypeCheck::HoldLocation(Node *n, const LVal &lv) {
+    Val v;
+    v.type = RefTo(lv.type, n->line);
+    v.SetProv(lv);
+    HoldValue(n, v);
+}
+
+// Index/slice receivers retain their element view while bounds evaluate.
+inline void TypeCheck::HoldSequence(Node *n, const LVal &lv, TypeExpr *elem) {
+    Val v;
+    v.type = SliceOf(elem, n->line);
+    v.SetProv(lv);
+    HoldValue(n, v);
 }
 
 // The root bounding the references inside a holder value: what was

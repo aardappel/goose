@@ -89,7 +89,10 @@ fn format(out: u8[>..]&, n: u32[>..]&) {
     if n.len == 0 { out.push('0'); return; }
     var work = copy(n);                  // the one copy, since division consumes its input
     var chunks: u32[>..] = [];           // nine decimal digits per entry, freed with the call
-    while work.len > 0 { chunks.push(div_small(work, 1000000000)); }
+    while work.len > 0 {
+        let chunk = div_small(work, 1000000000);
+        chunks.push(chunk);
+    }
     var first = true;
     each_rev(chunks) { c =>
         if first { format(out, c); first = false; }
