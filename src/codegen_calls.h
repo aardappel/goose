@@ -455,6 +455,12 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
         auto pt = sp0->argtypes[i];
         if (IsPoolParam(sp0, i)) {
             shared[i] = GenPrefVal(an[i]);
+        } else if (IsResz(pt)) {
+            string stk;
+            auto h = RzTemp(pt, stk);
+            GenConstruct(an[i], stk, pt, RzLenLv(pt, h));
+            shared[i] = h;
+            sharedstk[i] = stk;
         } else if (IsBytesT(pt)) {
             string stk;
             auto base = BytesTemp(stk);
@@ -468,11 +474,21 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
     // Shared return channels.
     vector<string> retex(sp0->rets.size());
     vector<string> dststk(sp0->rets.size());
+    vector<string> dstlen(sp0->rets.size());
     for (size_t i = 0; i < sp0->rets.size(); i++) {
         auto rt = sp0->rets[i];
         Dst dd = alldst && i < alldst->size() ? (*alldst)[i]
                                               : (i == 0 ? d0 : Dst {});
-        if (IsBytesT(rt)) {
+        if (IsResz(rt)) {
+            if (dd.k == DK_STACK && !dd.lenlv.empty()) {
+                dststk[i] = dd.s;
+                dstlen[i] = dd.lenlv;
+            } else {
+                auto h = RzTemp(rt, dststk[i]);
+                dstlen[i] = RzLenLv(rt, h);
+                retex[i] = h;
+            }
+        } else if (IsBytesT(rt)) {
             string stk;
             if (dd.k == DK_STACK) stk = dd.s;
             else BytesTemp(stk);
@@ -543,7 +559,10 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
         }
         for (auto fv : ki.freevars) EmitFvArg(fv, args);
         for (size_t i = 0; i < sp->rets.size(); i++) {
-            if (IsBytesT(sp->rets[i])) args.push_back(dststk[i]);
+            if (IsResz(sp->rets[i])) {
+                args.push_back(dststk[i]);
+                args.push_back(cat("&", dstlen[i]));
+            } else if (IsBytesT(sp->rets[i])) args.push_back(dststk[i]);
             else if ((int)i != ki.cret) args.push_back(cat("&", retex[i]));
         }
         if (ki.needssp) args.push_back(SpTop());
