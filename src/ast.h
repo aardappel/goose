@@ -969,9 +969,7 @@ struct FnSpec {
     int id = 0;                    // Unique, for diagnostics/codegen naming.
     // Filled by the optimizer (optimize.h):
     int uses = 0;                  // Call sites in live code (tag-dispatch entries included).
-    int nodecount = 0;             // Body node count after its own optimization.
     bool live = false;             // Reachable from main / threads / global initializers.
-    bool noinline = false;         // This body cannot be spliced into callers.
 };
 
 // ---------------------------------------------------------------------------

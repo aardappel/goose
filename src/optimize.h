@@ -66,6 +66,11 @@ struct Optimizer {
 
     vector<FnSpec *> postorder;  // Live specs, callees before callers.
 
+    // Inlining decisions use only this optimizer's classification of a body.
+    // Keep it here rather than as annotations exposed to subsequent passes.
+    struct InlineInfo { int nodecount = 0; bool noinline = false; };
+    unordered_map<FnSpec *, InlineInfo> inlineinfo;
+
     // ------------------------------------------------------------------
     // Small helpers.
 
@@ -275,11 +280,12 @@ struct Optimizer {
     // body may be spliced into callers (see the header comment).
 
     void Scan(FnSpec *sp) {
-        sp->nodecount = 0;
+        auto &info = inlineinfo[sp];
+        info.nodecount = 0;
         auto noin = sp->sf->isrec || sp->incycle || sp->sf->isthread || sp->rets.size() > 1;
         function<void(Node *)> rec = [&](Node *n) {
             if (!n) return;
-            sp->nodecount++;
+            info.nodecount++;
             if (auto c = Is<Call>(n)) {
                 auto callee = [&](FnSpec *k) {
                     if (!k) return;
@@ -299,7 +305,7 @@ struct Optimizer {
             n->Children([&](Node *ch) { rec(ch); });
         };
         rec(sp->body);
-        sp->noinline = noin;
+        info.noinline = noin;
     }
 
     // Accumulator tail-recursion elimination, defined in optimize_tre.h.
@@ -392,8 +398,9 @@ struct Optimizer {
     void DumpSpecs(string &s) {
         for (auto sp : ast.fnspecs) {
             if (!sp->live) continue;
-            Append(s, "// spec ", sp->id, ": uses ", sp->uses, ", nodes ", sp->nodecount,
-                   sp->noinline ? ", noinline" : "", "\n");
+            auto &info = inlineinfo[sp];
+            Append(s, "// spec ", sp->id, ": uses ", sp->uses, ", nodes ", info.nodecount,
+                   info.noinline ? ", noinline" : "", "\n");
             Append(s, "fn ", sp->sf->qname, "(");
             for (size_t i = 0; i < sp->params.size(); i++) {
                 if (i) s += ", ";
@@ -450,11 +457,12 @@ struct Inliner {
 inline Node *Optimizer::TryInline(Call *c) {
     if (!caninline || !c->spec || c->builtin >= 0 || !c->dispatch.empty()) return nullptr;
     auto K = c->spec;
-    if (!K->live || K->noinline || !K->body) return nullptr;
+    auto &info = inlineinfo[K];
+    if (!K->live || info.noinline || !K->body) return nullptr;
     // Never into a recursive cycle: the inlined body's locals would become
     // the cycle function's own, upsetting the §7.8 stack-assignment rule.
     if (curspec && (curspec->incycle || curspec->sf->isrec)) return nullptr;
-    if (!(K->uses == 1 || K->nodecount < nc || K->nodecount * K->uses < ncu)) return nullptr;
+    if (!(K->uses == 1 || info.nodecount < nc || info.nodecount * K->uses < ncu)) return nullptr;
     // The argument list; a UFCS receiver is the first parameter (§7.1).
     vector<Node *> argnodes;
     if (auto d = Is<Dot>(c->callee)) argnodes.push_back(d->obj);
