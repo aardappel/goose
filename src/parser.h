@@ -209,7 +209,22 @@ struct Parser {
         ExpectClosingAngle("generic parameter list");
     }
 
+    // A declaration's type parameters have lexical priority over every
+    // namespace (§11.1). Mark their uses before whole-program name resolution
+    // can mistake them for an unrelated struct, enum or alias. Do this after
+    // parsing the declaration so bounds can also name later parameters, and
+    // include nested functions, which inherit the enclosing type parameters.
+    void BindGenericNames(size_t firsttype, const vector<GenericParam> &generics) {
+        for (auto i = firsttype; i < ast.alltypes.size(); i++) {
+            auto t = ast.alltypes[i];
+            if (t->kind != TY_UNRESOLVED) continue;
+            for (auto &g : generics)
+                if (t->named->name == g.name) { t->kind = TY_GENERIC; break; }
+        }
+    }
+
     void ParseStructDecl() {
+        auto firsttype = ast.alltypes.size();
         auto line = CurLine();
         lex.Next();
         auto st = new SStruct();
@@ -223,6 +238,7 @@ struct Parser {
         Expect(T_LCURLY, "struct declaration");
         ParseFieldList(st->fields, "struct body");
         Expect(T_RCURLY, "struct declaration");
+        BindGenericNames(firsttype, st->generics);
         ast.NS(st->ns).structmap[st->name] = st;
         ast.topdecls.push_back(New<StructDecl>(line, st));
     }
@@ -255,6 +271,7 @@ struct Parser {
     }
 
     void ParseEnumDecl() {
+        auto firsttype = ast.alltypes.size();
         auto line = CurLine();
         lex.Next();
         auto en = new SEnum();
@@ -280,11 +297,13 @@ struct Parser {
             if (!IsNext(T_COMMA)) break;
         }
         Expect(T_RCURLY, "enum declaration");
+        BindGenericNames(firsttype, en->generics);
         ast.NS(en->ns).enummap[en->name] = en;
         ast.topdecls.push_back(New<EnumDecl>(line, en));
     }
 
     FnDecl *ParseFnDecl(bool nested) {
+        auto firsttype = ast.alltypes.size();
         auto line = CurLine();
         auto sf = new SFunction();
         ast.functions.push_back(sf);
@@ -347,6 +366,7 @@ struct Parser {
             sf->body = ParseBlockExpr("function body");
             curfn = savefn;
         }
+        BindGenericNames(firsttype, sf->generics);
         // Only the root file's `fn main` is the program entry; an imported
         // file's main is ignored entirely (§11.1), letting a runnable file
         // double as an importable library.
