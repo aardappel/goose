@@ -539,7 +539,35 @@ inline vector<string> CodeGen::EmitThreadSpawn(Call *c, vector<Node *> &an) {
     auto thunk = EnsureThreadThunk(sp);
     string stk;
     auto base = BytesTemp(stk);
-    for (size_t i = 0; i < sp->argtypes.size(); i++) GenConstruct(an[1 + i], stk);
+    for (size_t i = 0; i < sp->argtypes.size(); i++) {
+        auto pt = sp->argtypes[i];
+        if (!IsResz(pt)) {
+            GenConstruct(an[1 + i], stk, pt);
+            continue;
+        }
+        // Resizable values have an out-of-line header. Transfer a flat
+        // image with its count, never a pointer into the spawning instance.
+        auto szp = T();
+        L("int64_t *", szp, " = (int64_t *)", Top(stk), ";");
+        Bump(stk, "8");
+        auto cntp = T();
+        L("int64_t *", cntp, " = (int64_t *)", Top(stk), ";");
+        EmitValStore(stk, ast.inttypes[IS_I64], "0");
+        if (IsFrameObj(pt)) {
+            // Reserve the packed prefix, construct directly into the
+            // packet, then save only the header's count and fixed fields.
+            auto pre = FoPrefixSize(pt), pp = T(), h = T();
+            L("uint8_t *", pp, " = ", Top(stk), ";");
+            Bump(stk, pre);
+            L(CT(pt), " ", h, ";");
+            GenConstruct(an[1 + i], stk, pt, h);
+            L("*", cntp, " = ", FoTailHdr(pt, h), ".len;");
+            L("memcpy(", pp, ", &", h, ", ", pre, ");");
+        } else {
+            GenConstruct(an[1 + i], stk, pt, cat("(*", cntp, ")"));
+        }
+        L("*", szp, " = ", Top(stk), " - (uint8_t *)(", szp, " + 1);");
+    }
     for (auto d : ThreadGlobals(sp)) {
         auto szp = T();
         L("int64_t *", szp, " = (int64_t *)", Top(stk), ";");
@@ -585,9 +613,24 @@ inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
     vector<string> args;
     for (size_t i = 0; i < sp->argtypes.size(); i++) {
         auto pt = sp->argtypes[i];
-        if (IsBytesT(pt)) {
-            if (IsResz(pt))
-                Fail(sp->sf->line, "resizable by-value thread arguments are unsupported");
+        if (IsResz(pt)) {
+            EmitCoreTypes();
+            auto a = cat("a", i), stk = cat(a, "_stk");
+            Append(b, "    gs_stack ", stk, "; gs_stack_init(&", stk, ");\n",
+                   "    ", IsFrameObj(pt) ? CT(pt) : string("gs_rhdr"), " ", a, ";\n",
+                   "    {\n        int64_t sz = *(int64_t *)p; p += 8;\n");
+            auto pre = IsFrameObj(pt) ? FoPrefixSize(pt) : string("0");
+            auto hdr = IsFrameObj(pt) ? FoTailHdr(pt, a) : a;
+            if (IsFrameObj(pt))
+                Append(b, "        memcpy(&", a, ", p + 8, ", pre, ");\n");
+            Append(b, "        ", hdr, ".base = ", stk, ".top;\n",
+                   "        ", hdr, ".len = *(int64_t *)p;\n",
+                   "        memcpy(", stk, ".top, p + 8 + ", pre,
+                   ", (size_t)(sz - 8 - ", pre, "));\n",
+                   "        ", stk, ".top += sz - 8 - ", pre, "; p += sz;\n    }\n");
+            args.push_back(a);
+            args.push_back(cat("&", stk));
+        } else if (IsBytesT(pt)) {
             Append(b, "    uint8_t *a", i, " = p;\n");
             // Advance past the value; a size fn may be emitted on demand.
             Append(b, "    p += ", SizeX(pt, cat("a", i)).c_str(), ";\n");
