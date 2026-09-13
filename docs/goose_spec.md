@@ -2414,7 +2414,9 @@ follows it, so `from` remains usable as a name.
 
 ## Appendix E. Implementation notes (informative)
 
-What the current compiler does where the text above leaves it a choice.
+What the current compiler does where the text above leaves it a choice. The
+compiler's own description, pass by pass and analysis by analysis, is
+`implementation.md`.
 
 * **Two C backends.** The generated C is normally written to a file for a C
   compiler to build (`-o out.c`). Where the compiler was built with TinyCC
