@@ -153,7 +153,7 @@ struct CycleRoots {
     // its pointee's root, any other global its own storage.
     VarDef *RootOfGlobal(VarDef *vd) {
         auto t = vd->type;
-        return rootof(vd, t && (t->kind == TY_REF || t->kind == TY_SLICE));
+        return rootof(vd, t && (IsRefOrSlice(t)));
     }
 
     // Only single-name globals: LookupVar resolves a multi-name declaration's
@@ -186,7 +186,7 @@ struct CycleRoots {
             // declaration says so (`.=`, an `&` initializer), and storage
             // only where its initializer plainly builds a value.
             auto isref = b->byref ||
-                         (b->type && (b->type->kind == TY_REF || b->type->kind == TY_SLICE));
+                         (b->type && (IsRefOrSlice(b->type)));
             if (!isref && !b->type)
                 for (auto e : b->binds)
                     if (auto u = Is<Unary>(e); u && u->op == T_BITAND) isref = true;
@@ -217,7 +217,7 @@ struct CycleRoots {
         for (size_t i = 0; i < f->params.size(); i++) {
             if (f->params[i].name != id->name) continue;
             auto pt = f->params[i].type;
-            if (!pt || (pt->kind != TY_REF && pt->kind != TY_SLICE)) return UnknownDesc();
+            if (!pt || (!IsRefOrSlice(pt))) return UnknownDesc();
             RootDesc d;
             d.kind = RD_PARAM;
             d.param = (int)i;
@@ -464,7 +464,7 @@ struct CycleRoots {
         if (d.kind == RD_PARAM && d.param < (int)spec->params.size() &&
             d.param < (int)spec->argtypes.size()) {
             auto pt = spec->argtypes[d.param];
-            if (pt->kind == TY_REF || pt->kind == TY_SLICE) {
+            if (IsRefOrSlice(pt)) {
                 auto vd = spec->params[d.param];
                 exact = vd->refrootknown && vd->ref.rootexact;
                 return rootof(vd, true);
@@ -475,7 +475,7 @@ struct CycleRoots {
             auto vd = freevar(d.name);
             if (!vd) return cycleroot;
             if (vd->isglobal) { exact = true; return RootOfGlobal(vd); }
-            auto isref = vd->type && (vd->type->kind == TY_REF || vd->type->kind == TY_SLICE);
+            auto isref = vd->type && (IsRefOrSlice(vd->type));
             exact = isref ? vd->refrootknown && vd->ref.rootexact : true;
             return rootof(vd, isref);
         }
@@ -485,14 +485,13 @@ struct CycleRoots {
     void Seed(FnSpec *spec) {
         auto anyref = false;
         for (auto rt : spec->rets)
-            anyref |= rt->kind == TY_REF || rt->kind == TY_SLICE;
+            anyref |= IsRefOrSlice(rt);
         if (!anyref) return;
         ReturnRootDescs(spec->sf);
         auto &ds = cache.returns.at(spec->sf).values;
         if (spec->retroots.size() < spec->rets.size()) spec->retroots.resize(spec->rets.size());
         for (size_t i = 0; i < spec->rets.size(); i++) {
-            auto rk = spec->rets[i]->kind;
-            if (rk != TY_REF && rk != TY_SLICE) continue;
+            if (!IsRefOrSlice(spec->rets[i])) continue;
             auto &rr = spec->retroots[i];
             rr.root = i < ds.size() ? ResolveDesc(spec, ds[i], rr.exact) : cycleroot;
             // Writability follows the root (§9.5): a global's storage is

@@ -134,7 +134,7 @@ inline string Binary::CgX(CodeGen &cg) {
             // decayed pointee; the null test reads the reference itself.
             string x;
             TypeExpr *ot = other->exprtype;
-            if (auto id = Is<Ident>(other); id && id->vdef && cg.IsOpt(id->vdef->type)) {
+            if (auto id = Is<Ident>(other); id && id->vdef && IsOptional(id->vdef->type)) {
                 auto lv = cg.VarLoc(id->vdef);
                 x = lv.s;
                 ot = id->vdef->type;

@@ -82,7 +82,7 @@ inline TypeCheck::LVal TypeCheck::LValueBase(Node *n) {
     lv.SetProv(v);
     // A value result is materialized in its own temporary storage. References
     // and slices instead retain the (possibly inexact) owner they borrow.
-    if (lv.root == temproot && v.type->kind != TY_REF && v.type->kind != TY_SLICE)
+    if (lv.root == temproot && !IsRefOrSlice(v.type))
         lv.rootexact = true;
     return lv;
 }
@@ -131,7 +131,7 @@ inline void TypeCheck::SliceProvenance(LVal &lv, Node *at) {
 // A location whose own type is a reference or slice: the value loaded out
 // of it is a read-back, so its root is re-derived (§9.5).
 inline void TypeCheck::ReadBackLVal(LVal &lv) {
-    if (lv.type->kind != TY_REF && lv.type->kind != TY_SLICE) return;
+    if (!IsRefOrSlice(lv.type)) return;
     auto cr = CanonRoot(lv.root);
     // A byte view can point at any typed storage. Its owner cannot be
     // recovered by enumerating u8 containers. Global slots may have been
@@ -154,7 +154,7 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
     Val v;
     v.type = LoadType(lv.type);
     v.SetProv(lv);
-    if (v.type->kind == TY_REF || v.type->kind == TY_SLICE) v.writable = !lv.type->cq;
+    if (IsRefOrSlice(v.type)) v.writable = !lv.type->cq;
     else if (HoldsPlainRef(v.type)) {
         // What a holder read out of a container points at is bounded by
         // the container: everything stored into it had to outlive it.
@@ -173,7 +173,7 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
 inline void TypeCheck::HoldValue(Node *n, Val v, bool sequenceview) {
     if (!v.type) return;
     auto t = v.type;
-    if (t->kind == TY_REF || t->kind == TY_SLICE) {
+    if (IsRefOrSlice(t)) {
         heldtemps.push_back({ n, v });
         return;
     }
@@ -305,7 +305,7 @@ inline bool TypeCheck::BindsRef(const Val &v, TypeExpr *dt) {
 }
 
 inline bool TypeCheck::IsNonFixedLValue(const Val &v) {
-    return v.lvalue && v.type->kind != TY_REF && v.type->kind != TY_SLICE &&
+    return v.lvalue && !IsRefOrSlice(v.type) &&
            ClassOf(v.type) != SC_FIXED;
 }
 
@@ -331,7 +331,7 @@ inline bool TypeCheck::UserRefOf(Node *n) {
 // implicitly. A function's own local is moved by `return`.
 inline void TypeCheck::RequireCopyable(const Val &v, Node *n, TypeExpr *dt) {
     if (!reachable) return;
-    if (dt->kind == TY_REF || dt->kind == TY_SLICE || dt->kind == TY_VOID) return;
+    if (IsRefOrSlice(dt) || dt->kind == TY_VOID) return;
     if (ClassOf(dt) == SC_FIXED) return;
     auto src = IsPlainRef(v.type) ? v.type->ref->sub : v.type;
     if (ClassOf(src) == SC_FIXED) return;
@@ -438,7 +438,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
     // The store rule (§9.2) applies to a reference or slice, and to a value
     // holding references or slices by value (a struct with a slice field),
     // whose contents are bounded by its holder root.
-    auto isrs = [](TypeExpr *x) { return x->kind == TY_REF || x->kind == TY_SLICE; };
+    auto isrs = [](TypeExpr *x) { return IsRefOrSlice(x); };
     // Constness (§9.5): a read-only reference or slice lands in a slot only
     // if the slot's type says `const`, which is what a later read of the
     // slot then sees; a parameter or result takes either and is read-only

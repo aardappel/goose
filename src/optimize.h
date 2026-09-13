@@ -74,8 +74,6 @@ struct Optimizer {
     // ------------------------------------------------------------------
     // Small helpers.
 
-    static bool IsF32T(TypeExpr *t) { return t && t->kind == TY_FLT && t->fltstorage == FS_F32; }
-
     static bool ScalarType(TypeExpr *t) {
         return t && (t->kind == TY_BOOL || t->kind == TY_FLT ||
                      (t->kind == TY_INT && t->intstorage != IS_VARINT));
@@ -874,7 +872,7 @@ inline Node *Binary::Opt(Optimizer &o) {
     if (lf && rf) {
         // An all-f32 expression computes in 32 bits (§3.1): fold at that
         // precision when both operands are f32-typed.
-        auto f32 = Optimizer::IsF32T(left->exprtype) && Optimizer::IsF32T(right->exprtype);
+        auto f32 = IsF32(left->exprtype) && IsF32(right->exprtype);
         auto a = lf->val, b = rf->val;
         if (f32) { a = (float)a; b = (float)b; }
         switch (op) {
@@ -960,10 +958,10 @@ inline Node *AsCast::Opt(Optimizer &o) {
         } else if (tt->kind == TY_FLT) {
             if (suns) return this;   // u64-range sources are for the runtime.
             auto d = (double)i->val;
-            if (Optimizer::IsF32T(tt)) d = (double)(float)d;
+            if (IsF32(tt)) d = (double)(float)d;
             // Checked casts fold only when the conversion is exact; ±2^53
             // (2^24 for f32) guarantees that without round-trip games.
-            auto lim = Optimizer::IsF32T(tt) ? (int64_t)1 << 24 : (int64_t)1 << 53;
+            auto lim = IsF32(tt) ? (int64_t)1 << 24 : (int64_t)1 << 53;
             if (unchecked || (i->val > -lim && i->val < lim)) return o.NewFlt(this, d);
         }
         return this;
@@ -981,7 +979,7 @@ inline Node *AsCast::Opt(Optimizer &o) {
                     return o.NewInt(this, t);
             }
         } else if (tt->kind == TY_FLT) {
-            if (!Optimizer::IsF32T(tt)) return o.NewFlt(this, fl->val);
+            if (!IsF32(tt)) return o.NewFlt(this, fl->val);
             auto f = (double)(float)fl->val;
             if (unchecked || f == fl->val) return o.NewFlt(this, f);
         }

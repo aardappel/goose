@@ -602,14 +602,6 @@ struct TypeCheck {
     TypeExpr *RefTo(TypeExpr *t, Line l);
     TypeExpr *SliceOf(TypeExpr *t, Line l);
 
-    bool IsIntT(TypeExpr *t) { return t->kind == TY_INT && t->intstorage != IS_VARINT; }
-    bool IsFltT(TypeExpr *t) { return t->kind == TY_FLT; }
-    bool IsF32(TypeExpr *t) { return t->kind == TY_FLT && t->fltstorage == FS_F32; }
-    bool IsOptional(TypeExpr *t) { return t->kind == TY_REF && t->ref->optional; }
-    bool IsPlainRef(TypeExpr *t);
-    bool IsArrayKind(TypeExpr *t, ArrayKind k);
-    bool IsU8(TypeExpr *t) { return t->kind == TY_INT && t->intstorage == IS_U8; }
-
     TypeExpr *LoadType(TypeExpr *t);
     static bool ImplicitInt(IntStorage from, IntStorage to);
     TypeExpr *DerefType(TypeExpr *t);
@@ -1042,7 +1034,7 @@ struct TypeCheck {
         for (auto spec : ast.fnspecs) {
             for (size_t i = 0; i < spec->params.size() && i < spec->argtypes.size(); i++) {
                 auto t = spec->argtypes[i];
-                if (t->kind != TY_REF && t->kind != TY_SLICE) continue;
+                if (!IsRefOrSlice(t)) continue;
                 if (!spec->roots[i].exact)
                     spec->params[i]->ref.rootexact = false;
             }
@@ -1080,7 +1072,7 @@ struct TypeCheck {
             ValidateType(t, sf->line, VT_PARAM);
             spec->argtypes.push_back(t);
             RootArg ra;
-            if (t->kind == TY_REF || t->kind == TY_SLICE) {
+            if (IsRefOrSlice(t)) {
                 ra.cls = 0;
                 ra.writable = true;
                 ra.reusable = t->kind == TY_REF && IsArrayKind(t->ref->sub, A_GROW) &&

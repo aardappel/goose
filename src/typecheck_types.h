@@ -469,14 +469,6 @@ inline TypeExpr *TypeCheck::SliceOf(TypeExpr *t, Line l) {
     return s;
 }
 
-inline bool TypeCheck::IsPlainRef(TypeExpr *t) {
-    return t->kind == TY_REF && !t->ref->optional && t->ref->lenstorage < 0;
-}
-
-inline bool TypeCheck::IsArrayKind(TypeExpr *t, ArrayKind k) {
-    return t->kind == TY_ARRAY && t->arr->akind == k;
-}
-
 // The value type a load from storage yields: numeric types load as
 // themselves, varint decodes to i64 (§3.6), and relative references load
 // as ordinary references (§3.9).
@@ -484,7 +476,7 @@ inline TypeExpr *TypeCheck::LoadType(TypeExpr *t) {
     if (t->kind == TY_INT && t->intstorage == IS_VARINT) return ast.inttypes[IS_I64];
     // A const value loads as a copy, which is plain; a const reference or
     // slice loads as itself, its qualifier being about the pointee.
-    if (t->cq && t->kind != TY_REF && t->kind != TY_SLICE) return ast.PlainOf(t);
+    if (t->cq && !IsRefOrSlice(t)) return ast.PlainOf(t);
     if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
         auto r = ast.NewType(TY_REF, t->line);
         r->ref = ast.NewDetail<TypeRef>();
@@ -541,7 +533,7 @@ inline bool TypeCheck::HasRelRefT(TypeExpr *t) {
 // reference ranges over so whole-region copies can be permitted.
 inline void TypeCheck::NoRelRefCopy(Node *n, TypeExpr *t) {
     if (!reachable || !t) return;
-    if (t->kind == TY_REF || t->kind == TY_SLICE || !HasRelRefT(t)) return;
+    if (IsRefOrSlice(t) || !HasRelRefT(t)) return;
     if (Is<StructLit>(n) || Is<ArrayLit>(n)) return;   // Constructed in place.
     if (auto d = Is<Dot>(n); d && d->variantconst) return;   // A payload-less variant: a tag.
     Error(n, cat("copying a value of type ", TypeStr(t), ", which contains self-relative "
@@ -664,7 +656,7 @@ inline void TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, vec
     };
     auto consider = [&](VarDef *v, int rd) {
         if (!v->type) return;
-        if (v->type->kind == TY_REF || v->type->kind == TY_SLICE) {
+        if (IsRefOrSlice(v->type)) {
             if (!v->refrootknown) return;   // No commitment yet; nothing stored from it.
             auto r = CanonRoot(v->ref.root);
             if (Depth(r) > rd) return;

@@ -177,9 +177,7 @@ struct CodeGen {
     bool IsFatRef(TypeExpr *t);
     bool HoldsFatRef(TypeExpr *t);
     bool HoldsFatRefIn(TypeExpr *t, set<const void *> &open);
-    bool IsOpt(TypeExpr *t) { return t->kind == TY_REF && t->ref->optional; }
     bool IsVoidT(TypeExpr *t) { return !t || t->kind == TY_VOID; }
-    bool IsU8T(TypeExpr *t) { return t->kind == TY_INT && t->intstorage == IS_U8; }
 
     IntStorage LenStore(TypeArray *a);
 

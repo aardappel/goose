@@ -16,17 +16,14 @@ namespace goose {
 // a property of the VarDef (provenance), shared by caller and callee.
 inline bool CodeGen::PrefVar(const VarDef *vd) {
     auto t = vd->type;
-    return t && t->kind == TY_REF && t->ref->lenstorage < 0 && !t->ref->optional &&
-           t->ref->sub->kind == TY_ARRAY && t->ref->sub->arr->akind == A_GROW &&
-           vd->ref.reusable;
+    return t && IsPlainRef(t) && IsArrayKind(t->ref->sub, A_GROW) && vd->ref.reusable;
 }
 
 // Whether a value of type `have` needs a pointee load to serve as `want`:
 // optimizer splices can leave a reference-typed tree in a slot whose checked
 // type already decayed, and Dst::t says what the receiver wants.
 inline bool CodeGen::NeedsDeref(TypeExpr *have, TypeExpr *want) {
-    return have && want && have->kind == TY_REF && !have->ref->optional &&
-           have->ref->lenstorage < 0 && want->kind != TY_REF && want->kind != TY_VOID;
+    return have && want && IsPlainRef(have) && want->kind != TY_REF && want->kind != TY_VOID;
 }
 
 // The pointee of a fat reference `x` as a location.
@@ -599,7 +596,7 @@ inline bool CodeGen::IsCtl(Node *n) {
 // and a reference loc decays to its pointee when the exprtype says so.
 inline string CodeGen::LoadLoc(Loc lv, TypeExpr *et, Line ln) {
     if (lv.t->kind == TY_REF && et->kind != TY_REF &&
-        !(IsOpt(lv.t) && et->kind == TY_REF)) {
+        !(IsOptional(lv.t) && et->kind == TY_REF)) {
         DerefLoc(lv, ln);
         return LoadLoc(lv, et, ln);
     }
@@ -910,9 +907,7 @@ inline string CodeGen::GenStrBytes(StrLit *s) {
 // Operand exprtype as an operator sees it: a spliced reference reads as
 // its pointee.
 inline TypeExpr *CodeGen::OperandT(TypeExpr *t) {
-    if (t && t->kind == TY_REF && !t->ref->optional && t->ref->lenstorage < 0)
-        return t->ref->sub;
-    return t;
+    return t && IsPlainRef(t) ? t->ref->sub : t;
 }
 
 // GenX or GenPtr per the operand's rep; operators see spliced references

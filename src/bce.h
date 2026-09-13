@@ -221,7 +221,7 @@ struct BCE {
             if (!v) return { UK_STATIC, nullptr };
             auto t = v->type;
             if (!t) return { UK_OPAQUE, v };
-            if (t->kind != TY_REF && t->kind != TY_SLICE) return { UK_OWNED, v };
+            if (!IsRefOrSlice(t)) return { UK_OWNED, v };
             if (!v->refrootknown || !v->ref.rootexact) return { UK_OPAQUE, nullptr };
             v = v->ref.root;
         }
@@ -236,7 +236,7 @@ struct BCE {
     // instantiation is not at hand counts as one.
     static bool ReadsStoredRef(Node *cur) {
         auto isref = [](TypeExpr *t) {
-            return t && (t->kind == TY_REF || t->kind == TY_SLICE);
+            return t && (IsRefOrSlice(t));
         };
         if (isref(cur->exprtype)) return true;
         auto d = Is<Dot>(cur);
@@ -920,7 +920,7 @@ struct BCE {
             if (auto id = Is<Ident>(cur)) {
                 auto v = id->vdef;
                 if (!v) return { TG_OPAQUE };
-                if (v->type && (v->type->kind == TY_REF || v->type->kind == TY_SLICE)) {
+                if (v->type && (IsRefOrSlice(v->type))) {
                     auto [k, u] = UltOf(v);
                     return UltTarget(k, u);
                 }
@@ -1780,7 +1780,7 @@ struct BCE {
         for (size_t j = 0; j < sp->params.size(); j++) {
             auto p = sp->params[j];
             ownvars.insert(p);
-            if (p->type && (p->type->kind == TY_REF || p->type->kind == TY_SLICE) && p->ref.root)
+            if (p->type && (IsRefOrSlice(p->type)) && p->ref.root)
                 classparams[p->ref.root].push_back((int)j);
         }
         Mark(sp->body);
@@ -2666,13 +2666,11 @@ inline bool VarDecl::BceWalk(BCE &b) {
         if (b.mode != BCE::M_KILLS && v->type && v->type->kind == TY_SLICE &&
             Is<SliceExpr>(inits[0]))
             lt = b.slicelen;
-        else if (b.mode != BCE::M_KILLS && v->type &&
-                 (v->type->kind == TY_SLICE || v->type->kind == TY_REF))
+        else if (b.mode != BCE::M_KILLS && v->type && IsRefOrSlice(v->type))
             lt = b.BoundLenOf(inits[0]);
         if (BCE::ScalarIntVar(v)) {
             b.SetWrite(v, inits[0], true);
-        } else if (b.loopdepth > 0 && v->type &&
-                   (v->type->kind == TY_SLICE || v->type->kind == TY_REF)) {
+        } else if (b.loopdepth > 0 && v->type && IsRefOrSlice(v->type)) {
             b.RebindKill(v);   // Loop-repeated redeclaration rebinds.
         } else if (b.loopdepth > 0 && v->type && v->type->kind != TY_FLT &&
                    v->type->kind != TY_BOOL && v->type->kind != TY_INT) {

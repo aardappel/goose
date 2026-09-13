@@ -38,9 +38,8 @@ inline FnSpec *CodeGen::FmtSpecFor(Call *c, TypeExpr *t) {
 inline bool CodeGen::SimpleText(Call *c, TypeExpr *t) {
     if (FmtSpecFor(c, t)) return false;
     if (t->kind == TY_INT || t->kind == TY_FLT || t->kind == TY_BOOL) return true;
-    auto u8 = [&](TypeExpr *e) { return e->kind == TY_INT && e->intstorage == IS_U8; };
-    if (t->kind == TY_ARRAY) return u8(t->arr->sub);
-    if (t->kind == TY_SLICE) return u8(t->sub);
+    if (t->kind == TY_ARRAY) return IsU8(t->arr->sub);
+    if (t->kind == TY_SLICE) return IsU8(t->sub);
     return false;
 }
 
@@ -63,7 +62,6 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
     // optional, a plain reference in value position): the pointee.
     if (lv.t->kind == TY_REF && t->kind != TY_REF) DerefLoc(lv, ln);
     if (auto sp = FmtSpecFor(c, t)) { EmitUserFormat(out, lv, sp, ln); return; }
-    auto u8 = [&](TypeExpr *e) { return e->kind == TY_INT && e->intstorage == IS_U8; };
     switch (t->kind) {
         case TY_INT: {
             auto vt = t->intstorage == IS_VARINT ? ast.inttypes[IS_I64] : t;
@@ -110,7 +108,7 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
         case TY_ARRAY: case TY_SLICE: {
             auto elem = t->kind == TY_ARRAY ? t->arr->sub : t->sub;
             auto v = ArrayView(lv, ln);
-            if (u8(elem)) {
+            if (IsU8(elem)) {
                 if (nested) {
                     RenderN(out, cat("gs_fmt_quoted(", Top(out.stk), ", (const uint8_t *)(",
                                      v.elems, "), ", v.len, ")"));

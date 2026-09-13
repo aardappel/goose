@@ -57,7 +57,7 @@ inline Val StrLit::Check(TypeCheck &tc, TypeExpr *expected) {
     v.writable = false;
     if (expected) {
         // A string literal constructs any u8-element array type (§3.7).
-        if (expected->kind == TY_ARRAY && tc.IsU8(expected->arr->sub)) {
+        if (expected->kind == TY_ARRAY && IsU8(expected->arr->sub)) {
             if (expected->arr->akind == A_FIXED &&
                 tc.ArraySize(expected->arr) != (int64_t)val.size())
                 tc.Error(this, cat("string literal of length ", (int64_t)val.size(),
@@ -69,7 +69,7 @@ inline Val StrLit::Check(TypeCheck &tc, TypeExpr *expected) {
             v.type = expected;
             return v;
         }
-        if (expected->kind == TY_SLICE && tc.IsU8(expected->sub)) {
+        if (expected->kind == TY_SLICE && IsU8(expected->sub)) {
             v.type = tc.cu8slice;
             return v;
         }
@@ -85,7 +85,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
         Val v;
         auto t = vd->narrowed ? vd->narrowed : vd->type;
         v.type = tc.LoadType(t);
-        if (t->kind == TY_REF || t->kind == TY_SLICE) {
+        if (IsRefOrSlice(t)) {
             v.SetProv(tc.RefProvOf(vd));
             v.lvalue = t->kind == TY_SLICE;   // A slice variable is storage; a reference is the pointee's path.
         } else if (vd->unsized) {
@@ -312,7 +312,7 @@ inline Val Unary::Check(TypeCheck &tc, TypeExpr *) {
     Val r;
     switch (op) {
         case T_MINUS:
-            if (tc.IsIntT(t)) {
+            if (IsIntT(t)) {
                 if (v.ck == CK_INT) {
                     // -(2^63) is exactly i64.min; any other u64-range value
                     // cannot be negated.
@@ -337,12 +337,12 @@ inline Val Unary::Check(TypeCheck &tc, TypeExpr *) {
             return r;
         case T_NOT:
             // Optionals are testable like conditions (§3.8 truthiness).
-            if (t->kind != TY_BOOL && !tc.IsOptional(t))
+            if (t->kind != TY_BOOL && !IsOptional(t))
                 tc.Error(this, cat("! requires bool, got ", tc.TypeStr(t)));
             r.type = tc.ast.booltype;
             return r;
         case T_BITNOT:
-            if (!tc.IsIntT(t))
+            if (!IsIntT(t))
                 tc.Error(this, cat("~ requires an integer, got ", tc.TypeStr(t)));
             if (v.ck == CK_INT) {
                 r.type = tc.ast.inttypes[v.uns ? IS_U64 : IS_I64];
@@ -367,11 +367,11 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
         // side is a reference (plain or optional) or null, or storage taken
         // by reference as a `.=` binding takes it; the pointee types agree.
         auto lv = tc.CheckV(left, nullptr);
-        if (lv.lvalue && lv.type->kind != TY_REF && lv.type->kind != TY_SLICE)
+        if (lv.lvalue && !IsRefOrSlice(lv.type))
             left = tc.AutoRef(left, lv);
         tc.HoldValue(left, lv);
         auto rv = tc.CheckV(right, nullptr);
-        if (rv.lvalue && rv.type->kind != TY_REF && rv.type->kind != TY_SLICE)
+        if (rv.lvalue && !IsRefOrSlice(rv.type))
             right = tc.AutoRef(right, rv);
         left->exprtype = lv.type;
         right->exprtype = rv.type;
@@ -428,8 +428,8 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
                 auto othernode = lv.isnull ? right : left;
                 auto &other = lv.isnull ? rt : lt;
                 auto oid = Is<Ident>(othernode);
-                auto narrowedopt = oid && oid->vdef && tc.IsOptional(oid->vdef->type);
-                if (!tc.IsOptional(other) && !narrowedopt && !(lv.isnull && rv.isnull))
+                auto narrowedopt = oid && oid->vdef && IsOptional(oid->vdef->type);
+                if (!IsOptional(other) && !narrowedopt && !(lv.isnull && rv.isnull))
                     tc.Error(this, cat("only optionals compare against null, not ",
                                        tc.TypeStr(other)));
                 v.type = tc.ast.booltype;
@@ -473,7 +473,7 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
         case T_SHL: case T_SHR: {
             // Shifts: the left operand's type is the result type; the count
             // may be any integer type and is masked to the width (§6.2).
-            if (!tc.IsIntT(lt) || !tc.IsIntT(rt))
+            if (!IsIntT(lt) || !IsIntT(rt))
                 tc.Error(this, cat("shift requires integer operands, got ",
                                    tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
             if (lv.ck == CK_INT)
@@ -486,7 +486,7 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
             return v;
         }
         case T_BITAND: case T_BITOR: case T_XOR: {
-            if (!tc.IsIntT(lt) || !tc.IsIntT(rt))
+            if (!IsIntT(lt) || !IsIntT(rt))
                 tc.Error(this, cat("bitwise operator requires integer operands, got ",
                                    tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
             auto ct = tc.UnifyNumeric(this, op, lv, rv, lt, rt);
@@ -496,7 +496,7 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
             return v;
         }
         case T_PLUS: case T_MINUS: case T_MUL: case T_DIV: case T_MOD: {
-            if ((tc.IsIntT(lt) && tc.IsIntT(rt)) ||
+            if ((IsIntT(lt) && IsIntT(rt)) ||
                 (lt->kind == TY_FLT && rt->kind == TY_FLT)) {
                 auto ct = tc.UnifyNumeric(this, op, lv, rv, lt, rt);
                 tc.RetypeOperands(left, right, lv, rv, ct);
@@ -506,7 +506,7 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
                 } else if (lv.ck == CK_FLT && rv.ck == CK_FLT && op != T_MOD) {
                     // % (fmod) is left to the runtime.
                     auto a = lv.fval, b = rv.fval;
-                    if (tc.IsF32(ct)) { a = (float)a; b = (float)b; }
+                    if (IsF32(ct)) { a = (float)a; b = (float)b; }
                     v.ck = CK_FLT;
                     switch (op) {
                         case T_PLUS:  v.fval = a + b; break;
@@ -514,7 +514,7 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
                         case T_MUL:   v.fval = a * b; break;
                         default:      v.fval = b != 0 ? a / b : 0; break;
                     }
-                    if (tc.IsF32(ct)) v.fval = (double)(float)v.fval;
+                    if (IsF32(ct)) v.fval = (double)(float)v.fval;
                 }
                 return v;
             }
@@ -624,7 +624,7 @@ inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
 inline Val AsCast::Check(TypeCheck &tc, TypeExpr *) {
     auto cv = tc.Operand(child);
     auto st = tc.LoadType(cv.type);
-    if (!tc.IsIntT(st) && st->kind != TY_FLT)
+    if (!IsIntT(st) && st->kind != TY_FLT)
         tc.Error(this, cat("as requires a numeric source, got ", tc.TypeStr(st)));
     auto tt = tc.Subst(type);
     Val v;

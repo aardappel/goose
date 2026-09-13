@@ -191,6 +191,21 @@ struct TypeExpr {
     void Dump(string &s) const;
 };
 
+// The views of a type's shape that every pass asks for.
+inline bool IsRefOrSlice(const TypeExpr *t) { return t->kind == TY_REF || t->kind == TY_SLICE; }
+inline bool IsOptional(const TypeExpr *t) { return t->kind == TY_REF && t->ref->optional; }
+// A plain reference: an address, neither optional nor a relative offset.
+inline bool IsPlainRef(const TypeExpr *t) {
+    return t->kind == TY_REF && !t->ref->optional && t->ref->lenstorage < 0;
+}
+inline bool IsArrayKind(const TypeExpr *t, ArrayKind k) {
+    return t->kind == TY_ARRAY && t->arr->akind == k;
+}
+// A machine integer: any integer type but varint, the storage-only encoding.
+inline bool IsIntT(const TypeExpr *t) { return t->kind == TY_INT && t->intstorage != IS_VARINT; }
+inline bool IsU8(const TypeExpr *t) { return t->kind == TY_INT && t->intstorage == IS_U8; }
+inline bool IsF32(const TypeExpr *t) { return t && t->kind == TY_FLT && t->fltstorage == FS_F32; }
+
 // The primitive type keyword tokens, in a contiguous range.
 inline bool IsPrimTypeToken(TType t) { return t >= T_TBOOL && t <= T_TF64; }
 

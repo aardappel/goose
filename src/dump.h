@@ -56,7 +56,7 @@ inline void TypeExpr::Dump(string &s) const {
     // `const (u8[:])[3]`. A fn type base needs them to re-parse at all.
     auto chainhasrs = [](const TypeExpr *p) {
         for (; p; p = p->kind == TY_ARRAY ? p->arr->sub : nullptr)
-            if (p->kind == TY_REF || p->kind == TY_SLICE) return true;
+            if (IsRefOrSlice(p)) return true;
         return false;
     };
     if (cq) s += "const ";

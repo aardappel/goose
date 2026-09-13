@@ -219,7 +219,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     if (best.sf->isextern) {
         for (size_t i = 0; i < best.paramtypes.size() && i < argvals.size(); i++) {
             auto pt = best.paramtypes[i];
-            if ((pt->kind != TY_REF && pt->kind != TY_SLICE) || pt->cq || argvals[i].writable)
+            if ((!IsRefOrSlice(pt)) || pt->cq || argvals[i].writable)
                 continue;
             Error(argnodes[i], cat("extern fn ", name, ": parameter ", best.sf->params[i].name,
                                    " of type ", TypeStr(pt), " takes a writable value; a "
@@ -636,7 +636,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     vector<VarDef *> distinct;
     for (size_t i = 0; i < mi.paramtypes.size(); i++) {
         auto pt = mi.paramtypes[i];
-        auto isrs = pt->kind == TY_REF || pt->kind == TY_SLICE;
+        auto isrs = IsRefOrSlice(pt);
         // A by-value parameter holding references (§9.2's holder values)
         // is keyed by the root bounding its contents, as the spec's
         // "implicitly generic over those fields' roots" says.
@@ -1165,7 +1165,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
         vd->isparam = true;
         vd->assigned = true;
         for (auto li : spec->litparams) if (li == (int)i) vd->unsized = true;
-        if (pt->kind == TY_REF || pt->kind == TY_SLICE) {
+        if (IsRefOrSlice(pt)) {
             auto &ra = spec->roots[i];
             if (ra.cls == 0) {
                 vd->ref.root = nullptr;  // Static data.
@@ -1316,9 +1316,9 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
     if (tspec->retroots.size() < tspec->rets.size()) tspec->retroots.resize(tspec->rets.size());
     for (size_t i = 0; i < vals.size(); i++) {
         auto rt = tspec->rets[i];
-        auto rk = rt->kind;
-        auto holder = rk != TY_REF && rk != TY_SLICE && HoldsPlainRef(rt);
-        if (rk != TY_REF && rk != TY_SLICE && !holder) continue;
+        auto isrs = IsRefOrSlice(rt);
+        auto holder = !isrs && HoldsPlainRef(rt);
+        if (!isrs && !holder) continue;
         // A null return names no root: it agrees with every other return.
         if (vals[i].isnull) continue;
         // A holder value's contents must outlive the caller like a
@@ -1371,9 +1371,9 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
     for (size_t i = 0; i < spec->rets.size(); i++) {
         Val v;
         v.type = spec->rets[i];
-        auto holder = v.type->kind != TY_REF && v.type->kind != TY_SLICE &&
+        auto holder = !IsRefOrSlice(v.type) &&
                       HoldsPlainRef(v.type);
-        if (v.type->kind == TY_REF || v.type->kind == TY_SLICE || holder) {
+        if (IsRefOrSlice(v.type) || holder) {
             auto ri = i < spec->retroots.size() ? spec->retroots[i] : RetRoot {};
             auto rr = ri.root;
             v.writable = ri.writable && !v.type->cq;
@@ -1400,7 +1400,7 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
                     if (spec->params[p]->ref.root == rr) {
                         if (p < argvals.size()) {
                             auto pt = spec->argtypes[p];
-                            auto ph = pt->kind != TY_REF && pt->kind != TY_SLICE;
+                            auto ph = !IsRefOrSlice(pt);
                             v.root = CanonRoot(ph ? HolderRootOf(argvals[p]) : argvals[p].root);
                             v.rootexact = ri.exact && (ph ? argvals[p].holderexact
                                                           : argvals[p].rootexact);
@@ -1506,8 +1506,7 @@ inline void TypeCheck::CheckReturn(Return *r) {
         // conservatively require globals/static.
         if (tf != (int)frames.size() - 1 && !frames.back().isfunval) {
             for (auto &v : vals) {
-                auto rk = v.type->kind;
-                auto isrs = rk == TY_REF || rk == TY_SLICE;
+                auto isrs = IsRefOrSlice(v.type);
                 if (!isrs && !HoldsPlainRef(v.type)) continue;
                 auto root = isrs ? v.root : HolderRootOf(v);
                 if (root && !root->isglobal)

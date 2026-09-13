@@ -99,7 +99,7 @@ inline bool TypeCheck::GrowShrinkCanHold(VarDef *r, TypeExpr *of) {
 // specialization serves, not only the one recorded in classfrom, so it may
 // always be viewed.
 inline bool TypeCheck::MayBeViewed(VarDef *r) {
-    if (!r || !r->type || r->type->kind == TY_REF || r->type->kind == TY_SLICE) return true;
+    if (!r || !r->type || IsRefOrSlice(r->type)) return true;
     return Viewable(LoadType(r->type));
 }
 
@@ -433,7 +433,7 @@ inline void TypeCheck::PrebindLoopRefs(Node *body) {
 inline bool TypeCheck::ResolvePrebind(const RootDesc &d, VarDef *&root, bool &exact) {
     auto ofvar = [&](VarDef *v) {
         if (!v) return false;
-        auto isref = v->type && (v->type->kind == TY_REF || v->type->kind == TY_SLICE);
+        auto isref = v->type && (IsRefOrSlice(v->type));
         if (isref) {
             if (!v->refrootknown) return false;
             root = RefRootOf(v);
@@ -940,7 +940,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     auto vd = NewVar(x->var, bindtype, x->line, false);
     vd->assigned = true;
     vd->copybind = (x->iterkind == IK_ARRAY || x->iterkind == IK_SLICE) && !x->byref;
-    if (bindtype->kind != TY_REF && bindtype->kind != TY_SLICE && HoldsPlainRef(bindtype)) {
+    if (!IsRefOrSlice(bindtype) && HoldsPlainRef(bindtype)) {
         // A holder element copied out: its contents are the array's.
         Val hv;
         hv.root = CanonRoot(iterprov.root);
@@ -948,7 +948,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         hv.byteview = iterprov.byteview;
         RecordStore(vd, hv, nullptr, false, CanonRoot(iterprov.root));
     }
-    if (bindtype->kind == TY_REF || bindtype->kind == TY_SLICE) {
+    if (IsRefOrSlice(bindtype)) {
         // A relative-reference or slice element bound by value was read
         // out of the array, so where it points follows the read-back rule
         // (§9.5), not the array's own root.
@@ -1131,7 +1131,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         if (t->kind == TY_FN)
             Error(vd, "function values are compile-time only and cannot be stored (§7.6)");
         d->type = t;
-        if (v && (t->kind == TY_REF || t->kind == TY_SLICE)) {
+        if (v && (IsRefOrSlice(t))) {
             BindRefProvenance(d, *v);
             if (t->cq) d->ref.writable = false;
         } else if (v && HoldsPlainRef(t)) {
@@ -1198,9 +1198,9 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
                 // reference, a reference or slice value as it is (§3.8).
                 v = CheckV(vd->inits[i], nullptr);
                 if (v.isnull) Error(vd->inits[i], "null needs an annotated optional type");
-                if (v.lvalue && v.type->kind != TY_REF && v.type->kind != TY_SLICE) {
+                if (v.lvalue && !IsRefOrSlice(v.type)) {
                     vd->inits[i] = AutoRef(vd->inits[i], v);
-                } else if (v.type->kind != TY_REF && v.type->kind != TY_SLICE) {
+                } else if (!IsRefOrSlice(v.type)) {
                     Error(vd->inits[i], ".= binds a reference: the initializer must be a "
                                         "reference, a slice, or storage (a variable, field "
                                         "or element)");
@@ -1354,7 +1354,7 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     SlotScope ss(*this, true);
     auto v = CheckValueAt(a->rhs, target,
                           Dest { lv.root, lv.rootexact,
-                                 lv.var && (target->kind == TY_REF || target->kind == TY_SLICE) });
+                                 lv.var && (IsRefOrSlice(target)) });
     if (v.type->kind == TY_VOID && reachable)
         Error(a, "the right-hand side has no value");
     if (lv.var) {

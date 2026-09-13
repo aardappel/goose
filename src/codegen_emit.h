@@ -428,7 +428,7 @@ inline bool CodeGen::StaticInitX(Node *n, TypeExpr *t, string &out) {
             if (k < 1 || k > MAXSTATICELEMS) return false;
             string s = "{ { ";
             if (auto str = Is<StrLit>(n)) {
-                if (!IsU8T(a.sub) || (int64_t)str->val.size() != k) return false;
+                if (!IsU8(a.sub) || (int64_t)str->val.size() != k) return false;
                 for (int64_t e = 0; e < k; e++)
                     Append(s, e ? ", " : "", (int)(uint8_t)str->val[(size_t)e]);
             } else if (auto al = Is<ArrayLit>(n)) {

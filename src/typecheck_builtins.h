@@ -164,7 +164,7 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
     for (auto v : vars) {
         if (v == vd || !v->type) continue;
         auto t = v->type;
-        if (t->kind == TY_REF || t->kind == TY_SLICE) {
+        if (IsRefOrSlice(t)) {
             // A recorded root is exact only while the variable keeps its
             // first binding: a `var` may since have been rebound to any
             // root at the same depth, and one not bound yet can still
@@ -232,7 +232,7 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
         // A holder declared inside the loop is fresh every iteration; only
         // one declared outside it carries a store to the next.
         for (auto v : vars)
-            if (v != vd && v->type && v->type->kind != TY_REF && v->type->kind != TY_SLICE &&
+            if (v != vd && v->type && !IsRefOrSlice(v->type) &&
                 HoldsPlainRef(v->type) && Depth(v) <= loopscope)
                 ps.holders.push_back(v);
         pendingshrinks.push_back(ps);
@@ -243,7 +243,7 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
 // its root joins the literal's.
 inline void TypeCheck::NoteLitElem(LitDeep &deep, const Val &v, TypeExpr *t) {
     if (!t) return;
-    auto isrs = t->kind == TY_REF || t->kind == TY_SLICE;
+    auto isrs = IsRefOrSlice(t);
     if (!isrs && !HoldsPlainRef(t)) return;
     if (v.isnull) return;
     auto r = CanonRoot(isrs ? v.root : HolderRootOf(v));
@@ -290,7 +290,7 @@ inline void TypeCheck::RecordStore(VarDef *container, const Val &v, TypeExpr *po
     if (!container->type && !container->isglobal)
         if (auto spec = CurRealFrame().spec) spec->classevents.push_back(e);
     // The container's contents: the deepest root stored into it so far.
-    if (container->type && container->type->kind != TY_REF && container->type->kind != TY_SLICE) {
+    if (container->type && !IsRefOrSlice(container->type)) {
         if (!container->contentset || Depth(e.root) > Depth(container->contentroot)) {
             container->contentexact = e.exact && (!container->contentset ||
                                                   container->contentroot == e.root);
@@ -310,7 +310,7 @@ inline void TypeCheck::RecordStore(VarDef *container, const Val &v, TypeExpr *po
 inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Node *at) {
     auto argroot = [&](size_t q) -> pair<VarDef *, bool> {
         auto pt = spec->argtypes[q];
-        auto ph = pt->kind != TY_REF && pt->kind != TY_SLICE;
+        auto ph = !IsRefOrSlice(pt);
         return { CanonRoot(ph ? HolderRootOf(argvals[q]) : argvals[q].root),
                  ph ? argvals[q].holderset && argvals[q].holderexact : argvals[q].rootexact };
     };
@@ -357,10 +357,10 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
             if (pt->kind != TY_REF || !HoldsPlainRef(pt->ref->sub)) continue;
             for (size_t q = 0; q < spec->argtypes.size() && q < argvals.size(); q++) {
                 auto qt = spec->argtypes[q];
-                if (qt->kind != TY_REF && qt->kind != TY_SLICE && !HoldsPlainRef(qt)) continue;
+                if (!IsRefOrSlice(qt) && !HoldsPlainRef(qt)) continue;
                 auto [r, exact] = argroot(q);
                 push(CanonRoot(argvals[p].root), r, false,
-                     qt->kind == TY_REF || qt->kind == TY_SLICE ? PointeeOf(qt) : nullptr,
+                     IsRefOrSlice(qt) ? PointeeOf(qt) : nullptr,
                      nullptr, argvals[q].byteview);
                 (void)exact;
             }
@@ -547,7 +547,7 @@ inline void TypeCheck::CheckShrinkHolders(Node *at, const string &op, VarDef *ro
     CheckHeldShrinks(at, op, root, what, false);
     VisibleVars([&](VarDef *v) {
         if (v == root || !v->type) return;
-        if (v->type->kind != TY_REF && v->type->kind != TY_SLICE) return;
+        if (!IsRefOrSlice(v->type)) return;
         // A reference to the whole array (or the value holding it) is the
         // path to it, not something a shrink invalidates.
         if (v->type->kind == TY_REF && ContainsGrowShrink(v->type->ref->sub)) return;
@@ -758,7 +758,7 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
     for (size_t i = 0; i < params.size(); i++) {
         auto vd = NewVar(params[i].name, ptypes[i], c->line, params[i].isvar);
         vd->assigned = true;
-        if (ptypes[i]->kind == TY_REF || ptypes[i]->kind == TY_SLICE) {
+        if (IsRefOrSlice(ptypes[i])) {
             BindRefProvenance(vd, argvals[i]);
             if (ptypes[i]->cq) vd->ref.writable = false;
         }
