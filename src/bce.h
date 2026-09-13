@@ -152,18 +152,6 @@ struct BCE {
     }
     static bool SmallOff(int64_t c) { return c > -OFFCAP && c < OFFCAP; }
 
-    static pair<int64_t, int64_t> RangeOf(IntStorage s) {
-        switch (s) {
-            case IS_I8:  return { -128, 127 };
-            case IS_I16: return { -32768, 32767 };
-            case IS_I32: return { INT32_MIN, INT32_MAX };
-            case IS_U8:  return { 0, 255 };
-            case IS_U16: return { 0, 65535 };
-            case IS_U32: return { 0, (int64_t)UINT32_MAX };
-            default:     return { INT64_MIN, INT64_MAX };
-        }
-    }
-
     // Variable interning (Base holds compact ids).
     unordered_map<const VarDef *, int> varid;
     vector<VarDef *> varof;
@@ -500,7 +488,7 @@ struct BCE {
                 auto v = varof[b.id];
                 auto t = v->type;
                 if (t && t->kind == TY_INT && IntBits(t->intstorage) < 64) {
-                    auto [lo, hi] = RangeOf(t->intstorage);
+                    auto [lo, hi] = IntRange(t->intstorage);
                     edges.push_back({ 0, (int)i, -lo });
                     edges.push_back({ (int)i, 0, hi });
                 }
@@ -574,7 +562,7 @@ struct BCE {
         if (!t || t->kind != TY_INT || t->intstorage == IS_U64 ||
             t->intstorage == IS_VARINT)
             return {};
-        auto [tlo, thi] = RangeOf(t->intstorage);
+        auto [tlo, thi] = IntRange(t->intstorage);
         if (lo < tlo || hi > thi) return {};
         auto m = TmpBase();
         AddFactB(Zero(), m, SatSub(0, lo));   // lo <= m.
@@ -750,16 +738,10 @@ struct BCE {
         if (!st || st->kind != TY_INT || st->intstorage == IS_VARINT) return {};
         auto ct = TermOf(ac->child);
         if (!ct.ok) return {};
-        // u64's maximum exceeds the i64 range the facts compute in; every u64
-        // term the analysis produces is a proven-in-range value, so the
-        // window that matters on either side is [0, i64.max].
-        auto win = [](IntStorage s) {
-            auto r = RangeOf(s);
-            if (s == IS_U64) r = { 0, INT64_MAX };
-            return r;
-        };
-        auto [slo, shi] = win(st->intstorage);
-        auto [tlo, thi] = win(tt->intstorage);
+        // Every u64 term the analysis produces is a proven-in-range value,
+        // so IntRange's [0, i64.max] is the window that matters for one.
+        auto [slo, shi] = IntRange(st->intstorage);
+        auto [tlo, thi] = IntRange(tt->intstorage);
         if (slo < tlo && !Query(Zero(), ct.b, SatSub(ct.off, tlo))) return {};
         if (shi > thi && !Query(ct.b, Zero(), SatSub(thi, ct.off))) return {};
         return ct;
@@ -1276,7 +1258,7 @@ struct BCE {
         auto it = cands.find(v);
         if (it == cands.end()) return;
         auto &st = it->second;
-        auto [lo, hi] = RangeOf(v->type->intstorage);
+        auto [lo, hi] = IntRange(v->type->intstorage);
         if (c > 0) {
             auto nowrap = Query(VarBase(v), Zero(), SatSub(hi, c));   // v <= hi - c.
             st.wrapfree = st.wrapfree && nowrap;
@@ -1318,7 +1300,7 @@ struct BCE {
     // at the clamp is no bound at all for a 64-bit value.
     bool NoWrap(const Term &t, IntStorage s) {
         if (!t.ok || !t.off || t.b.kind == BK_ZERO) return t.ok;
-        auto [lo, hi] = RangeOf(s);
+        auto [lo, hi] = IntRange(s);
         hi = std::min(hi, CCAP - 1);
         lo = std::max(lo, 1 - CCAP);
         return t.off > 0 ? Query(t.b, Zero(), SatSub(hi, t.off))
@@ -1327,7 +1309,7 @@ struct BCE {
 
     void ShiftCore(VarDef *v, int64_t c) {
         if (!SmallOff(c)) { BumpVar(v, false); return; }
-        auto [lo, hi] = RangeOf(v->type->intstorage);
+        auto [lo, hi] = IntRange(v->type->intstorage);
         auto ok = c > 0 ? Query(VarBase(v), Zero(), SatSub(hi, c))
                         : Query(Zero(), VarBase(v), SatSub(c, lo));
         if (!ok) { BumpVar(v); return; }

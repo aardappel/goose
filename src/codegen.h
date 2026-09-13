@@ -175,7 +175,6 @@ struct CodeGen {
     static int64_t IntSize(IntStorage s) { return IntBits(s) / 8; }
 
     static const char *IntCT(IntStorage s);
-    static pair<int64_t, int64_t> IntRange(IntStorage s);
     static const char *IntSfx(IntStorage s);
     static const char *RelCT(IntStorage s, bool uns = false);
     static const char *RelCT(TypeExpr *rt);

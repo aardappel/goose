@@ -280,7 +280,7 @@ inline string AsCast::CgX(CodeGen &cg) {
             if (is == IS_U64) return cat("(uint64_t)GS_F2U(", x, ")");
             // GS_F2I checks the exact i64 value; GS_RANGE narrows further.
             if (cg.IntSize(is) == 8) return cat("(", tct, ")GS_F2I(", x, ")");
-            auto [lo, hi] = cg.IntRange(is);
+            auto [lo, hi] = IntRange(is);
             return cat("(", tct, ")GS_RANGE(GS_F2I(", x, "), ", cg.IntStr(lo), ", ",
                        cg.IntStr(hi), ")");
         }
@@ -289,14 +289,14 @@ inline string AsCast::CgX(CodeGen &cg) {
             // From u64: value-preserving iff it does not exceed the target's
             // maximum (all targets' maxima fit an unsigned compare).
             if (is == IS_U64) return cat("(", x, ")");
-            auto [lo, hi] = cg.IntRange(is);
+            auto [lo, hi] = IntRange(is);
             (void)lo;
             return cat("(", tct, ")GS_RANGE_U(", x, ", ", (uint64_t)hi, "ULL)");
         }
         if (is == IS_U64)   // Source ≤ i64.max: only negatives are out of range.
             return cat("(uint64_t)GS_RANGE((int64_t)(", x, "), 0, INT64_MAX)");
         if (cg.IntSize(is) == 8) return cat("(", tct, ")(", x, ")");
-        auto [lo, hi] = cg.IntRange(is);
+        auto [lo, hi] = IntRange(is);
         return cat("(", tct, ")GS_RANGE((int64_t)(", x, "), ", cg.IntStr(lo), ", ",
                    cg.IntStr(hi), ")");
     }

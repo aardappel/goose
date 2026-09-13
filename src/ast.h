@@ -91,6 +91,23 @@ inline int IntBits(IntStorage s) {
     }
 }
 
+// The values a storage type holds, as i64 bounds. u64's upper half lies
+// beyond i64: a constant up there travels as its bits with a flag
+// (IntLit::uns, Val::uns), and every user of a u64 range meets that case
+// before consulting the bounds. A varint holds the full i64 range (§3.6).
+inline pair<int64_t, int64_t> IntRange(IntStorage s) {
+    switch (s) {
+        case IS_I8:  return { -128, 127 };
+        case IS_I16: return { -32768, 32767 };
+        case IS_I32: return { INT32_MIN, INT32_MAX };
+        case IS_U8:  return { 0, 255 };
+        case IS_U16: return { 0, 65535 };
+        case IS_U32: return { 0, (int64_t)UINT32_MAX };
+        case IS_U64: return { 0, INT64_MAX };
+        default:     return { INT64_MIN, INT64_MAX };
+    }
+}
+
 // Per-kind detail payloads. A kind that needs more than one field gets one of
 // these behind its single union member; they are owned by Ast.typedetails.
 struct TypeDetail { virtual ~TypeDetail() {} };

@@ -212,20 +212,6 @@ inline const char *CodeGen::IntCT(IntStorage s) {
     }
 }
 
-// The value range of an integer type (u64's maximum reads as -1).
-inline pair<int64_t, int64_t> CodeGen::IntRange(IntStorage s) {
-    switch (s) {
-        case IS_I8:  return { -128, 127 };
-        case IS_I16: return { -32768, 32767 };
-        case IS_I32: return { INT32_MIN, INT32_MAX };
-        case IS_U8:  return { 0, 255 };
-        case IS_U16: return { 0, 65535 };
-        case IS_U32: return { 0, (int64_t)UINT32_MAX };
-        case IS_U64: return { 0, -1 };
-        default:     return { INT64_MIN, INT64_MAX };
-    }
-}
-
 // The runtime arithmetic helper suffix per integer type (runtime.h).
 inline const char *CodeGen::IntSfx(IntStorage s) {
     switch (s) {

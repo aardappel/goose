@@ -666,20 +666,11 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
 }
 
 // Whether the constant (value bits v, u64-flavored when uns) fits the
-// given integer type. varint holds the full i64 value range.
+// given integer type.
 inline bool TypeCheck::FitsIntStorage(int64_t v, bool uns, IntStorage s) {
     if (uns) return s == IS_U64;   // Above i64.max: only u64 holds it.
-    switch (s) {
-        case IS_I8:  return v >= -128 && v <= 127;
-        case IS_I16: return v >= -32768 && v <= 32767;
-        case IS_I32: return v >= INT32_MIN && v <= INT32_MAX;
-        case IS_U8:  return v >= 0 && v <= 255;
-        case IS_U16: return v >= 0 && v <= 65535;
-        case IS_U32: return v >= 0 && v <= UINT32_MAX;
-        case IS_U64: return v >= 0;
-        case IS_I64: case IS_VARINT: return true;
-    }
-    return false;
+    auto [lo, hi] = IntRange(s);
+    return v >= lo && v <= hi;
 }
 
 inline string TypeCheck::ConstStr(const Val &v) {
