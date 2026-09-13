@@ -193,6 +193,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     }
     auto spec = GetOrCreateSpec(best, argvals, c);
     ApplyCalleeShrinks(c, spec, argvals, name);
+    ApplyCalleeGrows(c, spec, argvals, name);
     // Phase 2: re-check arguments against the resolved parameter types.
     // Arguments construct into fresh parameter slots, not curdst.
     {
@@ -561,6 +562,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
         armvals[found].type = byref ? RefTo(vt, c->line) : vt;
         auto spec = GetOrCreateSpec(mi, armvals, c);
         ApplyCalleeShrinks(c, spec, armvals, name);
+        ApplyCalleeGrows(c, spec, armvals, name);
         if (first) {
             if (spec->rets.size() != first->rets.size())
                 Error(c, cat("case functions of ", name, " disagree on return counts"));
@@ -1142,6 +1144,10 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     frames.push_back(f);
     auto savepending = std::move(pendingshrinks);
     pendingshrinks.clear();
+    // The caller's constructions are its own too: the call site logs this
+    // body's growths against them from the summary.
+    auto savegrowlog = std::move(growlog);
+    growlog.clear();
     // The caller's pending temporaries and value region are its own; the
     // call site replays this body's shrinks against them.
     auto saveheld = std::move(heldtemps);
@@ -1283,6 +1289,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     if (!spec->retsknown) spec->retsknown = true;
     PopScope();
     pendingshrinks = std::move(savepending);
+    growlog = std::move(savegrowlog);
     heldtemps = std::move(saveheld);
     invalue = saveinvalue;
     frames.pop_back();

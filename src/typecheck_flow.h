@@ -1334,7 +1334,11 @@ inline void TypeCheck::CheckAssign(Assign *a) {
         CompletePending(target, PendingElemFromSeq(av, a), a->line);
     }
     // Assigning a resizable array whole replaces its elements: a shrink
-    // to anything referring into it (§5.1, §5.2).
+    // to anything referring into it (§5.1, §5.2), then a growth, the new
+    // contents being under construction at its base while the right-hand
+    // side runs (§4.4, §1.3(4)).
+    VarDef *built = nullptr;
+    auto builtexact = false;
     if (target->kind == TY_ARRAY && (!lv.var || lv.var->assigned)) {
         auto root = lv.var ? lv.var : CanonRoot(lv.root);
         if (target->arr->akind == A_GROW) {
@@ -1346,11 +1350,19 @@ inline void TypeCheck::CheckAssign(Assign *a) {
         } else if (target->arr->akind == A_GROWSHRINK) {
             ShrinkGrowShrink(a, cat("assign ", ExprStr(a->lval)), root, ExprStr(a->lval));
         }
+        if (target->arr->akind == A_GROW || target->arr->akind == A_GROWSHRINK) {
+            built = root;
+            builtexact = lv.var != nullptr || lv.rootexact;
+            NoteGrow(a, built, builtexact, cat("assign ", ExprStr(a->lval)));
+        }
     }
     SlotScope ss(*this, true);
+    auto base = growlog.size();
     auto v = CheckValueAt(a->rhs, target,
                           Dest { lv.root, lv.rootexact,
                                  lv.var && (IsRefOrSlice(target)) });
+    if (built)
+        CheckGrowsSince(base, built, builtexact, cat("the value assigned to ", ExprStr(a->lval)));
     if (v.type->kind == TY_VOID && reachable)
         Error(a, "the right-hand side has no value");
     if (lv.var) {
@@ -1444,12 +1456,23 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv) {
     if (pt->kind == TY_ARRAY && pt->arr->akind == A_GROW)
         Error(a, "cannot assign a grow-only array through a reference: a shrink of a "
                  "grow-only array applies to a local of the function that owns it (§5.1)");
-    if (pt->kind == TY_ARRAY && pt->arr->akind == A_GROWSHRINK)
-        ShrinkGrowShrink(a, cat("assign ", ExprStr(a->lval)),
-                         CanonRoot(lv.var ? RefRootOf(lv.var) : lv.root), ExprStr(a->lval));
+    // The pointee's elements are replaced: a shrink, then a growth with
+    // the new contents under construction while the right-hand side runs
+    // (§4.4, §1.3(4)).
+    VarDef *built = nullptr;
+    auto builtexact = false;
+    if (pt->kind == TY_ARRAY && pt->arr->akind == A_GROWSHRINK) {
+        built = CanonRoot(lv.var ? RefRootOf(lv.var) : lv.root);
+        builtexact = lv.var ? RefExactOf(lv.var) : lv.rootexact;
+        ShrinkGrowShrink(a, cat("assign ", ExprStr(a->lval)), built, ExprStr(a->lval));
+        NoteGrow(a, built, builtexact, cat("assign ", ExprStr(a->lval)));
+    }
     SlotScope ss(*this, true);
+    auto base = growlog.size();
     auto v = CheckValueAt(a->rhs, pt, lv.var ? Dest { RefRootOf(lv.var), RefExactOf(lv.var) }
                                              : Dest { lv.root, lv.rootexact });
+    if (built)
+        CheckGrowsSince(base, built, builtexact, cat("the value assigned to ", ExprStr(a->lval)));
     if (v.type->kind == TY_VOID && reachable)
         Error(a, "the right-hand side has no value");
 }
@@ -1770,6 +1793,16 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         }
         elem = rt->arr->sub;
     }
+    // The receiver grows (§1.3(4)): logged ahead of the arguments, so that
+    // a value built in place among them is checked against the growths
+    // within it alone.
+    if (d.kind == B_PUSH || d.kind == B_APPEND || d.kind == B_ALLOC_INDEX ||
+        d.kind == B_ALLOC_REF || d.kind == B_FORMAT || d.kind == B_RESIZE) {
+        auto how = d.kind == B_PUSH ? "push into " : d.kind == B_APPEND ? "append to "
+                 : d.kind == B_FORMAT ? "format into " : d.kind == B_RESIZE ? "resize "
+                 : "allocate in ";
+        NoteGrow(c, rv.root, rv.rootexact, cat(how, ExprStr(args[0])));
+    }
     // The serialization pair (docs/design/serialization.md §4). to_bytes
     // builds the image -- a varint byte count then the element region --
     // either as a fresh u8[>..] or appended to a builder the caller owns, so
@@ -1806,6 +1839,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             if (!ov.writable)
                 Error(c, "cannot append through a non-writable value (let, or "
                          "non-writable provenance, §9.5)");
+            NoteGrow(c, ov.root, ov.rootexact, cat("append to ", ExprStr(args[1])));
             return VoidVal();
         }
         auto t = ast.NewType(TY_ARRAY, c->line);
@@ -1887,8 +1921,20 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             case 'i': CheckIntAny(an); break;
             case 'f': CheckValue(an, ast.flttypes[FS_F64]); break;
             case 'b': CheckValue(an, ast.booltype); break;
-            case 'e': ElemArg(an, elem, rv); break;
+            case 'e': {
+                // An element built in place is under construction while
+                // its expression runs (§1.3(4)).
+                auto logbase = growlog.size();
+                ElemArg(an, elem, rv);
+                if (BuiltInPlace(elem))
+                    CheckGrowsSince(logbase, rv.root, rv.rootexact,
+                                    cat("the element ",
+                                        d.kind == B_PUSH ? "pushed into " : "allocated in ",
+                                        ExprStr(args[0])));
+                break;
+            }
             case 'a': {  // An array/slice of the receiver's element type.
+                auto logbase = growlog.size();
                 auto av = CheckV(an, nullptr);
                 an->exprtype = av.type;
                 auto t2 = av.type;
@@ -1900,6 +1946,11 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                 if (!selem || !TypeEq(selem, elem))
                     Error(c, cat(".", d.name, " takes an array or slice of ",
                                  TypeStr(elem), ", got ", TypeStr(av.type)));
+                // A call's array result is built at the receiver's top
+                // (§7.3): under construction while the call runs (§1.3(4)).
+                if (Is<Call>(an) && ak != A_LIMITED && ClassOf(t2) != SC_FIXED)
+                    CheckGrowsSince(logbase, rv.root, rv.rootexact,
+                                    cat("the run appended to ", ExprStr(args[0])));
                 break;
             }
             default: assert(false);

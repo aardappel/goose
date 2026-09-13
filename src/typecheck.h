@@ -922,6 +922,14 @@ struct TypeCheck {
     };
     map<SFunction *, ShrinkSummary> shrinkcache;
     const ShrinkSummary &SyntacticShrinks(SFunction *sf);
+    // The same for the growths a body spells out, for a recursive callee's
+    // incomplete summary (ApplyCalleeGrows).
+    map<SFunction *, ShrinkSummary> growcache;
+    const ShrinkSummary &SyntacticGrows(SFunction *sf);
+    // Fills `summary` with the receivers of the calls in sf's body that
+    // `recv` picks out, plus the targets of whole assignments; `recv`
+    // returns the receiver node of a call it is interested in, or null.
+    template<typename F> void ScanReceivers(SFunction *sf, ShrinkSummary &summary, F recv);
     void RefPointees(TypeExpr *t, vector<TypeExpr *> &out);
     VarDef *HolderRootOf(const Val &v);
 
@@ -932,9 +940,47 @@ struct TypeCheck {
     }
 
     void CheckShrinkHolders(Node *at, const string &op, VarDef *root, const string &what);
+    // Records an event on root for callers: globals and captured owners
+    // remain external roots (`externals`), while this specialization's
+    // parameter roots map at calls (`params`).
+    void NoteRootEvent(VarDef *root, set<VarDef *> FnSpec::*externals,
+                       set<int> FnSpec::*params);
     void NoteShrink(VarDef *root);
     void ShrinkGrowShrink(Node *at, const string &op, VarDef *root, const string &what);
     void ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
+    // A growth of the array rooted at root -- a push, an append, a pool
+    // allocation, format, resize, a whole assignment -- by this body or by
+    // a callee. A value built in place at a root's top or slot is under
+    // construction while its expression runs (§1.3(4)): it is checked
+    // against the growths logged meanwhile (CheckGrowsSince), and callers
+    // learn a body's growths as they learn its shrinks.
+    struct GrowEvent {
+        Node *at = nullptr;
+        VarDef *root = nullptr;
+        bool exact = false;   // root is the array itself, not a bound on its lifetime.
+        string what;
+    };
+    vector<GrowEvent> growlog;
+    void NoteGrow(Node *at, VarDef *root, bool exact, const string &what);
+    void CheckGrowsSince(size_t base, VarDef *root, bool exact, const string &what);
+    void ApplyCalleeGrows(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
+    // Whether an element pushed into, or allocated in, an array of `elem`
+    // is built in place at its slot: a variable-size one, or a fixed one
+    // holding relative references, whose offsets measure from the slot.
+    bool BuiltInPlace(TypeExpr *elem);
+    // Whether two roots may name one array: no, yes, or only the call
+    // sites can tell (two parameter classes of one activation, settled by
+    // ResolveGrowConflicts once every call site has been seen).
+    enum Alias { AL_NO, AL_YES, AL_DEFER };
+    Alias MayAliasRoots(VarDef *a, bool aexact, VarDef *b, bool bexact);
+    struct GrowConflict {
+        Node *at = nullptr;
+        FnSpec *spec = nullptr;
+        VarDef *grown = nullptr;
+        VarDef *built = nullptr;
+        string msg;
+    };
+    vector<GrowConflict> growconflicts;
     void ElemArg(Node *&n, TypeExpr *elem, Val &rv);
     FnSpec *EnsureThreadSpec(SFunction *sf, Line l);
 
@@ -1032,7 +1078,27 @@ struct TypeCheck {
         // reached code, since no call-site facts were available.
         for (auto sf : ast.functions) CheckUnreached(sf);
         SettleParamRootExactness();
+        ResolveGrowConflicts();
         VerifyLiterals();
+    }
+
+    // Two parameter classes of one activation are one array where some
+    // call site passes the same array to both, which a class that is
+    // concrete and exact at every call site rules out (SettleParamRootExactness).
+    void ResolveGrowConflicts() {
+        for (auto &gc : growconflicts) {
+            auto distinct = [&](VarDef *cr) {
+                auto found = false;
+                for (size_t i = 0; gc.spec && i < gc.spec->params.size() &&
+                                   i < gc.spec->roots.size(); i++) {
+                    if (CanonRoot(gc.spec->params[i]->ref.root) != cr) continue;
+                    if (!gc.spec->roots[i].concrete || !gc.spec->roots[i].exact) return false;
+                    found = true;
+                }
+                return found;
+            };
+            if (!distinct(gc.grown) || !distinct(gc.built)) Error(gc.at, gc.msg);
+        }
     }
 
     // Checking is over, so every call site of every specialization has been

@@ -85,6 +85,7 @@ inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns) {
         if (!TryMatch(sf, c, argvals, mi, why)) continue;
         auto sp = GetOrCreateSpec(mi, argvals, c);
         ApplyCalleeRebinds(sp);
+        ApplyCalleeGrows(c, sp, argvals, "format");
         c->fmtspecs.push_back({ t, sp });
         return sp;
     }
@@ -470,10 +471,44 @@ inline bool TypeCheck::IsGrowOnlyRootVar(VarDef *r) {
 // has that name. A local of the body that owns its array hides the name
 // until its block ends, while a name bound any other way may alias storage
 // outside the body and still counts.
+// The receiver of an array member operation spelled `a.op(...)` or
+// `op(a, ...)`, for the operations `pick` names; null for any other call.
+template<typename P> static Node *OpRecv(Call *c, P pick) {
+    if (auto d = Is<Dot>(c->callee)) return pick(d->name) ? d->obj : nullptr;
+    if (auto id = Is<Ident>(c->callee); id && !c->args.empty() && pick(id->name))
+        return c->args[0];
+    return nullptr;
+}
+
 inline const TypeCheck::ShrinkSummary &TypeCheck::SyntacticShrinks(SFunction *sf) {
     auto [it, fresh] = shrinkcache.try_emplace(sf);
     auto &summary = it->second;
     if (!fresh || !sf->body) return summary;
+    ScanReceivers(sf, summary, [](Call *c) {
+        return OpRecv(c, [](string_view op) {
+            return op == "pop" || op == "resize" || op == "clear";
+        });
+    });
+    return summary;
+}
+
+inline const TypeCheck::ShrinkSummary &TypeCheck::SyntacticGrows(SFunction *sf) {
+    auto [it, fresh] = growcache.try_emplace(sf);
+    auto &summary = it->second;
+    if (!fresh || !sf->body) return summary;
+    ScanReceivers(sf, summary, [](Call *c) -> Node * {
+        if (auto id = Is<Ident>(c->callee); id && id->name == "to_bytes" && c->args.size() == 2)
+            return c->args[1];
+        return OpRecv(c, [](string_view op) {
+            return op == "push" || op == "append" || op == "alloc_index" ||
+                   op == "alloc_ref" || op == "format" || op == "resize";
+        });
+    });
+    return summary;
+}
+
+template<typename F>
+void TypeCheck::ScanReceivers(SFunction *sf, ShrinkSummary &summary, F recv) {
     // A declaration owns its arrays when it binds array literals, or
     // uninitialized arrays, by value: any other initializer may bind existing
     // storage (§4.1).
@@ -484,8 +519,8 @@ inline const TypeCheck::ShrinkSummary &TypeCheck::SyntacticShrinks(SFunction *sf
         return true;
     };
     vector<pair<string_view, bool>> locals;   // The body's bindings in scope, innermost last.
-    auto note = [&](Node *recv) {
-        auto id = Is<Ident>(recv);
+    auto note = [&](Node *r) {
+        auto id = r ? Is<Ident>(r) : nullptr;
         if (!id) return;
         for (auto l = locals.rbegin(); l != locals.rend(); ++l) {
             if (l->first != id->name) continue;
@@ -500,11 +535,7 @@ inline const TypeCheck::ShrinkSummary &TypeCheck::SyntacticShrinks(SFunction *sf
     function<void(Node *)> walk = [&](Node *n) {
         if (!n) return;
         auto base = locals.size();
-        if (auto c = Is<Call>(n)) {
-            if (auto d = Is<Dot>(c->callee); d && (d->name == "pop" || d->name == "resize" ||
-                                                    d->name == "clear"))
-                note(d->obj);
-        }
+        if (auto c = Is<Call>(n)) note(recv(c));
         if (auto a = Is<Assign>(n); a && a->op == T_ASSIGN) note(a->lval);
         if (auto fl = Is<ForLoop>(n)) {
             walk(fl->iter);
@@ -535,7 +566,6 @@ inline const TypeCheck::ShrinkSummary &TypeCheck::SyntacticShrinks(SFunction *sf
         }
     };
     walk(sf->body);
-    return summary;
 }
 
 // A shrink of the grow-shrink array rooted at root (§5.2): no variable in
@@ -568,14 +598,12 @@ inline void TypeCheck::CheckShrinkHolders(Node *at, const string &op, VarDef *ro
     });
 }
 
-// Records a shrink for callers (§5.2): globals and captured owners remain
-// external roots, while this specialization's parameter roots map at calls.
-inline void TypeCheck::NoteShrink(VarDef *root) {
+inline void TypeCheck::NoteRootEvent(VarDef *root, set<VarDef *> FnSpec::*externals,
+                                     set<int> FnSpec::*params) {
     auto current = CurRealFrame().spec;
     if (!current) return;
     if (root->type) {
-        if (root->isglobal || root->ownerspec != current)
-            current->shrinkexternals.insert(root);
+        if (root->isglobal || root->ownerspec != current) (current->*externals).insert(root);
         return;
     }
     for (auto fi = (int)frames.size() - 1; fi >= 0; fi--) {
@@ -584,14 +612,19 @@ inline void TypeCheck::NoteShrink(VarDef *root) {
         auto found = false;
         for (size_t i = 0; i < spec->params.size(); i++) {
             if (RefRootOf(spec->params[i]) != root) continue;
-            spec->shrinkparams.insert((int)i);
+            (spec->*params).insert((int)i);
             found = true;
         }
         if (found) {
-            if (spec != current) current->shrinkexternals.insert(root);
+            if (spec != current) (current->*externals).insert(root);
             return;
         }
     }
+}
+
+// Records a shrink for callers (§5.2).
+inline void TypeCheck::NoteShrink(VarDef *root) {
+    NoteRootEvent(root, &FnSpec::shrinkexternals, &FnSpec::shrinkparams);
 }
 
 inline void TypeCheck::ShrinkGrowShrink(Node *at, const string &op, VarDef *root,
@@ -682,6 +715,107 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
         for (auto vd : spec->shrinkexternals)
             shrink(vd, cat("call ", name, ", which shrinks"));
     }
+}
+
+inline bool TypeCheck::BuiltInPlace(TypeExpr *elem) {
+    return ClassOf(elem) != SC_FIXED || (elem->kind != TY_REF && HasRelRefT(elem));
+}
+
+inline TypeCheck::Alias TypeCheck::MayAliasRoots(VarDef *a, bool aexact, VarDef *b,
+                                                 bool bexact) {
+    if (!a || !b || a == temproot || b == temproot) return AL_NO;
+    if (a == b) return AL_YES;
+    auto current = CurRealFrame().spec;
+    auto isclass = [](VarDef *v) { return !v->type; };
+    auto own = [&](VarDef *v, bool exact) {
+        return exact && v->type && !v->isglobal && v->ownerspec == current;
+    };
+    if (isclass(a) || isclass(b)) {
+        // A class stands for arrays outside this activation: a variable of
+        // the activation, named exactly, is another array; a global or a
+        // captured variable may be what a caller passed; two classes are
+        // one array where some call site passes it to both.
+        if (own(a, aexact) || own(b, bexact)) return AL_NO;
+        return isclass(a) && isclass(b) ? AL_DEFER : AL_YES;
+    }
+    // An inexact root bounds the lifetime: it may name any owner at least
+    // as outer (CheckHeldShrinks).
+    if (!aexact && Depth(a) >= Depth(b)) return AL_YES;
+    if (!bexact && Depth(b) >= Depth(a)) return AL_YES;
+    return AL_NO;
+}
+
+inline void TypeCheck::NoteGrow(Node *at, VarDef *root, bool exact, const string &what) {
+    root = CanonRoot(root);
+    if (!root || root == temproot) return;
+    growlog.push_back({ at, root, exact, what });
+    NoteRootEvent(root, &FnSpec::growexternals, &FnSpec::growparams);
+}
+
+// The value built at root's top or slot by the expression checked since
+// growlog was `base` long: none of the growths logged meanwhile may have
+// been of that array, or it would have landed inside the value.
+inline void TypeCheck::CheckGrowsSince(size_t base, VarDef *root, bool exact,
+                                       const string &what) {
+    root = CanonRoot(root);
+    for (auto i = base; i < growlog.size(); i++) {
+        auto &e = growlog[i];
+        auto may = MayAliasRoots(e.root, e.exact, root, exact);
+        if (may == AL_NO) continue;
+        auto msg = cat("cannot ", e.what, ": ", what, " is still under construction, and "
+                       "the growth would land inside it (§1.3)");
+        if (may == AL_YES) Error(e.at, msg);
+        growconflicts.push_back({ e.at, CurRealFrame().spec, e.root, root, msg });
+    }
+}
+
+// The callee's growths are the caller's (§1.3(4)): an argument it grows
+// through, and a global or captured owner it grows, are logged here for
+// the values under construction around the call and for the caller's
+// callers. A back edge's summary is incomplete, so what the callee's text
+// grows stands in for it. A C function appends to every builder it is
+// handed (§7.10).
+inline void TypeCheck::ApplyCalleeGrows(Node *at, FnSpec *spec, vector<Val> &argvals,
+                                        string_view name) {
+    auto grows = [&](size_t i, const char *how) {
+        if (i >= argvals.size()) return;
+        auto root = CanonRoot(argvals[i].root);
+        if (!root || root == temproot) return;
+        NoteGrow(at, root, argvals[i].rootexact,
+                 cat("call ", name, ", which ", how, " ", root->name));
+    };
+    if (spec->sf->isextern) {
+        for (size_t i = 0; i < spec->argtypes.size(); i++) {
+            auto pt = spec->argtypes[i];
+            if (IsPlainRef(pt) && ClassOf(pt->ref->sub) == SC_RESIZABLE) grows(i, "may grow");
+        }
+        return;
+    }
+    if (!spec->inprogress) {
+        for (auto pi : spec->growparams) grows((size_t)pi, "grows");
+        for (auto vd : spec->growexternals)
+            NoteGrow(at, vd, true, cat("call ", name, ", which grows ", vd->name));
+        return;
+    }
+    auto &textual = SyntacticGrows(spec->sf);
+    for (auto pi : textual.params) grows((size_t)pi, "may grow");
+    for (auto gn : textual.globals)
+        for (auto g : ast.globals)
+            for (auto vd : g->defs)
+                if (vd->type && vd->name == gn)
+                    NoteGrow(at, vd, true, cat("call ", name, ", which may grow ", vd->name));
+    // A nested recursive call can also reach its lexical parents' locals,
+    // arrays reached through captured references included.
+    for (auto env = spec->lexparent; env; env = env->lexparent)
+        for (auto vd : vars) {
+            if (vd->ownerspec != env || vd->isglobal || !vd->type) continue;
+            auto named = false;
+            for (auto cn : textual.captures) named |= cn == vd->name;
+            if (!named) continue;
+            auto viaref = IsPlainRef(vd->type);
+            NoteGrow(at, viaref ? CanonRoot(RefRootOf(vd)) : vd, !viaref || RefExactOf(vd),
+                     cat("call ", name, ", which may grow ", vd->name));
+        }
 }
 
 // Element construction targets the array's storage (relative references

@@ -1058,6 +1058,11 @@ struct FnSpec {
     // (§5.2): global/captured roots, and indices of parameters whose pointee shrinks.
     set<VarDef *> shrinkexternals;
     set<int> shrinkparams;
+    // Arrays the body may grow -- push, append, a pool allocation, format,
+    // resize, a whole assignment -- itself or through its callees
+    // (§1.3(4)), in the same form.
+    set<VarDef *> growexternals;
+    set<int> growparams;
     // Stores into the caller's storage, through reference parameters'
     // class roots (§5.1): the call sites map them onto their arguments.
     vector<StoreEvent> classevents;

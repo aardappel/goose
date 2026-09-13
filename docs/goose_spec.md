@@ -662,6 +662,13 @@ remaining capacity is reserved but **uninitialized** — this is safe because
 no read path to uninitialized slots exists (§5.3), and cheap because the
 runtime commits skipped address ranges explicitly (Appendix C.4).
 
+While a value is built in place in an array — an element `push`ed into or
+allocated in it that is variable-size or holds relative references, a call's
+array result `append`ed to it, or the new contents of a whole assignment
+(§4.4) — nothing may grow that array, neither the expression being built nor
+a function it calls (§1.3(4)). The compiler rejects a growth it cannot show
+to be of a different array.
+
 Literal forms usable in any construction context:
 
 * array literals `[1, 2, 3]`; `[]` where the element type is known from
