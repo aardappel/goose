@@ -68,7 +68,13 @@ file(CONFIGURE OUTPUT "${TCC_BUILD}/config.h" CONTENT "${tcc_config}" @ONLY)
 
 add_library(libtcc STATIC "${TCC_SRC}/libtcc.c")
 target_include_directories(libtcc PRIVATE "${TCC_BUILD}")
-target_include_directories(libtcc SYSTEM PUBLIC "${TCC_SRC}")
+target_include_directories(libtcc SYSTEM PRIVATE "${TCC_SRC}")
+# Expose only the API header: TinyCC's VERSION file shadows the C++ <version>
+# header on case-insensitive filesystems (including the macOS CI runner).
+# Keep this separate from the staged runtime headers, which also shadow the
+# host compiler's standard headers.
+configure_file("${TCC_SRC}/libtcc.h" "${TCC_BUILD}/api/libtcc.h" COPYONLY)
+target_include_directories(libtcc SYSTEM PUBLIC "${TCC_BUILD}/api")
 target_compile_definitions(libtcc PRIVATE ${tcc_defines} ONE_SOURCE=1)
 # Without the rename the archive would be liblibtcc; PIC because the compiled
 # program is relocated into memory the compiler owns.
