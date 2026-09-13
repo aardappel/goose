@@ -309,13 +309,7 @@ struct TailRecursion {
             for (auto &arm : me->arms) RwSlot(arm.body);
             return;
         }
-        if (auto c = Is<Call>(n)) {
-            RwWalk(c->callee);
-            for (auto a : c->args) RwWalk(a);
-            RwWalk(c->fvbody);
-            return;
-        }
-        n->Children([&](Node *ch) { RwWalk(ch); });
+        RunChildren(n, [&](Node *ch) { RwWalk(ch); });
     }
 
     // Every result that still returns folds the accumulator in on the way
@@ -336,13 +330,7 @@ struct TailRecursion {
             r->vals[0] = bin;
             return;
         }
-        if (auto c = Is<Call>(n)) {
-            FoldReturns(c->callee);
-            for (auto a : c->args) FoldReturns(a);
-            FoldReturns(c->fvbody);
-            return;
-        }
-        n->Children([&](Node *ch) { FoldReturns(ch); });
+        RunChildren(n, [&](Node *ch) { FoldReturns(ch); });
     }
 
     // Control provably leaves this statement rather than falling past it.
@@ -368,11 +356,8 @@ struct TailRecursion {
             // (§7.9); folding frames away would move where it lands.
             if (c->builtin < 0 && c->spec && c->spec->needs.count(sp)) return false;
             for (auto d : c->dispatch) if (d->needs.count(sp)) return false;
-            ok = Applicable(c->callee, selfcalls) && Applicable(c->fvbody, selfcalls);
-            for (auto a : c->args) ok = ok && Applicable(a, selfcalls);
-            return ok;
         }
-        n->Children([&](Node *ch) { ok = ok && Applicable(ch, selfcalls); });
+        RunChildren(n, [&](Node *ch) { ok = ok && Applicable(ch, selfcalls); });
         return ok;
     }
 

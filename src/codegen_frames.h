@@ -114,9 +114,8 @@ inline void CodeGen::CollectSpecs() {
                 if ((c->builtin == B_QGET || c->builtin == B_QPOLL) &&
                     !c->rettypes.empty() && IsBytesT(c->rettypes[0]))
                     si.needssp = true;
-                walk(c->fvbody);
             }
-            n->Children([&](Node *ch) { walk(ch); });
+            RunChildren(n, walk);
         };
         walk(sp->body);
     }

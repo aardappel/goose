@@ -79,8 +79,8 @@ inline bool CodeGen::CanCacheTops(FnSpec *sp) {
         if (auto vd = Is<VarDecl>(n)) for (auto d : vd->defs) check(d);
         if (auto fl = Is<ForLoop>(n)) check(fl->vdef);
         if (auto me = Is<MatchExpr>(n)) for (auto &arm : me->arms) check(arm.binder);
-        if (auto c = Is<Call>(n)) { walk(c->fvbody); for (auto p : c->fvparams) check(p); }
-        n->Children([&](Node *ch) { walk(ch); });
+        if (auto c = Is<Call>(n)) for (auto p : c->fvparams) check(p);
+        RunChildren(n, walk);
     };
     walk(sp->body);
     return ok;
@@ -136,8 +136,7 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp) {
     function<void(Node *)> ibs = [&](Node *n) {
         if (!n) return;
         if (auto ib = Is<InlineBlock>(n)) localexits.insert(ib->sf);
-        if (auto c = Is<Call>(n)) ibs(c->fvbody);
-        n->Children([&](Node *ch) { ibs(ch); });
+        RunChildren(n, ibs);
     };
     ibs(sp->body);
     // A frame object's tail has its own addressable header (C.2), but
@@ -167,8 +166,8 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp) {
         if (auto fl = Is<ForLoop>(n)) check(fl->vdef);
         if (auto me = Is<MatchExpr>(n)) for (auto &arm : me->arms) check(arm.binder);
         if (auto r = Is<Return>(n); r && !localexits.count(r->target)) ok = false;
-        if (auto c = Is<Call>(n)) { walk(c->fvbody); for (auto p : c->fvparams) check(p); }
-        n->Children([&](Node *ch) { walk(ch); });
+        if (auto c = Is<Call>(n)) for (auto p : c->fvparams) check(p);
+        RunChildren(n, walk);
     };
     walk(sp->body);
     return ok;

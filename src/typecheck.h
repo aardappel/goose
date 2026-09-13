@@ -1112,9 +1112,8 @@ struct TypeCheck {
                     rec(c->spec);
                     for (auto d : c->dispatch) rec(d);
                     for (auto &fs : c->fmtspecs) rec(fs.second);
-                    walk(c->fvbody);
                 }
-                n->Children([&](Node *ch) { walk(ch); });
+                RunChildren(n, walk);
             };
             walk(sp->body);
         };

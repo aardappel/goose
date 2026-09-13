@@ -56,13 +56,7 @@ struct BaseCaseInliner {
     static int TreeSize(Node *n) {
         if (!n) return 0;
         auto k = 1;
-        if (auto c = Is<Call>(n)) {
-            k += TreeSize(c->callee);
-            for (auto a : c->args) k += TreeSize(a);
-            k += TreeSize(c->fvbody);
-            return k;   // c->trailing is an unchecked template.
-        }
-        n->Children([&](Node *ch) { k += TreeSize(ch); });
+        RunChildren(n, [&](Node *ch) { k += TreeSize(ch); });
         return k;
     }
 
@@ -70,15 +64,11 @@ struct BaseCaseInliner {
     static int SelfCalls(Node *n, FnSpec *sp) {
         if (!n) return 0;
         auto k = 0;
-        if (auto c = Is<Call>(n)) {
+        if (auto c = Is<Call>(n))
             if (c->spec == sp && c->builtin < 0 && c->dispatch.empty() &&
                 Is<Ident>(c->callee)) k++;
-            k += SelfCalls(c->callee, sp);   // A UFCS receiver can be one too.
-            for (auto a : c->args) k += SelfCalls(a, sp);
-            k += SelfCalls(c->fvbody, sp);
-            return k;
-        }
-        n->Children([&](Node *ch) { k += SelfCalls(ch, sp); });
+        // The children include a UFCS receiver, which can be one too.
+        RunChildren(n, [&](Node *ch) { k += SelfCalls(ch, sp); });
         return k;
     }
 
@@ -124,12 +114,9 @@ struct BaseCaseInliner {
             if (cyc(c->spec)) return false;
             for (auto d : c->dispatch) if (cyc(d)) return false;
             for (auto p : c->fvparams) bound.insert(p);
-            if (!BaseOK(c->callee, bound, ibs, pure)) return false;
-            for (auto a : c->args) if (!BaseOK(a, bound, ibs, pure)) return false;
-            return BaseOK(c->fvbody, bound, ibs, pure);
         }
         auto ok = true;
-        n->Children([&](Node *ch) { ok = ok && BaseOK(ch, bound, ibs, pure); });
+        RunChildren(n, [&](Node *ch) { ok = ok && BaseOK(ch, bound, ibs, pure); });
         return ok;
     }
 

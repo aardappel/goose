@@ -1609,8 +1609,7 @@ struct BCE {
         if (Is<While>(n) || Is<LoopExpr>(n) || Is<ForLoop>(n) || Is<EarlyBlock>(n))
             return false;
         auto found = false;
-        if (auto c = Is<Call>(n)) found = HasBreaks(c->fvbody);
-        n->Children([&](Node *ch) { found = found || HasBreaks(ch); });
+        RunChildren(n, [&](Node *ch) { found = found || HasBreaks(ch); });
         return found;
     }
 
@@ -1618,8 +1617,7 @@ struct BCE {
         if (!n) return false;
         if (auto r = Is<Return>(n)) if (r->target == sf) return true;
         auto found = false;
-        if (auto c = Is<Call>(n)) found = ReturnsForTarget(c->fvbody, sf);
-        n->Children([&](Node *ch) { found = found || ReturnsForTarget(ch, sf); });
+        RunChildren(n, [&](Node *ch) { found = found || ReturnsForTarget(ch, sf); });
         return found;
     }
 
@@ -1633,8 +1631,7 @@ struct BCE {
         if (Is<While>(n) || Is<LoopExpr>(n) || Is<ForLoop>(n) || Is<EarlyBlock>(n))
             return false;
         auto found = false;
-        if (auto c = Is<Call>(n)) found = HasIterationJumps(c->fvbody);
-        n->Children([&](Node *ch) { found = found || HasIterationJumps(ch); });
+        RunChildren(n, [&](Node *ch) { found = found || HasIterationJumps(ch); });
         return found;
     }
 
@@ -1669,14 +1666,7 @@ struct BCE {
                     std::find(out.begin(), out.end(), id->vdef) == out.end())
                     out.push_back(id->vdef);
             }
-        // As in the prescan: `trailing` is a template, fvbody is what runs.
-        if (auto c = Is<Call>(n)) {
-            RefIndexed(c->callee, out);
-            for (auto a : c->args) RefIndexed(a, out);
-            RefIndexed(c->fvbody, out);
-            return;
-        }
-        n->Children([&](Node *ch) { RefIndexed(ch, out); });
+        RunChildren(n, [&](Node *ch) { RefIndexed(ch, out); });
     }
 
     // Which of the reference variables a loop indexes keep the same array,
@@ -1885,12 +1875,8 @@ struct BCE {
                 uses[d]++;
                 if (from) callees[from].push_back(d);
             }
-            ScanCalls(c->callee, from, uses);
-            for (auto a : c->args) ScanCalls(a, from, uses);
-            ScanCalls(c->fvbody, from, uses);
-            return;   // c->trailing is an unchecked template.
         }
-        n->Children([&](Node *ch) { ScanCalls(ch, from, uses); });
+        RunChildren(n, [&](Node *ch) { ScanCalls(ch, from, uses); });
     }
 
     void BuildCallGraph() {
@@ -2096,11 +2082,8 @@ inline void Dot::BceMark(BCE &b) {
 }
 
 inline void Call::BceMark(BCE &b) {
-    // `trailing` is an unchecked template; the instance that runs is fvbody.
-    b.Mark(callee);
-    for (auto a : args) b.Mark(a);
     for (auto p : fvparams) b.NoteOwn(p);
-    b.Mark(fvbody);
+    RunChildren(this, [&](Node *ch) { b.Mark(ch); });
 }
 
 inline void Index::BceMark(BCE &b) {

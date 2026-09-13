@@ -315,4 +315,18 @@ inline void IncDec::Children(const function<void(Node *)> &f) const { f(lval); }
 
 #undef CH
 
+// The direct children of a checked node that run. A call's trailing block
+// (Call::trailing) is the unchecked template; what runs is the instance
+// typecheck checked into Call::fvbody. Every walk over checked trees --
+// the optimizer's, BCE's, codegen's -- takes this in place of Children.
+inline void RunChildren(Node *n, const function<void(Node *)> &f) {
+    if (auto c = Is<Call>(n)) {
+        f(c->callee);
+        for (auto a : c->args) f(a);
+        if (c->fvbody) f(c->fvbody);
+        return;
+    }
+    n->Children(f);
+}
+
 }  // namespace goose

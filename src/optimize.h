@@ -171,12 +171,8 @@ struct Optimizer {
                 Reach(fs.second);
             }
             for (auto d : c->dispatch) { d->uses++; Reach(d); }
-            ReachTree(c->callee);
-            for (auto a : c->args) ReachTree(a);
-            ReachTree(c->fvbody);
-            return;  // c->trailing is an unchecked template; nothing live in it.
         }
-        n->Children([&](Node *ch) { ReachTree(ch); });
+        RunChildren(n, [&](Node *ch) { ReachTree(ch); });
     }
 
     // ------------------------------------------------------------------
@@ -193,10 +189,8 @@ struct Optimizer {
         } else if (auto u = Is<Unary>(n)) {
             if (u->op == T_BITAND)
                 if (auto id = Is<Ident>(u->child)) if (id->vdef) facts[id->vdef].addrof++;
-        } else if (auto c = Is<Call>(n)) {
-            Analyze(c->fvbody);
         }
-        n->Children([&](Node *ch) { Analyze(ch); });
+        RunChildren(n, [&](Node *ch) { Analyze(ch); });
     }
 
     // ------------------------------------------------------------------
@@ -207,8 +201,7 @@ struct Optimizer {
         if (!n) return false;
         if (auto r = Is<Return>(n)) if (r->target == sf) return true;
         auto found = false;
-        if (auto c = Is<Call>(n)) found = ReturnsFor(c->fvbody, sf);
-        n->Children([&](Node *ch) { found = found || ReturnsFor(ch, sf); });
+        RunChildren(n, [&](Node *ch) { found = found || ReturnsFor(ch, sf); });
         return found;
     }
 
@@ -297,12 +290,8 @@ struct Optimizer {
                 };
                 if (c->builtin < 0) callee(c->spec);
                 for (auto d : c->dispatch) callee(d);
-                rec(c->callee);
-                for (auto a : c->args) rec(a);
-                rec(c->fvbody);
-                return;
             }
-            n->Children([&](Node *ch) { rec(ch); });
+            RunChildren(n, [&](Node *ch) { rec(ch); });
         };
         rec(sp->body);
         info.noinline = noin;

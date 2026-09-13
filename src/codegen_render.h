@@ -436,8 +436,7 @@ inline const VarDef *CodeGen::NamedResult(Block *fnbody, SFunction *target,
             if (r->vals.size() != nrets) ok = false;
             else consider(r->vals[resultidx]);
         }
-        if (auto c = Is<Call>(n)) walk(c->fvbody);
-        n->Children([&](Node *ch) { walk(ch); });
+        RunChildren(n, walk);
     };
     walk(fnbody);
     if (fnbody->tail && nrets == 1 && !IsVoidT(fnbody->tail->exprtype)) consider(fnbody->tail);

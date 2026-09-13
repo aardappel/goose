@@ -494,9 +494,8 @@ inline void TypeCheck::CollectCheckedRebinds(Node *n, set<VarDef *> &out) {
         add(c->spec);
         for (auto d : c->dispatch) add(d);
         for (auto &fs : c->fmtspecs) add(fs.second);
-        CollectCheckedRebinds(c->fvbody, out);
     }
-    n->Children([&](Node *ch) { CollectCheckedRebinds(ch, out); });
+    RunChildren(n, [&](Node *ch) { CollectCheckedRebinds(ch, out); });
 }
 
 // A fact assumed at the start of a loop body that the loop rebinds through a
