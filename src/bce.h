@@ -766,6 +766,36 @@ struct BCE {
     bool anybump = false;
     int loopdepth = 0;          // Inside a loop body or function-value body.
 
+    // A kills-only walk with the summary sinks redirected: the flow it
+    // runs over is discarded, and the mode, the sinks and the bump flag
+    // are restored when the scope ends.
+    struct KillsScope {
+        BCE &b;
+        Flow flow;
+        Mode mode;
+        bool anybump;
+        set<int> *ksum, *shsum;
+        set<VarDef *> *vksum;
+        KillsScope(BCE &b, set<int> *ks = nullptr, set<int> *sh = nullptr,
+                   set<VarDef *> *vks = nullptr)
+            : b(b), flow(b.flow), mode(b.mode), anybump(b.anybump), ksum(b.ksum),
+              shsum(b.shsum), vksum(b.vksum) {
+            b.ksum = ks;
+            b.shsum = sh;
+            b.vksum = vks;
+            b.anybump = false;
+            b.mode = M_KILLS;
+        }
+        ~KillsScope() {
+            b.flow = std::move(flow);
+            b.mode = mode;
+            b.anybump = anybump;
+            b.ksum = ksum;
+            b.shsum = shsum;
+            b.vksum = vksum;
+        }
+    };
+
     void BumpVar(VarDef *v, bool bridge = true) {
         anybump = true;
         auto old = VarBase(v);
@@ -1637,21 +1667,8 @@ struct BCE {
 
     // Collects the place ids `n` can invalidate into `out`.
     void SummarizeInto(Node *n, set<int> &out) {
-        auto savedflow = flow;
-        auto savedmode = mode;
-        auto savedks = ksum;
-        auto savedsh = shsum;
-        auto savedvks = vksum;
-        ksum = &out;
-        shsum = nullptr;
-        vksum = nullptr;
-        mode = M_KILLS;
+        KillsScope ks(*this, &out);
         Walk(n);
-        flow = std::move(savedflow);
-        mode = savedmode;
-        ksum = savedks;
-        shsum = savedsh;
-        vksum = savedvks;
     }
 
     // Reference variables `n` indexes, whose pointee is an array with a
@@ -1699,26 +1716,9 @@ struct BCE {
     // Runs the walk over `n` recording only kill effects into a scratch flow;
     // returns whether anything tracked was changed.
     bool HasKillEffects(Node *n) {
-        auto savedflow = flow;
-        auto savedmode = mode;
-        auto savedany = anybump;
-        auto savedks = ksum;
-        auto savedsh = shsum;
-        auto savedvks = vksum;
-        ksum = nullptr;
-        shsum = nullptr;
-        vksum = nullptr;
-        anybump = false;
-        mode = M_KILLS;
+        KillsScope ks(*this);
         Walk(n);
-        auto r = anybump;
-        flow = std::move(savedflow);
-        mode = savedmode;
-        anybump = savedany;
-        ksum = savedks;
-        shsum = savedsh;
-        vksum = savedvks;
-        return r;
+        return anybump;
     }
 
     // Applies the kill effects of `n` to the current flow (loop-entry havoc).
@@ -1795,17 +1795,9 @@ struct BCE {
         set<int> bumped, shrunk;
         set<VarDef *> vbumped;
         {
-            auto savedflow = std::move(flow);
+            KillsScope ks(*this, &bumped, &shrunk, &vbumped);
             flow = Flow {};
-            ksum = &bumped;
-            shsum = &shrunk;
-            vksum = &vbumped;
-            mode = M_KILLS;
             Walk(sp->body);
-            ksum = nullptr;
-            shsum = nullptr;
-            vksum = nullptr;
-            flow = std::move(savedflow);
         }
         // Invariant candidates: eligible variables against this spec's
         // never-invalidated places.
