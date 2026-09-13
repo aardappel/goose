@@ -226,8 +226,6 @@ inline string CodeGen::SigRet(FnSpec *sp) {
     return si.cret >= 0 ? CT(sp->rets[si.cret]) : "void";
 }
 
-// Every global's dedicated stack expression.
-
 // The function's own indexed stacks, plus -- per the mode -- either the
 // globals' dedicated ones or the reference parameters': each has a single
 // spelling in its mode (see the note above). A caller's stack arriving as
@@ -474,8 +472,6 @@ inline void CodeGen::SaveBase(bool forlocal, const string &stk, const string &ba
     assert(false);
 }
 
-// Globals some `in pool` type names.
-
 inline string CodeGen::PoolBase(const VarDef *pool) {
     // Global initializers run in declaration order, and a pool's base is
     // only set when its own initializer does: there is no point in the
@@ -508,9 +504,6 @@ inline string CodeGen::VName(const VarDef *vd) {
     assert(git != gnames.end());
     return git->second;
 }
-
-// ------------------------------------------------------------------
-// Declarations and assignment.
 
 inline string CodeGen::Unique2(const string &base) {
     auto name = base;

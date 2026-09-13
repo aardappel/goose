@@ -538,8 +538,6 @@ inline TypeExpr *TypeCheck::RefTo(TypeExpr *t, Line l) {
     return r;
 }
 
-// A specific reason from the last failing FitsAt, if any.
-
 // Merges the values of two branches (for roots: the deeper — i.e. more
 // conservative — root wins; writability must hold in both).
 inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at,
@@ -713,7 +711,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
             arm.variant = found;
             VarDef *binder = nullptr;
             if (!arm.pat.binder.empty()) {
-                if (!found->has_payload && found->fields.empty())
+                if (!found->has_payload)
                     Error(arm.body, cat("variant ", arm.pat.variant, " has no payload to bind"));
                 auto vt = VariantTypeOf(enumtype, found, m->line);
                 // Packed resizable ADTs have one owning header, but no
@@ -845,8 +843,11 @@ inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue)
     auto entry = SaveFlow();
     PushScope(SK_LOOP, x);
     if (wantvalue) scopes.back().breakexpected = expected;
-    for (auto st : x->body->stmts) CheckStmt(st);
-    if (x->body->tail) CheckStmtExpr(x->body->tail);
+    {
+        BlockScope bs(*this, x->body);
+        CheckStmts(x->body);
+        if (x->body->tail) CheckStmtExpr(x->body->tail);
+    }
     auto sc = scopes.back();
     PopScope();
     loopassigned.pop_back();
@@ -1060,15 +1061,15 @@ inline int TypeCheck::FindBreakScope(bool forcontinue) {
 inline void TypeCheck::CheckBreak(Break *b) {
     auto si = FindBreakScope(false);
     if (si < 0) Error(b, "break outside of a loop or block");
-    auto &sc = scopes[si];
     if (b->val) {
-        if (!Is<LoopExpr>(sc.node) && !Is<EarlyBlock>(sc.node))
+        if (!Is<LoopExpr>(scopes[si].node) && !Is<EarlyBlock>(scopes[si].node))
             Error(b, "break with a value exits loop/block only");
-        if (sc.valuelessbreak)
+        if (scopes[si].valuelessbreak)
             Error(b, "this construct mixes valueless and valued breaks");
         // Later breaks agree with the first; the first constructs into the
         // type the construct is expected to have, as its tail value does.
-        auto v = CheckValue(b->val, sc.breaktype ? sc.breaktype : sc.breakexpected);
+        auto expected = scopes[si].breaktype ? scopes[si].breaktype : scopes[si].breakexpected;
+        auto v = CheckValue(b->val, expected);
         // The construct's value is a new one: the break's type and what its
         // references point at, never the operand's storage or literal form.
         Val exit;
@@ -1083,12 +1084,16 @@ inline void TypeCheck::CheckBreak(Break *b) {
         // Nothing after the break can complete a [] that took no element type
         // here: the construct's value does not carry the literal form.
         if (v.emptyarr) Error(b->val, "cannot infer array element type");
-        auto &sc2 = scopes[si];  // CheckValue may not reallocate, but be safe.
-        sc2.breakvalue = MergeVals(sc2.breakvalue, sc2.breaktype != nullptr,
-                                  exit, true, b, true, nullptr, b->val);
-        if (!sc2.breaktype) sc2.breaktype = v.type;
-        sc2.hasbreak = true;
+        // Checking the value opened and closed scopes of its own, so the
+        // construct's scope is addressed afresh rather than through a
+        // reference taken before.
+        auto &sc = scopes[si];
+        sc.breakvalue = MergeVals(sc.breakvalue, sc.breaktype != nullptr, exit, true, b, true,
+                                  nullptr, b->val);
+        if (!sc.breaktype) sc.breaktype = v.type;
+        sc.hasbreak = true;
     } else {
+        auto &sc = scopes[si];
         if (sc.breaktype)
             Error(b, "this construct mixes valueless and valued breaks");
         sc.valuelessbreak = true;

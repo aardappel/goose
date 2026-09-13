@@ -63,7 +63,6 @@ inline Node *Call::Clone(Ast &ast) const {
     CloneNodes(ast, args, c->args);
     c->trailing = (FunVal *)CloneOrNull(ast, (Node *)trailing);
     c->standalone = standalone;
-    c->fmtspecs = fmtspecs;
     return c;
 }
 

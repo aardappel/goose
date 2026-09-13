@@ -10,6 +10,66 @@ namespace goose {
 // ------------------------------------------------------------------
 // Lvalue paths: names, fields, elements, optionally through references.
 
+inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
+    if (auto id = Is<Ident>(n)) {
+        auto vd = LookupVar(id->name, id->ns);
+        if (!vd) Error(n, cat("unknown variable: ", id->name));
+        id->vdef = vd;
+        LVal lv;
+        lv.type = vd->narrowed ? vd->narrowed : vd->type;
+        lv.var = vd;
+        lv.root = vd;
+        lv.rootexact = true;
+        lv.byteview = vd->contentbyteview;
+        // Contents are writable unless the type says const or the binding
+        // is a copy (§9.5); `let` only keeps the binding from being
+        // reassigned (§4.4).
+        lv.writable = !vd->copybind && !(vd->type && vd->type->cq);
+        lv.letbound = !vd->isvar;
+        lv.letname = vd->name;
+        lv.copyof = vd->copybind ? vd : nullptr;
+        lv.reusable = vd->reusable;
+        n->exprtype = vd->type;
+        return lv;
+    }
+    if (auto d = Is<Dot>(n)) {
+        auto lv = LValueBase(d->obj);
+        DerefLValue(lv, d->obj);
+        ResolveMemberLValue(lv, d);
+        n->exprtype = lv.type;
+        return lv;
+    }
+    if (auto ix = Is<Index>(n)) {
+        TempScope temps(*this);
+        auto lv = LValueBase(ix->obj);
+        DerefLValue(lv, ix->obj);
+        SliceProvenance(lv, ix->obj);
+        TypeExpr *elem;
+        if (lv.type->kind == TY_SLICE) {
+            elem = lv.type->sub;
+        } else {
+            if (lv.type->kind != TY_ARRAY)
+                Error(n, cat("cannot index a value of type ", TypeStr(lv.type)));
+            RequireComplete(lv.type, n->line);
+            elem = lv.type->arr->sub;
+        }
+        if (ClassOf(elem) != SC_FIXED)
+            Error(n, cat(lv.type->kind == TY_SLICE ? "slices" : "arrays",
+                         " of variable-size elements cannot be indexed, only iterated"));
+        HoldSequence(ix->obj, lv, elem);
+        CheckIntAny(ix->idx);
+        if (lv.type->cq) lv.writable = false;   // An element of a const value.
+        lv.letbound = false;
+        lv.type = elem;
+        lv.var = nullptr;
+        lv.fromstorage = true;
+        lv.isvarint = elem->kind == TY_INT && elem->intstorage == IS_VARINT;
+        n->exprtype = lv.type;
+        return lv;
+    }
+    Error(n, "not an assignable location");
+}
+
 // The base of a path: itself a path, or any other expression (a call
 // result, a string literal, ...) whose value is then addressed. A null
 // root means static data; temporaries carry the temproot sentinel.
@@ -293,14 +353,14 @@ inline void TypeCheck::WriteBackArgs(Call *c, Dot *d, vector<Node *> &argnodes) 
     for (size_t i = 0; i < c->args.size(); i++) c->args[i] = argnodes[i + 1];
 }
 
-// copy(x) checked: the node becomes x itself, the stored value codegen
-// copies at the destination like any lvalue source.
 // The whole of array-valued n as a slice: `n[..]`, synthesized for an
 // equality between array kinds (§4.5).
 inline Node *TypeCheck::WholeSlice(Node *n) {
     return ast.New<SliceExpr>(n->line, n);
 }
 
+// copy(x) checked: the node becomes x itself, the stored value codegen
+// copies at the destination like any lvalue source.
 inline void TypeCheck::UnwrapCopy(Node *&n) {
     if (auto c = Is<Call>(n); c && c->builtin == B_COPY) n = c->args[0];
 }
@@ -340,8 +400,6 @@ inline Val TypeCheck::Operand(Node *n) {
     n->exprtype = v.type;
     return v;
 }
-
-// A specific reason from the last failing FitsAt, if any.
 
 inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt, bool callsite) {
     if (!reachable) return;  // A diverging operand fits anything.
@@ -1045,7 +1103,7 @@ inline TypeExpr *TypeCheck::VariantTypeOf(TypeExpr *enumtype, SVariant *v, Line 
 
 // ------------------------------------------------------------------
 // Struct and variant literals (§4.2). The per-node entry is
-// StructLit::Check at the end of this file.
+// StructLit::Check in typecheck_nodes.h.
 
 // `self` in a field initializer: the field must hold a non-optional
 // relative reference to the very value being constructed (§3.9), which is

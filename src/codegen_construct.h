@@ -132,8 +132,6 @@ inline void CodeGen::EmitRelSelfStore(const string &stk, TypeExpr *rt, int64_t f
     Bump(stk, cat(IntSize((IntStorage)rt->ref->lenstorage)));
 }
 
-// Does a fixed type contain relative references at any depth? Literals of
-// such types must construct in their final location, not via a temp.
 // Whether a fixed value of type t can hold bytes nothing ever wrote: the
 // unused slots of a limited array (§5.3), at any depth. A C temporary of
 // such a type is zero-initialized before a literal fills it, since copying
@@ -169,6 +167,8 @@ inline bool CodeGen::HasUninitSlots(TypeExpr *t) {
     }
 }
 
+// Does a fixed type contain relative references at any depth? Literals of
+// such types must construct in their final location, not via a temp.
 inline bool CodeGen::HasRelRef(TypeExpr *t) {
     switch (t->kind) {
         case TY_REF: return t->ref->lenstorage >= 0;

@@ -8,13 +8,9 @@ namespace goose {
 // ------------------------------------------------------------------
 // Text forms (§3.7): print, str and format share them. A scalar's text
 // comes from a gs_fmt_* runtime helper writing at most GS_FMT_MAX bytes;
-// a u8 array or slice contributes its bytes as they are.
-
-// One print argument to stdout.
-// ------------------------------------------------------------------
-// Rendering aggregates (§3.7): the text of any value appended to a
-// u8[>..] builder, structurally, or through a user `format` overload
-// recorded on the call for that type.
+// a u8 array or slice contributes its bytes as they are, and any other
+// value renders structurally into a u8[>..] builder, or through a user
+// `format` overload recorded on the call for its type.
 
 inline TypeExpr *CodeGen::GrowU8() {
     if (growu8) return growu8;

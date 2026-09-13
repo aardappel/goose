@@ -5,8 +5,6 @@
 
 namespace goose {
 
-// Element type mangle -> queue global.
-
 inline string CodeGen::QueueFor(TypeExpr *t) {
     usesthreads = true;
     auto m = Mangle(t);
@@ -367,17 +365,6 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
     }
 }
 
-// ------------------------------------------------------------------
-// Text forms (§3.7): print, str and format share them. A scalar's text
-// comes from a gs_fmt_* runtime helper writing at most GS_FMT_MAX bytes;
-// a u8 array or slice contributes its bytes as they are.
-
-// One print argument to stdout.
-// ------------------------------------------------------------------
-// Rendering aggregates (§3.7): the text of any value appended to a
-// u8[>..] builder, structurally, or through a user `format` overload
-// recorded on the call for that type.
-
 inline vector<string> CodeGen::EmitPush(Call *c, vector<Node *> &an, Line ln) {
     auto lv = RecvLoc(an[0]);
     auto v = ArrayView(lv, ln);
@@ -543,13 +530,13 @@ inline vector<VarDef *> &CodeGen::ThreadGlobals(FnSpec *entry) {
     auto it = threadglobals.find(entry);
     if (it != threadglobals.end()) return it->second;
     set<FnSpec *> seen;
-    set<VarDef *> used;
+    set<VarDef *> named;
     function<void(FnSpec *)> rec = [&](FnSpec *sp) {
         if (!sp || !sp->body || !seen.insert(sp).second) return;
         function<void(Node *)> walk = [&](Node *n) {
             if (!n) return;
             if (auto id = Is<Ident>(n))
-                if (auto v = id->vdef; v && v->isglobal && !gstatic.count(v)) used.insert(v);
+                if (auto v = id->vdef; v && v->isglobal && !gstatic.count(v)) named.insert(v);
             if (auto c = Is<Call>(n)) {
                 rec(c->spec);
                 for (auto d : c->dispatch) rec(d);
@@ -563,7 +550,7 @@ inline vector<VarDef *> &CodeGen::ThreadGlobals(FnSpec *entry) {
     rec(entry);
     auto &out = threadglobals[entry];
     for (auto g : ast.globals)
-        for (auto d : g->defs) if (used.count(d)) out.push_back(d);
+        for (auto d : g->defs) if (named.count(d)) out.push_back(d);
     return out;
 }
 

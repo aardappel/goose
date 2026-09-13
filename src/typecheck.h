@@ -295,9 +295,8 @@ struct TypeCheck {
                     default: return true;
                 }
             }
-            case TY_SLICE: return a->cq == b->cq && TypeEq(a->sub, b->sub);
+            case TY_SLICE: return TypeEq(a->sub, b->sub);
             case TY_REF:
-                if (a->cq != b->cq) return false;
                 // The pool is part of a relative reference's identity: offsets
                 // measured from different bases are different encodings (§3.9).
                 return TypeEq(a->ref->sub, b->ref->sub) && a->ref->optional == b->ref->optional &&
@@ -820,7 +819,7 @@ struct TypeCheck {
 
     // ------------------------------------------------------------------
     // Struct and variant literals (§4.2). The per-node entry is
-    // StructLit::Check at the end of this file.
+    // StructLit::Check in typecheck_nodes.h.
 
     // The deepest lifetime root among one literal's initialized fields/elements.
     struct LitDeep {

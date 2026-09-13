@@ -1522,7 +1522,7 @@ inline void TypeCheck::CheckReturn(Return *r) {
 
 // ------------------------------------------------------------------
 // Struct and variant literals (§4.2). The per-node entry is
-// StructLit::Check at the end of this file.
+// StructLit::Check in typecheck_nodes.h.
 
 // `selft` is the type of the value this literal constructs (the enum type
 // for a variant literal in fixed enum mode), which is what `self` names.

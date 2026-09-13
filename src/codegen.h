@@ -98,13 +98,6 @@ struct CodeGen {
         throw CompileError { s };
     }
 
-    string Where(Line l) {
-        if (l.fileidx < 0 || l.fileidx >= (int)ast.sources.size()) return "?";
-        auto f = ast.sources[l.fileidx].first;
-        for (auto &c : f) if (c == '\\') c = '/';
-        return cat(f, ":", l.line);
-    }
-
     // A C string literal (quotes included) for arbitrary bytes; non-printables
     // as 3-digit octal so following characters can never extend an escape.
     static string CStr(string_view v) {
@@ -352,7 +345,6 @@ struct CodeGen {
     int ind = 1;
     int tmpn = 0;
     int stknext = 0, stkmax = 0;
-    bool cursp = false;                  // The current context has a gs_sp value.
     string spexpr;                       // "gs_sp" inside functions, "0" at global init.
     set<string> fnused;                  // Local C identifiers.
     unordered_map<const VarDef *, string> vnames;
@@ -615,7 +607,7 @@ struct CodeGen {
     string GenTruth(Node *n);
 
     // The three per-node passes dispatch virtually (ast.h); the bodies live
-    // together at the end of this file, delegating into the machinery here.
+    // together in codegen_nodes.h, delegating into the machinery here.
     string GenX(Node *n) { return n->CgX(*this); }
     void GenAny(Node *n, Dst d) { n->CgAny(*this, d); }
     void GenStmt2(Node *n) { n->CgStmt(*this); }
@@ -795,13 +787,9 @@ struct CodeGen {
     // ------------------------------------------------------------------
     // Text forms (§3.7): print, str and format share them. A scalar's text
     // comes from a gs_fmt_* runtime helper writing at most GS_FMT_MAX bytes;
-    // a u8 array or slice contributes its bytes as they are.
-
-    // One print argument to stdout.
-    // ------------------------------------------------------------------
-    // Rendering aggregates (§3.7): the text of any value appended to a
-    // u8[>..] builder, structurally, or through a user `format` overload
-    // recorded on the call for that type.
+    // a u8 array or slice contributes its bytes as they are, and any other
+    // value renders structurally into a u8[>..] builder, or through a user
+    // `format` overload recorded on the call for its type.
 
     TypeExpr *growu8 = nullptr;
     TypeExpr *GrowU8();

@@ -21,11 +21,9 @@ inline bool CodeGen::PrefVar(const VarDef *vd) {
            vd->ref.reusable;
 }
 
-// Optimizer splices can leave a reference-typed tree in a slot whose
-// checked type already decayed; Dst::t says what the receiver wants, and
-// the pointee load then happens at the leaf against it.
-
-// Whether a value of type `have` needs a pointee load to serve as `want`.
+// Whether a value of type `have` needs a pointee load to serve as `want`:
+// optimizer splices can leave a reference-typed tree in a slot whose checked
+// type already decayed, and Dst::t says what the receiver wants.
 inline bool CodeGen::NeedsDeref(TypeExpr *have, TypeExpr *want) {
     return have && want && have->kind == TY_REF && !have->ref->optional &&
            have->ref->lenstorage < 0 && want->kind != TY_REF && want->kind != TY_VOID;
@@ -328,8 +326,6 @@ inline CodeGen::ArrView CodeGen::RawArrayView(const Loc &lv, Line ln) {
     }
     (void)ln;
 }
-
-// base, length.
 
 inline bool CodeGen::AddView(VarDef *vd, Line ln) {
     auto t = vd->type;
@@ -860,8 +856,6 @@ inline string CodeGen::GenPtr(Node *n, string *stkout) {
     if (stkout) *stkout = stk;
     return base;
 }
-
-// mangle+text -> value name.
 
 inline string CodeGen::StrRaw(const string &v) {
     auto it = strdata.find(v);

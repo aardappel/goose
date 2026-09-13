@@ -313,7 +313,7 @@ struct Node {
     virtual void Children(const function<void(Node *)> &f) const = 0;
     // The typecheck pass for this node as a value expression; statements are
     // dispatched separately by TypeCheck::CheckStmt. Implementations live
-    // together at the end of typecheck.h.
+    // together in typecheck_nodes.h.
     virtual Val Check(TypeCheck &tc, TypeExpr *expected) = 0;
     // The optimizer pass (both in optimize.h): Cp1 is the annotation-preserving
     // deep copy used for inlining (its Cp wrapper carries exprtype over); Opt
@@ -332,8 +332,8 @@ struct Node {
     virtual void BceMark(BCE &bce);
     // The codegen pass (codegen.h): CgX emits the node as a C value
     // expression, CgAny routes its value to a destination, CgStmt emits it in
-    // statement position. Implementations live together at the end of
-    // codegen.h; most are one-line delegations into CodeGen's machinery.
+    // statement position. Implementations live together in codegen_nodes.h;
+    // most are one-line delegations into CodeGen's machinery.
     virtual string CgX(CodeGen &cg) = 0;
     virtual void CgAny(CodeGen &cg, const Dst &d) = 0;
     virtual void CgStmt(CodeGen &cg) = 0;

@@ -575,8 +575,6 @@ inline string CodeGen::NameCT(TypeExpr *t) {
     return name;
 }
 
-// Mangled names whose C body has been emitted.
-
 inline void CodeGen::EmitCFields(string &d, const vector<Field> &fields,
                                  const vector<TypeExpr *> &ftypes) {
     // A frame object's tail is not part of the packed layout: it is the

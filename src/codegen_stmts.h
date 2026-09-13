@@ -5,8 +5,6 @@
 
 namespace goose {
 
-// The last emitted statement left via goto/return.
-
 // A Block's contents without emitting the braces/scope (the caller did).
 inline void CodeGen::GenBlockInner(Block *b, Dst d, size_t first) {
     for (auto i = first; i < b->stmts.size(); ++i) GenStmt(b->stmts[i]);

@@ -290,8 +290,7 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     curinfo = &sinfo[sp];
     emiter = er;
     ResetFnState();
-    cursp = curinfo->needssp;
-    spexpr = cursp ? "gs_sp" : "0";
+    spexpr = curinfo->needssp ? "gs_sp" : "0";
     cachetops = CanCacheTops(sp);
     reftops = !cachetops && RefTopsOk(sp);
     cachetops = cachetops || reftops;
@@ -511,7 +510,6 @@ inline void CodeGen::EmitGlobalInit() {
     curspec = nullptr;
     curinfo = nullptr;
     ResetFnState();
-    cursp = false;
     spexpr = "0";
     PushSc(SC_FN);
     for (auto g : ast.globals) {
