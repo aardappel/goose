@@ -43,6 +43,21 @@ enum BuiltinRecv {
     BR_SHRINKABLE = BR_LIMITED | BR_GROWSHRINK | BR_GROW,
 };
 
+// The receiver kind of a (dereferenced) type: one BR_ bit for an array
+// or slice, nothing for any other type.
+inline int RecvKindOf(TypeExpr *t) {
+    if (t->kind == TY_SLICE) return BR_SLICE;
+    if (t->kind != TY_ARRAY) return 0;
+    switch (t->arr->akind) {
+        case A_FIXED:      return BR_FIXED;
+        case A_VAR:        return BR_VAR;
+        case A_LIMITED:    return BR_LIMITED;
+        case A_GROW:       return BR_GROW;
+        case A_GROWSHRINK: return BR_GROWSHRINK;
+    }
+    return 0;
+}
+
 //        enum            name                min max  args  rets recv            flags
 #define BUILTINS \
     F(B_PRINT,            "print",            0, 99,   "",   "",  0,              BF_CUSTOM) \

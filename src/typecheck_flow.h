@@ -261,13 +261,8 @@ inline void TypeCheck::NarrowCond(Node *cond, bool sense) {
     if (auto id = Is<Ident>(cond)) {
         if (!id->vdef) return;
         auto t = id->vdef->type;
-        if (t && t->kind == TY_REF && t->ref->optional && sense && !id->vdef->narrowed) {
-            auto r = ast.NewType(TY_REF, cond->line);
-            r->ref = ast.NewDetail<TypeRef>();
-            r->ref->sub = t->ref->sub;
-            r->cq = t->cq;
-            id->vdef->narrowed = r;
-        }
+        if (t && t->kind == TY_REF && t->ref->optional && sense && !id->vdef->narrowed)
+            id->vdef->narrowed = NarrowedRef(t, cond->line);
         return;
     }
     if (auto u = Is<Unary>(cond)) {
@@ -519,6 +514,14 @@ inline TypeExpr *TypeCheck::RefTo(TypeExpr *t, Line l) {
     auto r = ast.NewType(TY_REF, l);
     r->ref = ast.NewDetail<TypeRef>();
     r->ref->sub = t;
+    return r;
+}
+
+// What an optional reference type narrows to (§3.8): a plain reference to
+// the same pointee under the same qualifier.
+inline TypeExpr *TypeCheck::NarrowedRef(TypeExpr *t, Line l) {
+    auto r = RefTo(t->ref->sub, l);
+    r->cq = t->cq;
     return r;
 }
 
@@ -1328,14 +1331,7 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     if (IsPendingArray(target)) {
         // `var x = []; x = other;` completes x from the assigned array.
         auto av = DecayRef(CheckV(a->rhs, nullptr));
-        auto t2 = av.type;
-        TypeExpr *selem = nullptr;
-        if (t2->kind == TY_ARRAY) selem = t2->arr->sub;
-        else if (t2->kind == TY_SLICE) selem = t2->sub;
-        if (av.strlit) selem = ast.inttypes[IS_U8];
-        if (!selem || av.emptyarr)
-            Error(a, "cannot infer the element type of this array from this value");
-        CompletePending(target, selem, a->line);
+        CompletePending(target, PendingElemFromSeq(av, a), a->line);
     }
     // Assigning a resizable array whole replaces its elements: a shrink
     // to anything referring into it (§5.1, §5.2).
@@ -1419,11 +1415,7 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
             if (spec && lv.var->ownerspec != spec)
                 spec->reboundoptionals.insert(lv.var);
             if (!v.isnull && wasplain) {
-                auto r = ast.NewType(TY_REF, a->line);
-                r->ref = ast.NewDetail<TypeRef>();
-                r->ref->sub = target->ref->sub;
-                r->cq = target->cq;
-                lv.var->narrowed = r;
+                lv.var->narrowed = NarrowedRef(target, a->line);
             } else {
                 lv.var->narrowed = nullptr;
             }
@@ -1733,22 +1725,13 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         }
         auto rt = rv.type;
         if (IsPlainRef(rt)) rt = rt->ref->sub;
-        auto got = 0;
         if (rt->kind == TY_ARRAY) {
             ak = rt->arr->akind;
             elem = rt->arr->sub;
-            switch (ak) {
-                case A_FIXED:      got = BR_FIXED; break;
-                case A_VAR:        got = BR_VAR; break;
-                case A_LIMITED:    got = BR_LIMITED; break;
-                case A_GROW:       got = BR_GROW; break;
-                case A_GROWSHRINK: got = BR_GROWSHRINK; break;
-            }
         } else if (rt->kind == TY_SLICE) {
-            got = BR_SLICE;
             elem = rt->sub;
         }
-        if (!(got & d.recv))
+        if (!(RecvKindOf(rt) & d.recv))
             Error(c, cat(".", d.name, " is not available on ", TypeStr(rv.type)));
         if ((d.flags & BF_WRITE) && !rv.writable)
             Error(c, cat("cannot .", d.name, " through a non-writable value "
@@ -1777,20 +1760,11 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         if (d.kind == B_PUSH || d.kind == B_ALLOC_INDEX || d.kind == B_ALLOC_REF) {
             auto av = DecayRef(CheckV(args[1], nullptr));
             CompletePending(rt, PendingElemFrom(av, args[1]), c->line);
-        } else if (d.kind == B_APPEND || d.kind == B_FORMAT) {
-            TypeExpr *selem = nullptr;
-            if (d.kind == B_FORMAT) {
-                selem = ast.inttypes[IS_U8];
-            } else {
-                auto av = DecayRef(CheckV(args[1], nullptr));
-                auto t2 = av.type;
-                if (t2->kind == TY_ARRAY) selem = t2->arr->sub;
-                else if (t2->kind == TY_SLICE) selem = t2->sub;
-                if (av.strlit) selem = ast.inttypes[IS_U8];
-                if (!selem || av.emptyarr)
-                    Error(c, "cannot infer the element type of this array from this value");
-            }
-            CompletePending(rt, selem, c->line);
+        } else if (d.kind == B_APPEND) {
+            auto av = DecayRef(CheckV(args[1], nullptr));
+            CompletePending(rt, PendingElemFromSeq(av, c), c->line);
+        } else if (d.kind == B_FORMAT) {
+            CompletePending(rt, ast.inttypes[IS_U8], c->line);
         } else {
             RequireComplete(rt, c->line);
         }

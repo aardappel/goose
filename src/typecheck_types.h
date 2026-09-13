@@ -369,6 +369,19 @@ inline TypeExpr *TypeCheck::PendingElemFrom(const Val &av, Node *at) {
     return av.type;
 }
 
+// The element type a sequence value (an array, slice or string literal
+// being appended or assigned whole) supplies to a pending array.
+inline TypeExpr *TypeCheck::PendingElemFromSeq(const Val &av, Node *at) {
+    auto t = av.type;
+    TypeExpr *elem = nullptr;
+    if (t->kind == TY_ARRAY) elem = t->arr->sub;
+    else if (t->kind == TY_SLICE) elem = t->sub;
+    if (av.strlit) elem = ast.inttypes[IS_U8];
+    if (!elem || av.emptyarr)
+        Error(at, "cannot infer the element type of this array from this value");
+    return elem;
+}
+
 inline void TypeCheck::CompletePending(TypeExpr *arrt, TypeExpr *elem, Line l) {
     arrt->arr->sub = elem;
     ValidateType(arrt, l, VT_LOCAL);

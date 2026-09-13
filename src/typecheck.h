@@ -523,6 +523,7 @@ struct TypeCheck {
     TypeExpr *PendingArray(Line l);
     bool IsPendingArray(TypeExpr *t);
     TypeExpr *PendingElemFrom(const Val &av, Node *at);
+    TypeExpr *PendingElemFromSeq(const Val &av, Node *at);
     void CompletePending(TypeExpr *arrt, TypeExpr *elem, Line l);
     void RequireComplete(TypeExpr *t, Line l);
     void ValidateType(TypeExpr *t, Line l, int pos);
@@ -600,6 +601,7 @@ struct TypeCheck {
     // Small type constructors and views.
 
     TypeExpr *RefTo(TypeExpr *t, Line l);
+    TypeExpr *NarrowedRef(TypeExpr *t, Line l);
     TypeExpr *SliceOf(TypeExpr *t, Line l);
 
     TypeExpr *LoadType(TypeExpr *t);

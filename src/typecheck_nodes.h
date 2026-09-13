@@ -555,19 +555,7 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     }
     // Builtin properties (.len/.cap) from the table.
     if (auto bd = LookupBuiltin(name); bd && (bd->flags & BF_PROPERTY)) {
-        auto got = 0;
-        if (t->kind == TY_ARRAY) {
-            switch (t->arr->akind) {
-                case A_FIXED:      got = BR_FIXED; break;
-                case A_VAR:        got = BR_VAR; break;
-                case A_LIMITED:    got = BR_LIMITED; break;
-                case A_GROW:       got = BR_GROW; break;
-                case A_GROWSHRINK: got = BR_GROWSHRINK; break;
-            }
-        } else if (t->kind == TY_SLICE) {
-            got = BR_SLICE;
-        }
-        if (got & bd->recv) {
+        if (RecvKindOf(t) & bd->recv) {
             member = bd->kind;
             Val v;
             assert(bd->rets[0] == 'i');
