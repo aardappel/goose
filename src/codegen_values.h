@@ -239,7 +239,8 @@ inline string CodeGen::VStkOf(const VarDef *vd) {
 }
 
 // A byte-pointer expression for field `fieldidx` within the bytes value at
-// `base` (fields/ftypes from a struct instance or a variant). Emits cursor
+// `base` (fields/ftypes from a struct instance or a variant), grouped as one
+// operand for the casts and dereferences applied to it. Emits cursor
 // statements when a dynamic-size field precedes the target.
 inline string CodeGen::FieldPtr(const string &base, const vector<Field> &fields,
                                 const vector<TypeExpr *> &ftypes, int fieldidx) {
@@ -258,8 +259,8 @@ inline string CodeGen::FieldPtr(const string &base, const vector<Field> &fields,
         off = 0;
         L(cur, " += ", SizeX(ftypes[i], cur), ";");
     }
-    if (cur.empty()) return off ? cat(base, " + ", off) : base;
-    return off ? cat(cur, " + ", off) : cur;
+    if (cur.empty()) return off ? cat("(", base, " + ", off, ")") : base;
+    return off ? cat("(", cur, " + ", off, ")") : cur;
 }
 
 // Reads of the length come from a loop-hoisted local where there is one;

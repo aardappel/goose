@@ -442,7 +442,7 @@ inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
         if (cg.IsResz(enumtype)) {
             auto lv = cg.GenLoc(scrutinee);
             if (lv.t->kind == TY_REF) cg.DerefLoc(lv, line);
-            p = cat("(", lv.s, ")");   // Tag inspection needs only the owner's byte base.
+            p = lv.s;   // Tag inspection needs only the owner's byte base.
         } else if (isref) {
             auto x = cg.GenPure(scrutinee);
             p = varmode ? x : cat("((uint8_t *)", x, ")");
