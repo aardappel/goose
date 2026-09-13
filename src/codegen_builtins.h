@@ -362,6 +362,23 @@ inline vector<string> CodeGen::EmitPush(Call *c, vector<Node *> &an, Line ln) {
     auto v = ArrayView(lv, ln);
     auto elem = v.elem;
     auto ak = lv.t->arr->akind;
+    // The receiver is evaluated, then the argument, then the element is
+    // added (§2), and the argument may itself grow the array. A fixed-size
+    // element is therefore evaluated before its slot is claimed, so that it
+    // follows whatever the argument pushed and the returned reference names
+    // it. A variable-size element, and a fixed one holding relative
+    // references (whose offsets measure from where the element lives), are
+    // built in place instead; the checker keeps the array from growing while
+    // such a value is under construction at its top (§1.3).
+    auto relref = elem->kind == TY_REF && elem->ref->lenstorage >= 0;
+    auto inplace = IsBytesT(elem) || (!relref && HasRelRef(elem));
+    string ev;   // The evaluated element, or the plain reference a relative slot encodes.
+    if (relref) {
+        ev = T();
+        L("uint8_t *", ev, " = (uint8_t *)(", GenX(an[1]), ");");
+    } else if (!inplace) {
+        ev = Snapshot(elem, GenXD(an[1], elem));
+    }
     string ref;
     if (ak == A_LIMITED) {
         auto nl = T();
@@ -369,13 +386,13 @@ inline vector<string> CodeGen::EmitPush(Call *c, vector<Node *> &an, Line ln) {
         L("if (", nl, " >= ", LimitedCap(lv), ") gs_abort(GS_E_CAPACITY, ", LocArgs(ln), ");");
         auto e = T();
         L(CT(elem), " *", e, " = (", CT(elem), " *)(", ElemAddr(v, nl), ");");
-        if (elem->kind == TY_REF && elem->ref->lenstorage >= 0) {
+        if (relref) {
             // A relative-reference element stores the offset from its
             // own slot, not the pointer (§3.9).
-            EmitRelStoreAt(cat("(uint8_t *)", e), elem, GenX(an[1]), ln, true);
+            EmitRelStoreAt(cat("(uint8_t *)", e), elem, ev, ln, true);
+        } else if (inplace) {
+            GenAny(an[1], Dst { DK_LVALUE, cat("(*", e, ")"), elem });
         } else {
-            auto ev = T();
-            L(CT(elem), " ", ev, " = ", GenXD(an[1], elem), ";");
             L("*", e, " = ", ev, ";");
         }
         L(v.lenlv, " = (", LenCast(lv), ")(", nl, " + 1);");
@@ -388,7 +405,9 @@ inline vector<string> CodeGen::EmitPush(Call *c, vector<Node *> &an, Line ln) {
         } else {
             L(CT(elem), " *", e, " = (", CT(elem), " *)", Top(lv.stk), ";");
         }
-        GenConstruct(an[1], lv.stk, elem);
+        if (relref) EmitRelStore(lv.stk, elem, ev, ln);
+        else if (inplace) GenConstruct(an[1], lv.stk, elem);
+        else EmitValStore(lv.stk, elem, ev);
         L(v.lenlv, "++;");
         ref = e;
     }
