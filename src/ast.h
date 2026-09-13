@@ -364,7 +364,8 @@ NODE_END
 
 NODE(FltLit)
     double val;
-    FltLit(Line l, double _val) : Node(l), val(_val) {}
+    string_view text;  // Original spelling, so hex floats and overflowing exponents dump as written.
+    FltLit(Line l, double _val, string_view _text = {}) : Node(l), val(_val), text(_text) {}
 NODE_END
 
 NODE(BoolLit)

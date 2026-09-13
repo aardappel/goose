@@ -816,8 +816,9 @@ struct Parser {
             Error(cat("integer constant expected in match pattern, found \'", TokStr(), "\'"));
         if (neg && lex.iuns && lex.ival != INT64_MIN)
             Error("negated literal too large for i64");
-        auto n = New<IntLit>(line, neg ? -lex.ival : lex.ival,
-                             neg ? string_view {} : lex.attr, !neg && lex.iuns);
+        // Unsigned arithmetic: the one admitted u64 literal negates to i64.min.
+        auto val = neg ? (int64_t)(0u - (uint64_t)lex.ival) : lex.ival;
+        auto n = New<IntLit>(line, val, neg ? string_view {} : lex.attr, !neg && lex.iuns);
         lex.Next();
         return n;
     }
@@ -991,7 +992,7 @@ struct Parser {
                 return n;
             }
             case T_FLTLIT: {
-                auto n = New<FltLit>(line, lex.fval);
+                auto n = New<FltLit>(line, lex.fval, lex.attr);
                 lex.Next();
                 return n;
             }

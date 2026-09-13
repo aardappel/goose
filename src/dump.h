@@ -210,6 +210,7 @@ inline void IntLit::Dump(string &s, int) const {
 }
 
 inline void FltLit::Dump(string &s, int) const {
+    if (!text.empty()) { s += text; return; }
     auto start = s.size();
     CatOne(s, val);
     // Keep it lexing as a float literal.

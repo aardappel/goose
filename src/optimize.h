@@ -141,7 +141,7 @@ struct Optimizer {
     Node *CloneLit(Node *lit, TypeExpr *usetype) {
         Node *r;
         if (auto i = Is<IntLit>(lit)) r = ast.New<IntLit>(lit->line, i->val, i->text, i->uns);
-        else if (auto f = Is<FltLit>(lit)) r = ast.New<FltLit>(lit->line, f->val);
+        else if (auto f = Is<FltLit>(lit)) r = ast.New<FltLit>(lit->line, f->val, f->text);
         else r = ast.New<BoolLit>(lit->line, ((BoolLit *)lit)->val);
         r->exprtype = usetype ? usetype : lit->exprtype;
         return r;
@@ -546,7 +546,7 @@ inline Node *Optimizer::TryInline(Call *c) {
 // symbols are shared, VarDefs remap via Inliner::Remap.
 
 inline Node *IntLit::Cp1(Inliner &inl) const { return inl.ast.New<IntLit>(line, val, text, uns); }
-inline Node *FltLit::Cp1(Inliner &inl) const { return inl.ast.New<FltLit>(line, val); }
+inline Node *FltLit::Cp1(Inliner &inl) const { return inl.ast.New<FltLit>(line, val, text); }
 inline Node *BoolLit::Cp1(Inliner &inl) const { return inl.ast.New<BoolLit>(line, val); }
 inline Node *StrLit::Cp1(Inliner &inl) const { return inl.ast.New<StrLit>(line, val); }
 inline Node *NullLit::Cp1(Inliner &inl) const { return inl.ast.New<NullLit>(line); }
@@ -795,8 +795,8 @@ inline Node *Unary::Opt(Optimizer &o) {
             if (auto i = Is<IntLit>(child)) {
                 auto t = Optimizer::IntTypeOf(this);
                 // An unrepresentable negation overflows; the runtime decides.
-                if (!t || !TypeCheck::FitsIntStorage(-i->val, false, t->intstorage) ||
-                    i->val == INT64_MIN)
+                if (!t || i->val == INT64_MIN ||
+                    !TypeCheck::FitsIntStorage(-i->val, false, t->intstorage))
                     break;
                 return o.NewInt(this, -i->val);
             }

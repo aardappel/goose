@@ -121,6 +121,9 @@ struct Lexer {
         auto start = p;
         tokline = line;
         toklinestart = linestart;
+        // An error raised while the token is still being scanned puts its
+        // caret at the token's start.
+        attr = string_view(start, 0);
         auto Set = [&](TType t) {
             tok = t;
             attr = string_view(start, (size_t)(p - start));
@@ -232,10 +235,7 @@ struct Lexer {
             }
             case '"': {
                 sval.clear();
-                while (*p != '"') {
-                    if (!*p || *p == '\n') { Set(T_STRLIT); Error("unterminated string literal"); }
-                    sval += (char)LexEscapedChar('"');
-                }
+                while (*p != '"') sval += (char)LexEscapedChar('"');
                 p++;
                 Set(T_STRLIT);
                 return;
