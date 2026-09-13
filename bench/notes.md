@@ -195,7 +195,7 @@ slice's upper bound is measured against a length the kernel now knows.
 the CSR fill, `pool[slots[at].node]` throughout `lru`. The analysis gets
 everything derived from loop counters, lengths, constant masks and reductions,
 and nothing that was loaded from a data structure -- which is what
-`test/bce.goose` documents. `blur` adds a second class, an index that is a
+`test/optimizer/bce.goose` documents. `blur` adds a second class, an index that is a
 *product* of two counters; the difference-constraint domain carries one-shot
 product and two-term-sum bases for that idiom, which is also what takes `scene`
 to 12/12.

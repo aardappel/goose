@@ -3,6 +3,28 @@
 Run `python test/run_tests.py --profile baseline --cc native --require-clang`
 after a normal compiler build. CI runs this on Windows, macOS and Linux.
 
+Test fixtures are grouped by category; `run_tests.py` stays at the root of `test/`:
+
+| Path under `test/` | Coverage |
+|---|---|
+| `syntax/` | Lexer, parser, dump grouping, imports and namespace resolution. Imported helpers live in `syntax/ns/` and `syntax/sub/`. |
+| `typing/` | Types, generics, constants, optional narrowing, dispatch results and recursive return contracts. |
+| `lifetimes/` | Reference roots, byte views, borrowed contents and shrinking while references are live. |
+| `codegen/` | C names, evaluation order, representations, frame/stack layout and aliasing. |
+| `optimizer/` | Inlining, tail recursion and bounds-check elimination. |
+| `runtime/` | Runtime diagnostics, reusable-slot operations and array size checks. |
+| `storage/` | Relative references, pools and serialization. |
+| `threads/` | Workers, queues, shared globals and the native runtime lifecycle test. |
+| `stdlib/` | Standard-library modules. |
+| `errors/`, `errors_tc/` | Expected parser/resolver and semantic rejections. |
+| `expected/` | Shared output and runtime-diagnostic expectations. |
+| `run_tests.py` | The Python test runner. |
+
+Positive fixtures are discovered one level below `test/`; nested import helpers
+run through their entry programs. Keep fixture stems unique across categories,
+since expectations and generated build artifacts use those names. The runner
+rejects duplicate names.
+
 | Configuration | Purpose |
 |---|---|
 | Debug Goose compiler; Goose `-O0` / native C `-O0` versus Goose `-O2` / native C `-O2` | Compare actual unoptimized and optimized executables, including native optimizer effects; check output against the existing fixtures. |
@@ -19,7 +41,7 @@ the current C backend deliberately performs unaligned packed accesses. The C++
 compiler retains alignment checking. ASan observes C allocations, but does not
 know logical object boundaries inside Goose's custom virtual-memory arenas.
 
-The direct `test/runtime_threads_lifecycle.c` regression checks allocations,
+The direct `test/threads/runtime_threads_lifecycle.c` regression checks allocations,
 mappings and Windows handles across worker churn, including unjoined workers,
 concurrent/repeated waits and children outliving their parents. It runs in both
 profiles. The normal suite also checks user-visible worker error diagnostics.

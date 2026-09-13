@@ -94,12 +94,10 @@ declarations under `__TINYC__` and the staged `.def` file would need the names.
 
 ### `log2` on Windows
 
-TinyCC's bundled `math.h` defines `log2(x)` as `log(x) * log2(e)`, a few ulp off
-the exact answers `test/stdlib_math.goose` compares against, so that file carries
-a `no-jit` marker. glibc's `log2` is exact, so the marker also costs the coverage
-on Linux, where it would have passed. Either scope the marker to a platform, or
-put a corrected `math.h` ahead of TinyCC's in the staged include directory and
-accept maintaining a patched third-party header.
+TinyCC's bundled `math.h` defines `log2(x)` as `log(x) * log2(e)`, which can differ
+from native libm by a few ulp. `test/stdlib/stdlib_math.goose` allows small
+rounding differences in transcendental results and runs on both native and JIT
+backends without a `no-jit` marker.
 
 ### The sanitizer profile
 

@@ -14,7 +14,7 @@ saving is a write of the element region, loading is a read of it, and there
 is no pointer fixup pass because there are no pointers.
 
 Three builtins (§12) express that. `samples/25_serialize.goose` is the
-worked example; `test/serialize.goose` is the coverage.
+worked example; `test/storage/serialize.goose` is the coverage.
 
 ## 2. Why a trusting loader is not acceptable
 

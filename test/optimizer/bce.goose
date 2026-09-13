@@ -1,5 +1,5 @@
 // Bounds-check elimination coverage. Every elide/keep annotation comment is
-// verified by `goose --bce-test` (see run_tests.py): all checks on such a
+// verified by `goose --bce-test` (see test/run_tests.py): all checks on such a
 // line must have exactly the annotated outcome. The file also runs as a
 // normal codegen test, so a wrongly elided check would corrupt its output;
 // every kept check passes at runtime. Keep-cases index with values loaded

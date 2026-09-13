@@ -475,7 +475,7 @@ With that, `let W = 78;` read by a worker is simply the worker's own `W`,
 whatever anyone does with `&W`, and the mandelbrot sample keeps its `let`s.
 The typechecker's rule shrinks to "flat globals only", and the only C
 statics left are string literals and compile-time `const` globals, both
-provably never written. `test/thread_globals.goose` exercises a counter, a
+provably never written. `test/threads/thread_globals.goose` exercises a counter, a
 resizable log, a `let` array written through a reference, a struct, a
 variable-size string, a pool with a freelist and a `const`, from a worker
 and from a worker's worker, checking main's values after each. This also

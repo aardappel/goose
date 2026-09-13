@@ -99,7 +99,7 @@ fn main() {
   Foreign C linkage names stay separate: an `extern`'s explicit symbol, or its
   default leaf name, is unchanged. `in pool` names resolve by the same rules
   and the pool declaration's identity is retained as before.
-* Tests: `test/namespaces.goose` with `test/ns/` and `test/namespaces_lib.goose`
+* Tests: `test/syntax/namespaces.goose` with `test/syntax/ns/` and `test/syntax/namespaces_lib.goose`
   cover duplicate leaf names across namespaces, same-namespace overloads,
   generic definition-site lookup, qualified types/variants/pools, global
   fallback and shadowing, imported main handling, custom formatting across

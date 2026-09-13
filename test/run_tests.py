@@ -33,10 +33,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-import toolchain as tc
-
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "scripts"))
+import toolchain as tc
 
 
 def joined(text):
@@ -235,13 +234,18 @@ def main():
     dumpdir = builddir / "dump"
     dumpdir.mkdir(parents=True, exist_ok=True)
 
-    code, out, err = r.goose("--tokens", HERE / "lexer_tokens.goose")
+    code, out, err = r.goose("--tokens", HERE / "syntax" / "lexer_tokens.goose")
     if code != 0:
         r.fail("lex lexer_tokens.goose", out + err)
     elif r.check_stdout("lexer_tokens", "lexer_tokens.goose", joined(out)):
         r.ok("lex lexer_tokens.goose")
 
-    tests = [f for f in sorted(HERE.glob("*.goose")) if f.name != "lexer_tokens.goose"]
+    # One level of category directories; nested syntax/ns and syntax/sub are
+    # import fixtures, exercised by their entry programs rather than alone.
+    tests = [f for f in sorted(HERE.glob("*/*.goose"))
+             if f.parent.name not in ("errors", "errors_tc") and f.name != "lexer_tokens.goose"]
+    if len({f.stem for f in tests}) != len(tests):
+        ap.error("fixture names must be unique across categories (shared expected/ and build outputs)")
 
     dump_tests = []
     for f in tests:
@@ -262,7 +266,7 @@ def main():
     # The optimizer runs at -O1 in every typecheck above; also exercise the
     # other levels (and the --specs dump path) on the optimizer coverage file.
     for lvl in ("-O0", "-O1", "-O2"):
-        code, out, err = r.goose(lvl, "--check", "--specs", HERE / "optimize.goose")
+        code, out, err = r.goose(lvl, "--check", "--specs", HERE / "optimizer" / "optimize.goose")
         if code != 0:
             r.fail(f"optimize {lvl}", out + err)
         elif r.check_optimizer(lvl, out):
@@ -368,7 +372,7 @@ def main():
         # instrumentation that cannot be expressed by a Goose program. Keep
         # this one focused native test in both profiles.
         name = "runtime_threads_lifecycle"
-        src = HERE / f"{name}.c"
+        src = HERE / "threads" / f"{name}.c"
         out_exe = gendir / f"{name}{tc.EXE_SUFFIX}"
         ok, log = cc.compile(src, out_exe, opt=2 if args.profile == "baseline" else 1,
                              extra=extra, strict_decls=True,
@@ -391,7 +395,7 @@ def main():
             print("skip cgen-clang (no clang found)")
         else:
             src = gendir / "cgclang.c"
-            code, out, err = r.goose("-O2", "-o", src, HERE / "codegen_exec.goose")
+            code, out, err = r.goose("-O2", "-o", src, HERE / "codegen" / "codegen_exec.goose")
             if code != 0:
                 r.fail("cgen-clang codegen_exec.goose", out + err)
             for label in ("release", "debug"):

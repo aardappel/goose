@@ -85,8 +85,8 @@ static int counted_munmap(void *base, size_t size) {
 #define GS_MAX_STACKS 8
 #define GS_STACK_RESERVE (256u << 10)
 #define GS_STACK_GAP (64u << 10)
-#include "../src/runtime/runtime.h"
-#include "../src/runtime/runtime_threads.h"
+#include "../../src/runtime/runtime.h"
+#include "../../src/runtime/runtime_threads.h"
 
 static gs_mutex test_mutex = GS_MUTEX_INIT;
 static gs_cond test_cond = GS_COND_INIT;
