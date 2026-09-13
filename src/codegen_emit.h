@@ -530,10 +530,7 @@ inline void CodeGen::EmitGlobalInit() {
                     dsts.push_back(Dst { DK_LVALUE, gnames[d] });
                 }
             }
-            auto rets = EmitCall(c, dsts.empty() ? Dst {} : dsts[0], &dsts);
-            for (size_t i = 0; i < dsts.size() && i < rets.size(); i++)
-                if (dsts[i].k == DK_LVALUE && !rets[i].empty() && rets[i] != dsts[i].s)
-                    L(dsts[i].s, " = ", rets[i], ";");
+            EmitCallInto(c, dsts);
         } else {
             for (size_t i = 0; i < g->defs.size(); i++) {
                 auto d = g->defs[i];

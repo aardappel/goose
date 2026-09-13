@@ -270,11 +270,8 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
                 // The array tops its stack: the element region ends at top.
                 L(TopW(lv.stk), " -= ", esz, ";");
                 L(CT(elem), " ", tv, " = *(", CT(elem), " *)", Top(lv.stk), ";");
-            } else if (v.typedelems) {
-                L(CT(elem), " ", tv, " = ", v.elems, "[", nl, "];");
             } else {
-                L(CT(elem), " ", tv, " = *(", CT(elem), " *)((", v.elems, ") + ", nl,
-                  " * ", esz, ");");
+                L(CT(elem), " ", tv, " = *(", CT(elem), " *)(", ElemAddr(v, nl), ");");
             }
             return { tv };
         }
@@ -305,20 +302,15 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             if (fv.empty()) {
                 L("gs_abort(GS_E_RESIZEFILL, ", LocArgs(ln), ");");
             } else {
-                if (ak == A_LIMITED) {
-                    auto capx = lv.val ? cat(ArrSize(lv.t->arr))
-                                       : cat("(int64_t)*(uint32_t *)(", lv.s, ")");
-                    L("if (", nn, " > ", capx,
-                      ") gs_abort(GS_E_CAPACITY, ", LocArgs(ln),
-                      ");");
-                }
+                if (ak == A_LIMITED)
+                    L("if (", nn, " > ", LimitedCap(lv), ") gs_abort(GS_E_CAPACITY, ",
+                      LocArgs(ln), ");");
                 auto iv = T();
                 L("for (int64_t ", iv, " = ", ol, "; ", iv, " < ", nn, "; ", iv, "++) {");
                 ind++;
                 if (ak == A_LIMITED) {
                     if (v.typedelems) L(v.elems, "[", iv, "] = ", fv, ";");
-                    else L("*(", CT(elem), " *)((", v.elems, ") + ", iv, " * ", esz,
-                           ") = ", fv, ";");
+                    else L("*(", CT(elem), " *)(", ElemAddr(v, iv), ") = ", fv, ";");
                 } else {
                     L("*(", CT(elem), " *)", Top(lv.stk), " = ", fv, ";");
                     L(TopW(lv.stk), " += ", esz, ";");
@@ -372,16 +364,11 @@ inline vector<string> CodeGen::EmitPush(Call *c, vector<Node *> &an, Line ln) {
     auto ak = lv.t->arr->akind;
     string ref;
     if (ak == A_LIMITED) {
-        auto esz = FixedSize(elem);
-        auto capx = lv.val ? cat(ArrSize(lv.t->arr)) : cat("(int64_t)*(uint32_t *)(", lv.s, ")");
         auto nl = T();
         L("int64_t ", nl, " = ", v.len, ";");
-        L("if (", nl, " >= ", capx, ") gs_abort(GS_E_CAPACITY, ",
-          LocArgs(ln), ");");
+        L("if (", nl, " >= ", LimitedCap(lv), ") gs_abort(GS_E_CAPACITY, ", LocArgs(ln), ");");
         auto e = T();
-        if (v.typedelems) L(CT(elem), " *", e, " = &", v.elems, "[", nl, "];");
-        else L(CT(elem), " *", e, " = (", CT(elem), " *)((", v.elems, ") + ", nl, " * ",
-               esz, ");");
+        L(CT(elem), " *", e, " = (", CT(elem), " *)(", ElemAddr(v, nl), ");");
         if (elem->kind == TY_REF && elem->ref->lenstorage >= 0) {
             // A relative-reference element stores the offset from its
             // own slot, not the pointer (§3.9).
@@ -391,8 +378,7 @@ inline vector<string> CodeGen::EmitPush(Call *c, vector<Node *> &an, Line ln) {
             L(CT(elem), " ", ev, " = ", GenXD(an[1], elem), ";");
             L("*", e, " = ", ev, ";");
         }
-        L(v.lenlv, " = (", lv.val ? IntCT(LenStore(lv.t->arr)) : "uint32_t", ")(", nl,
-          " + 1);");
+        L(v.lenlv, " = (", LenCast(lv), ")(", nl, " + 1);");
         ref = e;
     } else {
         assert(!lv.stk.empty());
@@ -446,17 +432,13 @@ inline void CodeGen::EmitAppend(vector<Node *> &an, Line ln) {
     auto nn = T();
     L("int64_t ", nn, " = ", se.n, ";");
     if (ak == A_LIMITED) {
-        auto esz = FixedSize(elem);
-        auto capx = lv.val ? cat(ArrSize(lv.t->arr)) : cat("(int64_t)*(uint32_t *)(", lv.s, ")");
         auto ol = T();
         L("int64_t ", ol, " = ", v.len, ";");
-        L("if (", ol, " + ", nn, " > ", capx,
-          ") gs_abort(GS_E_CAPACITY, ", LocArgs(ln), ");");
-        L("memcpy(", v.typedelems ? cat(v.elems, " + ", ol)
-                                  : cat("(", v.elems, ") + ", ol, " * ", esz),
-          ", ", se.elems, ", (size_t)(", nn, " * ", esz, "));");
-        L(v.lenlv, " = (", lv.val ? IntCT(LenStore(lv.t->arr)) : "uint32_t", ")(", ol,
-          " + ", nn, ");");
+        L("if (", ol, " + ", nn, " > ", LimitedCap(lv), ") gs_abort(GS_E_CAPACITY, ",
+          LocArgs(ln), ");");
+        L("memcpy(", ElemAddr(v, ol), ", ", se.elems, ", (size_t)(", nn, " * ",
+          FixedSize(elem), "));");
+        L(v.lenlv, " = (", LenCast(lv), ")(", ol, " + ", nn, ");");
         return;
     }
     assert(!lv.stk.empty());
@@ -491,8 +473,7 @@ inline vector<string> CodeGen::EmitAlloc(Call *c, vector<Node *> &an, Line ln) {
     ind--;
     L("}");
     auto e = T();
-    L(CT(elem), " *", e, " = (", CT(elem), " *)((", v.elems, ") + ", iv, " * ", esz,
-      ");");
+    L(CT(elem), " *", e, " = (", CT(elem), " *)(", ElemAddr(v, iv), ");");
     if (atslot) FixedLitAtLv(an[1], cat("(*", e, ")"), true);
     else L("*", e, " = ", ev, ";");
     if (c->builtin == B_ALLOC_INDEX) return { iv };
@@ -774,13 +755,11 @@ inline void CodeGen::PayloadOf(Node *n, Line ln, string &src, string &sz) {
 inline void CodeGen::AppendBytes(const Loc &lv, const string &src, const string &n, Line ln) {
     auto v = ArrayView(lv, ln);
     if (lv.t->arr->akind == A_LIMITED) {
-        auto capx = lv.val ? cat(ArrSize(lv.t->arr))
-                           : cat("(int64_t)*(uint32_t *)(", lv.s, ")");
         auto ol = T();
         L("int64_t ", ol, " = ", v.len, ";");
-        L("if (", ol, " + ", n, " > ", capx, ") gs_abort(GS_E_CAPACITY, ", LocArgs(ln), ");");
-        L("memcpy(", v.typedelems ? cat(v.elems, " + ", ol) : cat("(", v.elems, ") + ", ol),
-          ", ", src, ", (size_t)", n, ");");
+        L("if (", ol, " + ", n, " > ", LimitedCap(lv), ") gs_abort(GS_E_CAPACITY, ",
+          LocArgs(ln), ");");
+        L("memcpy(", ElemAddr(v, ol), ", ", src, ", (size_t)", n, ");");
         L(v.lenlv, " = (", LenCast(lv), ")(", ol, " + ", n, ");");
         return;
     }

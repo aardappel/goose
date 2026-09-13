@@ -564,6 +564,17 @@ struct CodeGen {
 
     ArrView ArrayView(const Loc &lv, Line ln);
     ArrView RawArrayView(const Loc &lv, Line ln);
+    // The address of element `i` of a view: typed pointer arithmetic where
+    // the elements are typed, byte arithmetic at the element size otherwise.
+    string ElemAddr(const ArrView &v, const string &i) {
+        return v.typedelems ? cat(v.elems, " + ", i)
+                            : cat("(", v.elems, ") + ", i, " * ", FixedSize(v.elem));
+    }
+    // A limited array's capacity: static for the C-typed form, read from
+    // the header of the runtime-capacity byte form.
+    string LimitedCap(const Loc &lv) {
+        return lv.val ? cat(ArrSize(lv.t->arr)) : cat("(int64_t)*(uint32_t *)(", lv.s, ")");
+    }
 
     // ------------------------------------------------------------------
     // Loop-invariant array views. An array reached through a reference keeps
@@ -769,6 +780,7 @@ struct CodeGen {
     string CallVal0(Call *c, const string &r0);
     void EmitSlidePrefix(const string &base, IntStorage ls, const string &stk, const string &lenlv);
     vector<string> EmitCall(Call *c, Dst d0, vector<Dst> *alldst = nullptr);
+    void EmitCallInto(Call *c, vector<Dst> &dsts);
     vector<string> EmitExternCall(Call *c, FnSpec *sp);
     string ExternProto(FnSpec *sp);
     vector<Node *> CallArgNodes(Call *c, size_t nparams);

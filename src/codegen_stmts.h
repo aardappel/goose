@@ -368,10 +368,7 @@ inline void CodeGen::GenFromReturn(Return *r) {
             else
                 dsts.push_back(Dst { DK_LVALUE, cat("gs_lret_", tid, "_", i) });
         }
-        auto cr = EmitCall(c, dsts.empty() ? Dst {} : dsts[0], &dsts);
-        for (size_t i = 0; i < dsts.size() && i < cr.size(); i++)
-            if (dsts[i].k == DK_LVALUE && !cr[i].empty() && cr[i] != dsts[i].s)
-                L(dsts[i].s, " = ", cr[i], ";");
+        EmitCallInto(c, dsts);
     }
     assert(curinfo && curinfo->hasrf);
     PropagateReturn(cat(tid));

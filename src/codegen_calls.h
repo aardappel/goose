@@ -57,6 +57,16 @@ inline vector<string> CodeGen::EmitCall(Call *c, Dst d0, vector<Dst> *alldst) {
     return EmitSpecCall(c, c->spec, d0, alldst);
 }
 
+// A call whose every return value has a destination: bytes results land
+// there directly, and a fixed result that came back as a C value is
+// assigned to its lvalue (a channel the callee wrote itself needs nothing).
+inline void CodeGen::EmitCallInto(Call *c, vector<Dst> &dsts) {
+    auto rets = EmitCall(c, dsts.empty() ? Dst {} : dsts[0], &dsts);
+    for (size_t i = 0; i < dsts.size() && i < rets.size(); i++)
+        if (dsts[i].k == DK_LVALUE && !rets[i].empty() && rets[i] != dsts[i].s)
+            L(dsts[i].s, " = ", rets[i], ";");
+}
+
 // A call to an extern fn (§7.10): the C function directly, each argument
 // in its C type, no calling-convention extras; a fixed result lands in
 // a temporary like any other C value.

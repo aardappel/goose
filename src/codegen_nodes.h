@@ -244,10 +244,8 @@ inline string Dot::CgX(CodeGen &cg) {
         auto lv = cg.GenLoc(obj);
         if (lv.t->kind == TY_REF) cg.DerefLoc(lv, line);
         if (lv.t->kind == TY_ARRAY && member == B_CAP) {
-            auto &a = *lv.t->arr;
-            assert(a.akind == A_LIMITED);
-            if (cg.ArrSize(lv.t->arr) >= 0) return cat(cg.ArrSize(lv.t->arr));
-            return cat("(int64_t)*(uint32_t *)(", lv.s, ")");
+            assert(lv.t->arr->akind == A_LIMITED);
+            return cg.LimitedCap(lv);
         }
         auto v = cg.ArrayView(lv, line);
         return cat("(", v.len, ")");
@@ -659,10 +657,7 @@ inline void VarDecl::CgStmt(CodeGen &cg) {
                 dsts.push_back(Dst { DK_LVALUE, name });
             }
         }
-        auto rets = cg.EmitCall(c, dsts.empty() ? Dst {} : dsts[0], &dsts);
-        for (size_t i = 0; i < dsts.size() && i < rets.size(); i++)
-            if (dsts[i].k == DK_LVALUE && !rets[i].empty() && rets[i] != dsts[i].s)
-                cg.L(dsts[i].s, " = ", rets[i], ";");
+        cg.EmitCallInto(c, dsts);
         return;
     }
     for (size_t i = 0; i < defs.size(); i++)
@@ -768,8 +763,8 @@ inline void Assign::CgStmt(CodeGen &cg) {
         auto src = cg.GenPtr(rhs, &srcstk);
         auto nn = cg.T();
         cg.L("int64_t ", nn, " = (int64_t)*(uint32_t *)(", src, " + 4);");
-        cg.L("if (", nn, " > (int64_t)*(uint32_t *)(", lv.s, ")",
-          ") gs_abort(GS_E_CAPACITY, ", cg.LocArgs(line), ");");
+        cg.L("if (", nn, " > ", cg.LimitedCap(lv), ") gs_abort(GS_E_CAPACITY, ",
+             cg.LocArgs(line), ");");
         cg.L("*(uint32_t *)((", lv.s, ") + 4) = (uint32_t)", nn, ";");
         cg.L("memcpy((", lv.s, ") + 8, ", src, " + 8, (size_t)(", nn, " * ",
           cg.FixedSize(t->arr->sub), "));");

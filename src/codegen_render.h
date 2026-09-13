@@ -343,13 +343,11 @@ inline void CodeGen::EmitFormatInto(Loc lv, Node *a, Line ln, Call *c) {
         L("int64_t ", n, " = ", FmtCall(a, Top(lv.stk)), ";");
     }
     if (limited) {
-        auto capx = lv.val ? cat(ArrSize(lv.t->arr))
-                           : cat("(int64_t)*(uint32_t *)(", lv.s, ")");
         auto ol = T();
         L("int64_t ", ol, " = ", v.len, ";");
-        L("if (", ol, " + ", n, " > ", capx, ") gs_abort(GS_E_CAPACITY, ", LocArgs(ln), ");");
-        L("memcpy(", v.typedelems ? cat(v.elems, " + ", ol) : cat("(", v.elems, ") + ", ol),
-          ", ", src, ", (size_t)", n, ");");
+        L("if (", ol, " + ", n, " > ", LimitedCap(lv), ") gs_abort(GS_E_CAPACITY, ",
+          LocArgs(ln), ");");
+        L("memcpy(", ElemAddr(v, ol), ", ", src, ", (size_t)", n, ");");
         L(v.lenlv, " = (", LenCast(lv), ")(", ol, " + ", n, ");");
         return;
     }
