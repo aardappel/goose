@@ -312,13 +312,6 @@ inline void TypeCheck::UnwrapCopy(Node *&n) {
 inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite) {
     auto v = CheckV(n, expected);
     UnwrapCopy(n);
-    if (!v.type) {
-        // A block that never produces (it returns, breaks or aborts on
-        // every path) is bottom: it fits any destination, and there is no
-        // value to adapt.
-        n->exprtype = ast.voidtype;
-        return v;
-    }
     if (!expected || expected->kind == TY_VOID) {
         v = DecayRef(v);
     } else {

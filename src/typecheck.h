@@ -707,6 +707,15 @@ struct TypeCheck {
     Val CheckCond(Node *n);
     TypeExpr *UnifyBranch(TypeExpr *a, TypeExpr *b, Node *at, bool wantvalue);
     Val VoidVal();
+    // The branch-merging checkers below give a construct that diverges on
+    // every path the null "bottom" type, which unifies with any sibling
+    // branch. That meaning ends at the construct's node: to everything that
+    // consumes an expression's value it is a value-less expression, like a
+    // call to abort, and reads as void.
+    Val VoidIfBottom(Val v) {
+        if (!v.type) v.type = ast.voidtype;
+        return v;
+    }
     TypeExpr *FixedArrayOf(TypeExpr *elem, int64_t count, Line l);
     Val CheckRefOf(Unary *x);
     static bool AddOv(int64_t a, int64_t b, int64_t &r);

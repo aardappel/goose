@@ -612,7 +612,9 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
     } else if (wantvalue) {
         Error(x, "an if used as a value requires an else branch");
     }
-    if (x->elseb) x->elseb->exprtype = ev.type;
+    // A nested else-if is checked here rather than through its own Check,
+    // so its type is settled here too, void where it never produces.
+    if (x->elseb) x->elseb->exprtype = ev.type ? ev.type : ast.voidtype;
     auto bflow = SaveFlow();
     RestoreFlow(entry);
     MergeFlow(aflow, bflow);
@@ -808,9 +810,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
     }
     if (!first) RestoreFlow(acc);
     reachable = resultreach;
-    if (!wantvalue) return VoidVal();
-    if (!result.type) result.type = ast.voidtype;
-    return result;
+    return wantvalue ? result : VoidVal();
 }
 
 inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wantvalue) {

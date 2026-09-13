@@ -646,19 +646,19 @@ inline Val RangeExpr::Check(TypeCheck &tc, TypeExpr *) {
 }
 
 inline Val Block::Check(TypeCheck &tc, TypeExpr *expected) {
-    return tc.CheckBlockVal(this, expected, true, TypeCheck::SK_PLAIN);
+    return tc.VoidIfBottom(tc.CheckBlockVal(this, expected, true, TypeCheck::SK_PLAIN));
 }
 
 inline Val IfExpr::Check(TypeCheck &tc, TypeExpr *expected) {
-    return tc.CheckIf(this, expected, true);
+    return tc.VoidIfBottom(tc.CheckIf(this, expected, true));
 }
 
 inline Val MatchExpr::Check(TypeCheck &tc, TypeExpr *expected) {
-    return tc.CheckMatch(this, expected, true);
+    return tc.VoidIfBottom(tc.CheckMatch(this, expected, true));
 }
 
 inline Val EarlyBlock::Check(TypeCheck &tc, TypeExpr *expected) {
-    return tc.CheckEarlyBlock(this, expected, true);
+    return tc.VoidIfBottom(tc.CheckEarlyBlock(this, expected, true));
 }
 
 inline Val While::Check(TypeCheck &tc, TypeExpr *) {
@@ -667,7 +667,7 @@ inline Val While::Check(TypeCheck &tc, TypeExpr *) {
 }
 
 inline Val LoopExpr::Check(TypeCheck &tc, TypeExpr *expected) {
-    return tc.CheckLoop(this, expected, true);
+    return tc.VoidIfBottom(tc.CheckLoop(this, expected, true));
 }
 
 inline Val ForLoop::Check(TypeCheck &tc, TypeExpr *) {
