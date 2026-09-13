@@ -98,6 +98,7 @@ struct TypeCheck {
         Node *node = nullptr;        // The loop / `block` construct for SK_LOOP/SK_BLOCK.
         TypeExpr *breaktype = nullptr;
         Val breakvalue;             // Roots and permissions of all valued exits.
+        TypeExpr *breakexpected = nullptr;   // The construct's expected value type.
         bool hasbreak = false;
         bool valuelessbreak = false;
     };

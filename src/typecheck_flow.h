@@ -658,6 +658,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
 inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wantvalue) {
     ValueRegion vr(*this, wantvalue);
     PushScope(SK_BLOCK, x);
+    if (wantvalue) scopes.back().breakexpected = expected;
     BlockScope bs(*this, x->body);
     CheckStmts(x->body);
     Val v = VoidVal();
@@ -679,12 +680,12 @@ inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wa
 }
 
 inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue) {
-    (void)expected;
     ValueRegion vr(*this, wantvalue);
     KillNarrowingsAssignedIn(x->body);
     PushLoopAssigned(x->body);
     auto entry = SaveFlow();
     PushScope(SK_LOOP, x);
+    if (wantvalue) scopes.back().breakexpected = expected;
     for (auto st : x->body->stmts) CheckStmt(st);
     if (x->body->tail) CheckStmtExpr(x->body->tail);
     auto sc = scopes.back();
@@ -887,7 +888,9 @@ inline void TypeCheck::CheckBreak(Break *b) {
             Error(b, "break with a value exits loop/block only");
         if (sc.valuelessbreak)
             Error(b, "this construct mixes valueless and valued breaks");
-        auto v = CheckValue(b->val, scopes[si].breaktype);
+        // Later breaks agree with the first; the first constructs into the
+        // type the construct is expected to have, as its tail value does.
+        auto v = CheckValue(b->val, sc.breaktype ? sc.breaktype : sc.breakexpected);
         // The construct's value is a new one: the break's type and what its
         // references point at, never the operand's storage or literal form.
         Val exit;
