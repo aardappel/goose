@@ -690,6 +690,15 @@ struct TypeCheck {
     void RequireCopyable(const Val &v, Node *n, TypeExpr *dt);
     void WriteBackArgs(Call *c, Dot *d, vector<Node *> &argnodes);
     void UnwrapCopy(Node *&n);
+    // A parameter that takes the value -- a slice, or a fixed-class value
+    // that a non-fixed one constructs by copy (an array of another kind
+    // into a static-capacity limited array, §4.2) -- takes the argument
+    // itself: the reference the argument loop made of a non-fixed lvalue
+    // (§4.1) is undone, so the adaptation is the plain one.
+    void UnrefForValueParam(Node *&a, TypeExpr *pt) {
+        if (pt->kind != TY_SLICE && (pt->kind == TY_REF || ClassOf(pt) != SC_FIXED)) return;
+        if (auto u = Is<Unary>(a); u && u->synth) a = u->child;
+    }
     Val CheckValue(Node *&n, TypeExpr *expected, bool callsite = false);
 
     Val CheckArg(Node *&n, TypeExpr *expected) {

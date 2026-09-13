@@ -398,11 +398,21 @@ inline void CodeGen::EnsureFromChannels(FnSpec *t) {
 // preferred destination for the first return (in-place construction);
 // alldst supplies destinations for every return (multi-value receives).
 
-// The first return value adjusted for reference decay: a call that
-// returns a reference received in a value context loads the pointee.
-inline string CodeGen::CallVal0(Call *c, const string &r0) {
+// The first return value adjusted to the context it is received in: a
+// reference received in a value context loads the pointee, and an array
+// of another kind constructs the static-capacity limited array or slice
+// expected. `want` is the receiver's type where it knows it; the call's
+// checked type otherwise.
+inline string CodeGen::CallVal0(Call *c, const string &r0, TypeExpr *want) {
     auto rt = c->rettypes.empty() ? nullptr : c->rettypes[0];
-    auto et = c->exprtype;
+    auto et = want ? want : c->exprtype;
+    // copy(x) yields its value in the context's representation already.
+    if (c->builtin == B_COPY) return r0;
+    if (rt && et && IsStaticLimited(et)) {
+        auto st = IsPlainRef(rt) ? rt->ref->sub : rt;
+        if ((st->kind == TY_ARRAY || st->kind == TY_SLICE) && !TEq(st, et))
+            return AdaptToFixed(CallResLoc(c, r0), et, c->line);
+    }
     if (rt && rt->kind == TY_ARRAY && IsResz(rt) && et && et->kind == TY_SLICE) {
         // A resizable result passed where a slice is expected (§3.10): the
         // temporary's elements, sliced whole; the temporary lives to the
@@ -428,6 +438,29 @@ inline string CodeGen::CallVal0(Call *c, const string &r0) {
         return cat("(*", r0, ")");
     }
     return r0;
+}
+
+// The first return value as a location, in the representation its return
+// type arrives in: a header for a resizable, a base pointer for another
+// bytes-class value, a C value otherwise; a reference is its pointee.
+inline CodeGen::Loc CodeGen::CallResLoc(Call *c, const string &r0) {
+    auto rt = c->rettypes[0];
+    Loc lv;
+    if (IsPlainRef(rt)) {
+        auto sub = rt->ref->sub;
+        if (IsResz(sub)) return FatRefLoc(r0, sub);
+        if (IsBytesT(sub)) return BytesLoc(r0, sub, Loc {});
+        lv.t = sub;
+        lv.val = true;
+        lv.s = cat("(*", r0, ")");
+        return lv;
+    }
+    if (IsResz(rt)) return RzTempLoc(rt, r0, "");
+    if (IsBytesT(rt)) return BytesLoc(r0, rt, Loc {});
+    lv.t = rt;
+    lv.val = true;
+    lv.s = r0;
+    return lv;
 }
 
 }  // namespace goose

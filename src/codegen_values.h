@@ -638,7 +638,10 @@ inline string CodeGen::LoadLoc(Loc lv, TypeExpr *et, Line ln) {
         if (et && IsFix(et) && !TEq(lv.t, et)) return AdaptToFixed(lv, et, ln);
         return lv.s;   // Bytes value: the pointer is the currency.
     }
-    if (et && IsFix(et) && lv.val && lv.t->kind == TY_SLICE && et->kind == TY_ARRAY)
+    // A slice, or an array of another kind or capacity, read as a
+    // static-capacity limited array (§4.2).
+    if (et && lv.val && IsStaticLimited(et) &&
+        (lv.t->kind == TY_SLICE || (lv.t->kind == TY_ARRAY && !TEq(lv.t, et))))
         return AdaptToFixed(lv, et, ln);
     if (lv.ispref && et && et->kind == TY_REF) {
         // A pool reference read as a plain reference drops the freelist.
@@ -740,6 +743,18 @@ inline string CodeGen::GenXD(Node *n, TypeExpr *want) {
         L(CT(want), " ", t, " = { (", IsBytesT(want->sub) ? string("uint8_t") : CT(want->sub),
           " *)", base, ", ", ArrSize(nt->arr), " };");
         return t;
+    }
+    if (want && nt && IsStaticLimited(want)) {
+        // Any array or slice of the element type reaching a static-capacity
+        // limited destination in a representation of its own (a copy's
+        // source, a spliced callee body's result): copied into the C value
+        // from wherever it lives (§4.2).
+        auto st = IsPlainRef(nt) ? nt->ref->sub : nt;
+        if ((st->kind == TY_ARRAY || st->kind == TY_SLICE) && !TEq(st, want)) {
+            auto lv = GenLoc(n);
+            if (lv.t->kind == TY_REF) DerefLoc(lv, n->line);
+            return AdaptToFixed(lv, want, n->line);
+        }
     }
     if (NeedsDeref(n->exprtype, want)) {
         auto sub = n->exprtype->ref->sub;

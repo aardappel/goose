@@ -198,11 +198,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     {
         DestScope ds(*this, Dest {});
         for (size_t i = 0; i < best.paramtypes.size(); i++) {
-            // A slice parameter takes the array itself: the reference the
-            // argument loop made of it is undone, so the coercion is the
-            // plain array-to-slice one.
-            if (best.paramtypes[i]->kind == TY_SLICE)
-                if (auto u = Is<Unary>(argnodes[i]); u && u->synth) argnodes[i] = u->child;
+            UnrefForValueParam(argnodes[i], best.paramtypes[i]);
             // A `&` at a parameter declared as a reference is redundant
             // (§4.1) -- unless it picked this overload.
             auto &p = best.sf->params[i];
@@ -587,8 +583,10 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
     {
         DestScope ds(*this, Dest {});
         for (size_t i = 0; i < matches[0].paramtypes.size(); i++)
-            if ((int)i != found) CheckArg(argnodes[i], matches[0].paramtypes[i]);
-            else {
+            if ((int)i != found) {
+                UnrefForValueParam(argnodes[i], matches[0].paramtypes[i]);
+                CheckArg(argnodes[i], matches[0].paramtypes[i]);
+            } else {
                 // Value cases receive an enum snapshot before later arguments.
                 // A reference case retains the original storage instead.
                 auto byreference = false;

@@ -253,6 +253,11 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
     if (want && et && lenlv.empty() && want->kind == TY_ARRAY && want->arr->akind == A_VAR &&
         et->kind == TY_ARRAY && IsResz(et) && TEq(want->arr->sub, et->arr->sub))
         et = want;
+    // Any array or slice of the element type landing in a static-capacity
+    // limited slot is copied into the slot's C value (§4.2).
+    if (want && et && IsStaticLimited(want) && (et->kind == TY_ARRAY || et->kind == TY_SLICE) &&
+        !TEq(et, want))
+        et = want;
     if (want && NeedsDeref(n->exprtype, want)) {
         // A spliced reference in a decayed slot: copy the pointee.
         auto sub = n->exprtype->ref->sub;
@@ -276,11 +281,16 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         return;
     }
     if (auto c = Is<Call>(n)) {
-        auto rets = EmitCall(c, Dst { DK_STACK, stk, want, lenlv });
+        auto rt0 = c->rettypes.empty() ? nullptr : c->rettypes[0];
+        // A bytes-class result feeding a fixed-class slot (an array
+        // constructing a static-capacity limited one, §4.2) is built on a
+        // temporary of its own and copied into the slot below, so the call
+        // is not handed the slot's stack to build on.
+        auto own = rt0 && IsBytesT(rt0) && !IsBytesT(et);
+        auto rets = EmitCall(c, own ? Dst {} : Dst { DK_STACK, stk, want, lenlv });
         if (rets.empty() || IsVoidT(et)) return;
         // A resizable result with no receiving header was built behind a
         // temporary one: copy it into the slot as the slot's array kind.
-        auto rt0 = c->rettypes.empty() ? nullptr : c->rettypes[0];
         if (rt0 && IsResz(rt0) && rt0->kind == TY_ARRAY && lenlv.empty() &&
             et->kind == TY_ARRAY && !rets[0].empty()) {
             Loc lv;
@@ -306,7 +316,7 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         }
         // A fixed-size result (a reference-returning call's pointee
         // included) is a C value: it lands at the top like any other.
-        if (!IsBytesT(et)) EmitValStore(stk, et, CallVal0(c, rets[0]));
+        if (!IsBytesT(et)) EmitValStore(stk, et, CallVal0(c, rets[0], et));
         return;
     }
     if (!IsBytesT(et)) {
@@ -325,7 +335,7 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
             FixedLitAtStk(n, stk);
             return;
         }
-        EmitValStore(stk, et, GenX(n));
+        EmitValStore(stk, et, GenXD(n, et));
         return;
     }
     if (Is<NullLit>(n)) {
@@ -431,6 +441,13 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
 
 inline void CodeGen::GenArrayFromLoc(Loc lv, TypeExpr *et, const string &stk, Line ln,
                                      const string &lenlv) {
+    if (IsStaticLimited(et)) {
+        // A static-capacity limited array is a C value (§4.2): its length
+        // and slots land together.
+        assert(lenlv.empty());
+        EmitValStore(stk, et, AdaptToFixed(lv, et, ln));
+        return;
+    }
     auto v = ArrayView(lv, ln);
     auto nn = T();
     L("int64_t ", nn, " = ", v.len, ";");
@@ -667,7 +684,7 @@ inline void CodeGen::FixedArrayLitAt(ArrayLit *al, const string &base, bool inro
     auto rel = elem->kind == TY_REF && elem->ref->lenstorage >= 0;
     auto emitelem = [&](Node *e, const string &path) {
         if (rel) EmitRelStoreAt(cat("(uint8_t *)&", path), elem, GenX(e), al->line, inroot);
-        else GenAny(e, Dst { DK_LVALUE, path });
+        else GenAny(e, Dst { DK_LVALUE, path, elem });
     };
     if (et->arr->akind == A_LIMITED) {
         auto count = al->fillval ? ((IntLit *)al->fillcount)->val
@@ -725,7 +742,7 @@ inline void CodeGen::StructLitAt(StructLit *sl, const string &base, bool inroot)
                     EmitRelStoreAt(cat("(uint8_t *)&", path), ft, GenX(init), sl->line, inroot);
                 continue;
             }
-            GenAny(init, Dst { DK_LVALUE, path });
+            GenAny(init, Dst { DK_LVALUE, path, ft });
         }
     };
     if (et->kind == TY_STRUCT) {

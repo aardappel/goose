@@ -259,7 +259,16 @@ inline string Index::CgX(CodeGen &cg) {
     return cg.LoadLoc(lv, exprtype, line);
 }
 
-inline string SliceExpr::CgX(CodeGen &cg) { return cg.GenSlice(this); }
+inline string SliceExpr::CgX(CodeGen &cg) {
+    auto s = cg.GenSlice(this);
+    if (!cg.IsStaticLimited(exprtype)) return s;
+    // The range constructing a static-capacity limited array (§4.2).
+    CodeGen::Loc slv;
+    slv.val = true;
+    slv.s = s;
+    slv.t = cg.MakeSliceT(exprtype->arr->sub, line);
+    return cg.AdaptToFixed(slv, exprtype, line);
+}
 // `as` range-checks in debug builds (GS_RANGE and friends are identity
 // casts unless the C is compiled with -DGS_DEBUG=1); `as!` always wraps
 // or truncates (§6.3).
@@ -568,7 +577,7 @@ inline void Call::CgAny(CodeGen &cg, const Dst &d) {
     // Fixed-value results wire into the destination here; bytes results and
     // channel-passed returns were handled in place.
     if (!rets.empty() && !cg.IsVoidT(exprtype) && !cg.IsBytesT(exprtype)) {
-        auto r0 = cg.CallVal0(this, rets[0]);
+        auto r0 = cg.CallVal0(this, rets[0], d.t);
         if (d.k == DK_LVALUE && r0 != d.s) cg.L(d.s, " = ", r0, ";");
         else if (d.k == DK_STACK) cg.EmitValStore(d.s, exprtype, r0);
     }

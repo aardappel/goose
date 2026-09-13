@@ -165,6 +165,12 @@ struct CodeGen {
     bool IsFix(TypeExpr *t)  { return Cls(t) == SC_FIXED; }
     bool IsResz(TypeExpr *t) { return Cls(t) == SC_RESIZABLE; }
     bool IsBytesT(TypeExpr *t) { return Cls(t) != SC_FIXED; }
+    // A limited array of static capacity, `T[..k]`: a C value of a length
+    // and k slots, which any other array or slice of T constructs by copy
+    // (§4.2, AdaptToFixed).
+    bool IsStaticLimited(TypeExpr *t) {
+        return t->kind == TY_ARRAY && t->arr->akind == A_LIMITED && IsFix(t);
+    }
     // A resizable-tailed struct with an all-fixed prefix is a frame object
     // (C.2): a C struct of its fixed fields plus its tail's own gs_rhdr (or
     // nested frame object), held in the owning frame like a fixed value;
@@ -777,7 +783,8 @@ struct CodeGen {
     // preferred destination for the first return (in-place construction);
     // alldst supplies destinations for every return (multi-value receives).
 
-    string CallVal0(Call *c, const string &r0);
+    string CallVal0(Call *c, const string &r0, TypeExpr *want = nullptr);
+    Loc CallResLoc(Call *c, const string &r0);
     void EmitSlidePrefix(const string &base, IntStorage ls, const string &stk, const string &lenlv);
     vector<string> EmitCall(Call *c, Dst d0, vector<Dst> *alldst = nullptr);
     void EmitCallInto(Call *c, vector<Dst> &dsts);
