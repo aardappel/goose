@@ -159,6 +159,16 @@ struct Optimizer {
         postorder.push_back(sp);
     }
 
+    // What the program runs from: main, the thread entry points, and every
+    // tree outside a function body.
+    void ReachRoots() {
+        auto mainsf = ast.MainFunction();
+        if (mainsf && !mainsf->specs.empty()) Reach(mainsf->specs[0]);
+        for (auto sf : ast.functions)
+            if (sf->isthread && !sf->specs.empty()) Reach(sf->specs[0]);
+        ast.ForEachRootTree([&](Node *n) { ReachTree(n); });
+    }
+
     void ReachTree(Node *n) {
         if (!n) return;
         if (auto c = Is<Call>(n)) {
@@ -325,24 +335,10 @@ struct Optimizer {
             default: nc = 16; ncu = 96; break;
         }
         // Reachability and use counts from the roots.
-        auto mainsf = ast.MainFunction();
-        if (mainsf && !mainsf->specs.empty()) Reach(mainsf->specs[0]);
-        for (auto sf : ast.functions)
-            if (sf->isthread && !sf->specs.empty()) Reach(sf->specs[0]);
-        for (auto g : ast.globals)
-            for (auto i : g->inits) ReachTree(i);
-        for (auto si : ast.structinsts)
-            for (auto d : si->defaults) if (d) ReachTree(d);
-        for (auto ei : ast.enuminsts)
-            for (auto &vd : ei->vdefaults) for (auto d : vd) if (d) ReachTree(d);
+        ReachRoots();
         // Write/address facts across every live body, before any rewriting.
         for (auto sp : postorder) if (sp->body) Analyze(sp->body);
-        for (auto g : ast.globals)
-            for (auto i : g->inits) Analyze(i);
-        for (auto si : ast.structinsts)
-            for (auto d : si->defaults) if (d) Analyze(d);
-        for (auto ei : ast.enuminsts)
-            for (auto &vd : ei->vdefaults) for (auto d : vd) if (d) Analyze(d);
+        ast.ForEachRootTree([&](Node *n) { Analyze(n); });
         // Globals first (fold only), so constant let globals propagate into
         // every body below.
         caninline = false;
@@ -364,23 +360,12 @@ struct Optimizer {
         // sites, so they must not grow variable bindings.
         for (auto g : ast.globals) OptGlobal(g);
         caninline = false;
-        for (auto si : ast.structinsts)
-            for (auto &d : si->defaults) if (d) d = Opt(d);
-        for (auto ei : ast.enuminsts)
-            for (auto &vd : ei->vdefaults) for (auto &d : vd) if (d) d = Opt(d);
+        ast.ForEachFieldDefault([&](Node *&d) { d = Opt(d); });
         // Final liveness over the rewritten trees: specs whose every call got
         // inlined (or folded away) go dead, so codegen can skip them.
         for (auto sp : ast.fnspecs) { sp->live = false; sp->uses = 0; }
         postorder.clear();
-        if (mainsf && !mainsf->specs.empty()) Reach(mainsf->specs[0]);
-        for (auto sf : ast.functions)
-            if (sf->isthread && !sf->specs.empty()) Reach(sf->specs[0]);
-        for (auto g : ast.globals)
-            for (auto i : g->inits) ReachTree(i);
-        for (auto si : ast.structinsts)
-            for (auto d : si->defaults) if (d) ReachTree(d);
-        for (auto ei : ast.enuminsts)
-            for (auto &vd : ei->vdefaults) for (auto d : vd) if (d) ReachTree(d);
+        ReachRoots();
     }
 
     // Optimized bodies for eyeballing (--specs); not reparseable.

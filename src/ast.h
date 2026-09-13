@@ -1116,6 +1116,22 @@ struct Ast {
     vector<Node *> topdecls;                        // In source/import order.
     vector<VarDecl *> globals;                      // Initialization order.
 
+    // The checked field defaults of every instantiation, and with the
+    // global initializers every checked tree that runs outside a function
+    // body. `f` gets the slot, so a pass that rewrites trees can put its
+    // result back.
+    template<typename F> void ForEachFieldDefault(F f) {
+        for (auto si : structinsts)
+            for (auto &d : si->defaults) if (d) f(d);
+        for (auto ei : enuminsts)
+            for (auto &vd : ei->vdefaults)
+                for (auto &d : vd) if (d) f(d);
+    }
+    template<typename F> void ForEachRootTree(F f) {
+        for (auto g : globals) for (auto &i : g->inits) f(i);
+        ForEachFieldDefault(f);
+    }
+
     // Declarations, by namespace. Qualified spellings (`ns::name`) are
     // interned here: the lexer delivers their parts as separate tokens.
     map<string_view, Namespace> namespaces;

@@ -1883,13 +1883,7 @@ struct BCE {
         map<FnSpec *, int> uses;
         for (auto sp : ast.fnspecs)
             if (sp->live && sp->body) ScanCalls(sp->body, sp, uses);
-        for (auto g : ast.globals)
-            for (auto i : g->inits) ScanCalls(i, nullptr, uses);
-        for (auto si : ast.structinsts)
-            for (auto d : si->defaults) ScanCalls(d, nullptr, uses);
-        for (auto ei : ast.enuminsts)
-            for (auto &vd : ei->vdefaults)
-                for (auto d : vd) ScanCalls(d, nullptr, uses);
+        ast.ForEachRootTree([&](Node *n) { ScanCalls(n, nullptr, uses); });
         // The optimizer's count is the authority on how a specialization is
         // reached: a use this scan did not see is one it cannot describe.
         for (auto sp : ast.fnspecs)
@@ -2003,24 +1997,10 @@ struct BCE {
         // surrounding context (defaults are shared across construction sites).
         ResetSpecState();
         mode = M_JUDGE;
-        for (auto g : ast.globals)
-            for (auto i : g->inits) {
-                flow = Flow {};
-                Walk(i);
-            }
-        for (auto si : ast.structinsts)
-            for (auto d : si->defaults)
-                if (d) {
-                    flow = Flow {};
-                    Walk(d);
-                }
-        for (auto ei : ast.enuminsts)
-            for (auto &vd : ei->vdefaults)
-                for (auto d : vd)
-                    if (d) {
-                        flow = Flow {};
-                        Walk(d);
-                    }
+        ast.ForEachRootTree([&](Node *n) {
+            flow = Flow {};
+            Walk(n);
+        });
     }
 
     // ------------------------------------------------------------------
