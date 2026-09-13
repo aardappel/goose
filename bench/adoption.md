@@ -545,9 +545,9 @@ first three are fixed on master (the third on 2.1's branch, the other two on
   element slot for `[f(), g()]` (2.6).
 * A global initializer whose builder needs an element-run twin fails to
   compile at -O0 (2.6).
-* `buf.append(f(&buf))` is accepted although the callee grows the stack the
-  result is being built on; spec 1.3(4) is not enforced against aliasing
-  (2.6).
+* `buf.append(f(&buf))` was accepted although the callee grows the stack the
+  result is being built on (2.6); the checker now rejects a growth of an
+  array while a value is built in place in it (spec 1.3(4), 4.2).
 * The `While` exit-flow hazard reported on 2.5c's branch is a guard for that
   branch's own index postconditions; the base has no such fact to shift, and
   its own `break` guard is already in place.

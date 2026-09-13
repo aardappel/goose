@@ -475,7 +475,7 @@ name scan could not follow. A callee's rebinds of the caller's optionals
 reach the caller through `ApplyCalleeRebinds`, and for a callee still being
 checked through the syntactic `InProgressRebinds`.
 
-### 3.10 The shrink rules
+### 3.10 The shrink rules, and growth during construction
 
 **Grow-only arrays** (§5.1). `pop`, `resize` and `clear` on a `[>..]`
 (`CheckBuiltin` → `CheckGrowShrink` → `GrowOnlyShrinkAt`,
@@ -530,6 +530,33 @@ targets, by parameter index, global name, and capture), every grow-shrink
 global and every grow-shrink array reachable from the lexical parents'
 locals counts as shrunk, and a grow-only local the text names does too.
 
+**Growth during construction** (§1.3(4), §4.2). A value built in place at an
+array's top or slot is under construction while its expression is checked,
+and nothing may grow that array meanwhile: a pushed or pool-allocated
+element that is variable-size or holds relative references
+(`BuiltInPlace`; a fixed-size element is evaluated before its slot is
+claimed, §6.5), a call's array result being appended to a non-limited
+array, and the new contents of a whole assignment of a resizable
+(`CheckAssign`, `PointeeAssign`). Every growth is logged (`NoteGrow` →
+`growlog`): `push`, `append`, `alloc_index`/`alloc_ref`, `format`,
+`resize`, `to_bytes(a, out)`, whole assignment, and what a callee grows
+(`ApplyCalleeGrows`: `growparams` mapped onto the arguments' roots,
+`growexternals` for globals and captured locals, recorded per
+specialization by `NoteRootEvent` exactly as shrinks are; a callee still
+being checked contributes what its text grows, `SyntacticGrows`, the shrink
+scanner with the growth operations; a C function is taken to append to
+every builder it is handed). When the constructed expression's check ends,
+the growths logged meanwhile are judged against the constructed root
+(`CheckGrowsSince`, `MayAliasRoots`): the same root conflicts; two
+variables are distinct unless one is inexact and at or below the other's
+depth (as in the held-temporary scan); a parameter class is distinct from a
+variable of the activation named exactly, may be a global or a captured
+local, and two classes of one activation are settled once every call site
+has been seen (`growconflicts`, `ResolveGrowConflicts`): distinct only where
+both are concrete and exact (§3.4). The log is per activation
+(`CheckSpecBody` saves and clears it), so a callee's growths reach the
+caller's constructions only through the summary.
+
 ### 3.11 Recursion
 
 A call that reaches a specialization already `inprogress` is a back edge.
@@ -571,9 +598,12 @@ a user overload set sharing a builtin's name (`format`) taking the calls it
 matches. `ResolveCall` checks the arguments once bottom-up (phase 1),
 rewriting non-fixed lvalues to references, tries every candidate
 (`TryMatch`, tiers: 0 exact, 1 generic binding, 2 coercion; the unique best
-tier wins), falls back to tag dispatch, then re-checks each argument against
-the resolved parameter type (phase 2, `CheckArg`), applies the callee's
-shrinks and rebinds, and maps the result roots (`CallResult`). Generic
+tier wins), falls back to tag dispatch, then undoes that reference for a
+parameter that takes the value -- a slice, or a fixed-class type an array of
+another kind constructs by copy (`UnrefForValueParam`) -- re-checks each
+argument against the resolved parameter type (phase 2, `CheckArg`), applies
+the callee's shrinks, growths and rebinds, and maps the result roots
+(`CallResult`). Generic
 inference is structural (`BindTypes`, through the one coercion generics see:
 whole array to slice), untyped parameters bind the argument's natural type
 (a reference stays a reference), literal arguments unify last so a typed
@@ -1051,14 +1081,38 @@ lvalue that receives the count (or the frame object). `GenAny` routes a node
 to its destination; control constructs recurse so every branch constructs at
 the same place (§4.3); `GenConstruct` writes a value front-to-back at a stack
 top; calls pass the destination stack down as the hidden argument, and a call
-in `v.push(f())` or `v.append(f())` builds straight at `v`'s top
-(`EmitPush`, `EmitAppend`). Element-run results (§7.3) exist for variable
-*array* results: `EnsureEr` compiles a second, `_er` twin of the callee that
-emits raw elements plus a count, so `v.append(f())` is contiguous; a callee
-without a twin (a builtin, a dispatch, a `return from` target) delivers the
-value form and the receiver slides the length prefix out with one `memmove`
-(`EmitSlidePrefix`). A `T[]` result landing in a slot of another length
-storage is re-prefixed afterwards (`EmitReprefix`).
+in `v.append(f())`, or in `v.push(f())` for a variable-size element, builds
+straight at `v`'s top (`EmitPush`, `EmitAppend`). Element-run results (§7.3)
+exist for variable *array* results: `EnsureEr` compiles a second, `_er` twin
+of the callee that emits raw elements plus a count, so `v.append(f())` is
+contiguous; a callee without a twin (a builtin, a dispatch, a `return from`
+target) delivers the value form and the receiver slides the length prefix
+out with one `memmove` (`EmitSlidePrefix`). A `T[]` result landing in a slot
+of another length storage is re-prefixed afterwards (`EmitReprefix`).
+
+**Pushes** (`EmitPush`). The receiver is evaluated, then the argument, then
+the element is added (§2), and the argument may itself grow the array
+(`v.push(v.push(1))`, `v.push(f(v))`): a fixed-size element is therefore
+evaluated before its slot is claimed, so it follows whatever the argument
+pushed and the returned reference names it. A variable-size element, and a
+fixed one holding relative references (whose offsets measure from where the
+element lives), are built in the slot instead -- for limited arrays too --
+which is what the checker's growth rule (§3.10) keeps safe. A pool
+allocation builds a literal holding relative references at its slot the same
+way (`EmitAlloc`).
+
+**Adaptation into static-capacity limited arrays.** `FitsAt` lets any array
+or slice of the element type construct a `T[..k]` (§4.2), and codegen copies
+into the C value (`AdaptToFixed`, with the capacity check) from whatever
+representation the source has: a variable or field through `LoadLoc`, a
+slice expression in `SliceExpr::CgX`, a call result through `CallVal0`
+(`CallResLoc`: the temporary header of a resizable result, the base pointer
+of a variable one, the pointee of a reference result), a node in another
+representation than its context wants through `GenXD` (a `copy` source, a
+spliced callee body), and a stack slot through `GenArrayFromLoc`. A
+bytes-class call result feeding a fixed-class slot is built on a temporary of
+its own rather than the slot's stack (`GenConstruct`), since the slot takes
+the adapted C value.
 
 **Named results** (`DetectNrvo`, `OpenIbNrvo`): when every `return` of a
 nonfixed result hands back the same top-level local (`NamedResult`), that
@@ -1214,8 +1268,9 @@ one-byte fast path macros `GS_ULEB_READ`/`GS_ULEB_SIZE` for length prefixes
 
 * every positive fixture typechecks, and its dump reparses to the same dump;
 * `test/errors_tc/` fixtures carry `// error: <substring>` markers and must
-  fail with those diagnostics: this is where the lifetime, shrink, cycle,
-  writability and relative-reference rules are pinned;
+  fail with those diagnostics: this is where the lifetime, shrink,
+  construction-growth, cycle, writability and relative-reference rules are
+  pinned;
 * `test/lifetimes/`, `test/storage/` and `test/codegen/` run the positive
   side of the same rules, including the store record, byte views, pool
   links, named results and the stack-top aliasing cases;
@@ -1348,6 +1403,15 @@ rewrites elements pays no live register for it.
 * `v.append(f())` for a `T[]`-returning `f` compiles a second copy of `f` in
   element-run form; a builtin or dispatch result there costs one `memmove`
   of the elements over the prefix.
+* A fixed-size element pushed into an array is evaluated first and stored
+  after, so `v.push(f(v))` may grow `v` inside `f`. A variable-size element,
+  or one holding relative references, is built in its slot, and `f` may then
+  not grow `v` -- nor may a callee grow the array a `v.append(f())` or a
+  whole assignment `v = f()` is building into (§4.2): a compile error, with
+  the callee's growths of its parameters, globals and captures counted.
+* An array or slice of another kind meeting a `T[..k]` -- a local, an
+  argument, a field, an assignment, a return -- is an O(length) copy into
+  the C value after a capacity check, whatever the source's representation.
 * `copy(x)` is a real O(size) copy, and so is any assignment of a non-fixed
   lvalue; the checker forces the spelling so the cost is visible.
 * A function returning several values is never inlined; a function used
@@ -1462,6 +1526,10 @@ specification allows, and the shapes the C backend refuses outright:
   `bench/notes.md` item 1).
 * Bounds-check elimination tracks no array contents and no `u64` variables
   (§5.12).
+* The growth-during-construction rule (§3.10) takes a parameter class to be
+  possibly any global or captured local a callee grows, two classes of one
+  activation to be one array unless every call site keeps both concrete and
+  exact, and a callee still being checked to grow whatever its text names.
 * The C backend rejects: binding, copying or dispatching a *resizable* ADT
   payload; a reference to a resizable nested in a variable-size prefix or an
   ADT payload; copying a resizable value with a variable-size prefix; `==` on
