@@ -49,8 +49,7 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
     });
     // Placement (§3.4): a resizable field only as the tail, making the
     // struct itself resizable; any variable part makes it variable.
-    auto lastreal = -1;
-    for (auto i = 0; i < (int)st->fields.size(); i++) if (!st->fields[i].ispad) lastreal = i;
+    auto lastreal = LastRealField(st->fields);
     for (auto i = 0; i < (int)st->fields.size(); i++) {
         if (st->fields[i].ispad) continue;
         auto ft = inst->ftypes[i];
@@ -105,8 +104,7 @@ inline EnumInst *TypeCheck::GetEnumInst(TypeExpr *t) {
     });
     for (size_t vi = 0; vi < en->variants.size(); vi++) {
         auto &v = en->variants[vi];
-        auto lastreal = -1;
-        for (auto i = 0; i < (int)v.fields.size(); i++) if (!v.fields[i].ispad) lastreal = i;
+        auto lastreal = LastRealField(v.fields);
         for (auto i = 0; i < (int)v.fields.size(); i++) {
             if (v.fields[i].ispad) continue;
             auto ft = inst->vftypes[vi][i];
@@ -196,7 +194,7 @@ inline SizeClass TypeCheck::ClassOf(TypeExpr *t) {
             }
         case TY_VARIANT: {
             auto inst = GetEnumInst(t->var->adt);
-            auto vi = VariantIndex(t->var->adt->enu->en, t->var->variant);
+            auto vi = t->var->adt->enu->en->VariantIndex(t->var->variant);
             auto c = SC_FIXED;
             for (auto ft : inst->vftypes[vi])
                 if (ft) c = std::max(c, ClassOf(ft));
@@ -215,7 +213,7 @@ inline bool TypeCheck::IsFlat(TypeExpr *t) {
         case TY_ARRAY:  return IsFlat(t->arr->sub);
         case TY_VARIANT: {
             auto inst = GetEnumInst(t->var->adt);
-            auto vi = VariantIndex(t->var->adt->enu->en, t->var->variant);
+            auto vi = t->var->adt->enu->en->VariantIndex(t->var->variant);
             for (auto ft : inst->vftypes[vi]) if (ft && !IsFlat(ft)) return false;
             return true;
         }
@@ -248,7 +246,7 @@ inline bool TypeCheck::HoldsPlainRef(TypeExpr *t) {
         case TY_ARRAY: return HoldsPlainRef(t->arr->sub);
         case TY_VARIANT: {
             auto inst = GetEnumInst(t->var->adt);
-            auto vi = VariantIndex(t->var->adt->enu->en, t->var->variant);
+            auto vi = t->var->adt->enu->en->VariantIndex(t->var->variant);
             for (auto ft : inst->vftypes[vi]) if (ft && HoldsPlainRef(ft)) return true;
             return false;
         }
@@ -293,7 +291,7 @@ inline bool TypeCheck::ImageSafe(TypeExpr *t, string &why) {
         }
         case TY_VARIANT: {
             auto inst = GetEnumInst(t->var->adt);
-            return fields(inst->vftypes[VariantIndex(t->var->adt->enu->en, t->var->variant)]);
+            return fields(inst->vftypes[t->var->adt->enu->en->VariantIndex(t->var->variant)]);
         }
         case TY_ARRAY: return ImageSafe(t->arr->sub, why);
         case TY_FN:
@@ -338,18 +336,11 @@ inline bool TypeCheck::VerifiableElem(TypeExpr *t, TypeExpr *elem, string &why) 
         }
         case TY_VARIANT: {
             auto inst = GetEnumInst(t->var->adt);
-            return fields(inst->vftypes[VariantIndex(t->var->adt->enu->en, t->var->variant)]);
+            return fields(inst->vftypes[t->var->adt->enu->en->VariantIndex(t->var->variant)]);
         }
         case TY_ARRAY: return VerifiableElem(t->arr->sub, elem, why);
         default: return ImageSafe(t, why);
     }
-}
-
-inline int TypeCheck::VariantIndex(SEnum *en, SVariant *v) {
-    for (size_t i = 0; i < en->variants.size(); i++)
-        if (&en->variants[i] == v) return (int)i;
-    assert(false);
-    return 0;
 }
 
 // Does a fixed-size type have a default value (§4.2)? Everything does
@@ -383,7 +374,7 @@ inline bool TypeCheck::HasDefault(TypeExpr *t, string &why) {
         }
         case TY_VARIANT: {
             auto inst = GetEnumInst(t->var->adt);
-            auto vi = VariantIndex(inst->en, t->var->variant);
+            auto vi = inst->en->VariantIndex(t->var->variant);
             return fields(t->var->variant->fields, inst->vftypes[vi]);
         }
         case TY_ARRAY:
@@ -609,7 +600,7 @@ inline bool TypeCheck::HasRelRefT(TypeExpr *t) {
         }
         case TY_VARIANT: {
             auto inst = GetEnumInst(t->var->adt);
-            auto vi = VariantIndex(t->var->adt->enu->en, t->var->variant);
+            auto vi = t->var->adt->enu->en->VariantIndex(t->var->variant);
             for (auto ft : inst->vftypes[vi]) if (ft && HasRelRefT(ft)) return true;
             return false;
         }
@@ -714,7 +705,7 @@ inline bool TypeCheck::CanContain(TypeExpr *t, TypeExpr *of) {
         }
         case TY_VARIANT: {
             auto inst = GetEnumInst(t->var->adt);
-            auto vi = VariantIndex(t->var->adt->enu->en, t->var->variant);
+            auto vi = t->var->adt->enu->en->VariantIndex(t->var->variant);
             for (auto ft : inst->vftypes[vi]) if (CanContain(ft, of)) return true;
             return false;
         }

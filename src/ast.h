@@ -731,7 +731,24 @@ struct SEnum {
     vector<GenericParam> generics;
     vector<SVariant> variants;  // Stable once parsing completes; pointed at by TY_VARIANT.
     vector<EnumInst *> insts;   // Instantiations (typecheck), owned by Ast.
+
+    SVariant *FindVariant(string_view vname) {
+        for (auto &v : variants) if (v.name == vname) return &v;
+        return nullptr;
+    }
+    // A variant's position, which is also its tag value.
+    int VariantIndex(const SVariant *v) const {
+        assert(v >= variants.data() && v < variants.data() + variants.size());
+        return (int)(v - variants.data());
+    }
 };
+
+// The index of the last field that is not padding, -1 for none: where a
+// resizable tail may sit (§3.4), and what a frame object's C struct ends in.
+inline int LastRealField(const vector<Field> &fields) {
+    for (auto i = (int)fields.size() - 1; i >= 0; i--) if (!fields[i].ispad) return i;
+    return -1;
+}
 
 // Not a type: a name referring to a type. Uses are substituted away during
 // resolution; the symbol remains for the declaration itself and lookups.

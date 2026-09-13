@@ -428,8 +428,7 @@ struct TypeCheck {
                 n->var->adt = adt;
                 auto name = t->var->name;
                 n->var->name = name;
-                SVariant *found = nullptr;
-                for (auto &v : adt->enu->en->variants) if (v.name == name) { found = &v; break; }
+                auto found = adt->enu->en->FindVariant(name);
                 if (!found)
                     Error(t->line, cat("enum ", adt->enu->en->name, " has no variant named ", name));
                 n->var->variant = found;
@@ -487,7 +486,6 @@ struct TypeCheck {
     SizeClass ClassOf(TypeExpr *t);
     bool IsFlat(TypeExpr *t);
     bool HoldsPlainRef(TypeExpr *t);
-    int VariantIndex(SEnum *en, SVariant *v);
     bool HasDefault(TypeExpr *t, string &why);
 
     // Serialization (docs/design/serialization.md): what to_bytes will write

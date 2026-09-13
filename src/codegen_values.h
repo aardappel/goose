@@ -570,7 +570,7 @@ inline CodeGen::Loc CodeGen::FieldLocAt(Loc lv, int fieldidx) {
     if (lv.t->kind != TY_VARIANT)
         Fail(Line {}, cat("internal: field of a non-struct location of type ", Mangle(lv.t)));
     auto ei = EIVar(lv.t);
-    auto vi = VarIdx(ei->en, lv.t->var->variant);
+    auto vi = ei->en->VariantIndex(lv.t->var->variant);
     auto ft = ei->vftypes[vi][fieldidx];
     if (lv.val) {
         Loc r = lv;

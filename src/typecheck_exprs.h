@@ -250,7 +250,7 @@ inline void TypeCheck::ResolveMemberLValue(LVal &lv, Dot *d) {
     }
     if (t->kind == TY_VARIANT) {
         auto inst = GetEnumInst(t->var->adt);
-        auto vi = VariantIndex(inst->en, t->var->variant);
+        auto vi = inst->en->VariantIndex(t->var->variant);
         if (step(t->var->variant->fields, inst->vftypes[vi], false)) return;
         Error(d, cat("variant ", inst->en->name, ".", t->var->variant->name,
                      " has no field ", d->name));
@@ -1060,8 +1060,7 @@ inline Val TypeCheck::CheckVariantConst(Dot *d, SEnum *en) {
     t->enu = ast.NewDetail<TypeEnum>();
     t->enu->en = en;
     auto inst = GetEnumInst(t);
-    SVariant *found = nullptr;
-    for (auto &var : en->variants) if (var.name == d->name) { found = &var; break; }
+    auto found = en->FindVariant(d->name);
     if (!found) Error(d, cat("enum ", en->name, " has no variant named ", d->name));
     if (found->has_payload)
         Error(d, cat("variant ", en->name, ".", d->name,

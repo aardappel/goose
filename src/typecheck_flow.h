@@ -118,7 +118,7 @@ inline bool TypeCheck::Viewable(TypeExpr *t) {
             return false;
         case TY_VARIANT: {
             auto inst = GetEnumInst(t->var->adt);
-            auto vi = VariantIndex(t->var->adt->enu->en, t->var->variant);
+            auto vi = t->var->adt->enu->en->VariantIndex(t->var->variant);
             for (auto ft : inst->vftypes[vi]) if (ft && Viewable(ft)) return true;
             return false;
         }
@@ -698,13 +698,11 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
             }
             if (arm.pat.kind != P_VARIANT)
                 Error(arm.body, "ADT match arms are variant names (or _)");
-            SVariant *found = nullptr;
-            int vi = 0;
-            for (auto i = 0; i < (int)en->variants.size(); i++)
-                if (en->variants[i].name == arm.pat.variant) { found = &en->variants[i]; vi = i; break; }
+            auto found = en->FindVariant(arm.pat.variant);
             if (!found)
                 Error(arm.body, cat("enum ", en->name, " has no variant named ",
                                     arm.pat.variant));
+            auto vi = en->VariantIndex(found);
             if (covered[vi])
                 Error(arm.body, cat("duplicate match arm for variant ", arm.pat.variant));
             covered[vi] = true;

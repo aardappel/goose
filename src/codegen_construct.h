@@ -154,7 +154,7 @@ inline bool CodeGen::HasUninitSlots(TypeExpr *t) {
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             for (size_t i = 0; i < ei->en->variants[vi].fields.size(); i++)
                 if (!ei->en->variants[vi].fields[i].ispad &&
                     HasUninitSlots(ei->vftypes[vi][i])) return true;
@@ -187,7 +187,7 @@ inline bool CodeGen::HasRelRef(TypeExpr *t) {
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             for (size_t i = 0; i < ei->en->variants[vi].fields.size(); i++)
                 if (!ei->en->variants[vi].fields[i].ispad &&
                     HasRelRef(ei->vftypes[vi][i])) return true;
@@ -411,7 +411,7 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         assert(et->kind == TY_ENUM && et->enu->varmode);
         auto ei = EIOf(et);
         EmitValStoreTag(stk, TagStore(ei->en),
-                        TagConst(ei, VarIdx(ei->en, d->variantconst)));
+                        TagConst(ei, ei->en->VariantIndex(d->variantconst)));
         if (!lenlv.empty()) L(lenlv, " = 0;");
         return;
     }
@@ -529,9 +529,7 @@ inline bool CodeGen::RzShape(TypeExpr *t, int64_t &prefix, TypeExpr *&elem) {
     }
     if (t->kind == TY_STRUCT) {
         auto si = SI(t);
-        auto last = -1;
-        for (auto i = 0; i < (int)si->st->fields.size(); i++)
-            if (!si->st->fields[i].ispad) last = i;
+        auto last = LastRealField(si->st->fields);
         assert(last >= 0);
         vector<Field> pre(si->st->fields.begin(), si->st->fields.begin() + last);
         vector<TypeExpr *> pret(si->ftypes.begin(), si->ftypes.begin() + last);
@@ -549,7 +547,7 @@ inline void CodeGen::GenVarEnumFromLoc(Loc lv, TypeExpr *et, const string &stk) 
     auto ei = EIOf(et);
     auto ts = TagStore(ei->en);
     if (lv.t->kind == TY_VARIANT) {
-        auto vi = VarIdx(ei->en, lv.t->var->variant);
+        auto vi = ei->en->VariantIndex(lv.t->var->variant);
         EmitValStoreTag(stk, ts, TagConst(ei, vi));
         if (!lv.val) {
             auto sz = T();
@@ -663,7 +661,7 @@ inline void CodeGen::FixedLitAtStk(Node *n, const string &stk) {
     }
     if (et->kind == TY_VARIANT) {
         auto ei = EIVar(et);
-        auto vi = VarIdx(ei->en, et->var->variant);
+        auto vi = ei->en->VariantIndex(et->var->variant);
         auto &lo = VariantLayout(ei, vi);
         emitfields(ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi], lo,
                    lo.size, 0);
@@ -671,7 +669,7 @@ inline void CodeGen::FixedLitAtStk(Node *n, const string &stk) {
     }
     assert(et->kind == TY_ENUM && !et->enu->varmode && sl->variant);
     auto ei = EIOf(et);
-    auto vi = VarIdx(ei->en, sl->variant);
+    auto vi = ei->en->VariantIndex(sl->variant);
     EmitValStoreTag(stk, TagStore(ei->en), TagConst(ei, vi));
     auto &lo = VariantLayout(ei, vi);
     emitfields(ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi], lo,
@@ -773,7 +771,7 @@ inline void CodeGen::StructLitAt(StructLit *sl, const string &base, bool inroot)
     }
     if (et->kind == TY_VARIANT) {
         auto ei = EIVar(et);
-        auto vi = VarIdx(ei->en, et->var->variant);
+        auto vi = ei->en->VariantIndex(et->var->variant);
         if (ei->en->variants[vi].fields.empty())
             L("memset(&", base, ", 0, sizeof(", base, "));");
         fieldset(base, ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi],
@@ -782,7 +780,7 @@ inline void CodeGen::StructLitAt(StructLit *sl, const string &base, bool inroot)
     }
     assert(et->kind == TY_ENUM && !et->enu->varmode && sl->variant);
     auto ei = EIOf(et);
-    auto vi = VarIdx(ei->en, sl->variant);
+    auto vi = ei->en->VariantIndex(sl->variant);
     L(base, ".tag = ", TagConst(ei, vi), ";");
     if (!ei->en->variants[vi].fields.empty())
         fieldset(cat(base, ".u.v_", Sanitize(ei->en->variants[vi].name)),
@@ -881,7 +879,7 @@ inline void CodeGen::GenStructLit(StructLit *sl, const string &stk, const string
     if (et->kind == TY_ENUM) {
         assert(et->enu->varmode && sl->variant);
         auto ei = EIOf(et);
-        auto vi = VarIdx(ei->en, sl->variant);
+        auto vi = ei->en->VariantIndex(sl->variant);
         EmitValStoreTag(stk, TagStore(ei->en), TagConst(ei, vi));
         // A resizable-class ADT: variants without a resizable tail leave
         // the receiving header length zero.
@@ -892,7 +890,7 @@ inline void CodeGen::GenStructLit(StructLit *sl, const string &stk, const string
     }
     if (et->kind == TY_VARIANT) {
         auto ei = EIVar(et);
-        auto vi = VarIdx(ei->en, et->var->variant);
+        auto vi = ei->en->VariantIndex(et->var->variant);
         GenFieldInits(sl, ei->en->variants[vi].fields, ei->vftypes[vi],
                       ei->vdefaults[vi], stk, lenlv, selfbase);
         return;

@@ -176,7 +176,7 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             auto &v = ei->en->variants[vi];
             if (v.fields.empty()) {
                 RenderLit(out, cat(ei->en->name, ".", v.name));

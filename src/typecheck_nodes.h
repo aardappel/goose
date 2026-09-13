@@ -241,7 +241,7 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
             tc.Error(this, cat("variant literal of non-ADT type ", tc.TypeStr(t->var->adt)));
         auto ei = tc.GetEnumInst(t->var->adt);
         auto var = t->var->variant;
-        auto vi = tc.VariantIndex(ei->en, var);
+        auto vi = ei->en->VariantIndex(var);
         einst = ei;
         variant = var;
         Val v;

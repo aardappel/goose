@@ -45,7 +45,7 @@ inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, N
         }
         case TY_VARIANT: {
             auto ei = GetEnumInst(t->var->adt);
-            auto vi = VariantIndex(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             for (auto ft : ei->vftypes[vi]) if (ft) CheckRenderable(c, what, ft, at, seen);
             return;
         }
@@ -477,7 +477,7 @@ inline void TypeCheck::RefPointees(TypeExpr *t, vector<TypeExpr *> &out) {
         }
         case TY_VARIANT: {
             auto inst = GetEnumInst(t->var->adt);
-            auto vi = VariantIndex(t->var->adt->enu->en, t->var->variant);
+            auto vi = t->var->adt->enu->en->VariantIndex(t->var->variant);
             for (auto ft : inst->vftypes[vi]) if (ft) RefPointees(ft, out);
             return;
         }

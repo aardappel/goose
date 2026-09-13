@@ -231,7 +231,7 @@ inline string Dot::CgX(CodeGen &cg) {
     if (variantconst) {
         auto et = exprtype;
         auto ei = einst;
-        auto vi = cg.VarIdx(ei->en, variantconst);
+        auto vi = ei->en->VariantIndex(variantconst);
         if (et->kind == TY_ENUM && !et->enu->varmode) {
             auto t = cg.T();
             cg.L(cg.CT(et), " ", t, ";");
@@ -462,13 +462,13 @@ inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
             haswild = true;
             cg.L("default: {");
         } else {
-            auto vi = cg.VarIdx(ei->en, arm.variant);
+            auto vi = ei->en->VariantIndex(arm.variant);
             cg.L("case ", cg.TagConst(ei, vi), ": {");
         }
         cg.ind++;
         cg.PushSc(CodeGen::SC_PLAIN);
         if (arm.binder) {
-            auto vi = cg.VarIdx(ei->en, arm.variant);
+            auto vi = ei->en->VariantIndex(arm.variant);
             auto vt = cg.VariantType(enumtype, vi);
             auto bn = cg.LocalName(arm.binder);
             string payload = varmode

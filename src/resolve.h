@@ -133,9 +133,7 @@ inline void ResolveTypeNames(Ast &ast) {
         auto adt = t->var->adt;
         if (adt->kind != TY_ENUM) continue;  // E.g. a generic param; typecheck decides.
         auto name = t->var->name;
-        SVariant *found = nullptr;
-        for (auto &v : adt->enu->en->variants)
-            if (v.name == name) { found = &v; break; }
+        auto found = adt->enu->en->FindVariant(name);
         if (!found)
             ErrorAt(t, cat("enum ", adt->enu->en->name, " has no variant named ", name));
         t->var->variant = found;  // Alias/const copies may share this detail.

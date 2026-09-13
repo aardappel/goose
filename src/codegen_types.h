@@ -76,13 +76,6 @@ inline EnumInst *CodeGen::EIVar(TypeExpr *t) {   // For TY_VARIANT.
     return EIOf(t->var->adt);
 }
 
-inline int CodeGen::VarIdx(SEnum *en, SVariant *v) {
-    for (size_t i = 0; i < en->variants.size(); i++)
-        if (&en->variants[i] == v) return (int)i;
-    assert(false);
-    return 0;
-}
-
 inline SizeClass CodeGen::Cls(TypeExpr *t) {
     switch (t->kind) {
         case TY_INT: return t->intstorage == IS_VARINT ? SC_VARIABLE : SC_FIXED;
@@ -98,7 +91,7 @@ inline SizeClass CodeGen::Cls(TypeExpr *t) {
             }
         case TY_VARIANT: {
             auto inst = EIVar(t);
-            auto vi = VarIdx(inst->en, t->var->variant);
+            auto vi = inst->en->VariantIndex(t->var->variant);
             auto c = SC_FIXED;
             for (auto ft : inst->vftypes[vi]) if (ft) c = std::max(c, Cls(ft));
             return c;
@@ -107,17 +100,10 @@ inline SizeClass CodeGen::Cls(TypeExpr *t) {
     }
 }
 
-inline int CodeGen::TailIdx(StructInst *si) {
-    auto last = -1;
-    for (auto i = 0; i < (int)si->st->fields.size(); i++)
-        if (!si->st->fields[i].ispad) last = i;
-    return last;
-}
-
 // The innermost tail's gs_rhdr lvalue within frame object `obj`.
 inline string CodeGen::FoTailHdr(TypeExpr *t, const string &obj) {
     auto si = SI(t);
-    auto ti = TailIdx(si);
+    auto ti = LastRealField(si->st->fields);
     auto s = cat(obj, ".", Sanitize(si->st->fields[ti].name));
     auto ft = si->ftypes[ti];
     return IsFrameObj(ft) ? FoTailHdr(ft, s) : s;
@@ -125,7 +111,7 @@ inline string CodeGen::FoTailHdr(TypeExpr *t, const string &obj) {
 
 inline TypeExpr *CodeGen::FoTailArr(TypeExpr *t) {
     auto si = SI(t);
-    auto ft = si->ftypes[TailIdx(si)];
+    auto ft = si->ftypes[LastRealField(si->st->fields)];
     return IsFrameObj(ft) ? FoTailArr(ft) : ft;
 }
 
@@ -176,7 +162,7 @@ inline bool CodeGen::HoldsFatRefIn(TypeExpr *t, set<const void *> &open) {
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             return fields(&ei->vftypes[vi], ei->en->variants[vi].fields, ei->vftypes[vi]);
         }
         default: return false;
@@ -327,7 +313,7 @@ inline int64_t CodeGen::FixedSize(TypeExpr *t) {
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            return VariantLayout(ei, VarIdx(ei->en, t->var->variant)).size;
+            return VariantLayout(ei, ei->en->VariantIndex(t->var->variant)).size;
         }
         case TY_ARRAY: {
             auto &a = *t->arr;
@@ -508,7 +494,7 @@ inline string CodeGen::CT(TypeExpr *t) {
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             auto &v = ei->en->variants[vi];
             Append(d, "struct ", name, " {\n");
             if (v.fields.empty()) Append(d, "    uint8_t gs_empty;\n");
@@ -709,7 +695,7 @@ inline void CodeGen::EmitSizeWalk(string &b, TypeExpr *t, const string &q) {
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             for (size_t i = 0; i < ei->en->variants[vi].fields.size(); i++) {
                 auto &f = ei->en->variants[vi].fields[i];
                 if (f.ispad) {
@@ -770,7 +756,7 @@ inline int64_t CodeGen::ZeroSize(TypeExpr *t) {
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             int64_t n = 0;
             for (size_t i = 0; i < ei->en->variants[vi].fields.size(); i++)
                 if (!ei->en->variants[vi].fields[i].ispad) n += ZeroSize(ei->vftypes[vi][i]);
@@ -808,7 +794,7 @@ inline int64_t CodeGen::MinBytes(TypeExpr *t) {
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             return fields(ei->en->variants[vi].fields, ei->vftypes[vi]);
         }
         case TY_ENUM: {
@@ -849,7 +835,7 @@ inline bool CodeGen::HasRelRefAny(TypeExpr *t) {
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             return fields(ei->en->variants[vi].fields, ei->vftypes[vi]);
         }
         case TY_ARRAY: return HasRelRefAny(t->arr->sub);
@@ -879,7 +865,7 @@ inline bool CodeGen::NeedsVerifyWalk(TypeExpr *t) {
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             return fields(ei->en->variants[vi].fields, ei->vftypes[vi]);
         }
         default: return false;
@@ -948,7 +934,7 @@ inline void CodeGen::EmitVerifyLink(string &b, TypeExpr *rt, TypeExpr *elem, con
     IntStorage ts = IS_U8;
     if (variant) {
         auto ei = EIVar(pt);
-        vi = VarIdx(ei->en, pt->var->variant);
+        vi = ei->en->VariantIndex(pt->var->variant);
         ts = TagStore(ei->en);
         skip = IntSize(ts);
     }
@@ -1141,7 +1127,7 @@ inline void CodeGen::EmitVerifyWalk(string &b, TypeExpr *t, TypeExpr *elem, cons
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             auto fix = IsFix(t);
             EmitVerifyFields(b, ei->en->variants[vi].fields, ei->vftypes[vi],
                              fix ? &VariantLayout(ei, vi) : nullptr, fix ? FixedSize(t) : 0,
@@ -1206,7 +1192,7 @@ inline bool CodeGen::HasFieldDefaults(TypeExpr *t) {
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             return any(ei->en->variants[vi].fields, ei->vftypes[vi]);
         }
         case TY_ARRAY: return t->arr->akind == A_FIXED && HasFieldDefaults(t->arr->sub);
@@ -1247,7 +1233,7 @@ inline void CodeGen::EmitDefaultFields(const string &lv, TypeExpr *t) {
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             fields(lv, ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi]);
             return;
         }
@@ -1285,7 +1271,7 @@ inline bool CodeGen::GapFree(TypeExpr *t) {
             return GapFree(t->arr->sub);
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             for (size_t i = 0; i < ei->en->variants[vi].fields.size(); i++) {
                 if (ei->en->variants[vi].fields[i].ispad) return false;
                 if (!GapFree(ei->vftypes[vi][i])) return false;
@@ -1352,7 +1338,7 @@ inline void CodeGen::EmitEqFixed(string &bo, TypeExpr *t) {
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             auto &v = ei->en->variants[vi];
             for (size_t i = 0; i < v.fields.size(); i++) {
                 if (v.fields[i].ispad) continue;
@@ -1415,7 +1401,7 @@ inline void CodeGen::EmitEqBytes(string &bo, TypeExpr *t) {
                 }
                 case TY_VARIANT: {
                     auto ei = EIVar(x);
-                    auto vi = VarIdx(ei->en, x->var->variant);
+                    auto vi = ei->en->VariantIndex(x->var->variant);
                     for (size_t i = 0; i < ei->en->variants[vi].fields.size(); i++) {
                         if (ei->en->variants[vi].fields[i].ispad) return false;
                         if (!rec(ei->vftypes[vi][i])) return false;
@@ -1518,7 +1504,7 @@ inline void CodeGen::EmitEqWalk(string &bo, TypeExpr *t, const string &pa, const
         }
         case TY_VARIANT: {
             auto ei = EIVar(t);
-            auto vi = VarIdx(ei->en, t->var->variant);
+            auto vi = ei->en->VariantIndex(t->var->variant);
             for (size_t i = 0; i < ei->en->variants[vi].fields.size(); i++)
                 if (!ei->en->variants[vi].fields[i].ispad)
                     EmitEqWalk(bo, ei->vftypes[vi][i], pa, pb, depth);

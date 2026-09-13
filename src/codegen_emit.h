@@ -148,7 +148,7 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp) {
             for (auto pt : pointees) if (TEq(pt, gt)) return true;
             if (!IsFrameObj(gt)) return false;
             auto si = SI(gt);
-            gt = si->ftypes[TailIdx(si)];
+            gt = si->ftypes[LastRealField(si->st->fields)];
         }
     };
     auto check = [&](const VarDef *v) {

@@ -147,7 +147,6 @@ struct CodeGen {
     StructInst *SI(TypeExpr *t);
     EnumInst *EIOf(TypeExpr *t);
     EnumInst *EIVar(TypeExpr *t);
-    int VarIdx(SEnum *en, SVariant *v);
     SizeClass Cls(TypeExpr *t);
 
     bool IsFix(TypeExpr *t)  { return Cls(t) == SC_FIXED; }
@@ -159,7 +158,6 @@ struct CodeGen {
     // only the innermost tail's elements occupy a data stack. A gs_rref to
     // one carries the object's address in `hdr`.
     bool IsFrameObj(TypeExpr *t) { return t->kind == TY_STRUCT && SI(t)->frameobj; }
-    int TailIdx(StructInst *si);
     string FoTailHdr(TypeExpr *t, const string &obj);
     TypeExpr *FoTailArr(TypeExpr *t);
     string FoPrefixSize(TypeExpr *t);
