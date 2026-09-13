@@ -76,6 +76,21 @@ inline EnumInst *CodeGen::EIVar(TypeExpr *t) {   // For TY_VARIANT.
     return EIOf(t->var->adt);
 }
 
+inline vector<FieldRun> CodeGen::FieldRuns(TypeExpr *t) {
+    vector<FieldRun> runs;
+    switch (t->kind) {
+        case TY_STRUCT: runs.push_back(RunOf(SI(t))); break;
+        case TY_ENUM: AllRunsOf(EIOf(t), runs); break;
+        case TY_VARIANT: {
+            auto ei = EIVar(t);
+            runs.push_back(RunOf(ei, ei->en->VariantIndex(t->var->variant)));
+            break;
+        }
+        default: break;
+    }
+    return runs;
+}
+
 inline SizeClass CodeGen::Cls(TypeExpr *t) {
     switch (t->kind) {
         case TY_INT: return t->intstorage == IS_VARINT ? SC_VARIABLE : SC_FIXED;
@@ -90,10 +105,8 @@ inline SizeClass CodeGen::Cls(TypeExpr *t) {
                 default:        return SC_RESIZABLE;
             }
         case TY_VARIANT: {
-            auto inst = EIVar(t);
-            auto vi = inst->en->VariantIndex(t->var->variant);
             auto c = SC_FIXED;
-            for (auto ft : inst->vftypes[vi]) if (ft) c = std::max(c, Cls(ft));
+            EachField(t, [&](TypeExpr *ft) { c = std::max(c, Cls(ft)); });
             return c;
         }
         default: return SC_FIXED;
@@ -138,34 +151,18 @@ inline bool CodeGen::HoldsFatRef(TypeExpr *t) {
 }
 
 inline bool CodeGen::HoldsFatRefIn(TypeExpr *t, set<const void *> &open) {
-    auto fields = [&](const void *key, const vector<Field> &fs,
-                      const vector<TypeExpr *> &fts) {
-        if (!open.insert(key).second) return false;
-        for (size_t i = 0; i < fs.size(); i++)
-            if (!fs[i].ispad && HoldsFatRefIn(fts[i], open)) return true;
-        return false;
-    };
     switch (t->kind) {
         case TY_REF: return IsFatRef(t) || HoldsFatRefIn(t->ref->sub, open);
         case TY_SLICE: return HoldsFatRefIn(t->sub, open);
         case TY_ARRAY: return HoldsFatRefIn(t->arr->sub, open);
-        case TY_STRUCT: {
-            auto si = SI(t);
-            return fields(si, si->st->fields, si->ftypes);
-        }
-        case TY_ENUM: {
-            auto ei = EIOf(t);
-            if (!open.insert(ei).second) return false;
-            for (size_t vi = 0; vi < ei->en->variants.size(); vi++)
-                if (HoldsFatRefIn(VariantType(t, (int)vi), open)) return true;
+        default:
+            // A run's types vector belongs to one instantiation (or one of
+            // its variants), so it identifies what was entered.
+            for (auto &run : FieldRuns(t)) {
+                if (!open.insert(run.ftypes).second) continue;
+                for (auto ft : *run.ftypes) if (ft && HoldsFatRefIn(ft, open)) return true;
+            }
             return false;
-        }
-        case TY_VARIANT: {
-            auto ei = EIVar(t);
-            auto vi = ei->en->VariantIndex(t->var->variant);
-            return fields(&ei->vftypes[vi], ei->en->variants[vi].fields, ei->vftypes[vi]);
-        }
-        default: return false;
     }
 }
 
@@ -680,32 +677,19 @@ inline void CodeGen::EmitSizeWalk(string &b, TypeExpr *t, const string &q) {
                     return;
             }
         }
-        case TY_STRUCT: {
-            auto si = SI(t);
-            for (size_t i = 0; i < si->st->fields.size(); i++) {
-                auto &f = si->st->fields[i];
-                // Bytes layouts have no bare-pad alignment; explicit pads count.
-                if (f.ispad) {
-                    if (f.padsize > 0) Append(b, "    ", q, " += ", f.padsize, ";\n");
-                    continue;
+        case TY_STRUCT: case TY_VARIANT:
+            for (auto &run : FieldRuns(t)) {
+                for (size_t i = 0; i < run.fields->size(); i++) {
+                    auto &f = (*run.fields)[i];
+                    // Bytes layouts have no bare-pad alignment; explicit pads count.
+                    if (f.ispad) {
+                        if (f.padsize > 0) Append(b, "    ", q, " += ", f.padsize, ";\n");
+                        continue;
+                    }
+                    EmitSizeWalk(b, (*run.ftypes)[i], q);
                 }
-                EmitSizeWalk(b, si->ftypes[i], q);
             }
             return;
-        }
-        case TY_VARIANT: {
-            auto ei = EIVar(t);
-            auto vi = ei->en->VariantIndex(t->var->variant);
-            for (size_t i = 0; i < ei->en->variants[vi].fields.size(); i++) {
-                auto &f = ei->en->variants[vi].fields[i];
-                if (f.ispad) {
-                    if (f.padsize > 0) Append(b, "    ", q, " += ", f.padsize, ";\n");
-                    continue;
-                }
-                EmitSizeWalk(b, ei->vftypes[vi][i], q);
-            }
-            return;
-        }
         case TY_ENUM: {
             auto ei = EIOf(t);
             auto ts = TagSize(ei->en);
@@ -747,19 +731,9 @@ inline int64_t CodeGen::ZeroSize(TypeExpr *t) {
                 case A_LIMITED: return 8;
                 default:        return 8;
             }
-        case TY_STRUCT: {
-            auto si = SI(t);
+        case TY_STRUCT: case TY_VARIANT: {
             int64_t n = 0;
-            for (size_t i = 0; i < si->st->fields.size(); i++)
-                if (!si->st->fields[i].ispad) n += ZeroSize(si->ftypes[i]);
-            return n;
-        }
-        case TY_VARIANT: {
-            auto ei = EIVar(t);
-            auto vi = ei->en->VariantIndex(t->var->variant);
-            int64_t n = 0;
-            for (size_t i = 0; i < ei->en->variants[vi].fields.size(); i++)
-                if (!ei->en->variants[vi].fields[i].ispad) n += ZeroSize(ei->vftypes[vi][i]);
+            EachField(t, [&](TypeExpr *ft) { n += ZeroSize(ft); });
             return n;
         }
         case TY_ENUM:
@@ -772,14 +746,6 @@ inline int64_t CodeGen::ZeroSize(TypeExpr *t) {
 // element count a length field may claim, before a single element is walked.
 inline int64_t CodeGen::MinBytes(TypeExpr *t) {
     if (IsFix(t)) return FixedSize(t);
-    auto fields = [&](const vector<Field> &fs, const vector<TypeExpr *> &fts) {
-        int64_t n = 0;
-        for (size_t i = 0; i < fs.size(); i++) {
-            if (fs[i].ispad) { if (fs[i].padsize > 0) n += fs[i].padsize; continue; }
-            n += MinBytes(fts[i]);
-        }
-        return n;
-    };
     switch (t->kind) {
         case TY_INT: case TY_REF: return 1;   // varint / varint-width relative ref
         case TY_ARRAY:
@@ -788,14 +754,16 @@ inline int64_t CodeGen::MinBytes(TypeExpr *t) {
                 case A_LIMITED: return 8;     // runtime capacity: [cap][len]
                 default:        return 0;
             }
-        case TY_STRUCT: {
-            auto si = SI(t);
-            return fields(si->st->fields, si->ftypes);
-        }
-        case TY_VARIANT: {
-            auto ei = EIVar(t);
-            auto vi = ei->en->VariantIndex(t->var->variant);
-            return fields(ei->en->variants[vi].fields, ei->vftypes[vi]);
+        case TY_STRUCT: case TY_VARIANT: {
+            int64_t n = 0;
+            for (auto &run : FieldRuns(t)) {
+                for (size_t i = 0; i < run.fields->size(); i++) {
+                    auto &f = (*run.fields)[i];
+                    if (f.ispad) { if (f.padsize > 0) n += f.padsize; continue; }
+                    n += MinBytes((*run.ftypes)[i]);
+                }
+            }
+            return n;
         }
         case TY_ENUM: {
             auto ei = EIOf(t);
@@ -816,30 +784,10 @@ inline int64_t CodeGen::MinBytes(TypeExpr *t) {
 // HasRelRef this looks through variable-size types too, since an image's
 // elements are exactly the types HasRelRef does not reach.
 inline bool CodeGen::HasRelRefAny(TypeExpr *t) {
-    auto fields = [&](const vector<Field> &fs, const vector<TypeExpr *> &fts) {
-        for (size_t i = 0; i < fs.size(); i++)
-            if (!fs[i].ispad && HasRelRefAny(fts[i])) return true;
-        return false;
-    };
     switch (t->kind) {
         case TY_REF: return t->ref->lenstorage >= 0;
-        case TY_STRUCT: {
-            auto si = SI(t);
-            return fields(si->st->fields, si->ftypes);
-        }
-        case TY_ENUM: {
-            auto ei = EIOf(t);
-            for (size_t vi = 0; vi < ei->en->variants.size(); vi++)
-                if (HasRelRefAny(VariantType(t, (int)vi))) return true;
-            return false;
-        }
-        case TY_VARIANT: {
-            auto ei = EIVar(t);
-            auto vi = ei->en->VariantIndex(t->var->variant);
-            return fields(ei->en->variants[vi].fields, ei->vftypes[vi]);
-        }
         case TY_ARRAY: return HasRelRefAny(t->arr->sub);
-        default: return false;
+        default: return AnyField(t, [&](TypeExpr *ft) { return HasRelRefAny(ft); });
     }
 }
 
@@ -849,25 +797,13 @@ inline bool CodeGen::HasRelRefAny(TypeExpr *t) {
 // opaque payload either way.
 inline bool CodeGen::NeedsVerifyWalk(TypeExpr *t) {
     if (!IsFix(t)) return true;
-    auto fields = [&](const vector<Field> &fs, const vector<TypeExpr *> &fts) {
-        for (size_t i = 0; i < fs.size(); i++)
-            if (!fs[i].ispad && NeedsVerifyWalk(fts[i])) return true;
-        return false;
-    };
     switch (t->kind) {
         case TY_REF:  return t->ref->lenstorage >= 0;
         case TY_ENUM: return true;                     // the tag is range-checked
         case TY_ARRAY:
             return t->arr->akind == A_LIMITED || NeedsVerifyWalk(t->arr->sub);
-        case TY_STRUCT: {
-            auto si = SI(t);
-            return fields(si->st->fields, si->ftypes);
-        }
-        case TY_VARIANT: {
-            auto ei = EIVar(t);
-            auto vi = ei->en->VariantIndex(t->var->variant);
-            return fields(ei->en->variants[vi].fields, ei->vftypes[vi]);
-        }
+        case TY_STRUCT: case TY_VARIANT:
+            return AnyField(t, [&](TypeExpr *ft) { return NeedsVerifyWalk(ft); });
         default: return false;
     }
 }
@@ -1176,24 +1112,18 @@ inline void CodeGen::EmitVerifyWalk(string &b, TypeExpr *t, TypeExpr *elem, cons
 
 // Does any field at any depth of a fixed type declare a default value?
 inline bool CodeGen::HasFieldDefaults(TypeExpr *t) {
-    auto any = [&](const vector<Field> &fs, const vector<TypeExpr *> &fts) {
-        for (size_t i = 0; i < fs.size(); i++) {
-            if (fs[i].ispad) continue;
-            if (fs[i].defaultval || HasFieldDefaults(fts[i])) return true;
-        }
-        return false;
-    };
     switch (t->kind) {
-        case TY_STRUCT: { auto si = SI(t); return any(si->st->fields, si->ftypes); }
-        case TY_ENUM: {
-            if (t->enu->varmode) return false;
-            auto ei = EIOf(t);
-            return any(ei->en->variants[0].fields, ei->vftypes[0]);
-        }
-        case TY_VARIANT: {
-            auto ei = EIVar(t);
-            auto vi = ei->en->VariantIndex(t->var->variant);
-            return any(ei->en->variants[vi].fields, ei->vftypes[vi]);
+        case TY_STRUCT: case TY_ENUM: case TY_VARIANT: {
+            if (t->kind == TY_ENUM && t->enu->varmode) return false;
+            auto runs = FieldRuns(t);
+            if (t->kind == TY_ENUM) runs.resize(1);   // Variant 0 is the default variant.
+            for (auto &run : runs)
+                for (size_t i = 0; i < run.fields->size(); i++) {
+                    auto &f = (*run.fields)[i];
+                    if (!f.ispad && (f.defaultval || HasFieldDefaults((*run.ftypes)[i])))
+                        return true;
+                }
+            return false;
         }
         case TY_ARRAY: return t->arr->akind == A_FIXED && HasFieldDefaults(t->arr->sub);
         default: return false;
@@ -1257,27 +1187,15 @@ inline void CodeGen::EmitDefaultFields(const string &lv, TypeExpr *t) {
 inline bool CodeGen::GapFree(TypeExpr *t) {
     if (!IsFix(t)) return false;
     switch (t->kind) {
-        case TY_STRUCT: {
-            auto si = SI(t);
-            for (size_t i = 0; i < si->st->fields.size(); i++) {
-                if (si->st->fields[i].ispad) return false;
-                if (!GapFree(si->ftypes[i])) return false;
-            }
+        case TY_STRUCT: case TY_VARIANT:
+            for (auto &run : FieldRuns(t))
+                for (size_t i = 0; i < run.fields->size(); i++)
+                    if ((*run.fields)[i].ispad || !GapFree((*run.ftypes)[i])) return false;
             return true;
-        }
         case TY_ENUM: return false;      // Uninitialized trailing payload area.
         case TY_ARRAY:
             if (t->arr->akind == A_LIMITED) return false;   // Uninitialized slots.
             return GapFree(t->arr->sub);
-        case TY_VARIANT: {
-            auto ei = EIVar(t);
-            auto vi = ei->en->VariantIndex(t->var->variant);
-            for (size_t i = 0; i < ei->en->variants[vi].fields.size(); i++) {
-                if (ei->en->variants[vi].fields[i].ispad) return false;
-                if (!GapFree(ei->vftypes[vi][i])) return false;
-            }
-            return true;
-        }
         default: return true;
     }
 }
@@ -1391,29 +1309,11 @@ inline void CodeGen::EmitEqBytes(string &bo, TypeExpr *t) {
             switch (x->kind) {
                 case TY_INT: case TY_REF: return true;
                 case TY_ARRAY: return rec(x->arr->sub);
-                case TY_STRUCT: {
-                    auto si = SI(x);
-                    for (size_t i = 0; i < si->st->fields.size(); i++) {
-                        if (si->st->fields[i].ispad) return false;
-                        if (!rec(si->ftypes[i])) return false;
-                    }
+                case TY_STRUCT: case TY_VARIANT: case TY_ENUM:
+                    for (auto &run : FieldRuns(x))
+                        for (size_t i = 0; i < run.fields->size(); i++)
+                            if ((*run.fields)[i].ispad || !rec((*run.ftypes)[i])) return false;
                     return true;
-                }
-                case TY_VARIANT: {
-                    auto ei = EIVar(x);
-                    auto vi = ei->en->VariantIndex(x->var->variant);
-                    for (size_t i = 0; i < ei->en->variants[vi].fields.size(); i++) {
-                        if (ei->en->variants[vi].fields[i].ispad) return false;
-                        if (!rec(ei->vftypes[vi][i])) return false;
-                    }
-                    return true;
-                }
-                case TY_ENUM: {
-                    auto ei = EIOf(x);
-                    for (size_t vi = 0; vi < ei->en->variants.size(); vi++)
-                        if (!rec(VariantType(x, (int)vi))) return false;
-                    return true;
-                }
                 default: return false;
             }
         };
@@ -1496,20 +1396,9 @@ inline void CodeGen::EmitEqWalk(string &bo, TypeExpr *t, const string &pa, const
             Append(bo, I, "}\n");
             return;
         }
-        case TY_STRUCT: {
-            auto si = SI(t);
-            for (size_t i = 0; i < si->st->fields.size(); i++)
-                if (!si->st->fields[i].ispad) EmitEqWalk(bo, si->ftypes[i], pa, pb, depth);
+        case TY_STRUCT: case TY_VARIANT:
+            EachField(t, [&](TypeExpr *ft) { EmitEqWalk(bo, ft, pa, pb, depth); });
             return;
-        }
-        case TY_VARIANT: {
-            auto ei = EIVar(t);
-            auto vi = ei->en->VariantIndex(t->var->variant);
-            for (size_t i = 0; i < ei->en->variants[vi].fields.size(); i++)
-                if (!ei->en->variants[vi].fields[i].ispad)
-                    EmitEqWalk(bo, ei->vftypes[vi][i], pa, pb, depth);
-            return;
-        }
         case TY_ENUM: {
             auto ei = EIOf(t);
             auto ts = TagSize(ei->en);

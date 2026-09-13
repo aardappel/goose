@@ -139,27 +139,9 @@ inline void CodeGen::EmitRelSelfStore(const string &stk, TypeExpr *rt, int64_t f
 // miscompile the reads of the bytes that were written.
 inline bool CodeGen::HasUninitSlots(TypeExpr *t) {
     switch (t->kind) {
-        case TY_STRUCT: {
-            auto si = SI(t);
-            for (size_t i = 0; i < si->st->fields.size(); i++)
-                if (!si->st->fields[i].ispad && HasUninitSlots(si->ftypes[i])) return true;
-            return false;
-        }
-        case TY_ENUM: {
-            if (t->enu->varmode) return false;
-            auto ei = EIOf(t);
-            for (size_t vi = 0; vi < ei->en->variants.size(); vi++)
-                if (HasUninitSlots(VariantType(t, (int)vi))) return true;
-            return false;
-        }
-        case TY_VARIANT: {
-            auto ei = EIVar(t);
-            auto vi = ei->en->VariantIndex(t->var->variant);
-            for (size_t i = 0; i < ei->en->variants[vi].fields.size(); i++)
-                if (!ei->en->variants[vi].fields[i].ispad &&
-                    HasUninitSlots(ei->vftypes[vi][i])) return true;
-            return false;
-        }
+        case TY_STRUCT: case TY_ENUM: case TY_VARIANT:
+            if (t->kind == TY_ENUM && t->enu->varmode) return false;
+            return AnyField(t, [&](TypeExpr *ft) { return HasUninitSlots(ft); });
         case TY_ARRAY:
             if (t->arr->akind == A_LIMITED) return true;
             return t->arr->akind == A_FIXED && HasUninitSlots(t->arr->sub);
@@ -172,27 +154,9 @@ inline bool CodeGen::HasUninitSlots(TypeExpr *t) {
 inline bool CodeGen::HasRelRef(TypeExpr *t) {
     switch (t->kind) {
         case TY_REF: return t->ref->lenstorage >= 0;
-        case TY_STRUCT: {
-            auto si = SI(t);
-            for (size_t i = 0; i < si->st->fields.size(); i++)
-                if (!si->st->fields[i].ispad && HasRelRef(si->ftypes[i])) return true;
-            return false;
-        }
-        case TY_ENUM: {
-            if (t->enu->varmode) return false;
-            auto ei = EIOf(t);
-            for (size_t vi = 0; vi < ei->en->variants.size(); vi++)
-                if (HasRelRef(VariantType(t, (int)vi))) return true;
-            return false;
-        }
-        case TY_VARIANT: {
-            auto ei = EIVar(t);
-            auto vi = ei->en->VariantIndex(t->var->variant);
-            for (size_t i = 0; i < ei->en->variants[vi].fields.size(); i++)
-                if (!ei->en->variants[vi].fields[i].ispad &&
-                    HasRelRef(ei->vftypes[vi][i])) return true;
-            return false;
-        }
+        case TY_STRUCT: case TY_ENUM: case TY_VARIANT:
+            if (t->kind == TY_ENUM && t->enu->varmode) return false;
+            return AnyField(t, [&](TypeExpr *ft) { return HasRelRef(ft); });
         case TY_ARRAY:
             return (t->arr->akind == A_FIXED || t->arr->akind == A_LIMITED) &&
                    HasRelRef(t->arr->sub);

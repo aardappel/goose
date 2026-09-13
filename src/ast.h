@@ -895,6 +895,23 @@ struct EnumInst {
     bool validated = false;
 };
 
+// One run of fields with their instantiated types, aligned (a pad's type is
+// null): what a nominal type's values are made of. A struct type has one
+// run, a variant type its variant's, and an enum type one per variant, its
+// tag aside. Every pass that walks a type's contents does so run by run.
+struct FieldRun {
+    const vector<Field> *fields = nullptr;
+    const vector<TypeExpr *> *ftypes = nullptr;
+};
+
+inline FieldRun RunOf(const StructInst *si) { return { &si->st->fields, &si->ftypes }; }
+inline FieldRun RunOf(const EnumInst *ei, int vi) {
+    return { &ei->en->variants[vi].fields, &ei->vftypes[vi] };
+}
+inline void AllRunsOf(const EnumInst *ei, vector<FieldRun> &out) {
+    for (size_t vi = 0; vi < ei->en->variants.size(); vi++) out.push_back(RunOf(ei, (int)vi));
+}
+
 // Call-site facts about one reference/slice or holder parameter, part of the
 // specialization key (§10.2): the relative-outlives class of its root among
 // the call's reference arguments (0 = static, 1 = outermost, ...), and the

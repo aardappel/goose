@@ -162,6 +162,21 @@ inline void TypeCheck::CheckFieldDefaults(vector<Field> &fields, vector<TypeExpr
     reachable = savereach;
 }
 
+inline vector<FieldRun> TypeCheck::FieldRuns(TypeExpr *t) {
+    vector<FieldRun> runs;
+    switch (t->kind) {
+        case TY_STRUCT: runs.push_back(RunOf(GetStructInst(t))); break;
+        case TY_ENUM: AllRunsOf(GetEnumInst(t), runs); break;
+        case TY_VARIANT: {
+            auto inst = GetEnumInst(t->var->adt);
+            runs.push_back(RunOf(inst, inst->en->VariantIndex(t->var->variant)));
+            break;
+        }
+        default: break;
+    }
+    return runs;
+}
+
 inline SizeClass TypeCheck::ClassOf(TypeExpr *t) {
     switch (t->kind) {
         case TY_INT:  return t->intstorage == IS_VARINT ? SC_VARIABLE : SC_FIXED;
@@ -193,11 +208,8 @@ inline SizeClass TypeCheck::ClassOf(TypeExpr *t) {
                 default:        return SC_RESIZABLE;
             }
         case TY_VARIANT: {
-            auto inst = GetEnumInst(t->var->adt);
-            auto vi = t->var->adt->enu->en->VariantIndex(t->var->variant);
             auto c = SC_FIXED;
-            for (auto ft : inst->vftypes[vi])
-                if (ft) c = std::max(c, ClassOf(ft));
+            EachField(t, [&](TypeExpr *ft) { c = std::max(c, ClassOf(ft)); });
             return c;
         }
         default: return SC_FIXED;
@@ -211,12 +223,7 @@ inline bool TypeCheck::IsFlat(TypeExpr *t) {
         case TY_STRUCT: return GetStructInst(t)->flat;
         case TY_ENUM:   return GetEnumInst(t)->flat;
         case TY_ARRAY:  return IsFlat(t->arr->sub);
-        case TY_VARIANT: {
-            auto inst = GetEnumInst(t->var->adt);
-            auto vi = t->var->adt->enu->en->VariantIndex(t->var->variant);
-            for (auto ft : inst->vftypes[vi]) if (ft && !IsFlat(ft)) return false;
-            return true;
-        }
+        case TY_VARIANT: return !AnyField(t, [&](TypeExpr *ft) { return !IsFlat(ft); });
         default: return true;
     }
 }
@@ -230,27 +237,8 @@ inline bool TypeCheck::HoldsPlainRef(TypeExpr *t) {
     switch (t->kind) {
         case TY_REF: return t->ref->lenstorage < 0;
         case TY_SLICE: return true;
-        case TY_STRUCT: {
-            auto inst = GetStructInst(t);
-            if (inst->flat) return false;
-            for (auto ft : inst->ftypes) if (ft && HoldsPlainRef(ft)) return true;
-            return false;
-        }
-        case TY_ENUM: {
-            auto inst = GetEnumInst(t);
-            if (inst->flat) return false;
-            for (auto &vf : inst->vftypes)
-                for (auto ft : vf) if (ft && HoldsPlainRef(ft)) return true;
-            return false;
-        }
         case TY_ARRAY: return HoldsPlainRef(t->arr->sub);
-        case TY_VARIANT: {
-            auto inst = GetEnumInst(t->var->adt);
-            auto vi = t->var->adt->enu->en->VariantIndex(t->var->variant);
-            for (auto ft : inst->vftypes[vi]) if (ft && HoldsPlainRef(ft)) return true;
-            return false;
-        }
-        default: return false;
+        default: return AnyField(t, [&](TypeExpr *ft) { return HoldsPlainRef(ft); });
     }
 }
 
@@ -260,10 +248,6 @@ inline bool TypeCheck::HoldsPlainRef(TypeExpr *t) {
 // so none of the three survives leaving the program. Self-relative
 // references do, which is the whole point.
 inline bool TypeCheck::ImageSafe(TypeExpr *t, string &why) {
-    auto fields = [&](const vector<TypeExpr *> &fts) {
-        for (auto ft : fts) if (ft && !ImageSafe(ft, why)) return false;
-        return true;
-    };
     switch (t->kind) {
         case TY_SLICE:
             why = cat(TypeStr(t), " is a slice, which is an address");
@@ -279,25 +263,11 @@ inline bool TypeCheck::ImageSafe(TypeExpr *t, string &why) {
                 return false;
             }
             return true;
-        case TY_STRUCT: {
-            auto inst = GetStructInst(t);
-            return inst->flat || fields(inst->ftypes);
-        }
-        case TY_ENUM: {
-            auto inst = GetEnumInst(t);
-            if (inst->flat) return true;
-            for (auto &vf : inst->vftypes) if (!fields(vf)) return false;
-            return true;
-        }
-        case TY_VARIANT: {
-            auto inst = GetEnumInst(t->var->adt);
-            return fields(inst->vftypes[t->var->adt->enu->en->VariantIndex(t->var->variant)]);
-        }
         case TY_ARRAY: return ImageSafe(t->arr->sub, why);
         case TY_FN:
             why = "function values are addresses";
             return false;
-        default: return true;
+        default: return !AnyField(t, [&](TypeExpr *ft) { return !ImageSafe(ft, why); });
     }
 }
 
@@ -307,10 +277,6 @@ inline bool TypeCheck::ImageSafe(TypeExpr *t, string &why) {
 // reference into a field of an element would need every valid address of
 // that type enumerated, which v1 does not do.
 inline bool TypeCheck::VerifiableElem(TypeExpr *t, TypeExpr *elem, string &why) {
-    auto fields = [&](const vector<TypeExpr *> &fts) {
-        for (auto ft : fts) if (ft && !VerifiableElem(ft, elem, why)) return false;
-        return true;
-    };
     switch (t->kind) {
         case TY_REF: {
             if (!ImageSafe(t, why)) return false;
@@ -324,20 +290,8 @@ inline bool TypeCheck::VerifiableElem(TypeExpr *t, TypeExpr *elem, string &why) 
                       "array or one of its variants");
             return false;
         }
-        case TY_STRUCT: {
-            auto inst = GetStructInst(t);
-            return inst->flat || fields(inst->ftypes);
-        }
-        case TY_ENUM: {
-            auto inst = GetEnumInst(t);
-            if (inst->flat) return true;
-            for (auto &vf : inst->vftypes) if (!fields(vf)) return false;
-            return true;
-        }
-        case TY_VARIANT: {
-            auto inst = GetEnumInst(t->var->adt);
-            return fields(inst->vftypes[t->var->adt->enu->en->VariantIndex(t->var->variant)]);
-        }
+        case TY_STRUCT: case TY_ENUM: case TY_VARIANT:
+            return !AnyField(t, [&](TypeExpr *ft) { return !VerifiableElem(ft, elem, why); });
         case TY_ARRAY: return VerifiableElem(t->arr->sub, elem, why);
         default: return ImageSafe(t, why);
     }
@@ -347,35 +301,26 @@ inline bool TypeCheck::VerifiableElem(TypeExpr *t, TypeExpr *elem, string &why) 
 // except a non-optional reference, which has nothing to point at, and so
 // anything containing one without a declared field default.
 inline bool TypeCheck::HasDefault(TypeExpr *t, string &why) {
-    auto fields = [&](const vector<Field> &fs, const vector<TypeExpr *> &fts) {
-        for (size_t i = 0; i < fs.size(); i++) {
-            if (fs[i].ispad || fs[i].defaultval) continue;
-            if (!HasDefault(fts[i], why)) {
-                why = cat("field ", fs[i].name, " has no declared default and ", why);
-                return false;
-            }
-        }
-        return true;
-    };
     switch (t->kind) {
         case TY_INT: case TY_FLT: case TY_BOOL: case TY_SLICE: return true;
         case TY_REF:
             if (t->ref->optional) return true;
             why = cat(TypeStr(t), " is a non-optional reference");
             return false;
-        case TY_STRUCT: {
-            auto inst = GetStructInst(t);
-            return fields(inst->st->fields, inst->ftypes);
-        }
-        case TY_ENUM: {
-            // Variant 0 is the default variant.
-            auto inst = GetEnumInst(t);
-            return fields(inst->en->variants[0].fields, inst->vftypes[0]);
-        }
-        case TY_VARIANT: {
-            auto inst = GetEnumInst(t->var->adt);
-            auto vi = inst->en->VariantIndex(t->var->variant);
-            return fields(t->var->variant->fields, inst->vftypes[vi]);
+        case TY_STRUCT: case TY_ENUM: case TY_VARIANT: {
+            auto runs = FieldRuns(t);
+            if (t->kind == TY_ENUM) runs.resize(1);   // Variant 0 is the default variant.
+            for (auto &run : runs) {
+                for (size_t i = 0; i < run.fields->size(); i++) {
+                    auto &f = (*run.fields)[i];
+                    if (f.ispad || f.defaultval) continue;
+                    if (!HasDefault((*run.ftypes)[i], why)) {
+                        why = cat("field ", f.name, " has no declared default and ", why);
+                        return false;
+                    }
+                }
+            }
+            return true;
         }
         case TY_ARRAY:
             if (t->arr->akind == A_LIMITED) return true;   // Empty.
@@ -585,27 +530,8 @@ inline Val TypeCheck::CheckIntAny(Node *n) {
 inline bool TypeCheck::HasRelRefT(TypeExpr *t) {
     switch (t->kind) {
         case TY_REF: return t->ref->lenstorage >= 0 && !t->ref->pool;
-        case TY_STRUCT: {
-            auto inst = GetStructInst(t);
-            for (size_t i = 0; i < inst->ftypes.size(); i++)
-                if (inst->ftypes[i] && HasRelRefT(inst->ftypes[i])) return true;
-            return false;
-        }
-        case TY_ENUM: {
-            auto inst = GetEnumInst(t);
-            for (auto &vf : inst->vftypes)
-                for (auto ft : vf)
-                    if (ft && HasRelRefT(ft)) return true;
-            return false;
-        }
-        case TY_VARIANT: {
-            auto inst = GetEnumInst(t->var->adt);
-            auto vi = t->var->adt->enu->en->VariantIndex(t->var->variant);
-            for (auto ft : inst->vftypes[vi]) if (ft && HasRelRefT(ft)) return true;
-            return false;
-        }
         case TY_ARRAY: return HasRelRefT(t->arr->sub);
-        default: return false;
+        default: return AnyField(t, [&](TypeExpr *ft) { return HasRelRefT(ft); });
     }
 }
 
@@ -690,27 +616,8 @@ inline void TypeCheck::ValidatePool(TypeExpr *t) {
 inline bool TypeCheck::CanContain(TypeExpr *t, TypeExpr *of) {
     if (!t) return false;
     if (TypeEq(LoadType(t), of)) return true;
-    switch (t->kind) {
-        case TY_ARRAY: return CanContain(t->arr->sub, of);
-        case TY_STRUCT: {
-            auto inst = GetStructInst(t);
-            for (auto ft : inst->ftypes) if (CanContain(ft, of)) return true;
-            return false;
-        }
-        case TY_ENUM: {
-            auto inst = GetEnumInst(t);
-            for (auto &vf : inst->vftypes)
-                for (auto ft : vf) if (CanContain(ft, of)) return true;
-            return false;
-        }
-        case TY_VARIANT: {
-            auto inst = GetEnumInst(t->var->adt);
-            auto vi = t->var->adt->enu->en->VariantIndex(t->var->variant);
-            for (auto ft : inst->vftypes[vi]) if (CanContain(ft, of)) return true;
-            return false;
-        }
-        default: return false;
-    }
+    if (t->kind == TY_ARRAY) return CanContain(t->arr->sub, of);
+    return AnyField(t, [&](TypeExpr *ft) { return CanContain(ft, of); });
 }
 
 // The pointee type a reference or slice type reaches: for a slice, its

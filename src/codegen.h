@@ -147,6 +147,19 @@ struct CodeGen {
     StructInst *SI(TypeExpr *t);
     EnumInst *EIOf(TypeExpr *t);
     EnumInst *EIVar(TypeExpr *t);
+    // The field runs of a nominal type (ast.h FieldRun); empty for every
+    // other kind.
+    vector<FieldRun> FieldRuns(TypeExpr *t);
+    // Whether `f` holds of some field type of t, pads skipped.
+    template<typename F> bool AnyField(TypeExpr *t, F f) {
+        for (auto &run : FieldRuns(t))
+            for (auto ft : *run.ftypes) if (ft && f(ft)) return true;
+        return false;
+    }
+    template<typename F> void EachField(TypeExpr *t, F f) {
+        for (auto &run : FieldRuns(t))
+            for (auto ft : *run.ftypes) if (ft) f(ft);
+    }
     SizeClass Cls(TypeExpr *t);
 
     bool IsFix(TypeExpr *t)  { return Cls(t) == SC_FIXED; }

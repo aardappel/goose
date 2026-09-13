@@ -32,23 +32,9 @@ inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, N
         case TY_ARRAY: CheckRenderable(c, what, t->arr->sub, at, seen); return;
         case TY_SLICE: CheckRenderable(c, what, t->sub, at, seen); return;
         case TY_REF: CheckRenderable(c, what, t->ref->sub, at, seen); return;
-        case TY_STRUCT: {
-            auto si = GetStructInst(t);
-            for (auto ft : si->ftypes) if (ft) CheckRenderable(c, what, ft, at, seen);
+        case TY_STRUCT: case TY_ENUM: case TY_VARIANT:
+            EachField(t, [&](TypeExpr *ft) { CheckRenderable(c, what, ft, at, seen); });
             return;
-        }
-        case TY_ENUM: {
-            auto ei = GetEnumInst(t);
-            for (auto &vf : ei->vftypes)
-                for (auto ft : vf) if (ft) CheckRenderable(c, what, ft, at, seen);
-            return;
-        }
-        case TY_VARIANT: {
-            auto ei = GetEnumInst(t->var->adt);
-            auto vi = ei->en->VariantIndex(t->var->variant);
-            for (auto ft : ei->vftypes[vi]) if (ft) CheckRenderable(c, what, ft, at, seen);
-            return;
-        }
         default:
             Error(at, cat(what, " cannot render a value of type ", TypeStr(t)));
     }
@@ -465,24 +451,8 @@ inline void TypeCheck::RefPointees(TypeExpr *t, vector<TypeExpr *> &out) {
             if (t->ref->lenstorage < 0) out.push_back(LoadType(t->ref->sub));
             return;
         case TY_SLICE: out.push_back(t->sub); return;
-        case TY_STRUCT: {
-            auto inst = GetStructInst(t);
-            for (auto ft : inst->ftypes) if (ft) RefPointees(ft, out);
-            return;
-        }
-        case TY_ENUM: {
-            auto inst = GetEnumInst(t);
-            for (auto &vf : inst->vftypes) for (auto ft : vf) if (ft) RefPointees(ft, out);
-            return;
-        }
-        case TY_VARIANT: {
-            auto inst = GetEnumInst(t->var->adt);
-            auto vi = t->var->adt->enu->en->VariantIndex(t->var->variant);
-            for (auto ft : inst->vftypes[vi]) if (ft) RefPointees(ft, out);
-            return;
-        }
         case TY_ARRAY: RefPointees(t->arr->sub, out); return;
-        default: return;
+        default: EachField(t, [&](TypeExpr *ft) { RefPointees(ft, out); }); return;
     }
 }
 

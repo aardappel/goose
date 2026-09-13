@@ -104,26 +104,11 @@ inline bool TypeCheck::MayBeViewed(VarDef *r) {
 }
 
 inline bool TypeCheck::Viewable(TypeExpr *t) {
-    switch (t->kind) {
-        case TY_ARRAY: {
-            string why;
-            return ImageSafe(t->arr->sub, why) || Viewable(t->arr->sub);
-        }
-        case TY_STRUCT:
-            for (auto ft : GetStructInst(t)->ftypes) if (ft && Viewable(ft)) return true;
-            return false;
-        case TY_ENUM:
-            for (auto &vf : GetEnumInst(t)->vftypes)
-                for (auto ft : vf) if (ft && Viewable(ft)) return true;
-            return false;
-        case TY_VARIANT: {
-            auto inst = GetEnumInst(t->var->adt);
-            auto vi = t->var->adt->enu->en->VariantIndex(t->var->variant);
-            for (auto ft : inst->vftypes[vi]) if (ft && Viewable(ft)) return true;
-            return false;
-        }
-        default: return false;
+    if (t->kind == TY_ARRAY) {
+        string why;
+        return ImageSafe(t->arr->sub, why) || Viewable(t->arr->sub);
     }
+    return AnyField(t, [&](TypeExpr *ft) { return Viewable(ft); });
 }
 
 // Reading a reference variable's root as an identity. A loop body is
