@@ -1,3 +1,4 @@
+// error: cannot pop data while h2 is still used: a reference into it was stored there
 // A returned holder's contents keep the exactness they were read back with.
 struct Holder { value: i64& }
 fn pass(hs: Holder[>..]&) -> Holder {

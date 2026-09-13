@@ -1,0 +1,154 @@
+identifier foo
+identifier _bar
+identifier baz123
+identifier _
+import
+namespace
+struct
+enum
+type
+fn
+thread_fn
+recursive
+let
+var
+const
+extern
+pad
+reusable
+if
+else
+while
+for
+in
+loop
+block
+guard
+match
+return
+identifier from
+break
+continue
+as
+true
+false
+null
+self
+i64
+f64
+bool
+varint
+i8
+i16
+i32
+i64
+u8
+u16
+u32
+u64
+f32
+f64
+integer literal 0 (0)
+integer literal 42 (42)
+integer literal 1234567890 (1234567890)
+integer literal 0 (0x0)
+integer literal 3735928559 (0xDEADbeef)
+integer literal -1 (0xffffffffffffffff)
+integer literal -1 (18446744073709551615)
+float literal 1.5
+float literal 0.25
+float literal 3.14159
+float literal 10000000000
+float literal 0.0025
+float literal 100
+float literal 12
+float literal 0.25
+float literal 20
+integer literal 1 (1)
+..
+integer literal 2 (2)
+integer literal 0 (0)
+..
+integer literal 16 (0x10)
+integer literal 97 ('a')
+integer literal 90 ('Z')
+integer literal 48 ('0')
+integer literal 32 (' ')
+integer literal 10 ('\n')
+integer literal 9 ('\t')
+integer literal 13 ('\r')
+integer literal 92 ('\\')
+integer literal 39 ('\'')
+integer literal 34 ('\"')
+integer literal 0 ('\0')
+integer literal 65 ('\x41')
+integer literal 255 ('\xff')
+string literal ""
+string literal "hello"
+string literal "a\nb\tc"
+string literal "quote:\" backslash:\\ tick:\'"
+string literal "nul\0hexA\n"
+(
+)
+[
+]
+{
+}
+,
+;
+:
+::
+?
+.
+..
+.=
+.==
+.!=
++
+-
+*
+/
+%
++=
+-=
+*=
+/=
+%=
+&=
+|=
+^=
+++
+--
+=
+==
+!=
+<
+>
+<=
+>=
+<<
+>>
+<<=
+>>=
+!
+~
+&
+|
+^
+&&
+||
+->
+=>
+>
+..
+<
+>
+..
+[
+:
+]
+&
+<
+u8
+>
+identifier end

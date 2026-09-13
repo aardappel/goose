@@ -1,3 +1,4 @@
+// error: cannot pop g inside a larger expression: a reference taken earlier in it may still be live, so bind the result first
 // A shrink of a grow-only local must stand on its own (§5.1): the reference
 // argument evaluated before the pop would outlive it.
 fn use(r: i64&, v: i64) -> i64 { r + v }

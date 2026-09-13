@@ -1,3 +1,4 @@
+// error: storing a reference rooted at x, which does not outlive the destination
 // A struct holding a reference to a local, copied into a global container:
 // the copy would outlive the local (§9.2).
 struct S { r: i64&, k: i64 }

@@ -1,3 +1,5 @@
+// error: cannot call replace, which shrinks xs: an earlier expression value
+// error: may still refer into xs
 fn main() {
     var xs: i64[>..<] = [1, 2];
     var out: u8[>..] = [];

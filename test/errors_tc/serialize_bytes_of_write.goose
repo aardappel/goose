@@ -1,3 +1,4 @@
+// error: cannot assign through this path (const, or a read-only instantiation, §9.5)
 // bytes_of is a view of a live structure: writing through it would forge the
 // relative references the checker otherwise proves (§3.9), so it is never
 // writable however writable the array is.

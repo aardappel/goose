@@ -1,3 +1,4 @@
+// error: cannot write p: a by-value binding is a copy of the element; bind it by reference (&p) to write the element
 // A by-value for binding is a copy of the element: a write would update
 // the copy and nothing else, so it is an error naming the &x form (§6.5).
 struct Pt { x: i64, y: i64 }

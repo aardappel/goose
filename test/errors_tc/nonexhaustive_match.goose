@@ -1,3 +1,4 @@
+// error: match does not cover variant E.C
 // ADT matches are exhaustive (§8.1).
 enum E { A, B, C }
 fn main() {

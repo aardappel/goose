@@ -1,3 +1,4 @@
+// error: returns disagree on the returned reference's root (not yet supported; use one source)
 // All returns of one function must agree on the returned reference's root
 // (§9.2). The cycle's fixpoint cannot predict a root here either, so the back
 // edge's result is unusable, but the returns themselves are still checked:

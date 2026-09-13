@@ -1,3 +1,4 @@
+// error: operator + cannot be applied to i64? and i64
 // A rebind in the right operand of && holds after the condition too.
 var n = 41;
 var g: i64? = null;

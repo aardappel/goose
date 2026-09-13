@@ -1,3 +1,5 @@
+// error: cannot bind the payload of resizable Value by reference: a whole assignment may replace its variant
+// error: bind by value: B b
 // A whole assignment of a resizable ADT replaces the variant under a payload reference.
 enum Value { A { items: i64[>..] }, B { n: i64 }, C { s: u8[] } }
 fn main() {

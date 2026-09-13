@@ -1,3 +1,5 @@
+// error: cannot pop scene.shapes while v
+// error: is still used: it may refer into scene.shapes
 // A byte view can cover an image-safe array nested anywhere in a value: here
 // the flat points of a record in a struct's resizable tail, which a pop frees.
 struct Pt { x: i32, y: i32 }

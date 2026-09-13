@@ -1,3 +1,4 @@
+// error: .alloc_index exists on reusable pools only
 // alloc/free exist on `reusable` pools only (§5.4).
 struct Slot { v: i64 = 0 }
 fn main() {

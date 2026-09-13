@@ -1,3 +1,4 @@
+// error: cannot call drop, which shrinks g inside a value-producing expression: references taken earlier in it may still be live
 // A callee's shrink of a global is the caller's inside a value-producing
 // region, also when that region is where the callee is first checked.
 var g: i64[>..] = [1, 2];

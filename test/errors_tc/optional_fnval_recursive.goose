@@ -1,3 +1,4 @@
+// error: operator + cannot be applied to i64? and i64
 // A recursive call may rebind every optional its function values can reach.
 recursive fn rec<F, G>(k: i64) {
     if k > 0 { rec(k - 1, F, G); }

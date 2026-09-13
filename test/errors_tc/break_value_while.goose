@@ -1,3 +1,4 @@
+// error: break with a value exits loop/block only
 // break with a value exits loop/block only (§6.4).
 fn main() {
     var i = 0;

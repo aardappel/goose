@@ -1,3 +1,4 @@
+// error: returning a reference rooted in value, which dies with this function
 // Fill arrays retain the lifetime of references in the repeated element.
 struct Holder { value: i64& }
 fn leak() -> Holder[2] {

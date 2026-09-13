@@ -31,16 +31,50 @@ the sanitizers, where the program runs uninstrumented inside an instrumented
 compiler and still holds its runtime allocations when that compiler exits.
 A test the backend cannot run yet is reported as a skip, not a failure: either
 because the compiler refuses the program outright (`JIT mode does not support`)
-or because the test's first line says `no-jit`, which is for the few cases
-where TinyCC's own C library answers differently from the ones the expected
-output was blessed against. What the backend cannot do yet, and what could be
+or because the test's first line says `no-jit`. Prefer portable assertions to
+skipping a backend; the math tests allow small rounding differences in
+transcendental results. What the backend cannot do yet, and what could be
 done about it, is `docs/design/jit_backend.md`.
 
 An explicitly requested compiler must exist; CI does not silently skip it.
-Expected aborts use `.aborts` alongside normal `.out` expectations. Optional
-`.stderr` files contain required diagnostic substrings, also supported for
-parser/typechecker error fixtures. Sanitizer reports fail even when a program
-was expected to abort, so an unrelated crash cannot satisfy those regressions.
+Every runnable fixture requires an `expected/<name>.out`, including an empty
+file when the program should be silent. Expected aborts additionally require
+`.aborts` and a nonempty `.stderr` containing the expected runtime diagnostic
+substrings. Sanitizer reports fail even when a program was expected to abort.
+
+Parser/resolver errors live in `test/errors/`; semantic errors live in
+`test/errors_tc/` and must first pass `--parse`. Each source declares one or
+more `// error: <diagnostic substring>` lines. The compiler must exit with 1,
+and all markers must occur in diagnostic headers, excluding echoed source.
+Use the specific rejection reason and relevant types/roots; omit source paths,
+line numbers and specification section numbers. These inline assertions replace
+the old compiler-error `.stderr` files.
+
+The runner checks more than exit status and runtime output:
+
+| Check | Contract |
+|---|---|
+| `lexer_tokens.goose` | Exact token stream, including keyword classification, decoded literals and longest-match punctuation. |
+| Every positive Goose fixture | Successful parse, successful initial dump, identical dump/reparse/dump, and typechecking unless its first line contains `parse-only`. Parsing also resolves type names; dumping alone does not. |
+| First-line `dump-runtime` | Compile and execute the dumped source against the original output. `control_expression_dump.goose` uses this to check grouping semantics, which a stable dump alone cannot establish. |
+| Every fixture with `// bce:elide` or `// bce:keep` | Run `-O1 --check --bce-test`, including expected-abort regressions. Native/JIT O0 and O2 runs independently check behavior. |
+| `optimize.goose` at O0/O1/O2 | Inspect named tail-recursion bodies in `--specs`: supported integer accumulator/plain recursion becomes loops; modulo, floating-point reassociation, nonlocal-return frames and returns inside nested loops retain self calls. Mixed operators retain the ineligible call. Leading locals prevent base-case inlining from consuming these cases first. |
+
+The fixture audit retained the small lifetime, optional-narrowing, alias-cycle,
+dispatch and frame-layout regressions. Similar diagnostics do not make them
+duplicates: they exercise different expression visitors, specialization/cache
+states, root propagation, or generated layouts. Whole-program globals and call
+graphs are also part of many regressions, so combining them can change the
+property under test.
+
+The audit removed three redundant fixtures: `all_tests.goose` only re-ran seven
+standalone suites (imported-main behavior remains covered by the namespace
+tests); `spec_examples.goose` executed a word scanner already covered by
+`typecheck.goose` and `bce.goose`, while its other declarations were unused
+sketches; `errors_tc/shrink_live_slice.goose` duplicated the live-slice clear
+rejection in `clear_live_slice.goose`. Dedicated tests retain recursive relative
+structures, dispatch, nonlocal returns and dictionary execution previously
+suggested by those unused sketches.
 
 This is four CI jobs, rather than a product of platforms, sanitizers, compiler
 optimization levels and runtime modes. Benchmarks remain separate from CI.

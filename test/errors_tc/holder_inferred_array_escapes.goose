@@ -1,3 +1,4 @@
+// error: returning a reference rooted in value, which dies with this function
 // Inferred array literals retain the lifetime of references in their elements.
 struct Holder { value: i64& }
 fn leak() -> Holder[1] {

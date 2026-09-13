@@ -1,3 +1,4 @@
+// error: function f is (in) a recursive cycle and may not own non-fixed-size locals
 // No function in a recursive cycle may own non-fixed-size locals (§7.8).
 recursive fn f(n: i64) -> i64 {
     var buf: i64[>..] = [];

@@ -1,3 +1,4 @@
+// error: to_bytes cannot write Cell[>..] out: Cell&<u32 in gpool>? is measured from gpool, not from the image
 // An `in pool` offset is measured from a named global's base, not from the
 // image, so neither direction of serialization admits one.
 var gpool: Cell[>..] = [];

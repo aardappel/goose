@@ -1,3 +1,4 @@
+// error: cannot assign through this path (const, or a read-only instantiation, §9.5)
 // Case results merge at every position of a multi-value call: the slice is
 // writable only if every case returns a writable one.
 enum Choice { A { n: i64 }, B { n: i64 } }

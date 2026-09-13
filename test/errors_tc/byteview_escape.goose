@@ -1,3 +1,4 @@
+// error: returning a reference rooted in a, which dies with this function
 struct Holder { bytes: const u8[:] }
 fn bytes() -> const u8[:] {
  var a: i64[>..] = [42];

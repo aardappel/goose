@@ -1,3 +1,4 @@
+// error: varint fields are written only at construction
 // varint fields are written only at construction (§3.6).
 struct S { v: varint }
 fn main() {

@@ -1,3 +1,5 @@
+// error: cannot pop a: an earlier expression value
+// error: may still refer into a
 enum E { A { r: i64& }, B { r: i64& } }
 fn read(v: E.A, n: i64) { print(v.r); }
 fn read(v: E.B, n: i64) { print(v.r); }

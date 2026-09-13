@@ -1,3 +1,5 @@
+// error: a relative reference in rpool must point into rpool
+// error: it was read out of rslots and may point into rpool or rspare
 // Two global containers can hold an RNode, so a reference read back out of
 // the slot array only outlives the global scope (§9.5) and is not known to
 // point into rpool (§3.9).

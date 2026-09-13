@@ -1,3 +1,4 @@
+// error: returning a reference rooted in a, which dies with this function
 struct Empty { count: i64 }
 struct Holder { bytes: const u8[:], empty: Empty }
 fn wrap(a: i64[>..]&) -> Holder {

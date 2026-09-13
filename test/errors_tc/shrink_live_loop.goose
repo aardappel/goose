@@ -1,3 +1,4 @@
+// error: cannot clear line while w is still used: it may hold a reference or slice into it
 // A slice declared outside a loop and read inside it is read again after a
 // shrink in the same loop, on the next iteration (§5.1).
 import std;

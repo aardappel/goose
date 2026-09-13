@@ -1,3 +1,5 @@
+// error: a relative reference must point within the same root as its location
+// error: it was read out of pool and may point into pool
 // The container came from a caller, so what a reference read out of it points
 // at may be storage this function cannot see (§9.5): the root bounds the
 // lifetime but is not an identity, and the relative store needs one (§3.9).

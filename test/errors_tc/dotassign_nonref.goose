@@ -1,3 +1,4 @@
+// error: .= rebinds references; the target has type i64
 // .= rebinds references only (§3.8).
 fn main() {
     var x = 1;

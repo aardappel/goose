@@ -1,3 +1,4 @@
+// error: self here is a value of type Cell, which does not fit a field of type Other&<u16>
 // A `self` field must point at the literal's own type (§3.9); this one is
 // declared to hold a relative reference to a different struct.
 struct Other { w: i64 }

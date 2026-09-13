@@ -1,3 +1,4 @@
+// error: operator + cannot be applied to i64? and i64
 // A recursive call may rebind what a `.=` names in a function that reaches a
 // call as a block's value rather than as an argument: the read after the back
 // edge cannot rely on g.

@@ -1,3 +1,4 @@
+// error: 3 element(s) exceed the capacity of u8[..2]
 // A literal constructing a limited array of static capacity must fit it
 // (§4.2): three elements into two slots.
 fn main() {

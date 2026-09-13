@@ -1,3 +1,4 @@
+// error: return from outer: no enclosing call of outer on this compile-time call path
 // A `from` target is the declaration the name resolves to, not any function
 // with that leaf name: b::outer never catches a return aimed at a::outer.
 fn a::deep() -> i64 { return -1 from outer; }

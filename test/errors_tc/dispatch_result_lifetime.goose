@@ -1,3 +1,4 @@
+// error: returning a reference rooted in local, which dies with this function
 // A dispatched result is rooted as deeply as the deepest case's result.
 enum Choice { A { n: i64 }, B { n: i64 } }
 fn view(c: Choice.A, s: const u8[:]) -> const u8[:] { return "abc"; }

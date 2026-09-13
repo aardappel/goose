@@ -1,3 +1,4 @@
+// error: re-binding n to storage rooted at poolB after its root poolA was used as the identity of a relative reference
 // A loop body is checked once, so the read of `n` above sees what the rebind
 // below leaves behind on the next iteration: the rebind may not move `n` to
 // another array once its root has been used as a relative link's identity

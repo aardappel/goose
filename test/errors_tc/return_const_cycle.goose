@@ -1,3 +1,4 @@
+// error: this return is read-only, but the recursive cycle already used a writable result; declare the result const
 recursive fn choose(r: i64&, depth: i64) -> i64& {
     if depth > 0 {
         let x .= choose(r, depth - 1);

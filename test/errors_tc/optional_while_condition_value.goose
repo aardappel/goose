@@ -1,3 +1,4 @@
+// error: optional opt is rebound later in this loop, so its narrowing does not hold on the next iteration
 // A while condition runs again after the body: a call in it that rebinds
 // the optional through a function value breaks the narrowing its earlier
 // read relied on.

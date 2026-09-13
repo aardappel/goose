@@ -1,2 +1,0 @@
-thread programs may access only flat globals
-shared holds references

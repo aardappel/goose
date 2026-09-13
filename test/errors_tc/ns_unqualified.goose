@@ -1,3 +1,4 @@
+// error: unknown function: bright
 // A namespaced declaration is not visible unqualified from the global
 // namespace; only its own namespace sees it by its leaf name.
 struct img::Pixel { r: u8 }

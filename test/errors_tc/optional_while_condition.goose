@@ -1,3 +1,4 @@
+// error: operator + cannot be applied to i64? and i64
 // A while condition runs again after the body, so a rebind in the body
 // un-narrows it too.
 var n = 41;

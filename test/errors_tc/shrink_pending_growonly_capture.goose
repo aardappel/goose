@@ -1,3 +1,4 @@
+// error: cannot call step, which may shrink buf inside a larger expression: a reference taken earlier in it may still be live, so bind the result first
 // A recursive call still being checked counts as shrinking the grow-only
 // arrays of its lexical parents that its body textually shrinks.
 fn read(r: i64&, unused: i64) -> i64 { return r; }

@@ -1,6 +1,6 @@
 // Optimizer coverage: inlining, constant folding, and propagation shapes.
-// Not a meaningful program; it exercises every optimizer path and must keep
-// typechecking (and meaning the same thing) at every -O level.
+// Runtime results must agree across optimization levels. The runner also
+// checks representative transformed bodies in --specs output.
 
 // --- inlining fodder ---------------------------------------------------------
 
@@ -330,22 +330,27 @@ fn indexpos() -> i64 {
 }
 
 // --- accumulator tail-recursion elimination ----------------------------------
+// A leading local keeps base-case inlining from rewriting these self calls
+// before the independent tail-recursion pass sees them.
 
 // `E + self(x)`: becomes a loop, with the base return folding the accumulator
 // in on the way out.
 recursive fn tre_add(n: i64) -> i64 {
+    let before_basecase = 0;
     if n <= 0 { return 0; }
     return (n * 2) + tre_add(n - 1);
 }
 
 // `self(x) ^ E` with an inert operand, which may move ahead of the call.
 recursive fn tre_rev(n: i64) -> i64 {
+    let before_basecase = 0;
     if n <= 0 { return 0; }
     return tre_rev(n - 1) ^ 3;
 }
 
 // `%` is not associative, so this is not a fold and nothing is rewritten.
 recursive fn tre_mod(n: i64) -> i64 {
+    let before_basecase = 0;
     if n <= 0 { return 1; }
     return (7 + tre_mod(n - 1)) % 1000;
 }
@@ -353,6 +358,7 @@ recursive fn tre_mod(n: i64) -> i64 {
 // Two operators: the first tail becomes the loop, the other stays a call
 // whose result folds in the way a base value does.
 recursive fn tre_mixed(n: i64) -> i64 {
+    let before_basecase = 0;
     if n <= 0 { return 1; }
     if n % 2 == 0 { return 2 + tre_mixed(n - 1); }
     return 3 * tre_mixed(n - 1);
@@ -361,12 +367,14 @@ recursive fn tre_mixed(n: i64) -> i64 {
 // No operator: plain tail recursion, looped without an accumulator. Both
 // parameters change and the new `k` reads the old `n`.
 recursive fn tre_plain(n: i64, k: i64) -> i64 {
+    let before_basecase = 0;
     if n <= 0 { return k; }
     return tre_plain(n - 1, k + n);
 }
 
 // Floats are left alone: regrouping them changes the answer.
 recursive fn tre_flt(n: i64, x: f64) -> f64 {
+    let before_basecase = 0;
     if n <= 0 { return x; }
     return 0.5 + tre_flt(n - 1, x);
 }
@@ -378,6 +386,7 @@ fn tre_leaf(n: i64) -> i64 {
     n
 }
 recursive fn tre_from(n: i64) -> i64 {
+    let before_basecase = 0;
     if n <= 0 { return 0; }
     return tre_leaf(n) + tre_from(n - 1);
 }
@@ -385,6 +394,7 @@ recursive fn tre_from(n: i64) -> i64 {
 // A tail return inside a loop of its own: the rewrite's `continue` would
 // restart that loop instead, so this one keeps its calls.
 recursive fn tre_inloop(n: i64) -> i64 {
+    let before_basecase = 0;
     var i = 0;
     while i < 3 {
         i += 1;

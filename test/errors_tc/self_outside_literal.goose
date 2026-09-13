@@ -1,3 +1,4 @@
+// error: self is only valid as the initializer of a non-optional relative-reference field of the literal containing it
 // `self` names the value a literal is constructing (§3.9), so it means
 // nothing in an ordinary expression.
 struct Cell { v: i64, link: Cell&<u16> }

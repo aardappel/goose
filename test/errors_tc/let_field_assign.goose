@@ -1,3 +1,4 @@
+// error: cannot assign to let id
 // A let field is not assigned after construction (§4.4).
 struct Rec { let id: i64, n: i64 }
 fn main() {

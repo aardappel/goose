@@ -1,3 +1,4 @@
+// error: dispatching a resizable ADT payload is not supported by the C backend yet; match its tag without a payload binder, or use a standalone resizable struct
 // Backend containment: full resizable payload views remain unsupported.
 enum Value { A { items: i64[>..] } }
 fn size(a: Value.A) -> i64 { a.items.len }

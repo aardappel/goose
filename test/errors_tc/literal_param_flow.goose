@@ -1,3 +1,4 @@
+// error: argument 2 of fill2: constant -1 does not fit u8, which parameter v takes
 // A literal passed on through a second generic function is checked against
 // the innermost use too (§7.7).
 import std;

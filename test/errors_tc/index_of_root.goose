@@ -1,3 +1,5 @@
+// error: .index_of needs a reference rooted at the array itself
+// error: this one is rooted at ispare
 // index_of converts a reference into an index of the array it names, so the
 // reference has to be one of that array's own elements (§3.3).
 struct INode { key: i32 }

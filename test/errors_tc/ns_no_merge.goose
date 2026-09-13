@@ -1,3 +1,4 @@
+// error: no matching overload for call to f
 // Overload sets never merge across namespaces: a namespace declaring any `f`
 // hides the global f overloads from its own unqualified calls (`::f` reaches
 // them).

@@ -1,3 +1,5 @@
+// error: cannot call replace, which shrinks rows: an earlier expression value
+// error: may still refer into rows
 fn main() {
     var rows: i64[2][>..<] = [[1, 2]];
     var other: i64[2] = [1, 2];

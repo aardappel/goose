@@ -1,3 +1,4 @@
+// error: operator + cannot be applied to i64? and i64
 // A recursive call may rebind what a format overload names, which printing
 // reaches without naming it: the read after the back edge cannot rely on g.
 struct Show { x: i64 }

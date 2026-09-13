@@ -1,4 +1,4 @@
-// Control expressions retain grouping as operands, receivers and scrutinees,
+// dump-runtime: control expressions retain grouping as operands, receivers and scrutinees,
 // as do literal receivers and the returns and breaks that end match arms.
 struct Box { value: i64 }
 enum Choice { One { value: i64 }, None }

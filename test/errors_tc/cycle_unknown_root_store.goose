@@ -1,3 +1,5 @@
+// error: storing the result of a recursive call whose returned reference's root the cycle's returns do not determine
+// error: it may only be passed down
 // A cycle's return roots are the fixpoint over its returns (§7.8). `either`
 // returns one of two parameters' pools, so which root that is depends on the
 // call site and no scan of the source can say; the back edge's result then
@@ -5,7 +7,7 @@
 // rejected. (Passing it down would be fine.)
 struct Cell { v: i64 }
 
-var slot: Cell&? = null;
+var slot: const Cell&? = null;
 
 fn either(a: Cell[>..]&, b: Cell[>..]&, n: i64) -> Cell& {
     if n > 0 { return a.push(Cell { v: n }); }

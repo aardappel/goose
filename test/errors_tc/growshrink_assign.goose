@@ -1,3 +1,5 @@
+// error: cannot assign gs while s
+// error: is still used: it may refer into gs
 // Assigning the array whole is a shrink (§5.2).
 fn main() {
     var gs: i64[>..<] = [1, 2, 3];

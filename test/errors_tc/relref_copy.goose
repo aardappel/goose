@@ -1,3 +1,4 @@
+// error: copying a value of type Cell, which contains self-relative references, is not supported; construct it in place
 // Copying a value containing relative references is rejected: the offsets
 // would be measured from the source location (§3.9, TODO scope tracking).
 struct Cell { v: i64 = 0, link: i64&<u16>? }

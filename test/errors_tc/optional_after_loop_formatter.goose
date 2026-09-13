@@ -1,3 +1,4 @@
+// error: operator + cannot be applied to i64? and i64
 // A format overload called in a loop body rebinds the global the loop's
 // condition narrows, which the name scan cannot see: after the loop the
 // global is not narrowed.

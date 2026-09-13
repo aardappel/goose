@@ -1,5 +1,5 @@
-// Full-coverage typechecker test: exercises the semantic rules the parser
-// tests don't reach. Not a meaningful program; it just has to typecheck.
+// Semantic coverage with runtime assertions and expected output. Every helper
+// under test must be called: function bodies are specialized on demand.
 
 // --- storage types, packing, defaults ---------------------------------------
 
@@ -187,7 +187,7 @@ fn growonly() {
     let r = &g[0];
     let s = g[0..1];
     g.append([2.0, 3.0]);
-    g.append([0.0; 3]);                  // (resize does not exist on grow-only.)
+    g.append([0.0; 3]);                  // Growth preserves the live views.
     print(first + r + s[0] + g.len as f64);
 }
 

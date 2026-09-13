@@ -1,3 +1,4 @@
+// error: expected a value of type i64, got i64?
 // Narrowing is killed by rebinding the variable (§3.8).
 fn f(var o: i64?, p: i64?) -> i64 {
     guard o else { return 0; }

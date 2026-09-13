@@ -8,8 +8,7 @@ fn main() {
     var d = dictionary<i64, i64> {};
     print(d.insert(1, 10), " ", d.insert(2, 20), " ", d.insert(1, 11));   // true true false
     print(d.count, " ", d.contains(1), " ", d.contains(3));               // 2 true false
-    // A reference from get may not be in scope at the next insertion (the
-    // checker enforces it), so each lives in its own block.
+    // End each read before another operation can resize the backing slots.
     block { let v = d.get(1); if v { print(v); } }                        // 11
     block { let w = d.get(3); print(w == null); }                         // true
     d.update(2, 0) { it += 5; };

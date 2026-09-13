@@ -1,3 +1,4 @@
+// error: constant 300 does not fit u8
 // A cached helper's literal must also fit the second target specialization.
 fn finish() { return 300 from choose; }
 fn relay() { finish(); }

@@ -1,3 +1,4 @@
+// error: variable x may be used before it is assigned
 // Assigned on only one branch: not definitely assigned after (§4.4).
 fn main() {
     var x: i64;

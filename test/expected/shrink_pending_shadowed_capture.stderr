@@ -1,1 +1,0 @@
-cannot call step, which may shrink buf while r is still used

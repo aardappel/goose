@@ -1,3 +1,4 @@
+// error: storing a reference rooted at h, which does not outlive the destination
 // A holder returned by a recursive call still being checked may hold a byte
 // view, which is stored like any reference.
 struct Holder { bytes: const u8[:] }

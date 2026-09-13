@@ -1,3 +1,4 @@
+// error: operator + cannot be applied to i64? and i64
 // The right operand of && runs after the left test narrowed: a rebind there
 // un-narrows the guarded region.
 var n = 41;

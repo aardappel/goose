@@ -40,6 +40,7 @@ fn random() {
     var xs = [1, 2, 3, 4, 5, 6, 7, 8];
     shuffle(xs, r);
     sort(xs);
+    assert(xs == [1, 2, 3, 4, 5, 6, 7, 8]);  // Check the entire permutation.
     print(xs[0], " ", xs[7], " ", xs.len);            // 1 8 8
 }
 
@@ -84,6 +85,8 @@ fn transforming() {
     print(lens[0], lens[1], lens[2]);                                          // 213
 }
 
+struct SortItem { key: i64, order: i64 }
+
 fn inplace() {
     var xs = [3, 1, 2];
     fill(xs, 7);
@@ -107,6 +110,9 @@ fn inplace() {
     var st = [3, 1, 2, 1, 3];
     stable_sort(st);
     print(st[0], st[1], st[4]);                                                // 113
+    var tagged = [SortItem { 2, 0 }, SortItem { 1, 1 }, SortItem { 2, 2 }, SortItem { 1, 3 }];
+    stable_sort(tagged) { a, b => a.key < b.key };
+    assert(tagged == [SortItem { 1, 1 }, SortItem { 1, 3 }, SortItem { 2, 0 }, SortItem { 2, 2 }]);
     var lo: u8[>..] = [];
     lo.append("Hello World");
     to_lower(lo);

@@ -1,3 +1,5 @@
+// error: a relative reference must point within the same root as its location
+// error: it was read out of slots and may point into spare or pool
 // Two locals in scope at the container's block can hold a Node, so the
 // read-back names neither of them (§9.5).
 struct Node { key: i32, next: Node&<u32>? }

@@ -1,3 +1,4 @@
+// error: return from outer: no enclosing call of outer on this compile-time call path
 // Every call site of a `return from` function must lie within the target's
 // dynamic extent (§7.9).
 fn deep(n: i64) -> i64 {

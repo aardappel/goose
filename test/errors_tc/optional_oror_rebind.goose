@@ -1,3 +1,4 @@
+// error: operator + cannot be applied to i64? and i64
 // The right operand of || runs after the left test narrowed its false side: a
 // rebind there un-narrows what follows when the condition is false.
 var n = 41;

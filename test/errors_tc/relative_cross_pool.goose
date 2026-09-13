@@ -1,3 +1,5 @@
+// error: a relative reference must point within the same root as its location
+// error: this reference is rooted at r
 // A relative link whose reference derives from a different pool fails at
 // that instantiation, with the compile-time call chain (§3.9, §9.5).
 struct Cell { v: i64 = 0, link: i64&<u16>? }

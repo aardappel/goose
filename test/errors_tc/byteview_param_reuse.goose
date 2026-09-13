@@ -1,6 +1,7 @@
-// Both calls share one specialization of put, so its parameter may be a byte
-// view of a grow-shrink array even though the first call passes a string.
-var names: const u8[:][>..<] = ["abcdefgh"];
+// error: storing a reference into s, which holds a grow-shrink array: such a reference lives in a variable, is passed down or returned, and is never stored
+// After accepting a string from a grow-only list, put must still reject a
+// byte view of a grow-shrink array: their root constraints differ.
+var names: const u8[:][>..] = ["abcdefgh"];
 struct Keep { v: const u8[:] }
 fn put(s: const u8[:], out: Keep[>..]&) { out.push(Keep { v: s }); }
 fn main() {

@@ -1,3 +1,4 @@
+// error: recursive call changes the enclosing specialization of a long-distance return
 // A back edge checked before the `return ... from` it reaches still has to
 // agree on the target specialization: the innermost g here is g<i32>.
 fn g<T>(x: T, n: i64) -> T {

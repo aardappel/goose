@@ -1,3 +1,4 @@
+// error: operator + cannot be applied to i64? and i64
 // A guard narrows the code after it by its condition, except what the right
 // operand of its && rebinds.
 var n = 41;

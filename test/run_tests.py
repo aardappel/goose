@@ -3,13 +3,16 @@
 roundtrips to identical output, typechecks files not marked `parse-only` on
 their first line, checks that error tests fail in the right phase, and (when a
 C compiler is available) compiles and runs the generated C at -O0 and -O2,
-comparing the two runs and any blessed output in expected/<name>.out.
+comparing the two runs and required output in expected/<name>.out.
 expected/<name>.aborts marks tests whose run is expected to end in a runtime
 abort (nonzero exit) after printing their expected stdout. Each nonblank line
 in expected/<name>.stderr must occur in stderr, so an unrelated crash cannot
-satisfy an expected abort; the same markers validate parser/typecheck errors.
+satisfy an expected abort. Compiler error fixtures require `// error:`
+diagnostic substrings in their source and the compiler's normal error exit.
 A first-line `runtime-debug` marker adds a targeted
 GS_DEBUG=1 run, alongside the existing codegen_exec debug coverage.
+A first-line `dump-runtime` marker also executes the parser's dump, checking
+that stable roundtripping preserved the original program's behavior.
 
 A compiler built with the TinyCC backend runs the same programs a second way,
 in JIT mode: no C file and no external compiler, the generated C built and run
@@ -25,6 +28,7 @@ Clang -O1 with ASan/UBSan on Linux, including the samples and C runtime tests.
 """
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -44,6 +48,10 @@ def joined(text):
 def first_line(path):
     with open(path, encoding="utf-8", errors="replace") as f:
         return f.readline()
+
+
+def error_markers(path):
+    return re.findall(r"^// error: (.+)$", path.read_text(encoding="utf-8"), re.MULTILINE)
 
 
 class Runner:
@@ -85,12 +93,15 @@ class Runner:
         if (aborts and code == 0) or (not aborts and code != 0):
             self.fail(f"run {label} (exit {code})", err)
             return None
-        if not self.check_stderr(name, label, err):
+        if not self.check_stderr(name, label, err, required=aborts):
             return None
         return joined(out)
 
-    def check_stderr(self, name, label, err):
+    def check_stderr(self, name, label, err, required=False):
         stderr_file = HERE / "expected" / f"{name}.stderr"
+        if required and not stderr_file.exists():
+            self.fail(f"missing expected-stderr {label}")
+            return False
         if stderr_file.exists():
             markers = [line.strip() for line in tc.decode(stderr_file.read_bytes()).splitlines()
                        if line.strip()]
@@ -101,12 +112,86 @@ class Runner:
 
     def check_stdout(self, name, label, out):
         expfile = HERE / "expected" / f"{name}.out"
-        if expfile.exists():
-            want = joined(tc.decode(expfile.read_bytes()))
-            if out != want:
-                self.fail(f"expected-output {label}", f"--- got:\n{out}\n--- want:\n{want}")
-                return False
+        if not expfile.exists():
+            self.fail(f"missing expected-output {label}")
+            return False
+        want = joined(tc.decode(expfile.read_bytes()))
+        if out != want:
+            self.fail(f"expected-output {label}", f"--- got:\n{out}\n--- want:\n{want}")
+            return False
         return True
+
+    def check_error(self, path, label, code, out, err):
+        # CompileError exits with 1. Signals, access violations and assertion
+        # failures are compiler bugs, even if they printed a matching message.
+        if code != 1 or tc.sanitizer_failure(err):
+            self.fail(f"{label} {path.name} (exit {code})", out + err)
+            return False
+        markers = error_markers(path)
+        # Match diagnostic headers, not echoed source (which may itself name
+        # the expected message). The missing-main error has no source location.
+        diagnostics = []
+        for line in err.splitlines():
+            match = re.match(r"^\S.*:\d+(?::\d+)?: error: (.*)$", line)
+            if match:
+                diagnostics.append(match[1])
+            elif line == "program needs exactly one global fn main()":
+                diagnostics.append(line)
+        diagnostics = "\n".join(diagnostics)
+        missing = [m for m in markers if m not in diagnostics]
+        if not markers or missing:
+            self.fail(f"expected-diagnostic {path.name}",
+                      f"missing: {missing or ['// error: marker']}\n{err}")
+            return False
+        return True
+
+    def roundtrip(self, path, tmp):
+        code, d1, err = self.goose("--dump", path)
+        if code != 0:
+            self.fail(f"dump {path.name}", d1 + err)
+            return False
+        tc.write_text(tmp, d1)
+        code, d2, err = self.goose("--dump", tmp)
+        if code != 0:
+            self.fail(f"reparse-of-dump {path.name}", d2 + err)
+        elif joined(d1) != joined(d2):
+            self.fail(f"roundtrip {path.name}")
+        else:
+            self.ok(f"parse+roundtrip {path.name}")
+            return True
+        return False
+
+    def check_optimizer(self, level, specs):
+        # Observe the transformed bodies, rather than accepting a successful
+        # --specs command or pinning unstable specialization IDs/pass counts.
+        bodies = {}
+        for spec in specs.split("// spec ")[1:]:
+            match = re.search(r"^fn (tre_\w+)\([^\n]*\) \{\n", spec, re.MULTILINE)
+            if match:
+                bodies[match[1]] = spec[match.end():]
+        optimized = level != "-O0"
+        shapes = {
+            "tre_add": (optimized, not optimized),
+            "tre_rev": (optimized, not optimized),
+            "tre_plain": (optimized, not optimized),
+            "tre_mixed": (optimized, True),
+            "tre_mod": (False, True),
+            "tre_flt": (False, True),
+            "tre_from": (False, True),
+            "tre_inloop": (False, True),
+        }
+        valid = True
+        for name, want in shapes.items():
+            body = bodies.get(name)
+            got = None if body is None else (
+                bool(re.search(r"\bloop \{", body)),
+                bool(re.search(rf"\b{name}\(", body)),
+            )
+            if got != want:
+                self.fail(f"tail-recursion {level} {name}",
+                          f"(loop, self call): got {got}, want {want}")
+                valid = False
+        return valid
 
 
 def main():
@@ -147,32 +232,26 @@ def main():
     r = Runner(exe)
     builddir = tc.REPO_ROOT / "build"
     builddir.mkdir(parents=True, exist_ok=True)
+    dumpdir = builddir / "dump"
+    dumpdir.mkdir(parents=True, exist_ok=True)
 
     code, out, err = r.goose("--tokens", HERE / "lexer_tokens.goose")
     if code != 0:
-        r.fail("lex lexer_tokens.goose")
-    else:
+        r.fail("lex lexer_tokens.goose", out + err)
+    elif r.check_stdout("lexer_tokens", "lexer_tokens.goose", joined(out)):
         r.ok("lex lexer_tokens.goose")
 
     tests = [f for f in sorted(HERE.glob("*.goose")) if f.name != "lexer_tokens.goose"]
 
+    dump_tests = []
     for f in tests:
         code, out, err = r.goose("--parse", f)
         if code != 0:
             r.fail(f"parse {f.name}", out + err)
             continue
-        code, d1, err = r.goose("--dump", f)
-        d1 = joined(d1)
-        tmp = builddir / "roundtrip.goose"
-        tc.write_text(tmp, d1)
-        code, d2, err = r.goose("--dump", tmp)
-        d2 = joined(d2)
-        if code != 0:
-            r.fail(f"reparse-of-dump {f.name}", d2 + err)
-        elif d1 != d2:
-            r.fail(f"roundtrip {f.name}")
-        else:
-            r.ok(f"parse+roundtrip {f.name}")
+        tmp = dumpdir / f.name
+        if r.roundtrip(f, tmp) and "dump-runtime" in first_line(f):
+            dump_tests.append(tmp)
         if "parse-only" not in first_line(f):
             code, out, err = r.goose("--check", f)
             if code != 0:
@@ -186,16 +265,19 @@ def main():
         code, out, err = r.goose(lvl, "--check", "--specs", HERE / "optimize.goose")
         if code != 0:
             r.fail(f"optimize {lvl}", out + err)
-        else:
+        elif r.check_optimizer(lvl, out):
             r.ok(f"optimize {lvl}")
 
-    # Bounds-check elimination: verify the per-line elide/keep annotations in
-    # bce.goose (the file's runtime behavior is covered by the cgen runs below).
-    code, out, err = r.goose("--check", "--bce-test", HERE / "bce.goose")
-    if code != 0:
-        r.fail("bce-test bce.goose", out + err)
-    else:
-        r.ok("bce-test bce.goose")
+    # Verify every annotated regression, including the expected-abort cases.
+    # These describe the default O1 pass; O0/O2 execution checks semantics.
+    for f in tests:
+        if not re.search(r"//\s*bce:(?:elide|keep)\b", f.read_text(encoding="utf-8")):
+            continue
+        code, out, err = r.goose("-O1", "--check", "--bce-test", f)
+        if code != 0:
+            r.fail(f"bce-test {f.name}", out + err)
+        else:
+            r.ok(f"bce-test {f.name}")
 
     # --- codegen: generate C, compile, run, compare ------------------------
     if not cc:
@@ -238,6 +320,25 @@ def main():
             if not r.check_stdout(name, f.name, runs["2"]):
                 continue
             r.ok(f"cgen+run {f.name}")
+
+        # A stable dump can still change grouping and therefore semantics.
+        # Execute selected dumped programs against the original expectations.
+        for f in dump_tests:
+            src = gendir / f"{f.stem}-dump.c"
+            out_exe = gendir / f"{f.stem}-dump{tc.EXE_SUFFIX}"
+            code, out, err = r.goose("-O2", "-o", src, f)
+            if code != 0:
+                r.fail(f"cgen-dump {f.name}", out + err)
+                continue
+            ok, log = cc.compile(src, out_exe, opt=2 if args.profile == "baseline" else 1,
+                                 extra=extra, strict_decls=True,
+                                 log=gendir / f"{f.stem}-dump.cc.log")
+            if not ok:
+                r.fail(f"cc-dump {f.name}", log)
+                continue
+            out = r.run_expected([out_exe], f.stem, f"dump {f.name}")
+            if out is not None and r.check_stdout(f.stem, f"dump {f.name}", out):
+                r.ok(f"dump+run {f.name}")
 
         # GS_DEBUG changes language overflow/cast checks, independently of
         # native optimization. Cover its helpers under O2 without multiplying
@@ -362,9 +463,7 @@ def main():
 
     for f in sorted((HERE / "errors").glob("*.goose")):
         code, out, err = r.goose("--parse", f)
-        if code == 0:
-            r.fail(f"expected-error {f.name}")
-        elif r.check_stderr(f.stem, f"parse error {f.name}", err):
+        if r.check_error(f, "expected-error", code, out, err):
             r.ok(f"error {f.name}")
 
     # Typecheck error tests: must parse, must fail the typechecker.
@@ -374,9 +473,7 @@ def main():
             r.fail(f"tc-error-parses {f.name}", out + err)
             continue
         code, out, err = r.goose("--check", f)
-        if code == 0:
-            r.fail(f"expected-tc-error {f.name}")
-        elif r.check_stderr(f.stem, f"typecheck error {f.name}", err):
+        if r.check_error(f, "expected-tc-error", code, out, err):
             r.ok(f"tc-error {f.name}")
 
     # The samples: compiled, built, run and compared with their expected output

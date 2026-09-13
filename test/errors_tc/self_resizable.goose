@@ -1,3 +1,4 @@
+// error: self cannot be stored relative: Grow is resizable, and a relative reference is an offset alone
 // A relative reference is an offset alone, so it cannot reach a resizable
 // value's header (§3.9). Every other relative reference is kept away from one
 // by the same-root rule; a self-reference satisfies that rule by construction,

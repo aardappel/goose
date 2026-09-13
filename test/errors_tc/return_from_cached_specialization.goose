@@ -1,3 +1,4 @@
+// error: recursive call changes the enclosing specialization of a long-distance return
 // step reuses mid inside g<i32> before walk's `return ... from g` gives mid
 // its g<i64> target, so the innermost g on that call path is the wrong one.
 fn h() -> i64 {

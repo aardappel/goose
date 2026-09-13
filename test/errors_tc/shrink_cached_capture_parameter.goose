@@ -1,3 +1,5 @@
+// error: cannot call drop, which shrinks xs: an earlier expression value
+// error: may still refer into xs
 fn read(r: i64&, unused: i64) { print(r); }
 fn outer(xs: i64[>..<]&) {
     fn drop() -> i64 { xs.pop(); return 0; }

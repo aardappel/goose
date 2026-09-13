@@ -1,5 +1,5 @@
-// Full-coverage parser test: exercises every construct the parser implements.
-// Parse-only; the code is not meant to be meaningful.
+// Broad syntax coverage, also typechecked and executed through main below.
+// Declarations cover parsing; calls exercise their specialized bodies.
 
 import util;
 import sub.mod;
@@ -417,6 +417,7 @@ extern fn cbrt(x: f64) -> f64;
 extern "sqrtf" fn sqrt_f32(x: f32) -> f32;
 
 fn main_parser_all() {
+    assert(from_mod(3) == 7);  // Root-relative import, then its sibling import.
     edge_cases();
     literals();
     print(operators(3, 4));

@@ -1,3 +1,4 @@
+// error: varint-width relative references are written only at construction
 // varint-width relative references are written only at construction (§3.9).
 struct Node2 { v: i64 = 0, link: i64&<varint>? }
 fn main() {

@@ -1,3 +1,4 @@
+// error: cannot assign through this path (const, or a read-only instantiation, §9.5)
 // Case functions are alternatives of one call: its result is writable only
 // if every case returns a writable reference.
 enum Choice { A { n: i64 }, B { n: i64 } }

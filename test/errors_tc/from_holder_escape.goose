@@ -1,3 +1,4 @@
+// error: a long-distance return may only carry references to globals or static data
 // A long-distance return of a holder may not carry references into the
 // frames it unwinds.
 struct Holder { value: i64& }

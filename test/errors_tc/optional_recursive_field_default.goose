@@ -1,3 +1,4 @@
+// error: operator + cannot be applied to i64? and i64
 // A recursive call may rebind what a `.=` names in a function that a field
 // default calls, which a struct literal runs without naming it: the read after
 // the back edge cannot rely on g, even though the instance already exists.

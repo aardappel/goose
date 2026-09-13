@@ -1,3 +1,4 @@
+// error: from_bytes<Deep[>..]> has no verifier: i64&<u16>? points at i64, not at an element of the array or one of its variants
 // A relative reference into a *field* of an element would need every valid
 // address of its type enumerated; the verifier only knows element starts.
 struct Deep { v: i64, link: i64&<u16>? }

@@ -1,3 +1,4 @@
+// error: function values are compile-time only and cannot be stored
 // Function values cannot escape into data (§7.6).
 fn h(v: i64) { print(v) }
 fn main() {

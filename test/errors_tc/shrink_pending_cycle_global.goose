@@ -1,3 +1,4 @@
+// error: cannot call b, which may shrink g g inside a larger expression: a reference taken earlier in it may still be live, so bind the result first
 // A recursive call counts as shrinking what every function still being
 // checked textually shrinks: the back edge into b holds g[0], and a, which
 // b calls further down, clears g.

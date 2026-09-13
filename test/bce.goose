@@ -1,5 +1,5 @@
 // Bounds-check elimination coverage. Every elide/keep annotation comment is
-// verified by `goose --bce-test` (see run_tests.ps1): all checks on such a
+// verified by `goose --bce-test` (see run_tests.py): all checks on such a
 // line must have exactly the annotated outcome. The file also runs as a
 // normal codegen test, so a wrongly elided check would corrupt its output;
 // every kept check passes at runtime. Keep-cases index with values loaded
@@ -75,8 +75,8 @@ fn grow_loops() -> i64 {
     return s;
 }
 
-// Growing during iteration: a grow-only array can never shrink, so bounds
-// established before a push stay established.
+// Growing during iteration: push cannot shrink the array, so bounds
+// established before it stay established.
 fn grow_during_loop() -> i64 {
     var v: i64[>..] = [];
     v.push(1);
@@ -465,7 +465,7 @@ fn call_local_loop() -> i64 {
     return s;
 }
 
-// Only a grow-shrink array can be emptied through a reference (§5.1, §5.2).
+// Whole assignment through a reference may empty the array (§5.1, §5.2).
 fn reset_it(p: i64[>..<]&) {
     p = [];
 }

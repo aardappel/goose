@@ -1,3 +1,5 @@
+// error: a relative reference in cpool must point into cpool
+// error: this reference is rooted at cspare
 // `in cpool` says the offset spans cpool, so a reference into another array
 // cannot be encoded in it whatever the destination is (§3.9).
 struct CNode { key: i32, next: CNode&<u32 in cpool>? }

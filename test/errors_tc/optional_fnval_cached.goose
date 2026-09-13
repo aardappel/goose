@@ -1,3 +1,4 @@
+// error: operator + cannot be applied to i64? and i64
 // A function value keeps the optionals of the environment it was written in
 // as part of a cached body's assumptions.
 fn apply<F>() { F(); }

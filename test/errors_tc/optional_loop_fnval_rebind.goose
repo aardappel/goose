@@ -1,3 +1,4 @@
+// error: optional opt is rebound later in this loop, so its narrowing does not hold on the next iteration
 // A loop body that rebinds a narrowed optional through a function value
 // breaks the narrowing its next iteration relies on.
 fn apply<F>() { F(); }

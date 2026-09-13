@@ -1,3 +1,4 @@
+// error: cannot pop data while h is still used: a reference into it was stored there
 // A holder field read out of a struct parameter is bounded by the struct, not
 // rooted in it: the array its reference points into may not shrink while the
 // returned copy is still used.
