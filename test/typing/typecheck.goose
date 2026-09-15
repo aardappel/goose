@@ -242,6 +242,15 @@ fn pop_scratch() -> i64 {
 struct Slot { v: i64 = 0, next: i64 = -1 }
 
 reusable var gpool: Slot[>..] = [];
+reusable[] var gspans: Slot[>..] = [];
+
+fn use_spans(pool: Slot[>..]&) -> i64 {
+    let s = pool.alloc_slice(2);
+    s[1].v = 4;
+    let t = pool.realloc_slice(s, 3);
+    pool.free_slice(t[..1]);
+    t[1].v + t.len
+}
 
 fn use_pool(pool: Slot[>..]&) -> i64 {
     let i = pool.alloc_index(Slot { v: 1 });
@@ -255,6 +264,9 @@ fn pools() {
     reusable var local: Slot[>..] = [];
     print(use_pool(local));
     print(use_pool(gpool));
+    reusable[] var spans: Slot[>..] = [];
+    print(use_spans(spans));             // 7
+    print(use_spans(gspans));            // 7
 }
 
 // --- relative references within one pool (§3.9, A.2) ------------------------

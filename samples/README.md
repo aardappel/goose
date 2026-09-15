@@ -82,3 +82,9 @@ calls it, so they are compiled and run as part of the test suite.
 | Sample | What it shows |
 |---|---|
 | [25_serialize](25_serialize.goose) | A word index saved and loaded as raw bytes: `bytes_of` views the element region without copying it, `to_bytes` builds the framed image, `from_bytes` verifies an untrusted one before it becomes a value. Fixed nodes with 4-byte links and a compact variable-size form of the same tree; tampered, truncated and extended files rejected. |
+
+## Pools of slices
+
+| Sample | What it shows |
+|---|---|
+| [26_file_tree](26_file_tree.goose) | A directory tree: nodes in a `reusable` pool, passed around as references, each directory's entries one run of 4-byte `in pool` links in a `reusable[]` pool, grown in place or moved by `realloc_slice`; `rm -r` gives slots and runs back, `mv` relinks, and the pools' counts show the reuse. |

@@ -617,10 +617,12 @@ inline void TypeCheck::ValidatePool(TypeExpr *t) {
 
 // Can a value of type `t` contain an `of` by value anywhere inside it? A
 // reference or slice field ends the search: what is behind one belongs to
-// its own root.
+// its own root. A slice's pointee is its element type as stored, which for a
+// relative reference is not the plain reference a load yields, so the stored
+// type matches too.
 inline bool TypeCheck::CanContain(TypeExpr *t, TypeExpr *of) {
     if (!t) return false;
-    if (TypeEq(LoadType(t), of)) return true;
+    if (TypeEq(t, of) || TypeEq(LoadType(t), of)) return true;
     if (t->kind == TY_ARRAY) return CanContain(t->arr->sub, of);
     return AnyField(t, [&](TypeExpr *ft) { return CanContain(ft, of); });
 }
@@ -658,8 +660,8 @@ inline bool TypeCheck::StaticCanContain(TypeExpr *of) {
 // that can hold one plus the pointee of every reference/slice in scope (a
 // parameter's caller-side storage is reachable only through it).
 // Deduplicated by root; the caller picks the deepest.
-inline void TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, vector<VarDef *> &out,
-                                      bool &hasstatic) {
+inline void TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, bool writable,
+                                      vector<VarDef *> &out, bool &hasstatic) {
     hasstatic = false;
     auto add = [&](VarDef *r) {
         r = CanonRoot(r);
@@ -682,6 +684,10 @@ inline void TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, vec
     if (!globalsonly) VisibleVars([&](VarDef *v) { if (!v->isglobal) consider(v, d); });
     for (auto g : ast.globals) for (auto gd : g->defs) consider(gd, 0);
     if (StaticCanContain(of)) hasstatic = true;
+    // A writable reference or slice is never given static data but a null or an
+    // empty slice (§9.5: literals only go into const slots), which point at no
+    // storage, so static data does not stand beside a real candidate for one.
+    if (writable && !out.empty()) hasstatic = false;
 }
 
 // The root of a reference/slice of type `rt` loaded out of a container
@@ -723,7 +729,7 @@ inline TypeCheck::ReadBack TypeCheck::ReadBackRoot(TypeExpr *rt, VarDef *croot, 
     // container's depth or shallower.
     vector<VarDef *> cands;
     auto hasstatic = false;
-    RootCandidates(of, Depth(croot), global, cands, hasstatic);
+    RootCandidates(of, Depth(croot), global, !rt->cq, cands, hasstatic);
     rb.from = croot;
     if (cands.empty()) {
         // Static data alone: null is its root, and it outlives everything.
@@ -746,15 +752,39 @@ inline string TypeCheck::ReadBackWhy(TypeExpr *rt, VarDef *from) {
     if (!from || !of) return {};
     vector<VarDef *> cands;
     auto hasstatic = false;
-    RootCandidates(of, Depth(from), from->isglobal, cands, hasstatic);
-    string s = cat("it was read out of ", from->name, " and may point into ");
+    RootCandidates(of, Depth(from), from->isglobal, !rt->cq, cands, hasstatic);
     auto n = cands.size() + (hasstatic ? 1 : 0);
+    if (n == 0) return cat("it was read out of ", from->name, ", whose contents this function cannot trace");
+    string s = cat("it was read out of ", from->name, " and may point into ");
     for (size_t i = 0; i < cands.size(); i++) {
         if (i) s += i + 1 == n ? " or " : ", ";
         s += cands[i]->name;
     }
     if (hasstatic) { if (n > 1) s += " or "; s += "static data"; }
     return s;
+}
+
+// Whether a reference or slice handed back to the array member called on is
+// known to point into that very array: rooted at it exactly (§9.2). A
+// parameter in a pool class points into that global pool (§3.9), so it is
+// rooted there as exactly as a local one.
+inline bool TypeCheck::RootedAtReceiver(const Val &rv, const Val &av) {
+    auto recvroot = CanonRoot(rv.root);
+    auto sameroot = CanonRoot(av.root) == recvroot ||
+                    (recvroot && recvroot->isglobal && PoolOf(av.root) == recvroot);
+    return av.rootexact && sameroot;
+}
+
+// The same, required of what member `op` is handed.
+inline void TypeCheck::CheckRootedAtReceiver(Call *c, const char *op, const Val &rv,
+                                             const Val &av, const char *what,
+                                             const char *sec) {
+    if (RootedAtReceiver(rv, av)) return;
+    auto why = av.rootexact ? string() : ReadBackWhy(av.type, av.rootfrom);
+    Error(c, cat(".", op, " needs ", what, " rooted at the array itself (", sec, "); ",
+                 !why.empty() ? why
+                 : cat("this one is rooted at ",
+                       av.root ? CanonRoot(av.root)->name : string_view("static data"))));
 }
 
 }  // namespace goose

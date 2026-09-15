@@ -383,7 +383,14 @@ struct Parser {
 
     VarDecl *ParseVarDecl(bool isglobal) {
         auto line = CurLine();
-        auto reusable = IsNext(T_REUSABLE);
+        auto reusable = 0;
+        if (IsNext(T_REUSABLE)) {
+            reusable = RU_SLOTS;
+            if (IsNext(T_LBRACKET)) {
+                Expect(T_RBRACKET, "reusable[]");
+                reusable = RU_SLICES;
+            }
+        }
         bool isvar, isconst = false;
         if (IsNext(T_VAR)) isvar = true;
         else if (IsNext(T_LET)) isvar = false;

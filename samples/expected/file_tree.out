@@ -1,0 +1,53 @@
+-- built: 9 nodes in 9 slots, 8 links in 8 cells
+/
+  home/
+    ann/
+      notes.txt
+      todo.txt
+    bob/
+      game.sav
+  etc/
+    hosts
+-- rm -r /home/bob: 7 nodes in 9 slots, 6 links in 8 cells
+/
+  home/
+    ann/
+      notes.txt
+      todo.txt
+  etc/
+    hosts
+-- mkdir /home/carl, touch a.txt: 9 nodes in 9 slots, 8 links in 8 cells
+/
+  home/
+    ann/
+      notes.txt
+      todo.txt
+    carl/
+      a.txt
+  etc/
+    hosts
+-- mv /home/ann/todo.txt /etc: 9 nodes in 9 slots, 8 links in 10 cells
+/
+  home/
+    ann/
+      notes.txt
+    carl/
+      a.txt
+  etc/
+    hosts
+    todo.txt
+-- more files: 14 nodes in 14 slots, 13 links in 13 cells
+/
+  home/
+    ann/
+      notes.txt
+      b.txt
+    carl/
+      a.txt
+      c.txt
+  etc/
+    hosts
+    todo.txt
+    log0
+    log1
+    log2

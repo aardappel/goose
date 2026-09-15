@@ -584,7 +584,8 @@ the intended *read* path; mutation idiomatically goes through references —
 but writes through a slice are legal when its provenance is writable (§9.5).
 
 * Created by slicing any array-family value or slice: `a[x..y]` (x inclusive,
-  y exclusive; omit for 0 / len; `^k` means "len − k"). At call sites, an
+  y exclusive; omit for 0 / len; `^k` means "len − k"), or allocated from a
+  slice pool (§5.4). At call sites, an
   array argument passed where a slice parameter is expected implicitly
   becomes a whole-array slice; an exact-type overload wins over this
   coercion.
@@ -919,6 +920,49 @@ Semantics, not just implementation: *all elements remain valid at all times*.
 A reference to a freed-then-reused slot reads a different (same-typed) value —
 type-safe reuse, never memory corruption. This is the language's answer to
 tree-mutation workloads that would otherwise need an allocator.
+
+**Slice pools.** Declared `reusable[]` (`reusable[] var pool: T[>..] = [];`,
+also valid on globals), the array hands out runs of elements instead. Its
+hidden freelist holds (index, count) spans sorted by index, and a freed run
+merges with the spans it touches:
+
+* `a.alloc_slice(n) -> T[:]` — `n` elements from the front of the first free
+  span, in index order, that holds them; failing that, from the end of the
+  array, which grows by `n` — less the elements of a free span that reaches
+  its end, which the run starts with.
+* `a.free_slice(s)` — records `s`'s elements for reuse.
+* `a.realloc_slice(s, n) -> T[:]` — `s` resized to `n` elements. Shrinking
+  frees the elements past `n` and keeps the front. Growing a non-empty `s`
+  keeps its elements in place when `s` ends the array, which grows, or when a
+  free span starts where `s` ends and either holds the difference or reaches
+  the end of the array, which grows by the rest. Otherwise, and always for an
+  empty `s`, the slice's elements are freed and copied to where
+  `alloc_slice(n)` then places the run, which may be their old place merged
+  with free elements around it.
+
+Every element an allocation or a growth adds is a default value (§4.2), so
+those two need an element type that has one. The length is evaluated once, and
+a negative one, or one no data stack could hold, aborts before the pool
+changes. The slice handed to `free_slice` or `realloc_slice` must be one of the
+pool's runs: one the pool handed out, a re-slice of it, or a slice of the pool
+itself. Where the checker sees that, because the slice is rooted at the pool
+exactly (§9.2), nothing is checked when the call runs. A slice rooted exactly at
+another global, or at another variable of the calling function, is a compile
+error. Any other slice, such as one read out of storage where runs of other
+arrays could be kept as well, is checked when the call runs: unless it is
+empty, its elements must lie inside the pool's length starting on an element
+boundary, or the call aborts before the pool changes. An empty slice frees
+nothing and grows like a new run, wherever it points. A grown slice may be copied, which a value holding
+self-relative references cannot survive (§3.9), so `realloc_slice` is a compile
+error for such an element type; `in pool` references copy fine, and the other
+two operations never move an element. The single-slot operations do not exist
+on a slice pool, nor these on a `reusable` one; `push` and `append` add at the
+end of either without consulting the freelist.
+
+The guarantee is the same: a slice still naming freed elements reads whatever
+their next owner wrote, or the default values an allocation put there. Freeing
+a run twice is a logic error of the same kind — the freelist can then hand the
+same elements out twice, but never anything outside the array.
 
 ---
 
@@ -1596,6 +1640,10 @@ Aborts (message + exit; not catchable):
   cannot fire, §10.5; can be disabled wholesale in a designated unsafe-fast
   build);
 * a reusable pool's `free(i)` with an index outside `[0, pool.len)`;
+* a slice pool's `alloc_slice`/`realloc_slice` with a negative length, or
+  one no data stack could hold (§5.4);
+* a slice pool's `free_slice`/`realloc_slice` with a non-empty slice that is
+  not one of its runs, where the checker could not tell (§5.4);
 * limited-array capacity overflow;
 * shrinking below empty (`pop` on an empty array, `resize` to a negative
   length);
@@ -1684,7 +1732,10 @@ storage can hold a `T` by value — an array of `T` in any array kind, a struct
 or ADT payload with a `T` field, a `T` itself, and so on through by-value
 nesting; a variable that merely holds *references* to `T` is not one, and a
 reference or slice field ends the search. Static data is a candidate for the
-element types a literal can supply. Then, by where `C`'s own root lies:
+element types a literal can supply; for a writable reference or slice only when
+nothing else is, since a writable slot is never given a literal (above) and so
+holds static data only as a null or an empty slice. Then, by where `C`'s own
+root lies:
 
 1. **A global.** Only globals outlive globals (§11.1), so the owner is a
    global candidate whatever local scope is open. One candidate: that
@@ -2002,6 +2053,7 @@ And the array members, ordinary functions of their receiver per UFCS
 | `.pop() -> T`, `.resize(n, v?)`, `.clear()` | limited, grow-shrink; grow-only where §5.1 allows a shrink | shrinking, and growing with a fill value (§3.3, §5) |
 | `.index_of(r) -> i64` | fixed, limited, grow-only, grow-shrink | the index of the element `r` refers to (§3.3) |
 | `.alloc_index(v) -> i64`, `.alloc_ref(v) -> T&`, `.free(i)` | `reusable` pools | slot reuse (§5.4) |
+| `.alloc_slice(n) -> T[:]`, `.realloc_slice(s, n) -> T[:]`, `.free_slice(s)` | `reusable[]` pools | slice reuse (§5.4) |
 
 Everything else is the standard library: Goose source under `stdlib/`,
 reached by `import` (§11.1) and documented in `stdlib.md` (the design it
@@ -2342,7 +2394,7 @@ fndecl      := ("extern" strlit?)? "recursive"? ("fn" | "thread_fn") declname
 params      := param ("," param)* ","?
 param       := "var"? ident (":" type)?          // untyped => generic
 rettypes    := type ("," type)*                  // no parens in declarations
-globaldecl  := "reusable"? ("let" | "var" | "const") declname (":" type)? "=" expr ";"
+globaldecl  := ("reusable" ("[" "]")?)? ("let" | "var" | "const") declname (":" type)? "=" expr ";"
 
 type        := "const"? (prim | qname tyargs? | "(" type ")") postfix*
                                                  // const: the first & or [:] (§9.5)
@@ -2361,7 +2413,7 @@ postfix     := "[" expr "]"                      // fixed array (const expr)
              | "." ident                         // variant type
 
 stmt        := decl | assign | incdec | exprstmt
-decl        := "reusable"? ("let" | "var" | "const") identlist (":" type)?
+decl        := ("reusable" ("[" "]")?)? ("let" | "var" | "const") identlist (":" type)?
                (("=" | ".=") exprlist)? ";"     // .= binds by reference (§3.8)
 assign      := lvalue assignop expr ";"          // = .= += -= *= /= %= &= |= ^= <<= >>=
 incdec      := lvalue ("++" | "--") ";"

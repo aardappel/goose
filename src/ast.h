@@ -266,6 +266,11 @@ struct FnValBind {
     }
 };
 
+// The two kinds of `reusable` pool (§5.4), as bits so that merging two
+// provenances keeps only what both allow: a pool of single slots, or a
+// `reusable[]` pool of slices.
+enum { RU_SLOTS = 1, RU_SLICES = 2 };
+
 // Where a reference or slice points, as the lifetime system tracks it (§9):
 // the variable whose scope bounds the pointee's life, whether that variable
 // owns the pointee or only outlives it, and the provenance bits. The checked
@@ -280,7 +285,7 @@ struct Prov {
     bool rootexact = false;
     VarDef *rootfrom = nullptr;  // Inexact read-back: the container, for diagnostics.
     bool writable = false;       // Writable provenance (§9.5).
-    bool reusable = false;       // Root is a reusable pool (§5.4).
+    int reusable = 0;            // Root is a reusable pool (§5.4): its RU_ kind.
     // A `bytes_of` view (docs/design/serialization.md): a u8 slice over the
     // element region of an array of some other type. The shrink scans of §5.1
     // and §5.2 otherwise dismiss a slice whose pointee the root's elements
@@ -495,6 +500,9 @@ NODE(Call)
     // occur in the arguments, by type (§3.7).
     vector<pair<TypeExpr *, FnSpec *>> fmtspecs;
     bool standalone = false;            // A whole statement, initializer or assignment rhs (§5.1).
+    // free_slice/realloc_slice: the slice handed back is not provably the pool's,
+    // so codegen checks at run time that it lies inside the pool (§5.4).
+    bool poolcheck = false;
     Call(Line l, Node *_callee) : Node(l), callee(_callee) {}
 NODE_END
 
@@ -653,7 +661,7 @@ NODE(VarDecl)
     BCE_MARK
     bool isvar;                 // var vs let.
     bool isconst = false;       // `const x`: a let whose type is `const` (§4.4).
-    bool reusable = false;
+    int reusable = 0;           // `reusable` or `reusable[]`: RU_SLOTS or RU_SLICES (§5.4).
     bool isglobal = false;
     bool byref = false;         // `x .= e`: bound by reference, no decay (§3.8).
     bool inline_arg = false;    // Synthesized call argument: caller-scope storage.
@@ -830,7 +838,7 @@ struct VarDef {
     bool copybind = false;
     bool isglobal = false;
     bool isparam = false;
-    bool reusable = false;
+    int reusable = 0;           // A reusable pool (§5.4): RU_SLOTS or RU_SLICES.
     bool nonneg = false;        // A `let` whose initializer was non-negative (§6.1).
     FnSpec *ownerspec = nullptr;  // Null for globals.
     // Lifetime depth for the outlives check (§9.2): globals 0, then one per
@@ -934,7 +942,7 @@ inline void AllRunsOf(const EnumInst *ei, vector<FieldRun> &out) {
 struct RootArg {
     int cls = 0;
     bool writable = true;
-    bool reusable = false;
+    int reusable = 0;
     // The argument's root holds a grow-shrink array (§5.2). Part of the key:
     // a body is checked against its shrink rules only where they apply.
     bool growshrink = false;

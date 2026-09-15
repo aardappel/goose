@@ -642,8 +642,8 @@ struct TypeCheck {
     TypeExpr *PointeeOf(TypeExpr *t);
     void VisibleVars(const function<void(VarDef *)> &f);
     bool StaticCanContain(TypeExpr *of);
-    void RootCandidates(TypeExpr *of, int d, bool globalsonly, vector<VarDef *> &out,
-                        bool &hasstatic);
+    void RootCandidates(TypeExpr *of, int d, bool globalsonly, bool writable,
+                        vector<VarDef *> &out, bool &hasstatic);
 
     // What the read-back rule makes of one load.
     struct ReadBack {
@@ -654,6 +654,9 @@ struct TypeCheck {
 
     ReadBack ReadBackRoot(TypeExpr *rt, VarDef *croot, bool cexact, bool byteview = false);
     string ReadBackWhy(TypeExpr *rt, VarDef *from);
+    bool RootedAtReceiver(const Val &rv, const Val &av);
+    void CheckRootedAtReceiver(Call *c, const char *op, const Val &rv, const Val &av,
+                               const char *what, const char *sec);
 
     // ------------------------------------------------------------------
     // Lvalue paths: names, fields, elements, optionally through references.
@@ -1152,8 +1155,9 @@ struct TypeCheck {
             if (IsRefOrSlice(t)) {
                 ra.cls = 0;
                 ra.writable = true;
-                ra.reusable = t->kind == TY_REF && IsArrayKind(t->ref->sub, A_GROW) &&
-                              ClassOf(t->ref->sub->arr->sub) == SC_FIXED;
+                if (t->kind == TY_REF && IsArrayKind(t->ref->sub, A_GROW) &&
+                    ClassOf(t->ref->sub->arr->sub) == SC_FIXED)
+                    ra.reusable = RU_SLOTS | RU_SLICES;
             }
             spec->roots.push_back(ra);
         }

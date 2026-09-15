@@ -843,6 +843,19 @@ recursive fn pfill(p: PSlot[>..]&, n: i64) -> i64 {
     return i + pfill(p, n - 1);
 }
 
+// A slice pool by reference: the runtime moves its freelist's top through
+// the address of the cached one, across the recursive call.
+recursive fn sgrow(p: PSlot[>..]&, s: PSlot[:], n: i64) -> i64 {
+    if n == 0 {
+        p.free_slice(s);
+        return p.len;
+    }
+    let t = p.realloc_slice(s, s.len + n);   // In place, moved, in place.
+    t[t.len - 1].n = n;
+    let u = p.alloc_slice(1);
+    return sgrow(p, t, n - 1) + u.len;
+}
+
 fn reftops() {
     var pool: RNode[>..] = [];
     let root: RNode& = rbuild(pool, 3);
@@ -859,6 +872,8 @@ fn reftops() {
     var ns = 0;
     for &s in slots { ns += s.n; }
     print(ns);                           // 3 + 2 + 1 + 8 = 14
+    reusable[] var spool: PSlot[>..] = [];
+    print(sgrow(spool, spool.alloc_slice(1), 3), " ", spool.len);   // 12 + 3 = 15, 12
 }
 
 // --- read-back roots: an LRU list relinked through a slot array --------------

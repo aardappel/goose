@@ -148,7 +148,8 @@ inline Prov TypeCheck::RefProvOf(VarDef *vd) {
         // one variable -- the read-back rule's answer (§9.5).
         vector<VarDef *> cands;
         auto hasstatic = false;
-        RootCandidates(LoadType(vd->type->ref->sub), Depth(vd), false, cands, hasstatic);
+        RootCandidates(LoadType(vd->type->ref->sub), Depth(vd), false, !vd->type->cq, cands,
+                       hasstatic);
         if (!cands.empty()) {
             p.root = cands[0];
             for (auto c : cands) if (Depth(c) > Depth(p.root)) p.root = c;
@@ -563,7 +564,7 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     v.rootexact = a.rootexact && b.rootexact && CanonRoot(a.root) == CanonRoot(b.root);
     v.rootfrom = a.rootfrom ? a.rootfrom : b.rootfrom;
     v.writable = a.writable && b.writable;
-    v.reusable = a.reusable && b.reusable;
+    v.reusable = a.reusable & b.reusable;
     v.byteview = a.byteview || b.byteview;
     return v;
 }
@@ -1141,10 +1142,11 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             NoteHolderBinding(d, *v);
         }
         if (vd->reusable) {
-            if (!vd->isvar) Error(vd, "reusable requires var");
+            auto kw = vd->reusable == RU_SLICES ? "reusable[]" : "reusable";
+            if (!vd->isvar) Error(vd, cat(kw, " requires var"));
             if (!IsArrayKind(t, A_GROW) || ClassOf(t->arr->sub) != SC_FIXED)
-                Error(vd, "reusable applies to grow-only arrays of fixed-size "
-                          "elements (§5.4)");
+                Error(vd, cat(kw, " applies to grow-only arrays of fixed-size "
+                                  "elements (§5.4)"));
         }
         NoteNonfixedLocal(t, vd->line, global);
         if (!global) {
@@ -1759,8 +1761,12 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         if ((d.flags & BF_WRITE) && !rv.writable)
             Error(c, cat("cannot .", d.name, " through a non-writable value "
                          "(let, const, or a read-only instantiation, §9.5)"));
-        if ((d.flags & BF_REUSABLE) && !rv.reusable)
-            Error(c, cat(".", d.name, " exists on reusable pools only (§5.4)"));
+        if ((d.flags & BF_REUSABLE) && !(rv.reusable & RU_SLOTS))
+            Error(c, cat(".", d.name, " exists on reusable pools only",
+                         rv.reusable ? ", not on the slice pools of reusable[]" : "", " (§5.4)"));
+        if ((d.flags & BF_SLICEPOOL) && !(rv.reusable & RU_SLICES))
+            Error(c, cat(".", d.name, " exists on reusable[] pools only",
+                         rv.reusable ? ", not on the slot pools of reusable" : "", " (§5.4)"));
         if (args.size() > 1) {
             // The builtin keeps its receiver location while later arguments
             // run. Serialization also retains a view of the source elements.
@@ -1797,7 +1803,8 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
     // a value built in place among them is checked against the growths
     // within it alone.
     if (d.kind == B_PUSH || d.kind == B_APPEND || d.kind == B_ALLOC_INDEX ||
-        d.kind == B_ALLOC_REF || d.kind == B_FORMAT || d.kind == B_RESIZE) {
+        d.kind == B_ALLOC_REF || d.kind == B_ALLOC_SLICE || d.kind == B_REALLOC_SLICE ||
+        d.kind == B_FORMAT || d.kind == B_RESIZE) {
         auto how = d.kind == B_PUSH ? "push into " : d.kind == B_APPEND ? "append to "
                  : d.kind == B_FORMAT ? "format into " : d.kind == B_RESIZE ? "resize "
                  : "allocate in ";
@@ -1899,19 +1906,46 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         if (!IsPlainRef(av.type) || !TypeEq(av.type->ref->sub, elem))
             Error(c, cat(".index_of takes a reference to an element of ", TypeStr(rv.type),
                          ", got ", TypeStr(av.type)));
-        // A reference parameter in a pool class points into that global
-        // pool (§3.9), so it is rooted there as exactly as a local one.
-        auto recvroot = CanonRoot(rv.root);
-        auto sameroot = CanonRoot(av.root) == recvroot ||
-                        (recvroot && recvroot->isglobal && PoolOf(av.root) == recvroot);
-        if (!av.rootexact || !sameroot) {
-            auto why = av.rootexact ? string() : ReadBackWhy(av.type, av.rootfrom);
-            Error(c, cat(".index_of needs a reference rooted at the array itself (§3.3); ",
-                         !why.empty() ? why
-                         : cat("this one is rooted at ",
-                               av.root ? CanonRoot(av.root)->name
-                                       : string_view("static data"))));
+        CheckRootedAtReceiver(c, d.name, rv, av, "a reference", "§3.3");
+    }
+    // A slice pool's operations (§5.4). A slice handed back must be one of
+    // the pool's own, by the same exact root index_of needs, so that the
+    // position it starts at is a whole index inside the length; the
+    // elements an operation adds are default values.
+    if (d.kind == B_ALLOC_SLICE || d.kind == B_REALLOC_SLICE || d.kind == B_FREE_SLICE) {
+        if (d.kind != B_ALLOC_SLICE) {
+            auto sv = CheckV(args[1], nullptr);
+            args[1]->exprtype = sv.type;
+            if (sv.type->kind != TY_SLICE || !TypeEq(sv.type->sub, elem))
+                Error(c, cat(".", d.name, " takes a slice of ", TypeStr(rv.type), ", got ",
+                             TypeStr(sv.type)));
+            if (!RootedAtReceiver(rv, sv)) {
+                // Globals and this function's own variables are separate storage,
+                // so a slice exactly rooted at another one is not the pool's.
+                // Any other slice may be, and is checked when the call runs.
+                auto own = [&](VarDef *r) {
+                    r = CanonRoot(r);
+                    return r && (r->isglobal || r->ownerspec == CurRealFrame().spec);
+                };
+                if (sv.rootexact && own(sv.root) && own(rv.root))
+                    Error(c, cat(".", d.name, " needs a slice of the pool it is called on (§5.4); "
+                                 "this one is rooted at ", CanonRoot(sv.root)->name));
+                c->poolcheck = true;
+            }
         }
+        if (d.kind != B_FREE_SLICE) {
+            CheckIntAny(args.back());
+            string why;
+            if (!HasDefault(elem, why))
+                Error(c, cat(".", d.name, " fills the elements it adds with default values, "
+                             "and ", TypeStr(elem), " has none: ", why, " (§5.4)"));
+        }
+        // Growing a slice may move it, and a moved element's self-relative
+        // offsets would still measure from where it was.
+        if (d.kind == B_REALLOC_SLICE && HasRelRefT(elem))
+            Error(c, cat(".realloc_slice may move the slice, which a value of type ",
+                         TypeStr(elem), " cannot survive: it contains self-relative "
+                         "references (§3.9)"));
     }
     // Signature-driven arguments.
     auto base = (d.flags & BF_MEMBER) ? 1 : 0;
@@ -1971,6 +2005,14 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             v.root = rv.root;
             v.rootexact = rv.rootexact;
             v.writable = rv.writable;
+            break;
+        case 's':
+            v.type = SliceOf(elem, c->line);
+            v.root = rv.root;
+            v.rootexact = rv.rootexact;
+            v.writable = rv.writable;
+            // What an adapting receiver (a limited array) constructs from.
+            c->rettypes.push_back(v.type);
             break;
         default: assert(false);
     }

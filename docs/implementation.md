@@ -294,7 +294,7 @@ struct Prov {
     bool rootexact;      // root's own storage holds the pointee (else it only outlives it)
     VarDef *rootfrom;    // for an inexact read-back: the container, for diagnostics
     bool writable;       // §9.5
-    bool reusable;       // the root is a reusable pool (§5.4)
+    int reusable;        // the root is a reusable pool (§5.4): RU_SLOTS or RU_SLICES bits
     bool byteview;       // a bytes_of view over typed storage
 };
 ```
@@ -316,6 +316,7 @@ depth: `temproot` (a temporary, outlived by everything) and `cycleroot`
 | a reference or slice variable (`RefProvOf`) | its committed binding (§3.7) | its binding's, weakened by rebinds |
 | a reference read out of a field or element (`ContainerRead`) | the read-back rule (§3.6) | only with one candidate |
 | `a.push(v)`, `a.alloc_ref(v)`, `&a[i]` | `a`'s root | `a`'s exactness |
+| `a.alloc_slice(n)`, `a.realloc_slice(s, n)` | `a`'s root | `a`'s exactness |
 | `a[lo..hi]` (`SliceExpr::Check`) | `a`'s root | `a`'s exactness |
 | a call result (`CallResult`) | the callee's `RetRoot`, mapped: a parameter's class back to the argument's root at this site, a global as itself, else static data | the callee's, ANDed with the argument's |
 | a string literal | static data (null) | yes |
@@ -395,8 +396,11 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   `in pool` reference is rooted at its pool, exactly;
 * a container whose own root is a global: the candidates are the globals
   whose storage can hold the pointee type by value (`CanContain`: through
-  elements and fields, stopping at references and slices), plus static data
-  when the pointee is `u8`;
+  elements and fields, stopping at references and slices, with a relative
+  reference's storage holding its own type, which is what a slice of them
+  points at), plus static data when the pointee is `u8` and the reference or
+  slice read back is `const`, or nothing else can hold the pointee (a writable
+  one is given static data only as a null or an empty slice);
 * a container that is an exactly rooted local of the function being checked:
   the candidates are the visible locals declared at the container's depth or
   outside it that can hold the pointee, the pointees of reference and slice
@@ -697,6 +701,19 @@ as able to point into any storage the root could image. Thread entry points
 get one specialization each (`EnsureThreadSpec`) with flat parameters, and
 `CheckThreadGlobals` walks a thread program's call graph rejecting non-flat
 globals.
+
+A pool's kind travels with its provenance as bits, `RU_SLOTS` for `reusable`
+and `RU_SLICES` for `reusable[]` (`Prov::reusable`, `RootArg::reusable`), so
+merging two branches keeps only what both allow, and the table's
+`BF_REUSABLE`/`BF_SLICEPOOL` flags each require their bit. A function checked
+standalone (`CheckUnreached`) assumes both. `free_slice` and `realloc_slice`
+use `index_of`'s exact-root test (`RootedAtReceiver`) only to leave out a
+run-time test: a slice it does not place in the pool is an error when it is
+rooted exactly at a global or a variable of the checked function, and
+otherwise sets `Call::poolcheck`, which codegen turns into a range test.
+`alloc_slice` and `realloc_slice` need an element type with a default value,
+and `realloc_slice` one without self-relative references (`HasRelRefT`),
+since it may copy the slice.
 
 ---
 
@@ -1163,6 +1180,21 @@ pool global reads that local too. `self` stores minus the field's own offset
 (self-relative) or the value's own pool offset (`in pool`, only where the
 literal is built inside the pool).
 
+A `reusable[]` pool's operations (`EmitSlicePool`) evaluate the receiver,
+then the slice, then the length (`SliceLen`, which aborts on a negative or
+unholdable one), and turn a non-empty slice back into an index: by an exact
+divide where the checker placed it in the pool, and otherwise
+(`Call::poolcheck`) after testing that it lies inside the element region on an
+element boundary, in `uintptr_t` arithmetic so that a slice of other storage
+compares without undefined pointer arithmetic, aborting with `GS_E_POOLSLICE`.
+An empty slice takes index 0. The freelist is the runtime's (§7): its base, count and top go to the
+`gs_spans_*` call by address, so a cached top works unchanged. Growth of the
+element region is emitted here (`EmitSliceExtend`: count and top, as for a
+push), and so are the default values (`EmitDefaultElems`: one `memset`, or
+`EmitDefaultInto` per element for a type with field defaults). A move is one
+`memmove`. A pool's freelist entry is 8 bytes for a slot pool and 16 for a
+slice pool (`FlEntrySize`), which the thread-spawn image copies.
+
 A fixed struct or array literal that holds relative references is built at
 its final address, never in a C temporary that is then copied (`FixedLitAt`,
 `FixedLitAtStk`, the `alloc_ref` slot path); a literal with unused limited
@@ -1254,6 +1286,18 @@ functions); division and modulo are always functions, zero-checked, with
 Euclidean `%`. `as` goes through `GS_RANGE`/`GS_F2I`/... macros that check in
 debug and cast in release; `as!` and release float-to-int use the defined
 wrap of `gs_f2iwrap`. Bounds checks are one unsigned compare (`GS_IDX`).
+
+**Slice pools** (§5.4): the `gs_spans_*` functions keep a `reusable[]`
+pool's freelist, a sorted run of `gs_span { idx, cnt }` on the freelist's own
+stack, handed its base, span count and stack top (the address of a cached top
+works as well as the memory form). Placing a run (`gs_spans_alloc`, for
+`alloc_slice` and for a slice `realloc_slice` moves) scans the spans in
+index order for the first that holds it, falling back to the end of the
+array, where a free span reaching it starts the run; growth in place and
+freeing find their neighbor by binary
+search (`gs_spans_grow`, `gs_spans_free`), and inserting or removing a span
+moves the entries above it. The emitted code keeps the element region's
+count and top and fills the default values itself.
 
 **Varints**: ULEB128 read/write/size, zigzag for signed positions, the
 one-byte fast path macros `GS_ULEB_READ`/`GS_ULEB_SIZE` for length prefixes
@@ -1494,6 +1538,19 @@ rewrites elements pays no live register for it.
   at no cost.
 * `reusable` pools cost nothing per operation beyond the freelist push and
   pop; `free(i)` bounds-checks its index.
+* A `reusable[]` pool's `alloc_slice` scans the free spans in index order up
+  to the first that holds the request. Adding or removing a span (a free
+  that merges with neither neighbor or with both, an allocation that uses a
+  span up) moves the spans above it. Both costs grow with the number of free
+  spans, of which merging leaves at most one more than there are allocated
+  runs between them. A slice handed back costs a range test unless the checker placed it in the pool, and
+  new elements cost one `memset` unless the element type has field
+  defaults.
+* A `realloc_slice` that cannot grow in place pays the scan and a copy of
+  the slice. The copy lands at the front of the span it takes, so what is
+  left of that span is room to grow into; once none is, a slice grown an
+  element at a time is copied at every growth, and growing by a factor keeps
+  the copies amortized.
 * A thread program copies every global it uses at spawn; keep a worker's
   globals small or pass what it needs as arguments.
 
@@ -1523,7 +1580,11 @@ specification allows, and the shapes the C backend refuses outright:
   only (`cycleroot`), never unsound.
 * A plain reference parameter's root class is identified with a global pool
   only inside a recursive cycle or through the `in pool` form (§9.5 above,
-  `bench/notes.md` item 1).
+  `bench/notes.md` item 1), so `index_of`, a relative store and an exact
+  read-back through such a parameter need a pool some `T&<w in pool>` type
+  names. Recording in the specialization key which global every exactly
+  rooted reference argument points into, rather than only those, would lift
+  that, at the cost of one specialization per distinct global passed.
 * Bounds-check elimination tracks no array contents and no `u64` variables
   (§5.12).
 * The growth-during-construction rule (§3.10) takes a parameter class to be

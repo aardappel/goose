@@ -334,6 +334,9 @@ struct CodeGen {
     set<FnSpec *> fromemitted;
 
     bool IsPoolParam(FnSpec *sp, size_t i);
+    // The bytes of one entry of a pool's freelist: a slot index, or the
+    // (index, count) span of a slice pool (runtime.h's gs_span).
+    static int FlEntrySize(const VarDef *d) { return d->reusable == RU_SLICES ? 16 : 8; }
 
     // Which globals with dedicated data stacks a specialization may touch, its
     // callees included, plus the globals holding a fat reference, whose stack
@@ -853,6 +856,11 @@ struct CodeGen {
     vector<string> EmitPush(Call *c, vector<Node *> &an, Line ln);
     void EmitAppend(vector<Node *> &an, Line ln);
     vector<string> EmitAlloc(Call *c, vector<Node *> &an, Line ln);
+    vector<string> EmitSlicePool(Call *c, vector<Node *> &an, Line ln);
+    string SpanArgs(const Loc &lv);
+    string SliceLen(Node *n, TypeExpr *elem, Line ln);
+    void EmitSliceExtend(const Loc &lv, const string &end, int64_t esz);
+    void EmitDefaultElems(const ArrView &v, const string &first, const string &count);
 
     // thread_spawn(worker, args...): pack the flat arguments contiguously on
     // a scratch stack, hand them to the runtime, unpack in a per-worker thunk.

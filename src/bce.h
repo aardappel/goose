@@ -2263,7 +2263,8 @@ inline bool Call::BceWalk(BCE &b) {
                                                                                : INT64_MIN);
                 break;
             }
-            case B_ALLOC_INDEX: case B_ALLOC_REF: case B_FORMAT:
+            case B_ALLOC_INDEX: case B_ALLOC_REF: case B_ALLOC_SLICE: case B_REALLOC_SLICE:
+            case B_FORMAT:
                 b.GrowShrinkKill(rn, 1);
                 break;
             case B_TO_BYTES:

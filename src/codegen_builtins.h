@@ -337,6 +337,8 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             return {};
         }
         case B_ALLOC_INDEX: case B_ALLOC_REF: return EmitAlloc(c, an, ln);
+        case B_ALLOC_SLICE: case B_REALLOC_SLICE: case B_FREE_SLICE:
+            return EmitSlicePool(c, an, ln);
         case B_FREE: {
             auto lv = RecvLoc(an[0]);
             assert(!lv.fl.empty());
@@ -500,6 +502,145 @@ inline vector<string> CodeGen::EmitAlloc(Call *c, vector<Node *> &an, Line ln) {
     return { e };
 }
 
+// A slice pool (§5.4): the element region grows like any grow-only array's,
+// and the runtime's gs_spans_* keep the freelist of (index, count) spans.
+inline vector<string> CodeGen::EmitSlicePool(Call *c, vector<Node *> &an, Line ln) {
+    auto lv = RecvLoc(an[0]);
+    assert(!lv.fl.empty() && !lv.stk.empty());
+    auto v = ArrayView(lv, ln);
+    auto elem = v.elem;
+    auto esz = FixedSize(elem);
+    // A slice handed back becomes an index into the pool. An empty one can be
+    // a default slice pointing at no storage at all; with no cells to free or
+    // keep, index 0 serves it. A non-empty one the checker rooted at this pool
+    // exactly starts a whole number of elements into the length; any other
+    // one is checked to, and to end inside the length (§5.4).
+    auto indexof = [&](const string &sv) {
+        auto i = T();
+        if (!c->poolcheck || !esz) {
+            L("int64_t ", i, " = ", sv, ".len ? ((uint8_t *)", sv, ".data - (uint8_t *)", v.elems,
+              ") / ", std::max<int64_t>(esz, 1), " : 0;");
+            return i;
+        }
+        L("int64_t ", i, " = 0;");
+        L("if (", sv, ".len) {");
+        ind++;
+        auto off = T();
+        L("uint64_t ", off, " = (uint64_t)((uintptr_t)", sv, ".data - (uintptr_t)", v.elems, ");");
+        L("if (", off, " % ", esz, " || ", off, " / ", esz, " >= (uint64_t)", lv.lenlv,
+          " || (uint64_t)", sv, ".len > (uint64_t)", lv.lenlv, " - ", off, " / ", esz,
+          ") gs_abort(GS_E_POOLSLICE, ", LocArgs(ln), ");");
+        L(i, " = (int64_t)(", off, " / ", esz, ");");
+        ind--;
+        L("}");
+        return i;
+    };
+    if (c->builtin == B_FREE_SLICE) {
+        auto sv = GenPure(an[1]);
+        L("gs_spans_free(", SpanArgs(lv), ", ", indexof(sv), ", ", sv, ".len);");
+        return {};
+    }
+    string i, n;
+    if (c->builtin == B_ALLOC_SLICE) {
+        n = SliceLen(an[1], elem, ln);
+        i = T();
+        L("int64_t ", i, " = gs_spans_alloc(", SpanArgs(lv), ", ", lv.lenlv, ", ", n, ");");
+        EmitSliceExtend(lv, cat(i, " + ", n), esz);
+        EmitDefaultElems(v, i, n);
+    } else {
+        auto sv = GenPure(an[1]);
+        n = SliceLen(an[2], elem, ln);
+        i = indexof(sv);
+        auto ol = T();
+        L("int64_t ", ol, " = ", sv, ".len;");
+        L("if (", n, " <= ", ol, ") {");
+        ind++;
+        L("gs_spans_free(", SpanArgs(lv), ", ", i, " + ", n, ", ", ol, " - ", n, ");");
+        ind--;
+        L("} else {");
+        ind++;
+        // Growth stays in place where the slice ends the array or free
+        // elements follow it. Otherwise the slice moves where alloc_slice
+        // would put the grown run, with its own place freed first so that,
+        // merged with free elements beside it, it can be that place; the
+        // copy then overlaps its source. An empty slice has nothing to keep
+        // in place, so it is always placed like a new run.
+        L("if (", ol, " == 0 || !gs_spans_grow(", SpanArgs(lv), ", ", lv.lenlv, ", ", i, " + ",
+          ol, ", ", n, " - ", ol, ")) {");
+        ind++;
+        L("gs_spans_free(", SpanArgs(lv), ", ", i, ", ", ol, ");");
+        auto ni = T();
+        L("int64_t ", ni, " = gs_spans_alloc(", SpanArgs(lv), ", ", lv.lenlv, ", ", n, ");");
+        L("memmove(", ElemAddr(v, ni), ", ", ElemAddr(v, i), ", (size_t)(", ol, " * ", esz,
+          "));");
+        L(i, " = ", ni, ";");
+        ind--;
+        L("}");
+        EmitSliceExtend(lv, cat(i, " + ", n), esz);
+        EmitDefaultElems(v, cat(i, " + ", ol), cat(n, " - ", ol));
+        ind--;
+        L("}");
+    }
+    auto r = T();
+    L(CT(MakeSliceT(elem, ln)), " ", r, " = { (", CT(elem), " *)(", ElemAddr(v, i), "), ", n,
+      " };");
+    return { r };
+}
+
+// The freelist as the gs_spans_* helpers take it: its base, its span count
+// and its stack's top, which they move.
+inline string CodeGen::SpanArgs(const Loc &lv) {
+    return cat(lv.fl, ".base, &", lv.fl, ".len, &(", TopW(lv.flstk), ")");
+}
+
+// A slice pool's length argument, evaluated once. A negative length, or one
+// no data stack could hold, aborts before anything changes.
+inline string CodeGen::SliceLen(Node *n, TypeExpr *elem, Line ln) {
+    auto nv = T();
+    L("int64_t ", nv, " = (int64_t)(", GenX(n), ");");
+    auto esz = FixedSize(elem);
+    if (esz)
+        L("if ((uint64_t)", nv, " > GS_STACK_RESERVE / ", esz, ") gs_abort(GS_E_SLICELEN, ",
+          LocArgs(ln), ");");
+    else
+        L("if (", nv, " < 0) gs_abort(GS_E_SLICELEN, ", LocArgs(ln), ");");
+    return nv;
+}
+
+// Grows a slice pool's element region to `end` elements where it is shorter.
+inline void CodeGen::EmitSliceExtend(const Loc &lv, const string &end, int64_t esz) {
+    auto ext = T();
+    L("int64_t ", ext, " = ", end, " - ", lv.lenlv, ";");
+    L("if (", ext, " > 0) {");
+    ind++;
+    L(lv.lenlv, " += ", ext, ";");
+    Bump(lv.stk, cat(ext, " * ", esz));
+    ind--;
+    L("}");
+}
+
+// Default values (§4.2) for `count` elements of an array view from index
+// `first`: one clear where the default is all zero bytes, else each built.
+inline void CodeGen::EmitDefaultElems(const ArrView &v, const string &first,
+                                      const string &count) {
+    auto esz = FixedSize(v.elem);
+    if (!esz) return;
+    if (!HasFieldDefaults(v.elem)) {
+        L("memset(", ElemAddr(v, cat("(", first, ")")), ", 0, (size_t)((", count, ") * ", esz,
+          "));");
+        return;
+    }
+    auto k = T();
+    L("for (int64_t ", k, " = 0; ", k, " < ", count, "; ", k, "++) {");
+    ind++;
+    auto e = T();
+    L(CT(v.elem), " *", e, " = (", CT(v.elem), " *)(", ElemAddr(v, cat("(", first, " + ", k, ")")),
+      ");");
+    EmitDefaultInto(cat("(*", e, ")"), v.elem);
+    ind--;
+    L("}");
+}
+
 // The image of a resizable at the top of `stk`: a frame object's fixed
 // fields are the bytes before its innermost tail header, any other shape's
 // the static prefix EmitRzCopy walks.
@@ -600,12 +741,13 @@ inline vector<string> CodeGen::EmitThreadSpawn(Call *c, vector<Node *> &an) {
         if (IsResz(d->type)) {
             EmitRzImage(lv, d->type, stk, c->line);
             if (d->reusable) {
-                // The pool's freelist follows: its count, then its indices.
+                // The pool's freelist follows: its count, then its entries.
                 auto &p = gpools[d];
+                auto flsz = FlEntrySize(d);
                 EmitValStore(stk, ast.inttypes[IS_I64], cat(p.first, ".len"));
                 L("memcpy(", Top(stk), ", ", p.first, ".base, (size_t)(", p.first,
-                  ".len * 8));");
-                Bump(stk, cat(p.first, ".len * 8"));
+                  ".len * ", flsz, "));");
+                Bump(stk, cat(p.first, ".len * ", flsz));
             }
         } else if (IsBytesT(d->type)) {
             auto n = T();
@@ -685,10 +827,11 @@ inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
                        pre, "));\n",
                        "        ", stk, "->top += sz - 8 - ", pre, ";\n");
             } else if (d->reusable) {
-                // [count][elements][freelist count][indices]: fixed-size
+                // [count][elements][freelist count][entries]: fixed-size
                 // elements, so the element bytes are the count's.
                 auto &p = gpools[d];
                 auto esz = FixedSize(d->type->arr->sub);
+                auto flsz = FlEntrySize(d);
                 Append(b, "        int64_t cnt = *(int64_t *)img, ebytes = cnt * ", esz, ";\n",
                        "        ", gn, ".base = ", stk, "->top;\n",
                        "        ", gn, ".len = cnt;\n",
@@ -698,8 +841,8 @@ inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
                        "        ", p.first, ".base = ", p.second, "->top;\n",
                        "        ", p.first, ".len = *(int64_t *)(img + 8 + ebytes);\n",
                        "        memcpy(", p.second, "->top, img + 16 + ebytes, (size_t)(",
-                       p.first, ".len * 8));\n",
-                       "        ", p.second, "->top += ", p.first, ".len * 8;\n");
+                       p.first, ".len * ", flsz, "));\n",
+                       "        ", p.second, "->top += ", p.first, ".len * ", flsz, ";\n");
             } else {
                 Append(b, "        ", gn, ".base = ", stk, "->top;\n",
                        "        ", gn, ".len = *(int64_t *)img;\n",

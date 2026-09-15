@@ -82,6 +82,8 @@ enum {
     GS_E_THREADSELF,   /* a worker cannot wait for itself */
     GS_E_TAG,          /* corrupt ADT tag (debug builds only) */
     GS_E_ENDIAN,       /* serialization on a big-endian host */
+    GS_E_SLICELEN,     /* slice pool length negative or beyond any data stack */
+    GS_E_POOLSLICE,    /* a slice handed to a slice pool is not one of its runs */
 };
 
 static const char *gs_errmsgs[] = {
@@ -97,6 +99,8 @@ static const char *gs_errmsgs[] = {
     "thread_wait on the current thread",
     "corrupt ADT tag",
     "serialization needs a little-endian host (not supported yet)",
+    "invalid slice length",
+    "slice not from this pool",
 };
 
 static GS_NORETURN void gs_panic(const char *msg) {
@@ -640,6 +644,112 @@ static void gs_rt_init(void) {
     gs_regions_init();
     gs_stks = gs_new_stack_block();
     gs_nstks = 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Slice pools (§5.4, `reusable[]`). The freelist is a run of (index, count)
+   spans on a data stack of its own, sorted by index, no two of them
+   touching. The emitted code grows the element region and fills elements;
+   these only keep the spans, and each takes the run's base, its span count
+   and its stack's top, which stays at the end of the run. Indices and counts
+   are in elements. Every span comes from a slice of the pool, so spans stay
+   inside the pool's length whatever the program frees: freeing a slice twice
+   leaves overlapping spans that hand the same elements out twice, never
+   anything outside the pool. */
+
+typedef struct { int64_t idx, cnt; } gs_span;
+
+/* The number of spans starting at or before idx. */
+static int64_t gs_spans_upto(const gs_span *s, int64_t n, int64_t idx) {
+    int64_t lo = 0, hi = n;
+    while (lo < hi) {
+        int64_t mid = lo + (hi - lo) / 2;
+        if (s[mid].idx <= idx) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+static void gs_spans_drop(gs_span *s, int64_t *n, uint8_t **top, int64_t at) {
+    memmove(s + at, s + at + 1, (size_t)(*n - at - 1) * sizeof(gs_span));
+    (*n)--;
+    *top -= sizeof(gs_span);
+}
+
+/* Takes cnt elements off the front of span `at`, or all of a span that
+   holds no more. */
+static void gs_spans_take(gs_span *s, int64_t *n, uint8_t **top, int64_t at, int64_t cnt) {
+    if (s[at].cnt <= cnt) {
+        gs_spans_drop(s, n, top, at);
+        return;
+    }
+    s[at].idx += cnt;
+    s[at].cnt -= cnt;
+}
+
+/* Where a run of cnt elements goes in a pool of len elements, for
+   alloc_slice and for a slice realloc_slice moves: the front of the first
+   span holding it, else the end of the array, where a free span that reaches
+   the end starts the run. The caller grows the array to the returned index
+   plus cnt. First fit rather than best: in index order it packs runs toward
+   the start and leaves the end free, and it stops scanning at the fit. */
+static int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
+                              int64_t cnt) {
+    gs_span *s = (gs_span *)base;
+    int64_t at = 0, idx;
+    if (cnt == 0) return len;
+    while (at < *n && s[at].cnt < cnt) at++;
+    if (at == *n) {
+        if (*n == 0 || s[*n - 1].idx + s[*n - 1].cnt != len) return len;
+        at = *n - 1;
+    }
+    idx = s[at].idx;
+    gs_spans_take(s, n, top, at, cnt);
+    return idx;
+}
+
+/* realloc_slice growing a slice in place: whether cnt more elements can
+   follow it where it ends, at `end` -- taken from a free span that starts
+   there, or from past the end of the pool, directly or through such a span
+   reaching it. The caller grows the array to whatever lies past its end. */
+static int gs_spans_grow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len, int64_t end,
+                         int64_t cnt) {
+    gs_span *s = (gs_span *)base;
+    int64_t at;
+    if (end == len) return 1;
+    at = gs_spans_upto(s, *n, end) - 1;
+    if (at < 0 || s[at].idx != end) return 0;
+    if (s[at].cnt < cnt && end + s[at].cnt != len) return 0;
+    gs_spans_take(s, n, top, at, cnt);
+    return 1;
+}
+
+/* free_slice, and what realloc_slice lets go of: [idx, idx + cnt) back on
+   the freelist, merged with the spans it touches. */
+static void gs_spans_free(uint8_t *base, int64_t *n, uint8_t **top, int64_t idx, int64_t cnt) {
+    gs_span *s = (gs_span *)base;
+    int64_t at;
+    int prev, next;
+    if (cnt <= 0) return;
+    at = gs_spans_upto(s, *n, idx);
+    prev = at > 0 && s[at - 1].idx + s[at - 1].cnt == idx;
+    next = at < *n && idx + cnt == s[at].idx;
+    if (prev) {
+        s[at - 1].cnt += cnt;
+        if (next) {
+            s[at - 1].cnt += s[at].cnt;
+            gs_spans_drop(s, n, top, at);
+        }
+    } else if (next) {
+        s[at].idx = idx;
+        s[at].cnt += cnt;
+    } else {
+        memmove(s + at + 1, s + at, (size_t)(*n - at) * sizeof(gs_span));
+        s[at].idx = idx;
+        s[at].cnt = cnt;
+        (*n)++;
+        *top += sizeof(gs_span);
+    }
 }
 
 /* ---------------------------------------------------------------------------

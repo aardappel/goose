@@ -9,7 +9,14 @@ let table: i64[3] = [1, 2, 3];
 var cfg = Cfg { n: 1, name: "startup " };
 var text: u8[] = "shared?";
 reusable var pool: i64[>..] = [];
+reusable[] var spans: i64[>..] = [];
 const LIMIT = 100;
+
+// The first free span of the copied freelist, which is (1, 2) at the spawn.
+fn take_span() -> i64 {
+    let s = spans.alloc_slice(1);
+    return spans.index_of(s[0]);
+}
 
 fn touch(k: i64) {
     counter += 10 * k;                   // the worker's own counter
@@ -25,6 +32,7 @@ thread_fn worker(k: i64) {
     touch(k);
     print("worker ", k, ": ", counter, " ", log, " ", table, " ", cfg.n, " ", text, " ",
           pool.len, " ", LIMIT);
+    print("worker ", k, " span ", take_span(), " of ", spans.len);
     if k == 2 {
         // A worker's worker copies the worker's globals, not main's.
         thread_wait(thread_spawn(worker, 3));
@@ -35,6 +43,8 @@ fn main_thread_globals() {
     counter = 5;
     log.append("main");
     pool.alloc_index(0);
+    let run = spans.alloc_slice(3);
+    spans.free_slice(run[1..]);
     print("main: ", counter, " ", log, " ", table, " ", cfg.n, " ", text, " ", pool.len);
     thread_wait(thread_spawn(worker, 1));
     print("main: ", counter, " ", log, " ", table, " ", cfg.n, " ", text, " ", pool.len);

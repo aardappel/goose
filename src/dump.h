@@ -474,7 +474,7 @@ inline void FunVal::Dump(string &s, int ind) const {
 }
 
 inline void VarDecl::Dump(string &s, int ind) const {
-    if (reusable) s += "reusable ";
+    if (reusable) s += reusable == RU_SLICES ? "reusable[] " : "reusable ";
     s += isconst ? "const " : isvar ? "var " : "let ";
     // A namespaced global dumps with its qualifier: the dump merges every
     // file into one, so declarations carry their namespace themselves.

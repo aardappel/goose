@@ -91,6 +91,7 @@ var gcounter_pa: i64 = 0;
 let gname_pa: u8[] = "goose";
 var gpool_pa: Shape..[>..] = [];
 reusable var gslots: Slot2[>..] = [];
+reusable[] var gspans: Slot2[>..] = [];
 
 struct Slot2 { v: i64 = 0 }
 
@@ -369,6 +370,11 @@ fn pools_pa() {
     let r = slots.alloc_ref(Slot2 { v: 2 });
     slots.free(i);
     print(r.v);
+    reusable[] var spans: Slot2[>..] = [];
+    let s = spans.alloc_slice(2);
+    let t = spans.realloc_slice(s, 3);
+    spans.free_slice(t);
+    gspans.free_slice(gspans.alloc_slice(1));
 }
 
 // --- misc statements -----------------------------------------------------

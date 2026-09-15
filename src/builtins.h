@@ -15,7 +15,8 @@
 // Signature characters, applying to the arguments after the receiver for
 // members: i int, f flt, b bool, e construct one element of the receiver's
 // element type, a an array/slice of that element type. Return characters:
-// i int, b bool, e element value, r reference to an element.
+// i int, b bool, e element value, r reference to an element, s slice of
+// elements (a slice pool's, rooted at the receiver like r).
 #pragma once
 
 namespace goose {
@@ -25,8 +26,9 @@ enum BuiltinFlags {
     BF_PROPERTY  = 1 << 1,  // .name access, not a call.
     BF_TYARGS    = 1 << 2,  // Takes an explicit <T> list.
     BF_WRITE     = 1 << 3,  // Receiver needs writable provenance (§9.5).
-    BF_REUSABLE  = 1 << 4,  // Receiver must be a reusable pool (§5.4).
+    BF_REUSABLE  = 1 << 4,  // Receiver must be a reusable pool of slots (§5.4).
     BF_CUSTOM    = 1 << 5,  // Checked by dedicated code beyond the table.
+    BF_SLICEPOOL = 1 << 6,  // Receiver must be a reusable[] pool of slices (§5.4).
 };
 
 // Receiver kind masks (members only): which array flavors have the member.
@@ -87,7 +89,10 @@ inline int RecvKindOf(TypeExpr *t) {
     F(B_CLEAR,            "clear",            1,  1,   "",   "",  BR_SHRINKABLE,  BF_MEMBER | BF_WRITE | BF_CUSTOM) \
     F(B_ALLOC_INDEX,      "alloc_index",      2,  2,   "e",  "i", BR_GROW,        BF_MEMBER | BF_WRITE | BF_REUSABLE) \
     F(B_ALLOC_REF,        "alloc_ref",        2,  2,   "e",  "r", BR_GROW,        BF_MEMBER | BF_WRITE | BF_REUSABLE) \
-    F(B_FREE,             "free",             2,  2,   "i",  "",  BR_GROW,        BF_MEMBER | BF_WRITE | BF_REUSABLE)
+    F(B_FREE,             "free",             2,  2,   "i",  "",  BR_GROW,        BF_MEMBER | BF_WRITE | BF_REUSABLE) \
+    F(B_ALLOC_SLICE,      "alloc_slice",      2,  2,   "",   "s", BR_GROW,        BF_MEMBER | BF_WRITE | BF_SLICEPOOL | BF_CUSTOM) \
+    F(B_REALLOC_SLICE,    "realloc_slice",    3,  3,   "",   "s", BR_GROW,        BF_MEMBER | BF_WRITE | BF_SLICEPOOL | BF_CUSTOM) \
+    F(B_FREE_SLICE,       "free_slice",       2,  2,   "",   "",  BR_GROW,        BF_MEMBER | BF_WRITE | BF_SLICEPOOL | BF_CUSTOM)
 
 enum BuiltinKind {
     #define F(k, n, lo, hi, a, r, rv, fl) k,

@@ -12,7 +12,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `lifetimes/` | Reference roots, byte views, borrowed contents and shrinking while references are live. |
 | `codegen/` | C names, evaluation order, representations, frame/stack layout and aliasing. |
 | `optimizer/` | Inlining, tail recursion and bounds-check elimination. |
-| `runtime/` | Runtime diagnostics, reusable-slot operations and array size checks. |
+| `runtime/` | Runtime diagnostics, reusable slot and slice pool operations and array size checks. |
 | `storage/` | Relative references, pools and serialization. |
 | `threads/` | Workers, queues, shared globals and the native runtime lifecycle test. |
 | `stdlib/` | Standard-library modules. |

@@ -585,6 +585,7 @@ inline Node *Call::Cp1(Inliner &inl) const {
     c->dispatch = dispatch;
     c->dispatcharg = dispatcharg;
     c->builtin = builtin;
+    c->poolcheck = poolcheck;
     c->fvtarget = fvtarget;
     c->rettypes = rettypes;
     c->fmtspecs = fmtspecs;

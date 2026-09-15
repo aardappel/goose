@@ -769,6 +769,21 @@ fn pool_loop() -> i64 {
     return s;
 }
 
+fn slice_pool_loop() -> i64 {
+    reusable[] var pool: i64[>..] = [];
+    let a = pool.alloc_slice(3);
+    for i in a.len {
+        a[i] = i + 1;                         // bce:elide
+    }
+    pool.free_slice(a[1..]);
+    let b = pool.realloc_slice(pool.alloc_slice(1), 4);
+    var s = b.len;
+    for i in pool.len {
+        s += pool[i];                         // bce:elide (slice pools never shrink either)
+    }
+    return s;
+}
+
 // --- known limitations and plain keeps -------------------------------------
 
 fn keep_unknown(s: i64[:], k: i64) -> i64 {
@@ -893,6 +908,7 @@ fn main() {
     print(carried_lengths(kz));               // 1215
     print(field_place());                     // 13
     print(pool_loop());                       // 51
+    print(slice_pool_loop());                 // 5
     print(keep_unknown(data, kk));            // 3
     print(keep_upper_only(data, kk));         // 3
     print(keep_lower_only(data, kk));         // 3

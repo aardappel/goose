@@ -1,10 +1,14 @@
 # Independently owned dynamic data: an editor's open documents
 
-Research example and three possible future extensions, not implemented language
-features. The requirement is a runtime-sized set of independently editable
-buffers, with memory reclaimed when each document closes. The difficulty is
-independent growth and reclamation, rather than simply representing a list of
-strings. The current-language alternatives come first; the proposals follow.
+Research example. The requirement is a runtime-sized set of independently
+editable buffers, with memory reclaimed when each document closes. The
+difficulty is independent growth and release in arbitrary order, rather than
+simply representing a list of strings. `reusable[]` slice pools (spec 5.4) now
+express this inside the language. This note shows that representation and what
+it costs, which of the earlier workarounds still earn their place, and two
+possible future extensions for what slice pools leave out: bounded independent
+dynamic stacks and opaque API resources. Neither extension is an implemented
+language feature.
 
 ## The ordinary owning representation
 
@@ -26,41 +30,134 @@ stays open, open C (2 MB), grow B, close C. There is no useful stack ordering:
 both allocation and release interleave. A document may later own undo history
 or tokens too, but one buffer per document already exposes the issue.
 
-## Goose representations and their costs
+## Documents as runs in a slice pool
 
-| Approach | What works | Cost under these requirements |
-|---|---|---|
-| `struct Document { text: u8[>..] }`, stored in a growable document array | One standalone resizable-tailed document is legal. | An array cannot contain resizable elements (spec 3.4); `[>..<]` and `reusable` additionally need fixed-size elements. A runtime-sized collection cannot give each element its own resizable tail. |
-| A reference table pointing to separate local buffers | Each named local can grow independently and the table can retain references while the owners live. | The program needs a statically named set of owners or an enclosing activation for each owner. Arbitrary open/close order does not match their nested scope lifetimes. A reference table does not create ownership. |
-| Inline limited arrays, `u8[..MAX]` | Fixed-size document slots can live in a reusable pool, and each buffer grows/shrinks within its capacity. | Every slot has a `MAX`-byte capacity/stride, though demand paging can leave untouched pages nonresident. A bound suitable for a huge document wastes address/layout space for small ones; exceeding it cannot transparently grow that buffer. This is a good solution when the bound is real and small. |
-| Runtime-capacity limited arrays, `u8[..]` | Capacity can match each document at construction. | Capacity still cannot grow, variable-size document records cannot use the fixed-slot reusable pool, and replacing a record does not reclaim an arbitrary hole in an enclosing stack. |
-| Append-only byte storage plus per-document offsets/slices | Compact descriptors and stable old data fit the current model. | Replacing/growing text leaves old storage behind until a whole-region reset is legal. Retention follows edit history, rather than the set of live documents. A moving compaction pass requires updating handles and proving no ordinary references survive it. |
-| One big grow-shrink buffer containing all documents | Explicitly shifting later data can maintain a compact byte store. | Growing or closing one document moves other documents; descriptors must be fixed up, and outstanding references/slices constrain shrink. The application has taken responsibility for placement and relocation. |
-| Reusable fixed-size chunks, linked by indices or relative references | Independent growth and release can be expressed, with storage recycled at chunk granularity. | Someone implements chunk allocation, addressing, cross-chunk iteration, fragmentation policy and any contiguous-view copying; a reusable library could hide this. A rope or piece table is an optional further choice. This may be the right editor representation, but requires more infrastructure than an ordinary owning byte vector. Stale-slot identity also needs an application policy. |
-| A worker owning each document | The worker's local buffer has an independent lifetime and is reclaimed on worker exit. | It changes an in-process container into a message protocol, costs an OS thread per document, and requires copying/flattening data that crosses queues. This is attractive when document actors are wanted anyway. |
-| Foreign owning storage | A C shim can manage documents behind integer handles. | The ownership implementation and operations move outside Goose's memory model; this does not demonstrate that Goose can express the container itself. |
+A document is a descriptor in a `reusable` pool of slots, and its text is one
+run of bytes in a `reusable[]` pool. The open documents are a list of links
+into the descriptor pool (§3.9), which is also what lets the operations take a
+`Document&`:
 
-Recursion does not supply a general escape: cycle functions cannot own new
-nonfixed locals (spec 7.8), and ordinary nested activations still close in
-stack order. Rebuilding all live documents into another region can bound retained
-history if the application creates a quiescent phase and replaces its references,
-but adds copying and lifetime coordination to every such phase.
+```goose
+struct Document { id: u64, text: u8[:] }   // the document's current run of bytes
 
-Goose is already a natural fit for immutable document snapshots, a single scoped
-document, bounded buffers, or a deliberate chunked editor. The research question
-is narrower: can it support independently growing, movable owners with arbitrary
-release order while retaining its cheap common case and static reference safety?
-The following three extensions are candidates to evaluate against that example.
-They do not prescribe a general-purpose heap or settle every part of their
-surface syntax and resource-management policy.
+reusable var docs: Document[>..] = [];
+reusable[] var bytes: u8[>..] = [];
+var open: Document&<u32 in docs>?[>..] = [];   // in tab order; pruned elsewhere
+
+fn open_doc(id: u64, size: i64) -> Document& {
+    let d .= docs.alloc_ref(Document { id: id, text: bytes.alloc_slice(size) });
+    open.push(d);
+    return d;
+}
+
+fn grow(d: Document&, extra: i64) {
+    d.text = bytes.realloc_slice(d.text, d.text.len + extra);
+}
+
+fn close(d: Document&) {
+    bytes.free_slice(d.text);
+    docs.free(docs.index_of(d));
+}
+```
+
+`alloc_slice` places a run at the first free span, in index order, that holds
+it, or else at the end of the array. `realloc_slice` grows a run in place where
+it ends the array or free bytes follow it, and otherwise moves it where a new
+run of the new size would go, its own old place included. `free_slice` returns
+a run, merged with the free spans beside it. Every byte a run gains is zero.
+
+In the example, A and B are placed end to end. Appending 5 MB to A finds B
+directly behind it and no free 6 MB run, so A's megabyte is copied to the end
+of the array. Closing A leaves two free runs: A's first place and the 6 MB at
+the end, which C then takes the front of. Growing B, now followed by C, copies
+B's 20 MB to the first free run that holds the new size: B's own place merged
+with the megabyte before it if the growth fits there, or else the end of the
+array, starting in the 4 MB left free after C. Closing C merges its bytes with
+whichever free bytes border them.
+
+Views keep the `reusable` semantics (spec 9.4). A slice or byte reference
+taken before a move or a close keeps its original range, and reads whatever
+bytes a later allocation puts there; it never reaches outside the array.
+Editing code therefore reads the document's `text` again after anything that can
+grow or close it, and keeps cursors as offsets rather than references. A link
+in the tab list outlives its document's close the same way: it reads a valid
+`Document`, which may by then be another one.
+
+`index_of` is what turns a `Document&` back into the slot `free` takes, and it
+recognises a reference a caller passed in as one of `docs`' slots only because
+a type names that pool (spec 3.9). A pool no `T&<w in pool>` type names has to
+pass slot numbers around instead; `docs/implementation.md` §10 records what
+would lift that.
+
+The checker cannot always tell which array a slice read out of `docs` points
+into: any other global able to hold a `u8`, a log buffer say, is as good a
+candidate as `bytes` (spec 9.5). `realloc_slice` and `free_slice` do not need
+it to. A slice they are not shown to be `bytes`' own is checked when the call
+runs, and the call aborts unless the slice lies inside `bytes` on an element
+boundary: a few compares beside the work the call does anyway. A slice type
+naming its pool (`u8[: in bytes]`, like `T&<u32 in pool>`) would make that
+knowledge static, should a program need the last bit of speed or find the
+abort comes too late.
+
+## What the slice pool costs
+
+* **One reservation for all documents.** The pool is one grow-only array on
+  one data stack, so all documents together are capped by that stack's
+  reservation (`GS_STACK_RESERVE`, 256 MB by default; spec 10.4 allows up to
+  2^48 bytes). Exceeding it aborts at the guard region: there is no recoverable
+  allocation failure.
+* **The array never shrinks.** Closed documents' runs are reused, but the
+  array's high-water length stays committed and is never returned to the OS.
+* **A move copies.** Growth that cannot happen in place is O(current length),
+  and a document grown in small steps while another follows it can be copied
+  at each step. Growing by a factor is the caller's policy.
+* **Fragmentation.** Placement is first fit in index order, with neighbors
+  merged on release. Enough free bytes in total does not guarantee a free run
+  of the needed size; the array then grows. First fit was measured against
+  best fit: it was faster everywhere, best fit's array came out at most 12%
+  smaller on buffers grown a step at a time, and first fit's came out smaller
+  on mixed sizes.
+* **Views do not follow a move.** See above: offsets into the current run are
+  the robust form of a position.
+* **Element types.** Elements are fixed-size, and `realloc_slice` rejects
+  element types holding self-relative references, whose offsets a copy would
+  leave measuring from the old place (spec 3.9).
+* **Per-operation cost.** Placement scans the free spans in order; adding or
+  removing a span shifts the spans above it (docs/implementation.md 9.7). A
+  workload with thousands of simultaneously free runs pays for both. A slice
+  handed back that the checker cannot place in the pool also pays a range test.
+
+## The other Goose representations
+
+The placement rules are unchanged: an array still cannot contain resizable
+elements (spec 3.4), so a growable array of growable documents remains
+inexpressible, and cycle functions still cannot own new nonfixed locals (spec
+7.8). Slice pools are the in-language substitute. Several earlier workarounds
+are superseded by them: append-only byte storage with per-document offsets
+(retention followed edit history until a whole-region reset), one big
+grow-shrink buffer with application-managed shifting (the pool now does the
+placement and moving), runtime-capacity limited arrays `u8[..]` (which could
+neither grow nor live in a slot pool), and a table of references to separately
+scoped locals (which never owned anything). Those that still earn their place:
+
+| Approach | Where it still fits |
+|---|---|
+| Inline limited arrays, `u8[..MAX]`, as fixed-size slots in a `reusable` pool | A real and small bound. Nothing is ever copied or fragmented, and each document is one fixed slot. Every slot pays the full capacity, and exceeding it cannot grow that buffer. |
+| Reusable fixed-size chunks linked by indices or relative references, possibly as a rope or piece table | Very large documents, or frequent inserts in the middle, which a contiguous run copies on every move. Chunks never move, so references into them stay current, growth copies at most a chunk, and fragmentation is bounded by the chunk size. It needs chunk addressing, cross-chunk iteration and a stale-slot policy, which a library could hide. |
+| A worker owning each document | Document actors wanted anyway. Reclamation happens at worker exit, at the cost of a message protocol, an OS thread per document and copying whatever crosses a queue. |
+| Foreign owning storage | Memory the program does not own. Option C below gives it a typed representation. |
 
 ## Future option A: bounded independent dynamic stacks
 
-Extend the dynamic stacks idea in spec 11.3 to a runtime-sized collection whose
-elements each own an independently growing stack: a resizable array of resizable
-arrays. This is a new owning container, not something today's placement rules
-already permit. Its descriptor table can grow or reuse slots while the element
-storage stays in separately reserved address regions.
+What a slice pool cannot give: element addresses that stay put while a
+document grows, growth that never copies, release of a closed document's memory
+to the OS, isolation of one document's fragmentation from the others, and more
+total storage than one reservation. This option extends the dynamic stacks idea
+in spec 11.3 to a runtime-sized collection whose elements each own an
+independently growing stack: a resizable array of resizable arrays. This is a
+new owning container, not something today's placement rules already permit.
+Its descriptor table can grow or reuse slots while the element storage stays in
+separately reserved address regions.
 
 For a supported 64-bit target, define a virtual-address reservation budget rather
 than assuming that a 64-bit pointer provides 2^64 usable bytes. A runtime profile
@@ -75,8 +172,8 @@ An editor could choose a maximum of 256 open documents, each with a 1 GiB text
 ceiling. That requires about 256 GiB of reserved virtual address space plus
 guards and metadata, not 256 GiB of resident RAM. Such a configuration is usable
 only on a target where that reservation can be guaranteed. It is a reasonable
-trade to investigate for a bounded number of substantial buffers, rather than
-one independently reserved stack per small string.
+trade for a bounded number of substantial buffers; many small buffers belong
+in a slice pool instead.
 
 * **Opening and growing:** opening document 257 returns a recoverable limit
   error that the editor can explain to the user. Growth beyond a document's
@@ -89,75 +186,29 @@ one independently reserved stack per small string.
   outer table need not move that data. An outer table index is not a permanent
   document identity if slots can be removed and reused; use a stable handle or
   another explicit identity policy.
-* **Reference safety:** closing one document must be forbidden while references
-  or slices into it can still be used. The checker needs to track an inner
-  owner's lifetime, not merely the outer table's lifetime. One conservative
-  first design permits access through scoped borrows of a document handle;
-  borrowing the whole collection is simpler but restricts unrelated closes.
-  Precise per-document borrowing is further design work. A generation check on
-  a handle prevents stale-handle reuse, but does not protect an escaped raw slice.
+* **Reference safety:** unlike a slice pool, closing a document releases its
+  storage, so it must be forbidden while references or slices into it can still
+  be used. The checker needs to track an inner owner's lifetime, not merely the
+  outer table's lifetime. One conservative first design permits access through
+  scoped borrows of a document handle; borrowing the whole collection is
+  simpler but restricts unrelated closes. Precise per-document borrowing is
+  further design work. A generation check on a handle prevents stale-handle
+  reuse, but does not protect an escaped raw slice.
 * **Release:** closing a document decommits its pages and recycles its region
   slot independently of other documents. Keeping the address reservation allows
   the runtime to guarantee reuse of its budget; the reservation itself is
-  released when its owning collection/runtime budget ends. No document's live
-  data has to be copied or compacted to release another's storage.
+  released when its owning collection or runtime budget ends. No document's live
+  data is copied to release another's storage.
 
-The remaining questions include per-stack versus pooled size budgets, the owning
-descriptor's transfer rules, and how much per-document lifetime precision the
-checker can provide without annotation-heavy APIs. Fixed size/count limits are
-part of this option's contract, not an accidental failure mode to hide.
-
-## Future option B: variable-size reusable spans in a boxed array
-
-Generalize the reusable-pool allocation unit from one slot to a contiguous run
-of `T` elements. An allocator lives inside an explicitly owned, stable backing
-array; "boxed array" here describes that separate owner, not an existing Goose
-keyword. It could be a scoped backing arena or one dynamic stack from option A.
-Different allocations have different lengths and can be released in any order.
-Start with fixed-size elements such as `u8`; this already covers text buffers.
-
-The owner tracks each live span's offset, length and capacity, with a freelist
-of available runs. Allocation can split a free run, release can coalesce adjacent
-runs, and growth can use adjacent free capacity when available. When it cannot,
-append allocates another run, copies the existing elements, appends the new ones
-and returns the replacement slice. The caller uses that returned slice to see
-the appended elements. Existing slices keep their original ranges, including
-when append stays in place. Freeing the old run happens only after a successful
-replacement; a failed append leaves the original allocation intact.
-
-* **Use after free or relocation is legal:** this option deliberately adopts
-  the existing `reusable` semantics. A slice, subslice or element reference into
-  a freed or relocated span remains usable within its original range and the
-  backing owner's lifetime. Reads and writes access whatever initialized `T`
-  values remain at those addresses or are subsequently placed there by reuse.
-  An old view does not follow the allocation to its new location, and a write
-  through it can affect a later allocation that reuses those cells. These are
-  the intended semantics, with no exclusive-borrow or automatic-invalidation
-  requirement. Normal writability, bounds and owner-lifetime rules still apply.
-* **Bounds and initialization:** a newly returned view covers the initialized
-  elements of its allocation. Validate span ranges and size arithmetic before
-  construction or copying. Every cell reachable by an old view must remain
-  addressable and initialized as `T`, even when the allocator considers it free
-  or has split that range between new spans. Keep allocator metadata separate
-  from these cells. General `T` also needs defined relocation semantics;
-  self-relative links require additional region tracking or must initially be
-  excluded from relocating spans.
-* **Release and fragmentation:** free makes a run available for another span;
-  it need not immediately return all of that allocation's pages to the OS.
-  A free run may still have usable slices into it: free alone is not proof that
-  its pages are unused. Do not decommit or shrink backing storage that an old
-  view can still reach. The backing owner releases its region at the end of its
-  lifetime under the normal reference-lifetime rules. Total free space does not
-  guarantee a sufficiently large contiguous run. Define a recoverable allocation
-  failure, and evaluate fit policies, coalescing and growth slack against real
-  document-size distributions. Any optional compaction must preserve old views'
-  ranges under the same reuse semantics; moving allocations alone does not make
-  their former backing pages safe to release.
-
-This option trades the stable-growth property for denser sharing of a bounded
-backing region: a relocating append is O(current length), and capacity slack
-and external fragmentation are real costs. The allocator is explicit and local
-to this owner; it need not replace Goose's ordinary bump-allocation path.
+The two compose: a stack from this option can back a slice pool of its own,
+for example one per class of document, combining stable large buffers with
+pooled small ones. The remaining questions include per-stack versus pooled size
+budgets, the owning descriptor's transfer rules, and how much per-document
+lifetime precision the checker can provide without annotation-heavy APIs. Fixed
+size and count limits are part of this option's contract, not an accidental
+failure mode to hide. This option is only worth that checker work where
+measurements of slice pools show copies, retained memory or a reservation limit
+that matters.
 
 ## Future option C: opaque API resources
 
@@ -179,10 +230,11 @@ lifetimes and API validity still need binding-defined rules.
 For example, a GPU binding could return a `resource<GpuBuffer>` and accept it
 in upload, draw and release operations. A byte-buffer binding could provide
 allocate, resize, release and bulk read/write or copy operations through a
-`resource<ByteBuffer>`. This supplies a third route to independently allocated
-dynamic memory, accessed through functions and copies. Options A and B remain
-preferable when the program wants direct array indexing, slices and ordinary
-Goose element references.
+`resource<ByteBuffer>`. With slice pools in the language, this is no longer the
+way to get independently growing Goose buffers; it is the way to hold memory and
+objects that belong to someone else, accessed through functions and copies.
+Slice pools and option A remain preferable when the program wants direct array
+indexing, slices and ordinary Goose element references.
 
 Existing FFI already passes scalar handles and Goose buffers to C, including
 builders that a C API can append copied bytes into. The proposed tagged resource
@@ -206,22 +258,33 @@ not yet promise RAII, destructors or automatic ownership transfer. These
 questions must be settled before a cleanup hook could be given reliable
 language semantics.
 
-## Evaluate the three options together
+## Extending slice pools
 
-Independent stacks suit a capped set of large buffers whose addresses should
-stay stable while they grow. Reusable spans suit many differently sized buffers;
-append returns the current allocation's view while older views legally continue
-to access their original cells. Opaque resources suit externally managed memory
-and other API objects, accessed through compatible binding functions. The
-options can compose: bounded independent stacks can back span allocators, and
-API operations can copy between resource-managed buffers and Goose arrays.
+Smaller steps than either option, each addressing one of the costs above:
 
-Evaluate all three with the open/edit/close sequence above, including the 257th
-document, a document exceeding its size ceiling, allocation failure during
-append and repeated fragmenting growth/release. For A, check references during
-document close; for B, verify legal reads and writes through old slices after
-free, relocation and reuse. For C, evaluate API buffer transfers and file-mapping
-access while keeping the unresolved cleanup policy explicit. Measure live bytes,
-committed pages, reserved address space, copied bytes and latency separately.
-That establishes which forms of independent storage are convenient and
-predictable for the application.
+* **A slice type naming its pool**, as described above, turning the run-time
+  check on a slice handed back into a static one.
+* **Recoverable allocation:** a form of `alloc_slice` and `realloc_slice` that
+  reports a run the reservation cannot hold instead of aborting, leaving the
+  original run intact.
+* **Returning free memory:** whole pages inside free spans could be decommitted
+  and recommitted zeroed on the next touch. Stale views can still read those
+  pages, so this is sound only for element types whose all-zero bytes are a
+  valid value, such as `u8`; a type holding a non-optional reference has none.
+* **Per-pool reservations:** a pool on a stack of its own size, or on a stack
+  from option A.
+* **Relocating self-relative references:** tracking the region a relative
+  reference ranges over (spec TODO 16) would let a run of linked elements move
+  whole.
+
+## Evaluating what remains
+
+Run the open/edit/close sequence against slice pools first, now that they
+exist. Measure live bytes, the array's high-water and committed bytes, copied
+bytes and latency separately, including repeated fragmenting growth and
+release, a document that outgrows the reservation, and old views read after a
+move, a close and reuse. That establishes where option A's stable, releasable
+storage is worth its checker work: its evaluation adds the 257th document, a
+document exceeding its size ceiling, and references held across a document
+close. For option C, evaluate API buffer transfers and file-mapping access
+while keeping the unresolved cleanup policy explicit.

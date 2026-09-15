@@ -335,8 +335,9 @@ struct CycleRoots {
                 // sites when the receiver is an array, which the scan cannot
                 // tell.
                 if (!cands.empty()) return UnknownDesc();
-                if ((bd->kind != B_PUSH && bd->kind != B_ALLOC_REF) || args.empty())
-                    return UnknownDesc();
+                auto atrecv = bd->kind == B_PUSH || bd->kind == B_ALLOC_REF ||
+                              bd->kind == B_ALLOC_SLICE || bd->kind == B_REALLOC_SLICE;
+                if (!atrecv || args.empty()) return UnknownDesc();
                 return ScanBase(f, args[0], busy, depth);
             }
             if (cands.size() != 1) return UnknownDesc();
