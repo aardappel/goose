@@ -61,7 +61,9 @@ comes from `package.json`.
 Open this `vscode/` directory in VS Code and press **F5** to launch an Extension
 Development Host with the parent Goose repository open. No build is needed.
 Packaging is local; the package is not published to the Marketplace.
-`UNLICENSED` deliberately does not introduce a license for the repository.
+The extension is under the repository's [Apache License 2.0](../LICENSE); the
+build copies that file into this directory, where `vsce` looks for it, so it
+ships inside the package.
 
 ## Compiler setup
 

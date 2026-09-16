@@ -4,7 +4,7 @@
   "description": "Syntax highlighting, compiler diagnostics, navigation and tasks for Goose, without a language server.",
   "version": "0.2.0",
   "publisher": "aardappel",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "repository": { "type": "git", "url": "https://github.com/aardappel/goose.git", "directory": "vscode" },
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Programming Languages", "Snippets"],
@@ -21,7 +21,7 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js",
-    "package": "vsce package --no-dependencies --skip-license --out goose-language.vsix",
+    "package": "vsce package --no-dependencies --out goose-language.vsix",
     "vscode:prepublish": "npm test"
   },
   "devDependencies": {

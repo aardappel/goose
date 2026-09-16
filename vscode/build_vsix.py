@@ -32,6 +32,10 @@ def main():
         print("+ npm " + " ".join(arguments), flush=True)
         subprocess.run([npm, *arguments], cwd=HERE, check=True)
 
+    # vsce bundles the license it finds in the extension root, so the package
+    # carries a copy of the repository's LICENSE refreshed on every build.
+    shutil.copyfile(HERE.parent / "LICENSE", HERE / "LICENSE")
+
     try:
         if not args.skip_install:
             run("ci", "--include=dev", "--no-audit", "--no-fund")
