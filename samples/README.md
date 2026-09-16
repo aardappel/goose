@@ -1,5 +1,9 @@
 # Goose samples
 
+If you have not written Goose before, read [`docs/tutorial.md`](../docs/tutorial.md)
+first: it introduces the language by example and says which of these to read
+when.
+
 Short, self-contained programs that show what writing Goose is like: the
 things every language has to do, written the way Goose wants them written,
 with the language's own strengths -- flat data, references into growing
