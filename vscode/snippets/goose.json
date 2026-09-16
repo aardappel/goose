@@ -1,0 +1,19 @@
+{
+  "Main function": { "prefix": "main", "body": ["fn main() {", "\t$0", "}"], "description": "Program entry point" },
+  "Function": { "prefix": "fn", "body": ["fn ${1:name}(${2:args})${3: -> i64} {", "\t$0", "}"], "description": "Function declaration" },
+  "Recursive function": { "prefix": "recfn", "body": ["recursive fn ${1:name}(${2:n: i64}) -> ${3:i64} {", "\t$0", "}"], "description": "Function with an explicit recursive signature" },
+  "Thread function": { "prefix": "thread_fn", "body": ["thread_fn ${1:worker}(${2:value: i64}) {", "\t$0", "}"], "description": "Thread entry function" },
+  "Struct": { "prefix": "struct", "body": ["struct ${1:Name} {", "\t${2:field}: ${3:i64},", "\t$0", "}"], "description": "Struct declaration" },
+  "Enum": { "prefix": "enum", "body": ["enum ${1:Name} {", "\t${2:Variant},", "\t$0", "}"], "description": "Enum declaration" },
+  "Type alias": { "prefix": "type", "body": "type ${1:Name} = ${2:i64};$0", "description": "Type alias" },
+  "Import": { "prefix": "import", "body": "import ${1:std};$0", "description": "Import a Goose module" },
+  "Namespace": { "prefix": "namespace", "body": "namespace ${1:name};$0", "description": "File namespace" },
+  "If": { "prefix": "if", "body": ["if ${1:condition} {", "\t$0", "}"], "description": "Conditional block" },
+  "If else": { "prefix": "ife", "body": ["if ${1:condition} {", "\t$2", "} else {", "\t$0", "}"], "description": "Conditional with fallback" },
+  "For": { "prefix": "for", "body": ["for ${1:item} in ${2:items} {", "\t$0", "}"], "description": "Iterate over a range or collection" },
+  "While": { "prefix": "while", "body": ["while ${1:condition} {", "\t$0", "}"], "description": "While loop" },
+  "Guard": { "prefix": "guard", "body": ["guard ${1:condition} else {", "\t${2:return;}", "}", "$0"], "description": "Guard with a diverging fallback" },
+  "Match": { "prefix": "match", "body": ["match ${1:value} {", "\t${2:Variant} ${3:v} => ${4:expression},", "\t$0", "}"], "description": "Pattern match" },
+  "Growable array": { "prefix": "grow", "body": "var ${1:items}: ${2:i64}[>..] = [];\n$0", "description": "Grow-only array" },
+  "Grow-shrink array": { "prefix": "growshrink", "body": "var ${1:items}: ${2:i64}[>..<] = [];\n$0", "description": "Grow-shrink array" }
+}

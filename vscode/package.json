@@ -1,0 +1,70 @@
+{
+  "name": "goose-language",
+  "displayName": "Goose Language",
+  "description": "Syntax highlighting, compiler diagnostics, navigation and tasks for Goose, without a language server.",
+  "version": "0.1.0",
+  "publisher": "aardappel",
+  "license": "UNLICENSED",
+  "repository": { "type": "git", "url": "https://github.com/aardappel/goose.git", "directory": "vscode" },
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages", "Snippets"],
+  "keywords": ["goose"],
+  "main": "./src/extension.js",
+  "activationEvents": ["onLanguage:goose", "onTaskType:goose"],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Syntax highlighting, snippets and the outline work in Restricted Mode. Running the compiler requires a trusted workspace.",
+      "restrictedConfigurations": ["goose.compilerPath", "goose.entryFile", "goose.stdlibPath", "goose.runArguments"]
+    },
+    "virtualWorkspaces": { "supported": false, "description": "Goose uses a compiler and source files on the extension host's filesystem." }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "package": "vsce package --no-dependencies --skip-license --out goose-language.vsix",
+    "vscode:prepublish": "npm test"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.6.2",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.2.0"
+  },
+  "contributes": {
+    "languages": [{ "id": "goose", "aliases": ["Goose", "goose"], "extensions": [".goose"], "configuration": "./language-configuration.json" }],
+    "grammars": [{ "language": "goose", "scopeName": "source.goose", "path": "./syntaxes/goose.tmLanguage.json" }],
+    "snippets": [{ "language": "goose", "path": "./snippets/goose.json" }],
+    "commands": [
+      { "command": "goose.check", "title": "Check Program", "category": "Goose", "enablement": "editorLangId == goose && isWorkspaceTrusted" },
+      { "command": "goose.run", "title": "Run Program", "category": "Goose", "icon": "$(play)", "enablement": "editorLangId == goose && isWorkspaceTrusted" },
+      { "command": "goose.generateC", "title": "Generate C", "category": "Goose", "enablement": "editorLangId == goose && isWorkspaceTrusted" },
+      { "command": "goose.showOutput", "title": "Show Compiler Output", "category": "Goose" }
+    ],
+    "menus": {
+      "editor/title": [{ "command": "goose.run", "when": "editorLangId == goose && isWorkspaceTrusted", "group": "navigation" }]
+    },
+    "configuration": {
+      "title": "Goose",
+      "properties": {
+        "goose.compilerPath": { "type": "string", "default": "", "scope": "resource", "description": "Compiler executable or command on PATH. Empty searches goose and build/{Release,Debug}/goose in the workspace, then PATH. Relative paths use the workspace folder. Supports ${workspaceFolder}." },
+        "goose.entryFile": { "type": "string", "default": "", "scope": "resource", "description": "Program entry file, relative to the workspace folder. Empty checks/runs the current file. Set this when editing imported modules. Supports ${workspaceFolder}." },
+        "goose.stdlibPath": { "type": "string", "default": "", "scope": "resource", "description": "Standard-library directory passed as --stdlib. Empty uses the compiler's default lookup (including GOOSE_STDLIB). Supports ${workspaceFolder}." },
+        "goose.checkOnSave": { "type": "boolean", "default": true, "scope": "resource", "description": "Check saved Goose files on open and save. Checks wait until open Goose files in the same workspace folder are saved." },
+        "goose.checkTimeout": { "type": "number", "default": 15000, "minimum": 1000, "maximum": 300000, "scope": "resource", "description": "Maximum time in milliseconds for a background compiler check." },
+        "goose.runArguments": { "type": "array", "items": { "type": "string" }, "default": [], "scope": "resource", "description": "Program arguments passed after -- by Run Program. Each item is one argument." }
+      }
+    },
+    "taskDefinitions": [{
+      "type": "goose", "required": ["action"],
+      "properties": {
+        "action": { "type": "string", "enum": ["check", "run", "generateC"], "description": "Compiler operation." },
+        "file": { "type": "string", "description": "Source file relative to the workspace folder. Defaults to goose.entryFile or the active file. Supports ${workspaceFolder} and ${file}." },
+        "output": { "type": "string", "description": "C output file for generateC; defaults to the source basename with .c." }
+      }
+    }],
+    "problemMatchers": [{
+      "name": "goose", "owner": "goose-task", "source": "Goose", "fileLocation": ["autoDetect", "${workspaceFolder}"],
+      "pattern": { "regexp": "^(.+?):(\\d+): (error|warning): (.*)$", "file": 1, "line": 2, "severity": 3, "message": 4 }
+    }],
+    "configurationDefaults": { "[goose]": { "editor.tabSize": 4, "editor.insertSpaces": true } }
+  }
+}

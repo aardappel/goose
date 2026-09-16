@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [{
+    "name": "Run Goose Extension",
+    "type": "extensionHost",
+    "request": "launch",
+    "args": ["--extensionDevelopmentPath=${workspaceFolder}", "${workspaceFolder}/.."]
+  }, {
+    "name": "Test Goose Extension",
+    "type": "extensionHost",
+    "request": "launch",
+    "args": [
+      "--extensionDevelopmentPath=${workspaceFolder}",
+      "--extensionTestsPath=${workspaceFolder}/test/extension-host.js",
+      "--disable-workspace-trust",
+      "${workspaceFolder}/../build/goose-extension-fixture"
+    ]
+  }]
+}
