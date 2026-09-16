@@ -244,22 +244,25 @@ where the keys are literals or views of a `let`, §9.5), or as inline
 `u8[..k]`. A set is `dictionary<K, bool>`.
 
 The slot array is grow-shrink, so a reference into it — a `get` or
-`get_or_insert` result, an `each` binder — may not be in scope at the next
-`insert`, `update`, `remove` or `clear`; the checker reports it (spec §5.2).
-Bind such references in their own block, or use `update`:
+`get_or_insert` result, an `each` binder — must be done with before the next
+`insert`, `update`, `remove` or `clear`; the checker reports it against the
+mutation, naming the reference and where it was bound (spec §5.2). Finish
+with the reference first, or use `update`, which does the lookup and the
+change in one:
 
 ```goose
 var counts = dictionary<const u8[:], i32> {};
 each_split(text, ' ') { counts.update(it, 0) { it += 1; } };
 counts.each() { w, n => if n > 100 { print(w, " ", n); } };
-block { let n = counts.get("the"); if n { print(n); }; }
+let n = counts.get("the");
+if n { print(n); }               // the last use of n; counts is free again after it
 ```
 
-The key type is `const u8[:]` because these keys are literals and views of a
-`let`; a dictionary whose keys are slices of a `var` buffer is
-`dictionary<u8[:], V>`. The `;` after the last `if` keeps it a statement: a
-block's value is its trailing expression, so an `if` in that position would
-need an `else`.
+It is liveness, not scope, that the checker asks about, so a reference whose
+last use is behind the mutation needs no block around it, and one still used
+after the mutation is an error wherever it was declared. The key type is
+`const u8[:]` because these keys are literals and views of a `let` (§9.5); a
+dictionary whose keys are slices of a `var` buffer is `dictionary<u8[:], V>`.
 
 ## vec
 

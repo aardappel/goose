@@ -55,6 +55,21 @@ enum IterKind { IK_RANGE, IK_COUNT, IK_ARRAY, IK_SLICE };
 // Type validation positions: what may be declared where.
 enum ValidPos { VT_LOCAL, VT_GLOBAL, VT_PARAM, VT_RET, VT_FIELD, VT_ELEM, VT_POINTEE };
 
+// Whether a trailing expression is one a value can never be asked of: an
+// else-less `if` and a `guard` produce nothing on either path, and a block
+// ending in one of those produces nothing either. Callers that decide
+// whether a body's tail is its result consult this first, so that wrapping
+// such a tail in `block { }` or a bare scope does not turn it into a value
+// the construct then has no way to supply.
+inline bool IsValuelessTail(const Node *n) {
+    if (!n) return false;
+    if (auto fi = Is<IfExpr>(n)) return !fi->elseb;
+    if (Is<Guard>(n)) return true;
+    if (auto b = Is<Block>(n)) return IsValuelessTail(b->tail);
+    if (auto e = Is<EarlyBlock>(n)) return IsValuelessTail(e->body);
+    return false;
+}
+
 struct TypeCheck {
     Ast &ast;
 

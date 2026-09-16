@@ -910,8 +910,7 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
     CheckStmts(c->fvbody);
     Val v = VoidVal();
     if (auto tail = c->fvbody->tail) {
-        auto fi = Is<IfExpr>(tail);
-        if ((fi && !fi->elseb) || Is<Guard>(tail)) CheckStmtExpr(tail);
+        if (IsValuelessTail(tail)) CheckStmtExpr(tail);
         else v = CheckValue(c->fvbody->tail, nullptr);
     }
     c->fvbody->exprtype = v.type;

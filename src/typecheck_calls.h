@@ -1250,15 +1250,14 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     if (sf->isrec && spec->retsknown) Cycles().Seed(spec);
     spec->body = (Block *)sf->body->Clone(ast);
     // The body: statements plus a value-producing tail (treated exactly
-    // like `return tail`). An else-less if tail cannot be a value, so a
-    // void function may end in one.
+    // like `return tail`). A tail that produces on no path is a statement
+    // instead, so a void function may end in one.
     BlockScope bs(*this, spec->body);
     CheckStmts(spec->body);
     if (spec->body->tail) {
         auto tail = spec->body->tail;
         auto asvalue = !(spec->retsknown && spec->rets.empty());
-        if (auto fi = Is<IfExpr>(tail); fi && !fi->elseb) asvalue = false;
-        if (Is<Guard>(tail)) asvalue = false;
+        if (IsValuelessTail(tail)) asvalue = false;
         if (!asvalue) {
             CheckStmtExpr(tail);
             if (reachable && spec->retsknown && !spec->rets.empty())

@@ -103,7 +103,11 @@ Literals:
 
 The language is **expression-oriented**: `if`, `match`, `block` and a bare
 `{ … }` block are expressions; a block's value is its trailing expression.
-Assignment and `++`/`--` are *statements*, not expressions.
+Assignment and `++`/`--` are *statements*, not expressions. A trailing
+construct that produces a value on no path — an else-less `if`, a `guard`, or
+a block or scope ending in one of those — is a statement rather than the
+block's value, so a function whose result type is inferred, and a function
+value's body, may end in one and produce nothing.
 
 **Statement termination.** Expression statements end with `;`, but a
 statement that *is* a block-ended construct — `if`, `match`, `block`, the
