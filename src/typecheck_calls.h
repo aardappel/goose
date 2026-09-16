@@ -1156,6 +1156,12 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     invalue = false;
     auto savereach = reachable;
     DestScope ds(*this, Dest {});
+    // Whatever the call's result is for -- the slot it lands in, the return
+    // it is a value of -- is the caller's business: this body's own
+    // statements say where their values go, and its tail is a return of its
+    // own, whose constness is inferred (§9.5).
+    SlotScope ss(*this, false);
+    FlagScope rs(inreturn, false);
     reachable = true;
     PushScope(SK_FN);
     // Parameters. For reference/slice parameters, a synthetic root
@@ -1482,26 +1488,27 @@ inline void TypeCheck::CheckReturn(Return *r) {
     auto expectone = [&](size_t i) -> TypeExpr * {
         return tspec->retsknown && i < tspec->rets.size() ? tspec->rets[i] : nullptr;
     };
-    inreturn = true;
     SlotScope ss(*this, false);   // A result's constness is the returns' (§9.5).
-    if (r->vals.size() == 1) {
-        auto v = CheckValue(r->vals[0], tspec->retsknown && tspec->rets.size() == 1
-                                            ? tspec->rets[0] : nullptr);
-        if (auto call = Is<Call>(r->vals[0]); call && call->rettypes.size() > 1) {
-            vals = lastcallrets;  // Forward a multi-value call.
+    {
+        FlagScope rs(inreturn, true);
+        if (r->vals.size() == 1) {
+            auto v = CheckValue(r->vals[0], tspec->retsknown && tspec->rets.size() == 1
+                                                ? tspec->rets[0] : nullptr);
+            if (auto call = Is<Call>(r->vals[0]); call && call->rettypes.size() > 1) {
+                vals = lastcallrets;  // Forward a multi-value call.
+            } else {
+                if (v.type->kind == TY_VOID) Error(r, "cannot return a valueless expression");
+                vals.push_back(v);
+            }
         } else {
-            if (v.type->kind == TY_VOID) Error(r, "cannot return a valueless expression");
-            vals.push_back(v);
-        }
-    } else {
-        for (size_t i = 0; i < r->vals.size(); i++) {
-            auto v = CheckValue(r->vals[i], expectone(i));
-            if (v.type->kind == TY_VOID) Error(r, "cannot return a valueless expression");
-            HoldValue(r->vals[i], v);
-            vals.push_back(v);
+            for (size_t i = 0; i < r->vals.size(); i++) {
+                auto v = CheckValue(r->vals[i], expectone(i));
+                if (v.type->kind == TY_VOID) Error(r, "cannot return a valueless expression");
+                HoldValue(r->vals[i], v);
+                vals.push_back(v);
+            }
         }
     }
-    inreturn = false;
     if (vals.empty() && tspec->retsknown && !tspec->rets.empty())
         Error(r, cat("function ", frames[tf].sf->name, " must return value(s)"));
     if (!vals.empty() || !tspec->retsknown) {

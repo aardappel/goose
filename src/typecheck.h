@@ -159,6 +159,14 @@ struct TypeCheck {
         ~TempScope() { tc.heldtemps.resize(base); }
     };
     bool inreturn = false;   // Checking a return's values: the function's own locals move.
+    // Sets a flag for a scope; the value in force outside returns on exit,
+    // an error's throw included.
+    struct FlagScope {
+        bool &flag;
+        bool saved;
+        FlagScope(bool &f, bool v) : flag(f), saved(f) { f = v; }
+        ~FlagScope() { flag = saved; }
+    };
     // The destination of the value under construction (for reference stores):
     // its root plus whether that root is the destination storage's owner.
     struct Dest {

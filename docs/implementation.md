@@ -172,9 +172,10 @@ types, seeds the cycle return roots where the function is `recursive`,
 clones the body, checks its statements, and treats a value-producing tail as
 `return tail`. Everything that is per-body -- pending shrinks, held
 temporaries, the value-region flag, reachability, the construction
-destination, the narrowings of outer variables -- is saved on entry and
-restored on exit, so a caller sees nothing of what the callee did except
-through the summaries the specialization keeps.
+destination, the slot flag (§3.8) and the return flag, the narrowings of
+outer variables -- is saved on entry and restored on exit, so a caller sees
+nothing of what the callee did except through the summaries the
+specialization keeps.
 
 **Frames, scopes and variables.** `frames` is the compile-time call path;
 `scopes` is one flat vector for the whole path (a frame records where its
