@@ -1182,20 +1182,22 @@ inline void CodeGen::EmitDefaultFields(const string &lv, TypeExpr *t) {
 
 // ------------------------------------------------------------------
 // Structural equality (§4.5): gs_eq_<mangle>. Fixed values pass by value,
-// bytes values as pointers. Gap-free fixed types shortcut to memcmp.
+// bytes values as pointers. Gap-free fixed types without floats shortcut
+// to memcmp.
 
-inline bool CodeGen::GapFree(TypeExpr *t) {
+inline bool CodeGen::BitwiseEq(TypeExpr *t) {
     if (!IsFix(t)) return false;
     switch (t->kind) {
         case TY_STRUCT: case TY_VARIANT:
             for (auto &run : FieldRuns(t))
                 for (size_t i = 0; i < run.fields->size(); i++)
-                    if ((*run.fields)[i].ispad || !GapFree((*run.ftypes)[i])) return false;
+                    if ((*run.fields)[i].ispad || !BitwiseEq((*run.ftypes)[i])) return false;
             return true;
         case TY_ENUM: return false;      // Uninitialized trailing payload area.
         case TY_ARRAY:
             if (t->arr->akind == A_LIMITED) return false;   // Uninitialized slots.
-            return GapFree(t->arr->sub);
+            return BitwiseEq(t->arr->sub);
+        case TY_FLT: return false;       // IEEE: -0.0 == 0.0, NaN != NaN.
         default: return true;
     }
 }
@@ -1214,7 +1216,7 @@ inline string CodeGen::EqX(TypeExpr *t, const string &a, const string &b) {
     if (t->kind == TY_SLICE && !IsBytesT(t->sub))
         return cat("(", a, ".data == ", b, ".data && ", a, ".len == ", b, ".len)");
     if (IsFix(t)) {
-        if (GapFree(t))
+        if (BitwiseEq(t))
             return cat("(memcmp(&", a, ", &", b, ", ", FixedSize(t), ") == 0)");
         return cat(EqFn(t), "(&", a, ", &", b, ")");
     }
@@ -1300,12 +1302,12 @@ inline void CodeGen::EmitEqFixed(string &bo, TypeExpr *t) {
 
 inline void CodeGen::EmitEqBytes(string &bo, TypeExpr *t) {
     // Canonical encodings (minimal varints) make bytewise comparison exact
-    // for any pad-free bytes value; walk-compare covers the rest.
-    auto padfree = [&](TypeExpr *tt) {
-        // Bytes layouts have no bare-pad alignment, but explicit pads and
-        // embedded fixed-mode ADTs still make bytes differ.
+    // for any pad-free, float-free bytes value; walk-compare covers the rest.
+    auto bitwise = [&](TypeExpr *tt) {
+        // Bytes layouts have no bare-pad alignment, but explicit pads,
+        // embedded fixed-mode ADTs and floats still defeat memcmp.
         function<bool(TypeExpr *)> rec = [&](TypeExpr *x) -> bool {
-            if (IsFix(x)) return GapFree(x);
+            if (IsFix(x)) return BitwiseEq(x);
             switch (x->kind) {
                 case TY_INT: case TY_REF: return true;
                 case TY_ARRAY: return rec(x->arr->sub);
@@ -1319,7 +1321,7 @@ inline void CodeGen::EmitEqBytes(string &bo, TypeExpr *t) {
         };
         return rec(tt);
     };
-    if (padfree(t)) {
+    if (bitwise(t)) {
         Append(bo, "    int64_t na = ", SizeX(t, "a"), ", nb = ", SizeX(t, "b"), ";\n",
                "    return na == nb && memcmp(a, b, (size_t)na) == 0;\n");
         return;
@@ -1338,7 +1340,7 @@ inline void CodeGen::EmitEqWalk(string &bo, TypeExpr *t, const string &pa, const
     if (IsFix(t)) {
         auto ct = CT(t);
         (void)ct;
-        if (GapFree(t)) {
+        if (BitwiseEq(t)) {
             Append(bo, I, "if (memcmp(", pa, ", ", pb, ", ", FixedSize(t),
                    ") != 0) return 0;\n");
         } else {

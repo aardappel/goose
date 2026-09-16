@@ -1218,15 +1218,16 @@ per value; a missed `qpoll` yields the all-zero image (`ZeroSize`).
 
 Per type on demand: `gs_size_<T>` (the byte size of a dynamic value),
 `gs_eq_<T>` (structural equality, a `memcmp` for gap-free fixed types and
-canonical-encoding bytes values, a cursor walk otherwise), `gs_verify_<T>`
-(the `from_bytes` verifier of `docs/design/serialization.md`: one framing
-pass for fixed elements, a framing pass setting an element-start bitmap and
-a link pass for variable ones), and the tag enums. Text rendering
-(`codegen_render.h`) formats scalars through `gs_fmt_*`, copies `u8` bytes,
-and renders everything else structurally into a `u8[>..]` builder or through
-the user `format` specialization recorded on the call; `print` renders the
-whole line into a temporary builder before writing it, so lines from
-different threads never interleave.
+canonical-encoding bytes values that hold no floats, a cursor walk
+otherwise), `gs_verify_<T>` (the `from_bytes` verifier of
+`docs/design/serialization.md`: one framing pass for fixed elements, a
+framing pass setting an element-start bitmap and a link pass for variable
+ones), and the tag enums. Text rendering (`codegen_render.h`) formats
+scalars through `gs_fmt_*`, copies `u8` bytes, and renders everything else
+structurally into a `u8[>..]` builder or through the user `format`
+specialization recorded on the call; `print` renders the whole line into a
+temporary builder before writing it, so lines from different threads never
+interleave.
 
 ### 6.10 Loop-invariant views and stack-top caching
 

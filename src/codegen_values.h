@@ -970,7 +970,7 @@ inline string CodeGen::GenRangeEq(TypeExpr *elem, const string &ae, const string
     L("uint8_t ", t, " = ", an, " == ", bn, ";");
     L("if (", t, ") {");
     ind++;
-    if (ScalarEq(elem) && GapFree(elem)) {
+    if (ScalarEq(elem) && BitwiseEq(elem)) {
         L(t, " = memcmp(", ae, ", ", be, ", (size_t)((", an, ") * ", FixedSize(elem),
           ")) == 0;");
     } else if (IsFix(elem)) {

@@ -763,12 +763,13 @@ large ones cheap.
 `==`/`!=` are **structural** and require both operands to have the same
 type: scalars and bools by value; structs and fixed arrays memberwise (pad
 and ADT padding bytes excluded — semantic comparison is per-member; memcmp
-is a valid optimization only for gap-free layouts); array-family values and
-slices by length then elements (sequential walk for variable elements) —
-two operands of *different* array kinds compare too, as slices, whenever
-their slices would have one type (§3.10): a `u8[>..]` field against a
-string literal, a `u8[..32]` against a `u8[:]`, with no `[..]` needed; ADTs
-by tag then payload.
+is a valid optimization only for gap-free layouts without floats, since a
+float compares by IEEE value wherever it sits: `-0.0 == 0.0`, and NaN is
+unequal to itself); array-family values and slices by length then elements
+(sequential walk for variable elements) — two operands of *different* array
+kinds compare too, as slices, whenever their slices would have one type
+(§3.10): a `u8[>..]` field against a string literal, a `u8[..32]` against a
+`u8[:]`, with no `[..]` needed; ADTs by tag then payload.
 
 References and slices follow a *top-level rule*: as the direct operands of
 `==` they have value-like semantics — a reference compares its pointee
