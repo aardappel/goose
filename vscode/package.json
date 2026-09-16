@@ -2,7 +2,7 @@
   "name": "goose-language",
   "displayName": "Goose Language",
   "description": "Syntax highlighting, compiler diagnostics, navigation and tasks for Goose, without a language server.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "aardappel",
   "license": "UNLICENSED",
   "repository": { "type": "git", "url": "https://github.com/aardappel/goose.git", "directory": "vscode" },
@@ -10,7 +10,7 @@
   "categories": ["Programming Languages", "Snippets"],
   "keywords": ["goose"],
   "main": "./src/extension.js",
-  "activationEvents": ["onLanguage:goose", "onTaskType:goose"],
+  "activationEvents": ["onLanguage:goose", "onTaskType:goose", "onDebugResolve:goose", "onDebugInitialConfigurations", "onDebugDynamicConfigurations:goose"],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
@@ -35,13 +35,37 @@
     "snippets": [{ "language": "goose", "path": "./snippets/goose.json" }],
     "commands": [
       { "command": "goose.check", "title": "Check Program", "category": "Goose", "enablement": "editorLangId == goose && isWorkspaceTrusted" },
-      { "command": "goose.run", "title": "Run Program", "category": "Goose", "icon": "$(play)", "enablement": "editorLangId == goose && isWorkspaceTrusted" },
+      { "command": "goose.run", "title": "Run with JIT", "category": "Goose", "icon": "$(play)", "enablement": "editorLangId == goose && isWorkspaceTrusted" },
       { "command": "goose.generateC", "title": "Generate C", "category": "Goose", "enablement": "editorLangId == goose && isWorkspaceTrusted" },
       { "command": "goose.showOutput", "title": "Show Compiler Output", "category": "Goose" }
     ],
     "menus": {
       "editor/title": [{ "command": "goose.run", "when": "editorLangId == goose && isWorkspaceTrusted", "group": "navigation" }]
     },
+    "keybindings": [
+      { "command": "goose.run", "key": "ctrl+shift+b", "mac": "cmd+shift+b", "when": "editorLangId == goose && editorTextFocus && isWorkspaceTrusted && config.goose.useRunKeybindings" },
+      { "command": "goose.run", "key": "ctrl+f5", "when": "editorLangId == goose && editorTextFocus && isWorkspaceTrusted && config.goose.useRunKeybindings && debugState == inactive" },
+      { "command": "goose.run", "key": "f5", "when": "editorLangId == goose && editorTextFocus && isWorkspaceTrusted && config.goose.useRunKeybindings && debugState == inactive" }
+    ],
+    "debuggers": [{
+      "type": "goose",
+      "label": "Goose: Run with JIT",
+      "languages": ["goose"],
+      "configurationAttributes": {
+        "launch": {
+          "required": [],
+          "properties": {
+            "program": { "type": "string", "description": "Entry file. Defaults to goose.entryFile or the active Goose file.", "default": "${file}" }
+          }
+        }
+      },
+      "initialConfigurations": [{ "type": "goose", "request": "launch", "name": "Goose: Run with JIT", "noDebug": true }],
+      "configurationSnippets": [{
+        "label": "Goose: Run with JIT",
+        "description": "Run Goose in a task terminal using the compiler's JIT (no debugger).",
+        "body": { "type": "goose", "request": "launch", "name": "Goose: Run with JIT", "noDebug": true }
+      }]
+    }],
     "configuration": {
       "title": "Goose",
       "properties": {
@@ -49,6 +73,7 @@
         "goose.entryFile": { "type": "string", "default": "", "scope": "resource", "description": "Program entry file, relative to the workspace folder. Empty checks/runs the current file. Set this when editing imported modules. Supports ${workspaceFolder}." },
         "goose.stdlibPath": { "type": "string", "default": "", "scope": "resource", "description": "Standard-library directory passed as --stdlib. Empty uses the compiler's default lookup (including GOOSE_STDLIB). Supports ${workspaceFolder}." },
         "goose.checkOnSave": { "type": "boolean", "default": true, "scope": "resource", "description": "Check saved Goose files on open and save. Checks wait until open Goose files in the same workspace folder are saved." },
+        "goose.useRunKeybindings": { "type": "boolean", "default": true, "description": "Run with JIT on Ctrl+Shift+B (Cmd+Shift+B on macOS), F5, and Ctrl+F5 while editing Goose. Disable to use VS Code's usual task/debug keybindings." },
         "goose.checkTimeout": { "type": "number", "default": 15000, "minimum": 1000, "maximum": 300000, "scope": "resource", "description": "Maximum time in milliseconds for a background compiler check." },
         "goose.runArguments": { "type": "array", "items": { "type": "string" }, "default": [], "scope": "resource", "description": "Program arguments passed after -- by Run Program. Each item is one argument." }
       }
@@ -56,7 +81,7 @@
     "taskDefinitions": [{
       "type": "goose", "required": ["action"],
       "properties": {
-        "action": { "type": "string", "enum": ["check", "run", "generateC"], "description": "Compiler operation." },
+        "action": { "type": "string", "enum": ["run", "check", "generateC"], "description": "Compiler operation. Run uses the JIT and is the contributed build task." },
         "file": { "type": "string", "description": "Source file relative to the workspace folder. Defaults to goose.entryFile or the active file. Supports ${workspaceFolder} and ${file}." },
         "output": { "type": "string", "description": "C output file for generateC; defaults to the source basename with .c." }
       }

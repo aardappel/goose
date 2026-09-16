@@ -23,7 +23,7 @@ async function run() {
     assert.ok(vscode.workspace.isTrusted);
     await fs.mkdir(path.join(folder.uri.fsPath, '.vscode'), { recursive: true });
     await fs.writeFile(path.join(folder.uri.fsPath, '.vscode', 'tasks.json'), JSON.stringify({
-        version: '2.0.0', tasks: [{ type: 'goose', label: 'Fixture check', action: 'check', file: 'main.goose', problemMatcher: '$goose' }]
+        version: '2.0.0', tasks: [{ type: 'goose', label: 'Fixture check', action: 'check', file: 'main.goose', group: 'test', problemMatcher: '$goose' }]
     }));
     const root = path.resolve(__dirname, '../..');
     const config = vscode.workspace.getConfiguration('goose', folder.uri);
@@ -58,10 +58,15 @@ async function run() {
         assert.ok(task, action);
         assert.ok(task.execution instanceof vscode.ProcessExecution);
         assert.ok(task.execution.args.includes(main.fsPath));
+        if (action === 'run') {
+            assert.equal(task.group.id, vscode.TaskGroup.Build.id);
+            assert.ok(task.execution.args.includes('--jit'));
+        } else assert.notEqual(task.group?.id, vscode.TaskGroup.Build.id);
     }
     const configured = tasks.find(task => task.name === 'Fixture check');
     assert.ok(configured, 'configured task is resolved');
     assert.ok(configured.execution.args.includes('--check'));
+    assert.equal(configured.group.id, vscode.TaskGroup.Test.id, 'keep explicit task groups');
     const matchers = extension.packageJSON.contributes.problemMatchers;
     const matcher = new RegExp(matchers[0].pattern.regexp);
     assert.equal(matcher.exec(`${helper.fsPath}:1: error: test`)[1], helper.fsPath);
@@ -85,7 +90,51 @@ async function run() {
     await config.update('checkOnSave', false, vscode.ConfigurationTarget.WorkspaceFolder);
     await until(() => problems().length === 0, 'disabling checks clears errors');
 
-    console.log('Goose extension host: activation, imports, outline, tasks, diagnostics and save lifecycle passed.');
+    // Run the real compiler, both through commands and the native Run picker.
+    // Start with an unsaved fix: Run must save the module before launching main.
+    await replace('fn helper() { print("GOOSE_JIT_TEST"); }\n');
+    const runTask = async (trigger, expectedFile = main.fsPath) => {
+        let finished;
+        const listener = vscode.tasks.onDidEndTaskProcess(event => {
+            if (event.execution.task.definition.type === 'goose' && event.execution.task.definition.action === 'run') finished = event;
+        });
+        try {
+            await trigger();
+            await until(() => finished !== undefined, 'JIT task completed');
+            assert.equal(finished.exitCode, 0, 'JIT compiler/program must succeed');
+            assert.ok(finished.execution.task.execution.args.includes('--jit'));
+            assert.ok(finished.execution.task.execution.args.includes(expectedFile));
+            await until(() => !vscode.tasks.taskExecutions.some(execution => execution.task.definition.type === 'goose'), 'JIT task released');
+        } finally {
+            listener.dispose();
+        }
+    };
+    await runTask(() => vscode.commands.executeCommand('goose.run'));
+    assert.equal(helperDoc.isDirty, false);
+    assert.equal((await fs.readdir(folder.uri.fsPath)).filter(file => file.endsWith('.c')).length, 0);
+    // Task-group defaults are owned by tasks.json, not the provider API. Check
+    // the documented default configuration with the native build command.
+    await fs.writeFile(path.join(folder.uri.fsPath, '.vscode', 'tasks.json'), JSON.stringify({
+        version: '2.0.0', tasks: [{
+            type: 'goose', label: 'Default Goose JIT', action: 'run', file: 'main.goose',
+            group: { kind: 'build', isDefault: true }, problemMatcher: '$goose'
+        }]
+    }));
+    await until(async () => (await vscode.tasks.fetchTasks({ type: 'goose' })).some(task => task.name === 'Default Goose JIT' && task.group.isDefault), 'default JIT task configuration');
+    await vscode.window.showTextDocument(helperDoc);
+    await runTask(() => vscode.commands.executeCommand('workbench.action.tasks.build'));
+    // Launch configurations must also work without an active source editor.
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+    const withoutEditor = await vscode.tasks.fetchTasks({ type: 'goose' });
+    assert.ok(withoutEditor.some(task => task.definition.action === 'run' && task.group.id === vscode.TaskGroup.Build.id));
+    await runTask(() => vscode.debug.startDebugging(folder, { type: 'goose', request: 'launch', name: 'JIT test', noDebug: true }));
+    const other = vscode.Uri.joinPath(folder.uri, 'other program.goose');
+    await fs.writeFile(other.fsPath, 'fn main() { print("OTHER_JIT_TEST"); }\n');
+    await runTask(() => vscode.debug.startDebugging(folder, {
+        type: 'goose', request: 'launch', name: 'JIT explicit file', program: '${workspaceFolder}/other program.goose'
+    }), other.fsPath);
+    assert.equal(vscode.debug.activeDebugSession, undefined, 'JIT runs do not create a debugger session');
+    console.log('Goose extension host: editor features, diagnostics, build tasks and JIT run configurations passed.');
 }
 
 module.exports = { run };

@@ -13,9 +13,13 @@ language server, runtime dependencies, or compiler changes are required.
   entries. Use **F8 / Shift+F8** to jump between problems. Lexer errors use the
   compiler's caret; type errors highlight the source line. Instantiation chains
   appear as related locations in Problems.
-- **Goose: Check Program**, **Goose: Run Program**, **Goose: Generate C**, and
+- **Goose: Check Program**, **Goose: Run with JIT**, **Goose: Generate C**, and
   **Goose: Show Compiler Output** in the Command Palette. The editor's play
-  button runs the program in a task terminal, with stdin and clickable errors.
+  button and **▶ Goose** status-bar button run the program in a task terminal,
+  with stdin and clickable errors.
+- **Ctrl+Shift+B**, **F5**, and **Ctrl+F5** run with JIT while editing Goose
+  (**Cmd+Shift+B** for build on macOS). **Goose: Run with JIT** is also available
+  in VS Code's Run configuration picker.
 - Top-level declarations in Outline, breadcrumbs and Go to Symbol (**Ctrl+Shift+O**).
 - Clickable imports, with root-relative, importing-file-relative (`import .foo;`),
   and standard-library resolution matching the compiler.
@@ -91,14 +95,26 @@ open Goose files in the same folder first. The compiler currently stops at the
 first error and typechecks instantiated functions; the extension preserves
 those limitations. Configuring the entry file is particularly useful for libraries.
 
-**Run Program** uses `--jit` and needs a Goose build with TinyCC enabled.
+**Run with JIT** uses `--jit` and needs a Goose build with TinyCC enabled.
 **Generate C** writes a `.c` file alongside the entry file, replacing an existing
 file of that name. Compiler execution is disabled in untrusted workspaces;
 highlighting, snippets and the outline remain available.
 
 ## Tasks
 
-**Tasks: Run Task** offers tasks for the current Goose file (or configured entry).
+JIT Run is the extension's build task. **Ctrl+Shift+B** runs it directly while
+editing a Goose file; Check and Generate C remain explicit commands under
+**Tasks: Run Task** and in the Command Palette. The editor and status-bar play
+buttons use the same JIT command. Check-on-save still only checks the program.
+
+The Goose shortcuts take precedence while a Goose editor has focus. To use
+your existing VS Code build/debug shortcuts instead, set
+`"goose.useRunKeybindings": false`. Existing `tasks.json` group/default choices
+are preserved. Buttons contributed by other extensions, such as CMake Tools,
+still control their own build systems; use the **▶ Goose** button for Goose.
+
+**Tasks: Run Task** offers tasks for the current Goose file (or configured entry,
+even when no Goose editor is active).
 For a persistent task, add this to your project's `.vscode/tasks.json`:
 
 ```json
@@ -107,8 +123,8 @@ For a persistent task, add this to your project's `.vscode/tasks.json`:
   "tasks": [
     {
       "type": "goose",
-      "label": "Check my Goose program",
-      "action": "check",
+      "label": "Run Goose with JIT",
+      "action": "run",
       "file": "main.goose",
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": "$goose"
@@ -129,6 +145,30 @@ For a persistent task, add this to your project's `.vscode/tasks.json`:
 `.c` suffix. Tasks use process arguments directly, including paths with spaces.
 Use VS Code's task save behavior to save edited files before running custom tasks.
 
+## Run configurations
+
+Select **Goose: Run with JIT** in the Run and Debug configuration picker to use
+VS Code's native Run controls. This launches the same terminal task, using
+`goose.entryFile` or the current Goose file. An optional `.vscode/launch.json`
+configuration can choose a specific program:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [{
+    "type": "goose",
+    "request": "launch",
+    "name": "Goose: Run with JIT",
+    "program": "${workspaceFolder}/main.goose",
+    "noDebug": true
+  }]
+}
+```
+
+This is run-only integration: breakpoints and stepping are not supported. Stop
+an executing program with **Tasks: Terminate Task** or its terminal's trash
+button. Program arguments still come from `goose.runArguments`.
+
 ## Verification
 
 `npm test` exercises the actual TextMate/Oniguruma grammar, declaration/import
@@ -142,7 +182,8 @@ For the editor integration suite, create an empty directory
 Extension** in this directory's Run and Debug menu. This suite writes fixtures
 and settings only in that disposable directory. It exercises activation, real
 compiler diagnostics, related error locations, imports, outline, tasks, and the
-edit/save lifecycle. Build the compiler first.
+edit/save lifecycle, and real JIT execution through commands, build tasks, and
+Run configurations. Build the compiler with TinyCC first.
 
 The implementation uses VS Code's [TextMate grammar support](https://code.visualstudio.com/api/language-extensions/syntax-highlight-guide),
 [task provider API](https://code.visualstudio.com/api/extension-guides/task-provider),

@@ -1,6 +1,7 @@
 'use strict';
 
 const vscode = require('vscode');
+const path = require('node:path');
 const { settings, argumentsFor, stdlibDirectories, absolute } = require('./config');
 const { parseDiagnostics, runCompiler, CheckQueue } = require('./diagnostics');
 const { declarations, imports, importCandidates } = require('./language');
@@ -117,20 +118,78 @@ function activate(context) {
     function makeTask(definition, uri, scope, name) {
         if (!vscode.workspace.isTrusted || uri.scheme !== 'file') return undefined;
         const config = settings(vscode, uri, definition, typeof scope === 'object' ? scope : undefined);
-        const titles = { check: 'Check Program', run: 'Run Program', generateC: 'Generate C' };
+        const titles = { check: 'Check Program', run: 'Run with JIT', generateC: 'Generate C' };
         if (!titles[definition.action]) return undefined;
         const task = new vscode.Task({ ...definition, type: 'goose', file: config.file },
             scope || config.workspaceFolder || vscode.TaskScope.Workspace,
             name || titles[definition.action], 'Goose',
             new vscode.ProcessExecution(config.compiler, argumentsFor(definition.action, config), { cwd: config.cwd }), '$goose');
-        if (definition.action === 'check' || definition.action === 'generateC') task.group = vscode.TaskGroup.Build;
+        // VS Code reserves isDefault for tasks.json. Contribute JIT as our only
+        // build task; explicit Check/Generate C tasks remain in Tasks: Run Task.
+        if (definition.action === 'run') task.group = vscode.TaskGroup.Build;
         task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Dedicated, clear: true };
         return task;
     }
 
+    const runStatus = vscode.window.createStatusBarItem('goose.run', vscode.StatusBarAlignment.Left, 5);
+    runStatus.name = 'Goose: Run with JIT';
+    runStatus.text = '$(play) Goose';
+    runStatus.tooltip = 'Compile and run Goose with the JIT';
+    runStatus.command = 'goose.run';
+    function updateRunStatus() {
+        if (vscode.workspace.isTrusted && vscode.window.activeTextEditor?.document.languageId === 'goose') runStatus.show();
+        else runStatus.hide();
+    }
+
+    const jitConfigurations = () => [{ type: 'goose', request: 'launch', name: 'Goose: Run with JIT', noDebug: true }];
+    // Participate in the native Run configuration picker without claiming a
+    // debugger. Launch the same terminal task, then stop debug resolution.
+    const launchProvider = {
+        provideDebugConfigurations: jitConfigurations,
+        resolveDebugConfiguration(_folder, config) {
+            return { ...jitConfigurations()[0], ...config, noDebug: true };
+        },
+        async resolveDebugConfigurationWithSubstitutedVariables(folder, config) {
+            if (!vscode.workspace.isTrusted) return undefined;
+            if (config.request !== 'launch') {
+                void vscode.window.showErrorMessage('Goose supports JIT launch only; attaching a debugger is not available.');
+                return undefined;
+            }
+            const active = vscode.window.activeTextEditor?.document;
+            const entry = (folder || active) && vscode.workspace.getConfiguration('goose', folder?.uri || active.uri).get('entryFile', '');
+            let uri;
+            if (config.program || entry) {
+                const file = config.program || entry;
+                const base = folder?.uri.fsPath || (active?.uri.scheme === 'file' ? path.dirname(active.uri.fsPath) : undefined);
+                if (!base && !path.isAbsolute(file)) {
+                    void vscode.window.showErrorMessage('Open a workspace folder or use an absolute Goose program path.');
+                    return undefined;
+                }
+                uri = vscode.Uri.file(absolute(file, base || path.dirname(file), active?.uri.fsPath || ''));
+            } else if (!folder || active && vscode.workspace.getWorkspaceFolder(active.uri)?.uri.toString() === folder.uri.toString()) {
+                uri = (await savedActiveDocument())?.uri;
+            }
+            if (!uri) {
+                void vscode.window.showErrorMessage('Open a Goose file or set goose.entryFile to run with JIT.');
+                return undefined;
+            }
+            const definition = { type: 'goose', action: 'run', file: uri.fsPath };
+            const cwd = settings(vscode, uri, definition, folder).cwd;
+            for (const doc of vscode.workspace.textDocuments) {
+                if (isGoose(doc) && doc.isDirty && cwdOf(doc) === cwd && !await doc.save()) return undefined;
+            }
+            await vscode.tasks.executeTask(makeTask(definition, uri, folder));
+            return undefined;
+        }
+    };
+
     context.subscriptions.push(
-        diagnostics, output,
+        diagnostics, output, runStatus,
         { dispose() { disposed = true; queue.invalidate(); } },
+        vscode.window.onDidChangeActiveTextEditor(updateRunStatus),
+        vscode.workspace.onDidGrantWorkspaceTrust(updateRunStatus),
+        vscode.debug.registerDebugConfigurationProvider('goose', launchProvider),
+        vscode.debug.registerDebugConfigurationProvider('goose', { provideDebugConfigurations: jitConfigurations }, vscode.DebugConfigurationProviderTriggerKind.Dynamic),
         vscode.commands.registerCommand('goose.showOutput', () => output.show()),
         vscode.commands.registerCommand('goose.check', async () => {
             const doc = await savedActiveDocument();
@@ -144,9 +203,17 @@ function activate(context) {
         })),
         vscode.tasks.registerTaskProvider('goose', {
             provideTasks() {
+                if (!vscode.workspace.isTrusted) return [];
                 const doc = vscode.window.activeTextEditor?.document;
-                if (!doc || !isGoose(doc) || !vscode.workspace.isTrusted) return [];
-                return ['check', 'run', 'generateC'].map(action => makeTask({ type: 'goose', action }, doc.uri));
+                if (doc && isGoose(doc)) return ['run', 'check', 'generateC'].map(action => makeTask({ type: 'goose', action }, doc.uri));
+                // A configured program is runnable even when another editor (or
+                // just the Run view) has focus.
+                return (vscode.workspace.workspaceFolders || []).flatMap(folder => {
+                    const entry = vscode.workspace.getConfiguration('goose', folder.uri).get('entryFile', '');
+                    if (!entry) return [];
+                    const uri = vscode.Uri.file(absolute(entry, folder.uri.fsPath, ''));
+                    return ['run', 'check', 'generateC'].map(action => makeTask({ type: 'goose', action }, uri, folder));
+                });
             },
             resolveTask(task) {
                 if (!vscode.workspace.isTrusted) return undefined;
@@ -164,7 +231,7 @@ function activate(context) {
                 if (resolved) {
                     resolved.definition = task.definition;
                     resolved.presentationOptions = task.presentationOptions;
-                    resolved.group = task.group;
+                    if (task.group) resolved.group = task.group;
                     resolved.problemMatchers = task.problemMatchers.length ? task.problemMatchers : ['$goose'];
                     resolved.runOptions = task.runOptions;
                 }
@@ -230,6 +297,7 @@ function activate(context) {
         recheck(cwd);
     };
     context.subscriptions.push(watcher, watcher.onDidCreate(changedOnDisk), watcher.onDidChange(changedOnDisk), watcher.onDidDelete(changedOnDisk));
+    updateRunStatus();
     recheck();
 }
 
