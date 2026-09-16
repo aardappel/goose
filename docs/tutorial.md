@@ -503,10 +503,8 @@ struct Order { id: varint, customer: u8[varint], items: Item[varint] }
 ```
 
 In most languages `Order` is a struct owning a `String` and a `Vec<Item>`,
-each `Item` owning another `String`: five allocations for one small order,
-and three pointer hops to read a SKU. Here an order is roughly ten bytes per
-item plus a header, laid end to end, and the whole order book is one array of
-those.
+each `Item` owning another `String`. Here an order is its header followed by
+its items, laid end to end, and the whole order book is one array of those.
 
 ```goose
 // "SKU:qty:cents;..." -> items, built straight into the field that gets them
@@ -537,7 +535,27 @@ for o in book {
 alice owes 4498 cents over 2 items
 ```
 
-Note `parse_items` returning a growable array by value and that costing
+It is worth counting the bytes, because this is the sort of record a real
+program has millions of. That order — id 1001, customer `alice`, two items
+with 5 and 7-character SKUs — is:
+
+| | bytes | allocations |
+|---|---:|---:|
+| Goose, as declared above | **29** | **0** |
+| C++ `std::string` + `std::vector<Item>` | 160 | 1 |
+| Rust `String` + `Vec<Item>` | 153 | 4 |
+
+The C++ and Rust figures are `sizeof` plus the blocks actually allocated,
+measured with MSVC and rustc; they do not include the allocator's own
+per-block header and rounding, which would add more. C++ gets off lightly
+here only because all three strings are short enough for the small-string
+optimization — one character more in a SKU and it is four allocations too.
+
+Five times smaller is a cache story, not a bookkeeping one: the whole book
+streams. And `id`, `qty` and `cents` cost one byte each rather than eight,
+because a `varint` is as wide as its value needs.
+
+Note also `parse_items` returning a growable array by value and that costing
 nothing: the callee is compiled knowing its destination and writes the items
 directly into the order's field, inside the book. Returning a built-up value
 and out-parameter style are the same cost in Goose, which is why the
@@ -660,7 +678,8 @@ narrow offset:
 
 * `T&<u32>` — *self-relative*: an offset from the field itself to the target,
   which must live in the same enclosing array. Position-independent, so a
-  structure built out of these can be copied, mapped or saved whole.
+  structure built out of these means the same thing wherever it sits — hold
+  that thought, because §15 cashes it in.
 * `T&<u32 in pool>` — *pool-relative*: an offset from a named global pool's
   base. A store is a subtraction from a base already in a register, and — the
   thing self-relative cannot do — other arrays can hold links *into* the
@@ -714,11 +733,12 @@ writes the offset, and the push cannot invalidate `cur` because nothing
 moves. In safe Rust this is where you switch to `Vec<Node>` plus `u32`
 indices.
 
-The node is 12 bytes: two `i32`s and two 4-byte links. A thousand random
-inserts:
+The node is 16 bytes: two `i32`s and two 4-byte links, where a tree of
+`Box<Node>` or `unique_ptr<Node>` would be 24 bytes of node plus an
+allocation header per node. A thousand random inserts:
 
 ```
-442 nodes, 5304 bytes of tree, no allocator involved
+442 nodes, 7072 bytes of tree, no allocator involved
 ```
 
 ### `self`, and sentinels
@@ -780,19 +800,25 @@ let s2 = pool.alloc_index(Item { 12, 2.0 });   // takes slot s0 back
 ```
 
 `alloc_index` / `alloc_ref` take a free slot if there is one and push
-otherwise; `free(i)` records a slot for reuse. That is an allocator, and you
-might reasonably ask what happened to the safety.
+otherwise; `free(i)` records a slot for reuse. That looks like an allocator,
+so it is worth being precise about what `free` does and does not do:
 
-The answer is the honest one, and it is worth stating plainly because it is
-the *entire* residual unsafety in the language:
+> **All elements remain valid at all times.** `free` does not release any
+> memory and does not end any lifetime — it adds an index to a freelist.
+> The slot is still a live, well-typed `Item` afterwards, and it still
+> belongs to the pool, which still belongs to its owning scope.
 
-> **All elements remain valid at all times.** A freed slot is still a live,
-> well-typed `Item`. A stale reference to it reads a *different value of the
-> correct type* — possibly the wrong one, which is a logic bug — but never
-> corrupt memory, never a type confusion, never an out-of-bounds access.
+So there is nothing here to be unsafe. A reference to a freed-and-reused slot
+reads a *different `Item`* — a perfectly good one, just not the one you were
+thinking of. That is the same class of mistake as keeping an index into an
+array you have since overwritten: a logic bug, and one you can reason about
+locally. Memory is never accessed at a type it was not written with, and
+nothing goes out of bounds, because nothing was freed.
 
-That is the trade that buys allocator-free speed. It is a much smaller hole
-than "use after free", and it is the only one.
+What it costs, then, is not safety but tidiness: within a pool, elements are
+managed loosely rather than by scope, and it is on you to stop naming a slot
+you have handed back. That is the price of expressing lifetimes a stack
+cannot.
 
 Running the linked list above through it:
 
@@ -812,41 +838,21 @@ want to be one contiguous run you can walk as a plain slice
 
 ---
 
-## 12. Errors, three ways
+## 12. Errors, and `return … from`
 
-There is no exception mechanism and no `Result` type. There is no specified
-error convention at all — it is the application's choice. In practice three
-idioms cover everything, and the samples use each where it fits.
+There is no exception mechanism and no `Result` type, and no specified error
+convention either — it is the application's choice. For a call with two
+outcomes the trailing `bool` you have already seen is enough
+(`let age, ok = parse_age(s);`), and for "found or not" it is a `T?`, which
+costs nothing because it is a reference into the input. Neither needs
+explaining.
 
-**A trailing bool**, for a call with two outcomes:
-
-```goose
-fn parse_age(s: u8[:]) -> i32, bool {
-    let v, ok = parse_int(trim(s));
-    if !ok || v < 0 || v > 150 { return 0, false; }
-    return v as i32, true;
-}
-
-let age, ok = parse_age(" 41 ");
-```
-
-**An optional**, for "found or not" — it is a reference into the input, so
-nothing is copied and you can write through it:
-
-```goose
-fn find_user(users: User[:], name: u8[:]) -> User? {
-    for &u in users { if u.name == name { return u; } }
-    return null;
-}
-
-let found = find_user(users, "ada");
-if found { found.age += 1; }            // narrowed: a plain User& in here
-```
-
-**`return ... from f`**, for a failure deep inside nested calls that should
-land in one place. This is the language's lightweight exception: it returns
-`E` as the result of the innermost active call of `f`, unwinding everything
-between.
+The one that is not obvious is **`return E from f`**: it returns `E` as the
+result of the innermost active call of `f`, unwinding every frame in between.
+It is the language's lightweight exception, and it exists because the two
+idioms above scale badly — a failure eight frames deep inside a parser would
+otherwise mean eight signatures carrying an error they have nothing to do
+with.
 
 ```goose
 fn load(text: u8[:]) -> User[>..], u8[] {
@@ -874,17 +880,42 @@ error: line 2: expected name,age
 error: line 1: bad age
 ```
 
-Look at what `parse_record` does *not* have: no error type in its signature,
-no `Result`, no `?` on every call, nothing threaded through the intermediate
-frames. Validity is checked statically — every call site of a function that
-does `return ... from load` must be inside a `load` — and the implementation
-is a hidden discriminant on the frames in between, checked on return. There
-is no unwinder, no tables, and no destructors, because there are none to run.
-The happy path pays essentially nothing for the possibility.
+Look at what `parse_record` does *not* have. Its return type is `User` — not
+`Result<User, E>`, not `(User, bool)`. It has no error parameter, no `?` on
+the calls it makes, and nothing to propagate. The same is true of every
+function between it and `load`, however many there are. All the error
+handling in the program is the two `guard`s that produce a message and the
+one `if err.len > 0` that reports it.
 
-And the ones that stop the program: `assert(c)` for invariants, `abort(msg)`
-with a message, `exit(code)`. The checker knows the last two never return, so
-either can be the whole of a `guard`'s else.
+Three things make this cheap rather than clever:
+
+* **It is checked statically.** Validity is a compile-time property: every
+  call site of a function containing `return … from load` must lie inside the
+  dynamic extent of a `load` call, and the whole-program compiler verifies
+  that in call-graph order. There is no "uncaught" case at runtime.
+* **The implementation is a hidden discriminant**, not an unwinder. Each
+  frame on the path gains a "this result is mine" versus "propagate to
+  `load`" flag; a caller checks it and returns immediately in the second
+  case. Normal epilogues run, so every data-stack watermark restores by
+  itself. No tables, no `setjmp`, no destructors — there are none to run.
+* **The result lands where `load`'s caller wanted it.** `str("line ", …)`
+  builds its message directly at `load`'s return destination, straight past
+  the frames being unwound.
+
+So the happy path pays for a flag check per frame on the way out and nothing
+else, which is why the parsers in the samples use this for *every* syntax
+error rather than reserving it for catastrophes
+([`17_calc`](../samples/17_calc.goose),
+[`18_json`](../samples/18_json.goose) — a bad token, a missing bracket and a
+bad escape are all one line each).
+
+The same machinery is what lets a block `return` from its enclosing function
+rather than from the HOF calling it (§13), which is the other place you will
+meet it.
+
+And the ones that stop the program rather than reporting: `assert(c)` for
+invariants, `abort(msg)` with a message, `exit(code)`. The checker knows the
+last two never return, so either can be the whole of a `guard`'s else.
 
 ---
 
@@ -952,7 +983,8 @@ fn each_step<F>(lo: i64, hi: i64, step: i64) {
 }
 
 fn first_multiple_of_7(lo: i64, hi: i64) -> i64 {
-    each_step(lo, hi, 3) { if it % 7 == 0 { return it; } };   // returns from *this* function
+    each_step(lo, hi, 3) { if it % 7 == 0 { return it; } };   // returns from first_multiple_of_7,
+                                                              // not from each_step
     return -1;
 }
 ```
@@ -1171,7 +1203,7 @@ cost the other languages pay and Goose does not.
 
 ## 18. What it costs you
 
-An honest list, because you will meet all of these.
+You will meet all of these.
 
 * **You have to think about where data lives.** Not constantly, but the
   question "who owns this, and how long does its scope last" is one you now
@@ -1190,8 +1222,10 @@ An honest list, because you will meet all of these.
   static; it is also what stops you writing a plugin system.
 * **Whole-program compilation.** No separate compilation, no shared
   libraries of Goose code.
-* **`reusable` pools can hand you a stale read.** Correct type, wrong value.
-  It is the one hole, and it is deliberate.
+* **A `reusable` pool manages its elements loosely.** Nothing is freed and
+  nothing is unsafe, but a slot you handed back and then still name reads
+  whatever its next owner put there — the array equivalent of a stale index,
+  and yours to avoid.
 * **v1 omissions** you will notice: no move for resizables, one resizable per
   struct, no labeled break, no namespace privacy, no directory listing or
   networking in the library yet.

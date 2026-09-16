@@ -249,11 +249,17 @@ The slot array is grow-shrink, so a reference into it — a `get` or
 Bind such references in their own block, or use `update`:
 
 ```goose
-var counts = dictionary<u8[:], i32> {};
+var counts = dictionary<const u8[:], i32> {};
 each_split(text, ' ') { counts.update(it, 0) { it += 1; } };
 counts.each() { w, n => if n > 100 { print(w, " ", n); } };
-block { let n = counts.get("the"); if n { print(n); } }
+block { let n = counts.get("the"); if n { print(n); }; }
 ```
+
+The key type is `const u8[:]` because these keys are literals and views of a
+`let`; a dictionary whose keys are slices of a `var` buffer is
+`dictionary<u8[:], V>`. The `;` after the last `if` keeps it a statement: a
+block's value is its trailing expression, so an `if` in that position would
+need an `else`.
 
 ## vec
 

@@ -98,7 +98,7 @@ fn main() {
         insert(pool, r.rand_int(500) as i32);
         inserted++;
     }
-    print(inserted, " inserts, ", pool.len, " distinct keys, ", pool.len * 12, " bytes of tree");
+    print(inserted, " inserts, ", pool.len, " distinct keys, ", pool.bytes_of().len, " bytes of tree");
     print("height ", height(pool[0]), ", min ", min_key(pool), ", max ", max_key(pool));
 
     var sorted: i32[>..] = [];

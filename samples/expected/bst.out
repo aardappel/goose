@@ -1,4 +1,4 @@
-1000 inserts, 442 distinct keys, 5304 bytes of tree
+1000 inserts, 442 distinct keys, 7072 bytes of tree
 height 20, min 0, max 499
 1000 keys in order, first ten [0, 0, 1, 1, 2, 2, 2, 2, 3, 5]
 sorted: true

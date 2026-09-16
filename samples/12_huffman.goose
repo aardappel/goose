@@ -1,7 +1,7 @@
 // Huffman coding, end to end: count byte frequencies, build the code tree
 // with a priority queue, read the codes off the tree, pack the text into
 // bits, and decode it again. The tree lives in one array of nodes whose
-// links are 2-byte self-relative offsets -- a node is 12 bytes and the tree
+// links are 2-byte self-relative offsets -- a node is 10 bytes and the tree
 // for a 256-symbol alphabet fits in 6 KB -- and the priority queue is a
 // grow-shrink array of node indices heap-ordered by weight.
 //
@@ -61,7 +61,7 @@ fn main() {
         heap.heap_push((nodes.len - 1) as i32) { a, b => nodes[a].weight < nodes[b].weight };
     }
     let root .= nodes[heap.pop()];
-    print(nodes.len, " nodes, ", nodes.len * 12, " bytes of tree");
+    print(nodes.len, " nodes, ", nodes.bytes_of().len, " bytes of tree");
 
     // 4. Codes.
     var codes: Code[256] = [default<Code>(); 256];
