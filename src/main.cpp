@@ -9,6 +9,7 @@
 #include "parser.h"
 #include "resolve.h"
 #include "builtins.h"
+#include "gfx.h"
 #include "typecheck_cycles.h"
 #include "typecheck.h"
 #include "typecheck_types.h"
@@ -34,7 +35,6 @@
 #include "codegen_nodes.h"
 #include "runtime_inline.h"
 #include "jit.h"
-#include "gfx.h"
 
 namespace goose {
 
@@ -284,6 +284,15 @@ int Main(int argc, char **argv) {
         // Hidden: what a shader compiles to, without a program around it.
         else if (arg == "--compile-shader" && i + 1 < argc) shaderfile = argv[++i];
         else if (arg == "--shader-source" && i + 1 < argc) shadersource = argv[++i];
+        else if (arg == "--gfx-link" && i + 1 < argc) {
+            try {
+                printf("%s\n", GfxLinkFile(DirOf(argv[0]), argv[++i]).c_str());
+            } catch (CompileError &e) {
+                fprintf(stderr, "%s\n", e.msg.c_str());
+                return 1;
+            }
+            return 0;
+        }
         else if (arg == "-O0") optlevel = 0;
         else if (arg == "-O1") optlevel = 1;
         else if (arg == "-O2") optlevel = 2;
@@ -314,7 +323,8 @@ int Main(int argc, char **argv) {
         fprintf(stderr, "usage: goose [--dump] [--parse] [--tokens] [--specs] [--check] "
                         "[--no-bce] [--bce-test] [--bce-lines] [--unsafe-no-rf-check] [-O0|-O1|-O2] "
                         "[-o out.c] [--jit] [-DNAME=VALUE]... [--include header.h]... [--stdlib dir] "
-                        "file.goose [-- program args...] | --gen-runtime-header\n");
+                        "file.goose [-- program args...] | --gen-runtime-header | "
+                        "--gfx-link msvc|cc\n");
         fprintf(stderr, "without -o the program is compiled and run in this process%s.\n",
                 have_jit ? " by TinyCC" : " -- unavailable in this build, so the .c is written");
         return 1;
@@ -439,7 +449,9 @@ int Main(int argc, char **argv) {
             // The program shares this process, so its exit code becomes ours
             // and whatever it wrote is already on the same streams.
             fflush(msgs);
-            return RunJit(out, JitLibPath(DirOf(argv[0])), filename, progargs);
+            // The gfx layer is this compiler's own, handed to the program.
+            if (cg.usesgfx && !have_gfx) throw CompileError { no_gfx_error };
+            return RunJit(out, JitLibPath(DirOf(argv[0])), filename, progargs, cg.usesgfx);
         }
     } catch (CompileError &e) {
         fprintf(stderr, "%s\n", e.msg.c_str());

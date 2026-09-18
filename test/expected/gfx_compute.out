@@ -1,0 +1,5 @@
+scale: 200 of 200 right, last 597, past the count 0 0, buffer of 1024 bytes
+pattern: 128 white texels, row 0 WWWW....WWWW....
+pattern sampled by a fragment shader as written true
+row sums: [8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8]
+updated at byte 16: [1, 2, 3, 4]

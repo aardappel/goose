@@ -85,6 +85,9 @@ struct CodeGen {
     set<FnSpec *> usedexterns;   // Extern fns called by live code: prototypes.
     string code;        // Function bodies, size/eq helpers, thunks, main.
     bool usesthreads = false;
+    // Calls into the gfx layer (stdlib/gfx.goose), which a JIT run has to be
+    // handed from the compiler's own copy of it.
+    bool usesgfx = false;
     // Measurement only, and unsound: emit the whole `return ... from`
     // machinery but none of the post-call discriminant checks, so a program
     // that never takes a long-distance return still prints the right answer
@@ -656,6 +659,8 @@ struct CodeGen {
 
     string StrRaw(const string &v);
     string GenStrBytes(StrLit *s);
+    map<string, string> blobdata;
+    string BlobRaw(const string &v);
 
     // ------------------------------------------------------------------
     // Binary operators. Operand exprtypes are already decayed and unified.

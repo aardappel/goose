@@ -3,4 +3,5 @@ build-*
 bench/gen
 samples/*.ppm
 samples/*.pgm
+samples/*.png
 __pycache__

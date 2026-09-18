@@ -1,0 +1,12 @@
+2d: read back as written true
+2d: row 1 after a region update 64,191,12,255 255,255,255,255 255,255,255,255 112,143,21,255
+2d: sampled as written true
+mips: 8 x 8 with 4 levels
+mips: level 3 averages the quadrants true, alpha 255 255
+3d: read back as written true
+3d: slice 0 sampled as written true
+3d: slice 1 sampled as written true
+cube: +x -x +y -y +z -z 255,0,0,255 0,255,0,255 0,0,255,255 255,255,0,255 0,255,255,255 255,0,255,255
+array: layers 0 1 2 255,255,0,255 0,255,255,255 255,0,255,255
+cube face 4 cleared: 255,51,0,255 255,51,0,255 255,51,0,255 255,51,0,255
+float texels: vec4<f32> { 0.5, -1.25, 1000, 1 } vec4<f32> { 3, 0, -0.125, 2 }

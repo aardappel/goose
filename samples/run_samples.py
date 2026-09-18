@@ -2,9 +2,14 @@
 """Compiles every sample, builds the generated C, runs it and compares its
 stdout, byte for byte after newline normalization, with expected/<name>.out.
 Samples run with this directory as the working directory; a sample reads
-data/<name>.stdin as its stdin when that file exists, and a sample's C header
-(<name>.h, see call_c) is passed with --include. Timings and machine-dependent
-facts go to stderr, which is not compared.
+data/<name>.stdin as its stdin when that file exists, gets the words of
+data/<name>.args as its arguments, and a sample's C header (<name>.h, see
+call_c) is passed with --include. Timings and machine-dependent facts go to
+stderr, which is not compared.
+
+A sample importing gfx draws off screen here (GOOSE_GFX_HEADLESS), links what
+`goose --gfx-link` names, and is skipped where the compiler has no gfx layer
+or the machine no GPU device.
 
 A compiler built with the TinyCC backend also runs every sample a second way,
 in JIT mode -- built and run inside the compiler process, with no C file and no
@@ -16,6 +21,7 @@ Used by test/run_tests.py; runnable on its own:
 """
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -57,9 +63,13 @@ def main():
         ap.error("the sanitize profile requires Linux and Clang")
 
     tc.setup_console()
+    # A windowed sample opens no window while it is being tested.
+    os.environ["GOOSE_GFX_HEADLESS"] = "1"
     exe = tc.find_goose(args.exe)
     cc = None if args.nocgen else tc.test_cc("clang" if args.profile == "sanitize" else args.cc)
     extra = tc.SANITIZER_FLAGS if args.profile == "sanitize" else ()
+    if args.profile == "sanitize":
+        tc.use_sanitizer_suppressions()
     # Blessing rewrites the expected outputs from the compiled run, so the
     # JIT comparison against them has nothing to say until that has happened.
     jit = not args.no_jit and not args.bless and tc.have_jit(exe)
@@ -68,7 +78,8 @@ def main():
     gendir.mkdir(parents=True, exist_ok=True)
     (HERE / "expected").mkdir(exist_ok=True)
 
-    failures, jitskips = 0, []
+    failures, jitskips, gfxskips = 0, [], []
+    gfxlibs = tc.gfx_link(exe, cc) if cc else []
     for f in sorted(HERE.glob("*.goose")):
         # The number prefix orders the files for reading; outputs, data and
         # headers go by the bare name.
@@ -76,6 +87,9 @@ def main():
         cfile = gendir / f"{name}.c"
         efile = gendir / (name + tc.EXE_SUFFIX)
         infile = HERE / "data" / f"{name}.stdin"
+        argfile = HERE / "data" / f"{name}.args"
+        progargs = argfile.read_text(encoding="utf-8").split() if argfile.exists() else []
+        isgfx = re.search(r"^import gfx;", f.read_text(encoding="utf-8"), re.M) is not None
         expfile = HERE / "expected" / f"{name}.out"
         gargs = ["-O2"]
         header = HERE / f"{name}.h"
@@ -84,10 +98,13 @@ def main():
         if jit:
             # Same source, same expected output, no C file and no external
             # compiler: the sample built and run inside the compiler process.
-            code, out, err = tc.run_capture([exe] + gargs + ["--jit", str(f)], cwd=HERE,
+            code, out, err = tc.run_capture([exe] + gargs + ["--jit", str(f), "--"] + progargs,
+                                            cwd=HERE,
                                             stdin_path=infile if infile.exists() else None)
             if code != 0 and tc.JIT_UNSUPPORTED in err:
                 jitskips.append(f.name)
+            elif isgfx and (tc.GFX_UNAVAILABLE in err or tc.GFX_NO_DEVICE in err):
+                gfxskips.append(f.name)
             elif code != 0 or tc.sanitizer_failure(err):
                 print("\n".join(err.splitlines()[:3]))
                 print(f"FAIL sample-jit {f.name} (exit {code})")
@@ -110,18 +127,25 @@ def main():
         if not cc:
             print(f"ok   sample-check {f.name}")
             continue
+        if isgfx and not gfxlibs:
+            gfxskips.append(f.name)
+            continue
         ok, log = cc.compile(cfile, efile, opt=2 if args.profile == "baseline" else 1,
-                             extra=extra, strict_decls=True, log=gendir / f"{name}.cc.log")
+                             extra=extra, strict_decls=True, libs=gfxlibs if isgfx else (),
+                             log=gendir / f"{name}.cc.log")
         if not ok:
             print("\n".join(log.splitlines()[:8]))
             print(f"FAIL sample-cc {f.name}")
             failures += 1
             continue
         outfile, errfile = gendir / f"{name}.out", gendir / f"{name}.err"
-        code, out, err = tc.run_capture([efile], cwd=HERE,
+        code, out, err = tc.run_capture([efile] + progargs, cwd=HERE,
                                         stdin_path=infile if infile.exists() else None)
         tc.write_text(outfile, out)
         tc.write_text(errfile, err)
+        if isgfx and tc.GFX_NO_DEVICE in err:
+            gfxskips.append(f.name)
+            continue
         if code != 0 or tc.sanitizer_failure(err):
             print("\n".join(err.splitlines()[:3]))
             print(f"FAIL sample-run {f.name} (exit {code})")
@@ -142,6 +166,9 @@ def main():
 
     if jitskips:
         print("skip JIT for sample(s) the backend cannot run yet: " + ", ".join(jitskips))
+    if gfxskips:
+        print("skip gfx sample(s) (no gfx layer or no GPU device): " +
+              ", ".join(sorted(set(gfxskips))))
     if failures:
         print(f"{failures} SAMPLE FAILURE(S)")
         return 1

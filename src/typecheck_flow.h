@@ -1660,6 +1660,28 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             }
             return first;
         }
+        case B_EMBED_SHADER: {
+            // embed_shader("file.frag"): the shader compiled now, and the
+            // result a read-only view of static data, like a string
+            // literal's (stdlib/gfx.goose).
+            auto lit = Is<StrLit>(args[0]);
+            if (!lit) Error(c, "embed_shader takes a string literal: the shader file's path");
+            auto path = EmbeddedShaderPath(ast.sources[c->line.fileidx].first, lit->val);
+            if (!ast.shaders.count(path)) {
+                try {
+                    ast.shaders[path] = CompileShaderFile(path);
+                } catch (CompileError &e) {
+                    Error(c, cat("embed_shader: ", e.msg));
+                }
+            }
+            args[0]->exprtype = cu8slice;
+            c->rettypes.push_back(cu8slice);
+            Val v;
+            v.type = cu8slice;
+            v.rootexact = true;   // Static data owns what it holds.
+            v.writable = false;
+            return v;
+        }
         case B_COPY: {
             // copy(x): a fresh value from stored one (§4.1), for the
             // destinations that never copy implicitly.

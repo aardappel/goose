@@ -1,0 +1,6 @@
+# LeakSanitizer suppressions for the sanitize profile (run_tests.py and
+# samples/run_samples.py pass this file). cute_spirv's parser keeps its
+# syntax tree's lists in ckit arrays it never frees; third_party/cute_spirv
+# is a copy kept unmodified, so its leaks are suppressed rather than fixed
+# there.
+leak:cute_spirv.h

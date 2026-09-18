@@ -1,0 +1,6 @@
+depth: top 0,255,0,255, bottom left 255,0,0,255, bottom right 255,255,255,255
+depth: 2048 green, 1024 red, 1024 white
+instances: 255,0,0,255 0,255,0,255 0,0,255,255 255,255,0,255; 3840 black
+storage positions: 1024 yellow, at 255,255,0,255
+blend: half red over blue true
+msaa: inside 255,255,0,255, outside 0,0,0,255, partly covered pixels seen true

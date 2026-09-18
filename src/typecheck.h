@@ -1205,6 +1205,10 @@ struct TypeCheck {
                                      entry->sf->name, ")"));
                 }
                 if (auto c = Is<Call>(n)) {
+                    if (c->spec && c->spec->sf->isextern &&
+                        c->spec->sf->cname.rfind("gs_gfx_", 0) == 0)
+                        Error(n, cat("gfx runs on the main thread only: ", c->spec->sf->qname,
+                                     " is reached from thread_fn ", entry->sf->name));
                     rec(c->spec);
                     for (auto d : c->dispatch) rec(d);
                     for (auto &fs : c->fmtspecs) rec(fs.second);

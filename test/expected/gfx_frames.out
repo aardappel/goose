@@ -1,0 +1,8 @@
+screen 32 x 24, driver named true
+first frame true, count 1
+Space down true pressed true released false; A down false
+Space down true pressed false released false
+Space down false pressed false released true
+mouse at 10,20 left down true pressed true right down false
+moved by 5,-2 left released true
+quit after 3 more frames, count 10, time runs true, last frame took true

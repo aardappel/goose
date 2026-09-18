@@ -19,6 +19,37 @@ inline constexpr bool have_gfx = true;
 inline constexpr bool have_gfx = false;
 #endif
 
+// What running a gfx program in this process says when the layer is not
+// built in. The test runners report it as a skip.
+inline const char *no_gfx_error = "this compiler was built without SDL3; check out "
+                                  "third_party/SDL and reconfigure";
+
+// The response file of link inputs a program built from the generated C
+// needs to use gfx (cmake/gfx.cmake): `style` is "msvc" for cl and clang-cl,
+// "cc" for gcc and clang. An explicit override for a moved build tree, next
+// to the compiler binary for an installed one, and otherwise where CMake
+// wrote them.
+inline string GfxLinkFile(const string &exedir, const string &style) {
+    if (style != "msvc" && style != "cc")
+        throw CompileError { cat("--gfx-link takes msvc or cc, not ", style) };
+    if (!have_gfx) throw CompileError { no_gfx_error };
+    auto name = cat("link-", style, ".rsp");
+    vector<string> dirs;
+    if (auto env = getenv("GOOSE_GFX_LINK")) dirs.push_back(env);
+    dirs.push_back(cat(exedir, "gfx"));
+    #ifdef GOOSE_GFX_LINK_PATH
+        dirs.push_back(GOOSE_GFX_LINK_PATH);
+    #endif
+    for (auto &dir : dirs) {
+        auto path = cat(dir, "/", name);
+        if (auto f = fopen(path.c_str(), "rb")) {
+            fclose(f);
+            return path;
+        }
+    }
+    throw CompileError { cat("cannot find ", name, " (set GOOSE_GFX_LINK to its directory)") };
+}
+
 // The stage a shader file is for, from its extension; -1 for none.
 inline int ShaderStageOf(const string &path) {
     auto dot = path.find_last_of('.');
@@ -27,6 +58,16 @@ inline int ShaderStageOf(const string &path) {
     if (ext == ".frag") return GS_GFX_STAGE_FRAGMENT;
     if (ext == ".comp") return GS_GFX_STAGE_COMPUTE;
     return -1;
+}
+
+// Where embed_shader(`lit`) in the file `from` finds its shader: relative to
+// that file's directory, the way `import .x` resolves, unless absolute.
+inline string EmbeddedShaderPath(const string &from, string_view lit) {
+    auto absolute = (!lit.empty() && (lit[0] == '/' || lit[0] == '\\')) ||
+                    (lit.size() > 1 && lit[1] == ':');
+    if (absolute) return string(lit);
+    auto pos = from.find_last_of("/\\");
+    return cat(pos == string::npos ? string() : from.substr(0, pos + 1), lit);
 }
 
 // The blob for the shader file at `path` (src/gfx/gfx_blob.h). A shader that

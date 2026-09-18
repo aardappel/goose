@@ -12,6 +12,9 @@
 #ifdef GOOSE_HAVE_LIBTCC
 #include "libtcc.h"
 #endif
+#ifdef GOOSE_HAVE_GFX
+#include "gfx/gfx_api.h"
+#endif
 
 namespace goose {
 
@@ -49,10 +52,24 @@ inline void JitDiag(void *opaque, const char *msg) {
     Append(*(string *)opaque, msg, "\n");
 }
 
+// The gfx layer's functions (src/gfx/gfx_api.h), which a program using the
+// gfx module calls: this process's own copy of them, defined for the
+// program before it is relocated.
+inline void AddGfxSymbols(TCCState *s) {
+    #ifdef GOOSE_HAVE_GFX
+        #define GS_GFX_SYMBOL(ret, name, params) tcc_add_symbol(s, #name, (const void *)&name);
+        GS_GFX_API(GS_GFX_SYMBOL)
+        #undef GS_GFX_SYMBOL
+    #else
+        (void)s;
+    #endif
+}
+
 // Compiles `csrc` in memory and calls its main, returning what the program
 // returned or exited with. `progargs` become the program's argv after argv[0].
+// `gfx` says the program calls into the gfx layer.
 inline int RunJit(const string &csrc, const string &libpath, const string &progname,
-                  const vector<string> &progargs) {
+                  const vector<string> &progargs, bool gfx) {
     string diags;
     auto s = tcc_new();
     if (!s) throw CompileError { "libtcc: out of memory" };
@@ -67,6 +84,7 @@ inline int RunJit(const string &csrc, const string &libpath, const string &progn
     };
     if (tcc_set_output_type(s, TCC_OUTPUT_MEMORY) < 0) fail("cannot target memory");
     if (tcc_compile_string(s, csrc.c_str()) < 0) fail("compiling the generated C failed");
+    if (gfx) AddGfxSymbols(s);
     // tcc_run hands these to the program's main, which takes them as C main
     // does: an array of writable pointers. Hence the mutable copies.
     auto name = progname;
@@ -87,7 +105,7 @@ inline int RunJit(const string &csrc, const string &libpath, const string &progn
 #else
 
 inline int RunJit(const string &, const string &, const string &,
-                  const vector<string> &) {
+                  const vector<string> &, bool) {
     throw CompileError { "this compiler was built without the TinyCC backend; "
                          "check out third_party/tinycc and reconfigure, or pass -o" };
 }

@@ -81,6 +81,29 @@ if(GOOSE_HAVE_LIBTCC)
         GOOSE_HAVE_LIBTCC=1 GOOSE_TCC_LIB_PATH="${TCC_STAGE}")
 endif()
 
+# The optional graphics module (stdlib/gfx.goose): SDL3 from the
+# third_party/SDL submodule and the C layer over it, built into the compiler
+# for JIT runs and linked into programs built from the generated C. Without
+# the submodule, or with -DGOOSE_GFX=OFF, the compiler builds and behaves the
+# same, except that it cannot run a gfx program itself.
+option(GOOSE_GFX "Build the SDL3 graphics module when the submodule is present" ON)
+if(GOOSE_GFX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL/CMakeLists.txt")
+    include(cmake/gfx.cmake)
+endif()
+if(GOOSE_HAVE_GFX)
+    target_link_libraries(goose PRIVATE goose_gfx)
+    target_compile_definitions(goose PRIVATE
+        GOOSE_HAVE_GFX=1 GOOSE_GFX_LINK_PATH="${CMAKE_BINARY_DIR}/gfx/$<CONFIG>")
+    if(MSVC)
+        # The system DLLs static SDL brings into goose: delay-loaded, so that
+        # a compiler run which never opens a window does not load them.
+        foreach(dll IN ITEMS user32 gdi32 winmm imm32 ole32 oleaut32 version setupapi shell32)
+            target_link_options(goose PRIVATE "/DELAYLOAD:${dll}.dll")
+        endforeach()
+        target_link_libraries(goose PRIVATE delayimp)
+    endif()
+endif()
+
 if(MSVC)
     # /bigobj: the compiler is one translation unit of header-inline
     # functions, past the object format's default COMDAT section limit.

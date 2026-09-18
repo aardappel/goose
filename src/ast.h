@@ -1144,6 +1144,10 @@ struct Ast {
     vector<Node *> topdecls;                        // In source/import order.
     vector<VarDecl *> globals;                      // Initialization order.
 
+    // embed_shader's compiled blobs, by the shader's path as resolved from
+    // the file calling it: compiled once by the checker, emitted by codegen.
+    map<string, string> shaders;
+
     // The checked field defaults of every instantiation, and with the
     // global initializers every checked tree that runs outside a function
     // body. `f` gets the slot, so a pass that rewrites trees can put its

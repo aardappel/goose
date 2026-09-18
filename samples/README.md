@@ -92,3 +92,9 @@ calls it, so they are compiled and run as part of the test suite.
 | Sample | What it shows |
 |---|---|
 | [26_file_tree](26_file_tree.goose) | A directory tree: nodes in a `reusable` pool, passed around as references, each directory's entries one run of 4-byte `in pool` links in a `reusable[]` pool, grown in place or moved by `realloc_slice`; `rm -r` gives slots and runs back, `mv` relinks, and the pools' counts show the reuse. |
+
+## The GPU
+
+| Sample | What it shows |
+|---|---|
+| [27_gfx_cube](27_gfx_cube.goose) | A window and a spinning, lit cube with the `gfx` module: GLSL shaders beside it (`gfx_cube.vert`, `gfx_cube.frag`) compiled in by `embed_shader`, vertex and index buffers from `bytes_of`, a uniform block as a packed struct, a depth buffer, the arrow keys; saves its last frame as `gfx_cube.png`. Needs a compiler built with SDL3 (`third_party/SDL`); the test runner draws it off screen. |

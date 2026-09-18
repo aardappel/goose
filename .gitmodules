@@ -1,3 +1,7 @@
 [submodule "third_party/tinycc"]
 	path = third_party/tinycc
 	url = https://github.com/TinyCC/tinycc
+[submodule "third_party/SDL"]
+	path = third_party/SDL
+	url = https://github.com/libsdl-org/SDL
+	shallow = true

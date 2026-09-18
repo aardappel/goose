@@ -32,8 +32,9 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
-      # The TinyCC submodule is what the JIT backend is built from; without it
-      # the compiler still builds, and the JIT part of the suite is skipped.
+      # The TinyCC submodule is what the JIT backend is built from, and SDL
+      # what the gfx module is; without either the compiler still builds, and
+      # that part of the suite is skipped.
       - uses: actions/checkout@v4
         with:
           submodules: true
@@ -41,6 +42,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+
+      # SDL3, built for the gfx module from its submodule, needs the headers
+      # of what it can talk to (third_party/SDL/docs/README-linux.md, less
+      # OpenGL, which it is built without); with no window system at all the
+      # build takes the no-gfx path instead. Mesa's lavapipe is a Vulkan
+      # device with no GPU, for the gfx tests to run on.
+      - name: Install SDL build dependencies
+        if: runner.os == 'Linux'
+        run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          libasound2-dev libpulse-dev libaudio-dev libfribidi-dev libjack-dev libsndio-dev
+          libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev
+          libxss-dev libxtst-dev libxkbcommon-dev libdrm-dev libgbm-dev libdbus-1-dev
+          libibus-1.0-dev libudev-dev libthai-dev libpipewire-0.3-dev libwayland-dev
+          libdecor-0-dev liburing-dev mesa-vulkan-drivers libvulkan1
 
       # CMAKE_BUILD_TYPE is what the single-config generators read and --config
       # is what the Visual Studio generator reads; passing both builds Debug
@@ -73,6 +89,8 @@ jobs:
 
       # No submodule checkout: the sanitizer profile does not run the JIT,
       # whose program is uninstrumented and outlives its own allocations.
+      # Without SDL this is also the build that takes the no-gfx path, where
+      # the gfx tests still typecheck and generate C.
 
       # Instrument the C++ compiler as well as the C it emits. -O1 keeps
       # useful sanitizer stacks and compiler build time modest. Generated C

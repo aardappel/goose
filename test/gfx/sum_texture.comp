@@ -1,0 +1,11 @@
+// Reads a sampled texture in a compute shader: each invocation sums a row's
+// red channel into a buffer.
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(std430, set = 1, binding = 0) buffer Rows { float sums[]; };
+void main() {
+    int y = int(gl_GlobalInvocationID.x);
+    float s = 0.0;
+    for (int x = 0; x < 16; x++) s += texelFetch(src, ivec2(x, y), 0).r;
+    sums[y] = s;
+}

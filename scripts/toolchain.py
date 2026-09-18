@@ -100,6 +100,31 @@ def have_jit(exe):
 JIT_UNSUPPORTED = "JIT mode does not support"
 
 
+def have_gfx(exe):
+    """Whether this compiler has the gfx layer built in, answered as have_jit
+    answers for TinyCC: by running a one-line program that calls into it."""
+    probe = REPO_ROOT / "build" / "gfxprobe.goose"
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    write_text(probe, "import gfx;\nfn main() { print(gfx::available()); }\n")
+    code, out, _ = run_capture([exe, "--jit", probe])
+    return code == 0 and out.strip() == "true"
+
+
+def gfx_link(exe, cc):
+    """The link inputs a program using gfx needs with this toolchain, as a
+    list for CC.compile's `libs`: the response file cmake/gfx.cmake wrote. An
+    empty list when the compiler was built without gfx."""
+    code, out, _ = run_capture([exe, "--gfx-link", "msvc" if cc.style == "msvc" else "cc"])
+    return [f"@{out.strip()}"] if code == 0 and out.strip() else []
+
+
+# What the compiler says when asked to run a gfx program without the gfx layer
+# built in, and what a gfx test prints when there is no GPU device to run on.
+# The runners report both as skips.
+GFX_UNAVAILABLE = "built without SDL3"
+GFX_NO_DEVICE = "gfx: no GPU device"
+
+
 # --- C and C++ toolchains ----------------------------------------------------
 
 _vs_root = None
@@ -159,9 +184,11 @@ class CC:
     desc: str
 
     def compile(self, sources, out, *, opt=None, defines=(), cpp=False,
-                warn="default", strict_decls=False, extra=(), log=None):
+                warn="default", strict_decls=False, extra=(), libs=(), log=None):
         """Compile and link `sources` into the executable `out`. Returns
-        (ok, combined output), and writes that output to `log` when given."""
+        (ok, combined output), and writes that output to `log` when given.
+        `libs` go after the sources, where a GNU linker resolves static
+        archives in order: a gfx program's `@link-*.rsp` (gfx_link)."""
         if cpp and not self.cxx:
             return False, f"no C++ compiler alongside {self.cc}\n"
         if isinstance(sources, (str, Path)):
@@ -177,8 +204,11 @@ class CC:
             if cpp:
                 argv += ["/EHsc", "/std:c++20"]
             argv += [f"/D{d}" for d in defines]
-            argv += list(extra) + sources
-            argv += [f"/Fe:{out}", f"/Fo:{out.with_suffix('.obj')}"]
+            argv += list(extra) + sources + [str(l) for l in libs]
+            # clang-cl counts libraries as inputs, and refuses an object file
+            # name for more than one; a directory it takes.
+            obj = f"{out.parent}{os.sep}" if libs else out.with_suffix(".obj")
+            argv += [f"/Fe:{out}", f"/Fo:{obj}"]
         else:
             if opt is not None:
                 argv.append(f"-O{opt}")
@@ -192,7 +222,7 @@ class CC:
             if cpp:
                 argv.append("-std=c++20")
             argv += [f"-D{d}" for d in defines]
-            argv += list(extra) + sources
+            argv += list(extra) + sources + [str(l) for l in libs]
             argv += ["-o", str(out)]
             # The runtime uses threads and libm; on Windows both live in the
             # CRT the driver links anyway, and asking for them by name fails.
@@ -330,6 +360,16 @@ def test_cc(name=None):
 # Goose virtual-memory arena.
 SANITIZER_FLAGS = ("-fsanitize=address,undefined", "-fno-sanitize=alignment",
                    "-fno-sanitize-recover=all", "-fno-omit-frame-pointer", "-g")
+
+
+def use_sanitizer_suppressions():
+    """Points LeakSanitizer, in this process's environment and so in every
+    program and compiler it starts, at test/lsan.supp: leaks in third-party
+    code kept unmodified in the tree."""
+    supp = f"suppressions={REPO_ROOT / 'test' / 'lsan.supp'}"
+    current = os.environ.get("LSAN_OPTIONS", "")
+    if supp not in current:
+        os.environ["LSAN_OPTIONS"] = f"{current}:{supp}" if current else supp
 
 
 def sanitizer_failure(stderr):

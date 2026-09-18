@@ -20,6 +20,13 @@ inside the compiler process. Those runs are compared with the same blessed
 outputs. A first-line `no-jit` marker leaves a test out of them, and a program
 the backend refuses outright is counted as a skip, not a failure.
 
+The gfx/ tests use the SDL3 graphics module. They always parse, typecheck and
+generate C; they build and run where the compiler has the gfx layer built in,
+linking what `goose --gfx-link` names, and a machine without a GPU device
+counts as a skip. A gfx/ fixture with `// error:` markers is a rejection
+test, as in errors_tc/. test/gfx_api_check.py checks stdlib/gfx.goose
+against the C layer's own list of its functions, structs and constants.
+
 Profiles keep the CI coverage deliberate: baseline compares Goose/native C
 -O0 and -O2 plus the targeted debug-runtime runs; sanitize uses Goose -O2 and
 Clang -O1 with ASan/UBSan on Linux, including the samples and C runtime tests.
@@ -28,6 +35,7 @@ Clang -O1 with ASan/UBSan on Linux, including the samples and C runtime tests.
 """
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -36,6 +44,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "scripts"))
 import toolchain as tc
+import gfx_api_check
 
 
 def joined(text):
@@ -216,18 +225,27 @@ def main():
         ap.error("the sanitize profile requires Linux and Clang")
 
     tc.setup_console()
+    # The suite opens no windows: a gfx program asking for one draws off
+    # screen instead.
+    os.environ["GOOSE_GFX_HEADLESS"] = "1"
     exe = tc.find_goose(args.exe)
     cc = None if args.nocgen else tc.test_cc("clang" if args.profile == "sanitize" else args.cc)
     clang = None if args.nocgen or args.profile == "sanitize" else tc.find_clang_c()
     if args.require_clang and not clang:
         ap.error("requested secondary C front end is unavailable: clang")
     extra = tc.SANITIZER_FLAGS if args.profile == "sanitize" else ()
+    if args.profile == "sanitize":
+        tc.use_sanitizer_suppressions()
     # Not under the sanitizers: the program runs inside the compiler process and
     # is not itself instrumented, and its runtime allocations are still held
     # when the compiler exits, which LeakSanitizer reports against the compiler.
     jit = not args.no_jit and args.profile != "sanitize" and tc.have_jit(exe)
+    # What a gfx test program links, empty for a compiler built without the
+    # gfx layer: those tests then only generate C.
+    gfxlibs = tc.gfx_link(exe, cc) if cc else []
     print(f"profile: {args.profile}; C backend: {cc.desc if cc else 'none'}; "
-          f"JIT backend: {'TinyCC' if jit else 'none'}")
+          f"JIT backend: {'TinyCC' if jit else 'none'}; "
+          f"gfx: {'linked' if gfxlibs else 'not built in'}")
     r = Runner(exe)
     builddir = tc.REPO_ROOT / "build"
     builddir.mkdir(parents=True, exist_ok=True)
@@ -255,12 +273,24 @@ def main():
     else:
         r.ok("compile-shader probe_badset.frag")
 
+    # Both sides of the gfx module's C boundary describe it: they must agree.
+    problems = gfx_api_check.check()
+    if problems:
+        r.fail("gfx-api stdlib/gfx.goose against src/gfx/gfx_api.h", "\n".join(problems))
+    else:
+        r.ok("gfx-api stdlib/gfx.goose against src/gfx/gfx_api.h")
+
     # One level of category directories; nested syntax/ns and syntax/sub are
     # import fixtures, exercised by their entry programs rather than alone.
     tests = [f for f in sorted(HERE.glob("*/*.goose"))
              if f.parent.name not in ("errors", "errors_tc") and f.name != "lexer_tokens.goose"]
     if len({f.stem for f in tests}) != len(tests):
         ap.error("fixture names must be unique across categories (shared expected/ and build outputs)")
+    # A gfx fixture with error markers is a rejection test, kept beside the
+    # shaders it rejects.
+    gfx_errors = [f for f in tests if f.parent.name == "gfx" and error_markers(f)]
+    tests = [f for f in tests if f not in gfx_errors]
+    gfx_skipped = []
 
     dump_tests = []
     for f in tests:
@@ -308,6 +338,7 @@ def main():
             if "parse-only" in first_line(f):
                 continue
             name = f.stem
+            isgfx = f.parent.name == "gfx"
             runs, bad = {}, False
             levels = ("0", "2") if args.profile == "baseline" else ("2",)
             for ol in levels:
@@ -318,15 +349,27 @@ def main():
                     r.fail(f"cgen -O{ol} {f.name}", out + err)
                     bad = True
                     continue
+                # A gfx program still generates C without the layer; there is
+                # just nothing to link it with.
+                if isgfx and not gfxlibs:
+                    gfx_skipped.append(f.name)
+                    bad = True
+                    continue
                 ok, log = cc.compile(cfile, efile,
                                      opt=int(ol) if args.profile == "baseline" else 1,
                                      extra=extra, strict_decls=True,
+                                     libs=gfxlibs if isgfx else (),
                                      log=gendir / f"{name}-O{ol}.cc.log")
                 if not ok:
                     r.fail(f"cc -O{ol} {f.name}", "\n".join(log.splitlines()[:8]))
                     bad = True
                     continue
-                out = r.run_expected([efile], name, f"-O{ol} {f.name}")
+                code, out, err = tc.run_capture([efile])
+                if isgfx and tc.GFX_NO_DEVICE in err:
+                    gfx_skipped.append(f.name)
+                    bad = True
+                    break
+                out = r.check_run(name, f"-O{ol} {f.name}", code, out, err)
                 if out is None:
                     bad = True
                     continue
@@ -454,6 +497,11 @@ def main():
                     skipped.append(f.name)
                     bad = True
                     break
+                if f.parent.name == "gfx" and (tc.GFX_UNAVAILABLE in err or
+                                               tc.GFX_NO_DEVICE in err):
+                    gfx_skipped.append(f.name)
+                    bad = True
+                    break
                 out = r.check_run(name, f"jit -O{ol} {f.name}", code, out, err)
                 if out is None:
                     bad = True
@@ -485,8 +533,12 @@ def main():
         if r.check_error(f, "expected-error", code, out, err):
             r.ok(f"error {f.name}")
 
+    if gfx_skipped:
+        print(f"skip running {len(set(gfx_skipped))} gfx test(s) (no gfx layer or no GPU "
+              f"device): " + ", ".join(sorted(set(gfx_skipped))))
+
     # Typecheck error tests: must parse, must fail the typechecker.
-    for f in sorted((HERE / "errors_tc").glob("*.goose")):
+    for f in sorted((HERE / "errors_tc").glob("*.goose")) + gfx_errors:
         code, out, err = r.goose("--parse", f)
         if code != 0:
             r.fail(f"tc-error-parses {f.name}", out + err)
