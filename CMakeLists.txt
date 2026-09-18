@@ -52,6 +52,10 @@ add_executable(goose
     src/gfx.h
 )
 
+# The compile runs on a thread of its own, with a larger stack (main.cpp).
+find_package(Threads REQUIRED)
+target_link_libraries(goose PRIVATE Threads::Threads)
+
 # The shader compiler behind embed_shader: third-party C (third_party/
 # cute_spirv), always built, so a gfx program typechecks and emits the same C
 # with or without SDL.

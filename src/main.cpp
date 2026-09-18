@@ -255,6 +255,9 @@ void GenRuntimeHeader(const char *argv0) {
     printf("wrote %s (%d bytes)\n", path.c_str(), (int)out.size());
 }
 
+// At the end of this file, past the system headers it needs.
+int RunOnCompilerStack(const function<int()> &fn);
+
 int Main(int argc, char **argv) {
     string filename, outfile, stdlibdir, shaderfile, shadersource;
     auto dump = false, tokens = false, parseonly = false, specs = false, nocgen = false;
@@ -339,7 +342,10 @@ int Main(int argc, char **argv) {
     }
     // The program shares stdout in JIT mode; progress goes to stderr.
     auto msgs = jit ? stderr : stdout;
-    try {
+    // What a JIT run compiles and starts, once the compile produced it.
+    string program;
+    auto usesgfx = false;
+    auto compile = [&]() -> int {
         if (tokens) {
             DumpTokens(filename);
             return 0;
@@ -446,18 +452,103 @@ int Main(int argc, char **argv) {
                 throw CompileError { "JIT mode does not support threads yet (TinyCC cannot "
                                      "place thread-local storage in an in-memory run); "
                                      "compile with -o and a C compiler instead" };
-            // The program shares this process, so its exit code becomes ours
-            // and whatever it wrote is already on the same streams.
-            fflush(msgs);
             // The gfx layer is this compiler's own, handed to the program.
             if (cg.usesgfx && !have_gfx) throw CompileError { no_gfx_error };
-            return RunJit(out, JitLibPath(DirOf(argv[0])), filename, progargs, cg.usesgfx);
+            program = std::move(out);
+            usesgfx = cg.usesgfx;
         }
+        return 0;
+    };
+    try {
+        // The compile has a thread of its own. The program a JIT run starts
+        // runs back on this one, the main thread, which a window on macOS
+        // has to be made on, with the stack an executable built from the
+        // same C would start with.
+        auto code = RunOnCompilerStack(compile);
+        if (code || program.empty()) return code;
+        // The program shares this process, so its exit code becomes ours
+        // and whatever it wrote is already on the same streams.
+        fflush(msgs);
+        return RunJit(program, JitLibPath(DirOf(argv[0])), filename, progargs, usesgfx);
     } catch (CompileError &e) {
         fprintf(stderr, "%s\n", e.msg.c_str());
         return 1;
     }
+}
+
+}  // namespace goose
+
+// The thread the compile runs on. The system headers come after the whole
+// compiler, so that none of their macros reach it.
+#ifdef _WIN32
+    #define WIN32_LEAN_AND_MEAN
+    #define NOMINMAX
+    #include <windows.h>
+    #include <process.h>
+#else
+    #include <pthread.h>
+#endif
+
+namespace goose {
+
+// The compile's native stack: address space reserved up front, of which only
+// what a program's depth reaches is ever committed. The typechecker stops at
+// stackfloor, STACKHEADROOM short of the end, which leaves room for the frames
+// a body nests below its last check and for reporting the error.
+constexpr size_t COMPILERSTACK = (size_t)64 << 20;
+constexpr size_t STACKHEADROOM = (size_t)4 << 20;
+
+struct CompilerThread {
+    const function<int()> &fn;
+    int code = 0;
+    exception_ptr failure;
+
+    void Run() {
+        stackfloor = StackPointer() - (COMPILERSTACK - STACKHEADROOM);
+        try {
+            code = fn();
+        } catch (...) {
+            failure = current_exception();
+        }
+    }
+};
+
+#ifdef _WIN32
+static unsigned __stdcall CompilerThreadMain(void *t) {
+    ((CompilerThread *)t)->Run();
     return 0;
+}
+#else
+static void *CompilerThreadMain(void *t) {
+    ((CompilerThread *)t)->Run();
+    return nullptr;
+}
+#endif
+
+// Runs fn on a thread with a COMPILERSTACK stack, and returns or throws here
+// what it returned or threw. Where no such thread can be had, fn runs on this
+// one, and nothing checks its depth.
+int RunOnCompilerStack(const function<int()> &fn) {
+    CompilerThread t { fn };
+    #ifdef _WIN32
+        // Without the flag, the size would be committed rather than reserved.
+        auto h = (HANDLE)_beginthreadex(nullptr, (unsigned)COMPILERSTACK, CompilerThreadMain,
+                                        &t, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+        if (!h) return fn();
+        WaitForSingleObject(h, INFINITE);
+        CloseHandle(h);
+    #else
+        pthread_attr_t attr;
+        pthread_t th;
+        if (pthread_attr_init(&attr)) return fn();
+        auto failed = pthread_attr_setstacksize(&attr, COMPILERSTACK) ||
+                      pthread_create(&th, &attr, CompilerThreadMain, &t);
+        pthread_attr_destroy(&attr);
+        if (failed) return fn();
+        pthread_join(th, nullptr);
+    #endif
+    if (t.failure) rethrow_exception(t.failure);
+    return t.code;
 }
 
 }  // namespace goose

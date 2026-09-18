@@ -57,6 +57,16 @@ shared templates: a function body is *cloned* per specialization
 `Cp1`, which preserves annotations and remaps the callee's `VarDef`s to fresh
 ones.
 
+**The compile thread.** `Main` runs the phases up to the finished C on a
+thread of its own with a 64 MB stack (`RunOnCompilerStack`, `COMPILERSTACK`
+in `main.cpp`): the typechecker recurses as deep as the program's
+compile-time call path (§3.1 below), and the platforms' main threads get
+anything from 1 MB (Windows) to 8 MB (Linux and macOS by default). The stack
+is reserved address space, committed only as deep as a compile goes. A JIT
+run starts the program back on the main thread, which gives it the thread and
+the stack an executable built from the same C would have, and is where macOS
+lets a window be made.
+
 **Driver flags** (`Main` in `main.cpp`):
 
 | Flag | Effect |
@@ -184,6 +194,30 @@ outer variables -- is saved on entry and restored on exit, so a caller sees
 nothing of what the callee did except through the summaries the
 specialization keeps.
 
+**Depth.** Since a body is checked inside the call that first reaches it,
+the native stack holds a `CheckSpecBody` activation for every call on the
+compile-time call path, and between two of them the frames of the statements
+and expressions around the call. Recursion deepens it only so far (a back
+edge reuses the specialization in progress, and a recursion whose types
+never repeat stops at `MAXNESTEDSPECS`, §3.11 below), but a chain of
+distinct functions is as long as a program makes it, a generated one
+especially. `CheckSpecBody` first compares the stack pointer with
+`stackfloor` (`utils.h`), which the driver sets `STACKHEADROOM` (4 MB) short
+of the end of the compile thread's 64 MB stack (§1 above), and below it
+reports "compile-time call path too deep for the compiler's stack" with the
+number of calls nested. The headroom holds whatever a body nests below the
+check and the error's unwinding. How many calls fit depends on the frames
+the C++ compiler made: for a chain of functions shaped
+`let a: i64[1] = [x]; next(a[0], n - 1) + 1` it is about 4,600 in an MSVC
+Debug build, 5,700 in a clang Debug or ASan one, 11,600 in an MSVC Release
+one and 18,700 in a clang -O3 one, and each block around the call costs
+another 1.6 to 2 KB per call in a Debug build and 0.7 to 1.3 KB in a Release
+one. Checking a path that deep takes seconds, and in a Release build
+gigabytes (each activation saves the narrowing of every variable in scope),
+so a larger stack would buy little. The optimizer's `Reach` and BCE's
+`BuildCallGraph` walk the same call graph recursively, with smaller frames,
+unchecked.
+
 **Frames, scopes and variables.** `frames` is the compile-time call path;
 `scopes` is one flat vector for the whole path (a frame records where its
 scopes begin), so `CurDepth()` -- the scope count -- increases monotonically
@@ -215,7 +249,8 @@ value, prints no list. `DumpInstance` writes a frame's specialization this
 way, and names the one a call would create in the polymorphic recursion
 error (§3.11). Each type is cut short at 200 characters (`DumpShort`): the
 text of one a runaway recursion built can be exponentially longer than the
-type.
+type. A chain longer than `MAXCHAIN` (20) shows its innermost and outermost
+ten and counts the rest.
 
 ### 3.2 Types, instantiation, and size classes
 

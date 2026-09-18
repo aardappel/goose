@@ -35,6 +35,26 @@ template<typename... Ts> string cat(const Ts &...args) {
 // Compile errors (in the program being compiled) throw a string, caught in main.
 struct CompileError { string msg; };
 
+// The native stack. The typechecker recurses once per function on the
+// compile-time call path, which is as long as the program makes it, so the
+// driver runs the passes on a thread with a stack of known size
+// (RunOnCompilerStack in main.cpp) and sets this floor some headroom above its
+// end: below it, a check reports the program as too deep rather than let the
+// stack overflow. Zero on any other thread, which nothing checks.
+inline thread_local uintptr_t stackfloor = 0;
+
+inline uintptr_t StackPointer() {
+    // The frame's address rather than a local's, which a sanitizer may move
+    // to a stack of its own.
+    #ifdef _MSC_VER
+        return (uintptr_t)_AddressOfReturnAddress();
+    #else
+        return (uintptr_t)__builtin_frame_address(0);
+    #endif
+}
+
+inline bool StackLow() { return StackPointer() < stackfloor; }
+
 // Reads a whole file; the returned string's c_str() gives the lexer its 0 terminator.
 inline bool LoadFile(const string &path, string &dest) {
     auto f = fopen(path.c_str(), "rb");

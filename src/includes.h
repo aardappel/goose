@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <deque>
+#include <exception>
 #include <functional>
 #include <map>
 #include <memory>
@@ -23,6 +24,10 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 
 namespace goose {
 using namespace std;

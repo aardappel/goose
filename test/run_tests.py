@@ -62,6 +62,24 @@ def error_markers(path):
     return re.findall(r"^// error: (.+)$", path.read_text(encoding="utf-8"), re.MULTILINE)
 
 
+def call_chain(depth, nest=0):
+    """A program whose compile-time call path is `depth` calls long: distinct
+    functions, each calling the next from inside `nest` blocks."""
+    fns = []
+    for i in range(depth):
+        call = f"step{i + 1}(a[0], n - 1) + 1"
+        for _ in range(nest):
+            call = f"{{ {call} }}"
+        fns.append(f"fn step{i}(x: i64, n: i64) -> i64 {{\n"
+                   f"    if n == 0 {{ return 0; }}\n"
+                   f"    let a: i64[1] = [x];\n"
+                   f"    {call}\n"
+                   f"}}\n")
+    fns.append(f"fn step{depth}(x: i64, n: i64) -> i64 {{ n }}\n")
+    fns.append("fn main() { print(step0(1, 3)); }\n")
+    return "".join(fns)
+
+
 class Runner:
     def __init__(self, exe):
         self.exe = exe
@@ -557,6 +575,35 @@ def main():
         code, out, err = r.goose("--check", f)
         if r.check_error(f, "expected-tc-error", code, out, err):
             r.ok(f"tc-error {f.name}")
+
+    # The typechecker checks a function inside the call that first reaches it,
+    # so its native stack grows with the compile-time call path, which a
+    # program can make as long as it likes. A chain of 2000 distinct functions
+    # checks and runs (at -O0: from -O1 on, the inliner nests a chain of
+    # single-use functions into one body as deep as the chain). A chain of
+    # 6000 that calls each next function from 32 blocks deep takes more stack
+    # than any build of the compiler has, a clang -O3 one holding about 2500
+    # of those calls, and is an error rather than a crash.
+    deepdir = builddir / "gen" / args.profile
+    deepdir.mkdir(parents=True, exist_ok=True)
+    f = deepdir / "call_chain.goose"
+    tc.write_text(f, call_chain(2000))
+    code, out, err = r.goose("-O0", "--check", f)
+    if code != 0:
+        r.fail(f"typecheck {f.name}", out + err)
+    else:
+        r.ok(f"typecheck {f.name}")
+    if jit:
+        code, out, err = r.goose("-O0", "--jit", f)
+        if code != 0 or joined(out) != "3":
+            r.fail(f"jit {f.name} (exit {code})", out + err)
+        else:
+            r.ok(f"jit {f.name}")
+    f = deepdir / "call_chain_too_deep.goose"
+    tc.write_text(f, "// error: compile-time call path too deep\n" + call_chain(6000, nest=32))
+    code, out, err = r.goose("-O0", "--check", f)
+    if r.check_error(f, "expected-tc-error", code, out, err):
+        r.ok(f"tc-error {f.name}")
 
     # The samples: compiled, built, run and compared with their expected output
     # (or only typechecked without a C compiler), by their own runner.

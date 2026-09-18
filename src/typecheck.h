@@ -230,6 +230,8 @@ struct TypeCheck {
         }
     }
 
+    static constexpr int MAXCHAIN = 20;
+
     [[noreturn]] void Error(Line l, const string &msg) {
         auto s = cat(Where(l), ": error: ", msg);
         // Show the offending source line with a caret-less underline context.
@@ -241,9 +243,18 @@ struct TypeCheck {
             while (*end && *end != '\n' && *end != '\r') end++;
             Append(s, "\n", string_view(p, (size_t)(end - p)));
         }
+        // A long chain shows its innermost and outermost instantiations.
+        auto chain = 0, nth = 0;
+        for (auto &f : frames) chain += f.sf && !f.isfunval;
         for (auto i = (int)frames.size() - 1; i > 0; i--) {
             auto &f = frames[i];
             if (!f.sf || f.isfunval) continue;
+            nth++;
+            if (chain > MAXCHAIN && nth > MAXCHAIN / 2 && nth <= chain - MAXCHAIN / 2) {
+                if (nth == MAXCHAIN / 2 + 1)
+                    Append(s, "\n  ... ", chain - MAXCHAIN, " more instantiations");
+                continue;
+            }
             Append(s, "\n  in ", f.sf->isthread ? "thread_fn " : "fn ");
             if (!f.spec) Append(s, f.sf->qname, "()");
             else DumpInstance(s, f.sf, f.spec->argtypes, f.spec->litparams, f.spec->bindings,

@@ -19,7 +19,10 @@ into that C rather than passing it to a backend, so a JIT run and a compiled one
 see the same text down to the byte. `--` passes the arguments after it to the
 program. The program shares the process: its exit status becomes the compiler's,
 its output goes to the same streams, and the compiler's own progress lines move
-to stderr so stdout belongs to the program alone.
+to stderr so stdout belongs to the program alone. It does not share the
+compiler's stack: the compile runs on a thread of its own with a larger one,
+and the program on the main thread, with the stack an executable built from the
+same C would start with.
 
 ## How it is built
 
