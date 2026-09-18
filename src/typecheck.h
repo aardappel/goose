@@ -989,7 +989,7 @@ struct TypeCheck {
     // Builtins (§3.7, §9.3, §11.2) and array members (§3.3, §5.4).
 
     Val CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> &args, Val *precv);
-    void CheckPrintable(Call *c, const char *what, Node *a);
+    void CheckPrintable(Call *c, const char *what, Node *&a);
     void CheckRenderable(Call *c, const char *what, TypeExpr *t, Node *at,
                          vector<TypeExpr *> &seen);
     FnSpec *UserFormat(Call *c, TypeExpr *t);

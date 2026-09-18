@@ -1582,12 +1582,12 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
     // The fully custom builtins first.
     switch (d.kind) {
         case B_PRINT:
-            for (auto a : args) CheckPrintable(c, d.name, a);
+            for (auto &a : args) CheckPrintable(c, d.name, a);
             return VoidVal();
         case B_STR: {
             // str(a, b, ...): a fresh u8[>..] holding the arguments' text,
             // built at the destination like any resizable result (§7.3).
-            for (auto a : args) CheckPrintable(c, d.name, a);
+            for (auto &a : args) CheckPrintable(c, d.name, a);
             auto t = ast.NewType(TY_ARRAY, c->line);
             t->arr = ast.NewDetail<TypeArray>();
             t->arr->sub = ast.inttypes[IS_U8];

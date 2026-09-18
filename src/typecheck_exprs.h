@@ -362,7 +362,7 @@ inline Node *TypeCheck::WholeSlice(Node *n) {
 // copy(x) checked: the node becomes x itself, the stored value codegen
 // copies at the destination like any lvalue source.
 inline void TypeCheck::UnwrapCopy(Node *&n) {
-    if (auto c = Is<Call>(n); c && c->builtin == B_COPY) n = c->args[0];
+    if (auto c = Is<Call>(n); c && c->builtin == B_COPY) n = c->FirstArg();
 }
 
 // A value meeting a destination of type `expected` (null or void: none).

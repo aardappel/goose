@@ -16,7 +16,7 @@ namespace goose {
 // null as null. A user overload fn format(out: u8[>..]&, v: T) renders a
 // T instead wherever one occurs; its specialization is recorded on the
 // call for codegen.
-inline void TypeCheck::CheckPrintable(Call *c, const char *what, Node *a) {
+inline void TypeCheck::CheckPrintable(Call *c, const char *what, Node *&a) {
     auto av = CheckValue(a, nullptr);
     vector<TypeExpr *> seen;
     CheckRenderable(c, what, av.type, a, seen);

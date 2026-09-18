@@ -511,6 +511,11 @@ NODE(Call)
     bool poolcheck = false;
     const string *shaderblob = nullptr;  // embed_shader: its compiled blob, in Ast::shaders.
     Call(Line l, Node *_callee) : Node(l), callee(_callee) {}
+    // The first argument in either spelling: a.f(b) is f(a, b) (§7.1).
+    Node *FirstArg() const {
+        if (auto d = dynamic_cast<Dot *>(callee)) return d->obj;
+        return args[0];
+    }
 NODE_END
 
 NODE(Index)

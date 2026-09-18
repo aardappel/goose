@@ -277,7 +277,7 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
     if (IsCtl(n)) { GenAny(n, Dst { DK_STACK, stk, want, lenlv }); return; }
     if (auto c = Is<Call>(n); c && c->builtin == B_COPY) {
         // copy(x): the stored value's bytes, as an implicit copy once was.
-        GenConstruct(c->args[0], stk, want, lenlv);
+        GenConstruct(c->FirstArg(), stk, want, lenlv);
         return;
     }
     if (auto c = Is<Call>(n)) {
