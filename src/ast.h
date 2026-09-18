@@ -658,6 +658,8 @@ NODE(FunVal)
     BCE_WALK
     vector<Param> params;       // Empty param list = implicit "it".
     bool explicit_params = false;
+    int col = 0;                // Of the `{`, 1-based: tells blocks on one line apart
+                                // in the instantiation chain (Line has no column).
     Block *body;
     FunVal(Line l, Block *_body) : Node(l), body(_body) {}
 NODE_END

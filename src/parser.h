@@ -1156,9 +1156,11 @@ struct Parser {
 
     FunVal *ParseFunVal() {
         auto line = CurLine();
+        auto col = (int)(lex.attr.data() - lex.toklinestart) + 1;
         Expect(T_LCURLY, "function value");
         auto b = New<Block>(line);
         auto fv = New<FunVal>(line, b);
+        fv->col = col;
         if (lex.tok == T_IDENT || lex.tok == T_VAR) {
             // Tentative `params =>` prefix; else the body starts right away
             // with an implicit `it` parameter.

@@ -246,7 +246,8 @@ struct TypeCheck {
             if (!f.sf || f.isfunval) continue;
             Append(s, "\n  in ", f.sf->isthread ? "thread_fn " : "fn ");
             if (!f.spec) Append(s, f.sf->qname, "()");
-            else DumpInstance(s, f.sf, f.spec->argtypes, f.spec->litparams, f.spec->bindings);
+            else DumpInstance(s, f.sf, f.spec->argtypes, f.spec->litparams, f.spec->bindings,
+                              f.spec->fnvals);
             Append(s, " instantiated from ", Where(f.callline));
         }
         throw CompileError { s };
@@ -254,22 +255,34 @@ struct TypeCheck {
 
     // A specialization as a diagnostic names it. The argument types show the
     // bindings of type variables a parameter type names; the others are
-    // listed (`size<T = f64>()`), or distinct specializations would print
-    // alike.
+    // listed, and so are the bound function values (`size<T = f64>()`,
+    // `apply<F = wide>(i64)`), or distinct specializations would print alike.
     void DumpInstance(string &s, SFunction *sf, const vector<TypeExpr *> &argtypes,
                       const vector<int> &litparams,
-                      const vector<pair<string_view, TypeExpr *>> &bindings) {
+                      const vector<pair<string_view, TypeExpr *>> &bindings,
+                      const vector<pair<string_view, FnValBind>> &fnvals) {
         s += sf->qname;
         auto listed = false;
+        auto item = [&](string_view n) {
+            Append(s, listed ? ", " : "<", n, " = ");
+            listed = true;
+        };
         for (auto &g : sf->generics) {
+            for (auto &[n, fb] : fnvals) {
+                if (n != g.name) continue;
+                item(n);
+                auto fv = fb.fv;
+                if (fb.named) s += fb.named->qname;
+                else if (fv) Append(s, "{block at ", Where(fv->line), ":", fv->col, "}");
+                else s += "?";
+            }
             auto named = false;
             for (auto &p : sf->params) named |= p.type && NamesGeneric(p.type, g.name);
             if (named) continue;
             for (auto &[n, t] : bindings) {
                 if (n != g.name) continue;
-                Append(s, listed ? ", " : "<", n, " = ");
+                item(n);
                 DumpShort(s, t);
-                listed = true;
             }
         }
         if (listed) s += ">";

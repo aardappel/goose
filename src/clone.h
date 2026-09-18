@@ -159,6 +159,7 @@ inline Node *FunVal::Clone(Ast &ast) const {
     auto fv = ast.New<FunVal>(line, (Block *)body->Clone(ast));
     fv->params = params;
     fv->explicit_params = explicit_params;
+    fv->col = col;
     return fv;
 }
 

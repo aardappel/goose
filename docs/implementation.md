@@ -200,16 +200,22 @@ the instantiation chain: every real frame from innermost outward, with the
 specialization's argument types (literal parameters marked) and the call
 site it was instantiated from (§7.7). The argument types show the binding
 of every type variable a parameter type names; the rest of `bindings`,
-from an explicit list, follows the function's name in declaration order,
-since distinct specializations would otherwise print alike: `size<u8>()`
-and `size<f64>()` on one line read `in fn size<T = u8>()` and
-`in fn size<T = f64>()`, and `fn scale<T, U>(t: T)` reads
-`in fn scale<U = u8>(f64)`. A function whose type variables all appear in
-its parameter types prints no list. `DumpInstance` writes a frame's
-specialization this way, and names the one a call would create in the
-polymorphic recursion error (§3.11). Each type is cut short at 200
-characters (`DumpShort`): the text of one a runaway recursion built can be
-exponentially longer than the type.
+from an explicit list, and every function value in `fnvals` follow the
+function's name in declaration order, since distinct specializations would
+otherwise print alike: `size<u8>()` and `size<f64>()` on one line read
+`in fn size<T = u8>()` and `in fn size<T = f64>()`, `fn scale<T, U>(t: T)`
+reads `in fn scale<U = u8>(f64)`, and `apply(3, wide)` reads
+`in fn apply<F = wide>(i64)`. A block has no name, and two can share a
+line, so it prints as the file, line and column of its `{`, as in
+`in fn apply<F = {block at x.goose:4:24}>(i64)` (the column is
+`FunVal::col`; `Line` has none). A value passed on under another generic's
+name prints as the function or block it is. A function whose type
+variables all appear in its parameter types, and that binds no function
+value, prints no list. `DumpInstance` writes a frame's specialization this
+way, and names the one a call would create in the polymorphic recursion
+error (§3.11). Each type is cut short at 200 characters (`DumpShort`): the
+text of one a runaway recursion built can be exponentially longer than the
+type.
 
 ### 3.2 Types, instantiation, and size classes
 

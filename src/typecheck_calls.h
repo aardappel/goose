@@ -791,7 +791,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     for (auto s : sf->specs) nested += s->inprogress;
     if (nested >= MAXNESTEDSPECS) {
         string inst;
-        DumpInstance(inst, sf, mi.paramtypes, mi.litparams, mi.bindings);
+        DumpInstance(inst, sf, mi.paramtypes, mi.litparams, mi.bindings, mi.fnvals);
         Error(callnode, cat("instantiating ", inst, " would put more than ", MAXNESTEDSPECS,
                             " specializations of ", sf->qname, " in progress on this call path: "
                             "a recursive call must reach a finite set of instantiations (§7.8)"));
