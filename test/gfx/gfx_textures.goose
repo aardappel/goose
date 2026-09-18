@@ -36,7 +36,16 @@ fn same(a: u8[:], b: u8[:]) -> bool {
 fn main() {
     guard open_or_skip() else { return; }
     let nearest = gfx::sampler(gfx::NEAREST, gfx::CLAMP);
-    let full_vs = embed_shader("fullscreen.vert");
+    // One triangle covering the target, with no vertex buffer: its texture
+    // coordinates run 0 to 1 over the target, (0, 0) at the top left.
+    let full_vs = embed_shader("vert", """
+        layout(location = 0) out vec2 v_uv;
+        void main() {
+            vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
+            v_uv = p;
+            gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
+        }
+        """);
 
     // 2D: a 4 x 4 pattern up and back, then a 2 x 2 region of it replaced.
     var pattern: u8[>..] = [];
@@ -50,9 +59,17 @@ fn main() {
     let patched = gfx::read_pixels(tex);
     print("2d: row 1 after a region update ", texels(patched[16..32]));
 
-    // Sampling it into a target of its size, texel for texel.
+    // Sampling it into a target of its size, texel for texel, at the mip
+    // level a uniform block gives.
+    let sample2d = embed_shader("frag", """
+        layout(location = 0) in vec2 v_uv;
+        layout(location = 0) out vec4 result;
+        layout(set = 2, binding = 0) uniform sampler2D tex;
+        layout(set = 3, binding = 0) uniform Lod { float lod; };
+        void main() { result = textureLod(tex, v_uv, lod); }
+        """);
     let target = gfx::render_target(4, 4, gfx::RGBA8);
-    let copy = gfx::pipeline(full_vs, embed_shader("sample2d.frag"));
+    let copy = gfx::pipeline(full_vs, sample2d);
     gfx::begin_pass(target, gfx::Texture { 0 }, float4 { 0.0, 0.0, 0.0, 0.0 });
     gfx::bind(copy);
     gfx::bind_texture(gfx::FRAGMENT, 0, tex, nearest);
@@ -97,8 +114,16 @@ fn main() {
     let volume = gfx::texture3d(2, 2, 2, gfx::RGBA8, gfx::SAMPLED);
     gfx::update_texture(volume, vol);
     print("3d: read back as written ", same(gfx::read_pixels(volume), vol));
+    // One slice of a volume, by depth coordinate.
+    let sample3d = embed_shader("frag", """
+        layout(location = 0) in vec2 v_uv;
+        layout(location = 0) out vec4 result;
+        layout(set = 2, binding = 0) uniform sampler3D volume;
+        layout(set = 3, binding = 0) uniform Slice { float w; };
+        void main() { result = texture(volume, vec3(v_uv, w)); }
+        """);
     let slice_target = gfx::render_target(2, 2, gfx::RGBA8);
-    let slicer = gfx::pipeline(full_vs, embed_shader("sample3d.frag"));
+    let slicer = gfx::pipeline(full_vs, sample3d);
     for z in 2 {
         gfx::begin_pass(slice_target, gfx::Texture { 0 }, float4 { 0.0, 0.0, 0.0, 0.0 });
         gfx::bind(slicer);
@@ -116,9 +141,25 @@ fn main() {
                            [255, 255, 0, 255], [0, 255, 255, 255], [255, 0, 255, 255]];
     let sky = gfx::texture_cube(1, gfx::RGBA8, gfx::SAMPLED);
     for f in 6 { gfx::update_texture(sky, gfx::Region { layer: f as i32 }, faces[f]); }
+    // Pixel x of a 6 x 1 target looks along cube face x's axis: +x, -x, +y,
+    // -y, +z, -z.
+    let along_axes = embed_shader("frag", """
+        layout(location = 0) out vec4 result;
+        layout(set = 2, binding = 0) uniform samplerCube sky;
+        void main() {
+            int face = int(gl_FragCoord.x);
+            vec3 dir = vec3(1.0, 0.0, 0.0);
+            if (face == 1) dir = vec3(-1.0, 0.0, 0.0);
+            if (face == 2) dir = vec3(0.0, 1.0, 0.0);
+            if (face == 3) dir = vec3(0.0, -1.0, 0.0);
+            if (face == 4) dir = vec3(0.0, 0.0, 1.0);
+            if (face == 5) dir = vec3(0.0, 0.0, -1.0);
+            result = texture(sky, dir);
+        }
+        """);
     let axes = gfx::render_target(6, 1, gfx::RGBA8);
     gfx::begin_pass(axes, gfx::Texture { 0 }, float4 { 0.0, 0.0, 0.0, 0.0 });
-    gfx::bind(gfx::pipeline(full_vs, embed_shader("cube.frag")));
+    gfx::bind(gfx::pipeline(full_vs, along_axes));
     gfx::bind_texture(gfx::FRAGMENT, 0, sky, nearest);
     gfx::draw(3);
     gfx::end_pass();
@@ -127,9 +168,15 @@ fn main() {
     // An array: one color per layer, each layer sampled.
     let layered = gfx::texture_array(1, 1, 3, gfx::RGBA8, gfx::SAMPLED);
     for l in 3 { gfx::update_texture(layered, gfx::Region { layer: l as i32 }, faces[l + 3]); }
+    // Pixel x of an N x 1 target samples layer x.
+    let by_layer = embed_shader("frag", """
+        layout(location = 0) out vec4 result;
+        layout(set = 2, binding = 0) uniform sampler2DArray layers;
+        void main() { result = texture(layers, vec3(0.5, 0.5, floor(gl_FragCoord.x))); }
+        """);
     let row = gfx::render_target(3, 1, gfx::RGBA8);
     gfx::begin_pass(row, gfx::Texture { 0 }, float4 { 0.0, 0.0, 0.0, 0.0 });
-    gfx::bind(gfx::pipeline(full_vs, embed_shader("layers.frag")));
+    gfx::bind(gfx::pipeline(full_vs, by_layer));
     gfx::bind_texture(gfx::FRAGMENT, 0, layered, nearest);
     gfx::draw(3);
     gfx::end_pass();

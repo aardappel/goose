@@ -92,6 +92,97 @@ inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns) {
     return nullptr;
 }
 
+// The literal a compile-time string argument stands for: a string literal,
+// or a let or const global initialized with one, named directly or through
+// other such globals -- a named constant, as an array size may use (§11.1).
+// Null for anything else, a local of the name included.
+inline StrLit *TypeCheck::ConstStrLit(Node *n) {
+    if (auto s = Is<StrLit>(n)) return s;
+    auto id = Is<Ident>(n);
+    if (!id) return nullptr;
+    if (auto vd = LookupVar(id->name, id->ns); vd && !vd->isglobal) return nullptr;
+    set<VarDecl *> visiting;
+    for (;;) {
+        auto g = ast.LookupGlobal(id->name, id->ns);
+        if (!g || g->isvar || g->inits.size() != 1 || !visiting.insert(g).second) return nullptr;
+        if (auto s = Is<StrLit>(g->inits[0])) return s;
+        if (!(id = Is<Ident>(g->inits[0]))) return nullptr;
+    }
+}
+
+// The blob of the shader an embed_shader call names, compiled here once per
+// distinct shader: embed_shader("x.frag") names a file, relative to the file
+// with the call; embed_shader("frag", source, ...) gives the GLSL, its parts
+// joined as lines, with #include relative to that file. The shader compiler's
+// errors are errors of the call, and one at a line of a """ source is
+// reported at that line of the program.
+inline const string *TypeCheck::EmbedShader(Call *c, vector<Node *> &args) {
+    auto &callfile = ast.sources[c->line.fileidx].first;
+    vector<StrLit *> lits;
+    vector<bool> named;
+    for (auto &a : args) {
+        auto lit = ConstStrLit(a);
+        if (!lit)
+            Error(a, "embed_shader takes string literals, and let or const globals "
+                     "initialized with one");
+        // The literal stands in for a global naming it: the call reads nothing
+        // at run time.
+        named.push_back(lit != a);
+        if (lit != a) a = ast.New<StrLit>(lit->line, lit->val, lit->multiline);
+        a->exprtype = cu8slice;
+        lits.push_back(lit);
+    }
+    if (lits.size() == 1) {
+        if (lits[0]->multiline || lits[0]->val.find('\n') != string::npos)
+            Error(c, "embed_shader(\"x.frag\") takes a shader file's path; shader source "
+                     "follows its stage: embed_shader(\"frag\", source)");
+        auto path = EmbeddedShaderPath(callfile, lits[0]->val);
+        auto it = ast.shaders.find(path);
+        if (it == ast.shaders.end()) {
+            try {
+                it = ast.shaders.emplace(path, CompileShaderFile(path)).first;
+            } catch (CompileError &e) {
+                Error(c, cat("embed_shader: ", e.msg));
+            }
+        }
+        return &it->second;
+    }
+    auto stage = ShaderStageNamed(lits[0]->val);
+    if (stage < 0)
+        Error(args[0], cat("embed_shader: the stage is \"vert\", \"frag\" or \"comp\", not \"",
+                           lits[0]->val, "\""));
+    // The source, and the line of it each part starts at.
+    string source;
+    vector<int> starts;
+    for (size_t i = 1; i < lits.size(); i++) {
+        if (i > 1) source += '\n';
+        starts.push_back(1 + (int)count(source.begin(), source.end(), '\n'));
+        source += lits[i]->val;
+    }
+    auto key = cat(callfile, "\n", lits[0]->val, "\n", source);
+    auto it = ast.shaders.find(key);
+    if (it != ast.shaders.end()) return &it->second;
+    try {
+        it = ast.shaders.emplace(key, CompileShader(source, callfile, stage)).first;
+    } catch (CompileError &e) {
+        int line;
+        string msg;
+        if (!ShaderMessageAt(e.msg, callfile, line, msg)) Error(c, cat("embed_shader: ", e.msg));
+        if (!line) Error(c, cat("embed_shader: ", msg));
+        auto part = upper_bound(starts.begin(), starts.end(), line) - starts.begin() - 1;
+        auto lit = lits[part + 1];
+        auto at = lit->line;
+        if (lit->multiline) {
+            auto lines = (int)count(lit->val.begin(), lit->val.end(), '\n') + 1;
+            at.line += min(line - starts[part] + 1, lines);
+        }
+        Error(at, cat("embed_shader: ", msg,
+                      named[part + 1] ? cat(" (in the shader embedded at ", Where(c->line), ")")
+                                      : string()));
+    }
+    return &it->second;
+}
+
 // A shrink (`pop`, `resize` down, `clear`) of a grow-only array (§5.1).
 // Everything below the stack top belongs to the array's elements for as
 // long as it lives, so handing part of the region back is safe exactly

@@ -26,7 +26,7 @@ inline Node *FltLit::Clone(Ast &ast) const { return ast.New<FltLit>(line, val, t
 inline Node *BoolLit::Clone(Ast &ast) const { return ast.New<BoolLit>(line, val); }
 inline Node *NullLit::Clone(Ast &ast) const { return ast.New<NullLit>(line); }
 inline Node *SelfRef::Clone(Ast &ast) const { return ast.New<SelfRef>(line); }
-inline Node *StrLit::Clone(Ast &ast) const { return ast.New<StrLit>(line, val); }
+inline Node *StrLit::Clone(Ast &ast) const { return ast.New<StrLit>(line, val, multiline); }
 inline Node *Ident::Clone(Ast &ast) const { return ast.New<Ident>(line, name, ns); }
 
 inline Node *ArrayLit::Clone(Ast &ast) const {

@@ -88,7 +88,9 @@ the token set is an X-macro table. The two context-sensitive spellings of
 type context, and `1..2` lexes as a range because a `.` starts a fraction
 only when a digit follows. A `"""` string's text is worked out here
 (`LexRawString`): the closing line's indentation off every line, `\r\n` as
-`\n`.
+`\n`. Its token, and the `StrLit` made from it, say whether it spanned
+lines, which lets `embed_shader` report a shader error at its line of the
+program.
 
 **Parser** (`parser.h`): recursive descent mirroring Appendix D, one
 function per construct. Points that matter to later passes:

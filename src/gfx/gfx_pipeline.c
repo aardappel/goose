@@ -67,7 +67,7 @@ static bool gfx_compile_hlsl(const char *hlsl, size_t len, int stage, void **cod
 bool gfx_read_blob(gs_gfx_bytes blob, gs_gfx_blob_header *h, gfx_shader_info *info) {
     if (blob.len >= (int64_t)sizeof *h) memcpy(h, blob.data, sizeof *h);
     if (blob.len < (int64_t)sizeof *h || memcmp(h->magic, GS_GFX_BLOB_MAGIC, 4) != 0)
-        return gfx_misuse("not a shader: pass what embed_shader(\"file\") returns");
+        return gfx_misuse("not a shader: pass what embed_shader returns");
     if (h->version != GS_GFX_BLOB_VERSION)
         return gfx_misuse("a shader blob of version %d, where this gfx reads version %d",
                           h->version, GS_GFX_BLOB_VERSION);

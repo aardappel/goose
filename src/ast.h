@@ -412,7 +412,11 @@ NODE_END
 
 NODE(StrLit)
     string val;
-    StrLit(Line l, string _val) : Node(l), val(std::move(_val)) {}
+    // A """ string spanning lines (§2): line k of its text is source line
+    // `line.line + k`, which embed_shader reports shader errors at.
+    bool multiline = false;
+    StrLit(Line l, string _val, bool _multiline = false)
+        : Node(l), val(std::move(_val)), multiline(_multiline) {}
 NODE_END
 
 NODE(Ident)
@@ -503,6 +507,7 @@ NODE(Call)
     // free_slice/realloc_slice: the slice handed back is not provably the pool's,
     // so codegen checks at run time that it lies inside the pool (§5.4).
     bool poolcheck = false;
+    const string *shaderblob = nullptr;  // embed_shader: its compiled blob, in Ast::shaders.
     Call(Line l, Node *_callee) : Node(l), callee(_callee) {}
 NODE_END
 
@@ -1144,8 +1149,9 @@ struct Ast {
     vector<Node *> topdecls;                        // In source/import order.
     vector<VarDecl *> globals;                      // Initialization order.
 
-    // embed_shader's compiled blobs, by the shader's path as resolved from
-    // the file calling it: compiled once by the checker, emitted by codegen.
+    // embed_shader's compiled blobs, compiled once by the checker and emitted
+    // by codegen: a shader file's by its path as resolved from the file
+    // calling it, a shader given as source by that file, stage and source.
     map<string, string> shaders;
 
     // The checked field defaults of every instantiation, and with the

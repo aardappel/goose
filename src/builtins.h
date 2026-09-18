@@ -79,7 +79,7 @@ inline int RecvKindOf(TypeExpr *t) {
     F(B_TO_BYTES,         "to_bytes",         1,  2,   "",   "",  BR_ANY,         BF_MEMBER | BF_CUSTOM) \
     F(B_BYTES_OF,         "bytes_of",         1,  1,   "",   "",  BR_ANY,         BF_MEMBER | BF_CUSTOM) \
     F(B_FROM_BYTES,       "from_bytes",       1,  1,   "",   "",  0,              BF_TYARGS | BF_CUSTOM) \
-    F(B_EMBED_SHADER,     "embed_shader",     1,  1,   "",   "",  0,              BF_CUSTOM) \
+    F(B_EMBED_SHADER,     "embed_shader",     1, 99,   "",   "",  0,              BF_CUSTOM) \
     F(B_LEN,              "len",              1,  1,   "",   "i", BR_ANY,         BF_MEMBER | BF_PROPERTY) \
     F(B_CAP,              "cap",              1,  1,   "",   "i", BR_LIMITED,     BF_MEMBER | BF_PROPERTY) \
     F(B_INDEX_OF,         "index_of",         2,  2,   "",   "i", BR_INDEXABLE,   BF_MEMBER | BF_CUSTOM) \

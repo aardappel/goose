@@ -1004,7 +1004,7 @@ struct Parser {
                 return n;
             }
             case T_STRLIT: {
-                auto n = New<StrLit>(line, lex.sval);
+                auto n = New<StrLit>(line, lex.sval, lex.smultiline);
                 lex.Next();
                 return n;
             }

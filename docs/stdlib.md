@@ -341,14 +341,29 @@ it works.
 ### Shaders
 
 ```goose
-let vs = embed_shader("lit.vert");     // .vert, .frag or .comp, relative to this file
+// Code shaders share, in a global each names as a part.
+let scene = """
+    layout(set = 1, binding = 0) uniform Scene { mat4 view_proj; };
+    """;
+
+// A shader's source after its stage, "vert", "frag" or "comp", or a file,
+// .vert, .frag or .comp, relative to this one.
+let vs = embed_shader("vert", scene, """
+    layout(location = 0) in vec3 a_pos;
+    void main() { gl_Position = view_proj * vec4(a_pos, 1.0); }
+    """);
+let fs = embed_shader("lit.frag");
 ```
 
 `embed_shader` is a builtin: the GLSL 450 shader is compiled when the program
 is, into SPIR-V, MSL and HLSL at once, and the result is a `const u8[:]` of
-static data to hand to `pipeline` or `compute_pipeline`. A shader that does not
-compile is a compile error at the call, with the shader's own file and line.
-`#include "x.glsl"` resolves relative to the shader. The dialect is
+static data to hand to `pipeline` or `compute_pipeline`. Its source is usually
+a `"""` string (spec §2) written at the call, and may come in parts: each is a
+string literal or a `let` or `const` global initialized with one, and they
+join as lines, in order. A shader that does not compile is a compile error at
+the call, pointing at the offending line of GLSL where there is one: in the
+program, or in the shader's file. `#include "x.glsl"` resolves relative to the
+shader's file, or to the program's for source written in it. The dialect is
 cute_spirv's (`third_party/cute_spirv`): no doubles, no geometry or
 tessellation stages, uniform blocks without instance names, and each storage
 buffer block one runtime array (`buffer B { vec4 items[]; };`).

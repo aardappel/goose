@@ -913,6 +913,8 @@ struct TypeCheck {
                          vector<TypeExpr *> &seen);
     FnSpec *UserFormat(Call *c, TypeExpr *t);
     FnSpec *UserFormatIn(Call *c, TypeExpr *t, string_view ns);
+    StrLit *ConstStrLit(Node *n);
+    const string *EmbedShader(Call *c, vector<Node *> &args);
     void CheckGrowShrink(Node *at, bool standalone, const char *op, Node *recv, TypeExpr *rtype);
     void GrowOnlyShrinkAt(Node *c, bool standalone, const string &op, VarDef *vd);
 

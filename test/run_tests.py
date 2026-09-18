@@ -272,6 +272,17 @@ def main():
         r.fail("compile-shader probe_badset.frag", out + err)
     else:
         r.ok("compile-shader probe_badset.frag")
+    # An error in shader source written in the program is reported at its own
+    # line of the program: the one using `oops` in these fixtures.
+    for name in ("gfx_err_shader_syntax", "gfx_err_shader_part"):
+        f = HERE / "gfx" / f"{name}.goose"
+        lines = f.read_text(encoding="utf-8").splitlines()
+        at = next(i for i, text in enumerate(lines, 1) if "oops" in text and not text.startswith("//"))
+        code, out, err = r.goose("--check", f)
+        if code != 1 or f"{f.name}:{at}: error: embed_shader: undeclared identifier 'oops'" not in err:
+            r.fail(f"shader error line {f.name}", out + err)
+        else:
+            r.ok(f"shader error line {f.name}")
 
     # Both sides of the gfx module's C boundary describe it: they must agree.
     problems = gfx_api_check.check()

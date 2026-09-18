@@ -122,8 +122,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
         }
         case B_HARDWARE_THREADS: return { "gs_hardware_threads()" };
         case B_EMBED_SHADER: {
-            auto &blob = ast.shaders.at(EmbeddedShaderPath(ast.sources[ln.fileidx].first,
-                                                           Is<StrLit>(an[0])->val));
+            auto &blob = *c->shaderblob;
             auto t = T();
             L(CT(c->rettypes[0]), " ", t, " = { ", BlobRaw(blob), ", ", blob.size(), " };");
             return { t };

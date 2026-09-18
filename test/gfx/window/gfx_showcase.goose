@@ -64,6 +64,331 @@ let TRAIL = 64;
 let SHADOW_SIZE = 1024;
 let STEP: f32 = 1.0 / 60.0;
 
+// --- shaders, GLSL that embed_shader compiles with the program ----------------------
+
+// The per-frame uniform block every 3D vertex shader reads (vertex set 1,
+// binding 0), and the instance transform they share: those shaders' first
+// part.
+let scene_glsl = """
+    layout(set = 1, binding = 0) uniform Scene {
+        mat4 view_proj;
+        mat4 light_view_proj;
+        vec4 eye;
+        vec4 light_dir;         // toward the light
+        vec4 cam_right;
+        vec4 cam_up;
+        vec4 params;            // x: time
+    };
+
+    // Rotates v by the unit quaternion q.
+    vec3 rotate_q(vec4 q, vec3 v) {
+        vec3 t = 2.0 * cross(q.xyz, v);
+        return v + q.w * t + cross(q.xyz, t);
+    }
+    """;
+
+// A procedural image into a storage texture: colored rings in a dark frame.
+// The showcase saves it as a PNG and loads it back as the cubes' texture.
+let rings_comp = """
+    layout(local_size_x = 8, local_size_y = 8) in;
+    layout(set = 1, binding = 0, rgba8) uniform writeonly image2D image;
+    void main() {
+        ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+        vec2 uv = vec2(p) / 128.0 - 0.5;
+        float r = length(uv) * 12.0;
+        vec3 c = 0.5 + 0.5 * cos(vec3(0.0, 2.1, 4.2) + r);
+        float edge = step(0.45, max(abs(uv.x), abs(uv.y)));
+        imageStore(image, p, vec4(mix(c, vec3(0.1), edge), 1.0));
+    }
+    """;
+
+// A mesh placed by one instance of a storage buffer of three vec4s each:
+// position, scale, rotation. The draw's first instance comes from a uniform,
+// since SV_InstanceID on Direct3D 12 does not count the draw's own.
+let lit_vert = """
+    layout(location = 0) in vec3 a_pos;
+    layout(location = 1) in vec3 a_normal;
+    layout(location = 2) in vec2 a_uv;
+    layout(std430, set = 0, binding = 0) readonly buffer Instances { vec4 inst[]; };
+    layout(set = 1, binding = 1) uniform Draw { vec4 draw; };   // x: first instance, y: uv tiling
+    layout(location = 0) out vec3 v_world;
+    layout(location = 1) out vec3 v_normal;
+    layout(location = 2) out vec2 v_uv;
+    layout(location = 3) out vec4 v_shadow;
+    void main() {
+        int i = (int(draw.x) + gl_InstanceIndex) * 3;
+        vec3 pos = inst[i].xyz;
+        vec3 scale = inst[i + 1].xyz;
+        vec4 rot = inst[i + 2];
+        vec3 world = pos + rotate_q(rot, a_pos * scale);
+        v_world = world;
+        v_normal = normalize(rotate_q(rot, a_normal / scale));
+        v_uv = draw.y > 0.0 ? a_uv * draw.y : a_uv;
+        v_shadow = light_view_proj * vec4(world, 1.0);
+        gl_Position = view_proj * vec4(world, 1.0);
+    }
+    """;
+
+// Diffuse and specular light from one direction, shadowed by a shadow map
+// through hardware depth comparison (four taps), with distance fog.
+let lit_frag = """
+    layout(location = 0) in vec3 v_world;
+    layout(location = 1) in vec3 v_normal;
+    layout(location = 2) in vec2 v_uv;
+    layout(location = 3) in vec4 v_shadow;
+    layout(location = 0) out vec4 result;
+    layout(set = 2, binding = 0) uniform sampler2D albedo;
+    layout(set = 2, binding = 1) uniform sampler2DShadow shadow_map;
+    layout(set = 3, binding = 0) uniform Light {
+        vec4 light_dir;
+        vec4 light_color;
+        vec4 ambient;
+        vec4 eye;
+        vec4 fog;                // rgb: color, w: density
+        vec4 tint;               // multiplies the result; a: its alpha
+    };
+    float shadowed(vec4 s) {
+        vec3 p = s.xyz / s.w;
+        vec2 uv = vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
+        float texel = 1.0 / 1024.0;
+        float lit = 0.0;
+        lit += texture(shadow_map, vec3(uv + vec2(-texel, -texel), p.z));
+        lit += texture(shadow_map, vec3(uv + vec2(texel, -texel), p.z));
+        lit += texture(shadow_map, vec3(uv + vec2(-texel, texel), p.z));
+        lit += texture(shadow_map, vec3(uv + vec2(texel, texel), p.z));
+        return lit * 0.25;
+    }
+    void main() {
+        vec3 n = normalize(v_normal);
+        vec3 l = normalize(light_dir.xyz);
+        vec3 base = texture(albedo, v_uv).rgb * tint.rgb;
+        float diffuse = max(dot(n, l), 0.0) * shadowed(v_shadow);
+        vec3 view = normalize(eye.xyz - v_world);
+        float spec = pow(max(dot(reflect(-l, n), view), 0.0), 32.0) * diffuse;
+        vec3 color = base * (ambient.rgb + light_color.rgb * diffuse) +
+                     light_color.rgb * spec * 0.4;
+        float dist = length(eye.xyz - v_world);
+        color = mix(color, fog.rgb, 1.0 - exp(-dist * fog.w));
+        result = vec4(color, tint.a);
+    }
+    """;
+
+// One triangle covering the target, (0, 0) at the top left of v_uv.
+let fullscreen_vert = """
+    layout(location = 0) out vec2 v_uv;
+    void main() {
+        vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
+        v_uv = p;
+        gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
+    }
+    """;
+
+// Lines in world space, each vertex with a color stored as four bytes.
+let line_vert = """
+    layout(location = 0) in vec3 a_pos;
+    layout(location = 1) in vec4 a_color;
+    layout(location = 0) out vec4 v_color;
+    void main() {
+        v_color = a_color;
+        gl_Position = view_proj * vec4(a_pos, 1.0);
+    }
+    """;
+
+// The color the vertex shader gives.
+let color_frag = """
+    layout(location = 0) in vec4 v_color;
+    layout(location = 0) out vec4 result;
+    void main() { result = v_color; }
+    """;
+
+// Moves the showcase's cubes: instance 0 is the ground and stays put; the
+// others circle, bob and tumble with time.
+let spin_comp = """
+    layout(local_size_x = 64) in;
+    layout(std430, set = 1, binding = 0) buffer Instances { vec4 inst[]; };
+    layout(set = 2, binding = 0) uniform Spin { float time; uint count; float pad0; float pad1; };
+    void main() {
+        uint k = gl_GlobalInvocationID.x;
+        if (k == 0u || k >= count) return;
+        float f = float(k);
+        float a = time * (0.3 + 0.05 * f) + f * 2.39996;
+        float r = 2.0 + mod(f * 1.7, 3.0);
+        inst[k * 3u] = vec4(cos(a) * r, 0.7 + 0.4 * sin(time * 2.0 + f), sin(a) * r, 0.0);
+        vec3 axis = normalize(vec3(sin(f), 1.0, cos(f * 1.3)));
+        float angle = time * (1.0 + 0.1 * f);
+        inst[k * 3u + 2u] = vec4(axis * sin(angle * 0.5), cos(angle * 0.5));
+    }
+    """;
+
+// Sparks: each is two vec4s, position and remaining life, then velocity.
+// Gravity pulls them down; a spent one respawns at the fountain with a
+// hashed velocity.
+let particles_comp = """
+    layout(local_size_x = 64) in;
+    layout(std430, set = 1, binding = 0) buffer Particles { vec4 parts[]; };
+    layout(set = 2, binding = 0) uniform Sim { float dt; float time; uint count; float pad; };
+    uint hash(uint x) {
+        x ^= x >> 16;
+        x *= 0x7feb352du;
+        x ^= x >> 15;
+        x *= 0x846ca68bu;
+        x ^= x >> 16;
+        return x;
+    }
+    float rnd(uint seed) { return float(hash(seed) & 0xffffu) / 65535.0; }
+    void main() {
+        uint i = gl_GlobalInvocationID.x;
+        if (i >= count) return;
+        vec4 p = parts[i * 2u];
+        vec4 v = parts[i * 2u + 1u];
+        p.w -= dt;
+        if (p.w <= 0.0) {
+            uint s = i * 1973u + uint(time * 1000.0) * 9277u;
+            p = vec4(0.0, 0.3, 0.0, 1.0 + 2.0 * rnd(s));
+            v = vec4((rnd(s + 1u) - 0.5) * 2.0, 3.0 + 2.0 * rnd(s + 2u),
+                     (rnd(s + 3u) - 0.5) * 2.0, 0.0);
+        }
+        v.y -= 4.0 * dt;
+        p.xyz += v.xyz * dt;
+        parts[i * 2u] = p;
+        parts[i * 2u + 1u] = v;
+    }
+    """;
+
+// The lit meshes seen from the light, for the shadow map: depth only.
+let shadow_vert = """
+    layout(location = 0) in vec3 a_pos;
+    layout(location = 1) in vec3 a_normal;
+    layout(location = 2) in vec2 a_uv;
+    layout(std430, set = 0, binding = 0) readonly buffer Instances { vec4 inst[]; };
+    layout(set = 1, binding = 1) uniform Draw { vec4 draw; };
+    void main() {
+        int i = (int(draw.x) + gl_InstanceIndex) * 3;
+        vec3 world = inst[i].xyz + rotate_q(inst[i + 2], a_pos * inst[i + 1].xyz);
+        gl_Position = light_view_proj * vec4(world, 1.0);
+    }
+    """;
+
+// A depth-only pass still needs a fragment shader.
+let empty_frag = """
+    void main() { }
+    """;
+
+// The sky: a cube map looked up along the view ray through each pixel.
+let sky_frag = """
+    layout(location = 0) in vec2 v_uv;
+    layout(location = 0) out vec4 result;
+    layout(set = 2, binding = 0) uniform samplerCube sky;
+    layout(set = 3, binding = 0) uniform View {
+        vec4 right;              // scaled by tan(fov / 2) * aspect
+        vec4 up;                 // scaled by tan(fov / 2)
+        vec4 forward;
+    };
+    void main() {
+        vec2 ndc = vec2(v_uv.x * 2.0 - 1.0, 1.0 - v_uv.y * 2.0);
+        vec3 dir = normalize(forward.xyz + ndc.x * right.xyz + ndc.y * up.xyz);
+        result = texture(sky, dir);
+    }
+    """;
+
+// A camera-facing square per spark, six vertices from the vertex index and
+// no vertex buffer: positions from the storage buffer the compute pass
+// wrote, colors from a 3D noise texture sampled in the vertex shader.
+let particle_vert = """
+    layout(set = 0, binding = 0) uniform sampler3D noise;
+    layout(std430, set = 0, binding = 1) readonly buffer Particles { vec4 parts[]; };
+    layout(location = 0) out vec2 v_corner;
+    layout(location = 1) out vec4 v_color;
+    void main() {
+        int corner = gl_VertexIndex % 6;
+        vec2 c = vec2(corner == 1 || corner == 2 || corner == 4 ? 1.0 : -1.0,
+                      corner == 2 || corner == 4 || corner == 5 ? 1.0 : -1.0);
+        vec4 p = parts[gl_InstanceIndex * 2];
+        float life = clamp(p.w, 0.0, 1.0);
+        vec3 world = p.xyz + (cam_right.xyz * c.x + cam_up.xyz * c.y) * (0.07 * life);
+        float n = textureLod(noise, fract(p.xyz * 0.25 + params.x * 0.05), 0.0).r;
+        v_corner = c;
+        v_color = vec4(1.0, 0.45 + 0.5 * n, 0.15 + 0.3 * n, 1.0) * life;
+        gl_Position = view_proj * vec4(world, 1.0);
+    }
+    """;
+
+// A soft round spark, added onto what is there.
+let particle_frag = """
+    layout(location = 0) in vec2 v_corner;
+    layout(location = 1) in vec4 v_color;
+    layout(location = 0) out vec4 result;
+    void main() {
+        float d = max(1.0 - dot(v_corner, v_corner), 0.0);
+        result = vec4(v_color.rgb * 3.0 * d, d);
+    }
+    """;
+
+// The resolved HDR image, tone mapped and gamma corrected, with a vignette.
+let post_frag = """
+    layout(location = 0) in vec2 v_uv;
+    layout(location = 0) out vec4 result;
+    layout(set = 2, binding = 0) uniform sampler2D hdr;
+    layout(set = 3, binding = 0) uniform Post {
+        float exposure;
+        float vignette;
+        float pad0;
+        float pad1;
+    };
+    void main() {
+        vec3 c = texture(hdr, v_uv).rgb * exposure;
+        c = c / (1.0 + c);
+        c = pow(c, vec3(1.0 / 2.2));
+        vec2 d = v_uv - 0.5;
+        c *= 1.0 - vignette * dot(d, d);
+        result = vec4(c, 1.0);
+    }
+    """;
+
+// A depth texture shown as gray, sampled plainly rather than compared.
+let depthview_frag = """
+    layout(location = 0) in vec2 v_uv;
+    layout(location = 0) out vec4 result;
+    layout(set = 2, binding = 0) uniform sampler2D depth;
+    void main() {
+        float d = texture(depth, v_uv).r;
+        float g = clamp((1.0 - d) * 3.0, 0.0, 1.0);
+        result = vec4(g, g, g, 1.0);
+    }
+    """;
+
+// Screen-space squares along the bottom, one per instance, which also picks
+// the icon's layer.
+let icon_vert = """
+    layout(location = 0) in vec2 a_corner;
+    layout(set = 1, binding = 0) uniform Icons {
+        vec4 place;             // x, y of the first; size; spacing
+    };
+    layout(location = 0) out vec3 v_uvw;
+    void main() {
+        vec2 p = place.xy + vec2(float(gl_InstanceIndex) * place.w, 0.0) + a_corner * place.z;
+        v_uvw = vec3(a_corner.x, 1.0 - a_corner.y, float(gl_InstanceIndex));
+        gl_Position = vec4(p, 0.0, 1.0);
+    }
+    """;
+
+// The icon of the instance, from its layer of the texture array.
+let icon_frag = """
+    layout(location = 0) in vec3 v_uvw;
+    layout(location = 0) out vec4 result;
+    layout(set = 2, binding = 0) uniform sampler2DArray icons;
+    void main() { result = texture(icons, v_uvw); }
+    """;
+
+// Flat color per draw: an object ID the showcase reads back to see what is
+// on screen where.
+let id_frag = """
+    layout(location = 0) out vec4 result;
+    layout(set = 3, binding = 0) uniform Id { vec4 id; };
+    void main() { result = id; }
+    """;
+
 // --- geometry and images, made on the CPU ---------------------------------------
 
 // Vectors times a scalar: vec's operators are elementwise only.
@@ -301,7 +626,7 @@ fn main() {
     let no_buffers: gfx::Buffer[>..] = [];
     let ring_tex: gfx::Texture[1] = [rings];
     gfx::begin_compute(no_buffers, ring_tex);
-    gfx::bind(gfx::compute_pipeline(embed_shader("rings.comp")));
+    gfx::bind(gfx::compute_pipeline(embed_shader("comp", rings_comp)));
     gfx::dispatch(16, 16, 1);
     gfx::end_compute();
     let png = str(out, "/rings.png");
@@ -321,14 +646,15 @@ fn main() {
     let shadow_cmp = gfx::shadow_sampler();
 
     // Pipelines.
-    let lit_vs = embed_shader("lit.vert");
-    let lit_fs = embed_shader("lit.frag");
-    let full_vs = embed_shader("fullscreen.vert");
-    let line_vs = embed_shader("line.vert");
-    let color_fs = embed_shader("color.frag");
-    let spin = gfx::compute_pipeline(embed_shader("spin.comp"));
-    let simulate = gfx::compute_pipeline(embed_shader("particles.comp"));
-    let shadow = gfx::pipeline(embed_shader("shadow.vert"), embed_shader("empty.frag"),
+    let lit_vs = embed_shader("vert", scene_glsl, lit_vert);
+    let lit_fs = embed_shader("frag", lit_frag);
+    let full_vs = embed_shader("vert", fullscreen_vert);
+    let line_vs = embed_shader("vert", scene_glsl, line_vert);
+    let color_fs = embed_shader("frag", color_frag);
+    let spin = gfx::compute_pipeline(embed_shader("comp", spin_comp));
+    let simulate = gfx::compute_pipeline(embed_shader("comp", particles_comp));
+    let shadow = gfx::pipeline(embed_shader("vert", scene_glsl, shadow_vert),
+                               embed_shader("frag", empty_frag),
                                gfx::PipelineDesc { cull: gfx::CULL_FRONT, depth_test: true,
                                                    depth_write: true, depth_bias: 1.0,
                                                    depth_bias_slope: 1.5 });
@@ -340,8 +666,9 @@ fn main() {
     let wire = gfx::pipeline(lit_vs, lit_fs, gfx::PipelineDesc { wireframe: true,
                                                                  depth_test: true,
                                                                  depth_write: true });
-    let sky_pipe = gfx::pipeline(full_vs, embed_shader("sky.frag"));
-    let spark_pipe = gfx::pipeline(embed_shader("particle.vert"), embed_shader("particle.frag"),
+    let sky_pipe = gfx::pipeline(full_vs, embed_shader("frag", sky_frag));
+    let spark_pipe = gfx::pipeline(embed_shader("vert", scene_glsl, particle_vert),
+                                   embed_shader("frag", particle_frag),
                                    gfx::PipelineDesc { depth_test: true, blend: gfx::BLEND_ADD });
     var line_desc = gfx::PipelineDesc { primitive: gfx::LINES, depth_test: true,
                                         depth_write: true };
@@ -349,11 +676,11 @@ fn main() {
     let lines = gfx::pipeline(line_vs, color_fs, line_desc);
     line_desc.primitive = gfx::LINE_STRIP;
     let strip = gfx::pipeline(line_vs, color_fs, line_desc);
-    let post = gfx::pipeline(full_vs, embed_shader("post.frag"));
-    let depth_view = gfx::pipeline(full_vs, embed_shader("depthview.frag"));
-    let icon_pipe = gfx::pipeline(embed_shader("icon.vert"), embed_shader("icon.frag"),
+    let post = gfx::pipeline(full_vs, embed_shader("frag", post_frag));
+    let depth_view = gfx::pipeline(full_vs, embed_shader("frag", depthview_frag));
+    let icon_pipe = gfx::pipeline(embed_shader("vert", icon_vert), embed_shader("frag", icon_frag),
                                   gfx::PipelineDesc { blend: gfx::BLEND_ALPHA });
-    let id_pipe = gfx::pipeline(lit_vs, embed_shader("id.frag"),
+    let id_pipe = gfx::pipeline(lit_vs, embed_shader("frag", id_frag),
                                 gfx::PipelineDesc { cull: gfx::CULL_BACK, depth_test: true,
                                                     depth_write: true });
 

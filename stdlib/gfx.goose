@@ -5,10 +5,11 @@
 // src/gfx/gfx_api.h; the test suite checks the two agree.
 //
 // Shaders are GLSL 450, compiled into the program by the builtin
-// `embed_shader("file.vert")` (also .frag and .comp) when it is compiled,
-// for every backend at once: SPIR-V for Vulkan, MSL for Metal, HLSL for
-// Direct3D 12. A shader declares its resources where SDL_GPU expects them,
-// which the compiler checks:
+// embed_shader when it is compiled, for every backend at once: SPIR-V for
+// Vulkan, MSL for Metal, HLSL for Direct3D 12. A shader is written in the
+// program after its stage, `embed_shader("frag", """ ... """)` (also "vert"
+// and "comp"), or read from a file, `embed_shader("file.frag")`. It declares
+// its resources where SDL_GPU expects them, which the compiler checks:
 //
 //   vertex    set 0: samplers, then storage textures, then storage buffers;
 //             set 1: uniform blocks

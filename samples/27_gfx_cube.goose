@@ -1,11 +1,10 @@
 // A window with a spinning, lit cube, drawn with the gfx module
 // (docs/stdlib.md): SDL3's GPU API behind a small Goose interface.
 //
-// The shaders are GLSL, in gfx_cube.vert and gfx_cube.frag beside this file.
-// embed_shader compiles each one when this program is compiled -- to SPIR-V
-// for Vulkan, MSL for Metal and HLSL for Direct3D 12, all at once -- so the
-// same program runs on whichever the machine has, with nothing to load at
-// run time.
+// The shaders are GLSL, written in main as """ strings. embed_shader
+// compiles each one when this program is compiled -- to SPIR-V for Vulkan,
+// MSL for Metal and HLSL for Direct3D 12, all at once -- so the same program
+// runs on whichever the machine has, with nothing to load at run time.
 //
 // The arrow keys turn the cube, and Escape or closing the window quits.
 // `-- --frames N` stops after N frames. Either way the last frame is saved
@@ -76,13 +75,41 @@ fn main() {
     cube(verts, indices);
     let vertex_buffer = gfx::vertex_buffer(bytes_of(verts));
     let index_buffer = gfx::index_buffer(bytes_of(indices));
-    // The shader's inputs are read from a vertex buffer in order, laid out as
-    // Vertex is; only the color needs saying, since it is bytes and not
-    // floats.
+    // The vertex shader: each corner moved by the model and view-projection
+    // matrices of a uniform block, its normal turned with the model.
+    let cube_vs = embed_shader("vert", """
+        layout(location = 0) in vec3 a_pos;
+        layout(location = 1) in vec3 a_normal;
+        layout(location = 2) in vec4 a_color;
+        layout(set = 1, binding = 0) uniform Transform {
+            mat4 model;
+            mat4 view_proj;
+        };
+        layout(location = 0) out vec3 v_normal;
+        layout(location = 1) out vec4 v_color;
+        void main() {
+            v_normal = (model * vec4(a_normal, 0.0)).xyz;
+            v_color = a_color;
+            gl_Position = view_proj * model * vec4(a_pos, 1.0);
+        }
+        """);
+    // The fragment shader: the face color, lit from one direction, with some
+    // light everywhere.
+    let cube_fs = embed_shader("frag", """
+        layout(location = 0) in vec3 v_normal;
+        layout(location = 1) in vec4 v_color;
+        layout(location = 0) out vec4 result;
+        void main() {
+            float light = max(dot(normalize(v_normal), normalize(vec3(0.4, 0.8, 0.6))), 0.0);
+            result = vec4(v_color.rgb * (0.25 + 0.75 * light), 1.0);
+        }
+        """);
+    // The vertex shader's inputs are read from a vertex buffer in order,
+    // laid out as Vertex is; only the color needs saying, since it is bytes
+    // and not floats.
     var desc = gfx::PipelineDesc { cull: gfx::CULL_BACK, depth_test: true, depth_write: true };
     desc.formats[2] = gfx::VERTEX_UBYTE4_NORM;
-    let cube_pipeline = gfx::pipeline(embed_shader("gfx_cube.vert"),
-                                      embed_shader("gfx_cube.frag"), desc);
+    let cube_pipeline = gfx::pipeline(cube_vs, cube_fs, desc);
 
     var yaw: f32 = 0.6;
     var pitch: f32 = 0.5;

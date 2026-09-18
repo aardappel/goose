@@ -10,7 +10,9 @@ itself is `stdlib/gfx.goose`.
 graphics and compute pipelines, render and compute passes, and reading results
 back. Underneath is SDL3's GPU API (SDL_GPU), which draws through Direct3D 12,
 Vulkan or Metal. Shaders are GLSL, compiled into the program by the builtin
-`embed_shader("file.frag")` when the program is compiled.
+`embed_shader` when the program is compiled: written in it as a `"""` string
+after their stage (`embed_shader("frag", """ ... """)`), or in a file
+(`embed_shader("file.frag")`).
 
     Goose program --extern fn--> gs_gfx_* (goose_gfx, native C) --> SDL3 (static)
 
@@ -62,14 +64,23 @@ and reconfigure". `--gfx-link` fails the same way.
 
 ## The compiler's side
 
-* **`embed_shader("x.vert")`** (`.vert`, `.frag` or `.comp`) is a builtin whose
-  argument is a string literal, resolved relative to the file containing the
-  call. The checker compiles the shader (`src/gfx.h`, `src/shaderc.c`),
-  `#include` resolving relative to the shader, and a failure is a compile
-  error at the call carrying the shader's own `file:line`. The result is a
-  `const u8[:]` into static data, like a string literal's, which codegen emits
-  as an initializer list since MSVC caps string literals at 64 KB. Compiled
-  blobs are kept in `Ast::shaders` by resolved path.
+* **`embed_shader`** is a builtin whose arguments are string literals, or
+  `let` or `const` globals initialized with one, which the checker puts in
+  their place. `embed_shader("frag", source, ...)` (`"vert"`, `"frag"` or
+  `"comp"`) compiles GLSL written in the program, its parts joined as lines,
+  with `#include` relative to the file containing the call;
+  `embed_shader("x.vert")` (`.vert`, `.frag` or `.comp`) compiles a file,
+  resolved relative to that file, with `#include` relative to the shader.
+  The checker compiles each distinct shader once (`TypeCheck::EmbedShader`,
+  `src/gfx.h`, `src/shaderc.c`), keeping the blobs in `Ast::shaders` and a
+  pointer to its blob on the call for codegen. A failure is a compile error
+  at the call. One the shader compiler puts at a line of source written in
+  the program is reported at that line instead, since a `"""` string
+  spanning lines holds its text line for line (`StrLit::multiline`); in a
+  part a global names, the message adds which call compiled it. One in a
+  file carries the shader's own `file:line`. The result is a `const u8[:]` into static
+  data, like a string literal's, which codegen emits as an initializer list
+  of bytes.
 * **The blob** (`src/gfx/gfx_blob.h`, shared by `shaderc.c` and the layer)
   holds SPIR-V, MSL and HLSL together, so the generated C builds anywhere,
   plus the reflection SDL_GPU needs: counts of samplers, storage textures and
@@ -154,11 +165,15 @@ SDL_GPU's clip space. `docs/stdlib.md` is the reference.
   draw only on pixel boundaries, so their output is exact on every backend.
   They build and run AOT and JIT where the compiler has the layer, and a
   machine without a GPU device reports them skipped (the program prints `gfx:
-  no GPU device`). Beside them are the rejection tests (a shader that does not
-  compile, a binding in the wrong set, a missing file, an unknown extension, a
-  non-literal argument, gfx from a `thread_fn`), a probe of the hidden
-  `--compile-shader` flag, and the API check. The suite sets
-  `GOOSE_GFX_HEADLESS=1`, so nothing it runs opens a window.
+  no GPU device`). Their shaders are written in them. Beside them are a
+  check that a shader from a file, written in the program and given in parts
+  compiles to the same blob, the rejection tests (a shader that does not
+  compile, whose error must land on the offending line of the program, also
+  in a part a global holds; a binding in the wrong set; a missing file; an
+  unknown extension or stage name; source given without a stage; a local
+  variable as an argument; gfx from a `thread_fn`), probes of the hidden
+  `--compile-shader` flag on the shader files kept for it, and the API check.
+  The suite sets `GOOSE_GFX_HEADLESS=1`, so nothing it runs opens a window.
 * **`samples/27_gfx_cube.goose`** runs in the samples runner, headless, for 30
   frames.
 * **`test/gfx/window/`** is not in the suite, since it needs a display: a
@@ -189,8 +204,8 @@ until CI or a Mac runs them.
 
 ## Decisions on the plan's open questions
 
-* The builtin is `embed_shader`, one file per stage, the stage from the
-  extension.
+* The builtin is `embed_shader`, one shader per stage: its GLSL written in
+  the program after the stage's name, or a file whose extension names it.
 * gfx from a `thread_fn` is a compile error.
 * Uniform structs are checked against the shader's block size, not member
   offsets.

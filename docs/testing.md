@@ -16,7 +16,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `storage/` | Relative references, pools and serialization. |
 | `threads/` | Workers, queues, shared globals and the native runtime lifecycle test. |
 | `stdlib/` | Standard-library modules. |
-| `gfx/` | The `gfx` graphics module: headless rendering, textures, compute, frames and input, a runtime misuse; shader and threading rejections (fixtures with `// error:` markers). Shaders sit beside the programs; `gfx/window/` is the windowed showcase, not part of the suite. |
+| `gfx/` | The `gfx` graphics module: headless rendering, textures, compute, frames and input, a runtime misuse, shaders from files and from the program; shader and threading rejections (fixtures with `// error:` markers). The programs hold their shaders; the shader files beside them are for the file form of `embed_shader` and `--compile-shader`. `gfx/window/` is the windowed showcase, not part of the suite. |
 | `errors/`, `errors_tc/` | Expected parser/resolver and semantic rejections. |
 | `expected/` | Shared output and runtime-diagnostic expectations. |
 | `run_tests.py` | The Python test runner. |
@@ -103,6 +103,7 @@ The runner checks more than exit status and runtime output:
 | Every positive Goose fixture | Successful parse, successful initial dump, identical dump/reparse/dump, and typechecking unless its first line contains `parse-only`. Parsing also resolves type names; dumping alone does not. |
 | First-line `dump-runtime` | Compile and execute the dumped source against the original output. `control_expression_dump.goose` uses this to check grouping semantics, which a stable dump alone cannot establish. |
 | Every fixture with `// bce:elide` or `// bce:keep` | Run `-O1 --check --bce-test`, including expected-abort regressions. Native/JIT O0 and O2 runs independently check behavior. |
+| `gfx_err_shader_syntax.goose`, `gfx_err_shader_part.goose` | Besides their markers, the error is reported at the program's line holding the offending GLSL. |
 | `optimize.goose` at O0/O1/O2 | Inspect named tail-recursion bodies in `--specs`: supported integer accumulator/plain recursion becomes loops; modulo, floating-point reassociation, nonlocal-return frames and returns inside nested loops retain self calls. Mixed operators retain the ineligible call. Leading locals prevent base-case inlining from consuming these cases first. |
 
 The fixture audit retained the small lifetime, optional-narrowing, alias-cycle,

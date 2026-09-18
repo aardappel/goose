@@ -84,6 +84,7 @@ struct Lexer {
     bool iuns = false;               // T_INTLIT above i64.max: a u64 constant.
     double fval = 0;                 // T_FLTLIT value.
     string sval;                     // T_STRLIT decoded value.
+    bool smultiline = false;         // T_STRLIT: a """ string spanning lines.
     int tokline = 1;
     const char *toklinestart = nullptr;
 
@@ -243,6 +244,7 @@ struct Lexer {
                     return;
                 }
                 sval.clear();
+                smultiline = false;
                 while (*p != '"') sval += (char)LexEscapedChar('"');
                 p++;
                 Set(T_STRLIT);
@@ -342,7 +344,8 @@ struct Lexer {
         sval.clear();
         auto q = p;
         while (*q == ' ' || *q == '\t' || *q == '\r') q++;
-        if (*q != '\n') {
+        smultiline = *q == '\n';
+        if (!smultiline) {
             for (; !(p[0] == '"' && p[1] == '"' && p[2] == '"'); p++) {
                 if (!*p) Error("unterminated \"\"\" string");
                 if (*p == '\n' || (*p == '\r' && p[1] == '\n'))

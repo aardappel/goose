@@ -520,7 +520,9 @@ inline Node *Optimizer::TryInline(Call *c) {
 inline Node *IntLit::Cp1(Inliner &inl) const { return inl.ast.New<IntLit>(line, val, text, uns); }
 inline Node *FltLit::Cp1(Inliner &inl) const { return inl.ast.New<FltLit>(line, val, text); }
 inline Node *BoolLit::Cp1(Inliner &inl) const { return inl.ast.New<BoolLit>(line, val); }
-inline Node *StrLit::Cp1(Inliner &inl) const { return inl.ast.New<StrLit>(line, val); }
+inline Node *StrLit::Cp1(Inliner &inl) const {
+    return inl.ast.New<StrLit>(line, val, multiline);
+}
 inline Node *NullLit::Cp1(Inliner &inl) const { return inl.ast.New<NullLit>(line); }
 inline Node *SelfRef::Cp1(Inliner &inl) const { return inl.ast.New<SelfRef>(line); }
 inline Node *Continue::Cp1(Inliner &inl) const { return inl.ast.New<Continue>(line); }
@@ -586,6 +588,7 @@ inline Node *Call::Cp1(Inliner &inl) const {
     c->dispatcharg = dispatcharg;
     c->builtin = builtin;
     c->poolcheck = poolcheck;
+    c->shaderblob = shaderblob;
     c->fvtarget = fvtarget;
     c->rettypes = rettypes;
     c->fmtspecs = fmtspecs;

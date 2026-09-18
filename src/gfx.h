@@ -50,14 +50,19 @@ inline string GfxLinkFile(const string &exedir, const string &style) {
     throw CompileError { cat("cannot find ", name, " (set GOOSE_GFX_LINK to its directory)") };
 }
 
+// The stage embed_shader("frag", source) names, which is also the extension
+// of a shader file for it; -1 for none.
+inline int ShaderStageNamed(string_view name) {
+    if (name == "vert") return GS_GFX_STAGE_VERTEX;
+    if (name == "frag") return GS_GFX_STAGE_FRAGMENT;
+    if (name == "comp") return GS_GFX_STAGE_COMPUTE;
+    return -1;
+}
+
 // The stage a shader file is for, from its extension; -1 for none.
 inline int ShaderStageOf(const string &path) {
     auto dot = path.find_last_of('.');
-    auto ext = dot == string::npos ? string() : path.substr(dot);
-    if (ext == ".vert") return GS_GFX_STAGE_VERTEX;
-    if (ext == ".frag") return GS_GFX_STAGE_FRAGMENT;
-    if (ext == ".comp") return GS_GFX_STAGE_COMPUTE;
-    return -1;
+    return dot == string::npos ? -1 : ShaderStageNamed(string_view(path).substr(dot + 1));
 }
 
 // Where embed_shader(`lit`) in the file `from` finds its shader: relative to
@@ -70,17 +75,14 @@ inline string EmbeddedShaderPath(const string &from, string_view lit) {
     return cat(pos == string::npos ? string() : from.substr(0, pos + 1), lit);
 }
 
-// The blob for the shader file at `path` (src/gfx/gfx_blob.h). A shader that
-// does not compile is a CompileError carrying the shader's own file:line
-// message.
-inline string CompileShaderFile(const string &path) {
-    auto stage = ShaderStageOf(path);
-    if (stage < 0)
-        throw CompileError { cat("cannot tell the shader stage of ", path,
-                                 ": the extension must be .vert, .frag or .comp") };
-    string src;
-    if (!LoadFile(path, src)) throw CompileError { cat("cannot open shader file: ", path) };
-    auto r = gs_shaderc_compile(src.c_str(), path.c_str(), stage);
+// The blob (src/gfx/gfx_blob.h) for the GLSL `source` of a shader for
+// `stage`, which `path` names in messages and `#include` resolves relative
+// to. A shader that does not compile is a CompileError carrying the shader
+// compiler's message: "path:line: error: ..." for one at a line of
+// `source`, "path: ..." for one about the shader as a whole, and the
+// included file's name for one inside an include.
+inline string CompileShader(const string &source, const string &path, int stage) {
+    auto r = gs_shaderc_compile(source.c_str(), path.c_str(), stage);
     if (!r.blob) {
         auto msg = string(r.error ? r.error : "shader compilation failed");
         gs_shaderc_free(&r);
@@ -89,6 +91,36 @@ inline string CompileShaderFile(const string &path) {
     string blob((const char *)r.blob, r.size);
     gs_shaderc_free(&r);
     return blob;
+}
+
+// The blob for the shader file at `path`.
+inline string CompileShaderFile(const string &path) {
+    auto stage = ShaderStageOf(path);
+    if (stage < 0)
+        throw CompileError { cat("cannot tell the shader stage of ", path,
+                                 ": the extension must be .vert, .frag or .comp") };
+    string src;
+    if (!LoadFile(path, src)) throw CompileError { cat("cannot open shader file: ", path) };
+    return CompileShader(src, path, stage);
+}
+
+// Takes apart a CompileShader message about `path`'s own source: the line
+// it is at (0 for none) and the message without its location. False for a
+// message about an included file.
+inline bool ShaderMessageAt(const string &err, const string &path, int &line, string &msg) {
+    if (err.compare(0, path.size(), path) || err.size() < path.size() + 2 ||
+        err[path.size()] != ':')
+        return false;
+    auto rest = string_view(err).substr(path.size() + 1);
+    line = 0;
+    while (!rest.empty() && isdigit((uint8_t)rest[0])) {
+        line = line * 10 + (rest[0] - '0');
+        rest.remove_prefix(1);
+    }
+    auto sep = string_view(line ? ": error: " : " ");
+    if (rest.substr(0, sep.size()) != sep) return false;
+    msg = string(rest.substr(sep.size()));
+    return true;
 }
 
 // --compile-shader: what a blob holds, for looking at a shader without a
