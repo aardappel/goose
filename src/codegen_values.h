@@ -643,6 +643,8 @@ inline string CodeGen::LoadLoc(Loc lv, TypeExpr *et, Line ln) {
     if (et && lv.val && IsStaticLimited(et) &&
         (lv.t->kind == TY_SLICE || (lv.t->kind == TY_ARRAY && !TEq(lv.t, et))))
         return AdaptToFixed(lv, et, ln);
+    // A variant read as its ADT (§3.5).
+    if (et && et->kind == TY_ENUM && lv.t->kind == TY_VARIANT) return AdaptToFixed(lv, et, ln);
     if (lv.ispref && et && et->kind == TY_REF) {
         // A pool reference read as a plain reference drops the freelist.
         auto t = T();
@@ -652,10 +654,22 @@ inline string CodeGen::LoadLoc(Loc lv, TypeExpr *et, Line ln) {
     return lv.s;
 }
 
-// A fixed C value built from a differently-represented source: a
-// variable-mode ADT read into a fixed-mode context, or an array/slice
+// A fixed C value built from a differently-represented source: a variant
+// or a variable-mode ADT read into a fixed-mode context, or an array/slice
 // into a static-capacity limited array.
 inline string CodeGen::AdaptToFixed(Loc lv, TypeExpr *et, Line ln) {
+    if (et->kind == TY_ENUM && lv.t->kind == TY_VARIANT) {
+        // The variant's own tag, its value the payload.
+        assert(lv.val);
+        auto ei = EIOf(et);
+        auto vi = ei->en->VariantIndex(lv.t->var->variant);
+        auto tv = T();
+        L(CT(et), " ", tv, HasUninitSlots(et) ? " = {0};" : ";");
+        L(tv, ".tag = ", TagConst(ei, vi), ";");
+        if (!ei->en->variants[vi].fields.empty())
+            L(tv, ".u.v_", Sanitize(ei->en->variants[vi].name), " = ", lv.s, ";");
+        return tv;
+    }
     if (et->kind == TY_ENUM) {
         auto ei = EIOf(et);
         auto ts = TagSize(ei->en);

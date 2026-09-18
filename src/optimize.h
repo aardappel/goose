@@ -490,12 +490,13 @@ inline Node *Optimizer::TryInline(Call *c) {
     // the single-pass design allows, and only over fresh nodes.
     OptBlock(body);
     // Trivial results unwrap to plain expressions — but only when the value's
-    // type survives as-is (a reference return decayed at the call site must
-    // keep the InlineBlock, whose exprtype records the decayed type).
+    // type survives as-is (a reference return decayed at the call site, or an
+    // ADT result received in its other mode, must keep the InlineBlock, whose
+    // exprtype records the type it converts to).
     auto unwrapok = [&](Node *v) {
         if (SameType(v->exprtype, c->exprtype)) return true;
         auto a = v->exprtype, b = c->exprtype;
-        return a && b && a->kind == b->kind && a->kind != TY_REF;
+        return a && b && a->kind == b->kind && a->kind != TY_REF && a->kind != TY_ENUM;
     };
     if (body->stmts.empty() && body->tail && !ReturnsFor(body->tail, K->sf) &&
         unwrapok(body->tail))

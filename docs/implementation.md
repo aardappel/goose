@@ -1146,6 +1146,23 @@ bytes-class call result feeding a fixed-class slot is built on a temporary of
 its own rather than the slot's stack (`GenConstruct`), since the slot takes
 the adapted C value.
 
+**Adaptation into an ADT.** `FitsAt` also lets a variant construct its ADT,
+and an ADT construct itself in its other mode (§3.5); the node then carries
+the ADT's type, and codegen finds the type the value arrives as where it is
+produced. A variable, field or element converts where it is read: into a
+fixed-mode ADT as a C value tagged with the variant (`LoadLoc`,
+`AdaptToFixed`), into a variable-mode one as the tag followed by the value's
+bytes (`GenVarEnumFromLoc`). A call's result, a builtin's element result
+included, and an inlined body arrive as the callee's own type (`AdtFrom`):
+`GenAdtAdapted` builds a variant headed for a variable-mode slot in place
+behind its tag, and anything else into a temporary it then converts. The
+inliner keeps the `InlineBlock` of a trivial body whose ADT result changes
+mode for this, as it does for a decayed reference. A multi-value call
+forwarded by `return`, whose values the checker fits to the function's return
+types one by one, delivers each value of another type into a temporary of the
+callee's type, converted from there into the return channel
+(`GenNormalReturn`).
+
 **Named results** (`DetectNrvo`, `OpenIbNrvo`): when every `return` of a
 nonfixed result hands back the same top-level local (`NamedResult`), that
 local is allocated at the return destination from its declaration and the

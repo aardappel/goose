@@ -2010,12 +2010,16 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         case 'e':
             v.type = LoadType(elem);
             v.root = temproot;
+            // What an adapting receiver (the element's ADT, say) constructs from.
+            c->rettypes.push_back(v.type);
             break;
         case 'r':
             v.type = RefTo(elem, c->line);
             v.root = rv.root;
             v.rootexact = rv.rootexact;
             v.writable = rv.writable;
+            // What a receiver that decays the reference loads through.
+            c->rettypes.push_back(v.type);
             break;
         case 's':
             v.type = SliceOf(elem, c->line);

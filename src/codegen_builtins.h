@@ -247,7 +247,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             }
             return poll ? vector<string> { tv, got } : vector<string> { tv };
         }
-        case B_PUSH: return EmitPush(c, an, ln);
+        case B_PUSH: return EmitPush(an, ln);
         case B_APPEND: EmitAppend(an, ln); return {};
         case B_INDEX_OF: {
             // The checker proved the reference is an element of this very
@@ -365,7 +365,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
     }
 }
 
-inline vector<string> CodeGen::EmitPush(Call *c, vector<Node *> &an, Line ln) {
+inline vector<string> CodeGen::EmitPush(vector<Node *> &an, Line ln) {
     auto lv = RecvLoc(an[0]);
     auto v = ArrayView(lv, ln);
     auto elem = v.elem;
@@ -419,11 +419,8 @@ inline vector<string> CodeGen::EmitPush(Call *c, vector<Node *> &an, Line ln) {
         L(v.lenlv, "++;");
         ref = e;
     }
-    // push returns a reference on grow-only and limited arrays (§3.3).
-    // An un-annotated receiver decayed the reference to an element copy.
-    if (c->exprtype && c->exprtype->kind != TY_REF && c->exprtype->kind != TY_VOID &&
-        !IsBytesT(elem))
-        return { cat("(*", ref, ")") };
+    // push returns a reference on grow-only and limited arrays (§3.3), which
+    // a receiver decaying it loads from (CallVal0).
     return { ref };
 }
 
@@ -504,7 +501,6 @@ inline vector<string> CodeGen::EmitAlloc(Call *c, vector<Node *> &an, Line ln) {
     if (atslot) FixedLitAtLv(an[1], cat("(*", e, ")"), true);
     else L("*", e, " = ", ev, ";");
     if (c->builtin == B_ALLOC_INDEX) return { iv };
-    if (c->exprtype && c->exprtype->kind != TY_REF) return { cat("(*", e, ")") };
     return { e };
 }
 

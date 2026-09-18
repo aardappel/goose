@@ -725,6 +725,13 @@ struct CodeGen {
     SrcElems GenSrcElems(Node *n);
     void GenConstruct(Node *n, const string &stk, TypeExpr *want = nullptr,
                       const string &lenlv = "");
+    void ConstructFromLoc(Loc lv, TypeExpr *et, const string &stk, const string &lenlv, Line ln);
+    void ConstructCall(Call *c, TypeExpr *et, const string &stk, TypeExpr *want,
+                       const string &lenlv);
+    TypeExpr *AdtFrom(Node *n);
+    void GenAdtAdapted(TypeExpr *from, TypeExpr *to, const Dst &d, Line ln,
+                       const function<void(const Dst &)> &gen);
+    void GenCallAs(Call *c, TypeExpr *t, const Dst &d);
     void GenArrayFromLoc(Loc lv, TypeExpr *et, const string &stk, Line ln,
                          const string &lenlv = "");
     void EmitRzCopy(Loc lv, TypeExpr *et, const string &stk, const string &lenlv, Line ln);
@@ -868,7 +875,7 @@ struct CodeGen {
 
     RzDest OpenRzDest(TypeExpr *t, Dst d0, Line ln, const char *what);
     void CloseRzDest(RzDest &rd, const string &count);
-    vector<string> EmitPush(Call *c, vector<Node *> &an, Line ln);
+    vector<string> EmitPush(vector<Node *> &an, Line ln);
     void EmitAppend(vector<Node *> &an, Line ln);
     vector<string> EmitAlloc(Call *c, vector<Node *> &an, Line ln);
     vector<string> EmitSlicePool(Call *c, vector<Node *> &an, Line ln);

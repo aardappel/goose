@@ -281,42 +281,12 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         return;
     }
     if (auto c = Is<Call>(n)) {
-        auto rt0 = c->rettypes.empty() ? nullptr : c->rettypes[0];
-        // A bytes-class result feeding a fixed-class slot (an array
-        // constructing a static-capacity limited one, §4.2) is built on a
-        // temporary of its own and copied into the slot below, so the call
-        // is not handed the slot's stack to build on.
-        auto own = rt0 && IsBytesT(rt0) && !IsBytesT(et);
-        auto rets = EmitCall(c, own ? Dst {} : Dst { DK_STACK, stk, want, lenlv });
-        if (rets.empty() || IsVoidT(et)) return;
-        // A resizable result with no receiving header was built behind a
-        // temporary one: copy it into the slot as the slot's array kind.
-        if (rt0 && IsResz(rt0) && rt0->kind == TY_ARRAY && lenlv.empty() &&
-            et->kind == TY_ARRAY && !rets[0].empty()) {
-            Loc lv;
-            lv.t = rt0;
-            lv.s = cat(rets[0], ".base");
-            lv.lenlv = cat(rets[0], ".len");
-            GenArrayFromLoc(lv, et, stk, n->line, lenlv);
+        if (auto from = AdtFrom(c)) {
+            GenAdtAdapted(from, et, Dst { DK_STACK, stk, et, lenlv }, n->line,
+                          [&](const Dst &d) { GenCallAs(c, from, d); });
             return;
         }
-        // A reference-returning call decayed to a value here: the callee
-        // did not construct at the destination; copy the pointee.
-        auto rt = c->rettypes.empty() ? nullptr : c->rettypes[0];
-        if (rt && rt->kind == TY_REF && et->kind != TY_REF && IsBytesT(rt->ref->sub)) {
-            if (IsResz(rt->ref->sub)) {
-                EmitRzCopy(FatRefLoc(rets[0], rt->ref->sub), et, stk, lenlv, n->line);
-            } else {
-                auto sz = T();
-                L("int64_t ", sz, " = ", SizeX(et, rets[0]), ";");
-                L("memcpy(", Top(stk), ", ", rets[0], ", (size_t)", sz, ");");
-                Bump(stk, sz);
-            }
-            return;
-        }
-        // A fixed-size result (a reference-returning call's pointee
-        // included) is a C value: it lands at the top like any other.
-        if (!IsBytesT(et)) EmitValStore(stk, et, CallVal0(c, rets[0], et));
+        ConstructCall(c, et, stk, want, lenlv);
         return;
     }
     if (!IsBytesT(et)) {
@@ -401,26 +371,38 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
     // Remaining nodes denote existing values: resolve the location, then
     // either copy identical layouts wholesale or adapt (slice/array kind
     // changes, ADT mode changes) element/field-wise.
-    auto lv = GenLoc(n);
-    if (lv.t->kind == TY_REF && et->kind != TY_REF) DerefLoc(lv, n->line);
+    ConstructFromLoc(GenLoc(n), et, stk, lenlv, n->line);
+}
+
+// Constructs the value at an existing location as a bytes-class et at stk's
+// top (see GenConstruct).
+inline void CodeGen::ConstructFromLoc(Loc lv, TypeExpr *et, const string &stk,
+                                      const string &lenlv, Line ln) {
+    if (lv.t->kind == TY_REF && et->kind != TY_REF) DerefLoc(lv, ln);
     if (IsResz(et)) {
         if (lv.t->kind == TY_SLICE && et->kind == TY_ARRAY) {
-            GenArrayFromLoc(lv, et, stk, n->line, lenlv);
+            GenArrayFromLoc(lv, et, stk, ln, lenlv);
             return;
         }
         if (lv.t->kind == TY_ARRAY || TEq(lv.t, et)) {
             if (TEq(lv.t, et) && et->kind != TY_ARRAY) {
-                EmitRzCopy(lv, et, stk, lenlv, n->line);
+                EmitRzCopy(lv, et, stk, lenlv, ln);
             } else {
-                GenArrayFromLoc(lv, et, stk, n->line, lenlv);
+                GenArrayFromLoc(lv, et, stk, ln, lenlv);
             }
             return;
         }
-        Fail(n->line, cat("unsupported resizable construction from ", Mangle(lv.t)));
+        // A variant without a resizable tail: the ADT's tail stays empty.
+        if (et->kind == TY_ENUM && !IsResz(lv.t)) {
+            GenVarEnumFromLoc(lv, et, stk);
+            if (!lenlv.empty()) L(lenlv, " = 0;");
+            return;
+        }
+        Fail(ln, cat("unsupported resizable construction from ", Mangle(lv.t)));
     }
     if (!lenlv.empty() && et->kind == TY_ARRAY) {
         // Element-run destination: elements only, count into lenlv.
-        GenArrayFromLoc(lv, et, stk, n->line, lenlv);
+        GenArrayFromLoc(lv, et, stk, ln, lenlv);
         return;
     }
     if (TEq(lv.t, et)) {
@@ -431,12 +413,136 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         Bump(stk, sz);
         return;
     }
-    if (et->kind == TY_ARRAY) { GenArrayFromLoc(lv, et, stk, n->line, lenlv); return; }
+    if (et->kind == TY_ARRAY) { GenArrayFromLoc(lv, et, stk, ln, lenlv); return; }
     if (et->kind == TY_ENUM && et->enu->varmode) {
         GenVarEnumFromLoc(lv, et, stk);
         return;
     }
-    Fail(n->line, cat("unsupported construction adaptation to ", Mangle(et)));
+    Fail(ln, cat("unsupported construction adaptation to ", Mangle(et)));
+}
+
+// A call's first result constructed as et at stk's top (see GenConstruct).
+inline void CodeGen::ConstructCall(Call *c, TypeExpr *et, const string &stk, TypeExpr *want,
+                                   const string &lenlv) {
+    auto rt0 = c->rettypes.empty() ? nullptr : c->rettypes[0];
+    // A bytes-class result feeding a fixed-class slot (an array
+    // constructing a static-capacity limited one, §4.2) is built on a
+    // temporary of its own and copied into the slot below, so the call
+    // is not handed the slot's stack to build on.
+    auto own = rt0 && IsBytesT(rt0) && !IsBytesT(et);
+    auto rets = EmitCall(c, own ? Dst {} : Dst { DK_STACK, stk, want, lenlv });
+    if (rets.empty() || IsVoidT(et)) return;
+    // A resizable result with no receiving header was built behind a
+    // temporary one: copy it into the slot as the slot's array kind.
+    if (rt0 && IsResz(rt0) && rt0->kind == TY_ARRAY && lenlv.empty() &&
+        et->kind == TY_ARRAY && !rets[0].empty()) {
+        Loc lv;
+        lv.t = rt0;
+        lv.s = cat(rets[0], ".base");
+        lv.lenlv = cat(rets[0], ".len");
+        GenArrayFromLoc(lv, et, stk, c->line, lenlv);
+        return;
+    }
+    // A reference-returning call decayed to a value here: the callee
+    // did not construct at the destination; copy the pointee.
+    if (rt0 && rt0->kind == TY_REF && et->kind != TY_REF && IsBytesT(rt0->ref->sub)) {
+        if (IsResz(rt0->ref->sub)) {
+            EmitRzCopy(FatRefLoc(rets[0], rt0->ref->sub), et, stk, lenlv, c->line);
+        } else {
+            auto sz = T();
+            L("int64_t ", sz, " = ", SizeX(et, rets[0]), ";");
+            L("memcpy(", Top(stk), ", ", rets[0], ", (size_t)", sz, ");");
+            Bump(stk, sz);
+        }
+        return;
+    }
+    // A fixed-size result (a reference-returning call's pointee
+    // included) is a C value: it lands at the top like any other.
+    if (!IsBytesT(et)) EmitValStore(stk, et, CallVal0(c, rets[0], et));
+}
+
+// The type a call or an inlined call body delivers its value as, where the
+// checker adapted that value to an ADT it does not arrive as (FitsAt: a
+// variant to its ADT, or the ADT to its other mode, §3.5); null elsewhere.
+// A reference result counts as its pointee, which the receiver loads.
+inline TypeExpr *CodeGen::AdtFrom(Node *n) {
+    auto et = n->exprtype;
+    if (!et || et->kind != TY_ENUM) return nullptr;
+    TypeExpr *from = nullptr;
+    if (auto c = Is<Call>(n)) {
+        if (c->fvbody) from = c->fvbody->exprtype;
+        else if (c->builtin != B_COPY && !c->rettypes.empty()) from = c->rettypes[0];
+    } else if (auto ib = Is<InlineBlock>(n)) {
+        if (ib->spec && !ib->spec->rets.empty()) from = ib->spec->rets[0];
+    }
+    if (from && IsPlainRef(from)) from = from->ref->sub;
+    if (!from || (from->kind != TY_VARIANT && from->kind != TY_ENUM) || TEq(from, et))
+        return nullptr;
+    return from;
+}
+
+// A value produced as `from` reaching d as the ADT `to` it was adapted to
+// (AdtFrom): `gen` builds the value, as `from`, into the destination it is
+// handed. A variant constructing a variable-mode ADT needs only its tag in
+// front of it, so it builds in place; every other adaptation builds into a
+// temporary and converts from there.
+inline void CodeGen::GenAdtAdapted(TypeExpr *from, TypeExpr *to, const Dst &d, Line ln,
+                                   const function<void(const Dst &)> &gen) {
+    if (d.k == DK_DISCARD) { gen(d); return; }
+    if (to->enu->varmode) {
+        assert(d.k == DK_STACK);
+        if (from->kind == TY_VARIANT) {
+            auto ei = EIOf(to);
+            EmitValStoreTag(d.s, TagStore(ei->en),
+                            TagConst(ei, ei->en->VariantIndex(from->var->variant)));
+            // A resizable-class ADT's tail count is the variant's own, or
+            // zero when the variant has no tail.
+            auto rz = IsResz(from);
+            if (!d.lenlv.empty() && !rz) L(d.lenlv, " = 0;");
+            gen(Dst { DK_STACK, d.s, from, rz ? d.lenlv : "" });
+            return;
+        }
+        // The fixed-mode ADT, whose variants are all fixed-size.
+        Loc lv;
+        lv.t = from;
+        lv.val = true;
+        lv.s = T();
+        L(CT(from), " ", lv.s, ";");
+        gen(Dst { DK_LVALUE, lv.s, from });
+        GenVarEnumFromLoc(lv, to, d.s);
+        if (!d.lenlv.empty()) L(d.lenlv, " = 0;");
+        return;
+    }
+    // The fixed-mode ADT, from a variant (fixed-size, as the mode requires)
+    // or from the variable-mode ADT.
+    Loc lv;
+    lv.t = from;
+    if (IsBytesT(from)) {
+        string stk;
+        lv.s = BytesTemp(stk);
+        lv.stk = stk;
+        gen(Dst { DK_STACK, stk, from });
+    } else {
+        lv.val = true;
+        lv.s = T();
+        L(CT(from), " ", lv.s, ";");
+        gen(Dst { DK_LVALUE, lv.s, from });
+    }
+    auto x = AdaptToFixed(lv, to, ln);
+    if (d.k == DK_LVALUE) L(d.s, " = ", x, ";");
+    else EmitValStore(d.s, to, x);
+}
+
+// A call's first result, of the type t it arrives as, into d.
+inline void CodeGen::GenCallAs(Call *c, TypeExpr *t, const Dst &d) {
+    if (d.k == DK_STACK) {
+        ConstructCall(c, t, d.s, d.t, d.lenlv);
+        return;
+    }
+    auto rets = EmitCall(c, d);
+    if (d.k != DK_LVALUE || rets.empty()) return;
+    auto r0 = CallVal0(c, rets[0], t);
+    if (r0 != d.s) L(d.s, " = ", r0, ";");
 }
 
 inline void CodeGen::GenArrayFromLoc(Loc lv, TypeExpr *et, const string &stk, Line ln,

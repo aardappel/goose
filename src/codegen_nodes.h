@@ -327,6 +327,8 @@ inline string AsCast::CgX(CodeGen &cg) {
 }
 
 inline string Call::CgX(CodeGen &cg) {
+    // A result adapted to an ADT converts into a temporary (CgAny).
+    if (cg.AdtFrom(this)) return cg.CtlValX(this);
     auto rets = cg.EmitCall(this, Dst {});
     assert(!rets.empty());
     return cg.CallVal0(this, rets[0]);
@@ -539,6 +541,16 @@ inline void LoopExpr::CgAny(CodeGen &cg, const Dst &d) {
 }
 
 inline void InlineBlock::CgAny(CodeGen &cg, const Dst &d) {
+    // The body delivers the callee's own result type; one the call site
+    // adapted to an ADT converts on the way out.
+    if (auto from = cg.AdtFrom(this)) {
+        cg.GenAdtAdapted(from, exprtype, d, line, [&](const Dst &nd) { EmitBody(cg, nd); });
+        return;
+    }
+    EmitBody(cg, d);
+}
+
+inline void InlineBlock::EmitBody(CodeGen &cg, const Dst &d) {
     auto named = cg.OpenIbNrvo(this, d);
     // An ordinary call evaluates its arguments in the caller's scope. Keep
     // that lifetime when inlining: a slice/reference argument can borrow a
@@ -573,6 +585,11 @@ inline void InlineBlock::CgAny(CodeGen &cg, const Dst &d) {
 }
 
 inline void Call::CgAny(CodeGen &cg, const Dst &d) {
+    // A result the checker adapted to an ADT arrives as the callee's type.
+    if (auto from = cg.AdtFrom(this)) {
+        cg.GenAdtAdapted(from, exprtype, d, line, [&](const Dst &nd) { cg.GenCallAs(this, from, nd); });
+        return;
+    }
     auto rets = cg.EmitCall(this, d);
     // Fixed-value results wire into the destination here; bytes results and
     // channel-passed returns were handled in place.

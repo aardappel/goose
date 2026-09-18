@@ -1499,6 +1499,16 @@ inline void TypeCheck::CheckReturn(Return *r) {
                                                 ? tspec->rets[0] : nullptr);
             if (auto call = Is<Call>(r->vals[0]); call && call->rettypes.size() > 1) {
                 vals = lastcallrets;  // Forward a multi-value call.
+                // Each value meets its return type as a value of its own
+                // would; codegen converts the ones that adapt.
+                if (tspec->retsknown && vals.size() == tspec->rets.size()) {
+                    for (size_t i = 0; i < vals.size(); i++) {
+                        auto rt = tspec->rets[i];
+                        RequireCopyable(vals[i], r->vals[0], rt);
+                        if (!KeepsRef(vals[i], rt)) vals[i] = DecayRef(vals[i]);
+                        MustFit(vals[i], r->vals[0], rt, false);
+                    }
+                }
             } else {
                 if (v.type->kind == TY_VOID) Error(r, "cannot return a valueless expression");
                 vals.push_back(v);

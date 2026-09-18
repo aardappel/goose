@@ -710,6 +710,7 @@ NODE(InlineBlock)
     Block *body;
     InlineBlock(Line l, SFunction *_sf, FnSpec *_spec, Block *_body)
         : Node(l), sf(_sf), spec(_spec), body(_body) {}
+    void EmitBody(CodeGen &cg, const Dst &d);   // CgAny, as the callee's own result type.
 NODE_END
 
 // ---------------------------------------------------------------------------

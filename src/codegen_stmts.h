@@ -205,12 +205,37 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
     assert(sp);
     auto &si = *curinfo;
     string retv;
-    // A single call forwards all its return values (§7.1).
+    // A single call forwards all its return values (§7.1). One the checker
+    // adapted to our return type (a variant to its ADT, say) arrives in the
+    // callee's type first and converts into our channel.
     if (vals.size() == 1 && sp->rets.size() > 1) {
         if (auto c = Is<Call>(vals[0]); c && c->rettypes.size() == sp->rets.size()) {
             vector<Dst> dsts;
             vector<string> tmps(sp->rets.size());
+            vector<Loc> arrived(sp->rets.size());
             for (size_t i = 0; i < sp->rets.size(); i++) {
+                auto ct = c->rettypes[i];
+                if (!TEq(ct, sp->rets[i])) {
+                    auto &lv = arrived[i];
+                    string stk;
+                    if (IsResz(ct)) {
+                        auto h = RzTemp(ct, stk);
+                        lv = RzTempLoc(ct, h, stk);
+                        dsts.push_back(Dst { DK_STACK, stk, ct, RzLenLv(ct, h) });
+                    } else if (IsBytesT(ct)) {
+                        lv.t = ct;
+                        lv.s = BytesTemp(stk);
+                        lv.stk = stk;
+                        dsts.push_back(Dst { DK_STACK, stk, ct });
+                    } else {
+                        lv.t = ct;
+                        lv.val = true;
+                        lv.s = T();
+                        L(CT(ct), " ", lv.s, ";");
+                        dsts.push_back(Dst { DK_LVALUE, lv.s, ct });
+                    }
+                    continue;
+                }
                 if (IsResz(sp->rets[i])) {
                     dsts.push_back(Dst { DK_STACK, cat("gs_dst", i), sp->rets[i],
                                          cat("(*gs_rl", i, ")") });
@@ -224,7 +249,23 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
             }
             auto rets = EmitCall(c, dsts[0], &dsts);
             for (size_t i = 0; i < sp->rets.size(); i++) {
-                if (IsBytesT(sp->rets[i])) continue;
+                auto rt = sp->rets[i];
+                if (auto lv = arrived[i]; lv.t) {
+                    // Where the call left the value (its C result, say).
+                    if (!IsResz(lv.t) && i < rets.size() && !rets[i].empty()) lv.s = rets[i];
+                    auto dst = cat("gs_dst", i);
+                    if (IsResz(rt)) {
+                        ConstructFromLoc(lv, rt, dst, cat("(*gs_rl", i, ")"), c->line);
+                    } else if (IsBytesT(rt)) {
+                        ConstructFromLoc(lv, rt, dst, "", c->line);
+                    } else {
+                        auto x = LoadLoc(lv, rt, c->line);
+                        if ((int)i == si.cret) retv = x;
+                        else L("*gs_r", i, " = ", x, ";");
+                    }
+                    continue;
+                }
+                if (IsBytesT(rt)) continue;
                 auto v = i < rets.size() && !rets[i].empty() ? rets[i] : tmps[i];
                 if ((int)i == si.cret) retv = v;
                 else L("*gs_r", i, " = ", v, ";");
