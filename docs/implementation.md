@@ -205,7 +205,11 @@ since distinct specializations would otherwise print alike: `size<u8>()`
 and `size<f64>()` on one line read `in fn size<T = u8>()` and
 `in fn size<T = f64>()`, and `fn scale<T, U>(t: T)` reads
 `in fn scale<U = u8>(f64)`. A function whose type variables all appear in
-its parameter types prints no list.
+its parameter types prints no list. `DumpInstance` writes a frame's
+specialization this way, and names the one a call would create in the
+polymorphic recursion error (§3.11). Each type is cut short at 200
+characters (`DumpShort`): the text of one a runaway recursion built can be
+exponentially longer than the type.
 
 ### 3.2 Types, instantiation, and size classes
 
@@ -588,6 +592,14 @@ requires every pool-class and pool-named parameter to be passed the same
 ultimate root the entry call passed (`UltimateRoot` follows `classfrom`
 chains). The cycle store rule is §3.5 rule 4; the optimizer never inlines
 into a cycle member.
+
+A recursion whose types never repeat has no back edge: each round is a new
+specialization, checked inside the one before, until the native stack runs
+out. `GetOrCreateSpec` therefore refuses to create a specialization of a
+function that already has `MAXNESTEDSPECS` (16) in progress, which are
+exactly the ones on the current path since checking is depth-first (§7.8,
+polymorphic recursion). The error names the instantiation the call would
+have made, and the chain shows the ones before it.
 
 **Cycle return roots** (`CycleRoots`, `typecheck_cycles.h`): a back edge
 reaches a function whose returns are not checked yet, so before a

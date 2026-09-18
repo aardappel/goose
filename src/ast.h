@@ -188,7 +188,9 @@ struct TypeExpr {
     };                               // (TY_BOOL uses none.)
 
     TypeExpr(TypeKind _kind, Line _line) : kind(_kind), line(_line) { named = nullptr; }
-    void Dump(string &s) const;
+    // Stops descending once s reaches `limit`: text past it is unspecified,
+    // and the caller cuts s back to the limit.
+    void Dump(string &s, size_t limit = string::npos) const;
 };
 
 // The views of a type's shape that every pass asks for.

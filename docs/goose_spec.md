@@ -1322,7 +1322,9 @@ arguments, reference roots (§9.2), writability provenances (§9.5), static
 function values, destination stacks). Errors are reported at the offending
 instantiation **with the compile-time call chain** — the whole-program,
 call-graph-order compiler can always show which call path produced the
-failing instantiation.
+failing instantiation. Every instantiation the program reaches is checked, so
+there must be finitely many: a recursive call may not keep making new ones
+(§7.8).
 
 Type variables are never checked abstractly. A generic body is checked only
 at an instantiation where every type is concrete — including the result of
@@ -1389,6 +1391,22 @@ recursion depth then only consumes native call stack. Unnamed nonfixed
 referred to across activations, so the soundness argument holds — but an
 implementation may then consume data-stack slots proportional to recursion
 depth for them (aborting past its limit).
+
+**Polymorphic recursion.** A recursive call may instantiate its callee with
+other type arguments than those of the call it sits in (§7.7): `flip<A, B>`
+calling `flip<B, A>` is back at `flip<A, B>` one round later, and that call
+is the cycle's back edge. The instantiations a recursion reaches must be
+finite, though. Every branch of every specialization is checked, whatever
+values reach it at run time, so a call whose types grow with each round —
+`g(a, n - 1)` with `let a: T[1] = [x]` inside `g<T>`, or `grow<T[2]>(n - 1)`
+inside `grow<T>` — would instantiate without end, even where `n` bounds the
+recursion at run time. The compiler rejects such a call once it would put
+more than 16 specializations of one function in progress on one compile-time
+call path, the way C++ bounds template instantiation depth, and reports it
+with the chain of instantiations that led there. A finite recursion has one
+specialization in progress per instantiation on its cycle, or per level of a
+nested type it descends through, so only an unusually deep one meets the
+bound.
 
 **Cycle store rule.** Within a recursive cycle, distinct activations of the
 same local are statically indistinguishable, so the §9.2 depth check is not

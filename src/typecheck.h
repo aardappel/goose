@@ -244,39 +244,52 @@ struct TypeCheck {
         for (auto i = (int)frames.size() - 1; i > 0; i--) {
             auto &f = frames[i];
             if (!f.sf || f.isfunval) continue;
-            Append(s, "\n  in ", f.sf->isthread ? "thread_fn " : "fn ", f.sf->qname);
-            if (f.spec) {
-                // The argument types show the bindings of type variables a
-                // parameter type names; the others are listed
-                // (`size<T = f64>()`), or distinct specializations would
-                // print alike.
-                auto listed = false;
-                for (auto &g : f.sf->generics) {
-                    auto named = false;
-                    for (auto &p : f.sf->params) named |= p.type && NamesGeneric(p.type, g.name);
-                    if (named) continue;
-                    for (auto &[n, t] : f.spec->bindings) {
-                        if (n != g.name) continue;
-                        Append(s, listed ? ", " : "<", n, " = ");
-                        t->Dump(s);
-                        listed = true;
-                    }
-                }
-                if (listed) s += ">";
-            }
-            s += "(";
-            if (f.spec) {
-                for (size_t j = 0; j < f.spec->argtypes.size(); j++) {
-                    if (j) s += ", ";
-                    auto lit = false;
-                    for (auto li : f.spec->litparams) lit |= li == (int)j;
-                    if (lit) s += "literal ";
-                    f.spec->argtypes[j]->Dump(s);
-                }
-            }
-            Append(s, ") instantiated from ", Where(f.callline));
+            Append(s, "\n  in ", f.sf->isthread ? "thread_fn " : "fn ");
+            if (!f.spec) Append(s, f.sf->qname, "()");
+            else DumpInstance(s, f.sf, f.spec->argtypes, f.spec->litparams, f.spec->bindings);
+            Append(s, " instantiated from ", Where(f.callline));
         }
         throw CompileError { s };
+    }
+
+    // A specialization as a diagnostic names it. The argument types show the
+    // bindings of type variables a parameter type names; the others are
+    // listed (`size<T = f64>()`), or distinct specializations would print
+    // alike.
+    void DumpInstance(string &s, SFunction *sf, const vector<TypeExpr *> &argtypes,
+                      const vector<int> &litparams,
+                      const vector<pair<string_view, TypeExpr *>> &bindings) {
+        s += sf->qname;
+        auto listed = false;
+        for (auto &g : sf->generics) {
+            auto named = false;
+            for (auto &p : sf->params) named |= p.type && NamesGeneric(p.type, g.name);
+            if (named) continue;
+            for (auto &[n, t] : bindings) {
+                if (n != g.name) continue;
+                Append(s, listed ? ", " : "<", n, " = ");
+                DumpShort(s, t);
+                listed = true;
+            }
+        }
+        if (listed) s += ">";
+        s += "(";
+        for (size_t j = 0; j < argtypes.size(); j++) {
+            if (j) s += ", ";
+            for (auto li : litparams) if (li == (int)j) s += "literal ";
+            DumpShort(s, argtypes[j]);
+        }
+        s += ")";
+    }
+
+    // A type as a diagnostic shows it: cut short past any useful length.
+    void DumpShort(string &s, const TypeExpr *t) {
+        auto limit = s.size() + 200;
+        t->Dump(s, limit);
+        if (s.size() > limit) {
+            s.resize(limit);
+            s += "...";
+        }
     }
 
     [[noreturn]] void Error(const Node *n, const string &msg) { Error(n->line, msg); }
@@ -894,6 +907,11 @@ struct TypeCheck {
     // Specialization: find or create the FnSpec for a resolved call and
     // check its body (once) in call-graph order.
 
+    // How many specializations of one function may be in progress on one
+    // compile-time call path (§7.8), the way C++ bounds template
+    // instantiation depth: a recursion whose types never repeat would
+    // otherwise instantiate without end.
+    static constexpr int MAXNESTEDSPECS = 16;
     FnSpec *GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, Node *callnode);
     void ValidateCycle(FnSpec *spec, Node *callnode);
     static VarDef *UltimateRoot(VarDef *v);

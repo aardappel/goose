@@ -785,6 +785,17 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         NoteLitArgs(spec, argvals, callnode);
         return spec;
     }
+    // The specializations in progress are the ones this call path is
+    // checking, each nested in the one before.
+    auto nested = 0;
+    for (auto s : sf->specs) nested += s->inprogress;
+    if (nested >= MAXNESTEDSPECS) {
+        string inst;
+        DumpInstance(inst, sf, mi.paramtypes, mi.litparams, mi.bindings);
+        Error(callnode, cat("instantiating ", inst, " would put more than ", MAXNESTEDSPECS,
+                            " specializations of ", sf->qname, " in progress on this call path: "
+                            "a recursive call must reach a finite set of instantiations (§7.8)"));
+    }
     auto spec = ast.NewFnSpec();
     spec->sf = sf;
     spec->lexparent = mi.env;

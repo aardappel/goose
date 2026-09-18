@@ -48,7 +48,11 @@ inline void DumpGenerics(string &s, const vector<GenericParam> &generics) {
     s += ">";
 }
 
-inline void TypeExpr::Dump(string &s) const {
+inline void TypeExpr::Dump(string &s, size_t limit) const {
+    // A type shares its parts, so its text can be exponentially longer than
+    // the type itself: each round of a runaway polymorphic recursion (§7.8)
+    // may double it.
+    if (s.size() >= limit) return;
     // `const` binds to the first reference or slice of the chain, else to
     // the whole type, so a base needs parens when it is const itself or when
     // this node is const and the base has a reference or slice the `const`
@@ -63,7 +67,7 @@ inline void TypeExpr::Dump(string &s) const {
     auto SubDump = [&](const TypeExpr *inner) {
         auto parens = inner->kind == TY_FN || inner->cq || (cq && chainhasrs(inner));
         if (parens) s += "(";
-        inner->Dump(s);
+        inner->Dump(s, limit);
         if (parens) s += ")";
     };
     auto ArgsDump = [&](const vector<TypeExpr *> &ts) {
@@ -71,7 +75,7 @@ inline void TypeExpr::Dump(string &s) const {
         s += "<";
         for (size_t i = 0; i < ts.size(); i++) {
             if (i) s += ", ";
-            ts[i]->Dump(s);
+            ts[i]->Dump(s, limit);
         }
         s += ">";
     };
@@ -97,7 +101,7 @@ inline void TypeExpr::Dump(string &s) const {
                 s += "(";
                 for (size_t i = 0; i < fn->args.size(); i++) {
                     if (i) s += ", ";
-                    fn->args[i]->Dump(s);
+                    fn->args[i]->Dump(s, limit);
                 }
                 s += ")";
                 if (!fn->rets.empty()) {
@@ -105,7 +109,7 @@ inline void TypeExpr::Dump(string &s) const {
                     if (fn->rets.size() > 1) s += "(";
                     for (size_t i = 0; i < fn->rets.size(); i++) {
                         if (i) s += ", ";
-                        fn->rets[i]->Dump(s);
+                        fn->rets[i]->Dump(s, limit);
                     }
                     if (fn->rets.size() > 1) s += ")";
                 }
