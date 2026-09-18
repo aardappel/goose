@@ -103,9 +103,14 @@ struct CodeGen {
 
     // A C string literal (quotes included) for arbitrary bytes; non-printables
     // as 3-digit octal so following characters can never extend an escape.
+    // MSVC takes at most 16380 bytes in one literal, so a long string becomes
+    // adjacent literals, a line of its text or at most 4000 bytes each.
     static string CStr(string_view v) {
         string s = "\"";
-        for (auto c : v) {
+        auto split = v.size() > 4000;
+        size_t piece = 0;
+        for (size_t i = 0; i < v.size(); i++) {
+            auto c = v[i];
             auto u = (uint8_t)c;
             if (c == '"' || c == '\\') { s += '\\'; s += c; }
             else if (u >= 32 && u < 127) s += c;
@@ -113,6 +118,10 @@ struct CodeGen {
                 char buf[8];
                 snprintf(buf, sizeof(buf), "\\%03o", u);
                 s += buf;
+            }
+            if (split && (c == '\n' || ++piece == 4000) && i + 1 < v.size()) {
+                s += "\"\n    \"";
+                piece = 0;
             }
         }
         s += '"';

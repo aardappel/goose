@@ -883,8 +883,9 @@ inline string CodeGen::StrRaw(const string &v) {
     return expr;
 }
 
-// Binary static data, such as an embedded shader: an initializer list,
-// since MSVC caps a string literal at 64 KB.
+// Binary static data, such as an embedded shader: an initializer list, which
+// MSVC takes at any size, where it takes a string literal only in pieces
+// (CStr).
 inline string CodeGen::BlobRaw(const string &v) {
     auto it = blobdata.find(v);
     if (it != blobdata.end()) return it->second;

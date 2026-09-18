@@ -2,7 +2,7 @@
   "name": "goose-language",
   "displayName": "Goose Language",
   "description": "Syntax highlighting, compiler diagnostics, navigation and tasks for Goose, without a language server.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "aardappel",
   "license": "Apache-2.0",
   "repository": { "type": "git", "url": "https://github.com/aardappel/goose.git", "directory": "vscode" },

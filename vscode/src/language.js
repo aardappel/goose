@@ -25,6 +25,13 @@ function tokens(source) {
             continue;
         }
         const start = i;
+        // A """ string is raw and may span lines: it ends at the next """.
+        if (source.startsWith('"""', i)) {
+            const end = source.indexOf('"""', i + 3);
+            i = end < 0 ? source.length : end + 3;
+            result.push({ text: source.slice(start, i), start, end: i, literal: true });
+            continue;
+        }
         if (source[i] === '"' || source[i] === "'") {
             const quote = source[i++];
             while (i < source.length && source[i] !== '\n') {

@@ -88,6 +88,10 @@ string literal "hello"
 string literal "a\nb\tc"
 string literal "quote:\" backslash:\\ tick:\'"
 string literal "nul\0hexA\n"
+string literal "raw \\n \"q\" \\ "
+string literal ""
+string literal "two\n  lines"
+identifier after
 (
 )
 [

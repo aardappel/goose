@@ -68,6 +68,15 @@ test('all builtin calls and namespace declarations highlight', async () => {
     assert.ok(has(line, 'image::worker', 'entity.name.function'));
 });
 
+test('""" strings are raw, span lines, and code resumes after them', async () => {
+    const lines = await tokenize('let s = """\n    fn fake() { \\n "quoted"\n    """; fn next() {}\n"""one "line" \\t"""; fn after() {}');
+    assert.ok(lines[1].every(token => token.scopes.includes('string.quoted.triple.goose')));
+    assert.ok(!has(lines[1], '\\n', 'constant.character.escape'));
+    assert.ok(has(lines[2], 'next', 'entity.name.function'));
+    assert.ok(!has(lines[3], '\\t', 'constant.character.escape'));
+    assert.ok(has(lines[3], 'after', 'entity.name.function'));
+});
+
 test('unterminated strings stop at the newline', async () => {
     const [, line] = await tokenize('"unterminated\nfn next() {}');
     assert.ok(has(line, 'next', 'entity.name.function'));

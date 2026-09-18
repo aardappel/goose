@@ -357,6 +357,22 @@ print(s, " [", s.len, " bytes]");
 hello, world! 42 [16 bytes]
 ```
 
+Text that spans lines is a `"""` string. It is raw, with no escapes, and the
+indentation of its closing `"""` comes off every line, so it sits in the
+code at the code's own indentation:
+
+```goose
+print("""
+    usage: wc [-l] file
+      -l   count lines only
+    """);
+```
+
+```
+usage: wc [-l] file
+  -l   count lines only
+```
+
 `str(...)` is `format` into a fresh string, and — this matters — it is built
 *directly at its destination*:
 

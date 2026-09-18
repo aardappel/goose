@@ -96,6 +96,23 @@ Literals:
   floats with a mandatory binary exponent (`0x1.8p3`). A `.` starts a
   fraction only when a digit follows, so `1..2` lexes as a range.
 * String `"..."`, with escapes `\n \t \r \0 \\ \" \' \xNN` (two hex digits).
+* Raw string `"""..."""`: no escapes, and the next `"""` ends it. On one
+  line, its text is what lies between the delimiters (`"""a "quoted"
+  C:\path"""`). Across lines, the opening `"""` ends its line and the
+  closing one begins its own after nothing but indentation; the text is
+  the lines in between, joined by `\n`, each less that indentation. Every
+  line must begin with it, except that a line holding only whitespace may
+  fall short, and is then empty. So the literal indents with the code
+  around it, and neither line break next to a delimiter belongs to the
+  text: an empty last line ends it with one. Line breaks are `\n` whatever
+  the source file uses.
+
+  ```goose
+  let usage = """
+      usage: goose [options] file.goose
+        -o file.c   write C instead of running it
+      """;      // "usage: goose [options] file.goose\n  -o file.c   write C ..."
+  ```
 * `null` — the empty value of any optional type `T?` (§3.8).
 * `self` — inside a struct or variant literal, the value that literal is
   constructing; it exists to initialize non-optional relative-reference

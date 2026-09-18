@@ -7,7 +7,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 
 | Path under `test/` | Coverage |
 |---|---|
-| `syntax/` | Lexer, parser, dump grouping, imports and namespace resolution. Imported helpers live in `syntax/ns/` and `syntax/sub/`. |
+| `syntax/` | Lexer, parser, dump grouping, imports and namespace resolution. Imported helpers live in `syntax/ns/` and `syntax/sub/`. `raw_strings_crlf.goose` is the one file checked out with CRLF line breaks (`.gitattributes`). |
 | `typing/` | Types, generics, constants, optional narrowing, dispatch results and recursive return contracts. |
 | `lifetimes/` | Reference roots, byte views, borrowed contents and shrinking while references are live. |
 | `codegen/` | C names, evaluation order, representations, frame/stack layout and aliasing. |

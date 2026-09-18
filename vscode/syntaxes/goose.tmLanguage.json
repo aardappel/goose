@@ -14,7 +14,7 @@
     { "match": "\\b(?:struct|enum|type|fn|thread_fn|let|var|const)\\b", "name": "storage.type.goose" },
     { "match": "\\b(?:extern|recursive|pad|reusable)\\b", "name": "storage.modifier.goose" },
     { "include": "#numbers" },
-    { "match": "\\b(?:print|str|format|assert|abort|exit|hardware_threads|thread_spawn|thread_wait|qput|qget|qpoll|default|copy|to_bytes|bytes_of|from_bytes|index_of|push|append|pop|resize|clear|alloc_index|alloc_ref|free|alloc_slice|realloc_slice|free_slice)\\b(?=\\s*[<(])", "name": "support.function.goose" },
+    { "match": "\\b(?:print|str|format|assert|abort|exit|hardware_threads|thread_spawn|thread_wait|qput|qget|qpoll|default|copy|to_bytes|bytes_of|from_bytes|embed_shader|index_of|push|append|pop|resize|clear|alloc_index|alloc_ref|free|alloc_slice|realloc_slice|free_slice)\\b(?=\\s*[<(])", "name": "support.function.goose" },
     { "match": "(?<=\\.)\\b(?:len|cap)\\b", "name": "support.variable.property.goose" },
     { "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*::)", "name": "entity.name.namespace.goose" },
     { "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()", "name": "entity.name.function.goose" },
@@ -31,6 +31,7 @@
     ] },
     "block-comment": { "name": "comment.block.goose", "begin": "/\\*", "end": "\\*/", "patterns": [{ "include": "#block-comment" }] },
     "strings": { "patterns": [
+      { "name": "string.quoted.triple.goose", "begin": "\"\"\"", "end": "\"\"\"" },
       { "name": "string.quoted.double.goose", "begin": "\"", "end": "\"|$", "patterns": [{ "include": "#escapes" }] },
       { "name": "string.quoted.single.goose", "begin": "'", "end": "'|$", "patterns": [{ "include": "#escapes" }] }
     ] },

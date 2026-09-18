@@ -33,6 +33,19 @@ reusable[] var pool: Pair<i64>[>..] = [];
     assert.ok(source.slice(result[5].rangeStart, result[5].rangeEnd).endsWith('\n}'));
 });
 
+test('outline and imports skip """ strings, which may span lines', () => {
+    const source = `let shader = """
+    struct Hidden {
+    fn fake() {}
+    import nope;
+    """;
+import std;
+fn main() { print("""one "line" """); }
+`;
+    assert.deepEqual(declarations(source).map(item => item.name), ['shader', 'main']);
+    assert.deepEqual(imports(source).map(item => item.parts), [['std']]);
+});
+
 test('outline tolerates incomplete declarations without throwing', () => {
     assert.deepEqual(declarations('fn '), []);
     const source = 'fn unfinished(x: i64) {';

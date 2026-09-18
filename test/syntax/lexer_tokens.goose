@@ -12,6 +12,12 @@ true false null self i64 f64 bool varint i8 i16 i32 i64 u8 u16 u32 u64 f32 f64
 'a' 'Z' '0' ' ' '\n' '\t' '\r' '\\' '\'' '\"' '\0' '\x41' '\xff'
 // Strings:
 "" "hello" "a\nb\tc" "quote:\" backslash:\\ tick:\'" "nul\0hex\x41\x0A"
+// Raw strings, on one line and spanning lines (less the closing line's indentation):
+"""raw \n "q" \ """ """"""
+"""
+    two
+      lines
+    """ after
 // All punctuation, longest-munch checks:
 ( ) [ ] { } , ; : :: ? . .. .= .== .!= + - * / % += -= *= /= %= &= |= ^= ++ -- = == != < >
 <= >= << >> <<= >>= ! ~ & | ^ && || -> =>

@@ -6,7 +6,8 @@ language server, runtime dependencies, or compiler changes are required.
 ## Features
 
 - Syntax highlighting for `.goose` files, including nested block comments,
-  escaped strings and characters, decimal/hex floats, namespaces and builtins.
+  escaped strings and characters, raw `"""` strings across lines, decimal/hex
+  floats, namespaces and builtins.
 - Bracket matching, auto-closing, indentation, comment toggling, folding and
   snippets (`main`, `fn`, `struct`, `enum`, `for`, `guard`, `match`, and more).
 - Compiler checks on open/save, error and warning underlines, and Problems

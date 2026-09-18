@@ -86,7 +86,9 @@ build configuration is unrelated.
 the token set is an X-macro table. The two context-sensitive spellings of
 §2 and D are the parser's business, not the lexer's: `T&<u8>` is `&` `<` in
 type context, and `1..2` lexes as a range because a `.` starts a fraction
-only when a digit follows.
+only when a digit follows. A `"""` string's text is worked out here
+(`LexRawString`): the closing line's indentation off every line, `\r\n` as
+`\n`.
 
 **Parser** (`parser.h`): recursive descent mirroring Appendix D, one
 function per construct. Points that matter to later passes:

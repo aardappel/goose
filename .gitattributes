@@ -4,3 +4,6 @@
 # generated C runtime inside a raw string literal, so its line ends travel into
 # every program the compiler emits.
 * text=auto eol=lf
+
+# Checks that a """ string's line breaks come out as \n from a CRLF file.
+test/syntax/raw_strings_crlf.goose -text

@@ -94,14 +94,16 @@ struct Lexer {
 
     [[noreturn]] void Error(const string &msg) { ErrorAt(msg, tokline, toklinestart); }
 
-    [[noreturn]] void ErrorAt(const string &msg, int errline, const char *errlinestart) {
+    [[noreturn]] void ErrorAt(const string &msg, int errline, const char *errlinestart,
+                              const char *caret = nullptr) {
         auto s = cat(filename, ":", errline, ": error: ", msg);
         if (errlinestart) {
             auto end = errlinestart;
             while (*end && *end != '\n' && *end != '\r') end++;
             Append(s, "\n", string_view(errlinestart, (size_t)(end - errlinestart)), "\n");
-            // Caret under the token start where we have it on this line.
-            auto caretpos = errlinestart == toklinestart ? attr.data() : nullptr;
+            // Caret under the given position, else under the token start
+            // where we have it on this line.
+            auto caretpos = caret ? caret : errlinestart == toklinestart ? attr.data() : nullptr;
             if (caretpos && caretpos >= errlinestart && caretpos <= end) {
                 for (auto q = errlinestart; q < caretpos; q++) s += *q == '\t' ? '\t' : ' ';
                 s += '^';
@@ -234,6 +236,12 @@ struct Lexer {
                 return;
             }
             case '"': {
+                if (p[0] == '"' && p[1] == '"') {
+                    p += 2;
+                    LexRawString();
+                    Set(T_STRLIT);
+                    return;
+                }
                 sval.clear();
                 while (*p != '"') sval += (char)LexEscapedChar('"');
                 p++;
@@ -322,6 +330,59 @@ struct Lexer {
                 Error(cat("illegal character: \'", string_view(start, 1), "\' (", (int)(uint8_t)c, ")"));
             }
         }
+    }
+
+    // The rest of a """ string (§2), p just past the opening """. Raw: no
+    // escapes, and the next """ closes it. On one line, its text is what lies
+    // between. Otherwise the opening """ ends its line and the closing one
+    // starts its own after nothing but indentation, the margin: the text is
+    // the lines in between, joined by \n, each without the margin, which all
+    // but a line of only whitespace must start with.
+    void LexRawString() {
+        sval.clear();
+        auto q = p;
+        while (*q == ' ' || *q == '\t' || *q == '\r') q++;
+        if (*q != '\n') {
+            for (; !(p[0] == '"' && p[1] == '"' && p[2] == '"'); p++) {
+                if (!*p) Error("unterminated \"\"\" string");
+                if (*p == '\n' || (*p == '\r' && p[1] == '\n'))
+                    Error("a multi-line string's text starts on the line after its opening \"\"\"");
+                sval += *p;
+            }
+            p += 3;
+            return;
+        }
+        auto first = q + 1;
+        auto close = first;
+        for (; !(close[0] == '"' && close[1] == '"' && close[2] == '"'); close++)
+            if (!*close) Error("unterminated \"\"\" string");
+        auto closestart = close;
+        while (closestart > first && closestart[-1] != '\n') closestart--;
+        auto margin = string_view(closestart, (size_t)(close - closestart));
+        if (margin.find_first_not_of(" \t") != string_view::npos)
+            ErrorAt("only indentation may come before the closing \"\"\" of a multi-line string",
+                    line + 1 + (int)count(first, closestart, '\n'), closestart, close);
+        line++;
+        for (auto l = first; l < closestart; line++) {
+            linestart = l;
+            auto e = l;
+            while (*e != '\n') e++;
+            auto text = string_view(l, (size_t)(e - l));
+            // Line breaks are \n whatever the file uses.
+            if (!text.empty() && text.back() == '\r') text.remove_suffix(1);
+            if (l != first) sval += '\n';
+            if (text.substr(0, margin.size()) == margin) {
+                sval += text.substr(margin.size());
+            } else if (text.find_first_not_of(" \t") != string_view::npos) {
+                auto bad = l;
+                while ((size_t)(bad - l) < margin.size() && *bad == margin[bad - l]) bad++;
+                ErrorAt("a line of a multi-line string must start with the indentation of its "
+                        "closing \"\"\"", line, l, bad);
+            }
+            l = e + 1;
+        }
+        linestart = closestart;
+        p = close + 3;
     }
 
     // Reads one (possibly escaped) character of a char/string literal body.

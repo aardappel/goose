@@ -1,0 +1,14 @@
+margin: [first|  indented by two|last] 28
+blank lines: [a|||  |b] 8
+trailing line break: [text|] 5
+empty: [] 0
+no margin: [    kept|      as is] 20
+tab margin: [tab|  then spaces] 17
+raw: [no escapes: \n \t \" \\ \x41|"quoted" and ""doubled"" quotes|// not a comment, /* nor this */ { } [ ]] 101
+one line: [say "hi" to C:\temp\new] 23
+one line, empty: [] 0
+banner: [+--------+|| "42" \ ||+--------+] 32
++--------+
+| "42" \ |
++--------+
+3 true 1
