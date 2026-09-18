@@ -211,6 +211,25 @@ struct TypeCheck {
         return cat(ast.sources[l.fileidx].first, ":", l.line);
     }
 
+    // Whether declared type t names type variable `name` where Subst replaces
+    // it, so that the substituted type shows what the variable is bound to.
+    static bool NamesGeneric(const TypeExpr *t, string_view name) {
+        switch (t->kind) {
+            case TY_GENERIC: return t->named->name == name;
+            case TY_STRUCT:
+                for (auto a : t->struc->args) if (NamesGeneric(a, name)) return true;
+                return false;
+            case TY_ENUM:
+                for (auto a : t->enu->args) if (NamesGeneric(a, name)) return true;
+                return false;
+            case TY_ARRAY:   return NamesGeneric(t->arr->sub, name);
+            case TY_SLICE:   return NamesGeneric(t->sub, name);
+            case TY_REF:     return NamesGeneric(t->ref->sub, name);
+            case TY_VARIANT: return NamesGeneric(t->var->adt, name);
+            default:         return false;
+        }
+    }
+
     [[noreturn]] void Error(Line l, const string &msg) {
         auto s = cat(Where(l), ": error: ", msg);
         // Show the offending source line with a caret-less underline context.
@@ -225,7 +244,27 @@ struct TypeCheck {
         for (auto i = (int)frames.size() - 1; i > 0; i--) {
             auto &f = frames[i];
             if (!f.sf || f.isfunval) continue;
-            Append(s, "\n  in ", f.sf->isthread ? "thread_fn " : "fn ", f.sf->qname, "(");
+            Append(s, "\n  in ", f.sf->isthread ? "thread_fn " : "fn ", f.sf->qname);
+            if (f.spec) {
+                // The argument types show the bindings of type variables a
+                // parameter type names; the others are listed
+                // (`size<T = f64>()`), or distinct specializations would
+                // print alike.
+                auto listed = false;
+                for (auto &g : f.sf->generics) {
+                    auto named = false;
+                    for (auto &p : f.sf->params) named |= p.type && NamesGeneric(p.type, g.name);
+                    if (named) continue;
+                    for (auto &[n, t] : f.spec->bindings) {
+                        if (n != g.name) continue;
+                        Append(s, listed ? ", " : "<", n, " = ");
+                        t->Dump(s);
+                        listed = true;
+                    }
+                }
+                if (listed) s += ">";
+            }
+            s += "(";
             if (f.spec) {
                 for (size_t j = 0; j < f.spec->argtypes.size(); j++) {
                     if (j) s += ", ";

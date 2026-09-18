@@ -198,7 +198,14 @@ scan (§3.10) reads.
 **Diagnostics.** `TypeCheck::Error` appends the offending source line and
 the instantiation chain: every real frame from innermost outward, with the
 specialization's argument types (literal parameters marked) and the call
-site it was instantiated from (§7.7).
+site it was instantiated from (§7.7). The argument types show the binding
+of every type variable a parameter type names; the rest of `bindings`,
+from an explicit list, follows the function's name in declaration order,
+since distinct specializations would otherwise print alike: `size<u8>()`
+and `size<f64>()` on one line read `in fn size<T = u8>()` and
+`in fn size<T = f64>()`, and `fn scale<T, U>(t: T)` reads
+`in fn scale<U = u8>(f64)`. A function whose type variables all appear in
+its parameter types prints no list.
 
 ### 3.2 Types, instantiation, and size classes
 
