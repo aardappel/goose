@@ -860,7 +860,10 @@ inline string CodeGen::GenPtr(Node *n, string *stkout) {
         if (stkout) *stkout = lv.stk;
         return lv.s;
     }
-    if (Is<Dot>(n) || Is<Index>(n)) {
+    // A payload-less variant constant is a value, not a path: it constructs
+    // below like the other rvalues.
+    auto dot = Is<Dot>(n);
+    if ((dot && !dot->variantconst) || Is<Index>(n)) {
         auto lv = GenLoc(n);
         if (lv.t->kind == TY_REF) DerefLoc(lv, n->line);
         if (stkout) *stkout = lv.stk;
