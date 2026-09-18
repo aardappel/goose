@@ -928,11 +928,21 @@ fn twice(x) { x + x }
 fn span<T>(a: T, b: T) -> T { if a > b { a - b } else { b - a } }
 ```
 
-`<T>` exists only to say that two parameters must agree. Type arguments are
-inferred from the arguments — `foo(1)`, never `foo<i64>(1)`. Everything is
-monomorphized, so there is nothing abstract to typecheck: a generic body is
-only ever checked at an instantiation where every type is concrete, and
-errors come with the compile-time call chain that produced them.
+`<T>` says that two parameters must agree, or names a type no parameter
+carries. Type arguments are inferred from the arguments — `foo(1)`, never
+`foo<i64>(1)` — and written out only for a type variable no argument
+mentions:
+
+```goose
+fn zero<T>() -> T { default<T>() }   // T's default value
+
+let half = zero<f64>() + 0.5;
+```
+
+Everything is monomorphized, so there is nothing abstract to typecheck: a
+generic body is only ever checked at an instantiation where every type is
+concrete, and errors come with the compile-time call chain that produced
+them.
 
 Overloads resolve on argument types, and a slice parameter takes any array
 kind:

@@ -838,6 +838,7 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
         return ResolveCall(c, cands, fb.env, fb.named->name, nullptr, nopre);
     }
     auto fv = fb.fv;
+    if (!c->tyargs.empty()) Error(c, "a block takes no type arguments");
     vector<Val> argvals;
     for (auto a : c->args) {
         auto v = CheckV(a, nullptr);

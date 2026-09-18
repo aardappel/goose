@@ -348,6 +348,20 @@ struct TypeCheck {
         return true;
     }
 
+    // Generic bindings bind each name once, in whatever order explicit type
+    // arguments and inference produced them.
+    bool BindingsEq(vector<pair<string_view, TypeExpr *>> &a,
+                    vector<pair<string_view, TypeExpr *>> &b) {
+        if (a.size() != b.size()) return false;
+        for (auto &[n, t] : a) {
+            auto same = false;
+            for (auto &[m, u] : b)
+                if (m == n) { same = TypeEq(t, u); break; }
+            if (!same) return false;
+        }
+        return true;
+    }
+
     // ------------------------------------------------------------------
     // Generic substitution. Bindings are searched lexically: the current
     // frame's lexical spec, then its lexical parents (nested fns see the

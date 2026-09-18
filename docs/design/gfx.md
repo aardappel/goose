@@ -202,15 +202,15 @@ until CI or a Mac runs them.
 
 * **macOS**: run the suite and the showcase; measure the start-up cost above.
 * **Compiler bugs found on the way**, each with a workaround in the module or
-  the tests: explicit type arguments on a user generic whose type variable
-  appears only in the body reuse the first specialization (hence the
-  out-array readback helpers); a fresh resizable result passed straight to an
-  inlined function's slice parameter produces invalid C at `-O1`/`-O2` (bind
-  it to a local first); and a struct field's default cannot name a global
-  constant (the gfx descriptions spell their defaults as numbers).
+  the tests: a fresh resizable result passed straight to an inlined
+  function's slice parameter produces invalid C at `-O1`/`-O2` (bind it to a
+  local first); and a struct field's default cannot name a global constant
+  (the gfx descriptions spell their defaults as numbers).
 * **API**: text input, gamepads and audio (SDL has them all), indirect draws,
   stencil, blend constants, debug labels, a `Region` for readback of depth
-  textures (SDL_GPU cannot download one directly), and checking uniform block
-  member offsets rather than size alone.
+  textures (SDL_GPU cannot download one directly), checking uniform block
+  member offsets rather than size alone, and readback forms that return a
+  fresh array of an explicit element type (`read_buffer<f32>(b, n)`) beside
+  the ones that append to an out-array.
 * **A 2D and 3D immediate-mode layer in Goose** on top of this one, as
   Lobster has, and shader hot reload.

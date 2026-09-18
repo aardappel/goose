@@ -730,6 +730,9 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         if (spec->lexparent != mi.env) continue;
         if (!spec->inprogress && spec->narrowedenv != narrowedenv) continue;
         if (!TypeArgsEq(spec->argtypes, mi.paramtypes)) continue;
+        // A type argument no parameter type mentions (`size<u8>()`) shows
+        // only in the bindings.
+        if (!BindingsEq(spec->bindings, mi.bindings)) continue;
         if (spec->litparams != mi.litparams) continue;
         if (spec->fnvals.size() != mi.fnvals.size()) continue;
         auto fvok = true;

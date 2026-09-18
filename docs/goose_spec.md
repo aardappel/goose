@@ -1323,7 +1323,9 @@ several arguments mention one type variable, the typed ones bind it and a
 literal then adapts (`max(n, 0)` with `n: u32` is the `u32` instantiation),
 so an `i64` literal never fixes the type by coming first. An
 explicit list `f<i64>(x)` is allowed, and *needed* only when no argument
-mentions the parameter (e.g. `qget<i64>()`). Syntactically, `f<` commits to
+mentions the parameter (e.g. `qget<i64>()`, or `zero<f64>()` for
+`fn zero<T>() -> T`); it binds the leading type parameters in order, and
+the rest are inferred. Syntactically, `f<` commits to
 a type argument list only when the `<…>` is immediately followed by `(`,
 by `{` for a struct literal (`Pair<i64> { … }`), or by `.ident {` for a
 variant literal (`Opt<i64>.Some { … }`); otherwise `<` is the comparison

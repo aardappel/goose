@@ -155,6 +155,7 @@ function and no existing specialization matches. `GetOrCreateSpec`
 |---|---|
 | `lexparent` | the defining specialization of a nested function or function value (its lexical environment) |
 | `argtypes` | the concrete parameter types after generic inference |
+| `bindings` | the concrete type of each of the function's own type variables, explicit or inferred, in any order: the only record of one no parameter type mentions (`size<u8>()`) |
 | `roots` (`RootArg` per parameter) | the reference root *class* of each reference, slice or reference-holding argument, its writability, `reusable` and grow-shrink provenance, whether it is a `bytes_of` view, and the global pool it is rooted in (§3.4) |
 | `litparams` | which parameters are literal parameters (§7.7) |
 | `fnvals` | the identity of each bound function value (the block node or named function, plus the environment it captures) |
