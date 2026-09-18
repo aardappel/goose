@@ -388,9 +388,10 @@ the losses; [results.md](bench/results.md) has every row and
 ## Build and run
 
 You need CMake 3.20 or later, a C++20 compiler (MSVC, clang or gcc) and Python
-3 for the test and sample runners. The TinyCC submodule is what the in-process
-backend is built from; without it the compiler builds and behaves the same,
-minus JIT mode.
+3 for the test and sample runners. Two submodules are optional: TinyCC, which
+the in-process backend is built from, and SDL3, which the `gfx` graphics module
+is built from. Without either the compiler builds and behaves the same, minus
+JIT mode or minus running `gfx` programs.
 
 ```bash
 git clone --recursive https://github.com/aardappel/goose
@@ -398,6 +399,12 @@ cd goose
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
+
+To leave SDL out, clone without `--recursive` and then run `git submodule
+update --init third_party/tinycc`, or configure with `-DGOOSE_GFX=OFF`. On
+Linux, SDL needs the X11 or Wayland development packages
+([`third_party/SDL/docs/README-linux.md`](https://github.com/libsdl-org/SDL/blob/main/docs/README-linux.md));
+without them the build leaves the `gfx` module out and says what to install.
 
 The compiler is `build/goose` (`build/Release/goose.exe` with the Visual Studio
 generator), and it finds the standard library in the source tree it was built
@@ -419,6 +426,16 @@ emitting C, `-O0`/`-O1`/`-O2` set the inlining level, `--bce-lines` reports the
 bounds checks kept per line, and `-DGS_DEBUG=1` turns on the overflow, range
 and tag checks in the generated C.
 
+A program using `gfx` also links the graphics layer and SDL, which the compiler
+names in a response file:
+
+```bash
+build/goose samples/27_gfx_cube.goose
+build/goose -o cube.c samples/27_gfx_cube.goose && cc cube.c -o cube @$(build/goose --gfx-link cc)
+```
+
+With MSVC that is `cl cube.c @<the path goose --gfx-link msvc prints>`.
+
 The test suite and the samples run on Windows, macOS and Linux:
 
 ```bash
@@ -439,11 +456,12 @@ code --install-extension vscode/goose-language.vsix
   this first.
 * [Language specification](docs/goose_spec.md): the exact rules, when you want
   to know why something did not compile.
-* [Samples](samples/README.md): twenty-six complete programs in reading order,
-  from a tour of the language to a JSON parser, a threaded Mandelbrot and a
-  file tree built from two pools.
-* [Standard library](docs/stdlib.md): five modules, all readable Goose under
-  `stdlib/`.
+* [Samples](samples/README.md): twenty-seven complete programs in reading
+  order, from a tour of the language to a JSON parser, a threaded Mandelbrot, a
+  file tree built from two pools and a spinning cube on the GPU.
+* [Standard library](docs/stdlib.md): six modules, all readable Goose under
+  `stdlib/`, including `gfx`, graphics on SDL3's GPU API
+  ([how it is built](docs/design/gfx.md)).
 * [Benchmarks](bench/summary.md): the numbers, with the
   [full results](bench/results.md) and the [design](bench/design.md) behind them.
 * [Implementation notes](docs/implementation.md): how the compiler works, pass

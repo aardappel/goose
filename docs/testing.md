@@ -16,9 +16,11 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `storage/` | Relative references, pools and serialization. |
 | `threads/` | Workers, queues, shared globals and the native runtime lifecycle test. |
 | `stdlib/` | Standard-library modules. |
+| `gfx/` | The `gfx` graphics module: headless rendering, textures, compute, frames and input, a runtime misuse; shader and threading rejections (fixtures with `// error:` markers). Shaders sit beside the programs; `gfx/window/` is the windowed showcase, not part of the suite. |
 | `errors/`, `errors_tc/` | Expected parser/resolver and semantic rejections. |
 | `expected/` | Shared output and runtime-diagnostic expectations. |
 | `run_tests.py` | The Python test runner. |
+| `gfx_api_check.py` | Checks `stdlib/gfx.goose` against `src/gfx/gfx_api.h`; run by `run_tests.py`. |
 
 Positive fixtures are discovered one level below `test/`; nested import helpers
 run through their entry programs. Keep fixture stems unique across categories,
@@ -45,6 +47,27 @@ The direct `test/threads/runtime_threads_lifecycle.c` regression checks allocati
 mappings and Windows handles across worker churn, including unjoined workers,
 concurrent/repeated waits and children outliving their parents. It runs in both
 profiles. The normal suite also checks user-visible worker error diagnostics.
+
+The `gfx/` tests exercise the SDL3 graphics module (`docs/design/gfx.md`). They
+always parse, typecheck and generate C. Where the compiler has the gfx layer
+built in (the `third_party/SDL` submodule, `goose --gfx-link` answering), they
+also build, linking what that names, and run at -O0 and -O2 and through
+TinyCC. They render headless into textures and read back only pixel-aligned
+results, so their output is the same on every backend and GPU; a machine with
+no GPU device (the program prints `gfx: no GPU device`) reports them skipped,
+as does a compiler without the layer. Linux CI runs them on Mesa's lavapipe.
+The runners set `GOOSE_GFX_HEADLESS=1`, so no test or sample opens a window.
+`gfx_api_check.py` checks that `stdlib/gfx.goose` and the C layer's list of
+its functions, structs and constants describe the same boundary, which
+compiles on both sides when they do not; the hidden `--compile-shader` flag is
+probed on `gfx/probe.frag`.
+
+`test/gfx/window/run_window_test.py` is run by hand, on a machine with a
+display and a GPU: it runs the showcase `gfx_showcase.goose` with a window
+in-process and built by every C toolchain found, on each GPU driver of the
+platform, checks what the program reports about its own readbacks, and decodes
+the screenshots it saves (under `build/gfx-window/`) to check them for detail
+and compare them across runs.
 
 The TinyCC runs need the `third_party/tinycc` submodule at configure time; a
 compiler built without it skips them, and the runners find that out by running

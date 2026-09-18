@@ -1,11 +1,13 @@
 # The Goose standard library
 
-Five modules under `stdlib/`, found by `import std;` (and `dictionary`,
-`vec`, `math`, `os`) wherever the compiler was built from a source tree, or
-through `--stdlib <dir>` / `GOOSE_STDLIB`. Everything is written in Goose
-except the C behind `os` (`src/runtime/runtime_os.h`) and libm behind
-`math`, both reached through `extern fn` (spec §7.10). The design and its
-rationale are in `design/stdlib_design.md`; this is the reference.
+Six modules under `stdlib/`, found by `import std;` (and `dictionary`,
+`vec`, `math`, `os`, `gfx`) wherever the compiler was built from a source
+tree, or through `--stdlib <dir>` / `GOOSE_STDLIB`. Everything is written in
+Goose except the C behind `os` (`src/runtime/runtime_os.h`), libm behind
+`math` and the graphics layer behind `gfx` (`src/gfx/`), all reached through
+`extern fn` (spec §7.10). The design and its rationale are in
+`design/stdlib_design.md` (and `design/gfx.md` for `gfx`); this is the
+reference.
 
 Conventions that hold throughout:
 
@@ -323,3 +325,246 @@ fn random_seed() -> u64                              // entropy, for rng
 `exit(code)` and `abort(msg)` are builtins, since the checker knows they
 diverge. Directory listing, subprocesses and networking are not in v1; they
 arrive as `extern fn`s when a program needs them.
+
+## gfx
+
+Graphics on SDL3's GPU API, which draws through Direct3D 12, Vulkan or Metal:
+a window and its input, buffers, textures, samplers, pipelines, render and
+compute passes, and reading results back. Optional: it needs a compiler built
+with the `third_party/SDL` submodule, and a program using it links what `goose
+--gfx-link msvc|cc` prints (a response file: `cl game.c @<it>`, `cc game.c -o
+game @<it>`). A compiler without it still typechecks and generates C for such
+a program; only running it in-process fails. Everything is in namespace `gfx`;
+`samples/27_gfx_cube.goose` is a small complete program, `design/gfx.md` how
+it works.
+
+### Shaders
+
+```goose
+let vs = embed_shader("lit.vert");     // .vert, .frag or .comp, relative to this file
+```
+
+`embed_shader` is a builtin: the GLSL 450 shader is compiled when the program
+is, into SPIR-V, MSL and HLSL at once, and the result is a `const u8[:]` of
+static data to hand to `pipeline` or `compute_pipeline`. A shader that does not
+compile is a compile error at the call, with the shader's own file and line.
+`#include "x.glsl"` resolves relative to the shader. The dialect is
+cute_spirv's (`third_party/cute_spirv`): no doubles, no geometry or
+tessellation stages, uniform blocks without instance names, and each storage
+buffer block one runtime array (`buffer B { vec4 items[]; };`).
+
+Resources go where SDL_GPU expects them, which the compiler checks:
+
+| Stage | `set` | holds, each set's bindings numbered from 0 in this order |
+|---|---|---|
+| vertex | 0 | samplers, then storage textures, then storage buffers (read-only) |
+| vertex | 1 | uniform blocks |
+| fragment | 2 | samplers, then storage textures, then storage buffers (read-only) |
+| fragment | 3 | uniform blocks |
+| compute | 0 | samplers, then read-only storage textures, then read-only storage buffers |
+| compute | 1 | read-write storage textures, then read-write storage buffers |
+| compute | 2 | uniform blocks |
+
+The `slot` of a `bind_*` call counts within one kind: the first storage buffer
+is slot 0 however many samplers precede it. A compute shader's read-write
+resources are given to `begin_compute` in binding order instead.
+
+### Device, window and frames
+
+```goose
+fn open(title: const u8[:], width: i64, height: i64) -> bool        // and (..., flags)
+fn open_headless(width: i64, height: i64) -> bool                   // no window; and (..., flags)
+fn close()
+fn frame() -> bool          // ends the frame drawn since the last call; false once asked to close
+fn quit()                   // frame() returns false next
+fn flush()                  // submit everything and wait for the GPU
+fn error() -> u8[>..]       // why the last failing call failed
+fn check()                  // abort if the program has misused gfx
+fn driver() -> u8[>..]      // "direct3d12", "vulkan" or "metal"
+fn set_title(title: const u8[:])
+fn screen() -> Texture      fn screen_depth() -> Texture      fn screen_size() -> int2
+fn time() -> f64            fn delta_time() -> f64            fn frame_count() -> i64
+```
+
+Flags for `open`: `WINDOW_RESIZABLE`, `WINDOW_HIDDEN`, `WINDOW_FULLSCREEN`,
+`WINDOW_HIGH_DPI`, `NO_VSYNC`, `DEBUG` (validation layers where installed; on
+in a debug build of the layer). With `GOOSE_GFX_HEADLESS=1` in the environment
+`open` opens no window, as the test runners use it. The screen is an RGBA8
+texture of the window's size in pixels, with a depth texture: a frame draws
+into it, and `frame()` shows it.
+
+```goose
+guard gfx::open("demo", 1280, 720) else { abort(str("gfx: ", gfx::error())); }
+while gfx::frame() {
+    gfx::begin_screen(float4 { 0.1, 0.1, 0.1, 1.0 });
+    // bind, uniforms, draw ...
+    gfx::end_pass();
+}
+gfx::close();
+```
+
+Errors: a call that can fail for reasons outside the program returns false or
+a zero handle, and `error()` says why. A call the program should not have made
+-- a draw with no pipeline bound, a texture the shader samples left unbound, a
+released handle, a uniform struct of the wrong size -- is printed as it
+happens, skipped, and aborts the program at the next `frame()`, `check()`,
+read back or `close()`.
+
+### Input
+
+```goose
+fn key_down(name: const u8[:]) -> bool        // SDL's key names: "A", "Space", "Left", "Escape"
+fn key_pressed(name: const u8[:]) -> bool     // went down since the last frame()
+fn key_released(name: const u8[:]) -> bool
+fn mouse_down(button: i64) -> bool            // MOUSE_LEFT, MOUSE_MIDDLE, MOUSE_RIGHT
+fn mouse_pressed(button: i64) -> bool         fn mouse_released(button: i64) -> bool
+fn mouse_pos() -> float2    fn mouse_delta() -> float2    fn mouse_wheel() -> f32
+fn inject_key(name: const u8[:], down: bool) -> bool           // as if typed, seen at the next frame()
+fn inject_mouse(x: f32, y: f32, button: i64, down: bool)       // button 0 only moves
+```
+
+### Buffers
+
+```goose
+struct Buffer { id: u32 }
+fn buffer(usage: i64, data: const u8[:]) -> Buffer             // and (usage, size, data): zeros after
+fn vertex_buffer(data: const u8[:]) -> Buffer                    // data from bytes_of(vertices)
+fn index_buffer(data: const u8[:]) -> Buffer
+fn update_buffer(b: Buffer, data: const u8[:]) -> bool           // and (b, offset, data)
+fn read_buffer<T>(b: Buffer, out: T[>..]&, count: i64) -> bool   // appends count elements of T
+fn read_buffer(b: Buffer, offset: i64, out: u8[:]) -> bool
+fn buffer_size(b: Buffer) -> i64
+fn release(b: Buffer)
+```
+
+Usage flags: `BUFFER_VERTEX`, `BUFFER_INDEX`, `BUFFER_INDIRECT`,
+`BUFFER_STORAGE` (read by vertex and fragment shaders), `BUFFER_COMPUTE_READ`,
+`BUFFER_COMPUTE_WRITE`. Updates and read backs happen between passes, in
+order with the draws around them; a read back waits for the GPU.
+
+### Textures and samplers
+
+```goose
+struct Texture { id: u32 }
+struct TextureDesc { kind: i32 = 0, format: i32 = 1, usage: i32 = 1, width: i32, height: i32,
+                     depth: i32 = 1, mips: i32 = 1, samples: i32 = 1 }   // TEXTURE_2D, RGBA8, SAMPLED
+struct Region { mip: i32 = 0, layer: i32 = 0, x: i32 = 0, y: i32 = 0, z: i32 = 0,
+                w: i32 = 0, h: i32 = 0, d: i32 = 0 }    // w == 0: the whole mip
+fn texture(desc: TextureDesc) -> Texture                 // mips 0: the full chain
+fn texture2d(width: i64, height: i64) -> Texture         // and (..., format, usage)
+fn render_target(width: i64, height: i64, format: i32) -> Texture   // COLOR_TARGET | SAMPLED
+fn depth_target(width: i64, height: i64) -> Texture                 // DEPTH, and SAMPLED
+fn texture3d(width, height, depth, format, usage)        fn texture_cube(size, format, usage)
+fn texture_array(width, height, layers, format, usage)
+fn load_texture(path: const u8[:], flags: i64) -> Texture   // PNG or BMP; LOAD_MIPS, LOAD_SRGB
+fn update_texture(t: Texture, data: const u8[:]) -> bool     // and (t, region, data)
+fn read_texture<T>(t: Texture, out: T[>..]&) -> bool         // appends mip 0 as T: u8, float4, ...
+fn read_texture(t: Texture, region: Region, out: u8[:]) -> bool
+fn read_pixels(t: Texture) -> u8[>..]                        // mip 0's bytes, top row first
+fn save_png(t: Texture, path: const u8[:]) -> bool           // RGBA8 or BGRA8
+fn screenshot(path: const u8[:]) -> bool                     // the screen, as shown
+fn generate_mips(t: Texture)
+fn texture_info(t: Texture) -> TextureDesc
+fn release(t: Texture)
+
+struct Sampler { id: u32 }
+struct SamplerDesc { min_filter: i32 = 1, mag_filter: i32 = 1, mip_filter: i32 = 1,
+                     wrap_u: i32 = 0, wrap_v: i32 = 0, wrap_w: i32 = 0,
+                     max_anisotropy: f32 = 1.0, compare: i32 = 0 }  // LINEAR, REPEAT
+fn sampler(desc: SamplerDesc) -> Sampler      fn sampler(filter: i32, wrap: i32) -> Sampler
+fn shadow_sampler() -> Sampler                // for sampler2DShadow
+fn release(s: Sampler)
+```
+
+Kinds `TEXTURE_2D`, `TEXTURE_2D_ARRAY`, `TEXTURE_3D`, `TEXTURE_CUBE` (faces
++x, -x, +y, -y, +z, -z as layers 0 to 5). Usage `SAMPLED`, `COLOR_TARGET`,
+`DEPTH_TARGET`, `STORAGE_READ`, `COMPUTE_READ`, `COMPUTE_WRITE`,
+`COMPUTE_READ_WRITE`; a multisampled texture is a target only. Formats
+`RGBA8`, `BGRA8`, `RGBA8_SRGB`, `R8`, `RG8`, `RGBA16F`, `RGBA32F`, `R16F`,
+`RG16F`, `R32F`, `RG32F`, `R32UI`, `RGBA8UI`, `RGB10A2`, `RG11B10F`, and
+`DEPTH16`, `DEPTH24`, `DEPTH32F`, `DEPTH24_STENCIL8`, `DEPTH` (32-bit float
+where it can also be sampled). Filters `NEAREST`, `LINEAR`; wraps `REPEAT`,
+`MIRROR`, `CLAMP`; compares `COMPARE_LESS` and the like.
+
+### Pipelines and drawing
+
+```goose
+struct Pipeline { id: u32 }
+struct PipelineDesc { primitive: i32 = 0, cull: i32 = 0, clockwise: bool = false,
+                      wireframe: bool = false, depth_test: bool = false,
+                      depth_write: bool = false, depth_compare: i32 = 2, blend: i32 = 0,
+                      instance_location: i32 = -1, depth_bias: f32 = 0.0,
+                      depth_bias_slope: f32 = 0.0, formats: u8[16] = [0; 16] }
+fn pipeline(vs: const u8[:], fs: const u8[:]) -> Pipeline      // and (vs, fs, desc)
+fn release(p: Pipeline)
+
+struct PassDesc { color: Texture[4], resolve: Texture[4], depth: Texture, layer: i32 = 0,
+                  mip: i32 = 0, clear_color: bool = true, clear_depth: bool = true,
+                  color_value: float4 = float4 { 0.0, 0.0, 0.0, 1.0 }, depth_value: f32 = 1.0 }
+fn begin_pass(desc: PassDesc) -> bool
+fn begin_pass(target: Texture, depth: Texture, clear: float4) -> bool   // Texture { 0 }: no depth
+fn begin_screen(clear: float4) -> bool
+fn end_pass()
+fn bind(p: Pipeline)
+fn bind_vertex_buffer(b: Buffer)                 // and (slot, b, offset): slot 1 per instance
+fn bind_index_buffer(b: Buffer, index_size: i64) // 2 or 4 bytes; and (b, size, offset)
+fn bind_texture(stage: i64, slot: i64, t: Texture, s: Sampler)     // VERTEX, FRAGMENT, COMPUTE
+fn bind_storage_texture(stage: i64, slot: i64, t: Texture)
+fn bind_storage_buffer(stage: i64, slot: i64, b: Buffer)
+fn uniforms<T>(stage: i64, slot: i64, u: T)     // a flat struct as a uniform block
+fn push_uniforms(stage: i64, slot: i64, data: const u8[:])
+fn viewport(x: f32, y: f32, w: f32, h: f32)     fn scissor(x: i64, y: i64, w: i64, h: i64)
+fn draw(vertices: i64)                          fn draw_instanced(vertices: i64, instances: i64)
+fn draw_indexed(indices: i64)                   fn draw_indexed_instanced(indices: i64, instances: i64)
+fn draw(vertices, instances, first_vertex, first_instance)
+fn draw_indexed(indices, instances, first_index, vertex_offset, first_instance)
+```
+
+A pipeline is not tied to the formats it draws into; it is made for each
+pass's targets the first time it is bound in one. The vertex shader's inputs
+are read, in location order, one after another from one packed element, as a
+Goose struct lays out its fields: `struct Vertex { pos: float3, uv: float2 }`
+feeds `layout(location = 0) in vec3` and `layout(location = 1) in vec2`.
+From `instance_location` on they come per instance from vertex buffer 1, and
+`formats[location]` overrides a location's format (`VERTEX_UBYTE4_NORM` for a
+color as four bytes, `VERTEX_HALF2`, and the rest of `VERTEX_*`). Primitives
+`TRIANGLES`, `TRIANGLE_STRIP`, `LINES`, `LINE_STRIP`, `POINTS`; culls
+`CULL_NONE`, `CULL_FRONT`, `CULL_BACK` (front faces counterclockwise unless
+`clockwise`); blends `BLEND_NONE`, `BLEND_ALPHA`, `BLEND_ADD`,
+`BLEND_PREMULTIPLIED`, `BLEND_MULTIPLY`.
+
+Uniform blocks are laid out by std140 and Goose structs are packed: a vec3 or
+vec4 member starts on a multiple of 16 bytes and a block's size rounds up to
+16, so the matching struct pads (`struct Place { rect: float4, depth: f32,
+pad 12 }`); pushing one of another size than the shader's block is a misuse.
+On Direct3D 12 a shader's `gl_InstanceIndex` does not count a draw's
+`first_instance`, so keep that 0 if the shader reads it.
+
+### Compute
+
+```goose
+struct ComputePipeline { id: u32 }
+fn compute_pipeline(cs: const u8[:]) -> ComputePipeline
+fn begin_compute(rw_buffers: const Buffer[:]) -> bool     // and (rw_buffers, rw_textures)
+fn bind(p: ComputePipeline)
+fn dispatch(x: i64, y: i64, z: i64)                        // workgroups of the shader's local size
+fn end_compute()
+fn release(p: ComputePipeline)
+```
+
+### Matrices
+
+```goose
+struct mat4 { c0: float4, c1: float4, c2: float4, c3: float4 }   // column-major, as GLSL's mat4
+let mat4_identity
+fn mul(a: mat4, b: mat4) -> mat4          fn mul(m: mat4, v: float4) -> float4
+fn translate(t: float3) -> mat4           fn scale(s: float3) -> mat4
+fn rotate(axis: float3, angle: f32) -> mat4
+fn perspective(fovy: f32, aspect: f32, near: f32, far: f32) -> mat4   // right-handed, depth 0..1
+fn ortho(left, right, bottom, top, near, far: f32) -> mat4
+fn look_at(eye: float3, target: float3, up: float3) -> mat4
+```
+
+Clip space is SDL_GPU's on every backend: y up, depth from 0 to 1, texture
+coordinates with (0, 0) at the top left.
+

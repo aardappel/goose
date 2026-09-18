@@ -34,7 +34,7 @@ single translation unit, included in the order the driver lists them.
 |---|---|---|---|
 | Parse | `lexer.h`, `parser.h`, `ParseProgram` in `main.cpp` | source files, following `import` | the `Ast`: nodes, type expressions, symbols per namespace, globals in initialization order |
 | Resolve | `resolve.h` (`ResolveTypeNames`) | type names as written | struct/enum/generic kinds, aliases substituted away |
-| Typecheck | `typecheck*.h` (`TypeCheckProgram`) | the `Ast` | one `FnSpec` per specialization with a cloned, annotated body; `StructInst`/`EnumInst`; `VarDef`s; the store record; every diagnostic of §3--§11 |
+| Typecheck | `typecheck*.h` (`TypeCheckProgram`) | the `Ast` | one `FnSpec` per specialization with a cloned, annotated body; `StructInst`/`EnumInst`; `VarDef`s; the store record; every diagnostic of §3--§11; the shader blobs `embed_shader` compiles (`gfx.h`, `shaderc.c`) |
 | Optimize | `optimize.h`, `optimize_basecase.h`, `optimize_tre.h` (`Optimizer`) | live specializations | bodies rewritten in place (inlined, folded, loops), liveness and use counts |
 | BCE | `bce.h` (`BCE::RunAll`) | live specializations | `Index::nobc`, `SliceExpr::nobc`, `ForLoop::fixedlen`, per-loop `hoistrefs` |
 | Codegen | `codegen*.h` (`CodeGen`) | live specializations, globals | one C file, with `src/runtime/` prepended |
@@ -70,6 +70,8 @@ ones.
 | `--bce-lines` | print elided/kept counts per source line |
 | `--unsafe-no-rf-check` | omit the `return from` discriminant checks after calls: a measurement aid, unsound |
 | `-o out.c`, `--jit`, `-D`, `--include`, `--stdlib`, `--` | output file, in-process run, a define written into the generated C, a user header, the stdlib directory, program arguments |
+| `--gfx-link msvc\|cc` | print the response file of link inputs a program using `gfx` needs (`gfx.h`, `GfxLinkFile`) |
+| `--compile-shader f [--shader-source msl\|hlsl]` | hidden: what a shader compiles to, without a program around it |
 
 The debug build of the *generated* C is `-DGS_DEBUG=1` on the C compiler (or
 `-DGS_DEBUG=1` to `goose`, which writes it into the file): it enables the
@@ -1300,6 +1302,13 @@ freeing find their neighbor by binary
 search (`gs_spans_grow`, `gs_spans_free`), and inserting or removing a span
 moves the entries above it. The emitted code keeps the element region's
 count and top and fills the default values itself.
+
+**The graphics layer** behind `stdlib/gfx.goose` is not part of this runtime:
+it is native C in `src/gfx/`, compiled once into a static library over SDL3
+that `goose` links for JIT runs and a program links when built from the
+generated C. The generated C only declares the `gs_gfx_*` functions it calls,
+and `AddGfxSymbols` (`jit.h`) defines them for a JIT run. `docs/design/gfx.md`
+describes it.
 
 **Varints**: ULEB128 read/write/size, zigzag for signed positions, the
 one-byte fast path macros `GS_ULEB_READ`/`GS_ULEB_SIZE` for length prefixes
