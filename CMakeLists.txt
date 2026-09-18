@@ -4,6 +4,12 @@ project(goose CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# One C runtime for the compiler, TinyCC, SDL and the gfx library, and the
+# one `cl game.c` links by default, so a program can link the same archives.
+# The non-debug variant even in Debug builds: a /MTd archive does not link
+# cleanly into a plain /MT program.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+
 add_executable(goose
     src/main.cpp
     src/includes.h
