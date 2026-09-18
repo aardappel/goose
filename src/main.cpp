@@ -34,6 +34,7 @@
 #include "codegen_nodes.h"
 #include "runtime_inline.h"
 #include "jit.h"
+#include "gfx.h"
 
 namespace goose {
 
@@ -255,7 +256,7 @@ void GenRuntimeHeader(const char *argv0) {
 }
 
 int Main(int argc, char **argv) {
-    string filename, outfile, stdlibdir;
+    string filename, outfile, stdlibdir, shaderfile, shadersource;
     auto dump = false, tokens = false, parseonly = false, specs = false, nocgen = false;
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
     auto forcejit = false;
@@ -280,6 +281,9 @@ int Main(int argc, char **argv) {
         else if (arg == "--unsafe-no-rf-check") norfcheck = true;
         else if (arg == "--jit") forcejit = true;
         else if (arg == "--gen-runtime-header") { GenRuntimeHeader(argv[0]); return 0; }
+        // Hidden: what a shader compiles to, without a program around it.
+        else if (arg == "--compile-shader" && i + 1 < argc) shaderfile = argv[++i];
+        else if (arg == "--shader-source" && i + 1 < argc) shadersource = argv[++i];
         else if (arg == "-O0") optlevel = 0;
         else if (arg == "-O1") optlevel = 1;
         else if (arg == "-O2") optlevel = 2;
@@ -296,6 +300,15 @@ int Main(int argc, char **argv) {
         }
         else if (filename.empty()) filename = arg;
         else { fprintf(stderr, "multiple input files given\n"); return 1; }
+    }
+    if (!shaderfile.empty()) {
+        try {
+            DumpShader(shaderfile, shadersource);
+        } catch (CompileError &e) {
+            fprintf(stderr, "%s\n", e.msg.c_str());
+            return 1;
+        }
+        return 0;
     }
     if (filename.empty()) {
         fprintf(stderr, "usage: goose [--dump] [--parse] [--tokens] [--specs] [--check] "

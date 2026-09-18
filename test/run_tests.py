@@ -240,6 +240,21 @@ def main():
     elif r.check_stdout("lexer_tokens", "lexer_tokens.goose", joined(out)):
         r.ok("lex lexer_tokens.goose")
 
+    # The shader compiler is built into every compiler, SDL or not: a shader
+    # compiles, #include included, and a binding outside SDL_GPU's sets is
+    # rejected with the rule it broke.
+    code, out, err = r.goose("--compile-shader", HERE / "gfx" / "probe.frag")
+    want = "samplers 1, storage textures 0 ro / 0 rw, storage buffers 0 ro / 0 rw, uniform blocks 1 (32 bytes)"
+    if code != 0 or want not in out:
+        r.fail("compile-shader probe.frag", out + err)
+    else:
+        r.ok("compile-shader probe.frag")
+    code, out, err = r.goose("--compile-shader", HERE / "gfx" / "probe_badset.frag")
+    if code != 1 or "sampler 'tex' is in set 0, and must be in set 2" not in err:
+        r.fail("compile-shader probe_badset.frag", out + err)
+    else:
+        r.ok("compile-shader probe_badset.frag")
+
     # One level of category directories; nested syntax/ns and syntax/sub are
     # import fixtures, exercised by their entry programs rather than alone.
     tests = [f for f in sorted(HERE.glob("*/*.goose"))

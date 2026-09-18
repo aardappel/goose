@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(goose CXX)
+project(goose C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -49,14 +49,29 @@ add_executable(goose
     src/runtime/runtime.h
     src/runtime/runtime_threads.h
     src/runtime/runtime_os.h
+    src/gfx.h
 )
+
+# The shader compiler behind embed_shader: third-party C (third_party/
+# cute_spirv), always built, so a gfx program typechecks and emits the same C
+# with or without SDL.
+add_library(goose_shaderc STATIC src/shaderc.c src/shaderc.h src/gfx/gfx_blob.h)
+target_include_directories(goose_shaderc PRIVATE third_party/cute_spirv)
+if(MSVC)
+    # ckit.h uses typeof and C11 atomics, which MSVC has only in its latest C
+    # mode. /W0 as for TinyCC: third-party warnings are not ours to act on.
+    target_compile_options(goose_shaderc PRIVATE /W0 /std:clatest /experimental:c11atomics)
+else()
+    set_target_properties(goose_shaderc PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+    target_compile_options(goose_shaderc PRIVATE -w)
+endif()
+target_link_libraries(goose PRIVATE goose_shaderc)
 
 # The optional in-process C backend. Present only when the TinyCC submodule has
 # been checked out (`git submodule update --init`); the compiler builds and
 # behaves exactly the same without it, minus JIT mode.
 option(GOOSE_LIBTCC "Build the in-process TinyCC backend when the submodule is present" ON)
 if(GOOSE_LIBTCC AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinycc/libtcc.h")
-    enable_language(C)
     include(cmake/libtcc.cmake)
 endif()
 if(GOOSE_HAVE_LIBTCC)
