@@ -591,15 +591,11 @@ fn main() {
     // to the screen, which holds gamma-encoded values already.
     let checker_tex = gfx::texture(gfx::TextureDesc { format: gfx::RGBA8_SRGB, width: 256,
                                                       height: 256, mips: 0 });
-    // Each image is made into a local first: a fresh array passed straight
-    // to update_texture's slice parameter trips an inlining bug.
-    let checker_px = checker();
-    gfx::update_texture(checker_tex, checker_px);
+    gfx::update_texture(checker_tex, checker());
     gfx::generate_mips(checker_tex);
     let sky = gfx::texture_cube(64, gfx::RGBA8_SRGB, gfx::SAMPLED);
     for f in 6 {
-        let face = sky_face(f, 64);
-        gfx::update_texture(sky, gfx::Region { layer: f as i32 }, face);
+        gfx::update_texture(sky, gfx::Region { layer: f as i32 }, sky_face(f, 64));
     }
     let noise = gfx::texture3d(16, 16, 16, gfx::R8, gfx::SAMPLED);
     var noise_bytes: u8[>..] = [];
@@ -607,8 +603,7 @@ fn main() {
     gfx::update_texture(noise, noise_bytes);
     let icons = gfx::texture_array(32, 32, 4, gfx::RGBA8, gfx::SAMPLED);
     for k in 4 {
-        let image = icon(k);
-        gfx::update_texture(icons, gfx::Region { layer: k as i32 }, image);
+        gfx::update_texture(icons, gfx::Region { layer: k as i32 }, icon(k));
     }
     let shadow_map = gfx::depth_target(SHADOW_SIZE, SHADOW_SIZE);
     let hdr_msaa = gfx::texture(gfx::TextureDesc { format: gfx::RGBA16F, usage: gfx::COLOR_TARGET,

@@ -744,20 +744,6 @@ inline string CodeGen::GenRefVal(Node *child, Line ln) {
 // where the context's checked type had already decayed.
 inline string CodeGen::GenXD(Node *n, TypeExpr *want) {
     auto nt = n->exprtype;
-    if (want && nt && want->kind == TY_SLICE && nt->kind == TY_ARRAY &&
-        nt->arr->akind == A_FIXED) {
-        // A fixed-array value reaching a slice destination (a spliced
-        // callee body's result, §3.10): a copy on a statement-scoped temp
-        // stack, sliced whole, so the slice outlives whatever C block the
-        // value was produced in.
-        string stk;
-        auto base = BytesTemp(stk);
-        GenAny(n, Dst { DK_STACK, stk });
-        auto t = T();
-        L(CT(want), " ", t, " = { (", IsBytesT(want->sub) ? string("uint8_t") : CT(want->sub),
-          " *)", base, ", ", ArrSize(nt->arr), " };");
-        return t;
-    }
     if (want && nt && IsStaticLimited(want)) {
         // Any array or slice of the element type reaching a static-capacity
         // limited destination in a representation of its own (a copy's

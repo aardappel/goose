@@ -791,8 +791,13 @@ followed by a `Cp1` copy of the body; a `Return` whose target is the inlined
 function exits the block with its values (`Return::CgStmt`), which is what
 keeps early returns, `return from` and function-value returns working through
 any nesting. The copy is re-folded so substituted constants cascade. A
-trivial result unwraps to a plain expression when its type survives. The
-thresholds per call site of callee K: inline if K is used once, or its
+trivial result unwraps to a plain expression when its type survives. A call
+passed where a slice is expected keeps that slice as its checked type while
+the body returns the array; codegen builds the array where the call would
+have put its result, a temporary of the caller's scope, and slices it whole
+(`InlineBlock::CgAny`), since the body's own scopes release their storage
+when it exits.
+The thresholds per call site of callee K: inline if K is used once, or its
 post-optimization node count is below NC, or count times uses is below NCU
 (`-O1`: 8/48, `-O2`: 16/96). Never inlined (`Scan`): a `recursive` function
 or cycle member, a `thread_fn`, a function returning more than one value, and
@@ -809,7 +814,10 @@ read of parameters and globals, and `e` calling nothing in the cycle, gets
 each direct self-call `f(a...)` rewritten to `{ let p = a; ...; if c[p] {
 e[p] } else { f(p...) } }` under the inliner's size thresholds. This removes
 half the calls of a complete tree walk. It does not fire when a statement
-precedes the base case, on mutual recursion, or on UFCS-spelled self-calls.
+precedes the base case, on mutual recursion, on UFCS-spelled self-calls, or
+on a self-call whose array result is passed where a slice is expected: the
+array has to outlive the `if`, and each arm would build it in a scope of its
+own.
 
 **Accumulator tail-recursion elimination** (`TailRecursion`,
 `optimize_tre.h`, `-O1` and above): a directly self-recursive
@@ -1567,7 +1575,8 @@ rewrites elements pays no live register for it.
 * A `recursive fn` whose body starts with the base case `if c { return e; }`
   has that base case inlined at every self-call (`-O1` and above), halving
   the calls of a complete tree walk; a statement before the test, a UFCS
-  self-call, or mutual recursion disables it.
+  self-call, or mutual recursion disables it, and a self-call whose array
+  result is passed straight to a slice parameter stays a call.
 * A self-recursive integer function whose tail returns fold with one
   associative operator becomes a loop; `1 + f(l) + f(r)` loses its right
   spine. Floats, `%`, returns inside nested loops, and callees that can

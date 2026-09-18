@@ -14,7 +14,9 @@
 //
 // which removes half the calls of a complete tree walk. Both arms construct
 // into the call's own destination (the ordinary rule for `if` as a value), so
-// reference and non-fixed results need no special case. Binding the arguments
+// reference and non-fixed results need no special case -- except that an
+// array result passed where a slice is expected has no destination an arm
+// could build it in, and such a call is left alone. Binding the arguments
 // first keeps them evaluated once and in order; c is the exception — the
 // recursing arm runs it a second time inside the callee — which is why it is
 // restricted to pure reads.
@@ -177,6 +179,12 @@ struct BaseCaseInliner {
         if (!Is<Ident>(c->callee)) return nullptr;
         auto K = basespec;
         if (c->args.size() != K->params.size()) return nullptr;
+        // Passed where a slice is expected, the call was checked as that
+        // slice (§3.10), while the arms would yield the array itself: built
+        // inside an arm, it would be released before the slice is used.
+        if (c->exprtype && c->exprtype->kind == TY_SLICE && K->rets.size() == 1 &&
+            K->rets[0]->kind == TY_ARRAY)
+            return nullptr;
         Inliner inl { o, ast, K, o.curspec, {}, {} };
         vector<Node *> decls;
         for (size_t i = 0; i < K->params.size(); i++) {

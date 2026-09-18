@@ -547,6 +547,37 @@ inline void InlineBlock::CgAny(CodeGen &cg, const Dst &d) {
         cg.GenAdtAdapted(from, exprtype, d, line, [&](const Dst &nd) { EmitBody(cg, nd); });
         return;
     }
+    // A call passed where a slice is expected was checked as that slice
+    // (§3.10), while the body returns the array itself. The array is built
+    // where the call would have put its result, a temporary of the caller's
+    // scope, and sliced whole: the body's own scopes release their storage
+    // when it exits, before the slice is used.
+    auto rt = spec && spec->rets.size() == 1 ? spec->rets[0] : nullptr;
+    auto want = d.t ? d.t : exprtype;
+    if (d.k != DK_DISCARD && rt && rt->kind == TY_ARRAY && want->kind == TY_SLICE) {
+        CodeGen::Loc lv;
+        if (cg.IsResz(rt)) {
+            string stk;
+            auto h = cg.RzTemp(rt, stk);
+            EmitBody(cg, Dst { DK_STACK, stk, rt, cg.RzLenLv(rt, h) });
+            lv = cg.RzTempLoc(rt, h, stk);
+        } else if (cg.IsBytesT(rt)) {
+            string stk;
+            auto base = cg.BytesTemp(stk);
+            EmitBody(cg, Dst { DK_STACK, stk, rt });
+            lv = cg.BytesLoc(base, rt, CodeGen::Loc {});
+        } else {
+            lv.t = rt;
+            lv.val = true;
+            lv.s = cg.T();
+            cg.L(cg.CT(rt), " ", lv.s, ";");
+            EmitBody(cg, Dst { DK_LVALUE, lv.s, rt });
+        }
+        auto x = cg.LoadLoc(lv, want, line);
+        if (d.k == DK_LVALUE) cg.L(d.s, " = ", x, ";");
+        else cg.EmitValStore(d.s, want, x);
+        return;
+    }
     EmitBody(cg, d);
 }
 

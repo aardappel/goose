@@ -454,24 +454,20 @@ inline string CodeGen::CallVal0(Call *c, const string &r0, TypeExpr *want) {
         if ((st->kind == TY_ARRAY || st->kind == TY_SLICE) && !TEq(st, et))
             return AdaptToFixed(CallResLoc(c, r0), et, c->line);
     }
-    if (rt && rt->kind == TY_ARRAY && IsResz(rt) && et && et->kind == TY_SLICE) {
-        // A resizable result passed where a slice is expected (§3.10): the
-        // temporary's elements, sliced whole; the temporary lives to the
-        // end of the statement like any other.
-        auto s = T();
-        L(CT(et), " ", s, " = { (", IsBytesT(et->sub) ? string("uint8_t") : CT(et->sub),
-          " *)", r0, ".base, ", r0, ".len };");
-        return s;
-    }
-    if (rt && rt->kind == TY_ARRAY && rt->arr->akind == A_FIXED && et && et->kind == TY_SLICE) {
-        // A fixed-array result passed where a slice is expected (§3.10):
-        // held in a temp of the statement's scope and sliced whole.
-        auto tv = T();
-        L(CT(rt), " ", tv, " = ", r0, ";");
-        auto s = T();
-        L(CT(et), " ", s, " = { (", IsBytesT(et->sub) ? string("uint8_t") : CT(et->sub),
-          " *)", tv, ".e, ", ArrSize(rt->arr), " };");
-        return s;
+    auto st = rt && IsPlainRef(rt) ? rt->ref->sub : rt;
+    if (st && st->kind == TY_ARRAY && et && et->kind == TY_SLICE) {
+        // An array result, or the array a reference result points at, passed
+        // where a slice is expected (§3.10): sliced whole where it lies. A
+        // result lives to the end of the statement like any temporary; one
+        // that arrives as a C value is held in a named temp for the slice to
+        // point into.
+        auto lv = CallResLoc(c, r0);
+        if (lv.val && st == rt) {
+            auto tv = T();
+            L(CT(rt), " ", tv, " = ", r0, ";");
+            lv.s = tv;
+        }
+        return LoadLoc(lv, et, c->line);
     }
     if (rt && rt->kind == TY_REF && rt->ref->lenstorage < 0 && et &&
         et->kind != TY_REF && et->kind != TY_VOID) {
