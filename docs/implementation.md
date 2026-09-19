@@ -848,6 +848,32 @@ its locals as free variables, and a remaining callee that does `return ...
 from` it needs its frame. Nothing is inlined *into* a cycle member (its
 locals would become the cycle's own).
 
+**The nesting limit** (`MAXNEST`, 64). Every inlined body is a C block of
+its own, and C compilers limit how deep blocks nest in one function: MSVC
+to 128 (C1061), clang outside its MSVC-compatible mode to 256
+(`-fbracket-depth`). Under the thresholds alone, a chain of single-use
+functions, each calling the next, folds into one body as deep as the chain
+is long; and as each inline copies a body with everything already inlined
+into it, while the original stays allocated, the cost is quadratic in the
+chain's length: 6.5 GB and most of a minute for a chain of 2000 in a Debug
+build. So, whatever the thresholds say, a call is inlined only while the C
+blocks around it plus those the callee's body nests stay within `MAXNEST`.
+Such a chain then folds into one body per 64 levels, each calling the next,
+and takes 2 s and 240 MB (0.7 s and 170 MB at `-O0`). Both counts are of
+what codegen opens a C block for: every `Block` (a function or inlined body,
+an arm, a loop body), one around an `else` that is not a `Block`, the right
+operand of `&&` and `||`, a `while` condition (tested inside the loop), the
+arguments of a function-value call (bound inside its block) and an array's
+fill value (built in a loop), and two around a match arm (a switch and its
+case); `Around` counts the ones around a child. `Scan` records the deepest
+nesting of each final body (`InlineInfo::nest`, the `nest` of `--specs`),
+and the walk keeps the count around the node it is at (`depth`), taken as
+the blocks stand when it gets there: one that folds away afterwards only
+makes it cautious. The other half of MSVC's limit is for the blocks codegen
+opens around runtime work, which are not counted. Ordinary programs stay
+far below the limit: the deepest inline in the tests, samples and
+benchmarks lands 18 blocks deep.
+
 **Base-case inlining** (`BaseCaseInliner`, `optimize_basecase.h`): a
 `recursive fn` whose body *starts* with `if c { return e; }` (or the negated
 `guard c else { return e; }`), with every parameter fixed-size, `c` a pure

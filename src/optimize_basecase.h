@@ -201,7 +201,12 @@ struct BaseCaseInliner {
         }
         auto vt = c->exprtype ? c->exprtype : ast.voidtype;
         auto cond = o.Opt(inl.Cp(basecond));
+        // The result lands in an arm of the `if` built below, inside the
+        // block holding the bindings if there are any.
+        auto around = decls.empty() ? 1 : 2;
+        o.depth += around;
         auto val = baseexpr ? o.Opt(inl.Cp(baseexpr)) : nullptr;
+        o.depth -= around;
         auto arm = [&](Node *v) {
             auto b = ast.New<Block>(c->line);
             if (v) b->tail = v;

@@ -32,6 +32,10 @@
 // Thresholds per call site of callee K: inline if K is used once anywhere,
 // or nodecount(K) < NC, or nodecount(K) * uses(K) < NCU.
 // -O0: no inlining; -O1: NC=8, NCU=48; -O2: NC=16, NCU=96.
+// Whatever the size, the C blocks around the call plus those K's body nests
+// must stay within MAXNEST (see Around): C compilers limit how deep blocks
+// nest in one function, and a chain of single-use functions, each calling
+// the next, would otherwise fold into one body as deep as the chain is long.
 // Folding and propagation run at every level.
 //
 // The per-node work is the Cp1 and Opt virtuals (declared in ast.h); their
@@ -68,8 +72,15 @@ struct Optimizer {
 
     // Inlining decisions use only this optimizer's classification of a body.
     // Keep it here rather than as annotations exposed to subsequent passes.
-    struct InlineInfo { int nodecount = 0; bool noinline = false; };
+    struct InlineInfo { int nodecount = 0; int nest = 0; bool noinline = false; };
     unordered_map<FnSpec *, InlineInfo> inlineinfo;
+
+    // The C blocks around the node being optimized (Around).
+    int depth = 0;
+    // The deepest C nesting an inlined body may reach: half of MSVC's limit
+    // of 128 blocks in a function. The rest is for the blocks codegen opens
+    // around runtime work, which Around does not count.
+    static constexpr int MAXNEST = 64;
 
     // ------------------------------------------------------------------
     // Small helpers.
@@ -215,6 +226,25 @@ struct Optimizer {
 
     Node *TryInline(Call *c);   // Defined after Inliner below.
 
+    // C nesting. Codegen opens a C block for every Block -- a function or
+    // inlined body, an arm, a loop body -- and around a child of some other
+    // nodes, which Around counts: an `else` that is not a Block, a match arm
+    // (two: a switch and its case), the right operand of && and ||, a while
+    // condition (tested inside the loop), the arguments of a function-value
+    // call (bound inside its block) and an array's fill value (built in a
+    // loop). Scan and the Opt walk count both to keep inlining within
+    // MAXNEST.
+    static int Around(Node *n, Node *ch) {
+        if (auto fi = Is<IfExpr>(n)) return ch == fi->elseb && !Is<Block>(ch) ? 1 : 0;
+        if (auto m = Is<MatchExpr>(n)) return ch != m->scrutinee ? 2 : 0;
+        if (auto b = Is<Binary>(n))
+            return ch == b->right && (b->op == T_ANDAND || b->op == T_OROR) ? 1 : 0;
+        if (auto w = Is<While>(n)) return ch == w->cond ? 1 : 0;
+        if (auto c = Is<Call>(n)) return c->fvbody && ch != c->callee && ch != c->fvbody ? 1 : 0;
+        if (auto al = Is<ArrayLit>(n)) return ch == al->fillval ? 1 : 0;
+        return 0;
+    }
+
     // Base-case inlining for self-recursive functions: the pass and what it
     // is for live in optimize_basecase.h, which defines these two — it needs
     // the Inliner below, so it is included after us and holds the state.
@@ -232,7 +262,17 @@ struct Optimizer {
         return n->Opt(*this);
     }
 
+    // Opt for ch, a child of n, at the depth codegen nests it.
+    Node *OptIn(Node *n, Node *ch) {
+        auto k = Around(n, ch);
+        depth += k;
+        ch = Opt(ch);
+        depth -= k;
+        return ch;
+    }
+
     void OptBlock(Block *b) {
+        depth++;
         vector<Node *> out;
         auto dead = false;
         for (auto st : b->stmts) {
@@ -253,6 +293,7 @@ struct Optimizer {
                 b->tail = Opt(b->tail);
             }
         }
+        depth--;
     }
 
     Node *OptStmt(Node *n) {
@@ -277,16 +318,18 @@ struct Optimizer {
     }
 
     // ------------------------------------------------------------------
-    // Post-optimization classification: final node count, and whether this
-    // body may be spliced into callers (see the header comment).
+    // Post-optimization classification: final node count, C nesting, and
+    // whether this body may be spliced into callers (see the header comment).
 
     void Scan(FnSpec *sp) {
         auto &info = inlineinfo[sp];
         info.nodecount = 0;
+        info.nest = 0;
         auto noin = sp->sf->isrec || sp->incycle || sp->sf->isthread || sp->rets.size() > 1;
-        function<void(Node *)> rec = [&](Node *n) {
+        function<void(Node *, int)> rec = [&](Node *n, int d) {
             if (!n) return;
             info.nodecount++;
+            if (Is<Block>(n)) info.nest = max(info.nest, ++d);   // Its children sit inside it.
             if (auto c = Is<Call>(n)) {
                 auto callee = [&](FnSpec *k) {
                     if (!k) return;
@@ -297,11 +340,11 @@ struct Optimizer {
                     if (k->needs.count(sp)) noin = true;
                 };
                 if (c->builtin < 0) callee(c->spec);
-                for (auto d : c->dispatch) callee(d);
+                for (auto k : c->dispatch) callee(k);
             }
-            RunChildren(n, [&](Node *ch) { rec(ch); });
+            RunChildren(n, [&](Node *ch) { rec(ch, d + Around(n, ch)); });
         };
-        rec(sp->body);
+        rec(sp->body, 0);
         info.noinline = noin;
     }
 
@@ -313,7 +356,9 @@ struct Optimizer {
     // init, and register constant scalar globals for propagation everywhere.
 
     void OptGlobal(VarDecl *g) {
+        depth = 1;   // In the body of the C function that sets the globals up.
         for (auto &i : g->inits) i = Opt(i);
+        depth = 0;
         if (g->names.size() == 1 && g->inits.size() == 1 && !g->defs.empty()) {
             auto d = g->defs[0];
             auto lit = AsLiteral(g->inits[0]);
@@ -372,7 +417,7 @@ struct Optimizer {
             if (!sp->live) continue;
             auto &info = inlineinfo[sp];
             Append(s, "// spec ", sp->id, ": uses ", sp->uses, ", nodes ", info.nodecount,
-                   info.noinline ? ", noinline" : "", "\n");
+                   ", nest ", info.nest, info.noinline ? ", noinline" : "", "\n");
             Append(s, "fn ", sp->sf->qname, "(");
             for (size_t i = 0; i < sp->params.size(); i++) {
                 if (i) s += ", ";
@@ -453,6 +498,10 @@ inline Node *Optimizer::TryInline(Call *c) {
     // the cycle function's own, upsetting the §7.8 stack-assignment rule.
     if (curspec && (curspec->incycle || curspec->sf->isrec)) return nullptr;
     if (!(K->uses == 1 || info.nodecount < nc || info.nodecount * K->uses < ncu)) return nullptr;
+    // The body's blocks would open `depth` deep. Past the limit the call
+    // stays, and a chain of single-use functions folds into one body per
+    // MAXNEST levels rather than one as deep as the chain.
+    if (depth + info.nest > MAXNEST) return nullptr;
     // The argument list; a UFCS receiver is the first parameter (§7.1).
     vector<Node *> argnodes;
     if (auto d = Is<Dot>(c->callee)) argnodes.push_back(d->obj);
@@ -804,7 +853,7 @@ inline Node *Binary::Opt(Optimizer &o) {
             if (op == T_ANDAND) return lb->val ? o.Opt(right) : left;
             return lb->val ? left : o.Opt(right);
         }
-        right = o.Opt(right);
+        right = o.OptIn(this, right);
         if (auto rb = Is<BoolLit>(right)) {
             // The left still evaluates; only the trivial combine drops.
             if (op == T_ANDAND && rb->val) { o.folded++; return left; }
@@ -922,7 +971,7 @@ inline Node *Dot::Opt(Optimizer &o) {
 
 inline Node *Call::Opt(Optimizer &o) {
     if (auto d = Is<Dot>(callee)) d->obj = o.Opt(d->obj);
-    for (auto &a : args) a = o.Opt(a);
+    for (auto &a : args) a = o.OptIn(this, a);
     if (fvbody) o.OptBlock(fvbody);
     if (builtin == B_ASSERT) {
         if (auto b = Is<BoolLit>(args[0]); b && b->val) {
@@ -1001,7 +1050,7 @@ inline Node *RangeExpr::Opt(Optimizer &o) {
 
 inline Node *ArrayLit::Opt(Optimizer &o) {
     for (auto &e : elems) e = o.Opt(e);
-    if (fillval) fillval = o.Opt(fillval);
+    if (fillval) fillval = o.OptIn(this, fillval);
     if (fillcount) fillcount = o.Opt(fillcount);
     if (capexpr) capexpr = o.Opt(capexpr);
     return this;
@@ -1034,7 +1083,7 @@ inline Node *IfExpr::Opt(Optimizer &o) {
         }
     }
     o.OptBlock(thenb);
-    if (elseb) elseb = o.Opt(elseb);
+    if (elseb) elseb = o.OptIn(this, elseb);
     return this;
 }
 
@@ -1064,7 +1113,7 @@ inline Node *MatchExpr::Opt(Optimizer &o) {
             return o.Opt(sel->body);
         }
     }
-    for (auto &arm : arms) arm.body = o.Opt(arm.body);
+    for (auto &arm : arms) arm.body = o.OptIn(this, arm.body);
     return this;
 }
 
@@ -1074,7 +1123,7 @@ inline Node *EarlyBlock::Opt(Optimizer &o) {
 }
 
 inline Node *While::Opt(Optimizer &o) {
-    cond = o.Opt(cond);
+    cond = o.OptIn(this, cond);
     if (auto b = Is<BoolLit>(cond); b && !b->val) {
         o.folded++;
         return o.EmptyBlock(this);

@@ -579,11 +579,13 @@ def main():
     # The typechecker checks a function inside the call that first reaches it,
     # so its native stack grows with the compile-time call path, which a
     # program can make as long as it likes. A chain of 2000 distinct functions
-    # checks and runs (at -O0: from -O1 on, the inliner nests a chain of
-    # single-use functions into one body as deep as the chain). A chain of
-    # 6000 that calls each next function from 32 blocks deep takes more stack
-    # than any build of the compiler has, a clang -O3 one holding about 2500
-    # of those calls, and is an error rather than a crash.
+    # checks and runs. At -O2 the inliner folds its single-use functions into
+    # one body per 64 levels of C blocks: one body as deep as the chain would
+    # cost time and memory quadratic in its length, and C that MSVC rejects
+    # past 128 levels and clang past 256. A chain of 6000 that calls each next
+    # function from 32 blocks deep takes more stack than any build of the
+    # compiler has, a clang -O3 one holding about 2500 of those calls, and is
+    # an error rather than a crash.
     deepdir = builddir / "gen" / args.profile
     deepdir.mkdir(parents=True, exist_ok=True)
     f = deepdir / "call_chain.goose"
@@ -599,6 +601,24 @@ def main():
             r.fail(f"jit {f.name} (exit {code})", out + err)
         else:
             r.ok(f"jit {f.name}")
+    if cc:
+        cfile = deepdir / "call_chain-O2.c"
+        efile = deepdir / f"call_chain-O2{tc.EXE_SUFFIX}"
+        code, out, err = r.goose("-O2", "-o", cfile, f)
+        if code != 0:
+            r.fail(f"cgen -O2 {f.name}", out + err)
+        else:
+            ok, log = cc.compile(cfile, efile, opt=2 if args.profile == "baseline" else 1,
+                                 extra=extra, strict_decls=True,
+                                 log=deepdir / "call_chain-O2.cc.log")
+            if not ok:
+                r.fail(f"cc -O2 {f.name}", "\n".join(log.splitlines()[:8]))
+            else:
+                code, out, err = tc.run_capture([efile])
+                if code != 0 or joined(out) != "3":
+                    r.fail(f"run -O2 {f.name} (exit {code})", out + err)
+                else:
+                    r.ok(f"cgen+run -O2 {f.name}")
     f = deepdir / "call_chain_too_deep.goose"
     tc.write_text(f, "// error: compile-time call path too deep\n" + call_chain(6000, nest=32))
     code, out, err = r.goose("-O0", "--check", f)
