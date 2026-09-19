@@ -1440,7 +1440,9 @@ offset measures from where the element lives, an `in pool` `self` is its
 position in the pool), are built in the slot instead -- for limited
 arrays too -- which is what the checker's growth rule (§3.10) keeps safe.
 A pool allocation builds a literal holding relative references at its
-slot the same way (`EmitAlloc`).
+slot the same way (`EmitAlloc`): a slot off the freelist is taken first,
+and a fresh one at the top is counted only once the element is written, so
+nothing the literal's initializers call can read it half-built.
 
 **Adaptation into limited arrays.** `FitsAt` lets any array
 or slice of the element type construct a `T[..k]` (§4.2), and codegen copies

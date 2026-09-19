@@ -518,6 +518,13 @@ inline vector<string> CodeGen::EmitAlloc(Call *c, vector<Node *> &an, Line ln) {
     // its value evaluated ahead of the freelist bookkeeping.
     auto atslot = (Is<StructLit>(an[1]) || Is<ArrayLit>(an[1])) && HasRelRef(elem);
     auto ev = atslot ? string() : GenPure(an[1]);
+    // A freelist slot is taken before the literal's initializers run, so
+    // nothing they free can change which one it is. A fresh slot at the
+    // top joins the array only once the element is written, as a pushed
+    // one does: until then no index reaches it, and the checker keeps the
+    // array from growing into it meanwhile (§1.3(4)). Freed slots all lie
+    // below the length, since a pool never shrinks, so the index tells
+    // which kind was taken.
     auto iv = T();
     L("int64_t ", iv, ";");
     L("if (", lv.fl, ".len > 0) {");
@@ -529,14 +536,18 @@ inline vector<string> CodeGen::EmitAlloc(Call *c, vector<Node *> &an, Line ln) {
     L("} else {");
     ind++;
     L(iv, " = ", lv.lenlv, ";");
-    L(lv.lenlv, "++;");
-    L(TopW(lv.stk), " += ", esz, ";");
     ind--;
     L("}");
     auto e = T();
     L(CT(elem), " *", e, " = (", CT(elem), " *)(", ElemAddr(v, iv), ");");
     if (atslot) FixedLitAtLv(an[1], cat("(*", e, ")"), true);
     else L("*", e, " = ", ev, ";");
+    L("if (", iv, " == ", lv.lenlv, ") {");
+    ind++;
+    L(lv.lenlv, "++;");
+    L(TopW(lv.stk), " += ", esz, ";");
+    ind--;
+    L("}");
     if (c->builtin == B_ALLOC_INDEX) return { iv };
     return { e };
 }
