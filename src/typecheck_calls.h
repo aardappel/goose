@@ -1677,7 +1677,7 @@ inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fi
         if (Is<SelfRef>(fi.val)) { CheckSelfInit(fi.val, ftypes[idx], selft); continue; }
         SlotScope ss(*this, true);
         auto fv = CheckValue(fi.val, ftypes[idx]);
-        NoteLitElem(deep, fv, ftypes[idx]);
+        NoteLitElem(deep, fi.val, fv, ftypes[idx]);
         HoldValue(fi.val, fv);
     }
     for (auto i = 0; i < (int)fields.size(); i++) {

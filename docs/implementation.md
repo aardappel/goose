@@ -521,6 +521,14 @@ references or slices, `HoldsPlainRef`) meets a destination with a root:
    reference variable may be stored (§7.8);
 5. the store is **recorded**.
 
+Rule 3 does not wait for a destination: a literal's field or element is
+storage wherever the literal lands, so `NoteLitElem` applies it to each one
+(`IntoGrowShrink`), in an argument or a result too. A back edge's
+`cycleroot` may point into a grow-shrink array, and so may a parameter class
+created from one (`IsGrowShrinkRoot`), which `NeverStoredError` words as
+rule 1. No holder ever holds a reference into a grow-shrink array, then,
+which is what lets the §5.2 shrink scan look at variables only (§3.10).
+
 A declaration without a type annotation takes its value's type and meets
 no destination type, so `FitsAt` never sees it; `CheckBindingRoot` applies
 rule 2 to it instead, each name of a multi-value declaration included,
@@ -2036,7 +2044,8 @@ specification allows, and the shapes the C backend refuses outright:
   marked for refinement (TODO 5).
 * The cycle return-root scan gives up on overload sets, function values and
   nested functions it cannot resolve by name; the result is then pass-down
-  only (`cycleroot`), never unsound.
+  only (`cycleroot`), never unsound, and may point into a grow-shrink array
+  wherever it is passed (§3.5).
 * A plain reference parameter's root class is identified with a global pool
   only inside a recursive cycle or through the `in pool` form (§9.5 above,
   `bench/notes.md` item 1), so `index_of`, a relative store and an exact

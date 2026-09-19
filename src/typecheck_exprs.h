@@ -483,9 +483,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
     if (((isrs(dt) && isrs(t)) || holder) && curdst.root) {
         auto root = CanonRoot(holder ? HolderRootOf(v) : v.root);
         if (root && root == cycleroot) {
-            fitfail = "storing the result of a recursive call whose returned "
-                      "reference's root the cycle's returns do not determine "
-                      "(§7.8); it may only be passed down";
+            fitfail = NeverStoredError(root);
             return false;
         }
         if (Depth(root) > Depth(CanonRoot(curdst.root))) {
@@ -494,14 +492,8 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
                           ", which does not outlive the destination (§9.2)");
             return false;
         }
-        vector<TypeExpr *> pointees;
-        if (holder) RefPointees(t, pointees); else pointees.push_back(PointeeOf(t));
-        auto intogs = v.byteview && IsGrowShrinkRoot(root) && MayBeViewed(root);
-        for (auto pt : pointees) intogs |= GrowShrinkCanHold(root, pt);
-        if (!curdst.varbind && intogs) {
-            fitfail = cat("storing a reference into ", root->name,
-                          ", which holds a grow-shrink array: such a reference lives in a "
-                          "variable, is passed down or returned, and is never stored (§5.2)");
+        if (!curdst.varbind && IntoGrowShrink(v, root, t, holder)) {
+            fitfail = NeverStoredError(root);
             return false;
         }
         // Rebinding one of this activation's own variables is not a store

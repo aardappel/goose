@@ -66,9 +66,10 @@ inline TypeExpr *TypeCheck::ResizableArrayIn(TypeExpr *t) {
 }
 
 // Whether references rooted at r may point into a grow-shrink array
-// (§5.2): r holds one, or stands for a call-site root that does.
+// (§5.2): r holds one, or stands for a call-site root that does, or for the
+// undetermined root of a back edge's result (§7.8), which may be one.
 inline bool TypeCheck::IsGrowShrinkRoot(VarDef *r) {
-    return r && (r->growshrink || (r->type && ContainsGrowShrink(r->type)));
+    return r && (r == cycleroot || r->growshrink || (r->type && ContainsGrowShrink(r->type)));
 }
 
 // Whether a grow-shrink array inside a value of type t can hold an `of`
@@ -101,6 +102,33 @@ inline bool TypeCheck::GrowShrinkCanHold(VarDef *r, TypeExpr *of) {
     while (v && !v->type && v->classfrom) v = v->classfrom;
     if (!v || !v->type) return true;   // Storage this frame cannot see: assume it can.
     return GrowShrinkContains(v->type, of);
+}
+
+// Whether the reference or slice v of type t rooted at root, or for a holder
+// any reference it holds, may point into a grow-shrink array: what §5.2
+// keeps out of every field, element and global.
+inline bool TypeCheck::IntoGrowShrink(const Val &v, VarDef *root, TypeExpr *t, bool holder) {
+    vector<TypeExpr *> pointees;
+    if (holder) RefPointees(t, pointees); else pointees.push_back(PointeeOf(t));
+    auto intogs = v.byteview && IsGrowShrinkRoot(root) && MayBeViewed(root);
+    for (auto pt : pointees) intogs |= GrowShrinkCanHold(root, pt);
+    return intogs;
+}
+
+// Why a reference rooted at root, or a holder of one, is never stored: it
+// may point into a grow-shrink array (§5.2), or it is a back edge's result,
+// which may point anywhere, as may a parameter whose class stands for one.
+inline string TypeCheck::NeverStoredError(VarDef *root) {
+    auto from = root;
+    while (from && !from->type && from->classfrom) from = from->classfrom;
+    auto recresult = "the result of a recursive call whose returned reference's root the "
+                     "cycle's returns do not determine (§7.8); it may only be passed down";
+    if (root == cycleroot) return cat("storing ", recresult);
+    if (from == cycleroot)
+        return cat("storing a reference into ", root->name, ", which may be ", recresult);
+    return cat("storing a reference into ", root->name,
+               ", which holds a grow-shrink array: such a reference lives in a "
+               "variable, is passed down or returned, and is never stored (§5.2)");
 }
 
 // Whether a byte view could ever cover this root's storage: bytes_of views

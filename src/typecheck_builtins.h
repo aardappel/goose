@@ -340,13 +340,17 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
 }
 
 // A field or element of a literal that is a reference, slice or holder:
-// its root joins the literal's.
-inline void TypeCheck::NoteLitElem(LitDeep &deep, const Val &v, TypeExpr *t) {
+// its root joins the literal's. It is storage wherever the literal lands,
+// so it never points into a grow-shrink array (§5.2), even where FitsAt has
+// no destination to check it against: in an argument, which passes none
+// since parameters die before their arguments' roots, or in a result.
+inline void TypeCheck::NoteLitElem(LitDeep &deep, Node *at, const Val &v, TypeExpr *t) {
     if (!t) return;
     auto isrs = IsRefOrSlice(t);
     if (!isrs && !HoldsPlainRef(t)) return;
     if (v.isnull) return;
     auto r = CanonRoot(isrs ? v.root : HolderRootOf(v));
+    if (IntoGrowShrink(v, r, t, !isrs)) Error(at, NeverStoredError(r));
     auto exact = isrs ? v.rootexact : v.holderset && v.holderexact;
     if (!deep.set || Depth(r) > Depth(deep.root)) {
         deep.exact = exact && (!deep.set || deep.root == r);

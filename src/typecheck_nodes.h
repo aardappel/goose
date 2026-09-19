@@ -200,7 +200,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         TypeCheck::SlotScope ss(tc, true);
         auto ev = tc.CheckValue(fillval, elem);
         if (!elem) elem = ev.type;
-        if (cnt) tc.NoteLitElem(deep, ev, elem);
+        if (cnt) tc.NoteLitElem(deep, fillval, ev, elem);
         if (wantcount >= 0 && cnt != wantcount)
             tc.Error(this, cat("fill count ", cnt, " does not match array size ", wantcount));
         if (capacity >= 0 && cnt > capacity)
@@ -223,7 +223,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         TypeCheck::SlotScope ss(tc, true);   // An element is a slot (§9.5).
         auto ev = tc.CheckValue(e, elem);
         if (!elem) elem = ev.type;
-        tc.NoteLitElem(deep, ev, elem);
+        tc.NoteLitElem(deep, e, ev, elem);
         tc.HoldValue(e, ev);
     }
     if (elem->kind == TY_VOID) tc.Error(this, "cannot infer array element type");

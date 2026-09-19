@@ -944,10 +944,14 @@ inexactly rooted argument points at.
   a pop, that stack-top memory can later be reused by *different types*
   (other locals, other pushes), so no reference into it may outlive the next
   shrink; keeping such references out of storage is what makes the next rule
-  a scan of the variables in scope. The rule is about references that can
-  point *into* the array: one merely rooted at a value that holds one, whose
-  pointee type the array's elements cannot contain — a slice key read back
-  out of a dictionary's slots — stores like any other.
+  a scan of the variables in scope. A literal's fields and elements are
+  storage wherever the literal lands, so no struct, variant or array literal
+  holds one, even where the literal itself is passed down or returned:
+  `f(S { a[..] })` is an error, as `let s = S { a[..] };` is. The rule is
+  about references that can point *into* the array: one merely rooted at a
+  value that holds one, whose pointee type the array's elements cannot
+  contain — a slice key read back out of a dictionary's slots — stores like
+  any other.
 * **A shrink is an error while any live variable may refer into the
   array** — the test a grow-only shrink applies (§5.1), its liveness rule
   and its call summaries for a shrink through a reference or of a global
@@ -1542,7 +1546,9 @@ of its own pool parameters, say, so which one it is depends on the call site —
 the result of a back edge is not treated as static data (that would let it be
 stored into a global and outlive the pool it points into). It carries instead
 a root that outlives nothing: such a result may be passed down, but storing or
-returning it is a compile error.
+returning it is a compile error. It may point into a grow-shrink array, too,
+so what it is passed down to holds it the way §5.2 holds references into one,
+in variables only: not in a literal, either.
 
 ### 7.9 `return … from` (long-distance return)
 

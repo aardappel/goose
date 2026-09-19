@@ -729,6 +729,8 @@ struct TypeCheck {
     TypeExpr *ResizableArrayIn(TypeExpr *t);
     bool IsGrowShrinkRoot(VarDef *r);
     bool GrowShrinkCanHold(VarDef *r, TypeExpr *of);
+    bool IntoGrowShrink(const Val &v, VarDef *root, TypeExpr *t, bool holder);
+    string NeverStoredError(VarDef *root);
     bool MayBeViewed(VarDef *r);
     bool Viewable(TypeExpr *t);
     bool GrowShrinkContains(TypeExpr *t, TypeExpr *of);
@@ -1138,7 +1140,7 @@ struct TypeCheck {
     // The deepest root among the references a literal under construction
     // holds: its holder root (§9.2). Each literal owns its accumulator, so
     // checking a nested literal cannot replace its enclosing literal's facts.
-    void NoteLitElem(LitDeep &deep, const Val &v, TypeExpr *t);
+    void NoteLitElem(LitDeep &deep, Node *at, const Val &v, TypeExpr *t);
     void HolderFromLit(Val &v, const LitDeep &deep);
     void RecordStore(VarDef *container, const Val &v, TypeExpr *pointee, bool varbind,
                      VarDef *src = nullptr);
