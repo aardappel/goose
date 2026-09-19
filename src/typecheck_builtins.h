@@ -588,6 +588,9 @@ inline const TypeCheck::ShrinkSummary &TypeCheck::SyntacticGrows(SFunction *sf) 
     auto &summary = it->second;
     if (!fresh || !sf->body) return summary;
     ScanReceivers(sf, summary, [](Call *c) -> Node * {
+        // to_bytes(a, out) and a.to_bytes(out) grow out, not a.
+        if (auto d = Is<Dot>(c->callee); d && d->name == "to_bytes" && c->args.size() == 1)
+            return c->args[0];
         if (auto id = Is<Ident>(c->callee); id && id->name == "to_bytes" && c->args.size() == 2)
             return c->args[1];
         return OpRecv(c, [](string_view op) {
