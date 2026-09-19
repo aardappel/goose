@@ -405,18 +405,25 @@ inline void TypeCheck::RecordStore(VarDef *container, const Val &v, TypeExpr *po
     }
 }
 
+// The root a parameter's class stands for at a call, and whether it is
+// exact: a reference or slice argument's own, and for a by-value holder the
+// root bounding what its references point into, which is what the class is
+// keyed by (GetOrCreateSpec). What the callee's summary records against the
+// class -- a store into it, a shrink or a growth of it -- happened to that
+// storage, never to the holder, which the callee received a copy of.
+inline pair<VarDef *, bool> TypeCheck::ClassArgRoot(TypeExpr *pt, const Val &v) {
+    if (IsRefOrSlice(pt)) return { CanonRoot(v.root), v.rootexact };
+    return { CanonRoot(HolderRootOf(v)), v.holderset && v.holderexact };
+}
+
 // What the callee stored into the caller's containers, as the caller's
-// own events: a store through reference parameter p into something
-// rooted at parameter q becomes a store into argument p's root of a value
-// rooted at argument q's. A callee still being checked (a back edge) may
-// have stored any reference argument into any container argument.
+// own events: a store through reference parameter p, or through the
+// references by-value holder p holds, into something rooted at parameter q
+// becomes a store into what argument p's class stands for (ClassArgRoot) of
+// a value rooted at argument q's. A callee still being checked (a back
+// edge) may have stored any reference argument into any container argument.
 inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Node *at) {
-    auto argroot = [&](size_t q) -> pair<VarDef *, bool> {
-        auto pt = spec->argtypes[q];
-        auto ph = !IsRefOrSlice(pt);
-        return { CanonRoot(ph ? HolderRootOf(argvals[q]) : argvals[q].root),
-                 ph ? argvals[q].holderset && argvals[q].holderexact : argvals[q].rootexact };
-    };
+    auto argroot = [&](size_t q) { return ClassArgRoot(spec->argtypes[q], argvals[q]); };
     auto paramof = [&](VarDef *cr) -> int {
         for (size_t p = 0; p < spec->params.size() && p < argvals.size(); p++)
             if (cr && spec->params[p]->ref.root == cr) return (int)p;
@@ -480,15 +487,19 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         e.src = mapped(e.src, exact);
         e.exact = exact;
     }
+    // A class event's container is storage of the caller's that the
+    // parameter leads to. One through a slice parameter is not replayed: a
+    // permutation of its elements, such as sort's, stores values read back
+    // out of them, which their read-back root only bounds (§9.5), so the
+    // caller would take the array as holding a reference into every array
+    // declared at its depth or outside it.
     for (auto &e : spec->classevents) {
         auto p = paramof(e.container);
-        if (p < 0) continue;
-        auto pt = spec->argtypes[p];
-        if (pt->kind != TY_REF) continue;   // A by-value parameter is the callee's own copy.
+        if (p < 0 || spec->argtypes[p]->kind == TY_SLICE) continue;
         auto exact = e.exact;
         auto r = mapped(e.root, exact);
         auto src = mapped(e.src, exact);
-        push(CanonRoot(argvals[p].root), r, exact, e.pointee, src, e.byteview);
+        push(argroot((size_t)p).first, r, exact, e.pointee, src, e.byteview);
     }
 }
 
@@ -843,6 +854,16 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
     ApplyCalleeStores(spec, argvals, at);
     for (size_t i = 0; i < argvals.size() && i < spec->argtypes.size(); i++) {
         auto pt = spec->argtypes[i];
+        // A shrink recorded against a by-value holder parameter is of the
+        // array its references point into (ClassArgRoot), not of the holder,
+        // which the callee received a copy of. Only a holder whose class is
+        // that one array exactly has such an entry (RootArg::heldexact, or a
+        // class shared with a reference); an inexact one's are bounds, below.
+        if (!pending && !IsRefOrSlice(pt)) {
+            if (spec->shrinkparams.count((int)i))
+                shrink(ClassArgRoot(pt, argvals[i]).first, true, nullptr, "shrinks");
+            continue;
+        }
         auto root = CanonRoot(argvals[i].root);
         // What shrinks through a parameter is its pointee: a resizable one,
         // which every other parameter in its class points into.
@@ -1030,12 +1051,16 @@ inline void TypeCheck::CheckGrowsSince(size_t base, VarDef *root, bool exact,
 // handed (§7.10).
 inline void TypeCheck::ApplyCalleeGrows(Node *at, FnSpec *spec, vector<Val> &argvals,
                                         string_view name) {
+    // A summary records a growth of a parameter's class (ClassArgRoot); the
+    // text of a callee still being checked names the parameter itself, which
+    // for a by-value holder is the callee's own copy.
     auto grows = [&](size_t i, const char *how) {
         if (i >= argvals.size()) return;
-        auto root = CanonRoot(argvals[i].root);
+        auto [root, exact] = spec->inprogress
+                                 ? pair(CanonRoot(argvals[i].root), argvals[i].rootexact)
+                                 : ClassArgRoot(spec->argtypes[i], argvals[i]);
         if (!root || IsTemp(root)) return;
-        NoteGrow(at, root, argvals[i].rootexact,
-                 cat("call ", name, ", which ", how, " ", root->name));
+        NoteGrow(at, root, exact, cat("call ", name, ", which ", how, " ", root->name));
     };
     if (spec->sf->isextern) {
         for (size_t i = 0; i < spec->argtypes.size(); i++) {

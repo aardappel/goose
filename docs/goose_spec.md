@@ -914,11 +914,15 @@ variables, so it is checked at every level: each function specialization
 records which globals, and which parameters' pointees, it shrinks — directly
 or through its own callees — and what its calls stored into those pointees,
 and a call is checked as if it performed those shrinks and stores in the
-caller. A global receiver additionally counts every other global whose type
-can hold a reference to something the array can contain as holding one,
-since its stores may come from functions not yet checked. A call into a
-recursive cycle still being checked counts as shrinking every array a
-function of the cycle textually shrinks.
+caller. The pointees of a parameter that holds references by value (a
+struct with a reference field, an array of slices) are what those
+references point to: a shrink or a store through one of them is of the
+caller's storage, not of the callee's copy of the holder. A global receiver
+additionally counts every other global whose type can hold a reference to
+something the array can contain as holding one, since its stores may come
+from functions not yet checked. A call into a recursive cycle still being
+checked counts as shrinking every array a function of the cycle textually
+shrinks.
 
 A reference whose root is inexact (§9.2) — a value chosen between arrays,
 `if c { a } else { b }`, or one read back out of a container — may point at

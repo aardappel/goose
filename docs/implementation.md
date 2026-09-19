@@ -459,7 +459,12 @@ whatever depth it shares with one at the call site.
 Whether two *different* classes are different arrays is what
 `RootArg::exact`/`concrete` answer, and only codegen's stack-top caching asks
 (§7.9); `SettleParamRootExactness` propagates the answer through the `via`
-links after every call site has been seen.
+links after every call site has been seen. What a body records against a
+class -- a store into it (§3.5), a shrink or a growth of it (§3.10) -- a call
+maps back to the root the class stands for there (`ClassArgRoot`): a
+reference or slice argument's own, and a holder argument's holder root, what
+its references point into; never the holder, which the callee received a
+copy of.
 
 **Depth keys.** A body is checked with its first call site's class depths
 and then serves every call with the same key, so the key has to hold
@@ -540,8 +545,13 @@ line. `RecordStore` also maintains the container's `contentroot`: the
 deepest root stored into it so far, exact only while every store agrees.
 A store into a caller's storage -- through a parameter's class root -- is
 kept on the specialization as a `classevent`, and `ApplyCalleeStores`
-replays it at every call site with the class mapped back to the argument's
-root; for a callee still being checked (a back edge) it conservatively
+replays it at every call site with the class mapped back to the root it
+stands for there (§3.4), what a holder's references point into for a holder
+parameter. One through a slice parameter, into the elements it views, is not
+replayed: a permutation of them (`sort`) stores values read back out of the
+array, which their read-back root only bounds (§3.6), so the caller would
+take the array to hold a reference into every array at its depth or outside
+it. For a callee still being checked (a back edge) it conservatively
 records every reference argument as stored into every reference argument
 whose pointee can hold references.
 
@@ -726,17 +736,20 @@ at them.
 
 **Calls** (`ApplyCalleeShrinks`): for a checked callee, each `shrinkparams`
 entry becomes a shrink of the argument's root at the call, of every array
-it bounds where it is inexact, and each `shrinkexternals` entry a shrink of
-that variable; each bound entry becomes a shrink of every array of its type
-that the argument's root (a holder's contents' root) or the external bounds.
-The parameter's pointee decides the scan, §5.1 where the array freed is
-grow-only (a struct's tail included, `GrowOnlyTail`), §5.2 otherwise. For a
-callee still being checked, the summary is incomplete: the callee's body is
-scanned textually (`SyntacticShrinks`: `pop`/`resize`/`clear` receivers and
-assignment targets, by parameter index, global name, and capture), every
-grow-shrink global and every grow-shrink array reachable from the lexical
-parents' locals (`LexicalLocals`, a function value's body among the
-parents) or through the references an argument or such a local holds
+it bounds where it is inexact -- for a by-value holder parameter, of the
+array its references point into (§3.4), exactly, since only a class that is
+one array exactly records such an entry -- and each `shrinkexternals` entry
+a shrink of that variable; each bound entry becomes a shrink of every array
+of its type that the argument's root (a holder's contents' root) or the
+external bounds. The parameter's pointee decides the scan, or for a holder
+the array's own type: §5.1 where the array freed is grow-only (a struct's
+tail included, `GrowOnlyTail`), §5.2 otherwise. For a callee still being
+checked, the summary is incomplete: the callee's body is scanned textually
+(`SyntacticShrinks`: `pop`/`resize`/`clear` receivers and assignment
+targets, by parameter index, global name, and capture), every grow-shrink
+global and every grow-shrink array reachable from the lexical parents'
+locals (`LexicalLocals`, a function value's body among the parents) or
+through the references an argument or such a local holds
 (`ReachedThroughRefs`) counts as shrunk, and a grow-only local the text
 names does too.
 
@@ -755,8 +768,8 @@ assignment of a resizable
 (`CheckAssign`, `PointeeAssign`). Every growth is logged (`NoteGrow` →
 `growlog`): `push`, `append`, `alloc_index`/`alloc_ref`, `format`,
 `resize`, `to_bytes(a, out)`, whole assignment, and what a callee grows
-(`ApplyCalleeGrows`: `growparams` mapped onto the arguments' roots,
-`growexternals` for globals and captured locals, recorded per
+(`ApplyCalleeGrows`: `growparams` mapped onto the roots their classes stand
+for, §3.4, `growexternals` for globals and captured locals, recorded per
 specialization by `NoteRootEvent` exactly as shrinks are; a callee still
 being checked contributes what its text grows, `SyntacticGrows`, the shrink
 scanner with the growth operations; a C function is taken to append to

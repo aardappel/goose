@@ -1176,6 +1176,7 @@ struct TypeCheck {
     template<typename F> void ScanReceivers(SFunction *sf, ShrinkSummary &summary, F recv);
     void RefPointees(TypeExpr *t, vector<TypeExpr *> &out);
     VarDef *HolderRootOf(const Val &v);
+    pair<VarDef *, bool> ClassArgRoot(TypeExpr *pt, const Val &v);
 
     string ExprStr(Node *n) {
         string s;
