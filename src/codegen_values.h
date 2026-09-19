@@ -867,7 +867,7 @@ inline string CodeGen::GenPtr(Node *n, string *stkout) {
     // Everything else constructs on a fresh temp stack.
     string stk;
     auto base = BytesTemp(stk);
-    GenAny(n, Dst { DK_STACK, stk });
+    GenAny(n, Dst { DK_STACK, stk, n->exprtype });
     if (stkout) *stkout = stk;
     return base;
 }

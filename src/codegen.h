@@ -947,9 +947,10 @@ struct CodeGen {
             Append(protos, "static ", SigRet(sp), " ", sinfo[sp].cname, "(",
                    SigParams(sp, false), ");\n");
         for (auto sp : livespecs) EmitSpec(sp);
-        // Element-run twins requested by call sites (may request more).
-        for (size_t i = 0; i < erqueue.size(); i++) EmitSpec(erqueue[i], true);
         EmitGlobalInit();
+        // Element-run twins requested by call sites, the globals'
+        // initializers included (may request more).
+        for (size_t i = 0; i < erqueue.size(); i++) EmitSpec(erqueue[i], true);
         EmitMain();
         if (usesthreads) predefs = "#define GS_NEED_THREADS 1\n";
         // The instance block: with workers each thread reaches its own

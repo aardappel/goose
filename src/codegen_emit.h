@@ -540,7 +540,7 @@ inline void CodeGen::EmitGlobalInit() {
                     GenConstruct(g->inits[i], gstks[d], d->type, GlobalLenLv(d));
                 } else if (IsBytesT(d->type)) {
                     InitGlobalStack(d);
-                    GenConstruct(g->inits[i], gstks[d]);
+                    GenConstruct(g->inits[i], gstks[d], d->type);
                 } else if (PrefVar(d)) {
                     L(gnames[d], " = ", GenPrefVal(g->inits[i]), ";");
                 } else {

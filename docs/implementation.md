@@ -1239,6 +1239,18 @@ target) delivers the value form and the receiver slides the length prefix
 out with one `memmove` (`EmitSlidePrefix`). A `T[]` result landing in a slot
 of another length storage is re-prefixed afterwards (`EmitReprefix`).
 
+A stack destination also names the slot's type wherever the receiver knows
+it: a local's, a global's, a parameter's, an array literal's element type, a
+temporary's own. The value is built as that type whatever the expression's
+own type says: a call's variable-array result takes the slot's length
+storage, a reference stores a relative slot's offset (§3.9), and `str()` and
+`to_bytes()`, whose results are resizable, reserve the slot's length prefix,
+write their elements behind it and patch it (`EmitStr`, `OpenRzDest`), so
+`[str("a"), str("bc")]` builds each string in its element. A call reached
+through `GenAny`, as a branch's value, is constructed by `GenConstruct` like
+any other. The `_er` twins are compiled last, after the globals'
+initializers, which can ask for one too.
+
 **Pushes** (`EmitPush`). The receiver is evaluated, then the argument, then
 the element is added (§2), and the argument may itself grow the array
 (`v.push(v.push(1))`, `v.push(f(v))`): a fixed-size element is therefore

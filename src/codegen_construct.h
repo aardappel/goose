@@ -292,10 +292,11 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
     if (!IsBytesT(et)) {
         // A reference landing in a relative-reference slot -- an element
         // of a `(T&<w>)[>..]`, say -- stores the offset from that slot,
-        // not the pointer (§3.9). Reference values always reach here as
-        // plain pointers, relative ones having been decoded on the read.
+        // not the pointer (§3.9), and null the optional's zero. Reference
+        // values always reach here as plain pointers, relative ones having
+        // been decoded on the read.
         if (want && want->kind == TY_REF && want->ref->lenstorage >= 0 &&
-            et->kind == TY_REF && !Is<NullLit>(n)) {
+            et->kind == TY_REF) {
             EmitRelStore(stk, want, GenX(n), n->line);
             return;
         }
@@ -927,7 +928,18 @@ inline void CodeGen::GenArrayLit(ArrayLit *al, const string &stk, const string &
             auto iv = T();
             L("for (int64_t ", iv, " = 0; ", iv, " < ", count, "; ", iv, "++) {");
             ind++;
-            GenConstruct(al->fillval, stk);
+            GenConstruct(al->fillval, stk, elem);
+            ind--;
+            L("}");
+        } else if (elem->kind == TY_REF && elem->ref->lenstorage >= 0) {
+            // Each relative slot stores its own offset to the one plain
+            // reference, or the optional's zero for null (§3.9).
+            auto p = T();
+            L("uint8_t *", p, " = (uint8_t *)(", GenX(al->fillval), ");");
+            auto iv = T();
+            L("for (int64_t ", iv, " = 0; ", iv, " < ", count, "; ", iv, "++) {");
+            ind++;
+            EmitRelStore(stk, elem, p, al->line);
             ind--;
             L("}");
         } else {
@@ -941,7 +953,7 @@ inline void CodeGen::GenArrayLit(ArrayLit *al, const string &stk, const string &
         }
         return;
     }
-    for (auto e : al->elems) GenConstruct(e, stk);
+    for (auto e : al->elems) GenConstruct(e, stk, elem);
 }
 
 // Does this literal name `self` directly? Such a literal has no static

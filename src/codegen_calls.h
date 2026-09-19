@@ -44,8 +44,8 @@ inline vector<string> CodeGen::EmitCall(Call *c, Dst d0, vector<Dst> *alldst) {
         d0.t->arr->akind == A_VAR && (c->builtin >= 0 || !c->dispatch.empty())) {
         auto base = T();
         L("uint8_t *", base, " = ", Top(d0.s), ";");
-        auto rets = c->builtin >= 0 ? EmitBuiltin(c, Dst { DK_STACK, d0.s })
-                                    : EmitDispatch(c, Dst { DK_STACK, d0.s }, alldst);
+        auto rets = c->builtin >= 0 ? EmitBuiltin(c, Dst { DK_STACK, d0.s, d0.t })
+                                    : EmitDispatch(c, Dst { DK_STACK, d0.s, d0.t }, alldst);
         EmitSlidePrefix(base, LenStore(d0.t->arr), d0.s, d0.lenlv);
         return rets;
     }
@@ -398,10 +398,14 @@ inline vector<string> CodeGen::EmitFvCall(Call *c, Dst d0) {
         rv = T();
         L(CT(et), " ", rv, ";");
         d = Dst { DK_LVALUE, rv };
+    } else if (wantsval && IsResz(et) && d0.k != DK_STACK) {
+        string stk;
+        rv = RzTemp(et, stk);
+        d = Dst { DK_STACK, stk, et, RzLenLv(et, rv) };
     } else if (wantsval && IsBytesT(et) && d0.k != DK_STACK) {
         string stk;
         rv = BytesTemp(stk);
-        d = Dst { DK_STACK, stk };
+        d = Dst { DK_STACK, stk, et };
     } else if (wantsval && d0.k == DK_LVALUE) {
         rv = d0.s;
     }
@@ -494,7 +498,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
         } else if (IsBytesT(pt)) {
             string stk;
             auto base = BytesTemp(stk);
-            GenConstruct(an[i], stk);
+            GenConstruct(an[i], stk, pt);
             shared[i] = base;
             sharedstk[i] = stk;
         } else {

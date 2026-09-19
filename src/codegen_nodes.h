@@ -620,18 +620,24 @@ inline void InlineBlock::EmitBody(CodeGen &cg, const Dst &d) {
 }
 
 inline void Call::CgAny(CodeGen &cg, const Dst &d) {
+    // A result bound for a stack slot (a branch's value, say) is constructed
+    // there as anywhere else, which is what copies in a resizable result
+    // built behind a header of its own, or a returned reference's pointee.
+    if (d.k == DK_STACK) {
+        cg.GenConstruct(this, d.s, d.t, d.lenlv);
+        return;
+    }
     // A result the checker adapted to an ADT arrives as the callee's type.
     if (auto from = cg.AdtFrom(this)) {
         cg.GenAdtAdapted(from, exprtype, d, line, [&](const Dst &nd) { cg.GenCallAs(this, from, nd); });
         return;
     }
     auto rets = cg.EmitCall(this, d);
-    // Fixed-value results wire into the destination here; bytes results and
-    // channel-passed returns were handled in place.
+    // A fixed-value result wires into the lvalue here; a channel-passed one
+    // was written in place.
     if (!rets.empty() && !cg.IsVoidT(exprtype) && !cg.IsBytesT(exprtype)) {
         auto r0 = cg.CallVal0(this, rets[0], d.t);
         if (d.k == DK_LVALUE && r0 != d.s) cg.L(d.s, " = ", r0, ";");
-        else if (d.k == DK_STACK) cg.EmitValStore(d.s, exprtype, r0);
     }
 }
 
