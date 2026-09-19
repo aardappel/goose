@@ -2298,13 +2298,13 @@ inline bool Call::BceWalk(BCE &b) {
                 if (pid >= 0) b.ExactLenIs(pid, nt);
                 break;
             }
-            case B_ASSERT:
-                if (b.mode != BCE::M_KILLS && !args.empty() && !b.HasKillEffects(args[0]))
-                    b.CondFacts(args[0], true);
+            case B_ASSERT: {
+                auto cond = FirstArg();
+                if (b.mode != BCE::M_KILLS && !b.HasKillEffects(cond)) b.CondFacts(cond, true);
                 // A statically false assertion ends the path.
-                if (!args.empty())
-                    if (auto bl = Is<BoolLit>(args[0]); bl && !bl->val) return false;
+                if (auto bl = Is<BoolLit>(cond); bl && !bl->val) return false;
                 break;
+            }
             case B_ABORT: case B_EXIT:
                 return false;   // The program ends here (§9.3).
             default:

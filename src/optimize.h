@@ -974,7 +974,7 @@ inline Node *Call::Opt(Optimizer &o) {
     for (auto &a : args) a = o.OptIn(this, a);
     if (fvbody) o.OptBlock(fvbody);
     if (builtin == B_ASSERT) {
-        if (auto b = Is<BoolLit>(args[0]); b && b->val) {
+        if (auto b = Is<BoolLit>(FirstArg()); b && b->val) {
             o.folded++;
             return o.EmptyBlock(this);
         }
