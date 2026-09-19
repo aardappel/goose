@@ -270,15 +270,22 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             // the stack top drop below the elements (grow-shrink).
             L("if (", nl, " < 0) gs_abort(GS_E_POP, ", LocArgs(ln), ");");
             L(v.lenlv, " = (", LenCast(lv), ")", nl, ";");
-            auto tv = T();
             auto ak = lv.t->arr->akind;
+            string at;
             if (ak == A_GROWSHRINK || ak == A_GROW) {
                 // The array tops its stack: the element region ends at top.
                 L(TopW(lv.stk), " -= ", esz, ";");
-                L(CT(elem), " ", tv, " = *(", CT(elem), " *)", Top(lv.stk), ";");
+                at = Top(lv.stk);
             } else {
-                L(CT(elem), " ", tv, " = *(", CT(elem), " *)(", ElemAddr(v, nl), ");");
+                at = cat("(", ElemAddr(v, nl), ")");
             }
+            // A relative-reference element leaves as the plain reference it
+            // loads as (§3.9): its offset is measured from the slot it
+            // leaves, whose bytes nothing has written over yet.
+            if (elem->kind == TY_REF && elem->ref->lenstorage >= 0)
+                return { LoadLoc(BytesLoc(at, elem, lv), c->rettypes[0], ln) };
+            auto tv = T();
+            L(CT(elem), " ", tv, " = *(", CT(elem), " *)", at, ";");
             return { tv };
         }
         case B_RESIZE: {

@@ -1595,7 +1595,8 @@ on the default 256 MB reservation stores unchecked. A pool's base is loaded
 once per function into a local (`PoolBase`), and element access through a
 pool global reads that local too. `self` stores minus the field's own offset
 (self-relative) or the value's own pool offset (`in pool`, only where the
-literal is built inside the pool).
+literal is built inside the pool). `pop` on an array of relative references
+loads the element it removes like any other load, from the slot it leaves.
 
 A `reusable[]` pool's operations (`EmitSlicePool`) evaluate the receiver,
 then the slice, then the length (`SliceLen`, which aborts on a negative or
