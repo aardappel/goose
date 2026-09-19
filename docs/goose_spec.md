@@ -1728,6 +1728,13 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   its value into the variable it declares, with a type annotation or
   without: `let s = { let t: u8[] = "abc"; t[..] };` is an error, since `t`
   ends with its block.
+* **Branch values**: whatever receives the value of an `if`, `match`,
+  `block`, `loop` or bare `{ }` — a call's argument as much as a variable —
+  gets it after the scopes its branch opened have ended. So a reference or
+  slice that value is, or holds, must not be rooted at a variable declared
+  in them, a match arm's binder included, or at a temporary made there:
+  `f(if c { var t: i64[>..] = [1, 2]; t[..] } else { a[..] })` is an error,
+  as is the declaration above.
 * **Return**: a returned reference's root must be visible to the caller (a
   caller-supplied root, a global, or the function's own in-place-constructed
   return value).

@@ -661,6 +661,31 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     return v;
 }
 
+// A branch's value outlives the scopes the branch opened: whatever receives
+// the construct's value -- a call's argument, which is no store, included --
+// gets it after they end. So a reference or slice it is, or one it holds,
+// must not point into a variable declared in them or a temporary made there
+// (§9.2). `depth` is the scope the construct is in, whose own statement's
+// temporaries outlive the value.
+inline void TypeCheck::CheckBranchRoot(const Val &v, int depth, Node *at, const char *construct) {
+    auto t = v.type;
+    if (!t || v.isnull) return;
+    auto isrs = IsRefOrSlice(t);
+    if (!isrs && !HoldsPlainRef(t)) return;
+    auto root = CanonRoot(isrs ? v.root : HolderRootOf(v));
+    // The sentinels stand for roots not known yet, as for a binding.
+    if (!root || root == temproot || root == cycleroot ||
+        Depth(root) <= depth + (IsTemp(root) ? 1 : 0))
+        return;
+    auto what = !isrs ? "holds references" : t->kind == TY_SLICE ? "is a slice" : "is a reference";
+    if (IsTemp(root))
+        Error(at, cat("the ", construct, "'s value ", what, " rooted at a temporary, which does "
+                      "not outlive it (§9.2): a temporary lasts until the end of its statement, "
+                      "or of the block whose final expression made it"));
+    Error(at, cat("the ", construct, "'s value ", what, " rooted at ", root->name,
+                  ", which does not outlive it (§9.2)"));
+}
+
 // A branch that was an integer constant now has the merged type: the
 // constant node and the blocks down to it.
 inline void TypeCheck::RetypeConstBranch(Node *n, TypeExpr *t) {
@@ -715,6 +740,7 @@ inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue
     }
     if (!reachable) v.type = nullptr;  // Bottom: the block never produces.
     PopScope();
+    CheckBranchRoot(v, CurDepth(), b->tail, "block");
     b->exprtype = v.type ? v.type : ast.voidtype;
     return v;
 }
@@ -750,6 +776,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
         auto aflow = SaveFlow();
         if (!reachable) av.type = nullptr;
         PopScope();
+        CheckBranchRoot(av, CurDepth(), arm.body, "match arm");
         if (first) {
             result = av;
             resultnode = arm.body;
@@ -912,6 +939,8 @@ inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wa
     x->body->exprtype = v.type ? v.type : ast.voidtype;
     reachable = reachable || sc.hasbreak;  // Exits via the tail or any break.
     if (!wantvalue) return VoidVal();
+    CheckBranchRoot(v, CurDepth(), x->body->tail, "block");
+    if (sc.breaktype) CheckBranchRoot(sc.breakvalue, CurDepth(), x, "block");
     Val r = sc.breaktype ? MergeVals(v, v.type != nullptr, sc.breakvalue, true,
                                      x, wantvalue, x->body->tail, nullptr) : v;
     r.type = UnifyBranch(v.type, sc.breaktype, x, wantvalue);
@@ -939,8 +968,9 @@ inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue)
     KillNarrowingsAssignedIn(x->body);
     FinishLoopNarrowing(x, assumed);
     reachable = sc.hasbreak;  // A loop only exits via break.
-    Val v = wantvalue && sc.breaktype ? sc.breakvalue : VoidVal();
-    return v;
+    if (!wantvalue || !sc.breaktype) return VoidVal();
+    CheckBranchRoot(sc.breakvalue, CurDepth(), x, "loop");
+    return sc.breakvalue;
 }
 
 inline void TypeCheck::CheckWhile(While *x) {
@@ -1356,8 +1386,9 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
 
 // A binding without an annotation takes its value's own type, so no store
 // rule (FitsAt) saw it; the variable must still not outlive what the value
-// points into (§9.2) -- a temporary of the binding's own statement, or a
-// local of the block whose value it is.
+// points into (§9.2) -- a temporary of the binding's own statement, say. A
+// value pointing into a block whose value it is never gets here: the block
+// rejected it as it closed (CheckBranchRoot).
 inline void TypeCheck::CheckBindingRoot(VarDef *d, const Val &v, Node *at) {
     auto t = v.type;
     if (!t || v.isnull) return;

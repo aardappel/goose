@@ -516,9 +516,19 @@ A declaration without a type annotation takes its value's type and meets
 no destination type, so `FitsAt` never sees it; `CheckBindingRoot` applies
 rule 2 to it instead, each name of a multi-value declaration included,
 which is what keeps a variable from viewing a temporary of its own
-statement or a local of the block whose value it is. The sentinels pass:
-a variable may hold what a reference not bound yet, or a back edge's
-result, points at.
+statement. The sentinels pass: a variable may hold what a reference not
+bound yet, or a back edge's result, points at.
+
+A branch's value -- an `if`'s branch, a `match` arm, a block's tail, a
+`block`'s or `loop`'s breaks -- reaches whatever receives its construct's
+value after the scopes the branch opened have ended, and a call's argument
+is no exception, although it is no store. `CheckBranchRoot` applies rule 2
+to it as the construct closes, against the depth the construct is in: a
+variable deeper than that has ended, and so has a temporary made inside
+the construct, one deeper than the temporaries of the construct's own
+statement, which last (a `match`'s scrutinee among them). A declaration of
+such a value meets this rule before `CheckBindingRoot`, so it is what keeps
+a variable from viewing a local of the block whose value it is.
 
 The record (`storeevents`, one `StoreEvent` per store, program-wide) is what
 the grow-only shrink rule of §5.1 consults: the container, the stored

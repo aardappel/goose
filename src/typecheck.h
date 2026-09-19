@@ -969,6 +969,7 @@ struct TypeCheck {
     Val CheckVariantConst(Dot *d, SEnum *en);
     Val MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at, bool wantvalue,
                   Node *anode = nullptr, Node *bnode = nullptr);
+    void CheckBranchRoot(const Val &v, int depth, Node *at, const char *construct);
     void RetypeConstBranch(Node *n, TypeExpr *t);
     Node *WholeSlice(Node *n);
     Val CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue);
