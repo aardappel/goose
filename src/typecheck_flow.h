@@ -1043,6 +1043,9 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         if (IsIntT(t)) {
             x->iterkind = IK_COUNT;
             if (x->byref) Error(x, "cannot iterate an integer count by reference");
+            // A count reads a reference as its pointee (§3.8); a sequence
+            // keeps the reference, the loop iterating it where it lies.
+            x->iter->exprtype = DecayRef(iv).type;
             bindtype = t;
         } else if (t->kind == TY_ARRAY || t->kind == TY_SLICE) {
             auto elem = t->kind == TY_ARRAY ? t->arr->sub : t->sub;
