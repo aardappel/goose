@@ -714,7 +714,9 @@ merge of the arms' (deeper root, exact only when the same, writable only if
 all are).
 
 **Function values** (`CheckFunValCall`, §7.6): a named function value
-resolves as a call in the definer's environment; a block is cloned into
+resolves as a call in the environment its declaration is in, for a nested
+function the scope declaring it, whatever function names it
+(`LookupLocalFnEnv`, as for a call); a block is cloned into
 `Call::fvbody` and checked inline in a frame marked `isfunval` whose lexical
 lookups chain to the definer, with parameters as locals bound to the
 arguments (reference provenance and literal-ness carried through). A plain

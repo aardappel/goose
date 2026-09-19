@@ -130,12 +130,13 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
         v.fnv = *fb;
         return v;
     }
-    if (auto sf = tc.LookupLocalFn(name)) {
+    FnSpec *env = nullptr;
+    if (auto sf = tc.LookupLocalFnEnv(name, env)) {
         fnref = sf;
         Val v;
         v.type = tc.fntype;
         v.fnv.named = sf;
-        v.fnv.env = tc.frames.back().lexspec;
+        v.fnv.env = env;
         return v;
     }
     if (auto &cands = tc.ast.LookupFunctions(name, ns); !cands.empty()) {
