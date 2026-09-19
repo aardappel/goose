@@ -351,7 +351,8 @@ inline void TypeCheck::RequireCopyable(const Val &v, Node *n, TypeExpr *dt) {
     if (IsRefOrSlice(dt) || dt->kind == TY_VOID) return;
     if (ClassOf(dt) == SC_FIXED) return;
     auto src = IsPlainRef(v.type) ? v.type->ref->sub : v.type;
-    if (ClassOf(src) == SC_FIXED) return;
+    // A varint is read as the i64 it decodes to (§3.6), like any scalar.
+    if (ClassOf(src) == SC_FIXED || IsVarintT(src)) return;
     if (!v.lvalue && !IsPlainRef(v.type)) return;
     if (inreturn && v.lvalue)
         if (auto id = Is<Ident>(n); id && id->vdef && !id->vdef->isglobal &&

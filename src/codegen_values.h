@@ -766,6 +766,7 @@ inline string CodeGen::GenXD(Node *n, TypeExpr *want) {
             return LoadLoc(lv, want, n->line);
         }
         auto x = GenX(n);
+        if (IsVarintT(sub)) return cat("gs_zig_read(", x, ")");
         if (IsResz(sub) || IsBytesT(sub)) return x;   // Byte-pointer currency.
         return cat("(*", x, ")");
     }
@@ -780,8 +781,8 @@ inline string CodeGen::GenTruth(Node *n) {
 }
 
 // A control construct used as a fixed-class value: route it into a temp.
-// A varint-typed value (an inlined call initializing a varint field) is
-// held in its decoded i64 form, like every other varint read.
+// A varint-typed value (an inlined call initializing a varint field or
+// element) is held in its decoded i64 form, like every other varint read.
 inline string CodeGen::CtlValX(Node *n) {
     auto t = T();
     auto vt = n->exprtype;

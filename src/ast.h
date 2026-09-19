@@ -205,6 +205,9 @@ inline bool IsArrayKind(const TypeExpr *t, ArrayKind k) {
 }
 // A machine integer: any integer type but varint, the storage-only encoding.
 inline bool IsIntT(const TypeExpr *t) { return t->kind == TY_INT && t->intstorage != IS_VARINT; }
+inline bool IsVarintT(const TypeExpr *t) {
+    return t && t->kind == TY_INT && t->intstorage == IS_VARINT;
+}
 inline bool IsU8(const TypeExpr *t) { return t->kind == TY_INT && t->intstorage == IS_U8; }
 inline bool IsF32(const TypeExpr *t) { return t && t->kind == TY_FLT && t->fltstorage == FS_F32; }
 

@@ -606,6 +606,7 @@ inline string CodeGen::CallVal0(Call *c, const string &r0, TypeExpr *want) {
     }
     if (rt && rt->kind == TY_REF && rt->ref->lenstorage < 0 && et &&
         et->kind != TY_REF && et->kind != TY_VOID) {
+        if (IsVarintT(rt->ref->sub)) return cat("gs_zig_read(", r0, ")");
         if (IsResz(rt->ref->sub) || IsBytesT(rt->ref->sub)) return r0;
         return cat("(*", r0, ")");
     }

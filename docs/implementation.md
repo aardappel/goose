@@ -1425,7 +1425,12 @@ own type says: a call's variable-array result takes the slot's length
 storage, a reference stores a relative slot's offset (§3.9), and `str()` and
 `to_bytes()`, whose results are resizable, reserve the slot's length prefix,
 write their elements behind it and patch it (`EmitStr`, `OpenRzDest`), so
-`[str("a"), str("bc")]` builds each string in its element. A call reached
+`[str("a"), str("bc")]` builds each string in its element. A varint field
+or element takes the `i64` every varint read decodes to (§3.6) from
+whatever produces it -- a control construct or an inlined body through a C
+temporary (`CtlValX`), a returned `varint&` through its load (`CallVal0`,
+`GenXD`), a fill value once -- and writes it zigzag-encoded
+(`EmitVarintStore`). A call reached
 through `GenAny`, as a branch's value, is constructed by `GenConstruct` like
 any other. A reference's pointee meeting a value slot -- a returned reference
 whose value is taken, or the reference an inlined body leaves in the slot --

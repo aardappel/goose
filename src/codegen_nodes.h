@@ -640,8 +640,9 @@ inline void Call::CgAny(CodeGen &cg, const Dst &d) {
     }
     auto rets = cg.EmitCall(this, d);
     // A fixed-value result wires into the lvalue here; a channel-passed one
-    // was written in place.
-    if (!rets.empty() && !cg.IsVoidT(exprtype) && !cg.IsBytesT(exprtype)) {
+    // was written in place. A varint-typed one is the i64 it will encode to.
+    if (!rets.empty() && !cg.IsVoidT(exprtype) &&
+        (!cg.IsBytesT(exprtype) || IsVarintT(exprtype))) {
         auto r0 = cg.CallVal0(this, rets[0], d.t);
         if (d.k == DK_LVALUE && r0 != d.s) cg.L(d.s, " = ", r0, ";");
     }

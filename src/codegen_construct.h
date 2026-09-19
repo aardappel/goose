@@ -26,6 +26,11 @@ inline void CodeGen::EmitLenStore(const string &stk, IntStorage ls, const string
     }
 }
 
+// A varint field or element (§3.6): the i64 value `x`, zigzag-encoded.
+inline void CodeGen::EmitVarintStore(const string &stk, const string &x) {
+    Bump(stk, cat("gs_zig_write(", Top(stk), ", ", x, ")"));
+}
+
 // The range check a store of `off` into a relative slot of width `w`
 // needs (§3.9). The self-relative form is signed and bounded by the span
 // of the root array; the `in pool` form is unsigned and bounded by the
@@ -241,6 +246,14 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         return;
     }
     auto et = n->exprtype;
+    // A varint slot's value is an i64, like every varint read, whatever
+    // produces it: an if or an inlined body computes it into a temporary
+    // (CtlValX), and only then is it encoded at stk, so an exit taken while
+    // it is computed leaves nothing there.
+    if (IsVarintT(want ? want : et)) {
+        EmitVarintStore(stk, GenXD(n, ast.inttypes[IS_I64]));
+        return;
+    }
     // A variable array landing in a slot of another length storage takes
     // the slot's layout: the prefix written here is the destination's,
     // whatever the expression's own type says.
@@ -912,7 +925,17 @@ inline void CodeGen::GenArrayLit(ArrayLit *al, const string &stk, const string &
             break;
     }
     if (al->fillval) {
-        if (IsBytesT(elem)) {
+        if (IsVarintT(elem)) {
+            // One i64, evaluated once as a fixed-size fill value is.
+            auto i64 = ast.inttypes[IS_I64];
+            auto fv = Snapshot(i64, GenXD(al->fillval, i64));
+            auto iv = T();
+            L("for (int64_t ", iv, " = 0; ", iv, " < ", count, "; ", iv, "++) {");
+            ind++;
+            EmitVarintStore(stk, fv);
+            ind--;
+            L("}");
+        } else if (IsBytesT(elem)) {
             auto iv = T();
             L("for (int64_t ", iv, " = 0; ", iv, " < ", count, "; ", iv, "++) {");
             ind++;
@@ -1060,11 +1083,6 @@ inline void CodeGen::GenFieldInits(StructLit *sl, const vector<Field> &fields,
             assert(ft->kind == TY_REF && ft->ref->optional);
             L("memset(", Top(stk), ", 0, ", FixedSize(ft), ");");
             Bump(stk, cat(FixedSize(ft)));
-            continue;
-        }
-        if (ft->kind == TY_INT && ft->intstorage == IS_VARINT) {
-            auto x = GenXD(init, ast.inttypes[IS_I64]);
-            Bump(stk, cat("gs_zig_write(", Top(stk), ", ", x, ")"));
             continue;
         }
         // The resizable tail (if any) receives the enclosing header's

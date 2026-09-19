@@ -720,6 +720,7 @@ struct CodeGen {
 
     void EmitValStore(const string &stk, TypeExpr *t, const string &x);
     void EmitLenStore(const string &stk, IntStorage ls, const string &n);
+    void EmitVarintStore(const string &stk, const string &x);
     void EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln, bool inroot);
     void EmitRelStoreAt(const string &fa, TypeExpr *rt, const string &rv, Line ln, bool inroot);
     void EmitRelStore(const string &stk, TypeExpr *rt, const string &rv, Line ln);
