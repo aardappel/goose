@@ -339,9 +339,12 @@ References are transparent (§3.8), which the checker implements as
 reference; every consumer goes through `CheckValue`, `CheckArg` or `Operand`
 (`typecheck_exprs.h`), which load the pointee (`DecayRef`) unless the
 destination keeps the reference (`KeepsRef`: a reference-typed destination,
-or a whole-array reference meeting a slice parameter). The node's `exprtype`
-is then the pointee's type, which codegen follows: a written `&x` there reads
-as `x` (`Unary::CgX`). `CheckValue` also:
+or a whole-array reference meeting a slice parameter). A condition
+(`CheckCond`) and an integer `match`'s scrutinee (`CheckMatch`) decay the
+same way; a reference to an ADT scrutinee is kept, its tag and payload read
+where the value lies. The node's `exprtype` is then the pointee's type,
+which codegen follows: a written `&x` there reads as `x` (`Unary::CgX`).
+`CheckValue` also:
 
 * unwraps `copy(x)` to `x` (the copy is codegen's business);
 * binds a non-fixed lvalue to a reference destination by rewriting the node

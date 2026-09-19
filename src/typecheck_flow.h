@@ -721,6 +721,9 @@ inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue
 
 inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalue) {
     auto sv = CheckV(m->scrutinee, nullptr);
+    // A reference to an integer reads as its pointee (§3.8); one to an ADT
+    // is kept, its tag and payload read where the value lies.
+    if (IsPlainRef(sv.type) && IsIntT(LoadType(sv.type->ref->sub))) sv = DecayRef(sv);
     m->scrutinee->exprtype = sv.type;
     auto st = sv.type;
     TypeExpr *enumtype = nullptr;
