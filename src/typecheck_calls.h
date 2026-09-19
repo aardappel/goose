@@ -85,16 +85,16 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d) {
     auto ov = CheckV(d->obj, nullptr);
     d->obj->exprtype = ov.type;
     auto rt = ov.type;
-    if (rt->kind == TY_REF) {
-        if (rt->ref->optional)
-            Error(c, "optional value must be narrowed (if/guard/assert) before use");
-        rt = rt->ref->sub;
-    }
+    auto optional = IsOptional(rt);
+    if (rt->kind == TY_REF) rt = rt->ref->sub;
     // Built-in members first (§7.1), then free functions, then the
-    // remaining builtins (a.f(b) is exactly f(a, b)).
+    // remaining builtins (a.f(b) is exactly f(a, b)). Only a member needs
+    // an optional receiver narrowed first: the others take it as f(a, b)
+    // takes a, so r.assert() is what narrows r (§3.8).
     auto bd = LookupBuiltin(d->name);
     if (bd && (bd->flags & BF_MEMBER) && !(bd->flags & BF_PROPERTY) &&
         rt->kind == TY_ARRAY) {
+        if (optional) Error(c, "optional value must be narrowed (if/guard/assert) before use");
         vector<Node *> argnodes = { d->obj };
         for (auto a : c->args) argnodes.push_back(a);
         d->member = bd->kind;
