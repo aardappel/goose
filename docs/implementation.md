@@ -1427,8 +1427,13 @@ storage, a reference stores a relative slot's offset (§3.9), and `str()` and
 write their elements behind it and patch it (`EmitStr`, `OpenRzDest`), so
 `[str("a"), str("bc")]` builds each string in its element. A call reached
 through `GenAny`, as a branch's value, is constructed by `GenConstruct` like
-any other. The `_er` twins are compiled last, after the globals'
-initializers, which can ask for one too.
+any other. A reference's pointee meeting a value slot -- a returned reference
+whose value is taken, or the reference an inlined body leaves in the slot --
+is built as the slot's type from where it lies (`ConstructFromLoc`): a `u8[]`
+pointee takes a `u8[varint]` element's prefix, and an element run's none.
+`v.append(copy(x))` appends `x`, whose elements the run copies anyway. The
+`_er` twins are compiled last, after the globals' initializers, which can
+ask for one too.
 
 **Pushes** (`EmitPush`). The receiver is evaluated, then the argument, then
 the element is added (§2), and the argument may itself grow the array

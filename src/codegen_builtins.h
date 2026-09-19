@@ -431,6 +431,9 @@ inline void CodeGen::EmitAppend(vector<Node *> &an, Line ln) {
     auto elem = v.elem;
     auto ak = lv.t->arr->akind;
     auto src = an[1];
+    // Appending copy(x) appends x: the run is a copy of its elements
+    // either way.
+    if (auto c = Is<Call>(src); c && c->builtin == B_COPY) src = c->FirstArg();
     // append(f()) where f returns a resizable: the callee emits raw
     // elements at our top and hands back the count -- contiguous by
     // construction (§7.3).

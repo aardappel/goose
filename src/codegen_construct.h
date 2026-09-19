@@ -259,19 +259,10 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         !TEq(et, want))
         et = want;
     if (want && NeedsDeref(n->exprtype, want)) {
-        // A spliced reference in a decayed slot: copy the pointee.
-        auto sub = n->exprtype->ref->sub;
-        if (IsFix(sub)) {
-            EmitValStore(stk, want, GenXD(n, want));
-        } else if (IsResz(sub)) {
-            EmitRzCopy(FatRefLoc(GenX(n), sub), sub, stk, lenlv, n->line);
-        } else {
-            auto x = GenX(n);
-            auto sz = T();
-            L("int64_t ", sz, " = ", SizeX(sub, x), ";");
-            L("memcpy(", Top(stk), ", ", x, ", (size_t)", sz, ");");
-            Bump(stk, sz);
-        }
+        // A spliced reference in a decayed slot: the pointee, constructed
+        // as the slot's type from where it lies.
+        if (IsBytesT(want)) ConstructFromLoc(GenLoc(n), want, stk, lenlv, n->line);
+        else EmitValStore(stk, want, GenXD(n, want));
         return;
     }
     if (IsCtl(n)) { GenAny(n, Dst { DK_STACK, stk, want, lenlv }); return; }
@@ -448,16 +439,10 @@ inline void CodeGen::ConstructCall(Call *c, TypeExpr *et, const string &stk, Typ
         return;
     }
     // A reference-returning call decayed to a value here: the callee
-    // did not construct at the destination; copy the pointee.
-    if (rt0 && rt0->kind == TY_REF && et->kind != TY_REF && IsBytesT(rt0->ref->sub)) {
-        if (IsResz(rt0->ref->sub)) {
-            EmitRzCopy(FatRefLoc(rets[0], rt0->ref->sub), et, stk, lenlv, c->line);
-        } else {
-            auto sz = T();
-            L("int64_t ", sz, " = ", SizeX(et, rets[0]), ";");
-            L("memcpy(", Top(stk), ", ", rets[0], ", (size_t)", sz, ");");
-            Bump(stk, sz);
-        }
+    // did not construct at the destination, so the pointee is constructed
+    // as the slot's type from where it lies.
+    if (rt0 && IsPlainRef(rt0) && IsBytesT(et)) {
+        ConstructFromLoc(CallResLoc(c, rets[0]), et, stk, lenlv, c->line);
         return;
     }
     // A fixed-size result (a reference-returning call's pointee
