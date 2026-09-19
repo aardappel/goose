@@ -976,6 +976,24 @@ its locals as free variables, and a remaining callee that does `return ...
 from` it needs its frame. Nothing is inlined *into* a cycle member (its
 locals would become the cycle's own).
 
+**Views of copies** (`OptViewed`). The value of a call, of a bare block and
+of an `if` or `match` is a temporary copy (§9.2), and the checker takes a
+view of it for a view of a temporary of its own (`TempRoot`), which nothing
+else in the statement writes or shrinks. Unwrapping an inlined result, or
+folding a statement-less block into its tail and an `if` or `match` into
+the branch taken, can reduce that value to a path into the storage it was
+copied from: harmless where the value is copied out, but where it is viewed
+where it stands the view would then see the rest of the statement write or
+shrink that storage. Those places are a slice's base, an index's base where
+the index runs code (the element is read after it; `CodeFree`), a `for`'s
+iterable, the operand of `&` (explicit, or a reference parameter binding
+it), a member builtin's receiver (`bytes_of` returns a view of it), and the
+base of a field or element that is itself viewed or is an array passed
+whole to a slice parameter. There such a path goes back into a block, which
+codegen evaluates into a temporary as the construct would have:
+`f(get()[..], a.pop())` for `fn get() -> i64[3] { a[0] }` would otherwise
+hand `f` a view of the slot the pop frees.
+
 **The nesting limit** (`MAXNEST`, 64). Every inlined body is a C block of
 its own, and C compilers limit how deep blocks nest in one function: MSVC
 to 128 (C1061), clang outside its MSVC-compatible mode to 256

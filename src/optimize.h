@@ -271,6 +271,61 @@ struct Optimizer {
         return ch;
     }
 
+    // The operand OptViewed is at, so that a field or element viewed in turn
+    // views its base (Dot::Opt, Index::Opt).
+    Node *viewed = nullptr;
+
+    // Whether the field or element n is viewed: it is the operand OptViewed
+    // is at, or an array passed whole to a slice parameter, which takes the
+    // slice's type (§3.10).
+    bool Viewed(Node *n) {
+        return viewed == n || (n->exprtype && n->exprtype->kind == TY_SLICE);
+    }
+
+    // Opt for an operand viewed where it stands rather than copied out
+    // (§9.2): sliced, iterated by a `for`, referenced, a member builtin's
+    // receiver, indexed by an index that runs code, or a field or element
+    // of such. The value of a call, bare block, `if` or `match` is a
+    // temporary there, a copy nothing else can write or shrink while the
+    // view lasts. Inlining a single-expression body (TryInline) or folding
+    // the construct to the branch taken can reduce it to the storage it was
+    // copied from, which the rest of the statement may write or shrink
+    // under the view: such a path goes back into a block, which codegen
+    // evaluates into a temporary as the construct would have.
+    Node *OptViewed(Node *n) {
+        auto outer = viewed;
+        viewed = n;
+        auto r = Opt(n);
+        viewed = outer;
+        if (r == n || !NamesStorage(r)) return r;
+        auto b = ast.New<Block>(r->line);
+        b->tail = r;
+        b->exprtype = r->exprtype;
+        return b;
+    }
+
+    // A path to a value in storage that a view can see into: a variable, or
+    // a field or element of one, directly or through a reference or slice.
+    static bool NamesStorage(Node *n) {
+        auto d = Is<Dot>(n);
+        if (!Is<Ident>(n) && !(d && !d->variantconst) && !Is<Index>(n)) return false;
+        auto t = n->exprtype;
+        return t && (t->kind == TY_ARRAY || t->kind == TY_STRUCT || t->kind == TY_ENUM ||
+                     t->kind == TY_VARIANT);
+    }
+
+    // Whether evaluating n runs nothing that could write storage: literals
+    // and reads of variables, fields and elements, combined by operators.
+    static bool CodeFree(Node *n) {
+        if (AsLiteral(n) || Is<Ident>(n)) return true;
+        if (auto u = Is<Unary>(n)) return CodeFree(u->child);
+        if (auto b = Is<Binary>(n)) return CodeFree(b->left) && CodeFree(b->right);
+        if (auto c = Is<AsCast>(n)) return CodeFree(c->child);
+        if (auto d = Is<Dot>(n)) return CodeFree(d->obj);
+        if (auto ix = Is<Index>(n)) return CodeFree(ix->obj) && CodeFree(ix->idx);
+        return false;
+    }
+
     void OptBlock(Block *b) {
         depth++;
         vector<Node *> out;
@@ -816,7 +871,7 @@ inline Node *Ident::Opt(Optimizer &o) {
 }
 
 inline Node *Unary::Opt(Optimizer &o) {
-    child = o.Opt(child);
+    child = op == T_BITAND ? o.OptViewed(child) : o.Opt(child);
     switch (op) {
         case T_MINUS:
             if (auto i = Is<IntLit>(child)) {
@@ -952,7 +1007,7 @@ inline Node *Binary::Opt(Optimizer &o) {
 }
 
 inline Node *Dot::Opt(Optimizer &o) {
-    obj = o.Opt(obj);
+    obj = o.Viewed(this) ? o.OptViewed(obj) : o.Opt(obj);
     if ((member == B_LEN || member == B_CAP) && Is<Ident>(obj)) {
         // .len of a fixed array / .cap of a static-capacity limited array are
         // compile-time constants; a plain variable receiver guarantees no
@@ -971,8 +1026,13 @@ inline Node *Dot::Opt(Optimizer &o) {
 }
 
 inline Node *Call::Opt(Optimizer &o) {
-    if (auto d = Is<Dot>(callee)) d->obj = o.Opt(d->obj);
-    for (auto &a : args) a = o.OptIn(this, a);
+    // A member builtin works on its receiver where it stands (bytes_of
+    // returns a view of it).
+    auto recv = builtin >= 0 && (builtindefs[builtin].flags & BF_MEMBER);
+    auto d = Is<Dot>(callee);
+    if (d) d->obj = recv ? o.OptViewed(d->obj) : o.Opt(d->obj);
+    for (size_t i = 0; i < args.size(); i++)
+        args[i] = recv && !d && !i ? o.OptViewed(args[i]) : o.OptIn(this, args[i]);
     if (fvbody) o.OptBlock(fvbody);
     if (builtin == B_ASSERT) {
         if (auto b = Is<BoolLit>(FirstArg()); b && b->val) {
@@ -986,13 +1046,14 @@ inline Node *Call::Opt(Optimizer &o) {
 }
 
 inline Node *Index::Opt(Optimizer &o) {
-    obj = o.Opt(obj);
+    // The element is read after the index runs.
+    obj = o.Viewed(this) || !Optimizer::CodeFree(idx) ? o.OptViewed(obj) : o.Opt(obj);
     idx = o.Opt(idx);
     return this;
 }
 
 inline Node *SliceExpr::Opt(Optimizer &o) {
-    obj = o.Opt(obj);
+    obj = o.OptViewed(obj);
     if (lo) lo = o.Opt(lo);
     if (hi) hi = o.Opt(hi);
     return this;
@@ -1139,7 +1200,7 @@ inline Node *LoopExpr::Opt(Optimizer &o) {
 }
 
 inline Node *ForLoop::Opt(Optimizer &o) {
-    iter = o.Opt(iter);
+    iter = o.OptViewed(iter);
     o.OptBlock(body);
     return this;
 }
