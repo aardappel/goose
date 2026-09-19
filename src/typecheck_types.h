@@ -658,21 +658,28 @@ inline bool TypeCheck::StaticCanContain(TypeExpr *of) {
     return of->kind == TY_INT && of->intstorage == IS_U8;
 }
 
-// Whether storage that can hold an `of` is reached from a value of type t
-// through the plain references and slices it holds, at any remove.
-inline bool TypeCheck::ReachesThroughRefs(TypeExpr *t, TypeExpr *of) {
-    vector<TypeExpr *> work, seen;
+// The types of the storage a value of type t leads to through the plain
+// references and slices it holds, at any remove, each once.
+inline void TypeCheck::ReachedThroughRefs(TypeExpr *t, vector<TypeExpr *> &out) {
+    vector<TypeExpr *> work;
     RefPointees(t, work);
     while (!work.empty()) {
         auto p = work.back();
         work.pop_back();
         auto again = false;
-        for (auto s : seen) again = again || TypeEq(s, p);
+        for (auto s : out) again = again || TypeEq(s, p);
         if (again) continue;
-        seen.push_back(p);
-        if (CanContain(p, of)) return true;
+        out.push_back(p);
         RefPointees(p, work);
     }
+}
+
+// Whether storage that can hold an `of` is among those.
+inline bool TypeCheck::ReachesThroughRefs(TypeExpr *t, TypeExpr *of) {
+    vector<TypeExpr *> reached;
+    ReachedThroughRefs(t, reached);
+    for (auto p : reached)
+        if (CanContain(p, of)) return true;
     return false;
 }
 

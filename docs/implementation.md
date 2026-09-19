@@ -690,16 +690,36 @@ held temporaries and the visible reference and slice variables only
 (`CheckShrinkHolders`): references into such an array can never be stored
 (§3.5 rule 3), so the variables are the whole answer.
 
+**Inexact receivers.** Both scans run once per array the shrink may free
+(`ShrinkThrough` over `ShrinkTargets`). An exact root is the array. An
+inexact one -- a merge that kept the deeper of two roots (`MergeVals`), a
+read-back (§3.6), a back edge's unknown result -- only bounds it, so the
+array may be any one of its type owned at the root's depth or outside it:
+every candidate `RootCandidates` finds for that type at the root's depth
+(locals, pointees of references in scope, parameter classes, globals, and
+the bounds standing for the caller's storage a parameter's references lead
+to). The root itself is scanned first, and where it is such a bound, or its
+own storage cannot hold the array (a holder it was read out of), the scans
+filter pointees by the array's type rather than the root's, and
+`NoteShrink` records it as `shrinkparambounds` or `shrinkexternalbounds`
+with that type. Diagnostics name the other arrays as the receiver may point
+at them.
+
 **Calls** (`ApplyCalleeShrinks`): for a checked callee, each `shrinkparams`
-entry becomes a shrink of the argument's root at the call, and each
-`shrinkexternals` entry a shrink of that variable; a grow-only root takes the
-§5.1 scan, a grow-shrink root the §5.2 scan. For a callee still being
-checked, the summary is incomplete: the callee's body is scanned textually
-(`SyntacticShrinks`: `pop`/`resize`/`clear` receivers and assignment
-targets, by parameter index, global name, and capture), every grow-shrink
-global and every grow-shrink array reachable from the lexical parents'
-locals (`LexicalLocals`, a function value's body among the parents) counts
-as shrunk, and a grow-only local the text names does too.
+entry becomes a shrink of the argument's root at the call, of every array
+it bounds where it is inexact, and each `shrinkexternals` entry a shrink of
+that variable; each bound entry becomes a shrink of every array of its type
+that the argument's root (a holder's contents' root) or the external bounds.
+The parameter's pointee decides the scan, §5.1 where the array freed is
+grow-only (a struct's tail included, `GrowOnlyTail`), §5.2 otherwise. For a
+callee still being checked, the summary is incomplete: the callee's body is
+scanned textually (`SyntacticShrinks`: `pop`/`resize`/`clear` receivers and
+assignment targets, by parameter index, global name, and capture), every
+grow-shrink global and every grow-shrink array reachable from the lexical
+parents' locals (`LexicalLocals`, a function value's body among the
+parents) or through the references an argument or such a local holds
+(`ReachedThroughRefs`) counts as shrunk, and a grow-only local the text
+names does too.
 
 **Growth during construction** (§1.3(4), §4.2). A value built in place at an
 array's top or slot is under construction while its expression is checked,

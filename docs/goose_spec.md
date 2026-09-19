@@ -911,6 +911,14 @@ since its stores may come from functions not yet checked. A call into a
 recursive cycle still being checked counts as shrinking every array a
 function of the cycle textually shrinks.
 
+A reference whose root is inexact (§9.2) — a value chosen between arrays,
+`if c { a } else { b }`, or one read back out of a container — may point at
+any array of its type that the root bounds, and a shrink through it counts
+as a shrink of each of them: those in variables at the root's scope or
+outside it, and the caller's arrays a parameter's references lead to, for
+which the callers check it. The same holds where a call shrinks what an
+inexactly rooted argument points at.
+
 ### 5.2 Grow-shrink `[>..<]`
 
 * Fixed-size elements only.
@@ -936,7 +944,8 @@ function of the cycle textually shrinks.
   was bound, so either end can be changed: use the slice for the last time
   before the shrink, or move the shrink. A
   call into a recursive cycle still being checked counts as shrinking every
-  grow-shrink array it can reach. Function values run inline, so a shrink
+  grow-shrink array it can reach, through the references its arguments hold
+  as well. Function values run inline, so a shrink
   inside a block is checked against the block's own enclosing scopes.
 * `push` returns a reference to the new element, and `index_of` works, as on
   grow-only arrays.
@@ -1699,9 +1708,10 @@ syntax).
 The rules below are the *scope* rules, and hold of exact and inexact roots
 alike. Only rules that need the target's **identity** rather than its lifetime
 consult exactness — storing a reference into a relative-reference location
-(§3.9), converting one to an index (`index_of`, §3.3), and the compiler's
-proof that two references name different arrays — and each of those takes its
-conservative answer without it. A relative reference that names a pool (§3.9)
+(§3.9), converting one to an index (`index_of`, §3.3), which array a shrink
+through a reference frees (§5.1), and the compiler's proof that two
+references name different arrays — and each of those takes its conservative
+answer without it. A relative reference that names a pool (§3.9)
 is where an exact root also *comes from*: a load out of one is rooted at that
 pool, exactly, whatever container it was read out of.
 

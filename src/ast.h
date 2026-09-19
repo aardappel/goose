@@ -1124,6 +1124,12 @@ struct FnSpec {
     // (§5.2): global/captured roots, and indices of parameters whose pointee shrinks.
     set<VarDef *> shrinkexternals;
     set<int> shrinkparams;
+    // Shrinks of an array of the given type that such a root's storage only
+    // leads to, through the references it holds: the call counts each as a
+    // shrink of any array of that type the root, or the argument's root,
+    // bounds (TypeCheck::ShrinkTargets).
+    vector<pair<VarDef *, TypeExpr *>> shrinkexternalbounds;
+    vector<pair<int, TypeExpr *>> shrinkparambounds;
     // Arrays the body may grow -- push, append, a pool allocation, format,
     // resize, a whole assignment -- itself or through its callees
     // (§1.3(4)), in the same form.

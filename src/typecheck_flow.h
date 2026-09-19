@@ -1468,21 +1468,16 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     auto builtexact = false;
     auto arr = ResizableArrayIn(target);
     if (arr && (!lv.var || lv.var->assigned)) {
-        auto root = lv.var ? lv.var : CanonRoot(lv.root);
+        built = lv.var ? lv.var : CanonRoot(lv.root);
+        builtexact = lv.var != nullptr || lv.rootexact;
+        if (arr->arr->akind == A_GROW && (!built || !built->type))
+            Error(a, "cannot assign a grow-only array through a reference: a shrink of "
+                     "a grow-only array applies to a local of the function that owns "
+                     "it (§5.1)");
         auto rest = shrinkrest;
         shrinkrest = a->rhs;
-        if (arr->arr->akind == A_GROW) {
-            if (!root || !root->type)
-                Error(a, "cannot assign a grow-only array through a reference: a shrink of "
-                         "a grow-only array applies to a local of the function that owns "
-                         "it (§5.1)");
-            GrowOnlyShrinkAt(a, true, "assign", root);
-        } else {
-            ShrinkGrowShrink(a, cat("assign ", ExprStr(a->lval)), root, ExprStr(a->lval));
-        }
+        ShrinkThrough(a, true, "assign", ExprStr(a->lval), built, builtexact, target);
         shrinkrest = rest;
-        built = root;
-        builtexact = lv.var != nullptr || lv.rootexact;
         NoteGrow(a, built, builtexact, cat("assign ", ExprStr(a->lval)));
     }
     SlotScope ss(*this, true);
@@ -1599,7 +1594,7 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv) {
         builtexact = lv.var ? RefExactOf(lv.var) : lv.rootexact;
         auto rest = shrinkrest;
         shrinkrest = a->rhs;
-        ShrinkGrowShrink(a, cat("assign ", ExprStr(a->lval)), built, ExprStr(a->lval));
+        ShrinkThrough(a, true, "assign", ExprStr(a->lval), built, builtexact, pt);
         shrinkrest = rest;
         NoteGrow(a, built, builtexact, cat("assign ", ExprStr(a->lval)));
     }
@@ -2019,7 +2014,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
     // it (§5.1); pop and resize also need an element the shrink can find,
     // which a sequential array has not got.
     if (ak == A_GROW && (d.kind == B_POP || d.kind == B_RESIZE || d.kind == B_CLEAR)) {
-        CheckGrowShrink(c, c->standalone, d.name, args[0], rv.type);
+        CheckGrowShrink(c, c->standalone, d.name, args[0], rv);
         if (d.kind != B_CLEAR && ClassOf(elem) != SC_FIXED)
             Error(c, cat(".", d.name, " needs fixed-size elements: ", TypeStr(rv.type),
                          " is sequential (§3.3)"));
@@ -2027,8 +2022,8 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
     // A grow-shrink array shrinks from anywhere, provided nothing in scope
     // refers into it (§5.2).
     if (ak == A_GROWSHRINK && (d.kind == B_POP || d.kind == B_RESIZE || d.kind == B_CLEAR))
-        ShrinkGrowShrink(c, cat(d.name, " ", ExprStr(args[0])), CanonRoot(rv.root),
-                         ExprStr(args[0]));
+        ShrinkThrough(c, c->standalone, d.name, ExprStr(args[0]), rv.root, rv.rootexact,
+                      IsPlainRef(rv.type) ? rv.type->ref->sub : rv.type);
     // resize has two forms (§3.3); a target below zero is caught at runtime.
     if (d.kind == B_RESIZE) {
         CheckIntAny(args[1]);

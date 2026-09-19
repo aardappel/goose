@@ -862,6 +862,7 @@ struct TypeCheck {
     // here only by the parameter's root, which is then a bound as well.
 
     bool CanContain(TypeExpr *t, TypeExpr *of);
+    void ReachedThroughRefs(TypeExpr *t, vector<TypeExpr *> &out);
     bool ReachesThroughRefs(TypeExpr *t, TypeExpr *of);
     TypeExpr *PointeeOf(TypeExpr *t);
     void VisibleVars(const function<void(VarDef *)> &f);
@@ -892,8 +893,10 @@ struct TypeCheck {
     void HoldValue(Node *n, Val v, bool sequenceview = false);
     void HoldLocation(Node *n, const LVal &lv);
     void HoldSequence(Node *n, const LVal &lv, TypeExpr *elem);
+    bool ShrinkMayFree(VarDef *root, TypeExpr *bound, bool growonly, TypeExpr *of,
+                       bool byteview);
     void CheckHeldShrinks(Node *at, const string &op, VarDef *root,
-                          const string &what, bool growonly);
+                          const string &what, bool growonly, TypeExpr *bound = nullptr);
 
     // ------------------------------------------------------------------
     // Values: the per-node dispatch plus the implicit-conversion rules.
@@ -1106,8 +1109,11 @@ struct TypeCheck {
     FnSpec *UserFormatIn(Call *c, TypeExpr *t, string_view ns);
     StrLit *ConstStrLit(Node *n);
     const string *EmbedShader(Call *c, vector<Node *> &args);
-    void CheckGrowShrink(Node *at, bool standalone, const char *op, Node *recv, TypeExpr *rtype);
-    void GrowOnlyShrinkAt(Node *c, bool standalone, const string &op, VarDef *vd);
+    void CheckGrowShrink(Node *at, bool standalone, const char *op, Node *recv, const Val &rv);
+    // `what` names the array in the diagnostics; `bound` is its type where vd
+    // only bounds it (ShrinkTarget).
+    void GrowOnlyShrinkAt(Node *c, bool standalone, const string &op, VarDef *vd,
+                          const string &what, TypeExpr *bound = nullptr);
 
     // Every store of a reference, slice or holder value into a container
     // (ast.h StoreEvent), program-wide: a function value's body stores into
@@ -1120,6 +1126,8 @@ struct TypeCheck {
         Node *at = nullptr;
         string op;
         VarDef *vd = nullptr;
+        string what;
+        TypeExpr *arrtype = nullptr;   // The type HolderMayPointInto filters pointees by.
         vector<VarDef *> holders;
         size_t eventstart = 0;
         int loopscope = 0;
@@ -1133,18 +1141,20 @@ struct TypeCheck {
     void HolderFromLit(Val &v, const LitDeep &deep);
     void RecordStore(VarDef *container, const Val &v, TypeExpr *pointee, bool varbind,
                      VarDef *src = nullptr);
-    bool HolderMayPointInto(VarDef *holder, VarDef *arr, size_t from, Line *where,
-                            set<VarDef *> &seen);
+    bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
+                            Line *where, set<VarDef *> &seen);
     vector<set<string_view>> loopassigned;   // Per enclosing loop: names its body writes.
     void CollectAssignedBases(Node *n, set<string_view> &out);
     void PushLoopAssigned(Node *body);
     void PrebindLoopRefs(Node *body);
     bool ResolvePrebind(const RootDesc &d, VarDef *&root, bool &exact);
     bool AssignedInEnclosingLoop(VarDef *vd);
-    bool HolderMayPointInto(VarDef *holder, VarDef *arr, size_t from, Line *where);
+    bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
+                            Line *where);
     void ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Node *at);
     void NoteHolderBinding(VarDef *d, const Val &v);
     void ResolvePendingShrinks(int scopeidx);
+    bool GrowOnlyTail(TypeExpr *t);
     bool IsGrowOnlyRootVar(VarDef *r);
     // Raw-body shrink facts needed only while a recursive call is checked.
     // Cache membership means scanned; an empty summary is a valid result.
@@ -1172,14 +1182,26 @@ struct TypeCheck {
         return s;
     }
 
-    void CheckShrinkHolders(Node *at, const string &op, VarDef *root, const string &what);
+    void CheckShrinkHolders(Node *at, const string &op, VarDef *root, const string &what,
+                            TypeExpr *bound = nullptr);
     // Records an event on root for callers: globals and captured owners
-    // remain external roots (`externals`), while this specialization's
-    // parameter roots map at calls (`params`).
-    void NoteRootEvent(VarDef *root, set<VarDef *> FnSpec::*externals,
-                       set<int> FnSpec::*params);
-    void NoteShrink(VarDef *root);
-    void ShrinkGrowShrink(Node *at, const string &op, VarDef *root, const string &what);
+    // remain external roots (`external` gets the specialization they are
+    // external to), while a specialization's parameter roots map at calls
+    // (`param` gets it and the parameter's index).
+    template <typename P, typename X> void NoteRootEvent(VarDef *root, P param, X external);
+    void NoteShrink(VarDef *root, TypeExpr *bound = nullptr);
+    void ShrinkGrowShrink(Node *at, const string &op, VarDef *root, const string &what,
+                          TypeExpr *bound = nullptr);
+    // An array a shrink may free (§5.1, §5.2): the one in root's own storage,
+    // or, where root cannot hold one, one its storage leads to through the
+    // references it holds (`bound`: root only bounds that array's lifetime).
+    struct ShrinkTarget {
+        VarDef *root = nullptr;
+        bool bound = false;
+    };
+    vector<ShrinkTarget> ShrinkTargets(VarDef *root, bool exact, TypeExpr *arr);
+    void ShrinkThrough(Node *at, bool standalone, const string &verb, const string &recv,
+                       VarDef *root, bool exact, TypeExpr *arr);
     void ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
     // A growth of the array rooted at root -- a push, an append, a pool
     // allocation, format, resize, a whole assignment -- by this body or by
