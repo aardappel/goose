@@ -111,14 +111,18 @@ inline string Binary::CgX(CodeGen &cg) {
     }
     if (op == T_ANDAND || op == T_OROR) {
         // Short-circuit with left-to-right statement emission: the right
-        // operand's statements may only run when the left allows.
+        // operand's statements may only run when the left allows. So may
+        // the restores of the temporaries it builds on data stacks, which
+        // are dead once its truth value is taken.
         auto l = cg.GenTruth(left);
         auto t = cg.T();
         cg.L("uint8_t ", t, " = (uint8_t)(", l, op == T_ANDAND ? " != 0);" : " != 0);");
         cg.L("if (", op == T_ANDAND ? t : cat("!", t), ") {");
         cg.ind++;
+        cg.PushSc(CodeGen::SC_PLAIN);
         auto r = cg.GenTruth(right);
         cg.L(t, " = (uint8_t)(", r, " != 0);");
+        cg.PopSc();
         cg.ind--;
         cg.L("}");
         return t;

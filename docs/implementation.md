@@ -1167,8 +1167,9 @@ pointer doubles as the watermark restored at scope exit, and every exit path
 -- fallthrough, `break`, `continue`, `return`, propagation -- emits the
 restores of the scopes it leaves in reverse declaration order
 (`EmitExitRestores`). A statement gets a scope of its own (`SC_STMT`) so a
-temporary's stack is free again at the next statement; a local's allocation
-skips the statement scopes (`AllocStk(forlocal)`).
+temporary's stack is free again at the next statement, and so does the
+right operand of `&&` and `||`, whose temporaries exist only when it runs;
+a local's allocation skips the statement scopes (`AllocStk(forlocal)`).
 
 Because a `uint8_t *` store may alias a stack's `top` in C, the tops of the
 stacks a function owns are cached in locals where the function grows them
