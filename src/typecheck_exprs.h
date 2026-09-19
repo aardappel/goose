@@ -1133,8 +1133,8 @@ inline void TypeCheck::CheckSelfInit(Node *n, TypeExpr *ft, TypeExpr *selft) {
     // built: inside that pool.
     if (ft->ref->pool && (!curdst.exact || PoolOf(curdst.root) != ft->ref->pool))
         Error(n, cat("self initializes ", TypeStr(ft), " only in a literal being built "
-                     "inside ", ft->ref->pool->name, " (a push, an alloc, or an element "
-                     "store), since it stores the value's own offset in it (§3.9)"));
+                     "inside ", ft->ref->pool->name, " (a push, an append, an alloc, or an "
+                     "element store), since it stores the value's own offset in it (§3.9)"));
     // A resizable pointee needs a header the offset cannot carry; the root
     // rule keeps every other relative reference away from one, but a
     // self-reference satisfies that rule by construction.

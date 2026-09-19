@@ -2096,7 +2096,13 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             }
             case 'a': {  // An array/slice of the receiver's element type.
                 auto logbase = growlog.size();
-                auto av = CheckV(an, nullptr);
+                // An array literal is the run appended: its elements are the
+                // receiver's, constructed into its storage (§4.2).
+                auto al = Is<ArrayLit>(an);
+                if (al && al->capexpr) al = nullptr;
+                auto av = al ? CheckValueAt(an, AppendedRun(elem, al),
+                                            Dest { rv.root, rv.rootexact })
+                             : CheckV(an, nullptr);
                 an->exprtype = av.type;
                 auto t2 = av.type;
                 if (IsPlainRef(t2)) t2 = t2->ref->sub;
@@ -2108,8 +2114,14 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                     Error(c, cat(".", d.name, " takes an array or slice of ",
                                  TypeStr(elem), ", got ", TypeStr(av.type)));
                 // A call's array result is built at the receiver's top
-                // (§7.3): under construction while the call runs (§1.3(4)).
-                if (Is<Call>(an) && ak != A_LIMITED && ClassOf(t2) != SC_FIXED)
+                // (§7.3), and a literal's run is built in place where its
+                // elements are not fixed-size or hold relative references of
+                // either form (at the top, or in a limited array's free
+                // slots): under construction while the call or the elements
+                // run (§1.3(4)).
+                auto inplace = al ? ClassOf(elem) != SC_FIXED || HasRelRefT(elem, true)
+                                  : Is<Call>(an) && ak != A_LIMITED && ClassOf(t2) != SC_FIXED;
+                if (inplace)
                     CheckGrowsSince(logbase, rv.root, rv.rootexact,
                                     cat("the run appended to ", ExprStr(args[0])));
                 break;

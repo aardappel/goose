@@ -452,6 +452,42 @@ inline void CodeGen::EmitAppend(vector<Node *> &an, Line ln) {
         L(v.lenlv, " += ", nn, ";");
         return;
     }
+    // A literal of elements that are not fixed-size, or that hold relative
+    // references (measured from where they are written), builds its run
+    // where the elements stay (§4.3): at the receiver's top, or in a limited
+    // array's free slots, the checker keeping the receiver from growing
+    // meanwhile. Other elements are evaluated first, as a pushed fixed-size
+    // one is, and copied.
+    if (auto al = Is<ArrayLit>(src); al && (IsBytesT(elem) || HasRelRef(elem))) {
+        if (IsBytesT(elem)) {
+            auto nn = T();
+            L("int64_t ", nn, " = 0;");
+            GenArrayLit(al, lv.stk, nn);
+            L(v.lenlv, " += ", nn, ";");
+            return;
+        }
+        auto count = al->fillval ? Is<IntLit>(al->fillcount)->val : (int64_t)al->elems.size();
+        string ol, at = Top(lv.stk);
+        if (ak == A_LIMITED) {
+            ol = T();
+            L("int64_t ", ol, " = ", v.len, ";");
+            L("if (", ol, " + ", count, " > ", LimitedCap(lv), ") gs_abort(GS_E_CAPACITY, ",
+              LocArgs(ln), ");");
+            at = ElemAddr(v, ol);
+        }
+        // The run is a fixed array of the literal's type laid over the slots.
+        auto rt = CT(src->exprtype);
+        auto p = T();
+        L(rt, " *", p, " = (", rt, " *)(", at, ");");
+        FixedArrayLitAt(al, cat("(*", p, ")"), true);
+        if (ak == A_LIMITED) {
+            L(v.lenlv, " = (", LenCast(lv), ")(", ol, " + ", count, ");");
+        } else {
+            Bump(lv.stk, cat(count * FixedSize(elem)));
+            L(v.lenlv, " += ", count, ";");
+        }
+        return;
+    }
     auto se = GenSrcElems(src);
     auto nn = T();
     L("int64_t ", nn, " = ", se.n, ";");

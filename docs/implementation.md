@@ -308,6 +308,13 @@ operand to compare two array kinds (`WholeSlice`, marked `cmpview`) may
 view one: codegen builds the literal on a statement-scoped stack, like a
 call result, and the comparison's result holds no view of it.
 
+`append` names its literal argument's type (`AppendedRun`): the run of the
+receiver's elements it adds, a `T[k]`, or a `T[]` where they are not
+fixed-size, checked with the receiver as its destination (`CheckValueAt`),
+as a pushed element is, so a reference in it obeys the store rule and a
+relative one may point into the receiver. Any other source is checked as it
+stands and must already be an array or slice of the element type.
+
 **Pending arrays.** `var out = [];` (§4.2) gets a grow-only array type whose
 element is a private void type (`PendingArray`); the first `push`, `append`,
 `format` or whole assignment overwrites the element type *in place*
@@ -676,7 +683,9 @@ and nothing may grow that array meanwhile: a pushed or pool-allocated
 element that is variable-size or holds relative references
 (`BuiltInPlace`; a fixed-size element is evaluated before its slot is
 claimed, §6.5), a call's array result being appended to a non-limited
-array, and the new contents of a whole assignment of a resizable
+array, an appended literal of elements that are variable-size or hold
+relative references of either form (which `EmitAppend` builds in place),
+and the new contents of a whole assignment of a resizable
 (`CheckAssign`, `PointeeAssign`). Every growth is logged (`NoteGrow` →
 `growlog`): `push`, `append`, `alloc_index`/`alloc_ref`, `format`,
 `resize`, `to_bytes(a, out)`, whole assignment, and what a callee grows
@@ -1332,6 +1341,13 @@ contiguous; a callee without a twin (a builtin, a dispatch, a `return from`
 target) delivers the value form and the receiver slides the length prefix
 out with one `memmove` (`EmitSlidePrefix`). A `T[]` result landing in a slot
 of another length storage is re-prefixed afterwards (`EmitReprefix`).
+An appended literal of variable-size elements is built the same way, its
+elements at `v`'s top and its count added to the length (`GenArrayLit`);
+one of fixed-size elements holding relative references is a fixed array
+laid over the slots it fills, at the top or in a limited array's free
+slots, and built there (`FixedArrayLitAt`), so each offset is measured from
+where it stays. Other fixed-size elements are evaluated into a C temporary
+and copied, as a pushed one is stored after it is evaluated.
 
 A stack destination also names the slot's type wherever the receiver knows
 it: a local's, a global's, a parameter's, an array literal's element type, a
@@ -1717,6 +1733,8 @@ rewrites elements pays no live register for it.
   not grow `v` -- nor may a callee grow the array a `v.append(f())` or a
   whole assignment `v = f()` is building into (§4.2): a compile error, with
   the callee's growths of its parameters, globals and captures counted.
+  The elements of an appended literal, `v.append([f(v), x])`, follow the
+  same rule as pushed ones.
 * An array or slice of another kind meeting a `T[..k]` -- a local, an
   argument, a field, an assignment, a return -- is an O(length) copy into
   the C value after a capacity check, whatever the source's representation.

@@ -531,12 +531,13 @@ inline Val TypeCheck::CheckIntAny(Node *n) {
 // Does this type embed self-relative references at the value level (not
 // behind plain references/slices)? Those are the offsets that depend on
 // where the value sits, so a copy would carry the wrong ones; an
-// `in pool` offset is measured from the pool and copies fine (§3.9).
-inline bool TypeCheck::HasRelRefT(TypeExpr *t) {
+// `in pool` offset is measured from the pool and copies fine (§3.9), and
+// counts only with `inpool`.
+inline bool TypeCheck::HasRelRefT(TypeExpr *t, bool inpool) {
     switch (t->kind) {
-        case TY_REF: return t->ref->lenstorage >= 0 && !t->ref->pool;
-        case TY_ARRAY: return HasRelRefT(t->arr->sub);
-        default: return AnyField(t, [&](TypeExpr *ft) { return HasRelRefT(ft); });
+        case TY_REF: return t->ref->lenstorage >= 0 && (inpool || !t->ref->pool);
+        case TY_ARRAY: return HasRelRefT(t->arr->sub, inpool);
+        default: return AnyField(t, [&](TypeExpr *ft) { return HasRelRefT(ft, inpool); });
     }
 }
 

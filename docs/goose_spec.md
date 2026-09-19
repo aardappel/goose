@@ -258,7 +258,8 @@ to a negative length).
 Built-in members: `.len` (always, returns `i64`), `.cap` (limited arrays),
 `.push(v)` (returns a reference to the new element on resizable and limited
 arrays — the idiomatic way to link up just-built data),
-`.append(src)` (src an array/slice of the element type), `.pop()`,
+`.append(src)` (src an array/slice of the element type; an array literal
+there is built as a run of such elements, §4.2), `.pop()`,
 `.resize(n, v)` (grow with fill value `v`, or shrink), `.resize(n)` (shrink
 only), `.clear()` per the rules above, and `.index_of(r) -> i64` (fixed,
 limited and resizable arrays of fixed-size elements): the index of the
@@ -577,8 +578,8 @@ from one. In a self-relative field the stored offset is minus the field's
 own byte offset within the value, so it is the one relative reference whose
 meaning does not depend on where the value lives. In an `in pool` field it
 is the value's own offset in the pool, which only a literal being built
-*inside* `pool` has — a `push`, an `alloc_index`/`alloc_ref`, or an element
-store into it; anywhere else it is a compile error.
+*inside* `pool` has — a `push` or `append`, an `alloc_index`/`alloc_ref`, or
+an element store into it; anywhere else it is a compile error.
 The point is that the whole structure can then be non-optional: with
 optional links every load pays a null test for a null that never occurs
 (that is what a sentinel is for), and non-optional relative references load
@@ -687,10 +688,11 @@ runtime commits skipped address ranges explicitly (Appendix C.4).
 
 While a value is built in place in an array — an element `push`ed into or
 allocated in it that is variable-size or holds relative references, a call's
-array result `append`ed to it, or the new contents of a whole assignment
-(§4.4) — nothing may grow that array, neither the expression being built nor
-a function it calls (§1.3(4)). The compiler rejects a growth it cannot show
-to be of a different array.
+array result `append`ed to it, an `append`ed array literal of such elements,
+or the new contents of a whole assignment (§4.4) — nothing may grow that
+array, neither the expression being built nor a function it calls
+(§1.3(4)). The compiler rejects a growth it cannot show to be of a
+different array.
 
 Literal forms usable in any construction context:
 
@@ -706,7 +708,14 @@ Literal forms usable in any construction context:
   `T[]` one is a variable value and exists only in a construction context,
   so viewing it takes a variable bound to it first. `==` and `!=` compare
   either one with any array or slice of its element type (§4.5), since
-  their result holds no view of it;
+  their result holds no view of it. An `append`ed literal is the run it adds:
+  the array's element type `T` makes it a `T[k]`, or a `T[]` when `T` is not
+  fixed-size, and its elements are constructed as the array's own
+  (`bytes.append([1, 2])` for a `u8[>..]`, `[]` adding nothing, a `str()`
+  built in its element). Elements that are variable-size or hold relative
+  references are built where they stay, so a relative reference among them
+  may point into the array; others are evaluated before the run is added,
+  as a pushed fixed-size element is;
 * struct literals `X { a: 1, b: 2 }` (named) or `X { 1, 2 }` (positional, in
   declaration order; no mixing). Named initializers must also appear in
   declaration order (out-of-order names are a compile error: values construct

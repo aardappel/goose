@@ -816,6 +816,22 @@ inline bool TypeCheck::BuiltInPlace(TypeExpr *elem) {
     return ClassOf(elem) != SC_FIXED || (elem->kind != TY_REF && HasRelRefT(elem));
 }
 
+// A T[k] of the receiver's elements, or a T[] where they are not
+// fixed-size, as only variable and grow-only arrays hold those (§3.3).
+inline TypeExpr *TypeCheck::AppendedRun(TypeExpr *elem, ArrayLit *al) {
+    if (ClassOf(elem) != SC_FIXED) {
+        auto t = ast.NewType(TY_ARRAY, al->line);
+        t->arr = ast.NewDetail<TypeArray>();
+        t->arr->sub = elem;
+        t->arr->akind = A_VAR;
+        return t;
+    }
+    // A negative fill count is the literal's own error to report.
+    auto n = al->fillval ? ConstIntOrError(al->fillcount, "array fill count")
+                         : (int64_t)al->elems.size();
+    return FixedArrayOf(elem, std::max<int64_t>(n, 0), al->line);
+}
+
 inline TypeCheck::Alias TypeCheck::MayAliasRoots(VarDef *a, bool aexact, VarDef *b,
                                                  bool bexact) {
     if (!a || !b || IsTemp(a) || IsTemp(b)) return AL_NO;

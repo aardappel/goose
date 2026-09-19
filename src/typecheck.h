@@ -825,7 +825,7 @@ struct TypeCheck {
     static bool ImplicitInt(IntStorage from, IntStorage to);
     TypeExpr *DerefType(TypeExpr *t);
     Val CheckIntAny(Node *n);
-    bool HasRelRefT(TypeExpr *t);
+    bool HasRelRefT(TypeExpr *t, bool inpool = false);
     void NoRelRefCopy(Node *n, TypeExpr *t);
 
     // ------------------------------------------------------------------
@@ -1194,6 +1194,9 @@ struct TypeCheck {
     // is built in place at its slot: a variable-size one, or a fixed one
     // holding relative references, whose offsets measure from the slot.
     bool BuiltInPlace(TypeExpr *elem);
+    // The array an array literal appended to an array of `elem` is: the run
+    // of elements it adds (§4.2).
+    TypeExpr *AppendedRun(TypeExpr *elem, ArrayLit *al);
     // Whether two roots may name one array: no, yes, or only the call
     // sites can tell (two parameter classes of one activation, settled by
     // ResolveGrowConflicts once every call site has been seen).
