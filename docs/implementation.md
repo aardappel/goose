@@ -1440,6 +1440,21 @@ what keeps §7.3's guarantee for the small builders the optimizer inlines. A
 function that is the target of a `return from` is excluded, since a value
 returned to it from below already occupies that destination.
 
+**Exits** (`ExitStart`, `LandValue`). A `return`, a `break` with a value
+and a return leaving an inlined body build their value at the top of the
+stack they deliver it to, while the receiver expects it where that top was
+when the function, inlined body or loop was entered. An exit taken while a
+construction on that stack is under way -- inside an element of a literal
+headed there, a `str()` argument, an inlined callee whose named result is
+bound there -- would leave that part in front of its value. Codegen counts
+the constructions open per stack (`openat`: `GenConstruct` for anything but
+a control construct, and an inlined body's named result); an exit that
+finds more of them open than its scope was entered with takes the top before
+building its value and moves the value down to the scope's top on entry
+afterwards, with the stack's top and a frame object's tail base following
+it. That entry top is declared where the scope begins, once an exit needs
+it (`ScopeTop0`, `DstTop0`). An exit at statement level emits nothing more.
+
 ### 6.6 Calls, dispatch, function values, `return from`
 
 `EmitSpecCall` builds the argument list by the convention above, flushes and
@@ -1465,6 +1480,14 @@ restored at its exit). A propagating function's ordinary exit writes
 nothing; a call on a propagation path costs one load and a never-taken
 branch, and an intermediate frame returns a dummy value after restoring its
 watermarks. `--unsafe-no-rf-check` omits the checks for measurement only.
+A nonfixed value is built at its channel's top, which the return records
+first (`gs_fval_<id>_<i>`): the calls it unwinds may have built there in
+the destination the target handed them -- a named result, part of a value,
+a length prefix claimed for a callee's elements -- so the target's catch
+moves the value down to its destination's top on entry, as an exit does
+(`LandValue`). A call's result is fixed up (`EmitReprefix`,
+`EmitSlidePrefix`) only after the check, since a value in flight may lie
+behind the prefix the fixup moves.
 
 ### 6.7 Relative references, pools, literals
 

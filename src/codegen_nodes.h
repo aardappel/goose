@@ -527,9 +527,9 @@ inline void EarlyBlock::CgAny(CodeGen &cg, const Dst &d) {
     cg.PushSc(CodeGen::SC_BLOCK);
     auto si = (int)cg.cscopes.size() - 1;
     cg.cscopes[si].brklbl = cg.Lbl();
-    cg.cscopes[si].dst = d;
     cg.L("{");
     cg.ind++;
+    cg.EnterDst(si, d);
     cg.GenBlockInner(body, d);
     auto brk = cg.cscopes.back().usedbrk;
     auto lbl = cg.cscopes.back().brklbl;
@@ -588,6 +588,8 @@ inline void InlineBlock::CgAny(CodeGen &cg, const Dst &d) {
 
 inline void InlineBlock::EmitBody(CodeGen &cg, const Dst &d) {
     auto named = cg.OpenIbNrvo(this, d);
+    // The named result's elements sit at d from its declaration on.
+    if (named) cg.openat[d.s]++;
     // An ordinary call evaluates its arguments in the caller's scope. Keep
     // that lifetime when inlining: a slice/reference argument can borrow a
     // temporary, and the returned value may still borrow it after this body
@@ -604,10 +606,10 @@ inline void InlineBlock::EmitBody(CodeGen &cg, const Dst &d) {
     auto si = (int)cg.cscopes.size() - 1;
     cg.cscopes[si].ibsf = sf;
     cg.cscopes[si].brklbl = cg.Lbl();
-    cg.cscopes[si].dst = d;
     cg.PushSc(CodeGen::SC_PLAIN);
     cg.L("{");
     cg.ind++;
+    cg.EnterDst(si, d);
     cg.GenBlockInner(body, d, first);
     cg.PopSc();
     cg.ind--;
@@ -616,7 +618,10 @@ inline void InlineBlock::EmitBody(CodeGen &cg, const Dst &d) {
     auto lbl = cg.cscopes.back().brklbl;
     cg.PopSc();
     if (brk) cg.L(lbl, ":;");
-    if (named) cg.nrvo.erase(named);
+    if (named) {
+        cg.nrvo.erase(named);
+        cg.openat[d.s]--;
+    }
     cg.termjump = false;
 }
 
@@ -984,7 +989,7 @@ inline void Return::CgStmt(CodeGen &cg) {
     for (auto i = (int)cg.cscopes.size() - 1; i >= 0; i--) {
         if (cg.cscopes[i].kind == CodeGen::SC_IB && cg.cscopes[i].ibsf == target) {
             if (!vals.empty()) {
-                cg.GenAny(vals[0], cg.cscopes[i].dst);
+                cg.GenExitValue(vals[0], i);
                 for (size_t j = 1; j < vals.size(); j++) cg.GenAny(vals[j], Dst {});
             }
             cg.EmitExitRestores(i);

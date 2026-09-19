@@ -1,0 +1,29 @@
+1 x1! ["y1", "next", "y1"]
+1 1 [10, 1, 101] [10, 1]
+1 a b1
+1 s1 [["a", "p1"], ["next"]] af1
+1 [["m", "q1"], ["next"]] r1 hop
+1 vhop! [["o", "g1"], ["next"]] y1
+1 [["a", "b1"], ["next"]] x1 ["a", "b1"] ["a", "b1"]
+2 x2! ["y2", "next", "y1"]
+2 1 [10, 2, 102] [10, 1]
+2 a b2
+2 s2 [["a", "p2"], ["next"]] af2
+2 [["m", "q2"], ["next"]] r2 t2
+2 vt2! [["o", "g2"], ["next"]] y2
+2 [["a", "b2"], ["next"]] x2 ["a", "b2"] ["a", "b2"]
+3 bad3! ["bad", "next", "y1"]
+3 99 [7, 8, 9, 103] [10, 1]
+3 p qq
+3 bad [["bad"], ["next"]] bad!
+3 [["bad"], ["next"]] bad bad
+3 bad! [["h", "i3"], ["next"]] bad
+3 [["bad"], ["next"]] bad ["bad"] ["bad"]
+4 bad4! ["bad", "next", "y1"]
+4 99 [7, 8, 9, 104] [10, 1]
+4 p qq
+4 bad [["bad"], ["next"]] bad!
+4 [["bad"], ["next"]] bad bad
+4 bad! [["inner"], ["next"]] bad
+4 [["bad"], ["next"]] bad ["bad"] ["bad"]
+["bad"] <3stop2> <1end>

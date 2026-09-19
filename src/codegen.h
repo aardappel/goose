@@ -28,12 +28,13 @@
 //   top and then slides the result's 8-byte length header out (see EmitCall).
 // * `return ... from` (§7.9) signals through one thread-local discriminant,
 //   gs_rf, plus per-target thread-local channels for the in-flight fixed
-//   values (nonfixed ones land directly on the target's destination stack,
-//   recorded thread-locally at target entry). gs_rf is zero except between a
-//   `return ... from` and the catch in its target frame, so only those two
-//   points write it: every other exit of a propagating function leaves it
-//   alone, and a call on a propagation path costs one load and a
-//   never-taken branch.
+//   values (nonfixed ones are built on the target's destination stack,
+//   recorded thread-locally at target entry, and moved to where that
+//   destination started if the unwound calls had built there first). gs_rf
+//   is zero except between a `return ... from` and the catch in its target
+//   frame, so only those two points write it: every other exit of a
+//   propagating function leaves it alone, and a call on a propagation path
+//   costs one load and a never-taken branch.
 //
 // Scope exits restore data-stack watermarks: every nonfixed local's own base
 // pointer doubles as the watermark to restore, so exits (fallthrough, break,
@@ -399,6 +400,18 @@ struct CodeGen {
     unordered_map<const VarDef *, NrvoDest> nrvo;
     vector<string> fdstsaves;            // Epilogue restores for gs_fdst_* saves.
 
+    // Constructions under way per stack, while their parts are emitted
+    // (GenConstruct, an inlined body's named result bound there): what they
+    // placed sits in front of the top an exit finds on that stack.
+    unordered_map<string, int> openat;
+    struct OpenAt {
+        CodeGen &cg;
+        string stk;
+        OpenAt(CodeGen &cg, const string &stk) : cg(cg), stk(stk) { cg.openat[stk]++; }
+        ~OpenAt() { cg.openat[stk]--; }
+    };
+    vector<string> dsttop0;              // gs_dst<i>'s top on entry, once needed.
+
     enum { SC_PLAIN, SC_FN, SC_LOOP, SC_BLOCK, SC_IB, SC_STMT };
     struct CScope {
         int kind;
@@ -408,6 +421,12 @@ struct CodeGen {
         string brklbl, cntlbl;
         bool usedbrk = false, usedcnt = false;
         Dst dst;                              // Break/IB value destination.
+        // A stack dst: the constructions open there on entry, and where its
+        // top on entry is declared once an exit needs it (ScopeTop0).
+        int open0 = 0;
+        size_t topat = 0;
+        int topind = 0;
+        string top0;
     };
     vector<CScope> cscopes;
 
@@ -780,6 +799,19 @@ struct CodeGen {
     void GenLoopBody(const function<void()> &condexit, Block *bodyb, Dst d,
                      const string &forhead = "");
     void GenBreakPath(Node *val);
+
+    // ------------------------------------------------------------------
+    // Exits delivering a value: where the receiver expects it (§7.3, §7.9).
+
+    void EnterDst(int si, const Dst &d);
+    void DeclareTop0(size_t at, int indent, const string &name, const string &stk);
+    string ScopeTop0(int si);
+    string DstTop0(size_t i);
+    const NrvoDest *BuiltInPlace(Node *val, const string &stk, const string &lenlv);
+    string ExitStart(Node *val, const string &stk, const string &lenlv, int open0);
+    void LandValue(const string &stk, const string &top0, const string &start, TypeExpr *t,
+                   const string &lenlv);
+    void GenExitValue(Node *val, int si);
 
     // ------------------------------------------------------------------
     // Declarations and assignment.

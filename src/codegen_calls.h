@@ -300,13 +300,16 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
         L(callee, "(", argstr, ");");
     }
     MarkReload(reach);
+    // Checked before the result is fixed up: a call that unwound left none,
+    // and a value in flight to a target may sit behind its reserved prefix,
+    // where a fixup would move it from where the target's catch finds it.
+    if (ki.hasrf) EmitRfCheck(sp);
     if (!reprefixbase.empty()) EmitReprefix(sp, reprefix, reprefixbase, reprefixcnt);
     if (!slidebase.empty()) {
         // Value form arrived as [len][elems]; slide the prefix out and
         // report the count (the one caller-side copy of this fallback).
         EmitSlidePrefix(slidebase, LenStore(sp->rets[0]->arr), slide.s, slide.lenlv);
     }
-    if (ki.hasrf) EmitRfCheck(sp);
     // A fixed first return requested onto a stack: store it (mixed cases
     // are handled above via cret; nothing more to do here).
     return retex;
@@ -377,14 +380,19 @@ inline void CodeGen::EmitRfCheck(FnSpec *callee) {
         L("gs_rf = 0;");
         string retv;
         for (size_t i = 0; i < curspec->rets.size(); i++) {
-            if (IsResz(curspec->rets[i])) {
-                // Elements are at our destination; forward the count.
-                L("*gs_rl", i, " = gs_lret_", tid, "_", i, ";");
+            auto rt = curspec->rets[i];
+            auto lret = cat("gs_lret_", tid, "_", i);
+            // The value is on our destination, behind anything the calls it
+            // unwound had built there: down to where our caller expects it.
+            if (IsBytesT(rt))
+                LandValue(cat("gs_dst", i), DstTop0(i), cat("gs_fval_", tid, "_", i), rt, lret);
+            if (IsResz(rt)) {
+                L("*gs_rl", i, " = ", lret, ";");   // The count, or the frame object.
                 continue;
             }
-            if (IsBytesT(curspec->rets[i])) continue;   // Already at our destination.
-            if ((int)i == curinfo->cret) retv = cat("gs_lret_", tid, "_", i);
-            else L("*gs_r", i, " = gs_lret_", tid, "_", i, ";");
+            if (IsBytesT(rt)) continue;
+            if ((int)i == curinfo->cret) retv = lret;
+            else L("*gs_r", i, " = ", lret, ";");
         }
         Epilogue(retv);
         ind--;

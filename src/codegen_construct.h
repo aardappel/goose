@@ -234,13 +234,9 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
     // bound to (OpenIbNrvo): the elements are in place, so all that is
     // left is the count or the reserved prefix. Any other use of that
     // local constructs a copy elsewhere and takes the normal path.
-    if (auto id = Is<Ident>(n); id && id->vdef) {
-        auto it = nrvo.find(id->vdef);
-        if (it != nrvo.end() && it->second.inlined && it->second.stk == stk &&
-            it->second.lenlv == lenlv) {
-            EmitNrvoFinish(it->second);
-            return;
-        }
+    if (auto nd = BuiltInPlace(n, stk, lenlv)) {
+        EmitNrvoFinish(*nd);
+        return;
     }
     auto et = n->exprtype;
     // A variable array landing in a slot of another length storage takes
@@ -277,6 +273,9 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         return;
     }
     if (IsCtl(n)) { GenAny(n, Dst { DK_STACK, stk, want, lenlv }); return; }
+    // What this places at stk while its parts are built sits in front of
+    // any exit taken inside one of them (ExitStart).
+    OpenAt open(*this, stk);
     if (auto c = Is<Call>(n); c && c->builtin == B_COPY) {
         // copy(x): the stored value's bytes, as an implicit copy once was.
         GenConstruct(c->FirstArg(), stk, want, lenlv);

@@ -190,6 +190,8 @@ inline void CodeGen::ResetFnState() {
     fnused.clear();
     nrvo.clear();
     fdstsaves.clear();
+    openat.clear();
+    dsttop0.clear();
     cscopes.clear();
     body.clear();
     tmpn = 0;

@@ -1261,6 +1261,13 @@ constructing expression directly. When different locals are returned on
 different paths, only one can live at the destination and the others are
 copied on return (the one place a returned value can cost a copy).
 
+**Exits.** A `return` or `break` taken while its destination already holds
+part of a value -- inside an element of a literal being built there, say,
+or, for a `return from` (§7.9), below a named result built in the
+destination the target handed down -- abandons that part. Its own value,
+constructed behind it, is moved down over it: a copy only such an exit
+costs.
+
 **Destination requests.** The construct-here information handed to a callee
 (or any constructing expression) comes in one of two forms, chosen by the
 receiver: *one value of type R* (receivers that store a value: `let`,
@@ -1520,6 +1527,8 @@ Semantics and implementation:
   watermark from `f`'s call site through `f`'s entire dynamic extent
   (§10.3), so no function between `f` and the `return from` can own data on
   it — unwinding intermediate frames cannot disturb the in-flight value.
+  What they had built there toward `f`'s result is abandoned, as for any
+  exit (§7.3).
 * Multiple `return from` sites and multiple targets compose; agreement with
   `f`'s return type applies as usual.
 

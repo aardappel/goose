@@ -35,7 +35,7 @@ inline void CodeGen::GenLoopBody(const function<void()> &condexit, Block *bodyb,
     auto si = (int)cscopes.size() - 1;
     cscopes[si].brklbl = Lbl();
     cscopes[si].cntlbl = Lbl();
-    cscopes[si].dst = d;
+    EnterDst(si, d);
     auto loopid = MarkLoopBegin();
     L(forhead.empty() ? "for (;;) {" : forhead);
     ind++;
@@ -63,11 +63,111 @@ inline void CodeGen::GenBreakPath(Node *val) {
         if (cscopes[i].kind == SC_FN) break;
     }
     assert(si >= 0);
-    if (val) GenAny(val, cscopes[si].dst);
+    if (val) GenExitValue(val, si);
     EmitExitRestores(si);
     cscopes[si].usedbrk = true;
     L("goto ", cscopes[si].brklbl, ";");
     termjump = true;
+}
+
+// ------------------------------------------------------------------
+// Exits delivering a value. A return, a break with a value and the catch of
+// a long-distance return build their value at the top of the stack they
+// deliver it to, and the receiver expects it where that top was when the
+// function, inlined body or loop was entered. What a construction still
+// under way has placed there since -- part of a literal, a claimed length
+// prefix, an inlined callee's named result -- or, below a `return from`,
+// what the unwound calls had built in the destination the target handed
+// them, sits in front of the value: it is moved down over that, and the
+// top follows it.
+
+// Scope si receives exit values at d: what is open on its stack now, and
+// the point its top on entry gets declared at if an exit needs it.
+inline void CodeGen::EnterDst(int si, const Dst &d) {
+    auto &s = cscopes[si];
+    s.dst = d;
+    if (d.k != DK_STACK) return;
+    s.open0 = openat[d.s];
+    s.topat = body.size();
+    s.topind = ind;
+}
+
+// Declares `name` as stk's top at body offset `at`, where its scope begins,
+// and shifts the offsets recorded by scopes that begin after it.
+inline void CodeGen::DeclareTop0(size_t at, int indent, const string &name, const string &stk) {
+    string line((size_t)indent * 4, ' ');
+    Append(line, "uint8_t *", name, " = ", Top(stk), ";\n");
+    body.insert(at, line);
+    for (auto &s : cscopes) if (s.topat > at) s.topat += line.size();
+}
+
+inline string CodeGen::ScopeTop0(int si) {
+    auto &s = cscopes[si];
+    if (s.top0.empty()) {
+        s.top0 = T();
+        DeclareTop0(s.topat, s.topind, s.top0, s.dst.s);
+    }
+    return s.top0;
+}
+
+inline string CodeGen::DstTop0(size_t i) {
+    if (dsttop0.size() <= i) dsttop0.resize(i + 1);
+    if (dsttop0[i].empty()) {
+        dsttop0[i] = T();
+        DeclareTop0(0, 1, dsttop0[i], cat("gs_dst", i));
+    }
+    return dsttop0[i];
+}
+
+// An inlined body's named result reaching the destination it was bound to
+// (OpenIbNrvo) is in place already: building it there writes only its
+// count or its prefix. Returns its binding, or null for any other value.
+inline const CodeGen::NrvoDest *CodeGen::BuiltInPlace(Node *val, const string &stk,
+                                                      const string &lenlv) {
+    auto id = Is<Ident>(val);
+    if (!id || !id->vdef) return nullptr;
+    auto it = nrvo.find(id->vdef);
+    if (it == nrvo.end() || !it->second.inlined || it->second.stk != stk ||
+        it->second.lenlv != lenlv)
+        return nullptr;
+    return &it->second;
+}
+
+// Where an exit's value will start on stk, taken before it is built when a
+// construction opened there since the exit's scope was entered (open0) may
+// have placed something in front of it; "" when none can have.
+inline string CodeGen::ExitStart(Node *val, const string &stk, const string &lenlv, int open0) {
+    if (openat[stk] <= open0 || BuiltInPlace(val, stk, lenlv)) return "";
+    auto start = T();
+    L("uint8_t *", start, " = ", Top(stk), ";");
+    return start;
+}
+
+// The value built from `start` up to stk's top moves down to top0; a frame
+// object's tail header, which lenlv receives, follows its elements.
+inline void CodeGen::LandValue(const string &stk, const string &top0, const string &start,
+                               TypeExpr *t, const string &lenlv) {
+    L("if (", start, " != ", top0, ") {");
+    ind++;
+    auto n = T();
+    L("int64_t ", n, " = (int64_t)(", Top(stk), " - ", start, ");");
+    L("memmove(", top0, ", ", start, ", (size_t)", n, ");");
+    L(TopW(stk), " = ", top0, " + ", n, ";");
+    if (t && IsFrameObj(t)) {
+        auto th = FoTailHdr(t, lenlv);
+        L(th, ".base = ", top0, " + (", th, ".base - ", start, ");");
+    }
+    ind--;
+    L("}");
+}
+
+// A break's value, or a return's leaving an inlined body, for scope si.
+inline void CodeGen::GenExitValue(Node *val, int si) {
+    auto d = cscopes[si].dst;
+    auto start = d.k == DK_STACK ? ExitStart(val, d.s, d.lenlv, cscopes[si].open0) : "";
+    GenAny(val, d);
+    if (!start.empty())
+        LandValue(d.s, ScopeTop0(si), start, d.t ? d.t : val->exprtype, d.lenlv);
 }
 
 // ------------------------------------------------------------------
@@ -247,6 +347,10 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
                     dsts.push_back(Dst { DK_LVALUE, tmps[i] });
                 }
             }
+            vector<string> starts(sp->rets.size());
+            for (size_t i = 0; i < sp->rets.size(); i++)
+                if (IsBytesT(sp->rets[i]))
+                    starts[i] = ExitStart(c, cat("gs_dst", i), "", 0);
             auto rets = EmitCall(c, dsts[0], &dsts);
             for (size_t i = 0; i < sp->rets.size(); i++) {
                 auto rt = sp->rets[i];
@@ -270,6 +374,10 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
                 if ((int)i == si.cret) retv = v;
                 else L("*gs_r", i, " = ", v, ";");
             }
+            for (size_t i = 0; i < sp->rets.size(); i++)
+                if (!starts[i].empty())
+                    LandValue(cat("gs_dst", i), DstTop0(i), starts[i], sp->rets[i],
+                              cat("(*gs_rl", i, ")"));
             Epilogue(retv);
             return;
         }
@@ -279,10 +387,10 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
         auto rt = sp->rets[i];
         auto id = Is<Ident>(vals[i]);
         auto named = id && id->vdef ? nrvo.find(id->vdef) : nrvo.end();
+        auto dst = cat("gs_dst", i);
         // Inline destinations belong to their own block; only DetectNrvo's
         // entries alias this function's return destinations.
-        auto direct = named != nrvo.end() && !named->second.inlined &&
-                      named->second.stk == cat("gs_dst", i);
+        auto direct = named != nrvo.end() && !named->second.inlined && named->second.stk == dst;
         if (IsResz(rt) || (emiter && i == 0)) {
             if (direct) {
                 // Built at the destination; only the count (or the frame
@@ -291,7 +399,10 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
                 else L("*gs_rl", i, " = ", HdrLv(id->vdef), ".len;");
                 continue;
             }
-            GenConstruct(vals[i], cat("gs_dst", i), rt, cat("(*gs_rl", i, ")"));
+            auto lenlv = cat("(*gs_rl", i, ")");
+            auto start = ExitStart(vals[i], dst, lenlv, 0);
+            GenConstruct(vals[i], dst, rt, lenlv);
+            if (!start.empty()) LandValue(dst, DstTop0(i), start, rt, lenlv);
         } else if (IsBytesT(rt)) {
             if (direct) {
                 // In place already. A resizable local's elements sit at
@@ -300,7 +411,9 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
                 if (IsResz(id->vdef->type)) EmitNrvoFinish(named->second);
                 continue;
             }
-            GenConstruct(vals[i], cat("gs_dst", i), rt);
+            auto start = ExitStart(vals[i], dst, "", 0);
+            GenConstruct(vals[i], dst, rt);
+            if (!start.empty()) LandValue(dst, DstTop0(i), start, rt, "");
         } else if ((int)i == si.cret) {
             retv = T();
             L(CT(rt), " ", retv, ";");
@@ -387,6 +500,12 @@ inline void CodeGen::GenFromReturn(Return *r) {
     auto &rets = t->rets;
     assert(r->vals.size() == rets.size() ||
            (r->vals.size() == 1 && Is<Call>(r->vals[0])));
+    // The values land at the channels' tops, which is not where the target's
+    // caller expects them when anything was built in its destination since:
+    // the catch moves them down from here (EmitRfCheck).
+    for (size_t i = 0; i < rets.size(); i++)
+        if (IsBytesT(rets[i]))
+            L("gs_fval_", tid, "_", i, " = ", Top(cat("gs_fdst_", tid, "_", i)), ";");
     if (r->vals.size() == rets.size()) {
         for (size_t i = 0; i < rets.size(); i++) {
             if (IsResz(rets[i]))
@@ -421,15 +540,15 @@ inline void CodeGen::EnsureFromChannels(FnSpec *t) {
     auto tid = fromids[t];
     auto &rets = t->rets;
     for (size_t i = 0; i < rets.size(); i++) {
-        if (IsResz(rets[i])) {
-            Append(data, "static GS_TLS gs_stack *gs_fdst_", tid, "_", i, ";\n");
+        if (IsFix(rets[i])) {
+            Append(data, "static GS_TLS ", CT(rets[i]), " gs_lret_", tid, "_", i, ";\n");
+            continue;
+        }
+        Append(data, "static GS_TLS gs_stack *gs_fdst_", tid, "_", i, ";\n");
+        Append(data, "static GS_TLS uint8_t *gs_fval_", tid, "_", i, ";\n");
+        if (IsResz(rets[i]))
             Append(data, "static GS_TLS ", IsFrameObj(rets[i]) ? CT(rets[i]) : string("int64_t"),
                    " gs_lret_", tid, "_", i, ";\n");
-        } else if (IsBytesT(rets[i])) {
-            Append(data, "static GS_TLS gs_stack *gs_fdst_", tid, "_", i, ";\n");
-        } else {
-            Append(data, "static GS_TLS ", CT(rets[i]), " gs_lret_", tid, "_", i, ";\n");
-        }
     }
 }
 
