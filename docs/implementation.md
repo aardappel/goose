@@ -694,12 +694,14 @@ as shrunk, and a grow-only local the text names does too.
 **Growth during construction** (§1.3(4), §4.2). A value built in place at an
 array's top or slot is under construction while its expression is checked,
 and nothing may grow that array meanwhile: a pushed or pool-allocated
-element that is variable-size or holds relative references
-(`BuiltInPlace`; a fixed-size element is evaluated before its slot is
-claimed, §6.5), a call's array result being appended to a non-limited
-array, an appended literal of elements that are variable-size or hold
-relative references of either form (which `EmitAppend` builds in place),
-and the new contents of a whole assignment of a resizable
+element that is variable-size or holds relative references of either form
+(`BuiltInPlace`: `EmitPush` builds such an element in its slot, and
+`EmitAlloc` a literal of one; any other fixed-size element is evaluated
+before its slot is claimed, §6.5), a call's array result being appended
+to a non-limited array, an appended literal of elements that are
+variable-size or hold relative references of either form (which
+`EmitAppend` builds in place), and the new contents of a whole
+assignment of a resizable
 (`CheckAssign`, `PointeeAssign`). Every growth is logged (`NoteGrow` →
 `growlog`): `push`, `append`, `alloc_index`/`alloc_ref`, `format`,
 `resize`, `to_bytes(a, out)`, whole assignment, and what a callee grows
@@ -1423,11 +1425,12 @@ the element is added (§2), and the argument may itself grow the array
 (`v.push(v.push(1))`, `v.push(f(v))`): a fixed-size element is therefore
 evaluated before its slot is claimed, so it follows whatever the argument
 pushed and the returned reference names it. A variable-size element, and a
-fixed one holding relative references (whose offsets measure from where the
-element lives), are built in the slot instead -- for limited arrays too --
-which is what the checker's growth rule (§3.10) keeps safe. A pool
-allocation builds a literal holding relative references at its slot the same
-way (`EmitAlloc`).
+fixed one holding relative references of either form (a self-relative
+offset measures from where the element lives, an `in pool` `self` is its
+position in the pool), are built in the slot instead -- for limited
+arrays too -- which is what the checker's growth rule (§3.10) keeps safe.
+A pool allocation builds a literal holding relative references at its
+slot the same way (`EmitAlloc`).
 
 **Adaptation into static-capacity limited arrays.** `FitsAt` lets any array
 or slice of the element type construct a `T[..k]` (§4.2), and codegen copies

@@ -375,9 +375,10 @@ inline vector<string> CodeGen::EmitPush(vector<Node *> &an, Line ln) {
     // element is therefore evaluated before its slot is claimed, so that it
     // follows whatever the argument pushed and the returned reference names
     // it. A variable-size element, and a fixed one holding relative
-    // references (whose offsets measure from where the element lives), are
-    // built in place instead; the checker keeps the array from growing while
-    // such a value is under construction at its top (§1.3).
+    // references of either form (a self-relative offset measures from where
+    // the element lives, an `in pool` `self` is its position in the pool),
+    // are built in place instead; the checker keeps the array from growing
+    // while such a value is under construction at its top (§1.3).
     auto relref = elem->kind == TY_REF && elem->ref->lenstorage >= 0;
     auto inplace = IsBytesT(elem) || (!relref && HasRelRef(elem));
     string ev;   // The evaluated element, or the plain reference a relative slot encodes.

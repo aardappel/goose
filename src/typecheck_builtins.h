@@ -813,7 +813,7 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
 }
 
 inline bool TypeCheck::BuiltInPlace(TypeExpr *elem) {
-    return ClassOf(elem) != SC_FIXED || (elem->kind != TY_REF && HasRelRefT(elem));
+    return ClassOf(elem) != SC_FIXED || (elem->kind != TY_REF && HasRelRefT(elem, true));
 }
 
 // A T[k] of the receiver's elements, or a T[] where they are not

@@ -1199,7 +1199,9 @@ struct TypeCheck {
     void ApplyCalleeGrows(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
     // Whether an element pushed into, or allocated in, an array of `elem`
     // is built in place at its slot: a variable-size one, or a fixed one
-    // holding relative references, whose offsets measure from the slot.
+    // holding relative references of either form, which codegen writes
+    // where the element stays (an `in pool` offset measures from the pool,
+    // but is stored field by field all the same).
     bool BuiltInPlace(TypeExpr *elem);
     // The array an array literal appended to an array of `elem` is: the run
     // of elements it adds (§4.2).
