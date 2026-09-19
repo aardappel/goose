@@ -209,7 +209,9 @@ inline CodeGen::SrcElems CodeGen::GenSrcElems(Node *n) {
         r.nullable = true;
         return r;
     }
-    assert(t->kind == TY_ARRAY);
+    // An array, or a reference to an array or slice (an append's source
+    // keeps its reference type): the elements where they are stored.
+    assert(t->kind == TY_ARRAY || IsPlainRef(t));
     auto lv = GenLoc(n);
     if (lv.t->kind == TY_REF) DerefLoc(lv, n->line);
     if (lv.t->kind == TY_SLICE) {
