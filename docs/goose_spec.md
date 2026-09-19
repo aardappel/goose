@@ -258,10 +258,12 @@ to a negative length).
 Built-in members: `.len` (always, returns `i64`), `.cap` (limited arrays),
 `.push(v)` (returns a reference to the new element on resizable and limited
 arrays — the idiomatic way to link up just-built data),
-`.append(src)` (src an array/slice of the element type; an array literal
-there is built as a run of such elements, §4.2), `.pop()`,
-`.resize(n, v)` (grow with fill value `v`, or shrink), `.resize(n)` (shrink
-only), `.clear()` per the rules above, and `.index_of(r) -> i64` (fixed,
+`.append(src)` (src an array/slice of the element type, whose elements are
+copied: the references they hold must outlive the array, §9.2, and none may
+be self-relative, §3.9; an array literal there is built instead as a run of
+such elements, §4.2), `.pop()`, `.resize(n, v)` (grow with fill value `v`,
+copied into every slot added, or shrink), `.resize(n)` (shrink only),
+`.clear()` per the rules above, and `.index_of(r) -> i64` (fixed,
 limited and resizable arrays of fixed-size elements): the index of the
 element `r` refers to, `(addr − base) / elemsize`. `r` must be rooted at the
 array *exactly* (§9.2), which is what makes the division whole and the
@@ -512,7 +514,9 @@ array/pool* as the location storing it.
   varint fields (re-encoding could change the byte length); fixed widths may
   be re-stored with `.=`/`=`.
 * Copying a *value that contains* self-relative references (assignment from
-  an lvalue, a by-value argument, a by-value match binder, an element copy)
+  an lvalue, a by-value argument, a by-value match binder, an element copy,
+  an `append` of anything but an array literal, a `resize` fill value, which
+  is copied into every slot it adds even when it is a literal)
   is a compile error: the copied offsets would still be measured from the
   source location. Construct such values in place (literals), and bind their
   match payloads by reference. (TODO 16: track the region a relative
@@ -1708,7 +1712,9 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   A value that *holds* references (a struct with a reference field, an
   array of slices, an ADT payload with one) stores under the same rule for
   what it holds: its root is that of the references stored into it, and each
-  such store is on record for the shrink rules (§5.1). A declaration stores
+  such store is on record for the shrink rules (§5.1). So do the elements
+  `append` copies: an array's as the whole array would store, and a slice's
+  as each element read out of it would (§9.5). A declaration stores
   its value into the variable it declares, with a type annotation or
   without: `let s = { let t: u8[] = "abc"; t[..] };` is an error, since `t`
   ends with its block.

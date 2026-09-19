@@ -832,6 +832,29 @@ inline TypeExpr *TypeCheck::AppendedRun(TypeExpr *elem, ArrayLit *al) {
     return FixedArrayOf(elem, std::max<int64_t>(n, 0), al->line);
 }
 
+// A copied element would carry self-relative offsets still measured from
+// the source (§3.9), and the references it holds are stored into the
+// receiver (§9.2): bounded as they are in a copy of a whole array, or, out
+// of the storage a slice or reference views, as reading each element out of
+// it would bound them (§9.5).
+inline void TypeCheck::AppendedCopies(Node *an, const Val &av, TypeExpr *elem, const Val &rv) {
+    if (HasRelRefT(elem))
+        Error(an, cat(".append copies the elements of ", ExprStr(an), ": copying a value of "
+                      "type ", TypeStr(elem), ", which contains self-relative references, is "
+                      "not supported; append an array literal, which constructs them in place"));
+    if (!HoldsPlainRef(elem)) return;
+    auto ev = av;
+    if (IsRefOrSlice(av.type)) {
+        LVal lv;
+        lv.SetProv(av);
+        lv.type = elem;
+        lv.fromstorage = true;
+        ev = ContainerRead(lv);
+    }
+    DestScope ds(*this, Dest { rv.root, rv.rootexact });
+    MustFit(ev, an, ev.type, false);
+}
+
 inline TypeCheck::Alias TypeCheck::MayAliasRoots(VarDef *a, bool aexact, VarDef *b,
                                                  bool bexact) {
     if (!a || !b || IsTemp(a) || IsTemp(b)) return AL_NO;

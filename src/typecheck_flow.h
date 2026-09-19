@@ -2032,7 +2032,16 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
     // resize has two forms (§3.3); a target below zero is caught at runtime.
     if (d.kind == B_RESIZE) {
         CheckIntAny(args[1]);
-        if (args.size() == 3) ElemArg(args[2], elem, rv);
+        if (args.size() == 3) {
+            ElemArg(args[2], elem, rv);
+            // The fill value is built once and copied into every slot the
+            // resize adds, so not even a literal is built in place (§3.9).
+            if (HasRelRefT(elem) && (Is<StructLit>(args[2]) || Is<ArrayLit>(args[2])))
+                Error(args[2], cat(".resize copies its fill value into every slot it adds: "
+                                   "copying a value of type ", TypeStr(elem), ", which "
+                                   "contains self-relative references, is not supported; push "
+                                   "the elements, which constructs each in place"));
+        }
         return VoidVal();
     }
     // index_of recovers the element index a reference stands for (§3.3).
@@ -2134,6 +2143,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                 if (!selem || !TypeEq(selem, elem))
                     Error(c, cat(".", d.name, " takes an array or slice of ",
                                  TypeStr(elem), ", got ", TypeStr(av.type)));
+                if (!al) AppendedCopies(an, av, elem, rv);
                 // A call's array result is built at the receiver's top
                 // (§7.3), and a literal's run is built in place where its
                 // elements are not fixed-size or hold relative references of

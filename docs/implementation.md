@@ -313,7 +313,12 @@ receiver's elements it adds, a `T[k]`, or a `T[]` where they are not
 fixed-size, checked with the receiver as its destination (`CheckValueAt`),
 as a pushed element is, so a reference in it obeys the store rule and a
 relative one may point into the receiver. Any other source is checked as it
-stands and must already be an array or slice of the element type.
+stands and must already be an array or slice of the element type; the
+elements it adds are copies (`AppendedCopies`). What the references in them
+point at is fitted to the receiver as a store (`MustFit` under the
+receiver's `Dest`): an array's holder root, as a copy of the whole array
+has, and out of a slice or reference, each element as `ContainerRead` reads
+it out of the storage viewed.
 
 **Pending arrays.** `var out = [];` (§4.2) gets a grow-only array type whose
 element is a private void type (`PendingArray`); the first `push`, `append`,
@@ -895,7 +900,10 @@ is the literal's own type; the `in pool` form additionally needs the literal
 to be under construction inside that pool. `NoRelRefCopy` rejects copying any
 value holding self-relative references except a literal built in place
 (`HasRelRefT` excludes `in pool` fields, which copy fine); the same rule
-rejects by-value `for` and `match` bindings of such elements and payloads.
+rejects by-value `for` and `match` bindings of such elements and payloads,
+the elements `append` copies from anything but a literal (an element that
+is itself a self-relative reference included), and a `resize` fill value,
+literal or not, which is built once and copied into every slot added.
 Varint-width relative references are construction-only.
 
 ### 3.14 Arithmetic, constants, and the rest

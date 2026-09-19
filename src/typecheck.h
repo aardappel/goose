@@ -1204,6 +1204,9 @@ struct TypeCheck {
     // The array an array literal appended to an array of `elem` is: the run
     // of elements it adds (§4.2).
     TypeExpr *AppendedRun(TypeExpr *elem, ArrayLit *al);
+    // The elements any other source `av` adds to receiver `rv`, which are
+    // copies of its own.
+    void AppendedCopies(Node *an, const Val &av, TypeExpr *elem, const Val &rv);
     // Whether two roots may name one array: no, yes, or only the call
     // sites can tell (two parameter classes of one activation, settled by
     // ResolveGrowConflicts once every call site has been seen).
