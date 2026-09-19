@@ -79,7 +79,7 @@ inline Val StrLit::Check(TypeCheck &tc, TypeExpr *expected) {
 }
 
 inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
-    if (auto vd = tc.LookupVar(name, ns)) {
+    if (auto vd = tc.LookupVar(name, ns, this)) {
         vdef = vd;
         tc.RequireAssigned(vd, this);
         Val v;

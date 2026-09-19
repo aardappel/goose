@@ -1064,6 +1064,11 @@ struct FnSpec {
     // Aligned with argtypes/params; a parameter holding no roots has the
     // default entry. Every pass uses the parameter index directly.
     vector<RootArg> roots;
+    // A nested function reached after the scope declaring it ended, its
+    // value having left that block or function value body (§7.5): part of
+    // the key, since its body may name nothing the scope declared, and one
+    // checked inside the scope may.
+    bool escaped = false;
     // Optional facts in the lexical environment at specialization entry.
     vector<VarDef *> narrowedenv;
     // External optional bindings this body (or a callee) may rebind.

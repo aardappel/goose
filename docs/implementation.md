@@ -168,6 +168,7 @@ function and no existing specialization matches. `GetOrCreateSpec`
 | Part of the key | What it records |
 |---|---|
 | `lexparent` | the lexical environment a nested function is declared in: a specialization, or a function value's body as one check of its call sees it (`FnSpec::isfunval`, §3.12) |
+| `escaped` | whether a nested function is called after the scope declaring it ended, its value having left it: its body may name nothing that scope declared, which one checked inside the scope may (§3.12) |
 | `argtypes` | the concrete parameter types after generic inference |
 | `bindings` | the concrete type of each of the function's own type variables, explicit or inferred, in any order: the only record of one no parameter type mentions (`size<u8>()`) |
 | `roots` (`RootArg` per parameter) | the reference root *class* of each reference, slice or reference-holding argument, its writability, `reusable` and grow-shrink provenance, whether it is a `bytes_of` view, and the global pool it is rooted in (§3.4) |
@@ -223,11 +224,15 @@ unchecked.
 scopes begin), so `CurDepth()` -- the scope count -- increases monotonically
 from `main` inward. `vars` is the flat vector of every variable in scope on
 the path, with per-frame bases; `LookupVar` searches the current frame's
-scopes innermost-out, then the lexical parent chain (marking the variable
-`captured`), then the globals by the namespace rules. `localfns` holds nested
-function declarations with the scope they were declared in. `blockpos` keeps
-the statement index of every open block, which the shrink rules' liveness
-scan (§3.10) reads.
+scopes innermost-out, then what the body sees outside them (`ForOuterVars`):
+a nested function's body the variables in scope at its declaration
+(§3.12), a function value's body those of the frame it is written in as
+they are at the call, and so on outward, marking the variable `captured`;
+then the globals by the namespace rules. `localfns` holds nested function
+declarations with the scope they were declared in; `Scope::serial` tells a
+scope from a later one at the same index. `blockpos` keeps the statement
+index of every open block, which the shrink rules' liveness scan (§3.10)
+reads.
 
 **Diagnostics.** `TypeCheck::Error` appends the offending source line and
 the instantiation chain: every real frame from innermost outward, with the
@@ -748,6 +753,32 @@ dispatches by value even through a reference; the result's provenance is the
 merge of the arms' (deeper root, exact only when the same, writable only if
 all are).
 
+**Nested functions** (`DeclareLocalFn`, §7.5): checking a declaration
+records a `DeclSite` for the function, under the environment declaring it
+(`declsiteof`): the variables in scope there, innermost first, with the
+index each holds in `vars`; and the functions it may call, every one
+declared in the blocks around the declaration (`blockpos`), the latest at or
+before it first and then those after it, followed by those the declaring
+body sees outside its own scopes. The frame `CheckSpecBody` pushes for a
+specialization keeps the site as `decl`, and `LookupVar` and
+`LookupLocalFnEnv` look there past the body's own scopes (`ForOuterVars`,
+`ForOuterFns`) instead of in the declaring frame as the call finds it, so a
+scope around the call that shadows or adds a name changes nothing and one
+specialization per `lexparent` serves every call. `GetOrCreateSpec` rejects
+a call that reaches a nested function before its declaration is checked (a
+nested function declared earlier calling it), since the variables its site
+lists do not exist yet. A site outlives its scope, because a block or a
+function value's body can yield the function as its value (`ScopeEnded`
+compares `Scope::serial`): a call after that finds the scope's variables out
+of scope (`InScope`), `LookupVar` reports one the body names, and the
+specialization is keyed apart (`FnSpec::escaped`), since one checked inside
+the scope may name them and reusing it would hand codegen captures it no
+longer declares. `VisibleVars`, which the shrink rules and the read-back
+candidates enumerate (§3.6, §3.10), keeps the lexical parents' frames as the
+call finds them: a reference handed to the body, a later nested function's
+result or one a function value written at the call returns, can point into
+a variable the declaration does not see.
+
 **Function values** (`CheckFunValCall`, §7.6): a named function value
 resolves as a call in the environment its declaration is in, for a nested
 function the scope declaring it, whatever function names it
@@ -762,13 +793,13 @@ function declared in the body has it as `lexparent`, and a function value
 written there or a nested function of the body named as one carries it, so
 their lookups chain through the body's frame (`FrameOfSpec`, `LexFrame`) to
 its parameters and locals (§7.5); a nested function the body yields as its
-value is checked once that frame is gone, and continues in the nearest
-environment around it still being checked, as one a finished block declared
-does. Each check clones the body afresh and makes a new environment with
-it, so a specialization keyed on one captures that clone's variables:
-another call site of the value, or the same call checked again as an
-argument, specializes anew instead of reusing one whose captures codegen
-never declares. `NamedSpec` gives the named function around such an
+value is checked once that frame is gone, through its declaration site as
+one a finished block declared is, and its frame's `lexframe` continues in
+the nearest environment around it still being checked. Each check clones
+the body afresh and makes a new environment with it, so a specialization
+keyed on one captures that clone's variables: another call site of the
+value, or the same call checked again as an argument, specializes anew
+instead of reusing one whose captures codegen never declares. `NamedSpec` gives the named function around such an
 environment, which a plain `return` inside it targets (`CheckReturn`); that
 is how HOF-based iteration returns. `LexicalLocals` gives a nested recursive
 call's lexical parents' locals, the body's included (§3.10).

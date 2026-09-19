@@ -105,12 +105,29 @@ struct TypeCheck {
         ReadBack contents;
     };
 
+    // What a nested function's body can name outside its own scopes (§7.5),
+    // as its declaration sees it: the variables in scope there, innermost
+    // first, each with the index it holds in `vars` while it is in scope;
+    // and every function declared in the blocks around the declaration,
+    // before or after it, then those the declaring body sees from outside,
+    // each with the environment it is declared in. Kept after the declaring
+    // scope ends, for a function whose value leaves it.
+    struct DeclSite {
+        vector<pair<VarDef *, int>> vars;
+        vector<pair<SFunction *, FnSpec *>> fns;
+        int scope = 0;               // The declaring scope, and its Scope::serial.
+        int serial = 0;
+    };
+
     // One level of the compile-time call path.
     struct Frame {
         SFunction *sf = nullptr;     // Null for the global-initializer frame.
         FnSpec *spec = nullptr;      // Owner of locals declared here (null at globals).
         FnSpec *lexspec = nullptr;   // Lexical env: generic bindings, parent of nested fns.
         int lexframe = -1;           // Frame index for free-variable lookup chains.
+        // A nested function's declaration site, which its body names things
+        // through instead of the lexical parent frame's scopes as they are now.
+        DeclSite *decl = nullptr;
         int scopebase = 0;           // First scope index belonging to this frame.
         int varbase = 0;             // First var index belonging to this frame.
         Line callline;               // Call site, for instantiation chain diagnostics.
@@ -120,6 +137,7 @@ struct TypeCheck {
     enum ScopeKind { SK_PLAIN, SK_FN, SK_LOOP, SK_BLOCK };
     struct Scope {
         int kind = SK_PLAIN;
+        int serial = 0;              // Unique per scope opened: tells a later one at its index apart.
         int varbase = 0;
         int fnbase = 0;              // Into localfns.
         Node *node = nullptr;        // The loop / `block` construct for SK_LOOP/SK_BLOCK.
@@ -155,6 +173,11 @@ struct TypeCheck {
     bool UsedAfter(VarDef *v);
     vector<VarDef *> vars;                            // All in-scope variables, all frames.
     vector<pair<int, SFunction *>> localfns;          // Nested fns, with their scope index.
+    int scopeserial = 0;
+    deque<DeclSite> declsites;
+    // The latest declaration site of each nested function, by the
+    // environment it is declared in: a call specializes it there.
+    map<pair<FnSpec *, SFunction *>, DeclSite *> declsiteof;
     bool reachable = true;
     // Inside a block/if/match/loop that produces a value, or a function-value
     // body: an enclosing expression may hold references it evaluated before
@@ -710,7 +733,55 @@ struct TypeCheck {
     void BindRefProvenance(VarDef *vd, const Val &v);
     Prov RefProvOf(VarDef *vd);
     VarDef *NewVar(string_view name, TypeExpr *type, Line l, bool isvar);
-    VarDef *LookupVar(string_view name, string_view ns);
+    VarDef *LookupVar(string_view name, string_view ns, Node *use = nullptr);
+
+    // The variables the body frame fi checks can name outside its own
+    // scopes, innermost first: a nested function's are those in scope where
+    // it is declared, a function value's those of the frame it is written
+    // in as they are at the call it is written at, then those that frame
+    // names outside its own. f gets each with its index in `vars` while in
+    // scope, and the frame whose declaration site lists it (-1 for a frame's
+    // current scopes); the walk stops when f returns true, and returns
+    // whether it did.
+    template <typename F> bool ForOuterVars(int fi, F f) {
+        for (;;) {
+            auto &fr = frames[fi];
+            if (fr.decl) {
+                for (auto [v, i] : fr.decl->vars) if (f(v, i, fi)) return true;
+                return false;
+            }
+            auto p = fr.lexframe;
+            if (p < 0) return false;
+            for (auto i = frames[p + 1].varbase - 1; i >= frames[p].varbase; i--)
+                if (f(vars[i], i, -1)) return true;
+            fi = p;
+        }
+    }
+
+    // The same for the nested functions it can call, in the order a name
+    // resolves to them, each with the environment it is declared in.
+    template <typename F> bool ForOuterFns(int fi, F f) {
+        for (;;) {
+            auto &fr = frames[fi];
+            if (fr.decl) {
+                for (auto [sf, env] : fr.decl->fns) if (f(sf, env)) return true;
+                return false;
+            }
+            auto p = fr.lexframe;
+            if (p < 0) return false;
+            for (auto i = (int)localfns.size() - 1; i >= 0; i--) {
+                auto [si, sf] = localfns[i];
+                if (si >= frames[p].scopebase && si < frames[p + 1].scopebase &&
+                    f(sf, frames[p].lexspec))
+                    return true;
+            }
+            fi = p;
+        }
+    }
+
+    bool InScope(VarDef *v, int idx) { return idx < (int)vars.size() && vars[idx] == v; }
+    bool ScopeEnded(const DeclSite &d);
+    void DeclareLocalFn(FnDecl *fd);
     string_view CurNs();
     int FrameOfSpec(FnSpec *sp);
     int LexFrame(FnSpec *env);

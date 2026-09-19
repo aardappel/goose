@@ -13,6 +13,7 @@ namespace goose {
 inline void TypeCheck::PushScope(int kind, Node *node) {
     Scope s;
     s.kind = kind;
+    s.serial = ++scopeserial;
     s.varbase = (int)vars.size();
     s.fnbase = (int)localfns.size();
     s.node = node;
@@ -171,24 +172,68 @@ inline VarDef *TypeCheck::NewVar(string_view name, TypeExpr *type, Line l, bool 
     return vd;
 }
 
-// Name lookup: current frame's scopes innermost-out, then the lexical
-// parent chain (free variables of nested fns / function values, §7.5),
-// then globals, in the namespace order of docs/design/namespaces.md.
-inline VarDef *TypeCheck::LookupVar(string_view name, string_view ns) {
-    for (auto fi = (int)frames.size() - 1; fi >= 0;) {
-        auto &f = frames[fi];
-        auto limit = fi == (int)frames.size() - 1 ? (int)vars.size()
-                                                  : frames[fi + 1].varbase;
-        for (auto i = limit - 1; i >= f.varbase; i--) {
-            if (vars[i]->name == name) {
-                if (fi != (int)frames.size() - 1) vars[i]->captured = true;
-                return vars[i];
-            }
+// Name lookup: current frame's scopes innermost-out, then what the body sees
+// outside them (free variables of nested fns / function values, §7.5), then
+// globals, in the namespace order of docs/design/namespaces.md. A nested
+// function called after the scope declaring one of those ended cannot name
+// it, which `use`, the node naming it, reports.
+inline VarDef *TypeCheck::LookupVar(string_view name, string_view ns, Node *use) {
+    auto top = (int)frames.size() - 1;
+    for (auto i = (int)vars.size() - 1; i >= frames[top].varbase; i--)
+        if (vars[i]->name == name) return vars[i];
+    VarDef *found = nullptr;
+    ForOuterVars(top, [&](VarDef *v, int i, int fi) {
+        if (v->name != name) return false;
+        if (use && !InScope(v, i)) {
+            auto fn = frames[fi].sf->name;
+            Error(use, cat(fn, " names ", v->name, " (bound at ", Where(v->line),
+                           "), whose scope has ended where ", fn, " is called (§7.5)"));
         }
-        fi = f.lexframe;
-    }
+        v->captured = true;
+        found = v;
+        return true;
+    });
+    if (found) return found;
     auto g = ast.LookupGlobal(name, ns);
     return g && !g->defs.empty() ? g->defs[0] : nullptr;
+}
+
+// Whether the scope a nested function is declared in has ended: its value
+// left it, and it is called outside.
+inline bool TypeCheck::ScopeEnded(const DeclSite &d) {
+    return d.scope >= (int)scopes.size() || scopes[d.scope].serial != d.serial;
+}
+
+// A nested function: visible from here to the end of the scope, checked when
+// called and specialized per caller (§7.5). Its body names what is in scope
+// here, whatever the call, and may call every function declared in the blocks
+// around it, so that nested functions call each other in either order (the
+// latest declared at or before this point wins, then the first after it).
+inline void TypeCheck::DeclareLocalFn(FnDecl *fd) {
+    auto top = (int)frames.size() - 1;
+    auto &fr = frames[top];
+    auto &site = declsites.emplace_back();
+    site.scope = (int)scopes.size() - 1;
+    site.serial = scopes.back().serial;
+    for (auto i = (int)vars.size() - 1; i >= fr.varbase; i--) site.vars.push_back({ vars[i], i });
+    ForOuterVars(top, [&](VarDef *v, int i, int) {
+        site.vars.push_back({ v, i });
+        return false;
+    });
+    for (auto bp = blockpos.rbegin(); bp != blockpos.rend() && bp->scopeidx >= fr.scopebase; ++bp) {
+        auto &stmts = bp->block->stmts;
+        auto at = std::min((int)bp->idx, (int)stmts.size() - 1);
+        for (auto i = at; i >= 0; i--)
+            if (auto d = Is<FnDecl>(stmts[i])) site.fns.push_back({ d->sf, fr.lexspec });
+        for (auto i = at + 1; i < (int)stmts.size(); i++)
+            if (auto d = Is<FnDecl>(stmts[i])) site.fns.push_back({ d->sf, fr.lexspec });
+    }
+    ForOuterFns(top, [&](SFunction *sf, FnSpec *env) {
+        site.fns.push_back({ sf, env });
+        return false;
+    });
+    declsiteof[{ fr.lexspec, fd->sf }] = &site;
+    localfns.push_back({ (int)scopes.size() - 1, fd->sf });
 }
 
 // The namespace of the function being checked (a function value's is its

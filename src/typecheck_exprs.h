@@ -12,7 +12,7 @@ namespace goose {
 
 inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
     if (auto id = Is<Ident>(n)) {
-        auto vd = LookupVar(id->name, id->ns);
+        auto vd = LookupVar(id->name, id->ns, n);
         if (!vd) Error(n, cat("unknown variable: ", id->name));
         id->vdef = vd;
         LVal lv;
@@ -1211,12 +1211,7 @@ inline void TypeCheck::CheckStmt(Node *n) {
     if (auto vd = Is<VarDecl>(n)) { CheckVarDecl(vd, false); return; }
     if (auto a = Is<Assign>(n)) { CheckAssign(a); return; }
     if (auto x = Is<IncDec>(n)) { CheckIncDec(x); return; }
-    if (auto fd = Is<FnDecl>(n)) {
-        // Nested function: visible from here to the end of the scope;
-        // checked when called, specialized per caller (§7.5).
-        localfns.push_back({ (int)scopes.size() - 1, fd->sf });
-        return;
-    }
+    if (auto fd = Is<FnDecl>(n)) { DeclareLocalFn(fd); return; }
     CheckStmtExpr(n);
 }
 

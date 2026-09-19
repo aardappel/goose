@@ -635,9 +635,12 @@ inline TypeExpr *TypeCheck::PointeeOf(TypeExpr *t) {
     return nullptr;
 }
 
-// Every variable the body being checked can name, exactly the set
-// LookupVar reaches: this frame's scopes plus the lexical parent chain
-// (§7.5). Globals are enumerated separately.
+// Every variable in scope in the body being checked and in its lexical
+// parents at the call (§7.5): all LookupVar reaches that is still in scope,
+// and for a nested function also what its declaration does not see, since a
+// reference handed to the body may point there (a later nested function's
+// result, a function value written at the call). Globals are enumerated
+// separately.
 inline void TypeCheck::VisibleVars(const function<void(VarDef *)> &f) {
     for (auto fi = (int)frames.size() - 1; fi >= 0;) {
         auto &fr = frames[fi];

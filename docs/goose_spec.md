@@ -1291,12 +1291,26 @@ A function value's body (§7.6) encloses what is written in it the same way:
 a function declared there, or a function value written there, may also name
 the value's parameters and the body's locals.
 
+Names in a nested function resolve where it is declared, whatever surrounds
+a call of it: a free variable is the one in scope at the declaration, not
+one of the same name that a scope around the call declares, or that is
+declared further on. The functions it calls are those in scope there and
+every function declared in the blocks around its declaration, before or
+after it, so nested functions may call each other in either order, as a
+recursive descent parser's do; calling one of them before the enclosing
+code has reached its declaration is an error. That code names a nested
+function from its declaration to the end of its scope, but the function's
+value may leave the scope as the value of a `block` or of a function
+value's body (`break h`, a body ending in `h`); a call after the scope has
+ended must not name a variable declared in it, which is an error.
+
 Implementation model: free variables become hidden reference parameters of
-the nested function. Since nested functions are non-escaping (like all
-function values, §7.6) this is always safe. When a nested function is passed
-as a static function value and inlined into its HOF — the expected, common
-case — the hidden parameters disappear entirely; un-inlined builds (debug)
-keep them as real arguments.
+the nested function. A nested function's value never outlives the function
+declaring it (function values do not escape, §7.6), and a call where a
+variable it names is out of scope is rejected, so every call can pass them.
+When a nested function is passed as a static function value and inlined into
+its HOF — the expected, common case — the hidden parameters disappear
+entirely; un-inlined builds (debug) keep them as real arguments.
 
 ### 7.6 Static function values
 

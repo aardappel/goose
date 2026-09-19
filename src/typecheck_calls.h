@@ -62,23 +62,24 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id) {
 }
 
 // A nested function visible from the current point, with the lexical
-// environment of the frame that declares it. A frame's scopes are
-// [f.scopebase, next frame's scopebase).
+// environment of the frame that declares it: one declared so far in this
+// frame's scopes, else one the body sees outside them (ForOuterFns).
 inline SFunction *TypeCheck::LookupLocalFnEnv(string_view name, FnSpec *&env) {
-    for (auto fi = (int)frames.size() - 1; fi >= 0;) {
-        auto &f = frames[fi];
-        auto scopelimit = fi == (int)frames.size() - 1 ? (int)scopes.size()
-                                                       : frames[fi + 1].scopebase;
-        for (auto i = (int)localfns.size() - 1; i >= 0; i--) {
-            auto &[si, sf] = localfns[i];
-            if (si >= f.scopebase && si < scopelimit && sf->name == name) {
-                env = f.lexspec;
-                return sf;
-            }
-        }
-        fi = f.lexframe;
+    auto top = (int)frames.size() - 1;
+    for (auto i = (int)localfns.size() - 1; i >= 0 && localfns[i].first >= frames[top].scopebase;
+         i--) {
+        if (localfns[i].second->name != name) continue;
+        env = frames[top].lexspec;
+        return localfns[i].second;
     }
-    return nullptr;
+    SFunction *found = nullptr;
+    ForOuterFns(top, [&](SFunction *sf, FnSpec *e) {
+        if (sf->name != name) return false;
+        found = sf;
+        env = e;
+        return true;
+    });
+    return found;
 }
 
 inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d) {
@@ -627,6 +628,18 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
 
 inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, Node *callnode) {
     auto sf = mi.sf;
+    // A nested function is specialized where it is declared (§7.5). A call
+    // that reaches the declaration ahead of the declaring body (a nested
+    // function declared earlier calling it) would have it name variables
+    // not bound yet; one after its declaring scope ended is keyed apart.
+    auto escaped = false;
+    if (sf->isnested && mi.env && LexFrame(mi.env) >= 0) {
+        auto it = declsiteof.find({ mi.env, sf });
+        if (it == declsiteof.end())
+            Error(callnode, cat(sf->name, " (declared at ", Where(sf->line),
+                                ") is called before its declaration is reached (§7.5)"));
+        escaped = ScopeEnded(*it->second);
+    }
     vector<VarDef *> narrowedenv;
     for (auto v : ExternalOptionals(mi.env, &mi.fnvals))
         if (v->narrowed) narrowedenv.push_back(v);
@@ -731,7 +744,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         }
     }
     for (auto spec : sf->specs) {
-        if (spec->lexparent != mi.env) continue;
+        if (spec->lexparent != mi.env || spec->escaped != escaped) continue;
         if (!spec->inprogress && spec->narrowedenv != narrowedenv) continue;
         if (!TypeArgsEq(spec->argtypes, mi.paramtypes)) continue;
         // A type argument no parameter type mentions (`size<u8>()`) shows
@@ -803,6 +816,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     auto spec = ast.NewFnSpec();
     spec->sf = sf;
     spec->lexparent = mi.env;
+    spec->escaped = escaped;
     spec->narrowedenv = narrowedenv;
     spec->argtypes = mi.paramtypes;
     spec->roots = roots;
@@ -1173,6 +1187,9 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     f.spec = spec;
     f.lexspec = spec;
     f.lexframe = spec->lexparent ? LexFrame(spec->lexparent) : -1;
+    if (f.lexframe >= 0)
+        if (auto it = declsiteof.find({ spec->lexparent, sf }); it != declsiteof.end())
+            f.decl = it->second;
     f.scopebase = (int)scopes.size();
     f.varbase = (int)vars.size();
     f.callline = callline;
