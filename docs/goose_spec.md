@@ -609,7 +609,8 @@ but writes through a slice are legal when its provenance is writable (§9.5).
   slice pool (§5.4). At call sites, an
   array argument passed where a slice parameter is expected implicitly
   becomes a whole-array slice; an exact-type overload wins over this
-  coercion.
+  coercion. (An array literal of variable-size elements is not such an
+  argument: it has no temporary to be sliced, §4.2.)
 * Slices of fixed-element arrays index and iterate, bounds-checked against
   the slice's own length. Slices never grow; shrinking a slice (re-slicing)
   is always safe.
@@ -698,7 +699,12 @@ Literal forms usable in any construction context:
   which makes the local a grow-only `T[>..]` whose `T` is fixed by the first
   `push`, `append`, `format` or whole assignment into it — a string literal
   pushed into one makes it a `u8[][>..]` — and must be fixed before the local
-  is otherwise used or its scope ends; `[v; n]` fill form for fixed arrays;
+  is otherwise used or its scope ends; `[v; n]` fill form for fixed arrays.
+  A literal whose destination names no array type is a `T[k]`, or a `T[]`
+  when its elements are not fixed-size (§3.3). A fixed one may also be a
+  temporary for a slice parameter, a `for`, `[..]` or `bytes_of` to view; a
+  `T[]` one is a variable value and exists only in a construction context,
+  so viewing it takes a variable bound to it first;
 * struct literals `X { a: 1, b: 2 }` (named) or `X { 1, 2 }` (positional, in
   declaration order; no mixing). Named initializers must also appear in
   declaration order (out-of-order names are a compile error: values construct

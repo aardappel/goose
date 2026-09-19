@@ -76,6 +76,7 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
 inline TypeCheck::LVal TypeCheck::LValueBase(Node *n) {
     if (Is<Ident>(n) || Is<Dot>(n) || Is<Index>(n)) return CheckLValue(n);
     auto v = CheckV(n, nullptr);
+    NoTemporaryLiteral(n, v.type);
     n->exprtype = v.type;
     LVal lv;
     lv.type = v.type;
@@ -85,6 +86,17 @@ inline TypeCheck::LVal TypeCheck::LValueBase(Node *n) {
     if (lv.root == temproot && !IsRefOrSlice(v.type))
         lv.rootexact = true;
     return lv;
+}
+
+// An array literal of variable-size elements is a T[] (§3.3), and such a
+// value comes into existence only where a construction context builds it
+// (§4.2). A statement temporary would have to hold it for a slice or
+// reference to view, where a fixed one is a plain C temporary.
+inline void TypeCheck::NoTemporaryLiteral(Node *n, TypeExpr *t) {
+    if (!Is<ArrayLit>(n) || ClassOf(t) == SC_FIXED) return;
+    Error(n, cat("an array literal of variable-size elements is a ", TypeStr(t),
+                 ", built only in a construction context (§4.2), never as a temporary "
+                 "for a slice or reference to view; bind it to a variable first"));
 }
 
 // Crossing a reference in a path (auto-deref, §3.8): the storage owner

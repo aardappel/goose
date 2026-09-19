@@ -167,6 +167,19 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     TypeExpr *elem = nullptr;
     int64_t wantcount = -1;
     int64_t capacity = -1;   // A limited array's static capacity, which the literal must fit.
+    // The array a literal is where the destination names no array type: a
+    // fixed one, or a T[] when the elements are not fixed-size, since only
+    // variable and grow-only arrays hold those (§3.3).
+    auto natural = [&](int64_t count) {
+        if (tc.ClassOf(elem) == SC_FIXED) return tc.FixedArrayOf(elem, count, line);
+        auto t = tc.ast.NewType(TY_ARRAY, line);
+        t->arr = tc.ast.NewDetail<TypeArray>();
+        t->arr->sub = elem;
+        t->arr->akind = A_VAR;
+        tc.ValidateType(t, line, VT_LOCAL);
+        return t;
+    };
+    auto atslice = expected && expected->kind == TY_SLICE;
     if (expected && expected->kind == TY_ARRAY) {
         elem = expected->arr->sub;
         if (expected->arr->akind == A_FIXED) wantcount = tc.ArraySize(expected->arr);
@@ -192,8 +205,8 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         if (capacity >= 0 && cnt > capacity)
             tc.Error(this, cat("fill count ", cnt, " exceeds the capacity of ",
                                tc.TypeStr(expected)));
-        v.type = expected && expected->kind == TY_ARRAY
-                     ? expected : tc.FixedArrayOf(elem, cnt, line);
+        v.type = expected && expected->kind == TY_ARRAY ? expected : natural(cnt);
+        if (atslice) tc.NoTemporaryLiteral(this, v.type);
         tc.HolderFromLit(v, deep);
         return v;
     }
@@ -218,13 +231,12 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     if (capacity >= 0 && (int64_t)elems.size() > capacity)
         tc.Error(this, cat((int64_t)elems.size(), " element(s) exceed the capacity of ",
                            tc.TypeStr(expected)));
-    if (expected && (expected->kind == TY_ARRAY || expected->kind == TY_SLICE)) {
+    v.type = expected && expected->kind == TY_ARRAY ? expected
+                                                    : natural((int64_t)elems.size());
+    if (atslice) {
         // A literal in slice position materializes a temporary fixed array.
-        v.type = expected->kind == TY_ARRAY
-                     ? expected : tc.FixedArrayOf(elem, (int64_t)elems.size(), line);
-        v.root = expected->kind == TY_SLICE ? tc.temproot : nullptr;
-    } else {
-        v.type = tc.FixedArrayOf(elem, (int64_t)elems.size(), line);
+        tc.NoTemporaryLiteral(this, v.type);
+        v.root = tc.temproot;
     }
     tc.HolderFromLit(v, deep);
     return v;

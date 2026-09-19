@@ -899,6 +899,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         bindtype = ct;
     } else {
         auto iv = CheckV(x->iter, nullptr);
+        NoTemporaryLiteral(x->iter, iv.type);
         x->iter->exprtype = iv.type;
         auto t = iv.type;
         iterprov = iv;
@@ -1831,6 +1832,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         if (!ImageSafe(elem, why))
             Error(c, cat(d.name, " cannot write ", TypeStr(rv.type), " out: ", why));
         if (d.kind == B_BYTES_OF) {
+            NoTemporaryLiteral(args[0], rv.type);
             Val v;
             v.type = cu8slice;   // A read-only view, in its type too (§9.5).
             v.SetProv(rv);

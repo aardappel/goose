@@ -776,6 +776,7 @@ struct TypeCheck {
 
     LVal CheckLValue(Node *n);
     LVal LValueBase(Node *n);
+    void NoTemporaryLiteral(Node *n, TypeExpr *t);
     void DerefLValue(LVal &lv, Node *at);
     void RequireAssigned(VarDef *vd, Node *at);
     void SliceProvenance(LVal &lv, Node *at);

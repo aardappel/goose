@@ -292,6 +292,14 @@ and grow-shrink arrays need fixed-size elements; variable and grow-only
 arrays may not hold resizables; an enum with non-fixed payloads is only
 usable in variable mode.
 
+An array literal takes the type its destination names; failing one it is a
+`T[k]`, or a `T[]` when its elements are not fixed-size, since `T[k]` would
+break those rules. A fixed literal at a slice destination is a temporary
+codegen holds in a C local and slices whole. A `T[]` literal has no such
+temporary: `NoTemporaryLiteral` rejects it at a slice destination, as a
+`for` iterable, as the base of a path (`[..]`) and as `bytes_of`'s argument,
+the places that would view it (spec §4.2).
+
 **Pending arrays.** `var out = [];` (§4.2) gets a grow-only array type whose
 element is a private void type (`PendingArray`); the first `push`, `append`,
 `format` or whole assignment overwrites the element type *in place*
