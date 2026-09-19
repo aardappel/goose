@@ -147,14 +147,14 @@ inline Prov TypeCheck::RefProvOf(VarDef *vd) {
         // use precedes): what it can point at is whatever can hold the
         // pointee type at its own depth or outside, exactly when that is
         // one variable -- the read-back rule's answer (§9.5).
-        vector<VarDef *> cands;
+        vector<VarDef *> cands, bounds;
         auto hasstatic = false;
         RootCandidates(LoadType(vd->type->ref->sub), Depth(vd), false, !vd->type->cq, cands,
-                       hasstatic);
+                       hasstatic, bounds);
         if (!cands.empty()) {
             p.root = cands[0];
             for (auto c : cands) if (Depth(c) > Depth(p.root)) p.root = c;
-            p.rootexact = cands.size() == 1 && !hasstatic;
+            p.rootexact = cands.size() == 1 && !hasstatic && bounds.empty();
         }
     }
     return p;

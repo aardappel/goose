@@ -1322,7 +1322,10 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
             vd->contentexact = true;
             vd->contentset = true;
             vd->contentbyteview = ra.byteview;
-            vd->ref.root = cr;   // So a returned holder maps back at the call site.
+            // A returned holder maps back at the call site through it, and a
+            // read-back out of the parameter, or out of anything its contents
+            // were copied into, is bounded by it (RootCandidates).
+            vd->ref.root = cr;
             vd->refrootknown = true;
             // Its contents are whatever the call site's value pointed at:
             // bounded by the class root, as an event of its own.

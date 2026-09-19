@@ -1836,10 +1836,17 @@ root lies:
 2. **A local of the function being checked**, at any block depth,
    by-value parameters included. Everything stored into `C` was reachable
    from this frame and had to outlive `C`, so the owner is a local declared
-   at or outside `C`'s block, a reference parameter's pointee, a global, or
-   static data. The root is the innermost such candidate — the true owner is
+   at or outside `C`'s block, a reference parameter's pointee, a global,
+   static data, or storage of the caller's that a parameter leads to through
+   references: the ones a by-value parameter holds, which its argument
+   filled, and the ones in what a reference parameter points at. This
+   function cannot enumerate that storage, and it all outlives the
+   parameter's root — for a by-value parameter the root of what its
+   argument held (§9.2's generic roots of reference fields) — so that root
+   is its candidate. The root is the innermost candidate — the true owner is
    that one or one further out, so its scope bounds every possibility — and
-   is exact when there is exactly one candidate in all.
+   is exact when there is exactly one candidate in all and it is not such a
+   parameter's root, which only bounds the storage behind it.
 3. **A reference parameter's pointee, or itself inexact.** The owner may be
    caller storage this function cannot enumerate: the root is `C`'s, inexact.
 4. **A temporary** (§9.2). Everything in it came from the literal's

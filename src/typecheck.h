@@ -854,13 +854,16 @@ struct TypeCheck {
     // owner. Where exactly one such candidate exists the read-back is that
     // variable, and rules that need identity (a relative-reference store,
     // §3.9) may use it; otherwise the candidates only bound the lifetime.
+    // What a parameter's references lead to is the caller's storage, known
+    // here only by the parameter's root, which is then a bound as well.
 
     bool CanContain(TypeExpr *t, TypeExpr *of);
+    bool ReachesThroughRefs(TypeExpr *t, TypeExpr *of);
     TypeExpr *PointeeOf(TypeExpr *t);
     void VisibleVars(const function<void(VarDef *)> &f);
     bool StaticCanContain(TypeExpr *of);
     void RootCandidates(TypeExpr *of, int d, bool globalsonly, bool writable,
-                        vector<VarDef *> &out, bool &hasstatic);
+                        vector<VarDef *> &out, bool &hasstatic, vector<VarDef *> &bounds);
 
     bool TempContents(const Val &v, ReadBack &contents);
     ReadBack ReadBackRoot(TypeExpr *rt, VarDef *croot, bool cexact, bool byteview = false,

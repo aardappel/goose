@@ -658,20 +658,51 @@ inline bool TypeCheck::StaticCanContain(TypeExpr *of) {
     return of->kind == TY_INT && of->intstorage == IS_U8;
 }
 
+// Whether storage that can hold an `of` is reached from a value of type t
+// through the plain references and slices it holds, at any remove.
+inline bool TypeCheck::ReachesThroughRefs(TypeExpr *t, TypeExpr *of) {
+    vector<TypeExpr *> work, seen;
+    RefPointees(t, work);
+    while (!work.empty()) {
+        auto p = work.back();
+        work.pop_back();
+        auto again = false;
+        for (auto s : seen) again = again || TypeEq(s, p);
+        if (again) continue;
+        seen.push_back(p);
+        if (CanContain(p, of)) return true;
+        RefPointees(p, work);
+    }
+    return false;
+}
+
 // The candidates for a pointee of type `of`: every global whose own
 // storage can hold one, static data where a literal could supply one and,
 // unless `globalsonly`, every named local at scope depth `d` or shallower
 // that can hold one plus the pointee of every reference/slice in scope (a
-// parameter's caller-side storage is reachable only through it).
+// parameter's caller-side storage is reachable only through it). The
+// references a parameter holds by value or points at lead on into more of
+// the caller's storage, which this function cannot enumerate: everything
+// stored there outlives the parameter's root, so that root stands in for
+// it, as a candidate that only bounds the owner (also listed in `bounds`).
 // Deduplicated by root; the caller picks the deepest.
 inline void TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, bool writable,
-                                      vector<VarDef *> &out, bool &hasstatic) {
+                                      vector<VarDef *> &out, bool &hasstatic,
+                                      vector<VarDef *> &bounds) {
     hasstatic = false;
+    bounds.clear();
     auto add = [&](VarDef *r) {
         r = CanonRoot(r);
         if (!r) { hasstatic = true; return; }
         for (auto o : out) if (o == r) return;
         out.push_back(r);
+    };
+    auto beyond = [&](VarDef *v, TypeExpr *t, int rd) {
+        if (!v->isparam || !v->refrootknown || !ReachesThroughRefs(t, of)) return;
+        auto r = CanonRoot(v->ref.root);
+        if (Depth(r) > rd) return;
+        add(r);
+        if (r && std::find(bounds.begin(), bounds.end(), r) == bounds.end()) bounds.push_back(r);
     };
     auto consider = [&](VarDef *v, int rd) {
         if (!v->type) return;
@@ -680,9 +711,13 @@ inline void TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, boo
             auto r = CanonRoot(v->ref.root);
             if (Depth(r) > rd) return;
             auto pt = PointeeOf(v->type);
-            if (pt && CanContain(pt, of)) add(r);
-        } else if (Depth(v) <= rd && CanContain(v->type, of)) {
-            add(v);
+            if (!pt) return;
+            if (CanContain(pt, of)) add(r);
+            beyond(v, pt, rd);
+        } else {
+            if (Depth(v) <= rd && CanContain(v->type, of)) add(v);
+            // A holder parameter's contents: its class root (CheckSpecBody).
+            beyond(v, v->type, rd);
         }
     };
     if (!globalsonly) VisibleVars([&](VarDef *v) { if (!v->isglobal) consider(v, d); });
@@ -746,9 +781,9 @@ inline TypeCheck::ReadBack TypeCheck::ReadBackRoot(TypeExpr *rt, VarDef *croot, 
     // is open here. A local container's was reachable from this frame and
     // had to outlive the container, so its owner is a candidate at the
     // container's depth or shallower.
-    vector<VarDef *> cands;
+    vector<VarDef *> cands, bounds;
     auto hasstatic = false;
-    RootCandidates(of, Depth(croot), global, !rt->cq, cands, hasstatic);
+    RootCandidates(of, Depth(croot), global, !rt->cq, cands, hasstatic, bounds);
     rb.from = croot;
     if (cands.empty()) {
         // Static data alone: null is its root, and it outlives everything.
@@ -759,7 +794,7 @@ inline TypeCheck::ReadBack TypeCheck::ReadBackRoot(TypeExpr *rt, VarDef *croot, 
     // one or one further out, so its depth bounds every possibility.
     rb.root = cands[0];
     for (auto c : cands) if (Depth(c) > Depth(rb.root)) rb.root = c;
-    rb.exact = cands.size() == 1 && !hasstatic;
+    rb.exact = cands.size() == 1 && !hasstatic && bounds.empty();
     return rb;
 }
 
@@ -769,14 +804,16 @@ inline TypeCheck::ReadBack TypeCheck::ReadBackRoot(TypeExpr *rt, VarDef *croot, 
 inline string TypeCheck::ReadBackWhy(TypeExpr *rt, VarDef *from) {
     auto of = PointeeOf(rt);
     if (!from || !of) return {};
-    vector<VarDef *> cands;
+    vector<VarDef *> cands, bounds;
     auto hasstatic = false;
-    RootCandidates(of, Depth(from), from->isglobal, !rt->cq, cands, hasstatic);
+    RootCandidates(of, Depth(from), from->isglobal, !rt->cq, cands, hasstatic, bounds);
     auto n = cands.size() + (hasstatic ? 1 : 0);
     if (n == 0) return cat("it was read out of ", from->name, ", whose contents this function cannot trace");
     string s = cat("it was read out of ", from->name, " and may point into ");
     for (size_t i = 0; i < cands.size(); i++) {
         if (i) s += i + 1 == n ? " or " : ", ";
+        if (std::find(bounds.begin(), bounds.end(), cands[i]) != bounds.end())
+            s += "the caller's storage behind ";
         s += cands[i]->name;
     }
     if (hasstatic) { if (n > 1) s += " or "; s += "static data"; }

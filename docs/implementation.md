@@ -520,7 +520,8 @@ deepest root among its reference initializers (`NoteLitElem`,
 the read writes the variable, in which case the variable itself is the
 bound; a container read's is the container's root, inexact, and out of a
 temporary the temporary's own; a holder parameter is keyed by its holder
-root class like a reference.
+root class like a reference, and that class (its `ref.root`) bounds what is
+read back out of it or out of a copy of it (§3.6).
 
 ### 3.6 Read-back roots
 
@@ -541,7 +542,13 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   the candidates are the visible locals declared at the container's depth or
   outside it that can hold the pointee, the pointees of reference and slice
   variables in scope with committed roots at that depth, the globals, and
-  static data;
+  static data -- and the class root of every parameter in scope whose
+  pointee, or whose by-value contents, lead through references to storage
+  that can hold the pointee (`ReachesThroughRefs`). That storage is the
+  caller's, which the body cannot enumerate: a holder parameter is a local,
+  but what it holds its argument filled, and whatever the body copies it
+  into holds the same. The class root only bounds it (`RootCandidates`
+  lists it in `bounds`);
 * a container reached through a caller's storage, or itself inexact: the
   container's root, inexact;
 * a container that is a temporary (a literal or a call result, reached
@@ -552,10 +559,11 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   out of one take the same answer.
 
 The root is the deepest candidate; it is exact only with exactly one
-candidate and no static data. `ReadBackWhy` turns the candidate list into
-the "may point into `pool` or `spare`" diagnostic the rules that need
-identity produce. A byte view read back takes the container's `contentroot`
-where one is known.
+candidate, no static data and no bound. `ReadBackWhy` turns the candidate
+list into the "may point into `pool` or `spare`" diagnostic the rules that
+need identity produce, naming a bound as "the caller's storage behind" its
+parameter. A byte view read back takes the container's `contentroot` where
+one is known.
 
 ### 3.7 Reference variables commit to a root
 
