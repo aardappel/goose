@@ -380,10 +380,13 @@ inline string AliasDecl::CgX(CodeGen &cg) { cg.Fail(line, "internal: decl as val
 // ---- CgAny ----------------------------------------------------------------
 
 inline void Block::CgAny(CodeGen &cg, const Dst &d) {
+    // A self-call's arguments, bound in front of the base case inlined in
+    // its place (optimize_basecase.h).
+    auto first = cg.GenInlineArgs(this);
     cg.PushSc(CodeGen::SC_PLAIN);
     cg.L("{");
     cg.ind++;
-    cg.GenBlockInner(this, d);
+    cg.GenBlockInner(this, d, first);
     cg.PopSc();
     cg.ind--;
     cg.L("}");
@@ -590,18 +593,9 @@ inline void InlineBlock::EmitBody(CodeGen &cg, const Dst &d) {
     auto named = cg.OpenIbNrvo(this, d);
     // The named result's elements sit at d from its declaration on.
     if (named) cg.openat[d.s]++;
-    // An ordinary call evaluates its arguments in the caller's scope. Keep
-    // that lifetime when inlining: a slice/reference argument can borrow a
-    // temporary, and the returned value may still borrow it after this body
-    // exits (or while a later argument is evaluated). Actual callee locals
-    // and its statement temporaries retain their ordinary inner scopes.
-    size_t first = 0;
-    while (first < body->stmts.size()) {
-        auto arg = Is<VarDecl>(body->stmts[first]);
-        if (!arg || !arg->inline_arg) break;
-        cg.GenStmt2(arg);
-        ++first;
-    }
+    // The callee's own locals and statement temporaries keep their ordinary
+    // inner scopes.
+    auto first = cg.GenInlineArgs(body);
     cg.PushSc(CodeGen::SC_IB);
     auto si = (int)cg.cscopes.size() - 1;
     cg.cscopes[si].ibsf = sf;

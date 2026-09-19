@@ -12,6 +12,22 @@ inline void CodeGen::GenBlockInner(Block *b, Dst d, size_t first) {
     else if (b->tail) GenAny(b->tail, Dst {});
 }
 
+// The argument bindings an inlined call's block starts with (`inline_arg`),
+// made in the current scope rather than the block's, as an ordinary call
+// makes its arguments in the caller's: a slice or reference argument can
+// view a temporary, which the call's value may still view after the block
+// exits, through the rest of the statement. Returns how many there are.
+inline size_t CodeGen::GenInlineArgs(Block *b) {
+    size_t n = 0;
+    while (n < b->stmts.size()) {
+        auto arg = Is<VarDecl>(b->stmts[n]);
+        if (!arg || !arg->inline_arg) break;
+        GenStmt2(arg);
+        n++;
+    }
+    return n;
+}
+
 inline void CodeGen::GenStmt(Node *n) {
     PushSc(SC_STMT);
     termjump = false;

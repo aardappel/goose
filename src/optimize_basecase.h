@@ -19,7 +19,9 @@
 // could build it in, and such a call is left alone. Binding the arguments
 // first keeps them evaluated once and in order; c is the exception — the
 // recursing arm runs it a second time inside the callee — which is why it is
-// restricted to pure reads.
+// restricted to pure reads. The bindings are made in the scope around the
+// block, as the call's arguments were (`inline_arg`): a slice argument may
+// view a temporary, which the block's value can still view.
 #pragma once
 
 namespace goose {
@@ -191,6 +193,7 @@ struct BaseCaseInliner {
             auto pv = K->params[i];
             auto vd = inl.BindArg(pv, c->args[i], c->line);
             if (!vd) continue;
+            vd->inline_arg = true;
             decls.push_back(vd);
             // The recursing arm passes the binding on, so whichever arm runs,
             // the argument was evaluated exactly once and before the test.

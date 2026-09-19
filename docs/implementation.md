@@ -1054,11 +1054,14 @@ benchmarks lands 18 blocks deep.
 read of parameters and globals, and `e` calling nothing in the cycle, gets
 each direct self-call `f(a...)` rewritten to `{ let p = a; ...; if c[p] {
 e[p] } else { f(p...) } }` under the inliner's size thresholds. This removes
-half the calls of a complete tree walk. It does not fire when a statement
-precedes the base case, on mutual recursion, on UFCS-spelled self-calls, or
-on a self-call whose array result is passed where a slice is expected: the
-array has to outlive the `if`, and each arm would build it in a scope of its
-own.
+half the calls of a complete tree walk. The bindings are marked
+`inline_arg`, like an inlined call's, and made in the scope around the block
+(`GenInlineArgs`): a slice argument can view a temporary, which has to last
+while the callee runs and while the block's value is used. It does not fire
+when a statement precedes the base case, on mutual recursion, on
+UFCS-spelled self-calls, or on a self-call whose array result is passed
+where a slice is expected: the array has to outlive the `if`, and each arm
+would build it in a scope of its own.
 
 **Accumulator tail-recursion elimination** (`TailRecursion`,
 `optimize_tre.h`, `-O1` and above): a directly self-recursive
