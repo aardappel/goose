@@ -1624,10 +1624,11 @@ outlives-rule is the language's entire "borrow checker".
 
 ### 9.2 Roots and the depth check
 
-Every reference/slice value has a static **root**: a local or global variable
-that bounds the scope its target lives in. The root is **exact** when that
-variable's own storage contains the target, and inexact when it only bounds
-the target's lifetime — the owner is then that variable or one further out.
+Every reference/slice value has a static **root**: a local or global
+variable, or a temporary (below), that bounds the scope its target lives in.
+The root is **exact** when that variable's own storage contains the target,
+and inexact when it only bounds the target's lifetime — the owner is then
+that variable or one further out.
 Every root a `&lvalue` creates is exact; the reads out of containers of §9.5
 are where inexact ones come from. Compilation in call-graph order with
 per-instantiation specialization means roots are always statically known —
@@ -1651,7 +1652,10 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   A value that *holds* references (a struct with a reference field, an
   array of slices, an ADT payload with one) stores under the same rule for
   what it holds: its root is that of the references stored into it, and each
-  such store is on record for the shrink rules (§5.1).
+  such store is on record for the shrink rules (§5.1). A declaration stores
+  its value into the variable it declares, with a type annotation or
+  without: `let s = { let t: u8[] = "abc"; t[..] };` is an error, since `t`
+  ends with its block.
 * **Return**: a returned reference's root must be visible to the caller (a
   caller-supplied root, a global, or the function's own in-place-constructed
   return value).
@@ -1685,10 +1689,16 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
 * A **temporary** — an array, struct or variant literal, or a call's
   result, viewed where it stands rather than built into a destination (by a
   slice parameter, a `for`, `[..]`, `bytes_of` or a path into it, §4.2) —
-  lasts for the rest of its statement, which every variable outlives: a
-  reference or slice into it may be passed down, but neither stored nor
-  returned. A function it is passed to may keep it in its own locals, which
-  die first. What a temporary *holds* is not rooted at the temporary (§9.5).
+  lasts for the rest of its statement, or of the block whose final
+  expression made it. Its scope is that statement's: the variables the
+  statement declares outlive it, and those of the scopes the statement
+  opens — the body of a `for` over it, the arms of a `match` on it — do
+  not. So a reference or slice into it may be passed down, and stored or
+  bound only in those inner scopes: `let s = f()[..];` is an error, while
+  `let t = f(); let s = t[..];` is not, and neither is a view into `x`
+  bound inside `for x in f() { … }`; it is never returned. A function it is
+  passed to may keep it in its own locals, which die first. What a
+  temporary *holds* is not rooted at the temporary (§9.5).
 
 Violations are compile errors. There is no escape hatch in v1.
 

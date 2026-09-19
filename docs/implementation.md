@@ -376,8 +376,20 @@ at its creation along the current compile-time call path. Because scopes
 accumulate along the path, a callee's locals are always deeper than
 anything its caller passed, and "A outlives B" is `Depth(A) <= Depth(B)`
 for variables live together on one path. Two sentinels have the largest
-depth: `temproot` (a temporary, outlived by everything) and `cycleroot`
-(the result of a back edge whose root the cycle does not determine, §3.11).
+depth: `temproot` (what a reference variable not bound yet points at) and
+`cycleroot` (the result of a back edge whose root the cycle does not
+determine, §3.11).
+
+**Temporaries.** A value made without a name -- a literal or a call's
+result, `str`'s text, a popped element -- is rooted at a `VarDef` of its
+own (`TempRoot`, `istemp`), one past the depth of the scope it is made in:
+codegen frees it when its statement ends (§6.2), or the block whose tail
+made it, so it outlives the variables of the scopes that statement opens (a
+`for` body over it, a `match` arm on it) and not the ones the statement
+itself declares. What it holds is read back where it points (`intemp`,
+§3.6), and a store record never names a temporary as the source of what it
+holds (`RecordStore`): nothing on record describes a temporary's contents,
+so the stored value's own root bounds them.
 
 **Where a root comes from:**
 
@@ -391,7 +403,7 @@ depth: `temproot` (a temporary, outlived by everything) and `cycleroot`
 | `a.alloc_slice(n)`, `a.realloc_slice(s, n)` | `a`'s root | `a`'s exactness |
 | `a[lo..hi]` (`SliceExpr::Check`) | `a`'s root | `a`'s exactness |
 | a call result (`CallResult`) | the callee's `RetRoot`, mapped: a parameter's class back to the argument's root at this site, a global as itself, else static data | the callee's, ANDed with the argument's |
-| an array, struct or variant literal | `temproot`: whatever views it rather than being built from it views a temporary | no |
+| an array, struct or variant literal, and a call's value result | a temporary (`TempRoot`): whatever views it rather than being built from it views a temporary | no |
 | a string literal | static data (null) | yes |
 | `null` | none (adapts to any optional) | -- |
 
@@ -407,7 +419,9 @@ from), and every parameter of the class is bound to it, `rootexact` within
 the body: inside the body a class names one array, whatever the call site.
 A temporary of the calling statement outlives the call, so its class takes
 the body's own outermost depth instead (`ClassDepth`): the body may keep it
-in its locals, but not in anything of the caller's.
+in its locals, but not in anything of the caller's. So that class numbers
+stay outlives ranks, a temporary ranks after every variable here too,
+whatever depth it shares with one at the call site.
 Whether two *different* classes are different arrays is what
 `RootArg::exact`/`concrete` answer, and only codegen's stack-top caching asks
 (§7.9); `SettleParamRootExactness` propagates the answer through the `via`
@@ -440,6 +454,14 @@ references or slices, `HoldsPlainRef`) meets a destination with a root:
    of an enclosing non-cycle function, or a rebind of the activation's own
    reference variable may be stored (§7.8);
 5. the store is **recorded**.
+
+A declaration without a type annotation takes its value's type and meets
+no destination type, so `FitsAt` never sees it; `CheckBindingRoot` applies
+rule 2 to it instead, each name of a multi-value declaration included,
+which is what keeps a variable from viewing a temporary of its own
+statement or a local of the block whose value it is. The sentinels pass:
+a variable may hold what a reference not bound yet, or a back edge's
+result, points at.
 
 The record (`storeevents`, one `StoreEvent` per store, program-wide) is what
 the grow-only shrink rule of §5.1 consults: the container, the stored

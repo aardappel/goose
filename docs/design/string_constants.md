@@ -503,6 +503,8 @@ one-file repro in the session's scratchpad:
   f()[..]` where `f` returns a `u8[]` typechecks (the temporary's sentinel
   root is accepted as a binding) while codegen restores the temporary's stack
   at the end of the statement. It works today only because each temporary
-  gets a stack of its own within the function.
+  gets a stack of its own within the function. (Since fixed: a temporary is
+  rooted at its statement's depth, and a binding without an annotation is
+  held to the store rule, §9.2.)
 * The `codex/readonly-literals` experiment missed the reference-to-element
   paths listed under option 2b.

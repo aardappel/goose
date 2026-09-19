@@ -667,8 +667,12 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
                     if (distinct[k] == r) idx = (int)k;
             if (idx < 0) {
                 // Keep distinct ordered by depth so classes mean outlives-rank.
+                // A temporary's class is deeper in the body than every
+                // variable's (ClassDepth), so it ranks after them whatever
+                // its depth here.
+                auto rank = [&](VarDef *v) { return IsTemp(v) ? INT32_MAX : Depth(v); };
                 auto ins = distinct.size();
-                while (ins > 0 && Depth(distinct[ins - 1]) > Depth(r)) ins--;
+                while (ins > 0 && rank(distinct[ins - 1]) > rank(r)) ins--;
                 distinct.insert(distinct.begin() + ins, r);
                 for (auto &rr : roots) if (rr.cls > (int)ins) rr.cls++;
                 idx = (int)ins;
@@ -1142,7 +1146,7 @@ inline void TypeCheck::CheckExternSpec(FnSpec *spec) {
 // scope: the callee may keep it in its locals, but not in the caller's
 // storage.
 inline int TypeCheck::ClassDepth(VarDef *r) {
-    return r == temproot ? CurDepth() : Depth(r);
+    return IsTemp(r) ? CurDepth() : Depth(r);
 }
 
 inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline) {
@@ -1374,7 +1378,7 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         if (root && root->ownerspec == tspec)
             Error(at, cat("returning a reference rooted in ", root->name,
                           ", which dies with this function (§9.2)"));
-        if (root && root == temproot)
+        if (IsTemp(root))
             Error(at, "returning a reference into a temporary");
         if (root && root == cycleroot)
             Error(at, "returning the result of a recursive call whose returned "
@@ -1461,12 +1465,12 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
                 v.holderroot = v.root;
                 v.holderexact = v.rootexact;
                 v.holderset = true;
-                v.root = temproot;
+                v.root = TempRoot();
                 v.rootexact = false;
                 v.writable = false;
             }
         } else {
-            v.root = temproot;
+            v.root = TempRoot();
             v.writable = false;
         }
         if (spec->inprogress && i < spec->retroots.size()) {

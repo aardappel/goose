@@ -1224,6 +1224,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             // Reference returns decay in inference, like everywhere, unless
             // the declaration binds by reference (`.=`).
             auto rv = vd->byref ? rets[i] : DecayRef(rets[i]);
+            CheckBindingRoot(d, rv, vd->inits[0]);
             Finish(d, rv.type, &rv);
         }
         return;
@@ -1282,7 +1283,10 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         }
         if (v.isnull && !ann)
             Error(vd->inits[i], "null needs an annotated optional type");
-        if (!ann) NoRelRefCopy(vd->inits[i], v.type);
+        if (!ann) {
+            NoRelRefCopy(vd->inits[i], v.type);
+            CheckBindingRoot(d, v, vd->inits[i]);
+        }
         d->assigned = true;
         // A `let` has exactly one value, so its initializer's
         // non-negativity is the name's for good (§6.1). A `var` can be
@@ -1290,6 +1294,28 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         d->nonneg = !vd->isvar && v.nonneg;
         Finish(d, ann ? ann : v.type, &v);
     }
+}
+
+// A binding without an annotation takes its value's own type, so no store
+// rule (FitsAt) saw it; the variable must still not outlive what the value
+// points into (§9.2) -- a temporary of the binding's own statement, or a
+// local of the block whose value it is.
+inline void TypeCheck::CheckBindingRoot(VarDef *d, const Val &v, Node *at) {
+    auto t = v.type;
+    if (!t || v.isnull) return;
+    auto isrs = IsRefOrSlice(t);
+    if (!isrs && !HoldsPlainRef(t)) return;
+    auto root = CanonRoot(isrs ? v.root : HolderRootOf(v));
+    // The sentinels stand for roots not known yet, which a variable may hold.
+    if (!root || root == temproot || root == cycleroot || Depth(root) <= Depth(d)) return;
+    auto what = !isrs ? "a value holding references" : t->kind == TY_SLICE ? "a slice"
+                                                                            : "a reference";
+    if (IsTemp(root))
+        Error(at, cat("binding ", d->name, " to ", what, " rooted at a temporary, which does "
+                      "not outlive it (§9.2): a temporary lasts until the end of its "
+                      "statement, so bind it to a variable of its own first"));
+    Error(at, cat("binding ", d->name, " to ", what, " rooted at ", root->name,
+                  ", which does not outlive it (§9.2)"));
 }
 
 inline void TypeCheck::NoteNonfixedLocal(TypeExpr *t, Line l, bool global) {
@@ -1639,7 +1665,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             c->rettypes.push_back(t);
             Val v;
             v.type = t;
-            v.root = temproot;
+            v.root = TempRoot();
             return v;
         }
         case B_ASSERT:
@@ -1693,7 +1719,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             c->rettypes.push_back(t);
             Val first;
             first.type = t;
-            first.root = temproot;
+            first.root = TempRoot();
             lastcallrets.clear();
             lastcallrets.push_back(first);
             if (d.kind == B_QPOLL) {
@@ -1763,7 +1789,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             c->rettypes.push_back(ast.booltype);
             Val first;
             first.type = t;
-            first.root = temproot;
+            first.root = TempRoot();
             Val ok;
             ok.type = ast.booltype;
             lastcallrets.clear();
@@ -1830,7 +1856,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                 held.type = SliceOf(elem, args[0]->line);
             else if (held.type->kind != TY_REF)
                 held.type = RefTo(rt, args[0]->line);
-            if (held.root == temproot && rv.type->kind != TY_REF &&
+            if (IsTemp(held.root) && rv.type->kind != TY_REF &&
                 rv.type->kind != TY_SLICE)
                 held.rootexact = true;
             HoldValue(args[0], held);
@@ -1912,7 +1938,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         c->rettypes.push_back(t);
         Val v;
         v.type = t;
-        v.root = temproot;
+        v.root = TempRoot();
         return v;
     }
     // format(out, a, b, ...): the arguments' text appended to a growable
@@ -2054,7 +2080,14 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         case 'b': v.type = ast.booltype; break;
         case 'e':
             v.type = LoadType(elem);
-            v.root = temproot;
+            v.root = TempRoot();
+            if (HoldsPlainRef(v.type)) {
+                // The element leaves as a temporary, holding what it held in
+                // the receiver, as an element read would (ContainerRead).
+                v.holderroot = CanonRoot(rv.root);
+                v.holderset = true;
+                v.holderfrom = CanonRoot(rv.root);
+            }
             // What an adapting receiver (the element's ADT, say) constructs from.
             c->rettypes.push_back(v.type);
             break;

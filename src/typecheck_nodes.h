@@ -208,7 +208,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
                                tc.TypeStr(expected)));
         v.type = expected && expected->kind == TY_ARRAY ? expected : natural(cnt);
         if (atslice) tc.NoTemporaryLiteral(this, v.type);
-        v.root = tc.temproot;
+        v.root = tc.TempRoot();
         tc.HolderFromLit(v, deep);
         return v;
     }
@@ -242,7 +242,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     // Anything that views the literal rather than building a destination
     // from it views a temporary (§9.2), whose elements point where its
     // holder root says.
-    v.root = tc.temproot;
+    v.root = tc.TempRoot();
     tc.HolderFromLit(v, deep);
     return v;
 }
@@ -270,7 +270,7 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
                          tc.TypeArgsEq(expected->enu->args, t->var->adt->enu->args)
                      ? expected : t;
         auto deep = tc.CheckInits(this, var->fields, ei->vftypes[vi], ei->en->name, v.type);
-        v.root = tc.temproot;   // A temporary, as an array literal is.
+        v.root = tc.TempRoot();   // A temporary, as an array literal is.
         tc.HolderFromLit(v, deep);
         return v;
     }
@@ -317,7 +317,7 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
         auto deep = tc.CheckInits(this, st->fields, inst->ftypes, st->name, t);
         Val v;
         v.type = t;
-        v.root = tc.temproot;
+        v.root = tc.TempRoot();
         tc.HolderFromLit(v, deep);
         return v;
     }

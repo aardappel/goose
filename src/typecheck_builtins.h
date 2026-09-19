@@ -204,7 +204,7 @@ inline void TypeCheck::CheckGrowShrink(Node *at, bool standalone, const char *op
                       "reference to it, not an element of another value (§5.1)"));
     // Through a reference variable or parameter: the array it points at.
     if (vd->type && vd->type->kind == TY_REF) vd = CanonRoot(RefRootOf(vd));
-    if (!vd || vd == temproot)
+    if (!vd || IsTemp(vd))
         Error(at, cat(op, " through a reference whose array is not known (§5.1)"));
     GrowOnlyShrinkAt(at, standalone, op, vd);
 }
@@ -364,11 +364,14 @@ inline void TypeCheck::RecordStore(VarDef *container, const Val &v, TypeExpr *po
     StoreEvent e;
     e.container = container;
     e.root = CanonRoot(v.root);
-    e.src = src == container ? nullptr : src;
+    // A temporary was filled by whatever made it, not by stores on record,
+    // so it is never the source: the value's own root bounds what it holds.
+    e.src = src == container || IsTemp(src) ? nullptr : src;
     // A reference read back out of a container inexactly (§9.5) points
     // at whatever was stored into that container: its stores are the
     // precise answer, where a bound would implicate every sibling.
-    if (!e.src && !v.rootexact && v.rootfrom && CanonRoot(v.rootfrom) != container)
+    if (!e.src && !v.rootexact && v.rootfrom && CanonRoot(v.rootfrom) != container &&
+        !IsTemp(CanonRoot(v.rootfrom)))
         e.src = CanonRoot(v.rootfrom);
     e.exact = v.rootexact;
     e.pointee = v.byteview ? nullptr : pointee;
@@ -815,7 +818,7 @@ inline bool TypeCheck::BuiltInPlace(TypeExpr *elem) {
 
 inline TypeCheck::Alias TypeCheck::MayAliasRoots(VarDef *a, bool aexact, VarDef *b,
                                                  bool bexact) {
-    if (!a || !b || a == temproot || b == temproot) return AL_NO;
+    if (!a || !b || IsTemp(a) || IsTemp(b)) return AL_NO;
     if (a == b) return AL_YES;
     auto current = CurRealFrame().spec;
     auto isclass = [](VarDef *v) { return !v->type; };
@@ -839,7 +842,7 @@ inline TypeCheck::Alias TypeCheck::MayAliasRoots(VarDef *a, bool aexact, VarDef 
 
 inline void TypeCheck::NoteGrow(Node *at, VarDef *root, bool exact, const string &what) {
     root = CanonRoot(root);
-    if (!root || root == temproot) return;
+    if (!root || IsTemp(root)) return;
     growlog.push_back({ at, root, exact, what });
     NoteRootEvent(root, &FnSpec::growexternals, &FnSpec::growparams);
 }
@@ -872,7 +875,7 @@ inline void TypeCheck::ApplyCalleeGrows(Node *at, FnSpec *spec, vector<Val> &arg
     auto grows = [&](size_t i, const char *how) {
         if (i >= argvals.size()) return;
         auto root = CanonRoot(argvals[i].root);
-        if (!root || root == temproot) return;
+        if (!root || IsTemp(root)) return;
         NoteGrow(at, root, argvals[i].rootexact,
                  cat("call ", name, ", which ", how, " ", root->name));
     };

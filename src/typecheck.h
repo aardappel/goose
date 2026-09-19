@@ -207,7 +207,10 @@ struct TypeCheck {
         DestScope(TypeCheck &t, Dest d) : tc(t), saved(t.curdst) { tc.curdst = d; }
         ~DestScope() { tc.curdst = saved; }
     };
-    VarDef *temproot = nullptr;  // Sentinel root for refs read out of temporaries.
+    // Sentinel root outlived by everything: what a reference variable not
+    // bound yet points at (RefRootOf). A temporary has a root of its own
+    // (TempRoot).
+    VarDef *temproot = nullptr;
     VarDef *cycleroot = nullptr; // Sentinel root for a back edge's result whose root
                                  // the cycle's returns do not determine (§7.8).
     TypeExpr *fntype = nullptr;  // Shared type of function values.
@@ -676,6 +679,21 @@ struct TypeCheck {
     static int Depth(VarDef *v) { return v ? v->depth : 0; }
     static VarDef *CanonRoot(VarDef *v);
 
+    // The storage of a temporary made here (a call's result, a literal): it
+    // lasts until the statement being checked ends, or the block whose tail
+    // value this is, so its depth is one past the current scope. It
+    // outlives the variables of the scopes that statement opens -- a `for`
+    // body over it, say -- and not the ones the statement itself declares
+    // (§9.2).
+    VarDef *TempRoot() {
+        auto t = ast.NewVarDef();
+        t->name = "<temporary>";
+        t->istemp = true;
+        t->depth = CurDepth() + 1;
+        return t;
+    }
+    static bool IsTemp(VarDef *v) { return v && v->istemp; }
+
     // The root of the reference a variable holds; a null-initialized optional
     // has no commitment yet and reads as the temp sentinel, which no store
     // outlives (conservative).
@@ -985,6 +1003,7 @@ struct TypeCheck {
     void CheckStmt(Node *n);
     void CheckStmtExpr(Node *n);
     void CheckVarDecl(VarDecl *vd, bool global);
+    void CheckBindingRoot(VarDef *d, const Val &v, Node *at);
     void NoteNonfixedLocal(TypeExpr *t, Line l, bool global);
     void AssignableClassCheck(TypeExpr *t, Node *at);
     void CheckAssign(Assign *a);
@@ -1132,6 +1151,7 @@ struct TypeCheck {
     TypeCheck(Ast &_ast) : ast(_ast) {
         temproot = ast.NewVarDef();
         temproot->name = "<temporary>";
+        temproot->istemp = true;
         temproot->depth = INT32_MAX;
         cycleroot = ast.NewVarDef();
         cycleroot->name = "<recursive result>";

@@ -695,7 +695,7 @@ inline void TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, boo
 // the temporary, since a literal's initializers or a callee's result
 // supplied everything it holds, but where they point, its holder root (§9.2).
 inline bool TypeCheck::TempContents(const Val &v, ReadBack &contents) {
-    if (CanonRoot(v.root) != temproot || IsRefOrSlice(v.type)) return false;
+    if (!IsTemp(CanonRoot(v.root)) || IsRefOrSlice(v.type)) return false;
     contents.root = CanonRoot(HolderRootOf(v));
     contents.exact = v.holderset && v.holderexact;
     contents.from = v.holderfrom;
@@ -710,7 +710,7 @@ inline TypeCheck::ReadBack TypeCheck::ReadBackRoot(TypeExpr *rt, VarDef *croot, 
     ReadBack rb;
     croot = CanonRoot(croot);
     auto relative = rt->kind == TY_REF && rt->ref->lenstorage >= 0;
-    if (contents && croot == temproot && !relative) return *contents;
+    if (contents && IsTemp(croot) && !relative) return *contents;
     if (byteview) {
         rb.root = croot && !croot->isglobal && croot->contentset &&
                   !AssignedInEnclosingLoop(croot) ? croot->contentroot : croot;
@@ -729,7 +729,7 @@ inline TypeCheck::ReadBack TypeCheck::ReadBackRoot(TypeExpr *rt, VarDef *croot, 
         return rb;
     }
     auto of = PointeeOf(rt);
-    if (!of || !croot || croot == temproot || croot == cycleroot) return rb;
+    if (!of || !croot || IsTemp(croot) || croot == cycleroot) return rb;
     // Case 3: the container came from a caller, or its own root is only a
     // bound -- storage this function cannot enumerate may be behind it.
     auto global = croot->isglobal;

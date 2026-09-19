@@ -854,6 +854,10 @@ struct VarDef {
     bool copybind = false;
     bool isglobal = false;
     bool isparam = false;
+    // Not a variable but a temporary's storage (typecheck.h TempRoot): a
+    // call's result, say, which lasts until the end of the statement that
+    // made it.
+    bool istemp = false;
     int reusable = 0;           // A reusable pool (§5.4): RU_SLOTS or RU_SLICES.
     bool nonneg = false;        // A `let` whose initializer was non-negative (§6.1).
     FnSpec *ownerspec = nullptr;  // Null for globals.

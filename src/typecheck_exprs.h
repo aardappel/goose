@@ -72,7 +72,7 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
 
 // The base of a path: itself a path, or any other expression (a call
 // result, a string literal, ...) whose value is then addressed. A null
-// root means static data; temporaries carry the temproot sentinel.
+// root means static data; a temporary has a root of its own (TempRoot).
 // `cmpview`: the path is the slice `==` compares an operand as (§4.5),
 // which ends with the comparison, so it may view any temporary.
 inline TypeCheck::LVal TypeCheck::LValueBase(Node *n, bool cmpview) {
