@@ -674,11 +674,12 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
             // Sharing a class says the two arguments point into the same
             // array, which an inexactly rooted one does not establish: it
             // names a scope its pointee outlives, not the storage that
-            // owns it (§9.5). Such an argument gets a class to itself, so
+            // owns it (§9.5). Such an argument gets a class to itself, one
+            // an exact argument with the same root does not join either, so
             // a class is always one array whatever the call site.
             if (ra.exact)
-                for (size_t k = 0; k < distinct.size(); k++)
-                    if (distinct[k] == r) idx = (int)k;
+                for (size_t j = 0; j < i; j++)
+                    if (argroots[j] == r && roots[j].exact) idx = roots[j].cls - 1;
             if (idx < 0) {
                 // Keep distinct ordered by the depths the classes take in
                 // the body, so classes mean outlives-rank there.
