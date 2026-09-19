@@ -292,7 +292,7 @@ inline Val TypeCheck::DecayRef(Val v) {
 }
 
 // Does dt consume a reference value as-is (so no decay before fitting)?
-inline bool TypeCheck::KeepsRef(Val &v, TypeExpr *dt) {
+inline bool TypeCheck::KeepsRef(const Val &v, TypeExpr *dt) {
     if (!IsPlainRef(v.type)) return true;  // Nothing to decay.
     if (dt->kind == TY_REF) return true;   // Binding (plain/optional/relative).
     // Whole-(pointee-)array argument to a slice parameter (§3.10).
@@ -389,8 +389,15 @@ inline void TypeCheck::UnwrapCopy(Node *&n) {
 // Argument position (`callsite`) additionally allows the array→slice
 // coercion (§3.10), and leaves the redundant-& warning to the call's own
 // resolution, where an explicit & may have picked the overload.
-inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite) {
+inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bool branchcopy) {
     auto v = CheckV(n, expected);
+    auto dt = expected && expected->kind != TY_VOID ? expected : DecayRef(v).type;
+    if (branchcopy && UserRefOf(n) && IsPlainRef(v.type) && !KeepsRef(v, dt) &&
+        ClassOf(dt) == SC_FIXED) {
+        auto what = ExprStr(Is<Unary>(n)->child);
+        Warn(n, cat("redundant &: the construct's value is a copy of ", what, " either way "
+                    "(§4.1); a reference-typed binding binds ", what, " without it"));
+    }
     UnwrapCopy(n);
     if (!expected || expected->kind == TY_VOID) {
         v = DecayRef(v);

@@ -432,9 +432,11 @@ pointee where §4.1 asks for one).
   without `&` (§4.1; writing the `&` warns). Where a *variable's* type is
   inferred (`let x = r;`), a reference to a fixed-size value decays to a
   pointee copy — except an explicit `&lvalue` initializer, which infers the
-  reference type — while a non-fixed lvalue binds by reference (`let w =
-  words[0];` names the element). To bind a reference-returning call, use
-  `.=` (`let e .= pool.push(v);`) or annotate (`let e: T& = pool.push(v);`).
+  reference type (but not a construct choosing one, such as
+  `if c { &a } else { &b }`, whose value is a copy, §4.1) — while a
+  non-fixed lvalue binds by reference (`let w = words[0];` names the
+  element). To bind a reference-returning call, use `.=`
+  (`let e .= pool.push(v);`) or annotate (`let e: T& = pool.push(v);`).
   An untyped parameter is an
   anonymous type variable and binds the argument's exact type, reference or
   not, exactly as an explicit `<T>` does (§7.7): for a fixed value `f(&x)`
@@ -661,6 +663,13 @@ as `f(x, a)` whatever `x`'s size class. `&x` is still how a reference to a
 equivalently `let r .= n;`, §3.8; `f(&n)` into an untyped parameter);
 wherever the destination's own type is
 a reference it is redundant, and a redundant `&` is a warning.
+
+A reference to a fixed-size value that an `if`, `match`, `block`, `loop`
+or bare `{ }` branch gives, `&x` included, is copied as its pointee where
+the construct has no destination type, as it is wherever a
+reference meets a value (§3.8): `let r = if c { &a } else { &b };` makes `r`
+a copy of `a` or `b`, so the `&`s are redundant and warn, while
+`let r: i64& = if c { a } else { b };` binds `a` or `b` itself.
 
 There is no ownership transfer beyond the return move, no destructors, no
 `Drop`, no reference counting. Deallocation is exclusively scope exit

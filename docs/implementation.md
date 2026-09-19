@@ -352,6 +352,8 @@ which codegen follows: a written `&x` there reads as `x` (`Unary::CgX`).
   sees an ordinary reference argument, and warns on a redundant user `&`;
 * rejects a non-fixed lvalue at a value destination unless it is a `copy`
   or the function's own local being returned (`RequireCopyable`, §4.1);
+* warns on a branch's redundant `&x` where its construct has no destination
+  type and copies the fixed-size pointee (`CheckValue`'s `branchcopy` flag);
 * fits the value to the destination (`MustFit`/`FitsAt`, §3.5); the node's
   `exprtype` becomes the destination's type, which can be wider than the
   type its operation computes at (an `i8` cast stored into an `i64`), so

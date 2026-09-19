@@ -733,7 +733,8 @@ inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue
     CheckStmts(b);
     Val v = VoidVal();
     if (b->tail) {
-        if (wantvalue) v = CheckValue(b->tail, expected);
+        if (wantvalue) v = CheckValue(b->tail, expected, false,
+                                     !expected || expected->kind == TY_VOID);
         else CheckStmtExpr(b->tail);
     } else if (wantvalue && reachable && expected && expected->kind != TY_VOID) {
         Error(b, "block used as a value must end in an expression");
@@ -771,7 +772,8 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
         PushScope(SK_PLAIN);
         if (binder) vars.push_back(binder);
         Val av;
-        if (wantvalue) av = CheckValue(arm.body, expected);
+        if (wantvalue) av = CheckValue(arm.body, expected, false,
+                                      !expected || expected->kind == TY_VOID);
         else CheckStmtExpr(arm.body);
         auto aflow = SaveFlow();
         if (!reachable) av.type = nullptr;
@@ -930,7 +932,8 @@ inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wa
     CheckStmts(x->body);
     Val v = VoidVal();
     if (x->body->tail) {
-        if (wantvalue) v = CheckValue(x->body->tail, expected);
+        if (wantvalue) v = CheckValue(x->body->tail, expected, false,
+                                     !expected || expected->kind == TY_VOID);
         else CheckStmtExpr(x->body->tail);
     }
     if (!reachable) v.type = nullptr;
@@ -1187,7 +1190,8 @@ inline void TypeCheck::CheckBreak(Break *b) {
         // Later breaks agree with the first; the first constructs into the
         // type the construct is expected to have, as its tail value does.
         auto expected = scopes[si].breaktype ? scopes[si].breaktype : scopes[si].breakexpected;
-        auto v = CheckValue(b->val, expected);
+        auto be = scopes[si].breakexpected;
+        auto v = CheckValue(b->val, expected, false, !be || be->kind == TY_VOID);
         // The construct's value is a new one: the break's type and what its
         // references point at, never the operand's storage or literal form.
         Val exit;

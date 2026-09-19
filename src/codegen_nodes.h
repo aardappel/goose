@@ -70,7 +70,9 @@ inline string Ident::CgX(CodeGen &cg) {
 inline string Unary::CgX(CodeGen &cg) {
     if (op == T_BITAND) {
         // Where the checker decayed the reference (an operand, a value
-        // destination, a rendered value), `&x` reads as its pointee (§3.8).
+        // destination, a rendered value, a construct's branch with no
+        // reference destination), `&x` reads as its pointee (§3.8); a whole
+        // array's `&x` at a slice parameter reads as that slice (§3.10).
         if (exprtype && exprtype->kind != TY_REF)
             return cg.LoadLoc(cg.GenLoc(child), exprtype, line);
         return cg.GenRefVal(child, line);
