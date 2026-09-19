@@ -76,6 +76,7 @@ inline Node *SliceExpr::Clone(Ast &ast) const {
     sl->hi = CloneOrNull(ast, hi);
     sl->lo_from_end = lo_from_end;
     sl->hi_from_end = hi_from_end;
+    sl->cmpview = cmpview;
     return sl;
 }
 

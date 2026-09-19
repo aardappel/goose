@@ -533,6 +533,7 @@ NODE(SliceExpr)
     Node *lo = nullptr, *hi = nullptr;      // Either may be absent.
     bool lo_from_end = false, hi_from_end = false;  // ^k bounds.
     bool nobc = false;          // Bounds check proven redundant (bce.h); codegen omits it.
+    bool cmpview = false;       // The whole slice `==` takes of an operand (§4.5).
     SliceExpr(Line l, Node *_obj) : Node(l), obj(_obj) {}
 NODE_END
 

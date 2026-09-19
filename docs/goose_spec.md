@@ -704,7 +704,9 @@ Literal forms usable in any construction context:
   when its elements are not fixed-size (§3.3). A fixed one may also be a
   temporary for a slice parameter, a `for`, `[..]` or `bytes_of` to view; a
   `T[]` one is a variable value and exists only in a construction context,
-  so viewing it takes a variable bound to it first;
+  so viewing it takes a variable bound to it first. `==` and `!=` compare
+  either one with any array or slice of its element type (§4.5), since
+  their result holds no view of it;
 * struct literals `X { a: 1, b: 2 }` (named) or `X { 1, 2 }` (positional, in
   declaration order; no mixing). Named initializers must also appear in
   declaration order (out-of-order names are a compile error: values construct

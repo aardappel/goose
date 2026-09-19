@@ -657,6 +657,7 @@ inline Node *SliceExpr::Cp1(Inliner &inl) const {
     if (hi) c->hi = inl.Cp(hi);
     c->lo_from_end = lo_from_end;
     c->hi_from_end = hi_from_end;
+    c->cmpview = cmpview;
     return c;
 }
 

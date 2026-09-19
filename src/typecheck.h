@@ -775,7 +775,7 @@ struct TypeCheck {
     // Lvalue paths: names, fields, elements, optionally through references.
 
     LVal CheckLValue(Node *n);
-    LVal LValueBase(Node *n);
+    LVal LValueBase(Node *n, bool cmpview = false);
     void NoTemporaryLiteral(Node *n, TypeExpr *t);
     void DerefLValue(LVal &lv, Node *at);
     void RequireAssigned(VarDef *vd, Node *at);

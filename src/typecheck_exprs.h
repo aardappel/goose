@@ -73,10 +73,12 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
 // The base of a path: itself a path, or any other expression (a call
 // result, a string literal, ...) whose value is then addressed. A null
 // root means static data; temporaries carry the temproot sentinel.
-inline TypeCheck::LVal TypeCheck::LValueBase(Node *n) {
+// `cmpview`: the path is the slice `==` compares an operand as (§4.5),
+// which ends with the comparison, so it may view any temporary.
+inline TypeCheck::LVal TypeCheck::LValueBase(Node *n, bool cmpview) {
     if (Is<Ident>(n) || Is<Dot>(n) || Is<Index>(n)) return CheckLValue(n);
     auto v = CheckV(n, nullptr);
-    NoTemporaryLiteral(n, v.type);
+    if (!cmpview) NoTemporaryLiteral(n, v.type);
     n->exprtype = v.type;
     LVal lv;
     lv.type = v.type;
@@ -368,7 +370,9 @@ inline void TypeCheck::WriteBackArgs(Call *c, Dot *d, vector<Node *> &argnodes) 
 // The whole of array-valued n as a slice: `n[..]`, synthesized for an
 // equality between array kinds (§4.5).
 inline Node *TypeCheck::WholeSlice(Node *n) {
-    return ast.New<SliceExpr>(n->line, n);
+    auto se = ast.New<SliceExpr>(n->line, n);
+    se->cmpview = true;
+    return se;
 }
 
 // copy(x) checked: the node becomes x itself, the stored value codegen

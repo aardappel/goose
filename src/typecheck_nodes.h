@@ -593,7 +593,7 @@ inline Val Index::Check(TypeCheck &tc, TypeExpr *) {
 
 inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
     TypeCheck::TempScope temps(tc);
-    auto lv = tc.LValueBase(obj);
+    auto lv = tc.LValueBase(obj, cmpview);
     tc.DerefLValue(lv, obj);
     tc.SliceProvenance(lv, obj);
     TypeExpr *elem;

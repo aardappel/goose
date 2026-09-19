@@ -298,7 +298,10 @@ break those rules. A fixed literal at a slice destination is a temporary
 codegen holds in a C local and slices whole. A `T[]` literal has no such
 temporary: `NoTemporaryLiteral` rejects it at a slice destination, as a
 `for` iterable, as the base of a path (`[..]`) and as `bytes_of`'s argument,
-the places that would view it (spec §4.2).
+the places that would view it (spec §4.2). The whole slice `==` takes of an
+operand to compare two array kinds (`WholeSlice`, marked `cmpview`) may
+view one: codegen builds the literal on a statement-scoped stack, like a
+call result, and the comparison's result holds no view of it.
 
 **Pending arrays.** `var out = [];` (§4.2) gets a grow-only array type whose
 element is a private void type (`PendingArray`); the first `push`, `append`,
