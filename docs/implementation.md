@@ -1440,7 +1440,10 @@ long-distance discriminant afterwards where the callee can propagate one
 (`EmitRfCheck`). Tag dispatch (`EmitDispatch`) evaluates every argument once
 in source order, snapshots a by-value scrutinee before later arguments run,
 and switches on the tag with one call per arm sharing the argument
-temporaries and return channels. A function value is spliced inline
+temporaries and return channels. The arms have no element-run form: a
+variable-array result arrives in the arms' layout and is slid out of its
+prefix for a run receiver, or re-prefixed once after the switch for a slot of
+another length storage. A function value is spliced inline
 (`EmitFvCall`): its parameters and locals are ordinary locals of the
 enclosing function, which what is declared in its body takes as free
 variables like any other. An `extern fn` is a direct C call with prototypes emitted for

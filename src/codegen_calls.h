@@ -37,17 +37,27 @@ inline void CodeGen::EmitSlidePrefix(const string &base, IntStorage ls, const st
 inline vector<string> CodeGen::EmitCall(Call *c, Dst d0, vector<Dst> *alldst) {
     // An element-run destination for a variable-array result: builtins
     // and tag dispatch have no element-run form, so take the value form
-    // and slide its length prefix out. Specialization calls route to an
-    // element-run twin (or the same fallback) inside EmitSpecCall, and a
-    // function value's tail construction honors the destination as-is.
+    // and slide its length prefix out -- a builtin builds the value in the
+    // receiver's layout, a dispatch's arms in their own. The arms of a
+    // dispatch of resizable results emit the run themselves (EmitDispatch).
+    // Specialization calls route to an element-run twin (or the same
+    // fallback) inside EmitSpecCall, and a function value's tail
+    // construction honors the destination as-is.
     if (d0.k == DK_STACK && !d0.lenlv.empty() && d0.t && d0.t->kind == TY_ARRAY &&
-        d0.t->arr->akind == A_VAR && (c->builtin >= 0 || !c->dispatch.empty())) {
-        auto base = T();
-        L("uint8_t *", base, " = ", Top(d0.s), ";");
-        auto rets = c->builtin >= 0 ? EmitBuiltin(c, Dst { DK_STACK, d0.s, d0.t })
-                                    : EmitDispatch(c, Dst { DK_STACK, d0.s, d0.t }, alldst);
-        EmitSlidePrefix(base, LenStore(d0.t->arr), d0.s, d0.lenlv);
-        return rets;
+        d0.t->arr->akind == A_VAR) {
+        auto vt = c->builtin >= 0 ? d0.t : nullptr;
+        if (!c->dispatch.empty() && !c->dispatch[0]->rets.empty()) {
+            auto rt = c->dispatch[0]->rets[0];
+            if (rt->kind == TY_ARRAY && rt->arr->akind == A_VAR) vt = rt;
+        }
+        if (vt) {
+            auto base = T();
+            L("uint8_t *", base, " = ", Top(d0.s), ";");
+            auto rets = c->builtin >= 0 ? EmitBuiltin(c, Dst { DK_STACK, d0.s, vt })
+                                        : EmitDispatch(c, Dst { DK_STACK, d0.s, vt }, alldst);
+            EmitSlidePrefix(base, LenStore(vt->arr), d0.s, d0.lenlv);
+            return rets;
+        }
     }
     if (c->builtin >= 0) return EmitBuiltin(c, d0);
     if (c->fvbody) return EmitFvCall(c, d0);
@@ -233,10 +243,7 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
                 args.push_back(dd.s);
                 retex[i] = "";
             }
-        } else if (i == 0 && dd.k == DK_STACK && dd.lenlv.empty() && dd.t &&
-                   dd.t->kind == TY_ARRAY && dd.t->arr->akind == A_VAR &&
-                   rt->kind == TY_ARRAY && rt->arr->akind == A_VAR &&
-                   LenStore(dd.t->arr) != LenStore(rt->arr)) {
+        } else if (i == 0 && NeedsReprefix(dd, rt)) {
             // A T[] result landing in a slot of another length storage
             // (a T[varint] field, say): the callee cannot write the
             // destination's layout, so its elements are taken raw and the
@@ -303,6 +310,16 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
     // A fixed first return requested onto a stack: store it (mixed cases
     // are handled above via cret; nothing more to do here).
     return retex;
+}
+
+// Whether a variable-array result of type rt reaches d as a value slot of a
+// T[] of another length storage (a T[varint] field, say), whose layout the
+// callee cannot write: the slot's prefix goes in front of the elements
+// after the call (EmitReprefix).
+inline bool CodeGen::NeedsReprefix(const Dst &d, TypeExpr *rt) {
+    return d.k == DK_STACK && d.lenlv.empty() && d.t && d.t->kind == TY_ARRAY &&
+           d.t->arr->akind == A_VAR && rt->kind == TY_ARRAY && rt->arr->akind == A_VAR &&
+           LenStore(d.t->arr) != LenStore(rt->arr);
 }
 
 // The elements of a variable-array call result sit at `base` -- raw (the
@@ -511,6 +528,11 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
     vector<string> retex(sp0->rets.size());
     vector<string> dststk(sp0->rets.size());
     vector<string> dstlen(sp0->rets.size());
+    // Set when a T[] result lands in a slot of another length storage: tag
+    // dispatch has no element-run form (C.3), so every arm writes the value
+    // in its own layout, and the slot's prefix replaces the arms' after the
+    // switch.
+    Dst reprefix;
     for (size_t i = 0; i < sp0->rets.size(); i++) {
         auto rt = sp0->rets[i];
         Dst dd = alldst && i < alldst->size() ? (*alldst)[i]
@@ -532,6 +554,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
             L("uint8_t *", base, " = ", Top(stk), ";");
             retex[i] = base;
             dststk[i] = stk;
+            if (i == 0 && NeedsReprefix(dd, rt)) reprefix = dd;
         } else {
             auto tv = T();
             L(CT(rt), " ", tv, ";");
@@ -608,6 +631,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
     }
     L("default: GS_UNREACHABLE(", LocArgs(c->line), ");");
     L("}");
+    if (reprefix.t) EmitReprefix(sp0, reprefix, retex[0], "");
     return retex;
 }
 

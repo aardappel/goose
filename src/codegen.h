@@ -826,6 +826,7 @@ struct CodeGen {
     void EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &args);
     void EmitFvArg(const VarDef *fv, vector<string> &args);
     vector<string> EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<Dst> *alldst);
+    bool NeedsReprefix(const Dst &d, TypeExpr *rt);
     void EmitReprefix(FnSpec *sp, const Dst &dd, const string &base, const string &cnt);
     void EmitRfCheck(FnSpec *callee);
     vector<string> EmitFvCall(Call *c, Dst d0);
