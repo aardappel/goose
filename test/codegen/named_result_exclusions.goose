@@ -1,5 +1,7 @@
-// A named result is not built at a destination another value also claims:
-// a long-distance return into the function, or a second result position.
+// Named results and other values bound for their destination: a return of a
+// copy from a function value's body, run inside a callee, and a long-distance
+// return land over the named result built there (build, grow); a local
+// returned in two result positions is built at neither.
 fn each<F>(n: i64) { for i in n { F(i); } }
 fn build(n: i64) -> u8[] {
     var s: u8[>..] = [];

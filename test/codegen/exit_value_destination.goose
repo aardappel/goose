@@ -2,15 +2,15 @@
 // A return, a break with a value and a `return ... from` build their value
 // at the top of the stack they deliver it to, while the receiver expects it
 // where that top was when the function, inlined body or loop was entered.
-// When the exit abandons something already built there -- an intermediate's
-// named result in the destination the target handed it, part of the
-// target's own literal, str() or struct, a length prefix claimed for a
-// callee's elements, part of a literal around an early return or a break --
-// the value is moved down over it. Every shape runs with and without the
-// exit; at -O2 the helpers are inlined, so exits leave inlined bodies, into
-// an inlined target or into one that stays a function (evaluate2, called
-// from several places). After each delivery something is built right
-// behind it on the same stack.
+// When the exit abandons something already built there -- the target's own
+// named result, an intermediate's in the destination the target handed it,
+// part of the target's own literal, str() or struct, a length prefix claimed
+// for a callee's elements, part of a literal around an early return or a
+// break -- the value is moved down over it. Every shape runs with and
+// without the exit; at -O2 the helpers are inlined, so exits leave inlined
+// bodies, into an inlined target or into one that stays a function
+// (evaluate2 and own, called from several places). After each delivery
+// something is built right behind it on the same stack.
 
 // Named results of intermediates that hand on the target's destination: a
 // resizable, one returned as a u8[] behind a claimed prefix, a frame object.
@@ -135,6 +135,26 @@ fn mid_sl(n: i64) -> u8[>..] {
 }
 fn ev_sl(n: i64) -> u8[>..] { return mid_sl(n); }
 
+// A target's own named result, which the value returned from below lands
+// over: a resizable returned as a u8[] behind its claimed prefix, and a
+// frame object.
+fn stop_own(n: i64) { if n > 2 { return str("bad", n) from own; } }
+fn own(n: i64) -> u8[] {
+    var out: u8[>..] = [];
+    out.push('o');
+    stop_own(n);
+    out.push('k');
+    return out;
+}
+fn stop_bag(n: i64) { if n > 2 { return Bag { tag: 98, items: [6] } from own_bag; } }
+fn own_bag(n: i64) -> Bag {
+    var b = Bag { tag: 2, items: [] };
+    b.items.push(20);
+    stop_bag(n);
+    b.items.push(21);
+    return b;
+}
+
 // A second `return from` while the first one's value is being built.
 fn inner(n: i64) -> u8[] {
     if n > 3 { return [str("inner")] from outer; }
@@ -196,6 +216,10 @@ fn main() {
         let two = ev_two(n);
         print(n, " ", ev_str(n), " ", [ev_lit(n), [str("next")]], " ", two.a, two.b);
         print(n, " ", [ev_mid(n), [str("next")]], " ", ev_rp(n), " ", ev_tw(n));
+        var ob = own_bag(n);
+        ob.items.push(200 + n);
+        print(n, " ", [own(n), str("next"), own(1)], " ", own(n + 1), own(2), " ", ob.tag, " ",
+              ob.items);
         var v = ev_sl(n);
         v.push('!');
         print(n, " ", v, " ", [outer(n), [str("next")]], " ", evaluate2(n));

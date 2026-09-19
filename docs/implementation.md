@@ -1437,8 +1437,8 @@ it at the return (`EmitPrefixPatch`, moving the elements up only when a
 varint prefix outgrows its one reserved byte). The same binding is made for
 an *inlined* callee's named result reaching a construction context, which is
 what keeps §7.3's guarantee for the small builders the optimizer inlines. A
-function that is the target of a `return from` is excluded, since a value
-returned to it from below already occupies that destination.
+function that is the target of a `return from` binds its named result too:
+a value returned to it from below is moved over it at the catch (§6.6).
 
 **Exits** (`ExitStart`, `LandValue`). A `return`, a `break` with a value
 and a return leaving an inlined body build their value at the top of the
