@@ -731,7 +731,8 @@ element that is variable-size or holds relative references of either form
 (`BuiltInPlace`: `EmitPush` builds such an element in its slot, and
 `EmitAlloc` a literal of one; any other fixed-size element is evaluated
 before its slot is claimed, §6.5), a call's array result being appended
-to a non-limited array, an appended literal of elements that are
+to a non-limited array (a `T[..]` result too, though `EmitAppend` builds it
+on a temporary, §6.5), an appended literal of elements that are
 variable-size or hold relative references of either form (which
 `EmitAppend` builds in place), and the new contents of a whole
 assignment of a resizable
@@ -1432,7 +1433,10 @@ of the callee that emits raw elements plus a count, so `v.append(f())` is
 contiguous; a callee without a twin (a builtin, a dispatch, a `return from`
 target) delivers the value form and the receiver slides the length prefix
 out with one `memmove` (`EmitSlidePrefix`). A `T[]` result landing in a slot
-of another length storage is re-prefixed afterwards (`EmitReprefix`).
+of another length storage is re-prefixed afterwards (`EmitReprefix`). A
+runtime-capacity limited result (`T[..]`) has no run form: `EmitAppend`
+builds it on a temporary of its own and copies its elements, as it does any
+call's result appended to a limited array.
 An appended literal of variable-size elements is built the same way, its
 elements at `v`'s top and its count added to the length (`GenArrayLit`);
 one of fixed-size elements holding relative references is a fixed array
@@ -1861,7 +1865,8 @@ rewrites elements pays no live register for it.
   a, b = f(); return a;`) copies.
 * `v.append(f())` for a `T[]`-returning `f` compiles a second copy of `f` in
   element-run form; a builtin or dispatch result there costs one `memmove`
-  of the elements over the prefix.
+  of the elements over the prefix. A `T[..]` result is built on a temporary
+  and costs one copy of its elements.
 * A fixed-size element pushed into an array is evaluated first and stored
   after, so `v.push(f(v))` may grow `v` inside `f`. A variable-size element,
   or one holding relative references, is built in its slot, and `f` may then

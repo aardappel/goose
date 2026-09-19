@@ -447,9 +447,12 @@ inline void CodeGen::EmitAppend(vector<Node *> &an, Line ln) {
     // append(f()) where f returns a variable array: request the
     // element-run form (C.3) -- raw elements at our top plus a count.
     // Callees that cannot supply it fall back to a value-form call with
-    // its length prefix slid out (inside EmitSpecCall).
-    if (auto call = Is<Call>(src); call && IsBytesT(src->exprtype) && ak != A_LIMITED) {
-        assert(src->exprtype->kind == TY_ARRAY);
+    // its length prefix slid out (inside EmitSpecCall). A runtime-capacity
+    // limited result has no element-run form: it is built on a temporary
+    // of its own and its elements copied, below.
+    auto st = src->exprtype;
+    if (auto call = Is<Call>(src);
+        call && st->kind == TY_ARRAY && st->arr->akind == A_VAR && ak != A_LIMITED) {
         auto nn = T();
         L("int64_t ", nn, " = 0;");
         EmitCall(call, Dst { DK_STACK, lv.stk, src->exprtype, nn });
