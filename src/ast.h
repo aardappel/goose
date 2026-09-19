@@ -957,8 +957,8 @@ inline void AllRunsOf(const EnumInst *ei, vector<FieldRun> &out) {
 
 // Call-site facts about one reference/slice or holder parameter, part of the
 // specialization key (§10.2): the relative-outlives class of its root among
-// the call's reference arguments (0 = static, 1 = outermost, ...), and the
-// provenance bits.
+// the call's reference arguments (0 = static, 1 = outermost, ...), where
+// its depth stands, and the provenance bits.
 struct RootArg {
     int cls = 0;
     bool writable = true;
@@ -995,6 +995,20 @@ struct RootArg {
     // this pool's base, so a call site passing a different one is a different
     // specialization rather than a fact to weaken afterwards.
     VarDef *pool = nullptr;
+    // The depth the class takes in the body (TypeCheck::ClassDepth). Not part
+    // of the key: the body is checked with its first call site's depths, and
+    // `depthkey` says which other call sites those stand for.
+    int depth = 0;
+    // What the key keeps of `depth`: the depth itself where it is within the
+    // reach of a lexical environment the body can see (only a global's, 0,
+    // for a body that sees none), else its rank among the distinct depths of
+    // the call's classes beyond that, negated. Calls that agree on it agree
+    // on which class outlives which, which ones share a depth, and how each
+    // stands against every variable the body can name outside itself, which
+    // settles every comparison of a class depth in the body. Part of the
+    // key, but compared apart from the rest (GetOrCreateSpec): a back edge
+    // whose classes differ only here still passes the arrays they describe.
+    int depthkey = 0;
     bool operator==(const RootArg &o) const {
         return cls == o.cls && writable == o.writable && reusable == o.reusable &&
                growshrink == o.growshrink && byteview == o.byteview && pool == o.pool;

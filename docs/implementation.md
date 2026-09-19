@@ -171,7 +171,7 @@ function and no existing specialization matches. `GetOrCreateSpec`
 | `escaped` | whether a nested function is called after the scope declaring it ended, its value having left it: its body may name nothing that scope declared, which one checked inside the scope may (§3.12) |
 | `argtypes` | the concrete parameter types after generic inference |
 | `bindings` | the concrete type of each of the function's own type variables, explicit or inferred, in any order: the only record of one no parameter type mentions (`size<u8>()`) |
-| `roots` (`RootArg` per parameter) | the reference root *class* of each reference, slice or reference-holding argument, its writability, `reusable` and grow-shrink provenance, whether it is a `bytes_of` view, and the global pool it is rooted in (§3.4) |
+| `roots` (`RootArg` per parameter) | the reference root *class* of each reference, slice or reference-holding argument, where the class's depth stands (`depthkey`), its writability, `reusable` and grow-shrink provenance, whether it is a `bytes_of` view, and the global pool it is rooted in (§3.4) |
 | `litparams` | which parameters are literal parameters (§7.7) |
 | `fnvals` | the identity of each bound function value (the block node or named function, plus the environment it captures) |
 | `narrowedenv` | which optionals of the lexical environment were narrowed at the call (a nested function or block sees them narrowed) |
@@ -424,13 +424,38 @@ from), and every parameter of the class is bound to it, `rootexact` within
 the body: inside the body a class names one array, whatever the call site.
 A temporary of the calling statement outlives the call, so its class takes
 the body's own outermost depth instead (`ClassDepth`): the body may keep it
-in its locals, but not in anything of the caller's. So that class numbers
-stay outlives ranks, a temporary ranks after every variable here too,
+in its locals, but not in anything of the caller's. Classes are numbered by
+these body depths, so a temporary ranks after every variable here too,
 whatever depth it shares with one at the call site.
 Whether two *different* classes are different arrays is what
 `RootArg::exact`/`concrete` answer, and only codegen's stack-top caching asks
 (§7.9); `SettleParamRootExactness` propagates the answer through the `via`
 links after every call site has been seen.
+
+**Depth keys.** A body is checked with its first call site's class depths
+and then serves every call with the same key, so the key has to hold
+everything the body's checks compare those depths with. The class numbers
+order the classes, which is not all: the store rule (§3.5) lets a class be
+stored into another's storage where the two share a depth and not where it
+is merely deeper, a reference or slice variable is rebound only between
+roots at one depth (§3.7), a value that may come from either of two classes
+(an `if`'s, say) takes the deeper one's root, the first where they tie, and
+only a class at depth 0, a global's, may be stored into a global. A nested function also compares its classes with the depths of the
+variables it captures, and a function given a function value does the same
+while it checks that value's body. So each class carries `RootArg::depthkey`
+as well: its body depth itself where that is within `EnvReach`, the scopes
+open in the frames of the lexical environments the body can see -- its
+`lexparent` and those its function values were written in, which hold every
+variable it can name outside itself -- with only 0, the globals, for a body
+that sees none; past that, its rank among the distinct depths of the call's
+classes beyond, negated. Calls with equal keys agree on every such
+comparison, and a call that does not gets a specialization of its own,
+checked for its depths. A function called once with a global and once with
+a local is split even where its body compares nothing; an extern function,
+whose body is C, keeps every key 0. A back edge reuses the specialization in
+progress whatever its depth keys, as whatever its classes (§3.11), and they
+have no say in whether those classes still describe the arrays it passes
+(`concrete`).
 
 A class is a **pool class** (`VarDef::poolclass`) when every member is an
 exactly rooted reference to a resizable-class value: no function in a

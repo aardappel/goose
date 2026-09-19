@@ -679,19 +679,37 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
                 for (size_t k = 0; k < distinct.size(); k++)
                     if (distinct[k] == r) idx = (int)k;
             if (idx < 0) {
-                // Keep distinct ordered by depth so classes mean outlives-rank.
-                // A temporary's class is deeper in the body than every
-                // variable's (ClassDepth), so it ranks after them whatever
-                // its depth here.
-                auto rank = [&](VarDef *v) { return IsTemp(v) ? INT32_MAX : Depth(v); };
+                // Keep distinct ordered by the depths the classes take in
+                // the body, so classes mean outlives-rank there.
                 auto ins = distinct.size();
-                while (ins > 0 && rank(distinct[ins - 1]) > rank(r)) ins--;
+                while (ins > 0 && ClassDepth(distinct[ins - 1]) > ClassDepth(r)) ins--;
                 distinct.insert(distinct.begin() + ins, r);
                 for (auto &rr : roots) if (rr.cls > (int)ins) rr.cls++;
                 idx = (int)ins;
             }
             ra.cls = idx + 1;
         }
+    }
+    // Class numbers alone cannot tell equal depths from a strict order, or a
+    // global from a local, and a body that sees a lexical environment
+    // compares its classes with that environment's variables too; the
+    // depth keys say all of that (RootArg::depthkey). An extern function's
+    // body is C, which compares none.
+    auto reach = EnvReach(mi);
+    vector<int> depthkeys(distinct.size());
+    for (size_t k = 0, rank = 0; k < distinct.size() && !sf->isextern; k++) {
+        auto d = ClassDepth(distinct[k]);
+        if (d <= reach) {
+            depthkeys[k] = d;
+            continue;
+        }
+        if (k == 0 || ClassDepth(distinct[k - 1]) != d) rank++;
+        depthkeys[k] = -(int)rank;
+    }
+    for (auto &ra : roots) {
+        if (!ra.cls) continue;
+        ra.depth = ClassDepth(distinct[ra.cls - 1]);
+        ra.depthkey = depthkeys[ra.cls - 1];
     }
     // A class of a parameter names whatever that parameter does, so it is as
     // concrete as the parameter (`via`, settled after checking), provided
@@ -757,12 +775,15 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
             fvok &= spec->fnvals[i].second == mi.fnvals[i].second;
         if (!fvok) continue;
         auto rootsok = spec->roots == roots;
+        auto depthsok = rootsok;
+        for (size_t i = 0; depthsok && i < roots.size(); i++)
+            depthsok = spec->roots[i].depthkey == roots[i].depthkey;
         // A back edge must reuse the in-progress spec whatever the roots
         // (§7.8): inside a cycle, references rooted at cycle locals may
         // not be stored or returned, so their identity is irrelevant, and
         // the pool parameters that may be stored are checked below to be
         // the same ones the entry call passed.
-        if (!rootsok && !spec->inprogress) continue;
+        if (!depthsok && !spec->inprogress) continue;
         // A long-distance return was checked against a concrete enclosing
         // specialization. Reusing this body under another one would keep
         // its old return types and roots, even when its own arguments are
@@ -1154,13 +1175,30 @@ inline void TypeCheck::CheckExternSpec(FnSpec *spec) {
     spec->inprogress = false;
 }
 
-// The depth a parameter class takes in the body being entered: its
+// The depth a parameter class takes in the body a call here enters: its
 // call-site root's. A temporary of the calling statement outlives every
 // activation that statement starts, so it takes the body's own outermost
-// scope: the callee may keep it in its locals, but not in the caller's
-// storage.
+// scope, the one past this: the callee may keep it in its locals, but not
+// in the caller's storage.
 inline int TypeCheck::ClassDepth(VarDef *r) {
-    return IsTemp(r) ? CurDepth() : Depth(r);
+    return IsTemp(r) ? CurDepth() + 1 : Depth(r);
+}
+
+// How deep the variables a body can name outside itself may be, besides the
+// globals: those of the lexical environment it is nested in and of the ones
+// its function values were written in. Each of those is a frame on the call
+// path, and its variables lie within the scopes that frame has open.
+inline int TypeCheck::EnvReach(const MatchInfo &mi) {
+    auto reach = 0;
+    auto add = [&](FnSpec *env) {
+        if (!env) return;
+        auto fi = LexFrame(env);
+        auto open = fi < 0 || fi + 1 == (int)frames.size() ? CurDepth() : frames[fi + 1].scopebase;
+        reach = max(reach, open);
+    };
+    add(mi.env);
+    for (auto &fv : mi.fnvals) add(fv.second.env);
+    return reach;
 }
 
 inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline) {
@@ -1235,7 +1273,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
                 if (!classroots[ra.cls]) {
                     auto rv = ast.NewVarDef();
                     rv->name = p.name;
-                    rv->depth = argvals ? ClassDepth(CanonRoot((*argvals)[i].root)) : 0;
+                    rv->depth = ra.depth;
                     rv->classfrom = argvals ? CanonRoot((*argvals)[i].root) : nullptr;
                     rv->poolclass = true;
                     rv->classpool = ra.pool;
@@ -1272,7 +1310,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
                 if (!classroots[ra.cls]) {
                     auto rv = ast.NewVarDef();
                     rv->name = p.name;
-                    rv->depth = argvals ? ClassDepth(CanonRoot(HolderRootOf((*argvals)[i]))) : 0;
+                    rv->depth = ra.depth;
                     rv->classfrom = argvals ? CanonRoot(HolderRootOf((*argvals)[i])) : nullptr;
                     rv->growshrink = ra.growshrink;
                     classroots[ra.cls] = rv;
