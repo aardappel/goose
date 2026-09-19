@@ -1,0 +1,13 @@
+[][]
+Named { "" } Ints { [] }
+[Named { "" }, Named { "" }]
+[]
+<> 2
+()
+0
+x 1 0
+true true true false
+0 0 true
+1 1 1 1
+false
+[]

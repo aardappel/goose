@@ -168,7 +168,8 @@ inline string Binary::CgX(CodeGen &cg) {
         auto ra = cg.GenLoc(right);
         if (ra.t->kind == TY_REF) cg.DerefLoc(ra, line);
         auto rvw = cg.ArrayView(ra, line);
-        auto eq = cg.GenRangeEq(lvw.elem, lvw.elems, lvw.len, rvw.elems, rvw.len);
+        auto eq = cg.GenRangeEq(lvw.elem, lvw.elems, lvw.len, rvw.elems, rvw.len,
+                                lvw.nullable || rvw.nullable);
         return op == T_EQ ? eq : cat("(uint8_t)(!", eq, ")");
     }
     // Order of evaluation is left-to-right (§2): the left operand lands in

@@ -474,7 +474,7 @@ uint8_t gs_gfx_save_png(gs_gfx_texture t, gs_gfx_bytes path) {
         char buf[1024];
         size_t n = path.len < 0 ? 0 : (size_t)path.len;
         if (n >= sizeof buf) n = sizeof buf - 1;
-        memcpy(buf, path.data, n);
+        if (n) memcpy(buf, path.data, n);
         buf[n] = 0;
         SDL_Surface *surf = SDL_CreateSurfaceFrom((int)reg.w, (int)reg.h, pf, pixels,
                                                   (int)reg.w * 4);
@@ -492,7 +492,7 @@ gs_gfx_texture gs_gfx_load_texture(gs_gfx_bytes path, int64_t flags) {
     char buf[1024];
     size_t n = path.len < 0 ? 0 : (size_t)path.len;
     if (n >= sizeof buf) n = sizeof buf - 1;
-    memcpy(buf, path.data, n);
+    if (n) memcpy(buf, path.data, n);
     buf[n] = 0;
     bool bmp = n >= 4 && SDL_strcasecmp(buf + n - 4, ".bmp") == 0;
     SDL_Surface *loaded = bmp ? SDL_LoadBMP(buf) : SDL_LoadPNG(buf);

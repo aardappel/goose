@@ -1242,7 +1242,11 @@ C, with the choices Appendix E records; this section is the map.
   packed structs, fixed and static-capacity limited arrays wrapped in structs
   (`{ T e[k]; }`, `{ len; T e[k]; }`), fixed-mode ADTs as `{ tag; union }`,
   plain references as pointers, slices as `{ data, len }`, relative
-  references as their stored integer. `CT` emits typedefs on first use;
+  references as their stored integer. An empty slice's `data` is null where
+  the slice was zero-filled (`default<T>()`, a default element), and C leaves
+  `memcpy` and `memcmp` undefined on a null pointer even for zero bytes, so
+  copies and compares out of a slice go through the runtime's `gs_memcpy` and
+  `gs_memcmp` (`ArrView::nullable`, `CopyFn`). `CT` emits typedefs on first use;
   struct-like kinds get a forward typedef so a node type can reference
   itself (`NameCT`). Every program name carries the `_g` suffix (`Sanitize`),
   namespaced ones the namespace's length as well.

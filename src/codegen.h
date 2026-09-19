@@ -582,7 +582,12 @@ struct CodeGen {
         string lenlv;      // Length lvalue for ops that change it (may be typed).
         TypeExpr *elem = nullptr;
         bool typedelems = false;   // elems is CT* (else uint8_t*).
+        bool nullable = false;     // elems is a slice's: NULL when zero-filled and empty.
     };
+
+    // The C copy for elements whose pointer may be a slice's: memcpy may
+    // not be handed a null pointer, even for zero bytes.
+    static const char *CopyFn(bool nullable) { return nullable ? "gs_memcpy" : "memcpy"; }
 
     ArrView ArrayView(const Loc &lv, Line ln);
     ArrView RawArrayView(const Loc &lv, Line ln);
@@ -681,7 +686,7 @@ struct CodeGen {
     string GenEquality(TypeExpr *lt, const string &l, const string &r);
     string GenSliceEq(TypeExpr *st, const string &l, const string &r);
     string GenRangeEq(TypeExpr *elem, const string &ae, const string &an, const string &be,
-                      const string &bn);
+                      const string &bn, bool nullable);
     void GenElemwiseInto(Binary *b, const string &l, const string &r, const string &dst);
     void ElemwiseOperands(Binary *b, string &l, string &r);
     string GenElemwise(Binary *b, const string &l, const string &r);
@@ -713,13 +718,15 @@ struct CodeGen {
     int64_t relrootmax = 0;
 
     void ComputeRelRootMax();
-    void EmitCopyElems(const string &stk, TypeExpr *elem, const string &src, const string &n);
+    void EmitCopyElems(const string &stk, TypeExpr *elem, const string &src, const string &n,
+                       bool nullable = false);
 
     // Element count + elements pointer of an array/slice-valued source node,
     // for construction and append. Understands string literals, slices, and
     // all array kinds (through references too).
     struct SrcElems {
         string elems, n;
+        bool nullable = false;   // As ArrView::nullable.
     };
 
     SrcElems GenSrcElems(Node *n);
@@ -858,8 +865,9 @@ struct CodeGen {
     void EmitFormatInto(Loc lv, Node *a, Line ln, Call *c);
     vector<string> EmitStr(Call *c, vector<Node *> &an, Dst d0, Line ln);
     void EmitLeCheck(Line ln);
-    void PayloadOf(Node *n, Line ln, string &src, string &sz);
-    void AppendBytes(const Loc &lv, const string &src, const string &n, Line ln);
+    void PayloadOf(Node *n, Line ln, string &src, string &sz, bool &nullable);
+    void AppendBytes(const Loc &lv, const string &src, const string &n, Line ln,
+                     bool nullable = false);
     vector<string> EmitBytesOf(Call *c, vector<Node *> &an, Line ln);
     vector<string> EmitToBytes(vector<Node *> &an, Dst d0, Line ln);
     vector<string> EmitFromBytes(Call *c, vector<Node *> &an, Dst d0, Line ln);

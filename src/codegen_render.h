@@ -115,8 +115,8 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
                 } else {
                     auto n = T();
                     L("int64_t ", n, " = ", v.len, ";");
-                    L("memcpy(", Top(out.stk), ", (const uint8_t *)(", v.elems, "), (size_t)",
-                      n, ");");
+                    L(CopyFn(v.nullable), "(", Top(out.stk), ", (const uint8_t *)(", v.elems,
+                      "), (size_t)", n, ");");
                     Bump(out.stk, n);
                     L(out.lenlv, " += ", n, ";");
                 }
@@ -324,6 +324,7 @@ inline void CodeGen::EmitFormatInto(Loc lv, Node *a, Line ln, Call *c) {
     auto bytes = t->kind == TY_ARRAY || t->kind == TY_SLICE;
     auto n = T();
     string src;   // Where the bytes to append sit, when not already at the top.
+    auto nullable = false;
     if (!SimpleText(c, t)) {
         // Into a limited array: rendered aside, then copied under the
         // capacity check like any bytes.
@@ -335,6 +336,7 @@ inline void CodeGen::EmitFormatInto(Loc lv, Node *a, Line ln, Call *c) {
         auto se = GenSrcElems(a);
         L("int64_t ", n, " = ", se.n, ";");
         src = cat("(const uint8_t *)(", se.elems, ")");
+        nullable = se.nullable;
     } else if (limited) {
         src = T();
         L("uint8_t ", src, "[GS_FMT_MAX];");
@@ -347,12 +349,12 @@ inline void CodeGen::EmitFormatInto(Loc lv, Node *a, Line ln, Call *c) {
         L("int64_t ", ol, " = ", v.len, ";");
         L("if (", ol, " + ", n, " > ", LimitedCap(lv), ") gs_abort(GS_E_CAPACITY, ",
           LocArgs(ln), ");");
-        L("memcpy(", ElemAddr(v, ol), ", ", src, ", (size_t)", n, ");");
+        L(CopyFn(nullable), "(", ElemAddr(v, ol), ", ", src, ", (size_t)", n, ");");
         L(v.lenlv, " = (", LenCast(lv), ")(", ol, " + ", n, ");");
         return;
     }
     assert(!lv.stk.empty());
-    if (bytes) L("memcpy(", Top(lv.stk), ", ", src, ", (size_t)", n, ");");
+    if (bytes) L(CopyFn(nullable), "(", Top(lv.stk), ", ", src, ", (size_t)", n, ");");
     Bump(lv.stk, n);
     L(v.lenlv, " += ", n, ";");
 }
@@ -392,7 +394,8 @@ inline vector<string> CodeGen::EmitStr(Call *c, vector<Node *> &an, Dst d0, Line
         } else if (t->kind == TY_ARRAY || t->kind == TY_SLICE) {
             auto se = GenSrcElems(a);
             L("int64_t ", n, " = ", se.n, ";");
-            L("memcpy(", Top(stk), ", (const uint8_t *)(", se.elems, "), (size_t)", n, ");");
+            L(CopyFn(se.nullable), "(", Top(stk), ", (const uint8_t *)(", se.elems, "), (size_t)",
+              n, ");");
         } else {
             L("int64_t ", n, " = ", FmtCall(a, Top(stk)), ";");
         }

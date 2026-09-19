@@ -22,7 +22,7 @@ static void gs_bld_append(gs_rref b, const void *p, int64_t n) {
 static char *gs_os_cstr(sl_u8 s, char *buf, size_t cap) {
     size_t n = (size_t)(s.len < 0 ? 0 : s.len);
     if (n >= cap) n = cap - 1;
-    memcpy(buf, s.data, n);
+    gs_memcpy(buf, s.data, n);
     buf[n] = 0;
     return buf;
 }

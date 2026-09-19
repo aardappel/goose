@@ -163,6 +163,17 @@ static int64_t gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
 #define GS_UNREACHABLE(f, l) ((void)0)
 #endif
 
+/* memcpy and memcmp for a slice's elements. An empty slice's data pointer is
+   NULL where the slice was zero-filled (default<T>(), a default element),
+   and C leaves both undefined on a null pointer even for zero bytes. */
+static void gs_memcpy(void *dst, const void *src, size_t n) {
+    if (n) memcpy(dst, src, n);
+}
+
+static int gs_memcmp(const void *a, const void *b, size_t n) {
+    return n ? memcmp(a, b, n) : 0;
+}
+
 /* ---------------------------------------------------------------------------
    Integer semantics (§6.2): every operation runs at its operands' type. The
    operations compute wide (so wrap is defined in C), truncate back, and — when
@@ -205,7 +216,8 @@ static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
     return (T)r; }
 
 #define GS_DIVOPS_U(SFX, T) \
-static T gs_div_##SFX(T a, T b, const char *file, int line) { \
+)GSRT"
+R"GSRT(static T gs_div_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
     return (T)(a / b); } \
 static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
@@ -217,8 +229,7 @@ GS_DIVOPS_S(i16, int16_t, -32768, 32767)
 GS_DIVOPS_S(i32, int32_t, INT32_MIN, INT32_MAX)
 GS_DIVOPS_U(u8, uint8_t)
 GS_DIVOPS_U(u16, uint16_t)
-)GSRT"
-R"GSRT(GS_DIVOPS_U(u32, uint32_t)
+GS_DIVOPS_U(u32, uint32_t)
 
 #if GS_DEBUG
 
@@ -395,7 +406,8 @@ static int64_t gs_f2iwrap(double d) {
    conversion would change the value; identity/plain casts in release. */
 #if GS_DEBUG
 
-static int64_t gs_rangechk(int64_t v, int64_t lo, int64_t hi) {
+)GSRT"
+R"GSRT(static int64_t gs_rangechk(int64_t v, int64_t lo, int64_t hi) {
     if (v < lo || v > hi) gs_panic("as conversion out of range (debug)");
     return v;
 }
@@ -407,8 +419,7 @@ static int64_t gs_f2ichk(double d) {
     if (!(d >= -9223372036854775808.0 && d < 9223372036854775808.0))
         gs_panic("as conversion out of range (debug)");
     int64_t v = (int64_t)d;
-)GSRT"
-R"GSRT(    if ((double)v != d) gs_panic("as conversion changes the value (debug)");
+    if ((double)v != d) gs_panic("as conversion changes the value (debug)");
     return v;
 }
 static uint64_t gs_f2uchk(double d) {
@@ -612,7 +623,8 @@ static GS_TLS int64_t gs_nstks;
    instances; the only C statics a program shares are read-only ones. */
 static GS_TLS void *gs_gl;
 
-#define GS(i) (&gs_stks[i])
+)GSRT"
+R"GSRT(#define GS(i) (&gs_stks[i])
 
 static void gs_stks_grow(int64_t n) {
     if (n > GS_MAX_STACKS) gs_panic("too many data stacks (deep call nesting?)");
@@ -626,8 +638,7 @@ static void gs_stks_grow(int64_t n) {
 
 static gs_stack *gs_new_stack_block(void) {
     gs_stack *b = (gs_stack *)calloc(GS_MAX_STACKS, sizeof(gs_stack));
-)GSRT"
-R"GSRT(    if (!b) gs_panic("out of memory allocating stack block");
+    if (!b) gs_panic("out of memory allocating stack block");
     return b;
 }
 
@@ -833,7 +844,8 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
    walk finishes, so every read here is bounded by the image end and reports
    a malformed encoding instead of running past it. */
 
-/* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
+)GSRT"
+R"GSRT(/* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
    payload bits above the 64th. The result is the byte count. */
 static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
     uint64_t v = 0;
@@ -844,8 +856,7 @@ static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out
         if (q >= end) return 0;
         b = *q++;
         if (shift > 63 || (shift == 63 && (b & 0x7e))) return 0;
-)GSRT"
-R"GSRT(        v |= (uint64_t)(b & 0x7f) << shift;
+        v |= (uint64_t)(b & 0x7f) << shift;
         if (!(b & 0x80)) break;
         shift += 7;
     }
@@ -1205,7 +1216,7 @@ static void gs_bld_append(gs_rref b, const void *p, int64_t n) {
 static char *gs_os_cstr(sl_u8 s, char *buf, size_t cap) {
     size_t n = (size_t)(s.len < 0 ? 0 : s.len);
     if (n >= cap) n = cap - 1;
-    memcpy(buf, s.data, n);
+    gs_memcpy(buf, s.data, n);
     buf[n] = 0;
     return buf;
 }

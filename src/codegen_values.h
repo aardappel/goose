@@ -274,6 +274,7 @@ inline CodeGen::ArrView CodeGen::RawArrayView(const Loc &lv, Line ln) {
         v.elems = cat(lv.s, ".data");
         v.len = cat(lv.s, ".len");
         v.typedelems = !IsBytesT(t->sub);
+        v.nullable = true;
         return v;
     }
     assert(t->kind == TY_ARRAY);
@@ -699,8 +700,8 @@ inline string CodeGen::AdaptToFixed(Loc lv, TypeExpr *et, Line ln) {
     auto tv = T();
     L(CT(et), " ", tv, ";");
     L(tv, ".len = (", IntCT(LenStore(et->arr)), ")", nn, ";");
-    L("memcpy(", tv, ".e, ", v.elems, ", (size_t)(", nn, " * ", FixedSize(et->arr->sub),
-      "));");
+    L(CopyFn(v.nullable), "(", tv, ".e, ", v.elems, ", (size_t)(", nn, " * ",
+      FixedSize(et->arr->sub), "));");
     return tv;
 }
 
@@ -981,19 +982,20 @@ inline string CodeGen::GenEquality(TypeExpr *lt, const string &l, const string &
 
 inline string CodeGen::GenSliceEq(TypeExpr *st, const string &l, const string &r) {
     return GenRangeEq(st->sub, cat(l, ".data"), cat(l, ".len"), cat(r, ".data"),
-                      cat(r, ".len"));
+                      cat(r, ".len"), true);
 }
 
 // Structural equality of two element ranges (§4.5): length then elements.
+// `nullable` as ArrView's, for either range.
 inline string CodeGen::GenRangeEq(TypeExpr *elem, const string &ae, const string &an,
-                                  const string &be, const string &bn) {
+                                  const string &be, const string &bn, bool nullable) {
     auto t = T();
     L("uint8_t ", t, " = ", an, " == ", bn, ";");
     L("if (", t, ") {");
     ind++;
     if (ScalarEq(elem) && BitwiseEq(elem)) {
-        L(t, " = memcmp(", ae, ", ", be, ", (size_t)((", an, ") * ", FixedSize(elem),
-          ")) == 0;");
+        L(t, " = ", nullable ? "gs_memcmp(" : "memcmp(", ae, ", ", be, ", (size_t)((", an,
+          ") * ", FixedSize(elem), ")) == 0;");
     } else if (IsFix(elem)) {
         auto pa = T(), pb = T(), iv = T();
         L("const ", CT(elem), " *", pa, " = (const ", CT(elem), " *)(", ae, ");");

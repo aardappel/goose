@@ -151,6 +151,17 @@ static int64_t gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
 #define GS_UNREACHABLE(f, l) ((void)0)
 #endif
 
+/* memcpy and memcmp for a slice's elements. An empty slice's data pointer is
+   NULL where the slice was zero-filled (default<T>(), a default element),
+   and C leaves both undefined on a null pointer even for zero bytes. */
+static void gs_memcpy(void *dst, const void *src, size_t n) {
+    if (n) memcpy(dst, src, n);
+}
+
+static int gs_memcmp(const void *a, const void *b, size_t n) {
+    return n ? memcmp(a, b, n) : 0;
+}
+
 /* ---------------------------------------------------------------------------
    Integer semantics (§6.2): every operation runs at its operands' type. The
    operations compute wide (so wrap is defined in C), truncate back, and — when
