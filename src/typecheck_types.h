@@ -690,12 +690,27 @@ inline void TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, boo
     if (writable && !out.empty()) hasstatic = false;
 }
 
+// Whether v is a value in a temporary of its own (a literal, a call result),
+// and if so where a reference or slice loaded out of it points: not into
+// the temporary, since a literal's initializers or a callee's result
+// supplied everything it holds, but where they point, its holder root (§9.2).
+inline bool TypeCheck::TempContents(const Val &v, ReadBack &contents) {
+    if (CanonRoot(v.root) != temproot || IsRefOrSlice(v.type)) return false;
+    contents.root = CanonRoot(HolderRootOf(v));
+    contents.exact = v.holderset && v.holderexact;
+    contents.from = v.holderfrom;
+    return true;
+}
+
 // The root of a reference/slice of type `rt` loaded out of a container
-// whose own root is (croot, cexact).
+// whose own root is (croot, cexact); a temporary's `contents` are its
+// holder root.
 inline TypeCheck::ReadBack TypeCheck::ReadBackRoot(TypeExpr *rt, VarDef *croot, bool cexact,
-                                                bool byteview) {
+                                                bool byteview, const ReadBack *contents) {
     ReadBack rb;
     croot = CanonRoot(croot);
+    auto relative = rt->kind == TY_REF && rt->ref->lenstorage >= 0;
+    if (contents && croot == temproot && !relative) return *contents;
     if (byteview) {
         rb.root = croot && !croot->isglobal && croot->contentset &&
                   !AssignedInEnclosingLoop(croot) ? croot->contentroot : croot;
@@ -708,7 +723,7 @@ inline TypeCheck::ReadBack TypeCheck::ReadBackRoot(TypeExpr *rt, VarDef *croot, 
     // construction (§3.9), so it inherits the container's root outright —
     // unless it named a pool, in which case the pool *is* the root, and
     // exactly, wherever the container sits.
-    if (rt->kind == TY_REF && rt->ref->lenstorage >= 0) {
+    if (relative) {
         if (rt->ref->pool) { rb.root = rt->ref->pool; rb.exact = true; return rb; }
         rb.exact = cexact;
         return rb;

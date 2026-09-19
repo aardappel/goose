@@ -76,6 +76,13 @@ struct TypeCheck {
     // (Val, the checked value of an expression, lives in ast.h: node Check
     // overrides return it.)
 
+    // What the read-back rule makes of one load (§9.5).
+    struct ReadBack {
+        VarDef *root = nullptr;
+        bool exact = false;
+        VarDef *from = nullptr;   // The container, where candidates were enumerated.
+    };
+
     // An assignable/addressable path: Ident, field, or element. Its
     // provenance names the storage's owner, and `writable` whether the whole
     // path admits writes.
@@ -91,6 +98,11 @@ struct TypeCheck {
                                      // reference read out of it is a read-back (§9.5).
         bool fotail = false;         // A frame object's resizable tail: has its own header (C.2).
         bool isvarint = false;       // varint field: read-only refs, not assignable.
+        // A path into a temporary that has not crossed a reference: a
+        // reference or slice loaded out of it points where the temporary's
+        // holder root says (TempContents), not into the temporary.
+        bool intemp = false;
+        ReadBack contents;
     };
 
     // One level of the compile-time call path.
@@ -761,14 +773,9 @@ struct TypeCheck {
     void RootCandidates(TypeExpr *of, int d, bool globalsonly, bool writable,
                         vector<VarDef *> &out, bool &hasstatic);
 
-    // What the read-back rule makes of one load.
-    struct ReadBack {
-        VarDef *root = nullptr;
-        bool exact = false;
-        VarDef *from = nullptr;   // The container, where candidates were enumerated.
-    };
-
-    ReadBack ReadBackRoot(TypeExpr *rt, VarDef *croot, bool cexact, bool byteview = false);
+    bool TempContents(const Val &v, ReadBack &contents);
+    ReadBack ReadBackRoot(TypeExpr *rt, VarDef *croot, bool cexact, bool byteview = false,
+                          const ReadBack *contents = nullptr);
     string ReadBackWhy(TypeExpr *rt, VarDef *from);
     bool RootedAtReceiver(const Val &rv, const Val &av);
     void CheckRootedAtReceiver(Call *c, const char *op, const Val &rv, const Val &av,
@@ -951,6 +958,7 @@ struct TypeCheck {
     bool ExternValueOk(TypeExpr *t, string &why);
     bool ExternParamOk(TypeExpr *t, string &why);
     void CheckExternSpec(FnSpec *spec);
+    int ClassDepth(VarDef *r);
     void CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline);
     void RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at);
     Val CallResult(Call *c, FnSpec *spec, vector<Val> &argvals);

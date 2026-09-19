@@ -1136,6 +1136,15 @@ inline void TypeCheck::CheckExternSpec(FnSpec *spec) {
     spec->inprogress = false;
 }
 
+// The depth a parameter class takes in the body being entered: its
+// call-site root's. A temporary of the calling statement outlives every
+// activation that statement starts, so it takes the body's own outermost
+// scope: the callee may keep it in its locals, but not in the caller's
+// storage.
+inline int TypeCheck::ClassDepth(VarDef *r) {
+    return r == temproot ? CurDepth() : Depth(r);
+}
+
 inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline) {
     // A body is checked inside the call that first reaches it, so the native
     // stack holds one of these per call on the compile-time call path.
@@ -1205,7 +1214,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
                 if (!classroots[ra.cls]) {
                     auto rv = ast.NewVarDef();
                     rv->name = p.name;
-                    rv->depth = argvals ? Depth(CanonRoot((*argvals)[i].root)) : 0;
+                    rv->depth = argvals ? ClassDepth(CanonRoot((*argvals)[i].root)) : 0;
                     rv->classfrom = argvals ? CanonRoot((*argvals)[i].root) : nullptr;
                     rv->poolclass = true;
                     rv->classpool = ra.pool;
@@ -1242,7 +1251,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
                 if (!classroots[ra.cls]) {
                     auto rv = ast.NewVarDef();
                     rv->name = p.name;
-                    rv->depth = argvals ? Depth(CanonRoot(HolderRootOf((*argvals)[i]))) : 0;
+                    rv->depth = argvals ? ClassDepth(CanonRoot(HolderRootOf((*argvals)[i]))) : 0;
                     rv->classfrom = argvals ? CanonRoot(HolderRootOf((*argvals)[i])) : nullptr;
                     rv->growshrink = ra.growshrink;
                     classroots[ra.cls] = rv;

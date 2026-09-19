@@ -782,11 +782,14 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                     if (HoldsPlainRef(vt)) {
                         // A copied payload holding references: its contents
                         // are the scrutinee's.
+                        ReadBack contents;
+                        auto intemp = TempContents(sv, contents);
                         Val hv;
-                        hv.root = CanonRoot(sv.root);
-                        hv.rootexact = false;
+                        hv.root = intemp ? contents.root : CanonRoot(sv.root);
+                        hv.rootexact = intemp && contents.exact;
                         hv.byteview = sv.byteview;
-                        RecordStore(binder, hv, nullptr, false, CanonRoot(sv.root));
+                        RecordStore(binder, hv, nullptr, false,
+                                    intemp ? contents.from : CanonRoot(sv.root));
                     }
                 }
                 arm.binder = binder;
@@ -925,6 +928,8 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     TypeExpr *bindtype = nullptr;
     TypeExpr *elemtype = nullptr;   // The array's element type, where it has one.
     Prov iterprov;   // What a reference binding points into.
+    ReadBack contents;   // Where the elements point, when the array is a temporary.
+    auto intemp = false;
     if (auto r = Is<RangeExpr>(x->iter)) {
         auto lo = CheckIntAny(r->lo);
         auto hi = CheckIntAny(r->hi);
@@ -940,6 +945,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         x->iter->exprtype = iv.type;
         auto t = iv.type;
         iterprov = iv;
+        intemp = TempContents(iv, contents);
         if (t->kind == TY_REF && !t->ref->optional) t = t->ref->sub;  // Iterate through refs.
         t = LoadType(t);
         RequireComplete(t, x->line);
@@ -985,10 +991,10 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     if (!IsRefOrSlice(bindtype) && HoldsPlainRef(bindtype)) {
         // A holder element copied out: its contents are the array's.
         Val hv;
-        hv.root = CanonRoot(iterprov.root);
-        hv.rootexact = false;
+        hv.root = intemp ? contents.root : CanonRoot(iterprov.root);
+        hv.rootexact = intemp && contents.exact;
         hv.byteview = iterprov.byteview;
-        RecordStore(vd, hv, nullptr, false, CanonRoot(iterprov.root));
+        RecordStore(vd, hv, nullptr, false, intemp ? contents.from : CanonRoot(iterprov.root));
     }
     if (IsRefOrSlice(bindtype)) {
         // A relative-reference or slice element bound by value was read
@@ -998,7 +1004,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
             ((elemtype->kind == TY_REF && elemtype->ref->lenstorage >= 0) ||
              elemtype->kind == TY_SLICE)) {
             auto rb = ReadBackRoot(elemtype, CanonRoot(iterprov.root), iterprov.rootexact,
-                                   iterprov.byteview);
+                                   iterprov.byteview, intemp ? &contents : nullptr);
             iterprov.root = rb.root;
             iterprov.rootexact = rb.exact;
             iterprov.rootfrom = rb.from;

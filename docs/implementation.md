@@ -338,15 +338,16 @@ Lvalue paths (`CheckLValue`, `LValueBase`) resolve `Ident`/`Dot`/`Index`
 chains to an `LVal`: the location's type, its owning variable when it is a
 bare name, its provenance, whether it is `let`-bound, whether it starts at a
 by-value binding, whether it was reached through a field or element step
-(`fromstorage`), whether it is a frame object's tail, and whether it is a
-`varint`. Crossing a reference on the way (`DerefLValue`) replaces the
-provenance by the reference's: a reference *variable*'s committed binding
-(§3.7), or, for a reference read out of storage, the read-back root
-(`ReadBackLVal`, §3.6). `ContainerRead` is the load of a field or element:
-the load type (`LoadType`: `varint` decodes to `i64`, a relative reference
-loads as a plain one, a `const` value loads as a plain copy), the read-back
-provenance, and, for a reference or slice, exactly the writability the
-slot's type says.
+(`fromstorage`), whether it is a frame object's tail, whether it is a
+`varint`, and, for a path into a temporary, where what the temporary holds
+points (`intemp`, §3.6). Crossing a reference on the way (`DerefLValue`)
+replaces the provenance by the reference's: a reference *variable*'s
+committed binding (§3.7), or, for a reference read out of storage, the
+read-back root (`ReadBackLVal`, §3.6). `ContainerRead` is the load of a
+field or element: the load type (`LoadType`: `varint` decodes to `i64`, a
+relative reference loads as a plain one, a `const` value loads as a plain
+copy), the read-back provenance, and, for a reference or slice, exactly the
+writability the slot's type says.
 
 **Held temporaries.** Values evaluated earlier in a statement stay live until
 it ends: `HoldValue` pushes a reference, slice, sequence view or holder
@@ -390,6 +391,7 @@ depth: `temproot` (a temporary, outlived by everything) and `cycleroot`
 | `a.alloc_slice(n)`, `a.realloc_slice(s, n)` | `a`'s root | `a`'s exactness |
 | `a[lo..hi]` (`SliceExpr::Check`) | `a`'s root | `a`'s exactness |
 | a call result (`CallResult`) | the callee's `RetRoot`, mapped: a parameter's class back to the argument's root at this site, a global as itself, else static data | the callee's, ANDed with the argument's |
+| an array, struct or variant literal | `temproot`: whatever views it rather than being built from it views a temporary | no |
 | a string literal | static data (null) | yes |
 | `null` | none (adapts to any optional) | -- |
 
@@ -403,6 +405,9 @@ establish. `CheckSpecBody` then creates one synthetic `VarDef` per class,
 carrying the call-site root's depth (`classfrom` remembers the root it came
 from), and every parameter of the class is bound to it, `rootexact` within
 the body: inside the body a class names one array, whatever the call site.
+A temporary of the calling statement outlives the call, so its class takes
+the body's own outermost depth instead (`ClassDepth`): the body may keep it
+in its locals, but not in anything of the caller's.
 Whether two *different* classes are different arrays is what
 `RootArg::exact`/`concrete` answer, and only codegen's stack-top caching asks
 (§7.9); `SettleParamRootExactness` propagates the answer through the `via`
@@ -454,8 +459,9 @@ Holder values carry their contents' bound as `holderroot`/`holderexact`
 deepest root among its reference initializers (`NoteLitElem`,
 `HolderFromLit`); a variable's is its `contentroot`, unless a loop around
 the read writes the variable, in which case the variable itself is the
-bound; a container read's is the container's root, inexact; a holder
-parameter is keyed by its holder root class like a reference.
+bound; a container read's is the container's root, inexact, and out of a
+temporary the temporary's own; a holder parameter is keyed by its holder
+root class like a reference.
 
 ### 3.6 Read-back roots
 
@@ -478,7 +484,13 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   variables in scope with committed roots at that depth, the globals, and
   static data;
 * a container reached through a caller's storage, or itself inexact: the
-  container's root, inexact.
+  container's root, inexact;
+* a container that is a temporary (a literal or a call result, reached
+  without crossing a reference, `LVal::intemp`): nothing in the temporary
+  can own what it holds, which came from the literal's initializers or the
+  callee's result, so the root is the temporary's holder root, exactly as
+  exact (`TempContents`). `for` over a temporary and a `match` binder copied
+  out of one take the same answer.
 
 The root is the deepest candidate; it is exact only with exactly one
 candidate and no static data. `ReadBackWhy` turns the candidate list into

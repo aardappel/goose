@@ -1682,6 +1682,13 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
 * All `return`s of one function must agree on the returned reference's root
   (v1 simplification; use one source or split the function).
 * Inside recursive cycles the stricter §7.8 cycle store rule applies.
+* A **temporary** — an array, struct or variant literal, or a call's
+  result, viewed where it stands rather than built into a destination (by a
+  slice parameter, a `for`, `[..]`, `bytes_of` or a path into it, §4.2) —
+  lasts for the rest of its statement, which every variable outlives: a
+  reference or slice into it may be passed down, but neither stored nor
+  returned. A function it is passed to may keep it in its own locals, which
+  die first. What a temporary *holds* is not rooted at the temporary (§9.5).
 
 Violations are compile errors. There is no escape hatch in v1.
 
@@ -1802,6 +1809,10 @@ root lies:
    is exact when there is exactly one candidate in all.
 3. **A reference parameter's pointee, or itself inexact.** The owner may be
    caller storage this function cannot enumerate: the root is `C`'s, inexact.
+4. **A temporary** (§9.2). Everything in it came from the literal's
+   initializers or from the call whose result it is, so the root is theirs:
+   the innermost root among the initializers, or the one the result's
+   contents are rooted at, exact when that is one variable exactly.
 
 An optional variable bound only to `null` so far (`var best: Node? = null;`
 before the loop that binds it) has no binding to take a root from; a use of

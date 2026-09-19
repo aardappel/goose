@@ -85,8 +85,8 @@ inline TypeCheck::LVal TypeCheck::LValueBase(Node *n, bool cmpview) {
     lv.SetProv(v);
     // A value result is materialized in its own temporary storage. References
     // and slices instead retain the (possibly inexact) owner they borrow.
-    if (lv.root == temproot && !IsRefOrSlice(v.type))
-        lv.rootexact = true;
+    lv.intemp = TempContents(v, lv.contents);
+    if (lv.intemp) lv.rootexact = true;
     return lv;
 }
 
@@ -152,10 +152,12 @@ inline void TypeCheck::ReadBackLVal(LVal &lv) {
     // filled by functions whose stores have not yet been checked.
     lv.byteview = lv.byteview || (cr && cr->contentbyteview) ||
                   (cr && cr->isglobal && lv.type->cq && IsU8(PointeeOf(lv.type)));
-    auto rb = ReadBackRoot(lv.type, lv.root, lv.rootexact, lv.byteview);
+    auto rb = ReadBackRoot(lv.type, lv.root, lv.rootexact, lv.byteview,
+                           lv.intemp ? &lv.contents : nullptr);
     lv.root = rb.root;
     lv.rootexact = rb.exact;
     lv.rootfrom = rb.from;
+    lv.intemp = false;
     if (lv.type->cq) lv.writable = false;   // A `const` slot's contents (§9.5).
 }
 
@@ -171,11 +173,12 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
     if (IsRefOrSlice(v.type)) v.writable = !lv.type->cq;
     else if (HoldsPlainRef(v.type)) {
         // What a holder read out of a container points at is bounded by
-        // the container: everything stored into it had to outlive it.
-        v.holderroot = CanonRoot(lv.root);
-        v.holderexact = false;
+        // the container: everything stored into it had to outlive it. Out
+        // of a temporary, it points where the temporary's contents do.
+        v.holderroot = lv.intemp ? lv.contents.root : CanonRoot(lv.root);
+        v.holderexact = lv.intemp && lv.contents.exact;
         v.holderset = true;
-        v.holderfrom = CanonRoot(lv.root);
+        v.holderfrom = lv.intemp ? lv.contents.from : CanonRoot(lv.root);
     }
     v.lvalue = v.type->kind != TY_REF;
     return v;
