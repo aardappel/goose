@@ -171,6 +171,9 @@ struct TypeCheck {
     void CheckStmts(Block *b);
     bool MentionsName(Node *n, string_view name, set<SFunction *> &seen);
     bool UsedAfter(VarDef *v);
+    // The part of the statement being checked that runs after the shrink
+    // being checked: a whole assignment's right-hand side (§5.1).
+    Node *shrinkrest = nullptr;
     vector<VarDef *> vars;                            // All in-scope variables, all frames.
     vector<pair<int, SFunction *>> localfns;          // Nested fns, with their scope index.
     int scopeserial = 0;
@@ -723,6 +726,7 @@ struct TypeCheck {
     VarDef *RefRootOf(VarDef *vd) { return vd->refrootknown ? vd->ref.root : temproot; }
 
     bool ContainsGrowShrink(TypeExpr *t);
+    TypeExpr *ResizableArrayIn(TypeExpr *t);
     bool IsGrowShrinkRoot(VarDef *r);
     bool GrowShrinkCanHold(VarDef *r, TypeExpr *of);
     bool MayBeViewed(VarDef *r);
@@ -1205,6 +1209,8 @@ struct TypeCheck {
     // ResolveGrowConflicts once every call site has been seen).
     enum Alias { AL_NO, AL_YES, AL_DEFER };
     Alias MayAliasRoots(VarDef *a, bool aexact, VarDef *b, bool bexact);
+    // A growth of, or a use of (CheckBuiltUses), a root the call sites have
+    // to tell apart from the one under construction.
     struct GrowConflict {
         Node *at = nullptr;
         FnSpec *spec = nullptr;
@@ -1213,6 +1219,18 @@ struct TypeCheck {
         string msg;
     };
     vector<GrowConflict> growconflicts;
+    // The right-hand side of a whole assignment runs while the array's new
+    // contents are built over its old ones (§4.4), so nothing it runs may
+    // use the array: name it, or a reference to it, directly or in a
+    // function it calls.
+    void CheckBuiltUses(Node *rhs, Node *lval, VarDef *built, bool exact, TypeExpr *arr);
+    Alias ReachesBuilt(VarDef *v, VarDef *built, bool exact, TypeExpr *arr, VarDef *&root);
+    template<typename F, typename G> void EachUse(Node *n, F named, G called);
+    bool FieldsApart(Node *use, Node *lval);
+    bool NamedOutside(FnSpec *spec, vector<VarDef *> &out);
+    // Its results for callees whose bodies were all checked, which no
+    // later check changes.
+    map<FnSpec *, vector<VarDef *>> namedoutside;
     void ElemArg(Node *&n, TypeExpr *elem, Val &rv);
     FnSpec *EnsureThreadSpec(SFunction *sf, Line l);
 

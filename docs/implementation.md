@@ -629,12 +629,12 @@ name scan could not follow. A callee's rebinds of the caller's optionals
 reach the caller through `ApplyCalleeRebinds`, and for a callee still being
 checked through the syntactic `InProgressRebinds`.
 
-### 3.10 The shrink rules, and growth during construction
+### 3.10 The shrink rules, and growth and uses during construction
 
 **Grow-only arrays** (§5.1). `pop`, `resize` and `clear` on a `[>..]`
 (`CheckBuiltin` → `CheckGrowShrink` → `GrowOnlyShrinkAt`,
-`typecheck_builtins.h`), and whole assignment of one (`CheckAssign`), pass
-in this order:
+`typecheck_builtins.h`), and whole assignment of one or of a value holding
+one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
 
 1. the receiver names the array's variable, or a reference variable or
    parameter whose root is known (the array behind it shrinks); not an
@@ -663,10 +663,11 @@ in this order:
 
 **Liveness** (`UsedAfter`) is syntactic: the variable's name occurs in a
 later statement of an open block at or inside its scope, in that block's
-tail, or anywhere in an enclosing loop it was declared outside of; a `for`
-binding is always live; `MentionsName` follows calls of nested functions by
-name into their bodies. The test never depends on what the optimizer
-proves.
+tail, anywhere in an enclosing loop it was declared outside of, or in a
+whole assignment's right-hand side, which runs after the assignment's
+shrink (`shrinkrest`); a `for` binding is always live; `MentionsName`
+follows calls of nested functions by name into their bodies. The test
+never depends on what the optimizer proves.
 
 **Grow-shrink arrays** (§5.2): `ShrinkGrowShrink` runs from anywhere (a
 local, a reference, a global, a struct's tail, whole assignment) and scans
@@ -713,6 +714,25 @@ has been seen (`growconflicts`, `ResolveGrowConflicts`): distinct only where
 both are concrete and exact (§3.4). The log is per activation
 (`CheckSpecBody` saves and clears it), so a callee's growths reach the
 caller's constructions only through the summary.
+
+**Uses during a whole assignment** (§4.4). The new contents are built over
+the old ones, so once the right-hand side is checked, `CheckBuiltUses`
+walks it for anything that may use the array: an identifier naming the
+array's variable (or the value holding it), or a reference to either
+(`ReachesBuilt`: `CanContain` of the array type, then `MayAliasRoots` as for
+growth, `AL_DEFER` going to `growconflicts`); and for each call, each
+specialization it may run (`spec`, `dispatch`, `fmtspecs`), what that
+callee's body and its callees' name outside their own activations
+(`NamedOutside`, walking the checked bodies with `RunChildren`, so function
+value bodies are included): globals and variables of lexical parents. A
+callee still being checked counts as naming every global and every variable
+in `vars`. A rebind's target (`r .= …`) is not a use, and a field path
+from the lvalue's own variable that parts from the lvalue's path at a flat
+field is not one either (`FieldsApart`): `t.chars = f(t.font)`. Slices and
+element references are left to the shrink scan, which sees the right-hand
+side as after the shrink. A reference parameter's class may be a global or
+captured array, so using one while building such an array is an error in
+the body, as a growth of one would be.
 
 ### 3.11 Recursion
 
@@ -1786,7 +1806,9 @@ rewrites elements pays no live register for it.
   whole assignment `v = f()` is building into (§4.2): a compile error, with
   the callee's growths of its parameters, globals and captures counted.
   The elements of an appended literal, `v.append([f(v), x])`, follow the
-  same rule as pushed ones.
+  same rule as pushed ones. A whole assignment's `f` may not use `v` at all
+  (§4.4); new contents computed from the old are built in a local of their
+  own and assigned as its `copy()`, one copy.
 * An array or slice of another kind meeting a `T[..k]` -- a local, an
   argument, a field, an assignment, a return -- is an O(length) copy into
   the C value after a capacity check, whatever the source's representation.

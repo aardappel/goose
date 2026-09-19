@@ -55,6 +55,16 @@ inline bool TypeCheck::ContainsGrowShrink(TypeExpr *t) {
     }
 }
 
+// The resizable array a value of type t holds: t itself, or the tail of a
+// struct or of a variable ADT's payload (§3.4); null if there is none.
+inline TypeExpr *TypeCheck::ResizableArrayIn(TypeExpr *t) {
+    if (ClassOf(t) != SC_RESIZABLE) return nullptr;
+    if (t->kind == TY_ARRAY) return t;
+    TypeExpr *arr = nullptr;
+    AnyField(t, [&](TypeExpr *ft) { return (arr = ResizableArrayIn(ft)) != nullptr; });
+    return arr;
+}
+
 // Whether references rooted at r may point into a grow-shrink array
 // (§5.2): r holds one, or stands for a call-site root that does.
 inline bool TypeCheck::IsGrowShrinkRoot(VarDef *r) {
@@ -1450,36 +1460,40 @@ inline void TypeCheck::CheckAssign(Assign *a) {
         auto av = DecayRef(CheckV(a->rhs, nullptr));
         CompletePending(target, PendingElemFromSeq(av, a), a->line);
     }
-    // Assigning a resizable array whole replaces its elements: a shrink
-    // to anything referring into it (§5.1, §5.2), then a growth, the new
-    // contents being under construction at its base while the right-hand
-    // side runs (§4.4, §1.3(4)).
+    // Assigning a resizable array whole, or a value holding one, replaces
+    // its elements: a shrink to anything referring into it (§5.1, §5.2),
+    // then a growth, the new contents being under construction at its
+    // base while the right-hand side runs (§4.4, §1.3(4)).
     VarDef *built = nullptr;
     auto builtexact = false;
-    if (target->kind == TY_ARRAY && (!lv.var || lv.var->assigned)) {
+    auto arr = ResizableArrayIn(target);
+    if (arr && (!lv.var || lv.var->assigned)) {
         auto root = lv.var ? lv.var : CanonRoot(lv.root);
-        if (target->arr->akind == A_GROW) {
+        auto rest = shrinkrest;
+        shrinkrest = a->rhs;
+        if (arr->arr->akind == A_GROW) {
             if (!root || !root->type)
                 Error(a, "cannot assign a grow-only array through a reference: a shrink of "
                          "a grow-only array applies to a local of the function that owns "
                          "it (§5.1)");
             GrowOnlyShrinkAt(a, true, "assign", root);
-        } else if (target->arr->akind == A_GROWSHRINK) {
+        } else {
             ShrinkGrowShrink(a, cat("assign ", ExprStr(a->lval)), root, ExprStr(a->lval));
         }
-        if (target->arr->akind == A_GROW || target->arr->akind == A_GROWSHRINK) {
-            built = root;
-            builtexact = lv.var != nullptr || lv.rootexact;
-            NoteGrow(a, built, builtexact, cat("assign ", ExprStr(a->lval)));
-        }
+        shrinkrest = rest;
+        built = root;
+        builtexact = lv.var != nullptr || lv.rootexact;
+        NoteGrow(a, built, builtexact, cat("assign ", ExprStr(a->lval)));
     }
     SlotScope ss(*this, true);
     auto base = growlog.size();
     auto v = CheckValueAt(a->rhs, target,
                           Dest { lv.root, lv.rootexact,
                                  lv.var && (IsRefOrSlice(target)) });
-    if (built)
+    if (built) {
         CheckGrowsSince(base, built, builtexact, cat("the value assigned to ", ExprStr(a->lval)));
+        CheckBuiltUses(a->rhs, a->lval, built, builtexact, arr);
+    }
     if (v.type->kind == TY_VOID && reachable)
         Error(a, "the right-hand side has no value");
     if (lv.var) {
@@ -1570,26 +1584,33 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv) {
     if (pt->kind == TY_INT && pt->intstorage == IS_VARINT)
         Error(a, "varint fields are written only at construction (§3.6)");
     AssignableClassCheck(pt, a);
-    if (pt->kind == TY_ARRAY && pt->arr->akind == A_GROW)
-        Error(a, "cannot assign a grow-only array through a reference: a shrink of a "
-                 "grow-only array applies to a local of the function that owns it (§5.1)");
+    auto arr = ResizableArrayIn(pt);
+    if (arr && arr->arr->akind == A_GROW)
+        Error(a, cat("cannot assign ", arr == pt ? "a grow-only array" : "a value holding a "
+                     "grow-only array", " through a reference: a shrink of a grow-only "
+                     "array applies to a local of the function that owns it (§5.1)"));
     // The pointee's elements are replaced: a shrink, then a growth with
     // the new contents under construction while the right-hand side runs
     // (§4.4, §1.3(4)).
     VarDef *built = nullptr;
     auto builtexact = false;
-    if (pt->kind == TY_ARRAY && pt->arr->akind == A_GROWSHRINK) {
+    if (arr) {
         built = CanonRoot(lv.var ? RefRootOf(lv.var) : lv.root);
         builtexact = lv.var ? RefExactOf(lv.var) : lv.rootexact;
+        auto rest = shrinkrest;
+        shrinkrest = a->rhs;
         ShrinkGrowShrink(a, cat("assign ", ExprStr(a->lval)), built, ExprStr(a->lval));
+        shrinkrest = rest;
         NoteGrow(a, built, builtexact, cat("assign ", ExprStr(a->lval)));
     }
     SlotScope ss(*this, true);
     auto base = growlog.size();
     auto v = CheckValueAt(a->rhs, pt, lv.var ? Dest { RefRootOf(lv.var), RefExactOf(lv.var) }
                                              : Dest { lv.root, lv.rootexact });
-    if (built)
+    if (built) {
         CheckGrowsSince(base, built, builtexact, cat("the value assigned to ", ExprStr(a->lval)));
+        CheckBuiltUses(a->rhs, a->lval, built, builtexact, arr);
+    }
     if (v.type->kind == TY_VOID && reachable)
         Error(a, "the right-hand side has no value");
 }

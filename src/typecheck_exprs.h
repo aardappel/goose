@@ -1182,12 +1182,14 @@ inline bool TypeCheck::MentionsName(Node *n, string_view name, set<SFunction *> 
     return hit;
 }
 
-// Whether variable v can be read again after the statement being checked
-// (§5.1): later in an open block at or inside v's scope, or anywhere in a
-// loop that contains this point and that v was declared outside of, whose
-// next iteration runs the earlier part of the body again.
+// Whether variable v can be read again after the shrink being checked
+// (§5.1): in the rest of its statement, later in an open block at or
+// inside v's scope, or anywhere in a loop that contains this point and
+// that v was declared outside of, whose next iteration runs the earlier
+// part of the body again.
 inline bool TypeCheck::UsedAfter(VarDef *v) {
     set<SFunction *> seen;
+    if (shrinkrest && MentionsName(shrinkrest, v->name, seen)) return true;
     for (auto i = 0; i < (int)scopes.size(); i++) {
         if (scopes[i].kind != SK_LOOP) continue;
         // A `for` binding is rebound by the loop itself at every iteration.

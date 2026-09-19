@@ -928,6 +928,165 @@ inline void TypeCheck::ApplyCalleeGrows(Node *at, FnSpec *spec, vector<Val> &arg
     }
 }
 
+// Where naming v leads, if that can be the array under construction at
+// `built`, of type arr: v is the array's variable or the value holding it,
+// or a reference to either. A slice, or a reference to anything smaller,
+// points into the old elements, which the shrink the assignment starts
+// with keeps from being used (§5.1).
+inline TypeCheck::Alias TypeCheck::ReachesBuilt(VarDef *v, VarDef *built, bool exact,
+                                                TypeExpr *arr, VarDef *&root) {
+    auto t = v->type;
+    if (!t || t->kind == TY_SLICE || (t->kind == TY_REF && t->ref->lenstorage >= 0))
+        return AL_NO;
+    auto isref = t->kind == TY_REF;
+    if (!CanContain(isref ? t->ref->sub : t, arr)) return AL_NO;
+    root = CanonRoot(isref ? RefRootOf(v) : v);
+    return MayAliasRoots(root, !isref || RefExactOf(v), built, exact);
+}
+
+// The array a whole assignment replaces has no contents while the
+// right-hand side runs: the old ones are gone, and the new ones are built
+// over them (§4.4). Nothing the right-hand side runs may use it, then:
+// name the array or a reference to it, itself or in a function it calls,
+// which reaches the caller's arrays only through its arguments and what it
+// names outside its own activation. A use the checker cannot show to be of
+// a different array is an error, as a growth is (CheckGrowsSince).
+inline void TypeCheck::CheckBuiltUses(Node *rhs, Node *lval, VarDef *built, bool exact,
+                                      TypeExpr *arr) {
+    built = CanonRoot(built);
+    if (!built || IsTemp(built)) return;
+    auto what = ExprStr(lval);
+    auto base = lval;
+    while (auto d = Is<Dot>(base)) base = d->obj;
+    auto lvvar = Is<Ident>(base) ? Is<Ident>(base)->vdef : nullptr;
+    // `via` says which function names v, when the right-hand side's own
+    // text does not.
+    auto check = [&](Node *at, VarDef *v, const string &how, const string &via) {
+        VarDef *root = nullptr;
+        auto may = ReachesBuilt(v, built, exact, arr, root);
+        if (may == AL_NO) return;
+        // The reference the assignment writes through needs no mention.
+        auto refers = v->type->kind == TY_REF && v != lvvar;
+        auto why = via.empty() ? (refers ? cat(v->name, " may refer to ", what) : string())
+                               : cat(via, refers ? cat(", which may refer to ", what) : "");
+        auto msg = cat("cannot ", how, " in the value assigned to ", what, ": ",
+                       why.empty() ? string() : cat(why, ", and "),
+                       "that value is built over the old contents of ", what,
+                       " (§4.4); build it in a variable of its own, and assign copy() of that");
+        if (may == AL_YES) Error(at, msg);
+        growconflicts.push_back({ at, CurRealFrame().spec, root, built, msg });
+    };
+    EachUse(rhs,
+            [&](Ident *id, Node *path) {
+                if (!FieldsApart(path, lval))
+                    check(id, id->vdef, cat("use ", ExprStr(path)), string());
+            },
+            [&](Call *c, FnSpec *sp) {
+                vector<VarDef *> named;
+                auto pending = NamedOutside(sp, named);
+                for (auto v : named)
+                    check(c, v, cat("call ", sp->sf->name),
+                          cat(sp->sf->name, pending ? ", still being checked, may use "
+                                                    : " uses ", v->name));
+            });
+}
+
+// The code under n that CheckBuiltUses judges: `named` gets each Ident
+// naming a variable, with the path of fields it is read through, which
+// may lead away from what the variable holds; `called` gets each call
+// with each specialization it may run. A rebind's target is not named:
+// moving a reference reaches nothing it points at.
+template<typename F, typename G> void TypeCheck::EachUse(Node *n, F named, G called) {
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n) return;
+        if (auto a = Is<Assign>(n); a && a->op == T_DOTASSIGN && Is<Ident>(a->lval)) {
+            walk(a->rhs);
+            return;
+        }
+        auto base = n;
+        for (auto d = Is<Dot>(base); d && d->fieldidx >= 0; d = Is<Dot>(base)) base = d->obj;
+        if (auto id = Is<Ident>(base); id && id->vdef) {
+            named(id, n);
+            if (base != n) return;
+        }
+        if (auto c = Is<Call>(n)) {
+            if (c->spec) called(c, c->spec);
+            for (auto sp : c->dispatch) called(c, sp);
+            for (auto &fs : c->fmtspecs) called(c, fs.second);
+        }
+        RunChildren(n, walk);
+    };
+    walk(n);
+}
+
+// Whether field paths `use` and `lval` start at one variable and part at
+// some field, what `use` reads holding no reference that could lead back
+// to what `lval` names.
+inline bool TypeCheck::FieldsApart(Node *use, Node *lval) {
+    auto path = [](Node *n, vector<Dot *> &fields) -> VarDef * {
+        for (auto d = Is<Dot>(n); d; d = Is<Dot>(n)) {
+            if (d->fieldidx < 0) return nullptr;
+            fields.push_back(d);
+            n = d->obj;
+        }
+        auto id = Is<Ident>(n);
+        return id ? id->vdef : nullptr;
+    };
+    vector<Dot *> uf, lf;
+    auto var = path(use, uf);
+    if (!var || var != path(lval, lf)) return false;
+    for (size_t i = 1; i <= uf.size() && i <= lf.size(); i++) {
+        if (uf[uf.size() - i]->fieldidx == lf[lf.size() - i]->fieldidx) continue;
+        auto ot = uf[0]->obj->exprtype;
+        if (ot && ot->kind == TY_REF) ot = ot->ref->sub;
+        auto runs = ot ? FieldRuns(ot) : vector<FieldRun>();
+        return runs.size() == 1 && IsFlat((*runs[0].ftypes)[uf[0]->fieldidx]);
+    }
+    return false;
+}
+
+// What a specialization's body names outside its own activation, itself or
+// through the functions it calls: globals, and variables of its lexical
+// parents or of the bodies that wrote the function values it runs -- all it
+// reaches of a caller's storage besides its arguments. A body still being
+// checked (a recursive cycle) is not known in full: it counts as naming
+// every global and every variable in scope on the path being checked, and
+// the result says so.
+inline bool TypeCheck::NamedOutside(FnSpec *spec, vector<VarDef *> &out) {
+    if (auto it = namedoutside.find(spec); it != namedoutside.end()) {
+        out = it->second;
+        return false;
+    }
+    set<FnSpec *> walked;
+    vector<VarDef *> named;
+    auto pending = false;
+    function<void(FnSpec *)> visit = [&](FnSpec *sp) {
+        if (sp->sf->isextern || !walked.insert(sp).second) return;
+        if (sp->inprogress) {
+            pending = true;
+            return;
+        }
+        EachUse(sp->body, [&](Ident *id, Node *) { named.push_back(id->vdef); },
+                [&](Call *, FnSpec *callee) { visit(callee); });
+    };
+    visit(spec);
+    set<VarDef *> seen;
+    auto add = [&](VarDef *v) {
+        if (seen.insert(v).second) out.push_back(v);
+    };
+    // A variable of an activation the call runs is created by it.
+    for (auto v : named)
+        if (v->isglobal || !walked.count(v->ownerspec)) add(v);
+    if (pending) {
+        for (auto g : ast.globals)
+            for (auto vd : g->defs) add(vd);
+        for (auto vd : vars) add(vd);
+    } else {
+        namedoutside[spec] = out;
+    }
+    return pending;
+}
+
 // Element construction targets the array's storage (relative references
 // in the element must derive from the same root, §3.9).
 inline void TypeCheck::ElemArg(Node *&n, TypeExpr *elem, Val &rv) {

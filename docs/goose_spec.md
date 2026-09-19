@@ -692,7 +692,8 @@ array result `append`ed to it, an `append`ed array literal of such elements,
 or the new contents of a whole assignment (§4.4) — nothing may grow that
 array, neither the expression being built nor a function it calls
 (§1.3(4)). The compiler rejects a growth it cannot show to be of a
-different array.
+different array. A whole assignment builds its new contents over the old
+ones, so its right-hand side may not use the array at all (§4.4).
 
 Literal forms usable in any construction context:
 
@@ -772,14 +773,35 @@ the *pointee* write that `=` performs; the reference value itself is updated
 only by `.=`, §3.8):
 
 * fixed-size lvalues declared `var`: assignable (plain overwrite copy);
-* whole resizable arrays (top of their stack): assignable — semantically
-  clear-then-construct; the bump pointer resets to the array's element start
-  and the new contents are built in (from an rvalue or `copy(x)`, §4.1);
+* whole resizable arrays (top of their stack), and values holding one as
+  their tail (§3.4): assignable — semantically clear-then-construct; the
+  bump pointer resets to the array's element start and the new contents are
+  built in (from an rvalue or `copy(x)`, §4.1), so the right-hand side may
+  not use the array (below);
 * limited arrays `[..k]`/`[..]`: assignable if the new length fits capacity;
 * fixed-mode ADT lvalues: assignable, including with a different variant;
 * **not** assignable: variable-class lvalues (`T[]` locals/fields/elements,
   variable-mode ADT lvalues, `varint` fields) — these are frozen at
   construction; rebuild the container instead.
+
+The right-hand side of a whole assignment of a resizable runs once the old
+contents are gone, while the new ones are built in their place, so it may
+not use the array: not name it (its length included), nor a reference to it
+or to the value holding it, and neither may a function it calls, through a
+global or captured variable that function names. `x = [x[1], x[0]]`,
+`x = f(x)` and `g = rebuilt()` for a `rebuilt` that reads `g` are errors. As
+with growth (§4.2), so is a use the compiler cannot show to be of a
+different array: of a reference parameter a caller may bind to the global
+being assigned, say, or through a call into a recursive cycle still being
+checked, which counts as using every global and every variable in scope.
+Where the assignment names the array as a field (`t.chars = …`), the
+right-hand side may still name the holding value's other fields that are
+flat (§1.1): `t.chars = render(t.font)`. A slice or reference into the old
+elements is the shrink rule's to judge (§5.1): the right-hand side runs
+after the shrink the assignment starts with, so one it uses is live there.
+New contents computed from the old are built in a variable of their own and
+assigned as `copy()` of it, the one copy spelled out where it is paid
+(§4.3).
 
 `let` forbids assigning that name or field as a whole, and nothing more:
 the *contents* of a `let` array or struct are as writable as their type
@@ -870,8 +892,9 @@ line.clear();` is fine, and a scratch buffer refilled per iteration, or a
 stack popped between phases, hands out slices of itself freely — "reusable
 scratch" and "structure I can point into" are the same type. The operations
 themselves are the grow-shrink ones: a stack-top move and a length store.
-Assigning the array whole (`a = …`) replaces its elements and is a shrink
-under the same rule.
+Assigning the array whole (`a = …`), or a value holding it, replaces its
+elements and is a shrink under the same rule; the right-hand side runs after
+it, so a variable that side names is used after the shrink.
 
 Through a reference or of a global, a shrink cannot see the callers'
 variables, so it is checked at every level: each function specialization
@@ -1251,7 +1274,8 @@ transient header between the caller's data and the new elements
 * `v.push(f());` / `v.append(f());` — the top of `v`'s stack; the push is a
   no-op on return beyond `v.len` adjustment (the data is already in place).
 * `g(f())` — the argument slot of `g` (its statically reserved stack).
-* `x = f();` (resizable `x`) — `x`'s stack, replacing its contents.
+* `x = f();` (resizable `x`) — `x`'s stack, replacing its contents, which
+  `f` may therefore not use (§4.4).
 
 **Named results (guaranteed NRVO).** When every `return` of a nonfixed
 result returns the same local variable (and those returns are its last
