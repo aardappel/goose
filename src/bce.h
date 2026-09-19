@@ -553,10 +553,15 @@ struct BCE {
         return true;
     }
 
+    // The integer type binary operation b computes and wraps at (§6.2): its
+    // operands', which the checker unified. b's own exprtype is the slot its
+    // value lands in, which can be wider (an i8 sum stored into an i64).
+    static TypeExpr *OpType(Binary *b) { return b->left->exprtype; }
+
     // A one-shot base carrying [lo, hi], for a value the operation computes
     // but the domain cannot relate to anything else. The interval is only
     // stated when the machine's own arithmetic agrees with it: §6.2 wraps at
-    // the expression's width in release builds, so a result the facts place
+    // the operation's width in release builds, so a result the facts place
     // outside that width is not the value the program computed.
     Term IvalTerm(TypeExpr *t, int64_t lo, int64_t hi) {
         if (!t || t->kind != TY_INT || t->intstorage == IS_U64 ||
@@ -575,7 +580,7 @@ struct BCE {
     // by the same rule as a nonnegative one.
     Term MulTerm(Binary *b) {
         if (mode == M_KILLS) return {};
-        auto t = b->exprtype;
+        auto t = OpType(b);
         if (!t || t->kind != TY_INT || t->intstorage == IS_U64 ||
             t->intstorage == IS_VARINT)
             return {};
@@ -592,7 +597,7 @@ struct BCE {
             lo = std::min(lo, c[i]);
             hi = std::max(hi, c[i]);
         }
-        return IvalTerm(b->exprtype, lo, hi);
+        return IvalTerm(t, lo, hi);
     }
 
     // `a + b` / `a - b` where neither side is a constant, so the difference
@@ -607,7 +612,7 @@ struct BCE {
         auto lo = minus ? li.lo - ri.hi : li.lo + ri.lo;
         auto hi = minus ? li.hi - ri.lo : li.hi + ri.hi;
         if (lo < -CCAP || hi > CCAP) return {};
-        return IvalTerm(b->exprtype, lo, hi);
+        return IvalTerm(OpType(b), lo, hi);
     }
 
     // ------------------------------------------------------------------
@@ -644,7 +649,7 @@ struct BCE {
         }
         if (auto d = Is<Dot>(n); d && d->member == B_LEN) return LenTermOf(d->obj);
         if (auto b = Is<Binary>(n); b && (b->op == T_PLUS || b->op == T_MINUS)) {
-            auto t = n->exprtype;
+            auto t = OpType(b);
             if (!t || t->kind != TY_INT || t->intstorage == IS_U64 ||
                 t->intstorage == IS_VARINT)
                 return {};
@@ -705,7 +710,7 @@ struct BCE {
     // resulting facts.
     Term RangedOpTerm(Binary *b) {
         if (mode == M_KILLS) return {};
-        auto t = b->exprtype;
+        auto t = OpType(b);
         if (!t || t->kind != TY_INT || t->intstorage == IS_VARINT) return {};
         auto rt = TermOf(b->right);
         if (!rt.ok) return {};
