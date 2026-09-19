@@ -639,11 +639,11 @@ inline Val AsCast::Check(TypeCheck &tc, TypeExpr *) {
     if (tt->kind == TY_INT) {
         if (tt->intstorage == IS_VARINT)
             tc.Error(this, "cannot cast to varint (varints are written at construction only)");
-        v.type = tt;
+        totype = v.type = tt;
         return v;
     }
     if (tt->kind == TY_FLT) {
-        v.type = tt;
+        totype = v.type = tt;
         return v;
     }
     tc.Error(this, cat("as can only convert between numeric types, not to ", tc.TypeStr(tt)));

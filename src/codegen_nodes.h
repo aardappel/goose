@@ -86,9 +86,13 @@ inline string Unary::CgX(CodeGen &cg) {
                 return cat("(", x, ".hdr == 0)");
             return cat("(uint8_t)(!", x, ")");
         }
-        case T_BITNOT:
-            // The cast undoes C's promotion to int for the narrow types.
-            return cat("(", cg.CT(exprtype), ")(~(", x, "))");
+        case T_BITNOT: {
+            // At the operand's type (§6.1): exprtype is the slot the result
+            // lands in, which can be wider. The cast undoes C's promotion to
+            // int for the narrow types.
+            auto ot = cg.OperandT(child->exprtype);
+            return cat("(", cg.IntCT(ot->intstorage), ")(~(", x, "))");
+        }
         default: assert(false); return x;
     }
 }
@@ -286,7 +290,7 @@ inline string SliceExpr::CgX(CodeGen &cg) {
 inline string AsCast::CgX(CodeGen &cg) {
     auto x = cg.GenX(child);
     auto st = child->exprtype;
-    auto tt = exprtype;
+    auto tt = totype;
     // u64 is the one source whose values exceed the int64 range the checks
     // compute in; it gets unsigned-compare variants.
     auto su64 = st->kind == TY_INT && st->intstorage == IS_U64;

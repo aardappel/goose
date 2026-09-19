@@ -544,6 +544,10 @@ NODE(AsCast)
     Node *child;
     TypeExpr *type;
     bool unchecked;             // as! vs as.
+    // Filled by typecheck: the concrete type the cast converts to. exprtype
+    // can be wider: it is the slot the result lands in (an i8 cast stored
+    // into an i64), and the cast still wraps and checks at its own type.
+    TypeExpr *totype = nullptr;
     AsCast(Line l, Node *_child, TypeExpr *_type, bool _unchecked)
         : Node(l), child(_child), type(_type), unchecked(_unchecked) {}
 NODE_END

@@ -352,7 +352,11 @@ which codegen follows: a written `&x` there reads as `x` (`Unary::CgX`).
   sees an ordinary reference argument, and warns on a redundant user `&`;
 * rejects a non-fixed lvalue at a value destination unless it is a `copy`
   or the function's own local being returned (`RequireCopyable`, §4.1);
-* fits the value to the destination (`MustFit`/`FitsAt`, §3.5);
+* fits the value to the destination (`MustFit`/`FitsAt`, §3.5); the node's
+  `exprtype` becomes the destination's type, which can be wider than the
+  type its operation computes at (an `i8` cast stored into an `i64`), so
+  that type is read elsewhere: a cast's `AsCast::totype`, an operator's
+  operands' `exprtype`;
 * rejects copies of values holding self-relative references
   (`NoRelRefCopy`, §3.13).
 

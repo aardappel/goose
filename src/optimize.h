@@ -717,7 +717,9 @@ inline Node *SliceExpr::Cp1(Inliner &inl) const {
 }
 
 inline Node *AsCast::Cp1(Inliner &inl) const {
-    return inl.ast.New<AsCast>(line, inl.Cp(child), type, unchecked);
+    auto c = inl.ast.New<AsCast>(line, inl.Cp(child), type, unchecked);
+    c->totype = totype;
+    return c;
 }
 
 inline Node *RangeExpr::Cp1(Inliner &inl) const {
@@ -872,10 +874,12 @@ inline Node *Ident::Opt(Optimizer &o) {
 
 inline Node *Unary::Opt(Optimizer &o) {
     child = op == T_BITAND ? o.OptViewed(child) : o.Opt(child);
+    // - and ~ compute at their operand's type (§6.1); the node's own exprtype
+    // is the slot the result lands in, which can be wider.
     switch (op) {
         case T_MINUS:
             if (auto i = Is<IntLit>(child)) {
-                auto t = Optimizer::IntTypeOf(this);
+                auto t = Optimizer::IntTypeOf(child);
                 // An unrepresentable negation overflows; the runtime decides.
                 if (!t || i->val == INT64_MIN ||
                     !TypeCheck::FitsIntStorage(-i->val, false, t->intstorage))
@@ -886,7 +890,7 @@ inline Node *Unary::Opt(Optimizer &o) {
             break;
         case T_BITNOT:
             if (auto i = Is<IntLit>(child)) {
-                auto t = Optimizer::IntTypeOf(this);
+                auto t = Optimizer::IntTypeOf(child);
                 if (!t) break;
                 return o.NewInt(this, Optimizer::WrapStorage(~i->val, t->intstorage));
             }
@@ -1061,7 +1065,7 @@ inline Node *SliceExpr::Opt(Optimizer &o) {
 
 inline Node *AsCast::Opt(Optimizer &o) {
     child = o.Opt(child);
-    auto tt = exprtype;  // The concrete target type, set at checking.
+    auto tt = totype;
     if (auto i = Is<IntLit>(child)) {
         // Whether the source value's bits read as a u64 above i64.max.
         auto st = Optimizer::IntTypeOf(child);

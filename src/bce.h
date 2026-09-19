@@ -733,7 +733,7 @@ struct BCE {
     // checked only where the source type does not already guarantee it.
     Term CastTerm(AsCast *ac) {
         if (mode == M_KILLS) return {};
-        auto tt = ac->exprtype, st = ac->child->exprtype;
+        auto tt = ac->totype, st = ac->child->exprtype;
         if (!tt || tt->kind != TY_INT || tt->intstorage == IS_VARINT) return {};
         if (!st || st->kind != TY_INT || st->intstorage == IS_VARINT) return {};
         auto ct = TermOf(ac->child);
