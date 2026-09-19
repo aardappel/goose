@@ -68,7 +68,13 @@ inline string Ident::CgX(CodeGen &cg) {
 }
 
 inline string Unary::CgX(CodeGen &cg) {
-    if (op == T_BITAND) return cg.GenRefVal(child, line);
+    if (op == T_BITAND) {
+        // Where the checker decayed the reference (an operand, a value
+        // destination, a rendered value), `&x` reads as its pointee (§3.8).
+        if (exprtype && exprtype->kind != TY_REF)
+            return cg.LoadLoc(cg.GenLoc(child), exprtype, line);
+        return cg.GenRefVal(child, line);
+    }
     auto x = cg.GenX(child);
     switch (op) {
         case T_MINUS:
