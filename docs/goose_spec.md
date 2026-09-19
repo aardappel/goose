@@ -1723,7 +1723,12 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   return value).
 * Struct types with reference fields are implicitly generic over those
   fields' roots; struct instances with different root bindings are distinct
-  types for checking purposes (same layout).
+  types for checking purposes (same layout). One whose references all point
+  into one variable is bound to that root exactly; one whose references
+  point into several is only bounded by the innermost of their roots, so a
+  function given both kinds is checked for each. A `recursive fn`'s back
+  edges reuse its body whatever they pass (§7.8), so its by-value parameters
+  are always taken to be of the second kind.
 * References into a value being copied by value do not transfer to the copy;
   they keep referring to the source (plain value semantics).
 * A reference *variable* commits to its first binding's root: `.=` may

@@ -977,6 +977,14 @@ struct RootArg {
     // bit -- codegen's proof that two classes are *different* arrays -- runs
     // after every call site has been seen.
     bool exact = true;
+    // For a holder parameter (§9.2): everything the argument holds points
+    // into the one array its class names, which the body then takes as that
+    // array exactly (CheckSpecBody). Part of the key, unlike `exact`: a
+    // reference in a class is in that array whatever the call site, but a
+    // holder's class only bounds the arrays its references point into, by the
+    // deepest of them. Never set for a recursive function, whose back edges
+    // reuse its body whatever they pass (§7.8).
+    bool heldexact = false;
     // The argument is a different array from every other concrete argument at
     // its call site: a global or a function's variable with no class of a
     // parameter beside it, a variable created inside the activation whose
@@ -1011,7 +1019,8 @@ struct RootArg {
     int depthkey = 0;
     bool operator==(const RootArg &o) const {
         return cls == o.cls && writable == o.writable && reusable == o.reusable &&
-               growshrink == o.growshrink && byteview == o.byteview && pool == o.pool;
+               growshrink == o.growshrink && byteview == o.byteview && pool == o.pool &&
+               heldexact == o.heldexact;
     }
 };
 

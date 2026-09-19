@@ -663,6 +663,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         ra.reusable = argvals[i].reusable;
         ra.exact = holder ? argvals[i].holderset && argvals[i].holderexact
                           : argvals[i].rootexact;
+        ra.heldexact = holder && ra.exact && !sf->isrec;
         ra.growshrink = IsGrowShrinkRoot(r);
         ra.byteview = argvals[i].byteview;
         if (ra.exact) ra.pool = PoolOf(r);
@@ -1303,7 +1304,9 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
             vd->ref.byteview = ra.byteview;
         } else if (HoldsPlainRef(pt)) {
             // A holder parameter: its contents are bounded by the class
-            // root its call sites agreed on.
+            // root its call sites agreed on, and are that array exactly only
+            // where they agreed its references all point into one
+            // (RootArg::heldexact).
             auto &ra = spec->roots[i];
             VarDef *cr = nullptr;
             if (ra.cls != 0) {
@@ -1319,7 +1322,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
                 cr = classroots[ra.cls];
             }
             vd->contentroot = cr;
-            vd->contentexact = true;
+            vd->contentexact = ra.heldexact;
             vd->contentset = true;
             vd->contentbyteview = ra.byteview;
             // A returned holder maps back at the call site through it, and a
@@ -1331,7 +1334,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
             // bounded by the class root, as an event of its own.
             Val hv;
             hv.root = cr;
-            hv.rootexact = true;
+            hv.rootexact = ra.heldexact;
             RecordStore(vd, hv, nullptr, false);
         }
         spec->params.push_back(vd);

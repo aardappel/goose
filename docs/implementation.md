@@ -436,6 +436,12 @@ establish. `CheckSpecBody` then creates one synthetic `VarDef` per class,
 carrying the call-site root's depth (`classfrom` remembers the root it came
 from), and every parameter of the class is bound to it, `rootexact` within
 the body: inside the body a class names one array, whatever the call site.
+A holder parameter's class only bounds what it holds, by the deepest root
+its references point into, so its contents (`contentexact`, and the store
+event that stands for them) are that array exactly only where the argument's
+references all point into one (`RootArg::heldexact`, part of the key), and
+never in a `recursive fn`, whose back edges reuse the body whatever they
+pass.
 A temporary of the calling statement outlives the call, so its class takes
 the body's own outermost depth instead (`ClassDepth`): the body may keep it
 in its locals, but not in anything of the caller's. Classes are numbered by
@@ -526,9 +532,11 @@ deepest root among its reference initializers (`NoteLitElem`,
 `HolderFromLit`); a variable's is its `contentroot`, unless a loop around
 the read writes the variable, in which case the variable itself is the
 bound; a container read's is the container's root, inexact, and out of a
-temporary the temporary's own; a holder parameter is keyed by its holder
-root class like a reference, and that class (its `ref.root`) bounds what is
-read back out of it or out of a copy of it (§3.6).
+temporary the temporary's own; a
+holder parameter is keyed by its holder root class like a reference, and by
+whether that class is exactly the one array it points into (§3.4), and the
+class (its `ref.root`) bounds what is read back out of it or out of a copy
+of it (§3.6).
 
 ### 3.6 Read-back roots
 
