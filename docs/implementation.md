@@ -1434,7 +1434,7 @@ arrays too -- which is what the checker's growth rule (§3.10) keeps safe.
 A pool allocation builds a literal holding relative references at its
 slot the same way (`EmitAlloc`).
 
-**Adaptation into static-capacity limited arrays.** `FitsAt` lets any array
+**Adaptation into limited arrays.** `FitsAt` lets any array
 or slice of the element type construct a `T[..k]` (§4.2), and codegen copies
 into the C value (`AdaptToFixed`, with the capacity check) from whatever
 representation the source has: a variable or field through `LoadLoc`, a
@@ -1445,7 +1445,11 @@ representation than its context wants through `GenXD` (a `copy` source, a
 spliced callee body), and a stack slot through `GenArrayFromLoc`. A
 bytes-class call result feeding a fixed-class slot is built on a temporary of
 its own rather than the slot's stack (`GenConstruct`), since the slot takes
-the adapted C value.
+the adapted C value. A runtime-capacity `T[..]` is a bytes value, and an
+assignment into one copies out of a value of that layout (`GenPtr`): a slice
+or an array of another kind is built as one on a temporary first
+(`ConstructFromLoc`), so the source is read in full before the destination
+changes, even a view into the destination itself.
 
 **Adaptation into an ADT.** `FitsAt` also lets a variant construct its ADT,
 and an ADT construct itself in its other mode (§3.5); the node then carries

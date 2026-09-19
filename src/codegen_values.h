@@ -841,28 +841,29 @@ inline string CodeGen::GenFixedArrayLit(ArrayLit *al) {
 inline string CodeGen::GenPtr(Node *n, string *stkout) {
     assert(!IsResz(n->exprtype));
     if (stkout) stkout->clear();
-    if (auto id = Is<Ident>(n)) {
-        auto lv = VarLoc(id->vdef);
+    // A path is the value where it is stored, and `&path` a reference
+    // decayed back to its bytes pointee. A payload-less variant constant is
+    // a value, not a path: it constructs below like the other rvalues.
+    Node *path = nullptr;
+    if (Is<Ident>(n) || Is<Index>(n)) path = n;
+    else if (auto dot = Is<Dot>(n); dot && !dot->variantconst) path = n;
+    else if (auto u = Is<Unary>(n); u && u->op == T_BITAND) path = u->child;
+    if (path) {
+        auto lv = GenLoc(path);
         if (lv.t->kind == TY_REF) DerefLoc(lv, n->line);
-        if (stkout) *stkout = lv.stk;
-        return lv.s;
-    }
-    // A payload-less variant constant is a value, not a path: it constructs
-    // below like the other rvalues.
-    auto dot = Is<Dot>(n);
-    if ((dot && !dot->variantconst) || Is<Index>(n)) {
-        auto lv = GenLoc(n);
-        if (lv.t->kind == TY_REF) DerefLoc(lv, n->line);
-        if (stkout) *stkout = lv.stk;
-        assert(!lv.val);
-        return lv.s;
-    }
-    if (auto u = Is<Unary>(n); u && u->op == T_BITAND) {
-        // A reference decayed back to a bytes pointee.
-        auto lv = GenLoc(u->child);
-        if (lv.t->kind == TY_REF) DerefLoc(lv, n->line);
-        if (stkout) *stkout = lv.stk;
-        return lv.s;
+        auto et = n->exprtype;
+        if (et->kind != TY_ARRAY || TEq(lv.t, et)) {
+            if (stkout) *stkout = lv.stk;
+            assert(!lv.val);
+            return lv.s;
+        }
+        // A slice or an array of another kind, which the checker let
+        // construct n's array type (§4.2): built as one on a temporary.
+        string stk;
+        auto base = BytesTemp(stk);
+        ConstructFromLoc(lv, et, stk, "", n->line);
+        if (stkout) *stkout = stk;
+        return base;
     }
     if (auto s = Is<StrLit>(n)) return GenStrBytes(s);
     // Everything else constructs on a fresh temp stack.
