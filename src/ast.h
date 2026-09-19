@@ -1048,7 +1048,14 @@ struct LitFlow {
 
 struct FnSpec {
     SFunction *sf = nullptr;
-    FnSpec *lexparent = nullptr;   // Defining specialization, for nested fns.
+    FnSpec *lexparent = nullptr;   // Defining specialization (or body), for nested fns.
+    // Not a specialization but a function value's body as one check of its
+    // call sees it (§7.6): the lexical parent of the functions and function
+    // values written in that body, which may name its parameters and locals.
+    // Each check clones the body afresh, so each has one of these. Its
+    // lexparent is where the value was written, its sf the named function
+    // whose body that is.
+    bool isfunval = false;
     vector<TypeExpr *> argtypes;   // Concrete parameter types (the key, with the below).
     // Aligned with argtypes/params; a parameter holding no roots has the
     // default entry. Every pass uses the parameter index directly.
@@ -1156,6 +1163,7 @@ struct Ast {
     vector<StructInst *> structinsts;
     vector<EnumInst *> enuminsts;
     vector<FnSpec *> fnspecs;
+    vector<FnSpec *> fvenvs;     // FnSpec::isfunval environments, which only the checker reads.
 
     vector<Node *> topdecls;                        // In source/import order.
     vector<VarDecl *> globals;                      // Initialization order.
@@ -1217,6 +1225,7 @@ struct Ast {
         for (auto i : structinsts) delete i;
         for (auto i : enuminsts) delete i;
         for (auto sp : fnspecs) delete sp;
+        for (auto sp : fvenvs) delete sp;
     }
 
     TypeExpr *NewType(TypeKind kind, Line line) {
@@ -1266,6 +1275,12 @@ struct Ast {
         auto sp = new FnSpec();
         sp->id = (int)fnspecs.size();
         fnspecs.push_back(sp);
+        return sp;
+    }
+    FnSpec *NewFunValEnv() {
+        auto sp = new FnSpec();
+        sp->isfunval = true;
+        fvenvs.push_back(sp);
         return sp;
     }
 

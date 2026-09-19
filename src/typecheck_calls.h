@@ -828,7 +828,7 @@ inline vector<VarDef *> TypeCheck::ExternalOptionals(
     // function it is handed to.
     function<void(FnSpec *)> addenv = [&](FnSpec *e) {
         if (!e || !seenenvs.insert(e).second) return;
-        for (auto fi = FrameOfSpec(e); fi >= 0; fi = frames[fi].lexframe) {
+        for (auto fi = LexFrame(e); fi >= 0; fi = frames[fi].lexframe) {
             auto end = fi + 1 < (int)frames.size() ? frames[fi + 1].varbase : (int)vars.size();
             for (auto i = frames[fi].varbase; i < end; i++) add(vars[i]);
         }
@@ -1159,7 +1159,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     f.sf = sf;
     f.spec = spec;
     f.lexspec = spec;
-    f.lexframe = spec->lexparent ? FrameOfSpec(spec->lexparent) : -1;
+    f.lexframe = spec->lexparent ? LexFrame(spec->lexparent) : -1;
     f.scopebase = (int)scopes.size();
     f.varbase = (int)vars.size();
     f.callline = callline;
@@ -1495,7 +1495,7 @@ inline void TypeCheck::CheckReturn(Return *r) {
             Error(r, cat("return from ", r->from, ": no enclosing call of ", r->from,
                          " on this compile-time call path"));
     } else if (frames.back().isfunval) {
-        tf = FrameOfSpec(frames.back().lexspec);
+        tf = FrameOfSpec(NamedSpec(frames.back().lexspec));
         if (tf < 0) Error(r, "cannot resolve the enclosing function of this value");
     } else {
         tf = (int)frames.size() - 1;

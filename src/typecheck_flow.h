@@ -201,11 +201,48 @@ inline string_view TypeCheck::CurNs() {
 }
 
 // The frame whose vars the above may address next: used to find a spec's
-// frame index for lexparent chains.
+// frame index for lexparent chains. A function value's body environment
+// (FnSpec::isfunval) is the frame checking the body.
 inline int TypeCheck::FrameOfSpec(FnSpec *sp) {
     for (auto i = (int)frames.size() - 1; i >= 0; i--)
-        if (frames[i].spec == sp && !frames[i].isfunval) return i;
+        if (frames[i].isfunval ? frames[i].lexspec == sp : frames[i].spec == sp) return i;
     return -1;
+}
+
+// The frame a body whose lexical parent is `env` looks names up in next. A
+// function declared in a function value's body can be called after that
+// body's check has ended (yielded as its value), and then continues in the
+// nearest environment around the body still being checked, as one a
+// finished block declared does.
+inline int TypeCheck::LexFrame(FnSpec *env) {
+    auto fi = FrameOfSpec(env);
+    while (fi < 0 && env && env->isfunval) fi = FrameOfSpec(env = env->lexparent);
+    return fi;
+}
+
+// The specialization of the named function a lexical environment is in
+// (null at globals): a function value's body is in the one it was written in.
+inline FnSpec *TypeCheck::NamedSpec(FnSpec *env) {
+    while (env && env->isfunval) env = env->lexparent;
+    return env;
+}
+
+// The locals a function nested in `env` can reach outside its own body:
+// those of each lexical parent, a function value's body holding the ones
+// its frame declares.
+inline vector<VarDef *> TypeCheck::LexicalLocals(FnSpec *env) {
+    vector<VarDef *> out;
+    for (; env; env = env->lexparent) {
+        if (!env->isfunval) {
+            for (auto vd : vars) if (vd->ownerspec == env) out.push_back(vd);
+            continue;
+        }
+        auto fi = FrameOfSpec(env);
+        if (fi < 0) continue;
+        auto end = fi + 1 < (int)frames.size() ? frames[fi + 1].varbase : (int)vars.size();
+        for (auto i = frames[fi].varbase; i < end; i++) out.push_back(vars[i]);
+    }
+    return out;
 }
 
 inline SFunction *TypeCheck::LookupLocalFn(string_view name) {

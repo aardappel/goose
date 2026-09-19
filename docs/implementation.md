@@ -167,7 +167,7 @@ function and no existing specialization matches. `GetOrCreateSpec`
 
 | Part of the key | What it records |
 |---|---|
-| `lexparent` | the defining specialization of a nested function or function value (its lexical environment) |
+| `lexparent` | the lexical environment a nested function is declared in: a specialization, or a function value's body as one check of its call sees it (`FnSpec::isfunval`, §3.12) |
 | `argtypes` | the concrete parameter types after generic inference |
 | `bindings` | the concrete type of each of the function's own type variables, explicit or inferred, in any order: the only record of one no parameter type mentions (`size<u8>()`) |
 | `roots` (`RootArg` per parameter) | the reference root *class* of each reference, slice or reference-holding argument, its writability, `reusable` and grow-shrink provenance, whether it is a `bytes_of` view, and the global pool it is rooted in (§3.4) |
@@ -603,7 +603,8 @@ checked, the summary is incomplete: the callee's body is scanned textually
 (`SyntacticShrinks`: `pop`/`resize`/`clear` receivers and assignment
 targets, by parameter index, global name, and capture), every grow-shrink
 global and every grow-shrink array reachable from the lexical parents'
-locals counts as shrunk, and a grow-only local the text names does too.
+locals (`LexicalLocals`, a function value's body among the parents) counts
+as shrunk, and a grow-only local the text names does too.
 
 **Growth during construction** (§1.3(4), §4.2). A value built in place at an
 array's top or slot is under construction while its expression is checked,
@@ -719,9 +720,24 @@ function the scope declaring it, whatever function names it
 (`LookupLocalFnEnv`, as for a call); a block is cloned into
 `Call::fvbody` and checked inline in a frame marked `isfunval` whose lexical
 lookups chain to the definer, with parameters as locals bound to the
-arguments (reference provenance and literal-ness carried through). A plain
-`return` inside it targets the lexically enclosing named function
-(`CheckReturn`), which is how HOF-based iteration returns.
+arguments (reference provenance and literal-ness carried through). The body
+as that check sees it is a lexical environment of its own, the frame's
+`lexspec`: an `FnSpec` marked `isfunval` (`NewFunValEnv`, outside
+`ast.fnspecs`), whose `lexparent` is where the value was written. A nested
+function declared in the body has it as `lexparent`, and a function value
+written there or a nested function of the body named as one carries it, so
+their lookups chain through the body's frame (`FrameOfSpec`, `LexFrame`) to
+its parameters and locals (§7.5); a nested function the body yields as its
+value is checked once that frame is gone, and continues in the nearest
+environment around it still being checked, as one a finished block declared
+does. Each check clones the body afresh and makes a new environment with
+it, so a specialization keyed on one captures that clone's variables:
+another call site of the value, or the same call checked again as an
+argument, specializes anew instead of reusing one whose captures codegen
+never declares. `NamedSpec` gives the named function around such an
+environment, which a plain `return` inside it targets (`CheckReturn`); that
+is how HOF-based iteration returns. `LexicalLocals` gives a nested recursive
+call's lexical parents' locals, the body's included (§3.10).
 
 **`return ... from`** (`CheckReturn`, §7.9): the target resolves in the
 returning function's definition context (a nested function in scope, else
@@ -1285,9 +1301,10 @@ long-distance discriminant afterwards where the callee can propagate one
 in source order, snapshots a by-value scrutinee before later arguments run,
 and switches on the tag with one call per arm sharing the argument
 temporaries and return channels. A function value is spliced inline
-(`EmitFvCall`): its parameters are ordinary locals of the enclosing function.
-An `extern fn` is a direct C call with prototypes emitted for symbols the
-runtime does not define.
+(`EmitFvCall`): its parameters and locals are ordinary locals of the
+enclosing function, which what is declared in its body takes as free
+variables like any other. An `extern fn` is a direct C call with prototypes emitted for
+symbols the runtime does not define.
 
 `return ... from` uses one thread-local `int32_t gs_rf` (zero except between
 a long-distance return and its catch) plus per-target thread-local channels

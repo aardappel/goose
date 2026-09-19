@@ -97,7 +97,7 @@ struct TypeCheck {
     struct Frame {
         SFunction *sf = nullptr;     // Null for the global-initializer frame.
         FnSpec *spec = nullptr;      // Owner of locals declared here (null at globals).
-        FnSpec *lexspec = nullptr;   // Lexical env for generic bindings (differs for funvals).
+        FnSpec *lexspec = nullptr;   // Lexical env: generic bindings, parent of nested fns.
         int lexframe = -1;           // Frame index for free-variable lookup chains.
         int scopebase = 0;           // First scope index belonging to this frame.
         int varbase = 0;             // First var index belonging to this frame.
@@ -683,6 +683,9 @@ struct TypeCheck {
     VarDef *LookupVar(string_view name, string_view ns);
     string_view CurNs();
     int FrameOfSpec(FnSpec *sp);
+    int LexFrame(FnSpec *env);
+    FnSpec *NamedSpec(FnSpec *env);
+    vector<VarDef *> LexicalLocals(FnSpec *env);
     SFunction *LookupLocalFn(string_view name);
 
     // Snapshot of assigned/narrowed for every variable currently in scope.

@@ -766,22 +766,20 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
         // A nested recursive call can also reach its lexical parents' local
         // storage, including arrays reached through captured parameters.
         set<VarDef *> seen;
-        for (auto env = spec->lexparent; env; env = env->lexparent) {
-            for (auto vd : vars) {
-                if (vd->ownerspec != env || vd->isglobal || !vd->type) continue;
-                auto rt = vd->type;
-                auto root = vd;
-                if (IsPlainRef(rt)) {
-                    rt = rt->ref->sub;
-                    root = CanonRoot(RefRootOf(vd));
-                }
-                if (!root) continue;
-                auto may = ContainsGrowShrink(rt);
-                if (IsArrayKind(rt, A_GROW))
-                    for (auto external : pending_shrinks->captures) may |= external == vd->name;
-                if (may && seen.insert(root).second)
-                    shrink(root, cat("call ", name, ", which may shrink"));
+        for (auto vd : LexicalLocals(spec->lexparent)) {
+            if (vd->isglobal || !vd->type) continue;
+            auto rt = vd->type;
+            auto root = vd;
+            if (IsPlainRef(rt)) {
+                rt = rt->ref->sub;
+                root = CanonRoot(RefRootOf(vd));
             }
+            if (!root) continue;
+            auto may = ContainsGrowShrink(rt);
+            if (IsArrayKind(rt, A_GROW))
+                for (auto external : pending_shrinks->captures) may |= external == vd->name;
+            if (may && seen.insert(root).second)
+                shrink(root, cat("call ", name, ", which may shrink"));
         }
         // Every grow-shrink global, and every grow-only global some function
         // still being checked textually shrinks.
@@ -900,16 +898,15 @@ inline void TypeCheck::ApplyCalleeGrows(Node *at, FnSpec *spec, vector<Val> &arg
                     NoteGrow(at, vd, true, cat("call ", name, ", which may grow ", vd->name));
     // A nested recursive call can also reach its lexical parents' locals,
     // arrays reached through captured references included.
-    for (auto env = spec->lexparent; env; env = env->lexparent)
-        for (auto vd : vars) {
-            if (vd->ownerspec != env || vd->isglobal || !vd->type) continue;
-            auto named = false;
-            for (auto cn : textual.captures) named |= cn == vd->name;
-            if (!named) continue;
-            auto viaref = IsPlainRef(vd->type);
-            NoteGrow(at, viaref ? CanonRoot(RefRootOf(vd)) : vd, !viaref || RefExactOf(vd),
-                     cat("call ", name, ", which may grow ", vd->name));
-        }
+    for (auto vd : LexicalLocals(spec->lexparent)) {
+        if (vd->isglobal || !vd->type) continue;
+        auto named = false;
+        for (auto cn : textual.captures) named |= cn == vd->name;
+        if (!named) continue;
+        auto viaref = IsPlainRef(vd->type);
+        NoteGrow(at, viaref ? CanonRoot(RefRootOf(vd)) : vd, !viaref || RefExactOf(vd),
+                 cat("call ", name, ", which may grow ", vd->name));
+    }
 }
 
 // Element construction targets the array's storage (relative references
@@ -971,12 +968,18 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
         TempScope argscope(*this);
         for (size_t i = 0; i < ptypes.size(); i++) CheckArg(c->args[i], ptypes[i]);
     }
-    // Check the body inline, with lookups chaining to the definer.
+    // Check the body inline, with lookups chaining to the definer. The body
+    // checked here is an environment of its own (FnSpec::isfunval), so what
+    // it declares and specializes captures this clone's variables.
+    auto named = NamedSpec(fb.env);
+    auto env = ast.NewFunValEnv();
+    env->sf = named ? named->sf : nullptr;
+    env->lexparent = fb.env;
     Frame f;
-    f.sf = fb.env ? fb.env->sf : CurRealFrame().sf;
+    f.sf = named ? named->sf : CurRealFrame().sf;
     f.spec = CurRealFrame().spec;
-    f.lexspec = fb.env;
-    f.lexframe = fb.env ? FrameOfSpec(fb.env) : 0;
+    f.lexspec = env;
+    f.lexframe = fb.env ? LexFrame(fb.env) : 0;
     f.scopebase = (int)scopes.size();
     f.varbase = (int)vars.size();
     f.callline = c->line;
@@ -998,7 +1001,7 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
         }
         c->fvparams.push_back(vd);
     }
-    c->fvtarget = fb.env ? fb.env->sf : nullptr;
+    c->fvtarget = env->sf;
     c->fvbody = (Block *)fv->body->Clone(ast);
     ValueRegion vr(*this, true);   // The body runs inside this call's expression.
     BlockScope bs(*this, c->fvbody);

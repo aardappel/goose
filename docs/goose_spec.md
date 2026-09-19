@@ -1287,6 +1287,9 @@ compile-time bound to whichever suitable array is in scope) is deferred
 Functions may be declared inside functions. A nested function may read and
 write the enclosing function's locals ("free variables"), subject to those
 variables' normal rules (writability §9.5, roots §9.2, shrink rules §5).
+A function value's body (§7.6) encloses what is written in it the same way:
+a function declared there, or a function value written there, may also name
+the value's parameters and the body's locals.
 
 Implementation model: free variables become hidden reference parameters of
 the nested function. Since nested functions are non-escaping (like all
