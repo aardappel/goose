@@ -855,6 +855,7 @@ struct CodeGen {
 
     string CallVal0(Call *c, const string &r0, TypeExpr *want = nullptr);
     Loc CallResLoc(Call *c, const string &r0);
+    string BytesResultBase(const Dst &dd, string &stk);
     void EmitSlidePrefix(const string &base, IntStorage ls, const string &stk, const string &lenlv);
     vector<string> EmitCall(Call *c, Dst d0, vector<Dst> *alldst = nullptr);
     void EmitCallInto(Call *c, vector<Dst> &dsts);

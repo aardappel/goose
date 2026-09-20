@@ -190,6 +190,17 @@ inline void CodeGen::EmitFvArg(const VarDef *fv, vector<string> &args) {
     args.push_back(fvptr.count(fv) ? name : cat("&", name));
 }
 
+// Where a bytes-class return value goes: the destination's own stack where
+// it has one, a temporary otherwise, and the address its bytes start at,
+// which is that stack's top before the call writes anything.
+inline string CodeGen::BytesResultBase(const Dst &dd, string &stk) {
+    if (dd.k == DK_STACK) stk = dd.s;
+    else BytesTemp(stk);
+    auto base = T();
+    L("uint8_t *", base, " = ", Top(stk), ";");
+    return base;
+}
+
 inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<Dst> *alldst) {
     assert(sinfo.count(sp));
     auto &ki = sinfo[sp];
@@ -268,11 +279,7 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
             retex[i] = reprefixbase;
         } else if (IsBytesT(rt)) {
             string stk;
-            if (dd.k == DK_STACK) stk = dd.s;
-            else BytesTemp(stk);
-            auto base = T();
-            L("uint8_t *", base, " = ", Top(stk), ";");
-            retex[i] = base;
+            retex[i] = BytesResultBase(dd, stk);
             args.push_back(stk);
         } else if ((int)i != ki.cret) {
             if (dd.k == DK_LVALUE) {
@@ -557,11 +564,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
             }
         } else if (IsBytesT(rt)) {
             string stk;
-            if (dd.k == DK_STACK) stk = dd.s;
-            else BytesTemp(stk);
-            auto base = T();
-            L("uint8_t *", base, " = ", Top(stk), ";");
-            retex[i] = base;
+            retex[i] = BytesResultBase(dd, stk);
             dststk[i] = stk;
             if (i == 0 && NeedsReprefix(dd, rt)) reprefix = dd;
         } else {

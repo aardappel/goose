@@ -461,25 +461,16 @@ inline void CodeGen::EmitAppend(vector<Node *> &an, Line ln) {
     // Appending copy(x) appends x: the run is a copy of its elements
     // either way.
     if (auto c = Is<Call>(src); c && c->builtin == B_COPY) src = c->FirstArg();
-    // append(f()) where f returns a resizable: the callee emits raw
-    // elements at our top and hands back the count -- contiguous by
-    // construction (§7.3).
-    if (auto call = Is<Call>(src); call && IsResz(src->exprtype) && ak != A_LIMITED) {
-        auto nn = T();
-        L("int64_t ", nn, " = 0;");
-        EmitCall(call, Dst { DK_STACK, lv.stk, src->exprtype, nn });
-        L(v.lenlv, " += ", nn, ";");
-        return;
-    }
-    // append(f()) where f returns a variable array: request the
-    // element-run form (C.3) -- raw elements at our top plus a count.
-    // Callees that cannot supply it fall back to a value-form call with
-    // its length prefix slid out (inside EmitSpecCall). A runtime-capacity
-    // limited result has no element-run form: it is built on a temporary
-    // of its own and its elements copied, below.
+    // append(f()) where f returns a resizable, or a variable array in the
+    // element-run form (C.3): the callee emits raw elements at our top and
+    // hands back the count -- contiguous by construction (§7.3). A callee
+    // with no run form falls back to a value-form call with its length
+    // prefix slid out (inside EmitSpecCall). A runtime-capacity limited
+    // result has no run form at all: it is built on a temporary of its own
+    // and its elements copied, below.
     auto st = src->exprtype;
-    if (auto call = Is<Call>(src);
-        call && st->kind == TY_ARRAY && st->arr->akind == A_VAR && ak != A_LIMITED) {
+    auto asrun = IsResz(st) || (st->kind == TY_ARRAY && st->arr->akind == A_VAR);
+    if (auto call = Is<Call>(src); call && asrun && ak != A_LIMITED) {
         auto nn = T();
         L("int64_t ", nn, " = 0;");
         EmitCall(call, Dst { DK_STACK, lv.stk, src->exprtype, nn });
