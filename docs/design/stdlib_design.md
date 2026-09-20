@@ -1,18 +1,20 @@
 # The Goose Standard Library — Design
 
-The design the library in `stdlib/` was built from, kept for its rationale:
-what is in it and why, the conventions every function follows, and (§8) the
-builtins and language rules the library needed, all of which the spec now
-has. `../stdlib.md` is the reference for what exists. Section references of
-the form §N are to `../goose_spec.md`.
+This document records the original standard library design: its scope,
+conventions, and the builtins and language rules it required (§8). It
+preserves the reasoning at the time. Later changes include `const` types,
+namespaces, generic aliases, serialization, graphics, and physics; some
+rules and limitations below have therefore been superseded. See
+`../stdlib.md` for the current API and `../goose_spec.md` for current language
+rules. References of the form §N refer to that specification.
 
 ---
 
 ## 0. Summary
 
-The standard library is five Goose source files (`std`, `math`,
-`dictionary`, `vec`, `os`), about 120 functions in total, and it introduces
-three families of named types: `dictionary<K, V>` (the one facility the
+The original standard library comprised five Goose source files (`std`,
+`math`, `dictionary`, `vec`, `os`) with about 120 functions in total. It
+introduced three families of named types: `dictionary<K, V>` (the one facility the
 language has no building block for), `rng` (one word of PRNG state), and the
 `vec2/3/4<T>` math vectors that §6.1 already promises. Everything else is a
 function over the user's own arrays, structs and pools.
@@ -26,7 +28,7 @@ Everything is written in Goose except:
   and `os` modules reach libm and a thin C runtime layer without a builtin
   per function.
 
-Nothing in the library allocates: every temporary is a local resizable or a
+The Goose library code uses no heap allocator: every temporary is a local resizable or a
 limited array, every result is constructed in its destination (§4.3), and
 every higher-order function compiles to a loop (§7.6).
 
@@ -36,8 +38,8 @@ every higher-order function compiles to a loop (§7.6).
 
 **Functions over types.** Goose's strength is the array family: eight kinds of
 array, pools, relative references, variable-mode ADTs, all named and laid out
-by the user. The library must not compete with that by handing the user *its*
-containers; it hands them operations that work on *theirs*. Concretely: a
+by the user. The library should operate on these user-defined containers rather than
+require wrappers of its own. Concretely: a
 library function takes a slice (`T[:]`) or a reference to whatever array the
 caller has, never a library-defined wrapper, and returns either a scalar, a
 reference into the input, or a fresh array built at the caller's destination.
@@ -53,7 +55,7 @@ UTF-8, float printing, binary search)? If neither, it is not in the library.
 §9 lists what was left out and the one-line loop that replaces it.
 
 **Goose first, builtins by exception.** A builtin is justified only when it
-buys something the language cannot express: custom typechecking (`print` of
+provides an operation the language cannot express: custom typechecking (`print` of
 any type, `default<T>()`), a diverging call the checker must know about
 (`abort`), or a way out to the OS. Speed alone is not a reason yet — the
 library's Goose code is expected to compile to the same loops a C programmer
@@ -63,7 +65,7 @@ that function moves into the builtin table without changing its signature.
 The `extern fn` mechanism (§8.4) keeps that door open without growing the
 typechecker.
 
-**Zero cost, visibly.** No hidden allocation, no hidden copies. The
+**Make costs explicit.** No hidden allocation, no hidden copies. The
 conventions in §2 are chosen so that the cheap call is the natural one to
 write and the expensive one cannot be written by accident.
 
@@ -186,7 +188,7 @@ Two resolution facts (§7.1) shape how these are written:
 `x.f(args)` is `f(x, args)` (§7.1). By the passing rule (§8.7) `x.f()` binds
 `x` by reference exactly when `f`'s first parameter is a reference type, for
 the same reason a free call `f(x)` does, so `d.insert(k, v)`,
-`q.heap_push(v)` and `r.rand_int(6)` all work and mean the obvious thing. An
+`q.heap_push(v)` and `r.rand_int(6)` all bind their receivers as their signatures specify. An
 earlier idea, a per-function marker for by-reference receivers, was
 withdrawn because it would have taught callers to drop `&` everywhere,
 which brings back the accidental copy the moment someone forgets to declare
@@ -255,7 +257,7 @@ constant (§2): `format(out, 'x')` appends `120`, and a byte goes in with
 up from its own executable's directory looking for `stdlib/std.goose` (three
 levels), so `build/Debug/goose.exe`, `build/goose`, `bin/goose.exe` and an
 installed `<prefix>/bin/goose` beside `<prefix>/stdlib` all find it without
-a blessed location. Unused library functions cost parse time only:
+requiring a single installation path. Unused library functions cost parse time only:
 functions are typechecked in call-graph order from `main`, so an
 unreferenced generic never instantiates.
 
@@ -287,8 +289,8 @@ fn swap<T>(a: T&, b: T&)
 Generic numeric bodies cannot use literals for floats (`x < 0` does not
 typecheck at `T = f64`, since an integer constant never becomes a float,
 §6.3), hence the explicit float overloads. `popcount`/`clz`/`ctz` are pure
-Goose bit tricks; `extern` intrinsics (§8.4) can replace them when a
-measurement asks for it.
+Goose bit tricks; `extern` intrinsics (§8.4) can replace them if
+measurements justify the change.
 
 ### 4.2 Hashing
 
@@ -633,8 +635,9 @@ string", which Goose does in place and should encourage: `words.push(str(
   fallback of the `format` overload set, and user overloads are found by
   the same resolution as any call.
 
-This is codegen per type, the same walk equality already does, and it is
-the single most useful debugging affordance Lobster has (spec §3.7).
+Code generation specializes rendering for each type, using a traversal like
+the one for equality. This follows Lobster's approach to printing values for
+debugging (spec §3.7).
 
 ### 8.2 `default<T>()`
 
@@ -687,7 +690,7 @@ extern fn gl_vertex3(v: float3&);
 * Writability is checked at the call site as for `push` (§9.5). Extern
   functions are usable from thread programs when the C is re-entrant, which
   the runtime's are.
-* Simplest workable plumbing, to be extended later: the compiler always
+* Initial implementation, with room for later extensions: the compiler always
   emits its own prototype from the Goose declaration; the C for the
   library's externs lives in `src/runtime/runtime_os.h`, prepended like the
   other runtime files; user externs get their C in via `--include <header>`,
@@ -734,18 +737,17 @@ destination — a call argument, a
   address implicitly; `&x` stays legal and means the same, so forwarding a
   reference variable is unchanged.
 * A **non-fixed** value is never copied implicitly. A reference-typed
-  destination binds it; an untyped or generic destination binds it by
-  reference too, that being the only free option; a value-typed destination
-  accepts an rvalue — a call result, a literal, a slice or other conversion,
-  a local being returned — or an explicit `copy(x)`, a builtin that
-  constructs the copy at the destination (§4.3 semantics; one word, and
-  greppable).
+  destination binds it; an untyped or generic destination binds it by reference
+  too, that being the only free option; a value-typed destination accepts an
+  rvalue — a call result, a literal, a slice or other conversion, a local being
+  returned — or an explicit `copy(x)`, a builtin that constructs the copy at the
+  destination (§4.3 semantics; an explicit marker that is easy to search for).
 * `&` at call sites is thereby redundant rather than required, and a
   redundant `&` — one written at a source whose reference-typed destination
   would have bound it anyway — is a warning, so that code in the language
   keeps one style rather than a scatter of leftover `&`.
 
-Where the rule has to be pinned down, with the readings decided:
+The rule applies to individual constructs as follows:
 
 * `let y = x;` for a non-fixed `x` is an error: write `let y = &x;` (a
   reference, the inferred type) or `let y = copy(x);`. For fixed `x` it
@@ -789,7 +791,7 @@ own copies become visible where they are intended (`stable_sort`'s
 temporary is a construction; the dictionary rehash is a `copy`/`move`).
 
 Pros, beyond the UFCS fix that motivated it: the rule matches the cost
-model exactly (registers for fixed values, in-place construction or a
+model (registers for fixed values, in-place construction or a
 reference for everything else); non-fixed copies become *impossible* to
 write by accident, which is stronger than the explicit-`&` rule, under
 which `f(arr)` to a by-value non-fixed parameter compiled and silently
@@ -817,13 +819,12 @@ Cons, and what limits them:
   argument by pointer when the specialization's roots prove nothing writes
   the source during the call.
 * `copy` will appear in places that feel like plain data flow —
-  `items.push(copy(item))`, `let name = copy(rec.name)` — which is the
-  point: the expectation is that it reads as a welcome marker of the
-  expensive places, and if it turns out to be everywhere a `*` spelling
-  can be considered. The existing tests and benchmarks change in a handful
-  of places (`let copy: u8[][] = src;`, `g = h`, `d.slots = ns`, pushes of
-  variable-size locals); every `&` they already write stays valid, modulo
-  the redundancy warning.
+  `items.push(copy(item))`, `let name = copy(rec.name)` — so readers can
+  identify operations that copy data, and if it turns out to be everywhere a `*`
+  spelling can be considered. The existing tests and benchmarks change in a
+  handful of places (`let copy: u8[][] = src;`, `g = h`, `d.slots = ns`, pushes
+  of variable-size locals); every `&` they already write stays valid, modulo the
+  redundancy warning.
 * `&` does not leave the language, only the places where the destination's
   type already says "reference": inferred `let r = &x;` keeps it, because
   there it chooses the type. A reference-typed *field* initializer and `.=`
@@ -910,8 +911,7 @@ is what `lru.goose` relinks with.
 
 ## 9. Deliberately not included
 
-Each with the loop that replaces it, so the omission is a documented idiom
-rather than a gap:
+These operations can be expressed using existing functions and short loops:
 
 * `zip`/`map2`/`each2`: `for i in min(a.len, b.len) { … a[i] … b[i] … }`.
   Without tuples there is nothing for `zip` to return.

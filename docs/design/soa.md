@@ -1,11 +1,11 @@
 # Column arrays: minimal struct-of-arrays storage
 
-A column array `T[||..]` stores a struct element type as one array per leaf
-field, each on its own data stack, with one shared length. It is deliberately
-a storage type and little more: an element is read out as an ordinary struct
-or written through a field path, and everything else (sorting, slicing,
-serializing, handing an element to a function by reference) happens on a
-lifted copy.
+This proposal adds column arrays. A `T[||..]` would store a struct element
+as one array per leaf field, each on its own data stack, with one shared
+length. Elements could be copied out as ordinary structs or written through
+field paths. Sorting, slicing, serialization, and passing an element by
+reference would require copying the data into ordinary storage. The feature
+is not implemented.
 
 ```goose
 import std;
@@ -65,10 +65,10 @@ var vx: f32[>..] = []; var vy: f32[>..] = []; var vz: f32[>..] = [];
 var age: i32[>..] = [];
 ```
 
-It stays that way everywhere it goes: seven pushes per element, seven lengths
-nothing keeps equal, seven parameters on every helper, and no way to bundle
-them, since a struct holds at most one resizable (§3.4). It is also slower
-than it has to be. Every one of those arrays starts at the same page offset
+This requires seven pushes per element and seven parameters per helper.
+The programmer must keep all seven lengths equal. A struct cannot group the
+arrays because it can hold at most one resizable field (§3.4). The layout
+also has a performance cost. Every one of those arrays starts at the same page offset
 of its own stack, which costs 2x on a six-array version of the particles
 kernel through 4K aliasing (measurements below), and nothing tells the
 compiler the arrays are parallel.
@@ -80,8 +80,8 @@ estimated at about 2,300 lines, 90% of it codegen, and most of that is the
 cost of letting an element or a slice escape into code written for ordinary
 arrays. A column array never lets anything escape: it is its own
 array kind, it coerces to nothing, and no reference, slice or view into it
-can exist. What remains is storage plumbing and a handful of members, about a
-third of the size.
+can exist. The remaining implementation consists of storage handling and a few array
+members, at about a third of the estimated size.
 
 ## Rules
 
@@ -103,7 +103,7 @@ reference: a `T[||..]&` parameter, or an untyped one, which binds the array by
 reference (§4.1). A reference to the whole array is an ordinary reference
 under the ordinary rules.
 
-**Elements are paths, not places.** `ps[i]` followed by any field steps and
+**Element access uses paths.** `ps[i]` followed by any field steps and
 fixed-array index steps (`ps[i]`, `ps[i].pos`, `ps[i].pos.y`) is an *element
 path*. A path can be:
 
@@ -148,7 +148,7 @@ since none can point into a column array.
 views, `to_bytes`, `bytes_of` and `from_bytes`, `reusable`, `in pool`
 references to its elements, and every function that takes `T[:]` (`sort`,
 `find`, `filter` and the other slice functions of `std`) are compile errors.
-The way through is the lift: `xs.append(ps)` into an ordinary array, and back
+To use these operations, copy the elements out: `xs.append(ps)` into an ordinary array, and back
 with `ps.clear(); ps.append(xs)` where needed.
 
 ## What the checker does not need
@@ -295,7 +295,7 @@ ordinary data stacks should start at staggered offsets too is a separate
 question, since unrelated arrays that one loop reads and writes meet the same
 aliasing today.
 
-## Later, in rough order of value
+## Possible extensions, ordered by expected benefit
 
 | Extension | What it adds | Rough cost |
 |---|---|---|

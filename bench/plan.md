@@ -1,16 +1,16 @@
 # Next compiler work, from the sixteen benchmarks
 
-*A completed round's plan, kept as the record of how each item was chosen and
-measured; `adoption.md` says what each turned out to be worth. What is still
-open is the list at the end of `notes.md`, not this file.*
+*This plan records a completed round of work: how each item was selected and
+measured. `adoption.md` records the results. For remaining work, see the list
+at the end of `notes.md`.*
 
-What to change in the compiler, and in a few places the language, to remove
-the deficits the benchmark suite measures and to compound the advantages it
-confirms. Every item below carries either a measurement (a hand-transformed
+The changes below aim to address the performance gaps measured by the
+benchmark suite and improve workloads where Goose already performs well.
+Most affect the compiler; a few require language changes. Every item below carries either a measurement (a hand-transformed
 version of the generated C, or the same benchmark written two ways in Goose,
 timed at the `large` size on the machine in `results.md`) or an explicit
-"not measured". Hand transforms are upper bounds on what the compiler doing
-the same thing properly would buy; noise is 5-10% on most rows and ~15% on
+"not measured". Hand transformations estimate the upper bounds of the gains an equivalent
+compiler change could achieve; noise is 5-10% on most rows and ~15% on
 the two cache-bound random-access rows (`lru`, `graph`).
 
 ## 1. Where the time goes, per deficit
@@ -29,12 +29,11 @@ The `large` ratios against the best safe Rust row, and what each one is:
 | `push` by reference | 8% | pushing through a fat reference | `push_ref` probe: 167 vs 155 ms |
 | `graph` linked, `graph_csr` | -- | loaded-index bounds checks | 5-6% and ~10% (last round) |
 
-Everything that is *not* on this list -- the flagship parse, the variant
-records, the strings, the tree walks -- is already ahead, and the items below
-that touch it (`return from`, dispatch merging, named results) compound
-rather than repair.
+The parse, variant-record, string, and tree-walk benchmarks already lead
+their comparisons. Changes to `return from`, dispatch merging, and named
+results may improve them further.
 
-## 2. Compiler work, in order of measured payoff
+## 2. Compiler work, ordered by measured benefit
 
 ### 2.1 Cache data-stack tops through fat references
 
@@ -45,8 +44,8 @@ holding a fat reference is excluded from top caching entirely
 name directly, so the two spellings could alias. With the top kept in a local
 and flushed around the recursive calls (the same discipline the global-stack
 caching already uses), `bintrees` goes from 356 to 313 ms under v145 and 381
-to 331 under clang (-12%, -13%). `push_ref` says the same loop moved behind a
-reference costs 8%.
+to 331 under clang (-12%, -13%). `push_ref` measures an 8% cost for moving the same loop into a function that
+accesses the array through a reference.
 
 The aliasing question is answered by the checker, not the backend. Every
 reference parameter has a root class per specialization; two fat references
@@ -114,8 +113,7 @@ b. **Products of counters.** `src[y * W + x]` with `y < H - 1`, `x < W - 1`
    + j` with `0 <= j < c`, `0 <= i < m` and `len >= m * c` recorded as a
    product term -- is contained and covers image kernels, matrices and
    row-major tables generally. Under clang the checks are free (it vectorises
-   around them, as it does for Rust), so this is the v145 half of the `blur`
-   story and 2.4 is the clang half.
+   around them, as it does for Rust), so this addresses `blur`'s v145 cost, while 2.4 addresses its clang cost.
 c. **Array-contents invariants** (`graph` 5-6%, `graph_csr` ~10%, from last
    round): "every element of `q` is a valid index into `dist`". The only
    route to the loaded-index checks, which are the majority of what survives
@@ -204,7 +202,7 @@ compiler items and one language question follow:
 * **Pool-relative offsets** (see 3.1) would make the load `base + off` with
   the base in a register, which is exactly the index shape that runs 1.5x
   faster; that is a language change with a root-tracking cost, and the
-  honest current guidance is the one in `notes.md`: relative references are
+  guidance at the time is the one in `notes.md`: relative references are
   for structures built once and walked, and a `reusable` structure that
   relinks is better off with plain references or indices.
 
@@ -215,7 +213,7 @@ compiler items and one language question follow:
 `gs_uleb_read` made the row *slower* (599 ms; the extra branch costs more
 than the loop it skips). It is the cost of a decode against a load, paid once
 per evaluated number. Two consequences: the language guidance should say
-that `varint` is for values whose range is genuinely open and a sized integer
+that `varint` is for values with a wide or unpredictable range and a sized integer
 (`u8` here -- the values are 1..99) for values whose range is known; and a
 codegen refinement worth trying is decoding a varint *field* read as `b < 128
 ? b : slow(p)` with the slow path out of line, which is what the hand
@@ -267,7 +265,7 @@ would be resolved against the wrong base. Pool-relative offsets are therefore
 gated on precise roots for stored references -- struct fields are "implicitly
 generic over their roots" (9.2), which is most of the machinery -- or on a
 runtime base carried with the reference. Worth an experiment behind a flag
-before a spec decision; the payoff is the entire `lru` deficit.
+before a spec decision; the potential benefit is closing the entire `lru` performance gap.
 
 ### 3.2 A constructible self-reference
 
@@ -304,7 +302,7 @@ had to choose between reuse and references.
 ### 3.6 Arithmetic width and `varint` in the performance notes
 
 Two guidance items rather than changes: a sum of `u8` taps wraps (6.2) and
-needs `as u16` on each -- `blur`'s first version was a non-blur for that
+needs `as u16` on each -- `blur`'s first version produced incorrect results for that
 reason -- and `varint` costs a decode per read (2.10). Both belong in a
 "choosing storage types" note next to Appendix A.
 
@@ -322,7 +320,7 @@ reason -- and `varint` costs a decode per read (2.10). Both belong in a
 3. **Analysis and language:** 2.5b (product indices: `blur` 4x under v145),
    2.5c (array contents), the pool-relative experiment of 3.1 (the `lru`
    deficit), 3.2 (self-referential sentinels), 3.5 (clearable scratch).
-4. **Measure, do not guess:** hardware counters on `lru`'s relative row, a
+4. **Further measurements:** hardware counters on `lru`'s relative row, a
    flag to omit `return from` checks for 2.12, and re-run the suite after
    each of the three rounds -- the reproducibility caveats in `notes.md`
    apply to every number here.

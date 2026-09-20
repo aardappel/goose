@@ -1,16 +1,17 @@
 # Relative references: self-relative or base-relative?
 
 A relative reference (`T&<u8>`, `T&<u16>`, `T&<u32>`, `T&<u64>`, `T&<varint>`,
-spec §3.9) is a reference stored as a narrow offset. Two encodings are on the
-table. The spec defines the first; the second was built behind a flag on the
-branch `opt/pool-relative` and measured (`bench/adoption.md` 3.1). This note
-states what each one means, what it costs and what it can express, and ends
-with a recommendation. The numbers are from the benchmark suite at the
-`large` size unless stated otherwise.
+spec §3.9) is a reference stored as a narrow offset. This note compares two
+encodings. At the time of the experiment, the spec defined the first; the second
+was built behind a flag on the branch `opt/pool-relative` and measured
+(`bench/adoption.md` 3.1). The comparison covers semantics, cost, and supported
+uses. The Outcome section records the subsequent implementation of both forms.
+The numbers are from the benchmark suite at the `large` size unless stated
+otherwise.
 
 ## 1. What each encoding means
 
-**Self-relative** (the spec today): the stored value is `target - &field`,
+**Self-relative** (the original form): the stored value is `target - &field`,
 the distance from the field's own address to the target, signed. Loading is
 `&field + offset`; storing needs both addresses. Zero means null for the
 optional form. The invariant the checker enforces is that the target lies in
@@ -28,7 +29,7 @@ start. The value is an index in disguise: `&P[i]` encodes as `i * sizeof(T)`
 with no base in sight, and the index is recovered by one shift.
 
 The two agree on width, on null, on what may be pointed at, and on the
-serialization story for a whole array. They differ in what the address
+serialization of a whole array. They differ in what the address
 arithmetic needs to know (the field's address, or the pool's base), and that
 one difference is behind every row below.
 
@@ -151,11 +152,11 @@ works with inexact roots, and the store-time check is gone. Leaves `lru`
 indices, which is also what the Rust and C++ arenas do.
 
 **B. Switch to base-relative.** Fastest for relink and index-conversion
-workloads, gives cross-array links, and offsets that are indices. Costs the
-hidden-argument tax on recursion, changes what every narrow width means,
-makes copies and queues need rebasing, and makes a reference read back out of
-a container unusable wherever two pools of its type are in scope. The last
-point is a language-level restriction the current encoding does not have.
+workloads, gives cross-array links, and offsets that are indices. Adds
+hidden-argument overhead to recursion, changes what every narrow width means,
+makes copies and queues need rebasing, and makes a reference read back out of a
+container unusable wherever two pools of its type are in scope. The last point
+is a language-level restriction the current encoding does not have.
 
 **C. Both, chosen per field.** Self-relative stays the default and the only
 form without a named pool. A field may instead be declared relative to a
@@ -174,9 +175,9 @@ declared width means, so it has to be visible in the source.
 
 ## Recommendation
 
-C. It keeps every current program and its meaning, adds the one thing
-self-relative cannot say, and lands the speed where it is wanted (relinking
-against a named pool) without taxing recursion elsewhere. The only new
+Option C preserves existing programs and their meaning while allowing links
+between arrays. It improves relinking against a named pool without adding
+overhead to recursion elsewhere. The only new
 analysis it needs -- exact roots for read-back references -- is the rooting
 change already in progress. The syntax is the open question; `T&<u32 in
 pool>` reads naturally for a global pool, and for a local or parameter pool
@@ -187,7 +188,7 @@ structures live.
 
 ## Outcome
 
-C, built: `T&<u32 in pool>` where `pool` is a global grow-only array (spec
+Option C was implemented: `T&<u32 in pool>` where `pool` is a global grow-only array (spec
 §3.9), plus `a.index_of(r)` (§3.3). The pool is named at the field's
 declaration and is part of the type, so a store measures from that global's
 base and a load is rooted there exactly -- no fixpoint over parameter classes
@@ -196,8 +197,7 @@ different pool is simply a different specialization, as every other root
 difference already is. The `in pool` form is restricted to global pools,
 which is where the note expected the relink-heavy structures to be; a local
 or parameter pool keeps the self-relative form, which is why `graph` stays
-self-relative (its pool is a local of `main`), and that is the intended
-division of labour.
+self-relative (its pool is a local of `main`), as intended.
 
 `lru` was rewritten onto it: the map holds `Node&<u32 in pool>?` in 8-byte
 slots and relinks through them, `pool.free(pool.index_of(n))` closes the

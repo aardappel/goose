@@ -7,13 +7,13 @@
 
 `cute_spirv.h` compiles a subset of GLSL 450 to SPIR-V and transpiles it to
 HLSL (Shader Model 5.1) and MSL, following SDL_GPU's binding conventions. The
-compiler uses it to implement `embed_shader`; `src/shaderc.c` is the one
-translation unit that compiles both headers.
+compiler uses it to implement `embed_shader`. Both headers are compiled in
+`src/shaderc.c`.
 
 Licenses:
 
-* `cute_spirv.h`: zlib, or public domain (Unlicense), at your choice; the full
-  text is at the end of the file.
+* `cute_spirv.h`: choose the zlib license or the public-domain dedication
+  (Unlicense). The full text is at the end of the file.
 * `ckit.h`: public domain.
 
 To update, copy both files from a newer cute_framework commit and record that

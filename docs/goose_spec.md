@@ -1,9 +1,8 @@
 # The Goose Language — Specification (v4 draft)
 
-This is the working specification of the Goose programming language, at a
-level of precision intended to support a first implementation without
-inconsistencies — not a full ISO-style spec. Unresolved items are collected
-in the TODO list (Appendix B).
+This working specification defines Goose's syntax, semantics, and compilation
+model. It provides the detail needed to implement the language, without the
+formal structure of an ISO specification. Appendix B lists unresolved items.
 
 Priorities, in order: **Speed, Safety, Expressiveness.**
 Safety here means: no out-of-bounds access, no access to memory at a type
@@ -46,8 +45,8 @@ A Goose program's memory consists of:
   references into a data stack are stable for the life of the data beneath
   them.
 * **Static data** — string literals and `const` globals with compile-time
-  initializers: read-only, and so the one memory every program instance
-  (§11.2) shares.
+  initializers. This read-only storage is shared by all program instances
+  (§11.2).
 
 There is no general-purpose heap and no `malloc`. All dynamic allocation is
 expressed as values living on data stacks, owned by locals (or globals).
@@ -83,7 +82,7 @@ beyond the bump pointers themselves.
 
 ## 2. Lexical structure and syntax style
 
-C/Rust-flavored syntax: `{}` blocks, `//` and `/* */` comments (block comments
+The syntax follows C and Rust: `{}` blocks, `//` and `/* */` comments (block comments
 nest), semicolon-terminated statements, postfix type annotations (`x: T`).
 Identifiers `[A-Za-z_][A-Za-z0-9_]*`.
 
@@ -98,14 +97,15 @@ Literals:
 * String `"..."`, with escapes `\n \t \r \0 \\ \" \' \xNN` (two hex digits).
 * Raw string `"""..."""`: no escapes, and the next `"""` ends it. On one
   line, its text is what lies between the delimiters (`"""a "quoted"
-  C:\path"""`). Across lines, the opening `"""` ends its line and the
-  closing one begins its own after nothing but indentation; the text is
-  the lines in between, joined by `\n`, each less that indentation. Every
-  line must begin with it, except that a line holding only whitespace may
-  fall short, and is then empty. So the literal indents with the code
-  around it, and neither line break next to a delimiter belongs to the
-  text: an empty last line ends it with one. Line breaks are `\n` whatever
-  the source file uses.
+  C:\path"""`). For a multiline string, the opening `"""` must end its line. The closing
+  `"""` must start its line after any indentation. The content is the lines
+  between them, joined by `\n`, with the closing delimiter's indentation
+  removed from each line. Every content line must start with that indentation;
+  a whitespace-only line may be shorter and then becomes empty. The line
+  breaks immediately after the opening delimiter and before the closing
+  delimiter are excluded. To include a final newline, add an empty content
+  line before the closing delimiter. Source line endings are normalized to
+  `\n`.
 
   ```goose
   let usage = """
@@ -170,8 +170,8 @@ A grammar sketch and precedence table are in Appendix D.
   operands' exact type and width (§6.2) — a loop over `i32` data runs in
   32-bit registers end to end, which is what lets backends vectorize it.
   `i64` is the conventional default for indices, sizes, and counts (it is
-  what `.len`, integer literals, and the builtins produce); the sized types
-  are for data, and for kernels where the width is the point.
+  what `.len`, integer literals, and the builtins produce); the other integer widths
+  are useful for compact data and kernels that require a particular width.
 * `varint` — variable-length integer **storage type** (§3.6), the one
   integer spelling restricted to fields and array elements. Reads decode to
   `i64`; writable only at construction.
@@ -249,7 +249,7 @@ Element restrictions:
 Growth operations (`push`, `append`, …) exist only on resizable arrays and on
 limited arrays (`[..k]`, `[..]`) up to capacity (exceeding capacity aborts).
 Shrink operations (`pop`, `resize` downward, `clear`) exist on limited
-arrays anywhere, on `[>..<]` wherever no variable in scope refers into it
+arrays anywhere, on `[>..<]` wherever no live variable refers into it
 (§5.2), and on a grow-only `[>..]` exactly where the compiler can see that
 no reference or slice into it is live (§5.1); they
 abort when they would shrink below empty (`pop` on an empty array, `resize`
@@ -266,9 +266,8 @@ copied into every slot added, or shrink), `.resize(n)` (shrink only),
 `.clear()` per the rules above, and `.index_of(r) -> i64` (fixed,
 limited and resizable arrays of fixed-size elements): the index of the
 element `r` refers to, `(addr − base) / elemsize`. `r` must be rooted at the
-array *exactly* (§9.2), which is what makes the division whole and the
-result in range, so nothing is checked; a reference rooted elsewhere is a
-compile error. Growth always supplies element values — no
+array *exactly* (§9.2), so the division is exact and the result is in range without a runtime check.
+A reference rooted elsewhere is a compile error. Growth always supplies element values — no
 operation can expose uninitialized slots (§5.3). Per UFCS these are ordinary
 functions: `a.push(v)` is `push(a, v)`.
 
@@ -317,8 +316,8 @@ containing declaration:
   contains a resizable tail). May have interior references into the payload,
   but the variant may **never be replaced in place**.
 
-This dichotomy (replaceable XOR interior-referenceable) is what keeps
-existential types sound (Grossman, "Existential Types for Imperative
+Allowing either variant replacement or interior references, but not both,
+preserves the soundness of existential types (Grossman, "Existential Types for Imperative
 Languages").
 
 Payload-less ADTs are ordinary C-like enums and are fixed, 1 byte by default.
@@ -357,7 +356,7 @@ References to `varint` fields are always read-only (§3.8).
 ### 3.7 Strings
 
 There is no built-in string type. A "string" is any array-family type with
-element `u8`: `u8[]` (immutable flat string), `u8[varint]` (compact), `u8[>..]`
+element `u8`: `u8[]` (flat string with a fixed length), `u8[varint]` (compact), `u8[>..]`
 (string builder), etc. String literals are static constant `u8` data,
 implicitly copyable into any of these representations and usable directly
 as slices, of type `const u8[:]` (§9.5): read-only through the type, so a
@@ -406,10 +405,10 @@ pointee where §4.1 asks for one).
   `&` of a location that itself holds a reference yields the *stored*
   reference (there are no references to references).
 * Writes: `r = v` (and `r += v`, `r++`, …) write the pointee, subject to
-  writability provenance (§9.5) and the target's own rules. There is no
-  `const`/`mut` distinction inside reference types.
+  writability (§9.5) and the target's own rules. A `const T&` does not allow
+  writes to its pointee.
 * Rebinding: the special assignment `r .= &x` updates the reference *value*
-  itself (the one thing transparency cannot express). `.=` applies to any
+  itself, rather than writing through it. `.=` applies to any
   reference-typed location — variables (subject to their `let`/`var`),
   fields, elements. On non-reference locations `.=` is an error. The
   declaration form `let r .= e;` / `var r .= e;` binds `r` to `e` by
@@ -421,11 +420,10 @@ pointee where §4.1 asks for one).
   it does not rebind, not that its pointee is const: `let r .= xs[i]; r =
   5;` writes the element (§9.5).
 * Identity: `r1 .== r2` and `r1 .!= r2` compare the references themselves —
-  the same address or not — the one comparison transparency cannot express
-  (`==` compares the pointees). Both operands are references to one pointee
-  type, or `null` for an optional; storage (a variable, field or element)
-  is taken by reference, as `.=` takes it, so `n .== pool[head]` asks
-  whether `n` names that element.
+  whether they have the same address (`==` compares the pointees). Both operands
+  are references to one pointee type, or `null` for an optional; storage (a
+  variable, field or element) is taken by reference, as `.=` takes it, so `n .==
+  pool[head]` asks whether `n` names that element.
 * Binding contexts keep the reference rather than loading through it: an
   initializer/argument/field whose *declared type* is a reference type binds
   the reference value, and binds an lvalue of the pointee type by reference
@@ -465,8 +463,8 @@ it.
 
 **What references may point to.** Anything except the interior of a
 fixed-mode ADT payload (§3.5). A reference into a grow-shrink array `[>..<]`
-lives in a variable only and must be out of scope at the array's next shrink
-(§5.2).
+lives in a variable only and must no longer be live when the array next
+shrinks (§5.2).
 
 References into a grow-only resizable `[>..]` remain valid for as long as
 they can be named: grown memory never moves, and the array shrinks only
@@ -551,9 +549,9 @@ where the field is declared, and a local's name means nothing there.
   error names the value's root, or, for an inexact read-back, the candidates
   §9.5 could not choose between. The destination may be anywhere — another
   global, a local, a parameter's pointee — since the offset does not depend
-  on where it is stored. Cross-array links are the point: a slot array can
-  hold 4-byte links into the pool. The §9.2 store rule is trivially met, the
-  pool being global.
+  on where it is stored. This permits links between arrays: a slot array can
+  hold 4-byte links into the pool. Since the pool is global, its lifetime
+  satisfies the §9.2 store rule.
 * A width bounds the *pool*, not the distance between the two ends, so the
   store is range-checked exactly where the pool's reservation can exceed it
   (§10.4): `u32` at a 2 GB reservation needs no check, `u16` at any
@@ -586,10 +584,9 @@ meaning does not depend on where the value lives. In an `in pool` field it
 is the value's own offset in the pool, which only a literal being built
 *inside* `pool` has — a `push` or `append`, an `alloc_index`/`alloc_ref`, or
 an element store into it; anywhere else it is a compile error.
-The point is that the whole structure can then be non-optional: with
-optional links every load pays a null test for a null that never occurs
-(that is what a sentinel is for), and non-optional relative references load
-as a plain add.
+This allows a structure to use non-optional links throughout. A sentinel
+eliminates the need for null links, and loading a non-optional relative
+reference requires only an addition, without a null test.
 
 **Which form.** Self-relative for position-independent blobs — a compact
 tree that is saved, mapped or moved whole (single-byte links to nearby
@@ -606,8 +603,8 @@ wherever the offset is wanted as an index, since `&pool[i]` encodes as
 `T[:]` = reference + element count, referring to a contiguous run of `T`s
 inside some root. Slices are the universal "process a range" parameter type,
 unifying all array representations. Like references, slices carry a root and
-participate fully in the lifetime system (§9): they are always safe, never
-dangling — Goose's fix for the danger of C++ `string_view`/`span`. They are
+participate fully in the lifetime system (§9), which prevents dangling
+slices. They are
 the intended *read* path; mutation idiomatically goes through references —
 but writes through a slice are legal when its provenance is writable (§9.5).
 
@@ -624,8 +621,8 @@ but writes through a slice are legal when its provenance is writable (§9.5).
 * Slices of variable-element arrays iterate only (no indexing); the count is
   an element count.
 * Slices obey the same restrictions as interior references (§3.8): a slice
-  of a grow-shrink array lives in a variable and must be out of scope at the
-  array's next shrink (§5.2).
+  of a grow-shrink array is held only by variables and must no longer be
+  live when the array next shrinks (§5.2).
 * A slice of a grow-only resizable taken before growth remains valid (it just
   doesn't see the new elements).
 
@@ -676,8 +673,8 @@ There is no ownership transfer beyond the return move, no destructors, no
 resetting stack pointers. (A `move` operation for resizable arrays —
 assign + leave source empty — is anticipated but not in v1.)
 
-Copies of variable/resizable values are real and cost O(size); with
-`copy` they are also visible at the site that pays for them.
+Copying a variable or resizable value costs O(size). The explicit `copy`
+marks that cost in the source.
 
 Shadowing: an inner scope may re-declare a name (a distinct variable).
 
@@ -692,8 +689,8 @@ of which provides fresh storage in a statically known place:
 * `push`/`append` into a resizable (the new element region);
 * a field/element inside a larger value under construction.
 
-Construction writes the value front-to-back (metadata, then elements /
-fields in order), which is what invariant §1.3(4) relies on. Construction of
+Construction writes metadata first, then elements or fields in order, as
+required by invariant §1.3(4). Construction of
 a limited array writes only its metadata and any provided elements; the
 remaining capacity is reserved but **uninitialized** — this is safe because
 no read path to uninitialized slots exists (§5.3), and cheap because the
@@ -733,9 +730,9 @@ Literal forms usable in any construction context:
 * struct literals `X { a: 1, b: 2 }` (named) or `X { 1, 2 }` (positional, in
   declaration order; no mixing). Named initializers must also appear in
   declaration order (out-of-order names are a compile error: values construct
-  front-to-back, and reordering would obfuscate either evaluation order or
-  cost). Fields with declared defaults (§3.2) may be omitted: trailing ones
-  in the positional form, any of them in the named form;
+  front-to-back, and reordering would obscure either evaluation order or copying
+  cost). Fields with declared defaults (§3.2) may be omitted: trailing ones in
+  the positional form, any of them in the named form;
 * `[..cap]` — an empty limited array `T[..]` with the given construction-time
   capacity (`cap` a runtime expression); the reserved slots stay
   uninitialized (§5.3, C.4). An array or string literal constructing a
@@ -869,8 +866,8 @@ on the length holds across every `push`.
   below. `pop` and `resize` additionally need fixed-size elements, since a
   sequential array cannot find its last element (§3.3).
 
-This is the workhorse type: arenas, pools, string builders, tree storage, and
-scratch that is refilled or popped between phases.
+Use grow-only arrays for arenas, pools, string builders, tree storage, and
+scratch buffers that are refilled or popped between phases.
 
 **When a grow-only array may shrink.** The receiver is the array's variable,
 a reference variable or parameter bound to the whole array, or a global —
@@ -899,7 +896,7 @@ declared in, or anywhere in a loop that contains the shrink and that the
 variable was declared outside of, since the next iteration runs the rest of
 the body again. "Named" is syntactic — any mention, a call of a nested
 function that mentions it included — so the test never depends on what
-the optimizer proved. A reference whose last use is behind the shrink is
+the optimizer proved. A reference whose last use is before the shrink is
 dead, and its block need not end: `let w = line[..5]; print(w);
 line.clear();` is fine, and a scratch buffer refilled per iteration, or a
 stack popped between phases, hands out slices of itself freely — "reusable
@@ -952,18 +949,17 @@ inexactly rooted argument points at.
   value that holds one, whose pointee type the array's elements cannot
   contain — a slice key read back out of a dictionary's slots — stores like
   any other.
-* **A shrink is an error while any live variable may refer into the
-  array** — the test a grow-only shrink applies (§5.1), its liveness rule
-  and its call summaries for a shrink through a reference or of a global
-  included, minus the store record: references into a grow-shrink array
-  live in variables only, so the variables still in use are the whole
-  answer. The error is at the shrink and names the variable and where it
-  was bound, so either end can be changed: use the slice for the last time
-  before the shrink, or move the shrink. A
-  call into a recursive cycle still being checked counts as shrinking every
-  grow-shrink array it can reach, through the references its arguments hold
-  as well. Function values run inline, so a shrink
-  inside a block is checked against the block's own enclosing scopes.
+* **A shrink is an error while any live variable may refer into the array** —
+  the test a grow-only shrink applies (§5.1), its liveness rule and its call
+  summaries for a shrink through a reference or of a global included, minus the
+  store record: references into a grow-shrink array live only in variables, so
+  checking those still in use is sufficient. The error is at the shrink and
+  names the variable and where it was bound, so either end can be changed: use
+  the slice for the last time before the shrink, or move the shrink. A call into
+  a recursive cycle still being checked counts as shrinking every grow-shrink
+  array it can reach, through the references its arguments hold as well.
+  Function values run inline, so a shrink inside a block is checked against the
+  block's own enclosing scopes.
 * `push` returns a reference to the new element, and `index_of` works, as on
   grow-only arrays.
 * Iterating with `for` uses indices under the hood; the `&x` binding is a
@@ -1082,17 +1078,15 @@ widens into the other's type (§6.3), the wider type wins. Anything else —
 same-width signed/unsigned, `u64` with anything signed, int with float — is
 a compile error asking for a cast. Nothing here invents a type absent from
 the expression: `u8 + i64` is an `i64` add, but `u32 + i32` does not
-silently become 64-bit math — that would smuggle the wide operations this
-type system exists to avoid. Exceptions: shifts take the *left* operand's
+become 64-bit arithmetic implicitly. Exceptions: shifts take the *left* operand's
 type as the result (the count is any integer type, masked per §6.2), and
 `==`/`!=`/orderings unify the same way but produce `bool`. Unary `-`
 requires a signed (or float) operand; `~` any integer, keeping its type.
 
-**Comparisons and `u64`.** A comparison produces `bool`, so unlike every
-other binary operator it has no result type to choose, and the mathematical
-answer across a sign boundary is never in doubt. `u64` is the one unsigned
-type with no signed supertype (`u8`–`u32` widen into `i64`, §6.3), so it is
-the only one this ever bites. A comparison between `u64` and a signed type
+**Comparisons and `u64`.** A comparison produces `bool`, so it does not need a common numeric result
+type. However, comparing signed and unsigned operands must preserve their
+values. `u64` is the only unsigned type with no signed supertype
+(`u8`–`u32` widen into `i64`, §6.3). A comparison between `u64` and a signed type
 is therefore allowed **when the signed operand is known non-negative**: it
 converts to `u64` without changing value, and the comparison is a single
 unsigned one — no wider than either operand, and never a hidden branch.
@@ -1101,13 +1095,12 @@ unsigned one — no wider than either operand, and never a hidden branch.
 one: a non-negative integer literal, a `.len` or `.cap` (non-negative by
 §10.4), or a `let` bound to one of those. Whether a comparison compiles thus
 depends only on what is written, never on how much the optimizer managed to
-prove. Anything else is a compile error asking for the cast — the honest
-outcome, since the conversion could then change the value. Note that writing
-that cast by hand is not a cheaper workaround but a wrong one: `x as! i64`
+prove. Other cases require an explicit cast because conversion may change the
+value. A cast does not, however, preserve every comparison: `x as! i64`
 on a `u64` above `i64.max` silently compares as negative, and the checked
 `x as i64` aborts in debug on a value that was perfectly legitimate to
-compare. Within its rule, the direct comparison is the only correct
-spelling as well as the cheapest.
+compare. When the rule permits it, use the direct comparison to preserve the values
+without conversion overhead.
 
 **Elementwise math**: the arithmetic operators apply memberwise to any two
 values of the *same* struct/fixed-array type whose scalar leaves are all
@@ -1220,8 +1213,7 @@ exit requires no value.
 Built-in iteration only (no iterator protocol):
 
 * `for i in a..b` — integer range, half-open `[a..b)`; the bounds unify per
-  §6.1 and `i` runs at that type (an `i32` range gives a genuinely 32-bit
-  loop variable).
+  §6.1 and `i` runs at that type (an `i32` range gives a 32-bit loop variable).
 * `for i in n` — sugar for `0..n`; `i` has `n`'s type.
 * `for x in arr` — element copies for fixed-size elements, at the element's
   type; element references for non-fixed ones (§4.1), whose walk is
@@ -1430,17 +1422,18 @@ at an instantiation where every type is concrete — including the result of
 every call it makes on a function-value parameter, since that value's body
 is checked inline against the concrete argument types at that point (§7.6).
 So a HOF never needs to state what its function value returns: `map`'s
-result element type is simply the type `F(x)` turns out to have, even when
+result element type is the type of `F(x)` in that instantiation, even when
 the block is `{ generic(it) }` and that type depends on the instantiation.
 
 **Call-site type arguments.** Type arguments are inferred from the argument
-types whenever they appear in the parameter list: `fn foo<T>(x: T)` is
-called as `foo(1)`, never `foo<i64>(1)` — the typechecker must support this
-for both `<T>`-style and untyped (implicitly generic) parameters. Where
+types whenever they appear in the parameter list: `fn foo<T>(x: T)` can
+be called as `foo(1)` without an explicit type argument. The typechecker
+must support inference for both `<T>`-style and untyped (implicitly generic)
+parameters. Where
 several arguments mention one type variable, the typed ones bind it and a
 literal then adapts (`max(n, 0)` with `n: u32` is the `u32` instantiation),
 so an `i64` literal never fixes the type by coming first. An
-explicit list `f<i64>(x)` is allowed, and *needed* only when no argument
+explicit list `f<i64>(x)` is allowed; it is *needed* when no argument
 mentions the parameter (e.g. `qget<i64>()`, or `zero<f64>()` for
 `fn zero<T>() -> T`); it binds the leading type parameters in order, and
 the rest are inferred. Syntactically, `f<` commits to
@@ -1592,10 +1585,10 @@ Semantics and implementation:
 * Multiple `return from` sites and multiple targets compose; agreement with
   `f`'s return type applies as usual.
 
-Error handling idiom: there is deliberately **no specified error-value
-convention** (bool, enum, string, i64 — application's choice; by custom the
-error is the last of multiple return values). Short-distance: manual
-multi-value returns. Long-distance: `return from`.
+Error handling has **no required error-value convention**: an application
+may use a bool, enum, string, i64, or another type. By convention, the error
+is the last of multiple return values. Use ordinary multiple returns for
+local propagation and `return from` to return across several calls.
 
 ---
 
@@ -1838,22 +1831,20 @@ Both `abort` and `exit` never return, which the checker knows: code after
 them is unreachable, and either may be the whole of a `guard`'s else block
 (§6.4).
 
-### 9.4 The residual unsafety, stated honestly
+### 9.4 Type-safe reuse and stale references
 
 With `reusable` arrays and limited arrays, a stale reference can read a
-*different value of the correct type* (type-safe reuse). This is the entire
-extent of "dangling"; it can produce a logic bug, never memory corruption,
-never a type confusion, never OOB. This is the deliberate trade that buys
-allocator-free speed.
+*different value of the correct type* (type-safe reuse). This can cause a logic
+error, but not memory corruption, type confusion, or out-of-bounds access. Slot
+reuse allows these errors while avoiding a general-purpose allocator.
 
-Bytes arriving from outside the program are the one place this could have
-been worse, and are not: `from_bytes` (§12) verifies an image before it is a
-value -- the framing, every tag, every length, and every self-relative link
-landing on an element start of that same image -- so a corrupt or hostile
-one is a `false` and an empty array, never a reference the checker did not
-prove. What it verifies is *safety*, not integrity: an image whose data
-bytes were edited still describes a well-formed structure, and a checksum,
-not the verifier, is what says the file is the one that was written.
+External bytes must be validated before they become a Goose value.
+`from_bytes` (§12) checks an image's framing, tags, lengths, and
+self-relative links. Each link must point to an element start in the same
+image. Invalid input returns `false` and an empty array, so it cannot
+introduce an unchecked reference. This verifies *safety*, not data
+integrity: edited bytes may still describe a valid structure. Detecting
+changes to the original data requires a separate check, such as a checksum.
 
 ### 9.5 Writability
 
@@ -1956,13 +1947,12 @@ out of and the candidates it could not choose between ("`n` was read out of
 `slots` and may point into `pool` or `spare`"), or, where the candidates are
 the caller's to know, the parameter whose pointee bounds it.
 
-Consequence, accepted deliberately: the check is callee-driven — a utility
-function that mutates its slice argument compiles in one calling context and
-errors in another. The call-graph-order compiler always reports such errors
-with the full compile-time call chain, so the origin (e.g. "this slice came
-from a string literal at …") is visible. This buys most of const-correctness
-with none of the type-soup churn: `const` is written where a slot must
-accept read-only data, and nowhere else.
+Writability checks depend on the callee's operations. A function that mutates
+its slice argument can compile for a writable argument and fail for a
+read-only one. The compiler reports the full compile-time call chain,
+including the source of the read-only data. `const` is required on slots
+that must accept read-only references or slices; parameters and results
+may also use it to state that they are always read-only.
 
 ---
 
@@ -2024,27 +2014,24 @@ Consequently, in every conforming implementation:
 * therefore every length, capacity, index, and byte offset lies in
   `[0, 2^48]`, and `.len` and `.cap` are non-negative by construction.
 
-This is a deliberate trade of unreachable range for reasoning the compiler
-can rely on everywhere, and it costs nothing to enforce. 2^48 is the
-canonical address width current 64-bit hardware actually implements, so the
-limit is above anything reachable (256 TB in one value); the guard region
-after each reservation already turns an attempt to exceed it into a safe
-abort (§9.3), so no growth operation needs a check of its own, and a fixed
+This limit allows up to 256 TB in one value while leaving headroom for
+arithmetic the compiler can reason about. The guard region after each
+reservation already turns an attempt to exceed it into a safe abort (§9.3),
+so no growth operation needs a separate check for this limit. A fixed
 array's size is a constant checked at compile time. Implementations may
 impose a *smaller* limit (wasm32 is inherently capped at 2^32); they may not
 raise it, so a program's meaning never depends on the target having more.
 
-What the limit buys, and why it is worth a spec clause rather than an
-implementation assumption:
+Making the limit part of the specification provides three guarantees:
 
 * **Size arithmetic cannot overflow.** With 15 bits of headroom below `i64`,
   `len - 1`, `i + 1` for `i < len`, `len + len`, `len * 2`, and
   `i * element size` are all in range. The optimizer may assume this rather
   than prove it, and the bounds-check analysis (§10.5) relies on it directly.
-* **Signed is the right default for sizes.** `.len` returns `i64` (§3.1) and
-  the top bit is provably unused, so the sign bit costs nothing real, while
-  subtraction and difference math stay natural. This is the trade C++'s
-  `size_t` gets backwards.
+* **Signed is the right default for sizes.** `.len` returns `i64` (§3.1) and the
+  top bit is provably unused, so the sign bit costs nothing real, while
+  subtraction and difference math stay natural. Signed sizes avoid unsigned
+  wraparound in ordinary differences.
 * **Non-negativity is a type-level fact, not an inferred one**, which is what
   lets §6.1 admit the one mixed-signedness comparison that matters without
   any analysis being involved.
@@ -2349,8 +2336,8 @@ the end, each with where its resolution lives.
     each reference's root (§10.2), and a grow-only `[>..]` shrinks only at an
     operation on the array itself (§5.1), so such an index could only be
     invalidated by one the analysis sees. This
-    is the one direction that would take §10.5 past what an LLVM-based
-    language can prove, since it turns a dataflow question into a type one.
+    could extend §10.5 by making index validity a type property, rather
+    than relying only on dataflow analysis.
 0f. **Bounds-check analysis, known gaps** (§10.5) — a loop's exit condition
     is a disjunction (`!(i < n && p)`), which a difference-constraint domain
     cannot represent, so post-loop bounds rest on the inferred invariants
@@ -2371,9 +2358,9 @@ the end, each with where its resolution lives.
     globals, free variables and pool parameters as roots of stored
     references — a reference to a caller's fixed-size local is still
     pass-down-only inside a cycle.
-    (Container-read writability laundering, one-root-per-reference-variable,
-    and the single agreed return root are now deliberate language rules,
-    §9.2/§9.5.)
+    (One-root-per-reference-variable and the single agreed return root are
+    language rules, §9.2. Writability follows `const` types; storage no longer
+    removes read-only restrictions, §9.5.)
 2. **Error propagation sugar** — `return from` is the mechanism; revisit
    whether a convention/sugar layer (a `try`-alike) is wanted once idioms
    emerge.
@@ -2417,7 +2404,7 @@ the end, each with where its resolution lives.
     resizable-class ADTs keep the bytes-on-stack shape.
 0j. **Slices of grow-shrink arrays** — DONE, see §5.2 (superseding TODO 4):
     a slice or reference into a `[>..<]` is created like any other and held
-    by variables only; a shrink is an error while one is in scope, naming
+    by variables only; a shrink is an error while one is live, naming
     it and where it was bound; specializations record what they shrink so
     that calls are checked the same way.
 0g. **Recursive results' roots at back edges** — DONE (§7.8, cycle return
@@ -2435,7 +2422,7 @@ the end, each with where its resolution lives.
    ~3x, below it loses up to ~3x. Revisit only if a per-field format choice
    is ever wanted for unpredictable-length data.
 4. **`[>..<]` interior-reference relaxation** — DONE, see §5.2: the
-   scope-based test of §5.1, plus per-specialization shrink summaries for
+   liveness test of §5.1, plus per-specialization shrink summaries for
    the shrinks it cannot see directly (through a reference, or of a global).
 11. **FFI** — DONE, see §7.10: `extern fn` binds a Goose signature to a C
     function, and what crosses is the flat fixed-size types by value,
@@ -2713,7 +2700,7 @@ compiler's own description, pass by pass and analysis by analysis, is
   value's root, exactness, and source container, program-wide; a
   specialization also summarizes the stores into its parameters' pointees,
   replayed onto the caller's containers at each call. A grow-only shrink
-  (§5.1) asks this record whether any value in scope holds a reference into
+  (§5.1) asks this record whether any live value holds a reference into
   the array, following source links (a copy holds what its source holds; a
   global source is judged by its type), and a shrink inside a loop is
   re-asked at the loop's end for stores the rest of the body made.

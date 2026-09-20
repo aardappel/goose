@@ -1,4 +1,4 @@
-# Focused compiler/runtime coverage
+# Compiler and runtime tests
 
 Run `python test/run_tests.py --profile baseline --cc native --require-clang`
 after a normal compiler build. CI runs this on Windows, macOS and Linux.
@@ -50,31 +50,31 @@ concurrent/repeated waits and children outliving their parents. It runs in both
 profiles. The normal suite also checks user-visible worker error diagnostics.
 
 The `gfx/` tests exercise the SDL3 graphics module (`docs/design/gfx.md`). They
-always parse, typecheck and generate C. Where the compiler has the gfx layer
-built in (the `third_party/SDL` submodule, `goose --gfx-link` answering), they
-also build, linking what that names, and run at -O0 and -O2 and through
+always parse, typecheck and generate C. When the compiler includes the gfx layer
+(built from the `third_party/SDL` submodule), the tests also link against the
+libraries listed by `goose --gfx-link` and run at -O0 and -O2 and through
 TinyCC. They render headless into textures and read back only pixel-aligned
-results, so their output is the same on every backend and GPU; a machine with
-no GPU device (the program prints `gfx: no GPU device`) reports them skipped,
-as does a compiler without the layer. Linux CI runs them on Mesa's lavapipe.
-The runners set `GOOSE_GFX_HEADLESS=1`, so no test or sample opens a window.
-The hidden `--compile-shader` flag is probed on `gfx/probe.frag`.
+results, so their output is the same on every backend and GPU; a machine with no
+GPU device (the program prints `gfx: no GPU device`) reports them skipped, as
+does a compiler without the layer. Linux CI runs them on Mesa's lavapipe. The
+runners set `GOOSE_GFX_HEADLESS=1`, so no test or sample opens a window. The
+hidden `--compile-shader` flag is probed on `gfx/probe.frag`.
 
 The `physics/` tests exercise the Box3D physics module
-(`docs/design/physics.md`) the same way: always generated, and built and run
-at -O0 and -O2 and through TinyCC where the compiler has the physics layer
-(the `third_party/box3d` submodule, `goose --physics-link` answering). Box3D
+(`docs/design/physics.md`) in the same way. They always generate C. When the
+compiler includes the physics layer from `third_party/box3d`, they link using
+`goose --physics-link` and run at -O0 and -O2 and through TinyCC. Box3D
 is deterministic across platforms and worker counts, so they print physics
 results, rounded, and compare them exactly. Between them they call every
 function of the layer.
 
-`api_check.py` checks that each of `stdlib/gfx.goose` and
-`stdlib/physics.goose` and its C layer's list of functions, structs and
-constants describe the same boundary, which compiles on both sides when they
-do not. It also rejects a struct the layer passes by value that TinyCC would
-pass differently from the C compilers on System V x86-64: one of at most 16
-bytes with a misaligned field, or with floats alone in one eightbyte and
-integers in the other.
+`api_check.py` compares the functions, structs, and constants in
+`stdlib/gfx.goose` and `stdlib/physics.goose` with their C headers. This catches
+interface mismatches that can compile successfully on both sides. It also
+rejects a struct the layer passes by value that TinyCC would pass differently
+from the C compilers on System V x86-64: one of at most 16 bytes with a
+misaligned field, or with floats alone in one eightbyte and integers in the
+other.
 
 `test/gfx/window/run_window_test.py` is run by hand, on a machine with a
 display and a GPU: it runs the showcase `gfx_showcase.goose` with a window
@@ -92,8 +92,8 @@ A test the backend cannot run yet is reported as a skip, not a failure: either
 because the compiler refuses the program outright (`JIT mode does not support`)
 or because the test's first line says `no-jit`. Prefer portable assertions to
 skipping a backend; the math tests allow small rounding differences in
-transcendental results. What the backend cannot do yet, and what could be
-done about it, is `docs/design/jit_backend.md`.
+transcendental results. See `docs/design/jit_backend.md` for the backend's remaining limitations and
+possible solutions.
 
 An explicitly requested compiler must exist; CI does not silently skip it.
 Every runnable fixture requires an `expected/<name>.out`, including an empty
@@ -137,5 +137,6 @@ rejection in `clear_live_slice.goose`. Dedicated tests retain recursive relative
 structures, dispatch, nonlocal returns and dictionary execution previously
 suggested by those unused sketches.
 
-This is four CI jobs, rather than a product of platforms, sanitizers, compiler
-optimization levels and runtime modes. Benchmarks remain separate from CI.
+CI uses four jobs to cover these configurations without testing every
+combination of platform, sanitizer, optimization level, and runtime mode.
+Benchmarks run separately from CI.

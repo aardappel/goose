@@ -1,12 +1,11 @@
-# String constants, laundering, and threads
+# String constants, writability, and threads
 
-The one memory the stack model does not own is static data: string literals,
-and the `let` globals a worker may read. Writability launders through storage
-(§9.5), so a reference to static data that has been stored and read back is
-writable, and with workers that is shared mutable memory. This note pins down
-exactly what could be written, works through the ways of closing it, and
-records what each costs, measured on a throwaway branch that implemented
-it:
+Before the changes described here, static data consisted of string literals
+and `let` globals that workers could read. Storing a reference and reading it
+back could make read-only data writable, a behavior called *laundering* in
+the former §9.5. With workers, this allowed shared mutable memory. This note
+records the affected paths and compares fixes measured on temporary
+implementation branches:
 
 1. a literal used as a slice is a hidden local on a data stack;
 2a. a `u8` read-back is never writable, and constants are never stored;
@@ -23,9 +22,9 @@ removed once the decision was made. Every one of them passed the full test
 suite with its own fixtures and typechecked every benchmark; the samples
 and the numbers are in §5.
 
-## 1. What can be written today
+## 1. What could be written before the fix
 
-The repro from the discussion:
+The original reproducer:
 
 ```goose
 struct Box { s: u8[:] }
@@ -46,7 +45,7 @@ it, `box.s` reads it back, and the read-back is writable by design: the
 own provenance is gone. The write lands in the C static, which every thread
 shares.
 
-Probing the current compiler shows the hole is wider than the repro:
+Tests of the compiler before the fix found additional affected paths:
 
 * Every read-back path launders: a field (`box.s[0]`), an element
   (`views[0][0]`), a `for x in views` copy, a slice behind a *reference* to an
@@ -91,7 +90,7 @@ complete (no memory outside the stacks), and it needs no provenance
 machinery at all: the hidden local is an ordinary local, so a slice of it
 obeys every existing lifetime rule.
 
-**Damage, language.** The lifetime rules are the damage. A slice of a local
+**Language impact.** The lifetime rules restrict existing uses. A slice of a local
 cannot be returned or stored outside its scope, so these no longer compile:
 
 ```goose
@@ -106,13 +105,13 @@ literal out; none of the benchmarks or tests needed any. Every function
 returning a `u8[:]` name for an enum — a common idiom — is affected.
 
 **Damage, runtime.** One memcpy of the bytes plus a stack bump per evaluation
-that needs a slice, and a save/restore of the literal stack per function
-entry and per loop iteration. The manifest benchmarks do not move: their hot
-literals are equality operands and `append`/`format` arguments, which take
-the static path. A micro-benchmark that passes a literal to a user function,
-stores one in a struct literal and binds one to a `let`, 20M times, is
-**+40%** (33.6 → 47.3 ms). That is the "cost for 99.9% of uses" concern made
-concrete: small, but paid at every call boundary that takes a slice.
+that needs a slice, and a save/restore of the literal stack per function entry
+and per loop iteration. The manifest benchmarks do not move: their hot literals
+are equality operands and `append`/`format` arguments, which take the static
+path. A micro-benchmark that passes a literal to a user function, stores one in
+a struct literal and binds one to a `let`, 20M times, is **+40%** (33.6 → 47.3
+ms). The cost is small per use, but applies at every call boundary that takes a
+slice.
 
 **Implementation**: the typechecker
 gives the literal a synthetic `VarDef` at the current depth (so `while`
@@ -179,7 +178,7 @@ carries the reason into the diagnostic.
 ### Option 2b — track "may point at static data" through storage
 
 This was the `codex/readonly-literals` experiment, rebased and repaired,
-and it is the analysis the discussion feared: every
+and requires analysis across the program: every
 `Prov` gains two pointers into a monotone origin graph (`literal`: the
 pointee may be static; `contents`: the references inside this value may
 be), every store, call, return, default value, iteration, `break` value and
@@ -260,43 +259,41 @@ by-value `for` or `match` binding is a copy and is not written (the write
 would go nowhere), which is the one place `let`'s old strictness was worth
 keeping as a rule of its own.
 
-This differs from 2b in kind, not degree: 2b infers what a container may
-hold and forbids the write; 4 has the programmer say what the container
-holds and forbids the store. The check is local and exact, the diagnostic
-names the slot and the fix ("declare the slot const"), the model loses a
-rule (laundering) instead of gaining an exception, and the same feature
-lets a struct hold a read-only view of anything — a `let` buffer, a
-`bytes_of` view — which today is only possible by laundering. Constants
-close for free: `&W` is a `const i64&`, which no `i64&` slot can hold.
+This differs from 2b in kind, not degree: 2b infers what a container may hold
+and forbids the write; 4 has the programmer say what the container holds and
+forbids the store. The check is local and exact, the diagnostic names the slot
+and the fix ("declare the slot const"), the model loses a rule (laundering)
+instead of gaining an exception, and the same feature lets a struct hold a
+read-only view of anything — a `let` buffer, a `bytes_of` view — which today is
+only possible by laundering. The same rule protects constants: `&W` is a `const
+i64&`, which no `i64&` slot can hold.
 
-**Damage, language.** Annotation churn at slots that hold read-only data,
-and `const` where a global must be a constant. In the corpus: 11 sites
-outside the standard library — three `extern fn` declarations taking a
-literal (`s: const u8[:]`), a `let s: const u8[:] = ""`, two
-`dictionary<const u8[:], …>` keyed by literals, a `dictionary<key, const
-u8[:]>` holding literal values, a struct field `word: const u8[:]` filled
-from that dictionary's keys, the mandelbrot sample's three `const W = 78;`
-globals its worker reads (a `let` global is no longer a constant a worker
-may read, since `&W` is a writable `i64&`), and a `const N = 4;` used as an
-array size — plus the standard library's eight `os` extern parameters and
-`split`, whose parts become `const u8[:]` so one function serves literals
-and buffers alike. No benchmark changed. The shape of the churn is the C++
-one: generic containers keyed by views need the view type spelled `const`
-(a `dictionary<u8[:], V>` given a literal key is an error asking for
-`dictionary<const u8[:], V>`), and a function that *stores* views of its
-input must commit to a constness for the container, since the container's
-element type is a slot. Three places bit during the implementation and are
-worth knowing: `null` and `default<T>()` are "empty" values that must count
-as writable or they refuse every non-`const` slot; a load of a `const`
-value is a plain copy while a reference to one is a `const T&`, so the
-qualifier has to move from the storage type to the reference type at every
-`&`; and the flag for the `const` binding form has to survive the clones
-the checker and the inliner make of every declaration, or the contents
-silently become writable — the test that caught it is `const_value_write`.
-The first version of the branch had `let` make derived references `const`,
-the old transitive rule in new clothes; the second commit takes that out,
-which is what made the mandelbrot constants and the array size need
-`const`.
+**Damage, language.** Annotation churn at slots that hold read-only data, and
+`const` where a global must be a constant. In the corpus: 11 sites outside the
+standard library — three `extern fn` declarations taking a literal (`s: const
+u8[:]`), a `let s: const u8[:] = ""`, two `dictionary<const u8[:], …>` keyed by
+literals, a `dictionary<key, const u8[:]>` holding literal values, a struct
+field `word: const u8[:]` filled from that dictionary's keys, the mandelbrot
+sample's three `const W = 78;` globals its worker reads (a `let` global is no
+longer a constant a worker may read, since `&W` is a writable `i64&`), and a
+`const N = 4;` used as an array size — plus the standard library's eight `os`
+extern parameters and `split`, whose parts become `const u8[:]` so one function
+serves literals and buffers alike. No benchmark changed. The shape of the churn
+is the C++ one: generic containers keyed by views need the view type spelled
+`const` (a `dictionary<u8[:], V>` given a literal key is an error asking for
+`dictionary<const u8[:], V>`), and a function that *stores* views of its input
+must commit to a constness for the container, since the container's element type
+is a slot. Three details required care during implementation: `null` and
+`default<T>()` are "empty" values that must count as writable or they refuse
+every non-`const` slot; a load of a `const` value is a plain copy while a
+reference to one is a `const T&`, so the qualifier has to move from the storage
+type to the reference type at every `&`; and the flag for the `const` binding
+form has to survive the clones the checker and the inliner make of every
+declaration, or the contents silently become writable — the test that caught it
+is `const_value_write`. The first version of the branch had `let` make derived
+references `const`, which reproduced the old transitive rule; the second commit
+takes that out, which is what made the mandelbrot constants and the array size
+need `const`.
 
 **Damage, runtime.** None; the generated C is the baseline's, with the
 literal data now emitted `static const` (the checker admits no write to it,
@@ -335,7 +332,7 @@ qualifier.
   any of the above, but the mandelbrot sample's `let W = 78;` in a worker is
   exactly the use the exception exists for.
 
-## 3. Damage summary
+## 3. Compatibility and cost summary
 
 | | tests (280) | samples (25) | benchmarks | spec change | runtime cost |
 |---|---|---|---|---|---|
@@ -345,7 +342,7 @@ qualifier.
 | 3 per-program static | all pass | all pass | all compile | static data is per program instance | none without workers; snapshot + per-worker copy + TLS base with them, unmeasurable |
 | 4 `const` types | all pass after 8 annotations | all pass after 4 (an extern, three constants) | all compile | `const` on any type; `let` is rebind-only; slots must say `const`; laundering removed | none |
 
-## 4. Opinion
+## 4. Recommendation
 
 Option 1 is the one to rule out. It is the cleanest *model* — no memory
 outside the stacks — but the model's cleanliness is paid for by the user:
@@ -358,14 +355,13 @@ the language exists to avoid exactly this kind of hidden copy.
 Option 2b works and is the most precise, but it is the "complex analysis"
 the discussion anticipated, in some 300 lines that touch every place provenance
 flows, and its diagnostics cannot say which store poisoned the container.
-Having found three paths it missed on the first pass, I would not want to be
-the one maintaining its soundness argument next to the roots one.
+The three paths missed by the first implementation also suggest a substantial
+maintenance burden alongside the existing root analysis.
 
-Option 4 is the one I would actually want the language to have, and it
-changes the calculus. It is the only option that *removes* a rule: the
+Option 4 is preferable for the language design. It is the only option that *removes* a rule: the
 laundering clause and its "const-cast" loophole go, writability becomes a
 property of a type you can read off a declaration, and the same feature
-pays for itself elsewhere — read-only views in data structures, `extern`
+supports other uses — read-only views in data structures, `extern`
 declarations that say what the C side may do, a `split` that serves
 literals. Its costs are real but bounded and predictable: `const` at slots
 that hold read-only data, which in the corpus meant nine sites and the
@@ -379,19 +375,19 @@ Against 3: 3 costs nothing in the language and nothing at runtime without
 workers, and it keeps laundering, which the spec chose deliberately. If
 laundering is worth keeping, 3 is the fix. If the const-cast loophole was a
 compromise rather than a feature — the discussion that produced §9.5 says
-it "buys most of const-correctness with none of the type-soup churn", and
-4 keeps that property, since nothing but slots is annotated — then 4 is the
+the aim was to preserve const-correctness while limiting annotations, and
+4 keeps that property because only slots require annotations — then 4 is the
 better language, and 3 becomes unnecessary for literals.
 
 Between the other two, the real choice is between **2a** and **3**.
 
-* 2a is a language rule with no machinery: "a `u8` slice you read out of
-  storage is read-only; a reference into a constant is never stored." It
-  costs nothing at runtime, it costs nothing in the corpus, and it is
-  honest about *why* — the compiler genuinely cannot know what was stored,
-  and `u8[:]` is the read idiom anyway. Its cost is that the language now
-  has a rule shaped by an implementation limit, and a struct holding a
-  writable byte view has to hold a reference to the array instead.
+* 2a is a language rule with no machinery: "a `u8` slice you read out of storage
+  is read-only; a reference into a constant is never stored." It costs nothing
+  at runtime, it costs nothing in the corpus, and its restriction follows from
+  the compiler's inability to determine what was stored. `u8[:]` is also
+  commonly used for reading. Its cost is that the language now has a rule shaped
+  by an implementation limit, and a struct holding a writable byte view has to
+  hold a reference to the array instead.
 * 3 changes nothing a program can see except that workers stop sharing
   static data, which is what the spec's thread model says already. It is
   the option that keeps "acceptable as a corner case" true in exactly the
@@ -401,9 +397,9 @@ Between the other two, the real choice is between **2a** and **3**.
   static-data accesses in those programs that did not show up in any
   measurement.
 
-My recommendation is now **option 4**: it is the design the language
-reads as having wanted all along, its churn is small and lands exactly
-where a reader benefits from seeing it, and it needs no runtime machinery.
+The recommendation is **option 4**. It requires few source changes, places
+annotations where readers need to know whether stored views are writable,
+and requires no runtime mechanism.
 If the laundering rule is to stay as a feature, take **option 3** with rule
 2 of option 2a — constants are never stored — so that thread-visible
 constants stay plain C statics the C compiler can fold and only the

@@ -2,36 +2,36 @@
 
 # The Goose Programming Language
 
-A memory-safe systems language that is faster than C++ and Rust, on less
-memory, with no allocator/GC and no lifetime annotations.
+A memory-safe systems language with no heap allocator, garbage collector, or
+lifetime annotations. In this repository's benchmarks, Goose runs faster than
+C++ and Rust while using less memory.
 
 [Tutorial](docs/tutorial.md) · [Specification](docs/goose_spec.md) ·
 [Samples](samples/README.md) · [Benchmarks](bench/summary.md) ·
 [Standard library](docs/stdlib.md)
 
-Goose looks familiar like C or Rust, and
-is built on one idea: **there is no heap**. Every dynamic value lives inline on
-a data stack the compiler manages, growth is a pointer bump, and scope exit is
-the only free. The rest of the language is what it takes to make that work for
-real programs, and what it buys is measurable.
+Goose has syntax familiar to C and Rust programmers, but **there is no heap**.
+Every dynamic value lives inline on a data stack managed by the compiler.
+Growth advances a pointer, and memory is freed when its scope ends. The
+language's type and lifetime rules make this memory model safe to use.
 
 ## Why Goose
 
 * **Faster than C++ and than safe Rust, while memory safe.** Over sixteen
   benchmarks Goose runs at 3.3x the speed of idiomatic C++, 1.16x hand-optimized
   C++ and 1.12x the best safe Rust, on 1.9x, 1.3x and 1.2x less memory
-  ([summary](bench/summary.md), [full results](bench/results.md)). The wins are
-  structural: they come from things the other languages cannot express.
+  ([summary](bench/summary.md), [full results](bench/results.md)). These gains
+  come from Goose's data layouts and memory model.
 * **No allocator, no GC, no reference counting, no destructors.** Memory is a
   handful of data stacks that the compiler assigns statically. Freeing a
   million-element structure is one store, however deeply it nests.
-* **Nothing ever moves.** A reference into a growing array stays valid for as
+* **Growth preserves references.** A reference into a growing array stays valid for as
   long as the array does. You keep typed references where C++ must `reserve`
-  and safe Rust retreats to `u32` indices.
+  and safe Rust uses `u32` indices in the corresponding benchmarks.
 * **Memory safe with zero annotations.** No lifetime syntax, no aliasing or
   exclusivity rules, no `unsafe`. The compiler infers what every reference is
-  rooted in and objects to exactly one thing: outliving the owner.
-* **Flat all the way down.** A string, an array of strings, a record with
+  rooted in and rejects references that could outlive their owners.
+* **Nested data stays inline.** A string, an array of strings, a record with
   variable-size fields and an array of those records are each one contiguous
   block with no pointer in it. A record that is 160 bytes and an allocation in
   C++ is 29 bytes and none in Goose.
@@ -46,7 +46,7 @@ real programs, and what it buys is measurable.
   final destination through any depth of calls. `items.push(parse(line))`
   writes the parsed record straight into the array, and returning a growable
   array by value costs nothing.
-* **Errors without plumbing.** `return err from load` returns from a function
+* **Returns across multiple calls.** `return err from load` returns from a function
   any number of frames up, statically checked, with no unwinder, no `Result`
   type and no `?` on every call.
 * **Threads that share nothing.** A worker is compiled as a separate program
@@ -66,9 +66,9 @@ The [tutorial](docs/tutorial.md) walks through all of this by example, the
 
 ## Features
 
-Only what is different about Goose is shown here. The [tutorial](docs/tutorial.md)
-covers the same ground properly, and the [samples](samples/README.md) are
-twenty-six complete programs doing it for real.
+This section focuses on what distinguishes Goose. The [tutorial](docs/tutorial.md)
+explains these features in more detail, and the [samples](samples/README.md)
+show them in twenty-eight complete programs.
 
 ### One memory model: stacks, and scope exit is the free
 
@@ -77,7 +77,7 @@ compiler works out N. A data stack is a large address-space reservation with a
 bump pointer, and there is no other memory. At most one resizable value is
 live per stack and it is always on top, so growth never moves anything and
 never checks a capacity. All of this is proved at compile time; the runtime
-keeps nothing but the bump pointers.
+tracks only the bump pointers.
 
 ```goose
 for round in 3 {
@@ -98,19 +98,18 @@ for i in 2..1000001 { items.push(Item { i as i32, 0.0 }); }
 first.weight = 99.5;                                  // still valid, a million pushes later
 ```
 
-`push` returns a reference to the element it just made, which is how data gets
-linked up while it is being built. A `vector<T>` or `Vec<T>` reallocates, so
-neither can promise this, and it is where a good share of the benchmark wins
-come from.
+`push` returns a reference to the new element, so a program can link elements
+while building the array. A `vector<T>` or `Vec<T>` may reallocate and cannot
+provide this guarantee. Stable references account for several benchmark gains.
 
 ### Safe references, no annotations
 
-Every reference and slice carries a static *root*, the variable that bounds its
-target's lifetime, and the whole lifetime system is one rule: a reference must
-not outlive the variable that owns its target, and must never see it at a wrong
-type. Roots are inferred and functions are specialized per root, so there is no
-syntax for any of it, and no aliasing or exclusivity rules either. When the
-checker objects, it names both ends:
+Every reference and slice has a static *root*: the variable that bounds its
+target's lifetime. A reference must not outlive the variable that owns its
+target or access that target through an incompatible type. The compiler infers
+roots and specializes functions for them, so no annotations are needed. There
+are no aliasing or exclusivity rules. When a lifetime check fails, the error
+names the reference's root and its destination:
 
 ```goose
 fn longest(a: u8[:], b: u8[:]) -> u8[:] { if a.len >= b.len { a } else { b } }
@@ -124,11 +123,11 @@ var w = outer[..];
 }                                  //        which does not outlive the destination (§9.2)
 ```
 
-A slice `T[:]` is the universal "process a range" parameter: every array kind
-coerces to it for free, and it never copies, so `split` returns slices into its
-input and a dictionary keyed by `u8[:]` stores no strings at all.
+A slice `T[:]` lets a function accept a range from any array kind without
+copying its elements. For example, `split` returns slices into its input, and
+a dictionary keyed by `u8[:]` stores views of strings rather than copies.
 
-### Flat all the way down
+### Nested data stays inline
 
 There is no single array type. There is a family that differs only in what
 happens to the size, and every member is `[metadata][elements...]`, inline and
@@ -184,9 +183,9 @@ for s in packed {
 }
 ```
 
-`match` has a second spelling, *case functions*: one overload per variant,
-dispatched on the tag through a jump table and checked for exhaustiveness. It
-is the virtual call without the vtable:
+*Case functions* provide another way to dispatch on a variant: define one
+overload per variant. Calls dispatch on the tag through a jump table, and the
+compiler checks that the overloads cover every variant:
 
 ```goose
 fn area(s: Shape.Circle) -> f64 { 3.14159 * s.r * s.r }
@@ -259,7 +258,7 @@ let evens = xs.filter() { it % 2 == 0 };       // built straight into `evens`: n
 book.push(Order { id: 1001, customer: "alice", items: parse_items("SKU-441:2:1999;SKU-7:1:500") });
 ```
 
-### Errors without plumbing
+### Returning errors across calls
 
 ```goose
 struct User { name: u8[..16], age: i32 }
@@ -288,7 +287,7 @@ discriminant checked per frame rather than an unwinder, and the message is
 built directly where `load`'s caller wants it. The parsers in the samples use
 it for every syntax error.
 
-### Generics without ceremony, blocks that disappear
+### Generics and function blocks
 
 ```goose
 fn twice(x) { x + x }                              // an untyped parameter is a generic one
@@ -307,12 +306,13 @@ let total = fold(xs, 0) { acc, x => acc + x };
 sort(xs) { a, b => a > b };
 ```
 
-Everything is monomorphized and type arguments are inferred, never written at a
-call. Function values are passed as generic parameters: every call is direct
-and inlinable, they cannot escape, and there are no closure objects or function
-pointers, so a higher-order function compiles to exactly the loop it looks
-like. A block may `return` from its lexically enclosing function, and nested
-functions see the enclosing function's locals.
+Everything is monomorphized. Type arguments are inferred from argument types;
+parameters absent from those types can be supplied explicitly. Function values
+are passed as generic parameters: every call is direct and inlinable, they
+cannot escape, and there are no closure objects or function pointers, so a
+higher-order function compiles to exactly the loop it looks like. A block may
+`return` from its lexically enclosing function, and nested functions see the
+enclosing function's locals.
 
 ### Threads that share nothing
 
@@ -343,20 +343,21 @@ extern fn crc32_bytes(s: const u8[:]) -> u32;       // a slice crosses as { data
 extern fn stats_of(xs: i32[:], out: Stats&);        // a struct filled through a pointer
 ```
 
-An `extern fn` binds a Goose signature to a C symbol, and that is the whole FFI;
-the `math` and `os` modules are built on it. Exactly what has a plain C shape
-may cross, and anything else is rejected at the declaration. The compiler emits
-one C file for the whole program, which any C compiler builds, and with the
-bundled TinyCC it compiles and runs the program inside its own process instead.
+An `extern fn` binds a Goose signature to a C symbol. The `math` and `os`
+modules use this interface. Only types with supported C representations may
+cross the boundary; unsupported signatures are rejected at the declaration.
+The compiler emits one C file for the whole program. The bundled TinyCC
+backend can compile and run that C inside the Goose compiler's process.
 
 ### Where the speed comes from
 
-Not a clever optimizer. No allocator on any path, no teardown, contiguous data
-so the cache does less work, narrow links, and enums that do not pay for their
-largest variant everywhere. Every index is bounds-checked and the compiler
-proves most checks away; one `assert` on a slice length is usually what a
-kernel needs to lose all of them and vectorize, and `--bce-lines` reports what
-survived. Every measurement is whole-process wall clock, teardown included.
+Much of the speed comes from the memory model: no heap allocation or
+per-object teardown, contiguous data, narrow links, and enums sized for the
+variant they contain. Every index is bounds-checked, and the compiler removes
+checks it can prove unnecessary. An `assert` on a slice length often lets a
+kernel eliminate its remaining checks and vectorize. `--bce-lines` reports
+the checks that remain. Benchmark measurements use whole-process wall-clock
+time, including teardown.
 
 | Geometric mean over 16 benchmarks | vs idiomatic C++ | vs hand-optimized C++ | vs best safe Rust |
 |---|---:|---:|---:|
@@ -364,9 +365,9 @@ survived. Every measurement is whole-process wall clock, teardown included.
 | speed, clang backend | 3.35x | 1.19x | 1.12x |
 | peak memory | 1.93x less | 1.30x less | 1.24x less |
 
-The [summary](bench/summary.md) says where each win comes from and owns up to
-the losses; [results.md](bench/results.md) has every row and
-[design.md](bench/design.md) says what the suite was built to find out.
+The [summary](bench/summary.md) explains the gains and losses;
+[results.md](bench/results.md) has every measurement, and
+[design.md](bench/design.md) explains what the suite tests.
 
 ### What it costs you
 
@@ -391,8 +392,8 @@ You need CMake 3.20 or later, a C++20 compiler (MSVC, clang or gcc) and Python
 3 for the test and sample runners. Three submodules are optional: TinyCC,
 which the in-process backend is built from, SDL3, which the `gfx` graphics
 module is built from, and Box3D, which the `physics` module is built from.
-Without any of them the compiler builds and behaves the same, minus JIT mode
-or minus running `gfx` or `physics` programs.
+The compiler builds without these submodules, but the corresponding features
+are unavailable: JIT execution, graphics, or physics.
 
 ```bash
 git clone --recursive https://github.com/aardappel/goose
@@ -501,22 +502,22 @@ Goose is licensed under the [Apache License, Version 2.0](LICENSE).
 
 ## History & Use of AI
 
-Yes, this repo is almost entirely AI produced, though from a human design.
+This repo was produced almost entirely with AI, from a human language design.
 I had designed Goose several years ago, and had started to implement it,
 but running a game startup (which is built on another programming language of mine,
 [Lobster](https://strlen.com/lobster/)) there was no time to finish it.
 Which was sad, because I knew Goose could do things other languages can't,
 and it should exist.
 
-I had not considered AI being able to help with this, until Fable came out and
-I figured it might have reached a level to be able to do good job of it.
+I had not expected AI to help with this until Fable came out. I thought it
+might be capable enough to do a good job.
 I made it essentially clone the style and structure of my other recent compiler
 (Lobster), which is why if you look at the code, it looks rather similar to that.
 My initial design had left lots of things unspecified, and lots of back and forth
 with Fable made me decide on all of those, and it is now a better language for it.
 
-It is also an experiment: though certainly not the first ever compiler implemented
-with AI, possibly one of the more novel/extensive from scratch ones. This project is very different from cloning an existing language.
+It is also an experiment in using AI to implement a new language, rather than
+reproduce an existing one.
 
 You may wonder why I had it work in C++, if clearly I could have used any
 language, like Rust, or my own Lobster, or.. Goose itself (that may still happen).

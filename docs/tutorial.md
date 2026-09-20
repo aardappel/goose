@@ -1,17 +1,13 @@
 # Goose, by example
 
-This is the friendly introduction. It assumes you have written C, C++, Rust,
-Go or something in that family, and it tries to show you what is *different*
-about Goose rather than re-teach you what an `if` is. The precise rules live
-in [the spec](goose_spec.md); the working programs live in
-[`samples/`](../samples/README.md). This is the thing you read first.
+This tutorial introduces Goose through examples. It assumes some experience
+with C, C++, Rust, Go, or a similar language and focuses on Goose's
+differences. Start here, consult [the specification](goose_spec.md) for exact
+rules, and see [`samples/`](../samples/README.md) for complete programs.
 
-A warning up front. Most of Goose looks ordinary — braces, `let`, `fn`,
-`struct`, `match`. If you skim it you will conclude it is one more C-family
-language with a slightly odd syntax for arrays, and you will have missed the
-point entirely, because the odd syntax for arrays *is* the point. So the
-first real section is about where values live. Everything else follows from
-it.
+Much of the syntax is familiar: braces, `let`, `fn`, `struct`, and `match`.
+The main difference is how arrays store and manage data. We start with where
+values live, since that explains many of the language's other choices.
 
 ---
 
@@ -31,15 +27,14 @@ when it goes out of scope. In Rust it is a `Vec<String>` with the same shape.
 In Goose it is **one contiguous block of bytes** — a length, then five
 back-to-back `(length, characters)` runs — that came into existence by
 bumping a pointer, and that disappears when the enclosing scope ends by
-moving that pointer back. There is no allocator involved. There is nothing to
-free. There is no pointer anywhere in it.
+moving that pointer back. No heap allocator or per-string deallocation is needed, and the block
+contains no pointers.
 
 ```
 words:  05 00 00 00 | 05 w o r d 0 | 05 w o r d 1 | 05 w o r d 2 | ...
 ```
 
-That is the whole idea, and the rest of the language is what it takes to make
-it work for real programs:
+The memory model has four main properties:
 
 * Memory is a handful of big **data stacks**. Growth is a pointer bump.
 * Every dynamic value is **owned by a variable**. The only deallocation is a
@@ -49,12 +44,12 @@ it work for real programs:
 * You may still take **references into a growing container**, and the
   compiler proves they never dangle — no annotations, no `'a`, no `Rc`.
 
-It is a trade, and it costs you things — §18 is the honest list. What it
-buys is measurable: over sixteen benchmarks Goose runs at about **3.3x the
-speed of idiomatic C++**, roughly level with hand-tuned C++ and with the best
-safe Rust, on **1.9x less memory** than the C++ and 1.2x less than the Rust
-([`bench/summary.md`](../bench/summary.md)). Most of the wins are structural
-rather than tuned: they are things the other languages cannot spell.
+This model has limitations, listed in §18, and measurable benefits: over sixteen
+benchmarks Goose runs at about **3.3x the speed of idiomatic C++**, roughly
+level with hand-tuned C++ and with the best safe Rust, on **1.9x less memory**
+than the C++ and 1.2x less than the Rust
+([`bench/summary.md`](../bench/summary.md)). Most of the gains come from
+differences in data layout and memory management.
 
 ---
 
@@ -75,7 +70,7 @@ what you want while you are reading this:
 goose hello.goose
 ```
 
-And the obligatory program:
+Here is a minimal program:
 
 ```goose
 fn main() {
@@ -93,14 +88,15 @@ print("answer=", 42, " ratio=", 0.75, " yes=", 3 > 2);
 
 Everything renders, not just scalars: arrays print as `[1, 2, 3]`, structs as
 `Point { 1, 2 }`, a `u8` array as its bytes. This is why the samples print so
-much — it is genuinely the easiest way to see what a value is.
+much — printing is a convenient way to inspect values.
 
 ---
 
-## 3. The half hour of stuff you already know
+## 3. Familiar syntax
 
-Skim this. `let` binds a constant, `var` a variable, types come after the
-name and are usually inferred:
+`let` creates a binding that cannot be reassigned; `var` allows reassignment.
+Neither makes the contents read-only: use `const` for that. Types follow the
+name and can usually be inferred:
 
 ```goose
 let answer = 42;
@@ -111,7 +107,7 @@ count++;              // a statement, not an expression
 ```
 
 Functions are free functions. There are no methods and no `impl` blocks, but
-`x.f(a)` is *exactly* `f(x, a)`, so you can write the method-ish form
+`x.f(a)` is *exactly* `f(x, a)`, so you can write method-call syntax
 wherever it reads better:
 
 ```goose
@@ -166,14 +162,13 @@ fn divide(a: i64, b: i64) -> i64, bool {
 let q, ok = divide(7, 2);
 ```
 
-Three small differences that will bite you if you skip them:
+Three arithmetic rules need particular attention:
 
 **Arithmetic happens at the operands' own width.** `u8 + u8` is an 8-bit add.
 A narrower type widens into a wider one implicitly; nothing narrows without
 `as` (range-checked in debug) or `as!` (never checked). `u32 + i32` is a
 compile error asking which one you meant — the language will not silently
-promote both to 64 bits behind your back, because avoiding exactly that is
-the reason the sized types exist.
+promote both to 64 bits. The declared widths determine the operation.
 
 **`%` is Euclidean.** The result is in `[0, |b|)` and never negative, at
 every integer type. So `x % n` is a valid index into a length-`n` array for
@@ -191,8 +186,6 @@ wraps in release.
 ---
 
 ## 4. Where values live
-
-Now the part that matters.
 
 A Goose program has the native call stack, some static data, and **N data
 stacks**, where N is a small number the compiler works out for your program.
@@ -215,8 +208,8 @@ beyond the bump pointers.
 "One resizable per stack" sounds alarming until you notice the plural in
 "N data stacks": three growable arrays alive at once simply get three stacks,
 and stacks are recycled the moment a scope frees one. N is whatever the
-deepest point of your program needs, computed once at compile time, and a
-stack costs nothing but reserved address space. You never write any of this
+deepest point of your program needs, computed once at compile time. An
+unused stack needs only reserved address space. You never write any of this
 down — there is no syntax for a stack anywhere in the language.
 
 ### Scope exit is the free
@@ -234,8 +227,6 @@ stack's top goes back to where it was. No destructor runs. No list is walked.
 The cost of "freeing" that buffer is one store.
 
 ### Nothing moves, so references survive growth
-
-This is the big one:
 
 ```goose
 struct Item { id: i32, weight: f32 }
@@ -274,7 +265,8 @@ b.push(4);
 Without the `copy`, `var b = a;` binds `b` to `a` by reference. Same at a
 call: `f(xs)` hands a growable array to `fn f(xs: i64[:])`, to
 `fn f(xs: i64[>..]&)` and to an untyped `fn f(xs)` alike, all by reference,
-all free. A function that wants its own copy says so.
+without copying the elements. A function that needs its own copy uses
+`copy`.
 
 ---
 
@@ -319,9 +311,9 @@ Which to reach for:
   *guarantee* — references into it stay valid — not the operation set; it can
   still `pop` and `clear` at points where the compiler can see nothing is
   pointing into it.
-* **`[>..<]`** when you genuinely need a stack or a heap. The price is that
-  references into it may live in variables only, never in storage, since
-  popped memory gets reused at other types.
+* **`[>..<]`** for a stack or priority queue. The price is that references into
+  it may live in variables only, never in storage, so the compiler can track
+  them when checking a shrink.
 * **`[..k]` / `[..]`** when the thing must sit inline inside something else:
   a 16-byte name inside a struct, a small list inside an array element.
 * **`[]` / `[varint]`** for finished data: a string in a record, a node in a
@@ -373,8 +365,7 @@ usage: wc [-l] file
   -l   count lines only
 ```
 
-`str(...)` is `format` into a fresh string, and — this matters — it is built
-*directly at its destination*:
+`str(...)` formats into a fresh string built *directly at its destination*:
 
 ```goose
 words.push(str("word", i));         // written straight into the new element
@@ -435,8 +426,8 @@ print(people);
 ## 7. Slices that cannot dangle
 
 `T[:]` is a reference plus a count: C++'s `span`/`string_view`, or Rust's
-`&[T]`, and it is the universal "process a range" parameter — every array
-kind coerces to it at a call site, for free.
+`&[T]`, and lets a function process a range from any array kind without copying its
+elements.
 
 ```goose
 fn total(xs: i64[:]) -> i64 { var t = 0; for x in xs { t += x; } return t; }
@@ -459,12 +450,10 @@ inferred, and functions are specialized per root, which gets you
 Rust-lifetime precision through monomorphization with zero syntax. There are
 also no aliasing or exclusivity rules — two references to the same thing are
 fine, because without shared-memory concurrency aliasing alone cannot break
-type safety here. If you have bounced off Rust's borrow checker, the thing to
-know is that Goose's version only ever objects to *outliving*, never to *two
-of them at once*.
+type safety here. The checker tracks lifetimes and valid access; it does not require references
+to be exclusive.
 
-When it does object, it tells you where both ends are, so you can move
-either:
+A lifetime error identifies both the reference's root and its destination:
 
 ```goose
 var line: u8[>..] = [];
@@ -495,18 +484,18 @@ of the final report points into it
 ([`15_word_freq`](../samples/15_word_freq.goose) does exactly this over a
 book).
 
-The `const` there is the other half of the story. Writability is inferred
+The `const` qualifier describes writability. Writability is inferred
 rather than annotated: a string literal is read-only, `&x` of a `var` is
 writable, and a *slot* — a field, an element, a global — has to say which
 kind it holds. `dictionary<const u8[:], i32>` says "these keys may be
-read-only views", which is what lets literals and views of a `let` be keys.
+read-only views", which allows literals and other read-only views to be keys.
 Parameters are generic over constness, so you almost never write `const`
 except on a slot that must accept read-only data, and on a parameter you
 want to document as read-only.
 
 ---
 
-## 8. Flat all the way down
+## 8. Nested data stays inline
 
 A struct may contain variable-size parts, and they sit **inline**, in
 declaration order. Combine that with `varint` fields — a LEB128 integer that
@@ -567,9 +556,9 @@ per-block header and rounding, which would add more. C++ gets off lightly
 here only because all three strings are short enough for the small-string
 optimization — one character more in a SKU and it is four allocations too.
 
-Five times smaller is a cache story, not a bookkeeping one: the whole book
-streams. And `id`, `qty` and `cents` cost one byte each rather than eight,
-because a `varint` is as wide as its value needs.
+The smaller layout reduces cache traffic when traversing the order book. And
+`id`, `qty` and `cents` cost one byte each rather than eight, because a `varint`
+is as wide as its value needs.
 
 Note also `parse_items` returning a growable array by value and that costing
 nothing: the callee is compiled knowing its destination and writes the items
@@ -638,8 +627,9 @@ for s in packed {
 }
 ```
 
-The dichotomy is exact and deliberate: **replaceable XOR
-interior-referenceable**. A fixed-mode value can be overwritten with another
+The two modes offer different guarantees: fixed-mode values can change
+variant; variable-mode values allow references into their payloads. A
+fixed-mode value can be overwritten with another
 variant, so nothing may point inside it; a variable-mode value can be pointed
 into, so it can never be overwritten. That is what keeps it sound, and it is
 why `&`-binders in a `match` are legal only on variable-mode payloads.
@@ -694,8 +684,8 @@ narrow offset:
 
 * `T&<u32>` — *self-relative*: an offset from the field itself to the target,
   which must live in the same enclosing array. Position-independent, so a
-  structure built out of these means the same thing wherever it sits — hold
-  that thought, because §15 cashes it in.
+  structure built from them can be relocated as a whole. Section 15 explains
+  how this supports serialization.
 * `T&<u32 in pool>` — *pool-relative*: an offset from a named global pool's
   base. A store is a subtraction from a base already in a register, and — the
   thing self-relative cannot do — other arrays can hold links *into* the
@@ -730,7 +720,7 @@ fn insert(pool: Node[>..]&, key: i32) {
 }
 ```
 
-A few things are happening here that are worth naming.
+The example uses three reference features:
 
 **`.=` binds and rebinds a reference.** Since references are *transparent* —
 an expression that denotes a reference behaves as its target everywhere, with
@@ -801,9 +791,9 @@ uses 3.2x less memory.
 
 ## 11. When lifetimes really are not nested
 
-Stacks are wonderful until your lifetimes are not nested — a cache, a mutable
-graph, a file tree where things get deleted in any order. Goose's answer is
-the `reusable` pool: a grow-only array the compiler pairs with a hidden
+Some data has lifetimes that do not nest: cache entries, mutable graph nodes,
+or files deleted in arbitrary order. Goose supports these uses with a
+`reusable` pool: a grow-only array the compiler pairs with a hidden
 freelist.
 
 ```goose
@@ -824,17 +814,16 @@ so it is worth being precise about what `free` does and does not do:
 > The slot is still a live, well-typed `Item` afterwards, and it still
 > belongs to the pool, which still belongs to its owning scope.
 
-So there is nothing here to be unsafe. A reference to a freed-and-reused slot
+Reuse preserves memory and type safety. A reference to a freed-and-reused slot
 reads a *different `Item`* — a perfectly good one, just not the one you were
 thinking of. That is the same class of mistake as keeping an index into an
 array you have since overwritten: a logic bug, and one you can reason about
 locally. Memory is never accessed at a type it was not written with, and
 nothing goes out of bounds, because nothing was freed.
 
-What it costs, then, is not safety but tidiness: within a pool, elements are
-managed loosely rather than by scope, and it is on you to stop naming a slot
-you have handed back. That is the price of expressing lifetimes a stack
-cannot.
+Within a pool, the program manages slot reuse independently of scope.
+After returning a slot, stop using references to its old contents: they
+remain memory safe but may read a replacement value.
 
 Running the linked list above through it:
 
@@ -860,8 +849,7 @@ There is no exception mechanism and no `Result` type, and no specified error
 convention either — it is the application's choice. For a call with two
 outcomes the trailing `bool` you have already seen is enough
 (`let age, ok = parse_age(s);`), and for "found or not" it is a `T?`, which
-costs nothing because it is a reference into the input. Neither needs
-explaining.
+costs nothing because it is a reference into the input. Both are ordinary return values.
 
 The one that is not obvious is **`return E from f`**: it returns `E` as the
 result of the innermost active call of `f`, unwinding every frame in between.
@@ -903,7 +891,7 @@ function between it and `load`, however many there are. All the error
 handling in the program is the two `guard`s that produce a message and the
 one `if err.len > 0` that reports it.
 
-Three things make this cheap rather than clever:
+Three properties keep the cost low:
 
 * **It is checked statically.** Validity is a compile-time property: every
   call site of a function containing `return … from load` must lie inside the
@@ -937,7 +925,7 @@ last two never return, so either can be the whole of a `guard`'s else.
 
 ## 13. Generics, and blocks that disappear
 
-An untyped parameter is a generic one. That is the whole feature:
+An untyped parameter is generic:
 
 ```goose
 fn twice(x) { x + x }
@@ -945,9 +933,9 @@ fn span<T>(a: T, b: T) -> T { if a > b { a - b } else { b - a } }
 ```
 
 `<T>` says that two parameters must agree, or names a type no parameter
-carries. Type arguments are inferred from the arguments — `foo(1)`, never
-`foo<i64>(1)` — and written out only for a type variable no argument
-mentions:
+carries. Type arguments are normally inferred from the arguments, as in `foo(1)`.
+An explicit list such as `foo<i64>(1)` can supply leading type arguments;
+it is required for a type variable that no argument determines:
 
 ```goose
 fn zero<T>() -> T { default<T>() }   // T's default value
@@ -974,8 +962,8 @@ print(describe(7), "; ", 2.5.describe(), "; ", xs.describe(), "; ", describe(xs[
 Function values are **compile-time entities**. They are passed as generic
 parameters, every call is direct and inlinable, and they cannot escape —
 storing one, returning one or putting one in data is a compile error. There
-are no closures-as-objects and no runtime function pointers. The payoff is
-that a higher-order function compiles to exactly the loop it looks like:
+are no closures-as-objects and no runtime function pointers. A higher-order
+function can therefore compile to a direct loop:
 
 ```goose
 fn each_pair<T, F>(xs: T[:]) {
@@ -1143,8 +1131,8 @@ references, and the lifetime system needs no new rule for it.
 
 ## 16. Calling C
 
-An `extern fn` binds a Goose signature to a C symbol. That is the whole FFI,
-and it is how the `math` and `os` modules are built.
+An `extern fn` binds a Goose signature to a C symbol. The `math` and `os`
+modules use this foreign-function interface.
 
 ```goose
 extern "cbrt" fn cube_root(x: f64) -> f64;
@@ -1166,10 +1154,11 @@ calling-convention extras. Your own C arrives with `--include header.h`.
 
 ## 17. About the speed
 
-Goose is not fast because of a clever optimizer. It is fast because of what
-it does not do, and it is worth knowing which is which.
+Goose's performance depends on both its memory model and compiler
+optimization. The distinction helps when choosing data layouts and tuning
+loops.
 
-**Where the wins come from.** No allocator on any path. No teardown — a scope
+**Benefits of the memory model.** No allocator on any path. No teardown — a scope
 exit is a pointer store, not a walk. Contiguous data, so the cache does less
 work: an array of records is *one* block, not one block per record. Narrow
 links: 2 and 4-byte offsets where a pointer would be 8. And variable-mode
@@ -1209,7 +1198,7 @@ and the loop does not vectorize. `--bce-lines` will tell you, per line,
 exactly which checks survived — use it when a kernel is slower than you
 expect.
 
-Two other things the language hands the analysis for free: a grow-only array
+Two language rules also help the analysis: a grow-only array
 can only shrink at a `pop`/`resize`/`clear` the compiler can see, so a bound
 established before a `push` still holds after it; and `%` being Euclidean
 means a reduction is in range by construction.
@@ -1260,15 +1249,14 @@ You will meet all of these.
 
 ## 19. Where to go next
 
-* **[`samples/`](../samples/README.md)** — twenty-six complete programs in
+* **[`samples/`](../samples/README.md)** — twenty-eight complete programs in
   reading order, each one commented for what it demonstrates. Start with
   `01_tour` and `02_memory`, then jump to whatever looks like your problem.
   `13_linked_list`, `14_bst` and `18_json` are the ones that show the data
-  structure story properly; `26_file_tree` is the most recent and uses both
-  pool kinds together.
-* **[`docs/stdlib.md`](stdlib.md)** — the library reference. Five modules:
-  `std`, `dictionary`, `vec`, `math`, `os`. It is small and it is all
-  readable Goose under `stdlib/`.
+  structures in detail; `26_file_tree` uses both pool kinds together.
+* **[`docs/stdlib.md`](stdlib.md)** — the library reference. Seven modules:
+  `std`, `dictionary`, `vec`, `math`, `os`, `gfx`, and `physics`, with Goose
+  interfaces under `stdlib/`.
 * **[`docs/goose_spec.md`](goose_spec.md)** — the actual rules, when you want
   to know why something did not compile. It is precise rather than friendly,
   and it is where every "§" in this document points.
@@ -1278,7 +1266,7 @@ You will meet all of these.
   if you want to hack on it.
 
 One last piece of advice: when the checker rejects something, read the whole
-error. It names both ends — the reference *and* where it was bound, the
-holder *and* the line that stored into it, the instantiation *and* the call
-chain that produced it. It is trying to tell you which of the two to move,
-and it is usually right.
+error. It names both ends — the reference *and* where it was bound, the holder
+*and* the line that stored into it, the instantiation *and* the call chain that
+produced it. Use those locations to decide which binding, store, or scope needs
+to change.

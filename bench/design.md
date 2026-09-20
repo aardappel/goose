@@ -1,19 +1,15 @@
-The design of Goose asks the question: what if went all-out on more efficient inline data
-structure options, and more efficient memory management at the language level, is it possible
-to surpass the performance of current performance leading languages like C++ and Rust,
-while being "safe"?
+Goose tests whether inline data structures and language-level memory
+management can outperform C++ and Rust while preserving memory safety.
 
-To answer that question, we must run some benchmarks that explore the kinds of code
-Goose seeks to improves, which means that Goose winning some of these benchmarks
-is not surprising. While that makes for good marketing material, we also want to
-find the limits of Goose, and find any limitations to improve the language.
+The benchmarks cover common algorithms that may benefit from this design,
+as well as workloads where Goose is likely to struggle. The aim is to
+measure both the benefits and the limitations and identify possible
+language improvements.
 
-We want to however find algorithms to test that are familiar and frequently occurring,
-not anything contrived.
+The suite tests the effects of these features:
 
-What are some advantages of Goose we're seeking to test the effects of?
-* Super compact inline data structures.
-* Super cheap in-place construction everywhere and pointer bump push back / append.
+* Compact inline data structures.
+* In-place construction and pointer-bump growth for push and append.
 * Less copying overhead.
 * No "realloc" of resizable data structures, while allowing element pointers.
 * Variable size enums.
@@ -56,9 +52,9 @@ What are some advantages of Goose we're seeking to test the effects of?
   serialization step, no shared ownership machinery.
 
 We will want to test against performance conscious (but still idiomatic) C++ and Rust.
-C++ for example can do all of the above if you're willing to go down to manual
-pointer management and data packing, but noone uses the language like this outside of
-highly specialized protocols. Goose makes it convenient and safe.
+C++ can reproduce many of these layouts through manual pointer management
+and data packing. Those techniques belong in the expert comparisons; Goose
+aims to make them convenient and memory safe in ordinary code.
 
 Besides speed, we will want to test memory usage, and the combination of both, by
 running with at least 3 different data sizes for each algorithm, where the smallest
@@ -76,8 +72,8 @@ fair to C++ and compare both what happens if the programmer optimally
 chooses `reserve`, and what if they don't bother to use it.
 
 We'll also want to find examples of code that Goose is currently weak at,
-and some that are a wash (because all languages go thru the same compiler
-backend).
+and some where performance is similar because the languages use the same
+compiler backend.
 
 ## Where the gains should compound
 
@@ -99,16 +95,14 @@ biggest expected wins, in rough order:
 4. Load/save and cross thread paths, where Goose does no work at all and the others
    serialize or pointer fixup.
 
-If a benchmark's data is a flat array of scalars, expect no advantage. That is the
-wash case, and useful precisely as the control.
+If a benchmark's data is a flat array of scalars, expect no advantage. That is a useful control case.
 
 ## Where we should expect Goose to lose
 
-Worth benchmarking deliberately, so the limits are ours to report rather than someone
-else's to discover:
+The suite should measure these potential limitations:
 
-* Arithmetic runs at the operands' own width (6.2), so an i32 kernel is genuinely
-  32-bit — but Goose's packed, unaligned layouts may still cost SIMD performance
+* Arithmetic runs at the operands' own width (6.2), so an i32 kernel uses
+  32-bit arithmetic, but Goose's packed, unaligned layouts may still cost SIMD performance
   against aligned C++ data. A straightforward integer array kernel should quantify
   what remains.
 * Packed, unaligned layouts (3.2) may cost real SIMD performance for the same reason:
@@ -121,23 +115,23 @@ else's to discover:
 * Bounds checks on everything non-fixed, like Rust, unlike C++. The compiler now
   proves most of them away (10.5), and `--no-bce` gives a direct A/B for what the
   rest cost -- `bench/bce_ab.py` runs it. The checked number stays the headline:
-  that is the honest safe vs safe comparison against Rust, with C++ as the unsafe
-  baseline.
+  this compares Goose and Rust with bounds checking enabled, using C++ as
+  the unchecked baseline.
 * Copies are real. By-value semantics with no move operation (4.1, TODO 3) means idioms
   a Rust programmer would express as a cheap move are an O(size) copy in Goose. A
   benchmark that returns different locals on different paths (7.3), or reassigns large
   values around, will show it. This is the most likely place to find something worth
   fixing in the language.
-* Stack discipline friction. Workloads whose lifetimes are genuinely not nested (caches,
+* Stack discipline friction. Workloads whose lifetimes are not nested (caches,
   long lived mutable graphs, anything wanting free-then-alloc at differing sizes) must
   go through `reusable` pools, and recursive cycles cannot own growable locals at all
-  (7.8). Worth one benchmark that is honestly awkward in Goose, to see what the
-  workaround costs. (`lru` is that benchmark. The pool itself turned out to cost
+  (7.8). Include a benchmark that is awkward in Goose to measure the cost of the
+  workaround. (`lru` is that benchmark. The pool itself turned out to cost
   nothing; the relative links it relinks cost 1.5x against indices -- the offset
   arithmetic sits on the pointer-chasing path -- so compact links are a
   build-once-walk-many trade, not a free one.)
 * Address space accounting: report committed pages, not the multi-GB reservations
-  (10.4), or the memory numbers are nonsense. Conversely, Goose commits at page
+  (10.4), to avoid counting reserved but unused address space as memory use. Conversely, Goose commits at page
   granularity per stack, so at the smallest data sizes it may legitimately look worse
   than malloc.
 
@@ -154,9 +148,9 @@ Familiar, widely written code, each chosen to hit specific axes above:
   std::variant visit vs Rust match. Isolates dispatch and node size from allocation.
 * Graph build plus BFS/Dijkstra: adjacency built incrementally (axis 3), then traversed.
   Compare Goose's nested resizables against hand built CSR in C++/Rust, which is the
-  performance conscious thing to do there and is genuinely more work to write.
+  performance conscious thing to do there and requires more code.
 * Particle/n-body or image kernel: the SIMD and packed-layout questions. Expect a wash
-  or a loss; that is the point of including it.
+  or a loss; this tests a potential weakness.
 * Save/load round trip of a built structure: mmap and use, vs parse and fixup.
 * Sort of a flat scalar array: the control. Should be a dead heat.
 * Binary trees (the well known benchmark game one) is worth including for
@@ -169,7 +163,7 @@ Familiar, widely written code, each chosen to hit specific axes above:
   clang version and optimization level, and note that Rust goes through LLVM too. The
   intent is to compare data structure and memory strategy, not backends.
 * Measure teardown inside the timed region. Freeing the structure is a real cost that
-  Goose does not pay, and excluding it silently hands the others a free win.
+  Goose does not pay, so it must be included for a fair comparison.
 * Give C++/Rust a fair allocator: system malloc is the default idiom, but a mimalloc or
   jemalloc row is the strong baseline, and a hand rolled bump/arena row is the "an
   expert wrote this" tier. Same tiering idea as the `reserve` fairness point above.
@@ -193,21 +187,21 @@ real error path a quarter of the time), `bintrees` (the Benchmarks Game's
 allocator benchmark, for recognisability), `respond` (a web handler's DTO
 with a string and a list of records, built and rendered per request), and
 `blur` (an image stencil: flat scalar work, bounds checks and no aliasing
-information, included to lose). `bench/run_bench.py` builds and runs them at
+information, chosen to test a likely weakness). `bench/run_bench.py` builds and runs them at
 three sizes each, checks that every implementation of a benchmark prints the
 same checksum, and writes `bench/results.md`; the commentary that file ends
 with lives in `bench/notes.md`.
 
-Two of the advantages listed above still have no benchmark, for language
-reasons rather than lack of trying: save/load of a relative-reference
-structure needs the whole-region copy of TODO 16, and thread queues cannot
-carry relative-reference values because those are not flat (TODO 9).
+The suite does not benchmark saving and loading relative-reference
+structures or sending them through thread queues. Serialization has since
+been implemented with validation (see `docs/design/serialization.md`). Queues
+can carry the serialized byte image, but cannot directly carry values with
+relative references because those values are not flat (TODO 9).
 
 C++ is measured at two tiers, idiomatic and expert, because the language admits
-such a wide range of hackery that one row would misrepresent it. Rust is
-measured against a single target -- the way the language is meant to be used --
-because it points much more clearly at one answer and its community is firm
-about what that is. Where a benchmark genuinely has two idiomatic Rust shapes
+such a wide range of implementation techniques that one row would
+misrepresent it. For Rust, the benchmarks compare safe, idiomatic
+implementations. Where a benchmark has two idiomatic Rust representations
 they are both listed, but the reason is always a semantic difference (owned
 versus borrowed strings) or a structural one (owning `Box` nodes versus the
 `Vec`-plus-indices arena the community recommends for pointer-heavy data), never
@@ -215,7 +209,6 @@ just that one is faster. The prediction made above -- that the arena, not `Box`,
 is the real Rust comparison point -- held: it is 2.8x to 5.9x faster than `Box`
 on the three benchmarks that have both.
 
-That makes the Rust comparison as much a software-engineering one as a
-performance one. Where Rust ties Goose using `u32` indices while Goose uses
-typed, nullable references, the tie is worth reporting as a Goose win on the
-axis the benchmark cannot time.
+The comparison also has a usability dimension that timing does not measure:
+when Rust uses `u32` indices and Goose uses typed, nullable references, similar
+performance still comes with different programming interfaces.

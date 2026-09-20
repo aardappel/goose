@@ -1,21 +1,16 @@
 # The Goose compiler: implementation notes
 
-How the compiler in `src/` implements the language specification
-(`goose_spec.md`), pass by pass, with most of the length on the analyses the
-specification only names: reference roots and provenance, writability, the
-shrink rules, recursion, the optimizer, bounds-check elimination, and the
-representation decisions of the C backend. It is written for two readers:
+These notes explain how the compiler in `src/` implements `goose_spec.md`.
+They cover each pass, with particular attention to reference roots and
+provenance, writability, shrinking, recursion, optimization, bounds-check
+elimination, and C representations. There are two intended audiences:
 
-* **The compiler implementor**, who needs the exact current state -- which
-  data structure carries which fact, where each rule is enforced, what is
-  conservative and why -- to fix or extend a pass. Sections 1 to 8 are for
-  them, and name the functions to start reading from.
-* **The advanced user**, for whom the specification already settles what a
-  program means, but who wants to know what is *fast*: which bounds checks
-  the compiler proves away, which copies it elides, which reference shapes
-  the backend turns into register arithmetic and which it cannot. Section 9
-  is for them, and refers back to the mechanism sections where the reason
-  matters.
+* **Compiler developers.** Sections 1 to 8 describe the data structures,
+  rule enforcement, and conservative assumptions in each pass, with function
+  names to help locate the implementation.
+* **Advanced users.** Section 9 explains which bounds checks and copies the
+  compiler can remove, and which representations generate efficient code.
+  It refers to earlier sections for implementation details.
 
 Conventions: `§n` refers to a section of the specification, `C.n` and `E` to
 its appendices. File names are under `src/`; function names are given as
@@ -44,8 +39,8 @@ The passes are virtual methods on `Node` (`ast.h`): `Dump`, `Clone`,
 `Children`, `Check`, `Cp1`/`Opt`, `BceWalk`/`BceMark`, `CgX`/`CgAny`/`CgStmt`.
 The per-node bodies of each pass live together in one file (`dump.h`,
 `clone.h`, `typecheck_nodes.h`, the tail of `optimize.h`, the tail of
-`bce.h`, `codegen_nodes.h`) so that a pass reads top to bottom; the shared
-machinery is on the pass object (`TypeCheck`, `Optimizer`, `BCE`, `CodeGen`),
+`bce.h`, `codegen_nodes.h`) so that each pass can be read in one place. Shared
+state and helpers belong to the pass object (`TypeCheck`, `Optimizer`, `BCE`, `CodeGen`),
 split across the `typecheck_*.h` and `codegen_*.h` files by topic.
 
 **Ownership.** `Ast` owns every node, type expression, type detail, symbol,
@@ -93,15 +88,14 @@ build configuration is unrelated.
 
 ## 2. Front end
 
-**Lexer** (`lexer.h`): a hand-written scanner over a 0-terminated buffer;
-the token set is an X-macro table. The two context-sensitive spellings of
-§2 and D are the parser's business, not the lexer's: `T&<u8>` is `&` `<` in
-type context, and `1..2` lexes as a range because a `.` starts a fraction
-only when a digit follows. A `"""` string's text is worked out here
-(`LexRawString`): the closing line's indentation off every line, `\r\n` as
-`\n`. Its token, and the `StrLit` made from it, say whether it spanned
-lines, which lets `embed_shader` report a shader error at its line of the
-program.
+**Lexer** (`lexer.h`): a hand-written scanner over a 0-terminated buffer; the
+token set is an X-macro table. Lexing and parsing handle the syntax described in
+§2 and Appendix D: `T&<u8>` is `&` `<` in type context, and `1..2` lexes as a
+range because a `.` starts a fraction only when a digit follows. `LexRawString`
+removes the closing line's indentation from each content line of a `"""` string
+and normalizes `\r\n` to `\n`. Its token and the resulting `StrLit` record
+whether it was multiline, allowing `embed_shader` to report errors at the
+corresponding source line.
 
 **Parser** (`parser.h`): recursive descent mirroring Appendix D, one
 function per construct. Points that matter to later passes:
@@ -177,10 +171,10 @@ function and no existing specialization matches. `GetOrCreateSpec`
 | `narrowedenv` | which optionals of the lexical environment were narrowed at the call (a nested function or block sees them narrowed) |
 | `needs` | the concrete specializations of every `return ... from` target enclosing the call must be the same on this path |
 
-`RootArg::exact` and `RootArg::concrete` are deliberately *not* part of the
-key: they are ANDed over every call site that reaches the specialization,
-and only codegen reads them (§7.9). A back edge into a specialization still
-being checked (`inprogress`) reuses it whatever its roots (§3.11).
+`RootArg::exact` and `RootArg::concrete` are excluded from the key: they are
+ANDed over every call site that reaches the specialization, and only codegen
+reads them (§7.9). A back edge into a specialization still being checked
+(`inprogress`) reuses it whatever its roots (§3.11).
 
 `CheckSpecBody` checks one body. It pushes a `Frame` (the function, its
 specialization, the lexical specialization and frame index used for free
@@ -188,12 +182,10 @@ variable lookup, the call line for diagnostics), creates the parameter
 `VarDef`s with their synthetic class roots, records or infers the return
 types, seeds the cycle return roots where the function is `recursive`,
 clones the body, checks its statements, and treats a value-producing tail as
-`return tail`. Everything that is per-body -- pending shrinks, held
-temporaries, the value-region flag, reachability, the construction
-destination, the slot flag (§3.8) and the return flag, the narrowings of
-outer variables -- is saved on entry and restored on exit, so a caller sees
-nothing of what the callee did except through the summaries the
-specialization keeps.
+`return tail`. Per-body state is saved on entry and restored on exit: pending shrinks,
+held temporaries, the value-region flag, reachability, the construction
+destination, the slot and return flags (§3.8), and narrowings of outer
+variables. Only the specialization's effect summaries reach the caller.
 
 **Depth.** Since a body is checked inside the call that first reaches it,
 the native stack holds a `CheckSpecBody` activation for every call on the
@@ -215,7 +207,7 @@ one and 18,700 in a clang -O3 one, and each block around the call costs
 another 1.6 to 2 KB per call in a Debug build and 0.7 to 1.3 KB in a Release
 one. Checking a path that deep takes seconds, and in a Release build
 gigabytes (each activation saves the narrowing of every variable in scope),
-so a larger stack would buy little. The optimizer's `Reach` and BCE's
+so increasing the stack size would have limited benefit. The optimizer's `Reach` and BCE's
 `BuildCallGraph` walk the same call graph recursively, with smaller frames,
 unchecked.
 
@@ -297,9 +289,9 @@ and grow-shrink arrays need fixed-size elements; variable and grow-only
 arrays may not hold resizables; an enum with non-fixed payloads is only
 usable in variable mode.
 
-An array literal takes the type its destination names; failing one it is a
-`T[k]`, or a `T[]` when its elements are not fixed-size, since `T[k]` would
-break those rules. A fixed literal at a slice destination is a temporary
+An array literal uses its destination's type when one is available.
+Otherwise it is a `T[k]` for fixed-size elements or a `T[]` for non-fixed
+elements, which cannot use `T[k]`. A fixed literal at a slice destination is a temporary
 codegen holds in a C local and slices whole. A `T[]` literal has no such
 temporary: `NoTemporaryLiteral` rejects it at a slice destination, as a
 `for` iterable, as the base of a path (`[..]`) and as `bytes_of`'s argument,
@@ -529,12 +521,12 @@ created from one (`IsGrowShrinkRoot`), which `NeverStoredError` words as
 rule 1. No holder ever holds a reference into a grow-shrink array, then,
 which is what lets the §5.2 shrink scan look at variables only (§3.10).
 
-A declaration without a type annotation takes its value's type and meets
-no destination type, so `FitsAt` never sees it; `CheckBindingRoot` applies
-rule 2 to it instead, each name of a multi-value declaration included,
-which is what keeps a variable from viewing a temporary of its own
-statement. The sentinels pass: a variable may hold what a reference not
-bound yet, or a back edge's result, points at.
+A declaration without a type annotation infers its type from the value, so
+`FitsAt` has no destination type to check. `CheckBindingRoot` applies rule 2
+instead, to every name in a multi-value declaration as well. This prevents a
+variable from retaining a view of its statement's temporary. The sentinels pass:
+a variable may hold what a reference not bound yet, or a back edge's result,
+points at.
 
 A branch's value -- an `if`'s branch, a `match` arm, a block's tail, a
 `block`'s or `loop`'s breaks -- reaches whatever receives its construct's
@@ -653,9 +645,10 @@ specialization key, so a function given a literal and the same function
 given a buffer are two specializations, and a write through the parameter
 is an error only in the first.
 
-`let` forbids assigning the binding as a whole (`NoLetAssign`, via
-`LVal::letbound`) and nothing else; a by-value `for` or `match` binding is a
-copy and is not written at all (`NoCopyWrite`, `VarDef::copybind`). `&x` of a
+`let` prevents whole-binding assignment (`NoLetAssign`, via
+`LVal::letbound`) but does not restrict writes to contents. By-value `for`
+and `match` bindings are copies; writes to them are rejected by
+`NoCopyWrite` using `VarDef::copybind`. `&x` of a
 `const` value is a `const T&`, a slice of read-only storage is a `const T[:]`,
 a string literal is `const u8[:]`, a `bytes_of` view is never writable, and
 `null` and `default<T>()` count as writable so they fit any slot.
@@ -727,7 +720,7 @@ never depends on what the optimizer proves.
 local, a reference, a global, a struct's tail, whole assignment) and scans
 held temporaries and the visible reference and slice variables only
 (`CheckShrinkHolders`): references into such an array can never be stored
-(§3.5 rule 3), so the variables are the whole answer.
+(§3.5 rule 3), so checking those variables and temporaries is sufficient.
 
 **Inexact receivers.** Both scans run once per array the shrink may free
 (`ShrinkThrough` over `ShrinkTargets`). An exact root is the array. An
@@ -1186,7 +1179,7 @@ axioms (`Dist`, Bellman-Ford with saturating weights); the smallest provable
 dropped), offsets on variable bases at 2^32, constants at 2^60, and
 anything larger is "unprovable" rather than wrong.
 
-**Axioms** every query gets for free: `0 <= len <= 2^48` for every length
+Every query uses these **axioms**: `0 <= len <= 2^48` for every length
 (§10.4 is what makes `len - 1`, `i + 1` and `len + len` provably free of
 overflow), the storage range of every sub-64-bit integer variable, and the
 invariants granted by the recording pass (§5.7).
@@ -1355,17 +1348,18 @@ elides a constant index into a fixed array (`IndexLoc`).
 ### 5.11 Verification
 
 `--bce-test` checks `// bce:elide` and `// bce:keep` comments: every check on
-such a line must have the annotated outcome. `test/optimizer/bce*.goose` are
-the coverage, and they run as ordinary programs too, so a wrongly elided
-check would corrupt their output. `--bce-lines` prints the per-line counts
+such a line must have the annotated outcome. The `test/optimizer/bce*.goose` fixtures
+check these decisions and also run as ordinary programs, allowing output
+checks to catch incorrect elimination. `--bce-lines` prints the per-line counts
 for comparing two builds of the pass; `bench/bce_ab.py` measures the whole
 pass against `--no-bce`.
 
 ### 5.12 Known gaps
 
 Indices loaded from array contents (`dist[q[i]]`) have no known range and
-keep their check; array-contents invariants were built and measured and
-dropped for buying no time (`bench/adoption.md`). A `u64` variable is never a
+keep their check. An analysis of array-content invariants was implemented
+and measured, then dropped because it produced no measurable speedup
+(`bench/adoption.md`). A `u64` variable is never a
 base, so a `u64` local loses the range its initializer had (TODO 0a). Loop
 exit conditions that are disjunctions are not represented (TODO 0f). A
 value read out of a field or element (only variables and lengths are
@@ -1379,7 +1373,8 @@ shrink stays unproven until re-established.
 `CodeGen` (`codegen.h`) emits one C file; the runtime (`src/runtime/`) is
 embedded in the compiler (`runtime_inline.h`, regenerated by
 `--gen-runtime-header`) and prepended. The representation follows Appendix
-C, with the choices Appendix E records; this section is the map.
+C, with the choices recorded in Appendix E. The following sections describe
+the representations and their implementation.
 
 ### 6.1 Values
 
@@ -1722,7 +1717,7 @@ instead, and every call syncs everything.
 
 ## 7. The runtime
 
-`src/runtime/runtime.h` is plain C99, deliberately small: data stacks,
+`src/runtime/runtime.h` is a small C99 runtime covering data stacks,
 integer semantics, varints, aborts, text forms; `runtime_threads.h` adds
 workers and queues (compiled out unless `GS_NEED_THREADS`); `runtime_os.h` is
 the C behind `stdlib/os.goose`, spliced in after the generated types because
@@ -1778,7 +1773,8 @@ one-byte fast path macros `GS_ULEB_READ`/`GS_ULEB_SIZE` for length prefixes
 
 ## 8. Testing the analyses
 
-`docs/testing.md` is the map of the suite. What matters to the passes above:
+`docs/testing.md` describes the test suite. The following checks cover the
+passes described above:
 
 * every positive fixture typechecks, and its dump reparses to the same dump;
 * `test/errors_tc/` fixtures carry `// error: <substring>` markers and must
@@ -1799,9 +1795,9 @@ one-byte fast path macros `GS_ULEB_READ`/`GS_ULEB_SIZE` for length prefixes
 
 ## 9. Writing fast Goose
 
-What the compiler proves, elides and caches, and what it cannot -- stated as
-guidance, each item pointing at the mechanism. The benchmark notes
-(`bench/notes.md`, `bench/adoption.md`) carry the measurements behind them.
+This section explains how compiler analysis, copy elimination, and caching
+affect performance. Each recommendation refers to the relevant mechanism;
+`bench/notes.md` and `bench/adoption.md` provide measurements.
 
 ### 9.1 Bounds checks
 
@@ -1887,7 +1883,7 @@ the reloads:
 * **View hoisting**: in a loop that only reads and writes *elements* of the
   array behind a reference variable -- no `push`, `pop`, `resize`, `clear`,
   whole assignment, rebind, or call that can reach it -- the view is read
-  once before the loop. This is a 4x on `blur` under clang. A loop that
+  once before the loop. This gives a 4x speedup on `blur` under clang. A loop that
   grows the array cannot have it; move growth out of the read loop, or split
   the loop.
 * **Stack-top caching**: pushes through a fat reference parameter run with
@@ -1897,13 +1893,12 @@ the reloads:
   nonfixed, has no `return from` channel, captures no resizable, and names
   no global that could be one of the parameters' pointees. A function that
   also reads a fat reference out of a field, or holds one in a local, keeps
-  the memory form for every stack. Push-heavy helpers therefore want their
-  pools as parameters, not as fields or captured locals, and want to be
-  called with distinct pools.
+  the memory form for every stack. For helpers that push frequently, pass
+  distinct pools as parameters to enable this optimization.
 
-A function that owns its arrays caches every top it grows for free; growth
-inside a loop confines the cache to that loop, so a kernel loop that only
-rewrites elements pays no live register for it.
+A function caches the stack tops of arrays it owns where it grows them.
+When growth occurs only inside a loop, the cache is confined to that loop.
+A loop that only updates elements therefore needs no register for a cached top.
 
 ### 9.3 Construction and copies
 
@@ -1933,9 +1928,10 @@ rewrites elements pays no live register for it.
   the C value after a capacity check, whatever the source's representation.
 * `copy(x)` is a real O(size) copy, and so is any assignment of a non-fixed
   lvalue; the checker forces the spelling so the cost is visible.
-* A function returning several values is never inlined; a function used
-  once is always inlined (at `-O1`), and small functions (8 nodes at `-O1`,
-  16 at `-O2`) everywhere.
+* A function returning several values is never inlined. At `-O1` and above,
+  a single use or a small body qualifies a function for inlining (thresholds
+  of 8 nodes at `-O1`, 16 at `-O2`), subject to the eligibility rules and
+  nesting limit in section 4.
 * `str(...)` and `format(out, ...)` write straight at the destination's stack
   top; `print` renders into a temporary builder first. Structural rendering
   of aggregates calls a generated walker per type.
@@ -1946,18 +1942,18 @@ rewrites elements pays no live register for it.
 
 * Arithmetic runs at the operands' width (§6.2): a sum of `u8` taps wraps at
   8 bits; widen each operand (`as u16`) before summing.
-* `varint` costs a decode per read; use it for values whose range is genuinely
-  open and a sized integer for values whose range is known (`calc` lost 11%
-  to `varint` numbers that fit a `u8`). Length prefixes decode with a
-  one-byte fast path; value fields do not.
+* `varint` costs a decode per read; use it for values with a wide or
+  unpredictable range and a sized integer for values whose range is known
+  (`calc` lost 11% to `varint` numbers that fit a `u8`). Length prefixes decode
+  with a one-byte fast path; value fields do not.
 * A `u64` local drops out of every bounds proof; compare `u64` hashes with
   `.len`-derived values directly (§6.1 admits it) and reduce with `%` or `&`
   before binding the result to an `i64`.
 * `let` bindings of `.len`, `.cap` or literals keep the non-negativity that
   the `u64` comparison rule needs; `var` bindings lose it.
 * A literal argument to a generic or untyped parameter is a literal parameter
-  adapting to every use in the body; a negative literal that must become a
-  narrower type wants the cast spelled at the call.
+  adapting to every use in the body; negative literals can adapt to narrower
+  types too, provided they fit every recorded use.
 
 ### 9.5 Relative references and pools
 
@@ -1980,7 +1976,7 @@ rewrites elements pays no live register for it.
   when moved or serialized; `bytes_of` is a zero-copy view of it.
 * A plain reference parameter outside a recursive cycle has its own root
   class and cannot be stored as a relative link into the pool it came from;
-  inside a `recursive` cycle the pool-class machinery identifies it. Helpers
+  inside a `recursive` cycle the pool-class analysis identifies it. Helpers
   that link nodes want to live in the cycle, take the pool itself, or use
   `in pool` links (whose root is the named global whatever the parameter's
   class).
@@ -2009,9 +2005,9 @@ rewrites elements pays no live register for it.
   checker can see that no reference or slice into it is live afterwards
   (§3.10): use a view for the last time, then shrink; a shrink is a
   statement of its own, not part of a larger expression.
-* Scope exit is the only free; a per-iteration scratch buffer declared inside
-  the loop is reset by the watermark restore at the end of each iteration
-  at no cost.
+* Scope exit releases storage by restoring a stack watermark. A scratch
+  buffer declared inside a loop is reset this way at the end of each
+  iteration, without per-element cleanup.
 * `reusable` pools cost nothing per operation beyond the freelist push and
   pop; `free(i)` bounds-checks its index.
 * A `reusable[]` pool's `alloc_slice` scans the free spans in index order up
@@ -2022,7 +2018,7 @@ rewrites elements pays no live register for it.
   runs between them. A slice handed back costs a range test unless the checker placed it in the pool, and
   new elements cost one `memset` unless the element type has field
   defaults.
-* A `realloc_slice` that cannot grow in place pays the scan and a copy of
+* A `realloc_slice` that cannot grow in place scans for space and copies
   the slice. The copy lands at the front of the span it takes, so what is
   left of that span is room to grow into; once none is, a slice grown an
   element at a time is copied at every growth, and growing by a factor keeps

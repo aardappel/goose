@@ -1,14 +1,15 @@
 # Serialization of relative-reference structures: a verified loader
 
-*Implemented. What the language promises, what a loader has to check, and
-the shape of the implementation that keeps the safety guarantees of §9.*
+*Implemented. This document describes the serialization guarantees, the
+loader's validation rules, and how the implementation preserves §9's safety
+guarantees.*
 
-## 1. The promise
+## 1. Serialization guarantees
 
 A structure whose links are all self-relative references (§3.9) is
 position-independent: a tree of `Node { v: i32, l: Node&<u32>?, r:
-Node&<u32>? }` in a `Node[>..]`, or a `Sexp..[>..]` pool, is a run of
-bytes that means the same wherever it sits. `bench/design.md` counts "Goose
+Node&<u32>? }` in a `Node[>..]`, or a `Sexp..[>..]` pool, is a contiguous sequence of
+bytes whose links remain valid when the sequence is relocated. `bench/design.md` counts "Goose
 data is already its own serialized form" among the design's advantages:
 saving is a write of the element region, loading is a read of it, and there
 is no pointer fixup pass because there are no pointers.
@@ -16,14 +17,15 @@ is no pointer fixup pass because there are no pointers.
 Three builtins (§12) express that. `samples/25_serialize.goose` is the
 worked example; `test/storage/serialize.goose` is the coverage.
 
-## 2. Why a trusting loader is not acceptable
+## 2. Why loading requires validation
 
 `from_bytes<T[>..]>(bytes)` that reinterpreted the bytes would be the first
 operation in the language that can produce a reference the checker did not
 prove valid: a corrupted or malicious offset is an address anywhere in memory,
 which breaks the first priority of §9.1 outright. Every other unsafety Goose
-admits is type-safe reuse (§9.4); this one is not. So the loader has to
-verify, the way a FlatBuffers verifier does, before the bytes are a value.
+admits is type-safe reuse (§9.4); this one is not. The loader must therefore
+validate the bytes before accepting them as a value, as a FlatBuffers verifier
+does.
 
 What is verified is *safety*, not integrity. An image whose data bytes were
 edited still describes a well-formed structure and is accepted with the
@@ -86,8 +88,7 @@ are checked like any other.
 
 A `reusable` pool (§5.4) writes and loads like any other array. Its freelist
 is separate state that no image carries, so a loaded pool starts with an
-empty one and every slot live — which is what §5.4 already says every slot
-always is.
+empty freelist and all slots live, consistent with §5.4.
 
 ## 5. The builtins
 
@@ -110,12 +111,11 @@ fresh `u8[>..]` at its destination like any other result (§7.3).
 `bytes_of` copies nothing: it is a `u8[:]` over the element region, rooted at
 the array exactly as a slice of it would be, so §5.1 and §5.2 keep the array
 from shrinking under it and §9 keeps it from outliving it. It is **never
-writable**, whatever the array's own provenance: bytes written through it
-would be relative references the checker never proved, which is the one thing
-the whole design is protecting. Its length is what the framing prefix would
-have said, so a save that writes its own header (`format_uleb`) and then the
-payload produces a file `from_bytes` reads back, with no image ever built in
-memory.
+writable**, whatever the array's own provenance: writing through it could create
+relative references that the checker had not validated. Its length is what the
+framing prefix would have said, so a save that writes its own header
+(`format_uleb`) and then the payload produces a file `from_bytes` reads back,
+with no image ever built in memory.
 
 `from_bytes` checks the prefix, runs the verifier over the payload, then
 copies it into the result's element region; the count the verifier returns
@@ -128,8 +128,8 @@ would additionally need the count to match a capacity the image does not
 carry, so those are rejected.
 
 The `bool` is the verifier's verdict; on failure the array is empty. It may be
-dropped (`var a = from_bytes<T>(b);`), which is deliberate: where corruption
-is unlikely and an empty array is a benign outcome, the check is noise.
+dropped (`var a = from_bytes<T>(b);`), when the caller accepts an empty
+array as the result of invalid input.
 
 Both are ordinary builtins with custom typechecking (like `default<T>()`);
 `from_bytes` needs its explicit type argument (§7.7).
@@ -193,8 +193,8 @@ element under 64 bytes and turns an O(1) test into an O(log n) one.
   per distinct pointee type, that the fixed-element fast path (no scratch at
   all, a modulo test for links) is lost the moment such a reference exists,
   and that "the valid offsets" stop being a static residue set as soon as a
-  limited array's live length or an ADT's tag decides them. Rejecting the
-  whole element type at the call, by name, was the cheap and honest v1.
+  limited array's live length or an ADT's tag decides them. The first version therefore rejects the
+  element type at the call and names it in the diagnostic.
 * **`from_bytes` into a fixed or limited array** would have to reject an
   image whose count does not match a capacity that is not in the image; the
   result is also a fixed-size C value rather than a stack destination, which

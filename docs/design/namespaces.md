@@ -1,7 +1,7 @@
 # Minimal namespaces
 
-An optional file-level namespace declaration and explicit qualified names,
-over the existing import loader and whole-program compilation.
+Files can declare a namespace and refer to declarations by qualified names.
+This extends the existing import loader and whole-program compiler.
 
 ```goose
 // image/filters.goose
@@ -21,8 +21,8 @@ fn main() {
 
 * `namespace name;` occurs at most once, before declarations (imports may sit
   on either side of it). Files without it keep the global namespace. `name`
-  is one identifier; nested namespaces, aliases and namespace-opening
-  directives can wait.
+  is one identifier. Nested namespaces, aliases, and namespace-opening
+  directives are not included.
 * Multiple files may declare the same namespace. `import` still locates and
   loads a file once; its path does not create a namespace or import
   unqualified names out of an explicitly named namespace. All declarations
@@ -34,10 +34,10 @@ fn main() {
   reaches the builtins the same way.
 * A declaration may also spell its namespace itself: `fn image::brightness`,
   `struct image::Pixel`, `let image::pool = ...`, or `fn ::main` for the
-  global namespace from inside a namespaced file. The qualifier decides the
-  declaration's namespace entirely -- the names written inside it resolve
-  there first, not in the file's namespace -- which is what lets the dump
-  (`--dump`) carry every file's namespace in its one merged file. Nested
+  global namespace from inside a namespaced file. The qualifier sets the
+  declaration's namespace. Names inside the declaration resolve there first,
+  rather than in the file's namespace. This lets `--dump` preserve namespaces
+  when it combines declarations from multiple files. Nested
   functions are lexical and cannot be qualified.
 * Unqualified resolution follows lexical locals/parameters/type parameters,
   then the current declaration's namespace, then the global declarations and
@@ -107,9 +107,8 @@ fn main() {
   same-leaf `return from` targets, and collision-free generated C symbols;
   `test/errors*/ns_*.goose` cover the diagnostics.
 
-This is a name-resolution extension. It deliberately does not add separate
-compilation, package resolution, privacy, re-exports or first-class module
-values.
+This extension changes name resolution. It does not add separate compilation,
+package resolution, privacy, re-exports, or first-class module values.
 
 ## Rust and Zig comparison
 

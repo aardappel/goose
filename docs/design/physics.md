@@ -1,8 +1,8 @@
 # The physics module (`physics`)
 
-How the optional physics module is put together, what was verified where,
-and what is left. The reference for using it is `docs/stdlib.md`; the module
-itself is `stdlib/physics.goose`.
+This document describes the optional physics module's implementation, test
+coverage, and remaining work. See `docs/stdlib.md` for the API reference and
+`stdlib/physics.goose` for the module source.
 
 ## What it is
 
@@ -55,8 +55,8 @@ third_party/box3d and reconfigure". `--physics-link` fails the same way.
 
 ## The compiler's side
 
-It is small, since nothing here is compiled at compile time the way
-`embed_shader` compiles shaders:
+The compiler integration is small: physics has no compile-time processing
+comparable to shader compilation by `embed_shader`.
 
 * **Calls into the layer** are recognized by their C symbol's `gs_phys_`
   prefix: codegen sets `usesphysics`, a JIT run registers the layer's
@@ -73,14 +73,14 @@ It is small, since nothing here is compiled at compile time the way
 declares exactly those functions with the same C shapes, the same struct
 fields in the same order, and the same constant values, as it does for gfx.
 
-* **Structs are Goose-shaped.** Box3D's definitions carry pointers, names
+* **Structs use Goose's layout.** Box3D's definitions carry pointers, names
   and callbacks and are naturally aligned; the layer's are packed, hold only
   what crosses, and are converted field by field onto Box3D's defaults
   (`b3Default*Def`), so its internal cookie and anything not exposed keep
   Box3D's values. `default_*_def()` hands Box3D's defaults back, and the test
   compares them with the Goose field defaults. Pointers become handles or
   separate arguments: names are set with `set_name`, user data is a `u64`.
-* **What crosses by value is what TinyCC passes as the C compilers do.**
+* **Only structs with compatible TinyCC and native C calling conventions pass by value.**
   Definitions, transforms and results are passed and returned by value,
   which is simple on the Goose side. TinyCC classifies a struct of up to 16
   bytes as a whole where the System V ABI classifies each eightbyte, so a
@@ -161,7 +161,7 @@ Box3D is deterministic across platforms and worker counts, and the layer
 adds no floating point of its own on the way, so the tests print physics
 results, rounded to hundredths or thousandths.
 
-### Verified where
+### Platforms tested
 
 | | Windows 11 | Linux (Ubuntu 24.04 under WSL2) | macOS |
 |---|---|---|---|

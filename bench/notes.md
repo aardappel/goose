@@ -1,10 +1,8 @@
 ## Reading the Rust rows
 
-Rust gets one target here rather than the two tiers C++ gets, because the
-language points much more clearly at one way of doing things and its community
-is unusually firm about what that is. Where a benchmark genuinely has two
-idiomatic shapes, both are listed, and the reason is never "one of them is
-faster":
+The Rust comparisons use safe, idiomatic implementations. C++ has separate
+idiomatic and expert tiers. Where two Rust implementations differ in ownership
+or data structure, both are listed:
 
 * `strlist` has `Vec<String>` and `Vec<&str>`, which differ in *ownership*. Only
   the first can outlive the text it came from, which is the semantics the Goose
@@ -35,18 +33,16 @@ faster":
   section).
 
 Everything else is a single row. The aggregate table compares Goose against
-whichever Rust row *won*, so those ratios are against the best safe Rust here,
-not the most flattering one.
+the fastest Rust implementation in this suite.
 
-Build flags are `-O -C codegen-units=1`. The codegen-units setting is what makes
-the comparison fair rather than generous: every C++ row is one translation unit
+Build flags are `-O -C codegen-units=1`. Using one codegen unit matches the C++ compilation model: every C++ row is one translation unit
 compiled whole, and the rustc default of 16 units would deny Rust the same
 cross-function view. Everything else is left where a shipped Rust binary leaves
 it -- bounds checks on, unwinding panics, no `target-cpu` beyond the x86-64
 baseline the C++ rows also build for. Goose and Rust are therefore both checked,
 with C++ as the unchecked baseline.
 
-### The layouts, since most of the memory column follows from them
+### Data layouts and memory use
 
 Measured with `size_of` and `sizeof`, or read off the packed declarations:
 
@@ -69,10 +65,11 @@ The `records` row is where Rust beats C++ outright and still loses to Goose by
 three words where `std::string` is four, and the enum tag hides in the pointer's
 niche rather than needing its own word. But it is still a *fixed* enum, so every
 one of the 16M elements is sized for `Say` whether it is a `Say` or not, and the
-text is a second allocation on top. That is the thing no amount of Rust skill
-removes, and it is what `records_fixed.goose` is the control for.
+text is a second allocation on top. This is a property of Rust's enum layout. `records_fixed.goose` provides a
+control with a fixed-size representation.
 
-Three of the Goose layouts have no counterpart at all. A `sexp` node is as big
+Three Goose layouts differ substantially from the corresponding C++ and Rust
+implementations. A `sexp` node is as big
 as its variant needs, with its symbol bytes inline behind a varint length and
 its two links 4-byte offsets into the pool -- 1.3x smaller than the same
 program with 8-byte links, which is what a language that cannot make a null
@@ -94,9 +91,7 @@ that remain:
 * **clang vectorises what v145 does not.** Goose's flat `blur` is the largest
   gap in the suite at 7.5x (2,042 against 271 ms), and the next two are the
   C++ `__restrict` row of the same kernel at 1.83x and `particles cpp SoA` at
-  1.60x. The Goose `blur_rows` form is 1.15x for the same reason. What the
-  bounds-check section takes apart is that these are two different effects
-  wearing one number: v145 will not vectorise a checked loop at all, and clang
+  1.60x. The Goose `blur_rows` form is 1.15x for the same reason. The bounds-check section separates two effects in this measurement: v145 will not vectorise a checked loop at all, and clang
   will, but neither hoists a fat reference's header out of a loop that stores
   through another one.
 * **v145 is better at recursion into a bump allocator, and at
@@ -214,8 +209,8 @@ would otherwise vectorise is not free at all.
 
 ## What the standard library costs the benchmarks
 
-Eight of the sixteen benchmarks reach into `stdlib/` wherever the library says
-what the hand-written code said. Each adoption was measured on its own, at the
+Eight of the sixteen benchmarks use `stdlib/` functions in place of
+hand-written code with the same behavior. Each adoption was measured on its own, at the
 `large` size, both toolchains, best of three interleaved runs, against the
 hand-written form it replaced (above 1.00 means the library form is faster):
 
@@ -229,14 +224,12 @@ hand-written form it replaced (above 1.00 means the library form is faster):
 | `respond`, `respond_stream` | `hash` | 1.00 | 1.00 |
 | `particles`, `particles_scalar`, `scene` | `vec`'s `float3` | 0.99 | 1.00 |
 
-So the library is free where it was adopted, and on two rows slightly better
-than the loop it replaced. `words` additionally keeps a whole second row,
-`words_dictionary.goose`, which throws the hand-rolled table away and counts
-into `dictionary<u8[:], i32>`: that one is a data-structure comparison, not a
+The adopted library functions add no measurable cost; on two benchmarks they
+are slightly faster than the loops they replace. `words` additionally keeps a whole second row,
+`words_dictionary.goose`, which replaces the hand-written table with `dictionary<u8[:], i32>`: that one is a data-structure comparison, not a
 notation one, and the per-benchmark table has it.
 
-Three things were measured and *not* adopted, which is the other half of the
-result:
+Three other substitutions were tested but not adopted:
 
 * **`format_int` in `respond` and `respond_stream`** costs 3-5% under v145
   against the hand-written digit loop, and nothing under clang. Most of the
@@ -256,9 +249,8 @@ result:
   loop for that reason. A `T&` parameter would not help either: the library
   would still be copying out of it.
 
-The library also has to be reachable from the benchmarks' own names. There is
-one namespace, so a local named `fill` shadows `std`'s and the error lands at
-the call rather than at the declaration; `graph_csr`'s CSR write cursor is
+The library also has to be reachable from the benchmarks' own names. The `std` functions are global, so a local named `fill` shadows the library
+function and produces an error at the call rather than the declaration; `graph_csr`'s CSR write cursor is
 called `cursor` for that reason, which is also what it is.
 
 ## Where Goose loses
@@ -308,14 +300,13 @@ against indices there is nothing measurable.
 backends, so what the clang column measures is what LLVM makes of rustc's
 recursion against what it makes of the same shape written in C. `tree` -- the
 same node built once and summed eight times -- has Goose 3-5% ahead of the
-Rust arena. `calc` is the same story at a smaller scale, 0.82-0.86x of the
+Rust arena. `calc` shows similar costs at a smaller scale, 0.82-0.86x of the
 Rust arena: what remains there is the global cursor, the `return from`
 discriminant and a varint decode on values that mostly need two bytes.
 
-**Flat scalar kernels lose to v145's refusal to vectorise a checked loop, and
-to nobody on data.** `blur` in its obvious form is 1.9x behind flat C++ under
+**Flat scalar kernels depend on backend optimization, with no memory advantage.** `blur` in its obvious form is 1.9x behind flat C++ under
 v145 and 1.07x *ahead* of flat Rust under clang (271 against 291 ms), for the
-two backend-specific reasons the bounds-check section takes apart, and level
+two backend-specific reasons explained in the bounds-check section, and level
 with both once written over row slices. `particles` is 2-5% behind Rust on
 identical memory, which is within the noise of the row. There is no Goose
 advantage on either and the design did not predict one.
@@ -342,16 +333,16 @@ with the C++ arena 10% behind its own clang build on the same row; padding the
   steady-state time on the first execution and takes about three runs to
   settle, and it hits clang-linked binaries far harder than MSVC-linked ones.
   Without them the toolchain comparison measures the malware scanner.
-* One machine, no core pinning. Differences under ~10% are not differences,
-  and on the two cache-bound random-access rows, `graph`'s linked rows and
-  `lru`, not under ~15%: two byte-identical `lru` binaries measured 14% apart
-  in the bounds-check A/B.
+* One machine, no core pinning. Differences under ~10% are within measurement
+  noise. The threshold is ~15% for the two cache-bound random-access cases,
+  `graph`'s linked rows and `lru`: two byte-identical `lru` binaries measured
+  14% apart in the bounds-check A/B.
 * **The allocator-heavy rows are the least reproducible in the suite, and they
   are the ones the headline ratio rests on.** Running the whole harness twice
   back to back, the Goose rows land within 3% of themselves, and so do the
   arena and CSR rows in every language -- but the malloc-bound rows move by up
   to 23%. A difference in the "vs idiomatic" geometric mean of less than about
-  10% means nothing at all, and a single suite run is not enough to attribute
+  10% is not significant, and a single suite run is not enough to attribute
   a change to the compiler; that wants a per-commit A/B built from the same
   sources minutes apart, with `-falign-loops=32` under clang so a shifted hot
   loop cannot masquerade as a codegen change.
@@ -373,7 +364,7 @@ how fast anything ran. Between them they reach `reusable` pools, per-input
 arenas inside recursion, `return from` as a taken error path, inline child
 arrays, DTOs with nested variable-size parts, and the standard library.
 
-**What works without friction:** grow-only pools with interior references,
+**Features that worked well:** grow-only pools with interior references,
 relative references inside a single root, variable-mode ADTs with inline
 variable-size payloads, case functions as the dispatch mechanism, `reusable`
 pools with sentinel-linked lists, limited arrays of relative references inside
@@ -383,7 +374,7 @@ variable-size records built by a function returning straight into the field,
 recursion, per-input local pools reset by scope exit, and a recursive builder
 building into a pool it is handed by reference.
 
-**What still bites:**
+**Difficulties encountered:**
 
 * **Inline child arrays need their count at construction.** The A.2 shape
   `(T&<u32>)[varint]` is only reachable when the children exist before the
@@ -399,7 +390,7 @@ building into a pool it is handed by reference.
   `sexp`'s parser can do exactly this. The same identification outside a cycle
   is the natural fix.
 * **Arithmetic at the operands' width bites on `u8` data.** The first version
-  of `blur` summed nine `u8` taps in `u8` and was a very fast non-blur; every
+  of `blur` summed nine `u8` taps in `u8` and produced incorrect results; every
   tap needs `as u16`. C promotes to `int` silently and Rust would panic in a
   debug build; Goose wraps, as the spec says it will (6.2), but nothing in the
   source points at it.
@@ -421,17 +412,18 @@ building into a pool it is handed by reference.
   encoding is a per-field decision: self-relative for blobs and for local
   pools, `in pool` for relink-heavy structures in a global pool.
 * **Thread queues cannot carry a relative-reference structure** (not flat,
-  TODO 9), and save/load needs the whole-region copy of TODO 16, so the two
-  design.md advantages that remain unbenchmarked are unbenchmarkable today.
+  TODO 9), and at the time of these measurements, save/load also lacked the
+  whole-region copy of TODO 16. Serialization has since been implemented
+  (`docs/design/serialization.md`); queues can carry its byte images, but
+  cannot directly carry values containing relative references.
 
 ## What the Rust implementations say about Rust
 
 Findings from implementing the suite in Rust, independent of how fast
-anything ran. The headline is that Rust is a much closer competitor than C++ on
-speed and a much better-designed language than C++ on most of these axes --
-and that the places it still cannot follow Goose are structural, not effort.
+anything ran. In these measurements, Rust is closer to Goose than idiomatic C++ on speed.
+The implementation differences below help explain the remaining gaps.
 
-**One benchmark has no Rust spelling at all.** `push` keeps a pointer to every
+**`push` requires indices in the Rust implementation.** `push` keeps a pointer to every
 64th element of an array it is still appending to. In Goose that is
 `marks.push(items.push(...))` and the reference stays valid for the array's whole
 life. In Rust it does not compile: a `&Item` borrows `items` for as long as it is
@@ -439,7 +431,7 @@ held, so the following `items.push` is rejected. No std container is both
 pointer-stable and O(1)-append. The row uses indices because that is what a
 Rust programmer writes; the interesting cost is in the source, not the numbers.
 
-**Indices everywhere Goose has references.** Same story in `tree`, `interp`,
+**Several Rust implementations use indices where Goose uses references.** This applies to `tree`, `interp`,
 `graph`, `sexp`, `scene`, `calc`, `bintrees` and `lru`: the fast, safe,
 recommended Rust shape is a `Vec` arena with `u32` links, exactly as
 `design.md` predicted. What that costs is not safety -- an out-of-range index
@@ -470,11 +462,11 @@ jump table from `match`, no vtable pointer, and niche optimisation that hides
 the tag inside a payload pointer. That is enough to beat `std::variant` on both
 time and memory in `records` and `interp`. What it cannot do is stop being
 fixed: every element is sized for the largest variant. Variable-mode enums are
-the one Goose feature in this suite with no Rust analogue at any level of
-effort.
+the one Goose feature in this suite without a direct counterpart in Rust's builtin enums.
 
-**`Result` plus `?` is a good deal.** In `calc` it reads like the C++
-exception row and costs like the error-code row. What the arena version gets
+**`Result` and `?` work well in `calc`.** The Rust code reads like the C++
+exception implementation and has a runtime cost similar to the error-code
+implementation. What the arena version gets
 for free -- `Vec::clear()` as an O(1) teardown -- holds only because `Expr`
 owns nothing; a node holding a `String` would turn the clear back into a
 per-node drop walk, which is the ordinary case and the one Goose never has.
@@ -507,16 +499,15 @@ loops, then runs it 4x faster.
 The sixteen rows split three ways by *why* the Rust comparison lands where it
 does, and only two of the three are worth working on.
 
-**Structural, and already banked.** Every row where Goose is clearly ahead is
-ahead for a reason Rust has no version of, not because the loop is tighter:
+**Gains from data representation.** The clearest gains come from differences
+in layout and reference rules:
 
 * *Variable-mode enums.* `records` is 2.0-2.3x faster on 4.0x less memory
   because an element costs its own variant rather than the largest one, and a
   `Say`'s text is inline rather than a second allocation. `interp` and `sexp`
   are the same property in a tree. Rust's enum is the best fixed-tag ADT of
-  the three languages and still pays max-payload per element; there is no
-  amount of skill that changes it.
-* *Variable-size parts inside a fixed-size parent.* `respond` builds a DTO
+  the three languages and still pays max-payload per element; changing that requires a different representation.
+* *Variable-size parts stored inside records.* `respond` builds a DTO
   whose string, item list and per-item sku are all inline, renders it with no
   allocation anywhere, and lands level with the streaming rows that never
   build the object. The Rust DTO allocates per string and per list, per
@@ -540,7 +531,7 @@ has since proven them (see the bounds-check section). Nothing here is closed by
 changing the language, and the ceiling is visible: each of these rows is
 already level under the other backend.
 
-**Design cost, paid on purpose.** The bounds checks that survive are indices
+**Costs required by the chosen semantics.** The bounds checks that survive are indices
 loaded out of a data structure, which is exactly where a check is not
 redundant; `calc`'s `return from` discriminant is a real error path that the
 C++ error-code row also pays and the exception row pays far more for. These
@@ -564,7 +555,7 @@ are not gaps to close.
    worth asking of every rule that currently demands an exact root: what does
    the *representation* actually require?
 
-## Compiler work, in order of measured payoff
+## Compiler work, ordered by measured benefit
 
 The first item of the previous round, carrying array lengths across calls, is
 done: a call site's facts about the arguments reach the callee's entry, and a
@@ -592,4 +583,4 @@ for the bounds-check pass (more elisions, no measurable time), merging tag
 dispatch (1%), dropping `#pragma pack(1)` where the layout is already gap-free
 (no difference on either backend), fusing an *optional* relative-reference load
 with its null test (both backends get worse), and rewriting benchmark code so
-the bounds-check pass can prove loaded indices (buys nothing).
+the bounds-check pass can prove loaded indices (no measurable gain).

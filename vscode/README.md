@@ -27,8 +27,9 @@ language server, runtime dependencies, or compiler changes are required.
 - Check, Run and Generate C tasks, plus the `$goose` problem matcher for custom
   tasks with absolute paths or paths relative to the workspace folder.
 
-These are lexical and compiler-command features. Semantic completion, rename,
-cross-file symbol definitions, formatting, debugging, and an LSP are deferred.
+The extension uses lexical analysis and compiler commands. It does not yet
+provide semantic completion, rename, cross-file symbol definitions, formatting,
+debugging, or an LSP.
 
 ## Install the prebuilt extension
 
@@ -54,10 +55,9 @@ python vscode/build_vsix.py
 
 The script works from any working directory. It installs the locked npm build
 dependencies, runs the extension tests, and writes `vscode/goose-language.vsix`.
-Use `--skip-install` to reuse existing `node_modules`. The stable VSIX filename
-is intentionally allowed in Git; commit the rebuilt file with extension updates
-so people can install without building locally. The extension version still
-comes from `package.json`.
+Use `--skip-install` to reuse existing `node_modules`. The VSIX file is tracked
+in Git. Commit the rebuilt file with extension updates so people can install
+without building locally. The extension version still comes from `package.json`.
 
 Open this `vscode/` directory in VS Code and press **F5** to launch an Extension
 Development Host with the parent Goose repository open. No build is needed.
@@ -168,7 +168,7 @@ configuration can choose a specific program:
 }
 ```
 
-This is run-only integration: breakpoints and stepping are not supported. Stop
+Run configurations execute programs without breakpoints or stepping. Stop
 an executing program with **Tasks: Terminate Task** or its terminal's trash
 button. Program arguments still come from `goose.runArguments`.
 

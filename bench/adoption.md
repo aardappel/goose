@@ -1,8 +1,8 @@
-# The plan.md branches: what each is worth, and whether to take it
+# Results of the compiler changes proposed in plan.md
 
-*A completed round's per-item outcome, kept as the record of what was measured
-and why each verdict went the way it did. The current state of the compiler is
-what `results.md` reports.*
+*This document records a completed round of compiler changes, their
+measurements, and the reasons for adopting or rejecting each one. See
+`results.md` for the benchmark report.*
 
 Sixteen branches, one per item of `bench/plan.md`, each implemented on its
 own `opt/<name>` branch from master `caf3b65` by its own agent, with tests,
@@ -39,20 +39,20 @@ was timed the same way (marked *variant*).
 | `opt/self-reference` | 3.2 `self` in literals | no code change; *variant* lru with non-optional links **1.10 / 1.01** | +126 -26; all +373 -29 | adopt | medium |
 | `opt/clear-grow-only` | 3.5 `clear()` on grow-only locals | no code change; *variant* calc over slices 0.92 / 0.90 | +85 -2; all +433 -5 | adopt as expressiveness | medium |
 
-*Adopt* means sound, small enough for what it buys, and paying on the suite
-or on code the suite represents. *Hold* means keep the branch, do not merge
+*Adopt* means the change is sound, its complexity is justified, and it
+benefits the suite or similar code. *Hold* means keep the branch, do not merge
 yet. The last column is a prediction of how often future Goose code hits the
 construct, judged from the shapes the spec's examples and the sixteen
 benchmarks are built from.
 
-Composition is real and was predicted: by hand, 2.1 + 2.2 + 2.3 took
+The measurements support the expected combined gains: by hand, 2.1 + 2.2 + 2.3 took
 `bintrees` from 356 to 229 ms under v145 against Rust's 227; on the branches,
 2.2 alone is 1.35, 2.1 1.12, 2.3 1.09, and their effects are on different
 parts of the same recursion. `blur` needs 2.4 for clang (7x) and 2.5b for
 v145 (2x, once the length of the reference parameter is known); 2.4 alone
 costs v145 6% on that row, which 2.5b's elision then removes.
 
-## Landed
+## Merged changes
 
 Merged onto master from `caf3b65`, in this order: `/bigobj` for the compiler
 build; 2.7 per-loop-tops; 2.1 fatref-tops; 2.4 fatref-views; 2.5a+b
@@ -132,14 +132,12 @@ references (`push_ref.goose`, on the branch) 170.5 to 157.7 ms under v145 and
 166.8 to 154.0 under clang, 1.08 both. Every other row byte-identical.
 
 **Complexity and side effects.** One predicate, one flag, one string set,
-and the flush discipline the global caching already uses. Two conservatisms
-leave speed on the table, never soundness: every call flushes everything in
+and the flush discipline the global caching already uses. Two conservative choices limit the speedup while preserving soundness: every call flushes everything in
 this mode, and globals are not cached alongside. It also fixed a pre-existing
 unsoundness in `CanCacheTops` -- a fat reference read out of a field or
 element was invisible to it, so a body pushing to a global both directly and
 through such a reference cached one spelling and wrote the other (repro
-printed `2,3,0` for `1,2,3`) -- with a regression test. Worth taking on its
-own.
+printed `2,3,0` for `1,2,3`) -- with a regression test. That fix is useful independently of the optimization.
 
 **Verdict: adopt.** **Future code: high.** "Recursive builder into a pool
 the caller owns" is the idiom the previous round's checker change made
@@ -214,7 +212,7 @@ Every other row byte-identical.
 the existing kill summary asked one more question, and the length lvalue used
 for growth is left on the real header so a missed growth could never
 silently miscompile. Both base and length must be hoisted for the win --
-either alone buys nothing, the agent measured. The v145 loss on `blur` goes
+neither alone produced a measurable gain. The v145 loss on `blur` goes
 away once 2.5b can prove the checks in that function (which needs the
 reference parameter's length, below).
 
@@ -266,10 +264,9 @@ whole-pass `--no-bce` A/B, which also disables the loop-view hoist.
 is "did it enumerate every write" (push, append, store, pointee write,
 resize, whole-array assignment, freelist `free`). It also fixed a latent
 while-exit hazard in the existing analysis. Some of what remains cannot be
-had: the `out[fill[s]]` invariant is genuinely false at the last vertex.
+had: the `out[fill[s]]` invariant is false at the last vertex.
 
-**Verdict: hold.** Correct and thoroughly tested, but the payoff is zero and
-the surface is large. Merge when a benchmark shows loaded indices costing
+**Verdict: hold.** Correct and thoroughly tested, but there is no measurable speedup and the analysis is large. Merge when a benchmark shows loaded indices costing
 time, or as the base for per-array index types (TODO 0e). **Future code:**
 medium as a foundation, low as a speedup.
 
@@ -309,14 +306,14 @@ an inlined early `return`) flushed by label position. `codegen.h`.
 **Measured.** particles 1.06 and particles_scalar 1.06 under clang (916 to
 862 ms, 913 to 858), level under v145; every push-heavy row within 2% (sum
 1.01 / 1.00, push 0.99 / 1.00, strlist 0.99 / 0.98, sexp 1.00 / 1.00,
-bintrees 1.00 / 1.01, lru 1.00 / 1.00). That is last round's 6% clang
-regression on the float kernels recovered, with nothing given back.
+bintrees 1.00 / 1.01, lru 1.00 / 1.00). This recovers the previous round's 6% clang regression on float kernels
+without a measurable regression elsewhere.
 
 **Complexity and side effects.** The most intricate codegen change of the
 set: textual post-processing over label positions, and the Debug object is
 at MSVC's section limit. Every function's temp numbering shifts, so
-generated-C diffs against master are noisy. Bonus: stacks grown only by
-callees are no longer cached at all, which removes flush/reload pairs from
+generated-C diffs against master are noisy. Stacks grown only by
+callees are also no longer cached, which removes flush/reload pairs from
 `bintrees` and `lru`.
 
 **Verdict: adopt.** **Future code: high** -- any array filled once and then
@@ -414,7 +411,7 @@ C.3 updated.
 **Measured.** calc 1.04 / 1.04 (548.9 to 527.7 ms, 535.1 to 514.1), sexp
 1.03 / 1.02. The agent's decomposition: the checks alone were 2% (v145) /
 4.7% (clang) of the error-free `calc`, the whole mechanism 5-7%; after the
-change the checks are free (the flag buys nothing more). NULL-signalling
+change the checks have no measurable cost (the flag adds no further speedup). NULL-signalling
 pointer results, a two-register struct return (Win64 returns 16 bytes through
 memory) and a plain global were measured and rejected.
 
@@ -439,7 +436,7 @@ Paren node holds a plain reference read back out of a container, the one
 construct with no base -- and the artefact 2.8 removes.
 
 **Complexity and side effects.** The representation is 40 lines; the rest
-is root plumbing the compiler did not have. Narrow widths change meaning (a
+implements root tracking that the compiler previously lacked. Narrow widths change meaning (a
 `u16` would bound the pool at 32 KB rather than the link distance) and
 sub-region copies (TODO 16) would need rebasing.
 
@@ -468,8 +465,7 @@ under v145 (1.10), 3,152 to 3,113 under clang (1.01).
 
 **Complexity and side effects.** One keyword in one position. Non-optional
 relative references need `let p: Node& = n.prev;` annotations, because an
-unannotated `let` decays a plain reference. The agent argues, convincingly,
-that `self` beats "offset 0 means the containing value": 0 is already null
+unannotated `let` decays a plain reference. `self` is preferable to defining offset 0 as the containing value: 0 is already null
 for optionals, and on a non-optional the representation reads 0 as the
 field's own address. Found another latent bug on the way (`alloc_index`
 with a relative-reference literal, below).
@@ -492,9 +488,7 @@ parser over slices) is *slower* than `calc`: 544 to 589 ms under v145 (0.92),
 reference (2.1's territory) and a 16-byte slice threaded through the
 recursion instead of a named global.
 
-**Verdict: adopt as an expressiveness item, not a speed one.** It removes
-the "reusable scratch or sliceable structure, pick one" rule from the
-findings. On master the same rule now covers `pop` and `resize` as well, and
+**Verdict: adopt as an expressiveness item, not a speed one.** It lets a scratch buffer support both reuse and slices. On master the same rule now covers `pop` and `resize` as well, and
 spec 5.1 defines grow-only as "never shrinks while a reference or slice into
 it can be live"; a shrink must also stand on its own (a statement, an
 initializer, or the right-hand side of an assignment to a variable), so no
@@ -505,7 +499,7 @@ everywhere; whether they need slicing is case by case.
 
 ## Merge order and interactions
 
-The order used is in "Landed" above. What actually conflicted: 2.1 with 2.7
+The merge order is listed under "Merged changes" above. The conflicts were: 2.1 with 2.7
 in the top-cache state and its per-function reset (2.7's machinery, 2.1's
 mode on top); 2.6 and 2.10 with 2.7 at the points that grow a stack, which
 now go through 2.7's growth-recording accessor, and 3.5 the same at `clear`;

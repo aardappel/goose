@@ -1,8 +1,9 @@
 # The Goose standard library
 
-Seven modules under `stdlib/`, found by `import std;` (and `dictionary`,
-`vec`, `math`, `os`, `gfx`, `physics`) wherever the compiler was built from a
-source tree, or through `--stdlib <dir>` / `GOOSE_STDLIB`. Everything is
+The standard library has seven modules under `stdlib/`: `std`, `dictionary`,
+`vec`, `math`, `os`, `gfx`, and `physics`. Import each module by name, for
+example `import std;`. The compiler locates the library in its source tree;
+use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location. Everything is
 written in Goose except the C behind `os` (`src/runtime/runtime_os.h`), libm
 behind `math`, the graphics layer behind `gfx` (`src/gfx/`) and the physics
 layer behind `physics` (`src/physics/`), all reached through `extern fn`
@@ -10,7 +11,7 @@ layer behind `physics` (`src/physics/`), all reached through `extern fn`
 (and `design/gfx.md` for `gfx`, `design/physics.md` for `physics`); this is
 the reference.
 
-Conventions that hold throughout:
+The library uses these conventions:
 
 * A function that reads or mutates elements in place takes `xs: T[:]`; every
   array kind and every slice coerces to it: `sort(arr)`, `sort(arr[1..])`.
@@ -18,8 +19,8 @@ Conventions that hold throughout:
   reference, and instantiates for whatever array kind it is given, provided
   that kind has the operations used. A grow-only array shrinks through the
   reference wherever nothing in the caller points into it (spec §5.1), so
-  `remove_at(xs, i)` works on a `[>..]` local; the checker reports the
-  call while a slice of `xs` is in scope.
+  `remove_at(xs, i)` works on a `[>..]` local; the checker rejects the
+  call if a live reference or slice could be invalidated.
 * Nothing non-fixed is taken by value (spec §4.1): `f(xs)` binds by
   reference; a function wanting its own copy says `copy(xs)`.
 * Fresh arrays come back as `T[>..]`, built straight into the caller's
@@ -34,11 +35,11 @@ Conventions that hold throughout:
   the fresh-string form.
 * UFCS applies: `xs.sort()`, `d.insert(k, v)`, `r.rand_int(6)`.
 * A function taking an element *by value* (`push_n`, `insert_at`, `fill`,
-  `heap_push`) cannot take one that contains self-relative references, which
-  no copy can carry (spec §3.9); build those in place.
-* The names here live in the program's one namespace, so a local called
-  `fill` or `count` shadows the library's and the error lands at the call,
-  not at the declaration.
+  `heap_push`) cannot take one that contains self-relative references, because
+  those values cannot be copied (spec §3.9). Construct them in place.
+* The `std`, `dictionary`, `vec`, `math`, and `os` names are global; `gfx`
+  and `physics` use their own namespaces. A local named `fill` or `count`
+  shadows the corresponding global function, causing an error at a call.
 
 ## std
 
@@ -153,7 +154,8 @@ fn to_upper(s: u8[:])
 
 `sort` is a quicksort with median-of-three pivots, insertion sort below 16
 elements and an explicit range stack; unstable, in place, no allocation.
-A `let` array is not sortable: the writes are the compile error.
+A `let` array can be sorted because `let` prevents rebinding, not element
+writes. A `const` array or read-only slice cannot be sorted (spec §9.5).
 
 ### Arrays: changing the length
 
@@ -213,10 +215,10 @@ each_split(text, '\n') { handle(trim(it)); };
 let n, ok = parse_int(trim(field));
 ```
 
-`format_uleb`/`parse_uleb` are the framing prefix an image carries
-(`design/serialization.md`): writing a save's header by hand is what lets its
-payload be a `bytes_of` view rather than a copy, and reading the prefix is
-how a stream reader knows how many bytes an image still needs.
+`format_uleb` and `parse_uleb` write and read the length prefix used by
+serialized images (`design/serialization.md`). Writing the prefix separately
+lets a program save a `bytes_of` view without first copying it into an image.
+Reading the prefix tells a stream reader how many payload bytes to expect.
 
 ```goose
 let payload = pool.bytes_of();            // a view, nothing copied
@@ -243,7 +245,7 @@ fn each<K, V, F>(d: dictionary<K, V>&)                          // F(key, val&);
 Open addressing with linear probing, power-of-two capacity, backward-shift
 deletion. Keys and values are fixed-size; a key type needs `hash` and `==`.
 Strings are keyed as `u8[:]` slices into text the caller keeps (`const u8[:]`
-where the keys are literals or views of a `let`, §9.5), or as inline
+for literals or views of `const` data, §9.5), or as inline
 `u8[..k]`. A set is `dictionary<K, bool>`.
 
 The slot array is grow-shrink, so a reference into it — a `get` or
@@ -262,10 +264,12 @@ if n { print(n); }               // the last use of n; counts is free again afte
 ```
 
 It is liveness, not scope, that the checker asks about, so a reference whose
-last use is behind the mutation needs no block around it, and one still used
+last use is before the mutation needs no block around it, and one still used
 after the mutation is an error wherever it was declared. The key type is
-`const u8[:]` because these keys are literals and views of a `let` (§9.5); a
-dictionary whose keys are slices of a `var` buffer is `dictionary<u8[:], V>`.
+`const u8[:]` because literals and the read-only views returned by `split`
+require it (§9.5). A dictionary holding writable slices can use
+`dictionary<u8[:], V>`, whether the underlying buffer is bound with `let`
+or `var`.
 
 ## vec
 
@@ -302,7 +306,7 @@ fn is_nan(x: f64) -> bool     fn is_inf(x: f64) -> bool
 
 ## os
 
-A deliberately thin layer over `src/runtime/runtime_os.h`:
+A small interface to `src/runtime/runtime_os.h`:
 
 ```goose
 fn read_file(path: const u8[:], out: u8[>..]&) -> bool     // appends the whole file
@@ -599,7 +603,7 @@ namespace `physics`; `samples/28_physics_boxes.goose` is a complete program,
 
 The API is Box3D's under Goose names: `b3Body_GetPosition` is
 `position(body)`, `b3CreateRevoluteJoint` is `create_revolute_joint`, a
-getter is the noun and a setter `set_` it. Box3D works in meters, kilograms
+getter uses the property name and a setter prefixes it with `set_`. Box3D works in meters, kilograms
 and seconds and has no built-in up; the default gravity is -10 along y. What
 Box3D takes as a callback comes back as an array: events and query results
 are fresh arrays (each also has an `_into` form that copies into a slice of
@@ -837,9 +841,9 @@ fn create_revolute_joint(w: World, def: RevoluteJointDef) -> RevoluteJoint
 // _weld_, _wheel_: each kind's definition starts with `base: JointDef`.
 ```
 
-A joint of each kind has its own handle type, `struct RevoluteJoint { joint:
-Joint }` and so on, which that kind's own functions take; what every joint
-has takes the `joint` in it:
+Each joint kind has its own handle type, such as `struct RevoluteJoint {
+joint: Joint }`. Kind-specific functions take that handle. Functions common
+to all joints take its `joint` field:
 
 ```goose
 fn destroy(j: Joint)    // and (j, wake_bodies: bool)
@@ -915,10 +919,10 @@ fn solve_planes(target_delta: float3, planes: CollisionPlane[:]) -> float3, i64
 fn clip_vector(vector: float3, planes: const CollisionPlane[:]) -> float3
 ```
 
-`cast_mover` is how far along its move a capsule gets; `collide_mover` the
-planes it touches, which become `CollisionPlane`s for `solve_planes`, the
-move closest to the target that they allow, and `clip_vector` a velocity
-with what points into them removed.
+`cast_mover` determines how far a capsule can move. `collide_mover` returns
+the planes it touches. Pass these as `CollisionPlane`s to `solve_planes` to
+find the allowed move closest to the target. `clip_vector` removes velocity
+components that point into those planes.
 
 ### Recording and replay
 

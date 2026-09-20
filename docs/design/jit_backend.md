@@ -1,6 +1,6 @@
 # The in-process C backend (JIT mode)
 
-How the TinyCC backend is put together, and what it cannot do yet.
+How the TinyCC backend works and its remaining limitations.
 
 ## What it is
 
@@ -14,9 +14,9 @@ and no C toolchain has to be installed.
     goose -o tour.c 01_tour.goose  # the C file, as before
     goose --jit prog.goose         # ask for it explicitly; fails if not built in
 
-Nothing about the generated C differs between the two. `-D` writes its define
+Both modes use identical generated C. `-D` writes its define
 into that C rather than passing it to a backend, so a JIT run and a compiled one
-see the same text down to the byte. `--` passes the arguments after it to the
+receive identical source text. `--` passes the arguments after it to the
 program. The program shares the process: its exit status becomes the compiler's,
 its output goes to the same streams, and the compiler's own progress lines move
 to stderr so stdout belongs to the program alone. It does not share the
@@ -51,22 +51,23 @@ the `.c` file when given no `-o`, as it always did.
 ## Testing
 
 `test/run_tests.py` and `samples/run_samples.py` run every program a second way
-through the backend and compare it against the same blessed output; the
+through the backend and compare it against the same expected output; the
 benchmark harness measures every Goose row a second way and reports those in a
 table of their own. See `docs/testing.md`.
 
-The point is not that TinyCC is fast. It is a third, very different C
-implementation reading the generated C, and it disagrees where the C is
-accidentally specific to one compiler or one C library. Two runtime bugs came
-out of the first run: the wall clock used C11's `timespec_get`, which TinyCC's
-Windows C library does not have and glibc hides from a compiler announcing C99;
-and floats printed as `1e+016` under the older Microsoft C runtime TinyCC links,
-where C99 asks for two exponent digits. Both were the text form of a Goose value
-depending on the backend underneath, which it must not.
+TinyCC provides a third C implementation for testing the generated code. It can
+expose accidental dependencies on another compiler or C library. Two runtime
+bugs came out of the first run: the wall clock used C11's `timespec_get`, which
+TinyCC's Windows C library does not have and glibc hides from a compiler
+announcing C99; and floats printed as `1e+016` under the older Microsoft C
+runtime TinyCC links, where C99 asks for two exponent digits. Both bugs made a
+Goose value's text representation depend on the backend, contrary to the
+language's requirements.
 
 ## Follow-up work
 
-Not done, in rough order of how much they cost the project.
+Remaining limitations and possible improvements, roughly ordered by their
+impact on the project.
 
 ### Threads
 
@@ -74,8 +75,8 @@ A program that spawns a worker or uses a queue (§11.2) is refused under this
 backend. TinyCC's in-memory runner rejects any section with `SHF_TLS`
 (`tccrun.c`: *thread-local storage not supported with -run*), and the runtime
 puts each thread program's globals pointer and its data-stack region registry in
-thread-local storage whenever `GS_NEED_THREADS` is set. This costs seven test
-files and one sample; everything else runs.
+thread-local storage whenever `GS_NEED_THREADS` is set. This prevents seven test
+files and one sample from running through JIT; the others run.
 
 Possible directions:
 
@@ -86,8 +87,8 @@ Possible directions:
   is read by the guard-page fault handler, where `pthread_getspecific` is not
   formally async-signal-safe. Measure the cost on the benchmarks before
   committing to it.
-* **Teach TinyCC's runner to allocate a thread-local block.** The right fix, and
-  upstream work rather than ours.
+* **Teach TinyCC's runner to allocate a thread-local block.** This would address the limitation in
+  TinyCC itself and would require upstream work.
 * **Leave it refused.** The diagnostic already says to compile with `-o`.
 
 Windows needs two more things whichever way this goes: TinyCC's bundled winapi
@@ -109,8 +110,8 @@ instrumented, and because TinyCC's `exit()` longjmps back into `tcc_run` rather
 than terminating, the program's own heap allocations are still live when the
 compiler exits, which LeakSanitizer reports against the compiler. Freeing them
 would need a teardown entry point in the runtime that the JIT could call after
-`tcc_run` returns. The compiled path already carries the full sanitizer
-coverage, so this is worth little.
+`tcc_run` returns. The compiled path already has full sanitizer coverage, so this is a low
+priority.
 
 ### Backtraces and bounds checking
 
@@ -133,4 +134,4 @@ Linux and Windows only.
 
 Every JIT run recompiles the runtime, about 1200 lines of C, along with the
 program. The benchmark report measures that floor. TinyCC has no serialized form
-for an in-memory result, so there is nothing cheap to do here.
+for an in-memory result, so caching would require substantial work.

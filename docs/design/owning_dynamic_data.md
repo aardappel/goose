@@ -5,7 +5,7 @@ editable buffers, with memory reclaimed when each document closes. The
 difficulty is independent growth and release in arbitrary order, rather than
 simply representing a list of strings. `reusable[]` slice pools (spec 5.4) now
 express this inside the language. This note shows that representation and what
-it costs, which of the earlier workarounds still earn their place, and two
+it costs, which earlier workarounds remain useful, and two
 possible future extensions for what slice pools leave out: bounded independent
 dynamic stacks and opaque API resources. Neither extension is an implemented
 language feature.
@@ -96,8 +96,8 @@ it to. A slice they are not shown to be `bytes`' own is checked when the call
 runs, and the call aborts unless the slice lies inside `bytes` on an element
 boundary: a few compares beside the work the call does anyway. A slice type
 naming its pool (`u8[: in bytes]`, like `T&<u32 in pool>`) would make that
-knowledge static, should a program need the last bit of speed or find the
-abort comes too late.
+knowledge static, if a program needs to avoid the runtime
+check or detect an invalid pool assignment earlier.
 
 ## What the slice pool costs
 
@@ -117,8 +117,8 @@ abort comes too late.
   best fit: it was faster everywhere, best fit's array came out at most 12%
   smaller on buffers grown a step at a time, and first fit's came out smaller
   on mixed sizes.
-* **Views do not follow a move.** See above: offsets into the current run are
-  the robust form of a position.
+* **Views do not follow a move.** Store positions as offsets into the current
+  run so they remain usable after it moves, as described above.
 * **Element types.** Elements are fixed-size, and `realloc_slice` rejects
   element types holding self-relative references, whose offsets a copy would
   leave measuring from the old place (spec 3.9).
@@ -138,7 +138,7 @@ are superseded by them: append-only byte storage with per-document offsets
 grow-shrink buffer with application-managed shifting (the pool now does the
 placement and moving), runtime-capacity limited arrays `u8[..]` (which could
 neither grow nor live in a slot pool), and a table of references to separately
-scoped locals (which never owned anything). Those that still earn their place:
+scoped locals (which never owned anything). The following approaches remain useful:
 
 | Approach | Where it still fits |
 |---|---|
@@ -249,7 +249,7 @@ array. Holding a mapping resource therefore would not automatically make the
 mapped bytes a Goose array or slice. Direct mapped views would need a separate
 design connecting their bounds and lifetime to the resource.
 
-**Cleanup is VERY TBD.** A binding might optionally supply cleanup to run when a
+**Cleanup remains unresolved.** A binding might optionally supply cleanup to run when a
 local resource leaves scope; whether or how that extends to resources inside
 aggregates is also open. Which copies would trigger cleanup, what happens to
 aliases after an explicit release, how repeated cleanup or double-free is
@@ -284,7 +284,7 @@ exist. Measure live bytes, the array's high-water and committed bytes, copied
 bytes and latency separately, including repeated fragmenting growth and
 release, a document that outgrows the reservation, and old views read after a
 move, a close and reuse. That establishes where option A's stable, releasable
-storage is worth its checker work: its evaluation adds the 257th document, a
+storage justifies the additional lifetime analysis: its evaluation adds the 257th document, a
 document exceeding its size ceiling, and references held across a document
 close. For option C, evaluate API buffer transfers and file-mapping access
 while keeping the unresolved cleanup policy explicit.

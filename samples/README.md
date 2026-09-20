@@ -4,22 +4,19 @@ If you have not written Goose before, read [`docs/tutorial.md`](../docs/tutorial
 first: it introduces the language by example and says which of these to read
 when.
 
-Short, self-contained programs that show what writing Goose is like: the
-things every language has to do, written the way Goose wants them written,
-with the language's own strengths -- flat data, references into growing
-arrays, relative links, variable-size enums, zero-allocation everything --
-doing the work. Each file is one program with a comment at the top saying
-what it demonstrates. The files are numbered in reading order, which is
-the order below; the first six are the ones the rest assume.
+These short, self-contained programs demonstrate common programming tasks
+using Goose's memory model: flat data, references into growing arrays,
+relative links, and variable-size enums, without heap allocation. Each file
+starts with a comment explaining what it demonstrates. The files are numbered
+in reading order. The later samples assume familiarity with the first six.
 
-Build and run any of them from this directory, with whichever C compiler is
-to hand:
+Build and run any sample from this directory using a C compiler:
 
     goose -o tour.c 01_tour.goose && cc tour.c -o tour -lm -pthread && ./tour
     goose -o tour.c 01_tour.goose && cl tour.c && tour
 
-A compiler built with the TinyCC backend needs neither of those: with no `-o`
-it compiles the program into its own process and runs it there.
+With the TinyCC backend, omit `-o` to compile and run the program inside the
+Goose compiler's process:
 
     goose 01_tour.goose
 
@@ -49,7 +46,7 @@ calls it, so they are compiled and run as part of the test suite.
 | [11_maze](11_maze.goose) | BFS and Dijkstra over a byte grid: a grow-only queue with a read head, a grow-shrink heap through `heap_push`/`heap_pop`, paths drawn back onto the maze. |
 | [12_huffman](12_huffman.goose) | Frequencies, a priority queue, a code tree with 2-byte relative links, bit packing, and a round trip. |
 
-## Data structures the Goose way
+## Data structures
 
 | Sample | What it shows |
 |---|---|
@@ -98,4 +95,4 @@ calls it, so they are compiled and run as part of the test suite.
 | Sample | What it shows |
 |---|---|
 | [27_gfx_cube](27_gfx_cube.goose) | A window and a spinning, lit cube with the `gfx` module: GLSL shaders written in the program as `"""` strings and compiled in by `embed_shader`, vertex and index buffers from `bytes_of`, a uniform block as a packed struct, a depth buffer, the arrow keys; saves its last frame as `gfx_cube.png`. Needs a compiler built with SDL3 (`third_party/SDL`); the test runner draws it off screen. |
-| [28_physics_boxes](28_physics_boxes.goose) | Thousands of boxes raining into a walled arena, onto two pyramids and each other, swept around by a turning arm: the `physics` module (Box3D, on up to eight worker threads) moves them, and each frame their transforms come back in one call and go straight into an instance buffer, one unit cube drawn per box and lit by a shadow-casting sun, with shaders written in the program as `"""` strings, the two vertex shaders sharing their inputs as one global part. Space sets off an explosion, the mouse looks around, Up and Down change the rain; once the arena holds `--boxes` of them the oldest go back up. Needs a compiler built with SDL3 and Box3D (`third_party/box3d`); the test runner draws 120 frames off screen. |
+| [28_physics_boxes](28_physics_boxes.goose) | Boxes fall into a walled arena containing two pyramids and a rotating arm. The `physics` module simulates them with Box3D on up to eight worker threads. Each frame retrieves all transforms in one call and writes them into an instance buffer. Each box is drawn as a unit cube with sunlight and shadows. Shaders are `"""` strings in the program; the two vertex shaders share their inputs through one global part. Space triggers an explosion, the mouse controls the view, and Up and Down adjust the rate at which boxes fall. Once the arena contains `--boxes` boxes, the oldest are returned to the top. Needs a compiler built with SDL3 and Box3D (`third_party/box3d`); the test runner draws 120 frames off screen. |

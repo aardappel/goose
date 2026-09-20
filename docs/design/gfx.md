@@ -1,8 +1,8 @@
 # The graphics module (`gfx`)
 
-How the optional graphics module is put together, what was verified where,
-and what is left. The reference for using it is `docs/stdlib.md`; the module
-itself is `stdlib/gfx.goose`.
+This document describes the optional graphics module's implementation, test
+coverage, and remaining work. See `docs/stdlib.md` for the API reference and
+`stdlib/gfx.goose` for the module source.
 
 ## What it is
 
@@ -53,7 +53,7 @@ generated C:
   take `@link-msvc.rsp` among the sources, and gcc-style clang takes
   `@link-cc.rsp`.
 
-**Opting out** is clean three ways, all verified: `-DGOOSE_GFX=OFF`, a checkout
+**Building without graphics** has been tested in three configurations: `-DGOOSE_GFX=OFF`, a checkout
 without the SDL submodule, and a Linux machine without the X11 and Wayland
 development files (where SDL's own configure would silently build an SDL that
 cannot open a window, `gfx.cmake` says what to install and takes this path).
@@ -73,12 +73,12 @@ and reconfigure". `--gfx-link` fails the same way.
   resolved relative to that file, with `#include` relative to the shader.
   The checker compiles each distinct shader once (`TypeCheck::EmbedShader`,
   `src/gfx.h`, `src/shaderc.c`), keeping the blobs in `Ast::shaders` and a
-  pointer to its blob on the call for codegen. A failure is a compile error
-  at the call. One the shader compiler puts at a line of source written in
-  the program is reported at that line instead, since a `"""` string
-  spanning lines holds its text line for line (`StrLit::multiline`); in a
-  part a global names, the message adds which call compiled it. One in a
-  file carries the shader's own `file:line`. The result is a `const u8[:]` into static
+  pointer to its blob on the call for codegen. Compilation failures are reported
+  at the call unless the shader compiler identifies a source line. For GLSL
+  written in the program, that line maps directly to the corresponding line
+  of the `"""` string (`StrLit::multiline`). If the source comes from a
+  global, the message also identifies the call that compiled it. Errors in
+  shader files include the shader's own `file:line`. The result is a `const u8[:]` into static
   data, like a string literal's, which codegen emits as an initializer list
   of bytes.
 * **The blob** (`src/gfx/gfx_blob.h`, shared by `shaderc.c` and the layer)
@@ -100,8 +100,8 @@ and reconfigure". `--gfx-link` fails the same way.
 
 ## The layer (`src/gfx/`)
 
-It absorbs what makes SDL_GPU error-prone, so the Goose API does not inherit
-it. `gfx_api.h` lists every function once (`GS_GFX_API`) and every constant
+The layer handles SDL_GPU's resource management and validation rules for the
+Goose API. `gfx_api.h` lists every function once (`GS_GFX_API`) and every constant
 (`GS_GFX_CONSTANTS`); `test/api_check.py` checks `stdlib/gfx.goose`
 declares exactly those functions with the same C shapes, the same struct
 fields in the same order, and the same constant values.
@@ -123,9 +123,9 @@ fields in the same order, and the same constant values.
   screen are ordinary texture downloads, and a minimized window (no swapchain
   image) only skips the blit. A headless device (`open_headless`, or `open`
   under `GOOSE_GFX_HEADLESS=1`) has the same screen and no window.
-* **Pipelines are made for the targets they draw into**, which their
-  description does not name: each is created on first use in a pass with a
-  new combination of color formats, depth format and sample count.
+* **Pipelines are created for their render targets.** A pipeline description
+  does not name its targets. The layer creates a pipeline on first use with
+  each combination of color formats, depth format, and sample count.
 * **The vertex layout comes from the shader**: its inputs in location order,
   packed one after another as a Goose struct lays out its fields, per vertex
   from buffer 0, from `instance_location` on per instance from buffer 1.
@@ -184,7 +184,7 @@ SDL_GPU's clip space. `docs/stdlib.md` is the reference.
   through readbacks and saving screenshots. `run_window_test.py` runs it in
   every way the machine can and compares the screenshots across them.
 
-### Verified where
+### Platforms tested
 
 | | Windows 11 (RTX 3080) | Linux (Ubuntu 24.04 under WSL2, WSLg) | macOS |
 |---|---|---|---|
