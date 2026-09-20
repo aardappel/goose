@@ -172,6 +172,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     // fixed one, or a T[] when the elements are not fixed-size, since only
     // variable and grow-only arrays hold those (§3.3).
     auto natural = [&](int64_t count) {
+        if (elem == tc.fntype) tc.Error(this, "function values cannot be stored in arrays (§7.6)");
         if (tc.ClassOf(elem) == SC_FIXED) return tc.FixedArrayOf(elem, count, line);
         auto t = tc.ast.NewType(TY_ARRAY, line);
         t->arr = tc.ast.NewDetail<TypeArray>();

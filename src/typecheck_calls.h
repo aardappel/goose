@@ -1406,7 +1406,10 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
 inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) {
     // A single call forwards all its return values.
     vector<TypeExpr *> types;
-    for (auto &v : vals) types.push_back(v.type);
+    for (auto &v : vals) {
+        if (v.type == fntype) Error(at, "function values cannot be returned (§7.6)");
+        types.push_back(v.type);
+    }
     if (!tspec->retsknown) {
         for (auto &v : vals) {
             if (v.type->kind == TY_VOID)

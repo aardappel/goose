@@ -738,7 +738,9 @@ struct TypeCheck {
     void BindProv(VarDef *vd, const Prov &p);
     void BindRefProvenance(VarDef *vd, const Val &v);
     Prov RefProvOf(VarDef *vd);
-    VarDef *NewVar(string_view name, TypeExpr *type, Line l, bool isvar);
+    VarDef *ResetLocal(VarDef *previous);
+    VarDef *NewVar(string_view name, TypeExpr *type, Line l, bool isvar,
+                   VarDef *previous = nullptr);
     VarDef *LookupVar(string_view name, string_view ns, Node *use = nullptr);
 
     // The variables the body frame fi checks can name outside its own
@@ -906,7 +908,13 @@ struct TypeCheck {
     // The raw per-node check: virtual dispatch; the value may still denote a
     // reference. Consumers go through CheckValue/CheckArg/Operand, which
     // apply reference transparency.
-    Val CheckV(Node *n, TypeExpr *expected) { return n->Check(*this, expected); }
+    Val CheckV(Node *n, TypeExpr *expected) {
+        auto v = n->Check(*this, expected);
+        if (v.type == fntype && !Is<Ident>(n) && !Is<FunVal>(n))
+            Error(n, "a function value must be a function name or block literal (§7.6); "
+                     "evaluate runtime expressions separately");
+        return v;
+    }
 
     Val DecayRef(Val v);
     bool KeepsRef(const Val &v, TypeExpr *dt);
@@ -917,7 +925,6 @@ struct TypeCheck {
     bool UserRefOf(Node *n);
     void RequireCopyable(const Val &v, Node *n, TypeExpr *dt);
     void WriteBackArgs(Call *c, Dot *d, vector<Node *> &argnodes);
-    void UnwrapCopy(Node *&n);
     // A parameter that takes the value -- a slice, or a fixed-class value
     // that a non-fixed one constructs by copy (an array of another kind
     // into a static-capacity limited array, §4.2) -- takes the argument

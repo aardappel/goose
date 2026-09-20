@@ -109,7 +109,16 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
         case B_EXIT:
             L("gs_exit(", GenX(an[0]), ");");
             return {};
-        case B_COPY: return { GenXD(an[0], c->exprtype) };
+        case B_COPY: {
+            if (c->exprtype->kind != TY_SLICE)
+                return { LoadLoc(GenLoc(an[0]), c->exprtype, ln) };
+            // A slice parameter views the copy's temporary, not its source.
+            auto slice = c->exprtype;
+            c->exprtype = c->rettypes[0];
+            auto lv = GenLoc(c);
+            c->exprtype = slice;
+            return { LoadLoc(lv, slice, ln) };
+        }
         case B_TO_BYTES: return EmitToBytes(an, d0, ln);
         case B_BYTES_OF: return EmitBytesOf(c, an, ln);
         case B_FROM_BYTES: return EmitFromBytes(c, an, d0, ln);
@@ -294,9 +303,15 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             auto elem = v.elem;
             auto esz = FixedSize(elem);
             auto ak = lv.t->arr->akind;
+            auto relref = elem->kind == TY_REF && elem->ref->lenstorage >= 0;
             auto nn = GenPure(an[1]);
             string fv;
-            if (an.size() > 2) fv = GenPure(an[2]);
+            if (an.size() > 2) {
+                if (relref) {
+                    fv = T();
+                    L("uint8_t *", fv, " = (uint8_t *)(", GenX(an[2]), ");");
+                } else fv = GenPure(an[2]);
+            }
             auto ol = T();
             L("int64_t ", ol, " = ", v.len, ";");
             // A negative target length shrinks past empty: the same
@@ -321,7 +336,12 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
                 auto iv = T();
                 L("for (int64_t ", iv, " = ", ol, "; ", iv, " < ", nn, "; ", iv, "++) {");
                 ind++;
-                if (ak == A_LIMITED) {
+                if (relref) {
+                    if (ak == A_LIMITED)
+                        EmitRelStoreAt(cat("(uint8_t *)(", ElemAddr(v, iv), ")"), elem, fv, ln, true);
+                    else
+                        EmitRelStore(lv.stk, elem, fv, ln);
+                } else if (ak == A_LIMITED) {
                     if (v.typedelems) L(v.elems, "[", iv, "] = ", fv, ";");
                     else L("*(", CT(elem), " *)(", ElemAddr(v, iv), ") = ", fv, ";");
                 } else {

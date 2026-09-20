@@ -11,7 +11,6 @@ fn id(n: i64) -> i64 { n }
 fn reapply<F>(n: i64) -> i64 { id(F(n)) }
 fn reapply2<F>(n: i64) -> i64 { id(id(F(n))) }
 fn both<F>(a: i64, b: i64) -> i64 { F(a) * 100 + F(b) }
-fn pass<G>(n: i64) -> i64 { apply(n, G()) }
 fn with_text<F>(s: u8[:]) -> i64 { F(s) }
 fn with_arr<F>(xs: i64[>..]&) -> i64 { F(xs) }
 recursive fn countdown<F>(k: i64) {
@@ -28,7 +27,7 @@ let G2 = apply(4) { x => apply(5) { y => fn g() -> i64 { x * y } g() } };
 // A global initializer's local, named in its function values' bodies.
 let G3 = block {
     let q = 3;
-    break apply(4) { fn g() -> i64 { q * it } g() } + pass(5) { fn h(n: i64) -> i64 { n * q } h };
+    break apply(4) { fn g() -> i64 { q * it } g() } + apply(5) { fn h(n: i64) -> i64 { n * q } h(it) };
 };
 fn main() {
     let base = 100;
@@ -84,7 +83,7 @@ fn main() {
     fn gx2(n: i64) -> i64 { n + x }
     print(apply(4) { let x = 50; gx() + x });
     print(apply(4) { let x = 50; apply(5, gx2) + x });
-    // Yielded out of the body, which has ended when it is called.
-    print(pass(5) { fn h(n: i64) -> i64 { n + base } h });
+    // Call the nested function while its declaring body is in scope.
+    print(apply(5) { fn h(n: i64) -> i64 { n + base } h(it) });
     print(find(), " ", G1, " ", G2, " ", G3);
 }

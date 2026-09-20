@@ -1,9 +1,5 @@
-// error: g names k
-// error: whose scope has ended where g is called
-// A nested function that leaves its block names nothing the block declared,
-// but calls g, declared further on in the block, which names the block's k:
-// neither may be called once the block has ended, whatever was checked
-// inside it.
+// error: a function value must be a function name or block literal
+// Computed function values are rejected before their captures can escape.
 fn apply<F>(n: i64) -> i64 { F(n) }
 fn main() {
     print(apply(5, block {

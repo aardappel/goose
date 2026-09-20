@@ -1,8 +1,5 @@
-// error: h names k
-// error: whose scope has ended where h is called
-// A nested function whose value leaves the block declaring it cannot name
-// that block's k once the block has ended, and does not name the k of the
-// scope it is called in instead.
+// error: a function value must be a function name or block literal
+// Computed function values are rejected before their captures can escape.
 fn apply<F>(n: i64) -> i64 { F(n) }
 fn main() {
     let k = 100;

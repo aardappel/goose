@@ -939,7 +939,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         auto p = cg.T();
         cg.L("uint8_t *", p, " = (uint8_t *)(", v.elems, ");");
         cg.GenLoopBody([&]() {
-            if (byref) cg.L("uint8_t *", iv, " = ", p, ";");
+            if (!vdef->copybind) cg.L("uint8_t *", iv, " = ", p, ";");
         }, body, d,
             cat("for (int64_t ", gi, " = 0; ", gi, " < (", v.len, "); ", gi, "++, ", p,
                 " += ", cg.SizeX(v.elem, p), ") {"));
@@ -951,7 +951,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
                           ? cat(v.elems, "[", gi, "]")
                           : cat("(*(", cg.CT(v.elem), " *)((", v.elems, ") + ", gi, " * ",
                                 esz, "))");
-        if (byref) {
+        if (!vdef->copybind) {
             cg.L(cg.CT(et), " ", iv, " = &", elem, ";");
         } else if (v.elem->kind == TY_REF && v.elem->ref->lenstorage >= 0) {
             // A relative-reference element bound by value: the binding is the

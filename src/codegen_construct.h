@@ -283,8 +283,11 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
     // any exit taken inside one of them (ExitStart).
     OpenAt open(*this, stk);
     if (auto c = Is<Call>(n); c && c->builtin == B_COPY) {
-        // copy(x): the stored value's bytes, as an implicit copy once was.
-        GenConstruct(c->FirstArg(), stk, want, lenlv);
+        // Keep the source's storage type and adapt into the destination.
+        auto target = want ? want : et;
+        auto lv = GenLoc(c->FirstArg());
+        if (IsBytesT(target)) ConstructFromLoc(lv, target, stk, lenlv, n->line);
+        else EmitValStore(stk, target, LoadLoc(lv, target, n->line));
         return;
     }
     if (auto c = Is<Call>(n)) {

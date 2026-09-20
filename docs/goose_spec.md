@@ -1369,10 +1369,8 @@ every function declared in the blocks around its declaration, before or
 after it, so nested functions may call each other in either order, as a
 recursive descent parser's do; calling one of them before the enclosing
 code has reached its declaration is an error. That code names a nested
-function from its declaration to the end of its scope, but the function's
-value may leave the scope as the value of a `block` or of a function
-value's body (`break h`, a body ending in `h`); a call after the scope has
-ended must not name a variable declared in it, which is an error.
+function from its declaration to the end of its scope. It may pass the
+name directly as a static function argument (§7.6).
 
 Implementation model: free variables become hidden reference parameters of
 the nested function. A nested function's value never outlives the function
@@ -1396,6 +1394,12 @@ runtime data. The `: fn(...)` bound is optional documentation: a bare `<F>`
 works identically — the call `F(a)` typechecks per instantiation like
 everything else (passing a non-function just produces the error at that call,
 reported with the instantiation chain).
+
+A function argument must be a function name (including a bound generic
+function parameter) or a block literal. Runtime expressions producing a
+function value, such as a call, `if`, `match`, `block`, or `loop`, are
+rejected. Evaluate runtime work in ordinary statements before the call;
+use locals when its ordering with other arguments matters.
 
 Function values capture enclosing locals per §7.5, and cannot escape:
 storing them, returning them, or putting them in data is a compile error.

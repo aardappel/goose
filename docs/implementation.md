@@ -168,7 +168,6 @@ function and no existing specialization matches. `GetOrCreateSpec`
 | Part of the key | What it records |
 |---|---|
 | `lexparent` | the lexical environment a nested function is declared in: a specialization, or a function value's body as one check of its call sees it (`FnSpec::isfunval`, §3.12) |
-| `escaped` | whether a nested function is called after the scope declaring it ended, its value having left it: its body may name nothing that scope declared, which one checked inside the scope may (§3.12) |
 | `argtypes` | the concrete parameter types after generic inference |
 | `bindings` | the concrete type of each of the function's own type variables, explicit or inferred, in any order: the only record of one no parameter type mentions (`size<u8>()`) |
 | `roots` (`RootArg` per parameter) | the reference root *class* of each reference, slice or reference-holding argument, where the class's depth stands (`depthkey`), its writability, `reusable` and grow-shrink provenance, whether it is a `bytes_of` view, and the global pool it is rooted in (§3.4) |
@@ -348,7 +347,7 @@ is then the pointee's type, which codegen follows: a written `&x` there
 reads as `x` (`Unary::CgX`).
 `CheckValue` also:
 
-* unwraps `copy(x)` to `x` (the copy is codegen's business);
+* retains `copy(x)` as a call, so repeated checking preserves copy intent;
 * binds a non-fixed lvalue to a reference destination by rewriting the node
   to a synthesized `&node` (`AutoRef`, `Unary::synth`), so every later pass
   sees an ordinary reference argument, and warns on a redundant user `&`;
@@ -909,19 +908,19 @@ scope around the call that shadows or adds a name changes nothing and one
 specialization per `lexparent` serves every call. `GetOrCreateSpec` rejects
 a call that reaches a nested function before its declaration is checked (a
 nested function declared earlier calling it), since the variables its site
-lists do not exist yet. A site outlives its scope, because a block or a
-function value's body can yield the function as its value (`ScopeEnded`
-compares `Scope::serial`): a call after that finds the scope's variables out
-of scope (`InScope`), `LookupVar` reports one the body names, and the
-specialization is keyed apart (`FnSpec::escaped`), since one checked inside
-the scope may name them and reusing it would hand codegen captures it no
-longer declares. `VisibleVars`, which the shrink rules and the read-back
-candidates enumerate (§3.6, §3.10), keeps the lexical parents' frames as the
-call finds them: a reference handed to the body, a later nested function's
+lists do not exist yet. Rechecking a declaration, loop or match binding
+resets its checking state while preserving its `VarDef` identity and
+capture flag (`ResetLocal`), so cached specializations still name the
+binding codegen declares. `VisibleVars`, which the shrink rules and the
+read-back candidates enumerate (§3.6, §3.10), keeps the lexical parents'
+frames as the call finds them: a reference handed to the body, a later nested function's
 result or one a function value written at the call returns, can point into
 a variable the declaration does not see.
 
-**Function values** (`CheckFunValCall`, §7.6): a named function value
+**Function values** (`CheckFunValCall`, §7.6) are restricted by `CheckV` to
+names and block literals; runtime expressions producing them are rejected
+rather than having their effects discarded. Returning a function value or
+constructing an array of them is also rejected. A named function value
 resolves as a call in the environment its declaration is in, for a nested
 function the scope declaring it, whatever function names it
 (`LookupLocalFnEnv`, as for a call); a block is cloned into
@@ -934,15 +933,13 @@ as that check sees it is a lexical environment of its own, the frame's
 function declared in the body has it as `lexparent`, and a function value
 written there or a nested function of the body named as one carries it, so
 their lookups chain through the body's frame (`FrameOfSpec`, `LexFrame`) to
-its parameters and locals (§7.5); a nested function the body yields as its
-value is checked once that frame is gone, through its declaration site as
-one a finished block declared is, and its frame's `lexframe` continues in
-the nearest environment around it still being checked. Each check clones
-the body afresh and makes a new environment with it, so a specialization
+its parameters and locals (§7.5). Each check clones the body afresh and
+makes a new environment with it, so a specialization
 keyed on one captures that clone's variables: another call site of the
 value, or the same call checked again as an argument, specializes anew
-instead of reusing one whose captures codegen never declares. `NamedSpec` gives the named function around such an
-environment, which a plain `return` inside it targets (`CheckReturn`); that
+instead of reusing one whose captures codegen never declares. `NamedSpec`
+gives the named function around such an environment, which a plain `return`
+inside it targets (`CheckReturn`); that
 is how HOF-based iteration returns. `LexicalLocals` gives a nested recursive
 call's lexical parents' locals, the body's included (§3.10).
 
@@ -1632,6 +1629,10 @@ pool global reads that local too. `self` stores minus the field's own offset
 (self-relative) or the value's own pool offset (`in pool`, only where the
 literal is built inside the pool). `pop` on an array of relative references
 loads the element it removes like any other load, from the slot it leaves.
+`resize(n, ref)` evaluates the fill once as a plain pointer and encodes an
+offset at each new slot using the same store helper, including its null and
+range checks. Aggregate fills containing self-relative references remain
+unsupported.
 
 A `reusable[]` pool's operations (`EmitSlicePool`) evaluate the receiver,
 then the slice, then the length (`SliceLen`, which aborts on a negative or

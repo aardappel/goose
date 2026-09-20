@@ -364,7 +364,7 @@ inline void TypeCheck::RequireCopyable(const Val &v, Node *n, TypeExpr *dt) {
                  what, ") for a copy, or bind it by reference"));
 }
 
-// Argument nodes the checker rebound (by reference, or a copy() unwrapped)
+// Argument nodes the checker rebound by reference
 // replace the originals: the receiver, then the call's own arguments.
 inline void TypeCheck::WriteBackArgs(Call *c, Dot *d, vector<Node *> &argnodes) {
     d->obj = argnodes[0];
@@ -377,12 +377,6 @@ inline Node *TypeCheck::WholeSlice(Node *n) {
     auto se = ast.New<SliceExpr>(n->line, n);
     se->cmpview = true;
     return se;
-}
-
-// copy(x) checked: the node becomes x itself, the stored value codegen
-// copies at the destination like any lvalue source.
-inline void TypeCheck::UnwrapCopy(Node *&n) {
-    if (auto c = Is<Call>(n); c && c->builtin == B_COPY) n = c->FirstArg();
 }
 
 // A value meeting a destination of type `expected` (null or void: none).
@@ -398,7 +392,6 @@ inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bo
         Warn(n, cat("redundant &: the construct's value is a copy of ", what, " either way "
                     "(§4.1); a reference-typed binding binds ", what, " without it"));
     }
-    UnwrapCopy(n);
     if (!expected || expected->kind == TY_VOID) {
         v = DecayRef(v);
     } else {

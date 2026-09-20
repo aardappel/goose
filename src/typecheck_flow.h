@@ -198,8 +198,19 @@ inline Prov TypeCheck::RefProvOf(VarDef *vd) {
     return p;
 }
 
-inline VarDef *TypeCheck::NewVar(string_view name, TypeExpr *type, Line l, bool isvar) {
-    auto vd = ast.NewVarDef();
+inline VarDef *TypeCheck::ResetLocal(VarDef *previous) {
+    if (!previous) return ast.NewVarDef();
+    // Cached nested specializations capture this identity. Recompute its
+    // checking state, but retain the capture discovered on an earlier pass.
+    auto captured = previous->captured;
+    *previous = VarDef {};
+    previous->captured = captured;
+    return previous;
+}
+
+inline VarDef *TypeCheck::NewVar(string_view name, TypeExpr *type, Line l, bool isvar,
+                                VarDef *previous) {
+    auto vd = ResetLocal(previous);
     vd->name = name;
     vd->type = type;
     vd->line = l;
@@ -859,7 +870,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                     Error(arm.body, "binding a resizable ADT payload is not supported by "
                                     "the C backend yet; match its tag without a payload "
                                     "binder, or use a standalone resizable struct");
-                binder = ast.NewVarDef();
+                binder = ResetLocal(arm.binder);
                 binder->name = arm.pat.binder;
                 binder->line = m->line;
                 binder->depth = CurDepth() + 1;
@@ -1044,6 +1055,7 @@ inline void TypeCheck::CheckWhile(While *x) {
 }
 
 inline void TypeCheck::CheckFor(ForLoop *x) {
+    auto byref = x->byref;
     TypeExpr *bindtype = nullptr;
     TypeExpr *elemtype = nullptr;   // The array's element type, where it has one.
     Prov iterprov;   // What a reference binding points into.
@@ -1080,13 +1092,12 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
             elemtype = elem;
             x->iterkind = t->kind == TY_ARRAY ? IK_ARRAY : IK_SLICE;
             // Non-fixed elements bind by reference either way (§4.1).
-            if (!x->byref && ClassOf(elem) != SC_FIXED) {
-                x->byref = true;
-            } else if (x->byref && ClassOf(elem) != SC_FIXED) {
+            if (x->byref && ClassOf(elem) != SC_FIXED) {
                 Warn(x, "redundant &: elements of this type bind by reference without it "
                         "(§4.1)");
             }
-            if (x->byref) {
+            byref = x->byref || ClassOf(elem) != SC_FIXED;
+            if (byref) {
                 bindtype = RefTo(elem, x->line);
             } else {
                 // An element that *is* a relative reference loads as a
@@ -1107,9 +1118,9 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     auto assumed = NarrowedOptionals();
     PushLoopAssigned(x->body);
     PushScope(SK_LOOP, x);
-    auto vd = NewVar(x->var, bindtype, x->line, false);
+    auto vd = NewVar(x->var, bindtype, x->line, false, x->vdef);
     vd->assigned = true;
-    vd->copybind = (x->iterkind == IK_ARRAY || x->iterkind == IK_SLICE) && !x->byref;
+    vd->copybind = (x->iterkind == IK_ARRAY || x->iterkind == IK_SLICE) && !byref;
     if (!IsRefOrSlice(bindtype) && HoldsPlainRef(bindtype)) {
         // A holder element copied out: its contents are the array's.
         Val hv;
@@ -1122,7 +1133,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         // A relative-reference or slice element bound by value was read
         // out of the array, so where it points follows the read-back rule
         // (§9.5), not the array's own root.
-        if (!x->byref && elemtype &&
+        if (!byref && elemtype &&
             ((elemtype->kind == TY_REF && elemtype->ref->lenstorage >= 0) ||
              elemtype->kind == TY_SLICE)) {
             auto rb = ReadBackRoot(elemtype, CanonRoot(iterprov.root), iterprov.rootexact,
@@ -1136,7 +1147,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     }
     x->vdef = vd;
     if (!x->idxvar.empty()) {
-        auto idx = NewVar(x->idxvar, ast.inttypes[IS_I64], x->line, false);
+        auto idx = NewVar(x->idxvar, ast.inttypes[IS_I64], x->line, false, x->idxdef);
         idx->assigned = true;
         x->idxdef = idx;
     }
@@ -1287,7 +1298,8 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
     }
     auto MakeDef = [&](size_t i) -> VarDef * {
         if (global) return vd->defs[i];  // Pre-created by the driver.
-        auto d = ast.NewVarDef();
+        if (vd->defs.size() <= i) vd->defs.push_back(nullptr);
+        auto d = vd->defs[i] = ResetLocal(vd->defs[i]);
         d->name = vd->names[i];
         d->line = vd->line;
         d->isvar = vd->isvar;
@@ -1317,7 +1329,6 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         }
         NoteNonfixedLocal(t, vd->line, global);
         if (!global) {
-            vd->defs.push_back(d);
             vars.push_back(d);
         }
     };
@@ -1366,6 +1377,10 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
                                                         ann->kind == TY_SLICE) });
             SlotScope ss(*this, ann != nullptr);
             auto refinit = Is<Unary>(vd->inits[i]);
+            if (refinit && refinit->synth) {
+                vd->inits[i] = refinit->child;
+                refinit = nullptr;
+            }
             if (vd->byref && !ann) {
                 // `let r .= e;` binds a reference to e: an lvalue by
                 // reference, a reference or slice value as it is (§3.8).
@@ -1876,17 +1891,28 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             // destinations that never copy implicitly.
             auto av = CheckV(args[0], nullptr);
             args[0]->exprtype = av.type;
-            if (av.type->kind == TY_SLICE)
+            auto v = DecayRef(av);
+            if (v.type->kind == TY_SLICE)
                 Error(c, "copy takes a value or a reference, not a slice");
             if (!av.lvalue && !IsPlainRef(av.type))
                 Error(c, "copy of a temporary: the value is fresh already");
-            auto v = DecayRef(av);
             if ((v.type->kind == TY_ENUM || v.type->kind == TY_VARIANT) &&
                 ClassOf(v.type) == SC_RESIZABLE)
                 Error(c, "copying a resizable ADT or variant is not supported by the "
                          "C backend yet; construct a fresh value or pass the owning "
                          "value by reference");
             v.lvalue = false;
+            // Keep the copy node and its own storage root through every
+            // argument check. Its contents still borrow from the source.
+            if (!v.holderset && HoldsPlainRef(v.type)) {
+                v.holderroot = CanonRoot(v.root);
+                v.holderfrom = IsTemp(v.holderroot) ? nullptr : v.holderroot;
+                v.holderset = true;
+            }
+            v.root = TempRoot();
+            v.rootexact = true;
+            v.rootfrom = nullptr;
+            v.writable = false;
             c->rettypes.push_back(v.type);
             return v;
         }

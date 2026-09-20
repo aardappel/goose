@@ -2086,7 +2086,7 @@ inline void MatchExpr::BceMark(BCE &b) {
 }
 
 inline void ForLoop::BceMark(BCE &b) {
-    if (byref) b.MarkAddr(iter);
+    if ((iterkind == IK_ARRAY || iterkind == IK_SLICE) && !vdef->copybind) b.MarkAddr(iter);
     b.NoteVar(vdef);
     b.NoteVar(idxdef);
     b.NoteOwn(vdef);
