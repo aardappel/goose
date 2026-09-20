@@ -1479,6 +1479,34 @@ inline void TypeCheck::AssignableClassCheck(TypeExpr *t, Node *at) {
                       " is frozen at construction (§4.4); rebuild its container instead"));
 }
 
+// The right-hand side of a whole assignment, against the storage it
+// replaces. Where that storage holds a resizable array (`arr`, rooted at
+// `built`), the old elements are released first -- a shrink of the array,
+// which anything still pointing into it rejects (§5.1, §5.2) -- and the new
+// ones are built over them, so the assignment is a growth of it as well; the
+// value then runs with that array under construction, which nothing it does
+// may grow (§1.3(4)) or even use (§4.4).
+inline Val TypeCheck::CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *arr,
+                                         VarDef *built, bool builtexact, Dest dest) {
+    if (arr) {
+        auto rest = shrinkrest;
+        shrinkrest = a->rhs;
+        ShrinkThrough(a, true, "assign", ExprStr(a->lval), built, builtexact, target);
+        shrinkrest = rest;
+        NoteGrow(a, built, builtexact, cat("assign ", ExprStr(a->lval)));
+    }
+    SlotScope ss(*this, true);
+    auto base = growlog.size();
+    auto v = CheckValueAt(a->rhs, target, dest);
+    if (arr && built) {
+        CheckGrowsSince(base, built, builtexact, cat("the value assigned to ", ExprStr(a->lval)));
+        CheckBuiltUses(a->rhs, a->lval, built, builtexact, arr);
+    }
+    if (v.type->kind == TY_VOID && reachable)
+        Error(a, "the right-hand side has no value");
+    return v;
+}
+
 inline void TypeCheck::CheckAssign(Assign *a) {
     TempScope temps(*this);
     auto lv = CheckLValue(a->lval);
@@ -1544,10 +1572,9 @@ inline void TypeCheck::CheckAssign(Assign *a) {
         auto av = DecayRef(CheckV(a->rhs, nullptr));
         CompletePending(target, PendingElemFromSeq(av, a), a->line);
     }
-    // Assigning a resizable array whole, or a value holding one, replaces
-    // its elements: a shrink to anything referring into it (§5.1, §5.2),
-    // then a growth, the new contents being under construction at its
-    // base while the right-hand side runs (§4.4, §1.3(4)).
+    // An uninitialized local's first assignment constructs it; every other
+    // assignment of a resizable array, or of a value holding one, replaces
+    // elements that are already there.
     VarDef *built = nullptr;
     auto builtexact = false;
     auto arr = ResizableArrayIn(target);
@@ -1558,23 +1585,12 @@ inline void TypeCheck::CheckAssign(Assign *a) {
             Error(a, "cannot assign a grow-only array through a reference: a shrink of "
                      "a grow-only array applies to a local of the function that owns "
                      "it (§5.1)");
-        auto rest = shrinkrest;
-        shrinkrest = a->rhs;
-        ShrinkThrough(a, true, "assign", ExprStr(a->lval), built, builtexact, target);
-        shrinkrest = rest;
-        NoteGrow(a, built, builtexact, cat("assign ", ExprStr(a->lval)));
+    } else {
+        arr = nullptr;
     }
-    SlotScope ss(*this, true);
-    auto base = growlog.size();
-    auto v = CheckValueAt(a->rhs, target,
-                          Dest { lv.root, lv.rootexact,
-                                 lv.var && IsRefOrSlice(target) });
-    if (built) {
-        CheckGrowsSince(base, built, builtexact, cat("the value assigned to ", ExprStr(a->lval)));
-        CheckBuiltUses(a->rhs, a->lval, built, builtexact, arr);
-    }
-    if (v.type->kind == TY_VOID && reachable)
-        Error(a, "the right-hand side has no value");
+    auto v = CheckAssignedValue(a, target, arr, built, builtexact,
+                                Dest { lv.root, lv.rootexact,
+                                       lv.var && IsRefOrSlice(target) });
     if (lv.var) {
         // Slice variables carry their value's provenance (refs use .=).
         if (target->kind == TY_SLICE) {
@@ -1668,30 +1684,11 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv) {
         Error(a, cat("cannot assign ", arr == pt ? "a grow-only array" : "a value holding a "
                      "grow-only array", " through a reference: a shrink of a grow-only "
                      "array applies to a local of the function that owns it (§5.1)"));
-    // The pointee's elements are replaced: a shrink, then a growth with
-    // the new contents under construction while the right-hand side runs
-    // (§4.4, §1.3(4)).
-    VarDef *built = nullptr;
-    auto builtexact = false;
-    if (arr) {
-        built = CanonRoot(lv.var ? RefRootOf(lv.var) : lv.root);
-        builtexact = lv.var ? RefExactOf(lv.var) : lv.rootexact;
-        auto rest = shrinkrest;
-        shrinkrest = a->rhs;
-        ShrinkThrough(a, true, "assign", ExprStr(a->lval), built, builtexact, pt);
-        shrinkrest = rest;
-        NoteGrow(a, built, builtexact, cat("assign ", ExprStr(a->lval)));
-    }
-    SlotScope ss(*this, true);
-    auto base = growlog.size();
-    auto v = CheckValueAt(a->rhs, pt, lv.var ? Dest { RefRootOf(lv.var), RefExactOf(lv.var) }
-                                             : Dest { lv.root, lv.rootexact });
-    if (built) {
-        CheckGrowsSince(base, built, builtexact, cat("the value assigned to ", ExprStr(a->lval)));
-        CheckBuiltUses(a->rhs, a->lval, built, builtexact, arr);
-    }
-    if (v.type->kind == TY_VOID && reachable)
-        Error(a, "the right-hand side has no value");
+    auto built = arr ? CanonRoot(lv.var ? RefRootOf(lv.var) : lv.root) : nullptr;
+    auto builtexact = arr && (lv.var ? RefExactOf(lv.var) : lv.rootexact);
+    CheckAssignedValue(a, pt, arr, built, builtexact,
+                       lv.var ? Dest { RefRootOf(lv.var), RefExactOf(lv.var) }
+                              : Dest { lv.root, lv.rootexact });
 }
 
 // A reference variable keeps one root for its whole life (see header

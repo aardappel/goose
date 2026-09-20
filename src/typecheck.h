@@ -1100,6 +1100,8 @@ struct TypeCheck {
     void NoteNonfixedLocal(TypeExpr *t, Line l, bool global);
     void AssignableClassCheck(TypeExpr *t, Node *at);
     void CheckAssign(Assign *a);
+    Val CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *arr, VarDef *built,
+                           bool builtexact, Dest dest);
     void CheckRebind(Assign *a, LVal &lv);
     bool PointeeWritable(LVal &lv, Node *at);
     void PointeeAssign(Assign *a, LVal &lv);
