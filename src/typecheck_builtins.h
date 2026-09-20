@@ -880,7 +880,12 @@ inline void TypeCheck::AddStoreEvent(const StoreEvent &e) {
 
 // The container's contents (§9.2): the deepest root stored into it so far,
 // exact only while every store agrees, which is what bounds a copy of them.
+// A container that is itself a reference or a slice has none -- what it
+// points at is its binding -- and neither has a parameter's class root: it
+// stands for storage of the caller's, whose contents are the caller's to
+// know, and which the body sees only as the bound the class is.
 inline void TypeCheck::NoteContentRoot(VarDef *container, VarDef *root, bool exact) {
+    if (!container->type || IsRefOrSlice(container->type)) return;
     if (!container->contentset || Depth(root) > Depth(container->contentroot)) {
         container->contentexact = exact && (!container->contentset ||
                                             container->contentroot == root);
@@ -912,10 +917,7 @@ inline void TypeCheck::RecordStore(VarDef *container, const Val &v, TypeExpr *po
     container->contentbyteview |= v.byteview;
     if (fitnode) e.at = fitnode->line;
     AddStoreEvent(e);
-    // A container that is itself a reference or a slice has no contents of
-    // its own: what it points at is its binding (§9.2).
-    if (container->type && !IsRefOrSlice(container->type))
-        NoteContentRoot(container, e.root, e.exact);
+    NoteContentRoot(container, e.root, e.exact);
 }
 
 // The root a parameter's class stands for at a call, and whether it is
@@ -954,8 +956,6 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         e.byteview = byteview;
         e.at = at->line;
         container->contentbyteview |= byteview;
-        // Unlike RecordStore, this notes the contents of a class root too,
-        // which is the caller's storage rather than a container of its own.
         NoteContentRoot(container, r, exact);
         AddStoreEvent(e);
     };
