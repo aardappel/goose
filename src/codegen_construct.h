@@ -62,6 +62,20 @@ inline void CodeGen::EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln,
     if (guarded) L("#endif");
 }
 
+// The offset a plain reference value stores as, in a local: its distance
+// from the origin the width's form measures against (RelOrigin), and zero
+// for the null of an optional one, whose slot cannot hold a real offset of
+// zero (§3.9).
+inline string CodeGen::RelOffset(TypeExpr *rt, const string &org, const string &rv) {
+    auto addr = cat("(uint8_t *)(", rv, ")");
+    auto off = T();
+    if (rt->ref->optional)
+        L("int64_t ", off, " = ", addr, " ? (int64_t)(", addr, " - (", org, ")) : 0;");
+    else
+        L("int64_t ", off, " = (int64_t)(", addr, " - (", org, "));");
+    return off;
+}
+
 // Writes a plain-reference value into the relative-reference slot at
 // `fa` (§3.9), range-checked. Fixed widths only; the varint form exists
 // only in the stack-top variant below.
@@ -70,13 +84,7 @@ inline void CodeGen::EmitRelStoreAt(const string &fa, TypeExpr *rt, const string
     auto w = (IntStorage)rt->ref->lenstorage;
     assert(w != IS_VARINT);
     assert(!IsResz(rt->ref->sub));
-    auto addr = cat("(uint8_t *)(", rv, ")");
-    auto org = RelOrigin(rt, fa);
-    auto off = T();
-    if (rt->ref->optional)
-        L("int64_t ", off, " = ", addr, " ? (int64_t)(", addr, " - (", org, ")) : 0;");
-    else
-        L("int64_t ", off, " = (int64_t)(", addr, " - (", org, "));");
+    auto off = RelOffset(rt, RelOrigin(rt, fa), rv);
     EmitRelRangeCheck(rt, off, ln, inroot);
     L("*(", RelCT(rt), " *)(", fa, ") = (", RelCT(rt), ")", off, ";");
 }
@@ -87,13 +95,7 @@ inline void CodeGen::EmitRelStore(const string &stk, TypeExpr *rt, const string 
     L("uint8_t *", fa, " = ", Top(stk), ";");
     if (w == IS_VARINT) {
         assert(!IsResz(rt->ref->sub));
-        auto addr = cat("(uint8_t *)(", rv, ")");
-        auto org = RelOrigin(rt, fa);
-        auto off = T();
-        if (rt->ref->optional)
-            L("int64_t ", off, " = ", addr, " ? (int64_t)(", addr, " - (", org, ")) : 0;");
-        else
-            L("int64_t ", off, " = (int64_t)(", addr, " - (", org, "));");
+        auto off = RelOffset(rt, RelOrigin(rt, fa), rv);
         Bump(stk, rt->ref->pool ? cat("gs_uleb_write(", fa, ", (uint64_t)", off, ")")
                                 : cat("gs_zig_write(", fa, ", ", off, ")"));
     } else {

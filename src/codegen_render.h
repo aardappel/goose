@@ -344,17 +344,14 @@ inline void CodeGen::EmitFormatInto(Loc lv, Node *a, Line ln, Call *c) {
     } else {
         L("int64_t ", n, " = ", FmtCall(a, Top(lv.stk)), ";");
     }
-    if (limited) {
-        auto ol = T();
-        L("int64_t ", ol, " = ", v.len, ";");
-        L("if (", ol, " + ", n, " > ", LimitedCap(lv), ") gs_abort(GS_E_CAPACITY, ",
-          LocArgs(ln), ");");
-        L(CopyFn(nullable), "(", ElemAddr(v, ol), ", ", src, ", (size_t)", n, ");");
-        L(v.lenlv, " = (", LenCast(lv), ")(", ol, " + ", n, ");");
+    // Bytes to copy -- a limited array's, under its capacity check, or a
+    // rendered or array source into a resizable -- append like any others.
+    if (limited || bytes) {
+        AppendBytes(lv, src, n, ln, nullable);
         return;
     }
+    // A scalar's text is at the resizable's top already: only the count moves.
     assert(!lv.stk.empty());
-    if (bytes) L(CopyFn(nullable), "(", Top(lv.stk), ", ", src, ", (size_t)", n, ");");
     Bump(lv.stk, n);
     L(v.lenlv, " += ", n, ";");
 }

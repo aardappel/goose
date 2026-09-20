@@ -725,6 +725,7 @@ struct CodeGen {
     void EmitLenStore(const string &stk, IntStorage ls, const string &n);
     void EmitVarintStore(const string &stk, const string &x);
     void EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln, bool inroot);
+    string RelOffset(TypeExpr *rt, const string &org, const string &rv);
     void EmitRelStoreAt(const string &fa, TypeExpr *rt, const string &rv, Line ln, bool inroot);
     void EmitRelStore(const string &stk, TypeExpr *rt, const string &rv, Line ln);
     void EmitRelSelfAt(const string &fa, TypeExpr *rt, int64_t fieldoff, Line ln,
