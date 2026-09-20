@@ -638,16 +638,10 @@ struct TypeCheck {
     // The field runs of a nominal type (ast.h FieldRun), instantiating it
     // as needed; empty for every other kind.
     vector<FieldRun> FieldRuns(TypeExpr *t);
-    // Whether `f` holds of some field type of t, pads skipped.
-    template<typename F> bool AnyField(TypeExpr *t, F f) {
-        for (auto &run : FieldRuns(t))
-            for (auto ft : *run.ftypes) if (ft && f(ft)) return true;
-        return false;
-    }
-    template<typename F> void EachField(TypeExpr *t, F f) {
-        for (auto &run : FieldRuns(t))
-            for (auto ft : *run.ftypes) if (ft) f(ft);
-    }
+    // Whether `f` holds of some field type of t, pads skipped, and the same
+    // for each of them; instantiating t as FieldRuns does.
+    template<typename F> bool AnyField(TypeExpr *t, F f) { return AnyFieldOf(FieldRuns(t), f); }
+    template<typename F> void EachField(TypeExpr *t, F f) { EachFieldOf(FieldRuns(t), f); }
     void CheckFieldDefaults(vector<Field> &fields, vector<TypeExpr *> &ftypes, vector<Node *> &out,
                             vector<pair<string_view, TypeExpr *>> &bindings);
     SizeClass ClassOf(TypeExpr *t);

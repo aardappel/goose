@@ -1066,6 +1066,22 @@ inline void AllRunsOf(const EnumInst *ei, vector<FieldRun> &out) {
     for (size_t vi = 0; vi < ei->en->variants.size(); vi++) out.push_back(RunOf(ei, (int)vi));
 }
 
+// Whether `f` holds of some field type in these runs, and the same for every
+// one of them; pads (a null type) are skipped. Which runs a type has is the
+// pass's own question -- the checker instantiates the type to answer it, the
+// backend reads the instantiation the checker left behind -- but what to do
+// with them is this.
+template<typename F> bool AnyFieldOf(const vector<FieldRun> &runs, F f) {
+    for (auto &run : runs)
+        for (auto ft : *run.ftypes) if (ft && f(ft)) return true;
+    return false;
+}
+
+template<typename F> void EachFieldOf(const vector<FieldRun> &runs, F f) {
+    for (auto &run : runs)
+        for (auto ft : *run.ftypes) if (ft) f(ft);
+}
+
 // Call-site facts about one reference/slice or holder parameter, part of the
 // specialization key (§10.2): the relative-outlives class of its root among
 // the call's reference arguments (0 = static, 1 = outermost, ...), where

@@ -153,6 +153,12 @@ struct CodeGen {
     // Type utilities on concrete (post-typecheck) types. Sizes of fixed and
     // limited arrays were evaluated during checking; assert rather than
     // re-evaluate.
+    //
+    // These read what the checker left behind and create nothing: TypeCheck's
+    // ClassOf and GetStructInst instantiate a type and validate it, which is
+    // the checking half of the same questions and must not happen here.
+    // TEq is not TypeEq either: it is equality of C representation, so it
+    // ignores `const`, which no C type carries (§9.5).
 
     int64_t ArrSize(TypeArray *a) {
         assert(a->size >= 0 || !a->sizeexpr);
@@ -166,16 +172,9 @@ struct CodeGen {
     // The field runs of a nominal type (ast.h FieldRun); empty for every
     // other kind.
     vector<FieldRun> FieldRuns(TypeExpr *t);
-    // Whether `f` holds of some field type of t, pads skipped.
-    template<typename F> bool AnyField(TypeExpr *t, F f) {
-        for (auto &run : FieldRuns(t))
-            for (auto ft : *run.ftypes) if (ft && f(ft)) return true;
-        return false;
-    }
-    template<typename F> void EachField(TypeExpr *t, F f) {
-        for (auto &run : FieldRuns(t))
-            for (auto ft : *run.ftypes) if (ft) f(ft);
-    }
+    // As the checker's, over the runs this pass reads rather than builds.
+    template<typename F> bool AnyField(TypeExpr *t, F f) { return AnyFieldOf(FieldRuns(t), f); }
+    template<typename F> void EachField(TypeExpr *t, F f) { EachFieldOf(FieldRuns(t), f); }
     SizeClass Cls(TypeExpr *t);
 
     bool IsFix(TypeExpr *t)  { return Cls(t) == SC_FIXED; }
