@@ -83,7 +83,10 @@ struct CodeGen {
     unordered_map<FnSpec *, vector<VarDef *>> threadglobals;
     vector<VarDef *> &ThreadGlobals(FnSpec *entry);
     string protos;
-    set<FnSpec *> usedexterns;   // Extern fns called by live code: prototypes.
+    // Extern fns called by live code, in the order their first call is
+    // emitted: the prototypes follow it, and a set of pointers would put
+    // them in heap-address order, which differs from run to run.
+    vector<FnSpec *> usedexterns;
     string code;        // Function bodies, size/eq helpers, thunks, main.
     bool usesthreads = false;
     // Calls into the gfx layer (stdlib/gfx.goose), which a JIT run has to be

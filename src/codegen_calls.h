@@ -81,7 +81,8 @@ inline void CodeGen::EmitCallInto(Call *c, vector<Dst> &dsts) {
 // in its C type, no calling-convention extras; a fixed result lands in
 // a temporary like any other C value.
 inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
-    usedexterns.insert(sp);
+    if (std::find(usedexterns.begin(), usedexterns.end(), sp) == usedexterns.end())
+        usedexterns.push_back(sp);
     if (sp->sf->cname.rfind("gs_gfx_", 0) == 0) usesgfx = true;
     auto an = CallArgNodes(c, sp->argtypes.size());
     string argstr;
