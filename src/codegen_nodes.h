@@ -168,9 +168,9 @@ inline string Binary::CgX(CodeGen &cg) {
             cg.OperandT(left->exprtype)->kind != TY_ARRAY)
             cg.Fail(line, "comparing resizable structs is unsupported");
         auto la = cg.GenLoc(left);
-        if (la.t->kind == TY_REF) cg.DerefLoc(la, line);
+        if (la.t->kind == TY_REF) cg.DerefLoc(la);
         // The left view is read before the right operand runs.
-        auto lvw = cg.ArrayView(la, line);
+        auto lvw = cg.ArrayView(la);
         auto le = cg.T(), ln = cg.T();
         cg.L(lvw.typedelems ? cg.CT(lvw.elem) : string("uint8_t"), " *", le, " = ", lvw.elems,
              ";");
@@ -178,8 +178,8 @@ inline string Binary::CgX(CodeGen &cg) {
         lvw.elems = le;
         lvw.len = ln;
         auto ra = cg.GenLoc(right);
-        if (ra.t->kind == TY_REF) cg.DerefLoc(ra, line);
-        auto rvw = cg.ArrayView(ra, line);
+        if (ra.t->kind == TY_REF) cg.DerefLoc(ra);
+        auto rvw = cg.ArrayView(ra);
         auto eq = cg.GenRangeEq(lvw.elem, lvw.elems, lvw.len, rvw.elems, rvw.len,
                                 lvw.nullable || rvw.nullable);
         return op == T_EQ ? eq : cat("(uint8_t)(!", eq, ")");
@@ -259,12 +259,12 @@ inline string Dot::CgX(CodeGen &cg) {
     }
     if (member >= 0) {   // .len / .cap property.
         auto lv = cg.GenLoc(obj);
-        if (lv.t->kind == TY_REF) cg.DerefLoc(lv, line);
+        if (lv.t->kind == TY_REF) cg.DerefLoc(lv);
         if (lv.t->kind == TY_ARRAY && member == B_CAP) {
             assert(lv.t->arr->akind == A_LIMITED);
             return cg.LimitedCap(lv);
         }
-        auto v = cg.ArrayView(lv, line);
+        auto v = cg.ArrayView(lv);
         return cat("(", v.len, ")");
     }
     auto lv = cg.GenLoc(this);
@@ -469,7 +469,7 @@ inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
     if (varmode || isref) {
         if (cg.IsResz(enumtype)) {
             auto lv = cg.GenLoc(scrutinee);
-            if (lv.t->kind == TY_REF) cg.DerefLoc(lv, line);
+            if (lv.t->kind == TY_REF) cg.DerefLoc(lv);
             p = lv.s;   // Tag inspection needs only the owner's byte base.
         } else if (isref) {
             auto x = cg.GenPure(scrutinee);
@@ -555,7 +555,7 @@ inline void EarlyBlock::CgAny(CodeGen &cg, const Dst &d) {
 }
 
 inline void LoopExpr::CgAny(CodeGen &cg, const Dst &d) {
-    CodeGen::ViewScope vs(cg, hoistrefs, line);
+    CodeGen::ViewScope vs(cg, hoistrefs);
     cg.GenLoopBody({}, body, d);
 }
 
@@ -745,7 +745,7 @@ inline void VarDecl::CgStmt(CodeGen &cg) {
 
 inline void Assign::CgStmt(CodeGen &cg) {
     auto lv = cg.GenLoc(lval);
-    if (pointee) cg.DerefLoc(lv, line);
+    if (pointee) cg.DerefLoc(lv);
     // Resolve the destination before the RHS can rebind a reference or
     // change an index used by its C lvalue expression. A resizable one is
     // also its count and its stack, which a reference that can be rebound
@@ -854,7 +854,7 @@ inline void Assign::CgStmt(CodeGen &cg) {
 
 inline void IncDec::CgStmt(CodeGen &cg) {
     auto lv = cg.GenLoc(lval);
-    if (lv.t->kind == TY_REF) cg.DerefLoc(lv, line);
+    if (lv.t->kind == TY_REF) cg.DerefLoc(lv);
     assert(lv.val);
     auto o = op == T_INC ? "gs_add_" : "gs_sub_";
     cg.L(lv.s, " = ", o, cg.IntSfx(lv.t->intstorage), "(", lv.s, ", 1);");
@@ -863,7 +863,7 @@ inline void IncDec::CgStmt(CodeGen &cg) {
 inline void FnDecl::CgStmt(CodeGen &) {}   // Nested declarations are separate specs.
 inline void While::CgStmt(CodeGen &cg) {
     Dst d;
-    CodeGen::ViewScope vs(cg, hoistrefs, line);
+    CodeGen::ViewScope vs(cg, hoistrefs);
     cg.GenLoopBody([&]() {
         auto c = cg.GenTruth(cond);
         auto si = (int)cg.cscopes.size() - 1;
@@ -877,7 +877,7 @@ inline void While::CgStmt(CodeGen &cg) {
 
 inline void ForLoop::CgStmt(CodeGen &cg) {
     auto d = Dst {};
-    CodeGen::ViewScope vs(cg, hoistrefs, line);
+    CodeGen::ViewScope vs(cg, hoistrefs);
     auto iv = vdef ? cg.LocalName(vdef) : cg.T();
     auto ix = idxdef ? cg.LocalName(idxdef) : "";
     if (iterkind == IK_RANGE) {
@@ -911,8 +911,8 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
     // Arrays and slices. The length re-reads each iteration (growth during
     // iteration is legal, §5.2); element access goes through the view.
     auto lv = cg.GenLoc(iter);
-    if (lv.t->kind == TY_REF) cg.DerefLoc(lv, line);
-    auto v = cg.ArrayView(lv, line);
+    if (lv.t->kind == TY_REF) cg.DerefLoc(lv);
+    auto v = cg.ArrayView(lv);
     // Where BCE proved the body cannot resize it, both halves of the view are
     // loop-invariant. Only a length that is an actual memory load is worth
     // spelling as a local: that is the one the C backend cannot hoist for

@@ -138,7 +138,7 @@ inline string CodeGen::DstTop0(size_t i) {
 // An inlined body's named result reaching the destination it was bound to
 // (OpenIbNrvo) is in place already: building it there writes only its
 // count or its prefix. Returns its binding, or null for any other value.
-inline const CodeGen::NrvoDest *CodeGen::BuiltInPlace(Node *val, const string &stk,
+inline const CodeGen::NrvoDest *CodeGen::NrvoBoundAt(Node *val, const string &stk,
                                                       const string &lenlv) {
     auto id = Is<Ident>(val);
     if (!id || !id->vdef) return nullptr;
@@ -153,7 +153,7 @@ inline const CodeGen::NrvoDest *CodeGen::BuiltInPlace(Node *val, const string &s
 // construction opened there since the exit's scope was entered (open0) may
 // have placed something in front of it; "" when none can have.
 inline string CodeGen::ExitStart(Node *val, const string &stk, const string &lenlv, int open0) {
-    if (openat[stk] <= open0 || BuiltInPlace(val, stk, lenlv)) return "";
+    if (openat[stk] <= open0 || NrvoBoundAt(val, stk, lenlv)) return "";
     auto start = T();
     L("uint8_t *", start, " = ", Top(stk), ";");
     return start;

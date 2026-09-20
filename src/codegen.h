@@ -589,7 +589,7 @@ struct CodeGen {
     Loc BytesLoc(const string &ptr, TypeExpr *t, const Loc &from);
     void RelParts(const Loc &lv, string &faddr, string &off);
     string RelOrigin(TypeExpr *rt, const string &faddr);
-    void DerefLoc(Loc &lv, Line ln);
+    void DerefLoc(Loc &lv);
     Loc VarLoc(VarDef *vd);
     string HdrLv(VarDef *vd);
     string VarCT(const VarDef *vd);
@@ -611,8 +611,8 @@ struct CodeGen {
     // not be handed a null pointer, even for zero bytes.
     static const char *CopyFn(bool nullable) { return nullable ? "gs_memcpy" : "memcpy"; }
 
-    ArrView ArrayView(const Loc &lv, Line ln);
-    ArrView RawArrayView(const Loc &lv, Line ln);
+    ArrView ArrayView(const Loc &lv);
+    ArrView RawArrayView(const Loc &lv);
     // The address of element `i` of a view: typed pointer arithmetic where
     // the elements are typed, byte arithmetic at the element size otherwise.
     string ElemAddr(const ArrView &v, const string &i) {
@@ -634,14 +634,14 @@ struct CodeGen {
     // into locals once before the loop and every access inside uses them.
     unordered_map<const VarDef *, pair<string, string>> views;   // base, length.
 
-    bool AddView(VarDef *vd, Line ln);
+    bool AddView(VarDef *vd);
 
     // Installs the views a loop body may read, for the extent of that body.
     struct ViewScope {
         CodeGen &cg;
         vector<VarDef *> added;
-        ViewScope(CodeGen &_cg, const vector<VarDef *> &refs, Line ln) : cg(_cg) {
-            for (auto vd : refs) if (cg.AddView(vd, ln)) added.push_back(vd);
+        ViewScope(CodeGen &_cg, const vector<VarDef *> &refs) : cg(_cg) {
+            for (auto vd : refs) if (cg.AddView(vd)) added.push_back(vd);
         }
         ~ViewScope() { for (auto vd : added) cg.views.erase(vd); }
     };
@@ -813,7 +813,7 @@ struct CodeGen {
     void DeclareTop0(size_t at, int indent, const string &name, const string &stk);
     string ScopeTop0(int si);
     string DstTop0(size_t i);
-    const NrvoDest *BuiltInPlace(Node *val, const string &stk, const string &lenlv);
+    const NrvoDest *NrvoBoundAt(Node *val, const string &stk, const string &lenlv);
     string ExitStart(Node *val, const string &stk, const string &lenlv, int open0);
     void LandValue(const string &stk, const string &top0, const string &start, TypeExpr *t,
                    const string &lenlv);
@@ -905,7 +905,7 @@ struct CodeGen {
     void EmitFormatInto(Loc lv, Node *a, Line ln, Call *c);
     vector<string> EmitStr(Call *c, vector<Node *> &an, Dst d0, Line ln);
     void EmitLeCheck(Line ln);
-    void PayloadOf(Node *n, Line ln, string &src, string &sz, bool &nullable);
+    void PayloadOf(Node *n, string &src, string &sz, bool &nullable);
     void AppendBytes(const Loc &lv, const string &src, const string &n, Line ln,
                      bool nullable = false);
     vector<string> EmitBytesOf(Call *c, vector<Node *> &an, Line ln);
@@ -925,7 +925,7 @@ struct CodeGen {
     void CloseRzDest(RzDest &rd, const string &count);
     vector<string> EmitPush(vector<Node *> &an, Line ln);
     void EmitAppend(vector<Node *> &an, Line ln);
-    vector<string> EmitAlloc(Call *c, vector<Node *> &an, Line ln);
+    vector<string> EmitAlloc(Call *c, vector<Node *> &an);
     vector<string> EmitSlicePool(Call *c, vector<Node *> &an, Line ln);
     string SpanArgs(const Loc &lv);
     string SliceLen(Node *n, TypeExpr *elem, Line ln);

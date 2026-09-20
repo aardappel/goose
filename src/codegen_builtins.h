@@ -25,11 +25,11 @@ inline CodeGen::Loc CodeGen::RecvLoc(Node *n) {
     auto lv = GenLoc(n);
     if (lv.t->kind == TY_REF) {
         auto orig = lv;
-        DerefLoc(orig, n->line);
+        DerefLoc(orig);
         if (lv.viaref && lv.val && lv.t->ref->lenstorage < 0 && !lv.ispref &&
             (orig.stk.empty() || !CacheableStk(orig.stk))) {
             lv.s = Snapshot(lv.t, lv.s);
-            DerefLoc(lv, n->line);
+            DerefLoc(lv);
         } else {
             lv = orig;
         }
@@ -147,7 +147,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             auto q = QueueFor(t);
             if (IsResz(t)) {
                 auto src = GenLoc(an[0]);
-                if (src.t->kind == TY_REF) DerefLoc(src, ln);
+                if (src.t->kind == TY_REF) DerefLoc(src);
                 string stk;
                 auto base = BytesTemp(stk);
                 EmitRzImage(src, t, stk, ln);
@@ -263,14 +263,14 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             // array (§3.3), so the distance is a whole number of elements
             // inside the length: an exact divide, nothing to check.
             auto lv = RecvLoc(an[0]);
-            auto v = ArrayView(lv, ln);
+            auto v = ArrayView(lv);
             auto rx = GenX(an[1]);
             return { cat("(((uint8_t *)(", rx, ") - (uint8_t *)(", v.elems, ")) / ",
                          FixedSize(v.elem), ")") };
         }
         case B_POP: {
             auto lv = RecvLoc(an[0]);
-            auto v = ArrayView(lv, ln);
+            auto v = ArrayView(lv);
             auto elem = v.elem;
             auto esz = FixedSize(elem);
             auto nl = T();
@@ -299,7 +299,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
         }
         case B_RESIZE: {
             auto lv = RecvLoc(an[0]);
-            auto v = ArrayView(lv, ln);
+            auto v = ArrayView(lv);
             auto elem = v.elem;
             auto esz = FixedSize(elem);
             auto ak = lv.t->arr->akind;
@@ -358,7 +358,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
         }
         case B_CLEAR: {
             auto lv = RecvLoc(an[0]);
-            auto v = ArrayView(lv, ln);
+            auto v = ArrayView(lv);
             // A resizable is the topmost value on its stack for its whole
             // life (§1.3), so both flavors hand the element region back by
             // dropping the top to the base; a limited array's capacity is
@@ -369,7 +369,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             L(v.lenlv, " = 0;");
             return {};
         }
-        case B_ALLOC_INDEX: case B_ALLOC_REF: return EmitAlloc(c, an, ln);
+        case B_ALLOC_INDEX: case B_ALLOC_REF: return EmitAlloc(c, an);
         case B_ALLOC_SLICE: case B_REALLOC_SLICE: case B_FREE_SLICE:
             return EmitSlicePool(c, an, ln);
         case B_FREE: {
@@ -394,7 +394,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
 
 inline vector<string> CodeGen::EmitPush(vector<Node *> &an, Line ln) {
     auto lv = RecvLoc(an[0]);
-    auto v = ArrayView(lv, ln);
+    auto v = ArrayView(lv);
     auto elem = v.elem;
     auto ak = lv.t->arr->akind;
     // The receiver is evaluated, then the argument, then the element is
@@ -454,7 +454,7 @@ inline vector<string> CodeGen::EmitPush(vector<Node *> &an, Line ln) {
 
 inline void CodeGen::EmitAppend(vector<Node *> &an, Line ln) {
     auto lv = RecvLoc(an[0]);
-    auto v = ArrayView(lv, ln);
+    auto v = ArrayView(lv);
     auto elem = v.elem;
     auto ak = lv.t->arr->akind;
     auto src = an[1];
@@ -531,10 +531,10 @@ inline void CodeGen::EmitAppend(vector<Node *> &an, Line ln) {
     L(v.lenlv, " += ", nn, ";");
 }
 
-inline vector<string> CodeGen::EmitAlloc(Call *c, vector<Node *> &an, Line ln) {
+inline vector<string> CodeGen::EmitAlloc(Call *c, vector<Node *> &an) {
     auto lv = RecvLoc(an[0]);
     assert(!lv.fl.empty() && !lv.stk.empty());
-    auto v = ArrayView(lv, ln);
+    auto v = ArrayView(lv);
     auto elem = v.elem;
     auto esz = FixedSize(elem);
     // A literal holding relative references is built once the slot is
@@ -581,7 +581,7 @@ inline vector<string> CodeGen::EmitAlloc(Call *c, vector<Node *> &an, Line ln) {
 inline vector<string> CodeGen::EmitSlicePool(Call *c, vector<Node *> &an, Line ln) {
     auto lv = RecvLoc(an[0]);
     assert(!lv.fl.empty() && !lv.stk.empty());
-    auto v = ArrayView(lv, ln);
+    auto v = ArrayView(lv);
     auto elem = v.elem;
     auto esz = FixedSize(elem);
     // A slice handed back becomes an index into the pool. An empty one can be
@@ -956,7 +956,7 @@ inline void CodeGen::EmitLeCheck(Line ln) {
 // The element region of a to_bytes/bytes_of receiver: a byte pointer, and
 // the byte count -- which for variable elements is a walk, since an element
 // count says nothing about the span. `nullable` as ArrView's.
-inline void CodeGen::PayloadOf(Node *n, Line ln, string &src, string &sz, bool &nullable) {
+inline void CodeGen::PayloadOf(Node *n, string &src, string &sz, bool &nullable) {
     auto nt = n->exprtype;
     auto rt = nt->kind == TY_REF ? nt->ref->sub : nt;
     auto elem = rt->kind == TY_SLICE ? rt->sub : rt->arr->sub;
@@ -964,7 +964,7 @@ inline void CodeGen::PayloadOf(Node *n, Line ln, string &src, string &sz, bool &
     if (rt->kind == TY_ARRAY || nt->kind == TY_REF) {
         // The receiver as a location, through a reference where it is one;
         // GenSrcElems is for the value forms it does not reach.
-        auto v = ArrayView(RecvLoc(n), ln);
+        auto v = ArrayView(RecvLoc(n));
         auto cnt = T();
         L("int64_t ", cnt, " = ", v.len, ";");
         se.elems = v.elems;
@@ -992,7 +992,7 @@ inline void CodeGen::PayloadOf(Node *n, Line ln, string &src, string &sz, bool &
 // array copies under a capacity check.
 inline void CodeGen::AppendBytes(const Loc &lv, const string &src, const string &n, Line ln,
                                  bool nullable) {
-    auto v = ArrayView(lv, ln);
+    auto v = ArrayView(lv);
     if (lv.t->arr->akind == A_LIMITED) {
         auto ol = T();
         L("int64_t ", ol, " = ", v.len, ";");
@@ -1054,7 +1054,7 @@ inline vector<string> CodeGen::EmitBytesOf(Call *c, vector<Node *> &an, Line ln)
     EmitLeCheck(ln);
     string src, sz;
     bool nullable;
-    PayloadOf(an[0], ln, src, sz, nullable);
+    PayloadOf(an[0], src, sz, nullable);
     auto s = T();
     L(CT(c->rettypes[0]), " ", s, " = { (uint8_t *)", src, ", ", sz, " };");
     return { s };
@@ -1068,7 +1068,7 @@ inline vector<string> CodeGen::EmitToBytes(vector<Node *> &an, Dst d0, Line ln) 
     EmitLeCheck(ln);
     string src, sz;
     bool nullable;
-    PayloadOf(an[0], ln, src, sz, nullable);
+    PayloadOf(an[0], src, sz, nullable);
     auto pfx = T(), pn = T();
     L("uint8_t ", pfx, "[10];");
     L("int64_t ", pn, " = gs_uleb_write(", pfx, ", (uint64_t)", sz, ");");

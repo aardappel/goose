@@ -90,7 +90,7 @@ inline string CodeGen::RelOrigin(TypeExpr *rt, const string &faddr) {
 
 // Loads the value of a loc holding a (plain or relative) reference and
 // steps to the pointee. Optional locs never get here (narrowing).
-inline void CodeGen::DerefLoc(Loc &lv, Line) {
+inline void CodeGen::DerefLoc(Loc &lv) {
     assert(lv.t->kind == TY_REF);
     auto &r = *lv.t->ref;
     if (r.lenstorage >= 0) {
@@ -259,13 +259,13 @@ inline string CodeGen::FieldPtr(const string &base, const vector<Field> &fields,
 
 // Reads of the length come from a loop-hoisted local where there is one;
 // `lenlv`, which the operations that change the length write, does not.
-inline CodeGen::ArrView CodeGen::ArrayView(const Loc &lv, Line ln) {
-    auto v = RawArrayView(lv, ln);
+inline CodeGen::ArrView CodeGen::ArrayView(const Loc &lv) {
+    auto v = RawArrayView(lv);
     if (!lv.hlen.empty()) v.len = lv.hlen;
     return v;
 }
 
-inline CodeGen::ArrView CodeGen::RawArrayView(const Loc &lv, Line) {
+inline CodeGen::ArrView CodeGen::RawArrayView(const Loc &lv) {
     auto t = lv.t;
     ArrView v;
     if (t->kind == TY_SLICE) {
@@ -323,7 +323,7 @@ inline CodeGen::ArrView CodeGen::RawArrayView(const Loc &lv, Line) {
     }
 }
 
-inline bool CodeGen::AddView(VarDef *vd, Line ln) {
+inline bool CodeGen::AddView(VarDef *vd) {
     auto t = vd->type;
     if (views.count(vd) || !t || t->kind != TY_REF) return false;
     if (t->ref->optional || t->ref->lenstorage >= 0) return false;
@@ -335,8 +335,8 @@ inline bool CodeGen::AddView(VarDef *vd, Line ln) {
     // declaration the body repeats), which has no view to read out here.
     if (!vnames.count(vd) && !gnames.count(vd)) return false;
     auto lv = VarLoc(vd);
-    DerefLoc(lv, ln);
-    auto v = ArrayView(lv, ln);
+    DerefLoc(lv);
+    auto v = ArrayView(lv);
     // Only a fat reference keeps the elements pointer in memory too; the
     // other forms reach them by offsetting the reference itself.
     string nb;
@@ -390,8 +390,8 @@ inline string CodeGen::FltStr(double v, bool f32) {
 // proved it redundant, or for provably in-range constant indices into
 // fixed arrays).
 inline CodeGen::Loc CodeGen::IndexLoc(Loc lv, Node *idxnode, Line ln, bool nobc) {
-    if (lv.t->kind == TY_REF) DerefLoc(lv, ln);
-    auto v = ArrayView(lv, ln);
+    if (lv.t->kind == TY_REF) DerefLoc(lv);
+    auto v = ArrayView(lv);
     if (HasStmts(idxnode)) {
         auto elems = T(), len = T();
         L(v.typedelems ? CT(v.elem) : string("uint8_t"), " *", elems, " = ", v.elems, ";");
@@ -439,12 +439,12 @@ inline CodeGen::Loc CodeGen::GenLoc(Node *n) {
     }
     if (auto d = Is<Dot>(n)) {
         auto lv = GenLoc(d->obj);
-        if (lv.t->kind == TY_REF) DerefLoc(lv, d->line);
+        if (lv.t->kind == TY_REF) DerefLoc(lv);
         return MemberLoc(lv, d);
     }
     if (auto ix = Is<Index>(n)) {
         auto lv = GenLoc(ix->obj);
-        if (lv.t->kind == TY_REF) DerefLoc(lv, ix->line);
+        if (lv.t->kind == TY_REF) DerefLoc(lv);
         return IndexLoc(lv, ix->idx, ix->line, ix->nobc);
     }
     // `&path` addressed as a location is the path itself: going through a
@@ -596,7 +596,7 @@ inline bool CodeGen::IsCtl(Node *n) {
 inline string CodeGen::LoadLoc(Loc lv, TypeExpr *et, Line ln) {
     if (lv.t->kind == TY_REF && et->kind != TY_REF &&
         !(IsOptional(lv.t) && et->kind == TY_REF)) {
-        DerefLoc(lv, ln);
+        DerefLoc(lv);
         return LoadLoc(lv, et, ln);
     }
     if (lv.t->kind == TY_REF && lv.t->ref->lenstorage >= 0) {
@@ -621,7 +621,7 @@ inline string CodeGen::LoadLoc(Loc lv, TypeExpr *et, Line ln) {
     if (et && et->kind == TY_SLICE && lv.t->kind == TY_ARRAY) {
         // Whole-array argument to a slice parameter (§3.10), any loc form
         // (fixed value or bytes/resizable pointer).
-        auto v = ArrayView(lv, ln);
+        auto v = ArrayView(lv);
         auto t = T();
         auto dp = v.typedelems && IsBytesT(et->sub)
                       ? cat("(uint8_t *)(", v.elems, ")") : string(v.elems);
@@ -690,7 +690,7 @@ inline string CodeGen::AdaptToFixed(Loc lv, TypeExpr *et, Line ln) {
         return tv;
     }
     assert(et->kind == TY_ARRAY && et->arr->akind == A_LIMITED);
-    auto v = ArrayView(lv, ln);
+    auto v = ArrayView(lv);
     auto nn = T();
     L("int64_t ", nn, " = ", v.len, ";");
     L("if (", nn, " > ", ArrSize(et->arr),
@@ -751,7 +751,7 @@ inline string CodeGen::GenXD(Node *n, TypeExpr *want) {
         auto st = IsPlainRef(nt) ? nt->ref->sub : nt;
         if ((st->kind == TY_ARRAY || st->kind == TY_SLICE) && !TEq(st, want)) {
             auto lv = GenLoc(n);
-            if (lv.t->kind == TY_REF) DerefLoc(lv, n->line);
+            if (lv.t->kind == TY_REF) DerefLoc(lv);
             return AdaptToFixed(lv, want, n->line);
         }
     }
@@ -760,7 +760,7 @@ inline string CodeGen::GenXD(Node *n, TypeExpr *want) {
         if (want->kind == TY_SLICE && sub->kind == TY_ARRAY) {
             // The pointee array sliced whole (§3.10).
             auto lv = GenLoc(n);
-            if (lv.t->kind == TY_REF) DerefLoc(lv, n->line);
+            if (lv.t->kind == TY_REF) DerefLoc(lv);
             return LoadLoc(lv, want, n->line);
         }
         auto x = GenX(n);
@@ -849,7 +849,7 @@ inline string CodeGen::GenPtr(Node *n, string *stkout) {
     else if (auto u = Is<Unary>(n); u && u->op == T_BITAND) path = u->child;
     if (path) {
         auto lv = GenLoc(path);
-        if (lv.t->kind == TY_REF) DerefLoc(lv, n->line);
+        if (lv.t->kind == TY_REF) DerefLoc(lv);
         auto et = n->exprtype;
         if (et->kind != TY_ARRAY || TEq(lv.t, et)) {
             if (stkout) *stkout = lv.stk;
@@ -1106,8 +1106,8 @@ inline string CodeGen::GenElemwise(Binary *b, const string &l, const string &r) 
 
 inline string CodeGen::GenSlice(SliceExpr *se) {
     auto lv = GenLoc(se->obj);
-    if (lv.t->kind == TY_REF) DerefLoc(lv, se->line);
-    auto v = ArrayView(lv, se->line);
+    if (lv.t->kind == TY_REF) DerefLoc(lv);
+    auto v = ArrayView(lv);
     auto elems = T();
     L(v.typedelems ? CT(v.elem) : string("uint8_t"), " *", elems, " = ", v.elems, ";");
     v.elems = elems;

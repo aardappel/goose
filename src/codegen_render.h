@@ -60,7 +60,7 @@ inline void CodeGen::RenderN(Loc &out, const string &nexpr) {
 inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call *c, Line ln) {
     // A reference location whose checked type already decayed (a narrowed
     // optional, a plain reference in value position): the pointee.
-    if (lv.t->kind == TY_REF && t->kind != TY_REF) DerefLoc(lv, ln);
+    if (lv.t->kind == TY_REF && t->kind != TY_REF) DerefLoc(lv);
     if (auto sp = FmtSpecFor(c, t)) { EmitUserFormat(out, lv, sp, ln); return; }
     switch (t->kind) {
         case TY_INT: {
@@ -95,19 +95,19 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
                 L("} else {");
                 ind++;
                 Loc pl = lv;
-                DerefLoc(pl, ln);
+                DerefLoc(pl);
                 RenderLoc(out, pl, t->ref->sub, nested, c, ln);
                 ind--;
                 L("}");
                 return;
             }
-            DerefLoc(lv, ln);
+            DerefLoc(lv);
             RenderLoc(out, lv, t->ref->sub, nested, c, ln);
             return;
         }
         case TY_ARRAY: case TY_SLICE: {
             auto elem = t->kind == TY_ARRAY ? t->arr->sub : t->sub;
-            auto v = ArrayView(lv, ln);
+            auto v = ArrayView(lv);
             if (IsU8(elem)) {
                 if (nested) {
                     RenderN(out, cat("gs_fmt_quoted(", Top(out.stk), ", (const uint8_t *)(",
@@ -310,7 +310,7 @@ inline string CodeGen::FmtCall(Node *a, const string &dst) {
 // room for them); a limited array formats into a buffer first, so the
 // capacity check comes before anything lands in it.
 inline void CodeGen::EmitFormatInto(Loc lv, Node *a, Line ln, Call *c) {
-    auto v = ArrayView(lv, ln);
+    auto v = ArrayView(lv);
     auto limited = lv.t->arr->akind == A_LIMITED;
     auto t = a->exprtype;
     if (!SimpleText(c, t) && !limited) {

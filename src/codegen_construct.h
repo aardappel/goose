@@ -220,14 +220,14 @@ inline CodeGen::SrcElems CodeGen::GenSrcElems(Node *n) {
     // keeps its reference type): the elements where they are stored.
     assert(t->kind == TY_ARRAY || IsPlainRef(t));
     auto lv = GenLoc(n);
-    if (lv.t->kind == TY_REF) DerefLoc(lv, n->line);
+    if (lv.t->kind == TY_REF) DerefLoc(lv);
     if (lv.t->kind == TY_SLICE) {
         r.elems = cat(lv.s, ".data");
         r.n = cat(lv.s, ".len");
         r.nullable = true;
         return r;
     }
-    auto v = ArrayView(lv, n->line);
+    auto v = ArrayView(lv);
     auto nn = T();
     L("int64_t ", nn, " = ", v.len, ";");
     r.elems = v.elems;
@@ -243,7 +243,7 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
     // bound to (OpenIbNrvo): the elements are in place, so all that is
     // left is the count or the reserved prefix. Any other use of that
     // local constructs a copy elsewhere and takes the normal path.
-    if (auto nd = BuiltInPlace(n, stk, lenlv)) {
+    if (auto nd = NrvoBoundAt(n, stk, lenlv)) {
         EmitNrvoFinish(*nd);
         return;
     }
@@ -391,7 +391,7 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
 // top (see GenConstruct).
 inline void CodeGen::ConstructFromLoc(Loc lv, TypeExpr *et, const string &stk,
                                       const string &lenlv, Line ln) {
-    if (lv.t->kind == TY_REF && et->kind != TY_REF) DerefLoc(lv, ln);
+    if (lv.t->kind == TY_REF && et->kind != TY_REF) DerefLoc(lv);
     if (IsResz(et)) {
         if (lv.t->kind == TY_SLICE && et->kind == TY_ARRAY) {
             GenArrayFromLoc(lv, et, stk, ln, lenlv);
@@ -561,7 +561,7 @@ inline void CodeGen::GenArrayFromLoc(Loc lv, TypeExpr *et, const string &stk, Li
         EmitValStore(stk, et, AdaptToFixed(lv, et, ln));
         return;
     }
-    auto v = ArrayView(lv, ln);
+    auto v = ArrayView(lv);
     auto nn = T();
     L("int64_t ", nn, " = ", v.len, ";");
     switch (et->arr->akind) {
