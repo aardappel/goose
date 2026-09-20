@@ -987,6 +987,8 @@ struct TypeCheck {
     Val CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalue);
     TypeExpr *VariantTypeOf(TypeExpr *enumtype, SVariant *v, Line l);
     Val CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wantvalue);
+    void CheckLoopBody(Block *body);
+    Scope EndLoop(Node *x, Block *body, const FlowState &entry, const set<VarDef *> &assumed);
     Val CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue);
     void CheckWhile(While *x);
     void CheckFor(ForLoop *x);

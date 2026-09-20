@@ -990,6 +990,30 @@ inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wa
     return r;
 }
 
+// A loop body: its statements, then a tail that is a statement like any
+// other (only a `break` gives a loop a value, §6.5).
+inline void TypeCheck::CheckLoopBody(Block *body) {
+    BlockScope bs(*this, body);
+    CheckStmts(body);
+    if (body->tail) CheckStmtExpr(body->tail);
+}
+
+// Closing a loop, whatever its header: the scope's record for the caller to
+// read the breaks off, the names its body assigns, the flow as it was before
+// the loop, and the narrowings its body turned out to rebind -- which the
+// body assumed on its first iteration and the next one would not have
+// (§3.8).
+inline TypeCheck::Scope TypeCheck::EndLoop(Node *x, Block *body, const FlowState &entry,
+                                           const set<VarDef *> &assumed) {
+    auto sc = scopes.back();
+    PopScope();
+    loopassigned.pop_back();
+    RestoreFlow(entry);
+    KillNarrowingsAssignedIn(body);
+    FinishLoopNarrowing(x, assumed);
+    return sc;
+}
+
 inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue) {
     ValueRegion vr(*this, wantvalue);
     KillNarrowingsAssignedIn(x->body);
@@ -998,17 +1022,8 @@ inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue)
     auto entry = SaveFlow();
     PushScope(SK_LOOP, x);
     if (wantvalue) scopes.back().breakexpected = expected;
-    {
-        BlockScope bs(*this, x->body);
-        CheckStmts(x->body);
-        if (x->body->tail) CheckStmtExpr(x->body->tail);
-    }
-    auto sc = scopes.back();
-    PopScope();
-    loopassigned.pop_back();
-    RestoreFlow(entry);
-    KillNarrowingsAssignedIn(x->body);
-    FinishLoopNarrowing(x, assumed);
+    CheckLoopBody(x->body);
+    auto sc = EndLoop(x, x->body, entry, assumed);
     reachable = sc.hasbreak;  // A loop only exits via break.
     if (!wantvalue || !sc.breaktype) return VoidVal();
     CheckBranchRoot(sc.breakvalue, CurDepth(), x, "loop");
@@ -1039,17 +1054,8 @@ inline void TypeCheck::CheckWhile(While *x) {
     PushLoopAssigned(x->body);
     NarrowCond(x->cond, true);
     PushScope(SK_LOOP, x);
-    {
-        BlockScope bs(*this, x->body);
-        CheckStmts(x->body);
-        if (x->body->tail) CheckStmtExpr(x->body->tail);
-    }
-    auto sc = scopes.back();
-    PopScope();
-    loopassigned.pop_back();
-    RestoreFlow(entry);
-    KillNarrowingsAssignedIn(x->body);
-    FinishLoopNarrowing(x, assumed);
+    CheckLoopBody(x->body);
+    auto sc = EndLoop(x, x->body, entry, assumed);
     if (sc.breaktype)
         Error(x, "break with a value exits loop/block only, not while");
 }
@@ -1151,17 +1157,8 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         idx->assigned = true;
         x->idxdef = idx;
     }
-    {
-        BlockScope bs(*this, x->body);
-        CheckStmts(x->body);
-        if (x->body->tail) CheckStmtExpr(x->body->tail);
-    }
-    auto sc = scopes.back();
-    PopScope();
-    loopassigned.pop_back();
-    RestoreFlow(entry);
-    KillNarrowingsAssignedIn(x->body);
-    FinishLoopNarrowing(x, assumed);
+    CheckLoopBody(x->body);
+    auto sc = EndLoop(x, x->body, entry, assumed);
     if (sc.breaktype)
         Error(x, "break with a value exits loop/block only, not for");
 }
