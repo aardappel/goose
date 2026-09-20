@@ -1631,40 +1631,27 @@ struct BCE {
         Walk(n);
     }
 
-    // Breaks that would bind a loop/block whose body is `n` (stops at nested
-    // binders; inlined bodies are transparent, over-approximating is fine).
-    bool HasBreaks(Node *n) {
+    // Jumps that would bind a loop/block whose body is `n` (stops at nested
+    // binders; inlined bodies are transparent, over-approximating is fine):
+    // breaks, and with `iteration` the continues that cut an iteration short
+    // as well.
+    bool HasJumps(Node *n, bool iteration) {
         if (!n) return false;
-        if (Is<Break>(n)) return true;
+        if (Is<Break>(n) || (iteration && Is<Continue>(n))) return true;
         if (auto g = Is<Guard>(n); g && !g->elseb && g->implicitexit == 1) return true;
         if (Is<While>(n) || Is<LoopExpr>(n) || Is<ForLoop>(n) || Is<EarlyBlock>(n))
             return false;
         auto found = false;
-        RunChildren(n, [&](Node *ch) { found = found || HasBreaks(ch); });
+        RunChildren(n, [&](Node *ch) { found = found || HasJumps(ch, iteration); });
         return found;
     }
 
-    bool ReturnsForTarget(Node *n, SFunction *sf) {
-        if (!n) return false;
-        if (auto r = Is<Return>(n)) if (r->target == sf) return true;
-        auto found = false;
-        RunChildren(n, [&](Node *ch) { found = found || ReturnsForTarget(ch, sf); });
-        return found;
-    }
+    bool HasBreaks(Node *n) { return HasJumps(n, false); }
 
-    // A break/continue that would cut an iteration of the loop whose body is
-    // `n` short, making its per-iteration push count unreliable (returns are
-    // fine: they leave the loop for good, and the facts are stated after it).
-    bool HasIterationJumps(Node *n) {
-        if (!n) return false;
-        if (Is<Break>(n) || Is<Continue>(n)) return true;
-        if (auto g = Is<Guard>(n); g && !g->elseb && g->implicitexit == 1) return true;
-        if (Is<While>(n) || Is<LoopExpr>(n) || Is<ForLoop>(n) || Is<EarlyBlock>(n))
-            return false;
-        auto found = false;
-        RunChildren(n, [&](Node *ch) { found = found || HasIterationJumps(ch); });
-        return found;
-    }
+    // A break or continue makes a loop body's per-iteration push count
+    // unreliable; a return does not (it leaves the loop for good, and the
+    // facts are stated after it).
+    bool HasIterationJumps(Node *n) { return HasJumps(n, true); }
 
     // Collects the place ids `n` can invalidate into `out`.
     void SummarizeInto(Node *n, set<int> &out) {
@@ -2616,16 +2603,16 @@ inline bool InlineBlock::BceWalk(BCE &b) {
     auto lastret = Is<Return>(last) && ((Return *)last)->target == sf;
     auto early = false;
     for (size_t i = 0; i + 1 < stmts.size(); i++)
-        early = early || b.ReturnsForTarget(stmts[i], sf);
+        early = early || ReturnsTo(stmts[i], sf);
     if (last) {
         if (lastret) {
             for (auto v : ((Return *)last)->vals)
-                early = early || b.ReturnsForTarget(v, sf);
+                early = early || ReturnsTo(v, sf);
         } else {
-            early = early || b.ReturnsForTarget(last, sf);
+            early = early || ReturnsTo(last, sf);
         }
     }
-    if (body->tail) early = early || b.ReturnsForTarget(body->tail, sf);
+    if (body->tail) early = early || ReturnsTo(body->tail, sf);
     if (!early) {
         b.Walk(body);
         return true;

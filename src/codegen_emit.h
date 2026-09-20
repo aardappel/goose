@@ -75,11 +75,7 @@ inline bool CodeGen::CanCacheTops(FnSpec *sp) {
             auto un = Is<Unary>(n);
             if (!Is<Ident>(n) && !(un && Is<Ident>(un->child))) ok = false;
         }
-        if (auto id = Is<Ident>(n)) check(id->vdef);
-        if (auto vd = Is<VarDecl>(n)) for (auto d : vd->defs) check(d);
-        if (auto fl = Is<ForLoop>(n)) check(fl->vdef);
-        if (auto me = Is<MatchExpr>(n)) for (auto &arm : me->arms) check(arm.binder);
-        if (auto c = Is<Call>(n)) for (auto p : c->fvparams) check(p);
+        NodeVars(n, check);
         RunChildren(n, walk);
     };
     walk(sp->body);
@@ -161,12 +157,8 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp) {
             auto id = Is<Ident>(n);
             if (!id || !fatparams.count(id->vdef)) { ok = false; return; }
         }
-        if (auto id = Is<Ident>(n)) check(id->vdef);
-        if (auto vd = Is<VarDecl>(n)) for (auto d : vd->defs) check(d);
-        if (auto fl = Is<ForLoop>(n)) check(fl->vdef);
-        if (auto me = Is<MatchExpr>(n)) for (auto &arm : me->arms) check(arm.binder);
         if (auto r = Is<Return>(n); r && !localexits.count(r->target)) ok = false;
-        if (auto c = Is<Call>(n)) for (auto p : c->fvparams) check(p);
+        NodeVars(n, check);
         RunChildren(n, walk);
     };
     walk(sp->body);

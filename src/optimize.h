@@ -215,15 +215,6 @@ struct Optimizer {
     // ------------------------------------------------------------------
     // Inlining support.
 
-    // Does this tree contain a Return that would exit an InlineBlock for sf?
-    bool ReturnsFor(Node *n, SFunction *sf) {
-        if (!n) return false;
-        if (auto r = Is<Return>(n)) if (r->target == sf) return true;
-        auto found = false;
-        RunChildren(n, [&](Node *ch) { found = found || ReturnsFor(ch, sf); });
-        return found;
-    }
-
     Node *TryInline(Call *c);   // Defined after Inliner below.
 
     // C nesting. Codegen opens a C block for every Block -- a function or
@@ -602,14 +593,14 @@ inline Node *Optimizer::TryInline(Call *c) {
         auto a = v->exprtype, b = c->exprtype;
         return a && b && a->kind == b->kind && a->kind != TY_REF && a->kind != TY_ENUM;
     };
-    if (body->stmts.empty() && body->tail && !ReturnsFor(body->tail, K->sf) &&
+    if (body->stmts.empty() && body->tail && !ReturnsTo(body->tail, K->sf) &&
         unwrapok(body->tail))
         return body->tail;
     if (body->stmts.empty() && !body->tail) return EmptyBlock(c);
     if (body->stmts.size() == 1 && !body->tail) {
         if (auto r = Is<Return>(body->stmts[0]); r && r->target == K->sf) {
             if (r->vals.empty()) return EmptyBlock(c);
-            if (r->vals.size() == 1 && !ReturnsFor(r->vals[0], K->sf) &&
+            if (r->vals.size() == 1 && !ReturnsTo(r->vals[0], K->sf) &&
                 unwrapok(r->vals[0]))
                 return r->vals[0];
         }

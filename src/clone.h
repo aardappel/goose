@@ -331,4 +331,27 @@ inline void RunChildren(Node *n, const function<void(Node *)> &f) {
     n->Children(f);
 }
 
+// Whether the tree holds a `return` that exits function sf: exactly the ones
+// an InlineBlock for sf catches (ast.h). The optimizer asks before unwrapping
+// such a block into a plain expression, BCE before taking an inlined body to
+// have one exit.
+inline bool ReturnsTo(Node *n, SFunction *sf) {
+    if (!n) return false;
+    if (auto r = Is<Return>(n); r && r->target == sf) return true;
+    auto found = false;
+    RunChildren(n, [&](Node *ch) { found = found || ReturnsTo(ch, sf); });
+    return found;
+}
+
+// The variables one checked node names or binds: an identifier's, a
+// declaration's, a `for`'s bindings, a match arm's payload, a function
+// value's parameters. Walking the tree is the caller's business.
+template<typename F> void NodeVars(Node *n, F f) {
+    if (auto id = Is<Ident>(n)) f(id->vdef);
+    if (auto vd = Is<VarDecl>(n)) for (auto d : vd->defs) f(d);
+    if (auto fl = Is<ForLoop>(n)) { f(fl->vdef); f(fl->idxdef); }
+    if (auto me = Is<MatchExpr>(n)) for (auto &arm : me->arms) f(arm.binder);
+    if (auto c = Is<Call>(n)) for (auto p : c->fvparams) f(p);
+}
+
 }  // namespace goose
