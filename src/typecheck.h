@@ -1152,6 +1152,8 @@ struct TypeCheck {
     // checking a nested literal cannot replace its enclosing literal's facts.
     void NoteLitElem(LitDeep &deep, Node *at, const Val &v, TypeExpr *t);
     void HolderFromLit(Val &v, const LitDeep &deep);
+    void AddStoreEvent(const StoreEvent &e);
+    void NoteContentRoot(VarDef *container, VarDef *root, bool exact);
     void RecordStore(VarDef *container, const Val &v, TypeExpr *pointee, bool varbind,
                      VarDef *src = nullptr);
     vector<set<string_view>> loopassigned;   // Per enclosing loop: names its body writes.

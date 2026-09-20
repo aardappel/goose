@@ -879,6 +879,28 @@ inline void TypeCheck::HolderFromLit(Val &v, const LitDeep &deep) {
     v.byteview = deep.byteview;
 }
 
+// One store on record: program-wide, and on the specialization as well when
+// the container is storage of the caller's, which a parameter's class root
+// stands for -- the call sites map those back (§3.5).
+inline void TypeCheck::AddStoreEvent(const StoreEvent &e) {
+    storeevents.push_back(e);
+    if (!e.container->type && !e.container->isglobal)
+        if (auto spec = CurRealFrame().spec) spec->classevents.push_back(e);
+}
+
+// The container's contents (§9.2): the deepest root stored into it so far,
+// exact only while every store agrees, which is what bounds a copy of them.
+inline void TypeCheck::NoteContentRoot(VarDef *container, VarDef *root, bool exact) {
+    if (!container->contentset || Depth(root) > Depth(container->contentroot)) {
+        container->contentexact = exact && (!container->contentset ||
+                                            container->contentroot == root);
+        container->contentroot = root;
+    } else if (container->contentroot != root) {
+        container->contentexact = false;
+    }
+    container->contentset = true;
+}
+
 inline void TypeCheck::RecordStore(VarDef *container, const Val &v, TypeExpr *pointee,
                                    bool varbind, VarDef *src) {
     if (!container || varbind) return;
@@ -899,23 +921,11 @@ inline void TypeCheck::RecordStore(VarDef *container, const Val &v, TypeExpr *po
     e.byteview = v.byteview;
     container->contentbyteview |= v.byteview;
     if (fitnode) e.at = fitnode->line;
-    storeevents.push_back(e);
-    // A store into a caller's storage (through a reference parameter's
-    // class root) is the caller's to know: kept on the specialization for
-    // its call sites to map back.
-    if (!container->type && !container->isglobal)
-        if (auto spec = CurRealFrame().spec) spec->classevents.push_back(e);
-    // The container's contents: the deepest root stored into it so far.
-    if (container->type && !IsRefOrSlice(container->type)) {
-        if (!container->contentset || Depth(e.root) > Depth(container->contentroot)) {
-            container->contentexact = e.exact && (!container->contentset ||
-                                                  container->contentroot == e.root);
-            container->contentroot = e.root;
-        } else if (container->contentroot != e.root) {
-            container->contentexact = false;
-        }
-        container->contentset = true;
-    }
+    AddStoreEvent(e);
+    // A container that is itself a reference or a slice has no contents of
+    // its own: what it points at is its binding (§9.2).
+    if (container->type && !IsRefOrSlice(container->type))
+        NoteContentRoot(container, e.root, e.exact);
 }
 
 // The root a parameter's class stands for at a call, and whether it is
@@ -952,19 +962,12 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         e.exact = exact;
         e.pointee = byteview ? nullptr : pointee;
         e.byteview = byteview;
-        container->contentbyteview |= byteview;
-        if (!container->contentset || Depth(r) > Depth(container->contentroot)) {
-            container->contentexact = exact && (!container->contentset ||
-                                                container->contentroot == r);
-            container->contentroot = r;
-        } else if (container->contentroot != r) {
-            container->contentexact = false;
-        }
-        container->contentset = true;
         e.at = at->line;
-        storeevents.push_back(e);
-        if (!container->type && !container->isglobal)
-            if (auto cur = CurRealFrame().spec) cur->classevents.push_back(e);
+        container->contentbyteview |= byteview;
+        // Unlike RecordStore, this notes the contents of a class root too,
+        // which is the caller's storage rather than a container of its own.
+        NoteContentRoot(container, r, exact);
+        AddStoreEvent(e);
     };
     // A class root of the callee, as seen from here: the argument's root.
     auto mapped = [&](VarDef *cr, bool &exact) -> VarDef * {
