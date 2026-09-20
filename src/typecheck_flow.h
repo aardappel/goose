@@ -560,7 +560,7 @@ inline void TypeCheck::PrebindLoopRefs(Node *body) {
 inline bool TypeCheck::ResolvePrebind(const RootDesc &d, VarDef *&root, bool &exact) {
     auto ofvar = [&](VarDef *v) {
         if (!v) return false;
-        auto isref = v->type && (IsRefOrSlice(v->type));
+        auto isref = v->type && IsRefOrSlice(v->type);
         if (isref) {
             if (!v->refrootknown) return false;
             root = RefRootOf(v);
@@ -1314,7 +1314,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         if (t->kind == TY_FN)
             Error(vd, "function values are compile-time only and cannot be stored (§7.6)");
         d->type = t;
-        if (v && (IsRefOrSlice(t))) {
+        if (v && IsRefOrSlice(t)) {
             BindRefProvenance(d, *v);
             if (t->cq) d->ref.writable = false;
         } else if (v && HoldsPlainRef(t)) {
@@ -1568,7 +1568,7 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     auto base = growlog.size();
     auto v = CheckValueAt(a->rhs, target,
                           Dest { lv.root, lv.rootexact,
-                                 lv.var && (IsRefOrSlice(target)) });
+                                 lv.var && IsRefOrSlice(target) });
     if (built) {
         CheckGrowsSince(base, built, builtexact, cat("the value assigned to ", ExprStr(a->lval)));
         CheckBuiltUses(a->rhs, a->lval, built, builtexact, arr);

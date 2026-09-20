@@ -313,8 +313,7 @@ inline string AsCast::CgX(CodeGen &cg) {
             // From u64: value-preserving iff it does not exceed the target's
             // maximum (all targets' maxima fit an unsigned compare).
             if (is == IS_U64) return cat("(", x, ")");
-            auto [lo, hi] = IntRange(is);
-            (void)lo;
+            auto hi = IntRange(is).second;
             return cat("(", tct, ")GS_RANGE_U(", x, ", ", (uint64_t)hi, "ULL)");
         }
         if (is == IS_U64)   // Source ≤ i64.max: only negatives are out of range.

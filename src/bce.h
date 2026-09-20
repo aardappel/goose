@@ -235,9 +235,7 @@ struct BCE {
     // back to the declared field or element type, and a generic field whose
     // instantiation is not at hand counts as one.
     static bool ReadsStoredRef(Node *cur) {
-        auto isref = [](TypeExpr *t) {
-            return t && (IsRefOrSlice(t));
-        };
+        auto isref = [](TypeExpr *t) { return t && IsRefOrSlice(t); };
         if (isref(cur->exprtype)) return true;
         auto d = Is<Dot>(cur);
         auto ix = Is<Index>(cur);
@@ -955,7 +953,7 @@ struct BCE {
             if (auto id = Is<Ident>(cur)) {
                 auto v = id->vdef;
                 if (!v) return { TG_OPAQUE };
-                if (v->type && (IsRefOrSlice(v->type))) {
+                if (v->type && IsRefOrSlice(v->type)) {
                     auto [k, u] = UltOf(v);
                     return UltTarget(k, u);
                 }
@@ -1286,8 +1284,6 @@ struct BCE {
 
     // ------------------------------------------------------------------
     // Variable writes: shifts, sets, and invariant recording.
-
-    bool IsCand(VarDef *v) { return cands.find(v) != cands.end(); }
 
     void RecordShift(VarDef *v, int64_t c) {
         auto it = cands.find(v);
@@ -1785,7 +1781,7 @@ struct BCE {
         for (size_t j = 0; j < sp->params.size(); j++) {
             auto p = sp->params[j];
             ownvars.insert(p);
-            if (p->type && (IsRefOrSlice(p->type)) && p->ref.root)
+            if (p->type && IsRefOrSlice(p->type) && p->ref.root)
                 classparams[p->ref.root].push_back((int)j);
         }
         Mark(sp->body);

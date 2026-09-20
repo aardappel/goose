@@ -322,8 +322,7 @@ inline bool TypeCheck::BindsRef(const Val &v, TypeExpr *dt) {
 }
 
 inline bool TypeCheck::IsNonFixedLValue(const Val &v) {
-    return v.lvalue && !IsRefOrSlice(v.type) &&
-           ClassOf(v.type) != SC_FIXED;
+    return v.lvalue && !IsRefOrSlice(v.type) && ClassOf(v.type) != SC_FIXED;
 }
 
 // Whether a resizable-valued path has a header of its own to reference
@@ -458,22 +457,21 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
     // The store rule (§9.2) applies to a reference or slice, and to a value
     // holding references or slices by value (a struct with a slice field),
     // whose contents are bounded by its holder root.
-    auto isrs = [](TypeExpr *x) { return IsRefOrSlice(x); };
     // Constness (§9.5): a read-only reference or slice lands in a slot only
     // if the slot's type says `const`, which is what a later read of the
     // slot then sees; a parameter or result takes either and is read-only
     // in that instantiation.
-    if (isrs(dt) && isrs(t) && !v.writable && !dt->cq && constslot) {
+    if (IsRefOrSlice(dt) && IsRefOrSlice(t) && !v.writable && !dt->cq && constslot) {
         fitfail = cat("storing a read-only ", dt->kind == TY_SLICE ? "slice" : "reference",
                       " of type ", TypeStr(t),
                       t->cq ? "" : " (read-only in this instantiation)",
                       " in a slot of type ", TypeStr(dt), " (§9.5); declare the slot const");
         return false;
     }
-    auto holder = !isrs(dt) && !isrs(t) && HoldsPlainRef(dt);
+    auto holder = !IsRefOrSlice(dt) && !IsRefOrSlice(t) && HoldsPlainRef(dt);
     // Argument slots pass no destination (parameters die before their
     // arguments' roots); an element or field being constructed does.
-    if (((isrs(dt) && isrs(t)) || holder) && curdst.root) {
+    if (((IsRefOrSlice(dt) && IsRefOrSlice(t)) || holder) && curdst.root) {
         auto root = CanonRoot(holder ? HolderRootOf(v) : v.root);
         if (root && root == cycleroot) {
             fitfail = NeverStoredError(root);

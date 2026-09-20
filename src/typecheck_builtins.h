@@ -981,11 +981,9 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
             for (size_t q = 0; q < spec->argtypes.size() && q < argvals.size(); q++) {
                 auto qt = spec->argtypes[q];
                 if (!IsRefOrSlice(qt) && !HoldsPlainRef(qt)) continue;
-                auto [r, exact] = argroot(q);
-                push(CanonRoot(argvals[p].root), r, false,
+                push(CanonRoot(argvals[p].root), argroot(q).first, false,
                      IsRefOrSlice(qt) ? PointeeOf(qt) : nullptr,
                      nullptr, argvals[q].byteview);
-                (void)exact;
             }
         }
         return;

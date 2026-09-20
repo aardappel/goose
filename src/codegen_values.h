@@ -90,7 +90,7 @@ inline string CodeGen::RelOrigin(TypeExpr *rt, const string &faddr) {
 
 // Loads the value of a loc holding a (plain or relative) reference and
 // steps to the pointee. Optional locs never get here (narrowing).
-inline void CodeGen::DerefLoc(Loc &lv, Line ln) {
+inline void CodeGen::DerefLoc(Loc &lv, Line) {
     assert(lv.t->kind == TY_REF);
     auto &r = *lv.t->ref;
     if (r.lenstorage >= 0) {
@@ -144,7 +144,6 @@ inline void CodeGen::DerefLoc(Loc &lv, Line ln) {
     nl.hlen = lv.hlen;
     nl.viaref = lv.viaref;
     lv = nl;
-    (void)ln;
 }
 
 inline CodeGen::Loc CodeGen::VarLoc(VarDef *vd) {
@@ -266,7 +265,7 @@ inline CodeGen::ArrView CodeGen::ArrayView(const Loc &lv, Line ln) {
     return v;
 }
 
-inline CodeGen::ArrView CodeGen::RawArrayView(const Loc &lv, Line ln) {
+inline CodeGen::ArrView CodeGen::RawArrayView(const Loc &lv, Line) {
     auto t = lv.t;
     ArrView v;
     if (t->kind == TY_SLICE) {
@@ -322,7 +321,6 @@ inline CodeGen::ArrView CodeGen::RawArrayView(const Loc &lv, Line ln) {
             v.lenlv = lv.lenlv;
             return v;
     }
-    (void)ln;
 }
 
 inline bool CodeGen::AddView(VarDef *vd, Line ln) {

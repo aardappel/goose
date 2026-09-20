@@ -1338,8 +1338,7 @@ inline void CodeGen::EmitEqWalk(string &bo, TypeExpr *t, const string &pa, const
                                 int depth) {
     auto I = string("    ");
     if (IsFix(t)) {
-        auto ct = CT(t);
-        (void)ct;
+        CT(t);   // The comparison below needs the type's C form emitted.
         if (BitwiseEq(t)) {
             Append(bo, I, "if (memcmp(", pa, ", ", pb, ", ", FixedSize(t),
                    ") != 0) return 0;\n");

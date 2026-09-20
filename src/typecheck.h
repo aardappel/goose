@@ -1152,8 +1152,6 @@ struct TypeCheck {
     void HolderFromLit(Val &v, const LitDeep &deep);
     void RecordStore(VarDef *container, const Val &v, TypeExpr *pointee, bool varbind,
                      VarDef *src = nullptr);
-    bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
-                            Line *where, set<VarDef *> &seen);
     vector<set<string_view>> loopassigned;   // Per enclosing loop: names its body writes.
     void CollectAssignedBases(Node *n, set<string_view> &out);
     void PushLoopAssigned(Node *body);
@@ -1162,6 +1160,8 @@ struct TypeCheck {
     bool AssignedInEnclosingLoop(VarDef *vd);
     bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
                             Line *where);
+    bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
+                            Line *where, set<VarDef *> &seen);
     void ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Node *at);
     void NoteHolderBinding(VarDef *d, const Val &v);
     void ResolvePendingShrinks(int scopeidx);

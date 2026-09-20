@@ -217,7 +217,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     if (best.sf->isextern) {
         for (size_t i = 0; i < best.paramtypes.size() && i < argvals.size(); i++) {
             auto pt = best.paramtypes[i];
-            if ((!IsRefOrSlice(pt)) || pt->cq || argvals[i].writable)
+            if (!IsRefOrSlice(pt) || pt->cq || argvals[i].writable)
                 continue;
             Error(argnodes[i], cat("extern fn ", name, ": parameter ", best.sf->params[i].name,
                                    " of type ", TypeStr(pt), " takes a writable value; a "
@@ -1481,8 +1481,7 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
     for (size_t i = 0; i < spec->rets.size(); i++) {
         Val v;
         v.type = spec->rets[i];
-        auto holder = !IsRefOrSlice(v.type) &&
-                      HoldsPlainRef(v.type);
+        auto holder = !IsRefOrSlice(v.type) && HoldsPlainRef(v.type);
         if (IsRefOrSlice(v.type) || holder) {
             auto ri = i < spec->retroots.size() ? spec->retroots[i] : RetRoot {};
             auto rr = ri.root;

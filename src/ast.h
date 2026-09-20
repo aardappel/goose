@@ -1031,8 +1031,6 @@ struct RootArg {
     }
 };
 
-// One return value's reference root, for the callers to map (§9.2), and
-// the cycle fixpoint's prediction of it (§7.8).
 // A reference, slice or holder value stored into a container (§9.2): what
 // the shrink rules (§5.1) consult to know whether the container may point
 // into an array.
@@ -1049,6 +1047,8 @@ struct StoreEvent {
     Line at;
 };
 
+// One return value's reference root, for the callers to map (§9.2), and
+// the cycle fixpoint's prediction of it (§7.8).
 struct RetRoot {
     VarDef *root = nullptr;    // Param VarDef, global, or null = static data.
     bool exact = false;        // Val::rootexact of the returned reference.
@@ -1064,8 +1064,6 @@ struct RetRoot {
     bool usedwritable = false;
 };
 
-// One monomorphic specialization of a function: the unit of typechecking and
-// of later codegen. Owns nothing; body is a clone with annotations filled.
 // A literal parameter's contact with a type (§7.7): what the literal at
 // each call site must fit.
 struct LitAdapt {
@@ -1080,6 +1078,8 @@ struct LitFlow {
     int toparam = 0;
 };
 
+// One monomorphic specialization of a function: the unit of typechecking and
+// of later codegen. Owns nothing; body is a clone with annotations filled.
 struct FnSpec {
     SFunction *sf = nullptr;
     FnSpec *lexparent = nullptr;   // Defining specialization (or body), for nested fns.
