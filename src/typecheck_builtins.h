@@ -31,10 +31,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             // str(a, b, ...): a fresh u8[>..] holding the arguments' text,
             // built at the destination like any resizable result (§7.3).
             for (auto &a : args) CheckPrintable(c, d.name, a);
-            auto t = ast.NewType(TY_ARRAY, c->line);
-            t->arr = ast.NewDetail<TypeArray>();
-            t->arr->sub = ast.inttypes[IS_U8];
-            t->arr->akind = A_GROW;
+            auto t = GrowU8Array(c->line);
             c->rettypes.push_back(t);
             Val v;
             v.type = t;
@@ -315,10 +312,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             NoteGrow(c, ov.root, ov.rootexact, cat("append to ", ExprStr(args[1])));
             return VoidVal();
         }
-        auto t = ast.NewType(TY_ARRAY, c->line);
-        t->arr = ast.NewDetail<TypeArray>();
-        t->arr->sub = ast.inttypes[IS_U8];
-        t->arr->akind = A_GROW;
+        auto t = GrowU8Array(c->line);
         c->rettypes.push_back(t);
         Val v;
         v.type = t;
@@ -786,11 +780,7 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
             // A bytes_of view is over the element region itself, so it
             // survives this filter however unrelated its pointee looks.
             if (!ShrinkMayFree(vd, bound, true, PointeeOf(t), v->ref.byteview)) continue;
-            auto root = RefRootOf(v);
-            auto holds = root == vd || (v->isvar && Depth(root) == Depth(vd)) ||
-                         (!v->ref.rootexact && Depth(root) >= Depth(vd)) ||
-                         (!v->refrootknown && Depth(v) >= Depth(vd));
-            if (!holds || !UsedAfter(v)) continue;
+            if (!RefMayPointInto(v, vd) || !UsedAfter(v)) continue;
         } else {
             // Any other value holds references only where a store put
             // them, and every store this function can see is on record
@@ -1227,11 +1217,7 @@ inline void TypeCheck::CheckShrinkHolders(Node *at, const string &op, VarDef *ro
         // A bytes_of view is over the element region itself, so the
         // pointee-type filter would dismiss exactly the case it is for.
         if (!ShrinkMayFree(root, bound, false, PointeeOf(v->type), v->ref.byteview)) return;
-        auto r = RefRootOf(v);
-        auto holds = r == root || (v->isvar && Depth(r) == Depth(root)) ||
-                     (!v->ref.rootexact && Depth(r) >= Depth(root)) ||
-                     (!v->refrootknown && Depth(v) >= Depth(root));
-        if (!holds || !UsedAfter(v)) return;
+        if (!RefMayPointInto(v, root) || !UsedAfter(v)) return;
         Error(at, cat("cannot ", op, " while ", v->name, " (bound at ", Where(v->line),
                       ") is still used: it may refer into ", what, " (§5.2)"));
     });

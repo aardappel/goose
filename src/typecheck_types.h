@@ -482,6 +482,17 @@ inline TypeExpr *TypeCheck::SliceOf(TypeExpr *t, Line l) {
     return s;
 }
 
+// A fresh `u8[>..]`: the text str() builds and the image to_bytes() writes
+// (§3.7, docs/design/serialization.md). Fresh per call, since a result type
+// is the call's own.
+inline TypeExpr *TypeCheck::GrowU8Array(Line l) {
+    auto t = ast.NewType(TY_ARRAY, l);
+    t->arr = ast.NewDetail<TypeArray>();
+    t->arr->sub = ast.inttypes[IS_U8];
+    t->arr->akind = A_GROW;
+    return t;
+}
+
 // The value type a load from storage yields: numeric types load as
 // themselves, varint decodes to i64 (§3.6), and relative references load
 // as ordinary references (§3.9).

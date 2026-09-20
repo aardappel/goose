@@ -304,9 +304,7 @@ inline bool TypeCheck::KeepsRef(const Val &v, TypeExpr *dt) {
 // (§4.1): the node becomes `&node`, as if written, so every later pass
 // sees an ordinary reference argument.
 inline Node *TypeCheck::AutoRef(Node *n, Val &v) {
-    if (!Referenceable(n, v))
-        Error(n, "cannot reference a resizable value nested in a variable-size prefix "
-                 "or an ADT payload; reference the owning variable instead");
+    if (!Referenceable(n, v)) NoResizableRef(n);
     auto u = ast.New<Unary>(n->line, T_BITAND, n);
     u->synth = true;
     v.type = RefTo(ast.PlainOf(v.type), n->line);
@@ -335,6 +333,13 @@ inline bool TypeCheck::Referenceable(Node *n, const Val &v) {
     auto ot = d->obj->exprtype;
     if (ot->kind == TY_REF) ot = ot->ref->sub;
     return ot->kind == TY_STRUCT && GetStructInst(ot)->frameobj;
+}
+
+// A reference to a resizable value is a reference to its header (C.2), and
+// only a variable and a frame object's tail have one of their own.
+[[noreturn]] inline void TypeCheck::NoResizableRef(Node *at) {
+    Error(at, "cannot reference a resizable value nested in a variable-size prefix "
+              "or an ADT payload; reference the owning variable instead");
 }
 
 inline bool TypeCheck::UserRefOf(Node *n) {
@@ -739,13 +744,11 @@ inline TypeExpr *TypeCheck::FixedArrayOf(TypeExpr *elem, int64_t count, Line l) 
 inline Val TypeCheck::CheckRefOf(Unary *x) {
     auto lv = CheckLValue(x->child);
     if (lv.var) RequireAssigned(lv.var, x);
-    // A reference to a resizable value points at its header (C.2): a whole
-    // variable's, or a frame object's tail's; a resizable nested in any
-    // other shape (a variable-size prefix, an ADT payload) has none.
+    // A resizable value has a header of its own only as a whole variable or
+    // as a frame object's tail (C.2).
     if (!lv.var && !lv.fotail && lv.type->kind != TY_REF &&
         ClassOf(lv.type) == SC_RESIZABLE)
-        Error(x, "cannot reference a resizable value nested in a variable-size prefix "
-                 "or an ADT payload; reference the owning variable instead");
+        NoResizableRef(x);
     if (lv.type->kind == TY_REF) {
         // Out of a container, the stored reference is a read-back (§9.5).
         if (!lv.var) return ContainerRead(lv);

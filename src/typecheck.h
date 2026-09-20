@@ -735,6 +735,7 @@ struct TypeCheck {
     bool Viewable(TypeExpr *t);
     bool GrowShrinkContains(TypeExpr *t, TypeExpr *of);
     bool RefExactOf(VarDef *vd);
+    bool RefMayPointInto(VarDef *v, VarDef *root);
     void BindProv(VarDef *vd, const Prov &p);
     void BindRefProvenance(VarDef *vd, const Val &v);
     Prov RefProvOf(VarDef *vd);
@@ -828,6 +829,7 @@ struct TypeCheck {
     TypeExpr *RefTo(TypeExpr *t, Line l);
     TypeExpr *NarrowedRef(TypeExpr *t, Line l);
     TypeExpr *SliceOf(TypeExpr *t, Line l);
+    TypeExpr *GrowU8Array(Line l);
 
     TypeExpr *LoadType(TypeExpr *t);
     static bool ImplicitInt(IntStorage from, IntStorage to);
@@ -922,6 +924,7 @@ struct TypeCheck {
     bool BindsRef(const Val &v, TypeExpr *dt);
     bool IsNonFixedLValue(const Val &v);
     bool Referenceable(Node *n, const Val &v);
+    [[noreturn]] void NoResizableRef(Node *at);
     bool UserRefOf(Node *n);
     void RequireCopyable(const Val &v, Node *n, TypeExpr *dt);
     void WriteBackArgs(Call *c, Dot *d, vector<Node *> &argnodes);

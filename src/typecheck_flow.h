@@ -161,6 +161,19 @@ inline bool TypeCheck::RefExactOf(VarDef *vd) {
     return true;
 }
 
+// Whether the reference or slice variable v may point into the array at
+// `root`, which a shrink of that array is checked against (§5.1, §5.2): it
+// is bound there; or it is a `var` bound at that depth, which a same-depth
+// rebind could since have retargeted (§9.2); or its root only bounds the
+// pointee's lifetime, at or below that depth; or it is not bound yet and
+// may still commit to the array further down a loop body.
+inline bool TypeCheck::RefMayPointInto(VarDef *v, VarDef *root) {
+    auto r = RefRootOf(v);
+    return r == root || (v->isvar && Depth(r) == Depth(root)) ||
+           (!v->ref.rootexact && Depth(r) >= Depth(root)) ||
+           (!v->refrootknown && Depth(v) >= Depth(root));
+}
+
 // Binds a reference variable to where p points.
 inline void TypeCheck::BindProv(VarDef *vd, const Prov &p) {
     vd->ref = p;
