@@ -9,7 +9,9 @@ stderr, which is not compared.
 
 A sample importing gfx draws off screen here (GOOSE_GFX_HEADLESS), links what
 `goose --gfx-link` names, and is skipped where the compiler has no gfx layer
-or the machine no GPU device.
+or the machine no GPU device. A sample importing physics links what `goose
+--physics-link` names, and is skipped where the compiler has no physics
+layer.
 
 A compiler built with the TinyCC backend also runs every sample a second way,
 in JIT mode -- built and run inside the compiler process, with no C file and no
@@ -78,8 +80,9 @@ def main():
     gendir.mkdir(parents=True, exist_ok=True)
     (HERE / "expected").mkdir(exist_ok=True)
 
-    failures, jitskips, gfxskips = 0, [], []
-    gfxlibs = tc.gfx_link(exe, cc) if cc else []
+    failures, jitskips, nativeskips = 0, [], []
+    native = {"gfx": tc.gfx_link(exe, cc) if cc else [],
+              "physics": tc.physics_link(exe, cc) if cc else []}
     for f in sorted(HERE.glob("*.goose")):
         # The number prefix orders the files for reading; outputs, data and
         # headers go by the bare name.
@@ -89,7 +92,10 @@ def main():
         infile = HERE / "data" / f"{name}.stdin"
         argfile = HERE / "data" / f"{name}.args"
         progargs = argfile.read_text(encoding="utf-8").split() if argfile.exists() else []
-        isgfx = re.search(r"^import gfx;", f.read_text(encoding="utf-8"), re.M) is not None
+        # The native modules the sample imports, whose layers it links.
+        text = f.read_text(encoding="utf-8")
+        modules = [m for m in native if re.search(rf"^import {m};", text, re.M)]
+        libs = [lib for m in modules for lib in native[m]]
         expfile = HERE / "expected" / f"{name}.out"
         gargs = ["-O2"]
         header = HERE / f"{name}.h"
@@ -103,8 +109,8 @@ def main():
                                             stdin_path=infile if infile.exists() else None)
             if code != 0 and tc.JIT_UNSUPPORTED in err:
                 jitskips.append(f.name)
-            elif isgfx and (tc.GFX_UNAVAILABLE in err or tc.GFX_NO_DEVICE in err):
-                gfxskips.append(f.name)
+            elif any(tc.native_unavailable(m, err) for m in modules):
+                nativeskips.append(f.name)
             elif code != 0 or tc.sanitizer_failure(err):
                 print("\n".join(err.splitlines()[:3]))
                 print(f"FAIL sample-jit {f.name} (exit {code})")
@@ -127,11 +133,11 @@ def main():
         if not cc:
             print(f"ok   sample-check {f.name}")
             continue
-        if isgfx and not gfxlibs:
-            gfxskips.append(f.name)
+        if any(not native[m] for m in modules):
+            nativeskips.append(f.name)
             continue
         ok, log = cc.compile(cfile, efile, opt=2 if args.profile == "baseline" else 1,
-                             extra=extra, strict_decls=True, libs=gfxlibs if isgfx else (),
+                             extra=extra, strict_decls=True, libs=libs,
                              log=gendir / f"{name}.cc.log")
         if not ok:
             print("\n".join(log.splitlines()[:8]))
@@ -143,8 +149,8 @@ def main():
                                         stdin_path=infile if infile.exists() else None)
         tc.write_text(outfile, out)
         tc.write_text(errfile, err)
-        if isgfx and tc.GFX_NO_DEVICE in err:
-            gfxskips.append(f.name)
+        if "gfx" in modules and tc.GFX_NO_DEVICE in err:
+            nativeskips.append(f.name)
             continue
         if code != 0 or tc.sanitizer_failure(err):
             print("\n".join(err.splitlines()[:3]))
@@ -166,9 +172,9 @@ def main():
 
     if jitskips:
         print("skip JIT for sample(s) the backend cannot run yet: " + ", ".join(jitskips))
-    if gfxskips:
-        print("skip gfx sample(s) (no gfx layer or no GPU device): " +
-              ", ".join(sorted(set(gfxskips))))
+    if nativeskips:
+        print("skip gfx or physics sample(s) (no gfx or physics layer, or no GPU device): " +
+              ", ".join(sorted(set(nativeskips))))
     if failures:
         print(f"{failures} SAMPLE FAILURE(S)")
         return 1

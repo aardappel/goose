@@ -1,13 +1,14 @@
 # The Goose standard library
 
-Six modules under `stdlib/`, found by `import std;` (and `dictionary`,
-`vec`, `math`, `os`, `gfx`) wherever the compiler was built from a source
-tree, or through `--stdlib <dir>` / `GOOSE_STDLIB`. Everything is written in
-Goose except the C behind `os` (`src/runtime/runtime_os.h`), libm behind
-`math` and the graphics layer behind `gfx` (`src/gfx/`), all reached through
-`extern fn` (spec §7.10). The design and its rationale are in
-`design/stdlib_design.md` (and `design/gfx.md` for `gfx`); this is the
-reference.
+Seven modules under `stdlib/`, found by `import std;` (and `dictionary`,
+`vec`, `math`, `os`, `gfx`, `physics`) wherever the compiler was built from a
+source tree, or through `--stdlib <dir>` / `GOOSE_STDLIB`. Everything is
+written in Goose except the C behind `os` (`src/runtime/runtime_os.h`), libm
+behind `math`, the graphics layer behind `gfx` (`src/gfx/`) and the physics
+layer behind `physics` (`src/physics/`), all reached through `extern fn`
+(spec §7.10). The design and its rationale are in `design/stdlib_design.md`
+(and `design/gfx.md` for `gfx`, `design/physics.md` for `physics`); this is
+the reference.
 
 Conventions that hold throughout:
 
@@ -583,3 +584,372 @@ fn look_at(eye: float3, target: float3, up: float3) -> mat4
 Clip space is SDL_GPU's on every backend: y up, depth from 0 to 1, texture
 coordinates with (0, 0) at the top left.
 
+## physics
+
+Rigid body physics on Box3D: worlds, bodies, shapes of every kind Box3D has,
+nine kinds of joints, contact, sensor, hit, move and joint events, ray and
+shape casts and overlap queries, a character mover, and recording and replay.
+Optional like `gfx`: it needs a compiler built with the `third_party/box3d`
+submodule, and a program using it links what `goose --physics-link msvc|cc`
+prints (`cl game.c @<it>`, `cc game.c -o game @<it>`; a program using `gfx`
+too adds that one's). A compiler without it still typechecks and generates C
+for such a program; only running it in-process fails. Everything is in
+namespace `physics`; `samples/28_physics_boxes.goose` is a complete program,
+`design/physics.md` how it works.
+
+The API is Box3D's under Goose names: `b3Body_GetPosition` is
+`position(body)`, `b3CreateRevoluteJoint` is `create_revolute_joint`, a
+getter is the noun and a setter `set_` it. Box3D works in meters, kilograms
+and seconds and has no built-in up; the default gravity is -10 along y. What
+Box3D takes as a callback comes back as an array: events and query results
+are fresh arrays (each also has an `_into` form that copies into a slice of
+the caller's and returns how many there are), and friction and restitution
+mixing is one of the `MIX_*` rules. Custom contact filters, pre-solve
+callbacks, debug drawing and the standalone dynamic tree are not part of it.
+
+Physics runs on the main thread; a `thread_fn` reaching it is a compile
+error. Box3D spreads a step over worker threads of its own, as many as
+`WorldDef.workers` asks for, with the same results for any number of them.
+
+### Errors
+
+A call that can fail for reasons outside the program -- a file that is not
+there, points that make no hull -- returns false or a zero handle, and
+`error()` says why. A call the program should not have made -- a destroyed
+body, a revolute function on a prismatic joint, a height field on a dynamic
+body -- is reported as it happens, skipped, and aborts the program at the
+next `step()`, `destroy(world)` or `check()`. Every handle carries a
+generation, so a destroyed object is an error to use, not a crash.
+
+```goose
+fn error() -> u8[>..]           fn check()             fn misuse_count() -> i64
+fn available() -> bool          fn version() -> Version          // Box3D's
+fn byte_count() -> i64          // what Box3D has allocated
+fn set_length_units_per_meter(units: f32)     // before anything else is made
+fn length_units_per_meter() -> f32
+fn world_count() -> i64         fn max_world_count() -> i64
+```
+
+### Values
+
+```goose
+struct Quat { x: f32, y: f32, z: f32, w: f32 }       // a rotation; w the scalar part
+struct Transform { p: float3, q: Quat }              // rotate by q, then move by p
+struct Mat3 { cx: float3, cy: float3, cz: float3 }   // by columns
+struct AABB { lower: float3, upper: float3 }
+struct Plane { normal: float3, offset: f32 }
+struct MassData { mass: f32, center: float3, inertia: Mat3 }
+struct Sphere { center: float3, radius: f32 }
+struct Capsule { center1: float3, center2: float3, radius: f32 }
+let quat_identity           let transform_identity
+fn quat_axis_angle(axis: float3, angle: f32) -> Quat
+fn mul(a: Quat, b: Quat) -> Quat            // b, then a
+fn rotate(q: Quat, v: float3) -> float3     fn inv_rotate(q: Quat, v: float3) -> float3
+fn conjugate(q: Quat) -> Quat               fn normalize(q: Quat) -> Quat
+fn rotation_matrix(q: Quat) -> Mat3
+fn transform_point(t: Transform, p: float3) -> float3      // and inv_transform_point
+fn mul(a: Transform, b: Transform) -> Transform            fn inv_mul(a, b) -> Transform
+```
+
+### Worlds
+
+```goose
+struct World { id: u32 }
+struct WorldDef { gravity: float3 = { 0, -10, 0 }, restitution_threshold: f32 = 1.0,
+                  hit_event_threshold: f32 = 1.0, contact_hertz: f32 = 30.0,
+                  contact_damping_ratio: f32 = 10.0, contact_speed: f32 = 3.0,
+                  maximum_linear_speed: f32 = 400.0, enable_sleep: bool = true,
+                  enable_continuous: bool = true, workers: i32 = 1, friction_mixing: i32 = 0,
+                  restitution_mixing: i32 = 0, user_data: u64 = 0, capacity: Capacity }
+fn create_world() -> World                   // and (def)
+fn destroy(w: World)                         fn is_valid(w: World) -> bool
+fn step(w: World, time_step: f32, sub_steps: i64)    // 1/60 and 4 are the usual
+fn gravity(w) -> float3        fn set_gravity(w, gravity: float3)
+fn enable_sleeping(w, flag)    fn sleeping_enabled(w) -> bool     // and continuous, warm_starting
+fn restitution_threshold(w) -> f32   fn hit_event_threshold(w) -> f32   // and set_...
+fn maximum_linear_speed(w) -> f32    fn contact_recycle_distance(w) -> f32  // and set_...
+fn set_contact_tuning(w, hertz: f32, damping_ratio: f32, push_speed: f32)
+fn set_friction_mixing(w, rule: i64)          fn set_restitution_mixing(w, rule: i64)
+fn worker_count(w) -> i64      fn set_worker_count(w, count: i64)   // 1 to MAX_WORKERS
+fn explode(w, def: ExplosionDef)       // position, radius, falloff, impulse_per_area, mask_bits
+fn bounds(w) -> AABB           fn awake_body_count(w) -> i64
+fn profile(w) -> Profile       fn counters(w) -> Counters      fn max_capacity(w) -> Capacity
+fn user_data(w) -> u64         fn set_user_data(w, data: u64)
+```
+
+At most 128 worlds exist at once. Mixing rules: `MIX_DEFAULT` (Box3D's: the
+geometric mean of the frictions, the larger restitution), `MIX_GEOMETRIC`,
+`MIX_MIN`, `MIX_MAX`, `MIX_AVERAGE`, `MIX_MULTIPLY`.
+
+### Bodies
+
+```goose
+struct Body { id: u64 }
+struct BodyDef { body_type: i32 = 0, position: float3, rotation: Quat = quat_identity,
+                 linear_velocity: float3, angular_velocity: float3, linear_damping: f32 = 0.0,
+                 angular_damping: f32 = 0.0, gravity_scale: f32 = 1.0,
+                 sleep_threshold: f32 = 0.05, safety_factor: f32 = 0.5,
+                 motion_locks: MotionLocks, enable_sleep: bool = true, is_awake: bool = true,
+                 is_bullet: bool = false, is_enabled: bool = true,
+                 allow_fast_rotation: bool = false, enable_contact_recycling: bool = true,
+                 user_data: u64 = 0 }
+fn create_body(w: World, def: BodyDef) -> Body
+fn destroy(b: Body)          // with its shapes and joints
+fn is_valid(b) -> bool       fn world(b) -> World
+fn body_type(b) -> i32       fn set_type(b, body_type: i64)   // STATIC, KINEMATIC, DYNAMIC
+fn name(b) -> u8[>..]        fn set_name(b, name: const u8[:])
+fn user_data(b) -> u64       fn set_user_data(b, data: u64)
+fn position(b) -> float3     fn rotation(b) -> Quat     fn transform(b) -> Transform
+fn transforms(bodies: const Body[:], out: Transform[:])   // many in one call
+fn set_transform(b, position: float3, rotation: Quat)      // a teleport
+fn local_point(b, p) -> float3    fn world_point(b, p) -> float3    // and local_/world_vector
+fn linear_velocity(b) -> float3   fn angular_velocity(b) -> float3  // and set_...
+fn local_point_velocity(b, p) -> float3        fn world_point_velocity(b, p) -> float3
+fn set_target_transform(b, target: Transform, time_step: f32, wake: bool)   // kinematic
+fn apply_force(b, force: float3, point: float3, wake: bool)   fn apply_force_to_center(b, force, wake)
+fn apply_torque(b, torque: float3, wake: bool)
+fn apply_linear_impulse(b, impulse, point, wake)   fn apply_linear_impulse_to_center(b, impulse, wake)
+fn apply_angular_impulse(b, impulse: float3, wake: bool)
+fn mass(b) -> f32     fn inverse_mass(b) -> f32     fn rotational_inertia(b) -> Mat3
+fn world_inverse_inertia(b) -> Mat3    fn local_center(b) -> float3    fn world_center(b) -> float3
+fn mass_data(b) -> MassData    fn set_mass_data(b, data: MassData)    fn apply_mass_from_shapes(b)
+fn linear_damping(b) -> f32    fn angular_damping(b) -> f32    fn gravity_scale(b) -> f32  // and set_...
+fn is_awake(b) -> bool         fn set_awake(b, awake: bool)     // the whole island
+fn enable_sleep(b, flag)       fn sleep_enabled(b) -> bool
+fn sleep_threshold(b) -> f32   fn safety_factor(b) -> f32       // and set_...
+fn is_enabled(b) -> bool       fn disable(b)     fn enable(b)
+fn motion_locks(b) -> MotionLocks      fn set_motion_locks(b, locks: MotionLocks)
+fn is_bullet(b) -> bool        fn set_bullet(b, flag: bool)
+fn fast_rotation_allowed(b) -> bool    fn allow_fast_rotation(b, flag: bool)
+fn contact_recycling_enabled(b) -> bool    fn enable_contact_recycling(b, flag: bool)
+fn enable_hit_events(b, flag: bool)          // on each of its shapes
+fn shape_count(b) -> i64     fn shapes(b) -> Shape[>..]
+fn joint_count(b) -> i64     fn joints(b) -> Joint[>..]
+fn contacts(b) -> Manifold[>..]            // those touching
+fn aabb(b) -> AABB           fn min_extent(b) -> f32    fn max_extent(b) -> float3
+fn closest_point(b, target: float3) -> float3, f32
+```
+
+Queries against one body, placed where the query says: `cast_ray(b, origin,
+translation, filter, max_fraction, body_transform) -> RayHit`, `cast_shape`,
+`overlap_shape`, `collide_mover(b, origin, mover, filter, body_transform) ->
+PlaneHit[>..]` and `time_of_impact_mover(b, origin, mover, translation,
+filter, transform1, transform2) -> ToiHit`.
+
+### Shapes
+
+```goose
+struct Shape { id: u64 }
+struct ShapeDef { material: SurfaceMaterial, density: f32 = 1000.0, filter: Filter,
+                  is_sensor: bool = false, enable_sensor_events: bool = false,
+                  enable_contact_events: bool = false, enable_hit_events: bool = false,
+                  invoke_contact_creation: bool = true, update_body_mass: bool = true,
+                  enable_speculative_contact: bool = true, explosion_scale: f32 = 1.0,
+                  user_data: u64 = 0 }
+struct SurfaceMaterial { friction: f32 = 0.6, restitution: f32 = 0.0,
+                         rolling_resistance: f32 = 0.0, tangent_velocity: float3,
+                         user_material_id: u64 = 0, custom_color: u32 = 0 }
+struct Filter { category_bits: u64 = ALL_BITS, mask_bits: u64 = ALL_BITS, group_index: i32 = 0 }
+fn create_sphere_shape(b: Body, def: ShapeDef, sphere: Sphere) -> Shape
+fn create_capsule_shape(b, def, capsule: Capsule) -> Shape
+fn create_box_shape(b, def, half_extents: float3) -> Shape      // and (..., frame: Transform)
+fn create_hull_shape(b, def, hull: Hull) -> Shape
+fn create_transformed_hull_shape(b, def, hull, transform: Transform, scale: float3) -> Shape
+fn create_mesh_shape(b, def, mesh: Mesh) -> Shape      // and (..., scale, materials)
+fn create_height_field_shape(b, def, h: HeightField) -> Shape  // static bodies; and (..., materials)
+fn create_compound_shape(b, def, c: Compound) -> Shape         // static bodies
+fn destroy(s: Shape)         // and (s, update_body_mass: bool)
+fn is_valid(s) -> bool       fn shape_type(s) -> i32    fn body(s) -> Body    fn world(s) -> World
+fn is_sensor(s) -> bool      fn name(s) -> u8[>..]      fn user_data(s) -> u64   // and set_...
+fn density(s) -> f32         fn set_density(s, density: f32, update_body_mass: bool)
+fn friction(s) -> f32        fn restitution(s) -> f32   // and set_...
+fn surface_material(s) -> SurfaceMaterial      fn set_surface_material(s, material)
+fn mesh_material_count(s) -> i64    fn mesh_material(s, i) -> SurfaceMaterial   // and set_...
+fn shape_filter(s) -> Filter        fn set_shape_filter(s, filter: Filter, invoke_contacts: bool)
+fn enable_contact_events(s, flag)   fn contact_events_enabled(s) -> bool   // and sensor_, hit_
+fn sphere(s) -> Sphere    fn capsule(s) -> Capsule    fn hull(s) -> Hull   // hull(): a copy
+fn mesh(s) -> Mesh        fn mesh_scale(s) -> float3  fn height_field(s) -> HeightField
+fn compound(s) -> Compound
+fn set_sphere(s, sphere)  fn set_capsule(s, capsule)  fn set_hull(s, hull)  fn set_mesh(s, mesh, scale)
+fn ray_cast(s, origin: float3, translation: float3) -> CastOutput     // in the world
+fn contacts(s) -> Manifold[>..]     fn sensor_overlaps(s) -> Shape[>..]
+fn aabb(s) -> AABB        fn mass_data(s) -> MassData     fn closest_point(s, target) -> float3
+fn apply_wind(s, wind: float3, drag: f32, lift: f32, max_speed: f32, wake: bool)
+```
+
+Shape types `SHAPE_SPHERE`, `SHAPE_CAPSULE`, `SHAPE_HULL`, `SHAPE_MESH`,
+`SHAPE_HEIGHT_FIELD`, `SHAPE_COMPOUND`. Two shapes collide when each one's
+category is in the other's mask, unless they share a group index: a positive
+group always collides, a negative one never does. A mesh collides only with
+shapes that are not meshes. The default density is water's, 1000 kg/m³.
+
+### Geometry
+
+Hulls, meshes, height fields and baked compounds are made once and shared by
+shapes. A shape keeps what it was made from: destroying a mesh, height field
+or compound that shapes use lets go of the handle, and the data goes when its
+last shape does; a hull is copied into each world that uses it.
+
+```goose
+struct Hull { id: u32 }      struct Mesh { id: u32 }
+struct HeightField { id: u32 }      struct Compound { id: u32 }
+fn create_hull(points: const float3[:]) -> Hull    // zero for points in a plane; and (..., max_vertices)
+fn create_box_hull(half_extents: float3) -> Hull   // and (..., frame)
+fn create_cylinder_hull(height, radius, y_offset: f32, sides: i64) -> Hull
+fn create_cone_hull(height, radius1, radius2: f32, slices: i64) -> Hull
+fn create_rock_hull(radius: f32) -> Hull
+fn transformed(h: Hull, transform: Transform, scale: float3) -> Hull
+fn create_mesh(vertices: const float3[:], indices: const i32[:]) -> Mesh
+fn create_mesh(vertices, indices, material_indices: const u8[:], def: MeshDef) -> Mesh
+fn create_grid_mesh(x_count, z_count: i64, cell_width: f32, material_count: i64, identify_edges: bool) -> Mesh
+fn create_wave_mesh(...)    fn create_torus_mesh(...)    fn create_box_mesh(center, extent, identify_edges)
+fn create_hollow_box_mesh(center, extent)    fn create_platform_mesh(center, height, top_width, bottom_width)
+fn create_height_field(heights: const f32[:], material_indices: const u8[:], def: HeightFieldDef) -> HeightField
+fn create_grid_height_field(rows, columns: i64, scale: float3, make_holes: bool) -> HeightField
+fn create_wave_height_field(rows, columns, scale, row_frequency, column_frequency, make_holes)
+fn create_compound(spheres: const CompoundSphere[:], capsules: const CompoundCapsule[:],
+                   hulls: const CompoundHull[:], meshes: const CompoundMesh[:]) -> Compound
+fn destroy(h: Hull)   fn is_valid(h: Hull) -> bool   fn info(h: Hull) -> HullInfo   // each kind
+fn vertices(h: Hull) -> float3[>..]    fn triangles(h: Hull) -> int3[>..]    // and for Mesh
+```
+
+The same geometry answers queries on its own, in its own frame:
+`compute_mass(g, density)` for spheres, capsules and hulls,
+`compute_aabb(g, transform)`, `ray_cast(g, origin, translation,
+max_fraction) -> CastOutput`, `overlap(g, transform, points, radius) -> bool`
+and `shape_cast(g, points, radius, translation, max_fraction, can_encroach)
+-> CastOutput` for each kind (a mesh takes its scale first). Between two
+point clouds with radii: `shape_distance`, `shape_cast` and
+`time_of_impact` over two `Sweep`s, with `sweep_transform(sweep, time)`.
+
+### Joints
+
+```goose
+struct Joint { id: u64 }
+struct JointDef { body_a: Body, body_b: Body, frame_a: Transform, frame_b: Transform,
+                  collide_connected: bool = false, force_threshold: f32, torque_threshold: f32,
+                  constraint_hertz: f32 = 60.0, constraint_damping_ratio: f32 = 2.0,
+                  draw_scale: f32 = 1.0, user_data: u64 = 0 }
+fn joint_def(a: Body, b: Body, anchor: float3) -> JointDef     // and (a, b, frame: Transform)
+fn local_frame(b: Body, world_frame: Transform) -> Transform
+fn create_revolute_joint(w: World, def: RevoluteJointDef) -> RevoluteJoint
+// and create_distance_joint, _filter_, _motor_, _parallel_, _prismatic_, _spherical_,
+// _weld_, _wheel_: each kind's definition starts with `base: JointDef`.
+```
+
+A joint of each kind has its own handle type, `struct RevoluteJoint { joint:
+Joint }` and so on, which that kind's own functions take; what every joint
+has takes the `joint` in it:
+
+```goose
+fn destroy(j: Joint)    // and (j, wake_bodies: bool)
+fn is_valid(j) -> bool       fn joint_type(j) -> i32     fn body_a(j) -> Body    fn body_b(j) -> Body
+fn world(j) -> World         fn local_frame_a(j) -> Transform     // and _b, and set_...
+fn collide_connected(j) -> bool    fn user_data(j) -> u64       // and set_...
+fn wake_bodies(j)            fn is_awake(j) -> bool
+fn constraint_force(j) -> float3   fn constraint_torque(j) -> float3
+fn linear_separation(j) -> f32     fn angular_separation(j) -> f32
+fn constraint_tuning(j) -> f32, f32     fn set_constraint_tuning(j, hertz, damping_ratio)
+fn force_threshold(j) -> f32        fn torque_threshold(j) -> f32     // and set_...
+```
+
+| Kind | What it does | Its own |
+|---|---|---|
+| `RevoluteJoint` | a hinge about the frames' z axis | `angle`, `enable_limit`/`set_limits`/`lower_limit`/`upper_limit`, `enable_motor`/`set_motor_speed`/`set_max_motor_torque`/`motor_torque`, `enable_spring`/`set_spring_hertz`/`set_spring_damping_ratio`/`set_target_angle` |
+| `PrismaticJoint` | a slider along the frames' x axis | `translation`, `speed`, limits, a motor (`set_max_motor_force`, `motor_force`), a spring to `set_target_translation` |
+| `DistanceJoint` | two anchors a distance apart | `rest_length`/`set_rest_length`, `current_length`, `set_length_range`/`min_length`/`max_length`, a spring with `set_spring_force_range`, a motor |
+| `SphericalJoint` | a ball and socket | `enable_cone_limit`/`set_cone_limit`/`cone_angle`, `set_twist_limits`/`twist_angle`, a spring to `set_target_rotation`, a motor to `set_motor_velocity` |
+| `WeldJoint` | two bodies as one | `set_linear_hertz`, `set_angular_hertz` and their damping ratios; 0 hertz is rigid |
+| `WheelJoint` | a wheel on a suspension | `enable_suspension`/limits, `enable_spin_motor`/`set_spin_motor_speed`/`spin_speed`, `enable_steering`/`set_target_steering_angle`/`steering_angle` |
+| `MotorJoint` | drives body b relative to body a | `set_linear_velocity`, `set_angular_velocity`, their limits, and springs |
+| `ParallelJoint` | keeps the frames' z axes parallel | `set_spring_hertz`, `set_spring_damping_ratio`, `set_max_torque` |
+| `FilterJoint` | only stops the two colliding | |
+
+Every setter has its getter. Kinds are `JOINT_REVOLUTE` and so on; using a
+kind's function on a joint of another kind is a misuse.
+
+### Events
+
+Read after the step they happened in, each an array of what the last step
+produced:
+
+```goose
+fn contact_begin_events(w) -> ContactEvent[>..]      // shape_a, shape_b, contact
+fn contact_end_events(w) -> ContactEvent[>..]
+fn contact_hit_events(w) -> ContactHitEvent[>..]     // point, normal, approach_speed, materials
+fn sensor_begin_events(w) -> SensorEvent[>..]        // sensor, visitor
+fn sensor_end_events(w) -> SensorEvent[>..]
+fn body_move_events(w) -> BodyMoveEvent[>..]         // transform, body, user_data, fell_asleep
+fn joint_events(w) -> JointEvent[>..]                // joint, user_data: past its thresholds
+struct Contact { ... }
+fn is_valid(c: Contact) -> bool          fn manifolds(c: Contact) -> Manifold[>..]
+```
+
+A shape reports contacts with `enable_contact_events`, hits with
+`enable_hit_events` (faster than the world's `hit_event_threshold`), and
+sensor visits with `enable_sensor_events` on both the sensor and the visitor.
+A `Manifold` has the contact and its shapes, the normal from a to b, and up
+to four `ManifoldPoint`s with their anchors, separation and impulses.
+
+### Queries
+
+```goose
+struct QueryFilter { category_bits: u64 = ALL_BITS, mask_bits: u64 = ALL_BITS }
+fn overlap_aabb(w, box: AABB, filter: QueryFilter) -> Shape[>..]
+fn overlap_shape(w, origin: float3, points: const float3[:], radius: f32, filter) -> Shape[>..]
+fn cast_ray(w, origin: float3, translation: float3, filter) -> RayHit[>..]   // nearest first
+fn cast_ray_closest(w, origin, translation, filter) -> RayHit                // hit false: none
+fn cast_shape(w, origin, points, radius, translation, filter) -> RayHit[>..]
+```
+
+A query shape is the convex hull of up to `MAX_PROXY_POINTS` points around
+`origin`, grown by `radius`: one point is a sphere, two a capsule, eight the
+corners of a box.
+
+### A character mover
+
+```goose
+fn cast_mover(w, origin: float3, mover: Capsule, translation: float3, filter) -> f32
+fn collide_mover(w, origin, mover, filter) -> PlaneHit[>..]
+fn solve_planes(target_delta: float3, planes: CollisionPlane[:]) -> float3, i64
+fn clip_vector(vector: float3, planes: const CollisionPlane[:]) -> float3
+```
+
+`cast_mover` is how far along its move a capsule gets; `collide_mover` the
+planes it touches, which become `CollisionPlane`s for `solve_planes`, the
+move closest to the target that they allow, and `clip_vector` a velocity
+with what points into them removed.
+
+### Recording and replay
+
+```goose
+struct Recording { id: u32 }      struct Player { id: u32 }
+fn create_recording() -> Recording        fn load_recording(path: const u8[:]) -> Recording
+fn start_recording(w: World, r: Recording)        fn stop_recording(w: World)
+fn size(r) -> i64     fn bytes(r) -> u8[>..]      fn save(r, path: const u8[:]) -> bool
+fn validate_replay(r, workers: i64) -> bool       // replays it; the same?
+fn create_player(r, workers: i64) -> Player
+fn step(p: Player) -> bool     fn sub_step(p)     fn at_pre_step(p) -> bool
+fn restart(p)     fn seek(p, frame: i64)     fn frame(p) -> i64     fn frame_count(p) -> i64
+fn at_end(p) -> bool     fn diverged(p) -> bool     fn diverge_frame(p) -> i64
+fn world(p) -> World     fn body_count(p) -> i64    fn body(p, index: i64) -> Body
+fn info(p) -> PlayerInfo     fn set_worker_count(p, count: i64)
+fn destroy(r: Recording)     fn destroy(p: Player)
+```
+
+A recording holds everything a world does between `start_recording` and
+`stop_recording`; a player replays it into a world of its own, step by step,
+checking it comes out the same. The recorded bodies exist once the replay has
+made them, `body(p, k)` being the k-th made.
+
+```goose
+let world = physics::create_world();
+let ground = physics::create_body(world, physics::BodyDef { position: float3 { 0.0, -1.0, 0.0 } });
+physics::create_box_shape(ground, physics::ShapeDef {}, float3 { 20.0, 1.0, 20.0 });
+let crate = physics::create_body(world, physics::BodyDef { body_type: physics::DYNAMIC,
+                                                           position: float3 { 0.0, 4.0, 0.0 } });
+physics::create_box_shape(crate, physics::ShapeDef {}, float3 { 0.5, 0.5, 0.5 });
+for i in 90 { physics::step(world, 1.0 / 60.0, 4); }
+print(physics::position(crate).y);        // resting on the ground: about 0.5
+physics::destroy(world);
+```

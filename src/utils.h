@@ -68,4 +68,31 @@ inline bool LoadFile(const string &path, string &dest) {
     return read == (size_t)len;
 }
 
+// The response file of link inputs a program built from the generated C
+// needs for a stdlib module with a native layer (gfx, physics), which CMake
+// writes: `style` is "msvc" for cl and clang-cl, "cc" for gcc and clang.
+// Looked for in the directory `env` names, for a moved build tree, then in
+// `<module>/` next to the compiler binary, for an installed one, then where
+// CMake wrote it (`built`).
+inline string NativeLinkFile(const string &flag, bool have, const char *missing,
+                             const string &module, const char *env, const char *built,
+                             const string &exedir, const string &style) {
+    if (style != "msvc" && style != "cc")
+        throw CompileError { cat(flag, " takes msvc or cc, not ", style) };
+    if (!have) throw CompileError { missing };
+    auto name = cat("link-", style, ".rsp");
+    vector<string> dirs;
+    if (auto dir = getenv(env)) dirs.push_back(dir);
+    dirs.push_back(cat(exedir, module));
+    if (built) dirs.push_back(built);
+    for (auto &dir : dirs) {
+        auto path = cat(dir, "/", name);
+        if (auto f = fopen(path.c_str(), "rb")) {
+            fclose(f);
+            return path;
+        }
+    }
+    throw CompileError { cat("cannot find ", name, " (set ", env, " to its directory)") };
+}
+
 }  // namespace goose

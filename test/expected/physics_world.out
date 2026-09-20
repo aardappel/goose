@@ -1,0 +1,20 @@
+Box3D 0.2.0; available true; 1.000 length units per meter; misuses 0
+defaults: world true, body true, shape true, material true, filter true, query filter true, explosion true
+joint defaults: distance true, filter true, motor true, parallel true, prismatic true, revolute true, spherical true, weld true, wheel true
+valid true; worlds 1 more
+gravity 0.000 -9.800 0.000; restitution threshold 0.500; hit threshold 2.000; top speed 100.000
+sleeping true, continuous false, warm starting true, user data 42, workers 1
+sleeping off: true
+now gravity 0.000 -10.000 0.000; thresholds 1.500 and 3.000; top speed 200.000; continuous true; user data 7; recycle distance 0.020
+awake at the start: 10
+asleep within 1000 steps: true
+lowest box center above the ground: true
+counters: 11 bodies, 11 shapes, 0 joints, contacts true, islands true
+profile times not negative: true
+capacity seen: true true
+bounds hold the ground: true
+awake after the explosion: true; the bottom box moved: true
+workers 1 and 4
+the same with one worker and with four: true
+worlds while three exist: 3; at most true
+destroyed: valid false, body valid false, worlds 0 more, Box3D's allocations down true

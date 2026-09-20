@@ -110,19 +110,37 @@ def have_gfx(exe):
     return code == 0 and out.strip() == "true"
 
 
-def gfx_link(exe, cc):
-    """The link inputs a program using gfx needs with this toolchain, as a
-    list for CC.compile's `libs`: the response file cmake/gfx.cmake wrote. An
-    empty list when the compiler was built without gfx."""
-    code, out, _ = run_capture([exe, "--gfx-link", "msvc" if cc.style == "msvc" else "cc"])
+def native_link(exe, cc, module):
+    """The link inputs a program using a stdlib module with a native layer
+    (gfx, physics) needs with this toolchain, as a list for CC.compile's
+    `libs`: the response file cmake/<module>.cmake wrote. An empty list when
+    the compiler was built without that module."""
+    code, out, _ = run_capture([exe, f"--{module}-link", "msvc" if cc.style == "msvc" else "cc"])
     return [f"@{out.strip()}"] if code == 0 and out.strip() else []
 
 
-# What the compiler says when asked to run a gfx program without the gfx layer
-# built in, and what a gfx test prints when there is no GPU device to run on.
-# The runners report both as skips.
+def gfx_link(exe, cc):
+    return native_link(exe, cc, "gfx")
+
+
+def physics_link(exe, cc):
+    return native_link(exe, cc, "physics")
+
+
+# What the compiler says when asked to run a gfx or physics program without
+# that layer built in, and what a gfx test prints when there is no GPU device
+# to run on. The runners report these as skips.
 GFX_UNAVAILABLE = "built without SDL3"
 GFX_NO_DEVICE = "gfx: no GPU device"
+PHYSICS_UNAVAILABLE = "built without Box3D"
+
+
+def native_unavailable(module, err):
+    """Whether a run of a program using `module` could not happen here, by
+    what it printed: a compiler without the layer, or for gfx no GPU."""
+    if module == "gfx":
+        return GFX_UNAVAILABLE in err or GFX_NO_DEVICE in err
+    return PHYSICS_UNAVAILABLE in err
 
 
 # --- C and C++ toolchains ----------------------------------------------------

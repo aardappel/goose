@@ -388,10 +388,11 @@ the losses; [results.md](bench/results.md) has every row and
 ## Build and run
 
 You need CMake 3.20 or later, a C++20 compiler (MSVC, clang or gcc) and Python
-3 for the test and sample runners. Two submodules are optional: TinyCC, which
-the in-process backend is built from, and SDL3, which the `gfx` graphics module
-is built from. Without either the compiler builds and behaves the same, minus
-JIT mode or minus running `gfx` programs.
+3 for the test and sample runners. Three submodules are optional: TinyCC,
+which the in-process backend is built from, SDL3, which the `gfx` graphics
+module is built from, and Box3D, which the `physics` module is built from.
+Without any of them the compiler builds and behaves the same, minus JIT mode
+or minus running `gfx` or `physics` programs.
 
 ```bash
 git clone --recursive https://github.com/aardappel/goose
@@ -400,8 +401,9 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
-To leave SDL out, clone without `--recursive` and then run `git submodule
-update --init third_party/tinycc`, or configure with `-DGOOSE_GFX=OFF`. On
+To leave SDL or Box3D out, clone without `--recursive` and then run `git
+submodule update --init` on the ones wanted, or configure with
+`-DGOOSE_GFX=OFF` or `-DGOOSE_PHYSICS=OFF`. On
 Linux, SDL needs the X11 or Wayland development packages
 ([`third_party/SDL/docs/README-linux.md`](https://github.com/libsdl-org/SDL/blob/main/docs/README-linux.md));
 without them the build leaves the `gfx` module out and says what to install.
@@ -434,7 +436,14 @@ build/goose samples/27_gfx_cube.goose
 build/goose -o cube.c samples/27_gfx_cube.goose && cc cube.c -o cube @$(build/goose --gfx-link cc)
 ```
 
-With MSVC that is `cl cube.c @<the path goose --gfx-link msvc prints>`.
+With MSVC that is `cl cube.c @<the path goose --gfx-link msvc prints>`. A
+program using `physics` links what `goose --physics-link` names the same way,
+next to the gfx one if it draws too:
+
+```bash
+build/goose samples/28_physics_boxes.goose
+build/goose -o boxes.c samples/28_physics_boxes.goose && cc boxes.c -o boxes @$(build/goose --gfx-link cc) @$(build/goose --physics-link cc)
+```
 
 The test suite and the samples run on Windows, macOS and Linux:
 
@@ -456,12 +465,14 @@ code --install-extension vscode/goose-language.vsix
   this first.
 * [Language specification](docs/goose_spec.md): the exact rules, when you want
   to know why something did not compile.
-* [Samples](samples/README.md): twenty-seven complete programs in reading
+* [Samples](samples/README.md): twenty-eight complete programs in reading
   order, from a tour of the language to a JSON parser, a threaded Mandelbrot, a
-  file tree built from two pools and a spinning cube on the GPU.
-* [Standard library](docs/stdlib.md): six modules, all readable Goose under
+  file tree built from two pools, a spinning cube on the GPU and thousands of
+  boxes raining into a heap.
+* [Standard library](docs/stdlib.md): seven modules, all readable Goose under
   `stdlib/`, including `gfx`, graphics on SDL3's GPU API
-  ([how it is built](docs/design/gfx.md)).
+  ([how it is built](docs/design/gfx.md)), and `physics`, rigid body physics
+  on Box3D ([how it is built](docs/design/physics.md)).
 * [Benchmarks](bench/summary.md): the numbers, with the
   [full results](bench/results.md) and the [design](bench/design.md) behind them.
 * [Implementation notes](docs/implementation.md): how the compiler works, pass

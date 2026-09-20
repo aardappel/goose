@@ -1,0 +1,9 @@
+the ball touched the ground within a second: true; hit true faster than 5 m/s true at 0.00 -0.02 0.00, material 3
+its contact valid: true
+manifolds: 1 with 1 point, normal 0.00 1.00 0.00, separation 0.00, pushing true, same shapes true
+the ball's shape has 1 contact, the same true
+lifted: the contact ended true, now valid false
+sensor true, events true
+the crate fell through the sensor: entered true, held true, left after true; now at 0.25
+the sensor holds nothing now: true
+the ball's moves reported: true, user data 8, fell asleep true, last at -5.00 0.50 0.00; awake now false

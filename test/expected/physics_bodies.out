@@ -1,0 +1,47 @@
+type dynamic true; user data 99; world true
+position 1.000 5.000 -2.000; rotation 0.000 0.000 0.247 0.969
+velocity 0.500 0.000 0.000; spin 0.000 0.250 0.000
+damping 0.100 0.200; gravity scale 0.000; sleep threshold 0.040; safety factor 0.250
+locks false true; sleep false; awake true; bullet true; enabled true; fast rotation true; recycling false
+name crate, ground name ''; user data 100
+shapes 2: true
+mass 1.524, inverse 0.656, center 0.344 0.000 0.000
+inertia diagonal 0.219 0.563 0.563
+mass data agrees: true
+overridden: mass 5.000, center 1.000 5.000 -2.000
+from the shapes again: mass 1.524
+world inverse inertia positive: true
+teleported to 0.000 10.000 0.000 turned 0.000 0.707 0.000 0.707
+local x in the world 0.000 10.000 -1.000; back 1.000 0.000 0.000
+vector 1.000 0.000 0.000; back 0.000 0.000 1.000
+helpers agree: 0.000 10.000 -1.000
+velocity 1.000 0.000 0.000; spin 0.000 2.000 0.000
+velocity of a point 1 in z of the center 3.000 0.000 0.000; of the body's origin as expected: true
+impulse of the mass: velocity 1.000 0.000 0.000
+force of 60 g for 1/60 s: velocity 0.000 1.000 0.000
+an angular impulse spins it about y: true
+a torque about z spins it about z: true
+an impulse off the center also spins: true, moves true
+a force off the center also spins: true
+gravity scale 2.000; threshold 0.100; safety 0.100; damping 0.500 0.600; bullet false; fast rotation false; recycling true; sleep true; hit events true
+put to sleep: awake false
+disabled: enabled false
+enabled again: true
+locked in x: x 5.000, moved in z true; locks read back true
+kinematic velocity to the target 0.000 60.000 0.000
+there after a step: -5.000 2.000 0.000
+now static: true, mass 0.000
+now dynamic: mass 800.000
+resting: manifolds 1, points 4, normal 0.000 1.000 0.000, pushing true
+contact still valid: true; between the crate and the ground: true
+bounds -0.520 -0.020 7.480 to 0.520 1.020 8.520
+min extent 0.500; max extent 0.500 0.500 0.500; from the origin 0.500 0.500 0.500
+closest to (3, 0.5, 8): 0.500 0.500 8.000 at 2.500
+joints 1: true; the ground has 0
+joint gone: 0
+ray at the crate: hit true at -0.500 0.000 0.000 normal -1.000 0.000 0.000 fraction 0.450
+sphere cast down at it: hit true at 0.000 0.500 0.000 fraction 0.426
+overlaps a sphere at its corner: true; one far away: false
+a mover against its side: planes 1, normal 1.000 0.000 0.000
+a mover sweeping into it stops at fraction 0.551, normal -1.000 0.000 0.000
+destroyed: body false, its contact false

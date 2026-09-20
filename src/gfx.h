@@ -25,29 +25,15 @@ inline const char *no_gfx_error = "this compiler was built without SDL3; check o
                                   "third_party/SDL and reconfigure";
 
 // The response file of link inputs a program built from the generated C
-// needs to use gfx (cmake/gfx.cmake): `style` is "msvc" for cl and clang-cl,
-// "cc" for gcc and clang. An explicit override for a moved build tree, next
-// to the compiler binary for an installed one, and otherwise where CMake
-// wrote them.
+// needs to use gfx (cmake/gfx.cmake), for --gfx-link.
 inline string GfxLinkFile(const string &exedir, const string &style) {
-    if (style != "msvc" && style != "cc")
-        throw CompileError { cat("--gfx-link takes msvc or cc, not ", style) };
-    if (!have_gfx) throw CompileError { no_gfx_error };
-    auto name = cat("link-", style, ".rsp");
-    vector<string> dirs;
-    if (auto env = getenv("GOOSE_GFX_LINK")) dirs.push_back(env);
-    dirs.push_back(cat(exedir, "gfx"));
     #ifdef GOOSE_GFX_LINK_PATH
-        dirs.push_back(GOOSE_GFX_LINK_PATH);
+        const char *built = GOOSE_GFX_LINK_PATH;
+    #else
+        const char *built = nullptr;
     #endif
-    for (auto &dir : dirs) {
-        auto path = cat(dir, "/", name);
-        if (auto f = fopen(path.c_str(), "rb")) {
-            fclose(f);
-            return path;
-        }
-    }
-    throw CompileError { cat("cannot find ", name, " (set GOOSE_GFX_LINK to its directory)") };
+    return NativeLinkFile("--gfx-link", have_gfx, no_gfx_error, "gfx", "GOOSE_GFX_LINK", built,
+                          exedir, style);
 }
 
 // The stage embed_shader("frag", source) names, which is also the extension

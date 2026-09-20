@@ -32,9 +32,9 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
-      # The TinyCC submodule is what the JIT backend is built from, and SDL
-      # what the gfx module is; without either the compiler still builds, and
-      # that part of the suite is skipped.
+      # The TinyCC submodule is what the JIT backend is built from, SDL what
+      # the gfx module is and Box3D what the physics module is; without any of
+      # them the compiler still builds, and that part of the suite is skipped.
       - uses: actions/checkout@v4
         with:
           submodules: true
@@ -89,8 +89,9 @@ jobs:
 
       # No submodule checkout: the sanitizer profile does not run the JIT,
       # whose program is uninstrumented and outlives its own allocations.
-      # Without SDL this is also the build that takes the no-gfx path, where
-      # the gfx tests still typecheck and generate C.
+      # Without SDL and Box3D this is also the build that takes the no-gfx
+      # and no-physics paths, where those tests still typecheck and generate
+      # C.
 
       # Instrument the C++ compiler as well as the C it emits. -O1 keeps
       # useful sanitizer stacks and compiler build time modest. Generated C

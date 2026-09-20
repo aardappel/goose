@@ -81,6 +81,7 @@ lets a window be made.
 | `--unsafe-no-rf-check` | omit the `return from` discriminant checks after calls: a measurement aid, unsound |
 | `-o out.c`, `--jit`, `-D`, `--include`, `--stdlib`, `--` | output file, in-process run, a define written into the generated C, a user header, the stdlib directory, program arguments |
 | `--gfx-link msvc\|cc` | print the response file of link inputs a program using `gfx` needs (`gfx.h`, `GfxLinkFile`) |
+| `--physics-link msvc\|cc` | the same for `physics` (`physics.h`, `PhysicsLinkFile`) |
 | `--compile-shader f [--shader-source msl\|hlsl]` | hidden: what a shader compiles to, without a program around it |
 
 The debug build of the *generated* C is `-DGS_DEBUG=1` on the C compiler (or
@@ -1763,6 +1764,9 @@ it is native C in `src/gfx/`, compiled once into a static library over SDL3
 that `goose` links for JIT runs and a program links when built from the
 generated C. The generated C only declares the `gs_gfx_*` functions it calls,
 and `AddGfxSymbols` (`jit.h`) defines them for a JIT run. `docs/design/gfx.md`
+describes it. **The physics layer** behind `stdlib/physics.goose` is built
+the same way over Box3D, in `src/physics/`, its functions `gs_phys_*` and
+their JIT definitions `AddPhysicsSymbols`; `docs/design/physics.md`
 describes it.
 
 **Varints**: ULEB128 read/write/size, zigzag for signed positions, the

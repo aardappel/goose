@@ -5,3 +5,7 @@
 	path = third_party/SDL
 	url = https://github.com/libsdl-org/SDL
 	shallow = true
+[submodule "third_party/box3d"]
+	path = third_party/box3d
+	url = https://github.com/erincatto/box3d
+	shallow = true

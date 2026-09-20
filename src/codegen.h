@@ -89,9 +89,11 @@ struct CodeGen {
     vector<FnSpec *> usedexterns;
     string code;        // Function bodies, size/eq helpers, thunks, main.
     bool usesthreads = false;
-    // Calls into the gfx layer (stdlib/gfx.goose), which a JIT run has to be
-    // handed from the compiler's own copy of it.
+    // Calls into the gfx and physics layers (stdlib/gfx.goose,
+    // stdlib/physics.goose), which a JIT run has to be handed from the
+    // compiler's own copies of them.
     bool usesgfx = false;
+    bool usesphysics = false;
     // Measurement only, and unsound: emit the whole `return ... from`
     // machinery but none of the post-call discriminant checks, so a program
     // that never takes a long-distance return still prints the right answer

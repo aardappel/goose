@@ -1,0 +1,43 @@
+a hull of points in a plane: handle 0, valid false, why: the points make no hull: fewer than four, or all in a plane
+tetrahedron: 4 vertices, 6 edges, 4 faces, volume 0.167, area 2.366, center 0.250 0.250 0.250
+its vertices 4, triangles 4
+box hull: 8 vertices, 6 faces, 12 triangles, volume 8.000, bounds -1.000 -1.000 -1.000 to 1.000 1.000 1.000
+cylinder 24 vertices; cone 24; rock true
+stretched box volume 16.000
+tetra handle gone: false; its shape stays: true, a hull
+shapes on the body 9: sphere, capsule, hull, hull, hull
+belongs to its body true and world true; sensor false
+name ball, user data 5
+density 2.000; the body heavier by 0.524
+friction 0.250, restitution 0.750
+material 0.100 0.200 0.300 1.000 0.000 0.000 77 16711680
+filter 2 5 -3
+events: sensor true, contact true, hit true
+contact events off: false
+sphere radius 0.500; capsule -1.000 0.000 0.000 to 1.000 0.000 0.000 radius 0.250
+the box's hull copied: 8 vertices
+box bounds -0.520 9.730 -1.020 to 0.520 10.270 1.020
+box mass 1.000 center 0.000 0.000 0.000
+closest point of the ball to (0, 10, 5): 0.000 10.000 0.500
+ray at the ball: true at 0.000 10.000 -0.500, fraction 0.450
+the ball now a capsule
+then a hull
+and a sphere again, radius 0.750
+wind moves the body: true
+floor mesh: 4 vertices, 2 triangles, 2 materials, area 400.000, bounds -10.000 0.000 -10.000 to 10.000 0.000 10.000
+its vertices 4, triangles 2
+mesh shape: mesh, same mesh true, scale 1.000 1.000 1.000, materials 2
+material 1 friction 0.300, material 0 0.500
+made meshes: grid 24 triangles, wave 128, torus 256, box 12, hollow box 12, platform true
+the bowl's mesh changed: true, scale 2.000 1.000 2.000
+height field: 5 x 5, heights 0.000 to 0.500, scale 2.000 1.000 2.000
+height field shape: height field, same field true
+made height fields: 9 and 9 rows
+compound: 2 spheres, 1 capsules, 1 hulls, 1 meshes
+compound shape: compound, same compound true
+the ghost fell through the floor: true; the grouped boxes both rest on it: 1.000 1.000
+floor mesh handle gone: false; the shape still valid true, its mesh handle now 0; the data kept: true
+a ball lands on it: 0.505
+the shape gone, the mesh's data freed: true
+the bowl's shape still uses the platform mesh: true
+shapes left on the body: 8

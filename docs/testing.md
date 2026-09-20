@@ -17,10 +17,11 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `threads/` | Workers, queues, shared globals and the native runtime lifecycle test. |
 | `stdlib/` | Standard-library modules. |
 | `gfx/` | The `gfx` graphics module: headless rendering, textures, compute, frames and input, a runtime misuse, shaders from files and from the program; shader and threading rejections (fixtures with `// error:` markers). The programs hold their shaders; the shader files beside them are for the file form of `embed_shader` and `--compile-shader`. `gfx/window/` is the windowed showcase, not part of the suite. |
+| `physics/` | The `physics` module: worlds, bodies, every kind of shape and geometry, all joint kinds, queries, events, recording and replay, a runtime misuse, and the threading rejection. |
 | `errors/`, `errors_tc/` | Expected parser/resolver and semantic rejections. |
 | `expected/` | Shared output and runtime-diagnostic expectations. |
 | `run_tests.py` | The Python test runner. |
-| `gfx_api_check.py` | Checks `stdlib/gfx.goose` against `src/gfx/gfx_api.h`; run by `run_tests.py`. |
+| `api_check.py` | Checks `stdlib/gfx.goose` and `stdlib/physics.goose` against their C layers' headers; run by `run_tests.py`. |
 
 Positive fixtures are discovered one level below `test/`; nested import helpers
 run through their entry programs. Keep fixture stems unique across categories,
@@ -57,10 +58,23 @@ results, so their output is the same on every backend and GPU; a machine with
 no GPU device (the program prints `gfx: no GPU device`) reports them skipped,
 as does a compiler without the layer. Linux CI runs them on Mesa's lavapipe.
 The runners set `GOOSE_GFX_HEADLESS=1`, so no test or sample opens a window.
-`gfx_api_check.py` checks that `stdlib/gfx.goose` and the C layer's list of
-its functions, structs and constants describe the same boundary, which
-compiles on both sides when they do not; the hidden `--compile-shader` flag is
-probed on `gfx/probe.frag`.
+The hidden `--compile-shader` flag is probed on `gfx/probe.frag`.
+
+The `physics/` tests exercise the Box3D physics module
+(`docs/design/physics.md`) the same way: always generated, and built and run
+at -O0 and -O2 and through TinyCC where the compiler has the physics layer
+(the `third_party/box3d` submodule, `goose --physics-link` answering). Box3D
+is deterministic across platforms and worker counts, so they print physics
+results, rounded, and compare them exactly. Between them they call every
+function of the layer.
+
+`api_check.py` checks that each of `stdlib/gfx.goose` and
+`stdlib/physics.goose` and its C layer's list of functions, structs and
+constants describe the same boundary, which compiles on both sides when they
+do not. It also rejects a struct the layer passes by value that TinyCC would
+pass differently from the C compilers on System V x86-64: one of at most 16
+bytes with a misaligned field, or with floats alone in one eightbyte and
+integers in the other.
 
 `test/gfx/window/run_window_test.py` is run by hand, on a machine with a
 display and a GPU: it runs the showcase `gfx_showcase.goose` with a window

@@ -102,7 +102,7 @@ and reconfigure". `--gfx-link` fails the same way.
 
 It absorbs what makes SDL_GPU error-prone, so the Goose API does not inherit
 it. `gfx_api.h` lists every function once (`GS_GFX_API`) and every constant
-(`GS_GFX_CONSTANTS`); `test/gfx_api_check.py` checks `stdlib/gfx.goose`
+(`GS_GFX_CONSTANTS`); `test/api_check.py` checks `stdlib/gfx.goose`
 declares exactly those functions with the same C shapes, the same struct
 fields in the same order, and the same constant values.
 

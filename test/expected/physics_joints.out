@@ -1,0 +1,36 @@
+revolute: kind true, motor true at 1.00 with up to 10000.00
+after a second the angle is 1.00, the motor pushing true
+limits true -0.25 to 0.50; spring true 2.00 hertz, ratio 0.50, target 0.25; motor torque up to 5000.00
+with the motor off it sits within its limits: true
+prismatic: at 1.00 of limits -1.00 to 1.00, speed 0.00, motor force true
+motor true at -3.00 up to 500.00; limits true -0.50 to 0.50
+driven back to -0.50
+spring true 4.00 1.00 to 0.25
+the spring pulls it to its target: 0.25
+distance: rest length 3.00, now 3.00
+spring true 3.00 0.70 within -500.00 to 500.00; limit true 1.50 to 2.50; motor true 0.50 up to 10.00
+a spring within its limits: true, the motor pushing true
+weld: hertz 0.00 0.00, ratios 1.00 1.00
+landed together: apart by 1.00, both at height 0.50 0.50
+wheel: spinning at 5.00 for a motor at 5.00, torque true
+motor true 2.00 up to 800.00; suspension true 5.00 0.90, limit true -0.20 to 0.20
+steering true 6.00 0.80 up to 300.00, limit true -0.50 to 0.50, target 0.30
+spinning at 2.00, steered to 0.30 by a torque true
+motor false, steering false
+spherical: cone limit true 0.50, widest swing within it: true
+cone 0.75; twist true -0.30 to 0.40; spring true 1.50 0.25 to 0.10 1.00; motor true 0.00 0.50 0.00 up to 50.00
+twist within its limits: true, the motor pushing true
+motor joint: the puck moved 0.90 in a second at 1.00 0.00 0.00
+velocity 0.00 0.00 1.00, spin 0.00 1.00 0.00, limits 800.00 80.00; springs 1.00 0.50 2.00 0.60 up to 90.00 9.00
+parallel: its z axis now 0.00 0.00 1.00
+spring 3.00 0.80 up to 70.00
+filter: still overlapping, 0.00 apart
+every joint: bodies true true, world true, awake true
+collide connected true, user data 1234, tuning 50.00 3.00, thresholds 1000000.00 2000000.00
+frame a at 0.00 5.00 0.00, frame b at -1.00 0.00 0.00
+frame b moved to -1.50 0.00 0.00
+holding the bar: force true, apart by 0.00, twisted by 0.00, torque true
+the other kinds report theirs: true
+joint events: true
+destroyed: false false; others true
+with its body gone the hinge is gone too: false

@@ -84,6 +84,7 @@ inline vector<string> CodeGen::EmitExternCall(Call *c, FnSpec *sp) {
     if (std::find(usedexterns.begin(), usedexterns.end(), sp) == usedexterns.end())
         usedexterns.push_back(sp);
     if (sp->sf->cname.rfind("gs_gfx_", 0) == 0) usesgfx = true;
+    if (sp->sf->cname.rfind("gs_phys_", 0) == 0) usesphysics = true;
     auto an = CallArgNodes(c, sp->argtypes.size());
     string argstr;
     // A builder argument (`u8[>..]&`, or a value holding one) is appended

@@ -15,6 +15,9 @@
 #ifdef GOOSE_HAVE_GFX
 #include "gfx/gfx_api.h"
 #endif
+#ifdef GOOSE_HAVE_PHYSICS
+#include "physics/physics_api.h"
+#endif
 
 namespace goose {
 
@@ -65,11 +68,22 @@ inline void AddGfxSymbols(TCCState *s) {
     #endif
 }
 
+// The physics layer's functions (src/physics/physics_api.h), the same way.
+inline void AddPhysicsSymbols(TCCState *s) {
+    #ifdef GOOSE_HAVE_PHYSICS
+        #define GS_PHYS_SYMBOL(ret, name, params) tcc_add_symbol(s, #name, (const void *)&name);
+        GS_PHYS_API(GS_PHYS_SYMBOL)
+        #undef GS_PHYS_SYMBOL
+    #else
+        (void)s;
+    #endif
+}
+
 // Compiles `csrc` in memory and calls its main, returning what the program
 // returned or exited with. `progargs` become the program's argv after argv[0].
-// `gfx` says the program calls into the gfx layer.
+// `gfx` and `physics` say the program calls into those layers.
 inline int RunJit(const string &csrc, const string &libpath, const string &progname,
-                  const vector<string> &progargs, bool gfx) {
+                  const vector<string> &progargs, bool gfx, bool physics) {
     string diags;
     auto s = tcc_new();
     if (!s) throw CompileError { "libtcc: out of memory" };
@@ -85,6 +99,7 @@ inline int RunJit(const string &csrc, const string &libpath, const string &progn
     if (tcc_set_output_type(s, TCC_OUTPUT_MEMORY) < 0) fail("cannot target memory");
     if (tcc_compile_string(s, csrc.c_str()) < 0) fail("compiling the generated C failed");
     if (gfx) AddGfxSymbols(s);
+    if (physics) AddPhysicsSymbols(s);
     // tcc_run hands these to the program's main, which takes them as C main
     // does: an array of writable pointers. Hence the mutable copies.
     auto name = progname;
@@ -105,7 +120,7 @@ inline int RunJit(const string &csrc, const string &libpath, const string &progn
 #else
 
 inline int RunJit(const string &, const string &, const string &,
-                  const vector<string> &, bool) {
+                  const vector<string> &, bool, bool) {
     throw CompileError { "this compiler was built without the TinyCC backend; "
                          "check out third_party/tinycc and reconfigure, or pass -o" };
 }

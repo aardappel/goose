@@ -1,0 +1,16 @@
+recording valid true, empty true
+recorded true bytes, read back whole: true
+saved true, on disk true
+loaded the same size: true, same bytes true
+a missing file: handle 0, why: cannot load a recording from no_such_recording.b3r
+replays the same: true true
+player: 90 frames of 0.017 s in 4 sub-steps, at frame 0 with 0 bodies made
+half a step: 7 bodies made, before the step true, the top box at 6.000
+stepped 90 frames to the end true; diverged false (frame -1)
+the replayed boxes end exactly where the recorded ones did: true
+the replay world is a world of its own: true
+seeking back to frame 30: at 30
+restarted: at 0 with 0 bodies made
+again with two workers: 90 frames, diverged false
+player gone: false; its world too: false
+recordings gone: false false

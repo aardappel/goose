@@ -50,6 +50,7 @@ add_executable(goose
     src/runtime/runtime_threads.h
     src/runtime/runtime_os.h
     src/gfx.h
+    src/physics.h
 )
 
 # The compile runs on a thread of its own, with a larger stack (main.cpp).
@@ -106,6 +107,21 @@ if(GOOSE_HAVE_GFX)
         endforeach()
         target_link_libraries(goose PRIVATE delayimp)
     endif()
+endif()
+
+# The optional physics module (stdlib/physics.goose): Box3D from the
+# third_party/box3d submodule and the C layer over it, built in and linked
+# the way gfx is. Without the submodule, or with -DGOOSE_PHYSICS=OFF, the
+# compiler builds and behaves the same, except that it cannot run a physics
+# program itself.
+option(GOOSE_PHYSICS "Build the Box3D physics module when the submodule is present" ON)
+if(GOOSE_PHYSICS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/box3d/CMakeLists.txt")
+    include(cmake/physics.cmake)
+endif()
+if(GOOSE_HAVE_PHYSICS)
+    target_link_libraries(goose PRIVATE goose_physics)
+    target_compile_definitions(goose PRIVATE
+        GOOSE_HAVE_PHYSICS=1 GOOSE_PHYSICS_LINK_PATH="${CMAKE_BINARY_DIR}/physics/$<CONFIG>")
 endif()
 
 if(MSVC)
