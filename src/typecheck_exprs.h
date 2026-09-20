@@ -1107,6 +1107,56 @@ inline TypeExpr *TypeCheck::VariantTypeOf(TypeExpr *enumtype, SVariant *v, Line 
 // Struct and variant literals (§4.2). The per-node entry is
 // StructLit::Check in typecheck_nodes.h.
 
+// `selft` is the type of the value this literal constructs (the enum type
+// for a variant literal in fixed enum mode), which is what `self` names.
+inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fields,
+                                               vector<TypeExpr *> &ftypes,
+                                               string_view what, TypeExpr *selft) {
+    TempScope temps(*this);
+    LitDeep deep;
+    auto named = !sl->inits.empty() && !sl->inits[0].name.empty();
+    vector<bool> got(fields.size(), false);
+    auto pos = 0;
+    for (auto &fi : sl->inits) {
+        auto idx = -1;
+        if (named) {
+            for (auto i = 0; i < (int)fields.size(); i++)
+                if (!fields[i].ispad && fields[i].name == fi.name) { idx = i; break; }
+            if (idx < 0) Error(fi.val, cat(what, " has no field ", fi.name));
+            if (got[idx]) Error(fi.val, cat("duplicate initializer for field ", fi.name));
+            // Declaration order is required (§4.2): values construct
+            // front-to-back, so out-of-order names would obfuscate either
+            // evaluation order or cost.
+            for (auto i = idx + 1; i < (int)fields.size(); i++)
+                if (got[i])
+                    Error(fi.val, cat("field initializers must follow declaration "
+                                      "order: ", fi.name, " comes before ",
+                                      fields[i].name));
+        } else {
+            while (pos < (int)fields.size() && fields[pos].ispad) pos++;
+            if (pos >= (int)fields.size())
+                Error(fi.val, cat("too many initializers for ", what));
+            idx = pos++;
+        }
+        got[idx] = true;
+        sl->fieldindices.push_back(idx);
+        if (Is<SelfRef>(fi.val)) { CheckSelfInit(fi.val, ftypes[idx], selft); continue; }
+        SlotScope ss(*this, true);
+        auto fv = CheckValue(fi.val, ftypes[idx]);
+        NoteLitElem(deep, fi.val, fv, ftypes[idx]);
+        HoldValue(fi.val, fv);
+    }
+    for (auto i = 0; i < (int)fields.size(); i++) {
+        if (fields[i].ispad || got[i]) continue;
+        // Optional fields default to null (there is no null literal to
+        // spell it with); anything else needs a declared default.
+        if (!fields[i].defaultval && !IsOptional(ftypes[i]))
+            Error(sl, cat("missing initializer for field ", fields[i].name, " of ", what,
+                          " (it has no default)"));
+    }
+    return deep;
+}
+
 // `self` in a field initializer: the field must hold a non-optional
 // relative reference to the very value being constructed (§3.9), which is
 // the one reference to it that exists before the value does. Optional

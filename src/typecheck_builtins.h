@@ -9,6 +9,515 @@ namespace goose {
 // ------------------------------------------------------------------
 // Builtins (§3.7, §9.3, §11.2) and array members (§3.3, §5.4).
 
+// One entry for every builtin (builtins.h), for both spellings — f(a, b)
+// and a.f(b) arrive with a uniform argument list (receiver first). The
+// table drives arity, receiver kind/provenance, and simple signatures;
+// BF_CUSTOM entries get dedicated code below.
+inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> &args, Val *precv) {
+    c->builtin = d.kind;
+    if (c->trailing) Error(c, cat(d.name, " takes no function value"));
+    if (!(d.flags & BF_TYARGS) && !c->tyargs.empty())
+        Error(c, cat(d.name, " takes no type arguments"));
+    if ((int)args.size() < d.minargs || (int)args.size() > d.maxargs)
+        Error(c, cat(d.name, " takes ", (int64_t)d.minargs,
+                     d.minargs == d.maxargs ? string() : cat("-", (int64_t)d.maxargs),
+                     " argument(s), ", (int64_t)args.size(), " given"));
+    // The fully custom builtins first.
+    switch (d.kind) {
+        case B_PRINT:
+            for (auto &a : args) CheckPrintable(c, d.name, a);
+            return VoidVal();
+        case B_STR: {
+            // str(a, b, ...): a fresh u8[>..] holding the arguments' text,
+            // built at the destination like any resizable result (§7.3).
+            for (auto &a : args) CheckPrintable(c, d.name, a);
+            auto t = ast.NewType(TY_ARRAY, c->line);
+            t->arr = ast.NewDetail<TypeArray>();
+            t->arr->sub = ast.inttypes[IS_U8];
+            t->arr->akind = A_GROW;
+            c->rettypes.push_back(t);
+            Val v;
+            v.type = t;
+            v.root = TempRoot();
+            return v;
+        }
+        case B_ASSERT:
+            CheckCond(args[0]);
+            NarrowCond(args[0], true);  // assert(r) narrows onwards (§3.8).
+            return VoidVal();
+        case B_ABORT: case B_EXIT:
+            // Both end the program (§9.3), so the code after them is
+            // unreachable: this is what lets a `guard ... else` diverge
+            // with an abort (§6.4).
+            if (d.kind == B_ABORT) CheckArg(args[0], u8slice);
+            else CheckIntAny(args[0]);
+            reachable = false;
+            return VoidVal();
+        case B_THREAD_SPAWN: {
+            auto wid = Is<Ident>(args[0]);
+            SFunction *wsf = nullptr;
+            if (wid)
+                for (auto sf : ast.LookupFunctions(wid->name, wid->ns))
+                    if (sf->isthread) wsf = sf;
+            if (!wsf) Error(c, "thread_spawn's first argument names a thread_fn");
+            wid->fnref = wsf;
+            wid->exprtype = fntype;
+            auto spec = EnsureThreadSpec(wsf, c->line);
+            if (args.size() != 1 + spec->argtypes.size())
+                Error(c, cat("thread_spawn(", wsf->name, ", ...) takes ",
+                             (int64_t)spec->argtypes.size(), " worker argument(s)"));
+            {
+                DestScope ds(*this, Dest {});
+                for (size_t i = 0; i < spec->argtypes.size(); i++)
+                    CheckArg(args[1 + i], spec->argtypes[i]);
+            }
+            c->spec = spec;
+            Val v;
+            v.type = ast.inttypes[IS_I64];
+            return v;
+        }
+        case B_QPUT: {
+            auto av = CheckValue(args[0], nullptr);
+            if (av.type->kind == TY_VOID || av.type->kind == TY_FN || !IsFlat(av.type))
+                Error(c, cat("queue elements must be flat (§11.2), not ", TypeStr(av.type)));
+            return VoidVal();
+        }
+        case B_QGET: case B_QPOLL: {
+            if (c->tyargs.size() != 1)
+                Error(c, cat(d.name, "<T>() needs exactly one explicit type argument"));
+            auto t = Subst(c->tyargs[0]);
+            ValidateType(t, c->line, VT_LOCAL);
+            if (!IsFlat(t))
+                Error(c, cat("queue elements must be flat (§11.2), not ", TypeStr(t)));
+            c->rettypes.push_back(t);
+            Val first;
+            first.type = t;
+            first.root = TempRoot();
+            lastcallrets.clear();
+            lastcallrets.push_back(first);
+            if (d.kind == B_QPOLL) {
+                Val b2;
+                b2.type = ast.booltype;
+                c->rettypes.push_back(ast.booltype);
+                lastcallrets.push_back(b2);
+            }
+            return first;
+        }
+        case B_EMBED_SHADER: {
+            // The shader compiled now, and the result a read-only view of
+            // static data, like a string literal's (stdlib/gfx.goose).
+            c->shaderblob = EmbedShader(c, args);
+            c->rettypes.push_back(cu8slice);
+            Val v;
+            v.type = cu8slice;
+            v.rootexact = true;   // Static data owns what it holds.
+            v.writable = false;
+            return v;
+        }
+        case B_COPY: {
+            // copy(x): a fresh value from stored one (§4.1), for the
+            // destinations that never copy implicitly.
+            auto av = CheckV(args[0], nullptr);
+            args[0]->exprtype = av.type;
+            auto v = DecayRef(av);
+            if (v.type->kind == TY_SLICE)
+                Error(c, "copy takes a value or a reference, not a slice");
+            if (!av.lvalue && !IsPlainRef(av.type))
+                Error(c, "copy of a temporary: the value is fresh already");
+            if ((v.type->kind == TY_ENUM || v.type->kind == TY_VARIANT) &&
+                ClassOf(v.type) == SC_RESIZABLE)
+                Error(c, "copying a resizable ADT or variant is not supported by the "
+                         "C backend yet; construct a fresh value or pass the owning "
+                         "value by reference");
+            v.lvalue = false;
+            // Keep the copy node and its own storage root through every
+            // argument check. Its contents still borrow from the source.
+            if (!v.holderset && HoldsPlainRef(v.type)) {
+                v.holderroot = CanonRoot(v.root);
+                v.holderfrom = IsTemp(v.holderroot) ? nullptr : v.holderroot;
+                v.holderset = true;
+            }
+            v.root = TempRoot();
+            v.rootexact = true;
+            v.rootfrom = nullptr;
+            v.writable = false;
+            c->rettypes.push_back(v.type);
+            return v;
+        }
+        case B_FROM_BYTES: {
+            // from_bytes<T[>..]>(bytes): the image verified and copied into
+            // a fresh array (docs/design/serialization.md §4). The result is
+            // rooted at its own variable like any resizable one, so nothing
+            // in §9 has to know it came from outside; the bool is the
+            // verifier's verdict, and a rejected image leaves the array empty.
+            if (c->tyargs.size() != 1)
+                Error(c, "from_bytes<T[>..]>(bytes) needs exactly one explicit type argument");
+            auto t = Subst(c->tyargs[0]);
+            ValidateType(t, c->line, VT_LOCAL);
+            // The kinds whose contents are exactly an element run plus a
+            // count: a resizable's count lives in its header, a variable
+            // array's in a length prefix the construction writes. A fixed or
+            // limited array would need the count to match a capacity the
+            // image does not carry, so those are rejected.
+            auto ak = t->kind == TY_ARRAY ? t->arr->akind : A_FIXED;
+            if (t->kind != TY_ARRAY || (ak != A_GROW && ak != A_GROWSHRINK && ak != A_VAR))
+                Error(c, cat("from_bytes builds a resizable or variable array "
+                             "(T[>..], T[>..<], T[]), not ", TypeStr(t)));
+            auto el = t->arr->sub;
+            if (el->kind == TY_VOID) Error(c, "from_bytes needs a known element type");
+            string why;
+            if (!VerifiableElem(el, el, why))
+                Error(c, cat("from_bytes<", TypeStr(t), "> has no verifier: ", why));
+            CheckArg(args[0], u8slice);
+            c->rettypes.push_back(t);
+            c->rettypes.push_back(ast.booltype);
+            Val first;
+            first.type = t;
+            first.root = TempRoot();
+            Val ok;
+            ok.type = ast.booltype;
+            lastcallrets.clear();
+            lastcallrets.push_back(first);
+            lastcallrets.push_back(ok);
+            return first;
+        }
+        case B_DEFAULT: {
+            // default<T>(): the value a T has before anything is written
+            // to it, declared field defaults applied (§4.2).
+            if (c->tyargs.size() != 1)
+                Error(c, "default<T>() needs exactly one explicit type argument");
+            auto t = Subst(c->tyargs[0]);
+            ValidateType(t, c->line, VT_LOCAL);
+            if (ClassOf(t) != SC_FIXED)
+                Error(c, cat("default<T>() needs a fixed-size type, not ", TypeStr(t)));
+            string why;
+            if (!HasDefault(t, why))
+                Error(c, cat("default<", TypeStr(t), ">() does not exist: ", why));
+            c->rettypes.push_back(t);
+            Val v;
+            v.type = t;
+            v.rootexact = true;   // A null optional or an empty slice: static.
+            v.writable = true;    // And nothing to write, so it fits any slot (§9.5).
+            return v;
+        }
+        default: break;
+    }
+    // Member receiver validation, from the table.
+    Val rv;
+    TypeExpr *elem = nullptr;
+    auto ak = A_FIXED;
+    if (d.flags & BF_MEMBER) {
+        if (precv) {
+            rv = *precv;
+        } else {
+            rv = CheckV(args[0], nullptr);
+            args[0]->exprtype = rv.type;
+        }
+        auto rt = rv.type;
+        if (IsPlainRef(rt)) rt = rt->ref->sub;
+        if (rt->kind == TY_ARRAY) {
+            ak = rt->arr->akind;
+            elem = rt->arr->sub;
+        } else if (rt->kind == TY_SLICE) {
+            elem = rt->sub;
+        }
+        if (!(RecvKindOf(rt) & d.recv))
+            Error(c, cat(".", d.name, " is not available on ", TypeStr(rv.type)));
+        if ((d.flags & BF_WRITE) && !rv.writable)
+            Error(c, cat("cannot .", d.name, " through a non-writable value "
+                         "(let, const, or a read-only instantiation, §9.5)"));
+        if ((d.flags & BF_REUSABLE) && !(rv.reusable & RU_SLOTS))
+            Error(c, cat(".", d.name, " exists on reusable pools only",
+                         rv.reusable ? ", not on the slice pools of reusable[]" : "", " (§5.4)"));
+        if ((d.flags & BF_SLICEPOOL) && !(rv.reusable & RU_SLICES))
+            Error(c, cat(".", d.name, " exists on reusable[] pools only",
+                         rv.reusable ? ", not on the slot pools of reusable" : "", " (§5.4)"));
+        if (args.size() > 1) {
+            // The builtin keeps its receiver location while later arguments
+            // run. Serialization also retains a view of the source elements.
+            auto held = rv;
+            if (d.kind == B_TO_BYTES || rt->kind == TY_SLICE)
+                held.type = SliceOf(elem, args[0]->line);
+            else if (held.type->kind != TY_REF)
+                held.type = RefTo(rt, args[0]->line);
+            if (IsTemp(held.root) && rv.type->kind != TY_REF &&
+                rv.type->kind != TY_SLICE)
+                held.rootexact = true;
+            HoldValue(args[0], held);
+        }
+    }
+    // A pending `var x = []` receiver learns its element type from what
+    // is first pushed or appended into it (§4.2).
+    if (elem && elem->kind == TY_VOID) {
+        auto rt = rv.type;
+        if (IsPlainRef(rt)) rt = rt->ref->sub;
+        if (d.kind == B_PUSH || d.kind == B_ALLOC_INDEX || d.kind == B_ALLOC_REF) {
+            auto av = DecayRef(CheckV(args[1], nullptr));
+            CompletePending(rt, PendingElemFrom(av, args[1]), c->line);
+        } else if (d.kind == B_APPEND) {
+            auto av = DecayRef(CheckV(args[1], nullptr));
+            CompletePending(rt, PendingElemFromSeq(av, c), c->line);
+        } else if (d.kind == B_FORMAT) {
+            CompletePending(rt, ast.inttypes[IS_U8], c->line);
+        } else {
+            RequireComplete(rt, c->line);
+        }
+        elem = rt->arr->sub;
+    }
+    // The receiver grows (§1.3(4)): logged ahead of the arguments, so that
+    // a value built in place among them is checked against the growths
+    // within it alone.
+    if (d.kind == B_PUSH || d.kind == B_APPEND || d.kind == B_ALLOC_INDEX ||
+        d.kind == B_ALLOC_REF || d.kind == B_ALLOC_SLICE || d.kind == B_REALLOC_SLICE ||
+        d.kind == B_FORMAT || d.kind == B_RESIZE) {
+        auto how = d.kind == B_PUSH ? "push into " : d.kind == B_APPEND ? "append to "
+                 : d.kind == B_FORMAT ? "format into " : d.kind == B_RESIZE ? "resize "
+                 : "allocate in ";
+        NoteGrow(c, rv.root, rv.rootexact, cat(how, ExprStr(args[0])));
+    }
+    // The serialization pair (docs/design/serialization.md §4). to_bytes
+    // builds the image -- a varint byte count then the element region --
+    // either as a fresh u8[>..] or appended to a builder the caller owns, so
+    // its own header can go in front. bytes_of is the element region alone,
+    // as a view: no copy, and no framing of its own.
+    if (d.kind == B_TO_BYTES || d.kind == B_BYTES_OF) {
+        string why;
+        if (!ImageSafe(elem, why))
+            Error(c, cat(d.name, " cannot write ", TypeStr(rv.type), " out: ", why));
+        if (d.kind == B_BYTES_OF) {
+            NoTemporaryLiteral(args[0], rv.type);
+            Val v;
+            v.type = cu8slice;   // A read-only view, in its type too (§9.5).
+            v.SetProv(rv);
+            // The bytes of a live structure: reading them is what they are
+            // for, and writing them would forge the relative references the
+            // checker otherwise proves (§3.9), so the view is never writable.
+            v.writable = false;
+            v.reusable = false;
+            v.byteview = true;
+            c->rettypes.push_back(v.type);
+            return v;
+        }
+        if (args.size() == 2) {
+            auto ov = CheckV(args[1], nullptr);
+            args[1]->exprtype = ov.type;
+            auto ot = ov.type;
+            if (IsPlainRef(ot)) ot = ot->ref->sub;
+            auto ok = ot->kind == TY_ARRAY && IsU8(ot->arr->sub) &&
+                      (ot->arr->akind == A_GROW || ot->arr->akind == A_GROWSHRINK ||
+                       ot->arr->akind == A_LIMITED);
+            if (!ok)
+                Error(c, cat("to_bytes(a, out) appends to a growable u8 array, not ",
+                             TypeStr(ov.type)));
+            if (!ov.writable)
+                Error(c, "cannot append through a non-writable value (let, or "
+                         "non-writable provenance, §9.5)");
+            NoteGrow(c, ov.root, ov.rootexact, cat("append to ", ExprStr(args[1])));
+            return VoidVal();
+        }
+        auto t = ast.NewType(TY_ARRAY, c->line);
+        t->arr = ast.NewDetail<TypeArray>();
+        t->arr->sub = ast.inttypes[IS_U8];
+        t->arr->akind = A_GROW;
+        c->rettypes.push_back(t);
+        Val v;
+        v.type = t;
+        v.root = TempRoot();
+        return v;
+    }
+    // format(out, a, b, ...): the arguments' text appended to a growable
+    // u8 array (§3.7).
+    if (d.kind == B_FORMAT) {
+        if (!IsU8(elem))
+            Error(c, cat(".format appends text to u8 arrays, not ", TypeStr(rv.type)));
+        for (size_t i = 1; i < args.size(); i++) CheckPrintable(c, d.name, args[i]);
+        return VoidVal();
+    }
+    // A grow-only array shrinks only where nothing can still be rooted in
+    // it (§5.1); pop and resize also need an element the shrink can find,
+    // which a sequential array has not got.
+    if (ak == A_GROW && (d.kind == B_POP || d.kind == B_RESIZE || d.kind == B_CLEAR)) {
+        CheckGrowShrink(c, c->standalone, d.name, args[0], rv);
+        if (d.kind != B_CLEAR && ClassOf(elem) != SC_FIXED)
+            Error(c, cat(".", d.name, " needs fixed-size elements: ", TypeStr(rv.type),
+                         " is sequential (§3.3)"));
+    }
+    // A grow-shrink array shrinks from anywhere, provided nothing in scope
+    // refers into it (§5.2).
+    if (ak == A_GROWSHRINK && (d.kind == B_POP || d.kind == B_RESIZE || d.kind == B_CLEAR))
+        ShrinkThrough(c, c->standalone, d.name, ExprStr(args[0]), rv.root, rv.rootexact,
+                      IsPlainRef(rv.type) ? rv.type->ref->sub : rv.type);
+    // resize has two forms (§3.3); a target below zero is caught at runtime.
+    if (d.kind == B_RESIZE) {
+        CheckIntAny(args[1]);
+        if (args.size() == 3) {
+            ElemArg(args[2], elem, rv);
+            // The fill value is built once and copied into every slot the
+            // resize adds, so not even a literal is built in place (§3.9).
+            if (HasRelRefT(elem) && (Is<StructLit>(args[2]) || Is<ArrayLit>(args[2])))
+                Error(args[2], cat(".resize copies its fill value into every slot it adds: "
+                                   "copying a value of type ", TypeStr(elem), ", which "
+                                   "contains self-relative references, is not supported; push "
+                                   "the elements, which constructs each in place"));
+        }
+        return VoidVal();
+    }
+    // index_of recovers the element index a reference stands for (§3.3).
+    // The reference must be an element of this very array, which is what
+    // an exact root at the receiver says (§9.2); the distance is then a
+    // whole number of elements and inside the length, so the division is
+    // exact and nothing has to be bounds-checked.
+    if (d.kind == B_INDEX_OF) {
+        if (ClassOf(elem) != SC_FIXED)
+            Error(c, cat(".index_of needs fixed-size elements: ", TypeStr(rv.type),
+                         " is sequential (§3.3)"));
+        auto av = CheckV(args[1], nullptr);
+        if (av.lvalue && av.type->kind != TY_REF && TypeEq(av.type, elem))
+            args[1] = AutoRef(args[1], av);
+        else if (UserRefOf(args[1]))
+            Warn(args[1], cat("redundant &: ", ExprStr(Is<Unary>(args[1])->child),
+                              " is passed by reference without it (§4.1)"));
+        args[1]->exprtype = av.type;
+        if (!IsPlainRef(av.type) || !TypeEq(av.type->ref->sub, elem))
+            Error(c, cat(".index_of takes a reference to an element of ", TypeStr(rv.type),
+                         ", got ", TypeStr(av.type)));
+        CheckRootedAtReceiver(c, d.name, rv, av, "a reference", "§3.3");
+    }
+    // A slice pool's operations (§5.4). A slice handed back must be one of
+    // the pool's own, by the same exact root index_of needs, so that the
+    // position it starts at is a whole index inside the length; the
+    // elements an operation adds are default values.
+    if (d.kind == B_ALLOC_SLICE || d.kind == B_REALLOC_SLICE || d.kind == B_FREE_SLICE) {
+        if (d.kind != B_ALLOC_SLICE) {
+            auto sv = CheckV(args[1], nullptr);
+            args[1]->exprtype = sv.type;
+            if (sv.type->kind != TY_SLICE || !TypeEq(sv.type->sub, elem))
+                Error(c, cat(".", d.name, " takes a slice of ", TypeStr(rv.type), ", got ",
+                             TypeStr(sv.type)));
+            if (!RootedAtReceiver(rv, sv)) {
+                // Globals and this function's own variables are separate storage,
+                // so a slice exactly rooted at another one is not the pool's.
+                // Any other slice may be, and is checked when the call runs.
+                auto own = [&](VarDef *r) {
+                    r = CanonRoot(r);
+                    return r && (r->isglobal || r->ownerspec == CurRealFrame().spec);
+                };
+                if (sv.rootexact && own(sv.root) && own(rv.root))
+                    Error(c, cat(".", d.name, " needs a slice of the pool it is called on (§5.4); "
+                                 "this one is rooted at ", CanonRoot(sv.root)->name));
+                c->poolcheck = true;
+            }
+        }
+        if (d.kind != B_FREE_SLICE) {
+            CheckIntAny(args.back());
+            string why;
+            if (!HasDefault(elem, why))
+                Error(c, cat(".", d.name, " fills the elements it adds with default values, "
+                             "and ", TypeStr(elem), " has none: ", why, " (§5.4)"));
+        }
+        // Growing a slice may move it, and a moved element's self-relative
+        // offsets would still measure from where it was.
+        if (d.kind == B_REALLOC_SLICE && HasRelRefT(elem))
+            Error(c, cat(".realloc_slice may move the slice, which a value of type ",
+                         TypeStr(elem), " cannot survive: it contains self-relative "
+                         "references (§3.9)"));
+    }
+    // Signature-driven arguments.
+    auto base = (d.flags & BF_MEMBER) ? 1 : 0;
+    for (auto i = 0; d.args[i]; i++) {
+        auto &an = args[base + i];
+        switch (d.args[i]) {
+            case 'i': CheckIntAny(an); break;
+            case 'f': CheckValue(an, ast.flttypes[FS_F64]); break;
+            case 'b': CheckValue(an, ast.booltype); break;
+            case 'e': {
+                // An element built in place is under construction while
+                // its expression runs (§1.3(4)).
+                auto logbase = growlog.size();
+                ElemArg(an, elem, rv);
+                if (BuiltInPlace(elem))
+                    CheckGrowsSince(logbase, rv.root, rv.rootexact,
+                                    cat("the element ",
+                                        d.kind == B_PUSH ? "pushed into " : "allocated in ",
+                                        ExprStr(args[0])));
+                break;
+            }
+            case 'a': {  // An array/slice of the receiver's element type.
+                auto logbase = growlog.size();
+                // An array literal is the run appended: its elements are the
+                // receiver's, constructed into its storage (§4.2).
+                auto al = Is<ArrayLit>(an);
+                if (al && al->capexpr) al = nullptr;
+                auto av = al ? CheckValueAt(an, AppendedRun(elem, al),
+                                            Dest { rv.root, rv.rootexact })
+                             : CheckV(an, nullptr);
+                an->exprtype = av.type;
+                auto t2 = av.type;
+                if (IsPlainRef(t2)) t2 = t2->ref->sub;
+                TypeExpr *selem = nullptr;
+                if (t2->kind == TY_ARRAY) selem = t2->arr->sub;
+                if (t2->kind == TY_SLICE) selem = t2->sub;
+                if (av.strlit) selem = ast.inttypes[IS_U8];
+                if (!selem || !TypeEq(selem, elem))
+                    Error(c, cat(".", d.name, " takes an array or slice of ",
+                                 TypeStr(elem), ", got ", TypeStr(av.type)));
+                if (!al) AppendedCopies(an, av, elem, rv);
+                // A call's array result is built at the receiver's top
+                // (§7.3), and a literal's run is built in place where its
+                // elements are not fixed-size or hold relative references of
+                // either form (at the top, or in a limited array's free
+                // slots): under construction while the call or the elements
+                // run (§1.3(4)).
+                auto inplace = al ? ClassOf(elem) != SC_FIXED || HasRelRefT(elem, true)
+                                  : Is<Call>(an) && ak != A_LIMITED && ClassOf(t2) != SC_FIXED;
+                if (inplace)
+                    CheckGrowsSince(logbase, rv.root, rv.rootexact,
+                                    cat("the run appended to ", ExprStr(args[0])));
+                break;
+            }
+            default: assert(false);
+        }
+    }
+    // Returns, from the table.
+    Val v = VoidVal();
+    switch (d.rets[0]) {
+        case 0: break;
+        case 'i': v.type = ast.inttypes[IS_I64]; break;
+        case 'b': v.type = ast.booltype; break;
+        case 'e':
+            v.type = LoadType(elem);
+            v.root = TempRoot();
+            if (HoldsPlainRef(v.type)) {
+                // The element leaves as a temporary, holding what it held in
+                // the receiver, as an element read would (ContainerRead).
+                v.holderroot = CanonRoot(rv.root);
+                v.holderset = true;
+                v.holderfrom = CanonRoot(rv.root);
+            }
+            // What an adapting receiver (the element's ADT, say) constructs from.
+            c->rettypes.push_back(v.type);
+            break;
+        case 'r':
+            v.type = RefTo(elem, c->line);
+            v.root = rv.root;
+            v.rootexact = rv.rootexact;
+            v.writable = rv.writable;
+            // What a receiver that decays the reference loads through.
+            c->rettypes.push_back(v.type);
+            break;
+        case 's':
+            v.type = SliceOf(elem, c->line);
+            v.root = rv.root;
+            v.rootexact = rv.rootexact;
+            v.writable = rv.writable;
+            // What an adapting receiver (a limited array) constructs from.
+            c->rettypes.push_back(v.type);
+            break;
+        default: assert(false);
+    }
+    return v;
+}
+
 // An argument of print/str/format (§3.7): every value type has a text
 // form -- scalars and bool as text, u8 arrays and slices as their bytes
 // (quoted inside an aggregate), other arrays as [a, b], structs and
@@ -1263,107 +1772,6 @@ inline bool TypeCheck::NamedOutside(FnSpec *spec, vector<VarDef *> &out) {
 inline void TypeCheck::ElemArg(Node *&n, TypeExpr *elem, Val &rv) {
     SlotScope ss(*this, true);
     CheckValueAt(n, elem, Dest { rv.root, rv.rootexact }, true);
-}
-
-// ------------------------------------------------------------------
-// Calling a function value F(a): the body is cloned and checked inline
-// in the lexical environment it was written in (§7.6).
-
-inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
-    if (c->trailing)
-        Error(c, "a function value call cannot itself take a trailing block");
-    if (fb.named) {
-        vector<SFunction *> cands = { fb.named };
-        Node *nopre = nullptr;
-        return ResolveCall(c, cands, fb.env, fb.named->name, nullptr, nopre);
-    }
-    auto fv = fb.fv;
-    if (!c->tyargs.empty()) Error(c, "a block takes no type arguments");
-    vector<Val> argvals;
-    for (auto a : c->args) {
-        auto v = CheckV(a, nullptr);
-        a->exprtype = v.type;
-        argvals.push_back(v);
-    }
-    vector<Param> params;
-    if (fv->explicit_params) {
-        params = fv->params;
-        if (params.size() != argvals.size())
-            Error(c, cat("this function value takes ", (int64_t)params.size(),
-                         " argument(s), ", (int64_t)argvals.size(), " given"));
-    } else if (argvals.size() == 1) {
-        Param p;
-        p.name = "it";
-        params.push_back(p);
-    } else if (!argvals.empty()) {
-        Error(c, "a block with multiple arguments needs named parameters (x, y => ...)");
-    }
-    // Parameter types: annotations resolve in the defining environment.
-    vector<TypeExpr *> ptypes;
-    for (size_t i = 0; i < params.size(); i++) {
-        if (params[i].type) {
-            auto t = SubstEnv(params[i].type, fb.env);
-            ValidateType(t, c->line, VT_PARAM);
-            ptypes.push_back(t);
-        } else {
-            auto nt = NaturalType(argvals[i]);
-            if (!nt || nt->kind == TY_VOID || nt == fntype)
-                Error(c->args[i], "cannot infer a type for this argument");
-            ptypes.push_back(nt);
-        }
-    }
-    {
-        DestScope ds(*this, Dest {});
-        TempScope argscope(*this);
-        for (size_t i = 0; i < ptypes.size(); i++) CheckArg(c->args[i], ptypes[i]);
-    }
-    // Check the body inline, with lookups chaining to the definer. The body
-    // checked here is an environment of its own (FnSpec::isfunval), so what
-    // it declares and specializes captures this clone's variables.
-    auto named = NamedSpec(fb.env);
-    auto env = ast.NewFunValEnv();
-    env->sf = named ? named->sf : nullptr;
-    env->lexparent = fb.env;
-    Frame f;
-    f.sf = named ? named->sf : CurRealFrame().sf;
-    f.spec = CurRealFrame().spec;
-    f.lexspec = env;
-    f.lexframe = fb.env ? LexFrame(fb.env) : 0;
-    f.scopebase = (int)scopes.size();
-    f.varbase = (int)vars.size();
-    f.callline = c->line;
-    f.isfunval = true;
-    frames.push_back(f);
-    PushScope(SK_FN);
-    c->fvparams.clear();
-    for (size_t i = 0; i < params.size(); i++) {
-        auto vd = NewVar(params[i].name, ptypes[i], c->line, params[i].isvar);
-        vd->assigned = true;
-        if (IsRefOrSlice(ptypes[i])) {
-            BindRefProvenance(vd, argvals[i]);
-            if (ptypes[i]->cq) vd->ref.writable = false;
-        }
-        // A literal parameter handed to the block stays one inside it.
-        if (argvals[i].unsized && !params[i].type && !params[i].isvar) {
-            vd->unsized = true;
-            vd->unsizedorigin = argvals[i].unsizedparam;
-        }
-        c->fvparams.push_back(vd);
-    }
-    c->fvtarget = env->sf;
-    c->fvbody = (Block *)fv->body->Clone(ast);
-    ValueRegion vr(*this, true);   // The body runs inside this call's expression.
-    BlockScope bs(*this, c->fvbody);
-    CheckStmts(c->fvbody);
-    Val v = VoidVal();
-    if (auto tail = c->fvbody->tail) {
-        if (IsValuelessTail(tail)) CheckStmtExpr(tail);
-        else v = CheckValue(c->fvbody->tail, nullptr);
-    }
-    c->fvbody->exprtype = v.type;
-    PopScope();
-    frames.pop_back();
-    return v;
 }
 
 }  // namespace goose

@@ -1073,6 +1073,7 @@ struct TypeCheck {
     void RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at);
     Val CallResult(Call *c, FnSpec *spec, vector<Val> &argvals);
     void CheckReturn(Return *r);
+    FnSpec *EnsureThreadSpec(SFunction *sf, Line l);
 
     // ------------------------------------------------------------------
     // Struct and variant literals (§4.2). The per-node entry is
@@ -1270,7 +1271,6 @@ struct TypeCheck {
     // later check changes.
     map<FnSpec *, vector<VarDef *>> namedoutside;
     void ElemArg(Node *&n, TypeExpr *elem, Val &rv);
-    FnSpec *EnsureThreadSpec(SFunction *sf, Line l);
 
     // ------------------------------------------------------------------
     // Calling a function value F(a): the body is cloned and checked inline

@@ -1641,61 +1641,9 @@ inline void TypeCheck::CheckReturn(Return *r) {
 }
 
 // ------------------------------------------------------------------
-// Struct and variant literals (§4.2). The per-node entry is
-// StructLit::Check in typecheck_nodes.h.
-
-// `selft` is the type of the value this literal constructs (the enum type
-// for a variant literal in fixed enum mode), which is what `self` names.
-inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fields,
-                                               vector<TypeExpr *> &ftypes,
-                                               string_view what, TypeExpr *selft) {
-    TempScope temps(*this);
-    LitDeep deep;
-    auto named = !sl->inits.empty() && !sl->inits[0].name.empty();
-    vector<bool> got(fields.size(), false);
-    auto pos = 0;
-    for (auto &fi : sl->inits) {
-        auto idx = -1;
-        if (named) {
-            for (auto i = 0; i < (int)fields.size(); i++)
-                if (!fields[i].ispad && fields[i].name == fi.name) { idx = i; break; }
-            if (idx < 0) Error(fi.val, cat(what, " has no field ", fi.name));
-            if (got[idx]) Error(fi.val, cat("duplicate initializer for field ", fi.name));
-            // Declaration order is required (§4.2): values construct
-            // front-to-back, so out-of-order names would obfuscate either
-            // evaluation order or cost.
-            for (auto i = idx + 1; i < (int)fields.size(); i++)
-                if (got[i])
-                    Error(fi.val, cat("field initializers must follow declaration "
-                                      "order: ", fi.name, " comes before ",
-                                      fields[i].name));
-        } else {
-            while (pos < (int)fields.size() && fields[pos].ispad) pos++;
-            if (pos >= (int)fields.size())
-                Error(fi.val, cat("too many initializers for ", what));
-            idx = pos++;
-        }
-        got[idx] = true;
-        sl->fieldindices.push_back(idx);
-        if (Is<SelfRef>(fi.val)) { CheckSelfInit(fi.val, ftypes[idx], selft); continue; }
-        SlotScope ss(*this, true);
-        auto fv = CheckValue(fi.val, ftypes[idx]);
-        NoteLitElem(deep, fi.val, fv, ftypes[idx]);
-        HoldValue(fi.val, fv);
-    }
-    for (auto i = 0; i < (int)fields.size(); i++) {
-        if (fields[i].ispad || got[i]) continue;
-        // Optional fields default to null (there is no null literal to
-        // spell it with); anything else needs a declared default.
-        if (!fields[i].defaultval && !IsOptional(ftypes[i]))
-            Error(sl, cat("missing initializer for field ", fields[i].name, " of ", what,
-                          " (it has no default)"));
-    }
-    return deep;
-}
-
-// ------------------------------------------------------------------
-// Builtins (§3.7, §9.3, §11.2) and array members (§3.3, §5.4).
+// Thread entry points (§11.2): one specialization per thread_fn, whose
+// body is checked like any other, reached from a spawn or from the
+// driver rather than from a call.
 
 inline FnSpec *TypeCheck::EnsureThreadSpec(SFunction *sf, Line l) {
     if (!sf->specs.empty()) return sf->specs[0];
@@ -1721,6 +1669,103 @@ inline FnSpec *TypeCheck::EnsureThreadSpec(SFunction *sf, Line l) {
 // ------------------------------------------------------------------
 // Calling a function value F(a): the body is cloned and checked inline
 // in the lexical environment it was written in (§7.6).
+
+inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
+    if (c->trailing)
+        Error(c, "a function value call cannot itself take a trailing block");
+    if (fb.named) {
+        vector<SFunction *> cands = { fb.named };
+        Node *nopre = nullptr;
+        return ResolveCall(c, cands, fb.env, fb.named->name, nullptr, nopre);
+    }
+    auto fv = fb.fv;
+    if (!c->tyargs.empty()) Error(c, "a block takes no type arguments");
+    vector<Val> argvals;
+    for (auto a : c->args) {
+        auto v = CheckV(a, nullptr);
+        a->exprtype = v.type;
+        argvals.push_back(v);
+    }
+    vector<Param> params;
+    if (fv->explicit_params) {
+        params = fv->params;
+        if (params.size() != argvals.size())
+            Error(c, cat("this function value takes ", (int64_t)params.size(),
+                         " argument(s), ", (int64_t)argvals.size(), " given"));
+    } else if (argvals.size() == 1) {
+        Param p;
+        p.name = "it";
+        params.push_back(p);
+    } else if (!argvals.empty()) {
+        Error(c, "a block with multiple arguments needs named parameters (x, y => ...)");
+    }
+    // Parameter types: annotations resolve in the defining environment.
+    vector<TypeExpr *> ptypes;
+    for (size_t i = 0; i < params.size(); i++) {
+        if (params[i].type) {
+            auto t = SubstEnv(params[i].type, fb.env);
+            ValidateType(t, c->line, VT_PARAM);
+            ptypes.push_back(t);
+        } else {
+            auto nt = NaturalType(argvals[i]);
+            if (!nt || nt->kind == TY_VOID || nt == fntype)
+                Error(c->args[i], "cannot infer a type for this argument");
+            ptypes.push_back(nt);
+        }
+    }
+    {
+        DestScope ds(*this, Dest {});
+        TempScope argscope(*this);
+        for (size_t i = 0; i < ptypes.size(); i++) CheckArg(c->args[i], ptypes[i]);
+    }
+    // Check the body inline, with lookups chaining to the definer. The body
+    // checked here is an environment of its own (FnSpec::isfunval), so what
+    // it declares and specializes captures this clone's variables.
+    auto named = NamedSpec(fb.env);
+    auto env = ast.NewFunValEnv();
+    env->sf = named ? named->sf : nullptr;
+    env->lexparent = fb.env;
+    Frame f;
+    f.sf = named ? named->sf : CurRealFrame().sf;
+    f.spec = CurRealFrame().spec;
+    f.lexspec = env;
+    f.lexframe = fb.env ? LexFrame(fb.env) : 0;
+    f.scopebase = (int)scopes.size();
+    f.varbase = (int)vars.size();
+    f.callline = c->line;
+    f.isfunval = true;
+    frames.push_back(f);
+    PushScope(SK_FN);
+    c->fvparams.clear();
+    for (size_t i = 0; i < params.size(); i++) {
+        auto vd = NewVar(params[i].name, ptypes[i], c->line, params[i].isvar);
+        vd->assigned = true;
+        if (IsRefOrSlice(ptypes[i])) {
+            BindRefProvenance(vd, argvals[i]);
+            if (ptypes[i]->cq) vd->ref.writable = false;
+        }
+        // A literal parameter handed to the block stays one inside it.
+        if (argvals[i].unsized && !params[i].type && !params[i].isvar) {
+            vd->unsized = true;
+            vd->unsizedorigin = argvals[i].unsizedparam;
+        }
+        c->fvparams.push_back(vd);
+    }
+    c->fvtarget = env->sf;
+    c->fvbody = (Block *)fv->body->Clone(ast);
+    ValueRegion vr(*this, true);   // The body runs inside this call's expression.
+    BlockScope bs(*this, c->fvbody);
+    CheckStmts(c->fvbody);
+    Val v = VoidVal();
+    if (auto tail = c->fvbody->tail) {
+        if (IsValuelessTail(tail)) CheckStmtExpr(tail);
+        else v = CheckValue(c->fvbody->tail, nullptr);
+    }
+    c->fvbody->exprtype = v.type;
+    PopScope();
+    frames.pop_back();
+    return v;
+}
 
 inline TypeExpr *TypeCheck::SubstEnv(TypeExpr *t, FnSpec *env) {
     Frame f;
