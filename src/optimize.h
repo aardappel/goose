@@ -908,58 +908,37 @@ inline Node *Binary::Opt(Optimizer &o) {
     auto li = Is<IntLit>(left), ri = Is<IntLit>(right);
     if (li && ri) {
         // Folds compute at the operands' checked type (the typechecker
-        // unified both sides). Overflow and division aborts stay runtime
+        // unified both sides), by the same rules the checker folds constants
+        // with (FoldIntOp, ast.h). Overflow and division aborts stay runtime
         // behavior: those cases are simply not folded.
         auto ot = Optimizer::IntTypeOf(left);
         if (!ot) return this;
         auto s = ot->intstorage;
-        auto bits = IntBits(s);
+        int64_t r;
+        if (FoldIntOp(op, li->val, ri->val, s, r)) return o.NewInt(this, r);
+        // A comparison has no integer result to fold, so it is not one of
+        // FoldIntOp's; its operands compare at their own signedness.
         if (IsUnsigned(s)) {
-            // Unsigned arithmetic wraps by definition (§6.2): every op folds.
             auto a = (uint64_t)li->val, b = (uint64_t)ri->val;
-            auto max = bits == 64 ? UINT64_MAX : (1ull << bits) - 1;
             switch (op) {
-                case T_PLUS:  return o.NewInt(this, (int64_t)((a + b) & max));
-                case T_MINUS: return o.NewInt(this, (int64_t)((a - b) & max));
-                case T_MUL:   return o.NewInt(this, (int64_t)((a * b) & max));
-                case T_DIV:   if (b) return o.NewInt(this, (int64_t)(a / b)); break;
-                case T_MOD:   if (b) return o.NewInt(this, (int64_t)(a % b)); break;
-                case T_BITAND: return o.NewInt(this, (int64_t)(a & b));
-                case T_BITOR:  return o.NewInt(this, (int64_t)(a | b));
-                case T_XOR:    return o.NewInt(this, (int64_t)(a ^ b));
-                case T_SHL:    return o.NewInt(this, (int64_t)((a << (b & (bits - 1))) & max));
-                case T_SHR:    return o.NewInt(this, (int64_t)((a & max) >> (b & (bits - 1))));
-                case T_LT:     return o.NewBool(this, a < b);
-                case T_GT:     return o.NewBool(this, a > b);
-                case T_LTEQ:   return o.NewBool(this, a <= b);
-                case T_GTEQ:   return o.NewBool(this, a >= b);
-                case T_EQ:     return o.NewBool(this, a == b);
-                case T_NEQ:    return o.NewBool(this, a != b);
+                case T_LT:   return o.NewBool(this, a < b);
+                case T_GT:   return o.NewBool(this, a > b);
+                case T_LTEQ: return o.NewBool(this, a <= b);
+                case T_GTEQ: return o.NewBool(this, a >= b);
+                case T_EQ:   return o.NewBool(this, a == b);
+                case T_NEQ:  return o.NewBool(this, a != b);
                 default: break;
             }
             return this;
         }
         auto a = li->val, b = ri->val;
-        auto fits = [&](int64_t r) { return FitsIntStorage(r, false, s); };
-        int64_t r;
         switch (op) {
-            case T_PLUS:  if (!AddOv(a, b, r) && fits(r)) return o.NewInt(this, r); break;
-            case T_MINUS: if (!SubOv(a, b, r) && fits(r)) return o.NewInt(this, r); break;
-            case T_MUL:   if (!MulOv(a, b, r) && fits(r)) return o.NewInt(this, r); break;
-            case T_DIV:   if (b && !(a == INT64_MIN && b == -1) && fits(a / b)) return o.NewInt(this, a / b); break;
-            case T_MOD:   if (b) return o.NewInt(this, EuclidMod(a, b)); break;
-            case T_BITAND: return o.NewInt(this, a & b);
-            case T_BITOR:  return o.NewInt(this, a | b);
-            case T_XOR:    return o.NewInt(this, a ^ b);
-            case T_SHL:    return o.NewInt(this, WrapStorage(
-                                       (int64_t)((uint64_t)a << (b & (bits - 1))), s));
-            case T_SHR:    return o.NewInt(this, a >> (b & (bits - 1)));
-            case T_LT:     return o.NewBool(this, a < b);
-            case T_GT:     return o.NewBool(this, a > b);
-            case T_LTEQ:   return o.NewBool(this, a <= b);
-            case T_GTEQ:   return o.NewBool(this, a >= b);
-            case T_EQ:     return o.NewBool(this, a == b);
-            case T_NEQ:    return o.NewBool(this, a != b);
+            case T_LT:   return o.NewBool(this, a < b);
+            case T_GT:   return o.NewBool(this, a > b);
+            case T_LTEQ: return o.NewBool(this, a <= b);
+            case T_GTEQ: return o.NewBool(this, a >= b);
+            case T_EQ:   return o.NewBool(this, a == b);
+            case T_NEQ:  return o.NewBool(this, a != b);
             default: break;
         }
         return this;

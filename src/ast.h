@@ -158,6 +158,60 @@ inline int64_t EuclidMod(int64_t a, int64_t b) {
     return r;
 }
 
+// The constant an integer operation folds to at storage `s`, false where it
+// has none. Unsigned arithmetic wraps modulo the width by definition (§6.2)
+// and so does a shift of either signedness (runtime.h's gs_shl_*), so those
+// always fold; a signed result that leaves the type does not, since a debug
+// build aborts on it and folding would define it away, and neither does a
+// zero divisor, which aborts in every build. Comparisons are not here: they
+// fold to a bool, which only the optimizer has a node for.
+inline bool FoldIntOp(TType op, int64_t la, int64_t rb, IntStorage s, int64_t &out) {
+    auto bits = IntBits(s);
+    if (IsUnsigned(s)) {
+        auto a = (uint64_t)la, b = (uint64_t)rb;
+        auto max = bits == 64 ? UINT64_MAX : (1ull << bits) - 1;
+        uint64_t r = 0;
+        switch (op) {
+            case T_PLUS:   r = a + b; break;
+            case T_MINUS:  r = a - b; break;
+            case T_MUL:    r = a * b; break;
+            case T_DIV:    if (!b) return false; r = a / b; break;
+            case T_MOD:    if (!b) return false; r = a % b; break;
+            case T_BITAND: r = a & b; break;
+            case T_BITOR:  r = a | b; break;
+            case T_XOR:    r = a ^ b; break;
+            case T_SHL:    r = a << (b & (bits - 1)); break;
+            case T_SHR:    r = (a & max) >> (b & (bits - 1)); break;
+            default:       return false;
+        }
+        out = WrapStorage((int64_t)r, s);
+        return true;
+    }
+    auto a = la, b = rb;
+    int64_t r = 0;
+    switch (op) {
+        case T_PLUS:   if (AddOv(a, b, r)) return false; break;
+        case T_MINUS:  if (SubOv(a, b, r)) return false; break;
+        case T_MUL:    if (MulOv(a, b, r)) return false; break;
+        case T_DIV:
+            if (!b || (a == INT64_MIN && b == -1)) return false;
+            r = a / b;
+            break;
+        case T_MOD:    if (!b) return false; r = EuclidMod(a, b); break;
+        case T_BITAND: r = a & b; break;
+        case T_BITOR:  r = a | b; break;
+        case T_XOR:    r = a ^ b; break;
+        case T_SHL:
+            out = WrapStorage((int64_t)((uint64_t)a << (b & (bits - 1))), s);
+            return true;
+        case T_SHR:    r = a >> (b & (bits - 1)); break;
+        default:       return false;
+    }
+    if (!FitsIntStorage(r, false, s)) return false;
+    out = r;
+    return true;
+}
+
 // Per-kind detail payloads. A kind that needs more than one field gets one of
 // these behind its single union member; they are owned by Ast.typedetails.
 struct TypeDetail { virtual ~TypeDetail() {} };

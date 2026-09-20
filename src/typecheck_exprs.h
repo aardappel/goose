@@ -757,64 +757,20 @@ inline Val TypeCheck::CheckRefOf(Unary *x) {
     return v;
 }
 
-// Folds a constant binary op at the width and signedness of out.type. An
-// operation whose result does not fit is left for the runtime (overflow
-// aborts in debug builds, §6.2); division by a constant zero is a
-// compile error. Operand values fit out.type (the unify rules ensured it).
+// Folds a constant binary op at the width and signedness of out.type
+// (FoldIntOp, ast.h, which the optimizer folds with too). Operand values fit
+// out.type (the unify rules ensured it). A zero divisor aborts at run time,
+// which a constant expression need not wait for.
 inline void TypeCheck::FoldInt(TType op, Val &l, Val &r, Val &out, Node *at) {
     if (l.ck != CK_INT || r.ck != CK_INT) return;
     auto s = out.type->intstorage;
     if (s == IS_VARINT) return;
-    auto bits = IntBits(s);
-    if (IsUnsigned(s)) {
-        // Unsigned arithmetic wraps modulo 2^width by definition (§6.2),
-        // so every operation folds exactly.
-        auto a = (uint64_t)l.ival, b = (uint64_t)r.ival;
-        auto max = bits == 64 ? UINT64_MAX : (1ull << bits) - 1;
-        uint64_t res = 0;
-        switch (op) {
-            case T_PLUS:   res = a + b; break;
-            case T_MINUS:  res = a - b; break;
-            case T_MUL:    res = a * b; break;
-            case T_DIV:    if (!b) Error(at, "constant division by zero"); res = a / b; break;
-            case T_MOD:    if (!b) Error(at, "constant division by zero"); res = a % b; break;
-            case T_BITAND: res = a & b; break;
-            case T_BITOR:  res = a | b; break;
-            case T_XOR:    res = a ^ b; break;
-            case T_SHL:    res = a << (b & (bits - 1)); break;
-            case T_SHR:    res = (a & max) >> (b & (bits - 1)); break;
-            default:       return;
-        }
-        out.ck = CK_INT;
-        out.ival = WrapStorage((int64_t)res, s);
-        out.uns = s == IS_U64 && out.ival < 0;
-        return;
-    }
-    auto a = l.ival, b = r.ival;
-    int64_t res = 0;
-    switch (op) {
-        case T_PLUS:   if (AddOv(a, b, res)) return; break;
-        case T_MINUS:  if (SubOv(a, b, res)) return; break;
-        case T_MUL:    if (MulOv(a, b, res)) return; break;
-        case T_DIV:
-            if (!b) Error(at, "constant division by zero");
-            if (a == INT64_MIN && b == -1) return;
-            res = a / b;
-            break;
-        case T_MOD:
-            if (!b) Error(at, "constant division by zero");
-            res = EuclidMod(a, b);
-            break;
-        case T_BITAND: res = a & b; break;
-        case T_BITOR:  res = a | b; break;
-        case T_XOR:    res = a ^ b; break;
-        case T_SHL:    res = (int64_t)((uint64_t)a << (b & (bits - 1))); break;
-        case T_SHR:    res = a >> (b & (bits - 1)); break;
-        default:       return;
-    }
-    if (!FitsIntStorage(res, false, s)) return;
+    if ((op == T_DIV || op == T_MOD) && !r.ival) Error(at, "constant division by zero");
+    int64_t res;
+    if (!FoldIntOp(op, l.ival, r.ival, s, res)) return;
     out.ck = CK_INT;
     out.ival = res;
+    out.uns = s == IS_U64 && res < 0;
 }
 
 // The operand/result type of a binary numeric operator: equal types

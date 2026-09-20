@@ -987,10 +987,12 @@ or unsigned into strictly wider signed) wins, and the `u64`-against-signed
 comparison is admitted only when the signed side's `nonneg` bit is set --
 a syntactic bit from a non-negative literal, a `.len`/`.cap`, or a `let`
 bound to one (`CheckVarDecl` copies it to the `VarDef` of a `let`). The
-checker folds constants at the operands' type (`FoldInt`: unsigned wraps,
-signed leaves an overflowing result unfolded for the runtime); `ConstIntValue`
-evaluates the constant expressions of array sizes, fill counts and match
-arms through `let` globals and arithmetic.
+checker folds constants at the operands' type (`FoldInt`, over the shared
+`FoldIntOp` of `ast.h`: unsigned wraps, a shift wraps at its width too, and
+a signed result that leaves the type is left unfolded for the runtime to
+abort on or wrap; a constant zero divisor is an error here rather than an
+abort); `ConstIntValue` evaluates the constant expressions of array sizes,
+fill counts and match arms through `let` globals and arithmetic.
 
 Builtins are one X-macro table (`builtins.h`) driving arity, receiver kinds,
 provenance requirements and simple signatures; `CheckBuiltin` handles the
@@ -1052,8 +1054,10 @@ becomes the literal and the declaration is dropped unless captured. Constant
 argument is substituted at inlining time (`Inliner::BindArg`).
 
 **Folding** (`Opt` per node): integer operators at the operands' checked
-width (unsigned wraps, signed only when the result fits), float operators
-(at `f32` precision when both operands are `f32`), comparisons, `&&`/`||`
+width (`FoldIntOp`, `ast.h`, which the checker folds with too: unsigned and
+shifts wrap, a signed result only when it fits), comparisons at the
+operands' signedness, float operators (at `f32` precision when both
+operands are `f32`), `&&`/`||`
 with a constant left, `!`, `~`, unary minus, casts (checked casts only when
 exact; a float-to-int only in range and integral), `.len` of a fixed array
 and `.cap` of a static-capacity limited array on a plain variable receiver,
