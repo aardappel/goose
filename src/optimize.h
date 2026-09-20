@@ -107,15 +107,6 @@ struct Optimizer {
         }
     }
 
-    static int64_t WrapStorage(int64_t v, IntStorage s) {
-        switch (s) {
-            case IS_I8:  return (int8_t)v;   case IS_U8:  return (uint8_t)v;
-            case IS_I16: return (int16_t)v;  case IS_U16: return (uint16_t)v;
-            case IS_I32: return (int32_t)v;  case IS_U32: return (int64_t)(uint32_t)v;
-            default:     return v;
-        }
-    }
-
     // The integer type an already-checked node computes at; null when it is
     // not a (non-varint) integer.
     static TypeExpr *IntTypeOf(Node *n) {
@@ -873,7 +864,7 @@ inline Node *Unary::Opt(Optimizer &o) {
                 auto t = Optimizer::IntTypeOf(child);
                 // An unrepresentable negation overflows; the runtime decides.
                 if (!t || i->val == INT64_MIN ||
-                    !TypeCheck::FitsIntStorage(-i->val, false, t->intstorage))
+                    !FitsIntStorage(-i->val, false, t->intstorage))
                     break;
                 return o.NewInt(this, -i->val);
             }
@@ -883,7 +874,7 @@ inline Node *Unary::Opt(Optimizer &o) {
             if (auto i = Is<IntLit>(child)) {
                 auto t = Optimizer::IntTypeOf(child);
                 if (!t) break;
-                return o.NewInt(this, Optimizer::WrapStorage(~i->val, t->intstorage));
+                return o.NewInt(this, WrapStorage(~i->val, t->intstorage));
             }
             break;
         case T_NOT:
@@ -949,18 +940,18 @@ inline Node *Binary::Opt(Optimizer &o) {
             return this;
         }
         auto a = li->val, b = ri->val;
-        auto fits = [&](int64_t r) { return TypeCheck::FitsIntStorage(r, false, s); };
+        auto fits = [&](int64_t r) { return FitsIntStorage(r, false, s); };
         int64_t r;
         switch (op) {
-            case T_PLUS:  if (!TypeCheck::AddOv(a, b, r) && fits(r)) return o.NewInt(this, r); break;
-            case T_MINUS: if (!TypeCheck::SubOv(a, b, r) && fits(r)) return o.NewInt(this, r); break;
-            case T_MUL:   if (!TypeCheck::MulOv(a, b, r) && fits(r)) return o.NewInt(this, r); break;
+            case T_PLUS:  if (!AddOv(a, b, r) && fits(r)) return o.NewInt(this, r); break;
+            case T_MINUS: if (!SubOv(a, b, r) && fits(r)) return o.NewInt(this, r); break;
+            case T_MUL:   if (!MulOv(a, b, r) && fits(r)) return o.NewInt(this, r); break;
             case T_DIV:   if (b && !(a == INT64_MIN && b == -1) && fits(a / b)) return o.NewInt(this, a / b); break;
-            case T_MOD:   if (b) return o.NewInt(this, TypeCheck::EuclidMod(a, b)); break;
+            case T_MOD:   if (b) return o.NewInt(this, EuclidMod(a, b)); break;
             case T_BITAND: return o.NewInt(this, a & b);
             case T_BITOR:  return o.NewInt(this, a | b);
             case T_XOR:    return o.NewInt(this, a ^ b);
-            case T_SHL:    return o.NewInt(this, Optimizer::WrapStorage(
+            case T_SHL:    return o.NewInt(this, WrapStorage(
                                        (int64_t)((uint64_t)a << (b & (bits - 1))), s));
             case T_SHR:    return o.NewInt(this, a >> (b & (bits - 1)));
             case T_LT:     return o.NewBool(this, a < b);
@@ -1062,9 +1053,9 @@ inline Node *AsCast::Opt(Optimizer &o) {
         auto st = Optimizer::IntTypeOf(child);
         auto suns = i->val < 0 && (i->uns || (st && st->intstorage == IS_U64));
         if (tt->kind == TY_INT) {
-            if (unchecked) return o.NewInt(this, Optimizer::WrapStorage(i->val, tt->intstorage));
+            if (unchecked) return o.NewInt(this, WrapStorage(i->val, tt->intstorage));
             // `as` range-checks in debug: fold only a fitting value.
-            if (TypeCheck::FitsIntStorage(i->val, suns, tt->intstorage))
+            if (FitsIntStorage(i->val, suns, tt->intstorage))
                 return o.NewInt(this, i->val);
         } else if (tt->kind == TY_FLT) {
             if (suns) return this;   // u64-range sources are for the runtime.
@@ -1085,8 +1076,8 @@ inline Node *AsCast::Opt(Optimizer &o) {
             // value that fits the storage exactly.
             if (d >= -9223372036854775808.0 && d < 9223372036854775808.0) {
                 auto t = (int64_t)d;
-                if (unchecked) return o.NewInt(this, Optimizer::WrapStorage(t, tt->intstorage));
-                if ((double)t == d && TypeCheck::FitsIntStorage(t, false, tt->intstorage))
+                if (unchecked) return o.NewInt(this, WrapStorage(t, tt->intstorage));
+                if ((double)t == d && FitsIntStorage(t, false, tt->intstorage))
                     return o.NewInt(this, t);
             }
         } else if (tt->kind == TY_FLT) {

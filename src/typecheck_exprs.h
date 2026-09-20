@@ -680,14 +680,6 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
     }
 }
 
-// Whether the constant (value bits v, u64-flavored when uns) fits the
-// given integer type.
-inline bool TypeCheck::FitsIntStorage(int64_t v, bool uns, IntStorage s) {
-    if (uns) return s == IS_U64;   // Above i64.max: only u64 holds it.
-    auto [lo, hi] = IntRange(s);
-    return v >= lo && v <= hi;
-}
-
 inline string TypeCheck::ConstStr(const Val &v) {
     return v.uns ? cat((uint64_t)v.ival) : cat(v.ival);
 }
@@ -765,37 +757,6 @@ inline Val TypeCheck::CheckRefOf(Unary *x) {
     return v;
 }
 
-// Wrap-free signed 64-bit arithmetic, reporting overflow.
-inline bool TypeCheck::AddOv(int64_t a, int64_t b, int64_t &r) {
-    r = (int64_t)((uint64_t)a + (uint64_t)b);
-    return ((a ^ r) & (b ^ r)) < 0;
-}
-
-inline bool TypeCheck::SubOv(int64_t a, int64_t b, int64_t &r) {
-    r = (int64_t)((uint64_t)a - (uint64_t)b);
-    return ((a ^ b) & (a ^ r)) < 0;
-}
-
-inline bool TypeCheck::MulOv(int64_t a, int64_t b, int64_t &r) {
-    r = (int64_t)((uint64_t)a * (uint64_t)b);
-    if (a == 0 || b == 0) return false;
-    if (a == -1) return b == INT64_MIN;
-    if (b == -1) return a == INT64_MIN;
-    return r / b != a;
-}
-
-// Signed `%` is Euclidean (§6.2): the result is in [0, |b|), never
-// negative. Callers check b != 0 first. The adjustment is computed
-// unsigned so that b == i64.min (whose negation is unrepresentable) and
-// the i64.min % -1 case both work out; the latter's exact remainder is 0,
-// which is why it needs no hardware division.
-inline int64_t TypeCheck::EuclidMod(int64_t a, int64_t b) {
-    if (b == -1) return 0;
-    auto r = a % b;
-    if (r < 0) r = (int64_t)((uint64_t)r + (b < 0 ? 0u - (uint64_t)b : (uint64_t)b));
-    return r;
-}
-
 // Folds a constant binary op at the width and signedness of out.type. An
 // operation whose result does not fit is left for the runtime (overflow
 // aborts in debug builds, §6.2); division by a constant zero is a
@@ -812,20 +773,20 @@ inline void TypeCheck::FoldInt(TType op, Val &l, Val &r, Val &out, Node *at) {
         auto max = bits == 64 ? UINT64_MAX : (1ull << bits) - 1;
         uint64_t res = 0;
         switch (op) {
-            case T_PLUS:   res = (a + b) & max; break;
-            case T_MINUS:  res = (a - b) & max; break;
-            case T_MUL:    res = (a * b) & max; break;
+            case T_PLUS:   res = a + b; break;
+            case T_MINUS:  res = a - b; break;
+            case T_MUL:    res = a * b; break;
             case T_DIV:    if (!b) Error(at, "constant division by zero"); res = a / b; break;
             case T_MOD:    if (!b) Error(at, "constant division by zero"); res = a % b; break;
             case T_BITAND: res = a & b; break;
             case T_BITOR:  res = a | b; break;
             case T_XOR:    res = a ^ b; break;
-            case T_SHL:    res = (a << (b & (bits - 1))) & max; break;
+            case T_SHL:    res = a << (b & (bits - 1)); break;
             case T_SHR:    res = (a & max) >> (b & (bits - 1)); break;
             default:       return;
         }
         out.ck = CK_INT;
-        out.ival = (int64_t)res;
+        out.ival = WrapStorage((int64_t)res, s);
         out.uns = s == IS_U64 && out.ival < 0;
         return;
     }

@@ -953,7 +953,6 @@ struct TypeCheck {
 
     void MustFit(Val &v, Node *n, TypeExpr *dt, bool callsite);
     bool FitsAt(Val &v, TypeExpr *dt, bool callsite);
-    static bool FitsIntStorage(int64_t v, bool uns, IntStorage s);
     static string ConstStr(const Val &v);
     Val CheckCond(Node *n);
     TypeExpr *UnifyBranch(TypeExpr *a, TypeExpr *b, Node *at, bool wantvalue);
@@ -969,10 +968,6 @@ struct TypeCheck {
     }
     TypeExpr *FixedArrayOf(TypeExpr *elem, int64_t count, Line l);
     Val CheckRefOf(Unary *x);
-    static bool AddOv(int64_t a, int64_t b, int64_t &r);
-    static bool SubOv(int64_t a, int64_t b, int64_t &r);
-    static bool MulOv(int64_t a, int64_t b, int64_t &r);
-    static int64_t EuclidMod(int64_t a, int64_t b);
     void FoldInt(TType op, Val &l, Val &r, Val &out, Node *at);
     TypeExpr *UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, TypeExpr *lt, TypeExpr *rt,
                            bool cmp = false);

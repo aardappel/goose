@@ -465,7 +465,7 @@ struct TailRecursion {
         sp->body->tail = nullptr;
         sp->body->exprtype = ast.voidtype;
         if (acc) {
-            auto init = ast.New<IntLit>(ln, Optimizer::WrapStorage(identity, rt->intstorage));
+            auto init = ast.New<IntLit>(ln, WrapStorage(identity, rt->intstorage));
             init->exprtype = rt;
             auto vd = ast.New<VarDecl>(ln, true);
             vd->names.push_back(acc->name);

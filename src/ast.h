@@ -108,6 +108,56 @@ inline pair<int64_t, int64_t> IntRange(IntStorage s) {
     }
 }
 
+// Whether a constant (value bits v, u64-flavored when uns) fits a storage
+// type: above i64.max only u64 holds it, anything else by its range.
+inline bool FitsIntStorage(int64_t v, bool uns, IntStorage s) {
+    if (uns) return s == IS_U64;   // Above i64.max: only u64 holds it.
+    auto [lo, hi] = IntRange(s);
+    return v >= lo && v <= hi;
+}
+
+// A value as the storage holds it: the low bits, signed types sign-extended
+// back to 64. This is what §6.2's release-build wrap computes.
+inline int64_t WrapStorage(int64_t v, IntStorage s) {
+    switch (s) {
+        case IS_I8:  return (int8_t)v;   case IS_U8:  return (uint8_t)v;
+        case IS_I16: return (int16_t)v;  case IS_U16: return (uint16_t)v;
+        case IS_I32: return (int32_t)v;  case IS_U32: return (int64_t)(uint32_t)v;
+        default:     return v;
+    }
+}
+
+// Wrap-free signed 64-bit arithmetic, reporting overflow.
+inline bool AddOv(int64_t a, int64_t b, int64_t &r) {
+    r = (int64_t)((uint64_t)a + (uint64_t)b);
+    return ((a ^ r) & (b ^ r)) < 0;
+}
+
+inline bool SubOv(int64_t a, int64_t b, int64_t &r) {
+    r = (int64_t)((uint64_t)a - (uint64_t)b);
+    return ((a ^ b) & (a ^ r)) < 0;
+}
+
+inline bool MulOv(int64_t a, int64_t b, int64_t &r) {
+    r = (int64_t)((uint64_t)a * (uint64_t)b);
+    if (a == 0 || b == 0) return false;
+    if (a == -1) return b == INT64_MIN;
+    if (b == -1) return a == INT64_MIN;
+    return r / b != a;
+}
+
+// Signed `%` is Euclidean (§6.2): the result is in [0, |b|), never
+// negative. Callers check b != 0 first. The adjustment is computed
+// unsigned so that b == i64.min (whose negation is unrepresentable) and
+// the i64.min % -1 case both work out; the latter's exact remainder is 0,
+// which is why it needs no hardware division.
+inline int64_t EuclidMod(int64_t a, int64_t b) {
+    if (b == -1) return 0;
+    auto r = a % b;
+    if (r < 0) r = (int64_t)((uint64_t)r + (b < 0 ? 0u - (uint64_t)b : (uint64_t)b));
+    return r;
+}
+
 // Per-kind detail payloads. A kind that needs more than one field gets one of
 // these behind its single union member; they are owned by Ast.typedetails.
 struct TypeDetail { virtual ~TypeDetail() {} };
