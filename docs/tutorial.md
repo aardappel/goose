@@ -1029,6 +1029,68 @@ recursive fn in_order(n: Node&, out: i32[>..]&) {
 That is a real constraint on how you write recursive code, and it is also
 most of why recursion depth costs nothing but native stack.
 
+### Several tables, one context
+
+A compiler or a simulation keeps its state in several growable tables (nodes,
+symbols, output) and wants to hand them around as one thing. A struct cannot
+own them, since it holds at most one resizable array, as its last field, and
+neither can a recursive function. What works is to make each table a local
+of a driver function, and to pass the code that works on them one struct of
+references:
+
+```goose
+struct Node { at: i64, first: i64, next: i64 }   // a source offset, first child, next sibling
+
+struct Ctx {                 // a slice and three references: fixed-size, cheap to pass
+    source: const u8[:],
+    nodes: Node[>..]&,
+    text: u8[>..]&,
+    scratch: i64[>..<]&,     // the recursion's working stack
+}
+
+recursive fn walk(c: Ctx&, n: i64, depth: i64) -> i64 {
+    let mark = c.scratch.len;
+    c.scratch.push(depth);                 // this activation's entries, above its callers'
+    c.text.push(c.source[c.nodes[n].at]);
+    var total = c.scratch[mark];
+    var e = c.nodes[n].first;
+    while e >= 0 {
+        total += walk(c, e, depth + 1);
+        e = c.nodes[e].next;
+    }
+    c.scratch.resize(mark);                // gone again before it returns
+    return total;
+}
+
+fn compile(source: const u8[:]) -> i64 {
+    var nodes: Node[>..] = [];
+    var text: u8[>..] = [];
+    var scratch: i64[>..<] = [];
+    nodes.push(Node { at: 0, first: 1, next: -1 });   // a root with two children
+    nodes.push(Node { at: 1, first: -1, next: 2 });
+    nodes.push(Node { at: 2, first: -1, next: -1 });
+    var c = Ctx { source: source, nodes: nodes, text: text, scratch: scratch };
+    let r = walk(c, 0, 1);
+    print(text, " ", scratch.len);
+    return r;
+}
+```
+
+`compile("abc")` prints `abc 0` and returns 5. `walk` pushes into, indexes
+and shrinks the tables through `c` as it would through separate reference
+parameters, and they are `compile`'s locals, owned outside the cycle and
+outliving every activation of `walk`. The grow-shrink `scratch` is a stack
+the whole recursion shares: each activation pushes above its callers'
+entries and truncates back to its mark before it returns.
+
+The context lives for one call of `compile`. A second call, for another file
+in the same process, starts from fresh tables, and each call's scope exit
+frees its tables at once, so there is no global state to reset. Where the
+code that works on the tables is small enough to live inside the driver,
+nested functions reach them as free variables with no struct at all, as the
+samples' parsers do; the struct is for code spread over many functions or
+files.
+
 ---
 
 ## 14. Threads that share nothing

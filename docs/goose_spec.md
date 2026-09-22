@@ -2404,6 +2404,40 @@ fn parse_expr(l: Lexer&) -> Expr.. {
 fn parse(src: u8[:]) -> Expr.., u8[] { ...; return parse_expr(&l), ""; }
 ```
 
+### A.6 A context of borrowed tables
+
+```goose
+struct Ctx {                          // a slice and three references: fixed-size
+    source: const u8[:],
+    nodes: Node[>..]&,
+    text: u8[>..]&,
+    scratch: i64[>..<]&,              // the recursion's working stack
+}
+recursive fn walk(c: Ctx&, n: i64, depth: i64) -> i64 {
+    let mark = c.scratch.len;
+    c.scratch.push(depth);            // above its callers' entries
+    ...
+    c.scratch.resize(mark);
+    return total;
+}
+fn compile(source: const u8[:]) -> i64 {
+    var nodes: Node[>..] = [];        // one local per table
+    var text: u8[>..] = [];
+    var scratch: i64[>..<] = [];
+    ...
+    var c = Ctx { source: source, nodes: nodes, text: text, scratch: scratch };
+    return walk(c, 0, 1);
+}
+```
+
+A struct owns at most one resizable (§3.4) and a function in a recursive
+cycle none (§7.8), so a program whose state is several growable tables owns
+each as a local of a driver function and passes the rest of the program one
+struct of references to them. The tables are rooted outside the cycle, which
+grows and shrinks them through `c` like any pool handed to it (§7.4, §7.8).
+They last for one call of the driver: each compilation starts from fresh
+tables, and no state is global.
+
 ---
 
 ## Appendix B. TODO / open items
