@@ -412,6 +412,13 @@ struct Prov {
     // a back edge may give other arrays than the entry call did (§7.8).
     bool cyclelocal = false;
     bool hidesclass = false;
+    // Every value this may hold was loaded out of a field, an element or a
+    // global, or points into what such a slice points at (a location: lies
+    // there). No reference into a grow-shrink array's elements is ever
+    // stored in those (§5.2), so this does not point into one. A reference
+    // there may still lead to a whole grow-shrink array, or to a variable
+    // holding a view into one: nothing reached through a reference keeps it.
+    bool slotread = false;
     void SetProv(const Prov &p) { *this = p; }
 };
 
@@ -1231,6 +1238,7 @@ struct RetRoot {
     // (Prov::hidesclass), which a back edge maps through none of its own
     // arguments: back edges get the cycleroot sentinel from then on.
     bool hidesclass = false;
+    bool slotread = false;     // Prov::slotread of every return.
     bool set = false;          // A non-null return has recorded its root.
     bool seeded = false;       // `root` is the cycle fixpoint's prediction and no
                                // return has been checked yet; the prediction is

@@ -99,6 +99,10 @@ struct TypeCheck {
                                      // reference read out of it is a read-back (§9.5).
         bool throughref = false;     // Reached by crossing a reference: a slice
                                      // loaded out of it is the slot's (SlotView).
+        // The location itself is a field or an element, not the pointee of
+        // a reference, which may be a variable: what is loaded out of it
+        // was stored there (Prov::slotread).
+        bool isslot = false;
         bool fotail = false;         // A frame object's resizable tail: has its own header (C.2).
         bool isvarint = false;       // varint field: read-only refs, not assignable.
         // A path into a temporary that has not crossed a reference: a
@@ -750,6 +754,9 @@ struct TypeCheck {
     bool GrowShrinkContains(TypeExpr *t, TypeExpr *of);
     bool RefExactOf(VarDef *vd);
     bool RefMayPointInto(VarDef *v, VarDef *root);
+    bool RefMayRetarget(VarDef *v, VarDef *root);
+    bool SlotReadMayRetarget(VarDef *v, VarDef *root);
+    bool SlotReadable(TypeExpr *t);
     bool HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *t, VarDef *root,
                               TypeExpr *bound, bool growonly);
     Prov SlotView(const Prov &p, TypeExpr *slice);

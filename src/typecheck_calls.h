@@ -1565,6 +1565,7 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         if (isrs && !rr.intogs) rr.intogs = vals[i].intogs;
         rr.cyclelocal = rr.cyclelocal || vals[i].cyclelocal;
         rr.hidesclass = rr.hidesclass || vals[i].hidesclass;
+        rr.slotread = isrs && vals[i].slotread && (!previous || rr.slotread);
         rr.seeded = false;
     }
     tspec->checkedreturn = true;
@@ -1593,6 +1594,9 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
             if (!holder) v.intogs = ri.intogs;
             v.cyclelocal = ri.cyclelocal;
             v.hidesclass = ri.hidesclass;
+            // A slot read where every return is one; a back edge's returns
+            // are not all checked yet.
+            v.slotread = !holder && ri.slotread && !spec->inprogress;
             if (spec->inprogress && ri.hidesclass) {
                 // A return may be the pointee of a parameter its root does
                 // not show, which this back edge may have given another

@@ -450,6 +450,7 @@ struct Prov {
     VarDef *intogs;      // a grow-shrink array it may point into that the root does not show
     bool cyclelocal;     // may be rooted where a recursive cycle stores nothing, unshown
     bool hidesclass;     // may be a parameter class's pointee the root does not show
+    bool slotread;       // read out of a field, an element or a global (§3.10)
 };
 ```
 
@@ -844,6 +845,32 @@ array: where the reference bound the slice by reference, the slice is at its
 root, or, the variable having been rebound, at an array of that root's depth;
 a slice variable named by an explicit `&` says so by its own binding, and a
 parameter's class of one only bounds it.
+
+**Slot reads** (`Prov::slotread`). For the same reason, a plain reference
+or slice loaded out of a field or an element (`ReadBackLVal`, where
+`LVal::isslot` says the location is one, not the pointee of a reference), a
+global reference or slice variable (`RefProvOf`; rule 3 covers a global's
+own bindings) and a `for` binder copying views out of an array (`CheckFor`)
+never point into a grow-shrink array's elements, whatever their read-back
+roots are. A slice of such a slice, and a reference into what it views, keep
+the bit; `MergeVals`, a rebind (`CheckRefRebindRoot`) and a call's result
+(`RetRoot`, never a back edge's) keep it only where every value does; and
+crossing a reference drops it (`DerefLValue`, `DecayRef`, `Dot::Check`'s
+auto-deref, a `for` loop or a builtin member through a reference, a whole
+array passed to a slice parameter through one), since what a reference read
+out of a field leads to may be a whole grow-shrink array, or a variable
+holding a view into one. A slice loaded through a reference to a slice
+variable named by an explicit `&` has what the variable's binding has
+(`SlotView`). A relative reference never has it: it points within the array
+that holds it. The §5.2 scans pass over a held temporary that has it, and
+over a variable that has it unless a binding its record does not show could
+put a view of the array there (`SlotReadMayRetarget`): one not bound yet, a
+`var` rooted at the array's depth, and, inside a loop the `var` was declared
+outside of, one rooted at that depth or deeper, which a rebind later in the
+body may have left a branch's inexactly rooted value in. Neither exemption
+reaches what a reference to a slice leads to (`HeldRefsMayPointInto`). The
+§5.1 scans never use it: views of a grow-only array, byte views included,
+are stored like any others.
 
 **Inexact receivers.** Both scans run once per array the shrink may free
 (`ShrinkThrough` over `ShrinkTargets`). An exact root is the array. An
@@ -2449,6 +2476,10 @@ specification allows, and the shapes the C backend refuses outright:
   that, at the cost of one specialization per distinct global passed.
 * Bounds-check elimination tracks no array contents and no `u64` variables
   (§5.12).
+* A parameter is never a slot read (§3.10), whatever its argument: the
+  specialization key does not record the bit, so inside the callee a
+  grow-shrink shrink still counts a view passed in from a field as one that
+  may point into the array.
 * The growth-during-construction rule (§3.10) takes a parameter class to be
   possibly any global or captured local a callee grows, two classes of one
   activation to be one array unless every call site keeps both concrete and

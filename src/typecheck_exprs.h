@@ -63,6 +63,7 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         lv.type = elem;
         lv.var = nullptr;
         lv.fromstorage = true;
+        lv.isslot = true;
         lv.isvarint = elem->kind == TY_INT && elem->intstorage == IS_VARINT;
         n->exprtype = lv.type;
         return lv;
@@ -122,6 +123,10 @@ inline void TypeCheck::DerefLValue(LVal &lv, Node *at) {
     lv.var = nullptr;
     lv.letbound = false;
     lv.throughref = true;
+    // The pointee may be a whole grow-shrink array, or a variable holding a
+    // view into one (Prov::slotread).
+    lv.isslot = false;
+    lv.slotread = false;
     if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT) lv.isvarint = true;
 }
 
@@ -151,7 +156,10 @@ inline void TypeCheck::ReadBackLVal(LVal &lv) {
     auto cr = CanonRoot(lv.root);
     // A byte view can point at any typed storage. Its owner cannot be
     // recovered by enumerating u8 containers. Global slots may have been
-    // filled by functions whose stores have not yet been checked.
+    // filled by functions whose stores have not yet been checked. That
+    // matters to a grow-only array's shrink (§5.1), whose byte views are
+    // stored like any other view; a grow-shrink array's shrink passes over
+    // a slot read, byte view or not (§5.2).
     lv.byteview = lv.byteview || (cr && cr->contentbyteview) ||
                   (cr && cr->isglobal && lv.type->cq && IsU8(PointeeOf(lv.type)));
     auto rb = ReadBackRoot(lv.type, lv.root, lv.rootexact, lv.byteview,
@@ -164,6 +172,7 @@ inline void TypeCheck::ReadBackLVal(LVal &lv) {
     lv.intogs = nullptr;
     lv.cyclelocal = false;
     lv.hidesclass = false;
+    lv.slotread = lv.isslot && SlotReadable(lv.type);
     lv.intemp = false;
     if (lv.type->cq) lv.writable = false;   // A `const` slot's contents (§9.5).
 }
@@ -261,6 +270,7 @@ inline void TypeCheck::ResolveMemberLValue(LVal &lv, Dot *d) {
             lv.type = ftypes[i];
             lv.var = nullptr;
             lv.fromstorage = true;
+            lv.isslot = true;
             lv.fotail = frameobj && ClassOf(lv.type) == SC_RESIZABLE;
             lv.isvarint = lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT;
             return true;
@@ -625,6 +635,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
             if (IsPlainRef(t) && t->ref->sub->kind == TY_ARRAY) at = t->ref->sub;
             if (!callsite || at->kind != TY_ARRAY) return false;
             if (!TypeEq(at->arr->sub, dt->sub)) return false;
+            if (at != t) v.slotread = false;   // As DerefLValue.
             v.type = dt;
             return true;
         }

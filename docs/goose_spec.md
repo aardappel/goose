@@ -1020,13 +1020,22 @@ again against the pairs the cycle records once the whole cycle is.
   summaries for a shrink through a reference or of a global included, minus the
   store record: references into a grow-shrink array live only in variables, so
   checking those still in use is sufficient, a reference to a slice variable
-  among them. The error is at the shrink and
-  names the variable and where it was bound, so either end can be changed: use
-  the slice for the last time before the shrink, or move the shrink. A call into
-  a recursive cycle still being checked counts as shrinking every grow-shrink
-  array it can reach, through the references its arguments hold as well.
-  Function values run inline, so a shrink inside a block is checked against the
-  block's own enclosing scopes.
+  among them. For the same reason a plain reference or slice read out of a
+  field, an element or a global never refers into a grow-shrink array, since
+  none is ever stored there: the shrink does not consider it, nor a slice of
+  such a slice or a reference into what it views, whatever else the read-back
+  rule (§9.5) says it may point into. That stops at a reference, since what
+  one read out of a field leads to may be a whole grow-shrink array, or a
+  variable holding a view into one; and a `var` bound to such reads still
+  counts where a rebind could retarget it into the array: a same-depth one
+  (§5.1), or, inside a loop the variable was declared outside of, one later in
+  the body to a value whose root only bounds the array (§9.2). The error is at
+  the shrink and names the variable and where it was bound, so either end can
+  be changed: use the slice for the last time before the shrink, or move the
+  shrink. A call into a recursive cycle still being checked counts as
+  shrinking every grow-shrink array it can reach, through the references its
+  arguments hold as well. Function values run inline, so a shrink inside a
+  block is checked against the block's own enclosing scopes.
 * `push` returns a reference to the new element, and `index_of` works, as on
   grow-only arrays.
 * Iterating with `for` uses indices under the hood; the `&x` binding is a

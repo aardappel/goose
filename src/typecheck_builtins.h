@@ -226,7 +226,10 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             args[0]->exprtype = rv.type;
         }
         auto rt = rv.type;
-        if (IsPlainRef(rt)) rt = rt->ref->sub;
+        if (IsPlainRef(rt)) {
+            rt = rt->ref->sub;
+            rv.slotread = false;   // As DerefLValue.
+        }
         if (rt->kind == TY_ARRAY) {
             ak = rt->arr->akind;
             elem = rt->arr->sub;
@@ -777,7 +780,11 @@ inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root
                                         const string &what, bool growonly, TypeExpr *bound) {
     for (auto &[node, v, location] : heldtemps) {
         auto path = v.type->kind == TY_REF && ClassOf(v.type->ref->sub) == SC_RESIZABLE;
-        auto held = !path && ShrinkMayFree(root, bound, growonly, PointeeOf(v.type), v.byteview);
+        // A slot read never points into a grow-shrink array (§5.2), though
+        // it may into a grow-only one.
+        auto slotread = !growonly && v.slotread;
+        auto held = !path && !slotread &&
+                    ShrinkMayFree(root, bound, growonly, PointeeOf(v.type), v.byteview);
         if (held) {
             auto r = CanonRoot(v.root);
             // An inexact root bounds the lifetime: it may name any outer owner,
@@ -1304,8 +1311,11 @@ inline void TypeCheck::CheckShrinkHolders(Node *at, const string &op, VarDef *ro
         // the text, whatever else it might be rebound to.
         // A bytes_of view is over the element region itself, so the
         // pointee-type filter would dismiss exactly the case it is for.
+        // Where every binding on record is a slot read, which never points
+        // into a grow-shrink array, only a binding the record does not show
+        // can.
         auto into = ShrinkMayFree(root, bound, false, PointeeOf(v->type), v->ref.byteview) &&
-                    RefMayPointInto(v, root);
+                    (v->ref.slotread ? SlotReadMayRetarget(v, root) : RefMayPointInto(v, root));
         // A reference to a slice also reaches where the slice points: it may
         // name a variable holding one into the array, which is where such
         // slices are kept.

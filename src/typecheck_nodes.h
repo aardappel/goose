@@ -575,6 +575,7 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
         if (t->ref->optional)
             tc.Error(this, "optional value must be narrowed (if/guard/assert) before use");
         t = t->ref->sub;  // Auto-deref; ov.root is already the pointee's owner.
+        ov.slotread = false;   // As DerefLValue.
     }
     // Builtin properties (.len/.cap) from the table.
     if (auto bd = LookupBuiltin(name); bd && (bd->flags & BF_PROPERTY)) {

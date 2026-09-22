@@ -211,15 +211,44 @@ inline bool TypeCheck::RefExactOf(VarDef *vd) {
 
 // Whether the reference or slice variable v may point into the array at
 // `root`, which a shrink of that array is checked against (§5.1, §5.2): it
-// is bound there; or it is a `var` bound at that depth, which a same-depth
-// rebind could since have retargeted (§9.2); or its root only bounds the
-// pointee's lifetime, at or below that depth; or it is not bound yet and
-// may still commit to the array further down a loop body.
+// is bound there; or its root only bounds the pointee's lifetime, at or
+// below that depth; or a binding its record does not show may have put it
+// there (RefMayRetarget).
 inline bool TypeCheck::RefMayPointInto(VarDef *v, VarDef *root) {
     auto r = RefRootOf(v);
-    return r == root || (v->isvar && Depth(r) == Depth(root)) ||
-           (!v->ref.rootexact && Depth(r) >= Depth(root)) ||
+    return r == root || (!v->ref.rootexact && Depth(r) >= Depth(root)) ||
+           RefMayRetarget(v, root);
+}
+
+// Whether a binding of v that its record does not show may point into the
+// array at `root`: v is a `var` bound at that depth, which a same-depth
+// rebind could since have retargeted (§9.2), or it is not bound yet and may
+// still commit to the array further down a loop body.
+inline bool TypeCheck::RefMayRetarget(VarDef *v, VarDef *root) {
+    return (v->isvar && Depth(RefRootOf(v)) == Depth(root)) ||
            (!v->refrootknown && Depth(v) >= Depth(root));
+}
+
+// The same for a variable whose bindings on record are all slot reads
+// (Prov::slotread). Inside a loop it was declared outside of, a `var` may
+// hold what a rebind further down the body left there: a value whose root,
+// at the variable's depth, only bounds its pointee -- an `if` choosing
+// between a view of the array and one of a deeper array -- and so may be
+// in any array at or above that depth.
+inline bool TypeCheck::SlotReadMayRetarget(VarDef *v, VarDef *root) {
+    if (RefMayRetarget(v, root)) return true;
+    if (!v->isvar || Depth(RefRootOf(v)) < Depth(root)) return false;
+    for (auto i = (int)scopes.size() - 1; i >= v->depth; i--)
+        if (scopes[i].kind == SK_LOOP) return true;
+    return false;
+}
+
+// Whether a reference or slice of type t loaded out of a field, an element
+// or a global is a slot read (Prov::slotread): anything but a relative
+// reference, which points within the array that holds it, a grow-shrink one
+// included.
+inline bool TypeCheck::SlotReadable(TypeExpr *t) {
+    return t->kind == TY_SLICE || (t->kind == TY_REF && t->ref->lenstorage < 0);
 }
 
 // Whether the references a reference's pointee holds -- the slice in the
@@ -270,26 +299,29 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
 // or element lives: a variable's own binding says where its slice points,
 // and the stores into a container only bound it, as the caller's variable
 // behind a parameter's class of an explicit `&s` does, and as an inexact
-// root bounds the slot.
+// root bounds the slot. Only a slice variable's binding says whether its
+// slice is a slot read (Prov::slotread); what the reference was does not.
 inline Prov TypeCheck::SlotView(const Prov &p, TypeExpr *slice) {
+    auto ref = p;
+    ref.slotread = false;
     auto r = CanonRoot(p.root);
-    if (!r || !p.rootexact) return p;
+    if (!r || !p.rootexact) return ref;
     if (r->type && IsRefOrSlice(r->type)) {
         auto v = RefProvOf(r);
         v.writable = v.writable && p.writable;
         return v;
     }
     if (!r->type && r->viewslot) {
-        auto v = p;
+        auto v = ref;
         v.rootexact = false;
         v.rootfrom = r;
         v.byteview = v.byteview || r->contentbyteview;
         return v;
     }
-    if (!r->type || !CanContain(r->type, slice)) return p;
+    if (!r->type || !CanContain(r->type, slice)) return ref;
     LVal lv;
     lv.type = slice;
-    lv.SetProv(p);
+    lv.SetProv(ref);
     ReadBackLVal(lv);
     return lv;
 }
@@ -313,6 +345,9 @@ inline Prov TypeCheck::RefProvOf(VarDef *vd) {
     Prov p = vd->ref;
     p.root = RefRootOf(vd);
     p.rootexact = RefExactOf(vd);
+    // A global is storage like a field: no binding puts a reference into a
+    // grow-shrink array there (FitsAt, CheckBindingRoot).
+    if (vd->isglobal && vd->type) p.slotread = SlotReadable(vd->type);
     if (!vd->refrootknown && vd->type && vd->type->kind == TY_REF && vd->type->ref->optional) {
         // Bound only to null so far (or bound later in a loop body this
         // use precedes): what it can point at is whatever can hold the
@@ -843,6 +878,7 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     auto cls = [&](VarDef *r) { return IsClassRoot(r); };
     v.cyclelocal = a.cyclelocal || b.cyclelocal || Hides(a, v, local) || Hides(b, v, local);
     v.hidesclass = a.hidesclass || b.hidesclass || Hides(a, v, cls) || Hides(b, v, cls);
+    v.slotread = (a.slotread || a.isnull) && (b.slotread || b.isnull);
     return v;
 }
 
@@ -1254,6 +1290,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         intemp = TempContents(iv, contents);
         if (t->kind == TY_REF && !t->ref->optional) {
             t = t->ref->sub;  // Iterate through refs.
+            iterprov.slotread = false;   // As DerefLValue.
             if (t->kind == TY_SLICE) iterprov = SlotView(iv, t);
         }
         t = LoadType(t);
@@ -1319,6 +1356,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
             iterprov.root = rb.root;
             iterprov.rootexact = rb.exact;
             iterprov.rootfrom = rb.from;
+            iterprov.slotread = SlotReadable(elemtype);
             if (elemtype->cq) iterprov.writable = false;
         }
         BindProv(vd, iterprov);
@@ -1876,6 +1914,7 @@ inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
     vd->ref.byteview = vd->ref.byteview || rv.byteview;
     vd->ref.cyclelocal = vd->ref.cyclelocal || rv.cyclelocal;
     vd->ref.hidesclass = vd->ref.hidesclass || rv.hidesclass;
+    vd->ref.slotread = vd->ref.slotread && rv.slotread;
     auto nr = CanonRoot(rv.root);
     if (nr != vd->ref.root && Depth(nr) != Depth(vd->ref.root))
         Error(at, cat("re-binding ", vd->name, " with a reference rooted at a different "
