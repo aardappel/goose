@@ -970,7 +970,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
     if (spec->inprogress) {
         for (size_t p = 0; p < spec->argtypes.size() && p < argvals.size(); p++) {
             auto pt = spec->argtypes[p];
-            if (pt->kind != TY_REF || !HoldsPlainRef(pt->ref->sub)) continue;
+            if (!IsRefOrSlice(pt) || !HoldsPlainRef(PointeeOf(pt))) continue;
             for (size_t q = 0; q < spec->argtypes.size() && q < argvals.size(); q++) {
                 auto qt = spec->argtypes[q];
                 if (!IsRefOrSlice(qt) && !HoldsPlainRef(qt)) continue;
@@ -991,15 +991,12 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         e.src = mapped(e.src, exact);
         e.exact = exact;
     }
-    // A class event's container is storage of the caller's that the
-    // parameter leads to. One through a slice parameter is not replayed: a
-    // permutation of its elements, such as sort's, stores values read back
-    // out of them, which their read-back root only bounds (§9.5), so the
-    // caller would take the array as holding a reference into every array
-    // declared at its depth or outside it.
+    // A slice writes the caller's elements just as an array reference does.
+    // Only a read-back from the same container preserves its existing
+    // contents provenance (for example a permutation).
     for (auto &e : spec->classevents) {
         auto p = paramof(e.container);
-        if (p < 0 || spec->argtypes[p]->kind == TY_SLICE) continue;
+        if (p < 0 || e.src == e.container) continue;
         auto exact = e.exact;
         auto r = mapped(e.root, exact);
         auto src = mapped(e.src, exact);

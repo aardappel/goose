@@ -606,8 +606,8 @@ parameter. Semantically this includes stores through slices: writing a
 reference into a viewed element changes the caller's container just as
 writing through an array reference does. A permutation may preserve the
 container's existing contents provenance, but a new incoming reference
-must not disappear from its store effects. The current unconditional skip
-for slice parameters is a correctness defect (section 11).
+must not disappear from its store effects. Only stores read back from the
+same container preserve the existing record without adding an incoming root.
 For a callee still being checked (a back edge) it conservatively
 records every reference argument as stored into every reference argument
 whose pointee can hold references.
@@ -2346,6 +2346,8 @@ The compiler code is unchanged by this documentation update.
    `holders[0].p`. Replacing the cleared element with 99 makes that stale
    reference print 99. A permutation-only optimization cannot justify
    dropping arbitrary incoming stores (section 3.5).
+   **Resolved:** slice destinations participate in store replay, including
+   recursive calls; only same-container read-backs preserve the old record.
 
 4. **Rendering hooks are given fabricated writable provenance.**
    `UserFormatIn` specializes a by-reference `format` hook using writable
