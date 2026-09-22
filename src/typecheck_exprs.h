@@ -121,6 +121,7 @@ inline void TypeCheck::DerefLValue(LVal &lv, Node *at) {
     lv.type = lv.type->ref->sub;
     lv.var = nullptr;
     lv.letbound = false;
+    lv.throughref = true;
     if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT) lv.isvarint = true;
 }
 
@@ -135,6 +136,7 @@ inline void TypeCheck::SliceProvenance(LVal &lv, Node *at) {
     if (lv.type->kind != TY_SLICE) return;
     if (!lv.var) {
         if (lv.fromstorage) ReadBackLVal(lv);
+        else if (lv.throughref) lv.SetProv(SlotView(lv, lv.type));
         return;
     }
     RequireAssigned(lv.var, at);
@@ -220,7 +222,7 @@ inline void TypeCheck::HoldLocation(Node *n, const LVal &lv) {
     Val v;
     v.type = RefTo(lv.type, n->line);
     v.SetProv(lv);
-    HoldValue(n, v);
+    heldtemps.push_back({ n, v, true });
 }
 
 // Index/slice receivers retain their element view while bounds evaluate.
@@ -284,10 +286,13 @@ inline Val TypeCheck::DecayRef(Val v) {
     if (!IsPlainRef(v.type)) return v;
     Val r;
     r.type = LoadType(v.type->ref->sub);
-    r.root = v.root;  // Compound pointee values: container info, harmless.
-    r.rootexact = v.rootexact;
-    r.rootfrom = v.rootfrom;
-    r.byteview = v.byteview && HoldsPlainRef(r.type);
+    // A slice is the one its slot holds; a compound pointee value keeps the
+    // container info, harmless.
+    auto p = r.type->kind == TY_SLICE ? SlotView(v, r.type) : Prov(v);
+    r.root = p.root;
+    r.rootexact = p.rootexact;
+    r.rootfrom = p.rootfrom;
+    r.byteview = p.byteview && HoldsPlainRef(r.type);
     return r;
 }
 

@@ -194,6 +194,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         }
         Error(c, cat("no matching overload for call to ", name, failures));
     }
+    LoadSliceArgs(argvals, best.paramtypes);
     auto spec = GetOrCreateSpec(best, argvals, c);
     ApplyCalleeShrinks(c, spec, argvals, name);
     ApplyCalleeGrows(c, spec, argvals, name);
@@ -555,6 +556,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
     // Specialize every arm; return types and the other parameters must
     // agree across the set.
     c->dispatcharg = found;
+    LoadSliceArgs(argvals, matches[0].paramtypes);
     vector<Val> armvals = argvals;
     auto en = enumtype->enu->en;
     FnSpec *first = nullptr;
@@ -624,6 +626,18 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
     return results.empty() ? VoidVal() : results[0];
 }
 
+// A slice parameter takes a copy of the slice a reference argument points at
+// (§4.1), so the argument's provenance is that slice's (SlotView), however the
+// reference names the variable holding it.
+inline void TypeCheck::LoadSliceArgs(vector<Val> &argvals, const vector<TypeExpr *> &ptypes) {
+    for (size_t i = 0; i < argvals.size() && i < ptypes.size(); i++) {
+        auto &av = argvals[i];
+        if (ptypes[i]->kind == TY_SLICE && IsPlainRef(av.type) &&
+            av.type->ref->sub->kind == TY_SLICE)
+            av.SetProv(SlotView(av, av.type->ref->sub));
+    }
+}
+
 // ------------------------------------------------------------------
 // Specialization: find or create the FnSpec for a resolved call and
 // check its body (once) in call-graph order.
@@ -667,7 +681,9 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
                           : argvals[i].rootexact;
         ra.heldexact = holder && ra.exact && !sf->isrec;
         ra.growshrink = IsGrowShrinkRoot(r);
-        ra.byteview = argvals[i].byteview;
+        ra.viewslot = pt->kind == TY_REF && pt->ref->sub->kind == TY_SLICE && r && r->type &&
+                      IsRefOrSlice(r->type);
+        ra.byteview = argvals[i].byteview || (ra.viewslot && r->ref.byteview);
         if (ra.exact) ra.pool = PoolOf(r);
         if (!r) {
             ra.cls = 0;
@@ -1295,6 +1311,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
                     classroots[ra.cls]->poolclass = false;
                 vd->ref.root = classroots[ra.cls];
                 classroots[ra.cls]->contentbyteview |= ra.byteview;
+                classroots[ra.cls]->viewslot |= ra.viewslot;
             }
             vd->refrootknown = true;
             // Every member of a class points into one array (see

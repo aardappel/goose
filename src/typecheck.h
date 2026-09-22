@@ -96,6 +96,8 @@ struct TypeCheck {
         VarDef *copyof = nullptr;    // The path starts at a by-value binding (VarDef::copybind).
         bool fromstorage = false;    // Reached by a field or element step, so a
                                      // reference read out of it is a read-back (§9.5).
+        bool throughref = false;     // Reached by crossing a reference: a slice
+                                     // loaded out of it is the slot's (SlotView).
         bool fotail = false;         // A frame object's resizable tail: has its own header (C.2).
         bool isvarint = false;       // varint field: read-only refs, not assignable.
         // A path into a temporary that has not crossed a reference: a
@@ -190,7 +192,14 @@ struct TypeCheck {
     bool invalue = false;
     // Earlier references, views and assignment locations remain live while
     // the rest of their expression evaluates, even without a named variable.
-    vector<pair<Node *, Val>> heldtemps;
+    // An assignment's location is only the slot the value lands in: what the
+    // slot holds now is overwritten, so a shrink does not reach it.
+    struct Held {
+        Node *node;
+        Val v;
+        bool location = false;
+    };
+    vector<Held> heldtemps;
     struct TempScope {
         TypeCheck &tc;
         size_t base;
@@ -731,6 +740,9 @@ struct TypeCheck {
     bool GrowShrinkContains(TypeExpr *t, TypeExpr *of);
     bool RefExactOf(VarDef *vd);
     bool RefMayPointInto(VarDef *v, VarDef *root);
+    bool HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *t, VarDef *root,
+                              TypeExpr *bound, bool growonly);
+    Prov SlotView(const Prov &p, TypeExpr *slice);
     void BindProv(VarDef *vd, const Prov &p);
     void BindRefProvenance(VarDef *vd, const Val &v);
     Prov RefProvOf(VarDef *vd);
@@ -1061,6 +1073,7 @@ struct TypeCheck {
     // otherwise instantiate without end.
     static constexpr int MAXNESTEDSPECS = 16;
     FnSpec *GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, Node *callnode);
+    void LoadSliceArgs(vector<Val> &argvals, const vector<TypeExpr *> &ptypes);
     void ValidateCycle(FnSpec *spec, Node *callnode);
     static VarDef *UltimateRoot(VarDef *v);
     void ValidatePoolArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode);

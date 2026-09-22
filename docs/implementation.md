@@ -476,6 +476,7 @@ so the stored value's own root bounds them.
 | `&lvalue` (`CheckRefOf`) | the lvalue's owner | as the path |
 | a reference or slice variable (`RefProvOf`) | its committed binding (§3.7) | its binding's, weakened by rebinds |
 | a reference read out of a field or element (`ContainerRead`) | the read-back rule (§3.6) | only with one candidate |
+| a slice loaded through a reference to one (`SlotView`) | the reference's, where it bound a slice by reference; for an explicit `&` of a slice variable, that variable's binding; out of a container, or behind a parameter's class of an explicit `&s`, the read-back rule or the class as a bound | as that |
 | `a.push(v)`, `a.alloc_ref(v)`, `&a[i]` | `a`'s root | `a`'s exactness |
 | `a.alloc_slice(n)`, `a.realloc_slice(s, n)` | `a`'s root | `a`'s exactness |
 | `a[lo..hi]` (`SliceExpr::Check`) | `a`'s root | `a`'s exactness |
@@ -500,6 +501,12 @@ event that stands for them) are that array exactly only where the argument's
 references all point into one (`RootArg::heldexact`, part of the key), and
 never in a `recursive fn`, whose back edges reuse the body whatever they
 pass.
+A reference to a slice bound by reference is rooted where the slice points,
+but one written as an explicit `&s` of a slice variable is rooted at `s`
+itself, so its class stands for the caller's variable and only bounds the
+slice loaded through it (`RootArg::viewslot`, part of the key); a slice
+parameter given a reference to a slice takes that slice's root
+(`LoadSliceArgs`).
 A temporary of the calling statement outlives the call, so its class takes
 the body's own outermost depth instead (`ClassDepth`): the body may keep it
 in its locals, but not in anything of the caller's. Classes are numbered by
@@ -748,7 +755,9 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    (`invalue`, set by `ValueRegion` for a valued `if`/`match`/`block`/`loop`
    and for a function value's body);
 4. no held temporary of this statement may refer into it
-   (`CheckHeldShrinks`);
+   (`CheckHeldShrinks`), nor, where it is a reference to a slice or to a
+   holder, may what it holds; an assignment's location counts as the slot
+   alone, since the assignment overwrites what the slot holds;
 5. no variable in scope, on any frame, may refer into it: a reference or
    slice variable whose pointee the array's elements can contain (or a byte
    view), rooted at it -- or a `var` at the same depth, or an inexact root
@@ -756,7 +765,12 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    it -- **and used afterwards**; a holder variable into which a store of a
    reference into the array is on record (`HolderMayPointInto`, following
    holder copies through their source containers and judging a global source
-   by its type) and used afterwards;
+   by its type) and used afterwards; a reference to a holder whose store
+   record says the same, or to a slice that may point into it
+   (`HeldRefsMayPointInto`: a slice variable named by an explicit `&` by its
+   own binding, otherwise by the reference's root, as a bound, since stores
+   through references to the slot may have replaced the slice), and used
+   afterwards;
 6. for a global receiver, every other global whose type can hold a reference
    to something the array contains counts as holding one;
 7. the shrink is recorded for the callers (`NoteShrink`: `shrinkexternals`
@@ -778,6 +792,11 @@ local, a reference, a global, a struct's tail, whole assignment) and scans
 held temporaries and the visible reference and slice variables only
 (`CheckShrinkHolders`): references into such an array can never be stored
 (§3.5 rule 3), so checking those variables and temporaries is sufficient.
+That includes a reference to a slice variable, whose slice may view the
+array: where the reference bound the slice by reference, the slice is at its
+root, or, the variable having been rebound, at an array of that root's depth;
+a slice variable named by an explicit `&` says so by its own binding, and a
+parameter's class of one only bounds it.
 
 **Inexact receivers.** Both scans run once per array the shrink may free
 (`ShrinkThrough` over `ShrinkTargets`). An exact root is the array. An

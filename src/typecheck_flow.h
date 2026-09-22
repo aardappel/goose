@@ -174,6 +174,78 @@ inline bool TypeCheck::RefMayPointInto(VarDef *v, VarDef *root) {
            (!v->refrootknown && Depth(v) >= Depth(root));
 }
 
+// Whether the references a reference's pointee holds -- the slice in the
+// slot a `T[:]&` names, those in the holder an `S&` names -- may point into
+// what a shrink at root frees (§5.1, §5.2), which the pointee's own type
+// says nothing about. v is the reference variable, if the reference is one,
+// and p its provenance.
+//
+// A reference to a holder is rooted at the holder, whose store record says
+// what it holds, as it does for the holder itself. One to a slice is rooted
+// where the slice points, or, taken with an explicit `&`, at the slice
+// variable, whose own binding says where (SlotView). The slot may since have
+// been rebound, a slice variable at its root's depth, and a slice into a
+// grow-only array stored into it through a reference, with anything at that
+// depth or outside it; there, as behind a `var` reference, an inexact one or
+// a parameter's class of an explicit `&s`, the root only bounds the array.
+inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *t,
+                                            VarDef *root, TypeExpr *bound, bool growonly) {
+    auto r = CanonRoot(p.root);
+    auto slot = r && r->type && IsRefOrSlice(r->type) ? r : nullptr;
+    auto byteview = p.byteview || (r && r->contentbyteview) || (slot && slot->ref.byteview);
+    vector<TypeExpr *> pointees;
+    RefPointees(t->ref->sub, pointees);
+    auto freed = false;
+    for (auto pt : pointees)
+        freed = freed || ShrinkMayFree(root, bound, growonly, pt, byteview && IsU8(pt));
+    if (!freed) return false;
+    if (v && !v->refrootknown) return Depth(v) >= Depth(root);
+    if (r == root || r == cycleroot) return true;
+    if (growonly && t->ref->sub->kind != TY_SLICE && p.rootexact && r && r->type &&
+        !r->isglobal && !slot && !(v && v->isvar)) {
+        auto arrtype = bound ? bound : root->type ? LoadType(root->type) : nullptr;
+        Line where;
+        return HolderMayPointInto(r, root, arrtype, 0, &where);
+    }
+    if (growonly || !p.rootexact || (r && !r->type && r->viewslot))
+        return Depth(r) >= Depth(root);
+    if (slot) return RefMayPointInto(slot, root) || (v && v->isvar && Depth(slot) >= Depth(root));
+    // A parameter's class is one array in the body; only rebinding the
+    // parameter moves it.
+    if (r && !r->type && !IsTemp(r)) return v && v->isvar && Depth(r) == Depth(root);
+    return Depth(r) == Depth(root);
+}
+
+// The slice a load through a reference to one sees. Bound by reference
+// (§4.1), the reference is rooted where that slice points already. Taken
+// with an explicit `&` (§3.8), it is rooted where the slice variable, field
+// or element lives: a variable's own binding says where its slice points,
+// and the stores into a container only bound it, as the caller's variable
+// behind a parameter's class of an explicit `&s` does, and as an inexact
+// root bounds the slot.
+inline Prov TypeCheck::SlotView(const Prov &p, TypeExpr *slice) {
+    auto r = CanonRoot(p.root);
+    if (!r || !p.rootexact) return p;
+    if (r->type && IsRefOrSlice(r->type)) {
+        auto v = RefProvOf(r);
+        v.writable = v.writable && p.writable;
+        return v;
+    }
+    if (!r->type && r->viewslot) {
+        auto v = p;
+        v.rootexact = false;
+        v.rootfrom = r;
+        v.byteview = v.byteview || r->contentbyteview;
+        return v;
+    }
+    if (!r->type || !CanContain(r->type, slice)) return p;
+    LVal lv;
+    lv.type = slice;
+    lv.SetProv(p);
+    ReadBackLVal(lv);
+    return lv;
+}
+
 // Binds a reference variable to where p points.
 inline void TypeCheck::BindProv(VarDef *vd, const Prov &p) {
     vd->ref = p;
@@ -1096,7 +1168,10 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         auto t = iv.type;
         iterprov = iv;
         intemp = TempContents(iv, contents);
-        if (t->kind == TY_REF && !t->ref->optional) t = t->ref->sub;  // Iterate through refs.
+        if (t->kind == TY_REF && !t->ref->optional) {
+            t = t->ref->sub;  // Iterate through refs.
+            if (t->kind == TY_SLICE) iterprov = SlotView(iv, t);
+        }
         t = LoadType(t);
         RequireComplete(t, x->line);
         if (IsIntT(t)) {

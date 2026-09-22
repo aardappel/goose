@@ -775,13 +775,24 @@ inline bool TypeCheck::ShrinkMayFree(VarDef *root, TypeExpr *bound, bool growonl
 // standalone RHS, where §5.1's syntax restriction alone is insufficient.
 inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root,
                                         const string &what, bool growonly, TypeExpr *bound) {
-    for (auto &[node, v] : heldtemps) {
-        if (v.type->kind == TY_REF && ClassOf(v.type->ref->sub) == SC_RESIZABLE) continue;
-        if (!ShrinkMayFree(root, bound, growonly, PointeeOf(v.type), v.byteview)) continue;
-        auto r = CanonRoot(v.root);
-        // An inexact root bounds the lifetime: it may name any outer owner,
-        // not just another owner at that exact scope depth.
-        if (r != root && (v.rootexact || Depth(r) < Depth(root))) continue;
+    for (auto &[node, v, location] : heldtemps) {
+        auto path = v.type->kind == TY_REF && ClassOf(v.type->ref->sub) == SC_RESIZABLE;
+        auto held = !path && ShrinkMayFree(root, bound, growonly, PointeeOf(v.type), v.byteview);
+        if (held) {
+            auto r = CanonRoot(v.root);
+            // An inexact root bounds the lifetime: it may name any outer owner,
+            // not just another owner at that exact scope depth.
+            held = r == root || (!v.rootexact && Depth(r) >= Depth(root));
+        }
+        // A reference to a slice also reaches where the slice points, and,
+        // for a grow-only array, one to anything holding references what
+        // those point at: only a variable holds a slice into a grow-shrink
+        // array. An assignment's location is overwritten before it is read
+        // again.
+        if (!held && !location && v.type->kind == TY_REF &&
+            (growonly ? HoldsPlainRef(v.type->ref->sub) : v.type->ref->sub->kind == TY_SLICE))
+            held = HeldRefsMayPointInto(nullptr, v, v.type, root, bound, growonly);
+        if (!held) continue;
         Error(at, cat("cannot ", op, ": an earlier expression value at ", Where(node->line),
                       " may still refer into ", what, growonly ? " (§5.1)" : " (§5.2)"));
     }
@@ -822,11 +833,22 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
             // the array cannot contain by value rules the variable out,
             // and so does a reference to a whole resizable value, which
             // is the path to an array rather than a pointer into one.
-            if (t->kind == TY_REF && ClassOf(t->ref->sub) == SC_RESIZABLE) continue;
             // A bytes_of view is over the element region itself, so it
             // survives this filter however unrelated its pointee looks.
-            if (!ShrinkMayFree(vd, bound, true, PointeeOf(t), v->ref.byteview)) continue;
-            if (!RefMayPointInto(v, vd) || !UsedAfter(v)) continue;
+            auto path = t->kind == TY_REF && ClassOf(t->ref->sub) == SC_RESIZABLE;
+            auto into = !path && ShrinkMayFree(vd, bound, true, PointeeOf(t), v->ref.byteview) &&
+                        RefMayPointInto(v, vd);
+            // A reference to a slice or to a value holding references, the
+            // path to an array included, also reaches what those point at.
+            auto via = !into && t->kind == TY_REF && HoldsPlainRef(t->ref->sub) &&
+                       HeldRefsMayPointInto(v, v->ref, t, vd, bound, true);
+            if ((!into && !via) || !UsedAfter(v)) continue;
+            if (via)
+                Error(c, cat("cannot ", op, " ", what, " while ", v->name, " is still used: ",
+                             t->ref->sub->kind == TY_SLICE
+                                 ? "the slice it refers to may point into it"
+                                 : "what it refers to may hold a reference or slice into it",
+                             " (§5.1)"));
         } else {
             // Any other value holds references only where a store put
             // them, and every store this function can see is on record
@@ -1263,10 +1285,18 @@ inline void TypeCheck::CheckShrinkHolders(Node *at, const string &op, VarDef *ro
         // the text, whatever else it might be rebound to.
         // A bytes_of view is over the element region itself, so the
         // pointee-type filter would dismiss exactly the case it is for.
-        if (!ShrinkMayFree(root, bound, false, PointeeOf(v->type), v->ref.byteview)) return;
-        if (!RefMayPointInto(v, root) || !UsedAfter(v)) return;
+        auto into = ShrinkMayFree(root, bound, false, PointeeOf(v->type), v->ref.byteview) &&
+                    RefMayPointInto(v, root);
+        // A reference to a slice also reaches where the slice points: it may
+        // name a variable holding one into the array, which is where such
+        // slices are kept.
+        auto via = !into && v->type->kind == TY_REF && v->type->ref->sub->kind == TY_SLICE &&
+                   HeldRefsMayPointInto(v, v->ref, v->type, root, bound, false);
+        if ((!into && !via) || !UsedAfter(v)) return;
         Error(at, cat("cannot ", op, " while ", v->name, " (bound at ", Where(v->line),
-                      ") is still used: it may refer into ", what, " (§5.2)"));
+                      ") is still used: ", via ? "the slice it refers to may point into "
+                                               : "it may refer into ",
+                      what, " (§5.2)"));
     });
 }
 

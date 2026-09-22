@@ -928,7 +928,9 @@ the test is exact to the store: the error names the holder and the line
 where a reference into the array was stored into it. A value whose type
 cannot hold a reference to anything the array's elements contain by value
 is never a holder, nor is one linked by relative references alone (a node
-pool): those point within their own root.
+pool): those point within their own root. A reference to a slice variable
+or to a holder counts as what it refers to: while the reference is live,
+so is whatever that slice or holder may refer into.
 
 A variable is live at the shrink when it can be read again afterwards:
 it is named later in its own block or in an enclosing block it was
@@ -993,7 +995,8 @@ inexactly rooted argument points at.
   the test a grow-only shrink applies (§5.1), its liveness rule and its call
   summaries for a shrink through a reference or of a global included, minus the
   store record: references into a grow-shrink array live only in variables, so
-  checking those still in use is sufficient. The error is at the shrink and
+  checking those still in use is sufficient, a reference to a slice variable
+  among them. The error is at the shrink and
   names the variable and where it was bound, so either end can be changed: use
   the slice for the last time before the shrink, or move the shrink. A call into
   a recursive cycle still being checked counts as shrinking every grow-shrink

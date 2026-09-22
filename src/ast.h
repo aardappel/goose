@@ -994,6 +994,10 @@ struct VarDef {
     // Synthetic class roots only: the call-site root holds a grow-shrink
     // array, so the shrink rules follow the class into the body (§5.2).
     bool growshrink = false;
+    // Synthetic class roots only: the call-site root is a slice variable
+    // named by an explicit `&` (RootArg::viewslot), which only bounds where
+    // the slice it holds points.
+    bool viewslot = false;
     // For variables of reference/slice type: where the value they hold
     // points, fixed at first binding (see typecheck.h header note). A
     // null-initialized optional has no commitment yet (refrootknown false),
@@ -1101,6 +1105,11 @@ struct RootArg {
     // the same reason growshrink is: the shrink scans dismiss a slice whose
     // pointee the root cannot hold, and this is the one that survives that.
     bool byteview = false;
+    // A reference to a slice taken with an explicit `&` of a slice variable,
+    // which is rooted at the variable itself (§3.8) rather than where its
+    // slice points, as binding the variable by reference is. Part of the key:
+    // a slice loaded through such a class is only bounded by it.
+    bool viewslot = false;
     // Val::rootexact of the argument, ANDed over every call site that reaches
     // the specialization. Deliberately not part of the key: within the callee
     // a class always names one array (typecheck.h keeps an inexactly rooted
@@ -1151,7 +1160,7 @@ struct RootArg {
     bool operator==(const RootArg &o) const {
         return cls == o.cls && writable == o.writable && reusable == o.reusable &&
                growshrink == o.growshrink && byteview == o.byteview && pool == o.pool &&
-               heldexact == o.heldexact;
+               heldexact == o.heldexact && viewslot == o.viewslot;
     }
 };
 
