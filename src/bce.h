@@ -920,6 +920,16 @@ struct BCE {
             if (v->isglobal || v->captured || addrof.count(v)) BumpVar(v);
     }
 
+    // Rendering calls can reach an argument's nested values without an
+    // explicit reference node. Until those paths have ordinary call-site
+    // mappings, conservatively invalidate their facts between arguments.
+    void KillRendering() {
+        NoteStorage({ TG_OPAQUE });
+        NoteInt({ TG_OPAQUE });
+        for (size_t i = 0; i < places.size(); i++) BumpPlace((int)i, 0);
+        for (auto v : intvars) BumpVar(v);
+    }
+
     // ------------------------------------------------------------------
     // Effects: where a write lands, as the caller of this body sees it.
 
@@ -2204,6 +2214,7 @@ inline bool Call::BceWalk(BCE &b) {
     if (auto d = Is<Dot>(callee)) {
         recv = d->obj;
         walkarg(recv);
+        if (!fmtspecs.empty() && builtin != B_FORMAT) b.KillRendering();
     }
     // A push, append or resize changes the array its receiver named when it
     // was evaluated, ahead of the other arguments (codegen resolves the
@@ -2225,6 +2236,7 @@ inline bool Call::BceWalk(BCE &b) {
     vector<decltype(b.nextgen)> argsgen;
     for (auto a : args) {
         walkarg(a);
+        if (!fmtspecs.empty()) b.KillRendering();
         argsgen.push_back(b.nextgen);
         if (pinrecv && !recv && argsgen.size() == 1) pin(a);
     }
@@ -2235,6 +2247,21 @@ inline bool Call::BceWalk(BCE &b) {
         for (auto &t : slens) t = BCE::Term {};
     }
     if (builtin >= 0) {
+        if (defaultinit) {
+            // Array defaults and pool fills execute zero or many times.
+            // Judge their code without entry facts, then retain only kills.
+            if (builtin != B_DEFAULT || rettypes[0]->kind == TY_ARRAY) {
+                if (b.mode != BCE::M_KILLS) {
+                    auto saved = std::move(b.flow);
+                    b.flow = BCE::Flow {};
+                    b.loopdepth++;
+                    b.Walk(defaultinit);
+                    b.loopdepth--;
+                    b.flow = std::move(saved);
+                }
+                b.StripKills(defaultinit);
+            } else b.Walk(defaultinit);
+        }
         auto rn = recv ? recv : (args.empty() ? nullptr : args[0]);
         // The first non-receiver argument, in either call spelling.
         auto arg0 = recv ? (args.empty() ? nullptr : args[0])

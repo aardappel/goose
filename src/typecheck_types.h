@@ -79,7 +79,7 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
         inst->frameobj = fo;
     }
     inst->validated = true;
-    CheckFieldDefaults(st->fields, inst->ftypes, inst->defaults, bindings);
+    inst->defaults.resize(st->fields.size(), nullptr);
     return inst;
 }
 
@@ -121,45 +121,40 @@ inline EnumInst *TypeCheck::GetEnumInst(TypeExpr *t) {
         }
     }
     inst->validated = true;
-    vector<pair<string_view, TypeExpr *>> b2 = bindings;
     for (size_t vi = 0; vi < en->variants.size(); vi++) {
-        inst->vdefaults.emplace_back();
-        CheckFieldDefaults(en->variants[vi].fields, inst->vftypes[vi],
-                           inst->vdefaults.back(), b2);
+        inst->vdefaults.emplace_back(en->variants[vi].fields.size(), nullptr);
     }
     return inst;
 }
 
-// Field defaults are checked once per instance, on clones, in a pristine
-// frame that sees only globals (plus the instance's generic bindings).
-inline void TypeCheck::CheckFieldDefaults(vector<Field> &fields, vector<TypeExpr *> &ftypes,
-                                          vector<Node *> &out,
-                                          vector<pair<string_view, TypeExpr *>> &bindings) {
-    auto any = false;
-    for (auto &f : fields) any |= f.defaultval != nullptr;
-    if (!any) {
-        out.resize(fields.size(), nullptr);
-        return;
-    }
-    auto savereach = reachable;
-    DestScope ds(*this, Dest {});
-    SlotScope ss(*this, true);   // A default lands in the field it declares.
-    reachable = true;
-    auto sp = ast.NewFnSpec();  // Bindings holder for the pseudo frame.
-    sp->bindings = bindings;
+// Defaults are checked at their execution sites, after the surrounding
+// globals have initialized, with the actual destination and live values.
+inline Val TypeCheck::CheckDefaultInit(Node *&n, TypeExpr *ft, TypeExpr *owner) {
+    auto t = owner->kind == TY_VARIANT ? owner->var->adt : owner;
+    auto env = ast.NewFunValEnv();
+    if (t->kind == TY_STRUCT)
+        BindGenerics(t->struc->st->generics, t->struc->args, "struct", t->struc->st->name,
+                     n->line, env->bindings);
+    else
+        BindGenerics(t->enu->en->generics, t->enu->args, "enum", t->enu->en->name,
+                     n->line, env->bindings);
     Frame f;
-    f.lexspec = sp;
+    f.spec = CurRealFrame().spec;
+    f.lexspec = env;
+    f.isfunval = true;  // Effects belong to the caller, lexical lookup does not.
+    f.isdefault = true;
     f.scopebase = (int)scopes.size();
     f.varbase = (int)vars.size();
     frames.push_back(f);
-    for (size_t i = 0; i < fields.size(); i++) {
-        if (!fields[i].defaultval) { out.push_back(nullptr); continue; }
-        auto clone = fields[i].defaultval->Clone(ast);
-        CheckValue(clone, ftypes[i]);
-        out.push_back(clone);
-    }
+    auto v = CheckValue(n, ft);
     frames.pop_back();
-    reachable = savereach;
+    return v;
+}
+
+inline Call *TypeCheck::DefaultCall(TypeExpr *t, Line line) {
+    auto c = ast.New<Call>(line, ast.New<Ident>(line, "::default"));
+    c->tyargs.push_back(t);
+    return c;
 }
 
 inline vector<FieldRun> TypeCheck::FieldRuns(TypeExpr *t) {
@@ -659,7 +654,7 @@ inline void TypeCheck::VisibleVars(const function<void(VarDef *)> &f) {
         auto limit = fi == (int)frames.size() - 1 ? (int)vars.size()
                                                   : frames[fi + 1].varbase;
         for (auto i = limit - 1; i >= fr.varbase; i--) f(vars[i]);
-        fi = fr.lexframe;
+        fi = fr.isdefault ? fi - 1 : fr.lexframe;
     }
 }
 

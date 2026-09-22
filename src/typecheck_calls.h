@@ -19,6 +19,8 @@ inline Val TypeCheck::CheckCall(Call *c) {
     c->dispatch.clear();
     c->builtin = -1;
     c->rettypes.clear();
+    c->fmtspecs.clear();
+    c->fmtcontexts.clear();
     lastcallrets.clear();
     // Arguments construct into parameter slots, not whatever destination
     // encloses this call; member ops re-set curdst for element pushes.
@@ -1548,6 +1550,7 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
 }
 
 inline void TypeCheck::CheckReturn(Return *r) {
+    if (frames.back().isdefault) Error(r, "return outside of a function");
     TempScope temps(*this);
     // Which function does this exit? `from f` names one on the current
     // compile-time path; a plain return inside a function value exits the

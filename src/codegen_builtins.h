@@ -126,7 +126,15 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             auto t = c->rettypes[0];
             auto tv = T();
             L(CT(t), " ", tv, ";");
-            EmitDefaultInto(tv, t);
+            if (!c->defaultinit) EmitDefaultInto(tv, t);
+            else if (t->kind == TY_ARRAY) {
+                auto i = T();
+                L("for (int64_t ", i, " = 0; ", i, " < ", ArrSize(t->arr), "; ", i, "++) {");
+                ind++;
+                GenAny(c->defaultinit, Dst { DK_LVALUE, cat(tv, ".e[", i, "]"), t->arr->sub });
+                ind--;
+                L("}");
+            } else GenAny(c->defaultinit, Dst { DK_LVALUE, tv, t });
             return { tv };
         }
         case B_HARDWARE_THREADS: return { "gs_hardware_threads()" };
@@ -620,7 +628,7 @@ inline vector<string> CodeGen::EmitSlicePool(Call *c, vector<Node *> &an, Line l
         i = T();
         L("int64_t ", i, " = gs_spans_alloc(", SpanArgs(lv), ", ", lv.lenlv, ", ", n, ");");
         EmitSliceExtend(lv, cat(i, " + ", n), esz);
-        EmitDefaultElems(v, i, n);
+        EmitDefaultElems(v, i, n, c->defaultinit);
     } else {
         auto sv = GenPure(an[1]);
         n = SliceLen(an[2], elem, ln);
@@ -651,7 +659,7 @@ inline vector<string> CodeGen::EmitSlicePool(Call *c, vector<Node *> &an, Line l
         ind--;
         L("}");
         EmitSliceExtend(lv, cat(i, " + ", n), esz);
-        EmitDefaultElems(v, cat(i, " + ", ol), cat(n, " - ", ol));
+        EmitDefaultElems(v, cat(i, " + ", ol), cat(n, " - ", ol), c->defaultinit);
         ind--;
         L("}");
     }
@@ -696,7 +704,7 @@ inline void CodeGen::EmitSliceExtend(const Loc &lv, const string &end, int64_t e
 // Default values (§4.2) for `count` elements of an array view from index
 // `first`: one clear where the default is all zero bytes, else each built.
 inline void CodeGen::EmitDefaultElems(const ArrView &v, const string &first,
-                                      const string &count) {
+                                      const string &count, Node *init) {
     auto esz = FixedSize(v.elem);
     if (!esz) return;
     if (!HasFieldDefaults(v.elem)) {
@@ -710,7 +718,7 @@ inline void CodeGen::EmitDefaultElems(const ArrView &v, const string &first,
     auto e = T();
     L(CT(v.elem), " *", e, " = (", CT(v.elem), " *)(", ElemAddr(v, cat("(", first, " + ", k, ")")),
       ");");
-    EmitDefaultInto(cat("(*", e, ")"), v.elem);
+    GenAny(init, Dst { DK_LVALUE, cat("(*", e, ")"), v.elem });
     ind--;
     L("}");
 }

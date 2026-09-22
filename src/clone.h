@@ -40,8 +40,9 @@ inline Node *ArrayLit::Clone(Ast &ast) const {
 
 inline Node *StructLit::Clone(Ast &ast) const {
     auto sl = ast.New<StructLit>(line, type);
+    sl->defaultall = defaultall;
     sl->inits.reserve(inits.size());
-    for (auto &fi : inits) sl->inits.push_back({ fi.name, fi.val->Clone(ast) });
+    for (auto &fi : inits) sl->inits.push_back({ fi.name, fi.val->Clone(ast), fi.fromdefault });
     return sl;
 }
 
@@ -326,6 +327,7 @@ inline void RunChildren(Node *n, const function<void(Node *)> &f) {
         f(c->callee);
         for (auto a : c->args) f(a);
         if (c->fvbody) f(c->fvbody);
+        if (c->defaultinit) f(c->defaultinit);
         return;
     }
     n->Children(f);

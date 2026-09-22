@@ -341,6 +341,7 @@ struct Field {
 struct FieldInit {
     string_view name;           // Empty for positional.
     Node *val = nullptr;
+    bool fromdefault = false;   // Checked in the type declaration's environment.
 };
 
 enum PatKind { P_WILDCARD, P_VARIANT, P_INT, P_RANGE };
@@ -552,6 +553,7 @@ NODE_END
 NODE(StructLit)
     TypeExpr *type;             // Named type or variant type.
     vector<FieldInit> inits;
+    bool defaultall = false;    // Synthesized by default<T>(), including undeclared defaults.
     // Filled by typecheck:
     StructInst *sinst = nullptr;    // Struct literals.
     EnumInst *einst = nullptr;      // Variant literals.
@@ -606,12 +608,14 @@ NODE(Call)
     int dispatcharg = -1;               //   which argument dispatches.
     int builtin = -1;                   // BuiltinKind, builtins.h (members included).
     Block *fvbody = nullptr;            // Call of a function value: checked body instance.
+    Node *defaultinit = nullptr;        // Per-use default construction, visible to every pass.
     vector<VarDef *> fvparams;          //   its parameter bindings.
     SFunction *fvtarget = nullptr;      //   the named fn a plain `return` inside exits.
     vector<TypeExpr *> rettypes;        // All return values (exprtype is rettypes[0] or void).
     // print/str/format: the user `format` overloads rendering the types that
     // occur in the arguments, by type (§3.7).
     vector<pair<TypeExpr *, FnSpec *>> fmtspecs;
+    vector<Call *> fmtcontexts; // One immutable hook set per rendered argument.
     bool standalone = false;            // A whole statement, initializer or assignment rhs (§5.1).
     // free_slice/realloc_slice: the slice handed back is not provably the pool's,
     // so codegen checks at run time that it lies inside the pool (§5.4).

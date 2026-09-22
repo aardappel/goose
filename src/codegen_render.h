@@ -28,6 +28,15 @@ inline CodeGen::Loc CodeGen::TempBuilder() {
     return RzTempLoc(GrowU8(), h, stk);
 }
 
+inline Call *CodeGen::FmtContext(Call *c, Node *arg) {
+    if (!c || c->fmtcontexts.empty()) return c;
+    auto args = CallArgNodes(c, c->args.size() + (Is<Dot>(c->callee) ? 1 : 0));
+    size_t start = c->builtin == B_FORMAT ? 1 : 0;
+    for (size_t i = start; i < args.size(); i++)
+        if (args[i] == arg) return c->fmtcontexts.at(i - start);
+    return c;
+}
+
 inline FnSpec *CodeGen::FmtSpecFor(Call *c, TypeExpr *t) {
     if (!c) return nullptr;
     for (auto &fs : c->fmtspecs) if (TEq(fs.first, t)) return fs.second;
@@ -274,6 +283,7 @@ inline CodeGen::Loc CodeGen::RenderToTemp(Node *a, Call *c) {
 }
 
 inline void CodeGen::EmitOutArg(Node *a, Call *c) {
+    c = FmtContext(c, a);
     auto t = a->exprtype;
     if (!SimpleText(c, t)) {
         auto b = RenderToTemp(a, c);
@@ -310,6 +320,7 @@ inline string CodeGen::FmtCall(Node *a, const string &dst) {
 // room for them); a limited array formats into a buffer first, so the
 // capacity check comes before anything lands in it.
 inline void CodeGen::EmitFormatInto(Loc lv, Node *a, Line ln, Call *c) {
+    c = FmtContext(c, a);
     auto v = ArrayView(lv);
     auto limited = lv.t->arr->akind == A_LIMITED;
     auto t = a->exprtype;
@@ -382,10 +393,11 @@ inline vector<string> CodeGen::EmitStr(Call *c, vector<Node *> &an, Dst d0, Line
     auto cnt = T();
     L("int64_t ", cnt, " = 0;");
     for (auto a : an) {
+        auto context = FmtContext(c, a);
         auto t = a->exprtype;
         auto n = T();
-        if (!SimpleText(c, t)) {
-            auto b = RenderToTemp(a, c);
+        if (!SimpleText(context, t)) {
+            auto b = RenderToTemp(a, context);
             L("int64_t ", n, " = ", b.hdr, ".len;");
             L("memcpy(", Top(stk), ", ", b.hdr, ".base, (size_t)", n, ");");
         } else if (t->kind == TY_ARRAY || t->kind == TY_SLICE) {

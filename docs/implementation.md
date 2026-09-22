@@ -312,8 +312,8 @@ validate them, and compute the derived properties every later pass reads:
   struct with the tail's header last;
 * `validated`, which is false while the instantiation is being built and so
   detects a struct that contains itself by value;
-* the checked clones of the field defaults (`CheckFieldDefaults`), checked
-  once per instantiation in a pristine frame that sees only globals.
+* concrete field types; defaults are checked at each construction site
+  (`CheckDefaultInit`), with declaration-scope bindings and caller effects.
 
 `ValidateType` enforces the placement rules of §3.3/§3.4 per position
 (`ValidPos`): `varint` only in fields, elements and pointees; fixed, limited
@@ -370,7 +370,9 @@ the explicit initializers, not once when the type is instantiated.
 and fills fixed arrays; empty limited arrays do not construct unused slots.
 The effects of executing a default must participate in the same lifetime,
 construction and optimization checks as an explicit initializer. The
-current handling of those effects is defective (section 11).
+checked expressions are part of that construction's tree, including
+`default<T>()` and slice-pool initialization. Unused defaults are checked
+when a construction first uses them, not merely on type instantiation.
 
 ### 3.3 Values, lvalues, and reference transparency
 
@@ -1069,7 +1071,9 @@ Builtins are one X-macro table (`builtins.h`) driving arity, receiver kinds,
 provenance requirements and simple signatures; `CheckBuiltin` handles the
 custom ones. `print`/`str`/`format` check renderability per type
 (`CheckRenderable`) and look up a user `format` overload in the type's
-namespace, then globally, specializing it once per call (`fmtspecs`).
+namespace, then globally, specializing it with each rendered argument's
+permissions and provenance (`fmtspecs`, `fmtcontexts`). Nested hooks obey
+the same constraints. Their effects are applied between rendered arguments.
 `to_bytes`/`bytes_of` require `ImageSafe` element types (no plain references,
 slices or `in pool` references), `from_bytes` the stricter `VerifiableElem`
 (every relative reference points at an element or a variant of it); a
@@ -1156,15 +1160,14 @@ per operation as it executes, so tail-recursion elimination may regroup an
 associative chain.
 
 **Order.** `ReachRoots` marks the specializations reachable from `main`, the
-thread entry points, the global initializers and the field defaults, counts
+thread entry points and global initializers (including expanded defaults), counts
 call sites per specialization (`uses`), and records a call-graph postorder
 (callees first; a cycle is cut at its back edge). `Analyze` collects, over
 every live body first, how often each variable is written and how often its
 address is taken (`facts`), so a write in another specialization's function
 value is visible before any rewriting. Then: global initializers (fold
 only), every specialization in postorder (`SetupBaseCase`, `OptBlock`,
-`TailRecurse`, `Scan`), globals again (now able to inline), field defaults
-(fold only: they are shared across construction sites), and a final
+`TailRecurse`, `Scan`), globals again (now able to inline), and a final
 reachability pass so specializations whose every call was inlined go dead
 and codegen skips them.
 
@@ -1819,7 +1822,7 @@ An empty slice takes index 0. The freelist is the runtime's (§7): its base, cou
 `gs_spans_*` call by address, so a cached top works unchanged. Growth of the
 element region is emitted here (`EmitSliceExtend`: count and top, as for a
 push), and so are the default values (`EmitDefaultElems`: one `memset`, or
-`EmitDefaultInto` per element for a type with field defaults). A move is one
+the checked default construction per element for a type with field defaults). A move is one
 `memmove`. A pool's freelist entry is 8 bytes for a slot pool and 16 for a
 slice pool (`FlEntrySize`), which the thread-spawn image copies.
 
@@ -2338,6 +2341,9 @@ The compiler code is unchanged by this documentation update.
    element reference is also permitted across the hidden shrink. Defaults
    must contribute effects wherever they execute, not just when their
    type is first instantiated.
+   **Resolved:** defaults are checked and expanded into each use site's
+   tree, with isolated declaration bindings but the caller's live storage
+   and effect context. This includes `default<T>()` and slice-pool fills.
 
 3. **Stores through slice parameters vanish from the caller's lifetime
    record.** `ApplyCalleeStores` skips every slice-parameter destination.
@@ -2357,6 +2363,9 @@ The compiler code is unchanged by this documentation update.
    can be invoked by `print(s)` on `const s = S { x: 1 }`; both the hook
    and a subsequent `print(s.x)` print 99. Implicit hook calls must obey
    the same writability and effect rules as explicit calls.
+   **Resolved:** hook checking uses the actual argument's permissions and
+   roots, retains separate hook sets per rendered argument, and applies
+   shrink/growth effects. BCE invalidates facts between hook executions.
 
 5. **The byte verifier admits noncanonical values.** `NeedsVerifyWalk`
    treats booleans as opaque bytes, and `gs_uleb_check` accepts redundant

@@ -1203,6 +1203,7 @@ inline void TypeCheck::CheckGuard(Guard *g) {
 }
 
 inline void TypeCheck::ImplicitEmptyReturn(Node *at) {
+    if (frames.back().isdefault) Error(at, "guard shorthand cannot exit a field default");
     auto &f = CurRealFrame();
     if (!f.sf) Error(at, "guard shorthand cannot exit the top level");
     auto spec = f.spec;

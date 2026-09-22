@@ -895,6 +895,7 @@ struct CodeGen {
     TypeExpr *growu8 = nullptr;
     TypeExpr *GrowU8();
     Loc TempBuilder();
+    Call *FmtContext(Call *c, Node *arg);
     FnSpec *FmtSpecFor(Call *c, TypeExpr *t);
     bool SimpleText(Call *c, TypeExpr *t);
     void RenderLit(Loc &out, const string &text);
@@ -932,7 +933,7 @@ struct CodeGen {
     string SpanArgs(const Loc &lv);
     string SliceLen(Node *n, TypeExpr *elem, Line ln);
     void EmitSliceExtend(const Loc &lv, const string &end, int64_t esz);
-    void EmitDefaultElems(const ArrView &v, const string &first, const string &count);
+    void EmitDefaultElems(const ArrView &v, const string &first, const string &count, Node *init);
 
     // thread_spawn(worker, args...): pack the flat arguments contiguously on
     // a scratch stack, hand them to the runtime, unpack in a per-worker thunk.

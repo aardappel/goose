@@ -640,7 +640,8 @@ inline Node *ArrayLit::Cp1(Inliner &inl) const {
 
 inline Node *StructLit::Cp1(Inliner &inl) const {
     auto c = inl.ast.New<StructLit>(line, type);
-    for (auto &fi : inits) c->inits.push_back({ fi.name, inl.Cp(fi.val) });
+    for (auto &fi : inits) c->inits.push_back({ fi.name, inl.Cp(fi.val), fi.fromdefault });
+    c->defaultall = defaultall;
     c->sinst = sinst;
     c->einst = einst;
     c->variant = variant;
@@ -679,8 +680,10 @@ inline Node *Call::Cp1(Inliner &inl) const {
     c->fvtarget = fvtarget;
     c->rettypes = rettypes;
     c->fmtspecs = fmtspecs;
+    c->fmtcontexts = fmtcontexts;
     for (auto p : fvparams) c->fvparams.push_back(inl.Remap(p));
     c->fvbody = fvbody ? inl.CpBlock(fvbody) : nullptr;
+    c->defaultinit = defaultinit ? inl.Cp(defaultinit) : nullptr;
     return c;
 }
 
@@ -999,6 +1002,7 @@ inline Node *Call::Opt(Optimizer &o) {
     for (size_t i = 0; i < args.size(); i++)
         args[i] = recv && !d && !i ? o.OptViewed(args[i]) : o.OptIn(this, args[i]);
     if (fvbody) o.OptBlock(fvbody);
+    if (defaultinit) defaultinit = o.Opt(defaultinit);
     if (builtin == B_ASSERT) {
         if (auto b = Is<BoolLit>(FirstArg()); b && b->val) {
             o.folded++;

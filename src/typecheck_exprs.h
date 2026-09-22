@@ -389,6 +389,11 @@ inline Node *TypeCheck::WholeSlice(Node *n) {
 // resolution, where an explicit & may have picked the overload.
 inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bool branchcopy) {
     auto v = CheckV(n, expected);
+    // A nominal default is an ordinary construction at this destination,
+    // including relative fields; do not turn it into a copied call result.
+    if (auto c = Is<Call>(n); c && c->builtin == B_DEFAULT &&
+        v.type->kind != TY_ARRAY && Is<StructLit>(c->defaultinit))
+        n = c->defaultinit;
     auto dt = expected && expected->kind != TY_VOID ? expected : DecayRef(v).type;
     if (branchcopy && UserRefOf(n) && IsPlainRef(v.type) && !KeepsRef(v, dt) &&
         ClassOf(dt) == SC_FIXED) {
@@ -1061,19 +1066,36 @@ inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fi
         }
         got[idx] = true;
         sl->fieldindices.push_back(idx);
-        if (Is<SelfRef>(fi.val)) { CheckSelfInit(fi.val, ftypes[idx], selft); continue; }
-        SlotScope ss(*this, true);
-        auto fv = CheckValue(fi.val, ftypes[idx]);
-        NoteLitElem(deep, fi.val, fv, ftypes[idx]);
-        HoldValue(fi.val, fv);
     }
+    vector<FieldInit> ordered(fields.size());
+    for (size_t i = 0; i < sl->inits.size(); i++) ordered[sl->fieldindices[i]] = sl->inits[i];
+    sl->inits.clear();
+    sl->fieldindices.clear();
     for (auto i = 0; i < (int)fields.size(); i++) {
-        if (fields[i].ispad || got[i]) continue;
-        // Optional fields default to null (there is no null literal to
-        // spell it with); anything else needs a declared default.
-        if (!fields[i].defaultval && !IsOptional(ftypes[i]))
-            Error(sl, cat("missing initializer for field ", fields[i].name, " of ", what,
-                          " (it has no default)"));
+        if (fields[i].ispad) continue;
+        auto fi = ordered[i];
+        fi.name = fields[i].name;
+        if (!fi.val) {
+            if (fields[i].defaultval) {
+                fi.val = fields[i].defaultval->Clone(ast);
+                fi.fromdefault = true;
+            } else if (IsOptional(ftypes[i])) continue;
+            else if (sl->defaultall) {
+                fi.val = DefaultCall(ftypes[i], sl->line);
+            }
+            else Error(sl, cat("missing initializer for field ", fields[i].name, " of ", what,
+                               " (it has no default)"));
+        }
+        if (Is<SelfRef>(fi.val)) CheckSelfInit(fi.val, ftypes[i], selft);
+        else {
+            SlotScope ss(*this, true);
+            auto fv = fi.fromdefault ? CheckDefaultInit(fi.val, ftypes[i], selft)
+                                     : CheckValue(fi.val, ftypes[i]);
+            NoteLitElem(deep, fi.val, fv, ftypes[i]);
+            HoldValue(fi.val, fv);
+        }
+        sl->inits.push_back(fi);
+        sl->fieldindices.push_back(i);
     }
     return deep;
 }

@@ -191,6 +191,21 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             if (!HasDefault(t, why))
                 Error(c, cat("default<", TypeStr(t), ">() does not exist: ", why));
             c->rettypes.push_back(t);
+            if (!c->defaultinit) {
+                if (t->kind == TY_STRUCT || t->kind == TY_ENUM || t->kind == TY_VARIANT) {
+                    auto st = t->kind == TY_ENUM ? VariantTypeOf(t, &t->enu->en->variants[0], c->line) : t;
+                    auto sl = ast.New<StructLit>(c->line, st);
+                    sl->defaultall = true;
+                    c->defaultinit = sl;
+                } else if (t->kind == TY_ARRAY && t->arr->akind == A_FIXED && ArraySize(t->arr))
+                    c->defaultinit = DefaultCall(t->arr->sub, c->line);
+            }
+            if (c->defaultinit) {
+                auto v = CheckValue(c->defaultinit, t->kind == TY_ARRAY ? t->arr->sub : t);
+                v.type = t;
+                lastcallrets = { v };
+                return v;
+            }
             Val v;
             v.type = t;
             v.rootexact = true;   // A null optional or an empty slice: static.
@@ -324,7 +339,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
     if (d.kind == B_FORMAT) {
         if (!IsU8(elem))
             Error(c, cat(".format appends text to u8 arrays, not ", TypeStr(rv.type)));
-        for (size_t i = 1; i < args.size(); i++) CheckPrintable(c, d.name, args[i]);
+        for (size_t i = 1; i < args.size(); i++) CheckPrintable(c, d.name, args[i], &rv);
         return VoidVal();
     }
     // A grow-only array shrinks only where nothing can still be rooted in
@@ -408,6 +423,10 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             if (!HasDefault(elem, why))
                 Error(c, cat(".", d.name, " fills the elements it adds with default values, "
                              "and ", TypeStr(elem), " has none: ", why, " (§5.4)"));
+            if (!c->defaultinit) c->defaultinit = DefaultCall(elem, c->line);
+            auto logbase = growlog.size();
+            ElemArg(c->defaultinit, elem, rv);
+            CheckGrowsSince(logbase, rv.root, rv.rootexact, "the default elements allocated in a slice pool");
         }
         // Growing a slice may move it, and a moved element's self-relative
         // offsets would still measure from where it was.
@@ -519,24 +538,51 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
 // null as null. A user overload fn format(out: u8[>..]&, v: T) renders a
 // T instead wherever one occurs; its specialization is recorded on the
 // call for codegen.
-inline void TypeCheck::CheckPrintable(Call *c, const char *what, Node *&a) {
+inline void TypeCheck::CheckPrintable(Call *c, const char *what, Node *&a, const Val *out) {
     auto av = CheckValue(a, nullptr);
+    TempScope temps(*this);
+    HoldValue(a, av, true);
+    Val builder;
+    builder.root = TempRoot();
+    builder.rootexact = true;
+    builder.writable = true;
+    if (out && ClassOf(DecayRef(*out).type) == SC_RESIZABLE) builder = *out;
+    auto context = ast.New<Call>(c->line, c->callee);
+    context->standalone = c->standalone;
     vector<TypeExpr *> seen;
-    CheckRenderable(c, what, av.type, a, seen);
+    CheckRenderable(context, what, av.type, a, seen, av, builder);
+    c->fmtcontexts.push_back(context);
+    c->fmtspecs.insert(c->fmtspecs.end(), context->fmtspecs.begin(), context->fmtspecs.end());
 }
 
 inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, Node *at,
-                                       vector<TypeExpr *> &seen) {
+                                       vector<TypeExpr *> &seen, Val value, const Val &out) {
     for (auto s : seen) if (TypeEq(s, t)) return;   // Recursion through references.
     seen.push_back(t);
-    if (UserFormat(c, t)) return;
+    struct PopSeen { vector<TypeExpr *> &types; ~PopSeen() { types.pop_back(); } } pop { seen };
+    value.type = t;
+    value.writable &= !t->cq;
+    if (UserFormat(c, t, value, out)) return;
+    auto child = [&](TypeExpr *ft, bool throughref) {
+        auto v = value;
+        if (throughref) {
+            ReadBack contents;
+            auto hascontents = TempContents(value, contents);
+            auto rb = ReadBackRoot(ft, value.root, value.rootexact, value.byteview,
+                                   hascontents ? &contents : nullptr);
+            v.root = rb.root;
+            v.rootexact = rb.exact;
+            v.rootfrom = value.root;
+        }
+        CheckRenderable(c, what, ft, at, seen, v, out);
+    };
     switch (t->kind) {
         case TY_INT: case TY_FLT: case TY_BOOL: return;
-        case TY_ARRAY: CheckRenderable(c, what, t->arr->sub, at, seen); return;
-        case TY_SLICE: CheckRenderable(c, what, t->sub, at, seen); return;
-        case TY_REF: CheckRenderable(c, what, t->ref->sub, at, seen); return;
+        case TY_ARRAY: child(t->arr->sub, IsRefOrSlice(t->arr->sub)); return;
+        case TY_SLICE: child(t->sub, IsRefOrSlice(t->sub)); return;
+        case TY_REF: child(t->ref->sub, false); return;
         case TY_STRUCT: case TY_ENUM: case TY_VARIANT:
-            EachField(t, [&](TypeExpr *ft) { CheckRenderable(c, what, ft, at, seen); });
+            EachField(t, [&](TypeExpr *ft) { child(ft, IsRefOrSlice(ft)); });
             return;
         default:
             Error(at, cat(what, " cannot render a value of type ", TypeStr(t)));
@@ -549,14 +595,14 @@ inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, N
 // those of the type's own namespace, then the global ones: rendering
 // follows the type, not the namespace of whoever prints it
 // (docs/design/namespaces.md).
-inline FnSpec *TypeCheck::UserFormat(Call *c, TypeExpr *t) {
-    for (auto &fs : c->fmtspecs) if (TypeEq(fs.first, t)) return fs.second;
+inline FnSpec *TypeCheck::UserFormat(Call *c, TypeExpr *t, const Val &value, const Val &out) {
     auto tns = NominalNs(t);
-    if (auto sp = UserFormatIn(c, t, tns)) return sp;
-    return tns.empty() ? nullptr : UserFormatIn(c, t, {});
+    if (auto sp = UserFormatIn(c, t, tns, value, out)) return sp;
+    return tns.empty() ? nullptr : UserFormatIn(c, t, {}, value, out);
 }
 
-inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns) {
+inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns,
+                                      const Val &value, const Val &out) {
     auto n = ast.FindNS(ns);
     if (!n) return nullptr;
     auto fit = n->functionmap.find("format");
@@ -573,20 +619,20 @@ inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns) {
             !IsU8(pt0->ref->sub->arr->sub))
             continue;
         vector<Val> argvals(2);
+        argvals[0] = out;
         argvals[0].type = pt0;
-        argvals[0].root = temproot;
-        argvals[0].rootexact = true;
-        argvals[0].writable = true;
+        argvals[1] = value;
         argvals[1].type = pt1;
-        argvals[1].root = temproot;
-        argvals[1].rootexact = true;
-        argvals[1].writable = true;
+        if (!IsRefOrSlice(pt1)) argvals[1].writable = true; // The hook's own value copy.
         MatchInfo mi;
         mi.sf = sf;
         mi.env = nullptr;
         string why;
         if (!TryMatch(sf, c, argvals, mi, why)) continue;
+        if (sf->isextern && IsRefOrSlice(pt1) && !pt1->cq && !argvals[1].writable)
+            Error(c, "extern format hook needs a writable value or a const parameter");
         auto sp = GetOrCreateSpec(mi, argvals, c);
+        ApplyCalleeShrinks(c, sp, argvals, "format");
         ApplyCalleeRebinds(sp);
         ApplyCalleeGrows(c, sp, argvals, "format");
         c->fmtspecs.push_back({ t, sp });
@@ -817,7 +863,7 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
     // Inside a loop, a store later in the body reaches this shrink on the
     // next iteration: those are checked when the outermost loop ends.
     auto loopscope = -1;
-    for (auto i = frames.back().scopebase; i < (int)scopes.size(); i++)
+    for (auto i = CurRealFrame().scopebase; i < (int)scopes.size(); i++)
         if (scopes[i].kind == SK_LOOP) { loopscope = i; break; }
     if (loopscope >= 0) {
         PendingShrink ps;
@@ -897,8 +943,12 @@ inline void TypeCheck::NoteContentRoot(VarDef *container, VarDef *root, bool exa
 }
 
 inline void TypeCheck::RecordStore(VarDef *container, const Val &v, TypeExpr *pointee,
-                                   bool varbind, VarDef *src) {
+                                    bool varbind, VarDef *src) {
     if (!container || varbind) return;
+    // Putting a container's own read-back contents back into it adds no
+    // incoming lifetime. Keep this distinction before discarding src.
+    if (src == container || (!v.rootexact && v.rootfrom &&
+                             CanonRoot(v.rootfrom) == container)) return;
     StoreEvent e;
     e.container = container;
     e.root = CanonRoot(v.root);
@@ -946,7 +996,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
     };
     auto push = [&](VarDef *container, VarDef *r, bool exact, TypeExpr *pointee, VarDef *src,
                     bool byteview) {
-        if (!container) return;
+        if (!container || src == container) return;
         StoreEvent e;
         e.container = container;
         e.root = r;

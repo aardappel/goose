@@ -132,6 +132,7 @@ struct TypeCheck {
         int varbase = 0;             // First var index belonging to this frame.
         Line callline;               // Call site, for instantiation chain diagnostics.
         bool isfunval = false;
+        bool isdefault = false;    // Lexically isolated, but caller values remain live.
     };
 
     enum ScopeKind { SK_PLAIN, SK_FN, SK_LOOP, SK_BLOCK };
@@ -642,8 +643,8 @@ struct TypeCheck {
     // for each of them; instantiating t as FieldRuns does.
     template<typename F> bool AnyField(TypeExpr *t, F f) { return AnyFieldOf(FieldRuns(t), f); }
     template<typename F> void EachField(TypeExpr *t, F f) { EachFieldOf(FieldRuns(t), f); }
-    void CheckFieldDefaults(vector<Field> &fields, vector<TypeExpr *> &ftypes, vector<Node *> &out,
-                            vector<pair<string_view, TypeExpr *>> &bindings);
+    Val CheckDefaultInit(Node *&n, TypeExpr *ft, TypeExpr *owner);
+    Call *DefaultCall(TypeExpr *t, Line line);
     SizeClass ClassOf(TypeExpr *t);
     bool IsFlat(TypeExpr *t);
     bool HoldsPlainRef(TypeExpr *t);
@@ -1118,11 +1119,11 @@ struct TypeCheck {
     // Builtins (§3.7, §9.3, §11.2) and array members (§3.3, §5.4).
 
     Val CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> &args, Val *precv);
-    void CheckPrintable(Call *c, const char *what, Node *&a);
+    void CheckPrintable(Call *c, const char *what, Node *&a, const Val *out = nullptr);
     void CheckRenderable(Call *c, const char *what, TypeExpr *t, Node *at,
-                         vector<TypeExpr *> &seen);
-    FnSpec *UserFormat(Call *c, TypeExpr *t);
-    FnSpec *UserFormatIn(Call *c, TypeExpr *t, string_view ns);
+                         vector<TypeExpr *> &seen, Val value, const Val &out);
+    FnSpec *UserFormat(Call *c, TypeExpr *t, const Val &value, const Val &out);
+    FnSpec *UserFormatIn(Call *c, TypeExpr *t, string_view ns, const Val &value, const Val &out);
     StrLit *ConstStrLit(Node *n);
     const string *EmbedShader(Call *c, vector<Node *> &args);
     void CheckGrowShrink(Node *at, bool standalone, const char *op, Node *recv, const Val &rv);
