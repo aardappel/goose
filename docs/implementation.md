@@ -2398,6 +2398,10 @@ The compiler code is unchanged by this documentation update.
    versus copying a fill. The language needs one evaluation rule for this
    form that preserves relative references; this discrepancy should not
    become a representation-dependent side-effect rule.
+   **Resolved:** every fill evaluates its operand once, even for zero
+   elements. Literal operands containing relative references capture their
+   field values once and encode links at each destination; `self` denotes
+   each new element. Variable-size operands also evaluate once.
 
 8. **Float text is not always shortest.** `gs_fmt_f64` prints
    `1.000000000000001` as `1.0000000000000011`, even though the shorter

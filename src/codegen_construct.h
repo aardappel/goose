@@ -249,6 +249,16 @@ inline CodeGen::SrcElems CodeGen::GenSrcElems(Node *n) {
 // names the receiving header's length lvalue: elements are written and
 // the count assigned there (§7.3's metadata-outside-the-data form).
 inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, const string &lenlv) {
+    if (auto it = fillvalues.find(n); it != fillvalues.end()) {
+        auto target = want ? want : it->second.t;
+        if (target->kind == TY_REF && target->ref->lenstorage >= 0)
+            EmitRelStore(stk, target, GenX(n), n->line);
+        else if (IsVarintT(target)) EmitVarintStore(stk, GenXD(n, ast.inttypes[IS_I64]));
+        else if (IsBytesT(target) || IsResz(target))
+            ConstructFromLoc(it->second, target, stk, lenlv, n->line);
+        else EmitValStore(stk, target, GenXD(n, target));
+        return;
+    }
     // An inlined body's named result reaching the destination it was
     // bound to (OpenIbNrvo): the elements are in place, so all that is
     // left is the count or the reserved prefix. Any other use of that
@@ -684,6 +694,58 @@ inline void CodeGen::GenVarEnumFromLoc(Loc lv, TypeExpr *et, const string &stk) 
     L("}");
 }
 
+// Capture a fill's value before repeating its construction. Relative links
+// retain absolute targets until the destination is known; `self` remains
+// bound to each constructed element. Capturing the literal's leaves avoids
+// trying to encode a narrow relative link in a distant temporary first.
+inline void CodeGen::FreezeFill(Node *n, TypeExpr *t, vector<Node *> &added) {
+    if (!n || Is<SelfRef>(n) || fillvalues.count(n)) return;
+    if (HasRelRefAny(t)) {
+        if (auto sl = Is<StructLit>(n)) {
+            const vector<TypeExpr *> *fields;
+            if (t->kind == TY_STRUCT) fields = &SI(t)->ftypes;
+            else {
+                auto ei = t->kind == TY_VARIANT ? EIVar(t) : EIOf(t);
+                auto vi = ei->en->VariantIndex(t->kind == TY_VARIANT ? t->var->variant : sl->variant);
+                fields = &ei->vftypes[vi];
+            }
+            for (size_t i = 0; i < sl->inits.size(); i++)
+                FreezeFill(sl->inits[i].val, (*fields)[sl->fieldindices[i]], added);
+            return;
+        }
+        if (auto al = Is<ArrayLit>(n); al && t->kind == TY_ARRAY) {
+            if (al->capexpr) FreezeFill(al->capexpr, ast.inttypes[IS_I64], added);
+            if (al->fillval) FreezeFill(al->fillval, t->arr->sub, added);
+            else for (auto e : al->elems) FreezeFill(e, t->arr->sub, added);
+            return;
+        }
+    }
+    if (IsVarintT(t)) t = ast.inttypes[IS_I64];
+    if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
+        auto pt = ast.NewType(TY_REF, n->line);
+        pt->ref = ast.NewDetail<TypeRef>();
+        *pt->ref = *t->ref;
+        pt->ref->lenstorage = -1;
+        pt->ref->pool = nullptr;
+        t = pt;
+    }
+    Loc lv;
+    lv.t = t;
+    if (IsResz(t)) {
+        auto h = RzTemp(t, lv.stk);
+        GenAny(n, Dst { DK_STACK, lv.stk, t, RzLenLv(t, h) });
+        lv = RzTempLoc(t, h, lv.stk);
+    } else if (IsBytesT(t)) {
+        lv.s = BytesTemp(lv.stk);
+        GenConstruct(n, lv.stk, t);
+    } else {
+        lv.val = true;
+        lv.s = Snapshot(t, GenXD(n, t));
+    }
+    fillvalues.emplace(n, lv);
+    added.push_back(n);
+}
+
 // A fixed struct/array literal built directly at the stack top, so its
 // relative references measure offsets from their real addresses. Layout
 // gaps (pads, ADT payload padding) are zero-filled to keep sizes exact.
@@ -720,6 +782,7 @@ inline void CodeGen::FixedLitAtStk(Node *n, const string &stk) {
                                          : (int64_t)al->elems.size()));
         }
         if (al->fillval) {
+            FillScope fill(*this, al->fillval, elem);
             auto fc = Is<IntLit>(al->fillcount);
             auto iv = T();
             L("for (int64_t ", iv, " = 0; ", iv, " < ", fc->val, "; ", iv, "++) {");
@@ -818,8 +881,8 @@ inline void CodeGen::FixedArrayLitAt(ArrayLit *al, const string &base, bool inro
     if (al->fillval) {
         auto fc = Is<IntLit>(al->fillcount);
         assert(fc);
-        // Elements holding relative references are built one by one, each
-        // against its own address; any other fill value is evaluated once.
+        FillScope fill(*this, al->fillval, elem);
+        // Captured values repeat; relative offsets are encoded per slot.
         auto perelem = HasRelRef(elem);
         auto fv = perelem ? string() : GenPure(al->fillval);
         auto iv = T();
@@ -941,6 +1004,7 @@ inline void CodeGen::GenArrayLit(ArrayLit *al, const string &stk, const string &
             break;
     }
     if (al->fillval) {
+        FillScope fill(*this, al->fillval, elem);
         if (IsVarintT(elem)) {
             // One i64, evaluated once as a fixed-size fill value is.
             auto i64 = ast.inttypes[IS_I64];
@@ -951,7 +1015,7 @@ inline void CodeGen::GenArrayLit(ArrayLit *al, const string &stk, const string &
             EmitVarintStore(stk, fv);
             ind--;
             L("}");
-        } else if (IsBytesT(elem)) {
+        } else if (IsBytesT(elem) || HasRelRef(elem)) {
             auto iv = T();
             L("for (int64_t ", iv, " = 0; ", iv, " < ", count, "; ", iv, "++) {");
             ind++;

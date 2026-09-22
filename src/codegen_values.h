@@ -433,6 +433,7 @@ inline CodeGen::Loc CodeGen::IndexLoc(Loc lv, Node *idxnode, Line ln, bool nobc)
 }
 
 inline CodeGen::Loc CodeGen::GenLoc(Node *n) {
+    if (auto it = fillvalues.find(n); it != fillvalues.end()) return it->second;
     if (auto id = Is<Ident>(n)) {
         assert(id->vdef);
         return VarLoc(id->vdef);
@@ -742,6 +743,8 @@ inline string CodeGen::GenRefVal(Node *child, Line ln) {
 // GenX, loading the pointee when an optimizer splice left a reference
 // where the context's checked type had already decayed.
 inline string CodeGen::GenXD(Node *n, TypeExpr *want) {
+    if (auto it = fillvalues.find(n); it != fillvalues.end())
+        return LoadLoc(it->second, want, n->line);
     auto nt = n->exprtype;
     if (want && nt && IsStaticLimited(want)) {
         // Any array or slice of the element type reaching a static-capacity
@@ -840,6 +843,10 @@ inline string CodeGen::GenFixedArrayLit(ArrayLit *al) {
 inline string CodeGen::GenPtr(Node *n, string *stkout) {
     assert(!IsResz(n->exprtype));
     if (stkout) stkout->clear();
+    if (auto it = fillvalues.find(n); it != fillvalues.end()) {
+        if (stkout) *stkout = it->second.stk;
+        return it->second.s;
+    }
     // A path is the value where it is stored, and `&path` a reference
     // decayed back to its bytes pointee. A payload-less variant constant is
     // a value, not a path: it constructs below like the other rvalues.

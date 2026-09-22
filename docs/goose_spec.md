@@ -739,8 +739,9 @@ Literal forms usable in any construction context:
   `push`, `append`, `format` or whole assignment into it — a string literal
   pushed into one makes it a `u8[][>..]` — and must be fixed before the local
   is otherwise used or its scope ends; `[v; n]` fill form with a non-negative
-  compile-time element count. The current inconsistency in how often `v`
-  is evaluated is recorded in the implementation notes, section 11.
+  compile-time element count. `v` is evaluated once, including when `n` is
+  zero, and its value is repeated. Relative links retain their target at
+  every destination; `self` in a literal refers to each constructed element.
   A literal whose destination names no array type is a `T[k]`, or a `T[]`
   when its elements are not fixed-size (§3.3). A fixed one may also be a
   temporary for a slice parameter, a `for`, `[..]` or `bytes_of` to view; a

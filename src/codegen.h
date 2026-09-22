@@ -648,6 +648,16 @@ struct CodeGen {
     };
 
     string Snapshot(TypeExpr *t, const string &x);
+    // Fill operands are evaluated once; literal shells containing relative
+    // links are replayed at each slot using these captured leaf values.
+    unordered_map<Node *, Loc> fillvalues;
+    void FreezeFill(Node *n, TypeExpr *t, vector<Node *> &added);
+    struct FillScope {
+        CodeGen &cg;
+        vector<Node *> added;
+        FillScope(CodeGen &cg, Node *n, TypeExpr *t) : cg(cg) { cg.FreezeFill(n, t, added); }
+        ~FillScope() { for (auto n : added) cg.fillvalues.erase(n); }
+    };
     string GenPure(Node *n);
     static string IntStr(int64_t v);
     static string FltStr(double v, bool f32);
@@ -677,8 +687,14 @@ struct CodeGen {
 
     // The three per-node passes dispatch virtually (ast.h); the bodies live
     // together in codegen_nodes.h, delegating into the machinery here.
-    string GenX(Node *n) { return n->CgX(*this); }
-    void GenAny(Node *n, Dst d) { n->CgAny(*this, d); }
+    string GenX(Node *n) {
+        auto it = fillvalues.find(n);
+        return it == fillvalues.end() ? n->CgX(*this) : LoadLoc(it->second, it->second.t, n->line);
+    }
+    void GenAny(Node *n, Dst d) {
+        if (fillvalues.count(n)) LeafAny(n, d);
+        else n->CgAny(*this, d);
+    }
     void GenStmt2(Node *n) { n->CgStmt(*this); }
 
     string CtlValX(Node *n);
