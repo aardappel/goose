@@ -469,8 +469,8 @@ int Main(int argc, char **argv) {
     try {
         // The compile has a thread of its own. The program a JIT run starts
         // runs back on this one, the main thread, which a window on macOS
-        // has to be made on, with the stack an executable built from the
-        // same C would start with.
+        // has to be made on, and whose stack the link reserves as large as
+        // the compile thread's where the platform lets it (CMakeLists.txt).
         auto code = RunOnCompilerStack(compile);
         if (code || program.empty()) return code;
         // The program shares this process, so its exit code becomes ours

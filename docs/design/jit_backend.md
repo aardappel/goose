@@ -20,9 +20,11 @@ receive identical source text. `--` passes the arguments after it to the
 program. The program shares the process: its exit status becomes the compiler's,
 its output goes to the same streams, and the compiler's own progress lines move
 to stderr so stdout belongs to the program alone. It does not share the
-compiler's stack: the compile runs on a thread of its own with a larger one,
-and the program on the main thread, with the stack an executable built from the
-same C would start with.
+compiler's stack: the compile runs on a thread of its own, and the program on
+the main thread. The compiler is linked to reserve 64 MB for that thread's
+stack on Windows and macOS, as much as the compile gets, where an executable
+built from the same C starts with 1 MB and 8 MB; on Linux both have the stack
+limit the process started with (`ulimit -s`).
 
 ## How it is built
 

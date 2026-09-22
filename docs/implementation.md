@@ -75,9 +75,10 @@ in `main.cpp`): the typechecker recurses as deep as the program's
 compile-time call path (§3.1 below), and the platforms' main threads get
 anything from 1 MB (Windows) to 8 MB (Linux and macOS by default). The stack
 is reserved address space, committed only as deep as a compile goes. A JIT
-run starts the program back on the main thread, which gives it the thread and
-the stack an executable built from the same C would have, and is where macOS
-lets a window be made.
+run starts the program back on the main thread, which is where macOS lets a
+window be made. The link reserves 64 MB for that thread's stack as well on
+Windows and macOS (`CMakeLists.txt`); on Linux it has the stack limit the
+process started with (`ulimit -s`), which nothing in the executable sets.
 
 **Driver flags** (`Main` in `main.cpp`):
 

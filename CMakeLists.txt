@@ -57,6 +57,23 @@ add_executable(goose
 find_package(Threads REQUIRED)
 target_link_libraries(goose PRIVATE Threads::Threads)
 
+# A program run in-process runs on the main thread (main.cpp), whose stack the
+# executable sets: 64 MB reserved, as for the compile thread, where Windows
+# would give it 1 MB and macOS 8 MB. Only what a program's depth reaches is
+# committed. On Windows this is also the reserve of every thread started
+# without a size of its own (SDL's, a GPU driver's). A Linux main thread's
+# stack comes from the RLIMIT_STACK the process starts with (`ulimit -s`,
+# commonly 8 MB), which no link option sets.
+set(goose_main_stack 67108864)
+if(MSVC)
+    target_link_options(goose PRIVATE "/STACK:${goose_main_stack}")
+elseif(MINGW)
+    target_link_options(goose PRIVATE "LINKER:--stack,${goose_main_stack}")
+elseif(APPLE)
+    math(EXPR goose_main_stack_hex "${goose_main_stack}" OUTPUT_FORMAT HEXADECIMAL)
+    target_link_options(goose PRIVATE "LINKER:-stack_size,${goose_main_stack_hex}")
+endif()
+
 # The shader compiler behind embed_shader: third-party C (third_party/
 # cute_spirv), always built, so a gfx program typechecks and emits the same C
 # with or without SDL.

@@ -2747,10 +2747,14 @@ compiler's own description, pass by pass and analysis by analysis, is
   a program runs with no C toolchain present and no file written. The
   program shares the process: its exit status becomes the compiler's, and
   the compiler's own progress lines move to stderr to leave stdout to the
-  program. Nothing about the generated C differs between the two, and `-D`
-  is written into that C rather than passed to a backend so that stays
-  true. TinyCC does not optimize and cannot place thread-local storage in
-  an in-memory run, so a program using workers (§11.2) is refused there
+  program. It runs on the compiler's main thread, whose stack the compiler
+  reserves at 64 MB on Windows and macOS, where an executable's main thread
+  gets 1 MB and 8 MB by default; on Linux it is the stack limit the process
+  started with (`ulimit -s`), as for an executable. Nothing about the
+  generated C differs between the two, and `-D` is written into that C
+  rather than passed to a backend so that stays true. TinyCC does not
+  optimize and cannot place thread-local storage in an in-memory run, so a
+  program using workers (§11.2) is refused there
   (docs/design/jit_backend.md).
 * **Fat references.** A callee that grows a resizable through a reference
   (`push` through a `f64[>..]&`) must know which data stack to bump. The
