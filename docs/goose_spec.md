@@ -1904,7 +1904,9 @@ Aborts (message + exit; not catchable):
 * division by zero (always);
 * `assert` failures, and the program's own `abort(msg)` (`msg` any `u8`
   array or slice; printed as `goose runtime error: <msg>`);
-* guard-page hits (stack budget exceeded) — safe abort, never corruption.
+* guard-page hits (stack budget exceeded) — safe abort, never corruption;
+* native call stack exhaustion (recursion deeper than a thread's stack
+  holds, §7.8) — the same safe abort, with a diagnostic of its own.
 
 `exit(code)` ends the program normally with the given process exit code.
 Both `abort` and `exit` never return, which the checker knows: code after

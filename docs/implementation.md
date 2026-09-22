@@ -2028,6 +2028,27 @@ them; a worker's are released when it exits. Every region owned by the
 current thread program is registered thread-locally so the fault handler
 never touches another worker's state.
 
+**Native stacks.** Recursion consumes only the native call stack (spec
+§7.8), whose size is set as its thread starts; running out of it ends the
+program with `goose runtime error: native call stack overflow` and exit
+status 1, as a data stack overrun does. Every thread program's thread
+prepares for that as it starts (`gs_native_stack_init`, from `gs_rt_init`
+and `gs_thread_main`). On Windows the vectored handler takes
+`EXCEPTION_STACK_OVERFLOW`, and `SetThreadStackGuarantee` keeps 64 KB of
+each such stack for it: what an overflow leaves without one only just holds
+the report and `ExitProcess`. A program TinyCC builds looks the function up,
+its `kernel32.def` lacking it. On POSIX the handler runs on an alternate
+signal stack, which the runtime allocates for each such thread unless it has
+one already (ASan gives every thread its own) and releases with a worker's
+data stacks. A fault between 64 KB below the thread's stack and its top is
+that stack overflowing, by the bounds read as the thread starts
+(`pthread_getattr_np` on Linux, `pthread_get_stackaddr_np` and
+`pthread_get_stacksize_np` on macOS; elsewhere there are none, and the
+overflow is not reported). A fault that is neither kind gets back the
+handler the runtime replaced and recurs under it: the default action, or a
+sanitizer's report. A JIT program installs all this on the compiler's main
+thread, which it runs on (§1).
+
 **Integer semantics** (§6.2): every operation runs at its type through
 `gs_add_i32`-style helpers, which are functions that check the wide result
 under `GS_DEBUG` and macros equal to the release expression otherwise

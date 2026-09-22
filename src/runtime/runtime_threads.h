@@ -77,6 +77,7 @@ static void *gs_thread_main(void *p)
 #endif
 {
     gs_thread *t = (gs_thread *)p;
+    gs_native_stack_init();
     gs_current_thread_id = t->id;
     gs_stks = gs_new_stack_block();
     gs_nstks = 0;

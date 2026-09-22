@@ -86,9 +86,9 @@ Possible directions:
   `TlsAlloc`/`TlsGetValue` on Windows and `pthread_key_create`/
   `pthread_getspecific` elsewhere. Self-contained, perhaps thirty lines, but it
   turns every access to the globals pointer into a call, and the region registry
-  is read by the guard-page fault handler, where `pthread_getspecific` is not
-  formally async-signal-safe. Measure the cost on the benchmarks before
-  committing to it.
+  and the thread's stack bounds are read by the fault handler, where
+  `pthread_getspecific` is not formally async-signal-safe. Measure the cost on
+  the benchmarks before committing to it.
 * **Teach TinyCC's runner to allocate a thread-local block.** This would address the limitation in
   TinyCC itself and would require upstream work.
 * **Leave it refused.** The diagnostic already says to compile with `-o`.

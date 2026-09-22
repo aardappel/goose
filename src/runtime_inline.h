@@ -502,9 +502,21 @@ static GS_TLS volatile long gs_nregions;
 
 static size_t gs_page_size = 0;
 #define GS_COMMIT_CHUNK (1u << 20)
+/* What each thread program keeps of its native stack for reporting that
+   stack's overflow (gs_native_stack_init). */
+#define GS_STACK_GUARANTEE (64u << 10)
 
 static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
-    if (ep->ExceptionRecord->ExceptionCode != STATUS_ACCESS_VIOLATION)
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (code == EXCEPTION_STACK_OVERFLOW) {
+        /* On the little stack the guarantee kept: WriteFile rather than
+           stdio, which could want more. */
+        static const char msg[] = "goose runtime error: native call stack overflow\n";
+        DWORD written;
+        WriteFile(GetStdHandle(STD_ERROR_HANDLE), msg, sizeof(msg) - 1, &written, NULL);
+        ExitProcess(1);
+    }
+    if (code != STATUS_ACCESS_VIOLATION)
         return EXCEPTION_CONTINUE_SEARCH;
     uint8_t *hit = (uint8_t *)ep->ExceptionRecord->ExceptionInformation[1];
     for (long i = 0; i < gs_nregions; i++) {
@@ -536,6 +548,21 @@ static void gs_regions_init(void) {
         gs_panic("cannot install data stack fault handler");
 }
 
+/* Run by each thread program's thread as it starts. TinyCC's kernel32.def
+   does not list SetThreadStackGuarantee, so a program it builds looks it up. */
+static void gs_native_stack_init(void) {
+    ULONG room = GS_STACK_GUARANTEE;
+    #ifdef __TINYC__
+        BOOL (WINAPI *guarantee)(PULONG) = (BOOL (WINAPI *)(PULONG))GetProcAddress(
+            GetModuleHandleA("kernel32.dll"), "SetThreadStackGuarantee");
+        if (guarantee) guarantee(&room);
+    #else
+        SetThreadStackGuarantee(&room);
+    #endif
+}
+
+static void gs_native_stack_free(void) {}
+
 static uint8_t *gs_reserve_region(void) {
     if (gs_nregions == GS_MAX_STACKS * 4)
         gs_panic("too many data stack regions");
@@ -557,6 +584,20 @@ static void gs_release_region(uint8_t *base) {
 #include <sys/mman.h>
 #include <unistd.h>
 #include <signal.h>
+#include <pthread.h>
+
+/* The calling thread's native stack, from GS_NATIVE_SLOP below its lowest
+   usable address up to its top: a fault in there is that stack overflowing,
+   whether on the guard below it or at a limit the kernel would not grow it
+   past. The slop covers a frame larger than the guard reaching over it.
+   Empty where the platform cannot tell. */
+#define GS_NATIVE_SLOP (64u << 10)
+static GS_TLS uintptr_t gs_native_lo, gs_native_hi;
+/* The alternate signal stack gs_native_stack_init allocated, if it did. */
+static GS_TLS void *gs_sigstack;
+#define GS_SIGSTACK_MIN (64u << 10)
+/* What the fault handler replaced, for the faults that are not its own. */
+static struct sigaction gs_prev_segv, gs_prev_bus;
 
 static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
     (void)ctx;
@@ -570,20 +611,86 @@ static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
             _exit(1);
         }
     }
-    signal(sig, SIG_DFL);  /* Not ours: recrash with default handling. */
+    if ((uintptr_t)hit - gs_native_lo < gs_native_hi - gs_native_lo) {
+)GSRT"
+R"GSRT(        static const char msg[] = "goose runtime error: native call stack overflow\n";
+        ssize_t w = write(2, msg, sizeof(msg) - 1);
+        (void)w;
+        _exit(1);
+    }
+    /* Not ours: the access faults again under what handled it before, the
+       default action or a sanitizer's report. */
+    sigaction(sig, sig == SIGSEGV ? &gs_prev_segv : &gs_prev_bus, NULL);
 }
 
 static void gs_regions_init(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = gs_fault_handler;
-    sa.sa_flags = SA_SIGINFO;
-    if (sigaction(SIGSEGV, &sa, NULL))
+    /* A native stack overflow leaves the handler no room on the thread's own. */
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    if (sigaction(SIGSEGV, &sa, &gs_prev_segv))
         gs_panic("cannot install data stack fault handler");
     #ifdef SIGBUS
-        if (sigaction(SIGBUS, &sa, NULL))
+        if (sigaction(SIGBUS, &sa, &gs_prev_bus))
             gs_panic("cannot install data stack fault handler");
     #endif
+}
+
+#ifdef __linux__
+/* pthread.h declares it only under _GNU_SOURCE, which would have to come
+   before every system header a file includes. */
+int pthread_getattr_np(pthread_t, pthread_attr_t *);
+#endif
+
+static size_t gs_sigstack_size(void) {
+    return SIGSTKSZ > GS_SIGSTACK_MIN ? (size_t)SIGSTKSZ : (size_t)GS_SIGSTACK_MIN;
+}
+
+/* Run by each thread program's thread as it starts: an alternate stack for
+   the fault handler, unless the thread has one (ASan gives every thread its
+   own), and the bounds of the thread's stack. */
+static void gs_native_stack_init(void) {
+    stack_t ss;
+    uintptr_t lo = 0, hi = 0;
+    if (!sigaltstack(NULL, &ss) && (ss.ss_flags & SS_DISABLE)) {
+        ss.ss_size = gs_sigstack_size();
+        ss.ss_sp = malloc(ss.ss_size);
+        ss.ss_flags = 0;
+        if (ss.ss_sp && !sigaltstack(&ss, NULL)) gs_sigstack = ss.ss_sp;
+        else free(ss.ss_sp);
+    }
+    #if defined(__APPLE__)
+        hi = (uintptr_t)pthread_get_stackaddr_np(pthread_self());
+        lo = hi - pthread_get_stacksize_np(pthread_self());
+    #elif defined(__linux__)
+        pthread_attr_t attr;
+        void *base;
+        size_t size;
+        if (!pthread_getattr_np(pthread_self(), &attr)) {
+            if (!pthread_attr_getstack(&attr, &base, &size)) {
+                lo = (uintptr_t)base;
+                hi = lo + size;
+            }
+            pthread_attr_destroy(&attr);
+        }
+    #endif
+    if (lo > GS_NATIVE_SLOP) {
+        gs_native_lo = lo - GS_NATIVE_SLOP;
+        gs_native_hi = hi;
+    }
+}
+
+/* At a worker's end, the alternate stack gs_native_stack_init gave it. */
+static void gs_native_stack_free(void) {
+    stack_t ss;
+    if (!gs_sigstack) return;
+    memset(&ss, 0, sizeof(ss));
+    ss.ss_flags = SS_DISABLE;
+    ss.ss_size = gs_sigstack_size();
+    sigaltstack(&ss, NULL);
+    free(gs_sigstack);
+    gs_sigstack = NULL;
 }
 
 static uint8_t *gs_reserve_region(void) {
@@ -622,8 +729,7 @@ static GS_TLS int64_t gs_nstks;
    compiler lays out: main's is its one static instance, a worker's a fresh
    copy of the globals its program uses, taken from the spawning instance
    at spawn like the arguments (11.2). No global is shared between program
-)GSRT"
-R"GSRT(   instances; the only C statics a program shares are read-only ones. */
+   instances; the only C statics a program shares are read-only ones. */
 static GS_TLS void *gs_gl;
 
 #define GS(i) (&gs_stks[i])
@@ -650,7 +756,8 @@ static void gs_stack_init(gs_stack *s) {
 
 /* Workers own all their registered regions (globals belong to main). No
    Goose reference to these mappings may outlive the worker. Unregister
-   before unmapping, then discard the now-useless bump pointers. */
+   before unmapping, then discard the now-useless bump pointers. The
+   thread's alternate signal stack goes with them. */
 static void gs_free_thread_stacks(void) {
     while (gs_nregions) {
         long i = gs_nregions - 1;
@@ -662,6 +769,7 @@ static void gs_free_thread_stacks(void) {
     free(gs_stks);
     gs_stks = NULL;
     gs_nstks = 0;
+    gs_native_stack_free();
 }
 
 static void gs_rt_init(void) {
@@ -670,6 +778,7 @@ static void gs_rt_init(void) {
     // throughput ever matters.
     setvbuf(stdout, NULL, _IONBF, 0);
     gs_regions_init();
+    gs_native_stack_init();
     gs_stks = gs_new_stack_block();
     gs_nstks = 0;
 }
@@ -721,7 +830,8 @@ static void gs_spans_take(gs_span *s, int64_t *n, uint8_t **top, int64_t at, int
    the end starts the run. The caller grows the array to the returned index
    plus cnt. First fit rather than best: in index order it packs runs toward
    the start and leaves the end free, and it stops scanning at the fit. */
-static int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
+)GSRT"
+R"GSRT(static int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
                               int64_t cnt) {
     gs_span *s = (gs_span *)base;
     int64_t at = 0, idx;
@@ -843,8 +953,7 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
 /* ---------------------------------------------------------------------------
    Verified loading (docs/design/serialization.md): what the generated
    gs_verify_<T> walkers are built from. The bytes are untrusted until the
-)GSRT"
-R"GSRT(   walk finishes, so every read here is bounded by the image end and reports
+   walk finishes, so every read here is bounded by the image end and reports
    a malformed encoding instead of running past it. */
 
 /* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
@@ -933,7 +1042,8 @@ static int gs_fmt_exp(char *s, int n) {
 static int64_t gs_fmt_f64(uint8_t *dst, double v) {
     int n = snprintf((char *)dst, GS_FMT_MAX, "%.15g", v);
     if (strtod((char *)dst, NULL) != v) n = snprintf((char *)dst, GS_FMT_MAX, "%.17g", v);
-    return gs_fmt_exp((char *)dst, n);
+)GSRT"
+R"GSRT(    return gs_fmt_exp((char *)dst, n);
 }
 
 static int64_t gs_fmt_bool(uint8_t *dst, int64_t v) {
@@ -1055,6 +1165,7 @@ static void *gs_thread_main(void *p)
 #endif
 {
     gs_thread *t = (gs_thread *)p;
+    gs_native_stack_init();
     gs_current_thread_id = t->id;
     gs_stks = gs_new_stack_block();
     gs_nstks = 0;
