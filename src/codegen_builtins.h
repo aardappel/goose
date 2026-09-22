@@ -473,15 +473,30 @@ inline void CodeGen::EmitAppend(vector<Node *> &an, Line ln) {
     // element-run form (C.3): the callee emits raw elements at our top and
     // hands back the count -- contiguous by construction (§7.3). A callee
     // with no run form falls back to a value-form call with its length
-    // prefix slid out (inside EmitSpecCall). A runtime-capacity limited
-    // result has no run form at all: it is built on a temporary of its own
-    // and its elements copied, below.
+    // prefix slid out (inside EmitSpecCall). Control expressions, including
+    // inlined calls, pass the same destination to each branch.
     auto st = src->exprtype;
     auto asrun = IsResz(st) || (st->kind == TY_ARRAY && st->arr->akind == A_VAR);
-    if (auto call = Is<Call>(src); call && asrun && ak != A_LIMITED) {
+    auto fresh = Is<Call>(src) || IsCtl(src);
+    if (fresh && asrun && ak != A_LIMITED) {
         auto nn = T();
         L("int64_t ", nn, " = 0;");
-        EmitCall(call, Dst { DK_STACK, lv.stk, src->exprtype, nn });
+        GenAny(src, Dst { DK_STACK, lv.stk, st, nn });
+        L(v.lenlv, " += ", nn, ";");
+        return;
+    }
+    if (fresh && st->kind == TY_ARRAY && st->arr->akind == A_LIMITED &&
+        ArrSize(st->arr) < 0 && ak != A_LIMITED) {
+        // Build the limited result on the receiving stack, then remove its
+        // capacity/length header and unused capacity in place. Only its live
+        // elements belong to the appended run.
+        auto base = T(), nn = T(), bytes = T();
+        L("uint8_t *", base, " = ", Top(lv.stk), ";");
+        GenAny(src, Dst { DK_STACK, lv.stk, st });
+        L("int64_t ", nn, " = *(uint32_t *)(", base, " + 4);");
+        L("int64_t ", bytes, " = ", nn, " * ", FixedSize(elem), ";");
+        L("memmove(", base, ", ", base, " + 8, (size_t)", bytes, ");");
+        L(TopW(lv.stk), " = ", base, " + ", bytes, ";");
         L(v.lenlv, " += ", nn, ";");
         return;
     }

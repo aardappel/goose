@@ -394,7 +394,7 @@ struct CodeGen {
     // return, rather than the elements moved out of the way.
     struct NrvoDest {
         string stk;               // Destination stack expression.
-        string lenlv;             // Receiving count lvalue; empty when prefix.
+        string lenlv;             // Receiving count; empty for a packed value.
         IntStorage ls = IS_U32;   // The prefix's length storage.
         bool prefix = false;      // Reserve prefix bytes and patch the count.
         bool inlined = false;     // Bound by an InlineBlock, not by DetectNrvo.

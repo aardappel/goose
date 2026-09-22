@@ -100,7 +100,13 @@ class Runner:
         """The compiler under test, as (exit code, stdout, stderr). Both
         streams are captured rather than shown, so a failing step can print
         what happened without having to run the compiler a second time."""
-        result = tc.run_capture([self.exe] + [str(a) for a in args])
+        # Resource-bound regressions use the same runtime configuration
+        # through generated C and TinyCC, at every optimization level.
+        source = Path(args[-1]) if args else None
+        defines = []
+        if source and source.suffix == ".goose" and source.is_file():
+            defines = re.findall(r"^// runtime-define: (\w+=\w+)$", first_line(source))
+        result = tc.run_capture([self.exe] + ["-D" + d for d in defines] + [str(a) for a in args])
         if tc.sanitizer_failure(result[2]):
             self.fail(f"compiler sanitizer {args[-1]}", result[2])
         return result

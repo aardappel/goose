@@ -476,6 +476,7 @@ inline void CodeGen::EmitPrefixPatch(const string &pref, IntStorage ls, const st
 // the count goes to the receiving header, or into the prefix reserved in
 // front of the elements when the destination is a value slot.
 inline void CodeGen::EmitNrvoFinish(const NrvoDest &nd) {
+    if (nd.hdr.empty()) return;   // A packed non-resizable result is complete.
     if (nd.fo) { L(nd.lenlv, " = ", nd.hdr, ";"); return; }
     if (!nd.prefix) { L(nd.lenlv, " = ", nd.hdr, ".len;"); return; }
     EmitPrefixPatch(nd.pref, nd.ls, nd.stk, cat(nd.hdr, ".len"), cat(nd.hdr, ".base"));

@@ -1247,8 +1247,9 @@ what codegen opens a C block for: every `Block` (a function or inlined body,
 an arm, a loop body), one around an `else` that is not a `Block`, the right
 operand of `&&` and `||`, a `while` condition (tested inside the loop), the
 arguments of a function-value call (bound inside its block) and an array's
-fill value (built in a loop), and two around a match arm (a switch and its
-case); `Around` counts the ones around a child. `Scan` records the deepest
+fill value (conservatively counted with its repetition loop), and two
+around a match arm (a switch and its case); `Around` counts the ones around
+a child. `Scan` records the deepest
 nesting of each final body (`InlineInfo::nest`, the `nest` of `--specs`),
 and the walk keeps the count around the node it is at (`depth`), taken as
 the blocks stand when it gets there: one that folds away afterwards only
@@ -1636,9 +1637,15 @@ target) delivers the value form and the receiver slides the length prefix
 out with one `memmove` (`EmitSlidePrefix`). A `T[]` result landing in a slot
 of another length storage is re-prefixed afterwards (`EmitReprefix`). A
 runtime-capacity limited result (`T[..]`) has no run form: `EmitAppend`
-builds it on a temporary of its own and copies its elements, as it does any
-call's result appended to a limited array. These fallbacks do not fulfill
-the spec's unconditional copy-free guarantee (section 11).
+builds its image on the destination stack, then compacts its live elements
+over the header and discards unused capacity. Inlined calls retain named
+result placement for identical packed layouts, and control expressions pass
+the same destination through their branches. These packed
+layout relocations are the exception in spec §4.3; they do not use a
+separate result stack. A fresh result appended to a limited receiver still
+requires staging while its final count is unknown, to check capacity before
+writing the receiver; spec §4.3 permits this separate bounded-destination
+exception.
 An appended literal of variable-size elements is built the same way, its
 elements at `v`'s top and its count added to the length (`GenArrayLit`);
 one of fixed-size elements holding relative references is a fixed array
@@ -2311,14 +2318,14 @@ specification allows, and the shapes the C backend refuses outright:
 
 ---
 
-## 11. Known correctness gaps, not semantics to reproduce
+## 11. Audit findings and resolutions
 
-The runtime failures below were reproduced during the documentation audit
-at `-O0` and `-O2`, through both TinyCC and native MSVC. The construction-copy
-gap was checked in generated C at both levels. They are ordered by impact.
-These examples identify failures of the contracts above; an independent
-implementation should satisfy those contracts, not reproduce the failures.
-The compiler code is unchanged by this documentation update.
+The failures below describe the pre-fix compiler (`316063d`), ordered by
+impact. Runtime cases were reproduced at `-O0` and `-O2` through TinyCC and
+native MSVC; the construction-copy gap was checked in generated C at both
+levels. Each resolution records the corrected contract. An independent
+implementation should satisfy those contracts, not reproduce the original
+failures.
 
 1. **Length-field overflow corrupts the containing layout.** `EmitLenStore`
    and the prefix-patching paths narrow counts without establishing that
@@ -2407,6 +2414,8 @@ The compiler code is unchanged by this documentation update.
    `1.000000000000001` as `1.0000000000000011`, even though the shorter
    spelling reads back to the same value. Its 15/17-digit strategy meets
    round-trip accuracy, but not spec §3.7's shortest-form promise.
+   **Open:** the shortest-float formatting fix is deferred; the compiler
+   retains its existing 15/17-digit formatting.
 
 9. **Some construction paths still copy whole fresh results.** The
    fallbacks in section 6.5 contradict spec §4.3/§7.3's unconditional
@@ -2416,3 +2425,8 @@ The compiler code is unchanged by this documentation update.
    this copy at both optimization levels. This is a performance-contract
    gap, even when the program's values are correct; it is not a license
    for a replacement implementation to ignore the guarantee.
+   **Resolved:** fresh runtime-capacity limited results and control
+   expressions now construct on the receiving resizable's stack. Required
+   packed-layout changes relocate bytes there; they do not materialize a
+   separate result. Spec §4.3 allows that relocation, and separately allows
+   staging a result of unknown length to check a limited receiver's capacity.

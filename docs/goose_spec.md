@@ -788,22 +788,32 @@ Literal forms usable in any construction context:
   value a missed `qpoll` yields, §11.2, is the all-zero-bytes value; the two
   agree except where a field declares a non-zero default.)
 
-### 4.3 The copy-free construction guarantee
+### 4.3 The in-place construction guarantee
 
-A constructed nonfixed value is always built **directly in its final
-destination**. The compiler propagates "construct onto this stack"
-information top-down through expressions and calls (whole-program,
-call-graph-order compilation makes this always possible): all branches of an
-`if`/`match`/case-dispatch construct to the same destination, and a function
-whose result is nonfixed is compiled against its destination stack — either
-statically per specialization, or via a hidden destination-stack argument
-when one compiled body serves call sites with different destinations.
-Construct-then-copy never occurs. (The semantic fallback — construct on a
-fresh stack, then copy — is definable but the compiler is required not to
-need it.) Copying an *already-constructed* value (assignment from a
-variable, a by-value argument that is a variable) is an ordinary copy; the
-guarantee is about newly constructed values — and §7.3 extends it to
-returned locals.
+A constructed nonfixed value is built **directly in its receiving
+storage**, including through calls and the selected branch of an
+`if`/`match`/case-dispatch. Passing through such an expression is not a
+reason to materialize a separate result and then copy it into place.
+
+The packed byte layout may require relocation within the receiving
+storage: a length prefix whose width becomes known after constructing the
+elements can grow or shrink, and a value-form result delivered as an
+element run can lose its header and unused capacity. Moving the element
+bytes for these layout changes is permitted. The final representation,
+reference targets and evaluation order must remain the same; an initializer
+must not be re-executed to discover its size.
+
+A limited-capacity receiver must establish that the complete live result
+fits before writing outside its available slots. When the result's length
+is not available before evaluating it, temporary construction for this
+capacity check is permitted. This exception concerns a bounded receiver;
+it does not permit staging an ordinary fresh result for a resizable one.
+
+Copying an *already-constructed* value (an explicit `copy`, a by-value
+argument from fixed storage, or the repeated value of a fill) is an ordinary
+copy. The guarantee concerns fresh construction; §7.3 extends it to
+returned locals and specifies the copies associated with different returned
+locals and exits that abandon a partial destination.
 
 ### 4.4 Assignability
 
@@ -1332,9 +1342,9 @@ Fixed-size returns use registers/native stack as usual. A variable or
 resizable return value is **constructed directly in its destination**
 (§4.3); the callee is compiled knowing the destination stack (statically or
 as a hidden argument), writes element data there, and returns the value's
-metadata (lengths) in registers — the destination stack never carries a
-transient header between the caller's data and the new elements
-(Appendix C.3):
+metadata (lengths) outside the element run. Where a result is first built
+with its packed value header, the header is removed in place under §4.3's
+relocation exception (Appendix C.3):
 
 * `let x = f();` — a fresh stack region (statically assigned to `x`).
 * `v.push(f());` / `v.append(f());` — the top of `v`'s stack; the push is a
@@ -1349,7 +1359,7 @@ uses), that local is allocated at the return destination from its
 declaration — `return x` then costs exactly the same as returning the
 constructing expression directly. When different locals are returned on
 different paths, only one can live at the destination and the others are
-copied on return (the one place a returned value can cost a copy).
+copied on return. This is in addition to §4.3's layout relocation.
 
 **Exits.** A `return` or `break` taken while its destination already holds
 part of a value -- inside an element of a literal being built there, say,
@@ -1366,12 +1376,13 @@ the constructed bytes), or *a run of elements of type T* (receivers that
 splice: `append`) — the callee emits raw elements and returns the count.
 The request kind is part of the specialization signature (§10.2); the same
 function may be compiled in both forms for different callers. A callee that
-merely constructs its result satisfies either form with zero copies; one
-that must first operate on its result as a whole array makes the copy
-itself, just before returning — at most one copy, on the callee side, and
-only in that case. (Often even that is avoided: a callee local resizable
-assigned the destination stack is operated on via its frame header,
-Appendix C.2, and its elements are already in place.)
+merely constructs its result passes the destination through. A callee that
+must first operate on its result as a whole array may make one copy into
+the requested element run, just before returning. Where its packed value
+can occupy the receiving storage, removing the header is instead the
+layout relocation of §4.3 and may be performed by the callee or receiver.
+A local resizable can use metadata outside the element region
+(Appendix C.2), with its elements already in place.
 
 Consequence: returning a built-up value and out-parameter style are the same
 cost, and building a variable element "inside" a container is idiomatically a
@@ -2749,7 +2760,9 @@ compiler's own description, pass by pass and analysis by analysis, is
   contiguous with no copy, and a named result pays the specified single
   callee-side copy. Callees with no run form (builtins, tag dispatch) fall
   back to the value form, and the receiver slides the length prefix out
-  with one memmove. Non-array variable results have only the value form.
+  with one memmove. A runtime-capacity limited result is built on the
+  destination stack, then compacted there to discard its header and unused
+  slots. Non-array variable results have only the value form.
 * **Queue images** (§11.2) are one contiguous byte image per value; a
   resizable's is its count, its fixed fields and its tail's elements, built
   on a scratch stack at `qput` and unpacked at the receiver's destination.

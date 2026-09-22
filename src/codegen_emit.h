@@ -18,11 +18,18 @@ namespace goose {
 inline const VarDef *CodeGen::OpenIbNrvo(InlineBlock *ib, const Dst &d) {
     if (d.k != DK_STACK || !ib->spec || ib->spec->rets.size() != 1) return nullptr;
     auto vd = NamedResult(ib->body, ib->sf, 1, 0);
-    if (!vd || !IsResz(vd->type) || nrvo.count(vd)) return nullptr;
+    if (!vd || !IsBytesT(vd->type) || nrvo.count(vd)) return nullptr;
     auto ct = vd->type;
     NrvoDest nd;
     nd.stk = d.s;
     nd.inlined = true;
+    if (!IsResz(ct)) {
+        // A packed value of the same layout needs no separate metadata:
+        // its declaration and every return can share the destination.
+        if (!d.lenlv.empty() || !d.t || !TEq(ct, d.t)) return nullptr;
+        nrvo[vd] = nd;
+        return vd;
+    }
     if (!d.lenlv.empty()) {
         // An element-run or resizable receiver: raw elements plus a count.
         if (!d.t) return nullptr;
