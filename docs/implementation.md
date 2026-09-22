@@ -716,10 +716,15 @@ is an error only in the first.
 `let` prevents whole-binding assignment (`NoLetAssign`, via
 `LVal::letbound`) but does not restrict writes to contents. By-value `for`
 and `match` bindings are copies; writes to them are rejected by
-`NoCopyWrite` using `VarDef::copybind`. `&x` of a
-`const` value is a `const T&`, a slice of read-only storage is a `const T[:]`,
-a string literal is `const u8[:]`, a `bytes_of` view is never writable, and
-`null` and `default<T>()` count as writable so they fit any slot.
+`NoCopyWrite` using `VarDef::copybind`. A variable's `const` type works the
+other way round: a bare name's `LVal::writable` is its *contents'*
+writability, which `&x` and the paths into it inherit, while a write of the
+variable itself (`=`, a compound assignment, `++`/`--`) is left to those two
+rules alone (`WholeWritable`), so a `var s: const u8[:]` re-slices itself.
+`&x` of a `const` value is a `const T&`, a slice of read-only storage is a
+`const T[:]`, a string literal is `const u8[:]`, a `bytes_of` view is never
+writable, and `null` and `default<T>()` count as writable so they fit any
+slot.
 
 ### 3.9 Flow state: definite assignment and narrowing
 
@@ -1654,10 +1659,11 @@ Every global that is not read-only static data is a member of one
 resizable ones inside it; main's is a static, a worker's is allocated by its
 entry thunk and filled from the spawn image (§6.8). Access is `GS_GL->name`,
 which is `(&gs_globals_main)` in a program without workers and the
-thread-local `gs_gl` with them. A `const` global of flat fixed type with a
-compile-time initializer (`StaticInitX`, up to 256 array elements) is a C
-static shared by every instance; everything else is initialized by
-`gs_init_globals` in declaration order.
+thread-local `gs_gl` with them. A `let` (or `const`) global of a `const`
+flat fixed type with a compile-time initializer (`StaticInitX`, up to 256
+array elements) is a C static shared by every instance; a `var` of such a
+type can be assigned as a whole and is a member like any other. Everything
+but the statics is initialized by `gs_init_globals` in declaration order.
 
 ### 6.4 The calling convention (C.3)
 

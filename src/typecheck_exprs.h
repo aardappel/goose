@@ -22,8 +22,8 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         lv.rootexact = true;
         lv.byteview = vd->contentbyteview;
         // Contents are writable unless the type says const or the binding
-        // is a copy (§9.5); `let` only keeps the binding from being
-        // reassigned (§4.4).
+        // is a copy (§9.5). Whether the variable itself is assigned is up
+        // to its binding alone (`let`, a copy: WholeWritable, §4.4).
         lv.writable = !vd->copybind && !(vd->type && vd->type->cq);
         lv.letbound = !vd->isvar;
         lv.letname = vd->name;

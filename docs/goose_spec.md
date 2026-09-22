@@ -858,11 +858,12 @@ the *contents* of a `let` array or struct are as writable as their type
 says (`let xs = [1, 2, 3]; xs[0] = 9;` is fine), and so is what a reference
 to it reaches. Contents are made read-only by the type, `const T` (§9.5),
 and `const x = e;` declares a `let` of type `const T`: neither reassigned
-nor written into. Definite assignment is enforced: no
-reads of uninitialized locals; every declaration either has an initializer
-or is provably assigned on all paths before use. Fixed arrays require full
-initialization (every slot is indexable); the `[v; n]` fill literal makes
-large ones cheap.
+nor written into. A `var` of type `const T` is the converse: reassigned
+(`=`, compound assignment, `++`), never written into. Definite assignment
+is enforced: no reads of uninitialized locals; every declaration either has
+an initializer or is provably assigned on all paths before use. Fixed
+arrays require full initialization (every slot is indexable); the
+`[v; n]` fill literal makes large ones cheap.
 
 ### 4.5 Equality and comparison
 
@@ -1937,12 +1938,13 @@ reference to it reaches), and `const T&` / `const T[:]` are a reference and
 a slice through which the pointee, or the elements, cannot be written: no
 assignment, compound assignment, `++`, or growing/shrinking operation
 through it compiles. Assigning a `const` value as a whole is the binding's
-business (`let`, §4.4), and a copy of one is a fresh, writable value.
-`const` is shallow: a reference read out of a field of a `const Box&` is as
-writable as the field's own type says. Every value of reference or slice
-type is either read-only or writable, and where that comes from is
-*inferred*, per instantiation, exactly like roots, with no annotation
-needed:
+business (`let`, §4.4), and a copy of one is a fresh, writable value: a
+cursor `var s: const u8[:] = text;` advances with `s = s[1..]` and never
+writes a byte of `text`. `const` is shallow: a reference read out of a
+field of a `const Box&` is as writable as the field's own type says. Every
+value of reference or slice type is either read-only or writable, and
+where that comes from is *inferred*, per instantiation, exactly like roots,
+with no annotation needed:
 
 * Read-only: a string literal (`const u8[:]`, §3.7); `&x` and `x[..]` of a
   `const` value, of a field of one, or of a by-value `for`/`match` binding
@@ -2208,7 +2210,8 @@ the caller's own facts about `src` intact.
   natural whole-program arena). That outermost scope is a frame like any
   other: a global's storage belongs to the program instance running it and
   is never shared with another (§11.2).
-  `const` globals of flat fixed type with compile-time-evaluable
+  `const` globals (`let` ones of a `const` type; a `var` of one is
+  assigned as a whole, §4.4) of flat fixed type with compile-time-evaluable
   initializers live in static data; the initializer of any `let` or
   `const` global is a named constant a compile-time size may use
   (`i64[N]`).

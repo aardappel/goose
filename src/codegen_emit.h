@@ -491,9 +491,10 @@ inline void CodeGen::EmitGlobalDecls() {
                 reg(gstks[d]);
             } else {
                 string init;
-                // A const global with a compile-time initializer is never
-                // written (§9.5): static data every instance shares.
-                if (perdef && d->type->cq && !PrefVar(d) &&
+                // A `let` global of a const type with a compile-time
+                // initializer is never written (§9.5): static data every
+                // instance shares. A `var` one may be assigned as a whole.
+                if (perdef && !d->isvar && d->type->cq && !PrefVar(d) &&
                     StaticInitX(g->inits[di], d->type, init)) {
                     Append(data, "static ", VarCT(d), " ", name, " = ", init, ";\n");
                     gstatic.insert(d);

@@ -1126,6 +1126,7 @@ struct TypeCheck {
     void CompoundAssign(Assign *a, TypeExpr *st, bool writable);
     void NoLetAssign(Node *at, const LVal &lv);
     void NoCopyWrite(Node *at, const LVal &lv);
+    bool WholeWritable(const LVal &lv);
     void CheckIncDec(IncDec *x);
 
     // ------------------------------------------------------------------

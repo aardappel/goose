@@ -1637,7 +1637,7 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     if (a->op != T_ASSIGN) {
         NoCopyWrite(a, lv);
         NoLetAssign(a, lv);
-        CompoundAssign(a, lv.type, lv.writable);
+        CompoundAssign(a, lv.type, WholeWritable(lv));
         if (lv.var) RequireAssigned(lv.var, a);
         return;
     }
@@ -1648,7 +1648,7 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     } else {
         NoCopyWrite(a, lv);
         NoLetAssign(a, lv);
-        if (!lv.writable)
+        if (!WholeWritable(lv))
             Error(a, "cannot assign through this path (const, or a read-only "
                      "instantiation, §9.5)");
         AssignableClassCheck(target, a);
@@ -1821,6 +1821,15 @@ inline void TypeCheck::NoCopyWrite(Node *at, const LVal &lv) {
                       ") to write the element (§6.5)"));
 }
 
+// Whether `=`, a compound assignment or `++`/`--` may write the location as
+// a whole. A variable is assigned as its binding allows (NoLetAssign,
+// NoCopyWrite): the `const` of its type is about its contents, so a
+// `var s: const u8[:]` moves on with `s = s[1..]` while its bytes stay
+// read-only (§9.5). A field or element is as writable as the path to it.
+inline bool TypeCheck::WholeWritable(const LVal &lv) {
+    return lv.var || lv.writable;
+}
+
 inline void TypeCheck::CompoundAssign(Assign *a, TypeExpr *st, bool writable) {
     if (!writable)
         Error(a, "cannot assign through this path (const, or a read-only "
@@ -1846,7 +1855,7 @@ inline void TypeCheck::CompoundAssign(Assign *a, TypeExpr *st, bool writable) {
 inline void TypeCheck::CheckIncDec(IncDec *x) {
     auto lv = CheckLValue(x->lval);
     auto st = lv.type;
-    auto writable = lv.writable;
+    auto writable = WholeWritable(lv);
     if (IsPlainRef(lv.type)) {
         st = lv.type->ref->sub;
         writable = PointeeWritable(lv, x);
