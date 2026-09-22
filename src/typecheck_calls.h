@@ -1417,6 +1417,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     for (auto [v, n] : outernarrowed) v->narrowed = n;
     reachable = savereach;
     spec->inprogress = false;
+    if (spec->incycle && !cyclesites.empty() && !CycleOpen()) ResolveCycleSites();
 }
 
 // Shared by `return` statements and body tails: agree the values with

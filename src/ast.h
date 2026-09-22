@@ -1180,6 +1180,28 @@ struct StoreEvent {
     Line at;
 };
 
+// A shrink, and a reference, slice or holder still used after it that only
+// the call sites can tell apart from the shrunk array (§5.1, §5.2): one of
+// the two roots is a parameter's class, which a call site maps onto its
+// argument's root; the other is too, or is a global or a variable or class
+// of a lexical parent.
+struct LiveShrink {
+    VarDef *shrunk = nullptr;
+    bool shrunkexact = true;
+    // The type of the array shrunk where `shrunk` only bounds it, leading to
+    // it through the references its storage holds; null where it holds it.
+    TypeExpr *bound = nullptr;
+    VarDef *live = nullptr;      // The root of what is still used.
+    bool liveexact = true;
+    TypeExpr *pointee = nullptr; // What it points at; null: unknown.
+    bool byteview = false;
+    bool growonly = false;       // The shrink is §5.1's, else §5.2's.
+    // Only a call into a recursive cycle still being checked, which counts
+    // as shrinking what the cycle may shrink, shrinks the array.
+    bool guessed = false;
+    string name;                 // What is still used, as the error names it.
+};
+
 // One return value's reference root, for the callers to map (§9.2), and
 // the cycle fixpoint's prediction of it (§7.8).
 struct RetRoot {
@@ -1267,6 +1289,11 @@ struct FnSpec {
     // bounds (TypeCheck::ShrinkTargets).
     vector<pair<VarDef *, TypeExpr *>> shrinkexternalbounds;
     vector<pair<int, TypeExpr *>> shrinkparambounds;
+    // The body's shrinks, itself or through its callees, while something it
+    // still uses may point into the shrunk array as only the call sites can
+    // tell: each a parameter's class against another class, or against an
+    // array or view outside the activation.
+    vector<LiveShrink> liveshrinks;
     // Arrays the body may grow -- push, append, a pool allocation, format,
     // resize, a whole assignment -- itself or through its callees
     // (§1.3(4)), in the same form.

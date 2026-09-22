@@ -1158,9 +1158,11 @@ struct TypeCheck {
         VarDef *vd = nullptr;
         string what;
         TypeExpr *arrtype = nullptr;   // The type HolderMayPointInto filters pointees by.
+        TypeExpr *bound = nullptr;     // As LiveShrink::bound.
         vector<VarDef *> holders;
         size_t eventstart = 0;
         int loopscope = 0;
+        bool guessed = false;          // As LiveShrink::guessed.
     };
     vector<PendingShrink> pendingshrinks;
     Node *fitnode = nullptr;         // The node MustFit is fitting, for RecordStore.
@@ -1236,6 +1238,37 @@ struct TypeCheck {
     void ShrinkThrough(Node *at, bool standalone, const string &verb, const string &recv,
                        VarDef *root, bool exact, TypeExpr *arr);
     void ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
+    // A shrink's scan sees the views of the activation only, and takes a
+    // parameter's class for an array of its own: whether an argument was a
+    // view of the shrunk array, or the shrunk array one the activation's
+    // views point into, is its callers' to judge, from the pairs a
+    // specialization records (FnSpec::liveshrinks).
+    bool IsClassRoot(VarDef *v) {
+        return v && !v->type && !v->isglobal && !IsTemp(v) && v != cycleroot;
+    }
+    // The shrinks being checked are what a call into a recursive cycle still
+    // being checked is taken to do, not what it is known to do.
+    bool guessedshrink = false;
+    bool CallersJudge(VarDef *r, VarDef *root);
+    void NoteLiveViews(Node *at, const string &prefix, VarDef *root, const string &what,
+                       bool growonly, TypeExpr *bound);
+    template<typename F> void EachHolderRoot(VarDef *holder, size_t from, F f);
+    int NoteLiveShrink(LiveShrink ls, FnSpec *current);
+    void ApplyCalleeLiveShrinks(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
+    // A call checked while a recursive cycle is (§7.8), with its arguments'
+    // roots: the callee's pairs may still grow until the cycle is checked,
+    // and are mapped again then.
+    struct CycleSite {
+        Node *at = nullptr;
+        FnSpec *caller = nullptr;
+        FnSpec *callee = nullptr;
+        vector<pair<VarDef *, bool>> args;   // Root and exactness, per parameter.
+        string name;
+    };
+    vector<CycleSite> cyclesites;
+    bool MapLiveShrinks(const CycleSite &site);
+    bool CycleOpen();
+    void ResolveCycleSites();
     // A growth of the array rooted at root -- a push, an append, a pool
     // allocation, format, resize, a whole assignment -- by this body or by
     // a callee. A value built in place at a root's top or slot is under
@@ -1269,6 +1302,7 @@ struct TypeCheck {
     // ResolveGrowConflicts once every call site has been seen).
     enum Alias { AL_NO, AL_YES, AL_DEFER };
     Alias MayAliasRoots(VarDef *a, bool aexact, VarDef *b, bool bexact);
+    Alias MayAliasRoots(VarDef *a, bool aexact, VarDef *b, bool bexact, FnSpec *current);
     // A growth of, or a use of (CheckBuiltUses), a root the call sites have
     // to tell apart from the one under construction.
     struct GrowConflict {

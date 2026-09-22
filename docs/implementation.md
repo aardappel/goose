@@ -205,8 +205,9 @@ function and no existing specialization matches. `GetOrCreateSpec`
 
 `RootArg::exact` and `RootArg::concrete` are excluded from the key: they are
 ANDed over every call site that reaches the specialization, and only codegen
-reads them (section 6.10). A back edge into a specialization still being checked
-(`inprogress`) reuses it whatever its roots (§3.11).
+(section 6.10) and the growth checks (§3.10) read them. A back edge into a
+specialization still being checked (`inprogress`) reuses it whatever its roots
+(§3.11).
 
 `CheckSpecBody` checks one body. It pushes a `Frame` (the function, its
 specialization, the lexical specialization and frame index used for free
@@ -512,10 +513,12 @@ the body's own outermost depth instead (`ClassDepth`): the body may keep it
 in its locals, but not in anything of the caller's. Classes are numbered by
 these body depths, so a temporary ranks after every variable here too,
 whatever depth it shares with one at the call site.
-Whether two *different* classes are different arrays is what
-`RootArg::exact`/`concrete` answer, and only codegen's stack-top caching asks
-(section 6.10); `SettleParamRootExactness` propagates the answer through the `via`
-links after every call site has been seen. What a body records against a
+Whether two *different* classes are different arrays only the call sites
+know. Codegen's stack-top caching (section 6.10) and the growth checks (§3.10)
+ask `RootArg::exact`/`concrete`, which `SettleParamRootExactness` propagates
+through the `via` links after every call site has been seen; the shrink rules
+have each call judge the pairs of roots its callee could not tell apart
+(§3.10, **Parameters' views**). What a body records against a
 class -- a store into it (§3.5), a shrink or a growth of it (§3.10) -- a call
 maps back to the root the class stands for there (`ClassArgRoot`): a
 reference or slice argument's own, and a holder argument's holder root, what
@@ -774,7 +777,9 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
 6. for a global receiver, every other global whose type can hold a reference
    to something the array contains counts as holding one;
 7. the shrink is recorded for the callers (`NoteShrink`: `shrinkexternals`
-   for globals and captured locals, `shrinkparams` for parameters);
+   for globals and captured locals, `shrinkparams` for parameters), and so
+   are the views still used that only the callers can tell apart from the
+   array (`NoteLiveViews`, **Parameters' views** below);
 8. inside a loop, the shrink is re-checked when the outermost loop ends
    against stores the rest of the body made (`pendingshrinks`,
    `ResolvePendingShrinks`), since the next iteration reaches it.
@@ -831,6 +836,36 @@ locals (`LexicalLocals`, a function value's body among the parents) or
 through the references an argument or such a local holds
 (`ReachedThroughRefs`) counts as shrunk, and a grow-only local the text
 names does too.
+
+**Parameters' views** (`FnSpec::liveshrinks`). The scans see the
+activation's variables only, and take a parameter's class for an array of
+its own: never a global or captured array a caller passed a view of, nor
+what another class names, which the arguments for the two may make one array
+(an inexactly rooted argument gets a class of its own, §3.4, and a caller may
+pass its own classes on). So after the scans `NoteLiveViews` looks again at
+what is still used -- a reference or slice variable (`UsedAfter`, which
+counts a whole assignment's right-hand side), a held temporary, a grow-only
+holder by its store record (`EachHolderRoot`), and what a reference to a
+slice or, for a grow-only array, to a holder reaches -- for a view only the
+callers can tell apart from the array (`CallersJudge`): its root is a
+parameter's class, or the array is. `NoteLiveShrink` keeps such a pair (a
+`LiveShrink`) on the specialization when `MayAliasRoots` does not rule it out
+and both roots are classes or storage outside the activation (globals, a
+lexical parent's variables and classes), with the array's type where the
+shrunk root only bounds it (`LiveShrink::bound`); a store a loop body's later
+iteration brings to the shrink is added when the loop ends
+(`ResolvePendingShrinks`). At a call, `ApplyCalleeLiveShrinks` maps each
+pair's classes onto the roots of the arguments passed for them
+(`ClassArgRoot`): two roots the caller can tell apart pass, one root or two
+it cannot tell apart are an error at the call, which names the array as the
+caller does, and a pair still open for the caller -- one of its roots is the
+caller's class -- is kept on the caller's record in turn, under that
+parameter's name. A callee in a recursive cycle still being checked has not
+recorded all its pairs: every call checked while a cycle is open keeps its
+arguments' roots (`cyclesites`), and once the outermost cycle on the path has
+been checked they are mapped again until no record grows
+(`ResolveCycleSites`). A pair that only a back edge's counted shrinks
+produced is `guessed`, which its error says as "may shrink".
 
 **Growth during construction** (§1.3(4), §4.2). A value built in place at an
 array's top or slot is under construction while its expression is checked,

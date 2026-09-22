@@ -971,6 +971,20 @@ outside it, and the caller's arrays a parameter's references lead to, for
 which the callers check it. The same holds where a call shrinks what an
 inexactly rooted argument points at.
 
+Nor can a shrink inside a function tell what its parameters point into: a
+parameter's pointee is whatever each call passes, which may be a global, a
+variable of an enclosing function, or what another parameter points into —
+an inexactly rooted argument may be any array its root bounds. Where a
+reference, slice or holder parameter, or a variable bound from one, is still
+used after a shrink of a global, of such a variable or of another
+parameter's pointee — or a view of a global or of such a variable is still
+used after a shrink of a parameter's pointee — the specialization records
+the pair, and each call judges it by the arguments it passes: a call that may
+make the two one array is an error, as a variable of the caller still used
+would be, and a call passing its own parameters on records the pair for its
+own callers. A call into a recursive cycle still being checked is judged
+again against the pairs the cycle records once the whole cycle is.
+
 ### 5.2 Grow-shrink `[>..<]`
 
 * Fixed-size elements only.
