@@ -3,6 +3,7 @@ fn tick() -> i64 { calls++; return calls; }
 struct Node { value: i64, next: Node&<u8> }
 struct Text { value: i64, text: u8[] }
 fn text() -> u8[] { return str(tick()); }
+fn first(a: i64[:]) -> i64& { return a[0]; }
 
 fn main() {
     var fixed: Node[3] = [Node { tick(), self }; 3];
@@ -23,4 +24,7 @@ fn main() {
     print(nested[0][0].value, nested[1][1].next.value, calls);
     grow.append([Node { tick(), grow[0] }; 3]);
     for i in 3..6 { print(grow[i].value, grow[i].next.value); }
+    var values = [42];
+    let copied: i64[3] = [first(values); 3];
+    print(copied);
 }

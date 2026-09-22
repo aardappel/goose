@@ -91,8 +91,7 @@ inline string CodeGen::RelOffset(TypeExpr *rt, const string &org, const string &
 // only in the stack-top variant below.
 inline void CodeGen::EmitRelStoreAt(const string &fa, TypeExpr *rt, const string &rv, Line ln,
                                     bool inroot) {
-    auto w = (IntStorage)rt->ref->lenstorage;
-    assert(w != IS_VARINT);
+    assert(rt->ref->lenstorage != IS_VARINT);
     assert(!IsResz(rt->ref->sub));
     auto off = RelOffset(rt, RelOrigin(rt, fa), rv, ln);
     EmitRelRangeCheck(rt, off, ln, inroot);
@@ -884,7 +883,7 @@ inline void CodeGen::FixedArrayLitAt(ArrayLit *al, const string &base, bool inro
         FillScope fill(*this, al->fillval, elem);
         // Captured values repeat; relative offsets are encoded per slot.
         auto perelem = HasRelRef(elem);
-        auto fv = perelem ? string() : GenPure(al->fillval);
+        auto fv = perelem ? string() : GenXD(al->fillval, elem);
         auto iv = T();
         L("for (int64_t ", iv, " = 0; ", iv, " < ", fc->val, "; ", iv, "++) {");
         ind++;
@@ -1034,7 +1033,7 @@ inline void CodeGen::GenArrayLit(ArrayLit *al, const string &stk, const string &
             ind--;
             L("}");
         } else {
-            auto fv = GenPure(al->fillval);
+            auto fv = GenXD(al->fillval, elem);
             auto iv = T();
             L("for (int64_t ", iv, " = 0; ", iv, " < ", count, "; ", iv, "++) {");
             ind++;
