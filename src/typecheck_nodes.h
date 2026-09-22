@@ -58,6 +58,7 @@ inline Val StrLit::Check(TypeCheck &tc, TypeExpr *expected) {
     if (expected) {
         // A string literal constructs any u8-element array type (§3.7).
         if (expected->kind == TY_ARRAY && IsU8(expected->arr->sub)) {
+            tc.CheckArrayCount(this, expected, (int64_t)val.size());
             if (expected->arr->akind == A_FIXED &&
                 tc.ArraySize(expected->arr) != (int64_t)val.size())
                 tc.Error(this, cat("string literal of length ", (int64_t)val.size(),
@@ -193,6 +194,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     if (fillval) {
         auto cnt = tc.ConstIntOrError(fillcount, "array fill count");
         if (cnt < 0) tc.Error(this, "array fill count cannot be negative");
+        tc.CheckArrayCount(this, expected, cnt);
         // Later passes consume the evaluated count, not its unchecked source
         // expression. In particular every construction path expects IntLit,
         // even when the source used arithmetic or a named constant (§4.2).
@@ -220,6 +222,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         v.type = tc.FixedArrayOf(tc.ast.voidtype, 0, line);
         return v;
     }
+    tc.CheckArrayCount(this, expected, (int64_t)elems.size());
     for (auto &e : elems) {
         TypeCheck::SlotScope ss(tc, true);   // An element is a slot (§9.5).
         auto ev = tc.CheckValue(e, elem);

@@ -17,7 +17,15 @@ inline void CodeGen::EmitValStore(const string &stk, TypeExpr *t, const string &
     Bump(stk, cat(sz));
 }
 
+inline void CodeGen::EmitLenCheck(IntStorage ls, const string &n) {
+    if (ls == IS_VARINT || IntSize(ls) == 8) return;
+    auto max = (1ull << (IntSize(ls) * 8)) - 1;
+    L("if ((uint64_t)(", n, ") > ", max,
+      "ull) gs_panic(\"array length exceeds storage range\");");
+}
+
 inline void CodeGen::EmitLenStore(const string &stk, IntStorage ls, const string &n) {
+    EmitLenCheck(ls, n);
     if (ls == IS_VARINT) {
         Bump(stk, cat("gs_uleb_write(", Top(stk), ", (uint64_t)(", n, "))"));
     } else {
@@ -570,6 +578,7 @@ inline void CodeGen::GenArrayFromLoc(Loc lv, TypeExpr *et, const string &stk, Li
             else EmitLenStore(stk, LenStore(et->arr), nn);
             break;
         case A_LIMITED:   // Runtime capacity: chosen as the initial length (v1).
+            EmitLenCheck(IS_U32, nn);
             L("*(uint32_t *)", Top(stk), " = (uint32_t)", nn, ";");
             L("*(uint32_t *)(", Top(stk), " + 4) = (uint32_t)", nn, ";");
             Bump(stk, "8");

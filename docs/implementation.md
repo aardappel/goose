@@ -1512,7 +1512,8 @@ occupies one byte and valid values encode as 0 or 1. Array metadata is
 counted in elements, except the outer serialization frame, which counts
 payload bytes (section 6.9). A stored length must represent the actual
 count exactly; truncating it would change where subsequent fields start.
-The current missing narrow-length checks are a defect (section 11).
+Known counts are checked statically; dynamic counts are checked before
+storing or patching the length field.
 
 Layout details needed for byte/C compatibility (`FixedSize`, `LayoutFields`,
 `LenStore`, `TagStore`):
@@ -2323,6 +2324,8 @@ The compiler code is unchanged by this documentation update.
    reference field would likewise be read from the wrong location. All
    construction/adaptation paths need to preserve the length invariant,
    including statically known counts (spec §3.3).
+   **Resolved:** known overflow is rejected; dynamic length stores and
+   prefix adaptations check representability before narrowing.
 
 2. **Field-default execution is missing from effects at its use sites.**
    `CheckFieldDefaults` checks a shared expression separately, while

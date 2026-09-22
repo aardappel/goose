@@ -426,6 +426,9 @@ inline Val TypeCheck::Operand(Node *n) {
 }
 
 inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt, bool callsite) {
+    auto vt = DecayRef(v).type;
+    if (vt->kind == TY_ARRAY && vt->arr->akind == A_FIXED)
+        CheckArrayCount(n, dt, ArraySize(vt->arr));
     if (!reachable) return;  // A diverging operand fits anything.
     fitfail.clear();
     fitnode = n;

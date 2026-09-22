@@ -451,6 +451,7 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
 inline void CodeGen::EmitPrefixPatch(const string &pref, IntStorage ls, const string &stk,
                                      const string &count, const string &elems) {
     if (ls != IS_VARINT) {
+        EmitLenCheck(ls, count);
         L("*(", IntCT(ls), " *)", pref, " = (", IntCT(ls), ")(", count, ");");
         return;
     }

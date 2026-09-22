@@ -723,6 +723,7 @@ struct CodeGen {
     void Bump(const string &stk, const string &n) { L(TopW(stk), " += ", n, ";"); }
 
     void EmitValStore(const string &stk, TypeExpr *t, const string &x);
+    void EmitLenCheck(IntStorage ls, const string &n);
     void EmitLenStore(const string &stk, IntStorage ls, const string &n);
     void EmitVarintStore(const string &stk, const string &x);
     void EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln, bool inroot);

@@ -359,6 +359,7 @@ inline void CodeGen::EmitReprefix(FnSpec *sp, const Dst &dd, const string &base,
     }
     auto ms = T();
     string writepref;
+    EmitLenCheck(ls, count);
     if (ls == IS_VARINT) {
         auto tmp = T();
         L("uint8_t ", tmp, "[10];");

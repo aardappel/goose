@@ -946,6 +946,15 @@ struct TypeCheck {
     string fitfail;  // A specific reason from the last failing FitsAt, if any.
 
     void MustFit(Val &v, Node *n, TypeExpr *dt, bool callsite);
+    void CheckArrayCount(Node *n, TypeExpr *t, int64_t count) {
+        if (!t || t->kind != TY_ARRAY) return;
+        auto a = t->arr;
+        auto ls = a->akind == A_VAR ? (a->lenstorage < 0 ? IS_U32 : (IntStorage)a->lenstorage)
+                  : a->akind == A_LIMITED && !a->sizeexpr ? IS_U32 : IS_U64;
+        if (ls != IS_VARINT && IntBits(ls) < 64 &&
+            (uint64_t)count >= (1ull << IntBits(ls)))
+            Error(n, cat("array length ", count, " exceeds storage range of ", TypeStr(t)));
+    }
     bool FitsAt(Val &v, TypeExpr *dt, bool callsite);
     static string ConstStr(const Val &v);
     Val CheckCond(Node *n);
