@@ -96,6 +96,7 @@ enum {
     GS_E_ENDIAN,       /* serialization on a big-endian host */
     GS_E_SLICELEN,     /* slice pool length negative or beyond any data stack */
     GS_E_POOLSLICE,    /* a slice handed to a slice pool is not one of its runs */
+    GS_E_RELNULL,      /* a non-null optional self-relative target has offset zero */
 };
 
 static const char *gs_errmsgs[] = {
@@ -113,6 +114,7 @@ static const char *gs_errmsgs[] = {
     "serialization needs a little-endian host (not supported yet)",
     "invalid slice length",
     "slice not from this pool",
+    "non-null relative reference encodes as null",
 };
 
 static GS_NORETURN void gs_panic(const char *msg) {
@@ -212,12 +214,12 @@ static T gs_div_##SFX(T a, T b, const char *file, int line) { \
 static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
     int64_t r = (int64_t)a % (int64_t)b; \
-    if (r < 0) r += (int64_t)b < 0 ? -(int64_t)b : (int64_t)b; \
+)GSRT"
+R"GSRT(    if (r < 0) r += (int64_t)b < 0 ? -(int64_t)b : (int64_t)b; \
     return (T)r; }
 
 #define GS_DIVOPS_U(SFX, T) \
-)GSRT"
-R"GSRT(static T gs_div_##SFX(T a, T b, const char *file, int line) { \
+static T gs_div_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
     return (T)(a / b); } \
 static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
@@ -403,11 +405,11 @@ static int64_t gs_f2iwrap(double d) {
 }
 
 /* `as` conversion checks (§6.3): abort in debug builds whenever the
-   conversion would change the value; identity/plain casts in release. */
+)GSRT"
+R"GSRT(   conversion would change the value; identity/plain casts in release. */
 #if GS_DEBUG
 
-)GSRT"
-R"GSRT(static int64_t gs_rangechk(int64_t v, int64_t lo, int64_t hi) {
+static int64_t gs_rangechk(int64_t v, int64_t lo, int64_t hi) {
     if (v < lo || v > hi) gs_panic("as conversion out of range (debug)");
     return v;
 }
@@ -620,11 +622,11 @@ static GS_TLS int64_t gs_nstks;
    compiler lays out: main's is its one static instance, a worker's a fresh
    copy of the globals its program uses, taken from the spawning instance
    at spawn like the arguments (11.2). No global is shared between program
-   instances; the only C statics a program shares are read-only ones. */
+)GSRT"
+R"GSRT(   instances; the only C statics a program shares are read-only ones. */
 static GS_TLS void *gs_gl;
 
-)GSRT"
-R"GSRT(#define GS(i) (&gs_stks[i])
+#define GS(i) (&gs_stks[i])
 
 static void gs_stks_grow(int64_t n) {
     if (n > GS_MAX_STACKS) gs_panic("too many data stacks (deep call nesting?)");
@@ -841,11 +843,11 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
 /* ---------------------------------------------------------------------------
    Verified loading (docs/design/serialization.md): what the generated
    gs_verify_<T> walkers are built from. The bytes are untrusted until the
-   walk finishes, so every read here is bounded by the image end and reports
+)GSRT"
+R"GSRT(   walk finishes, so every read here is bounded by the image end and reports
    a malformed encoding instead of running past it. */
 
-)GSRT"
-R"GSRT(/* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
+/* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
    payload bits above the 64th, or is not shortest. The result is the byte count. */
 static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
     uint64_t v = 0;

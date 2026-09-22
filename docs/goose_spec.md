@@ -508,8 +508,8 @@ measured from a named pool's base.
 Both forms have the optional spelling `T&<u8>?`, which reserves offset 0
 for null. A pool-relative offset is biased by one. A self-relative field
 can share its address with an enclosing value, so a non-null store must
-not silently encode as the optional's null; the current compiler mishandles
-this collision (implementation notes, section 11). A non-optional
+not encode as the optional's null: such a store aborts, while a statically
+known collision may be rejected during compilation. A non-optional
 self-relative reference has no null sentinel: offset 0 denotes its field
 address, as in `self` in a value's first field. Null is
 therefore representable in any relative location whatever the location's

@@ -74,13 +74,15 @@ inline void CodeGen::EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln,
 // from the origin the width's form measures against (RelOrigin), and zero
 // for the null of an optional one, whose slot cannot hold a real offset of
 // zero (§3.9).
-inline string CodeGen::RelOffset(TypeExpr *rt, const string &org, const string &rv) {
+inline string CodeGen::RelOffset(TypeExpr *rt, const string &org, const string &rv, Line ln) {
     auto addr = cat("(uint8_t *)(", rv, ")");
     auto off = T();
     if (rt->ref->optional)
         L("int64_t ", off, " = ", addr, " ? (int64_t)(", addr, " - (", org, ")) : 0;");
     else
         L("int64_t ", off, " = (int64_t)(", addr, " - (", org, "));");
+    if (rt->ref->optional && !rt->ref->pool)
+        L("if (", addr, " && !", off, ") gs_abort(GS_E_RELNULL, ", LocArgs(ln), ");");
     return off;
 }
 
@@ -92,7 +94,7 @@ inline void CodeGen::EmitRelStoreAt(const string &fa, TypeExpr *rt, const string
     auto w = (IntStorage)rt->ref->lenstorage;
     assert(w != IS_VARINT);
     assert(!IsResz(rt->ref->sub));
-    auto off = RelOffset(rt, RelOrigin(rt, fa), rv);
+    auto off = RelOffset(rt, RelOrigin(rt, fa), rv, ln);
     EmitRelRangeCheck(rt, off, ln, inroot);
     L("*(", RelCT(rt), " *)(", fa, ") = (", RelCT(rt), ")", off, ";");
 }
@@ -103,7 +105,7 @@ inline void CodeGen::EmitRelStore(const string &stk, TypeExpr *rt, const string 
     L("uint8_t *", fa, " = ", Top(stk), ";");
     if (w == IS_VARINT) {
         assert(!IsResz(rt->ref->sub));
-        auto off = RelOffset(rt, RelOrigin(rt, fa), rv);
+        auto off = RelOffset(rt, RelOrigin(rt, fa), rv, ln);
         Bump(stk, rt->ref->pool ? cat("gs_uleb_write(", fa, ", (uint64_t)", off, ")")
                                 : cat("gs_zig_write(", fa, ", ", off, ")"));
     } else {

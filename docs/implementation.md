@@ -2385,6 +2385,9 @@ The compiler code is unchanged by this documentation update.
    check the numeric width but not this collision. The null encoding and
    acceptance rules need a consistent resolution; silently losing a
    non-null target is not intended reference semantics (spec §3.9).
+   **Resolved:** optional self-relative stores reject a non-null target
+   whose offset is zero. The packed encoding is unchanged; non-optional
+   zero offsets and pool-relative links retain their existing meaning.
 
 7. **Fill evaluation depends on the destination representation.** For
    `struct Node { value: i64, next: Node&<u8> }`, a fill

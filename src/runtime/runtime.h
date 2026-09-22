@@ -84,6 +84,7 @@ enum {
     GS_E_ENDIAN,       /* serialization on a big-endian host */
     GS_E_SLICELEN,     /* slice pool length negative or beyond any data stack */
     GS_E_POOLSLICE,    /* a slice handed to a slice pool is not one of its runs */
+    GS_E_RELNULL,      /* a non-null optional self-relative target has offset zero */
 };
 
 static const char *gs_errmsgs[] = {
@@ -101,6 +102,7 @@ static const char *gs_errmsgs[] = {
     "serialization needs a little-endian host (not supported yet)",
     "invalid slice length",
     "slice not from this pool",
+    "non-null relative reference encodes as null",
 };
 
 static GS_NORETURN void gs_panic(const char *msg) {
