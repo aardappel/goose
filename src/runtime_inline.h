@@ -846,7 +846,7 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
 
 )GSRT"
 R"GSRT(/* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
-   payload bits above the 64th. The result is the byte count. */
+   payload bits above the 64th, or is not shortest. The result is the byte count. */
 static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
     uint64_t v = 0;
     int shift = 0;
@@ -857,7 +857,10 @@ static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out
         b = *q++;
         if (shift > 63 || (shift == 63 && (b & 0x7e))) return 0;
         v |= (uint64_t)(b & 0x7f) << shift;
-        if (!(b & 0x80)) break;
+        if (!(b & 0x80)) {
+            if (shift && !b) return 0;  /* Redundant high zero group. */
+            break;
+        }
         shift += 7;
     }
     *out = v;

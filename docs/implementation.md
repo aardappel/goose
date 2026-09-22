@@ -1888,7 +1888,8 @@ interleave.
   Interior-field targets are rejected at typecheck time, even if a
   particular image would be valid. A zero offset is null only for an
   optional; a non-optional zero offset still denotes its field address.
-  The scalar/canonical-varint validation gaps are defects (section 11).
+  Boolean bytes and varints are checked for canonical encodings, including
+  within nested aggregates and array metadata.
 * The current variable-element link verifier uses at most one reservation
   of scratch for its start bitmap; an image needing more is rejected with
   `false`. Elements that can occupy zero bytes have no recoverable count:
@@ -2365,6 +2366,8 @@ The compiler code is unchanged by this documentation update.
    but compares unequal to a normally constructed `[V { x: 0 }]`, because
    `EmitEqBytes` assumes shortest varints. Loaded values must satisfy the
    same representation invariants as constructed ones (section 6.9).
+   **Resolved:** verification checks boolean bytes and rejects redundant
+   high zero groups in every checked varint, including the image prefix.
 
 6. **An optional self-relative link can silently become null.** With
    `struct Node { next: Node&<u8>?, value: i64 }`, the legal-looking

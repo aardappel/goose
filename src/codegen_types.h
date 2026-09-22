@@ -793,11 +793,12 @@ inline bool CodeGen::HasRelRefAny(TypeExpr *t) {
 
 // Whether the verifier has anything to say about a value of this type, or
 // can simply skip its bytes: a fixed value with no ADT tag to range-check,
-// no limited-array length to bound and no relative reference to follow is
+// no boolean to validate, limited-array length to bound or relative reference to follow is
 // opaque payload either way.
 inline bool CodeGen::NeedsVerifyWalk(TypeExpr *t) {
     if (!IsFix(t)) return true;
     switch (t->kind) {
+        case TY_BOOL: return true;
         case TY_REF:  return t->ref->lenstorage >= 0;
         case TY_ENUM: return true;                     // the tag is range-checked
         case TY_ARRAY:
@@ -929,6 +930,10 @@ inline void CodeGen::EmitVerifyWalk(string &b, TypeExpr *t, TypeExpr *elem, cons
         return;
     }
     switch (t->kind) {
+        case TY_BOOL:
+            VNeed(b, q, "1");
+            Append(b, "    if (p[", q, "] > 1) return -1;\n    ", q, "++;\n");
+            return;
         case TY_INT: {   // varint field: only its length matters to the walk
             auto v = VTmp();
             Append(b, "    { uint64_t ", v, "u; int64_t ", v, " = gs_uleb_check(p + ", q,
