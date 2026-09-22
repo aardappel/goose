@@ -133,8 +133,9 @@ struct BaseCaseInliner {
         basenot = false;
         if (!o.caninline || !sp->sf->isrec || !sp->body || sp->body->stmts.empty()) return;
         // Binding a non-fixed parameter to a temporary would give a cycle
-        // member a non-fixed local of its own, which §7.8 forbids — and copy
-        // the value at every level besides, where passing it costs nothing.
+        // member a non-fixed local in scope at the self-call, which §7.8
+        // forbids — and copy the value at every level besides, where
+        // passing it costs nothing.
         for (auto pv : sp->params) if (!FixedType(pv->type)) return;
         Node *cond = nullptr;
         Block *arm = nullptr;

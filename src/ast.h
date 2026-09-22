@@ -984,8 +984,9 @@ struct VarDef {
     // Synthetic per-class parameter roots only (typecheck.h): the call-site
     // root the class was created from, and whether every parameter in the
     // class is a reference to a resizable-class value. No function in a
-    // recursive cycle can own such a value (§7.8), so references in a pool
-    // class are rooted outside any cycle and exempt from the cycle store rule.
+    // recursive cycle holds such a value across a call into the cycle (§7.8),
+    // so references in a pool class are rooted outside the cycle and exempt
+    // from the cycle store rule.
     VarDef *classfrom = nullptr;
     bool poolclass = false;
     // The global pool every call site's argument for this class is rooted in
@@ -1271,8 +1272,11 @@ struct FnSpec {
     bool checkedreturn = false;    // A return with values has been recorded.
     bool inprogress = false;
     bool incycle = false;          // Part of a recursive cycle (§7.8).
-    bool has_nonfixed_local = false;
-    Line nonfixedline;             // First nonfixed local, for cycle diagnostics.
+    // The cycle member this one was merged under; following the links ends
+    // at the outermost member on the call path that found the cycle, which
+    // is still in progress exactly while the cycle can grow (TypeCheck::
+    // CycleHead).
+    FnSpec *cyclelink = nullptr;
     set<FnSpec *> needs;           // Concrete `return from` targets enclosing every call.
     // Calls that reused this spec, with the call path each was checked on: a
     // target recorded later applies to those paths too. The call that created

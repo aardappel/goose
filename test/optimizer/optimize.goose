@@ -476,13 +476,6 @@ recursive fn rec_local(n: RecNode&, d: i64) -> i64 {
 recursive fn rec_even(k: i64) -> i64 { if k == 0 { return 1; } return rec_odd(k - 1); }
 recursive fn rec_odd(k: i64) -> i64 { if k == 0 { return 0; } return rec_even(k - 1); }
 
-// Left alone: binding the non-fixed parameter would give the cycle a
-// non-fixed local of its own (§7.8), and copy the bytes at every level.
-recursive fn rec_bytes(s: u8[], k: i64) -> i64 {
-    if k == 0 { return s.len; }
-    return rec_bytes(copy(s), k - 1) + 1;
-}
-
 fn recursion_op() {
     var pool: RecNode[>..] = [];
     let root: RecNode& = rec_build(pool, 3, 1);
@@ -492,7 +485,6 @@ fn recursion_op() {
     print(rec_marks);                                // 3
     print(rec_local(root, 3));                       // 8
     print(rec_even(7) + rec_odd(7));                 // 0 + 1
-    print(rec_bytes("hello", 3));                    // 5 + 3
 }
 
 fn main_optimize() {

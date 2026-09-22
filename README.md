@@ -374,8 +374,8 @@ The [summary](bench/summary.md) explains the gains and losses;
 * You think about where data lives: who owns this, and how long does its scope
   last. Usually the answer is "the function that builds it", and that is free;
   when it is not, it is a `reusable` pool.
-* Recursive functions cannot own growable data; they take the pool as a
-  parameter.
+* Recursive functions cannot keep growable data across a recursive call;
+  scratch ends before the call, and what outlives it is passed in as a pool.
 * Arrays of variable-size elements iterate but do not index, a fixed-mode enum
   cannot be pointed into, and a variable-mode one cannot be overwritten. You
   choose per container.

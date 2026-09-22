@@ -103,7 +103,9 @@ substrings. Sanitizer reports fail even when a program was expected to abort.
 Resource-bound fixtures can set a runtime limit in their first line, such as
 `// runtime-define: GS_MAX_STACKS=1`; the runner applies it to both TinyCC
 and generated C. `append_destination_storage.goose` uses this to detect
-temporary result stacks that output-only comparisons would miss.
+temporary result stacks that output-only comparisons would miss, and
+`cycle_scratch_locals.goose` to show that a recursion's scratch locals take
+the same few stacks at every level.
 
 Parser/resolver errors live in `test/errors/`; semantic errors live in
 `test/errors_tc/` and must first pass `--parse`. Each source declares one or

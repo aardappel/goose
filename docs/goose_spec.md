@@ -1547,15 +1547,34 @@ opt-in and annotated: the entry function of every recursive cycle is marked
 `recursive fn` (the keyword alone: roots and destinations follow from the
 entry call as for any specialization, §7.7), all functions in the cycle need
 fully explicit signatures (no inference across the cycle back-edge), and —
-the key restriction — **no function in the cycle may
-declare locals requiring a new data-stack assignment**. Growable data used
-by recursive code must be owned outside the cycle and passed in (references,
-slices, reusable pools). The compiler checks this in call-graph order;
-recursion depth then only consumes native call stack. Unnamed nonfixed
-*temporaries* (e.g. an intermediate call result) are exempt: they cannot be
-referred to across activations, so the soundness argument holds — but an
-implementation may then consume data-stack slots proportional to recursion
-depth for them (aborting past its limit).
+the key restriction — **no function in the cycle may call into the cycle
+while one of its nonfixed locals is in scope**. A call into the cycle is
+any call that can lead back to the caller: the back edge, and every other
+call reaching a member of the cycle. A nonfixed local — a variable- or
+resizable-class `let` or `var`, or a `match` arm's by-value copy of such a
+payload — holds a data stack (§10.3) from its declaration, whose initializer
+builds it in place (§4.3), to the end of its block, so it counts at a call
+in its own initializer too; were one in scope at such a call, every
+activation would hold a stack of its own. So a scratch buffer declared in a
+block or a loop body that ends before the recursive call costs the
+recursion nothing, its stack free again before any deeper activation
+starts; one declared before a loop whose body recurses is still in scope at
+that call, and is an error there, reported with the local. A by-value
+nonfixed *parameter* is in scope for the whole body, so no function in a
+cycle can have one: it takes a reference or a slice instead. A function
+value's body is part of the function it is written in, so the locals it
+declares count where it calls into the cycle, as do those of the function
+calling it; a nested function in the cycle is a member like any other,
+while the locals of an enclosing function outside the cycle are owned
+outside it (below). Growable data that must outlive a recursive call is
+owned outside the cycle and passed in (references, slices, reusable pools,
+or one struct of references to several tables, A.6). The compiler checks
+every call into a cycle in call-graph order; recursion depth then only
+consumes native call stack. Unnamed nonfixed *temporaries* (e.g. an
+intermediate call result) are exempt: they cannot be referred to across
+activations, so the soundness argument holds — but an implementation may
+then consume data-stack slots proportional to recursion depth for them
+(aborting past its limit).
 
 **Polymorphic recursion.** A recursive call may instantiate its callee with
 other type arguments than those of the call it sits in (§7.7): `flip<A, B>`
@@ -1582,9 +1601,10 @@ variables (`cur .= cur.next`) is not such a store: the variable dies with
 the activation, and what it is bound to came from one that outlives it.
 References rooted outside the cycle are
 unrestricted — in particular a pool handed to the cycle by reference (a
-parameter whose pointee is resizable-class, which no cycle function can own),
-so a recursive builder can push into a caller's local pool and link what it
-pushed. A local of an enclosing function outside the cycle — a free variable
+parameter whose pointee is resizable-class, which no cycle function can hand
+on to the cycle, holding none across a call into it), so a recursive builder
+can push into a caller's local pool and link what it pushed. A local of an
+enclosing function outside the cycle — a free variable
 (§7.5) of a nested `recursive fn` — outlives every activation the same way,
 so a parser keeps its pool, its key table and its input as locals of a
 non-recursive `parse`, and the nested recursive functions store, link and
@@ -2066,7 +2086,10 @@ stack indices in use on entry, and a map from each of its nonfixed locals /
 by-value params / in-flight returns to an index. Assign each new
 simultaneously-live resizable (and each data-stack-resident variable value,
 which shares by nesting per §1.3(4)) the lowest index not in use at that
-point; indices free again when the owning scope exits (sequential reuse).
+point; indices free again when the owning scope exits (sequential reuse),
+so a function called after a local's block has ended may use that local's
+index again (which is what lets a recursive cycle's functions own scratch,
+§7.8).
 A pending nonfixed return's destination stack is part of the in-use set
 from the call site until the value is received — which is also what makes
 `return from` safe (§7.9). N = the maximum index + 1 reached anywhere.
@@ -2430,13 +2453,14 @@ fn compile(source: const u8[:]) -> i64 {
 }
 ```
 
-A struct owns at most one resizable (§3.4) and a function in a recursive
-cycle none (§7.8), so a program whose state is several growable tables owns
-each as a local of a driver function and passes the rest of the program one
-struct of references to them. The tables are rooted outside the cycle, which
-grows and shrinks them through `c` like any pool handed to it (§7.4, §7.8).
-They last for one call of the driver: each compilation starts from fresh
-tables, and no state is global.
+A struct owns at most one resizable (§3.4), and a function in a recursive
+cycle none that stays in scope across a call back into the cycle (§7.8), so
+a program whose state is several growable tables owns each as a local of a
+driver function and passes the rest of the program one struct of references
+to them. The tables are rooted outside the cycle, which grows and shrinks
+them through `c` like any pool handed to it (§7.4, §7.8). They last for one
+call of the driver: each compilation starts from fresh tables, and no state
+is global.
 
 ---
 

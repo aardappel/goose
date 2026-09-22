@@ -31,8 +31,9 @@
 // reference's root. Inside a recursive cycle (§7.8) a reference may be stored
 // only if it is rooted at a global or at a pool parameter -- a parameter root
 // class whose members are all references to resizable-class values, which no
-// cycle function can own (VarDef::poolclass); a back edge must then pass
-// those pools exactly as the entry call did (ValidatePoolArgs). A cycle's
+// cycle function holds across a call into its cycle (VarDef::poolclass,
+// JoinCycle); a back edge must then pass those pools exactly as the entry
+// call did (ValidatePoolArgs). A cycle's
 // *return* roots cannot come from its returns either, since a back edge
 // reaches a function before those are checked, so they are predicted by a
 // syntactic fixpoint over the cycle's returns before any body runs
@@ -135,6 +136,10 @@ struct TypeCheck {
         Line callline;               // Call site, for instantiation chain diagnostics.
         bool isfunval = false;
         bool isdefault = false;    // Lexically isolated, but caller values remain live.
+        // Calls into a recursive cycle this frame has been inside so far, and
+        // where it made the latest (JoinCycle).
+        int cyclecalls = 0;
+        Line cyclecall;
     };
 
     enum ScopeKind { SK_PLAIN, SK_FN, SK_LOOP, SK_BLOCK };
@@ -1075,6 +1080,9 @@ struct TypeCheck {
     FnSpec *GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, Node *callnode);
     void LoadSliceArgs(vector<Val> &argvals, const vector<TypeExpr *> &ptypes);
     void ValidateCycle(FnSpec *spec, Node *callnode);
+    static FnSpec *CycleHead(FnSpec *s);
+    void JoinCycle(FnSpec *spec, Node *callnode);
+    string_view FrameFnName(int fi);
     static VarDef *UltimateRoot(VarDef *v);
     void ValidatePoolArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode);
     void ValidateNeeds(FnSpec *spec, Node *callnode);
@@ -1114,7 +1122,7 @@ struct TypeCheck {
     void CheckStmtExpr(Node *n);
     void CheckVarDecl(VarDecl *vd, bool global);
     void CheckBindingRoot(VarDef *d, const Val &v, Node *at);
-    void NoteNonfixedLocal(TypeExpr *t, Line l, bool global);
+    void CheckCycleInit(VarDef *d, int fi, int calls);
     void AssignableClassCheck(TypeExpr *t, Node *at);
     void CheckAssign(Assign *a);
     Val CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *arr, VarDef *built,

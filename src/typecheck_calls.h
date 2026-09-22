@@ -835,6 +835,10 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
                                         " to remain narrowed (§3.8)"));
             ValidateCycle(spec, callnode);
             ValidatePoolArgs(spec, argvals, callnode);
+        } else if (CycleHead(spec)->inprogress) {
+            // A finished member of a cycle still being checked leads back
+            // into it, as a back edge does.
+            JoinCycle(spec, callnode);
         }
         vector<pair<SFunction *, FnSpec *>> path;
         for (auto &f : frames) path.push_back({ f.isfunval ? nullptr : f.sf, f.spec });
@@ -1028,22 +1032,72 @@ inline void TypeCheck::ValidateCycle(FnSpec *spec, Node *callnode) {
     auto fi = FrameOfSpec(spec);
     if (fi < 0) fi = 0;
     for (auto i = fi; i < (int)frames.size(); i++) {
-        auto s = frames[i].spec;
-        if (!s || !frames[i].sf || frames[i].isfunval) continue;
-        s->incycle = true;
+        if (!frames[i].spec || !frames[i].sf || frames[i].isfunval) continue;
         for (auto &p : frames[i].sf->params)
             if (!p.type)
                 Error(callnode, cat("function ", frames[i].sf->name, " is in a recursive "
                                     "cycle and needs fully explicit parameter types"));
-        if (s->has_nonfixed_local)
-            Error(s->nonfixedline, cat("function ", frames[i].sf->name, " is in a "
-                                       "recursive cycle and may not own non-fixed-size "
-                                       "locals (§7.8)"));
     }
+    JoinCycle(spec, callnode);
     // A cycle function without an explicit return type is committed to
     // returning nothing at the back edge; a later `return v` then errors
     // with a mismatch (return-type inference cannot cross the back edge).
     if (!spec->retsknown) spec->retsknown = true;
+}
+
+inline FnSpec *TypeCheck::CycleHead(FnSpec *s) {
+    while (s->cyclelink) s = s->cyclelink;
+    return s;
+}
+
+// A call into the recursive cycle spec belongs to (§7.8): a back edge, or a
+// call reaching a finished member of a cycle whose outermost member is still
+// in progress. Every frame from that member inward is inside a call into the
+// cycle, or is making this one, so it joins the cycle. A non-fixed-size
+// variable any of them has in scope keeps its data stack across that call,
+// which would take a stack per activation: an error at the frame's call.
+inline void TypeCheck::JoinCycle(FnSpec *spec, Node *callnode) {
+    auto head = CycleHead(spec);
+    auto fi = FrameOfSpec(head);
+    if (fi < 0) fi = 0;
+    auto last = (int)frames.size() - 1;
+    for (auto i = fi; i <= last; i++) {
+        auto &f = frames[i];
+        // The frame's call into the cycle is the one the next frame checks;
+        // a field default's frame records none, and is part of the call
+        // below it.
+        f.cyclecall = callnode->line;
+        for (auto j = i + 1; j <= last; j++)
+            if (frames[j].callline.line > 0) { f.cyclecall = frames[j].callline; break; }
+        f.cyclecalls++;
+        if (!f.spec || !f.sf || f.isfunval) continue;
+        f.spec->incycle = true;
+        if (auto h = CycleHead(f.spec); h != head) h->cyclelink = head;
+    }
+    for (auto i = fi; i <= last; i++) {
+        auto end = i < last ? frames[i + 1].varbase : (int)vars.size();
+        for (auto vi = frames[i].varbase; vi < end; vi++) {
+            auto v = vars[vi];
+            if (!v->type || ClassOf(v->type) == SC_FIXED) continue;
+            if (v->isparam)
+                Error(frames[i].cyclecall,
+                      cat(FrameFnName(i), " calls into its recursive cycle while by-value "
+                          "non-fixed-size parameter ", v->name, " is in scope, as it is for "
+                          "the whole body (§7.8): take it by reference or as a slice"));
+            Error(frames[i].cyclecall,
+                  cat(FrameFnName(i), " calls into its recursive cycle while non-fixed-size "
+                      "local ", v->name, " (declared at ", Where(v->line), ") is in scope "
+                      "(§7.8): end its scope before the call"));
+        }
+    }
+}
+
+// The function whose body frame fi checks: a function value's is the one it
+// is written in, a field default's the one constructing the value.
+inline string_view TypeCheck::FrameFnName(int fi) {
+    for (; fi >= 0; fi--)
+        if (frames[fi].sf) return frames[fi].sf->name;
+    return "global initialization";
 }
 
 // The root a synthetic parameter class stands for, followed back through

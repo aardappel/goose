@@ -1012,9 +1012,10 @@ variables instead of passing a state struct around
 
 One thing to know about recursion: it is opt-in and annotated. The entry of a
 recursive cycle is a `recursive fn`, every function in the cycle needs an
-explicit signature, and **no function in a cycle may own growable data** —
-that would need a new data stack per activation. So a recursive builder takes
-the pool it grows as a parameter:
+explicit signature, and **no function in a cycle may hold growable data
+across a call back into the cycle** — every activation would need a data
+stack of its own. So a recursive builder takes the pool it grows as a
+parameter:
 
 ```goose
 recursive fn in_order(n: Node&, out: i32[>..]&) {
@@ -1026,6 +1027,26 @@ recursive fn in_order(n: Node&, out: i32[>..]&) {
 }
 ```
 
+A function in a cycle may still own scratch it is done with before it
+recurses, as long as the scratch's scope ends before the call. Here each
+line is built and printed in a block, so its stack is free again when the
+recursive calls start:
+
+```goose
+recursive fn show(n: Node&, depth: i64) {
+    {
+        var line: u8[>..] = [];
+        for i in depth { line.append("  "); }
+        line.append(str(n.key));
+        print(line);
+    }
+    let l = n.left;
+    if l { show(l, depth + 1); }
+    let r = n.right;
+    if r { show(r, depth + 1); }
+}
+```
+
 That is a real constraint on how you write recursive code, and it is also
 most of why recursion depth costs nothing but native stack.
 
@@ -1034,9 +1055,9 @@ most of why recursion depth costs nothing but native stack.
 A compiler or a simulation keeps its state in several growable tables (nodes,
 symbols, output) and wants to hand them around as one thing. A struct cannot
 own them, since it holds at most one resizable array, as its last field, and
-neither can a recursive function. What works is to make each table a local
-of a driver function, and to pass the code that works on them one struct of
-references:
+a recursive function cannot keep them across its recursive calls. What works
+is to make each table a local of a driver function, and to pass the code
+that works on them one struct of references:
 
 ```goose
 struct Node { at: i64, first: i64, next: i64 }   // a source offset, first child, next sibling
@@ -1286,10 +1307,12 @@ You will meet all of these.
   question "who owns this, and how long does its scope last" is one you now
   answer explicitly. Most of the time the answer is "the function that builds
   it", and that is free. When it is not, it is a `reusable` pool.
-* **Recursive functions cannot own growable data.** Pass the pool in. This
-  changes how a recursive-descent parser is structured — the state becomes
-  locals of the non-recursive entry function, which is arguably nicer, but it
-  is a change.
+* **Recursive functions cannot keep growable data across a recursive call.**
+  Scratch in a block that ends before the call is fine; anything that lives
+  longer is passed in. This changes how a recursive-descent parser is
+  structured — the state becomes locals of the non-recursive entry function,
+  or a struct of references to them, which is arguably nicer, but it is a
+  change.
 * **Arrays of variable-size elements cannot be indexed.** You pick, per
   container, between "compact and walkable" and "indexable".
 * **A fixed-mode enum cannot be pointed into; a variable-mode one cannot be

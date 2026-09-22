@@ -989,7 +989,6 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                     binder->type = vt;  // Payload copy, any mode (§8.1).
                     binder->isvar = false;
                     binder->copybind = true;
-                    NoteNonfixedLocal(vt, m->line, !frames.back().spec);
                     if (HoldsPlainRef(vt)) {
                         // A copied payload holding references: its contents
                         // are the scrutinee's.
@@ -1394,6 +1393,10 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         d->ownerspec = frames.back().spec;
         return d;
     };
+    // The calls into a recursive cycle this frame has been inside before the
+    // initializer about to be checked (CheckCycleInit).
+    auto fi = (int)frames.size() - 1;
+    auto calls = frames[fi].cyclecalls;
     auto Finish = [&](VarDef *d, TypeExpr *t, const Val *v) {
         if (vd->isconst) t = ast.ConstOf(t);
         if (t->kind == TY_VOID) Error(vd, "initializer has no value");
@@ -1413,8 +1416,8 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
                 Error(vd, cat(kw, " applies to grow-only arrays of fixed-size "
                                   "elements (§5.4)"));
         }
-        NoteNonfixedLocal(t, vd->line, global);
         if (!global) {
+            CheckCycleInit(d, fi, calls);
             vars.push_back(d);
         }
     };
@@ -1455,6 +1458,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
     for (size_t i = 0; i < vd->names.size(); i++) {
         auto d = MakeDef(i);
         Val v;
+        calls = frames[fi].cyclecalls;
         {
             // The new variable's storage is the destination; a reference
             // or slice variable binds a value rather than storing one. An
@@ -1543,18 +1547,15 @@ inline void TypeCheck::CheckBindingRoot(VarDef *d, const Val &v, Node *at) {
                   ", which does not outlive it (§9.2)"));
 }
 
-inline void TypeCheck::NoteNonfixedLocal(TypeExpr *t, Line l, bool global) {
-    if (global) return;
-    if (ClassOf(t) == SC_FIXED) return;
-    auto spec = frames.back().spec;
-    if (!spec) return;
-    if (!spec->has_nonfixed_local) {
-        spec->has_nonfixed_local = true;
-        spec->nonfixedline = l;
-    }
-    if (spec->incycle || spec->sf->isrec)
-        Error(l, cat("function ", spec->sf->name, " is (in) a recursive cycle and may "
-                     "not own non-fixed-size locals (§7.8)"));
+// A non-fixed-size local is built where it is stored (§4.3), so its data
+// stack is taken before its initializer runs: a call into the recursive
+// cycle of frame fi there (JoinCycle counts them) keeps that stack across
+// the call, as one in the local's scope does (§7.8).
+inline void TypeCheck::CheckCycleInit(VarDef *d, int fi, int calls) {
+    if (frames[fi].cyclecalls == calls || ClassOf(d->type) == SC_FIXED) return;
+    Error(frames[fi].cyclecall,
+          cat(FrameFnName(fi), " calls into its recursive cycle while initializing "
+              "non-fixed-size local ", d->name, ", which is built in place (§7.8)"));
 }
 
 // §4.4: which lvalues accept `=` after construction.

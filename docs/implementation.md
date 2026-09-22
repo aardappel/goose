@@ -553,9 +553,10 @@ have no say in whether those classes still describe the arrays it passes
 
 A class is a **pool class** (`VarDef::poolclass`) when every member is an
 exactly rooted reference to a resizable-class value: no function in a
-recursive cycle can own such a value (§7.8), so references in a pool class
-are exempt from the cycle store rule. `classpool` is the global pool every
-member is rooted in, when all agree (§3.13).
+recursive cycle holds such a value across a call into the cycle (§7.8), so
+references in a pool class are exempt from the cycle store rule.
+`classpool` is the global pool every member is rooted in, when all agree
+(§3.13).
 
 ### 3.5 The store rule and the store record
 
@@ -928,10 +929,23 @@ the body, as a growth of one would be.
 
 A call that reaches a specialization already `inprogress` is a back edge.
 `ValidateCycle` requires the reused specialization's function to be
-`recursive`, marks every frame from it inward `incycle`, requires fully
-typed parameters there, rejects any non-fixed local any of those functions
-owns (`NoteNonfixedLocal`, also at the declaration once the flag is set),
-and commits an unknown return type to "returns nothing". `ValidatePoolArgs`
+`recursive` and fully typed parameters from it inward, commits an unknown
+return type to "returns nothing", and joins the cycle (`JoinCycle`): every
+frame from the cycle's outermost member on the call path (`CycleHead`,
+following `FnSpec::cyclelink`) inward is inside a call into the cycle, so
+it is marked `incycle` and its cycle linked under that member, and a
+variable of non-fixed class in scope in any of those frames is an error at
+that frame's call, since every activation would keep it on a data stack of
+its own (§7.8). A by-value non-fixed parameter is always in scope there. A
+local whose own initializer calls into the cycle holds its stack across the
+call too, being built in place: each frame counts the calls into a cycle it
+has been inside, and `CheckCycleInit` compares the count across the
+initializer once the local's type is known. A call reusing a finished
+specialization whose cycle's outermost member is still in progress leads
+back into that cycle as well and joins it the same way, so a later call to
+a cycle member, or a function that reaches the cycle only through one, is
+checked like a back edge; the explicit-type rule stays with back edges,
+where inference would cross the cycle. `ValidatePoolArgs`
 requires every pool-class and pool-named parameter to be passed the same
 ultimate root the entry call passed (`UltimateRoot` follows `classfrom`
 chains). The cycle store rule is §3.5 rule 4; the optimizer never inlines
@@ -1646,7 +1660,10 @@ restores of the scopes it leaves in reverse declaration order
 (`EmitExitRestores`). A statement gets a scope of its own (`SC_STMT`) so a
 temporary's stack is free again at the next statement, and so does the
 right operand of `&&` and `||`, whose temporaries exist only when it runs;
-a local's allocation skips the statement scopes (`AllocStk(forlocal)`).
+a local's allocation skips the statement scopes inside its block
+(`AllocStk(forlocal)`), and no further: its index is free again once the
+block ends, for the locals and calls that follow (what lets a recursive
+cycle's functions own scratch, §7.8).
 
 Because a `uint8_t *` store may alias a stack's `top` in C, the tops of the
 stacks a function owns are cached in locals where the function grows them
@@ -2329,7 +2346,9 @@ A loop that only updates elements therefore needs no register for a cached top.
   statement of its own, not part of a larger expression.
 * Scope exit releases storage by restoring a stack watermark. A scratch
   buffer declared inside a loop is reset this way at the end of each
-  iteration, without per-element cleanup.
+  iteration, without per-element cleanup. In a recursive function, one
+  declared in a block that ends before the recursive call reuses the same
+  data stack at every level (§7.8).
 * `reusable` pools cost nothing per operation beyond the freelist push and
   pop; `free(i)` bounds-checks its index.
 * A `reusable[]` pool's `alloc_slice` scans the free spans in index order up

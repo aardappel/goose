@@ -449,16 +449,18 @@ inline void CodeGen::EmitExitRestores(int to) {
     for (auto i = (int)cscopes.size() - 1; i >= to; i--) EmitRestores(cscopes[i]);
 }
 
-// Allocates a data stack index; `forlocal` skips enclosing statement
-// scopes so the value survives to the end of the surrounding block.
+// Allocates a data stack index; `forlocal` skips the statement scopes
+// inside the surrounding block so the value survives to that block's end,
+// and no further: past it the index is free for what follows, calls
+// included, which a recursive cycle's scratch locals rely on (§7.8).
 // Returns the stack expression; the caller emits `uint8_t *base = X->top;`
 // and registers it via SaveBase.
 inline string CodeGen::AllocStk(bool forlocal) {
     auto k = stknext++;
     stkmax = std::max(stkmax, stknext);
     if (forlocal)
-        for (auto &s : cscopes)
-            if (s.kind == SC_STMT && s.stkbase < stknext) s.stkbase = stknext;
+        for (auto i = (int)cscopes.size() - 1; i >= 0 && cscopes[i].kind == SC_STMT; i--)
+            cscopes[i].stkbase = std::max(cscopes[i].stkbase, stknext);
     return SpIdx(k);
 }
 

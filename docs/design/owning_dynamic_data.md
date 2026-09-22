@@ -131,10 +131,11 @@ check or detect an invalid pool assignment earlier.
 
 The placement rules are unchanged: an array still cannot contain resizable
 elements (spec 3.4), so a growable array of growable documents remains
-inexpressible, and cycle functions still cannot own new nonfixed locals (spec
-7.8). Slice pools are the in-language substitute. Several earlier workarounds
-are superseded by them: append-only byte storage with per-document offsets
-(retention followed edit history until a whole-region reset), one big
+inexpressible, and cycle functions still cannot keep nonfixed locals across
+a call into their cycle (spec 7.8). Slice pools are the in-language
+substitute. Several earlier workarounds are superseded by them: append-only
+byte storage with per-document offsets (retention followed edit history
+until a whole-region reset), one big
 grow-shrink buffer with application-managed shifting (the pool now does the
 placement and moving), runtime-capacity limited arrays `u8[..]` (which could
 neither grow nor live in a slot pool), and a table of references to separately
