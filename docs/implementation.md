@@ -5,18 +5,35 @@ They cover each pass, with particular attention to reference roots and
 provenance, writability, shrinking, recursion, optimization, bounds-check
 elimination, and C representations. There are two intended audiences:
 
-* **Compiler developers.** Sections 1 to 8 describe the data structures,
-  rule enforcement, and conservative assumptions in each pass, with function
-  names to help locate the implementation.
+* **Compiler developers and independent implementors.** Sections 1 to 8
+  describe the data structures, rule enforcement, and conservative assumptions
+  in each pass, with function names to help locate the implementation.
 * **Advanced users.** Section 9 explains which bounds checks and copies the
   compiler can remove, and which representations generate efficient code.
   It refers to earlier sections for implementation details.
 
 Conventions: `§n` refers to a section of the specification, `C.n` and `E` to
 its appendices. File names are under `src/`; function names are given as
-they appear there. Everything below describes the compiler at the commit
-this file was added in, and where the compiler is more conservative than the
-specification allows, it says so.
+they appear there. These notes describe the current source, including the
+supported subset in section 10. Section 11 records correctness defects;
+their behavior is not a compatibility requirement.
+
+**What an equivalent implementation must preserve.** Read these notes with
+`goose_spec.md`: the specification defines the language, and these notes
+make its implementation choices and current limits explicit. Equivalence
+means the same type and lifetime decisions within that supported subset,
+the same evaluation, mutation, results and required runtime failures, and
+the specified layouts where bytes or C interfaces expose them. It does not
+require the same AST, specialization count, stack numbering, optimization
+thresholds, generated C text, or diagnostic wording. Bounds checks may be
+removed whenever sound; acceptance must not depend on an optimization
+proving an otherwise illegal lifetime safe. Debug arithmetic has the
+specific optimization latitude given in spec §6.2.
+
+The source names below are navigation aids, not prescribed algorithms. In
+particular, an exact root is a claim about storage identity, while an
+inexact root is only an outlives bound. Neither equal depth nor distinct
+specialization parameters alone proves that two arrays cannot alias.
 
 ---
 
@@ -125,6 +142,16 @@ function per construct. Points that matter to later passes:
   stable-sorts `ast.globals` by a post-order walk of the import graph so an
   imported file's globals initialize first.
 
+Import traversal visits a file's imports in source order; an edge to a file
+already being visited contributes no second visit. This also determines
+the initializer order in import cycles. Within a file, declaration order
+is preserved. Name visibility does not make a global initialized: reading
+one before its initializer, including through a called function, fails
+definite assignment. The standard-library search order in `StdlibDirs` is
+`--stdlib`, `GOOSE_STDLIB`, `stdlib/` beside the executable and up to three
+ancestors, then `stdlib/` in the working directory; the first existing
+candidate wins, after the root-file-relative candidate.
+
 **Resolution** (`resolve.h`): every parse-time `TY_UNRESOLVED` name is
 rewritten in place. A struct or enum name becomes `TY_STRUCT`/`TY_ENUM`; an
 alias use is substituted with its target (after a structural cycle check
@@ -150,8 +177,13 @@ roots: the `TypeCheck` constructor creates a `VarDef` for every global up
 front (so names resolve in any order), resolves the pools named by relative
 reference types, validates every non-generic struct and enum declaration,
 checks the global initializers in order, then `main`, then every
-`thread_fn`, and finally the functions nothing reached (`CheckUnreached`,
-under permissive assumptions, so that dead code still gets its errors).
+`thread_fn`, and finally eligible functions nothing reached (`CheckUnreached`).
+That last check covers only top-level functions with fully annotated
+parameters, no generics, and no syntactically detected `return from` to an
+outside target. Unused generic and nested bodies are checked only when
+instantiated. The standalone check gives reference parameters static-root,
+writable provenance, and eligible grow-only parameters both reusable-pool
+capabilities; it is not evidence that every possible call is valid.
 Two whole-program fixups run after that: `SettleParamRootExactness`
 (§3.4) and `VerifyLiterals` (§3.12).
 
@@ -173,7 +205,7 @@ function and no existing specialization matches. `GetOrCreateSpec`
 
 `RootArg::exact` and `RootArg::concrete` are excluded from the key: they are
 ANDed over every call site that reaches the specialization, and only codegen
-reads them (§7.9). A back edge into a specialization still being checked
+reads them (section 6.10). A back edge into a specialization still being checked
 (`inprogress`) reuses it whatever its roots (§3.11).
 
 `CheckSpecBody` checks one body. It pushes a `Frame` (the function, its
@@ -291,7 +323,15 @@ usable in variable mode.
 
 An array literal uses its destination's type when one is available.
 Otherwise it is a `T[k]` for fixed-size elements or a `T[]` for non-fixed
-elements, which cannot use `T[k]`. A fixed literal at a slice destination is a temporary
+elements, which cannot use `T[k]`. Without an expected element type, the
+first element supplies it and later elements must fit it; there is no
+search for a common wider element type. `[]` and `null` alone do not infer
+a generic argument type. A string literal's natural type is `const u8[:]`;
+the pending-array rule below deliberately chooses an owned string element
+instead. Array adaptation requires equal element types, not elementwise
+numeric conversions. Fixed-array destinations require their exact length;
+an arbitrary slice is not implicitly checked and converted into `T[k]`.
+A fixed literal at a slice destination is a temporary
 codegen holds in a C local and slices whole. A `T[]` literal has no such
 temporary: `NoTemporaryLiteral` rejects it at a slice destination, as a
 `for` iterable, as the base of a path (`[..]`) and as `bytes_of`'s argument,
@@ -318,6 +358,19 @@ element is a private void type (`PendingArray`); the first `push`, `append`,
 (`CompletePending`), which completes it in the `VarDef`, in every `Ident`
 already checked and in the literal, since all of them share the one type
 object. A pending array that reaches a scope exit uncompleted is an error.
+
+**Defaults.** An omitted optional field is null even without an explicit
+default. Other omitted fields need a declared default; a constructor does
+not implicitly apply `default<T>()` to every missing field. A declared
+default resolves in its type declaration's namespace and generic bindings,
+with access to globals, not the constructor's locals or sibling fields.
+It is evaluated at each construction that uses it, in field order among
+the explicit initializers, not once when the type is instantiated.
+`default<T>()` recursively applies declared defaults, selects variant zero,
+and fills fixed arrays; empty limited arrays do not construct unused slots.
+The effects of executing a default must participate in the same lifetime,
+construction and optimization checks as an explicit initializer. The
+current handling of those effects is defective (section 11).
 
 ### 3.3 Values, lvalues, and reference transparency
 
@@ -452,7 +505,7 @@ these body depths, so a temporary ranks after every variable here too,
 whatever depth it shares with one at the call site.
 Whether two *different* classes are different arrays is what
 `RootArg::exact`/`concrete` answer, and only codegen's stack-top caching asks
-(§7.9); `SettleParamRootExactness` propagates the answer through the `via`
+(section 6.10); `SettleParamRootExactness` propagates the answer through the `via`
 links after every call site has been seen. What a body records against a
 class -- a store into it (§3.5), a shrink or a growth of it (§3.10) -- a call
 maps back to the root the class stands for there (`ClassArgRoot`): a
@@ -549,11 +602,13 @@ A store into a caller's storage -- through a parameter's class root -- is
 kept on the specialization as a `classevent`, and `ApplyCalleeStores`
 replays it at every call site with the class mapped back to the root it
 stands for there (§3.4), what a holder's references point into for a holder
-parameter. One through a slice parameter, into the elements it views, is not
-replayed: a permutation of them (`sort`) stores values read back out of the
-array, which their read-back root only bounds (§3.6), so the caller would
-take the array to hold a reference into every array at its depth or outside
-it. For a callee still being checked (a back edge) it conservatively
+parameter. Semantically this includes stores through slices: writing a
+reference into a viewed element changes the caller's container just as
+writing through an array reference does. A permutation may preserve the
+container's existing contents provenance, but a new incoming reference
+must not disappear from its store effects. The current unconditional skip
+for slice parameters is a correctness defect (section 11).
+For a callee still being checked (a back edge) it conservatively
 records every reference argument as stored into every reference argument
 whose pointee can hold references.
 
@@ -868,6 +923,28 @@ whole array to slice), untyped parameters bind the argument's natural type
 argument fixes the type variable, and leftover generics bind function values
 in order.
 
+The tier is the worst match of any argument, not a sum of conversion
+costs. Concrete exact matches beat generic exact matches, which beat any
+candidate requiring adaptation; two candidates at the same best tier are
+ambiguous, without a declaration-order or "more specific" tiebreaker.
+Reference transparency and implicit lvalue binding participate in matching;
+writing `&` can therefore select a different overload. The expected result
+type does not select an overload or infer its generics. Explicit type
+arguments bind the initial generic parameters in declaration order. A
+selected body's error is an error at that call, not a reason to retry a
+worse overload. Dispatch is attempted only when no ordinary candidate
+matches, so an overload for the entire ADT takes precedence over its cases.
+
+**Multiple results.** Results are not tuples. An ordinary value use of a
+call takes its first result and discards the others; a call statement
+discards all of them, while still executing the call. `let a, b = f()`
+requires exactly that many results and has no shared type annotation.
+`return f()` forwards all results of a multi-result call and adapts each
+one to the corresponding declared return type. Reference decay and lifetime
+checks apply separately to each received result. Inference fixes a
+function's result types from the first checked return; subsequent returns
+must fit them, rather than widening the result by a whole-body join.
+
 **Literal parameters** (§7.7): an argument that is a literal (or a literal
 parameter passed on) to an untyped parameter, or to a bare type variable no
 typed argument binds, makes the parameter a literal parameter: part of the
@@ -1002,6 +1079,20 @@ get one specialization each (`EnsureThreadSpec`) with flat parameters, and
 `CheckThreadGlobals` walks a thread program's call graph rejecting non-flat
 globals.
 
+`embed_shader` is a compile-time graphics extension (`EmbedShader`, `gfx.h`).
+With one argument it reads a file relative to the Goose file containing
+the call (or an absolute path), inferring the GLSL stage from `.vert`,
+`.frag` or `.comp`. With several arguments, the first is `"vert"`, `"frag"`
+or `"comp"`; the rest are GLSL parts joined with newlines, with includes
+relative to the calling file. Arguments must be string literals or chains
+of immutable global names initialized by string literals, not arbitrary
+constant expressions or locals. Compilation failure is a Goose compile
+error. The result is a static, read-only `const u8[:]` shader blob, with no
+runtime reads of the named globals. Its platform blob format and the
+native graphics library interface are separate compatibility surfaces
+(`gfx/gfx_blob.h`, `gfx/gfx_api.h`, `docs/design/gfx.md`), not general Goose
+value layouts.
+
 A pool's kind travels with its provenance as bits, `RU_SLOTS` for `reusable`
 and `RU_SLICES` for `reusable[]` (`Prov::reusable`, `RootArg::reusable`), so
 merging two branches keeps only what both allow, and the table's
@@ -1014,6 +1105,43 @@ otherwise sets `Call::poolcheck`, which codegen turns into a range test.
 `alloc_slice` and `realloc_slice` need an element type with a default value,
 and `realloc_slice` one without self-relative references (`HasRelRefT`),
 since it may copy the slice.
+
+### 3.15 Evaluation and observable storage
+
+Left-to-right evaluation in spec §2 includes taking a value, not merely
+computing a path that C might read later. These distinctions matter in the
+presence of aliases (`Snapshot`, `IndexLoc`, `GenSlice`, `Assign::CgStmt`,
+`EmitDispatch`):
+
+* An earlier scalar or fixed by-value argument is sampled before later
+  operands or arguments run. A reference or slice samples its address or
+  view; it does not copy the storage it reaches. Later permitted writes to
+  that storage remain visible through the view.
+* Indexing and slicing establish the receiver's element region and length
+  before evaluating the index or bounds, then evaluate bounds left to
+  right. The index's element load follows its index evaluation. A later
+  growth does not enlarge the earlier receiver view for this operation;
+  an invalidating shrink must be rejected by the lifetime rules.
+* Assignment resolves its destination before evaluating its right-hand
+  side. Compound assignment also samples the old value first. Whole
+  resizable assignment has the clear-before-construction semantics of
+  spec §4.4; overlapping permitted copies have memmove semantics.
+* A range/count `for` samples its bounds once, before iteration, and runs
+  zero times for an empty or reversed range. Array iteration visits
+  increasing indices and tests the current array length at each iteration,
+  so permitted appends can extend the traversal. A slice's length is its
+  own view length, not its owner's current length. A sequential cursor
+  advances past the current element even on `continue`.
+* A by-value result that is immediately viewed still has its own temporary
+  storage through the containing statement. Inlining or selecting a
+  constant branch must preserve that copy when replacing it with the
+  source lvalue would expose later writes (section 4, "Views of copies").
+
+Effects include hidden calls: field defaults, rendering hooks, every
+dispatch arm, and invoked function-value bodies. All must be considered
+when checking shrinking, construction conflicts, optional narrowing and
+when retaining bounds facts. Optimizations may remove effects only after
+the program has passed the language's static checks.
 
 ---
 
@@ -1338,12 +1466,12 @@ elides a constant index into a fixed array (`IndexLoc`).
 
 * `ForLoop::fixedlen`: for an array or slice loop, whether the body's kill
   summary leaves the iterated place alone, in which case codegen reads the
-  view once instead of re-reading the length every iteration (§6.5 makes
+  view once instead of re-reading the length every iteration (section 3.15 makes
   growth during iteration legal, so the re-read is the default).
 * `hoistrefs` on every loop: the reference variables the loop indexes whose
   array the body (and a `while` condition) can neither grow, shrink, rewrite
   whole nor reach through a call; codegen reads their base and length into
-  locals before the loop (§7.10).
+  locals before the loop (section 6.10).
 
 ### 5.11 Verification
 
@@ -1377,6 +1505,35 @@ C, with the choices recorded in Appendix E. The following sections describe
 the representations and their implementation.
 
 ### 6.1 Values
+
+The C backend targets 64-bit, little-endian hosts with unaligned packed
+accesses. Integer and floating widths are their declared widths; `bool`
+occupies one byte and valid values encode as 0 or 1. Array metadata is
+counted in elements, except the outer serialization frame, which counts
+payload bytes (section 6.9). A stored length must represent the actual
+count exactly; truncating it would change where subsequent fields start.
+The current missing narrow-length checks are a defect (section 11).
+
+Layout details needed for byte/C compatibility (`FixedSize`, `LayoutFields`,
+`LenStore`, `TagStore`):
+
+* A default variable-array length is `u32`; `T[uN]` uses that unsigned
+  width, and `T[varint]` uses unsigned LEB128. Static limited-array length
+  widths are 1, 2, 4 or 8 bytes at capacities 255, 65535 and 2^32−1.
+  Runtime limited arrays store `u32 capacity`, then `u32 length`, then all
+  capacity slots; assigning one preserves the receiver's capacity.
+* ADT tags are zero-based declaration indices, one byte for up to 256
+  variants, otherwise two bytes. A standalone variant payload has no tag;
+  a variant reference into an ADT addresses the payload after the tag.
+* `pad n` contributes exactly `n` bytes. In a fixed layout, bare `pad`
+  aligns the next real field to its scalar storage width (8 for plain
+  references and slices; 1 for composite fields). It adds nothing in a
+  variable layout or without a following field. There is no implicit
+  aggregate tail padding. An empty struct occupies one byte.
+* Padding, inactive ADT payload bytes and unused limited-array slots are
+  not value-bearing. Structural equality ignores them. Raw byte images
+  can include them, so equal values need not serialize byte-for-byte
+  identically, and callers must not infer zeroing from fresh OS pages.
 
 * **Fixed-size types** are packed C types (`#pragma pack(1)`): scalars,
   packed structs, fixed and static-capacity limited arrays wrapped in structs
@@ -1428,7 +1585,7 @@ a local's allocation skips the statement scopes (`AllocStk(forlocal)`).
 
 Because a `uint8_t *` store may alias a stack's `top` in C, the tops of the
 stacks a function owns are cached in locals where the function grows them
-(§7.9).
+(section 6.10).
 
 ### 6.3 Globals and program instances
 
@@ -1448,10 +1605,12 @@ static shared by every instance; everything else is initialized by
 its `gs_stack *`; a pool parameter is one `gs_pref`; a bytes value is a
 `uint8_t *`); the free variables of a nested function or function value
 (fixed ones by pointer, resizables as header pointer plus stack, pools as
-`gs_pref`); out-pointers for fixed returns after the first; per nonfixed
-return a destination `gs_stack *` and, for a resizable, the count
-out-parameter (or the frame object out-parameter); and `gs_sp` when the
-function touches stacks. The C return value is the first fixed return.
+`gs_pref`); result channels in source result order (out-pointers for fixed
+results other than the first fixed result; per nonfixed result a
+destination `gs_stack *` and, for a resizable, the count out-parameter or
+frame object out-parameter); and `gs_sp` when the function touches stacks.
+The C return value is the first fixed result, even when it is not result
+zero; with none it is `void`.
 `CollectSpecs` computes per specialization, to a fixpoint over the call
 graph, the free variables it or its callees need, the stack-owning globals
 it can reach, and whether it needs `gs_sp` at all.
@@ -1474,7 +1633,8 @@ out with one `memmove` (`EmitSlidePrefix`). A `T[]` result landing in a slot
 of another length storage is re-prefixed afterwards (`EmitReprefix`). A
 runtime-capacity limited result (`T[..]`) has no run form: `EmitAppend`
 builds it on a temporary of its own and copies its elements, as it does any
-call's result appended to a limited array.
+call's result appended to a limited array. These fallbacks do not fulfill
+the spec's unconditional copy-free guarantee (section 11).
 An appended literal of variable-size elements is built the same way, its
 elements at `v`'s top and its count added to the length (`GenArrayLit`);
 one of fixed-size elements holding relative references is a fixed array
@@ -1597,6 +1757,19 @@ enclosing function, which what is declared in its body takes as free
 variables like any other. An `extern fn` is a direct C call with prototypes emitted for
 symbols the runtime does not define.
 
+**The foreign boundary.** `CheckExternSpec` admits scalars and flat
+fixed-size values by value, including fixed-mode ADTs and limited arrays
+of static capacity. Parameters additionally admit plain non-optional
+references and slices of those values, and `u8[>..]&` builders. Results
+are at most one by-value scalar or flat fixed-size value: references,
+slices and builders cannot be returned by an extern. A builder argument
+uses `gs_rref { hdr, stk }`; C may append through `gs_bld_append` but may
+not shrink it, retain borrowed arguments beyond the call, or invalidate
+Goose's types, roots or lengths. These are obligations on C, not proofs
+the Goose compiler performs. Effect analysis assumes C may write passed
+storage and append to passed builders, but does not mutate unrelated
+Goose globals. The builtin runtime shims obey the same boundary.
+
 `return ... from` uses one thread-local `int32_t gs_rf` (zero except between
 a long-distance return and its catch) plus per-target thread-local channels
 for in-flight fixed values (`gs_lret_<id>_<i>`) and destination stacks for
@@ -1681,6 +1854,61 @@ structurally into a `u8[>..]` builder or through the user `format`
 specialization recorded on the call; `print` renders the whole line into a
 temporary builder before writing it, so lines from different threads never
 interleave.
+
+**Serialization contract.** The following is the observable part of
+`docs/design/serialization.md`, independent of how a verifier is organized:
+
+* `to_bytes(a)` emits `ULEB128(payload byte count)` followed by the
+  contiguous element region of the source array or slice. It excludes the
+  source's outer length/capacity/header and any reusable-pool freelist;
+  metadata within each element remains. The two-argument form appends the
+  same image. `bytes_of(a)` views just that payload, read-only, with the
+  source's lifetime; its length is fixed when the view is taken.
+* The image carries no type, element count, version or checksum. Both
+  endpoints must agree on the element type and its layout. Plain
+  references, slices and pool-relative links at any depth exclude an
+  element type from all three operations. Saving a subrange does not make
+  self-relative links to excluded elements self-contained.
+* `from_bytes<A>(b)` consumes exactly one image: the prefix must account
+  for all remaining bytes, with neither truncation nor trailing data.
+  The element count is recovered from the payload. `A` may be a grow-only,
+  grow-shrink or variable array. Invalid input yields an empty `A` and
+  `false`; success copies into independently owned storage and yields
+  `true`. It does not retain a view of the input.
+* Validation must establish every representation invariant used by
+  ordinary reads: bounded lengths, complete elements, valid tags and
+  booleans, and valid varints. Varints constructed by Goose use the
+  shortest encoding; equality currently relies on that canonical form.
+  Limited-array live lengths cannot exceed capacity; unused slots and
+  padding carry no typed values to validate. Untrusted offsets and size
+  arithmetic must be checked without overflowing before accessing data.
+* Every non-null self-relative link must land on an outer element start,
+  or on the payload of the correctly tagged variant of that element.
+  Interior-field targets are rejected at typecheck time, even if a
+  particular image would be valid. A zero offset is null only for an
+  optional; a non-optional zero offset still denotes its field address.
+  The scalar/canonical-varint validation gaps are defects (section 11).
+* The current variable-element link verifier uses at most one reservation
+  of scratch for its start bitmap; an image needing more is rejected with
+  `false`. Elements that can occupy zero bytes have no recoverable count:
+  the current verifier accepts only an empty payload, as zero elements.
+  Ordinary allocation failure remains a runtime failure. Serialization
+  on a big-endian host aborts.
+
+**Text compatibility.** Aggregate separators are `, `; struct and payload
+forms use `Type { ` and ` }`, without field labels. Nested byte strings
+escape quote, backslash, newline, carriage return and tab, while other
+bytes remain literal; top-level byte strings are unquoted. Values are
+rendered in argument order, so an argument's rendering hook runs before
+the next argument is evaluated. Hook discovery currently accepts only
+top-level, non-generic two-parameter `format` functions with a
+`u8[>..]&` destination and an exact value or plain-reference parameter for
+the rendered type. This is narrower than ordinary generic overload
+resolution. Reference rendering follows pointees and has no cycle
+detection. Finite float formatting currently tries 15 significant decimal
+digits, then 17 if needed to recover the promoted `f64`, with redundant
+exponent zeroes removed to at least two digits (`gs_fmt_f64`). That is a
+round-trip format, not a general shortest-decimal algorithm; see section 11.
 
 ### 6.10 Loop-invariant views and stack-top caching
 
@@ -2075,3 +2303,92 @@ specification allows, and the shapes the C backend refuses outright:
   (`docs/design/serialization.md` §7).
 * The JIT backend refuses programs that use workers or queues
   (`docs/design/jit_backend.md`).
+
+---
+
+## 11. Known correctness gaps, not semantics to reproduce
+
+The runtime failures below were reproduced during the documentation audit
+at `-O0` and `-O2`, through both TinyCC and native MSVC. The construction-copy
+gap was checked in generated C at both levels. They are ordered by impact.
+These examples identify failures of the contracts above; an independent
+implementation should satisfy those contracts, not reproduce the failures.
+The compiler code is unchanged by this documentation update.
+
+1. **Length-field overflow corrupts the containing layout.** `EmitLenStore`
+   and the prefix-patching paths narrow counts without establishing that
+   they fit. For `struct Packet { bytes: u8[u8], tail: i64 }`, constructing
+   `Packet { bytes: [1; 256], tail: 42 }` succeeds: `bytes.len` is 0 and
+   `tail` reads as 72340172838076673 (eight of the element bytes). A later
+   reference field would likewise be read from the wrong location. All
+   construction/adaptation paths need to preserve the length invariant,
+   including statically known counts (spec §3.3).
+
+2. **Field-default execution is missing from effects at its use sites.**
+   `CheckFieldDefaults` checks a shared expression separately, while
+   `CheckInits` visits only explicit initializers. With a global
+   `data: i64[>..<] = [42]` and `struct S<T> { x: i64 = zap() }`, where
+   `zap` clears `data` and returns 0, constructing `S<u8> {}` inside
+   `if data.len > 0` leaves BCE's old length fact alive. A following
+   `data[0]` prints 42; `--no-bce` correctly aborts at length 0. A retained
+   element reference is also permitted across the hidden shrink. Defaults
+   must contribute effects wherever they execute, not just when their
+   type is first instantiated.
+
+3. **Stores through slice parameters vanish from the caller's lifetime
+   record.** `ApplyCalleeStores` skips every slice-parameter destination.
+   For `struct Holder { p: i64? }` and
+   `fn save(xs: Holder[:], p: i64&) { xs[0].p .= p; }`, a caller can
+   `save(holders, data[0])`, clear `data`, and subsequently dereference
+   `holders[0].p`. Replacing the cleared element with 99 makes that stale
+   reference print 99. A permutation-only optimization cannot justify
+   dropping arbitrary incoming stores (section 3.5).
+
+4. **Rendering hooks are given fabricated writable provenance.**
+   `UserFormatIn` specializes a by-reference `format` hook using writable
+   placeholder arguments, rather than the actual rendered value's
+   permissions. A `format(out: u8[>..]&, v: S&)` that assigns `v.x = 99`
+   can be invoked by `print(s)` on `const s = S { x: 1 }`; both the hook
+   and a subsequent `print(s.x)` print 99. Implicit hook calls must obey
+   the same writability and effect rules as explicit calls.
+
+5. **The byte verifier admits noncanonical values.** `NeedsVerifyWalk`
+   treats booleans as opaque bytes, and `gs_uleb_check` accepts redundant
+   high zero groups. `from_bytes<bool[>..]>([1, 2])` succeeds and produces
+   a value that renders as `true` but compares unequal to `true`. For
+   `struct V { x: varint }`, loading `[2, 128, 0]` succeeds with `x == 0`
+   but compares unequal to a normally constructed `[V { x: 0 }]`, because
+   `EmitEqBytes` assumes shortest varints. Loaded values must satisfy the
+   same representation invariants as constructed ones (section 6.9).
+
+6. **An optional self-relative link can silently become null.** With
+   `struct Node { next: Node&<u8>?, value: i64 }`, the legal-looking
+   `nodes[0].next .= nodes[0]` stores offset zero because the field and
+   element start coincide. Reading it gives null. `RelOffset`/`EmitRelStoreAt`
+   check the numeric width but not this collision. The null encoding and
+   acceptance rules need a consistent resolution; silently losing a
+   non-null target is not intended reference semantics (spec §3.9).
+
+7. **Fill evaluation depends on the destination representation.** For
+   `struct Node { value: i64, next: Node&<u8> }`, a fill
+   `[Node { value: tick(), next: self }; 3]` calls `tick` three times when
+   constructing `Node[3]`, but only once for `Node[>..]`. With an incrementing
+   counter, the first array contains 1, 2, 3 and the second 4, 4, 4.
+   `FixedArrayLitAt` and `GenArrayLit` disagree about repeated construction
+   versus copying a fill. The language needs one evaluation rule for this
+   form that preserves relative references; this discrepancy should not
+   become a representation-dependent side-effect rule.
+
+8. **Float text is not always shortest.** `gs_fmt_f64` prints
+   `1.000000000000001` as `1.0000000000000011`, even though the shorter
+   spelling reads back to the same value. Its 15/17-digit strategy meets
+   round-trip accuracy, but not spec §3.7's shortest-form promise.
+
+9. **Some construction paths still copy whole fresh results.** The
+   fallbacks in section 6.5 contradict spec §4.3/§7.3's unconditional
+   guarantee. For example, `out.append(make())`, with `make` returning a
+   runtime-capacity `i64[..]`, constructs a separate limited-array image
+   then copies its live elements into `out`. The generated C contains
+   this copy at both optimization levels. This is a performance-contract
+   gap, even when the program's values are correct; it is not a license
+   for a replacement implementation to ignore the guarantee.

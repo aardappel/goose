@@ -156,6 +156,13 @@ initializers — which named struct literals keep aligned with construction
 order by requiring declaration order, §4.2). Overlapping copies have
 memmove semantics.
 
+An earlier by-value operand is read before a later operand executes; a
+reference or slice retains its address or view, not a snapshot of its
+contents. Indexing and slicing sample the receiver's region and length
+before their index or bounds run. Assignment resolves the destination
+first; compound assignment also reads its old value before the right-hand
+side. Whole-resizable assignment clears before constructing (§4.4).
+
 A grammar sketch and precedence table are in Appendix D.
 
 ---
@@ -198,17 +205,23 @@ struct X { a: i8[3], b: i32, c: i64 = 0 }
 
 * Packed by default: a struct of `i8[3]` + `i32` is 7 bytes. Unaligned
   access is assumed cheap; there is no automatic padding.
-* `pad n` inserts n bytes explicitly; bare `pad` pads the *next* field to its
-  own size, for compatibility with foreign layouts:
+* `pad n` inserts n bytes explicitly; bare `pad` aligns the *next* real
+  field to its scalar storage width, for compatibility with foreign layouts:
   `struct X { a: i8[3], pad, b: i32 }`. Pad bytes are never read and are
-  ignored by `==`. In variable-class layouts (where offsets are dynamic)
+  ignored by `==`. Plain references and slices use pointer alignment
+  (8 in the C backend); composite fields use alignment 1. No automatic
+  tail padding is added. In variable-class layouts (where offsets are dynamic)
   `pad n` still inserts n bytes, but bare `pad` has no defined alignment to
   aim for and inserts nothing.
 * Fields are mutable by default; `let` before a field name means the field
   is not assigned after construction (§4.4), and `const f: T` is `let f:
   const T`: its contents are read-only too (§9.5).
 * A field may declare a default value (`c: i64 = 0` above); constructors may
-  then omit it (§4.2).
+  then omit it (§4.2). Defaults resolve in the declaration's namespace and
+  generic environment, can name globals, and cannot name the constructor's
+  locals or sibling fields. A used default executes at each construction,
+  in field order among explicit initializers; it is not a cached value.
+  Its effects obey the same rules as an explicit initializer's.
 * Layout is declaration order; variable/resizable fields obey §3.4.
 
 Struct and enum declarations introduce **nominal** types. `type Name = T;`
@@ -234,6 +247,13 @@ data...]`, inline, packed (exact layouts in Appendix C).
 
 Indexing is bounds-checked — against `k` for fixed arrays (checks statically
 elided where provable), against the current length for all others.
+
+A stored length must hold the actual element count without truncation.
+For example, `T[u8]` can hold at most 255 elements. A construction exceeding
+its length field's range must be rejected when known statically or abort
+when discovered at runtime, including when adapting another array, a call
+result or a string. It must never produce an image whose metadata and
+element region disagree.
 
 Element restrictions:
 
@@ -327,8 +347,10 @@ Variant types (`Shape.Circle`) are themselves nominal struct-like types
 ### 3.6 varint fields
 
 `varint` is **LEB128**: little-endian base-128, 7 payload bits per byte,
-high bit = continuation; 1–10 bytes; full 64-bit range. LEB was chosen
-because this type is optimized for values that are usually very small but
+high bit = continuation; 1–10 bytes; full 64-bit range. Stored encodings
+are canonical: the shortest encoding of the unsigned or zigzag-transformed
+value. A verified byte image must preserve that invariant (§12).
+LEB was chosen because this type is optimized for values that are usually very small but
 have occasional outliers, where it outperformed other formats (measurements
 in `varint_bench/results.md`).
 
@@ -483,9 +505,13 @@ offset is measured from: **self-relative**, the default, measured from the
 offset field itself; and **pool-relative**, written `T&<u32 in pool>`,
 measured from a named pool's base.
 
-Both forms have the optional spelling `T&<u8>?`, which uses offset 0 as null
-(no target can encode as 0: a self-relative reference to the offset field
-itself is meaningless, and a pool-relative one is biased by one). Null is
+Both forms have the optional spelling `T&<u8>?`, which reserves offset 0
+for null. A pool-relative offset is biased by one. A self-relative field
+can share its address with an enclosing value, so a non-null store must
+not silently encode as the optional's null; the current compiler mishandles
+this collision (implementation notes, section 11). A non-optional
+self-relative reference has no null sentinel: offset 0 denotes its field
+address, as in `self` in a value's first field. Null is
 therefore representable in any relative location whatever the location's
 root: a value known to be null — the literal, or a reference whose root is
 static data, which nothing but null has — stores into an optional relative
@@ -712,7 +738,9 @@ Literal forms usable in any construction context:
   which makes the local a grow-only `T[>..]` whose `T` is fixed by the first
   `push`, `append`, `format` or whole assignment into it — a string literal
   pushed into one makes it a `u8[][>..]` — and must be fixed before the local
-  is otherwise used or its scope ends; `[v; n]` fill form for fixed arrays.
+  is otherwise used or its scope ends; `[v; n]` fill form with a non-negative
+  compile-time element count. The current inconsistency in how often `v`
+  is evaluated is recorded in the implementation notes, section 11.
   A literal whose destination names no array type is a `T[k]`, or a `T[]`
   when its elements are not fixed-size (§3.3). A fixed one may also be a
   temporary for a slice parameter, a `for`, `[..]` or `bytes_of` to view; a
@@ -732,7 +760,8 @@ Literal forms usable in any construction context:
   declaration order (out-of-order names are a compile error: values construct
   front-to-back, and reordering would obscure either evaluation order or copying
   cost). Fields with declared defaults (§3.2) may be omitted: trailing ones in
-  the positional form, any of them in the named form;
+  the positional form, any of them in the named form. An omitted optional
+  field without a declared default is null; other omitted fields are errors;
 * `[..cap]` — an empty limited array `T[..]` with the given construction-time
   capacity (`cap` a runtime expression); the reserved slots stay
   uninitialized (§5.3, C.4). An array or string literal constructing a
@@ -1232,6 +1261,13 @@ All array-family types and slices are iterable. Custom access patterns are
 provided by HOFs taking static function values (§7.6), which compile to
 plain loops.
 
+Range/count bounds are evaluated once, before the first iteration; an
+empty or reversed range performs no iterations. Array traversal tests the
+current length before each iteration, so permitted growth can add elements
+to the traversal. A slice keeps its own length: growing its source does
+not extend that view. `continue` advances to the next index or sequential
+element just as reaching the end of the body does.
+
 ---
 
 ## 7. Functions
@@ -1254,9 +1290,12 @@ fn also_generic(a, b) { ... }        // untyped params are generic
   types. Return types may be omitted where inferrable (required across
   recursive cycles, §7.8).
 * Overloading by parameter types is allowed; resolution is static: the
-  unique overload matching exactly wins, else the unique one matching after
-  coercions (array→slice §3.10, literal fit §3.1, implicit widening §6.3),
-  else tag dispatch (§8.2), else error. Ambiguity is an error.
+  unique concrete exact match wins, then a generic exact match, then a
+  match requiring coercion (array→slice §3.10, literal fit §3.1, implicit
+  widening §6.3). A candidate's rank is its worst argument rank; ties are
+  errors, without further specificity or declaration-order tiebreaking.
+  Only if no ordinary candidate matches is tag dispatch (§8.2) tried.
+  The expected result type neither selects an overload nor binds generics.
 * Multiple return values: `fn f() -> A, B`; received as `let a, b = f();`.
   There is no tuple *type* — multiple returns are a calling convention;
   structs are the way to keep data together. (Function *types* with
@@ -1264,6 +1303,10 @@ fn also_generic(a, b) { ... }        // untyped params are generic
   comma; declaration headers don't.) Nonfixed types are allowed in any
   return position; each nonfixed result gets its own destination per §7.3
   (possibly distinct stacks).
+  An ordinary value context takes only the first result; a call statement
+  discards them all. A multi-name binding requires exactly that many
+  results. `return f()` forwards all of a multi-result call's results,
+  adapting each to its corresponding declared return type.
 
 Declarations at top level are order-independent (whole-program compile);
 only global initializers have ordered semantics (§11.1).
@@ -1620,15 +1663,23 @@ no namespaced name coincides with a global one. An `extern fn`'s own symbol is
 the exception: that is the C name the declaration gives, unchanged.
 
 What crosses (layouts per C.2): the integer and float scalars and `bool`;
-any flat fixed-size struct or fixed array, by value as its packed C type;
+any flat fixed-size value (including structs, fixed and static-capacity
+limited arrays, and fixed-mode ADTs), by value as its packed C type;
 `T&` to such a `T`, as a pointer; `T[:]` of such a `T`, as the slice struct
 (`{ data, len }`); and `u8[>..]&`, as the resizable's header plus its stack
 (`gs_rref`), which C appends to through `gs_bld_append(ref, p, n)`.
-Returns are one such value or nothing. Everything else — varints,
-references inside structs, variable and resizable values by value, slices
-of variable elements, optionals — is rejected at the declaration.
+Returns are one scalar or flat fixed-size value by value, or nothing;
+references, slices and builders are parameter-only forms. Everything
+else — varints, references inside structs, variable and resizable values
+by value, slices of variable elements, optionals — is rejected at the declaration.
 A parameter of reference or slice type is what it says (§9.5): a read-only
 argument needs it declared `const`.
+
+C must preserve the types and lifetimes of borrowed storage, must not
+retain a borrowed argument beyond the call, and may only append to a
+builder. The compiler assumes an extern may write through its arguments
+but does not mutate unrelated Goose globals; C code is responsible for
+honoring those obligations.
 
 ## 8. ADTs in use
 
@@ -2215,6 +2266,7 @@ The language's own functions:
 | `to_bytes(a) -> u8[>..]`, `to_bytes(a, out)` | an array's image — a varint byte count then its element region — fresh, or appended to a growable `u8` array (§3.9, `design/serialization.md`) |
 | `bytes_of(a) -> u8[:]` | the element region alone, as a view: no copy, and never writable |
 | `from_bytes<T[>..]>(b: u8[:]) -> T[>..], bool` | a *verified* array from an untrusted image; empty and `false` if it is not one. Also builds `T[>..<]` and the `T[]` family |
+| `embed_shader(path)` or `embed_shader(stage, source, …) -> const u8[:]` | compile-time GLSL compilation to a static shader blob; graphics extension, detailed in the implementation notes, section 3.14 |
 
 And the array members, ordinary functions of their receiver per UFCS
 (`a.push(v)` is `push(a, v)`):
@@ -2229,6 +2281,16 @@ And the array members, ordinary functions of their receiver per UFCS
 | `.index_of(r) -> i64` | fixed, limited, grow-only, grow-shrink | the index of the element `r` refers to (§3.3) |
 | `.alloc_index(v) -> i64`, `.alloc_ref(v) -> T&`, `.free(i)` | `reusable` pools | slot reuse (§5.4) |
 | `.alloc_slice(n) -> T[:]`, `.realloc_slice(s, n) -> T[:]`, `.free_slice(s)` | `reusable[]` pools | slice reuse (§5.4) |
+
+For serialization, the byte-count prefix must account for exactly the
+remaining input. Validation establishes complete elements, representable
+lengths, in-range tags, booleans encoded as 0 or 1, canonical varints, and
+valid self-relative targets before exposing a value. A link must name an
+outer element or the correctly tagged payload of one; interior-field
+targets are currently unsupported. Failure returns an empty array and
+`false`, not a partially verified value. Success owns a copy of the
+payload. The implementation notes, section 6.9, give the byte contract and
+current resource limits; section 11 identifies violations still to fix.
 
 Everything else is the standard library: Goose source under `stdlib/`,
 reached by `import` (§11.1) and documented in `stdlib.md` (the design it
@@ -2468,12 +2530,16 @@ state exists.
 * `T[..k]`: length field (smallest unsigned type fitting `k`), then `k`
   element slots (uninitialized until first written).
 * `T[..]`: capacity then length (both `u32` default), then capacity slots.
-* ADT fixed mode: tag, then payload area of max size (trailing padding
+* ADT tags are zero-based variant indices in declaration order, stored in
+  `u8` for up to 256 variants, otherwise `u16` in the current C backend.
+  Fixed mode: tag, then payload area of max size (trailing padding
   uninitialized, never read). ADT variable mode: tag, then the actual
   variant's payload.
 * varint: §3.6 (ULEB128; zigzag where signed).
-* Reference: one pointer. Optional: 0 = null. Self-relative: signed offset
-  of the declared width from the offset field's own address; 0 = null.
+* Reference: one pointer, except the fat form for resizables below.
+  Optional: 0 = null. Self-relative: signed offset
+  of the declared width from the offset field's own address; 0 = null
+  only in the optional form (§3.9).
   Pool-relative (`in pool`, §3.9): unsigned offset of the declared width,
   `(target − base(pool)) + 1`, so 0 stays null and a `uN` width spans
   2^N − 1 bytes of the pool. `base(pool)` is the global's element region,
