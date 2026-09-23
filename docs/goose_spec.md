@@ -407,7 +407,11 @@ v: T)` (taking `T` by value or by reference) renders a `T` through itself
 instead, wherever a `T` occurs in an argument, so a type can choose its own
 text once for all three builtins. The overload is looked up in the
 namespace `T` is declared in, then globally (§11.1): rendering follows the
-type, not the namespace of the code printing it.
+type, not the namespace of the code printing it. The three builtins
+evaluate and render their arguments in order, each just before its text,
+and call the overload in the middle of rendering the argument holding the
+`T`: neither the variables the arguments after that one name nor the rest of
+that argument may refer into what the overload shrinks (§5.1).
 
 ### 3.8 References
 
@@ -947,7 +951,10 @@ scratch" and "structure I can point into" are the same type. The operations
 themselves are the grow-shrink ones: a stack-top move and a length store.
 Assigning the array whole (`a = …`), or a value holding it, replaces its
 elements and is a shrink under the same rule; the right-hand side runs after
-it, so a variable that side names is used after the shrink.
+it, so a variable that side names is used after the shrink. `print`, `str`
+and `format` evaluate and render their arguments in order (§3.7), so a
+variable a later argument names is used after a shrink an earlier one makes,
+by a call in it or through a `format` overload rendering it.
 
 Through a reference or of a global, a shrink cannot see the callers'
 variables, so it is checked at every level: each function specialization
@@ -962,7 +969,13 @@ additionally counts every other global whose type can hold a reference to
 something the array can contain as holding one, since its stores may come
 from functions not yet checked. A call into a recursive cycle still being
 checked counts as shrinking every array a function of the cycle textually
-shrinks.
+shrinks. A user `format` overload (§3.7) is a call at the `print`, `str` or
+`format` that renders a value through it, with the `format` call's receiver
+as the builder where the text lands in it. The rest of the argument holding
+that value is rendered around the call, so it is still in use there — where
+the argument lies, the elements of the arrays and slices it renders, what its
+references lead to — unless the overload takes the whole argument, the value
+itself or a reference to it.
 
 A reference whose root is inexact (§9.2) — a value chosen between arrays,
 `if c { a } else { b }`, or one read back out of a container — may point at

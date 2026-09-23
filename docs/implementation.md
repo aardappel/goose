@@ -831,11 +831,12 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
 
 **Liveness** (`UsedAfter`) is syntactic: the variable's name occurs in a
 later statement of an open block at or inside its scope, in that block's
-tail, anywhere in an enclosing loop it was declared outside of, or in a
-whole assignment's right-hand side, which runs after the assignment's
-shrink (`shrinkrest`); a `for` binding is always live; `MentionsName`
-follows calls of nested functions by name into their bodies. The test
-never depends on what the optimizer proves.
+tail, anywhere in an enclosing loop it was declared outside of, or in what
+runs after the shrink within its own statement (`shrinkrest`): a whole
+assignment's right-hand side, and the arguments print, str and format render
+after the one being checked (**Format overloads** below); a `for` binding is
+always live; `MentionsName` follows calls of nested functions by name into
+their bodies. The test never depends on what the optimizer proves.
 
 **Grow-shrink arrays** (§5.2): `ShrinkGrowShrink` runs from anywhere (a
 local, a reference, a global, a struct's tail, whole assignment) and scans
@@ -916,7 +917,7 @@ what another class names, which the arguments for the two may make one array
 (an inexactly rooted argument gets a class of its own, §3.4, and a caller may
 pass its own classes on). So after the scans `NoteLiveViews` looks again at
 what is still used -- a reference or slice variable (`UsedAfter`, which
-counts a whole assignment's right-hand side), a held temporary, a grow-only
+counts the rest of the statement, `shrinkrest`), a held temporary, a grow-only
 holder by its store record (`EachHolderRoot`), and what a reference to a
 slice or, for a grow-only array, to a holder reaches -- for a view only the
 callers can tell apart from the array (`CallersJudge`): its root is a
@@ -984,6 +985,29 @@ found for and every assumed entry becomes unbalanced: what judging those
 calls as shrinks from the start would have given. Those records belong to
 calls checked while the cycle was open, which `ResolveCycleSites` maps again
 afterwards, so `CheckSpecBody` settles the assumptions first.
+
+**Format overloads** (§3.7). print, str and format check their arguments in
+order (`CheckPrintable`): each one's value, then its rendering
+(`CheckRenderable`), which specializes the user `format` overload of each
+type it meets with that part's roots and permissions, and the builder --
+the format call's receiver where the text lands in it, else a temporary --
+and applies it as a call there (`UserFormatIn`: `ApplyCalleeShrinks`,
+`ApplyCalleeRebinds`, `ApplyCalleeGrows`). Codegen evaluates each argument
+just before rendering it (`EmitFormatInto`, `EmitStr`), so while argument i
+is checked the ones after it are in `shrinkrest`: a shrink in its evaluation
+(a call) or its rendering (an overload) finds a variable they name used
+after it. The rest of the argument is rendered around its overloads, and is
+held while they are applied (`heldtemps`, whose `render` names the builtin
+for the error): the views `HoldValue` holds for any argument (an optional
+reference or a slice, a non-fixed array's elements, a holder's references),
+and, for a struct, enum or array argument no overload takes whole, a
+reference to where it lies, which may be an element of the array an
+overload clears (a plain reference argument has decayed to its pointee,
+which lies where the reference points). `NoteLiveViews` sees both, so a
+function rendering its parameter around an overload, or after one, keeps
+the pair for its callers (**Parameters' views** above). A callee body
+checked meanwhile starts with an empty `shrinkrest` (`CheckSpecBody`), as
+with `heldtemps`: the call site applies its summary against the caller's.
 
 **Growth during construction** (§1.3(4), §4.2). A value built in place at an
 array's top or slot is under construction while its expression is checked,
@@ -1278,7 +1302,8 @@ custom ones. `print`/`str`/`format` check renderability per type
 (`CheckRenderable`) and look up a user `format` overload in the type's
 namespace, then globally, specializing it with each rendered argument's
 permissions and provenance (`fmtspecs`, `fmtcontexts`). Nested hooks obey
-the same constraints. Their effects are applied between rendered arguments.
+the same constraints. Their effects are applied between rendered arguments
+(§3.10, **Format overloads**).
 `to_bytes`/`bytes_of` require `ImageSafe` element types (no plain references,
 slices or `in pool` references), `from_bytes` the stricter `VerifiableElem`
 (every relative reference points at an element or a variant of it); a
@@ -2553,6 +2578,11 @@ specification allows, and the shapes the C backend refuses outright:
   possibly any global or captured local a callee grows, two classes of one
   activation to be one array unless every call site keeps both concrete and
   exact, and a callee still being checked to grow whatever its text names.
+* While print, str or format runs a `format` overload, the views an argument
+  reads through (an optional reference, a slice, a non-fixed array's
+  elements, a holder's references) stay held even where the overload takes
+  the whole argument and nothing of it is rendered around the call (§3.10,
+  **Format overloads**).
 * The C backend rejects: binding, copying or dispatching a *resizable* ADT
   payload; a reference to a resizable nested in a variable-size prefix or an
   ADT payload; copying a resizable value with a variable-size prefix; `==` on

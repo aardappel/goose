@@ -25,12 +25,12 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
     // The fully custom builtins first.
     switch (d.kind) {
         case B_PRINT:
-            for (auto &a : args) CheckPrintable(c, d.name, a);
+            for (size_t i = 0; i < args.size(); i++) CheckPrintable(c, d.name, args, i);
             return VoidVal();
         case B_STR: {
             // str(a, b, ...): a fresh u8[>..] holding the arguments' text,
             // built at the destination like any resizable result (§7.3).
-            for (auto &a : args) CheckPrintable(c, d.name, a);
+            for (size_t i = 0; i < args.size(); i++) CheckPrintable(c, d.name, args, i);
             auto t = GrowU8Array(c->line);
             c->rettypes.push_back(t);
             Val v;
@@ -342,7 +342,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
     if (d.kind == B_FORMAT) {
         if (!IsU8(elem))
             Error(c, cat(".format appends text to u8 arrays, not ", TypeStr(rv.type)));
-        for (size_t i = 1; i < args.size(); i++) CheckPrintable(c, d.name, args[i], &rv);
+        for (size_t i = 1; i < args.size(); i++) CheckPrintable(c, d.name, args, i, &rv);
         return VoidVal();
     }
     // A grow-only array shrinks only where nothing can still be rooted in
@@ -542,11 +542,17 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
 // variants as their positional literal, references as their pointee,
 // null as null. A user overload fn format(out: u8[>..]&, v: T) renders a
 // T instead wherever one occurs; its specialization is recorded on the
-// call for codegen.
-inline void TypeCheck::CheckPrintable(Call *c, const char *what, Node *&a, const Val *out) {
+// call for codegen. The arguments are evaluated and rendered in order, each
+// just before its text (EmitFormatInto, EmitStr), so the ones after
+// argument i use what they name after whatever it shrinks.
+inline void TypeCheck::CheckPrintable(Call *c, const char *what, vector<Node *> &args, size_t i,
+                                      const Val *out) {
+    RestScope rest(*this, args.begin() + (long)i + 1, args.end());
+    auto &a = args[i];
     auto av = CheckValue(a, nullptr);
     TempScope temps(*this);
     HoldValue(a, av, true);
+    for (auto j = temps.base; j < heldtemps.size(); j++) heldtemps[j].render = what;
     Val builder;
     builder.root = TempRoot();
     builder.rootexact = true;
@@ -568,6 +574,16 @@ inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, N
     value.type = t;
     value.writable &= !t->cq;
     if (UserFormat(c, t, value, out)) return;
+    // The argument itself, unless an overload takes it whole: rendering reads
+    // it where it lies, around the overloads its parts run, so that storage
+    // stays in use meanwhile. HoldValue holds the views a reference, slice or
+    // array argument reads through.
+    if (seen.size() == 1 && (t->kind == TY_STRUCT || t->kind == TY_ENUM ||
+                             t->kind == TY_VARIANT || t->kind == TY_ARRAY)) {
+        auto where = value;
+        where.type = RefTo(t, at->line);
+        heldtemps.push_back({ at, where, false, what });
+    }
     auto child = [&](TypeExpr *ft, bool throughref) {
         auto v = value;
         if (throughref) {
@@ -780,7 +796,7 @@ inline bool TypeCheck::ShrinkMayFree(VarDef *root, TypeExpr *bound, bool growonl
 // standalone RHS, where §5.1's syntax restriction alone is insufficient.
 inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root,
                                         const string &what, bool growonly, TypeExpr *bound) {
-    for (auto &[node, v, location] : heldtemps) {
+    for (auto &[node, v, location, render] : heldtemps) {
         auto path = v.type->kind == TY_REF && ClassOf(v.type->ref->sub) == SC_RESIZABLE;
         // A slot read never points into a grow-shrink array (§5.2), though
         // it may into a grow-only one.
@@ -802,8 +818,17 @@ inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root
             (growonly ? HoldsPlainRef(v.type->ref->sub) : v.type->ref->sub->kind == TY_SLICE))
             held = HeldRefsMayPointInto(nullptr, v, v.type, root, bound, growonly);
         if (!held) continue;
+        auto sec = growonly ? " (§5.1)" : " (§5.2)";
+        if (render) {
+            // A §5.1 scan's op names no array.
+            auto arg = ExprStr(node);
+            if (arg.find('\n') != string::npos) arg = "its argument";
+            Error(at, cat("cannot ", op, growonly ? cat(" ", what) : string(), ": ", render,
+                          " runs it in the middle of rendering ", arg, ", which may refer into ",
+                          what, sec));
+        }
         Error(at, cat("cannot ", op, ": an earlier expression value at ", Where(node->line),
-                      " may still refer into ", what, growonly ? " (§5.1)" : " (§5.2)"));
+                      " may still refer into ", what, sec));
     }
 }
 
@@ -1606,7 +1631,7 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
                  vs.end());
         return !vs.empty();
     };
-    for (auto &[node, v, location] : heldtemps) {
+    for (auto &[node, v, location, render] : heldtemps) {
         auto vs = views(v, v.type, location);
         if (!judged(vs)) continue;
         auto name = ExprStr(node);

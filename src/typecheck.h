@@ -184,9 +184,19 @@ struct TypeCheck {
     void CheckStmts(Block *b);
     bool MentionsName(Node *n, string_view name, set<SFunction *> &seen);
     bool UsedAfter(VarDef *v);
-    // The part of the statement being checked that runs after the shrink
-    // being checked: a whole assignment's right-hand side (§5.1).
-    Node *shrinkrest = nullptr;
+    // The parts of the statement being checked that run after the shrink
+    // being checked: a whole assignment's right-hand side, and the arguments
+    // print, str and format render after the one being checked (§3.7, §5.1).
+    vector<Node *> shrinkrest;
+    struct RestScope {
+        TypeCheck &tc;
+        size_t base;
+        template <typename It>
+        RestScope(TypeCheck &t, It first, It last) : tc(t), base(t.shrinkrest.size()) {
+            t.shrinkrest.insert(t.shrinkrest.end(), first, last);
+        }
+        ~RestScope() { tc.shrinkrest.resize(base); }
+    };
     vector<VarDef *> vars;                            // All in-scope variables, all frames.
     vector<pair<int, SFunction *>> localfns;          // Nested fns, with their scope index.
     int scopeserial = 0;
@@ -208,6 +218,9 @@ struct TypeCheck {
         Node *node;
         Val v;
         bool location = false;
+        // The builtin (print, str, format) rendering `node`, which runs the
+        // format overloads of its parts meanwhile.
+        const char *render = nullptr;
     };
     vector<Held> heldtemps;
     struct TempScope {
@@ -1155,7 +1168,8 @@ struct TypeCheck {
     // Builtins (§3.7, §9.3, §11.2) and array members (§3.3, §5.4).
 
     Val CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> &args, Val *precv);
-    void CheckPrintable(Call *c, const char *what, Node *&a, const Val *out = nullptr);
+    void CheckPrintable(Call *c, const char *what, vector<Node *> &args, size_t i,
+                        const Val *out = nullptr);
     void CheckRenderable(Call *c, const char *what, TypeExpr *t, Node *at,
                          vector<TypeExpr *> &seen, Val value, const Val &out);
     FnSpec *UserFormat(Call *c, TypeExpr *t, const Val &value, const Val &out);

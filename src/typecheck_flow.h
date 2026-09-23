@@ -1709,10 +1709,10 @@ inline void TypeCheck::AssignableClassCheck(TypeExpr *t, Node *at) {
 inline Val TypeCheck::CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *arr,
                                          VarDef *built, bool builtexact, Dest dest) {
     if (arr) {
-        auto rest = shrinkrest;
-        shrinkrest = a->rhs;
-        ShrinkThrough(a, true, "assign", ExprStr(a->lval), built, builtexact, target);
-        shrinkrest = rest;
+        {
+            RestScope rest(*this, &a->rhs, &a->rhs + 1);
+            ShrinkThrough(a, true, "assign", ExprStr(a->lval), built, builtexact, target);
+        }
         NoteGrow(a, built, builtexact, cat("assign ", ExprStr(a->lval)));
     }
     SlotScope ss(*this, true);

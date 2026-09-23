@@ -1317,10 +1317,13 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     // body's growths against them from the summary.
     auto savegrowlog = std::move(growlog);
     growlog.clear();
-    // The caller's pending temporaries and value region are its own; the
-    // call site replays this body's shrinks against them.
+    // The caller's pending temporaries, the rest of its statement and its
+    // value region are its own; the call site replays this body's shrinks
+    // against them.
     auto saveheld = std::move(heldtemps);
     heldtemps.clear();
+    auto saverest = std::move(shrinkrest);
+    shrinkrest.clear();
     auto saveinvalue = invalue;
     invalue = false;
     auto savereach = reachable;
@@ -1472,6 +1475,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     pendingshrinks = std::move(savepending);
     growlog = std::move(savegrowlog);
     heldtemps = std::move(saveheld);
+    shrinkrest = std::move(saverest);
     invalue = saveinvalue;
     frames.pop_back();
     for (auto [v, n] : outernarrowed) v->narrowed = n;

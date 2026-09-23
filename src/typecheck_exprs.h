@@ -1201,7 +1201,8 @@ inline bool TypeCheck::MentionsName(Node *n, string_view name, set<SFunction *> 
 // part of the body again.
 inline bool TypeCheck::UsedAfter(VarDef *v) {
     set<SFunction *> seen;
-    if (shrinkrest && MentionsName(shrinkrest, v->name, seen)) return true;
+    for (auto n : shrinkrest)
+        if (MentionsName(n, v->name, seen)) return true;
     for (auto i = 0; i < (int)scopes.size(); i++) {
         if (scopes[i].kind != SK_LOOP) continue;
         // A `for` binding is rebound by the loop itself at every iteration.
