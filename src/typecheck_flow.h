@@ -1760,7 +1760,7 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     // (a narrowed optional included, since lv.type is the narrowed type)
     // writes the pointee; rebinding is `.=`.
     if (IsPlainRef(lv.type)) {
-        if (a->op == T_ASSIGN) PointeeAssign(a, lv);
+        if (a->op == T_ASSIGN) PointeeAssign(a, lv, held);
         else CompoundAssign(a, lv.type->ref->sub, PointeeWritable(lv, a));
         a->pointee = true;
         return;
@@ -1892,7 +1892,9 @@ inline bool TypeCheck::PointeeWritable(LVal &lv, Node *at) {
     return !lv.type->cq;
 }
 
-inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv) {
+// `r = v` through the reference at lv, whose pointee is the location `at`
+// (DerefLValue): where the reference points is the destination.
+inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv, const LVal &at) {
     auto pt = lv.type->ref->sub;
     if (!PointeeWritable(lv, a))
         Error(a, "cannot write through this reference: non-writable provenance (§9.5)");
@@ -1904,11 +1906,9 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv) {
         Error(a, cat("cannot assign ", arr == pt ? "a grow-only array" : "a value holding a "
                      "grow-only array", " through a reference: a shrink of a grow-only "
                      "array applies to a local of the function that owns it (§5.1)"));
-    auto built = arr ? CanonRoot(lv.var ? RefRootOf(lv.var) : lv.root) : nullptr;
-    auto builtexact = arr && (lv.var ? RefExactOf(lv.var) : lv.rootexact);
-    CheckAssignedValue(a, pt, arr, built, builtexact,
-                       lv.var ? Dest { RefRootOf(lv.var), RefExactOf(lv.var) }
-                              : Dest { lv.root, lv.rootexact });
+    auto built = arr ? CanonRoot(at.root) : nullptr;
+    auto builtexact = arr && at.rootexact;
+    CheckAssignedValue(a, pt, arr, built, builtexact, Dest { at.root, at.rootexact });
 }
 
 // A reference variable keeps one root for its whole life (see header

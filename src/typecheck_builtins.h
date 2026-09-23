@@ -1004,7 +1004,7 @@ inline void TypeCheck::NoteContentRoot(VarDef *container, VarDef *root, bool exa
 }
 
 inline void TypeCheck::RecordStore(VarDef *container, const Val &v, TypeExpr *pointee,
-                                    bool varbind, VarDef *src) {
+                                    bool varbind, VarDef *src, TypeExpr *slot, bool bound) {
     if (!container || varbind) return;
     // Putting a container's own read-back contents back into it adds no
     // incoming lifetime. Keep this distinction before discarding src.
@@ -1025,6 +1025,8 @@ inline void TypeCheck::RecordStore(VarDef *container, const Val &v, TypeExpr *po
     e.exact = v.rootexact;
     e.pointee = v.byteview ? nullptr : pointee;
     e.byteview = v.byteview;
+    e.slot = slot;
+    e.bound = bound;
     container->contentbyteview |= v.byteview;
     if (fitnode) e.at = fitnode->line;
     AddStoreEvent(e);
@@ -1046,8 +1048,12 @@ inline pair<VarDef *, bool> TypeCheck::ClassArgRoot(TypeExpr *pt, const Val &v) 
 // own events: a store through reference parameter p, or through the
 // references by-value holder p holds, into something rooted at parameter q
 // becomes a store into what argument p's class stands for (ClassArgRoot) of
-// a value rooted at argument q's. A callee still being checked (a back
-// edge) may have stored any reference argument into any container argument.
+// a value rooted at argument q's. Where that argument's root only bounds
+// the storage, or the store went into storage the class only leads to, it
+// is a store into each storage there that can hold the slot (ShrinkTargets),
+// which the value must outlive (§9.2): the body saw only the bound. A
+// callee still being checked (a back edge) may have stored any reference
+// argument into any container argument.
 inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Node *at) {
     auto argroot = [&](size_t q) { return ClassArgRoot(spec->argtypes[q], argvals[q]); };
     auto paramof = [&](VarDef *cr) -> int {
@@ -1056,7 +1062,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         return -1;
     };
     auto push = [&](VarDef *container, VarDef *r, bool exact, TypeExpr *pointee, VarDef *src,
-                    bool byteview) {
+                    bool byteview, TypeExpr *slot, bool bound) {
         if (!container || src == container) return;
         StoreEvent e;
         e.container = container;
@@ -1066,6 +1072,8 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         e.pointee = byteview ? nullptr : pointee;
         e.byteview = byteview;
         e.at = at->line;
+        e.slot = slot;
+        e.bound = bound;
         container->contentbyteview |= byteview;
         NoteContentRoot(container, r, exact);
         AddStoreEvent(e);
@@ -1082,12 +1090,14 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         for (size_t p = 0; p < spec->argtypes.size() && p < argvals.size(); p++) {
             auto pt = spec->argtypes[p];
             if (!IsRefOrSlice(pt) || !HoldsPlainRef(PointeeOf(pt))) continue;
+            auto slot = PointeeOf(pt);
             for (size_t q = 0; q < spec->argtypes.size() && q < argvals.size(); q++) {
                 auto qt = spec->argtypes[q];
                 if (!IsRefOrSlice(qt) && !HoldsPlainRef(qt)) continue;
-                push(CanonRoot(argvals[p].root), argroot(q).first, false,
-                     IsRefOrSlice(qt) ? PointeeOf(qt) : nullptr,
-                     nullptr, argvals[q].byteview);
+                for (auto &t : ShrinkTargets(argvals[p].root, argvals[p].rootexact, slot))
+                    push(t.root, argroot(q).first, false,
+                         IsRefOrSlice(qt) ? PointeeOf(qt) : nullptr,
+                         nullptr, argvals[q].byteview, slot, t.bound);
             }
         }
         return;
@@ -1111,7 +1121,21 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         auto exact = e.exact;
         auto r = mapped(e.root, exact);
         auto src = mapped(e.src, exact);
-        push(argroot((size_t)p).first, r, exact, e.pointee, src, e.byteview);
+        auto [cr, crexact] = argroot((size_t)p);
+        auto widen = e.bound || !crexact;
+        for (auto &t : ShrinkTargets(cr, !widen, e.slot)) {
+            if (widen && Depth(r) > Depth(t.root)) {
+                auto rname = r ? r->name : string_view("static data");
+                auto pname = spec->sf->params[(size_t)p].name;
+                Error(at, cat("call ", spec->sf->name, " stores a reference rooted at ", rname,
+                              e.bound ? cat(" into what its parameter ", pname,
+                                            " leads to, which may be ")
+                                      : cat(" through its parameter ", pname,
+                                            ", whose argument may point into "),
+                              TargetStr(t), ", which ", rname, " does not outlive (§9.2)"));
+            }
+            push(t.root, r, exact, e.pointee, src, e.byteview, e.slot, t.bound);
+        }
     }
 }
 
@@ -1513,7 +1537,9 @@ inline bool TypeCheck::SamePath(Node *a, Node *b) {
 // caller's storage behind a parameter as a bound. The root itself comes
 // first, and is a bound too where its own storage cannot hold an `arr`: it
 // was read out of something whose references lead to the array. A null
-// root is static data where exact, and where not, the globals.
+// root is static data where exact, and where not, the globals. The same
+// storage is where a store into a slot of type `arr` rooted there may land
+// (FitsAt, ApplyCalleeStores).
 inline vector<TypeCheck::ShrinkTarget> TypeCheck::ShrinkTargets(VarDef *root, bool exact,
                                                                  TypeExpr *arr) {
     root = CanonRoot(root);
@@ -1532,6 +1558,14 @@ inline vector<TypeCheck::ShrinkTarget> TypeCheck::ShrinkTargets(VarDef *root, bo
     for (auto c : cands)
         if (c != root) out.push_back({ c, bound(c) });
     return out;
+}
+
+// One of those as a diagnostic names it: a bound by what it leads to, the
+// caller's storage for a parameter's class.
+inline string TypeCheck::TargetStr(const ShrinkTarget &t) {
+    if (!t.bound) return string(t.root->name);
+    if (!t.root->type) return cat("the caller's storage behind ", t.root->name);
+    return cat("what ", t.root->name, "'s references lead to");
 }
 
 // A shrink of the `arr` rooted at root, spelled `verb` on the receiver

@@ -1156,7 +1156,7 @@ struct TypeCheck {
                            bool builtexact, Dest dest);
     void CheckRebind(Assign *a, LVal &lv);
     bool PointeeWritable(LVal &lv, Node *at);
-    void PointeeAssign(Assign *a, LVal &lv);
+    void PointeeAssign(Assign *a, LVal &lv, const LVal &at);
     void CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv);
     void CompoundAssign(Assign *a, TypeExpr *st, bool writable);
     void NoLetAssign(Node *at, const LVal &lv);
@@ -1211,7 +1211,7 @@ struct TypeCheck {
     void AddStoreEvent(const StoreEvent &e);
     void NoteContentRoot(VarDef *container, VarDef *root, bool exact);
     void RecordStore(VarDef *container, const Val &v, TypeExpr *pointee, bool varbind,
-                     VarDef *src = nullptr);
+                     VarDef *src = nullptr, TypeExpr *slot = nullptr, bool bound = false);
     vector<set<string_view>> loopassigned;   // Per enclosing loop: names its body writes.
     void CollectAssignedBases(Node *n, set<string_view> &out);
     void PushLoopAssigned(Node *body);
@@ -1296,6 +1296,7 @@ struct TypeCheck {
         bool bound = false;
     };
     vector<ShrinkTarget> ShrinkTargets(VarDef *root, bool exact, TypeExpr *arr);
+    string TargetStr(const ShrinkTarget &t);
     void ShrinkThrough(Node *at, bool standalone, const string &verb, const string &recv,
                        VarDef *root, bool exact, TypeExpr *arr,
                        ShrinkBalance balance = SB_UNBALANCED);

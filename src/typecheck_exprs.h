@@ -515,10 +515,19 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
             fitfail = NeverStoredError(root);
             return false;
         }
-        if (Depth(root) > Depth(CanonRoot(curdst.root))) {
+        // An inexact destination root only bounds the storage the slot is
+        // in: that may be any storage there or further out that can hold
+        // one (ShrinkTargets), and the value must outlive each (§9.2).
+        auto dsts = ShrinkTargets(curdst.root, curdst.exact, dt);
+        for (auto &d : dsts) {
+            if (Depth(root) <= Depth(d.root)) continue;
             fitfail = cat("storing a reference rooted at ",
                           root ? root->name : string_view("static data"),
-                          ", which does not outlive the destination (§9.2)");
+                          ", which does not outlive the destination");
+            if (!curdst.exact)
+                Append(fitfail, ": it is reached through a reference that may point into ",
+                       TargetStr(d));
+            Append(fitfail, " (§9.2)");
             return false;
         }
         // Binding a global reference or slice variable stores into a global
@@ -540,17 +549,20 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
                       "recursive cycle (§7.8)";
             return false;
         }
-        if (holder) {
-            // A literal's fields were each recorded as they were stored; a
-            // whole-value event for it would only be a looser copy.
-            if (!Is<StructLit>(fitnode) && !Is<ArrayLit>(fitnode)) {
-                Val hv = v;
-                hv.root = root;
-                hv.rootexact = v.holderset && v.holderexact;
-                RecordStore(CanonRoot(curdst.root), hv, nullptr, curdst.varbind, v.holderfrom);
+        // Each storage the slot may be in holds the value from here on.
+        for (auto &d : dsts) {
+            if (holder) {
+                // A literal's fields were each recorded as they were stored; a
+                // whole-value event for it would only be a looser copy.
+                if (!Is<StructLit>(fitnode) && !Is<ArrayLit>(fitnode)) {
+                    Val hv = v;
+                    hv.root = root;
+                    hv.rootexact = v.holderset && v.holderexact;
+                    RecordStore(d.root, hv, nullptr, curdst.varbind, v.holderfrom, dt, d.bound);
+                }
+            } else {
+                RecordStore(d.root, v, PointeeOf(t), curdst.varbind, nullptr, dt, d.bound);
             }
-        } else {
-            RecordStore(CanonRoot(curdst.root), v, PointeeOf(t), curdst.varbind);
         }
     }
     if (TypeEq(t, dt)) { v.type = dt; return true; }

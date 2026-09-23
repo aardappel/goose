@@ -600,7 +600,11 @@ or **holder** value (a by-value struct, array or payload that contains plain
 references or slices, `HoldsPlainRef`) meets a destination with a root:
 
 1. a `cycleroot` value is rejected (pass-down only);
-2. the value's root must be at or above the destination's depth;
+2. the value's root must be at or above the destination's depth, and where
+   the destination's root is inexact, at or above the depth of every
+   storage that root may stand for (`ShrinkTargets` over the slot's type:
+   the root itself and each read-back candidate at its depth or outside, a
+   parameter's class as the bound on the caller's storage behind it);
 3. a reference that may point into a grow-shrink array's elements may be
    bound to a variable but never stored (§5.2, `StoredIntoGrowShrink`: by
    its root, `GrowShrinkCanHold` with the byte-view exception `MayBeViewed`,
@@ -611,7 +615,7 @@ references or slices, `HoldsPlainRef`) meets a destination with a root:
    parameter or a local of an enclosing non-cycle function
    (`CycleStorable`), and no merged value with `cyclelocal`, may be stored,
    besides a rebind of the activation's own reference variable (§7.8);
-5. the store is **recorded**.
+5. the store is **recorded**, on each of those storages.
 
 Rule 3 does not wait for a destination: a literal's field or element is
 storage wherever the literal lands, so `NoteLitElem` applies it to each one
@@ -624,6 +628,10 @@ may a variable that points into none be rebound to a value that may
 (`CheckRefRebindRoot`): a store or return checked before the rebind -- later
 in a loop, through a reference taken to it, in a nested function whose
 checked body a later call reuses -- has already let it through.
+
+An assignment through a reference (`PointeeAssign`) stores where the
+reference points, which for a reference read out of a field is where the
+read-back rule says (`DerefLValue`), not the field's container.
 
 A declaration without a type annotation infers its type from the value, so
 `FitsAt` has no destination type to check. `CheckBindingRoot` applies rule 2
@@ -660,9 +668,16 @@ writing through an array reference does. A permutation may preserve the
 container's existing contents provenance, but a new incoming reference
 must not disappear from its store effects. Only stores read back from the
 same container preserve the existing record without adding an incoming root.
-For a callee still being checked (a back edge) it conservatively
-records every reference argument as stored into every reference argument
-whose pointee can hold references.
+An event keeps the slot's type (`StoreEvent::slot`), and one made through a
+class that only bounds the caller's storage behind it is marked `bound`.
+The body checked such a store against one class, as deep as the argument's
+root; where that root is inexact, or the event is a bound one, the call
+widens the store to every storage the argument's root may stand for
+(`ShrinkTargets` over the slot type), checks the stored value's mapped root
+against each, and records it on each, a class of its own caller's marked
+`bound` again. For a callee still being checked (a back edge) it
+conservatively records every reference argument as stored into every
+storage a reference argument whose pointee can hold references may be.
 
 Holder values carry their contents' bound as `holderroot`/`holderexact`
 (§9.2's "implicitly generic over the fields' roots"): a literal's is the

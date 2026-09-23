@@ -1928,9 +1928,10 @@ The rules below are the *scope* rules, and hold of exact and inexact roots
 alike. Only rules that need the target's **identity** rather than its lifetime
 consult exactness — storing a reference into a relative-reference location
 (§3.9), converting one to an index (`index_of`, §3.3), which array a shrink
-through a reference frees (§5.1), and the compiler's proof that two
-references name different arrays — and each of those takes its conservative
-answer without it. A relative reference that names a pool (§3.9)
+through a reference frees (§5.1), where a store through a reference lands
+(the store rule below), and the compiler's proof that two references name
+different arrays — and each of those takes its conservative answer without
+it. A relative reference that names a pool (§3.9)
 is where an exact root also *comes from*: a load out of one is rooted at that
 pool, exactly, whatever container it was read out of.
 
@@ -1938,6 +1939,15 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
 
 * **Store**: `r` may be stored into a location owned by root `L` only if
   `scope(root(r)) ⊇ scope(L)` — the pointee provably outlives the container.
+  Where the location is reached through a reference whose root is inexact,
+  its owner is that root or anything further out that can hold the
+  location: every read-back candidate for its type at the root's scope or
+  outside it (§9.5), the caller's storage behind a parameter included. `r`
+  must outlive each of them, and the store is on record for each: in `let n:
+  Node& = if c { a } else { b }; n.p .= x;` the field is `a`'s or `b`'s, so
+  `x` must outlive both. A call checks what its callee stores through an
+  argument with such a root, or into storage an argument's references lead
+  to, in the same way, since the callee sees only a root for it.
   A value that *holds* references (a struct with a reference field, an
   array of slices, an ADT payload with one) stores under the same rule for
   what it holds: its root is that of the references stored into it, and each

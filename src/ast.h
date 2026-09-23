@@ -1224,6 +1224,14 @@ struct StoreEvent {
     TypeExpr *pointee = nullptr; // Null: unknown (a holder value's contents).
     bool byteview = false;
     Line at;
+    // The type of the slot stored into, by which the storage an inexact
+    // root may stand for is enumerated (TypeCheck::ShrinkTargets); null for
+    // a binding's contents, which are the variable's own.
+    TypeExpr *slot = nullptr;
+    // Stored not into the container's own storage but into storage its
+    // references lead to, which it only bounds: a parameter's class stands
+    // for the caller's, which the call widens to the candidates there.
+    bool bound = false;
 };
 
 // A shrink, and a reference, slice or holder still used after it that only
