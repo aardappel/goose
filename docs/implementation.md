@@ -486,7 +486,7 @@ so the stored value's own root bounds them.
 | `a.push(v)`, `a.alloc_ref(v)`, `&a[i]` | `a`'s root | `a`'s exactness |
 | `a.alloc_slice(n)`, `a.realloc_slice(s, n)` | `a`'s root | `a`'s exactness |
 | `a[lo..hi]` (`SliceExpr::Check`) | `a`'s root | `a`'s exactness |
-| a call result (`CallResult`) | the callee's `RetRoot`, mapped: a parameter's class back to the argument's root at this site (at a back edge, every argument the class's parameters get, merged), a global as itself, else static data | the callee's, ANDed with the argument's |
+| a call result (`CallResult`) | every root the callee's returns give (`RetRoot::alts`), mapped (`RetAltVal`: a parameter's class back to the argument's root at this site -- at a back edge, every argument the class's parameters get, merged -- a global or captured local as itself, null as static data) and merged as branches are (`MergeVals`) | only where they all map to one root exactly |
 | an `if`, `match`, `block` or `loop` value (`MergeVals`) | the innermost of its branches' roots (`InnerRoot`) | only where they all name one root exactly |
 | an array, struct or variant literal, and a call's value result | a temporary (`TempRoot`): whatever views it rather than being built from it views a temporary | no |
 | a string literal | static data (null) | yes |
@@ -494,7 +494,8 @@ so the stored value's own root bounds them.
 
 **Merged roots.** A value that may be any of several -- an `if`'s branches, a
 reference variable's bindings before and after a rebind to another root at
-its depth (`CheckRefRebindRoot`) -- keeps one root, the innermost
+its depth (`CheckRefRebindRoot`), the roots a call's callee returns
+(`CallResult`) -- keeps one root, the innermost
 (`InnerRoot`): the deeper, and at a tie the checked function's own variable,
 since a temporary of the calling statement takes the depth of the function's
 outermost scope (`ClassDepth`) but outlives the variables declared there; a
@@ -510,7 +511,7 @@ value: through a rebind, which keeps what the old binding hid, a load of a
 slice through a reference (`DecayRef`, `SlotView`), a parameter
 (`RootArg::intogs`, part of the key, makes the parameter's own `intogs` its
 class root, or the parameter where it has no class), a function's returns
-(`RetRoot::intogs`, `cyclelocal`, `hidesclass`) and the argument a call maps
+(`RetAlt::intogs`, `cyclelocal`, `hidesclass`) and the argument a call maps
 a result through. A read-back clears them: whatever was stored passed those
 rules already.
 
@@ -560,8 +561,9 @@ order the classes, which is not all: the store rule (§3.5) lets a class be
 stored into another's storage where the two share a depth and not where it
 is merely deeper, a reference or slice variable is rebound only between
 roots at one depth (§3.7), a value that may come from either of two classes
-(an `if`'s, say) takes the deeper one's root, the first where they tie, and
-only a class at depth 0, a global's, may be stored into a global. A nested function also compares its classes with the depths of the
+(an `if`'s, say, or a call's whose callee returns either) takes the deeper
+one's root, the first where they tie, and only a class at depth 0, a
+global's, may be stored into a global. A nested function also compares its classes with the depths of the
 variables it captures, and a function given a function value does the same
 while it checks that value's body. So each class carries `RootArg::depthkey`
 as well: its body depth itself where that is within `EnvReach`, the scopes
@@ -854,7 +856,8 @@ own bindings) and a `for` binder copying views out of an array (`CheckFor`)
 never point into a grow-shrink array's elements, whatever their read-back
 roots are. A slice of such a slice, and a reference into what it views, keep
 the bit; `MergeVals`, a rebind (`CheckRefRebindRoot`) and a call's result
-(`RetRoot`, never a back edge's) keep it only where every value does; and
+(`RetAlt::slotread` of every root its returns give, never a back edge's)
+keep it only where every value does; and
 crossing a reference drops it (`DerefLValue`, `DecayRef`, `Dot::Check`'s
 auto-deref, a `for` loop or a builtin member through a reference, a whole
 array passed to a slice parameter through one), since what a reference read
@@ -1023,29 +1026,39 @@ have made, and the chain shows the ones before it.
 
 **Cycle return roots** (`CycleRoots`, `typecheck_cycles.h`): a back edge
 reaches a function whose returns are not checked yet, so before a
-`recursive fn` body is checked, `Seed` predicts each reference return's root
+`recursive fn` body is checked, `Seed` predicts each reference return's roots
 by a purely syntactic fixpoint over the returns of the function and of the
-functions those returns call: a `RootDesc` is a parameter index, a global, a
-free variable of an enclosing function, one of the function's own locals
-(meaningful only to itself), or unknown; `ScanExpr`/`ScanBase`/`ScanCall`
-read `X.push(...)`, `X.alloc_ref(...)`, `&X[...]`, field and element steps
-whose declared types stay inside the base's storage, reference variables
-through their bindings, and calls to uniquely named functions through their
-own descriptors. The fixpoint iterates the closure of functions reached
-(`ReturnRootDescs`, at most 64 rounds). `ResolveDesc` turns a prediction into
-a root and exactness for the specialization; what cannot be predicted
-becomes `cycleroot`. Every real return then verifies the prediction
-(`ReturnConflict`), and a result a back edge already consumed pins the
-exactness, writability and storability the later returns may not weaken
-(`RetRoot::usedexact`, `usedwritable`, `usedclean` for a grow-shrink taint,
-`usedstorable` for `cyclelocal`). A back edge reuses the body whatever it
-passes, so `CallResult` maps a parameter class through every argument the
-back edge gives the class's parameters, merged, where an ordinary call, whose
-classes group the arguments as the key's, takes the first. A return with
-`hidesclass` may be a class's pointee its root does not show, which no
-mapping of the root reaches: the back edges checked after it get
-`cycleroot` (`RetRoot::hidesclass`), and one after a back edge has used the
-result is an error (`RetRoot::used`).
+functions those returns call. A `RootSet` holds every `RootDesc` a return
+may give -- a parameter index, a global, a free variable of an enclosing
+function, static data, one of the function's own locals (meaningful only to
+itself) -- or is unknown, the top; the join is their union.
+`ScanExpr`/`ScanBase`/`ScanCall` read `X.push(...)`, `X.alloc_ref(...)`,
+`&X[...]`, field and element steps whose declared types stay inside the
+base's storage, subranges, string literals, reference variables through
+their bindings, and calls to uniquely named functions through their own
+sets, each parameter mapped to what the call passes. The fixpoint iterates
+the closure of functions reached (`ReturnRootDescs`, at most 64 rounds).
+`ResolveDesc` turns each alternative into a `RetAlt` of the specialization
+(`RetRoot::pred`), which a back edge maps as any call maps a return's root
+(`RetAltVal`): a back edge reuses the body whatever it passes, so a
+parameter class maps through every argument the back edge gives the
+class's parameters, merged, where an ordinary call, whose classes group the
+arguments as the key's, takes the first. A set that is unknown, or names a
+function's own local, predicts nothing (`predunknown`); until a return is
+checked, back edges then get `cycleroot`, and after it they map that return,
+which stands in for the prediction. Each real return is checked against the
+prediction as it is recorded (`ReturnConflict`): one it names narrows the
+alternative for later back edges, but may not take back what an earlier one
+was given (`RetRoot::usedexact`, `usedwritable`, `usedclean` for a
+grow-shrink taint, `usedstorable` for `cyclelocal`); one it missed joins
+it where no back edge has used the prediction yet, and after that only a
+root every activation shares and no deeper than any back edge's result
+(`useddepth`). A return with `hidesclass` may be the pointee of a parameter
+class no alternative names, which no mapping reaches: unless the prediction
+names every class, the back edges checked after it get `cycleroot`
+(`predlost`), and one after a back edge has used the prediction is an error
+(`RetRoot::used`). The callers of the finished specialization map the real
+returns' roots (`RetRoot::alts`), not the prediction.
 
 ### 3.12 Calls, generics, literal parameters, dispatch, function values
 
@@ -1167,8 +1180,10 @@ every specialization between records the target in `needs`, and every path
 by which a specialization was later reused (`neededges`) is re-validated
 against it (`ValidateNeeds`, `AddNeed`). A long-distance return may carry
 only references rooted at globals or static data -- more conservative than
-the spec's "rooted at or above the target's frame" (TODO 0d). All returns of
-one function must agree on the returned reference's root (`RecordReturn`).
+the spec's "rooted at or above the target's frame" (TODO 0d). The returns of
+one function may give different roots: `RecordReturn` keeps one `RetAlt` per
+distinct root, the guarantees on it ANDed, and every call maps and merges
+them (`CallResult`, §3.4).
 
 ### 3.13 Relative references and pools
 
@@ -2458,15 +2473,23 @@ specification allows, and the shapes the C backend refuses outright:
 * Inside a recursive cycle, a reference rooted at a caller's fixed-size local
   is pass-down only; the spec's cycle store rule is stated the same way and
   marked for refinement (TODO 5).
-* The cycle return-root scan gives up on overload sets, function values and
-  nested functions it cannot resolve by name; the result is then pass-down
-  only (`cycleroot`), never unsound, and may point into a grow-shrink array
+* The cycle return-root scan gives up on branch values, overload sets,
+  function values and nested functions it cannot resolve by name; until a
+  return is checked, a back edge's result is then pass-down only
+  (`cycleroot`), never unsound, and may point into a grow-shrink array
   wherever it is passed (§3.5).
 * A return that may be a parameter class's pointee its root does not show
-  (`hidesclass`) makes the back edges after it pass-down only even where
-  the class is a pool, whose argument every back edge must pass as the
-  entry call did (§3.11), and it is kept on a merge of any class root, a
-  class of an enclosing function included.
+  (`hidesclass`) makes the back edges after it pass-down only, unless the
+  prediction names every class, even where the class is a pool, whose
+  argument every back edge must pass as the entry call did (§3.11), and it
+  is kept on a merge of any class root, a class of an enclosing function
+  included.
+* A return whose value is itself merged from branches reaches its callers
+  as one root, the innermost, with `cyclelocal` set where the other one's
+  root is not a pool, a global or an enclosing function's local in the
+  callee (§3.4), so a recursive cycle cannot store the result even where the
+  argument behind that other root is a pool; the same function written
+  with a `return` per branch is mapped a root at a time.
 * A plain reference parameter's root class is identified with a global pool
   only inside a recursive cycle or through the `in pool` form (§9.5 above,
   `bench/notes.md` item 1), so `index_of`, a relative store and an exact

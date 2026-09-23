@@ -1,14 +1,15 @@
 // Goose compiler — cycle return roots (§7.8). A back edge lands in a
-// specialization whose own returns have not been checked yet, so the root its
-// result should carry is recorded nowhere. Before checking a `recursive fn`
-// body the checker therefore *predicts* every return root, from a purely
-// syntactic scan of the returns of the function and of the functions those
-// returns call, iterated to a fixpoint (a cycle's functions define each
-// other's roots, so one pass does not settle it). The prediction seeds
-// FnSpec::retroots, and every real return verifies it as it is checked. What
-// the scan cannot pin down becomes the `cycleroot` sentinel: like a temporary
-// it outlives nothing, so such a result may only be passed down, never stored
-// or returned.
+// specialization whose own returns have not been checked yet, so the roots its
+// result should carry are recorded nowhere. Before checking a `recursive fn`
+// body the checker therefore *predicts* them, from a purely syntactic scan of
+// the returns of the function and of the functions those returns call,
+// iterated to a fixpoint (a cycle's functions define each other's roots, so
+// one pass does not settle it). The prediction is a set, one root per way a
+// return can go, which seeds FnSpec::retroots; each back edge maps it through
+// its own arguments and merges it as the branches of an `if` are merged, and
+// every real return is checked against it. What the scan cannot pin down
+// becomes the `cycleroot` sentinel: like a temporary it outlives nothing, so
+// such a result may only be passed down, never stored or returned.
 //
 // The scan is purely syntactic, so it needs no checker state beyond the three
 // things it cannot derive itself: the sentinel, what root the checker has
@@ -22,21 +23,54 @@ namespace goose {
 
 // A returned reference's root as the syntactic cycle scan (§7.8,
 // typecheck_cycles.h) can name it before any body is checked: one of the
-// function's own reference parameters' root classes, a global, a local of
-// an enclosing function (a free variable of a nested function, §7.5), or the
-// function's own local storage (meaningful to the function itself, never to
-// a caller). RD_NONE is "no return contributes yet" (the fixpoint's
-// optimistic bottom), RD_UNKNOWN its top.
-enum RootDescKind { RD_NONE, RD_PARAM, RD_GLOBAL, RD_FREE, RD_LOCAL, RD_UNKNOWN };
+// function's own reference parameters' pointees, a global, a local of an
+// enclosing function (a free variable of a nested function, §7.5), static
+// data (a string literal), or the function's own local storage (meaningful
+// to the function itself, never to a caller).
+enum RootDescKind { RD_PARAM, RD_GLOBAL, RD_FREE, RD_STATIC, RD_LOCAL };
 struct RootDesc {
-    RootDescKind kind = RD_NONE;
+    RootDescKind kind = RD_PARAM;
     int param = 0;              // RD_PARAM: index into SFunction::params.
     VarDef *glob = nullptr;     // RD_GLOBAL.
     string_view name;           // RD_FREE / RD_LOCAL: the variable's name.
     bool operator==(const RootDesc &o) const {
         return kind == o.kind && param == o.param && glob == o.glob && name == o.name;
     }
-    bool operator!=(const RootDesc &o) const { return !(*this == o); }
+};
+
+// Every root a reference may have, as the scan sees it: the lattice the
+// fixpoint climbs. No alternatives is "no return contributes yet", the
+// optimistic bottom; `unknown`, something the scan cannot follow, its top.
+struct RootSet {
+    bool unknown = false;
+    vector<RootDesc> alts;      // In the order the scan met them.
+    static RootSet Unknown() {
+        RootSet s;
+        s.unknown = true;
+        return s;
+    }
+    static RootSet Of(const RootDesc &d) {
+        RootSet s;
+        s.alts.push_back(d);
+        return s;
+    }
+    void Join(const RootSet &o) {
+        if (unknown) return;
+        if (o.unknown) {
+            unknown = true;
+            alts.clear();
+            return;
+        }
+        for (auto &d : o.alts)
+            if (find(alts.begin(), alts.end(), d) == alts.end()) alts.push_back(d);
+    }
+    bool operator==(const RootSet &o) const {
+        if (unknown != o.unknown || alts.size() != o.alts.size()) return false;
+        for (auto &d : o.alts)
+            if (find(alts.begin(), alts.end(), d) == alts.end()) return false;
+        return true;
+    }
+    bool operator!=(const RootSet &o) const { return !(*this == o); }
 };
 
 // One name a function body binds, for the same scan: what a `return v` of a
@@ -64,7 +98,7 @@ struct CycleRoots {
         vector<SFunction *> localfns;
     };
     struct Returns {
-        vector<RootDesc> values;
+        vector<RootSet> values;
         bool settled = false;
     };
     // Presence records the first scan/enrollment, without separate flags on
@@ -83,18 +117,11 @@ struct CycleRoots {
     CycleRoots(Ast &_ast, Cache &_cache, VarDef *_cycleroot, RootOfVar _rootof, FreeVar _freevar)
         : ast(_ast), cache(_cache), cycleroot(_cycleroot), rootof(_rootof), freevar(_freevar) {}
 
-    static RootDesc UnknownDesc() {
+    static RootSet Named(RootDescKind kind, string_view name) {
         RootDesc d;
-        d.kind = RD_UNKNOWN;
-        return d;
-    }
-
-    // All returns of one function must agree on the root (§9.2), so any
-    // disagreement between two of them is already the top of this lattice.
-    static RootDesc JoinDesc(const RootDesc &a, const RootDesc &b) {
-        if (a.kind == RD_NONE) return b;
-        if (b.kind == RD_NONE || a == b) return a;
-        return UnknownDesc();
+        d.kind = kind;
+        d.name = name;
+        return RootSet::Of(d);
     }
 
     LocalBind *FindBind(SFunction *f, string_view name) {
@@ -158,28 +185,34 @@ struct CycleRoots {
 
     // Only single-name globals: LookupVar resolves a multi-name declaration's
     // uses to its first VarDef, which the scan will not second-guess.
-    RootDesc GlobalDesc(string_view name, string_view ns) {
+    RootSet GlobalDesc(string_view name, string_view ns) {
         auto g = ast.LookupGlobal(name, ns);
-        if (!g || g->names.size() != 1 || g->defs.size() != 1) return UnknownDesc();
+        if (!g || g->names.size() != 1 || g->defs.size() != 1) return RootSet::Unknown();
         RootDesc d;
         d.kind = RD_GLOBAL;
         d.glob = g->defs[0];
-        return d;
+        return RootSet::Of(d);
     }
 
-    // The root of the reference `n` evaluates to. `busy` breaks the recursion
-    // through locals defined in terms of each other.
-    RootDesc ScanExpr(SFunction *f, Node *n, vector<string_view> &busy, int depth) {
-        if (!n || depth > 16) return UnknownDesc();
+    // The roots the reference `n` evaluates to may have. `busy` breaks the
+    // recursion through locals defined in terms of each other.
+    RootSet ScanExpr(SFunction *f, Node *n, vector<string_view> &busy, int depth) {
+        if (!n || depth > 16) return RootSet::Unknown();
         if (Is<Dot>(n) || Is<Index>(n) || Is<SliceExpr>(n)) return ScanBase(f, n, busy, depth);
         if (auto u = Is<Unary>(n))
-            return u->op == T_BITAND ? ScanBase(f, u->child, busy, depth) : UnknownDesc();
+            return u->op == T_BITAND ? ScanBase(f, u->child, busy, depth) : RootSet::Unknown();
         if (auto c = Is<Call>(n)) return ScanCall(f, c, busy, depth);
+        if (Is<NullLit>(n)) return RootSet {};   // Null names no root.
+        if (Is<StrLit>(n)) {
+            RootDesc d;
+            d.kind = RD_STATIC;
+            return RootSet::Of(d);
+        }
         auto id = Is<Ident>(n);
-        if (!id) return UnknownDesc();
+        if (!id) return RootSet::Unknown();
         EnsureBinds(f);
         if (auto b = FindBind(f, id->name)) {
-            if (b->opaque) return UnknownDesc();
+            if (b->opaque) return RootSet::Unknown();
             // A reference variable is rooted where its bindings point; a
             // value variable is storage this function owns. A variable
             // declared without a type is a reference only where the
@@ -197,30 +230,24 @@ struct CycleRoots {
                         value &= Is<IntLit>(e) || Is<FltLit>(e) || Is<StrLit>(e) ||
                                  Is<BoolLit>(e) || Is<StructLit>(e) || Is<ArrayLit>(e);
                 }
-                if (!value) return UnknownDesc();
-                RootDesc d;
-                d.kind = RD_LOCAL;
-                d.name = id->name;
-                return d;
+                if (!value) return RootSet::Unknown();
+                return Named(RD_LOCAL, id->name);
             }
-            for (auto nm : busy) if (nm == id->name) return UnknownDesc();
+            for (auto nm : busy) if (nm == id->name) return RootSet::Unknown();
             busy.push_back(id->name);
-            RootDesc d;
-            for (auto e : b->binds) {
-                if (Is<NullLit>(e)) continue;   // Null binds no provenance.
-                d = JoinDesc(d, ScanExpr(f, e, busy, depth + 1));
-            }
+            RootSet s;
+            for (auto e : b->binds) s.Join(ScanExpr(f, e, busy, depth + 1));
             busy.pop_back();
-            return d;
+            return s;
         }
         for (size_t i = 0; i < f->params.size(); i++) {
             if (f->params[i].name != id->name) continue;
             auto pt = f->params[i].type;
-            if (!pt || !IsRefOrSlice(pt)) return UnknownDesc();
+            if (!pt || !IsRefOrSlice(pt)) return RootSet::Unknown();
             RootDesc d;
             d.kind = RD_PARAM;
             d.param = (int)i;
-            return d;
+            return RootSet::Of(d);
         }
         // A free variable: a local or parameter of an enclosing function,
         // which outlives every activation of this one.
@@ -229,12 +256,7 @@ struct CycleRoots {
             auto b = FindBind(o, id->name);
             auto isparam = false;
             for (auto &p : o->params) isparam |= p.name == id->name;
-            if ((b && b->declared) || isparam) {
-                RootDesc d;
-                d.kind = RD_FREE;
-                d.name = id->name;
-                return d;
-            }
+            if ((b && b->declared) || isparam) return Named(RD_FREE, id->name);
         }
         return GlobalDesc(id->name, id->ns);
     }
@@ -265,7 +287,7 @@ struct CycleRoots {
     // point within the same root (§3.9). A plain reference or slice read
     // out of the base points elsewhere (§9.5), and so does a step the
     // declared types cannot follow.
-    RootDesc ScanBase(SFunction *f, Node *n, vector<string_view> &busy, int depth) {
+    RootSet ScanBase(SFunction *f, Node *n, vector<string_view> &busy, int depth) {
         vector<Node *> steps;   // Innermost step first.
         for (;;) {
             if (auto d = Is<Dot>(n)) { steps.push_back(n); n = d->obj; continue; }
@@ -274,38 +296,40 @@ struct CycleRoots {
             break;
         }
         auto d = ScanExpr(f, n, busy, depth + 1);
-        if (steps.empty() || d.kind == RD_UNKNOWN || d.kind == RD_NONE) return d;
+        if (steps.empty() || d.unknown || d.alts.empty()) return d;
         auto id = Is<Ident>(n);
         auto t = id ? DeclaredType(f, id->name) : nullptr;
-        if (!t) return UnknownDesc();
+        if (!t) return RootSet::Unknown();
         if (t->kind == TY_REF) t = t->ref->sub;   // A reference variable: its pointee.
         for (auto it = steps.rbegin(); it != steps.rend(); ++it) {
             if (auto dot = Is<Dot>(*it)) {
-                if (t->kind != TY_STRUCT) return UnknownDesc();
+                if (t->kind != TY_STRUCT) return RootSet::Unknown();
                 TypeExpr *ft = nullptr;
                 for (auto &fl : t->struc->st->fields)
                     if (!fl.ispad && fl.name == dot->name) ft = fl.type;
-                if (!ft) return UnknownDesc();
+                if (!ft) return RootSet::Unknown();
                 t = ft;
             } else if (Is<SliceExpr>(*it)) {
-                if (t->kind != TY_ARRAY && t->kind != TY_SLICE) return UnknownDesc();
+                // A subrange of an array or slice views the same storage.
+                if (t->kind != TY_ARRAY && t->kind != TY_SLICE) return RootSet::Unknown();
+                continue;
             } else {
                 if (t->kind == TY_ARRAY) t = t->arr->sub;
                 else if (t->kind == TY_SLICE) t = t->sub;
-                else return UnknownDesc();
+                else return RootSet::Unknown();
             }
-            if (!t) return UnknownDesc();
+            if (!t) return RootSet::Unknown();
             if (t->kind == TY_REF) {
-                if (t->ref->lenstorage < 0) return UnknownDesc();
+                if (t->ref->lenstorage < 0) return RootSet::Unknown();
                 t = t->ref->sub;
             }
             if (t->kind == TY_SLICE || t->kind == TY_GENERIC || t->kind == TY_UNRESOLVED)
-                return UnknownDesc();
+                return RootSet::Unknown();
         }
         return d;
     }
 
-    RootDesc ScanCall(SFunction *f, Call *c, vector<string_view> &busy, int depth) {
+    RootSet ScanCall(SFunction *f, Call *c, vector<string_view> &busy, int depth) {
         // The argument list resolution builds: a UFCS receiver is argument 0.
         string_view name, ns;
         vector<Node *> args;
@@ -317,7 +341,7 @@ struct CycleRoots {
             name = id->name;
             ns = id->ns;
         } else {
-            return UnknownDesc();
+            return RootSet::Unknown();
         }
         for (auto a : c->args) args.push_back(a);
         // A nested function declared in this function or an enclosing one
@@ -333,36 +357,43 @@ struct CycleRoots {
                 // A member builtin wins over a same-named function at a.f()
                 // sites when the receiver is an array, which the scan cannot
                 // tell.
-                if (!cands.empty()) return UnknownDesc();
+                if (!cands.empty()) return RootSet::Unknown();
                 auto atrecv = bd->kind == B_PUSH || bd->kind == B_ALLOC_REF ||
                               bd->kind == B_ALLOC_SLICE || bd->kind == B_REALLOC_SLICE;
-                if (!atrecv || args.empty()) return UnknownDesc();
+                if (!atrecv || args.empty()) return RootSet::Unknown();
                 return ScanBase(f, args[0], busy, depth);
             }
-            if (cands.size() != 1) return UnknownDesc();
+            if (cands.size() != 1) return RootSet::Unknown();
             callee = cands[0];
         }
         EnrollDescs(callee);
         auto &ds = cache.returns.at(callee).values;
-        if (ds.empty()) return UnknownDesc();
-        auto cd = ds[0];
-        if (cd.kind == RD_NONE || cd.kind == RD_GLOBAL) return cd;
-        // A callee's free variable is this function's too, unless it is
-        // this function's own local, which is then its own storage. The
-        // callee's own locals mean nothing here.
-        if (cd.kind == RD_FREE) {
-            if (!OwnName(f, cd.name)) return cd;
-            RootDesc d;
-            d.kind = RD_LOCAL;
-            d.name = cd.name;
-            return d;
+        if (ds.empty()) return RootSet::Unknown();
+        auto cs = ds[0];
+        if (cs.unknown) return cs;
+        RootSet s;
+        for (auto &cd : cs.alts) {
+            switch (cd.kind) {
+                case RD_GLOBAL: case RD_STATIC:
+                    s.Join(RootSet::Of(cd));
+                    break;
+                // A callee's free variable is this function's too, unless it
+                // is this function's own local, which is then its own storage.
+                case RD_FREE:
+                    s.Join(OwnName(f, cd.name) ? Named(RD_LOCAL, cd.name) : RootSet::Of(cd));
+                    break;
+                // The callee's own locals mean nothing here.
+                case RD_LOCAL:
+                    return RootSet::Unknown();
+                // Rooted at one of the callee's own parameters: follow the
+                // argument this call site passes there.
+                case RD_PARAM:
+                    if (cd.param >= (int)args.size()) return RootSet::Unknown();
+                    s.Join(ScanExpr(f, args[cd.param], busy, depth + 1));
+                    break;
+            }
         }
-        if (cd.kind == RD_LOCAL) return UnknownDesc();
-        // The callee's result is rooted at one of its own parameters: follow
-        // the argument this call site passes there.
-        if (cd.kind == RD_PARAM && cd.param < (int)args.size())
-            return ScanExpr(f, args[cd.param], busy, depth + 1);
-        return UnknownDesc();
+        return s;
     }
 
     vector<SFunction *> descqueue;   // Functions in the running fixpoint.
@@ -378,7 +409,7 @@ struct CycleRoots {
         descchanged = true;
     }
 
-    void ScanReturns(SFunction *f, Node *n, vector<RootDesc> &ds, bool &usable) {
+    void ScanReturns(SFunction *f, Node *n, vector<RootSet> &ds, bool &usable) {
         if (auto r = Is<Return>(n)) {
             // `return … from g` exits another frame entirely; only a `from`
             // naming this function targets it (its innermost activation).
@@ -391,18 +422,18 @@ struct CycleRoots {
                 } else {
                     vector<string_view> busy;
                     for (size_t i = 0; i < ds.size(); i++)
-                        ds[i] = JoinDesc(ds[i], ScanExpr(f, r->vals[i], busy, 0));
+                        ds[i].Join(ScanExpr(f, r->vals[i], busy, 0));
                 }
             }
         }
         n->Children([&](Node *c) { ScanReturns(f, c, ds, usable); });
     }
 
-    vector<RootDesc> ComputeDescs(SFunction *f) {
-        vector<RootDesc> ds(f->has_rets ? f->rets.size() : 0);
+    vector<RootSet> ComputeDescs(SFunction *f) {
+        vector<RootSet> ds(f->has_rets ? f->rets.size() : 0);
         if (ds.empty()) return ds;
         if (f->isthread || !f->body) {
-            for (auto &d : ds) d = UnknownDesc();
+            for (auto &d : ds) d = RootSet::Unknown();
             return ds;
         }
         auto usable = true;
@@ -416,11 +447,11 @@ struct CycleRoots {
                     usable = false;
                 } else {
                     vector<string_view> busy;
-                    ds[0] = JoinDesc(ds[0], ScanExpr(f, tail, busy, 0));
+                    ds[0].Join(ScanExpr(f, tail, busy, 0));
                 }
             }
         }
-        if (!usable) for (auto &d : ds) d = UnknownDesc();
+        if (!usable) for (auto &d : ds) d = RootSet::Unknown();
         return ds;
     }
 
@@ -448,38 +479,59 @@ struct CycleRoots {
         }
         for (auto g : descqueue) {
             auto &result = cache.returns.at(g);
-            if (!settled) for (auto &d : result.values) d = UnknownDesc();
+            if (!settled) for (auto &d : result.values) d = RootSet::Unknown();
             result.settled = true;
         }
         descqueue.clear();
     }
 
-    // The prediction as a root of this specialization, with the exactness
-    // that root carries (§9.5): a global owns its own storage, a parameter
-    // stands for one call-site array only where that argument's root did. A
-    // parameter's root class may legitimately be null (the call site passed
-    // static data).
-    VarDef *ResolveDesc(FnSpec *spec, const RootDesc &d, bool &exact) {
-        exact = false;
-        if (d.kind == RD_PARAM && d.param < (int)spec->params.size() &&
-            d.param < (int)spec->argtypes.size()) {
-            auto pt = spec->argtypes[d.param];
-            if (IsRefOrSlice(pt)) {
+    // One predicted root as this specialization sees it, with the exactness
+    // and writability it carries (§9.5): a global owns its own storage, which
+    // is writable when it is a `var`; a parameter's pointee stands for one
+    // call-site array only where that argument's root did, and is writable
+    // where the argument was (its root class may legitimately be null, where
+    // the call site passed static data); static data is read-only. False for
+    // what only one activation knows: its own storage, or a name no enclosing
+    // scope declares.
+    bool ResolveDesc(FnSpec *spec, const RootDesc &d, RetAlt &a) {
+        a = RetAlt {};
+        switch (d.kind) {
+            case RD_PARAM: {
+                if (d.param >= (int)spec->params.size() || d.param >= (int)spec->argtypes.size() ||
+                    !IsRefOrSlice(spec->argtypes[d.param]))
+                    return false;
                 auto vd = spec->params[d.param];
-                exact = vd->refrootknown && vd->ref.rootexact;
-                return rootof(vd, true);
+                a.root = rootof(vd, true);
+                a.exact = vd->refrootknown && vd->ref.rootexact;
+                a.writable = vd->ref.writable;
+                return true;
             }
+            case RD_GLOBAL:
+                a.root = RootOfGlobal(d.glob);
+                a.exact = true;
+                a.writable = !(d.glob->type && d.glob->type->cq);
+                return true;
+            case RD_FREE: {
+                auto vd = freevar(d.name);
+                if (!vd) return false;
+                auto isref = vd->type && IsRefOrSlice(vd->type);
+                a.writable = isref ? vd->ref.writable : !(vd->type && vd->type->cq);
+                if (vd->isglobal) {
+                    a.root = RootOfGlobal(vd);
+                    a.exact = true;
+                    return true;
+                }
+                a.root = rootof(vd, isref);
+                a.exact = isref ? vd->refrootknown && vd->ref.rootexact : true;
+                return true;
+            }
+            case RD_STATIC:
+                a.exact = true;
+                return true;
+            case RD_LOCAL:
+                return false;
         }
-        if (d.kind == RD_GLOBAL) { exact = true; return RootOfGlobal(d.glob); }
-        if (d.kind == RD_FREE) {
-            auto vd = freevar(d.name);
-            if (!vd) return cycleroot;
-            if (vd->isglobal) { exact = true; return RootOfGlobal(vd); }
-            auto isref = vd->type && IsRefOrSlice(vd->type);
-            exact = isref ? vd->refrootknown && vd->ref.rootexact : true;
-            return rootof(vd, isref);
-        }
-        return cycleroot;
+        return false;
     }
 
     void Seed(FnSpec *spec) {
@@ -493,51 +545,107 @@ struct CycleRoots {
         for (size_t i = 0; i < spec->rets.size(); i++) {
             if (!IsRefOrSlice(spec->rets[i])) continue;
             auto &rr = spec->retroots[i];
-            rr.root = i < ds.size() ? ResolveDesc(spec, ds[i], rr.exact) : cycleroot;
-            // Writability follows the root (§9.5): a global's storage is
-            // writable when the global is a `var`, a parameter's when the
-            // argument behind it was; a sentinel promises nothing.
-            rr.writable = false;
-            if (i < ds.size()) {
-                auto &d = ds[i];
-                if (d.kind == RD_GLOBAL)
-                    rr.writable = d.glob && !(d.glob->type && d.glob->type->cq);
-                else if (d.kind == RD_PARAM && d.param < (int)spec->params.size())
-                    rr.writable = spec->params[d.param]->ref.writable;
-                else if (d.kind == RD_FREE) {
-                    if (auto vd = freevar(d.name)) {
-                        auto isref = vd->type && IsRefOrSlice(vd->type);
-                        rr.writable = isref ? vd->ref.writable : !(vd->type && vd->type->cq);
-                    }
-                }
-            }
             rr.seeded = true;
+            rr.predunknown = i >= ds.size() || ds[i].unknown;
+            for (size_t k = 0; !rr.predunknown && k < ds[i].alts.size(); k++) {
+                RetAlt a;
+                if (ResolveDesc(spec, ds[i].alts[k], a)) rr.pred.push_back(a);
+                else rr.predunknown = true;
+            }
+            if (rr.predunknown) rr.pred.clear();
         }
     }
 
-    // The prediction the cycle's back edges were given must hold: what is
-    // wrong with a checked return whose root contradicts it, empty when it
-    // agrees. A sentinel prediction promised nothing to contradict.
-    string ReturnConflict(FnSpec *spec, size_t i, VarDef *root, bool exact) {
-        if (spec->checkedreturn || i >= spec->retroots.size() || !spec->retroots[i].seeded)
-            return {};
+    // A return checked while back edges map the prediction (§7.8): what is
+    // wrong with it, empty when it fits. Where the scan named nothing, the
+    // first return stands in for the prediction, since no back edge was
+    // given one before it. A root the prediction names may narrow what later
+    // back edges are given, but not take back what earlier ones used; one it
+    // misses joins it, which once a back edge has used the prediction only a
+    // root no deeper than that back edge's result may, and one every
+    // activation shares: a back edge gives a parameter's class the arguments
+    // it passes. A return that may be the pointee of a parameter none of the
+    // prediction's roots stands for leaves back edges nothing to map. `gs`
+    // and `local`: a store may not keep the returned reference, its root
+    // included, as it may not keep a reference into a grow-shrink array
+    // (§5.2) or into what the cycle stores nothing into (§7.8).
+    string ReturnConflict(FnSpec *spec, size_t i, const RetAlt &ret, bool gs, bool local) {
+        if (!spec->inprogress || i >= spec->retroots.size()) return {};
         auto &rr = spec->retroots[i];
-        if (rr.root == cycleroot) return {};
-        if (rr.root == root) {
-            // A back edge may already have stored the result relatively on the
-            // strength of the prediction's exactness (§3.9).
-            if (!exact && rr.exact)
-                return cat("this return's reference only outlives ",
-                           root ? root->name : string_view("static data"),
-                           ", but the recursive cycle's returns give storage it owns "
-                           "(§7.8); use one source");
+        if (!rr.seeded || rr.predlost) return {};
+        auto weakens = [&](bool lessexact, bool readonly, bool togs, bool tolocal) -> string {
+            if (rr.usedexact && lessexact)
+                return "this return weakens the reference root already used by the recursive "
+                       "cycle (§7.8); use one source";
+            if (rr.usedwritable && readonly)
+                return "this return is read-only, but the recursive cycle already used a "
+                       "writable result; declare the result const (§9.5)";
+            if (rr.usedclean && togs)
+                return "this return may point into a grow-shrink array, but the recursive "
+                       "cycle already used a result that does not (§5.2, §7.8); use one source";
+            if (rr.usedstorable && tolocal)
+                return "this return may be rooted where the recursive cycle stores nothing, "
+                       "but the cycle already used a result it could store (§7.8); use one "
+                       "source";
+            return {};
+        };
+        // The classes of this activation's parameters, which a back edge maps
+        // to the arguments it gives them, and whether the prediction has each.
+        auto isclass = [&](VarDef *r) {
+            for (auto p : spec->params) if (r && p->ref.root == r) return true;
+            return false;
+        };
+        auto covered = true;
+        for (auto p : spec->params) {
+            auto c = p->ref.root;
+            if (!isclass(c)) continue;
+            auto has = false;
+            for (auto &a : rr.pred) has |= a.root == c;
+            covered &= has;
+        }
+        auto hidden = ret.hidesclass && !covered;
+        if (rr.predunknown || rr.pred.empty()) {
+            if (hidden) rr.predlost = true;
+            else rr.pred.push_back(ret);
+            rr.predunknown = false;
             return {};
         }
-        return cat("this return's reference is rooted at ",
-                   root ? root->name : string_view("static data"),
-                   ", but the recursive cycle's returns give ",
-                   rr.root ? rr.root->name : string_view("static data"),
-                   " (§7.8); use one source");
+        auto named = false;
+        for (auto &a : rr.pred) {
+            if (a.root != ret.root) continue;
+            named = true;
+            if (auto bad = weakens(!ret.exact, !ret.writable, ret.intogs && !a.intogs,
+                                   ret.cyclelocal && !a.cyclelocal);
+                !bad.empty())
+                return bad;
+            a.exact = a.exact && ret.exact;
+            a.writable = a.writable && ret.writable;
+            if (!a.intogs) a.intogs = ret.intogs;
+            a.cyclelocal = a.cyclelocal || ret.cyclelocal;
+            a.hidesclass = a.hidesclass || ret.hidesclass;
+        }
+        if (hidden) {
+            if (rr.used)
+                return "this return may point where a parameter other than its root's does, "
+                       "which the recursive cycle's back edges were not given (§7.8); use one "
+                       "source";
+            rr.predlost = true;
+            return {};
+        }
+        if (named) return {};
+        if (rr.used) {
+            if (isclass(ret.root))
+                return cat("this return's reference is rooted at ", ret.root->name,
+                           ", which the recursive cycle's back edges were not given (§7.8); "
+                           "use one source");
+            if (ret.root && ret.root->depth > rr.useddepth)
+                return cat("this return's reference is rooted at ", ret.root->name,
+                           ", deeper than the result the recursive cycle's back edges were "
+                           "given (§7.8); use one source");
+            if (auto bad = weakens(true, !ret.writable, gs, local); !bad.empty()) return bad;
+        }
+        rr.pred.push_back(ret);
+        return {};
     }
 };
 

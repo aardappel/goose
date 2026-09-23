@@ -407,9 +407,10 @@ struct Prov {
     // rule (§5.2) reads it beside the root (TypeCheck::GrowShrinkTaint).
     VarDef *intogs = nullptr;
     // What else a merged value -- the branches of an `if`, a variable's
-    // bindings -- may be that its root does not show: rooted where a
-    // recursive cycle stores nothing (§7.8), or at a parameter's class, which
-    // a back edge may give other arrays than the entry call did (§7.8).
+    // bindings, a function's returns -- may be that its root does not show:
+    // rooted where a recursive cycle stores nothing (§7.8), or at a
+    // parameter's class, which a back edge may give other arrays than the
+    // entry call did (§7.8).
     bool cyclelocal = false;
     bool hidesclass = false;
     // Every value this may hold was loaded out of a field, an element or a
@@ -1225,27 +1226,40 @@ struct LiveShrink {
     string name;                 // What is still used, as the error names it.
 };
 
-// One return value's reference root, for the callers to map (§9.2), and
-// the cycle fixpoint's prediction of it (§7.8).
-struct RetRoot {
-    VarDef *root = nullptr;    // Param VarDef, global, or null = static data.
+// One root a function's result may have (§9.2): a checked return's, or one
+// the cycle fixpoint predicts (§7.8), with the guarantees that hold of it.
+struct RetAlt {
+    VarDef *root = nullptr;    // Param class root, global, captured outer local, or null = static data.
     bool exact = false;        // Val::rootexact of the returned reference.
     bool writable = false;
+    VarDef *intogs = nullptr;  // Prov::intogs of a return rooted here.
+    bool cyclelocal = false;   // Prov::cyclelocal of one.
+    bool hidesclass = false;   // Prov::hidesclass of one.
+    bool slotread = false;     // Prov::slotread of every one.
+};
+
+// One return value's reference roots: every root a return gives, which each
+// call maps and merges as it would the branches of an `if` (§9.2), and the
+// cycle fixpoint's prediction of them (§7.8).
+struct RetRoot {
+    vector<RetAlt> alts;       // One per distinct root of the checked returns.
     bool byteview = false;
-    VarDef *intogs = nullptr;  // Prov::intogs of some return.
-    bool cyclelocal = false;   // Prov::cyclelocal of some return.
-    // Some return may be a parameter's pointee its root does not show
-    // (Prov::hidesclass), which a back edge maps through none of its own
-    // arguments: back edges get the cycleroot sentinel from then on.
-    bool hidesclass = false;
-    bool slotread = false;     // Prov::slotread of every return.
     bool set = false;          // A non-null return has recorded its root.
-    bool seeded = false;       // `root` is the cycle fixpoint's prediction and no
-                               // return has been checked yet; the prediction is
-                               // verified as they are.
-    // What a back edge's result was given while the returns were still being
-    // checked (§7.8): the returns checked after it may not take that back.
+    // While a `recursive fn` body is checked, its back edges map `pred`, the
+    // roots its returns were predicted to give, or where the scan named none
+    // (`predunknown`), those of the returns checked so far; each checked
+    // return is held against it (CycleRoots::ReturnConflict). A return that
+    // may be a parameter's pointee none of them shows leaves back edges the
+    // cycleroot sentinel from then on (`predlost`).
+    bool seeded = false;
+    bool predunknown = false;
+    bool predlost = false;
+    vector<RetAlt> pred;
+    // What back edges were given (§7.8): a return checked later may not
+    // take it back, by being deeper, less exact, read-only, or what a store
+    // may not keep where theirs could be kept.
     bool used = false;
+    int useddepth = INT32_MAX;
     bool usedexact = false;
     bool usedwritable = false;
     bool usedclean = false;    // Given as pointing into no grow-shrink array.
@@ -1299,9 +1313,8 @@ struct FnSpec {
     Block *body = nullptr;         // Cloned, annotated copy of sf->body.
     vector<VarDef *> params;
     vector<TypeExpr *> rets;       // TY_VOID-free: empty = no return values.
-    vector<RetRoot> retroots;      // Per ret, from the first return checked or seeded.
+    vector<RetRoot> retroots;      // Per ret: the checked returns' roots and the prediction.
     bool retsknown = false;
-    bool checkedreturn = false;    // A return with values has been recorded.
     bool inprogress = false;
     bool incycle = false;          // Part of a recursive cycle (§7.8).
     // The cycle member this one was merged under; following the links ends

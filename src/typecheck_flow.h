@@ -706,15 +706,14 @@ inline void TypeCheck::PrebindLoopRefs(Node *body) {
             continue;
         if (vd->ownerspec != frames.back().spec) continue;
         auto cy = Cycles();
-        RootDesc d;
+        RootSet s;
         for (auto rhs : rhss) {
-            if (Is<NullLit>(rhs)) continue;
             vector<string_view> busy;
-            d = CycleRoots::JoinDesc(d, cy.ScanExpr(sf, rhs, busy, 0));
+            s.Join(cy.ScanExpr(sf, rhs, busy, 0));
         }
         VarDef *root = nullptr;
         auto exact = false;
-        if (!ResolvePrebind(d, root, exact)) continue;
+        if (s.unknown || s.alts.size() != 1 || !ResolvePrebind(s.alts[0], root, exact)) continue;
         vd->ref.root = CanonRoot(root);
         vd->ref.rootexact = exact;
         vd->ref.rootfrom = nullptr;
@@ -826,7 +825,8 @@ inline TypeExpr *TypeCheck::NarrowedRef(TypeExpr *t, Line l) {
 }
 
 // Merges the values of two branches (for roots: the deeper — i.e. more
-// conservative — root wins; writability must hold in both).
+// conservative — root wins; writability must hold in both). A call merges
+// the roots its callee's returns give the same way (CallResult).
 inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at,
                                 bool wantvalue, Node *anode, Node *bnode) {
     if (!areach) return b;

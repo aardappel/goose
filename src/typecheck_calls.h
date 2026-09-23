@@ -1251,7 +1251,6 @@ inline void TypeCheck::CheckExternSpec(FnSpec *spec) {
         spec->rets.push_back(t);
     }
     spec->retsknown = true;
-    spec->checkedreturn = true;
     spec->inprogress = false;
 }
 
@@ -1529,46 +1528,74 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         if (root && root == cycleroot)
             Error(at, "returning the result of a recursive call whose returned "
                       "reference's root the cycle's returns do not determine (§7.8)");
+        RetAlt ret { root, exact, vals[i].writable, isrs ? vals[i].intogs : nullptr,
+                     vals[i].cyclelocal, vals[i].hidesclass, isrs && vals[i].slotread };
         auto &rr = tspec->retroots[i];
-        if (rr.set && rr.root != root)
-            Error(at, "returns disagree on the returned reference's root "
-                      "(not yet supported; use one source)");
-        // Once a back edge has reused this result, its promises may already
-        // have justified stores or writes. A later return cannot weaken them.
-        if (rr.usedexact && !exact)
-            Error(at, "this return weakens the reference root already used by the "
-                      "recursive cycle (§7.8); use one source");
-        if (rr.usedwritable && !vals[i].writable)
-            Error(at, "this return is read-only, but the recursive cycle already "
-                      "used a writable result; declare the result const (§9.5)");
-        if (rr.usedclean && !rr.intogs && isrs && vals[i].intogs)
-            Error(at, "this return may point into a grow-shrink array, but the recursive "
-                      "cycle already used a result that does not (§5.2, §7.8); use one source");
-        if (rr.usedstorable && !rr.cyclelocal && vals[i].cyclelocal)
-            Error(at, "this return may be rooted where the recursive cycle stores nothing, "
-                      "but the cycle already used a result it could store (§7.8); use one "
-                      "source");
-        if (rr.used && vals[i].hidesclass)
-            Error(at, "this return may point where a parameter other than its root's does, "
-                      "which the recursive cycle's back edges were not given (§7.8); use one "
-                      "source");
-        auto previous = rr.set && !rr.seeded;
-        rr.set = true;
-        if (auto bad = Cycles().ReturnConflict(tspec, i, root, exact); !bad.empty())
-            Error(at, bad);
-        rr.root = root;
-        // A result may come from any return. Guarantees must hold on all
-        // paths; a cycle's initial prediction is not an actual return.
-        rr.exact = exact && (!previous || rr.exact);
-        rr.writable = vals[i].writable && (!previous || rr.writable);
+        if (rr.seeded) {
+            // Where a root the back edges were not given joins them, a store
+            // of it meets its own storage too.
+            auto gs = holder ? IntoGrowShrink(vals[i], root, rt, true)
+                             : StoredIntoGrowShrink(vals[i], root, rt, false) != nullptr;
+            auto local = !CycleStorable(root) || ret.cyclelocal;
+            if (auto bad = Cycles().ReturnConflict(tspec, i, ret, gs, local); !bad.empty())
+                Error(at, bad);
+        }
+        // A result may come from any return: every root one gives is kept,
+        // with the guarantees that hold on all paths to it.
+        auto known = false;
+        for (auto &a : rr.alts) {
+            if (a.root != root) continue;
+            a.exact = a.exact && ret.exact;
+            a.writable = a.writable && ret.writable;
+            if (!a.intogs) a.intogs = ret.intogs;
+            a.cyclelocal = a.cyclelocal || ret.cyclelocal;
+            a.hidesclass = a.hidesclass || ret.hidesclass;
+            a.slotread = a.slotread && ret.slotread;
+            known = true;
+        }
+        if (!known) rr.alts.push_back(ret);
         rr.byteview = rr.byteview || vals[i].byteview;
-        if (isrs && !rr.intogs) rr.intogs = vals[i].intogs;
-        rr.cyclelocal = rr.cyclelocal || vals[i].cyclelocal;
-        rr.hidesclass = rr.hidesclass || vals[i].hidesclass;
-        rr.slotread = isrs && vals[i].slotread && (!previous || rr.slotread);
-        rr.seeded = false;
+        rr.set = true;
     }
-    tspec->checkedreturn = true;
+}
+
+// One root a result may have, as this call sees it: a parameter's class root
+// maps back to the argument's root -- at a back edge, which reuses the body
+// whatever it passes (§7.8), to every argument the class's parameters get,
+// merged; anything else is itself.
+inline Val TypeCheck::RetAltVal(FnSpec *spec, const RetAlt &alt, vector<Val> &argvals,
+                                TypeExpr *t, Node *at) {
+    Val m;
+    m.type = t;
+    m.root = alt.root;
+    m.rootexact = alt.exact && alt.root != nullptr;   // Static data is no array to name.
+    m.writable = alt.writable;
+    m.intogs = alt.intogs;
+    m.cyclelocal = alt.cyclelocal;
+    m.hidesclass = alt.hidesclass;
+    m.slotread = alt.slotread;
+    if (!alt.root || alt.root->isglobal || alt.root->ownerspec) return m;
+    auto v = m;
+    auto first = true;
+    for (size_t p = 0; p < spec->params.size() && p < argvals.size(); p++) {
+        if (spec->params[p]->ref.root != alt.root) continue;
+        auto ph = !IsRefOrSlice(spec->argtypes[p]);
+        auto &a = argvals[p];
+        auto x = m;
+        x.root = CanonRoot(ph ? HolderRootOf(a) : a.root);
+        x.rootexact = alt.exact && (ph ? a.holderexact : a.rootexact);
+        x.rootfrom = a.rootfrom;
+        x.writable = alt.writable && a.writable;
+        if (!ph) {
+            if (!x.intogs) x.intogs = a.intogs;
+            x.cyclelocal = x.cyclelocal || a.cyclelocal;
+            x.hidesclass = x.hidesclass || a.hidesclass;
+        }
+        v = first ? x : MergeVals(v, true, x, true, at, true, nullptr, nullptr);
+        first = false;
+        if (!spec->inprogress) break;
+    }
+    return v;
 }
 
 inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
@@ -1579,64 +1606,36 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
         v.type = spec->rets[i];
         auto holder = !IsRefOrSlice(v.type) && HoldsPlainRef(v.type);
         if (IsRefOrSlice(v.type) || holder) {
-            auto ri = i < spec->retroots.size() ? spec->retroots[i] : RetRoot {};
-            auto rr = ri.root;
-            v.writable = ri.writable && !v.type->cq;
+            RetRoot none;
+            auto &ri = i < spec->retroots.size() ? spec->retroots[i] : none;
+            // A back edge's target is still being checked: it maps the roots
+            // its returns were predicted to give (§7.8), and where there are
+            // none to map, it outlives nothing, which is not static data.
+            auto backedge = spec->inprogress;
+            if (backedge && (!ri.seeded || ri.predlost || ri.pred.empty())) {
+                v.root = cycleroot;
+            } else {
+                // Each root a return gives, merged as branches are (§9.2).
+                auto first = true;
+                for (auto &alt : backedge ? ri.pred : ri.alts) {
+                    auto m = RetAltVal(spec, alt, argvals, v.type, c);
+                    v = first ? m : MergeVals(v, true, m, true, c, true, nullptr, nullptr);
+                    first = false;
+                }
+            }
+            v.writable = v.writable && !v.type->cq;
             // A back edge's returns are not all known yet: any u8 view the
             // result holds, directly or inside a holder, may be a byte view.
             auto u8view = false;
-            if (spec->inprogress) {
+            if (backedge) {
                 vector<TypeExpr *> ps;
                 if (holder) RefPointees(v.type, ps); else ps.push_back(PointeeOf(v.type));
                 for (auto pt : ps) u8view |= pt && IsU8(pt);
             }
-            v.byteview = ri.byteview || u8view;
-            if (!holder) v.intogs = ri.intogs;
-            v.cyclelocal = ri.cyclelocal;
-            v.hidesclass = ri.hidesclass;
-            // A slot read where every return is one; a back edge's returns
-            // are not all checked yet.
-            v.slotread = !holder && ri.slotread && !spec->inprogress;
-            if (spec->inprogress && ri.hidesclass) {
-                // A return may be the pointee of a parameter its root does
-                // not show, which this back edge may have given another
-                // array than the entry call did: unknown, as below.
-                v.root = cycleroot;
-            } else if (!rr) {
-                // A back edge whose target has neither recorded nor
-                // predicted this root: unknown, which is not static data.
-                auto known = spec->checkedreturn || ri.seeded;
-                v.root = spec->inprogress && !known ? cycleroot : nullptr;
-            } else if (!rr->isglobal && !rr->ownerspec) {
-                // A synthetic per-class parameter root: map back to this
-                // call site's argument root. A back edge reuses the body
-                // whatever it passes (§7.8), so it may give the parameters
-                // of one class different arrays: the result may be in any.
-                v.root = rr;
-                v.rootexact = ri.exact;
-                auto first = true;
-                for (size_t p = 0; p < spec->params.size() && p < argvals.size(); p++) {
-                    if (spec->params[p]->ref.root != rr) continue;
-                    auto ph = !IsRefOrSlice(spec->argtypes[p]);
-                    auto &a = argvals[p];
-                    auto m = v;
-                    m.root = CanonRoot(ph ? HolderRootOf(a) : a.root);
-                    m.rootexact = ri.exact && (ph ? a.holderexact : a.rootexact);
-                    m.rootfrom = a.rootfrom;
-                    m.writable = v.writable && a.writable;
-                    if (!ph) {
-                        if (!m.intogs) m.intogs = a.intogs;
-                        m.cyclelocal = m.cyclelocal || a.cyclelocal;
-                        m.hidesclass = m.hidesclass || a.hidesclass;
-                    }
-                    v = first ? m : MergeVals(v, true, m, true, c, true, nullptr, nullptr);
-                    first = false;
-                    if (!spec->inprogress) break;
-                }
-            } else {
-                v.root = rr;  // A global or a captured outer local.
-                v.rootexact = ri.exact;
-            }
+            v.byteview = v.byteview || ri.byteview || u8view;
+            // A slot read where every return is one, as MergeVals keeps it;
+            // a back edge's returns are not all checked yet.
+            v.slotread = v.slotread && !holder && !backedge;
             if (holder) {
                 // The bound travels as the holder root; the value itself is
                 // a temporary.
@@ -1652,14 +1651,15 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
             v.writable = false;
         }
         if (spec->inprogress && i < spec->retroots.size()) {
+            // What a back edge was given, the returns checked after it may
+            // not take back (CycleRoots::ReturnConflict).
             auto &rr = spec->retroots[i];
-            rr.usedexact |= holder ? v.holderexact : v.rootexact;
-            rr.usedwritable |= v.writable;
-            // What a store may already have kept, the returns checked after
-            // this may not take back either (RecordReturn).
             auto root = CanonRoot(HolderRootOf(v));
             if ((IsRefOrSlice(v.type) || holder) && root != cycleroot) {
                 rr.used = true;
+                rr.useddepth = min(rr.useddepth, Depth(root));
+                rr.usedexact |= holder ? v.holderexact : v.rootexact;
+                rr.usedwritable |= v.writable;
                 rr.usedclean |= IsRefOrSlice(v.type) && !GrowShrinkTaint(v, v.type);
                 rr.usedstorable |= CycleStorable(root) && !v.cyclelocal;
             }

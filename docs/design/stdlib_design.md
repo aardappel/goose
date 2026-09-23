@@ -891,8 +891,8 @@ parameter does, so `f(&gs)` into `fn f(xs)` mutates `gs`.
 
 **`return null` is root-neutral (spec §9.2).** `fn find<T, F>(xs: T[:]) ->
 T?` written as `for &x in xs { if F(x) { return x; } } return null;`
-typechecks: a null return names no root, so it agrees with every other
-return.
+typechecks: a null return names no root, so it adds nothing to the roots
+the other returns give.
 
 **Generic type aliases** (`type set<K> = dictionary<K, bool>;`) do not
 parse. Non-generic aliases of generic instances (`type float3 =

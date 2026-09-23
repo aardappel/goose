@@ -27,8 +27,9 @@
 // spec, §9.2/§9.5): a read-back reference is writable regardless of its
 // original provenance (writability launders through storage -- the language's
 // const-cast loophole); a reference variable commits to one root depth for
-// its whole life; all returns of one function agree on the returned
-// reference's root. Inside a recursive cycle (§7.8) a reference may be stored
+// its whole life. A function's result is rooted as a branch value is: each
+// call merges the roots its returns give, mapped to its own arguments.
+// Inside a recursive cycle (§7.8) a reference may be stored
 // only if it is rooted at a global or at a pool parameter -- a parameter root
 // class whose members are all references to resizable-class values, which no
 // cycle function holds across a call into its cycle (VarDef::poolclass,
@@ -1108,6 +1109,7 @@ struct TypeCheck {
     int EnvReach(const MatchInfo &mi);
     void CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline);
     void RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at);
+    Val RetAltVal(FnSpec *spec, const RetAlt &alt, vector<Val> &argvals, TypeExpr *t, Node *at);
     Val CallResult(Call *c, FnSpec *spec, vector<Val> &argvals);
     void CheckReturn(Return *r);
     FnSpec *EnsureThreadSpec(SFunction *sf, Line l);

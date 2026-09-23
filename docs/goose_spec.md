@@ -1634,39 +1634,46 @@ at a back edge is a compile error. (Further refinements are future work,
 TODO.)
 
 **Cycle return roots.** A back edge reaches a function whose own returns may
-not have been checked yet, so the root of its result cannot come from them.
+not have been checked yet, so the roots of its result cannot come from them.
 Instead, **the return roots of a cycle are the fixpoint over the returns of
-the functions in it**, computed before any of their bodies are checked: a
-return of `X.push(…)`, `X.alloc_ref(…)` or `&X[…]` gives the root of `X` (a
-global, a free variable, or a parameter, whose root each specialization
-already has from its call site); a return of a reference variable gives the
-root of what it was
-bound to; a return of `g(…)` gives `g`'s return root, mapped through the
-argument that carries it; iterating settles the mutual definitions. A cycle
-function may therefore `return` the result of a back-edge call, and a
-parenthesised subexpression in a recursive-descent parser needs no wrapper
-node (`bench/goose/calc_noparen.goose`). Every real return is then checked
-against the fixpoint's answer, and the §9.2 rule that all returns agree
-applies as usual.
+the functions in it**, computed before any of their bodies are checked, and
+each is a set, one root for each way a return can go: a return of
+`X.push(…)`, `X.alloc_ref(…)`, `&X[…]` or `X[i..j]` gives the root of `X` (a
+global, a free variable, or a parameter, whose pointee's root each call
+supplies); a string literal gives static data, and `null` nothing; a return
+of a reference variable gives the roots of what it was bound to; a return of
+`g(…)` gives `g`'s return roots, mapped through the arguments that carry
+them; iterating settles the mutual definitions. A back edge reuses the body
+whatever it passes, so it maps a parameter's root through the arguments it
+gives the parameters the entry call gave that root — it may give two of them
+two arrays where the entry call gave one — and merges the lot as a call
+merges its callee's returns (§9.2). A cycle function may therefore `return`
+the result of a back-edge call, and a parenthesised subexpression in a
+recursive-descent parser needs no wrapper node
+(`bench/goose/calc_noparen.goose`); one that returns either of two pools it
+is handed can store the result where both outlive the store.
 
-A back edge reuses the body whatever it passes, so it may give two
-parameters that the entry call gave one root two different arrays: a result
-rooted at that root is rooted, at the back edge, at the innermost of the
-arguments it gives them. A return that may be the pointee of a parameter its
-root does not show (a merged value, §9.2) makes the back edges checked after
-it carry the root that outlives nothing (below), and is an error where a
-back edge has already used the result; so is a return that would make a
-result a back edge used less exact, read-only, or impossible to store where
-the back edge's result could be stored (§5.2, and the store rule above).
+Every real return is then checked against what the back edges were given.
+A root the fixpoint names is fine, unless a back edge was already given a
+result that this return would make less exact, read-only, or impossible to
+store where the back edge's result could be stored (§5.2, and the store rule
+above). A root it missed joins the answer for the back edges checked later;
+after one has used the answer, only a root no deeper than that back edge's
+result is accepted, which every activation shares: a global, static data or
+a free variable. A return that may be the pointee of a parameter the answer
+does not map (a merged value, §9.2) leaves the back edges checked after it
+the root that outlives nothing (below), and is an error once one has used
+the answer.
 
-Where the fixpoint cannot determine a root — a callee that returns one of two
-of its own pool parameters, say, so which one it is depends on the call site —
-the result of a back edge is not treated as static data (that would let it be
-stored into a global and outlive the pool it points into). It carries instead
-a root that outlives nothing: such a result may be passed down, but storing or
-returning it is a compile error. It may point into a grow-shrink array, too,
-so what it is passed down to holds it the way §5.2 holds references into one,
-in variables only: not in a literal, either.
+Where the fixpoint cannot determine a root — a return of a call to an
+overload set or a function value, say, or of an `if` — the first return
+checked stands in for its answer, as no back edge was given one before it.
+Before that, the result of a back edge is not treated as static data (that
+would let it be stored into a global and outlive the pool it points into).
+It carries instead a root that outlives nothing: such a result may be passed
+down, but storing or returning it is a compile error. It may point into a
+grow-shrink array, too, so what it is passed down to holds it the way §5.2
+holds references into one, in variables only: not in a literal, either.
 
 ### 7.9 `return … from` (long-distance return)
 
@@ -1882,18 +1889,23 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   as is the declaration above.
 * **Return**: a returned reference's root must be visible to the caller (a
   caller-supplied root, a global, or the function's own in-place-constructed
-  return value).
+  return value) — every return's, whatever the others give.
 * **Merged values**: a value that may be any of several — the branches of an
   `if` or `match`, the `break`s of a `block` or `loop`, a reference
-  variable's bindings — is rooted at the innermost of their roots, the one
+  variable's bindings, or a function's `return`s, which each call maps to
+  its own arguments — is rooted at the innermost of their roots, the one
   whose scope ends first, and exactly only where every one of them names that
   one root exactly (a `null` names none); what a value holding references
   holds is rooted the same way. It is writable only where all of them are
   (§9.5), and it is stored only where each of them could be: not at all
   where one may point into a grow-shrink array (§5.2), and not inside a
   recursive cycle where one is rooted where the cycle stores nothing (§7.8).
-  A parameter given such a value, and a call's result where the returns or
-  the argument behind them may be one, are stored the same way.
+  A parameter given such a value, and a call's result where the argument
+  behind a return may be one, are stored the same way. So a function may
+  return a view of its input on one path and of a global arena or a string
+  literal on another, and `longer(x, y)`, for a `longer` returning whichever
+  of its two slice parameters is longer, is rooted at whichever of `x` and
+  `y` is declared further in, whichever it returns at run time.
 * Struct types with reference fields are implicitly generic over those
   fields' roots; struct instances with different root bindings are distinct
   types for checking purposes (same layout). One whose references all point
@@ -1924,8 +1936,6 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   it and supplies the rest of the provenance. Where the scan cannot tell,
   nothing changes, and a use before the rebind sees the read-back rule's
   answer (§9.5).
-* All `return`s of one function must agree on the returned reference's root
-  (v1 simplification; use one source or split the function).
 * Inside recursive cycles the stricter §7.8 cycle store rule applies.
 * A **temporary** — an array, struct or variant literal, or a call's
   result, viewed where it stands rather than built into a destination (by a
@@ -2022,10 +2032,10 @@ with no annotation needed:
   declared `const u8[:]` is read-only whatever it is given, which is what a
   function that only reads its input documents. A declared result type
   likewise names the shape, and the constness of a call's result is that of
-  what the function returns (a `u8[:]` result of `return s` for a `const
-  u8[:]` parameter is read-only at that call); `-> const u8[:]` makes it
-  read-only always. Adding `const` is implicit everywhere (`u8[:]` fits
-  `const u8[:]`); dropping it is never.
+  what the function returns, read-only where any return is (a `u8[:]`
+  result of `return s` for a `const u8[:]` parameter is read-only at that
+  call); `-> const u8[:]` makes it read-only always. Adding `const` is
+  implicit everywhere (`u8[:]` fits `const u8[:]`); dropping it is never.
 * **Slots say what they hold.** A field, an element, a global, an annotated
   variable and an assignment target are *slots*, and a read-only reference
   or slice is stored in a slot only if the slot's type is `const`: `struct
@@ -2552,8 +2562,9 @@ the end, each with where its resolution lives.
     globals, free variables and pool parameters as roots of stored
     references — a reference to a caller's fixed-size local is still
     pass-down-only inside a cycle.
-    (One-root-per-reference-variable and the single agreed return root are
-    language rules, §9.2. Writability follows `const` types; storage no longer
+    (One-root-per-reference-variable is a language rule, §9.2; a function's
+    result is rooted as a branch's value is, at the innermost of its
+    returns' roots. Writability follows `const` types; storage no longer
     removes read-only restrictions, §9.5.)
 2. **Error propagation sugar** — `return from` is the mechanism; revisit
    whether a convention/sugar layer (a `try`-alike) is wanted once idioms
@@ -2603,13 +2614,16 @@ the end, each with where its resolution lives.
     that calls are checked the same way.
 0g. **Recursive results' roots at back edges** — DONE (§7.8, cycle return
     roots): a cycle's return roots are the fixpoint over its returns,
-    computed before any body is checked, so a back edge's result carries a
-    real root wherever the fixpoint determines one and an outlives-nothing
-    root (pass-down-only) where it does not. What remains is the precision of
-    the scan itself: it reads returns of `X.push(…)`/`&X[…]`, of reference
+    computed before any body is checked, so a back edge's result carries the
+    merge of the real roots the fixpoint determines, mapped through that back
+    edge's own arguments, and an outlives-nothing root (pass-down-only) where
+    it determines none and no return has been checked yet. What remains is
+    the precision of the scan itself: it reads returns of
+    `X.push(…)`/`&X[…]`/`X[i..j]`, of string literals, of reference
     variables, and of calls to uniquely named functions, and gives up on
-    anything else (overload sets, function values, nested functions), which
-    only ever costs a back-edge result its usability, never soundness.
+    anything else (branch values, overload sets, function values, nested
+    functions), which only ever costs a back-edge result its usability,
+    never soundness.
 1. **varint format benchmark** — DONE, see `varint_bench/results.md`:
    ULEB128 adopted (§3.6). Break-even vs the best branchless format sits at
    ~70–75% single-byte values (a cliff, not a slope); above it ULEB wins

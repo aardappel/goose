@@ -850,10 +850,12 @@ inline void TypeCheck::CheckRootedAtReceiver(Call *c, const char *op, const Val 
                                              const char *sec) {
     if (RootedAtReceiver(rv, av)) return;
     auto why = av.rootexact ? string() : ReadBackWhy(av.type, av.rootfrom);
+    auto root = av.root ? CanonRoot(av.root)->name : string_view("static data");
     Error(c, cat(".", op, " needs ", what, " rooted at the array itself (", sec, "); ",
                  !why.empty() ? why
-                 : cat("this one is rooted at ",
-                       av.root ? CanonRoot(av.root)->name : string_view("static data"))));
+                 : !av.rootexact ? cat("this one's root is not known exactly, only that it "
+                                       "outlives ", root)
+                 : cat("this one is rooted at ", root)));
 }
 
 }  // namespace goose
