@@ -940,30 +940,50 @@ been checked they are mapped again until no record grows
 produced is `guessed`, which its error says as "may shrink".
 
 **Balanced calls** (§5.2). Each summary entry carries a `ShrinkBalance`,
-the worst of the shrinks `NoteShrink` recorded against it: balanced, or not.
-A grow-shrink `resize` is balanced where `ResizesToMark` holds: its length
-argument names a `let` of the activation (`ownerspec` is the current real
-frame's specialization, so a mark a nested function or a block's writer took
-before this activation began does not count) whose initializer was exactly
-`X.len` (`VarDef::markof`, set by `CheckVarDecl`), and `SamePath` finds that
-`X` and the receiver name the same storage: the same variable, not a `var`
-reference, then the same fields, none of them read out as a reference or
-slice. Nothing else is balanced: `pop`, `clear`, other resizes, whole
-assignment, a grow-only array's shrinks (`GrowOnlyShrinkAt` records every
-shrink unbalanced), and whatever a back edge is taken to shrink. The body's
-own scans are unchanged, a balanced resize included, and so are the pairs
-`NoteLiveViews` keeps for it. At a call to a checked callee,
-`ApplyCalleeShrinks` first expands every entry into the arrays it may shrink
-(`ShrinkTargets`), each with its entry's balance, then judges them together:
-a grow-shrink array whose shrinks are all balanced, and that no unbalanced
-one may be (`MayAliasRoots`, a bound taken as inexact and two classes of one
-activation as one array), is recorded as a balanced shrink without the §5.2
-scan, and without pairs for the callers, since a view rooted at a class was
-taken before the call too; every other array is scanned and recorded
-unbalanced as before. The skipped scan includes what a reference to a slice
-variable reaches (`HeldRefsMayPointInto`): the variable still holds a slice
-taken before the call, since writing a view of the array into it through a
-reference is a store (§3.5 rule 3).
+the worst of the shrinks `NoteShrink` recorded against it: balanced,
+assumed balanced (below), or not. A grow-shrink `resize` is balanced where
+`ResizesToMark` holds: its length argument names a `let` of the activation
+(`ownerspec` is the current real frame's specialization, so a mark a nested
+function or a block's writer took before this activation began does not
+count) whose initializer was exactly `X.len` (`VarDef::markof`, set by
+`CheckVarDecl`), and `SamePath` finds that `X` and the receiver name the
+same storage: the same variable, not a `var` reference, then the same
+fields, none of them read out as a reference or slice. No other shrink in a
+body is balanced: `pop`, `clear`, other resizes, whole assignment, and a
+grow-only array's shrinks (`GrowOnlyShrinkAt` records every shrink
+unbalanced). The body's own scans are unchanged, a balanced resize
+included, and so are the pairs `NoteLiveViews` keeps for it. At a call to a
+checked callee, `ApplyCalleeShrinks` first expands every entry into the
+arrays it may shrink (`ShrinkTargets`), each with its entry's balance, then
+judges them together: a grow-shrink array whose shrinks are all balanced,
+and that no unbalanced one may be (`MayAliasRoots`, a bound taken as inexact
+and two classes of one activation as one array), is recorded as a balanced
+shrink without the §5.2 scan, and without pairs for the callers, since a
+view rooted at a class was taken before the call too; every other array is
+scanned and recorded unbalanced as before. The skipped scan includes what a
+reference to a slice variable reaches (`HeldRefsMayPointInto`): the
+variable still holds a slice taken before the call, since writing a view of
+the array into it through a reference is a store (§3.5 rule 3).
+
+A back edge is *assumed* balanced for every grow-shrink array it reaches
+(`SB_ASSUMED`), unless its callee has already recorded an unbalanced
+grow-shrink shrink (`FnSpec::unbalancedshrink`, set by `NoteShrink`). The
+checks it skips run anyway (`KeepShrinkChecks`), the §5.2 scan and then
+`NoteLiveViews`, whose pairs `NoteLiveShrink` puts aside (`livecapture`)
+rather than on their records; the first error ends them. The callee joins
+`assumedopen`, and a later call whose verdict rests on an assumed entry is
+assumed too and keeps its checks the same way (`assumedshrinks`). When the
+last callee in `assumedopen` has been checked (`CheckSpecBody` →
+`SettleAssumedShrinks`), every summary the assumptions went into is
+complete. They held if no callee assumed of has an unbalanced grow-shrink
+shrink, with the assumed entries counted as balanced: a run of the cycle
+then never shortens an array, by induction on how deeply it nests its
+calls, and every assumed entry becomes balanced. Otherwise the first kept
+error is reported, or else every kept pair goes into the record it was
+found for and every assumed entry becomes unbalanced: what judging those
+calls as shrinks from the start would have given. Those records belong to
+calls checked while the cycle was open, which `ResolveCycleSites` maps again
+afterwards, so `CheckSpecBody` settles the assumptions first.
 
 **Growth during construction** (§1.3(4), §4.2). A value built in place at an
 array's top or slot is under construction while its expression is checked,

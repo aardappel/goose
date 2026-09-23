@@ -891,7 +891,7 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
         }
     }
     NoteLiveViews(c, cat("cannot ", op, " ", what), vd, what, true, bound);
-    NoteShrink(vd, bound);
+    NoteShrink(vd, bound, SB_UNBALANCED, true);
     // Inside a loop, a store later in the body reaches this shrink on the
     // next iteration: those are checked when the outermost loop ends.
     auto loopscope = -1;
@@ -1358,7 +1358,8 @@ inline void TypeCheck::NoteRootEvent(VarDef *root, P param, X external) {
 // Records a shrink for callers (§5.2), a bound's with the type of the array
 // its storage leads to. An array stays balanced only while every shrink of
 // it is.
-inline void TypeCheck::NoteShrink(VarDef *root, TypeExpr *bound, ShrinkBalance balance) {
+inline void TypeCheck::NoteShrink(VarDef *root, TypeExpr *bound, ShrinkBalance balance,
+                                  bool growonly) {
     auto note = [&](auto &bounds, auto key) {
         for (auto &b : bounds)
             if (b.key == key && TypeEq(b.type, bound)) {
@@ -1371,15 +1372,72 @@ inline void TypeCheck::NoteShrink(VarDef *root, TypeExpr *bound, ShrinkBalance b
         auto [it, fresh] = entries.try_emplace(key, balance);
         if (!fresh) it->second = std::max(it->second, balance);
     };
+    auto noted = [&](FnSpec *s) {
+        if (balance == SB_ASSUMED) assumedspecs.insert(s);
+        if (balance == SB_UNBALANCED && !growonly) s->unbalancedshrink = true;
+    };
     NoteRootEvent(root,
                   [&](FnSpec *s, int i) {
                       if (bound) note(s->shrinkparambounds, i);
                       else mark(s->shrinkparams, i);
+                      noted(s);
                   },
                   [&](FnSpec *s, VarDef *r) {
                       if (bound) note(s->shrinkexternalbounds, r);
                       else mark(s->shrinkexternals, r);
+                      noted(s);
                   });
+}
+
+// What the §5.2 scan of a shrink and the pairs after it (NoteLiveViews)
+// would report or keep, for a call taken to be balanced before that is known:
+// kept, and reported or recorded should it not be (SettleAssumedShrinks).
+// The first error ends it, as it would have ended the check.
+inline void TypeCheck::KeepShrinkChecks(Node *at, const string &op, VarDef *root,
+                                        const string &what, TypeExpr *bound,
+                                        AssumedShrink &kept) {
+    if (!kept.error.empty()) return;
+    auto saved = livecapture;
+    livecapture = &kept.pairs;
+    try {
+        CheckShrinkHolders(at, op, root, what, bound);
+        NoteLiveViews(at, cat("cannot ", op), root, what, false, bound);
+    } catch (CompileError &e) {
+        kept.error = e.msg;
+    }
+    livecapture = saved;
+}
+
+// Once the outermost function a back edge took to be balanced is checked
+// (§5.2), every summary the assumption went into is complete. It held if no
+// function assumed of shrinks any grow-shrink array unbalanced: then no run
+// shortens one, by induction on the calls it makes, the calls back into the
+// cycle included. If it did not, every call judged by it is judged as one
+// that is not balanced: the first error its skipped checks found is
+// reported, or else the pairs they would have kept go into their records,
+// and what it recorded as balanced is not.
+inline void TypeCheck::SettleAssumedShrinks() {
+    auto held = true;
+    for (auto &a : assumedshrinks) held = held && !(a.callee && a.callee->unbalancedshrink);
+    if (!held) {
+        for (auto &a : assumedshrinks)
+            if (!a.error.empty()) throw CompileError { a.error };
+        for (auto &a : assumedshrinks)
+            for (auto &[s, ls] : a.pairs) NoteLiveShrink(ls, s);
+    }
+    for (auto s : assumedspecs) {
+        auto settle = [&](ShrinkBalance &b) {
+            if (b != SB_ASSUMED) return;
+            b = held ? SB_BALANCED : SB_UNBALANCED;
+            s->unbalancedshrink = s->unbalancedshrink || !held;
+        };
+        for (auto &e : s->shrinkparams) settle(e.second);
+        for (auto &e : s->shrinkexternals) settle(e.second);
+        for (auto &b : s->shrinkparambounds) settle(b.balance);
+        for (auto &b : s->shrinkexternalbounds) settle(b.balance);
+    }
+    assumedshrinks.clear();
+    assumedspecs.clear();
 }
 
 inline void TypeCheck::ShrinkGrowShrink(Node *at, const string &op, VarDef *root,
@@ -1625,6 +1683,10 @@ inline int TypeCheck::NoteLiveShrink(LiveShrink ls, FnSpec *current) {
     };
     if (!current || s == l || (!IsClassRoot(s) && !IsClassRoot(l)) || !outside(s) || !outside(l))
         return -1;
+    if (livecapture) {
+        livecapture->push_back({ current, ls });
+        return 0;
+    }
     for (auto &e : current->liveshrinks) {
         if (e.shrunk != s || e.live != l || !e.bound != !ls.bound) continue;
         if (e.bound && !TypeEq(e.bound, ls.bound)) continue;
@@ -1735,16 +1797,19 @@ inline void TypeCheck::ResolveCycleSites() {
 // A balanced shrink (NoteShrink) frees nothing a view the caller holds can
 // reach, provided no other shrink of the call may be of the same array. A
 // back edge's summary is incomplete, so it counts as shrinking every
-// grow-shrink array it can reach.
+// grow-shrink array it can reach, balanced as long as nothing the callee has
+// done so far says otherwise (SettleAssumedShrinks).
 inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &argvals,
                                           string_view name) {
     auto pending = spec->inprogress;
     FlagScope guessing(guessedshrink, pending);
     auto standalone = Is<Call>(at) && Is<Call>(at)->standalone;
+    auto assume = pending && !spec->unbalancedshrink;
     // A shrink of an array the call may free: a grow-only array takes the
     // §5.1 scan (variables and recorded stores), a grow-shrink one the §5.2
     // scan (variables only) and the pairs its callers judge (NoteLiveViews),
-    // unless balanced.
+    // unless it is judged balanced. One judged so on an assumption keeps what
+    // the two would have done aside until the assumption is settled.
     struct Hit {
         VarDef *root;
         TypeExpr *bound;
@@ -1753,15 +1818,20 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
         const char *how;
     };
     vector<Hit> hits;
-    auto apply = [&](const Hit &h, bool balanced) {
+    AssumedShrink kept;
+    kept.callee = assume ? spec : nullptr;
+    auto apply = [&](const Hit &h, ShrinkBalance judged) {
         auto what = cat("call ", name, ", which ", h.how);
-        if (h.growonly)
+        auto op = cat(what, " ", h.root->name);
+        if (h.growonly) {
             GrowOnlyShrinkAt(at, standalone, what, h.root, string(h.root->name), h.bound);
-        else if (balanced)
-            NoteShrink(h.root, h.bound, h.balance);
-        else
-            ShrinkGrowShrink(at, cat(what, " ", h.root->name), h.root, string(h.root->name),
-                             h.bound);
+        } else if (judged == SB_UNBALANCED) {
+            ShrinkGrowShrink(at, op, h.root, string(h.root->name), h.bound);
+        } else {
+            if (judged == SB_ASSUMED)
+                KeepShrinkChecks(at, op, h.root, string(h.root->name), h.bound, kept);
+            NoteShrink(h.root, h.bound, judged);
+        }
     };
     // A shrink of the `arr` at root, and, where root is inexact or only
     // bounds it, of every other array it may be (ShrinkTargets). An
@@ -1775,7 +1845,7 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
         for (auto &t : ShrinkTargets(root, exact, arr)) {
             Hit h { t.root, t.bound ? arr : nullptr, growonly,
                     growonly ? SB_UNBALANCED : balance, t.root == root ? how : "may shrink" };
-            if (pending) apply(h, false);
+            if (pending) apply(h, assume ? SB_ASSUMED : SB_UNBALANCED);
             else hits.push_back(h);
         }
     };
@@ -1864,8 +1934,8 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
             for (auto vd : g->defs) {
                 if (!vd->type) continue;
                 if (ContainsGrowShrink(vd->type)) {
-                    ShrinkGrowShrink(at, cat("call ", name, ", which may shrink ", vd->name),
-                                     vd, string(vd->name));
+                    apply({ vd, nullptr, false, SB_UNBALANCED, "may shrink" },
+                          assume ? SB_ASSUMED : SB_UNBALANCED);
                 } else if (IsArrayKind(vd->type, A_GROW)) {
                     auto textual = false;
                     for (auto &fr : frames) {
@@ -1879,27 +1949,37 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
                 }
             }
         }
+        if (assume) {
+            assumedshrinks.push_back(std::move(kept));
+            assumedopen.insert(spec);
+        }
     } else {
         for (auto &[vd, balance] : spec->shrinkexternals)
             shrink(vd, true, nullptr, "shrinks", balance);
         for (auto &b : spec->shrinkexternalbounds)
             shrink(b.key, false, b.type, "may shrink", b.balance);
+        // A balanced shrink frees nothing a view of the array taken before
+        // the call points into, unless the call may also shrink that array
+        // unbalanced, under its root or another that may name it: an inexact
+        // or bound one, or a parameter class, which may be a global, a
+        // captured variable or another class (MayAliasRoots; two classes of
+        // one activation only the call sites could tell apart). The verdict
+        // is only assumed where one of those shrinks is.
+        auto judge = [&](const Hit &h) {
+            if (h.growonly || h.balance == SB_UNBALANCED) return SB_UNBALANCED;
+            auto judged = h.balance;
+            for (auto &u : hits) {
+                if (u.growonly || MayAliasRoots(h.root, !h.bound, u.root, !u.bound) == AL_NO)
+                    continue;
+                if (u.balance == SB_UNBALANCED) return SB_UNBALANCED;
+                judged = std::max(judged, u.balance);
+            }
+            return judged;
+        };
+        for (auto &h : hits) apply(h, judge(h));
+        if (!kept.error.empty() || !kept.pairs.empty())
+            assumedshrinks.push_back(std::move(kept));
     }
-    // A balanced shrink frees nothing a view of the array taken before the
-    // call points into, unless the call may also shrink that array
-    // unbalanced, under its root or another that may name it: an inexact or
-    // bound one, or a parameter class, which may be a global, a captured
-    // variable or another class (MayAliasRoots; two classes of one
-    // activation only the call sites could tell apart).
-    auto balanced = [&](const Hit &h) {
-        if (h.growonly || h.balance != SB_BALANCED) return false;
-        for (auto &u : hits)
-            if (!u.growonly && u.balance != SB_BALANCED &&
-                MayAliasRoots(h.root, !h.bound, u.root, !u.bound) != AL_NO)
-                return false;
-        return true;
-    };
-    for (auto &h : hits) apply(h, balanced(h));
     ApplyCalleeLiveShrinks(at, spec, argvals, name);
 }
 

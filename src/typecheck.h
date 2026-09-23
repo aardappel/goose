@@ -1248,11 +1248,32 @@ struct TypeCheck {
     // (`param` gets it and the parameter's index).
     template <typename P, typename X> void NoteRootEvent(VarDef *root, P param, X external);
     void NoteShrink(VarDef *root, TypeExpr *bound = nullptr,
-                    ShrinkBalance balance = SB_UNBALANCED);
+                    ShrinkBalance balance = SB_UNBALANCED, bool growonly = false);
     void ShrinkGrowShrink(Node *at, const string &op, VarDef *root, const string &what,
                           TypeExpr *bound = nullptr, ShrinkBalance balance = SB_UNBALANCED);
     bool ResizesToMark(Node *recv, Node *len);
     bool SamePath(Node *a, Node *b);
+    // Calls into a cycle still being checked that were taken to be balanced
+    // for every grow-shrink array they may shrink (§5.2), and calls judged
+    // balanced on the strength of that: settled once the outermost function
+    // assumed of has been checked (SettleAssumedShrinks). What the checks such
+    // a call skipped would have done is kept for the case the assumption
+    // fails: the first error, or else the pairs for the callers, each with
+    // the specialization whose record it goes into.
+    struct AssumedShrink {
+        FnSpec *callee = nullptr;   // A back edge's; null for a call relying on one.
+        string error;
+        vector<pair<FnSpec *, LiveShrink>> pairs;
+    };
+    vector<AssumedShrink> assumedshrinks;
+    set<FnSpec *> assumedopen;      // Callees still being checked some back edge assumed of.
+    set<FnSpec *> assumedspecs;     // Specializations with an entry noted SB_ASSUMED.
+    // Where NoteLiveShrink puts the pairs it would keep while such a call's
+    // skipped checks run (KeepShrinkChecks); null otherwise.
+    vector<pair<FnSpec *, LiveShrink>> *livecapture = nullptr;
+    void KeepShrinkChecks(Node *at, const string &op, VarDef *root, const string &what,
+                          TypeExpr *bound, AssumedShrink &kept);
+    void SettleAssumedShrinks();
     // An array a shrink may free (§5.1, §5.2): the one in root's own storage,
     // or, where root cannot hold one, one its storage leads to through the
     // references it holds (`bound`: root only bounds that array's lifetime).

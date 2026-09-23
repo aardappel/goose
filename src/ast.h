@@ -1194,11 +1194,12 @@ struct RootArg {
 // How a body's shrinks of one array leave it (§5.2): balanced where each
 // resizes it back to a length it had during the call, or is a balanced call,
 // so that it is never shorter than when the call began and no view taken
-// before the call can tell; unbalanced where one may leave it shorter. A
-// grow-only array's shrinks are never balanced (§5.1): a callee may store
-// references to its new elements into the caller's holders before popping
-// them.
-enum ShrinkBalance { SB_BALANCED, SB_UNBALANCED };
+// before the call can tell; assumed balanced where that rests on calls into
+// a cycle still being checked being balanced too, which is settled once the
+// cycle is; unbalanced where one may leave it shorter. A grow-only array's
+// shrinks are never balanced (§5.1): a callee may store references to its
+// new elements into the caller's holders before popping them.
+enum ShrinkBalance { SB_BALANCED, SB_ASSUMED, SB_UNBALANCED };
 
 // A shrink a body records against what one of its parameters' or outside
 // roots' storage only leads to, through the references it holds: an array
@@ -1360,6 +1361,9 @@ struct FnSpec {
     // bounds (TypeCheck::ShrinkTargets).
     vector<BoundShrink<VarDef *>> shrinkexternalbounds;
     vector<BoundShrink<int>> shrinkparambounds;
+    // Some grow-shrink array's shrink above is unbalanced: a call into the
+    // body while it is still being checked is no longer taken to be balanced.
+    bool unbalancedshrink = false;
     // The body's shrinks, itself or through its callees, while something it
     // still uses may point into the shrunk array as only the call sites can
     // tell: each a parameter's class against another class, or against an

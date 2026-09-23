@@ -1477,6 +1477,9 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     for (auto [v, n] : outernarrowed) v->narrowed = n;
     reachable = savereach;
     spec->inprogress = false;
+    // The pairs a failed assumption brings back go into records the cycle's
+    // calls are mapped from again, so they are settled first.
+    if (assumedopen.erase(spec) && assumedopen.empty()) SettleAssumedShrinks();
     if (spec->incycle && !cyclesites.empty() && !CycleOpen()) ResolveCycleSites();
 }
 

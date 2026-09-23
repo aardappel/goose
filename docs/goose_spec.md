@@ -1060,7 +1060,16 @@ again against the pairs the cycle records once the whole cycle is.
   the caller's roots decide which can be, and a parameter's array can be a
   global, a captured variable, or another parameter's. Grow-only arrays have
   no balanced calls (§5.1): a callee can store references to its new elements
-  into the caller's holders before shrinking them away.
+  into the caller's holders before shrinking them away. A call into a
+  recursive cycle still being checked cannot be judged by the part of the
+  callee checked so far, so it is taken to be balanced for every grow-shrink
+  array it can reach until the cycle has been checked. It is balanced if,
+  then, no function such a call enters shrinks a grow-shrink array
+  unbalanced when such calls count as balanced: by induction on how deeply a
+  run nests its calls, no run of the cycle shortens an array. Otherwise it,
+  and every call judged balanced on the strength of it, counts as a shrink
+  after all: against the views live across it, and with them for the callers
+  to judge.
 * `push` returns a reference to the new element, and `index_of` works, as on
   grow-only arrays.
 * Iterating with `for` uses indices under the hood; the `&x` binding is a
@@ -1618,6 +1627,26 @@ intermediate call result) are exempt: they cannot be referred to across
 activations, so the soundness argument holds — but an implementation may
 then consume data-stack slots proportional to recursion depth for them
 (aborting past its limit).
+
+Scratch passed down this way can be viewed across the recursive calls. An
+activation that takes `let mark = scratch.len` of a grow-shrink scratch
+array, pushes onto it, views its own part and ends with
+`scratch.resize(mark)` leaves the array as long as it found it, so its calls
+back into the cycle are balanced (§5.2) and the view stays in use across
+them:
+
+```goose
+recursive fn walk(scratch: i64[>..<]&, depth: i64) -> i64 {
+    let mark = scratch.len;
+    scratch.push(depth);
+    let mine = scratch[mark..];
+    var total = 0;
+    if depth < 3 { total = walk(scratch, depth + 1); }
+    total += mine[0];
+    scratch.resize(mark);
+    return total;
+}
+```
 
 **Polymorphic recursion.** A recursive call may instantiate its callee with
 other type arguments than those of the call it sits in (§7.7): `flip<A, B>`
