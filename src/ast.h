@@ -401,6 +401,17 @@ struct Prov {
     // and §5.2 otherwise dismiss a slice whose pointee the root's elements
     // cannot contain -- true of every other slice, and exactly wrong here.
     bool byteview = false;
+    // A grow-shrink array this may point into although its root does not
+    // hold one: a branch's value kept another branch's deeper root, a
+    // variable was rebound, a parameter was given such a value. The store
+    // rule (§5.2) reads it beside the root (TypeCheck::GrowShrinkTaint).
+    VarDef *intogs = nullptr;
+    // What else a merged value -- the branches of an `if`, a variable's
+    // bindings -- may be that its root does not show: rooted where a
+    // recursive cycle stores nothing (§7.8), or at a parameter's class, which
+    // a back edge may give other arrays than the entry call did (§7.8).
+    bool cyclelocal = false;
+    bool hidesclass = false;
     void SetProv(const Prov &p) { *this = p; }
 };
 
@@ -1111,6 +1122,10 @@ struct RootArg {
     // slice points, as binding the variable by reference is. Part of the key:
     // a slice loaded through such a class is only bounded by it.
     bool viewslot = false;
+    // The argument may point into a grow-shrink array its root does not hold
+    // (Prov::intogs), or, for a reference to a slice, the slice may. Part of
+    // the key for the reason growshrink is: the parameter is never stored.
+    bool intogs = false;
     // Val::rootexact of the argument, ANDed over every call site that reaches
     // the specialization. Deliberately not part of the key: within the callee
     // a class always names one array (typecheck.h keeps an inexactly rooted
@@ -1161,7 +1176,7 @@ struct RootArg {
     bool operator==(const RootArg &o) const {
         return cls == o.cls && writable == o.writable && reusable == o.reusable &&
                growshrink == o.growshrink && byteview == o.byteview && pool == o.pool &&
-               heldexact == o.heldexact && viewslot == o.viewslot;
+               heldexact == o.heldexact && viewslot == o.viewslot && intogs == o.intogs;
     }
 };
 
@@ -1210,14 +1225,23 @@ struct RetRoot {
     bool exact = false;        // Val::rootexact of the returned reference.
     bool writable = false;
     bool byteview = false;
+    VarDef *intogs = nullptr;  // Prov::intogs of some return.
+    bool cyclelocal = false;   // Prov::cyclelocal of some return.
+    // Some return may be a parameter's pointee its root does not show
+    // (Prov::hidesclass), which a back edge maps through none of its own
+    // arguments: back edges get the cycleroot sentinel from then on.
+    bool hidesclass = false;
     bool set = false;          // A non-null return has recorded its root.
     bool seeded = false;       // `root` is the cycle fixpoint's prediction and no
                                // return has been checked yet; the prediction is
                                // verified as they are.
     // What a back edge's result was given while the returns were still being
     // checked (§7.8): the returns checked after it may not take that back.
+    bool used = false;
     bool usedexact = false;
     bool usedwritable = false;
+    bool usedclean = false;    // Given as pointing into no grow-shrink array.
+    bool usedstorable = false; // Given as a reference the cycle may store.
 };
 
 // A literal parameter's contact with a type (§7.7): what the literal at

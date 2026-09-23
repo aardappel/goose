@@ -1001,11 +1001,20 @@ again against the pairs the cycle records once the whole cycle is.
   a scan of the variables in scope. A literal's fields and elements are
   storage wherever the literal lands, so no struct, variant or array literal
   holds one, even where the literal itself is passed down or returned:
-  `f(S { a[..] })` is an error, as `let s = S { a[..] };` is. The rule is
-  about references that can point *into* the array: one merely rooted at a
-  value that holds one, whose pointee type the array's elements cannot
-  contain — a slice key read back out of a dictionary's slots — stores like
-  any other.
+  `f(S { a[..] })` is an error, as `let s = S { a[..] };` is, and so is
+  binding a global reference or slice variable to one, a global being
+  storage as well. What counts is where a reference *may* point, whatever
+  its root says: a value that may be any of several (§9.2) is stored only
+  where each of them could be, and a parameter given one that may point into
+  the array is not stored either, nor a function's result where one of its
+  returns may, nor a reference to a slice variable whose slice may. A
+  variable that points into no grow-shrink array may not be rebound to a
+  value that may: what read it earlier — in a loop, through a reference to
+  it, or in a nested function, whose bodies are checked once — may have
+  stored it. The rule is about references that can point *into* the array:
+  one merely rooted at a value that holds one, whose pointee type the
+  array's elements cannot contain — a slice key read back out of a
+  dictionary's slots — stores like any other.
 * **A shrink is an error while any live variable may refer into the array** —
   the test a grow-only shrink applies (§5.1), its liveness rule and its call
   summaries for a shrink through a reference or of a global included, minus the
@@ -1631,6 +1640,16 @@ node (`bench/goose/calc_noparen.goose`). Every real return is then checked
 against the fixpoint's answer, and the §9.2 rule that all returns agree
 applies as usual.
 
+A back edge reuses the body whatever it passes, so it may give two
+parameters that the entry call gave one root two different arrays: a result
+rooted at that root is rooted, at the back edge, at the innermost of the
+arguments it gives them. A return that may be the pointee of a parameter its
+root does not show (a merged value, §9.2) makes the back edges checked after
+it carry the root that outlives nothing (below), and is an error where a
+back edge has already used the result; so is a return that would make a
+result a back edge used less exact, read-only, or impossible to store where
+the back edge's result could be stored (§5.2, and the store rule above).
+
 Where the fixpoint cannot determine a root — a callee that returns one of two
 of its own pool parameters, say, so which one it is depends on the call site —
 the result of a back edge is not treated as static data (that would let it be
@@ -1855,6 +1874,17 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
 * **Return**: a returned reference's root must be visible to the caller (a
   caller-supplied root, a global, or the function's own in-place-constructed
   return value).
+* **Merged values**: a value that may be any of several — the branches of an
+  `if` or `match`, the `break`s of a `block` or `loop`, a reference
+  variable's bindings — is rooted at the innermost of their roots, the one
+  whose scope ends first, and exactly only where every one of them names that
+  one root exactly (a `null` names none); what a value holding references
+  holds is rooted the same way. It is writable only where all of them are
+  (§9.5), and it is stored only where each of them could be: not at all
+  where one may point into a grow-shrink array (§5.2), and not inside a
+  recursive cycle where one is rooted where the cycle stores nothing (§7.8).
+  A parameter given such a value, and a call's result where the returns or
+  the argument behind them may be one, are stored the same way.
 * Struct types with reference fields are implicitly generic over those
   fields' roots; struct instances with different root bindings are distinct
   types for checking purposes (same layout). One whose references all point
@@ -1870,8 +1900,9 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   (the common case: retargeting to another element of the same or a sibling
   container in a loop). Anything else needs a new variable. This keeps the
   checker single-pass over loop bodies. A rebind to a different root leaves
-  the variable inexact, since it no longer names one array; and since a loop
-  body is checked once, such a rebind is rejected outright when the
+  the variable inexact, since it no longer names one array, and a merged
+  value (above), since it may still hold its earlier binding; and since a
+  loop body is checked once, such a rebind is rejected outright when the
   variable's root has already been used as an identity earlier in that loop.
   A variable declared before a loop and bound only inside it (`var last:
   Node? = null;` before `loop { if last { last.next .= child; } … last .=

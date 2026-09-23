@@ -920,13 +920,14 @@ inline void TypeCheck::NoteLitElem(LitDeep &deep, Node *at, const Val &v, TypeEx
     if (!isrs && !HoldsPlainRef(t)) return;
     if (v.isnull) return;
     auto r = CanonRoot(isrs ? v.root : HolderRootOf(v));
-    if (IntoGrowShrink(v, r, t, !isrs)) Error(at, NeverStoredError(r));
+    if (auto gs = StoredIntoGrowShrink(v, r, t, !isrs)) Error(at, NeverStoredError(gs, gs != r));
     auto exact = isrs ? v.rootexact : v.holderset && v.holderexact;
     if (!deep.set || Depth(r) > Depth(deep.root)) {
         deep.exact = exact && (!deep.set || deep.root == r);
         deep.root = r;
     } else if (deep.root != r) {
         deep.exact = false;
+        deep.root = InnerRoot(deep.root, r);
     }
     deep.set = true;
     deep.byteview = deep.byteview || v.byteview;
@@ -963,6 +964,7 @@ inline void TypeCheck::NoteContentRoot(VarDef *container, VarDef *root, bool exa
         container->contentroot = root;
     } else if (container->contentroot != root) {
         container->contentexact = false;
+        container->contentroot = InnerRoot(container->contentroot, root);
     }
     container->contentset = true;
 }

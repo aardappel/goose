@@ -159,6 +159,11 @@ inline void TypeCheck::ReadBackLVal(LVal &lv) {
     lv.root = rb.root;
     lv.rootexact = rb.exact;
     lv.rootfrom = rb.from;
+    // What was stored into a slot passed the store rule (§5.2) with its own
+    // provenance; the container's says nothing about it.
+    lv.intogs = nullptr;
+    lv.cyclelocal = false;
+    lv.hidesclass = false;
     lv.intemp = false;
     if (lv.type->cq) lv.writable = false;   // A `const` slot's contents (§9.5).
 }
@@ -293,6 +298,11 @@ inline Val TypeCheck::DecayRef(Val v) {
     r.rootexact = p.rootexact;
     r.rootfrom = p.rootfrom;
     r.byteview = p.byteview && HoldsPlainRef(r.type);
+    if (r.type->kind == TY_SLICE) {
+        r.intogs = p.intogs;
+        r.cyclelocal = p.cyclelocal;
+        r.hidesclass = p.hidesclass;
+    }
     return r;
 }
 
@@ -501,20 +511,20 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
                           ", which does not outlive the destination (§9.2)");
             return false;
         }
-        if (!curdst.varbind && IntoGrowShrink(v, root, t, holder)) {
-            fitfail = NeverStoredError(root);
-            return false;
+        // Binding a global reference or slice variable stores into a global
+        // (§5.2).
+        if (!curdst.varbind || CanonRoot(curdst.root)->isglobal) {
+            if (auto gs = StoredIntoGrowShrink(v, root, t, holder)) {
+                fitfail = NeverStoredError(gs, gs != root);
+                return false;
+            }
         }
         // Rebinding one of this activation's own variables is not a store
         // that could outlive it: what the variable is bound to came from
         // an activation that outlives this one, as the first binding did.
         auto spec = CurRealFrame().spec;
         auto ownvar = curdst.varbind && curdst.root && curdst.root->ownerspec == spec;
-        // A local of an enclosing function outside the cycle (a free
-        // variable, §7.5) outlives every activation of it, like a global.
-        auto outer = root && root->ownerspec && root->ownerspec != spec &&
-                     !root->ownerspec->incycle && !root->ownerspec->sf->isrec;
-        if (root && !root->isglobal && !root->poolclass && spec && !ownvar && !outer &&
+        if ((!CycleStorable(root) || v.cyclelocal) && spec && !ownvar &&
             (spec->incycle || spec->sf->isrec)) {
             fitfail = "references may only be passed down, not stored, inside a "
                       "recursive cycle (§7.8)";

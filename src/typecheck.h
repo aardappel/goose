@@ -713,6 +713,7 @@ struct TypeCheck {
     int CurDepth() { return (int)scopes.size(); }
     static int Depth(VarDef *v) { return v ? v->depth : 0; }
     static VarDef *CanonRoot(VarDef *v);
+    VarDef *InnerRoot(VarDef *a, VarDef *b);
 
     // The storage of a temporary made here (a call's result, a literal): it
     // lasts until the statement being checked ends, or the block whose tail
@@ -738,8 +739,12 @@ struct TypeCheck {
     TypeExpr *ResizableArrayIn(TypeExpr *t);
     bool IsGrowShrinkRoot(VarDef *r);
     bool GrowShrinkCanHold(VarDef *r, TypeExpr *of);
-    bool IntoGrowShrink(const Val &v, VarDef *root, TypeExpr *t, bool holder);
-    string NeverStoredError(VarDef *root);
+    bool IntoGrowShrink(const Prov &v, VarDef *root, TypeExpr *t, bool holder);
+    VarDef *GrowShrinkTaint(const Prov &p, TypeExpr *t);
+    VarDef *StoredIntoGrowShrink(const Val &v, VarDef *root, TypeExpr *t, bool holder);
+    string NeverStoredError(VarDef *root, bool may = false);
+    bool CycleStorable(VarDef *r);
+    bool Hides(const Val &b, const Val &m, const function<bool(VarDef *)> &hidden);
     bool MayBeViewed(VarDef *r);
     bool Viewable(TypeExpr *t);
     bool GrowShrinkContains(TypeExpr *t, TypeExpr *of);

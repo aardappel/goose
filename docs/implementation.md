@@ -447,6 +447,9 @@ struct Prov {
     bool writable;       // §9.5
     int reusable;        // the root is a reusable pool (§5.4): RU_SLOTS or RU_SLICES bits
     bool byteview;       // a bytes_of view over typed storage
+    VarDef *intogs;      // a grow-shrink array it may point into that the root does not show
+    bool cyclelocal;     // may be rooted where a recursive cycle stores nothing, unshown
+    bool hidesclass;     // may be a parameter class's pointee the root does not show
 };
 ```
 
@@ -482,10 +485,33 @@ so the stored value's own root bounds them.
 | `a.push(v)`, `a.alloc_ref(v)`, `&a[i]` | `a`'s root | `a`'s exactness |
 | `a.alloc_slice(n)`, `a.realloc_slice(s, n)` | `a`'s root | `a`'s exactness |
 | `a[lo..hi]` (`SliceExpr::Check`) | `a`'s root | `a`'s exactness |
-| a call result (`CallResult`) | the callee's `RetRoot`, mapped: a parameter's class back to the argument's root at this site, a global as itself, else static data | the callee's, ANDed with the argument's |
+| a call result (`CallResult`) | the callee's `RetRoot`, mapped: a parameter's class back to the argument's root at this site (at a back edge, every argument the class's parameters get, merged), a global as itself, else static data | the callee's, ANDed with the argument's |
+| an `if`, `match`, `block` or `loop` value (`MergeVals`) | the innermost of its branches' roots (`InnerRoot`) | only where they all name one root exactly |
 | an array, struct or variant literal, and a call's value result | a temporary (`TempRoot`): whatever views it rather than being built from it views a temporary | no |
 | a string literal | static data (null) | yes |
 | `null` | none (adapts to any optional) | -- |
+
+**Merged roots.** A value that may be any of several -- an `if`'s branches, a
+reference variable's bindings before and after a rebind to another root at
+its depth (`CheckRefRebindRoot`) -- keeps one root, the innermost
+(`InnerRoot`): the deeper, and at a tie the checked function's own variable,
+since a temporary of the calling statement takes the depth of the function's
+outermost scope (`ClassDepth`) but outlives the variables declared there; a
+literal's references (`NoteLitElem`) and a container's contents
+(`NoteContentRoot`) are bounded the same way. The rules that ask what
+storage a root *is* would see only the one kept, so the merge also carries
+what the others would have shown them: `intogs`, a grow-shrink array one may
+point into (§3.5 rule 3, `GrowShrinkTaint`); `cyclelocal`, that one is rooted
+where a recursive cycle may not store (rule 4, `CycleStorable`); and
+`hidesclass`, that one is a parameter class's pointee, which a back edge may
+give another array than the entry call did (§3.11). They travel with the
+value: through a rebind, which keeps what the old binding hid, a load of a
+slice through a reference (`DecayRef`, `SlotView`), a parameter
+(`RootArg::intogs`, part of the key, makes the parameter's own `intogs` its
+class root, or the parameter where it has no class), a function's returns
+(`RetRoot::intogs`, `cyclelocal`, `hidesclass`) and the argument a call maps
+a result through. A read-back clears them: whatever was stored passed those
+rules already.
 
 **Parameters and root classes.** A callee never sees the caller's variables;
 it sees *classes*. `GetOrCreateSpec` groups the reference, slice and holder
@@ -572,28 +598,36 @@ references or slices, `HoldsPlainRef`) meets a destination with a root:
 
 1. a `cycleroot` value is rejected (pass-down only);
 2. the value's root must be at or above the destination's depth;
-3. a reference into a grow-shrink array's elements may be bound to a
-   variable but never stored (§5.2, `GrowShrinkCanHold`, with the byte-view
-   exception `MayBeViewed`);
-4. inside a recursive cycle, only a global, a pool-class parameter, a local
-   of an enclosing non-cycle function, or a rebind of the activation's own
-   reference variable may be stored (§7.8);
+3. a reference that may point into a grow-shrink array's elements may be
+   bound to a variable but never stored (§5.2, `StoredIntoGrowShrink`: by
+   its root, `GrowShrinkCanHold` with the byte-view exception `MayBeViewed`,
+   by `Prov::intogs`, or for a reference to a slice by what the slice may
+   point into); a global reference or slice variable is storage, so binding
+   one is a store here;
+4. inside a recursive cycle, only a reference into a global, a pool-class
+   parameter or a local of an enclosing non-cycle function
+   (`CycleStorable`), and no merged value with `cyclelocal`, may be stored,
+   besides a rebind of the activation's own reference variable (§7.8);
 5. the store is **recorded**.
 
 Rule 3 does not wait for a destination: a literal's field or element is
 storage wherever the literal lands, so `NoteLitElem` applies it to each one
-(`IntoGrowShrink`), in an argument or a result too. A back edge's
+(`StoredIntoGrowShrink`), in an argument or a result too. A back edge's
 `cycleroot` may point into a grow-shrink array, and so may a parameter class
 created from one (`IsGrowShrinkRoot`), which `NeverStoredError` words as
 rule 1. No holder ever holds a reference into a grow-shrink array, then,
-which is what lets the §5.2 shrink scan look at variables only (§3.10).
+which is what lets the §5.2 shrink scan look at variables only (§3.10). Nor
+may a variable that points into none be rebound to a value that may
+(`CheckRefRebindRoot`): a store or return checked before the rebind -- later
+in a loop, through a reference taken to it, in a nested function whose
+checked body a later call reuses -- has already let it through.
 
 A declaration without a type annotation infers its type from the value, so
 `FitsAt` has no destination type to check. `CheckBindingRoot` applies rule 2
-instead, to every name in a multi-value declaration as well. This prevents a
-variable from retaining a view of its statement's temporary. The sentinels pass:
-a variable may hold what a reference not bound yet, or a back edge's result,
-points at.
+instead, to every name in a multi-value declaration as well, and rule 3 to a
+global. This prevents a variable from retaining a view of its statement's
+temporary. The sentinels pass: a variable may hold what a reference not bound
+yet, or a back edge's result, points at.
 
 A branch's value -- an `if`'s branch, a `match` arm, a block's tail, a
 `block`'s or `loop`'s breaks -- reaches whatever receives its construct's
@@ -611,7 +645,8 @@ the grow-only shrink rule of §5.1 consults: the container, the stored
 value's root and exactness, the pointee type, the byte-view flag, the source
 container for a holder copy (a copy holds what its source holds), and the
 line. `RecordStore` also maintains the container's `contentroot`: the
-deepest root stored into it so far, exact only while every store agrees.
+innermost root stored into it so far (`InnerRoot`), exact only while every
+store agrees.
 A store into a caller's storage -- through a parameter's class root -- is
 kept on the specialization as a `classevent`, and `ApplyCalleeStores`
 replays it at every call site with the class mapped back to the root it
@@ -974,8 +1009,16 @@ own descriptors. The fixpoint iterates the closure of functions reached
 a root and exactness for the specialization; what cannot be predicted
 becomes `cycleroot`. Every real return then verifies the prediction
 (`ReturnConflict`), and a result a back edge already consumed pins the
-exactness and writability the later returns may not weaken
-(`RetRoot::usedexact`, `usedwritable`).
+exactness, writability and storability the later returns may not weaken
+(`RetRoot::usedexact`, `usedwritable`, `usedclean` for a grow-shrink taint,
+`usedstorable` for `cyclelocal`). A back edge reuses the body whatever it
+passes, so `CallResult` maps a parameter class through every argument the
+back edge gives the class's parameters, merged, where an ordinary call, whose
+classes group the arguments as the key's, takes the first. A return with
+`hidesclass` may be a class's pointee its root does not show, which no
+mapping of the root reaches: the back edges checked after it get
+`cycleroot` (`RetRoot::hidesclass`), and one after a back edge has used the
+result is an error (`RetRoot::used`).
 
 ### 3.12 Calls, generics, literal parameters, dispatch, function values
 
@@ -2392,6 +2435,11 @@ specification allows, and the shapes the C backend refuses outright:
   nested functions it cannot resolve by name; the result is then pass-down
   only (`cycleroot`), never unsound, and may point into a grow-shrink array
   wherever it is passed (§3.5).
+* A return that may be a parameter class's pointee its root does not show
+  (`hidesclass`) makes the back edges after it pass-down only even where
+  the class is a pool, whose argument every back edge must pass as the
+  entry call did (§3.11), and it is kept on a merge of any class root, a
+  class of an enclosing function included.
 * A plain reference parameter's root class is identified with a global pool
   only inside a recursive cycle or through the `in pool` form (§9.5 above,
   `bench/notes.md` item 1), so `index_of`, a relative store and an exact

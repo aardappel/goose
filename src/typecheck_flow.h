@@ -40,6 +40,21 @@ inline VarDef *TypeCheck::CanonRoot(VarDef *v) {
     return v;
 }
 
+// Of two roots, the one a value that may be either is bounded by: the deeper,
+// and at a tie a's, unless only b is the checked function's own variable. A
+// temporary of the calling statement, which that function's parameter class
+// stands for, takes the depth of the function's outermost scope (ClassDepth),
+// but its variables there die first.
+inline VarDef *TypeCheck::InnerRoot(VarDef *a, VarDef *b) {
+    if (Depth(a) != Depth(b)) return Depth(a) > Depth(b) ? a : b;
+    auto spec = CurRealFrame().spec;
+    auto own = [&](VarDef *r) {
+        r = CanonRoot(r);
+        return r && !r->isglobal && r->ownerspec && r->ownerspec == spec;
+    };
+    return own(b) && !own(a) ? b : a;
+}
+
 // A grow-shrink array anywhere in a value of type t: the array itself, or
 // the tail of a struct (elements are never resizable, §3.3).
 inline bool TypeCheck::ContainsGrowShrink(TypeExpr *t) {
@@ -105,9 +120,9 @@ inline bool TypeCheck::GrowShrinkCanHold(VarDef *r, TypeExpr *of) {
 }
 
 // Whether the reference or slice v of type t rooted at root, or for a holder
-// any reference it holds, may point into a grow-shrink array: what §5.2
-// keeps out of every field, element and global.
-inline bool TypeCheck::IntoGrowShrink(const Val &v, VarDef *root, TypeExpr *t, bool holder) {
+// any reference it holds, may point into a grow-shrink array by what the
+// root holds: what §5.2 keeps out of every field, element and global.
+inline bool TypeCheck::IntoGrowShrink(const Prov &v, VarDef *root, TypeExpr *t, bool holder) {
     vector<TypeExpr *> pointees;
     if (holder) RefPointees(t, pointees); else pointees.push_back(PointeeOf(t));
     auto intogs = v.byteview && IsGrowShrinkRoot(root) && MayBeViewed(root);
@@ -115,20 +130,53 @@ inline bool TypeCheck::IntoGrowShrink(const Val &v, VarDef *root, TypeExpr *t, b
     return intogs;
 }
 
+// A grow-shrink array a reference or slice of type t with provenance p may
+// point into, or null: one its root holds, one a branch, a rebind or a call
+// left behind with another root (Prov::intogs), or, for a reference to a
+// slice, one that slice may point into.
+inline VarDef *TypeCheck::GrowShrinkTaint(const Prov &p, TypeExpr *t) {
+    if (!t || !IsRefOrSlice(t)) return nullptr;
+    auto r = CanonRoot(p.root);
+    if (IntoGrowShrink(p, r, t, false)) return r;
+    if (p.intogs) return p.intogs;
+    if (t->kind == TY_REF && t->ref->sub->kind == TY_SLICE)
+        return GrowShrinkTaint(SlotView(p, t->ref->sub), t->ref->sub);
+    return nullptr;
+}
+
+// What the store rule (§5.2) checks v, rooted at root, against: a grow-shrink
+// array it may point into, or for a holder one a reference it holds may. A
+// holder's references were each checked where they were stored.
+inline VarDef *TypeCheck::StoredIntoGrowShrink(const Val &v, VarDef *root, TypeExpr *t,
+                                               bool holder) {
+    if (holder) return IntoGrowShrink(v, root, t, true) ? root : nullptr;
+    auto p = Prov(v);
+    p.root = root;
+    return GrowShrinkTaint(p, t);
+}
+
 // Why a reference rooted at root, or a holder of one, is never stored: it
 // may point into a grow-shrink array (§5.2), or it is a back edge's result,
 // which may point anywhere, as may a parameter whose class stands for one.
-inline string TypeCheck::NeverStoredError(VarDef *root) {
+// `may`: root is not the reference's own but what it may point into as well
+// (Prov::intogs), a parameter's class or the parameter where the argument
+// may.
+inline string TypeCheck::NeverStoredError(VarDef *root, bool may) {
     auto from = root;
     while (from && !from->type && from->classfrom) from = from->classfrom;
     auto recresult = "the result of a recursive call whose returned reference's root the "
                      "cycle's returns do not determine (§7.8); it may only be passed down";
-    if (root == cycleroot) return cat("storing ", recresult);
+    if (root == cycleroot) return cat("storing ", may ? "what may be " : "", recresult);
     if (from == cycleroot)
-        return cat("storing a reference into ", root->name, ", which may be ", recresult);
-    return cat("storing a reference into ", root->name,
-               ", which holds a grow-shrink array: such a reference lives in a "
-               "variable, is passed down or returned, and is never stored (§5.2)");
+        return cat("storing a reference ", may ? "that may point " : "", "into ", root->name,
+                   ", which may be ", recresult);
+    auto stored = ": such a reference lives in a variable, is passed down or returned, and "
+                  "is never stored (§5.2)";
+    if (may && (!root->type || IsRefOrSlice(root->type)))
+        return cat("storing a reference that may point into a grow-shrink array, as ",
+                   root->name, " may", stored);
+    return cat("storing a reference ", may ? "that may point " : "", "into ", root->name,
+               ", which holds a grow-shrink array", stored);
 }
 
 // Whether a byte view could ever cover this root's storage: bytes_of views
@@ -772,17 +820,54 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     if (a.holderset || b.holderset) {
         auto ar = HolderRootOf(a), br = HolderRootOf(b);
         v.holderset = true;
-        v.holderroot = Depth(ar) >= Depth(br) ? ar : br;
+        v.holderroot = InnerRoot(ar, br);
         v.holderexact = a.holderexact && b.holderexact && ar == br;
     }
     v.isnull = a.isnull && b.isnull;   // Both null: still a null, which names no root.
-    v.root = Depth(a.root) >= Depth(b.root) ? a.root : b.root;
+    v.root = InnerRoot(a.root, b.root);
     v.rootexact = a.rootexact && b.rootexact && CanonRoot(a.root) == CanonRoot(b.root);
     v.rootfrom = a.rootfrom ? a.rootfrom : b.rootfrom;
     v.writable = a.writable && b.writable;
     v.reusable = a.reusable & b.reusable;
     v.byteview = a.byteview || b.byteview;
+    // The root kept may hold no grow-shrink array where the other branch's
+    // does: the value may point into that one all the same (§5.2).
+    if (v.type && IsRefOrSlice(v.type) && !GrowShrinkTaint(v, v.type)) {
+        v.intogs = GrowShrinkTaint(a, a.type);
+        if (!v.intogs) v.intogs = GrowShrinkTaint(b, b.type);
+    }
+    // Nor, where the other branch's value may be, what a recursive cycle
+    // stores nothing into, or a parameter's pointee, which a back edge may
+    // give another array than the entry call did (§7.8).
+    auto local = [&](VarDef *r) { return !CycleStorable(r); };
+    auto cls = [&](VarDef *r) { return IsClassRoot(r); };
+    v.cyclelocal = a.cyclelocal || b.cyclelocal || Hides(a, v, local) || Hides(b, v, local);
+    v.hidesclass = a.hidesclass || b.hidesclass || Hides(a, v, cls) || Hides(b, v, cls);
     return v;
+}
+
+// Whether branch value b, or what it holds, is rooted elsewhere than the
+// merged value m is, at a root `hidden` accepts, which m's root then hides.
+inline bool TypeCheck::Hides(const Val &b, const Val &m,
+                             const function<bool(VarDef *)> &hidden) {
+    if (!b.type || b.isnull) return false;
+    auto hides = [&](VarDef *r, VarDef *kept) {
+        r = CanonRoot(r);
+        return r != CanonRoot(kept) && hidden(r);
+    };
+    if (IsRefOrSlice(b.type)) return hides(b.root, m.root);
+    return HoldsPlainRef(b.type) && hides(HolderRootOf(b), HolderRootOf(m));
+}
+
+// Whether a reference rooted at r may be stored inside a recursive cycle
+// (§7.8): it points into static data, a global, a pool handed to the cycle,
+// or a local of an enclosing function outside it, which all outlive every
+// activation.
+inline bool TypeCheck::CycleStorable(VarDef *r) {
+    auto spec = CurRealFrame().spec;
+    return !r || r->isglobal || r->poolclass ||
+           (r->ownerspec && r->ownerspec != spec && !r->ownerspec->incycle &&
+            !r->ownerspec->sf->isrec);
 }
 
 // A branch's value outlives the scopes the branch opened: whatever receives
@@ -1535,6 +1620,12 @@ inline void TypeCheck::CheckBindingRoot(VarDef *d, const Val &v, Node *at) {
     auto isrs = IsRefOrSlice(t);
     if (!isrs && !HoldsPlainRef(t)) return;
     auto root = CanonRoot(isrs ? v.root : HolderRootOf(v));
+    // A global is storage, which no reference into a grow-shrink array is
+    // stored in (§5.2), as FitsAt says of an annotated one.
+    if (d->isglobal) {
+        if (auto gs = StoredIntoGrowShrink(v, root, t, !isrs))
+            Error(at, NeverStoredError(gs, gs != root));
+    }
     // The sentinels stand for roots not known yet, which a variable may hold.
     if (!root || root == temproot || root == cycleroot || Depth(root) <= Depth(d)) return;
     auto what = !isrs ? "a value holding references" : t->kind == TY_SLICE ? "a slice"
@@ -1783,10 +1874,22 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv) {
 // scope depth (which is equivalent for the outlives check).
 inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
     vd->ref.byteview = vd->ref.byteview || rv.byteview;
+    vd->ref.cyclelocal = vd->ref.cyclelocal || rv.cyclelocal;
+    vd->ref.hidesclass = vd->ref.hidesclass || rv.hidesclass;
     auto nr = CanonRoot(rv.root);
     if (nr != vd->ref.root && Depth(nr) != Depth(vd->ref.root))
         Error(at, cat("re-binding ", vd->name, " with a reference rooted at a different "
                       "scope depth is not supported; declare a new variable"));
+    // Nor does a variable that points into no grow-shrink array start to:
+    // what read it before -- earlier in a loop, through a reference to it, in
+    // a nested function checked once -- may have stored it (§5.2).
+    auto was = GrowShrinkTaint(vd->ref, vd->type);
+    if (!was) {
+        if (auto gs = GrowShrinkTaint(rv, vd->type))
+            Error(at, cat("re-binding ", vd->name, " to a reference that may point into a "
+                          "grow-shrink array (", gs->name, "), where it pointed into none, is "
+                          "not supported; declare a new variable (§5.2)"));
+    }
     if (nr == vd->ref.root) {
         // The root is unchanged, so only the new value's own exactness can
         // weaken what the variable stands for.
@@ -1802,7 +1905,14 @@ inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
                       nr ? nr->name : string_view("static data"), " after its root ",
                       vd->ref.root ? vd->ref.root->name : string_view("static data"),
                       " was used as the identity of a relative reference (§3.9)"));
-    vd->ref.root = nr;
+    // It may still point into the array its old root holds.
+    if (!vd->ref.intogs) vd->ref.intogs = was;
+    // And be what the root it no longer shows stands for.
+    auto kept = InnerRoot(nr, vd->ref.root);
+    auto hidden = kept == nr ? vd->ref.root : nr;
+    vd->ref.cyclelocal = vd->ref.cyclelocal || !CycleStorable(hidden);
+    vd->ref.hidesclass = vd->ref.hidesclass || IsClassRoot(hidden);
+    vd->ref.root = kept;
     vd->ref.rootexact = false;
     vd->ref.rootfrom = rv.rootfrom;
 }
