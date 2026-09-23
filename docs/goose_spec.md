@@ -1036,6 +1036,31 @@ again against the pairs the cycle records once the whole cycle is.
   shrinking every grow-shrink array it can reach, through the references its
   arguments hold as well. Function values run inline, so a shrink inside a
   block is checked against the block's own enclosing scopes.
+* **Balanced calls.** A call is *balanced* for an array when the array is never
+  shorter, while the call runs, than it was when the call began. Such a call
+  frees nothing a view taken before it points into: a live view lies within the
+  array's length at the call, since every shrink after the view was taken was
+  checked against it, and one a reference to a slice variable reaches is no
+  newer, since the callee can only return a view, never store one where the
+  caller would read it. A balanced call is therefore no shrink where it is made:
+  no view is checked against it there, nor recorded with it for the callers to
+  judge (§5.1), a parameter's view having been taken before the call as well.
+  It still counts for the callers, as a balanced one where the caller is
+  balanced too. A function is balanced for an array X — what a reference
+  parameter points at, a global, or a captured variable — when each shrink of X
+  in it is `X.resize(m)`, with or without a fill value, where `m` is a `let` of
+  the same activation initialized to exactly `X.len` of the same path X, or a
+  call that is balanced for X. The same path is one variable that cannot be
+  rebound (a `var` reference can), then the same fields, none of them a
+  reference. `pop`, `clear`, a resize to anything else, and assigning X or a
+  value holding it whole are not balanced. Every length X has during such an
+  activation is at least its length on entry, so every mark is too, and so is
+  every resize back to one. A call is balanced for an array of the caller's
+  when each shrink it may make of any array that can be that one is balanced:
+  the caller's roots decide which can be, and a parameter's array can be a
+  global, a captured variable, or another parameter's. Grow-only arrays have
+  no balanced calls (§5.1): a callee can store references to its new elements
+  into the caller's holders before shrinking them away.
 * `push` returns a reference to the new element, and `index_of` works, as on
   grow-only arrays.
 * Iterating with `for` uses indices under the hood; the `&x` binding is a

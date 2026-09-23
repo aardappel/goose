@@ -939,6 +939,32 @@ been checked they are mapped again until no record grows
 (`ResolveCycleSites`). A pair that only a back edge's counted shrinks
 produced is `guessed`, which its error says as "may shrink".
 
+**Balanced calls** (§5.2). Each summary entry carries a `ShrinkBalance`,
+the worst of the shrinks `NoteShrink` recorded against it: balanced, or not.
+A grow-shrink `resize` is balanced where `ResizesToMark` holds: its length
+argument names a `let` of the activation (`ownerspec` is the current real
+frame's specialization, so a mark a nested function or a block's writer took
+before this activation began does not count) whose initializer was exactly
+`X.len` (`VarDef::markof`, set by `CheckVarDecl`), and `SamePath` finds that
+`X` and the receiver name the same storage: the same variable, not a `var`
+reference, then the same fields, none of them read out as a reference or
+slice. Nothing else is balanced: `pop`, `clear`, other resizes, whole
+assignment, a grow-only array's shrinks (`GrowOnlyShrinkAt` records every
+shrink unbalanced), and whatever a back edge is taken to shrink. The body's
+own scans are unchanged, a balanced resize included, and so are the pairs
+`NoteLiveViews` keeps for it. At a call to a checked callee,
+`ApplyCalleeShrinks` first expands every entry into the arrays it may shrink
+(`ShrinkTargets`), each with its entry's balance, then judges them together:
+a grow-shrink array whose shrinks are all balanced, and that no unbalanced
+one may be (`MayAliasRoots`, a bound taken as inexact and two classes of one
+activation as one array), is recorded as a balanced shrink without the §5.2
+scan, and without pairs for the callers, since a view rooted at a class was
+taken before the call too; every other array is scanned and recorded
+unbalanced as before. The skipped scan includes what a reference to a slice
+variable reaches (`HeldRefsMayPointInto`): the variable still holds a slice
+taken before the call, since writing a view of the array into it through a
+reference is a store (§3.5 rule 3).
+
 **Growth during construction** (§1.3(4), §4.2). A value built in place at an
 array's top or slot is under construction while its expression is checked,
 and nothing may grow that array meanwhile: a pushed or pool-allocated

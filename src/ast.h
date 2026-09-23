@@ -994,6 +994,9 @@ struct VarDef {
     bool istemp = false;
     int reusable = 0;           // A reusable pool (§5.4): RU_SLOTS or RU_SLICES.
     bool nonneg = false;        // A `let` whose initializer was non-negative (§6.1).
+    // A `let` initialized to exactly `X.len` (§5.2): the path X, as checked
+    // there. Resizing the same X back to it is a balanced shrink.
+    Node *markof = nullptr;
     FnSpec *ownerspec = nullptr;  // Null for globals.
     // Lifetime depth for the outlives check (§9.2): globals 0, then one per
     // nested scope along the current compile-time call path. Only comparable
@@ -1188,6 +1191,24 @@ struct RootArg {
     }
 };
 
+// How a body's shrinks of one array leave it (§5.2): balanced where each
+// resizes it back to a length it had during the call, or is a balanced call,
+// so that it is never shorter than when the call began and no view taken
+// before the call can tell; unbalanced where one may leave it shorter. A
+// grow-only array's shrinks are never balanced (§5.1): a callee may store
+// references to its new elements into the caller's holders before popping
+// them.
+enum ShrinkBalance { SB_BALANCED, SB_UNBALANCED };
+
+// A shrink a body records against what one of its parameters' or outside
+// roots' storage only leads to, through the references it holds: an array
+// of the given type (TypeCheck::ShrinkTargets).
+template<typename K> struct BoundShrink {
+    K key;
+    TypeExpr *type = nullptr;
+    ShrinkBalance balance = SB_UNBALANCED;
+};
+
 // A reference, slice or holder value stored into a container (§9.2): what
 // the shrink rules (§5.1) consult to know whether the container may point
 // into an array.
@@ -1328,16 +1349,17 @@ struct FnSpec {
     // the spec needs no entry, since its path starts every path a target
     // reaches the spec by.
     vector<pair<Node *, vector<pair<SFunction *, FnSpec *>>>> neededges;
-    // Grow-shrink arrays the body may shrink, itself or through its callees
-    // (§5.2): global/captured roots, and indices of parameters whose pointee shrinks.
-    set<VarDef *> shrinkexternals;
-    set<int> shrinkparams;
+    // Arrays the body may shrink, itself or through its callees (§5.1,
+    // §5.2): global/captured roots, and indices of parameters whose pointee
+    // shrinks, each with how every shrink of it leaves it.
+    map<VarDef *, ShrinkBalance> shrinkexternals;
+    map<int, ShrinkBalance> shrinkparams;
     // Shrinks of an array of the given type that such a root's storage only
     // leads to, through the references it holds: the call counts each as a
     // shrink of any array of that type the root, or the argument's root,
     // bounds (TypeCheck::ShrinkTargets).
-    vector<pair<VarDef *, TypeExpr *>> shrinkexternalbounds;
-    vector<pair<int, TypeExpr *>> shrinkparambounds;
+    vector<BoundShrink<VarDef *>> shrinkexternalbounds;
+    vector<BoundShrink<int>> shrinkparambounds;
     // The body's shrinks, itself or through its callees, while something it
     // still uses may point into the shrunk array as only the call sites can
     // tell: each a parameter's class against another class, or against an

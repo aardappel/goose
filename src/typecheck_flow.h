@@ -1644,6 +1644,10 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         // assigned anything later.
         d->nonneg = !vd->isvar && v.nonneg;
         Finish(d, ann ? ann : v.type, &v);
+        auto len = Is<Dot>(vd->inits[i]);
+        if (!vd->isvar && !global && len && len->member == B_LEN &&
+            d->type->kind == TY_INT && d->type->intstorage == IS_I64)
+            d->markof = len->obj;
     }
 }
 

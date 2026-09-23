@@ -1247,9 +1247,12 @@ struct TypeCheck {
     // external to), while a specialization's parameter roots map at calls
     // (`param` gets it and the parameter's index).
     template <typename P, typename X> void NoteRootEvent(VarDef *root, P param, X external);
-    void NoteShrink(VarDef *root, TypeExpr *bound = nullptr);
+    void NoteShrink(VarDef *root, TypeExpr *bound = nullptr,
+                    ShrinkBalance balance = SB_UNBALANCED);
     void ShrinkGrowShrink(Node *at, const string &op, VarDef *root, const string &what,
-                          TypeExpr *bound = nullptr);
+                          TypeExpr *bound = nullptr, ShrinkBalance balance = SB_UNBALANCED);
+    bool ResizesToMark(Node *recv, Node *len);
+    bool SamePath(Node *a, Node *b);
     // An array a shrink may free (§5.1, §5.2): the one in root's own storage,
     // or, where root cannot hold one, one its storage leads to through the
     // references it holds (`bound`: root only bounds that array's lifetime).
@@ -1259,7 +1262,8 @@ struct TypeCheck {
     };
     vector<ShrinkTarget> ShrinkTargets(VarDef *root, bool exact, TypeExpr *arr);
     void ShrinkThrough(Node *at, bool standalone, const string &verb, const string &recv,
-                       VarDef *root, bool exact, TypeExpr *arr);
+                       VarDef *root, bool exact, TypeExpr *arr,
+                       ShrinkBalance balance = SB_UNBALANCED);
     void ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
     // A shrink's scan sees the views of the activation only, and takes a
     // parameter's class for an array of its own: whether an argument was a

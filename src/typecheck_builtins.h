@@ -358,7 +358,9 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
     // refers into it (§5.2).
     if (ak == A_GROWSHRINK && (d.kind == B_POP || d.kind == B_RESIZE || d.kind == B_CLEAR))
         ShrinkThrough(c, c->standalone, d.name, ExprStr(args[0]), rv.root, rv.rootexact,
-                      IsPlainRef(rv.type) ? rv.type->ref->sub : rv.type);
+                      IsPlainRef(rv.type) ? rv.type->ref->sub : rv.type,
+                      d.kind == B_RESIZE && ResizesToMark(args[0], args[1]) ? SB_BALANCED
+                                                                            : SB_UNBALANCED);
     // resize has two forms (§3.3); a target below zero is caught at runtime.
     if (d.kind == B_RESIZE) {
         CheckIntAny(args[1]);
@@ -1354,29 +1356,71 @@ inline void TypeCheck::NoteRootEvent(VarDef *root, P param, X external) {
 }
 
 // Records a shrink for callers (§5.2), a bound's with the type of the array
-// its storage leads to.
-inline void TypeCheck::NoteShrink(VarDef *root, TypeExpr *bound) {
+// its storage leads to. An array stays balanced only while every shrink of
+// it is.
+inline void TypeCheck::NoteShrink(VarDef *root, TypeExpr *bound, ShrinkBalance balance) {
     auto note = [&](auto &bounds, auto key) {
-        for (auto &[k, t] : bounds) if (k == key && TypeEq(t, bound)) return;
-        bounds.push_back({ key, bound });
+        for (auto &b : bounds)
+            if (b.key == key && TypeEq(b.type, bound)) {
+                b.balance = std::max(b.balance, balance);
+                return;
+            }
+        bounds.push_back({ key, bound, balance });
+    };
+    auto mark = [&](auto &entries, auto key) {
+        auto [it, fresh] = entries.try_emplace(key, balance);
+        if (!fresh) it->second = std::max(it->second, balance);
     };
     NoteRootEvent(root,
                   [&](FnSpec *s, int i) {
                       if (bound) note(s->shrinkparambounds, i);
-                      else s->shrinkparams.insert(i);
+                      else mark(s->shrinkparams, i);
                   },
                   [&](FnSpec *s, VarDef *r) {
                       if (bound) note(s->shrinkexternalbounds, r);
-                      else s->shrinkexternals.insert(r);
+                      else mark(s->shrinkexternals, r);
                   });
 }
 
 inline void TypeCheck::ShrinkGrowShrink(Node *at, const string &op, VarDef *root,
-                                        const string &what, TypeExpr *bound) {
+                                        const string &what, TypeExpr *bound,
+                                        ShrinkBalance balance) {
     if (!root) return;
     CheckShrinkHolders(at, op, root, what, bound);
     NoteLiveViews(at, cat("cannot ", op), root, what, false, bound);
-    NoteShrink(root, bound);
+    NoteShrink(root, bound, balance);
+}
+
+// Whether `recv.resize(len)` is a balanced shrink (§5.2): len names a `let`
+// of this activation initialized to exactly `recv.len`, with recv the same
+// path there, so the resize goes back to a length recv has had since the
+// activation began. While every shrink of it is such a resize or a balanced
+// call, no such length is shorter than the one it began with.
+inline bool TypeCheck::ResizesToMark(Node *recv, Node *len) {
+    auto id = Is<Ident>(len);
+    auto m = id ? LookupVar(id->name, id->ns) : nullptr;
+    auto spec = CurRealFrame().spec;
+    return m && m->markof && !m->isvar && spec && m->ownerspec == spec &&
+           SamePath(m->markof, recv);
+}
+
+// Whether two checked paths name the same storage whenever both run under
+// one binding of the variable they start from: the same variable, which no
+// rebinding can move (a `var` reference can be rebound), then the same
+// fields, none of them a reference or slice, which could be moved.
+inline bool TypeCheck::SamePath(Node *a, Node *b) {
+    auto da = Is<Dot>(a), db = Is<Dot>(b);
+    if (da || db) {
+        auto field = [](Dot *d) {
+            return d && d->fieldidx >= 0 && d->exprtype && !IsRefOrSlice(d->exprtype);
+        };
+        return field(da) && field(db) && da->fieldidx == db->fieldidx && da->name == db->name &&
+               SamePath(da->obj, db->obj);
+    }
+    auto ia = Is<Ident>(a), ib = Is<Ident>(b);
+    if (!ia || !ib || !ia->vdef || ia->vdef != ib->vdef) return false;
+    auto v = ia->vdef;
+    return v->type && !(v->isvar && IsRefOrSlice(v->type));
 }
 
 // The arrays a shrink of an `arr` rooted at root may free. An exact root
@@ -1413,7 +1457,7 @@ inline vector<TypeCheck::ShrinkTarget> TypeCheck::ShrinkTargets(VarDef *root, bo
 // its own name and the receiver's.
 inline void TypeCheck::ShrinkThrough(Node *at, bool standalone, const string &verb,
                                      const string &recv, VarDef *root, bool exact,
-                                     TypeExpr *arr) {
+                                     TypeExpr *arr, ShrinkBalance balance) {
     root = CanonRoot(root);
     auto growonly = GrowOnlyTail(arr);
     for (auto &t : ShrinkTargets(root, exact, arr)) {
@@ -1425,7 +1469,7 @@ inline void TypeCheck::ShrinkThrough(Node *at, bool standalone, const string &ve
         } else {
             auto what = t.root == root ? recv : cat(t.root->name, ", which ", recv,
                                                     " may point at");
-            ShrinkGrowShrink(at, cat(verb, " ", recv), t.root, what, bound);
+            ShrinkGrowShrink(at, cat(verb, " ", recv), t.root, what, bound, balance);
         }
     }
 }
@@ -1688,43 +1732,68 @@ inline void TypeCheck::ResolveCycleSites() {
 // The callee's shrinks of grow-shrink arrays (§5.2) are the caller's:
 // nothing in scope may refer into an argument it shrinks through or a
 // external owner it shrinks, and both are recorded for the caller's callers.
-// A back edge's summary is incomplete, so it counts as shrinking every
+// A balanced shrink (NoteShrink) frees nothing a view the caller holds can
+// reach, provided no other shrink of the call may be of the same array. A
+// back edge's summary is incomplete, so it counts as shrinking every
 // grow-shrink array it can reach.
 inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &argvals,
                                           string_view name) {
     auto pending = spec->inprogress;
     FlagScope guessing(guessedshrink, pending);
     auto standalone = Is<Call>(at) && Is<Call>(at)->standalone;
+    // A shrink of an array the call may free: a grow-only array takes the
+    // §5.1 scan (variables and recorded stores), a grow-shrink one the §5.2
+    // scan (variables only) and the pairs its callers judge (NoteLiveViews),
+    // unless balanced.
+    struct Hit {
+        VarDef *root;
+        TypeExpr *bound;
+        bool growonly;
+        ShrinkBalance balance;
+        const char *how;
+    };
+    vector<Hit> hits;
+    auto apply = [&](const Hit &h, bool balanced) {
+        auto what = cat("call ", name, ", which ", h.how);
+        if (h.growonly)
+            GrowOnlyShrinkAt(at, standalone, what, h.root, string(h.root->name), h.bound);
+        else if (balanced)
+            NoteShrink(h.root, h.bound, h.balance);
+        else
+            ShrinkGrowShrink(at, cat(what, " ", h.root->name), h.root, string(h.root->name),
+                             h.bound);
+    };
     // A shrink of the `arr` at root, and, where root is inexact or only
-    // bounds it, of every other array it may be (ShrinkTargets). A
-    // grow-only array takes the §5.1 scan (variables and recorded stores),
-    // a grow-shrink one the §5.2 scan (variables only). An external's type
-    // is its root's own, which a parameter class takes from its call site.
-    auto shrink = [&](VarDef *root, bool exact, TypeExpr *arr, const char *how) {
+    // bounds it, of every other array it may be (ShrinkTargets). An
+    // external's type is its root's own, which a parameter class takes from
+    // its call site. A back edge's are applied as they come; a checked
+    // callee's once all of them are known.
+    auto shrink = [&](VarDef *root, bool exact, TypeExpr *arr, const char *how,
+                      ShrinkBalance balance) {
         root = CanonRoot(root);
         auto growonly = arr ? GrowOnlyTail(arr) : IsGrowOnlyRootVar(root);
         for (auto &t : ShrinkTargets(root, exact, arr)) {
-            auto what = cat("call ", name, ", which ", t.root == root ? how : "may shrink");
-            auto bound = t.bound ? arr : nullptr;
-            if (growonly)
-                GrowOnlyShrinkAt(at, standalone, what, t.root, string(t.root->name), bound);
-            else
-                ShrinkGrowShrink(at, cat(what, " ", t.root->name), t.root,
-                                 string(t.root->name), bound);
+            Hit h { t.root, t.bound ? arr : nullptr, growonly,
+                    growonly ? SB_UNBALANCED : balance, t.root == root ? how : "may shrink" };
+            if (pending) apply(h, false);
+            else hits.push_back(h);
         }
     };
     auto pending_shrinks = pending ? &SyntacticShrinks(spec->sf) : nullptr;
     ApplyCalleeStores(spec, argvals, at);
     for (size_t i = 0; i < argvals.size() && i < spec->argtypes.size(); i++) {
         auto pt = spec->argtypes[i];
+        auto entry = spec->shrinkparams.find((int)i);
+        auto recorded = entry != spec->shrinkparams.end();
         // A shrink recorded against a by-value holder parameter is of the
         // array its references point into (ClassArgRoot), not of the holder,
         // which the callee received a copy of. Only a holder whose class is
         // that one array exactly has such an entry (RootArg::heldexact, or a
         // class shared with a reference); an inexact one's are bounds, below.
         if (!pending && !IsRefOrSlice(pt)) {
-            if (spec->shrinkparams.count((int)i))
-                shrink(ClassArgRoot(pt, argvals[i]).first, true, nullptr, "shrinks");
+            if (recorded)
+                shrink(ClassArgRoot(pt, argvals[i]).first, true, nullptr, "shrinks",
+                       entry->second);
             continue;
         }
         auto root = CanonRoot(argvals[i].root);
@@ -1734,7 +1803,7 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
         auto arr = LoadType(pt->ref->sub);
         bool shrinks;
         if (!pending) {
-            shrinks = spec->shrinkparams.count((int)i) > 0;
+            shrinks = recorded;
         } else if (GrowOnlyTail(arr)) {
             // A back edge's summary is incomplete; a grow-only argument
             // counts as shrunk where the callee textually shrinks it.
@@ -1743,18 +1812,20 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
         } else {
             shrinks = ContainsGrowShrink(arr);
         }
-        if (shrinks) shrink(root, argvals[i].rootexact, arr, "shrinks");
+        if (shrinks)
+            shrink(root, argvals[i].rootexact, arr, "shrinks",
+                   recorded && !pending ? entry->second : SB_UNBALANCED);
     }
     // An array only reached through the references an argument holds or
     // points at: any of its type that the argument's root, or its contents'
     // for a by-value holder, bounds. A back edge's shrinks are noted on the
     // callee itself, so the list may grow meanwhile.
     auto parambounds = spec->shrinkparambounds;
-    for (auto &[i, arr] : parambounds) {
-        if (i >= (int)argvals.size()) continue;
-        auto root = IsRefOrSlice(spec->argtypes[i]) ? argvals[i].root
-                                                    : HolderRootOf(argvals[i]);
-        shrink(root, false, arr, "may shrink");
+    for (auto &b : parambounds) {
+        if (b.key >= (int)argvals.size()) continue;
+        auto root = IsRefOrSlice(spec->argtypes[b.key]) ? argvals[b.key].root
+                                                        : HolderRootOf(argvals[b.key]);
+        shrink(root, false, b.type, "may shrink", pending ? SB_UNBALANCED : b.balance);
     }
     if (pending) {
         // What the references an argument or a lexical parent's local holds
@@ -1764,7 +1835,7 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
             vector<TypeExpr *> reached;
             ReachedThroughRefs(t, reached);
             for (auto p : reached)
-                if (ContainsGrowShrink(p)) shrink(root, false, p, "may shrink");
+                if (ContainsGrowShrink(p)) shrink(root, false, p, "may shrink", SB_UNBALANCED);
         };
         for (size_t i = 0; i < argvals.size() && i < spec->argtypes.size(); i++) {
             auto pt = spec->argtypes[i];
@@ -1784,7 +1855,7 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
             if (IsArrayKind(rt, A_GROW))
                 for (auto external : pending_shrinks->captures) may |= external == vd->name;
             if (may && seen.insert(root).second)
-                shrink(root, !viaref || RefExactOf(vd), rt, "may shrink");
+                shrink(root, !viaref || RefExactOf(vd), rt, "may shrink", SB_UNBALANCED);
             reach(root, rt);
         }
         // Every grow-shrink global, and every grow-only global some function
@@ -1809,9 +1880,26 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
             }
         }
     } else {
-        for (auto vd : spec->shrinkexternals) shrink(vd, true, nullptr, "shrinks");
-        for (auto &[vd, arr] : spec->shrinkexternalbounds) shrink(vd, false, arr, "may shrink");
+        for (auto &[vd, balance] : spec->shrinkexternals)
+            shrink(vd, true, nullptr, "shrinks", balance);
+        for (auto &b : spec->shrinkexternalbounds)
+            shrink(b.key, false, b.type, "may shrink", b.balance);
     }
+    // A balanced shrink frees nothing a view of the array taken before the
+    // call points into, unless the call may also shrink that array
+    // unbalanced, under its root or another that may name it: an inexact or
+    // bound one, or a parameter class, which may be a global, a captured
+    // variable or another class (MayAliasRoots; two classes of one
+    // activation only the call sites could tell apart).
+    auto balanced = [&](const Hit &h) {
+        if (h.growonly || h.balance != SB_BALANCED) return false;
+        for (auto &u : hits)
+            if (!u.growonly && u.balance != SB_BALANCED &&
+                MayAliasRoots(h.root, !h.bound, u.root, !u.bound) != AL_NO)
+                return false;
+        return true;
+    };
+    for (auto &h : hits) apply(h, balanced(h));
     ApplyCalleeLiveShrinks(at, spec, argvals, name);
 }
 
