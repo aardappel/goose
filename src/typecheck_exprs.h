@@ -103,7 +103,8 @@ inline void TypeCheck::NoTemporaryLiteral(Node *n, TypeExpr *t) {
 }
 
 // Crossing a reference in a path (auto-deref, §3.8): the storage owner
-// becomes the reference's root, writability its provenance.
+// becomes the reference's root, writability its provenance, and the rest of
+// the path lies in its pointee (Prov::reached).
 inline void TypeCheck::DerefLValue(LVal &lv, Node *at) {
     if (lv.type->kind != TY_REF) return;
     if (lv.type->ref->optional)
@@ -120,6 +121,7 @@ inline void TypeCheck::DerefLValue(LVal &lv, Node *at) {
         ReadBackLVal(lv);
     }
     lv.type = lv.type->ref->sub;
+    lv.reached = LoadType(lv.type);
     lv.var = nullptr;
     lv.letbound = false;
     lv.throughref = true;
@@ -136,16 +138,19 @@ inline void TypeCheck::RequireAssigned(VarDef *vd, Node *at) {
 }
 
 // Accessing through a slice variable: writes and roots follow the slice
-// value's provenance, not the variable's own var-ness.
+// value's provenance, not the variable's own var-ness. What is indexed or
+// sliced lies in the elements it views (Prov::reached).
 inline void TypeCheck::SliceProvenance(LVal &lv, Node *at) {
     if (lv.type->kind != TY_SLICE) return;
     if (!lv.var) {
         if (lv.fromstorage) ReadBackLVal(lv);
         else if (lv.throughref) lv.SetProv(SlotView(lv, lv.type));
+        lv.reached = lv.type->sub;
         return;
     }
     RequireAssigned(lv.var, at);
     lv.SetProv(RefProvOf(lv.var));
+    lv.reached = lv.type->sub;
     lv.var = nullptr;
 }
 
@@ -172,6 +177,7 @@ inline void TypeCheck::ReadBackLVal(LVal &lv) {
     lv.intogs = nullptr;
     lv.cyclelocal = false;
     lv.hidesclass = false;
+    lv.reached = nullptr;
     lv.slotread = lv.isslot && SlotReadable(lv.type);
     lv.intemp = false;
     if (lv.type->cq) lv.writable = false;   // A `const` slot's contents (§9.5).
@@ -554,8 +560,13 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
         }
         // An inexact destination root only bounds the storage the slot is
         // in: that may be any storage there or further out that can hold
-        // one (ShrinkTargets), and the value must outlive each (§9.2).
-        auto dsts = ShrinkTargets(curdst.root, curdst.exact, dt);
+        // what the destination's path reached (Dest::reached), which holds
+        // the slot by value, so its owner holds one too (ShrinkTargets). What
+        // can hold that can hold the slot, so of the storage the slot's type
+        // admits, this leaves out only what cannot be its owner. The value
+        // must outlive each (§9.2).
+        auto reached = curdst.reached ? curdst.reached : dt;
+        auto dsts = ShrinkTargets(curdst.root, curdst.exact, reached);
         for (auto &d : dsts) {
             if (Depth(root) <= Depth(d.root)) continue;
             fitfail = cat("storing a reference rooted at ",
@@ -607,10 +618,11 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
                     Val hv = v;
                     hv.root = root;
                     hv.rootexact = v.holderset && v.holderexact;
-                    RecordStore(d.root, hv, nullptr, curdst.varbind, v.holderfrom, dt, d.bound);
+                    RecordStore(d.root, hv, nullptr, curdst.varbind, v.holderfrom, reached,
+                                d.bound);
                 }
             } else {
-                RecordStore(d.root, v, PointeeOf(t), curdst.varbind, nullptr, dt, d.bound);
+                RecordStore(d.root, v, PointeeOf(t), curdst.varbind, nullptr, reached, d.bound);
             }
         }
     }

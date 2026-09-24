@@ -330,6 +330,7 @@ inline Prov TypeCheck::SlotView(const Prov &p, TypeExpr *slice) {
 inline void TypeCheck::BindProv(VarDef *vd, const Prov &p) {
     vd->ref = p;
     vd->ref.root = CanonRoot(p.root);
+    vd->ref.reached = nullptr;
     vd->refrootknown = true;
 }
 
@@ -1857,7 +1858,7 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     }
     auto v = CheckAssignedValue(a, target, arr, built, builtexact,
                                 Dest { lv.root, lv.rootexact,
-                                       lv.var && IsRefOrSlice(target) });
+                                       lv.var && IsRefOrSlice(target), lv.reached });
     if (lv.var) {
         // Slice variables carry their value's provenance (refs use .=).
         if (target->kind == TY_SLICE) {
@@ -1891,7 +1892,7 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
     bool wasplain;
     {
         DestScope ds(*this, lv.var ? Dest { lv.var, true, true }
-                                   : Dest { lv.root, lv.rootexact });
+                                   : Dest { lv.root, lv.rootexact, false, lv.reached });
         // `r .= &x` is the documented spelling of a rebind (§3.8), so an
         // explicit & is not redundant here as it is at a binding destination.
         SlotScope ss(*this, true);
@@ -1955,7 +1956,8 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv, const LVal &at) {
                      "array applies to a local of the function that owns it (§5.1)"));
     auto built = arr ? CanonRoot(at.root) : nullptr;
     auto builtexact = arr && at.rootexact;
-    CheckAssignedValue(a, pt, arr, built, builtexact, Dest { at.root, at.rootexact });
+    CheckAssignedValue(a, pt, arr, built, builtexact,
+                       Dest { at.root, at.rootexact, false, at.reached });
 }
 
 // A reference variable keeps one root for its whole life (see header

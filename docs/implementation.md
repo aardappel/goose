@@ -434,11 +434,13 @@ by-value binding, whether it was reached through a field or element step
 points (`intemp`, §3.6). Crossing a reference on the way (`DerefLValue`)
 replaces the provenance by the reference's: a reference *variable*'s
 committed binding (§3.7), or, for a reference read out of storage, the
-read-back root (`ReadBackLVal`, §3.6). `ContainerRead` is the load of a
-field or element: the load type (`LoadType`: `varint` decodes to `i64`, a
-relative reference loads as a plain one, a `const` value loads as a plain
-copy), the read-back provenance, and, for a reference or slice, exactly the
-writability the slot's type says.
+read-back root (`ReadBackLVal`, §3.6); and the rest of the path lies in the
+reference's pointee, whose type it notes (`Prov::reached`, §3.5), as a
+slice crossed notes its element type (`SliceProvenance`). `ContainerRead` is
+the load of a field or element: the load type (`LoadType`: `varint` decodes
+to `i64`, a relative reference loads as a plain one, a `const` value loads
+as a plain copy), the read-back provenance, and, for a reference or slice,
+exactly the writability the slot's type says.
 
 **Held temporaries.** Values evaluated earlier in a statement stay live until
 it ends: `HoldValue` pushes a reference, slice, sequence view or holder
@@ -463,6 +465,7 @@ struct Prov {
     bool cyclelocal;     // may be rooted where a recursive cycle stores nothing, unshown
     bool hidesclass;     // may be a parameter class's pointee the root does not show
     bool slotread;       // read out of a field, an element or a global (§3.10)
+    TypeExpr *reached;   // the pointee type of the last reference or slice its path crossed (§3.5)
 };
 ```
 
@@ -606,10 +609,12 @@ whose declaration is being checked has no type yet either.
 ### 3.5 The store rule and the store record
 
 `FitsAt` is where §9.2's store rule is enforced. The **destination** of the
-value being checked is `curdst` (`Dest`: a root, its exactness, and whether
-the destination is a reference variable itself, which makes the operation a
-binding rather than a store); it is set by declarations, assignments,
-element arguments (`ElemArg`), and literal fields, and cleared to "no
+value being checked is `curdst` (`Dest`: a root, its exactness, whether the
+destination is a reference variable itself, which makes the operation a
+binding rather than a store, and what the path to it reached: the pointee
+type of the last reference or slice it crossed, which the slots filled lie
+in, `Prov::reached`); it is set by declarations, assignments, element
+arguments (`ElemArg`), appends, and literal fields, and cleared to "no
 destination" for call arguments and returns -- a parameter dies before its
 argument's root, so an argument is never a store. When a reference, slice,
 or **holder** value (a by-value struct, array or payload that contains plain
@@ -618,9 +623,14 @@ references or slices, `HoldsPlainRef`) meets a destination with a root:
 1. a `cycleroot` value is rejected (pass-down only);
 2. the value's root must be at or above the destination's depth, and where
    the destination's root is inexact, at or above the depth of every
-   storage that root may stand for (`ShrinkTargets` over the slot's type:
-   the root itself and each read-back candidate at its depth or outside, a
-   parameter's class as the bound on the caller's storage behind it);
+   storage that root may stand for (`ShrinkTargets` over the type the path
+   reached, or the slot's own where it crossed no reference: the root itself
+   and each read-back candidate at its depth or outside, a parameter's class
+   as the bound on the caller's storage behind it). Whatever owns the slot
+   holds a value of the type reached, and whatever can hold one can hold the
+   slot, so of the storage the slot's type admits this leaves out only what
+   the slot cannot be in: beside a borrowed context's table of `Input`s, an
+   argument list, which can hold an `Input`'s text but no `Input[>..]`;
 3. a reference that may point into a grow-shrink array's elements may be
    bound to a variable but never stored (§5.2, `StoredIntoGrowShrink`: by
    its root, `GrowShrinkCanHold` with the byte-view exception `MayBeViewed`,
@@ -687,16 +697,17 @@ writing through an array reference does. A permutation may preserve the
 container's existing contents provenance, but a new incoming reference
 must not disappear from its store effects. Only stores read back from the
 same container preserve the existing record without adding an incoming root.
-An event keeps the slot's type (`StoreEvent::slot`), and one made through a
-class that only bounds the caller's storage behind it is marked `bound`.
-The body checked such a store against one class, as deep as the argument's
-root; where that root is inexact, or the event is a bound one, the call
-widens the store to every storage the argument's root may stand for
-(`ShrinkTargets` over the slot type), checks the stored value's mapped root
-against each, and records it on each, a class of its own caller's marked
-`bound` again. For a callee still being checked (a back edge) it
-conservatively records every reference argument as stored into every
-storage a reference argument whose pointee can hold references may be.
+An event keeps the type its destination reached (`StoreEvent::reached`),
+and one made through a class that only bounds the caller's storage behind
+it is marked `bound`. The body checked such a store against one class, as
+deep as the argument's root; where that root is inexact, or the event is a
+bound one, the call widens the store to every storage the argument's root
+may stand for (`ShrinkTargets` over that type), checks the stored value's
+mapped root against each, and records it on each, a class of its own
+caller's marked `bound` again. For a callee still being checked (a back
+edge) it conservatively records every reference argument as stored into
+every storage a reference argument whose pointee can hold references may be,
+the pointee's type being what a store through it reaches.
 
 Holder values carry their contents' bound as `holderroot`/`holderexact`
 (§9.2's "implicitly generic over the fields' roots"): a literal's is the
@@ -2692,6 +2703,14 @@ specification allows, and the shapes the C backend refuses outright:
   specialization key does not record the bit, so inside the callee a
   grow-shrink shrink still counts a view passed in from a field as one that
   may point into the array.
+* A shrink of an array in what an inexactly rooted reference points at
+  (`c.s.arr.pop()`, with `c.s` read out of `c`) counts as a shrink of every
+  array of that array's type the root bounds, not only of those in storage
+  that can hold what the reference points at, as a store through it does
+  (§3.5): the pairs of roots it leaves its callers (`LiveShrink`) and its
+  bound summaries (`BoundShrink`) carry the array's type alone, so narrowing
+  the shrink by what its path reached would only move the rejection to the
+  call.
 * The growth-during-construction rule (§3.10) takes a parameter class to be
   possibly any global or captured local a callee grows, two classes of one
   activation to be one array unless every call site keeps both concrete and

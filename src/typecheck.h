@@ -256,6 +256,9 @@ struct TypeCheck {
         VarDef *root = nullptr;
         bool exact = false;
         bool varbind = false;  // A reference/slice variable itself: a binding, not a store.
+        // The type of the storage the path to it reached, which the slots it
+        // fills lie in (Prov::reached); null where it crossed no reference.
+        TypeExpr *reached = nullptr;
     };
     Dest curdst;
     // Whether the value being checked lands in a typed slot -- a field, an
@@ -1273,7 +1276,7 @@ struct TypeCheck {
     void AddStoreEvent(const StoreEvent &e);
     void NoteContentRoot(VarDef *container, VarDef *root, bool exact);
     void RecordStore(VarDef *container, const Val &v, TypeExpr *pointee, bool varbind,
-                     VarDef *src = nullptr, TypeExpr *slot = nullptr, bool bound = false);
+                     VarDef *src = nullptr, TypeExpr *reached = nullptr, bool bound = false);
     vector<set<string_view>> loopassigned;   // Per enclosing loop: names its body writes.
     void CollectAssignedBases(Node *n, set<string_view> &out);
     void PushLoopAssigned(Node *body);

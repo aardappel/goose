@@ -420,6 +420,14 @@ struct Prov {
     // there may still lead to a whole grow-shrink array, or to a variable
     // holding a view into one: nothing reached through a reference keeps it.
     bool slotread = false;
+    // Where the path to the pointee crossed a reference or slice: the type of
+    // the last one's pointee, which the fields and elements stepped into
+    // after it lie in by value, as storage the root owns or bounds. Whatever
+    // owns the pointee holds one, so the storage an inexact root may stand
+    // for is enumerated by it (the store rule, §9.2). Null where the path
+    // crossed none, and where the root was derived anew since: a read-back
+    // (§9.5), or a variable's binding, which a read of it crosses again.
+    TypeExpr *reached = nullptr;
     void SetProv(const Prov &p) { *this = p; }
 };
 
@@ -1232,10 +1240,12 @@ struct StoreEvent {
     TypeExpr *pointee = nullptr; // Null: unknown (a holder value's contents).
     bool byteview = false;
     Line at;
-    // The type of the slot stored into, by which the storage an inexact
-    // root may stand for is enumerated (TypeCheck::ShrinkTargets); null for
-    // a binding's contents, which are the variable's own.
-    TypeExpr *slot = nullptr;
+    // The type of the storage the slot stored into lies in, as the
+    // destination reached it (Prov::reached; the slot's own type where no
+    // reference was crossed), by which the storage an inexact root may stand
+    // for is enumerated (TypeCheck::ShrinkTargets); null for a binding's
+    // contents, which are the variable's own.
+    TypeExpr *reached = nullptr;
     // Stored not into the container's own storage but into storage its
     // references lead to, which it only bounds: a parameter's class stands
     // for the caller's, which the call widens to the candidates there.
