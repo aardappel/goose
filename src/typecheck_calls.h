@@ -1229,12 +1229,14 @@ inline void TypeCheck::AddNeed(FnSpec *s, FnSpec *t) {
     }
 }
 
-// The §7.8 cycle return-root analysis, handed the one piece of checker
-// state it cannot derive from the syntax: the root a variable holds.
+// The §7.8 cycle return-root analysis, handed the checker state it cannot
+// derive from the syntax: the root a variable holds, the variable a name
+// denotes, and which checked types hold references.
 inline CycleRoots TypeCheck::Cycles() {
     return CycleRoots(ast, cyclecache, cycleroot, [this](VarDef *vd, bool isref) {
         return CanonRoot(isref ? RefRootOf(vd) : vd);
-    }, [this](string_view name) { return LookupVar(name, CurNs()); });
+    }, [this](string_view name) { return LookupVar(name, CurNs()); },
+    [this](TypeExpr *t) { return HoldsPlainRef(t); });
 }
 
 // A fixed-size value C takes by value (§7.10): a scalar, bool, or a flat
@@ -1665,6 +1667,19 @@ inline Val TypeCheck::RetAltVal(FnSpec *spec, const RetAlt &alt, vector<Val> &ar
 inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
     c->rettypes = spec->rets;
     lastcallrets.clear();
+    // A back edge reuses the body whatever it passes (§7.8), and a parameter
+    // the key gave static data has no class for a prediction to name, so no
+    // mapping reaches what a back edge passes it instead: a holder result
+    // such a back edge gets outlives nothing. A reference result is mapped
+    // as predicted, which parsers rely on where the entry call passes a
+    // literal key and the back edges views of the input (samples/18_json).
+    auto unkeyed = false;
+    for (size_t p = 0; spec->inprogress && p < spec->params.size() && p < argvals.size(); p++) {
+        auto pt = spec->argtypes[p];
+        if ((IsRefOrSlice(pt) || HoldsPlainRef(pt)) && spec->roots[p].cls == 0 &&
+            ClassArgRoot(pt, argvals[p]).first)
+            unkeyed = true;
+    }
     for (size_t i = 0; i < spec->rets.size(); i++) {
         Val v;
         v.type = spec->rets[i];
@@ -1676,7 +1691,8 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
             // its returns were predicted to give (§7.8), and where there are
             // none to map, it outlives nothing, which is not static data.
             auto backedge = spec->inprogress;
-            if (backedge && (!ri.seeded || ri.predlost || ri.pred.empty())) {
+            if (backedge && (!ri.seeded || ri.predlost || ri.pred.empty() ||
+                             (holder && unkeyed))) {
                 v.root = cycleroot;
             } else {
                 // Each root a return gives, merged as branches are (§9.2).
@@ -1724,7 +1740,8 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
                 rr.useddepth = min(rr.useddepth, Depth(root));
                 rr.usedexact |= holder ? v.holderexact : v.rootexact;
                 rr.usedwritable |= v.writable;
-                rr.usedclean |= IsRefOrSlice(v.type) && !GrowShrinkTaint(v, v.type);
+                rr.usedclean |= holder ? !IntoGrowShrink(v, root, v.type, true)
+                                       : !GrowShrinkTaint(v, v.type);
                 rr.usedstorable |= CycleStorable(root) && !v.cyclelocal;
             }
         }

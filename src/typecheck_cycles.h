@@ -9,12 +9,15 @@
 // its own arguments and merges it as the branches of an `if` are merged, and
 // every real return is checked against it. What the scan cannot pin down
 // becomes the `cycleroot` sentinel: like a temporary it outlives nothing, so
-// such a result may only be passed down, never stored or returned.
+// such a result may only be passed down, never stored or returned. A result
+// holding references (a holder, §9.2) is seeded too, by the roots of what it
+// holds; the scan reads no holder, so its first checked return stands in.
 //
-// The scan is purely syntactic, so it needs no checker state beyond the three
+// The scan is purely syntactic, so it needs no checker state beyond the four
 // things it cannot derive itself: the sentinel, what root the checker has
-// recorded for one of its variables (RootOfVar), and which variable a free
-// variable's name denotes from the specialization being seeded (FreeVar). Its
+// recorded for one of its variables (RootOfVar), which variable a free
+// variable's name denotes from the specialization being seeded (FreeVar), and
+// whether a checked result type holds references (HoldsRefs). Its
 // per-function results are cached in the typechecker, so syntax-only scratch
 // state is discarded before optimization and code generation.
 #pragma once
@@ -92,6 +95,8 @@ struct CycleRoots {
     using RootOfVar = function<VarDef *(VarDef *vd, bool isref)>;
     // The variable a name resolves to through the lexical parent chain.
     using FreeVar = function<VarDef *(string_view name)>;
+    // Whether a value of a checked type holds plain references or slices.
+    using HoldsRefs = function<bool(TypeExpr *t)>;
 
     struct Bindings {
         vector<LocalBind> locals;
@@ -113,9 +118,12 @@ struct CycleRoots {
     VarDef *cycleroot;
     RootOfVar rootof;
     FreeVar freevar;
+    HoldsRefs holds;
 
-    CycleRoots(Ast &_ast, Cache &_cache, VarDef *_cycleroot, RootOfVar _rootof, FreeVar _freevar)
-        : ast(_ast), cache(_cache), cycleroot(_cycleroot), rootof(_rootof), freevar(_freevar) {}
+    CycleRoots(Ast &_ast, Cache &_cache, VarDef *_cycleroot, RootOfVar _rootof, FreeVar _freevar,
+               HoldsRefs _holds)
+        : ast(_ast), cache(_cache), cycleroot(_cycleroot), rootof(_rootof), freevar(_freevar),
+          holds(_holds) {}
 
     static RootSet Named(RootDescKind kind, string_view name) {
         RootDesc d;
@@ -535,18 +543,26 @@ struct CycleRoots {
     }
 
     void Seed(FnSpec *spec) {
-        auto anyref = false;
-        for (auto rt : spec->rets)
+        auto anyref = false, anyholder = false;
+        for (auto rt : spec->rets) {
             anyref |= IsRefOrSlice(rt);
-        if (!anyref) return;
-        ReturnRootDescs(spec->sf);
-        auto &ds = cache.returns.at(spec->sf).values;
+            anyholder |= !IsRefOrSlice(rt) && holds(rt);
+        }
+        if (!anyref && !anyholder) return;
+        vector<RootSet> ds;
+        if (anyref) {
+            ReturnRootDescs(spec->sf);
+            ds = cache.returns.at(spec->sf).values;
+        }
         if (spec->retroots.size() < spec->rets.size()) spec->retroots.resize(spec->rets.size());
         for (size_t i = 0; i < spec->rets.size(); i++) {
-            if (!IsRefOrSlice(spec->rets[i])) continue;
+            auto isrs = IsRefOrSlice(spec->rets[i]);
+            if (!isrs && !holds(spec->rets[i])) continue;
             auto &rr = spec->retroots[i];
             rr.seeded = true;
-            rr.predunknown = i >= ds.size() || ds[i].unknown;
+            // The scan follows references, not what a holder holds: a holder
+            // result's prediction is its first checked return.
+            rr.predunknown = !isrs || i >= ds.size() || ds[i].unknown;
             for (size_t k = 0; !rr.predunknown && k < ds[i].alts.size(); k++) {
                 RetAlt a;
                 if (ResolveDesc(spec, ds[i].alts[k], a)) rr.pred.push_back(a);
@@ -569,10 +585,19 @@ struct CycleRoots {
     // and `local`: a store may not keep the returned reference, its root
     // included, as it may not keep a reference into a grow-shrink array
     // (§5.2) or into what the cycle stores nothing into (§7.8).
+    //
+    // A holder result's return joins the prediction inexact, whatever it
+    // is: a back edge's holder is taken apart by reading its fields, which
+    // re-derives their roots inexactly out of a named holder (§9.5), and an
+    // exact prediction would be taken back by the first return built from
+    // them. A returned reference keeps its root through a variable (§9.2),
+    // so a reference result's return joins as exact as it is.
     string ReturnConflict(FnSpec *spec, size_t i, const RetAlt &ret, bool gs, bool local) {
         if (!spec->inprogress || i >= spec->retroots.size()) return {};
         auto &rr = spec->retroots[i];
         if (!rr.seeded || rr.predlost) return {};
+        auto joined = ret;
+        if (i < spec->rets.size() && !IsRefOrSlice(spec->rets[i])) joined.exact = false;
         auto weakens = [&](bool lessexact, bool readonly, bool togs, bool tolocal) -> string {
             if (rr.usedexact && lessexact)
                 return "this return weakens the reference root already used by the recursive "
@@ -606,7 +631,7 @@ struct CycleRoots {
         auto hidden = ret.hidesclass && !covered;
         if (rr.predunknown || rr.pred.empty()) {
             if (hidden) rr.predlost = true;
-            else rr.pred.push_back(ret);
+            else rr.pred.push_back(joined);
             rr.predunknown = false;
             return {};
         }
@@ -644,7 +669,7 @@ struct CycleRoots {
                            "given (§7.8); use one source");
             if (auto bad = weakens(true, !ret.writable, gs, local); !bad.empty()) return bad;
         }
-        rr.pred.push_back(ret);
+        rr.pred.push_back(joined);
         return {};
     }
 };

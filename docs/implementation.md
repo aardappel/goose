@@ -1143,13 +1143,31 @@ class's parameters, merged, where an ordinary call, whose classes group the
 arguments as the key's, takes the first. A set that is unknown, or names a
 function's own local, predicts nothing (`predunknown`); until a return is
 checked, back edges then get `cycleroot`, and after it they map that return,
-which stands in for the prediction. Each real return is checked against the
+which stands in for the prediction. A holder result (`HoldsPlainRef`, which
+the scan is handed as its `HoldsRefs` callback) is seeded too, by the roots
+of what it holds, which `CallResult`, `RecordReturn` and `RetAltVal` map and
+check as they do a reference's; the scan reads no holder, so it is always
+`predunknown`. What a checked return adds to a holder result's prediction,
+the stand-in included, is inexact whatever the return: a back edge's holder
+is taken apart by reading its fields, which re-derives their roots out of a
+named holder (§3.6), inexactly wherever static data or a parameter's bound
+is a candidate too, and an exact stand-in would be weakened by the first
+return built from them. A reference result's stand-in stays as exact as its
+return: a variable keeps its binding's root (§3.7), so a returned back-edge
+result is as exact as it was given, and exactness is what `index_of` and an
+exact shrink need. A parameter the key gave static data (class 0) has no
+class root for a prediction to name, so a back edge that passes it storage
+of its own gets a holder result that outlives nothing (`CallResult`); a
+reference result is mapped as predicted there, which parsers passing a
+literal key at the entry call rely on (`samples/18_json.goose`). Each real
+return is checked against the
 prediction as it is recorded (`ReturnConflict`): one it names narrows the
 alternative for later back edges, but may not take back what an earlier one
 was given (`RetRoot::usedexact`, `usedwritable`, `usedclean` for a
-grow-shrink taint, `usedstorable` for `cyclelocal`); one it missed joins
-it where no back edge has used the prediction yet, and after that only a
-root every activation shares and no deeper than any back edge's result
+grow-shrink taint -- for a holder, `IntoGrowShrink` over what it holds, as
+rule 3 of §3.5 stores it -- `usedstorable` for `cyclelocal`); one it missed
+joins it where no back edge has used the prediction yet, and after that only
+a root every activation shares and no deeper than any back edge's result
 (`useddepth`). A return with `hidesclass` may be the pointee of a parameter
 class no alternative names, which no mapping reaches: unless the prediction
 names every class, the back edges checked after it get `cycleroot`
@@ -2593,10 +2611,17 @@ specification allows, and the shapes the C backend refuses outright:
   is pass-down only; the spec's cycle store rule is stated the same way and
   marked for refinement (TODO 5).
 * The cycle return-root scan gives up on branch values, overload sets,
-  function values and nested functions it cannot resolve by name; until a
-  return is checked, a back edge's result is then pass-down only
-  (`cycleroot`), never unsound, and may point into a grow-shrink array
-  wherever it is passed (§3.5).
+  function values and nested functions it cannot resolve by name, and
+  reads no holder result at all; until a return is checked, a back edge's
+  result is then pass-down only (`cycleroot`), never unsound, and may point
+  into a grow-shrink array wherever it is passed (§3.5). A recursion that
+  builds its holder result from its children's before any return of it is
+  checked (recursing ahead of the base case's return) is refused for that.
+* A back edge that passes storage of its own to a reference, slice or
+  holder parameter the entry call gave static data gets a holder result
+  that may only be passed down: the body was checked with that parameter
+  as static data, which no prediction can map to what the back edge
+  passes (§3.11).
 * A return that may be a parameter class's pointee its root does not show
   (`hidesclass`) makes the back edges after it pass-down only, unless the
   prediction names every class, even where the class is a pool, whose

@@ -1276,9 +1276,10 @@ struct RetAlt {
     bool slotread = false;     // Prov::slotread of every one.
 };
 
-// One return value's reference roots: every root a return gives, which each
-// call maps and merges as it would the branches of an `if` (§9.2), and the
-// cycle fixpoint's prediction of them (§7.8).
+// One return value's reference roots, or for a holder the roots of what it
+// holds: every root a return gives, which each call maps and merges as it
+// would the branches of an `if` (§9.2), and the cycle fixpoint's prediction
+// of them (§7.8).
 struct RetRoot {
     vector<RetAlt> alts;       // One per distinct root of the checked returns.
     bool byteview = false;

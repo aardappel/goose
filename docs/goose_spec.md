@@ -1751,6 +1751,34 @@ down, but storing or returning it is a compile error. It may point into a
 grow-shrink array, too, so what it is passed down to holds it the way §5.2
 holds references into one, in variables only: not in a literal, either.
 
+A result that *holds* references — a struct with slice fields, say — is
+predicted and checked the same way, by the roots of what it holds (§9.2): a
+back edge's result holds references rooted where the returns' results hold
+theirs, mapped through its own arguments, and each real return's holder is
+checked against what the back edges were given, as a returned reference is.
+The fixpoint reads no holder, so the first return checked stands in for its
+answer. A returned reference keeps its root through a variable, but a holder
+is taken apart by reading its fields, which re-derives their roots (§9.5),
+inexactly wherever static data or a parameter's storage is a candidate too.
+So what a checked return adds to a holder result's answer is inexact
+whatever the return: an exact one would be weakened by the first return
+built out of a back edge's fields. A recursive builder may thus return
+views into an arena that outlives the cycle, built from its children's:
+
+```goose
+struct Fragment { text: const u8[:] }
+var arena: u8[>..] = [];
+
+recursive fn nest(n: i64) -> Fragment {
+    if n == 0 { arena.append("x"); return Fragment { text: arena[..] }; }
+    let child = nest(n - 1);
+    return Fragment { text: child.text };
+}
+```
+
+Written with the recursive call ahead of every return, the back edge would
+come before the stand-in, and `child`'s views could only be passed down.
+
 ### 7.9 `return … from` (long-distance return)
 
 ```goose
@@ -2703,13 +2731,17 @@ the end, each with where its resolution lives.
     computed before any body is checked, so a back edge's result carries the
     merge of the real roots the fixpoint determines, mapped through that back
     edge's own arguments, and an outlives-nothing root (pass-down-only) where
-    it determines none and no return has been checked yet. What remains is
-    the precision of the scan itself: it reads returns of
+    it determines none and no return has been checked yet. A result holding
+    references is predicted by the roots of what it holds, the same way.
+    What remains is the precision of the scan itself: it reads returns of
     `X.push(…)`/`&X[…]`/`X[i..j]`, of string literals, of reference
     variables, and of calls to uniquely named functions, and gives up on
     anything else (branch values, overload sets, function values, nested
     functions), which only ever costs a back-edge result its usability,
-    never soundness.
+    never soundness. It reads no holder at all (struct literals, holder
+    variables), so the back edge of a holder result checked before any of
+    its returns — recursing ahead of the base case's return — gives a
+    result that may only be passed down.
 1. **varint format benchmark** — DONE, see `varint_bench/results.md`:
    ULEB128 adopted (§3.6). Break-even vs the best branchless format sits at
    ~70–75% single-byte values (a cliff, not a slope); above it ULEB wins

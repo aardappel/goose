@@ -12,8 +12,9 @@ recursive fn pick(r: i64&, d: i64) -> i64& {
     return c;
 }
 
-// Holder results are not predicted: an exact holder, then one read back out
-// of the container.
+// A holder result's first return stands in for its prediction, and the back
+// edge comes before it: an exact holder, then one read back out of the
+// container.
 struct H { value: i64&, k: i64 }
 recursive fn walk(hs: H[>..]&, d: i64) -> H {
     if d > 0 { let x = walk(hs, d - 1); print(x.k); }
