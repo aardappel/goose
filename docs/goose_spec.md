@@ -459,7 +459,9 @@ pointee where §4.1 asks for one).
   reference type (but not a construct choosing one, such as
   `if c { &a } else { &b }`, whose value is a copy, §4.1) — while a
   non-fixed lvalue binds by reference (`let w = words[0];` names the
-  element). To bind a reference-returning call, use `.=`
+  element), and a reference to a non-fixed value denotes one (`let a =
+  c.args;`, with `args: u8[>..]&`, binds what the field refers to, as `.=`
+  does). To bind a reference-returning call to a fixed-size value, use `.=`
   (`let e .= pool.push(v);`) or annotate (`let e: T& = pool.push(v);`).
   An untyped parameter is an
   anonymous type variable and binds the argument's exact type, reference or

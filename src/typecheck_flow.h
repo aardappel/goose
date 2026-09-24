@@ -1567,9 +1567,10 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         for (size_t i = 0; i < vd->names.size(); i++) {
             auto d = MakeDef(i);
             d->assigned = true;
-            // Reference returns decay in inference, like everywhere, unless
-            // the declaration binds by reference (`.=`).
-            auto rv = vd->byref ? rets[i] : DecayRef(rets[i]);
+            // A reference result decays to a copy of a fixed-size pointee,
+            // as a single binding's does, unless the declaration binds by
+            // reference (`.=`); one to a non-fixed value binds it (§4.1).
+            auto rv = vd->byref || IsNonFixedRef(rets[i]) ? rets[i] : DecayRef(rets[i]);
             CheckBindingRoot(d, rv, vd->inits[0]);
             Finish(d, rv.type, &rv);
         }
@@ -1616,9 +1617,11 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
                     Warn(vd->inits[i], cat("redundant &: ", ExprStr(refinit->child),
                                            " binds by reference without it (§4.1)"));
             } else {
-                v = CheckValue(vd->inits[i], ann);
+                v = CheckValue(vd->inits[i], ann, false, false, !ann);
                 // An un-annotated binding of a non-fixed lvalue is a
-                // reference to it (§4.1), like an untyped parameter's.
+                // reference to it (§4.1), like an untyped parameter's, and
+                // one of a reference to such a value is that reference,
+                // which CheckValue keeps.
                 if (!ann && IsNonFixedLValue(v)) vd->inits[i] = AutoRef(vd->inits[i], v);
             }
         }

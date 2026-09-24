@@ -961,6 +961,7 @@ struct TypeCheck {
     Node *AutoRef(Node *n, Val &v);
     bool BindsRef(const Val &v, TypeExpr *dt);
     bool IsNonFixedLValue(const Val &v);
+    bool IsNonFixedRef(const Val &v);
     bool Referenceable(Node *n, const Val &v);
     [[noreturn]] void NoResizableRef(Node *at);
     bool UserRefOf(Node *n);
@@ -975,7 +976,8 @@ struct TypeCheck {
         if (pt->kind != TY_SLICE && (pt->kind == TY_REF || ClassOf(pt) != SC_FIXED)) return;
         if (auto u = Is<Unary>(a); u && u->synth) a = u->child;
     }
-    Val CheckValue(Node *&n, TypeExpr *expected, bool callsite = false, bool branchcopy = false);
+    Val CheckValue(Node *&n, TypeExpr *expected, bool callsite = false, bool branchcopy = false,
+                   bool inferred = false);
 
     Val CheckArg(Node *&n, TypeExpr *expected) {
         SlotScope ss(*this, false);

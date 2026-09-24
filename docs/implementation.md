@@ -401,6 +401,11 @@ reads as `x` (`Unary::CgX`).
 * binds a non-fixed lvalue to a reference destination by rewriting the node
   to a synthesized `&node` (`AutoRef`, `Unary::synth`), so every later pass
   sees an ordinary reference argument, and warns on a redundant user `&`;
+* keeps a reference to a non-fixed value undecayed where an un-annotated
+  `let`/`var` takes it (`CheckValue`'s `inferred` flag, `IsNonFixedRef`):
+  the pointee is a non-fixed lvalue, which such a binding takes by
+  reference (§4.1), so the variable is that reference, exactly as with `.=`;
+  `CheckVarDecl` keeps a multi-value binding's such results the same way;
 * rejects a non-fixed lvalue at a value destination unless it is a `copy`
   or the function's own local being returned (`RequireCopyable`, §4.1);
 * warns on a branch's redundant `&x` where its construct has no destination

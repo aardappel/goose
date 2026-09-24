@@ -348,6 +348,12 @@ inline bool TypeCheck::IsNonFixedLValue(const Val &v) {
     return v.lvalue && !IsRefOrSlice(v.type) && ClassOf(v.type) != SC_FIXED;
 }
 
+// A reference to a non-fixed value denotes a non-fixed lvalue (§3.8). A
+// varint pointee loads as the i64 it decodes to, a fixed-size value.
+inline bool TypeCheck::IsNonFixedRef(const Val &v) {
+    return IsPlainRef(v.type) && ClassOf(LoadType(v.type->ref->sub)) != SC_FIXED;
+}
+
 // Whether a resizable-valued path has a header of its own to reference
 // (C.2): a variable, or the tail of a frame object.
 inline bool TypeCheck::Referenceable(Node *n, const Val &v) {
@@ -411,8 +417,12 @@ inline Node *TypeCheck::WholeSlice(Node *n) {
 // A value meeting a destination of type `expected` (null or void: none).
 // Argument position (`callsite`) additionally allows the array→slice
 // coercion (§3.10), and leaves the redundant-& warning to the call's own
-// resolution, where an explicit & may have picked the overload.
-inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bool branchcopy) {
+// resolution, where an explicit & may have picked the overload. A variable
+// whose type is `inferred` from the value is no destination type either, but
+// binds a reference to a non-fixed value rather than copying the pointee
+// (§3.8, §4.1).
+inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bool branchcopy,
+                                 bool inferred) {
     auto v = CheckV(n, expected);
     // A nominal default is an ordinary construction at this destination,
     // including relative fields; do not turn it into a copied call result.
@@ -427,7 +437,7 @@ inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bo
                     "(§4.1); a reference-typed binding binds ", what, " without it"));
     }
     if (!expected || expected->kind == TY_VOID) {
-        v = DecayRef(v);
+        if (!inferred || !IsNonFixedRef(v)) v = DecayRef(v);
     } else {
         if (!callsite && expected->kind == TY_REF && UserRefOf(n))
             Warn(n, cat("redundant &: ", ExprStr(Is<Unary>(n)->child),
