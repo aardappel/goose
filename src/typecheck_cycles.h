@@ -374,7 +374,10 @@ struct CycleRoots {
             if (cands.size() != 1) return RootSet::Unknown();
             callee = cands[0];
         }
-        EnrollDescs(callee);
+        // A scan of bindings rather than of returns runs outside the
+        // fixpoint, and needs the callee's returns settled.
+        if (descrunning) EnrollDescs(callee);
+        else ReturnRootDescs(callee);
         auto &ds = cache.returns.at(callee).values;
         if (ds.empty()) return RootSet::Unknown();
         auto cs = ds[0];
@@ -406,6 +409,7 @@ struct CycleRoots {
 
     vector<SFunction *> descqueue;   // Functions in the running fixpoint.
     bool descchanged = false;
+    bool descrunning = false;
 
     // Bring a function into that fixpoint on first sight, so its own returns
     // get scanned too.
@@ -471,6 +475,7 @@ struct CycleRoots {
             return;
         descqueue.clear();
         EnrollDescs(f);
+        descrunning = true;
         auto settled = false;
         for (auto round = 0; round < 64 && !settled; round++) {
             descchanged = false;
@@ -491,6 +496,7 @@ struct CycleRoots {
             result.settled = true;
         }
         descqueue.clear();
+        descrunning = false;
     }
 
     // One predicted root as this specialization sees it, with the exactness

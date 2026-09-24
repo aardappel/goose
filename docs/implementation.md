@@ -1134,7 +1134,9 @@ itself) -- or is unknown, the top; the join is their union.
 base's storage, subranges, string literals, reference variables through
 their bindings, and calls to uniquely named functions through their own
 sets, each parameter mapped to what the call passes. The fixpoint iterates
-the closure of functions reached (`ReturnRootDescs`, at most 64 rounds).
+the closure of functions reached (`ReturnRootDescs`, at most 64 rounds); a
+scan run outside it, of a loop's rebinds (§3.7), runs that fixpoint for each
+function it calls before reading the function's sets.
 `ResolveDesc` turns each alternative into a `RetAlt` of the specialization
 (`RetRoot::pred`), which a back edge maps as any call maps a return's root
 (`RetAltVal`): a back edge reuses the body whatever it passes, so a
