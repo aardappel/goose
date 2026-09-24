@@ -30,18 +30,24 @@
 // its whole life. A function's result is rooted as a branch value is: each
 // call merges the roots its returns give, mapped to its own arguments.
 // Inside a recursive cycle (§7.8) a reference may be stored
-// only if it is rooted at a global or at a pool parameter -- a parameter root
-// class whose members are all references to resizable-class values, which no
-// cycle function holds across a call into its cycle (VarDef::poolclass,
-// JoinCycle); a back edge must then pass those pools exactly as the entry
-// call did (ValidatePoolArgs). A cycle's
-// *return* roots cannot come from its returns either, since a back edge
-// reaches a function before those are checked, so they are predicted by a
-// syntactic fixpoint over the cycle's returns before any body runs
+// only if it is rooted at a global, at a local of an enclosing function
+// outside the cycle, at a pool parameter -- a parameter root class whose
+// members are all references to resizable-class values, which no cycle
+// function holds across a call into its cycle (VarDef::poolclass,
+// JoinCycle), and which a back edge must then pass exactly as the entry call
+// did (ValidatePoolArgs) -- or at a threaded parameter: a class of exactly
+// rooted references or slices that every call into the cycle passes on as
+// it was first given, from storage outside every cycle (ThreadedClass). A
+// back edge may pass a threaded class something else, so a store relies on
+// it, and that call is then an error at the store (ValidateThreadArgs). A
+// cycle's *return* roots cannot come from its returns either, since a back
+// edge reaches a function before those are checked, so they are predicted by
+// a syntactic fixpoint over the cycle's returns before any body runs
 // (CycleRoots, typecheck_cycles.h) and verified against the real returns as
 // they are checked. Remaining conservatisms marked TODO: long-distance
 // returns carry only global/static refs, and references rooted at a caller's
-// fixed-size local are still pass-down-only inside a cycle.
+// fixed-size local that a call back into the cycle replaces are still
+// pass-down-only inside a cycle.
 //
 // This file holds the TypeCheck class -- its state, the small utilities, and
 // the driver -- with its members declared in the order they are defined
@@ -1142,6 +1148,31 @@ struct TypeCheck {
     string_view FrameFnName(int fi);
     static VarDef *UltimateRoot(VarDef *v);
     void ValidatePoolArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode);
+    // A reference or slice parameter class its creating call rooted exactly,
+    // which every call back into the recursive cycle passes on as that call
+    // did: in every activation it points where that argument did, so where
+    // that is outside the cycle, a reference rooted at it may be stored
+    // inside the cycle as one rooted at a pool may (§7.8). Nothing makes a
+    // back edge pass it on, so it is restricted only once a store relies on
+    // it: a call back into the cycle passing something else is then an error
+    // at that store; one checked before any store leaves it pass-down-only.
+    struct ThreadedClass {
+        bool broken = false;
+        string why;                  // What broke it, as the diagnostics say.
+        bool relied = false;
+        Line reliedat;               // The first store relying on it.
+        // The classes created from its parameters' values, or given them at a
+        // back edge: each points where it does only while it stays threaded.
+        vector<VarDef *> heirs;
+    };
+    unordered_map<VarDef *, ThreadedClass> threadedclasses;
+    void ValidateThreadArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode);
+    void NoteThreadedClass(VarDef *cls);
+    bool ThreadedChain(VarDef *r);
+    bool ThreadStorable(VarDef *r);
+    void RelyOnThread(VarDef *r);
+    void Unthread(VarDef *cls, const string &why);
+    string CycleStoreError(VarDef *root);
     void ValidateNeeds(FnSpec *spec, Node *callnode);
     void AddNeed(FnSpec *s, FnSpec *t);
     CycleRoots::Cache cyclecache;   // Syntactic predictions, needed only during this pass.

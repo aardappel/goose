@@ -590,7 +590,10 @@ struct CycleRoots {
     // prediction's roots stands for leaves back edges nothing to map. `gs`
     // and `local`: a store may not keep the returned reference, its root
     // included, as it may not keep a reference into a grow-shrink array
-    // (§5.2) or into what the cycle stores nothing into (§7.8).
+    // (§5.2) or into what the cycle stores nothing into (§7.8). `unthread`:
+    // the return may be what back edges were given as storable only while
+    // threaded parameter classes stay threaded (RetRoot::usedthreads), and
+    // is not storable itself; the caller breaks those classes.
     //
     // A holder result's return joins the prediction inexact, whatever it
     // is: a back edge's holder is taken apart by reading its fields, which
@@ -598,7 +601,8 @@ struct CycleRoots {
     // exact prediction would be taken back by the first return built from
     // them. A returned reference keeps its root through a variable (§9.2),
     // so a reference result's return joins as exact as it is.
-    string ReturnConflict(FnSpec *spec, size_t i, const RetAlt &ret, bool gs, bool local) {
+    string ReturnConflict(FnSpec *spec, size_t i, const RetAlt &ret, bool gs, bool local,
+                          bool &unthread) {
         if (!spec->inprogress || i >= spec->retroots.size()) return {};
         auto &rr = spec->retroots[i];
         if (!rr.seeded || rr.predlost) return {};
@@ -618,6 +622,7 @@ struct CycleRoots {
                 return "this return may be rooted where the recursive cycle stores nothing, "
                        "but the cycle already used a result it could store (§7.8); use one "
                        "source";
+            if (tolocal && !rr.usedthreads.empty()) unthread = true;
             return {};
         };
         // The classes of this activation's parameters, which a back edge maps

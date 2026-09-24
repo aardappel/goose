@@ -1706,8 +1706,25 @@ return references rooted at them freely. Because the cycle's functions are
 checked once against the entry
 call's roots, every recursive call must pass such a pool by the same
 reference the entry call did: swapping two pools, or passing a different one,
-at a back edge is a compile error. (Further refinements are future work,
-TODO.)
+at a back edge is a compile error.
+
+A reference or slice parameter the cycle passes on is rooted outside it
+the same way, whatever its pointee's size. Where the call that first
+reached the function rooted the parameter's argument exactly, outside every
+recursive cycle — a local of a function that is neither recursive nor in a
+cycle, or a global — and every call back into the cycle passes the
+parameter on — itself, a subslice or field of it, or a parameter of the
+calling activation passed on in the same way — the parameter points there
+in every activation, and references rooted at it or read through it may be
+stored inside the cycle, into storage that is the same in every activation:
+a local, a pool, or what another such parameter points at or leads to, not
+what a parameter the cycle passes something else does. So a recursive walk
+over a context of borrowed tables (A.6) stores the views it reads through
+the context into the tables it reaches through it. Nothing makes a
+recursive call pass such a parameter on, so it is restricted only once a
+store relies on it: a later call into the cycle that passes it anything
+else is a compile error reported at the store, and one before any store
+makes the store the error. (Further refinements are future work, TODO.)
 
 **Cycle return roots.** A back edge reaches a function whose own returns may
 not have been checked yet, so the roots of its result cannot come from them.
@@ -1733,13 +1750,15 @@ Every real return is then checked against what the back edges were given.
 A root the fixpoint names is fine, unless a back edge was already given a
 result that this return would make less exact, read-only, or impossible to
 store where the back edge's result could be stored (§5.2, and the store rule
-above). A root it missed joins the answer for the back edges checked later;
-after one has used the answer, only a root no deeper than that back edge's
-result is accepted, which every activation shares: a global, static data or
-a free variable. A return that may be the pointee of a parameter the answer
-does not map (a merged value, §9.2) leaves the back edges checked after it
-the root that outlives nothing (below), and is an error once one has used
-the answer.
+above). A result rooted at a parameter the cycle passes on is storable only
+on that condition, so such a return ends it instead: a store of the result
+is then the error. A root it missed joins the answer for the back edges
+checked later; after one has used the answer, only a root no deeper than
+that back edge's result is accepted, which every activation shares: a
+global, static data or a free variable. A return that may be the pointee of
+a parameter the answer does not map (a merged value, §9.2) leaves the back
+edges checked after it the root that outlives nothing (below), and is an
+error once one has used the answer.
 
 Where the fixpoint cannot determine a root — a return of a call to an
 overload set or a function value, say, or of an `if` — the first return
@@ -2622,9 +2641,11 @@ cycle none that stays in scope across a call back into the cycle (§7.8), so
 a program whose state is several growable tables owns each as a local of a
 driver function and passes the rest of the program one struct of references
 to them. The tables are rooted outside the cycle, which grows and shrinks
-them through `c` like any pool handed to it (§7.4, §7.8). They last for one
-call of the driver: each compilation starts from fresh tables, and no state
-is global.
+them through `c` like any pool handed to it (§7.4, §7.8), and since every
+call back into the cycle passes `c` on, the views read through it — a
+node's name copied into `text`, say — may be stored into the other tables
+inside the cycle too. They last for one call of the driver: each
+compilation starts from fresh tables, and no state is global.
 
 ---
 
@@ -2673,9 +2694,11 @@ the end, each with where its resolution lives.
     still exceed the spec: long-distance returns (§7.9) only carry
     references to globals/static data (precise rule: rooted at or above the
     target's frame), and the recursive-cycle store rule (§7.8) admits only
-    globals, free variables and pool parameters as roots of stored
-    references — a reference to a caller's fixed-size local is still
-    pass-down-only inside a cycle.
+    globals, free variables, pool parameters and parameters every call back
+    into the cycle passes on as roots of stored references — a reference to
+    a caller's fixed-size local that such a call replaces is still
+    pass-down-only inside a cycle, and so is a merged value that may be one
+    rooted at a parameter the cycle passes on.
     (One-root-per-reference-variable is a language rule, §9.2; a function's
     result is rooted as a branch's value is, at the innermost of its
     returns' roots. Writability follows `const` types; storage no longer
@@ -2686,7 +2709,11 @@ the end, each with where its resolution lives.
 3. **Move operation for resizables** — assign-and-leave-source-empty, as the
    one sanctioned "move".
 5. **Cycle store rule refinement** (§7.8) — the pass-down-only rule is
-   conservative; explore per-activation reasoning.
+   conservative. Parameters the cycle passes on as it was given are exempt;
+   one a recursive call gives other storage stays pass-down-only even where
+   every activation's store would outlive what it is given, and so does one
+   whose first argument is a local of a recursive function outside the
+   cycle. Explore per-activation reasoning.
 6. **"Current pool" implicit destinations** — allocation without naming the
    array, bound at compile time to the in-scope array of the right type.
 7. **Mixed-type pools & pool GC** — internal vs external references, inline

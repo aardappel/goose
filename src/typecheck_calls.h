@@ -894,10 +894,12 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
                                         " to remain narrowed (§3.8)"));
             ValidateCycle(spec, callnode);
             ValidatePoolArgs(spec, argvals, callnode);
+            ValidateThreadArgs(spec, argvals, callnode);
         } else if (CycleHead(spec)->inprogress) {
             // A finished member of a cycle still being checked leads back
             // into it, as a back edge does.
             JoinCycle(spec, callnode);
+            ValidateThreadArgs(spec, argvals, callnode);
         }
         vector<pair<SFunction *, FnSpec *>> path;
         for (auto &f : frames) path.push_back({ f.isfunval ? nullptr : f.sf, f.spec });
@@ -1192,6 +1194,111 @@ inline void TypeCheck::ValidatePoolArgs(FnSpec *spec, vector<Val> &argvals, Node
     }
 }
 
+// A call back into a recursive cycle that passes a threaded class
+// (ThreadedClass) other storage than the call that created it breaks it;
+// one that passes it a class of the calling activation keeps it threaded
+// only while that class stays so. A call to a finished member of a cycle
+// still being checked counts as well, not only a back edge: the body's
+// calls back into the cycle were checked with what the member was first
+// given, so they pass on whatever this call gives it.
+inline void TypeCheck::ValidateThreadArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode) {
+    for (size_t i = 0; i < spec->params.size() && i < argvals.size(); i++) {
+        auto pr = spec->params[i]->ref.root;
+        auto it = pr ? threadedclasses.find(pr) : threadedclasses.end();
+        if (it == threadedclasses.end() || it->second.broken) continue;
+        auto ar = CanonRoot(argvals[i].root);
+        if (!argvals[i].rootexact || UltimateRoot(pr) != UltimateRoot(ar) || !ThreadedChain(ar)) {
+            Unthread(pr, cat(spec->inprogress ? "the recursive call at " : "the call at ",
+                             Where(callnode->line), " passes ", spec->params[i]->name,
+                             " rooted differently from ",
+                             spec->inprogress ? "the cycle's entry call"
+                                              : cat("the first call of ", spec->sf->name)));
+            continue;
+        }
+        if (ar == pr) continue;
+        if (auto at = threadedclasses.find(ar); at != threadedclasses.end()) {
+            auto &heirs = at->second.heirs;
+            if (find(heirs.begin(), heirs.end(), pr) == heirs.end()) heirs.push_back(pr);
+        }
+    }
+}
+
+// Whether what is rooted at r is the same storage in every activation, as
+// far as the parameter classes it was passed through tell: a pool class's
+// always is, and any other class's while it is threaded. A class is known
+// by the root it was created from: a variable whose declaration is being
+// checked has no type yet either.
+inline bool TypeCheck::ThreadedChain(VarDef *r) {
+    if (!r || !r->classfrom || r->poolclass) return true;
+    auto it = threadedclasses.find(r);
+    return it != threadedclasses.end() && !it->second.broken;
+}
+
+// A class its creating call rooted exactly (CheckSpecBody): threaded until a
+// call back into its cycle passes something else, and only while the class
+// its argument was rooted at, if any, stays threaded, since each activation
+// of that class's function makes the call anew with what it was given.
+inline void TypeCheck::NoteThreadedClass(VarDef *cls) {
+    auto from = cls->classfrom;
+    ThreadedClass *parent = nullptr;
+    if (from && from->classfrom && !from->poolclass) {
+        auto it = threadedclasses.find(from);
+        if (it == threadedclasses.end()) return;
+        parent = &it->second;
+    }
+    auto &tc = threadedclasses[cls];
+    if (!parent) return;
+    if (parent->broken) {
+        tc.broken = true;
+        tc.why = parent->why;
+    } else {
+        parent->heirs.push_back(cls);
+    }
+}
+
+// Whether a reference rooted at r may be stored inside a recursive cycle
+// for as long as r's class stays threaded: the argument the class stands
+// for is rooted outside the cycle, in storage every activation shares.
+inline bool TypeCheck::ThreadStorable(VarDef *r) {
+    auto it = threadedclasses.find(r);
+    if (it == threadedclasses.end() || it->second.broken) return false;
+    auto u = UltimateRoot(r);
+    return u && (u->isglobal ||
+                 (u->ownerspec && !u->ownerspec->incycle && !u->ownerspec->sf->isrec));
+}
+
+// The store being checked (fitnode) relies on r staying threaded, where r is
+// a threaded class.
+inline void TypeCheck::RelyOnThread(VarDef *r) {
+    auto it = threadedclasses.find(r);
+    if (it == threadedclasses.end() || it->second.relied) return;
+    it->second.relied = true;
+    if (fitnode) it->second.reliedat = fitnode->line;
+}
+
+// A threaded class is broken, as `why` says: by a call back into its cycle,
+// or by a return the cycle cannot store that a result rooted at it may be. A
+// store that relied on it is an error there, and so is every store to come.
+// The classes whose threading rests on it break with it.
+inline void TypeCheck::Unthread(VarDef *cls, const string &why) {
+    auto it = threadedclasses.find(cls);
+    if (it == threadedclasses.end() || it->second.broken) return;
+    auto &tc = it->second;
+    tc.broken = true;
+    tc.why = why;
+    if (tc.relied) Error(tc.reliedat, CycleStoreError(cls));
+    for (size_t k = 0; k < tc.heirs.size(); k++) Unthread(tc.heirs[k], why);
+}
+
+// The cycle store rule's diagnostic (§7.8), with what broke the threaded
+// class the stored reference is rooted at, where it is one.
+inline string TypeCheck::CycleStoreError(VarDef *root) {
+    string s = "references may only be passed down, not stored, inside a recursive cycle (§7.8)";
+    if (auto it = threadedclasses.find(root); it != threadedclasses.end() && it->second.broken)
+        Append(s, ": ", it->second.why);
+    return s;
+}
+
 // `return from` targets recorded by a callee must be live on every
 // compile-time call path (§7.9); cached reuse re-validates here.
 inline void TypeCheck::ValidateNeeds(FnSpec *spec, Node *callnode) {
@@ -1394,6 +1501,8 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     // Parameters. For reference/slice parameters, a synthetic root
     // VarDef per call-site root class carries the caller-side depth.
     vector<VarDef *> classroots(spec->roots.size() + 1, nullptr);
+    // Classes whose members are all references or slices rooted exactly.
+    vector<bool> exactrefs(classroots.size(), true);
     for (size_t i = 0; i < sf->params.size(); i++) {
         auto &p = sf->params[i];
         auto pt = spec->argtypes[i];
@@ -1426,6 +1535,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
                 if (pt->kind != TY_REF || ClassOf(pt->ref->sub) != SC_RESIZABLE ||
                     !ra.exact)
                     classroots[ra.cls]->poolclass = false;
+                if (!ra.exact) exactrefs[ra.cls] = false;
                 vd->ref.root = classroots[ra.cls];
                 classroots[ra.cls]->contentbyteview |= ra.byteview;
                 classroots[ra.cls]->viewslot |= ra.viewslot;
@@ -1457,6 +1567,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
                     classroots[ra.cls] = rv;
                 }
                 classroots[ra.cls]->poolclass = false;
+                exactrefs[ra.cls] = false;
                 cr = classroots[ra.cls];
             }
             vd->contentroot = cr;
@@ -1477,6 +1588,9 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
         }
         spec->params.push_back(vd);
     }
+    for (size_t k = 1; k < classroots.size(); k++)
+        if (classroots[k] && exactrefs[k] && !classroots[k]->poolclass)
+            NoteThreadedClass(classroots[k]);
     if (sf->has_rets) {
         for (auto rt : sf->rets) {
             auto ct = Subst(rt);
@@ -1603,8 +1717,14 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
             auto gs = holder ? IntoGrowShrink(vals[i], root, rt, true)
                              : StoredIntoGrowShrink(vals[i], root, rt, false) != nullptr;
             auto local = !CycleStorable(root) || ret.cyclelocal;
-            if (auto bad = Cycles().ReturnConflict(tspec, i, ret, gs, local); !bad.empty())
+            auto unthread = false;
+            if (auto bad = Cycles().ReturnConflict(tspec, i, ret, gs, local, unthread); !bad.empty())
                 Error(at, bad);
+            if (unthread)
+                for (auto t : rr.usedthreads)
+                    Unthread(t, cat("the return at ", Where(at->line), " may be rooted where the "
+                                    "cycle stores nothing, and so may a recursive call's result "
+                                    "rooted at ", t->name));
         }
         // A result may come from any return: every root one gives is kept,
         // with the guarantees that hold on all paths to it.
@@ -1742,7 +1862,12 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
                 rr.usedwritable |= v.writable;
                 rr.usedclean |= holder ? !IntoGrowShrink(v, root, v.type, true)
                                        : !GrowShrinkTaint(v, v.type);
-                rr.usedstorable |= CycleStorable(root) && !v.cyclelocal;
+                if (!v.cyclelocal && CycleStorable(root))
+                    rr.usedstorable = true;
+                else if (!v.cyclelocal && ThreadStorable(root) &&
+                         find(rr.usedthreads.begin(), rr.usedthreads.end(), root) ==
+                             rr.usedthreads.end())
+                    rr.usedthreads.push_back(root);
             }
         }
         lastcallrets.push_back(v);

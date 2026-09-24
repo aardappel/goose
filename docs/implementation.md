@@ -597,7 +597,11 @@ exactly rooted reference to a resizable-class value: no function in a
 recursive cycle holds such a value across a call into the cycle (§7.8), so
 references in a pool class are exempt from the cycle store rule.
 `classpool` is the global pool every member is rooted in, when all agree
-(§3.13).
+(§3.13). Any other class whose members are all exactly rooted references or
+slices is a **threaded** candidate (`TypeCheck::ThreadedClass`), exempt in
+the same way while every call back into its cycle passes it on (§3.11). A
+synthetic class root is told from a variable by its `classfrom`: a variable
+whose declaration is being checked has no type yet either.
 
 ### 3.5 The store rule and the store record
 
@@ -625,8 +629,11 @@ references or slices, `HoldsPlainRef`) meets a destination with a root:
    one is a store here;
 4. inside a recursive cycle, only a reference into a global, a pool-class
    parameter or a local of an enclosing non-cycle function
-   (`CycleStorable`), and no merged value with `cyclelocal`, may be stored,
-   besides a rebind of the activation's own reference variable (§7.8);
+   (`CycleStorable`), or into a threaded parameter class where every class
+   among the destination's storages is threaded too (`ThreadStorable`,
+   `ThreadedChain`, §3.11), and no merged value with `cyclelocal`, may be
+   stored, besides a rebind of the activation's own reference variable
+   (§7.8);
 5. the store is **recorded**, on each of those storages.
 
 Rule 3 does not wait for a destination: a literal's field or element is
@@ -1112,6 +1119,39 @@ requires every pool-class and pool-named parameter to be passed the same
 ultimate root the entry call passed (`UltimateRoot` follows `classfrom`
 chains). The cycle store rule is §3.5 rule 4; the optimizer never inlines
 into a cycle member.
+
+**Threaded parameters.** A parameter class other than a pool, all of whose
+members its creating call rooted exactly as references or slices, is
+threaded (`ThreadedClass`, noted by `NoteThreadedClass`) until a call into
+its cycle passes one of its parameters something other than a root exactly
+at the same ultimate root, reached through classes that are pools or
+threaded themselves (`ValidateThreadArgs`, `ThreadedChain`): in every
+activation it then points where its creating call's argument did. Back
+edges are checked, and so are calls reaching a finished member of a cycle
+still being checked: its body's calls back into the cycle were checked with
+what it was first given, and pass on whatever the call gives it. A class
+created from another class's parameter, or given one at such a call, is
+threaded only while that one is: it is recorded among that class's heirs,
+which break with it, and one created from a broken class is born broken,
+since each activation of the creating function makes the call anew with
+what it was given. A reference rooted at a threaded class whose ultimate
+root lies outside every cycle -- a global, or a variable of a function
+neither recursive nor in a cycle, as for a free variable -- may be stored
+inside the cycle (`ThreadStorable`), where every storage the destination
+may be (`ShrinkTargets`) is a variable, a pool, or a threaded class too,
+since the store lands where that class points, or leads, in each activation.
+The store relies on the classes (`ThreadedClass::relied`): nothing makes a
+back edge pass them on, so they are restricted only once a store needs them,
+and a call that breaks one afterwards is an error at the first store that
+relied on it, naming the call and the parameter (`Unthread`), while one that
+broke it before makes the store the error (`CycleStoreError`). Only stores
+rely. A merged value or rebound variable that may hide a threaded class is
+`cyclelocal`, as for any class, since the store it reaches cannot see what
+it hides, and a return rooted at one counts as `local` to `ReturnConflict`.
+A back edge's result rooted at a threaded class is given as storable only
+while the class stays so (`RetRoot::usedthreads`): a later return that the
+cycle could not store breaks those classes instead of being an error, which
+only matters to a store of the result.
 
 A recursion whose types never repeat has no back edge: each round is a new
 specialization, checked inside the one before, until the native stack runs
@@ -2610,8 +2650,11 @@ specification allows, and the shapes the C backend refuses outright:
 * A long-distance return may carry only references rooted at globals or
   static data (TODO 0d).
 * Inside a recursive cycle, a reference rooted at a caller's fixed-size local
-  is pass-down only; the spec's cycle store rule is stated the same way and
-  marked for refinement (TODO 5).
+  is pass-down only unless the parameter it came through is threaded (§3.11);
+  the spec's cycle store rule is stated the same way and marked for
+  refinement (TODO 5). Beyond the spec's rule, a merged value or a rebound
+  variable that may be rooted at a threaded class, which the spec stores
+  where each of its roots could be, is pass-down only.
 * The cycle return-root scan gives up on branch values, overload sets,
   function values and nested functions it cannot resolve by name, and
   reads no holder result at all; until a return is checked, a back edge's

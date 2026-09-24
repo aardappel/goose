@@ -1303,6 +1303,9 @@ struct RetRoot {
     bool usedwritable = false;
     bool usedclean = false;    // Given as pointing into no grow-shrink array.
     bool usedstorable = false; // Given as a reference the cycle may store.
+    // Given as one the cycle may store while these threaded parameter classes
+    // stay threaded (TypeCheck::ThreadedClass).
+    vector<VarDef *> usedthreads;
 };
 
 // A literal parameter's contact with a type (§7.7): what the literal at
