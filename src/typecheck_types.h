@@ -742,10 +742,11 @@ inline void TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, boo
     if (writable && !out.empty()) hasstatic = false;
 }
 
-// Whether v is a value in a temporary of its own (a literal, a call result),
-// and if so where a reference or slice loaded out of it points: not into
-// the temporary, since a literal's initializers or a callee's result
-// supplied everything it holds, but where they point, its holder root (§9.2).
+// Whether v is a value in a temporary of its own (a literal, a call result,
+// a copy, TempCopy), and if so where a reference or slice loaded out of it
+// points: not into the temporary, since a literal's initializers, a
+// callee's result or the copy's source supplied everything it holds, but
+// where they point, its holder root (§9.2).
 inline bool TypeCheck::TempContents(const Val &v, ReadBack &contents) {
     if (!IsTemp(CanonRoot(v.root)) || IsRefOrSlice(v.type)) return false;
     contents.root = CanonRoot(HolderRootOf(v));

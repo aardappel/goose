@@ -496,6 +496,18 @@ itself declares. What it holds is read back where it points (`intemp`,
 holds (`RecordStore`): nothing on record describes a temporary's contents,
 so the stored value's own root bounds them.
 
+The by-value result of an `if`, `match`, block, loop or bare `{ }`, and of
+`copy(x)` and an array's `default<T>()`, is such a temporary too: codegen
+builds it in storage of its own (`CtlValX`, or `GenLoc` for any other value
+it addresses), copying a branch's value there even where the branch names
+a variable. `TempCopy` roots a construct's value and an array default
+there, and `CheckBuiltin` a copy, keeping what it holds pointing where the
+source's contents do; it is read-only and no `lvalue`, as a call's result
+is, so nothing binds it by reference or writes it in place. Where the
+optimizer folds a construct to the branch taken, `OptViewed` keeps a
+viewed value a copy (section 4, "Views of copies"), which is what lets
+the shrink rules take a view of it for a view of the temporary alone.
+
 **Where a root comes from:**
 
 | Expression | Root | Exact |
@@ -509,8 +521,9 @@ so the stored value's own root bounds them.
 | `a.alloc_slice(n)`, `a.realloc_slice(s, n)` | `a`'s root | `a`'s exactness |
 | `a[lo..hi]` (`SliceExpr::Check`) | `a`'s root | `a`'s exactness |
 | a call result (`CallResult`) | every root the callee's returns give (`RetRoot::alts`), mapped (`RetAltVal`: a parameter's class back to the argument's root at this site -- at a back edge, every argument the class's parameters get, merged -- a global or captured local as itself, null as static data) and merged as branches are (`MergeVals`) | only where they all map to one root exactly |
-| an `if`, `match`, `block` or `loop` value (`MergeVals`) | the innermost of its branches' roots (`InnerRoot`) | only where they all name one root exactly |
+| an `if`, `match`, `block` or `loop` value of reference or slice type (`MergeVals`) | the innermost of its branches' roots (`InnerRoot`) | only where they all name one root exactly |
 | an array, struct or variant literal, and a call's value result | a temporary (`TempRoot`): whatever views it rather than being built from it views a temporary | no |
+| any other `if`, `match`, `block`, `loop` or bare `{ }` value, and an array's `default<T>()` (`TempCopy`); `copy(x)` | a temporary (`TempRoot`), holding what the value it copied held | no; a copy's yes |
 | a string literal | static data (null) | yes |
 | `null` | none (adapts to any optional) | -- |
 
@@ -722,7 +735,7 @@ deepest root among its reference initializers (`NoteLitElem`,
 `HolderFromLit`); a variable's is its `contentroot`, unless a loop around
 the read writes the variable, in which case the variable itself is the
 bound; a container read's is the container's root, inexact, and out of a
-temporary the temporary's own; a
+temporary the temporary's own; a copy's (`TempCopy`) is its source's; a
 holder parameter is keyed by its holder root class like a reference, and by
 whether that class is exactly the one array it points into (§3.4), and the
 class (its `ref.root`) bounds what is read back out of it or out of a copy
@@ -756,12 +769,13 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   lists it in `bounds`);
 * a container reached through a caller's storage, or itself inexact: the
   container's root, inexact;
-* a container that is a temporary (a literal or a call result, reached
-  without crossing a reference, `LVal::intemp`): nothing in the temporary
-  can own what it holds, which came from the literal's initializers or the
-  callee's result, so the root is the temporary's holder root, exactly as
-  exact (`TempContents`). `for` over a temporary and a `match` binder copied
-  out of one take the same answer.
+* a container that is a temporary (a literal, a call result or a copy,
+  reached without crossing a reference, `LVal::intemp`): nothing in the
+  temporary can own what it holds, which came from the literal's
+  initializers, the callee's result or the copy's source, so the root is
+  the temporary's holder root, exactly as exact (`TempContents`). `for`
+  over a temporary and a `match` binder copied out of one take the same
+  answer.
 
 The root is the deepest candidate; it is exact only with exactly one
 candidate, no static data and no bound. `ReadBackWhy` turns the candidate

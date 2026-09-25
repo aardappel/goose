@@ -661,7 +661,8 @@ inline Val RangeExpr::Check(TypeCheck &tc, TypeExpr *) {
 }
 
 inline Val Block::Check(TypeCheck &tc, TypeExpr *expected) {
-    return tc.VoidIfBottom(tc.CheckBlockVal(this, expected, true, TypeCheck::SK_PLAIN));
+    return tc.VoidIfBottom(tc.TempCopy(tc.CheckBlockVal(this, expected, true,
+                                                        TypeCheck::SK_PLAIN)));
 }
 
 inline Val IfExpr::Check(TypeCheck &tc, TypeExpr *expected) {

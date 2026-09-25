@@ -934,6 +934,37 @@ inline void TypeCheck::CheckBranchRoot(const Val &v, int depth, Node *at, const 
                   ", which does not outlive it (§9.2)"));
 }
 
+// A by-value result codegen builds in temporary storage of its own (§9.2):
+// the value of an if, match, block, loop or bare { }, which is a copy of
+// what the branch taken produced even where that branch names a variable,
+// and an array default<T>() fills. Like a call's result, a view of it is
+// rooted at the temporary, not at the storage it was copied from (a
+// variable, or a temporary of a scope the construct has left), it names no
+// storage to bind by reference, and it is read-only: a write would change
+// the copy and nothing else. What it holds still points where the source's
+// contents do. A reference or slice is the reference itself.
+inline Val TypeCheck::TempCopy(Val v) {
+    if (!v.type || v.isnull || IsRefOrSlice(v.type) || v.type->kind == TY_VOID ||
+        v.type->kind == TY_FN)
+        return v;
+    if (!v.holderset && HoldsPlainRef(v.type)) {
+        // What the source holds is bounded by its storage, as a container
+        // read's is (ContainerRead).
+        auto src = CanonRoot(v.root);
+        v.holderroot = src;
+        v.holderexact = false;
+        v.holderfrom = IsTemp(src) ? nullptr : src;
+        v.holderset = true;
+    }
+    v.root = TempRoot();
+    v.rootexact = false;
+    v.rootfrom = nullptr;
+    v.reached = nullptr;
+    v.lvalue = false;
+    v.writable = false;
+    return v;
+}
+
 // A branch that was an integer constant now has the merged type: the
 // constant node and the blocks down to it.
 inline void TypeCheck::RetypeConstBranch(Node *n, TypeExpr *t) {
@@ -976,7 +1007,8 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
     RestoreFlow(entry);
     MergeFlow(aflow, bflow);
     if (!wantvalue) return VoidVal();
-    return MergeVals(tv, aflow.reachable, ev, bflow.reachable, x, wantvalue, x->thenb, x->elseb);
+    return TempCopy(MergeVals(tv, aflow.reachable, ev, bflow.reachable, x, wantvalue, x->thenb,
+                              x->elseb));
 }
 
 inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue, int scopekind,
@@ -1186,7 +1218,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
     }
     if (!first) RestoreFlow(acc);
     reachable = resultreach;
-    return wantvalue ? result : VoidVal();
+    return wantvalue ? TempCopy(result) : VoidVal();
 }
 
 inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wantvalue) {
@@ -1221,7 +1253,7 @@ inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wa
                                      x, wantvalue, x->body->tail, nullptr) : v;
     r.type = UnifyBranch(v.type, sc.breaktype, x, wantvalue);
     if (!r.type) r.type = ast.voidtype;
-    return r;
+    return TempCopy(r);
 }
 
 // A loop body: its statements, then a tail that is a statement like any
@@ -1266,7 +1298,7 @@ inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue)
     reachable = sc.hasbreak;  // A loop only exits via break.
     if (!wantvalue || !sc.breaktype) return VoidVal();
     CheckBranchRoot(sc.breakvalue, CurDepth(), x, "loop");
-    return sc.breakvalue;
+    return TempCopy(sc.breakvalue);
 }
 
 inline void TypeCheck::CheckWhile(While *x) {

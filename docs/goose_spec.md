@@ -2085,19 +2085,23 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   nothing changes, and a use before the rebind sees the read-back rule's
   answer (§9.5).
 * Inside recursive cycles the stricter §7.8 cycle store rule applies.
-* A **temporary** — an array, struct or variant literal, or a call's
-  result, viewed where it stands rather than built into a destination (by a
-  slice parameter, a `for`, `[..]`, `bytes_of` or a path into it, §4.2) —
-  lasts for the rest of its statement, or of the block whose final
-  expression made it. Its scope is that statement's: the variables the
-  statement declares outlive it, and those of the scopes the statement
-  opens — the body of a `for` over it, the arms of a `match` on it — do
-  not. So a reference or slice into it may be passed down, and stored or
-  bound only in those inner scopes: `let s = f()[..];` is an error, while
-  `let t = f(); let s = t[..];` is not, and neither is a view into `x`
-  bound inside `for x in f() { … }`; it is never returned. A function it is
-  passed to may keep it in its own locals, which die first. What a
-  temporary *holds* is not rooted at the temporary (§9.5).
+* A **temporary** — an array, struct or variant literal, a call's result,
+  `copy(x)`, `default<T>()`, or the value of an `if`, `match`, `block`,
+  `loop` or bare `{ }`, which is a copy of what the branch taken produced
+  even where that names a variable — viewed where it stands rather than
+  built into a destination (by a slice parameter, a `for`, `[..]`,
+  `bytes_of` or a path into it, §4.2) — lasts for the rest of its
+  statement, or of the block whose final expression made it. Its scope is
+  that statement's: the variables the statement declares outlive it, and
+  those of the scopes the statement opens — the body of a `for` over it,
+  the arms of a `match` on it — do not. So a reference or slice into it
+  may be passed down, and stored or bound only in those inner scopes:
+  `let s = f()[..];` is an error, while `let t = f(); let s = t[..];` is
+  not, and neither is a view into `x` bound inside `for x in f() { … }`;
+  it is never returned. A function it is passed to may keep it in its own
+  locals, which die first. What a temporary *holds* is not rooted at the
+  temporary (§9.5). A temporary is no storage for `.=` or a reference
+  parameter to bind (§4.1), and a view of one is read-only (§9.5).
 
 Violations are compile errors. There is no escape hatch in v1.
 
@@ -2166,11 +2170,12 @@ with no annotation needed:
 
 * Read-only: a string literal (`const u8[:]`, §3.7); `&x` and `x[..]` of a
   `const` value, of a field of one, or of a by-value `for`/`match` binding
-  (§6.5) — these are `const T&` and `const T[:]`; a `bytes_of` view (§12);
-  and whatever is read out of a slot declared `const`. A `let` binding *of*
-  a reference or slice names the reference: it does not rebind, and writes
-  through it follow the value's own constness (`let r .= xs[i]; r = 0;`
-  writes an element of a `var` array, §3.8).
+  (§6.5) — these are `const T&` and `const T[:]`; a view into a temporary
+  (§9.2), which a write would change and nothing else; a `bytes_of` view
+  (§12); and whatever is read out of a slot declared `const`. A `let`
+  binding *of* a reference or slice names the reference: it does not
+  rebind, and writes through it follow the value's own constness
+  (`let r .= xs[i]; r = 0;` writes an element of a `var` array, §3.8).
 * Writable: everything else — `&x` and `x[..]` of a `var` or of a plain
   `let`, and whatever is read out of a slot that is not `const`.
 * **Parameters and results are generic over constness.** A parameter
@@ -2227,9 +2232,10 @@ root lies:
 3. **A reference parameter's pointee, or itself inexact.** The owner may be
    caller storage this function cannot enumerate: the root is `C`'s, inexact.
 4. **A temporary** (§9.2). Everything in it came from the literal's
-   initializers or from the call whose result it is, so the root is theirs:
-   the innermost root among the initializers, or the one the result's
-   contents are rooted at, exact when that is one variable exactly.
+   initializers, from the call whose result it is, or from the value it is
+   a copy of, so the root is theirs: the innermost root among the
+   initializers, the one the result's contents are rooted at, or the one
+   the copied value's are, exact when that is one variable exactly.
 
 An optional variable bound only to `null` so far (`var best: Node? = null;`
 before the loop that binds it) has no binding to take a root from; a use of

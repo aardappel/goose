@@ -1066,6 +1066,7 @@ struct TypeCheck {
     Val MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at, bool wantvalue,
                   Node *anode = nullptr, Node *bnode = nullptr);
     void CheckBranchRoot(const Val &v, int depth, Node *at, const char *construct);
+    Val TempCopy(Val v);
     void RetypeConstBranch(Node *n, TypeExpr *t);
     Node *WholeSlice(Node *n);
     Val CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue);

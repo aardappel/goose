@@ -203,6 +203,9 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             if (c->defaultinit) {
                 auto v = CheckValue(c->defaultinit, t->kind == TY_ARRAY ? t->arr->sub : t);
                 v.type = t;
+                // An array is filled with its element's default in a
+                // temporary of its own, as a literal is built (§9.2).
+                if (t->kind == TY_ARRAY) v = TempCopy(v);
                 lastcallrets = { v };
                 return v;
             }
