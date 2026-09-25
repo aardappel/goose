@@ -496,17 +496,19 @@ itself declares. What it holds is read back where it points (`intemp`,
 holds (`RecordStore`): nothing on record describes a temporary's contents,
 so the stored value's own root bounds them.
 
-The by-value result of an `if`, `match`, block, loop or bare `{ }`, and of
-`copy(x)` and an array's `default<T>()`, is such a temporary too: codegen
-builds it in storage of its own (`CtlValX`, or `GenLoc` for any other value
-it addresses), copying a branch's value there even where the branch names
-a variable. `TempCopy` roots a construct's value and an array default
-there, and `CheckBuiltin` a copy, keeping what it holds pointing where the
-source's contents do; it is read-only and no `lvalue`, as a call's result
-is, so nothing binds it by reference or writes it in place. Where the
-optimizer folds a construct to the branch taken, `OptViewed` keeps a
-viewed value a copy (section 4, "Views of copies"), which is what lets
-the shrink rules take a view of it for a view of the temporary alone.
+The by-value result of an `if`, `match`, block, loop or bare `{ }`, of a
+function value's call, and of `copy(x)` and an array's `default<T>()`, is
+such a temporary too: codegen builds it in storage of its own (`CtlValX`,
+or `GenLoc` for any other value it addresses), copying a branch's value
+there even where the branch names a variable. `TempCopy` roots a
+construct's value, a function value's call's (`CheckFunValCall`) and an
+array default there, and `CheckBuiltin` a copy, keeping what it holds
+pointing where the source's contents do; it is read-only and no `lvalue`,
+as a call's result is, so nothing binds it by reference or writes it in
+place. Where the optimizer folds a construct to the branch taken,
+`OptViewed` keeps a viewed value a copy (section 4, "Views of copies"),
+which is what lets the shrink rules take a view of it for a view of the
+temporary alone.
 
 **Where a root comes from:**
 
@@ -523,7 +525,7 @@ the shrink rules take a view of it for a view of the temporary alone.
 | a call result (`CallResult`) | every root the callee's returns give (`RetRoot::alts`), mapped (`RetAltVal`: a parameter's class back to the argument's root at this site -- at a back edge, every argument the class's parameters get, merged -- a global or captured local as itself, null as static data) and merged as branches are (`MergeVals`) | only where they all map to one root exactly |
 | an `if`, `match`, `block` or `loop` value of reference or slice type (`MergeVals`) | the innermost of its branches' roots (`InnerRoot`) | only where they all name one root exactly |
 | an array, struct or variant literal, and a call's value result | a temporary (`TempRoot`): whatever views it rather than being built from it views a temporary | no |
-| any other `if`, `match`, `block`, `loop` or bare `{ }` value, and an array's `default<T>()` (`TempCopy`); `copy(x)` | a temporary (`TempRoot`), holding what the value it copied held | no; a copy's yes |
+| any other `if`, `match`, `block`, `loop` or bare `{ }` value, a function value's call, and an array's `default<T>()` (`TempCopy`); `copy(x)` | a temporary (`TempRoot`), holding what the value it copied held | no; a copy's yes |
 | a string literal | static data (null) | yes |
 | `null` | none (adapts to any optional) | -- |
 

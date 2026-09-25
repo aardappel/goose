@@ -937,12 +937,13 @@ inline void TypeCheck::CheckBranchRoot(const Val &v, int depth, Node *at, const 
 // A by-value result codegen builds in temporary storage of its own (§9.2):
 // the value of an if, match, block, loop or bare { }, which is a copy of
 // what the branch taken produced even where that branch names a variable,
-// and an array default<T>() fills. Like a call's result, a view of it is
-// rooted at the temporary, not at the storage it was copied from (a
-// variable, or a temporary of a scope the construct has left), it names no
-// storage to bind by reference, and it is read-only: a write would change
-// the copy and nothing else. What it holds still points where the source's
-// contents do. A reference or slice is the reference itself.
+// that of a function value's call, and an array default<T>() fills. Like
+// a call's result, a view of it is rooted at the temporary, not at the
+// storage it was copied from (a variable, or a temporary of a scope the
+// construct has left), it names no storage to bind by reference, and it is
+// read-only: a write would change the copy and nothing else. What it holds
+// still points where the source's contents do. A reference or slice is the
+// reference itself.
 inline Val TypeCheck::TempCopy(Val v) {
     if (!v.type || v.isnull || IsRefOrSlice(v.type) || v.type->kind == TY_VOID ||
         v.type->kind == TY_FN)

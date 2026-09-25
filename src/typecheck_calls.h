@@ -2121,7 +2121,9 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
     c->fvbody->exprtype = v.type;
     PopScope();
     frames.pop_back();
-    return v;
+    // The call's value is a copy of the body's, a temporary of the calling
+    // statement as any call's result is (§9.2).
+    return TempCopy(v);
 }
 
 inline TypeExpr *TypeCheck::SubstEnv(TypeExpr *t, FnSpec *env) {

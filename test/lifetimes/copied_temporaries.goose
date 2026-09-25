@@ -1,9 +1,10 @@
 // The value of an if, match, block, loop or bare { } is a temporary copy of
 // what the branch taken produced, even where that branch names a variable,
-// and so is an array default<T>() (§9.2). A view of one may be passed down,
-// and the storage it was copied from may shrink and be refilled while the
-// view lasts. What one holds points where the value it copied pointed, so a
-// slice read out of one can be kept wherever that value's could (§9.5).
+// and so are a function value's call and an array default<T>() (§9.2). A
+// view of one may be passed down, and the storage it was copied from may
+// shrink and be refilled while the view lasts. What one holds points where
+// the value it copied pointed, so a slice read out of one can be kept
+// wherever that value's could (§9.5).
 struct Named { name: const u8[:] }
 enum Item { Tagged { name: const u8[:] }, Blank }
 
@@ -38,6 +39,8 @@ fn param_name(n: Named) -> const u8[:] { (match n.name.len { 0 => n, _ => n }).n
 fn ref_name(n: Named&) -> const u8[:] { (block { n }).name }
 fn loop_name(n: Named&) -> const u8[:] { (loop { break n; }).name }
 fn default_name() -> const u8[:] { default<Named[2]>()[1].name }
+fn body_name<F>() -> const u8[:] { F().name }
+fn body_head<F>() -> i64 { head(F()[..], refill()) }
 
 fn main() {
     let c = keep.len == 0;
@@ -71,4 +74,6 @@ fn main() {
         refill();
     }
     print(t);
+    print(body_name() { gn });
+    print(body_head() { rows[0] });
 }
