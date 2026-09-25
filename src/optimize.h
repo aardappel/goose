@@ -435,12 +435,8 @@ struct Optimizer {
         }
         curspec = nullptr;
         cursf = nullptr;
-        // Globals again, now able to inline into their initializers. Field
-        // defaults fold only: their trees are shared across construction
-        // sites, so they must not grow variable bindings.
+        // Globals again, now able to inline into their initializers.
         for (auto g : ast.globals) OptGlobal(g);
-        caninline = false;
-        ast.ForEachFieldDefault([&](Node *&d) { d = Opt(d); });
         // Final liveness over the rewritten trees: specs whose every call got
         // inlined (or folded away) go dead, so codegen can skip them.
         for (auto sp : ast.fnspecs) { sp->live = false; sp->uses = 0; }

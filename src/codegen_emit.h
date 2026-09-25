@@ -412,12 +412,8 @@ inline bool CodeGen::StaticInitX(Node *n, TypeExpr *t, string &out) {
             auto any = false;
             for (size_t fi = 0; fi < si->st->fields.size(); fi++) {
                 if (si->st->fields[fi].ispad) continue;   // Pads zero-fill.
-                Node *v = nullptr;
-                for (size_t k = 0; k < sl->fieldindices.size(); k++)
-                    if (sl->fieldindices[k] == (int)fi) { v = sl->inits[k].val; break; }
-                if (!v && fi < si->defaults.size()) v = si->defaults[fi];
                 string fx;
-                if (!StaticInitX(v, si->ftypes[fi], fx)) return false;
+                if (!StaticInitX(sl->InitFor((int)fi), si->ftypes[fi], fx)) return false;
                 Append(s, any ? ", " : "", ".", Sanitize(si->st->fields[fi].name),
                        " = ", fx);
                 any = true;

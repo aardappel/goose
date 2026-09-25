@@ -79,7 +79,6 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
         inst->frameobj = fo;
     }
     inst->validated = true;
-    inst->defaults.resize(st->fields.size(), nullptr);
     return inst;
 }
 
@@ -121,9 +120,6 @@ inline EnumInst *TypeCheck::GetEnumInst(TypeExpr *t) {
         }
     }
     inst->validated = true;
-    for (size_t vi = 0; vi < en->variants.size(); vi++) {
-        inst->vdefaults.emplace_back(en->variants[vi].fields.size(), nullptr);
-    }
     return inst;
 }
 

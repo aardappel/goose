@@ -804,18 +804,13 @@ inline void CodeGen::FixedLitAtStk(Node *n, const string &stk) {
     // `base` is where the fields run starts within the value: past the tag
     // for a literal constructing its enum, zero otherwise.
     auto emitfields = [&](const vector<Field> &fields, const vector<TypeExpr *> &ftypes,
-                          const vector<Node *> &defaults, const Layout &lo, int64_t total,
-                          int64_t base) {
+                          const Layout &lo, int64_t total, int64_t base) {
         int64_t cur = 0;
         for (size_t i = 0; i < fields.size(); i++) {
             if (fields[i].ispad) continue;
             Gap(lo.offs[i] - cur);
             cur = lo.offs[i];
-            Node *init = nullptr;
-            for (size_t k = 0; k < sl->fieldindices.size(); k++)
-                if (sl->fieldindices[k] == (int)i) init = sl->inits[k].val;
-            if (!init && i < defaults.size() && defaults[i]) init = defaults[i];
-            EmitF(init, ftypes[i], base + lo.offs[i]);
+            EmitF(sl->InitFor((int)i), ftypes[i], base + lo.offs[i]);
             cur += FixedSize(ftypes[i]);
         }
         Gap(total - cur);
@@ -823,15 +818,14 @@ inline void CodeGen::FixedLitAtStk(Node *n, const string &stk) {
     if (et->kind == TY_STRUCT) {
         auto si = SI(et);
         auto &lo = StructLayout(si);
-        emitfields(si->st->fields, si->ftypes, si->defaults, lo, lo.size, 0);
+        emitfields(si->st->fields, si->ftypes, lo, lo.size, 0);
         return;
     }
     if (et->kind == TY_VARIANT) {
         auto ei = EIVar(et);
         auto vi = ei->en->VariantIndex(et->var->variant);
         auto &lo = VariantLayout(ei, vi);
-        emitfields(ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi], lo,
-                   lo.size, 0);
+        emitfields(ei->en->variants[vi].fields, ei->vftypes[vi], lo, lo.size, 0);
         return;
     }
     assert(et->kind == TY_ENUM && !et->enu->varmode && sl->variant);
@@ -839,8 +833,7 @@ inline void CodeGen::FixedLitAtStk(Node *n, const string &stk) {
     auto vi = ei->en->VariantIndex(sl->variant);
     EmitValStoreTag(stk, TagStore(ei->en), TagConst(ei, vi));
     auto &lo = VariantLayout(ei, vi);
-    emitfields(ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi], lo,
-               lo.size, TagSize(ei->en));
+    emitfields(ei->en->variants[vi].fields, ei->vftypes[vi], lo, lo.size, TagSize(ei->en));
     Gap(FixedSize(et) - TagSize(ei->en) - lo.size);
 }
 
@@ -905,14 +898,10 @@ inline void CodeGen::StructLitAt(StructLit *sl, const string &base, bool inroot)
     // `baseoff` is where the fields run starts within the whole value, so a
     // `self` field can store its (constant) offset back to it.
     auto fieldset = [&](const string &b, const vector<Field> &fields,
-                        const vector<TypeExpr *> &ftypes, const vector<Node *> &defaults,
-                        const Layout &lo, int64_t baseoff) {
+                        const vector<TypeExpr *> &ftypes, const Layout &lo, int64_t baseoff) {
         for (size_t i = 0; i < fields.size(); i++) {
             if (fields[i].ispad) continue;
-            Node *init = nullptr;
-            for (size_t k = 0; k < sl->fieldindices.size(); k++)
-                if (sl->fieldindices[k] == (int)i) init = sl->inits[k].val;
-            if (!init && i < defaults.size() && defaults[i]) init = defaults[i];
+            auto init = sl->InitFor((int)i);
             auto ft = ftypes[i];
             auto path = cat(b, ".", Sanitize(fields[i].name));
             if (!init) {   // Omitted optional: null.
@@ -933,7 +922,7 @@ inline void CodeGen::StructLitAt(StructLit *sl, const string &base, bool inroot)
     };
     if (et->kind == TY_STRUCT) {
         auto si = SI(et);
-        fieldset(base, si->st->fields, si->ftypes, si->defaults, StructLayout(si), 0);
+        fieldset(base, si->st->fields, si->ftypes, StructLayout(si), 0);
         return;
     }
     if (et->kind == TY_VARIANT) {
@@ -941,8 +930,7 @@ inline void CodeGen::StructLitAt(StructLit *sl, const string &base, bool inroot)
         auto vi = ei->en->VariantIndex(et->var->variant);
         if (ei->en->variants[vi].fields.empty())
             L("memset(&", base, ", 0, sizeof(", base, "));");
-        fieldset(base, ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi],
-                 VariantLayout(ei, vi), 0);
+        fieldset(base, ei->en->variants[vi].fields, ei->vftypes[vi], VariantLayout(ei, vi), 0);
         return;
     }
     assert(et->kind == TY_ENUM && !et->enu->varmode && sl->variant);
@@ -951,8 +939,8 @@ inline void CodeGen::StructLitAt(StructLit *sl, const string &base, bool inroot)
     L(base, ".tag = ", TagConst(ei, vi), ";");
     if (!ei->en->variants[vi].fields.empty())
         fieldset(cat(base, ".u.v_", Sanitize(ei->en->variants[vi].name)),
-                 ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi],
-                 VariantLayout(ei, vi), TagSize(ei->en));
+                 ei->en->variants[vi].fields, ei->vftypes[vi], VariantLayout(ei, vi),
+                 TagSize(ei->en));
 }
 
 inline void CodeGen::EmitValStoreTag(const string &stk, IntStorage ts, const string &x) {
@@ -1073,15 +1061,13 @@ inline void CodeGen::GenStructLit(StructLit *sl, const string &stk, const string
         // A resizable-class ADT: variants without a resizable tail leave
         // the receiving header length zero.
         if (!lenlv.empty() && IsFix(VariantType(et, vi))) L(lenlv, " = 0;");
-        GenFieldInits(sl, ei->en->variants[vi].fields, ei->vftypes[vi],
-                      ei->vdefaults[vi], stk, lenlv, selfbase);
+        GenFieldInits(sl, ei->en->variants[vi].fields, ei->vftypes[vi], stk, lenlv, selfbase);
         return;
     }
     if (et->kind == TY_VARIANT) {
         auto ei = EIVar(et);
         auto vi = ei->en->VariantIndex(et->var->variant);
-        GenFieldInits(sl, ei->en->variants[vi].fields, ei->vftypes[vi],
-                      ei->vdefaults[vi], stk, lenlv, selfbase);
+        GenFieldInits(sl, ei->en->variants[vi].fields, ei->vftypes[vi], stk, lenlv, selfbase);
         return;
     }
     assert(et->kind == TY_STRUCT);
@@ -1091,7 +1077,7 @@ inline void CodeGen::GenStructLit(StructLit *sl, const string &stk, const string
         GenFrameObjLit(sl, si, stk, lenlv);
         return;
     }
-    GenFieldInits(sl, si->st->fields, si->ftypes, si->defaults, stk, lenlv, selfbase);
+    GenFieldInits(sl, si->st->fields, si->ftypes, stk, lenlv, selfbase);
 }
 
 // A frame object literal: fixed fields as C members of the receiving
@@ -1103,11 +1089,8 @@ inline void CodeGen::GenFrameObjLit(StructLit *sl, StructInst *si, const string 
     auto &fields = si->st->fields;
     for (size_t i = 0; i < fields.size(); i++) {
         if (fields[i].ispad) continue;
-        Node *init = nullptr;
-        for (size_t k = 0; k < sl->fieldindices.size(); k++)
-            if (sl->fieldindices[k] == (int)i) init = sl->inits[k].val;
+        auto init = sl->InitFor((int)i);
         auto ft = si->ftypes[i];
-        if (!init && i < si->defaults.size()) init = si->defaults[i];
         auto flv = cat(obj, ".", Sanitize(fields[i].name));
         if (IsResz(ft)) {
             assert(init);
@@ -1130,19 +1113,16 @@ inline void CodeGen::GenFrameObjLit(StructLit *sl, StructInst *si, const string 
 }
 
 inline void CodeGen::GenFieldInits(StructLit *sl, const vector<Field> &fields,
-                                   const vector<TypeExpr *> &ftypes, const vector<Node *> &defaults,
-                                   const string &stk, const string &lenlv, const string &selfbase) {
+                                   const vector<TypeExpr *> &ftypes, const string &stk,
+                                   const string &lenlv, const string &selfbase) {
     for (size_t i = 0; i < fields.size(); i++) {
         if (fields[i].ispad) {
             auto n = fields[i].padsize > 0 ? fields[i].padsize : 0;
             if (n) { L("memset(", Top(stk), ", 0, ", n, ");"); Bump(stk, cat(n)); }
             continue;
         }
-        Node *init = nullptr;
-        for (size_t k = 0; k < sl->fieldindices.size(); k++)
-            if (sl->fieldindices[k] == (int)i) init = sl->inits[k].val;
+        auto init = sl->InitFor((int)i);
         auto ft = ftypes[i];
-        if (!init && i < defaults.size()) init = defaults[i];
         if (ft->kind == TY_REF && ft->ref->lenstorage >= 0) {
             // Relative-reference slot: store from the plain reference.
             if (!init) {

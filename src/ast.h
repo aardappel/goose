@@ -680,6 +680,15 @@ NODE(StructLit)
     SVariant *variant = nullptr;    //   "
     vector<int> fieldindices;       // Per init, the target field index.
     StructLit(Line l, TypeExpr *_type) : Node(l), type(_type) {}
+    // The initializer of field `fieldidx` once the literal is checked
+    // (TypeCheck::CheckInits): the one written, the field's declared
+    // default, or the default<T>() call default<T>() fills it with; null
+    // for an omitted optional field, which is null.
+    Node *InitFor(int fieldidx) const {
+        for (size_t k = 0; k < fieldindices.size(); k++)
+            if (fieldindices[k] == fieldidx) return inits[k].val;
+        return nullptr;
+    }
 NODE_END
 
 NODE(Unary)
@@ -1173,7 +1182,6 @@ struct StructInst {
     SStruct *st = nullptr;
     vector<TypeExpr *> args;
     vector<TypeExpr *> ftypes;     // Aligned with st->fields; null for pads.
-    vector<Node *> defaults;       // Aligned; checked clones of field defaults (or null).
     SizeClass sclass = SC_FIXED;
     bool flat = true;
     bool validated = false;        // Guards against recursive by-value nesting.
@@ -1188,7 +1196,6 @@ struct EnumInst {
     SEnum *en = nullptr;
     vector<TypeExpr *> args;
     vector<vector<TypeExpr *>> vftypes;   // Per variant, per field.
-    vector<vector<Node *>> vdefaults;     // Checked clones of field defaults (or null).
     bool allfixed = true;                 // Fixed-mode use is legal.
     SizeClass varclass = SC_VARIABLE;     // Class when used in variable mode.
     bool flat = true;
@@ -1565,20 +1572,11 @@ struct Ast {
     // calling it, a shader given as source by that file, stage and source.
     map<string, string> shaders;
 
-    // The checked field defaults of every instantiation, and with the
-    // global initializers every checked tree that runs outside a function
-    // body. `f` gets the slot, so a pass that rewrites trees can put its
-    // result back.
-    template<typename F> void ForEachFieldDefault(F f) {
-        for (auto si : structinsts)
-            for (auto &d : si->defaults) if (d) f(d);
-        for (auto ei : enuminsts)
-            for (auto &vd : ei->vdefaults)
-                for (auto &d : vd) if (d) f(d);
-    }
+    // Every checked tree that runs outside a function body: the global
+    // initializers. `f` gets the slot, so a pass that rewrites trees can
+    // put its result back.
     template<typename F> void ForEachRootTree(F f) {
         for (auto g : globals) for (auto &i : g->inits) f(i);
-        ForEachFieldDefault(f);
     }
 
     // Declarations, by namespace. Qualified spellings (`ns::name`) are

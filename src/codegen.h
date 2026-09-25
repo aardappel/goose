@@ -306,12 +306,11 @@ struct CodeGen {
     // ------------------------------------------------------------------
     // default<T>() (§4.2): all-zero bytes are the default of every fixed type
     // -- numbers, false, null, empty slices and limited arrays, variant 0 --
-    // except where a field declares its own default, which is written over
-    // the zeroes afterwards.
+    // except where a field declares its own default, which the checker
+    // builds as a literal of the call's own (Call::defaultinit).
 
     bool HasFieldDefaults(TypeExpr *t);
     void EmitDefaultInto(const string &lv, TypeExpr *t);
-    void EmitDefaultFields(const string &lv, TypeExpr *t);
 
     // ------------------------------------------------------------------
     // Structural equality (§4.5): gs_eq_<mangle>. Fixed values pass by value,
@@ -797,8 +796,7 @@ struct CodeGen {
     void GenStructLit(StructLit *sl, const string &stk, const string &lenlv = "");
     void GenFrameObjLit(StructLit *sl, StructInst *si, const string &stk, const string &obj);
     void GenFieldInits(StructLit *sl, const vector<Field> &fields, const vector<TypeExpr *> &ftypes,
-                       const vector<Node *> &defaults, const string &stk, const string &lenlv = "",
-                       const string &selfbase = "");
+                       const string &stk, const string &lenlv = "", const string &selfbase = "");
 
     // ------------------------------------------------------------------
     // Statements and control flow. GenAny routes a node's value to a Dst;

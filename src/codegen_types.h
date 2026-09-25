@@ -1112,10 +1112,11 @@ inline void CodeGen::EmitVerifyWalk(string &b, TypeExpr *t, TypeExpr *elem, cons
 // ------------------------------------------------------------------
 // default<T>() (§4.2): all-zero bytes are the default of every fixed type
 // -- numbers, false, null, empty slices and limited arrays, variant 0 --
-// except where a field declares its own default, which is written over
-// the zeroes afterwards.
+// except where a field declares its own default, which the checker
+// builds as a literal of the call's own (Call::defaultinit).
 
-// Does any field at any depth of a fixed type declare a default value?
+// Does any field at any depth of a fixed type declare a default value? An
+// empty array has no fields.
 inline bool CodeGen::HasFieldDefaults(TypeExpr *t) {
     switch (t->kind) {
         case TY_STRUCT: case TY_ENUM: case TY_VARIANT: {
@@ -1130,59 +1131,19 @@ inline bool CodeGen::HasFieldDefaults(TypeExpr *t) {
                 }
             return false;
         }
-        case TY_ARRAY: return t->arr->akind == A_FIXED && HasFieldDefaults(t->arr->sub);
+        case TY_ARRAY:
+            return t->arr->akind == A_FIXED && ArrSize(t->arr) > 0 &&
+                   HasFieldDefaults(t->arr->sub);
         default: return false;
     }
 }
 
-// Writes the default value of fixed type t into the C lvalue lv.
+// Writes the default value of fixed type t into the C lvalue lv. A type
+// with a declared field default anywhere in it never gets here: the
+// checker builds its default as a literal (TypeCheck::CheckBuiltin).
 inline void CodeGen::EmitDefaultInto(const string &lv, TypeExpr *t) {
+    assert(!HasFieldDefaults(t));
     L("memset(&", lv, ", 0, sizeof(", lv, "));");
-    EmitDefaultFields(lv, t);
-}
-
-// The declared field defaults of t, over an already zeroed lv.
-inline void CodeGen::EmitDefaultFields(const string &lv, TypeExpr *t) {
-    if (!HasFieldDefaults(t)) return;
-    auto fields = [&](const string &base, const vector<Field> &fs,
-                      const vector<TypeExpr *> &fts, const vector<Node *> &defaults) {
-        for (size_t i = 0; i < fs.size(); i++) {
-            if (fs[i].ispad) continue;
-            auto path = cat(base, ".", Sanitize(fs[i].name));
-            if (i < defaults.size() && defaults[i]) GenAny(defaults[i], Dst { DK_LVALUE, path, fts[i] });
-            else EmitDefaultFields(path, fts[i]);
-        }
-    };
-    switch (t->kind) {
-        case TY_STRUCT: {
-            auto si = SI(t);
-            fields(lv, si->st->fields, si->ftypes, si->defaults);
-            return;
-        }
-        case TY_ENUM: {
-            auto ei = EIOf(t);
-            if (ei->en->variants[0].fields.empty()) return;
-            fields(cat(lv, ".u.v_", Sanitize(ei->en->variants[0].name)),
-                   ei->en->variants[0].fields, ei->vftypes[0], ei->vdefaults[0]);
-            return;
-        }
-        case TY_VARIANT: {
-            auto ei = EIVar(t);
-            auto vi = ei->en->VariantIndex(t->var->variant);
-            fields(lv, ei->en->variants[vi].fields, ei->vftypes[vi], ei->vdefaults[vi]);
-            return;
-        }
-        case TY_ARRAY: {
-            auto iv = T();
-            L("for (int64_t ", iv, " = 0; ", iv, " < ", ArrSize(t->arr), "; ", iv, "++) {");
-            ind++;
-            EmitDefaultFields(cat(lv, ".e[", iv, "]"), t->arr->sub);
-            ind--;
-            L("}");
-            return;
-        }
-        default: return;
-    }
 }
 
 // ------------------------------------------------------------------

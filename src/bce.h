@@ -1983,8 +1983,7 @@ struct BCE {
         // sites, which have to have been judged.
         for (auto it = calleesfirst.rbegin(); it != calleesfirst.rend(); ++it)
             if ((*it)->live && (*it)->body) RunSpec(*it);
-        // Global initializers and shared field defaults: judged with no
-        // surrounding context (defaults are shared across construction sites).
+        // Global initializers: judged with no surrounding context.
         ResetSpecState();
         mode = M_JUDGE;
         ast.ForEachRootTree([&](Node *n) {
