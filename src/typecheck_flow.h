@@ -859,6 +859,8 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
         v.holderexact = a.holderexact && b.holderexact && ar == br;
     }
     v.isnull = a.isnull && b.isnull;   // Both null: still a null, which names no root.
+    v.storagebranches = a.storagebranches && b.storagebranches;
+    v.implicitcopy = a.implicitcopy ? a.implicitcopy : b.implicitcopy;
     v.root = InnerRoot(a.root, b.root);
     v.rootexact = a.rootexact && b.rootexact && CanonRoot(a.root) == CanonRoot(b.root);
     v.rootfrom = a.rootfrom ? a.rootfrom : b.rootfrom;
@@ -945,14 +947,20 @@ inline void TypeCheck::RetypeConstBranch(Node *n, TypeExpr *t) {
 }
 
 inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
+    auto onpath = argpath == x;
     CheckCond(x->cond);
     auto entry = SaveFlow();
     NarrowCond(x->cond, true);
-    auto tv = CheckBlockVal(x->thenb, expected, wantvalue, SK_PLAIN);
+    Val tv;
+    {
+        PathScope ps(*this, onpath ? x->thenb : nullptr);
+        tv = CheckBlockVal(x->thenb, expected, wantvalue, SK_PLAIN);
+    }
     auto aflow = SaveFlow();
     RestoreFlow(entry);
     Val ev = VoidVal();
     NarrowCond(x->cond, false);
+    PathScope ps(*this, onpath ? x->elseb : nullptr);
     if (auto ei = Is<IfExpr>(x->elseb)) {
         ev = CheckIf(ei, expected, wantvalue);
     } else if (x->elseb) {
@@ -972,15 +980,19 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
 
 inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue, int scopekind,
                                     Node *scopenode) {
+    auto onpath = argpath == b;
     ValueRegion vr(*this, wantvalue);
     PushScope(scopekind, scopenode);
     BlockScope bs(*this, b);
     CheckStmts(b);
     Val v = VoidVal();
     if (b->tail) {
-        if (wantvalue) v = CheckValue(b->tail, expected, false,
-                                     !expected || expected->kind == TY_VOID);
-        else CheckStmtExpr(b->tail);
+        if (wantvalue) {
+            PathScope ps(*this, onpath ? b->tail : nullptr);
+            v = CheckValue(b->tail, expected, false, !expected || expected->kind == TY_VOID);
+        } else {
+            CheckStmtExpr(b->tail);
+        }
     } else if (wantvalue && reachable && expected && expected->kind != TY_VOID) {
         Error(b, "block used as a value must end in an expression");
     }
@@ -992,7 +1004,12 @@ inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue
 }
 
 inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalue) {
-    auto sv = CheckV(m->scrutinee, nullptr);
+    auto onpath = argpath == m;
+    Val sv;
+    {
+        FlagScope rs(inreturn, false);
+        sv = CheckV(m->scrutinee, nullptr);
+    }
     // A reference to an integer reads as its pointee (§3.8); one to an ADT
     // is kept, its tag and payload read where the value lies.
     if (IsPlainRef(sv.type) && IsIntT(LoadType(sv.type->ref->sub))) sv = DecayRef(sv);
@@ -1017,9 +1034,12 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
         PushScope(SK_PLAIN);
         if (binder) vars.push_back(binder);
         Val av;
-        if (wantvalue) av = CheckValue(arm.body, expected, false,
-                                      !expected || expected->kind == TY_VOID);
-        else CheckStmtExpr(arm.body);
+        if (wantvalue) {
+            PathScope ps(*this, onpath ? arm.body : nullptr);
+            av = CheckValue(arm.body, expected, false, !expected || expected->kind == TY_VOID);
+        } else {
+            CheckStmtExpr(arm.body);
+        }
         auto aflow = SaveFlow();
         if (!reachable) av.type = nullptr;
         PopScope();
@@ -1169,16 +1189,24 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
 }
 
 inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wantvalue) {
+    auto onpath = argpath == x;
     ValueRegion vr(*this, wantvalue);
     PushScope(SK_BLOCK, x);
-    if (wantvalue) scopes.back().breakexpected = expected;
+    if (wantvalue) {
+        scopes.back().breakexpected = expected;
+        scopes.back().onargpath = onpath;
+        scopes.back().inreturn = inreturn;
+    }
     BlockScope bs(*this, x->body);
     CheckStmts(x->body);
     Val v = VoidVal();
     if (x->body->tail) {
-        if (wantvalue) v = CheckValue(x->body->tail, expected, false,
-                                     !expected || expected->kind == TY_VOID);
-        else CheckStmtExpr(x->body->tail);
+        if (wantvalue) {
+            PathScope ps(*this, onpath ? x->body->tail : nullptr);
+            v = CheckValue(x->body->tail, expected, false, !expected || expected->kind == TY_VOID);
+        } else {
+            CheckStmtExpr(x->body->tail);
+        }
     }
     if (!reachable) v.type = nullptr;
     auto sc = scopes.back();
@@ -1225,8 +1253,13 @@ inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue)
     auto assumed = NarrowedOptionals();
     PushLoopAssigned(x->body);
     auto entry = SaveFlow();
+    auto onpath = argpath == x;
     PushScope(SK_LOOP, x);
-    if (wantvalue) scopes.back().breakexpected = expected;
+    if (wantvalue) {
+        scopes.back().breakexpected = expected;
+        scopes.back().onargpath = onpath;
+        scopes.back().inreturn = inreturn;
+    }
     CheckLoopBody(x->body);
     auto sc = EndLoop(x, x->body, entry, assumed);
     reachable = sc.hasbreak;  // A loop only exits via break.
@@ -1266,6 +1299,7 @@ inline void TypeCheck::CheckWhile(While *x) {
 }
 
 inline void TypeCheck::CheckFor(ForLoop *x) {
+    FlagScope rs(inreturn, false);   // No part of a value being returned.
     auto byref = x->byref;
     TypeExpr *bindtype = nullptr;
     TypeExpr *elemtype = nullptr;   // The array's element type, where it has one.
@@ -1441,7 +1475,13 @@ inline void TypeCheck::CheckBreak(Break *b) {
         // type the construct is expected to have, as its tail value does.
         auto expected = scopes[si].breaktype ? scopes[si].breaktype : scopes[si].breakexpected;
         auto be = scopes[si].breakexpected;
-        auto v = CheckValue(b->val, expected, false, !be || be->kind == TY_VOID);
+        Val v;
+        {
+            // The break is a statement, but its value is the construct's.
+            PathScope ps(*this, scopes[si].onargpath ? b->val : nullptr);
+            FlagScope rs(inreturn, scopes[si].inreturn);
+            v = CheckValue(b->val, expected, false, !be || be->kind == TY_VOID);
+        }
         // The construct's value is a new one: the break's type and what its
         // references point at, never the operand's storage or literal form.
         Val exit;
@@ -1452,6 +1492,8 @@ inline void TypeCheck::CheckBreak(Break *b) {
         exit.holderexact = v.holderexact;
         exit.holderset = v.holderset;
         exit.holderfrom = v.holderfrom;
+        exit.storagebranches = v.storagebranches;
+        exit.implicitcopy = v.implicitcopy;
         exit.fnv = v.fnv;  // Which function it names, as static as its type (§7.6).
         // Nothing after the break can complete a [] that took no element type
         // here: the construct's value does not carry the literal form.
@@ -1483,8 +1525,10 @@ inline void TypeCheck::CheckContinue(Node *n) {
 // Statements.
 
 // An expression in statement position: control constructs want no value;
-// other values are computed and discarded.
+// other values are computed and discarded. Like any statement, it is no
+// part of a value being returned (CheckStmt).
 inline void TypeCheck::CheckStmtExpr(Node *n) {
+    FlagScope rs(inreturn, false);
     if (auto x = Is<IfExpr>(n)) { CheckIf(x, nullptr, false); n->exprtype = ast.voidtype; return; }
     if (auto x = Is<Block>(n)) {
         CheckBlockVal(x, nullptr, false, SK_PLAIN);

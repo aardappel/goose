@@ -682,7 +682,7 @@ depends on its size class (§1.1):
   a constructing expression, built in place per §4.3) or an explicit
   **`copy(x)`**, which is a fresh copy of the stored value, constructed at
   the destination like any other rvalue. A function's own local is *moved*
-  by `return` (§7.3).
+  by `return`, or as its body's final expression (§7.3).
 
 So `f(xs)` hands a `u8[][>..]` variable to `fn f(xs: u8[][:])`,
 `fn f(xs: u8[][>..]&)` and `fn f(xs)` alike by reference, `out.push(w)`
@@ -693,12 +693,19 @@ equivalently `let r .= n;`, §3.8; `f(&n)` into an untyped parameter);
 wherever the destination's own type is
 a reference it is redundant, and a redundant `&` is a warning.
 
-A reference to a fixed-size value that an `if`, `match`, `block`, `loop`
-or bare `{ }` branch gives, `&x` included, is copied as its pointee where
-the construct has no destination type, as it is wherever a
-reference meets a value (§3.8): `let r = if c { &a } else { &b };` makes `r`
-a copy of `a` or `b`, so the `&`s are redundant and warn, while
-`let r: i64& = if c { a } else { b };` binds `a` or `b` itself.
+Where an `if`, `match`, `block`, `loop` or bare `{ }` has no destination
+type — an un-annotated `let`/`var`, an untyped parameter, an operand, or the
+value a `for`, `[..]` or builtin works on — its value is a copy of what the
+branch taken gives. A reference to a fixed-size value, `&x` included, is
+copied as its pointee there, as it is wherever a reference meets a value
+(§3.8): `let r = if c { &a } else { &b };` makes `r` a copy of `a` or `b`,
+so the `&`s are redundant and warn. A branch naming non-fixed storage, or a
+reference to it, is an error there, as at a value-typed destination:
+`let x = if c { copy(a) } else { copy(b) };` spells the copy. At a
+reference-typed destination — an annotated `let`/`var`, a reference
+parameter — each branch binds by reference instead:
+`let r: i64& = if c { a } else { b };` binds `a` or `b` itself, and
+`f(if c { a } else { b })` hands `a` or `b` itself to `fn f(xs: i64[>..]&)`.
 
 There is no ownership transfer beyond the return move, no destructors, no
 `Drop`, no reference counting. Deallocation is exclusively scope exit

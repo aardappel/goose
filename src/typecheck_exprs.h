@@ -380,23 +380,43 @@ inline bool TypeCheck::UserRefOf(Node *n) {
 
 // A non-fixed value reaches a value destination only as an rvalue or an
 // explicit copy (§4.1): an lvalue, or a reference to one, is never copied
-// implicitly. A function's own local is moved by `return`.
-inline void TypeCheck::RequireCopyable(const Val &v, Node *n, TypeExpr *dt) {
-    if (!reachable) return;
-    if (IsRefOrSlice(dt) || dt->kind == TY_VOID) return;
-    if (ClassOf(dt) == SC_FIXED) return;
+// implicitly. A function's own local is moved by `return`, or as its body's
+// final expression.
+inline bool TypeCheck::ImplicitCopy(const Val &v, Node *n, TypeExpr *dt) {
+    if (!reachable) return false;
+    if (IsRefOrSlice(dt) || dt->kind == TY_VOID) return false;
+    if (ClassOf(dt) == SC_FIXED) return false;
     auto src = IsPlainRef(v.type) ? v.type->ref->sub : v.type;
     // A varint is read as the i64 it decodes to (§3.6), like any scalar.
-    if (ClassOf(src) == SC_FIXED || IsVarintT(src)) return;
-    if (!v.lvalue && !IsPlainRef(v.type)) return;
+    if (ClassOf(src) == SC_FIXED || IsVarintT(src)) return false;
+    if (!v.lvalue && !IsPlainRef(v.type)) return false;
     if (inreturn && v.lvalue)
         if (auto id = Is<Ident>(n); id && id->vdef && !id->vdef->isglobal &&
                                     id->vdef->ownerspec == frames.back().spec)
-            return;
+            return false;
+    return true;
+}
+
+inline void TypeCheck::ImplicitCopyError(Node *n) {
     auto u = Is<Unary>(n);
     auto what = ExprStr(u && u->op == T_BITAND ? u->child : n);
     Error(n, cat(what, " is not fixed-size and is not copied implicitly (§4.1): pass copy(",
                  what, ") for a copy, or bind it by reference"));
+}
+
+// A branch's value v whose construct has no destination type: the
+// construct's value is a copy of it, of type dt, which non-fixed storage, or
+// a reference to it, reaches only through copy(x), as at a value destination
+// (§4.1). On an argument's path (argpath) a reference parameter may yet bind
+// the branch by reference instead; `out`, the value the branch gives its
+// construct, notes both for that argument.
+inline void TypeCheck::CheckBranchCopy(const Val &v, Node *n, TypeExpr *dt, Val &out) {
+    out.storagebranches = v.storagebranches || (IsNonFixedLValue(v) && Referenceable(n, v)) ||
+                          IsNonFixedRef(v);
+    out.implicitcopy = v.implicitcopy;
+    if (!ImplicitCopy(v, n, dt)) return;
+    if (argpath != n) ImplicitCopyError(n);
+    if (!out.implicitcopy) out.implicitcopy = n;
 }
 
 // Argument nodes the checker rebound by reference
@@ -420,7 +440,9 @@ inline Node *TypeCheck::WholeSlice(Node *n) {
 // resolution, where an explicit & may have picked the overload. A variable
 // whose type is `inferred` from the value is no destination type either, but
 // binds a reference to a non-fixed value rather than copying the pointee
-// (§3.8, §4.1).
+// (§3.8, §4.1). `branchcopy`: n is a branch's value whose construct has no
+// destination type, which copies it (CheckBranchCopy), and `expected` at
+// most the type an earlier break gave the construct.
 inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bool branchcopy,
                                  bool inferred) {
     auto v = CheckV(n, expected);
@@ -436,18 +458,23 @@ inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bo
         Warn(n, cat("redundant &: the construct's value is a copy of ", what, " either way "
                     "(§4.1); a reference-typed binding binds ", what, " without it"));
     }
+    Val branch;
     if (!expected || expected->kind == TY_VOID) {
+        if (branchcopy) CheckBranchCopy(v, n, dt, branch);
         if (!inferred || !IsNonFixedRef(v)) v = DecayRef(v);
     } else {
         if (!callsite && expected->kind == TY_REF && UserRefOf(n))
             Warn(n, cat("redundant &: ", ExprStr(Is<Unary>(n)->child),
                         " binds by reference here without it (§4.1)"));
         if (BindsRef(v, expected)) n = AutoRef(n, v);
-        RequireCopyable(v, n, expected);
+        if (branchcopy) CheckBranchCopy(v, n, expected, branch);
+        else RequireCopyable(v, n, expected);
         if (!KeepsRef(v, expected)) v = DecayRef(v);
         MustFit(v, n, expected, callsite);
         NoRelRefCopy(n, expected);
     }
+    v.storagebranches = branch.storagebranches;
+    v.implicitcopy = branch.implicitcopy;
     n->exprtype = v.type;
     return v;
 }
@@ -744,6 +771,7 @@ inline string TypeCheck::ConstStr(const Val &v) {
 // references decay (a bool& condition reads its pointee); an already
 // narrowed optional stays a valid (trivially true) test.
 inline Val TypeCheck::CheckCond(Node *n) {
+    FlagScope rs(inreturn, false);
     auto v = CheckV(n, nullptr);
     auto id = Is<Ident>(n);
     auto narrowedopt = id && id->vdef && IsOptional(id->vdef->type) && id->vdef->narrowed;
@@ -1245,6 +1273,9 @@ inline bool TypeCheck::UsedAfter(VarDef *v) {
 }
 
 inline void TypeCheck::CheckStmt(Node *n) {
+    // A statement inside a returned value's block is no part of that value:
+    // the function's locals outlive it.
+    FlagScope rs(inreturn, false);
     if (auto vd = Is<VarDecl>(n)) { CheckVarDecl(vd, false); return; }
     if (auto a = Is<Assign>(n)) { CheckAssign(a); return; }
     if (auto x = Is<IncDec>(n)) { CheckIncDec(x); return; }

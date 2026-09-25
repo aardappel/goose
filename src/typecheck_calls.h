@@ -85,7 +85,11 @@ inline SFunction *TypeCheck::LookupLocalFnEnv(string_view name, FnSpec *&env) {
 }
 
 inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d) {
-    auto ov = CheckV(d->obj, nullptr);
+    Val ov;
+    {
+        PathScope ps(*this, d->obj);
+        ov = CheckV(d->obj, nullptr);
+    }
     d->obj->exprtype = ov.type;
     auto rt = ov.type;
     auto optional = IsOptional(rt);
@@ -98,6 +102,9 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d) {
     if (bd && (bd->flags & BF_MEMBER) && !(bd->flags & BF_PROPERTY) &&
         rt->kind == TY_ARRAY) {
         if (optional) Error(c, "optional value must be narrowed (if/guard/assert) before use");
+        // A member works on the receiver's value, which for a control
+        // construct is a copy of the branch taken.
+        if (ov.implicitcopy) ImplicitCopyError(ov.implicitcopy);
         vector<Node *> argnodes = { d->obj };
         for (auto a : c->args) argnodes.push_back(a);
         d->member = bd->kind;
@@ -134,11 +141,13 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     vector<Val> argvals;
     // A non-fixed lvalue argument passes by reference (§4.1): it becomes
     // `&a` before any candidate sees it. The user's own `&` on one is
-    // redundant.
+    // redundant. A control construct's value is no storage, even where its
+    // one branch is: a reference parameter binds its branches instead
+    // (BindBranchesByRef).
     auto byref = [&](Node *&a, Val &v) {
         // A resizable without a header of its own (C.2) stays a value,
         // which a slice parameter still takes whole.
-        if (IsNonFixedLValue(v) && Referenceable(a, v)) a = AutoRef(a, v);
+        if (IsNonFixedLValue(v) && !v.storagebranches && Referenceable(a, v)) a = AutoRef(a, v);
         else if (UserRefOf(a) && IsPlainRef(v.type) && ClassOf(v.type->ref->sub) != SC_FIXED)
             Warn(a, cat("redundant &: ", ExprStr(Is<Unary>(a)->child),
                         " is passed by reference without it (§4.1)"));
@@ -150,7 +159,11 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         argvals.push_back(v);
     }
     for (auto &a : c->args) {
-        auto v = CheckV(a, nullptr);
+        Val v;
+        {
+            PathScope ps(*this, a);
+            v = CheckV(a, nullptr);
+        }
         // A pending array (`var out = []`) is completed by the builtin
         // sharing this name (push, append, format), never by user code.
         if (nomatch && IsPendingArray(v.type)) {
@@ -195,6 +208,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         Error(c, cat("no matching overload for call to ", name, failures));
     }
     LoadSliceArgs(argvals, best.paramtypes);
+    BindBranchesByRef(argnodes, argvals, best.paramtypes);
     auto spec = GetOrCreateSpec(best, argvals, c);
     ApplyCalleeShrinks(c, spec, argvals, name);
     ApplyCalleeGrows(c, spec, argvals, name);
@@ -236,6 +250,26 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     c->spec = spec;
     ApplyCalleeRebinds(spec);
     return CallResult(c, spec, argvals);
+}
+
+// A control construct whose branches are all non-fixed storage binds each
+// by reference at a reference parameter (§4.1): the argument is checked as
+// that reference, rooted where its branches are, before the specialization
+// and the callee's effects are keyed on it; phase 2 checks it so again, in
+// order with the other arguments. `skip` is a dispatch position, whose value
+// the cases take as it is.
+inline void TypeCheck::BindBranchesByRef(vector<Node *> &argnodes, vector<Val> &argvals,
+                                         const vector<TypeExpr *> &paramtypes, int skip) {
+    for (size_t i = 0; i < paramtypes.size() && i < argvals.size(); i++) {
+        auto pt = paramtypes[i];
+        if ((int)i == skip || !argvals[i].storagebranches || pt->kind != TY_REF ||
+            pt->ref->lenstorage >= 0)
+            continue;
+        DestScope ds(*this, Dest {});
+        SlotScope ss(*this, false);
+        FlagScope q(quiet, true);
+        argvals[i] = CheckValue(argnodes[i], pt, true);
+    }
 }
 
 inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, MatchInfo &mi,
@@ -393,8 +427,10 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
         return ct;
     }
     // An lvalue meeting a reference parameter binds by reference (§4.1),
-    // so a generic pointee unifies with the argument's own type.
-    if (av.lvalue && pt->kind == TY_REF && pt->ref->lenstorage < 0 &&
+    // so a generic pointee unifies with the argument's own type. So does
+    // a control construct whose branches are all non-fixed storage, each
+    // branch binding by reference (BindBranchesByRef).
+    if ((av.lvalue || av.storagebranches) && pt->kind == TY_REF && pt->ref->lenstorage < 0 &&
         av.type->kind != TY_REF) {
         Val rv = av;
         rv.type = RefTo(av.type, pt->line);
@@ -508,8 +544,15 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
         auto at = argvals[pos].type;
         TypeExpr *et = nullptr;
         auto isref = false;
-        if (at->kind == TY_ENUM) et = at;
-        else if (IsPlainRef(at) && at->ref->sub->kind == TY_ENUM) { et = at->ref->sub; isref = true; }
+        if (at->kind == TY_ENUM) {
+            et = at;
+            // A control construct whose branches are all storage passes
+            // them by reference, as that storage would be (§4.1).
+            isref = argvals[pos].storagebranches;
+        } else if (IsPlainRef(at) && at->ref->sub->kind == TY_ENUM) {
+            et = at->ref->sub;
+            isref = true;
+        }
         if (!et) continue;
         // Fixed-mode payloads pass by copy even through a reference, for
         // the same soundness reason as match binders (§3.5).
@@ -553,6 +596,16 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
         Error(c, "dispatching a resizable ADT payload is not supported by the C backend "
                  "yet; match its tag without a payload binder, or use a standalone "
                  "resizable struct");
+    // Phase 2 does not check the dispatch argument again: a construct
+    // dispatched by reference binds its branches so here, and the copy a
+    // construct dispatched by value would take of a branch is reported here.
+    if (byref && !IsPlainRef(argvals[found].type)) {
+        DestScope ds(*this, Dest {});
+        SlotScope ss(*this, false);
+        argvals[found] = CheckValue(argnodes[found], RefTo(enumtype, c->line), true);
+    }
+    if (argvals[found].implicitcopy) ImplicitCopyError(argvals[found].implicitcopy);
+    BindBranchesByRef(argnodes, argvals, matches[0].paramtypes, found);
     // Specialize every arm; return types and the other parameters must
     // agree across the set.
     c->dispatcharg = found;
@@ -1450,7 +1503,11 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
         } else {
             auto expected = spec->retsknown && spec->rets.size() == 1 ? spec->rets[0]
                                                                       : nullptr;
-            auto tv = CheckValue(spec->body->tail, expected);
+            Val tv;
+            {
+                FlagScope ret(inreturn, true);
+                tv = CheckValue(spec->body->tail, expected);
+            }
             tail = spec->body->tail;
             if (reachable) {
                 if (tv.type->kind == TY_VOID) {
@@ -1812,6 +1869,7 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
     if (!c->tyargs.empty()) Error(c, "a block takes no type arguments");
     vector<Val> argvals;
     for (auto a : c->args) {
+        PathScope ps(*this, a);
         auto v = CheckV(a, nullptr);
         a->exprtype = v.type;
         argvals.push_back(v);
@@ -1846,7 +1904,12 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
     {
         DestScope ds(*this, Dest {});
         TempScope argscope(*this);
-        for (size_t i = 0; i < ptypes.size(); i++) CheckArg(c->args[i], ptypes[i]);
+        for (size_t i = 0; i < ptypes.size(); i++) {
+            auto v = CheckArg(c->args[i], ptypes[i]);
+            // A control construct whose branches this bound by reference
+            // is that reference, rooted where its branches are.
+            if (argvals[i].storagebranches && ptypes[i]->kind == TY_REF) argvals[i] = v;
+        }
     }
     // Check the body inline, with lookups chaining to the definer. The body
     // checked here is an environment of its own (FnSpec::isfunval), so what

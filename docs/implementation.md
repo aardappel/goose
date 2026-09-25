@@ -381,7 +381,8 @@ when a construction first uses them, not merely on type instantiation.
 Every `Check` returns a `Val` (`ast.h`): the type, the constant value where
 the expression folds, the literal flags (`strlit`, `emptyarr`, `isnull`,
 `unsized`), `lvalue` (denotes storage), `nonneg` (§3.14), the holder fields
-(§3.5), and a `Prov` -- the provenance of §3.4.
+(§3.5), what a control construct's branches are (`storagebranches`,
+`implicitcopy`, §3.12), and a `Prov` -- the provenance of §3.4.
 
 References are transparent (§3.8), which the checker implements as
 *decay*: `CheckV` is the raw per-node check whose result may still denote a
@@ -407,9 +408,15 @@ reads as `x` (`Unary::CgX`).
   reference (§4.1), so the variable is that reference, exactly as with `.=`;
   `CheckVarDecl` keeps a multi-value binding's such results the same way;
 * rejects a non-fixed lvalue at a value destination unless it is a `copy`
-  or the function's own local being returned (`RequireCopyable`, §4.1);
+  or the function's own local being returned, by a `return` or as the
+  body's tail (`RequireCopyable`, §4.1; `inreturn`, which the statements,
+  conditions, scrutinees and `for` loops inside the returned value clear,
+  and a valued `block` or `loop` keeps for its breaks' values), and so a
+  branch's value, or a reference to it, where its construct has no
+  destination type and the construct's value is a copy of it
+  (`CheckValue`'s `branchcopy` flag, `CheckBranchCopy`);
 * warns on a branch's redundant `&x` where its construct has no destination
-  type and copies the fixed-size pointee (`CheckValue`'s `branchcopy` flag);
+  type and copies the fixed-size pointee (`branchcopy` again);
 * fits the value to the destination (`MustFit`/`FitsAt`, §3.5); the node's
   `exprtype` becomes the destination's type, which can be wider than the
   type its operation computes at (an `i8` cast stored into an `i64`), so
@@ -1171,6 +1178,27 @@ whole array to slice), untyped parameters bind the argument's natural type
 (a reference stays a reference), literal arguments unify last so a typed
 argument fixes the type variable, and leftover generics bind function values
 in order.
+
+A control construct as an argument has no destination type in phase 1,
+where its value would copy the branch taken (§3.3). On the argument's value
+path -- the argument itself, a UFCS receiver included, and each branch a
+construct on it checks next, a nested construct, a block's tail or a
+break's value (`argpath`, `PathScope`, `Scope::onargpath`) --
+`CheckBranchCopy` notes that copy on the value (`Val::implicitcopy`)
+instead of reporting it, and whether every branch is non-fixed storage or
+a reference to it (`Val::storagebranches`, merged by `MergeVals`). Such a
+value is not rewritten to a reference, but matches a reference parameter
+as an lvalue does (`UnifyArgRaw`), and `BindBranchesByRef` checks it
+against that parameter before the specialization and the callee's effects
+are keyed on it: each branch binds by reference (`AutoRef`), and the
+argument takes the branches' merged root and writability. At any other
+parameter phase 2 reports the copy, an untyped one included, which takes
+the construct's value type. Tag dispatch binds such a construct at the
+dispatch position by reference as well, and reports a copy noted on one it
+dispatches by value, which phase 2 does not check again; a member builtin
+reports one noted on its receiver, which it takes as checked; a function
+value's declared reference parameter takes its provenance from the
+argument's check against it.
 
 The tier is the worst match of any argument, not a sum of conversion
 costs. Concrete exact matches beat generic exact matches, which beat any

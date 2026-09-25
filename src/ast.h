@@ -443,6 +443,14 @@ struct Val : Prov {
     bool unsized = false;
     VarDef *unsizedparam = nullptr;
     bool lvalue = false;         // Denotes storage (a variable, field or element), not a temporary.
+    // A control construct's value, whose branches a destination with no type
+    // of its own copies (TypeCheck::CheckBranchCopy): whether every branch is
+    // non-fixed storage, or a reference to it, which a reference parameter
+    // binds by reference instead (§4.1), and the first branch such a copy
+    // would take implicitly, where the check was left to the argument's
+    // check against its parameter (TypeCheck::argpath).
+    bool storagebranches = false;
+    Node *implicitcopy = nullptr;
     // A signed value the compiler knows cannot be negative, which is what
     // lets it meet a u64 in a comparison (§6.1). Deliberately syntactic --
     // a literal, a .len/.cap, or a `let` bound to one -- so that whether a

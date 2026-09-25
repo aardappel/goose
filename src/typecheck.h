@@ -157,6 +157,8 @@ struct TypeCheck {
         TypeExpr *breaktype = nullptr;
         Val breakvalue;             // Roots and permissions of all valued exits.
         TypeExpr *breakexpected = nullptr;   // The construct's expected value type.
+        bool onargpath = false;     // The construct is on argpath, and so are its breaks' values.
+        bool inreturn = false;      // The construct's value is returned, as are its breaks' values.
         bool hasbreak = false;
         bool valuelessbreak = false;
     };
@@ -229,7 +231,11 @@ struct TypeCheck {
         TempScope(TypeCheck &t) : tc(t), base(t.heldtemps.size()) {}
         ~TempScope() { tc.heldtemps.resize(base); }
     };
-    bool inreturn = false;   // Checking a return's values: the function's own locals move.
+    // Checking what a return, or the body's tail, gives the caller: the
+    // function's own locals move. The statements, conditions, scrutinees
+    // and loops inside it are no part of that value; a valued block or loop
+    // keeps the flag for its breaks' values (Scope::inreturn).
+    bool inreturn = false;
     // Sets a flag for a scope; the value in force outside returns on exit,
     // an error's throw included.
     struct FlagScope {
@@ -392,7 +398,11 @@ struct TypeCheck {
 
     [[noreturn]] void Error(const Node *n, const string &msg) { Error(n->line, msg); }
 
+    // A check that phase 2 of a call repeats leaves its warnings to that
+    // repetition (BindBranchesByRef).
+    bool quiet = false;
     void Warn(const Node *n, const string &msg) {
+        if (quiet) return;
         fprintf(stderr, "%s: warning: %s\n", Where(n->line).c_str(), msg.c_str());
     }
 
@@ -965,7 +975,26 @@ struct TypeCheck {
     bool Referenceable(Node *n, const Val &v);
     [[noreturn]] void NoResizableRef(Node *at);
     bool UserRefOf(Node *n);
-    void RequireCopyable(const Val &v, Node *n, TypeExpr *dt);
+    bool ImplicitCopy(const Val &v, Node *n, TypeExpr *dt);
+    [[noreturn]] void ImplicitCopyError(Node *n);
+    void RequireCopyable(const Val &v, Node *n, TypeExpr *dt) {
+        if (ImplicitCopy(v, n, dt)) ImplicitCopyError(n);
+    }
+    void CheckBranchCopy(const Val &v, Node *n, TypeExpr *dt, Val &out);
+    // The value path of a call's argument checked before its parameter's
+    // type is known: the argument, then each branch a control construct on
+    // it checks next. A reference parameter binds such a construct's
+    // branches by reference, so the copy CheckBranchCopy would report is
+    // left to the argument's check against its parameter.
+    Node *argpath = nullptr;
+    struct PathScope {
+        TypeCheck &tc;
+        Node *saved;
+        PathScope(TypeCheck &t, Node *n) : tc(t), saved(t.argpath) { tc.argpath = n; }
+        ~PathScope() { tc.argpath = saved; }
+    };
+    void BindBranchesByRef(vector<Node *> &argnodes, vector<Val> &argvals,
+                           const vector<TypeExpr *> &paramtypes, int skip = -1);
     void WriteBackArgs(Call *c, Dot *d, vector<Node *> &argnodes);
     // A parameter that takes the value -- a slice, or a fixed-class value
     // that a non-fixed one constructs by copy (an array of another kind
