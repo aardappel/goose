@@ -1134,6 +1134,7 @@ inline void TypeCheck::JoinCycle(FnSpec *spec, Node *callnode) {
         if (!f.spec || !f.sf || f.isfunval) continue;
         f.spec->incycle = true;
         if (auto h = CycleHead(f.spec); h != head) h->cyclelink = head;
+        NoInferredRefResult(f.spec, f.cyclecall);
     }
     for (auto i = fi; i <= last; i++) {
         auto end = i < last ? frames[i + 1].varbase : (int)vars.size();
@@ -1151,6 +1152,17 @@ inline void TypeCheck::JoinCycle(FnSpec *spec, Node *callnode) {
                       "(§7.8): end its scope before the call"));
         }
     }
+}
+
+// A cycle's back edges take the roots of its functions' results before their
+// returns are checked (§7.8): a function in one declares a reference result
+// rather than inferring it from a return.
+inline void TypeCheck::NoInferredRefResult(FnSpec *spec, Line at) {
+    if (!spec->sf || spec->sf->has_rets) return;
+    for (auto rt : spec->rets)
+        if (IsPlainRef(rt))
+            Error(at, cat("function ", spec->sf->name, " is in a recursive cycle and returns "
+                          "a reference, which needs an explicit result type (§7.8)"));
 }
 
 // The function whose body frame fi checks: a function value's is the one it
@@ -1622,7 +1634,8 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
             Val tv;
             {
                 FlagScope ret(inreturn, true);
-                tv = CheckValue(spec->body->tail, expected);
+                tv = spec->retsknown ? CheckValue(spec->body->tail, expected)
+                                     : CheckInferredResult(spec->body->tail, spec);
             }
             tail = spec->body->tail;
             if (reachable) {
@@ -1670,6 +1683,9 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         if (v.type == fntype) Error(at, "function values cannot be returned (§7.6)");
         types.push_back(v.type);
     }
+    // The result type this return meets may be a reference another one
+    // inferred, where none is written.
+    auto inferredearlier = tspec->retsknown && tspec->sf && !tspec->sf->has_rets;
     if (!tspec->retsknown) {
         for (auto &v : vals) {
             if (v.type->kind == TY_VOID)
@@ -1677,6 +1693,7 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
             tspec->rets.push_back(v.type);
         }
         tspec->retsknown = true;
+        if (tspec->incycle) NoInferredRefResult(tspec, at->line);
     } else {
         if (vals.size() != tspec->rets.size())
             Error(at, cat("returning ", (int64_t)vals.size(), " value(s), function ",
@@ -1702,7 +1719,10 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         // VarDefs (no ownerspec), so they pass and map at the call site.
         if (root && root->ownerspec == tspec)
             Error(at, cat("returning a reference rooted in ", root->name,
-                          ", which dies with this function (§9.2)"));
+                          ", which dies with this function (§9.2)",
+                          inferredearlier ? cat("; the result type ", TypeStr(rt),
+                                                " is inferred from an earlier return")
+                                          : string()));
         if (IsTemp(root))
             Error(at, "returning a reference into a temporary");
         if (root && root == cycleroot)
@@ -1921,8 +1941,9 @@ inline void TypeCheck::CheckReturn(Return *r) {
     {
         FlagScope rs(inreturn, true);
         if (r->vals.size() == 1) {
-            auto v = CheckValue(r->vals[0], tspec->retsknown && tspec->rets.size() == 1
-                                                ? tspec->rets[0] : nullptr);
+            auto one = tspec->retsknown && tspec->rets.size() == 1 ? tspec->rets[0] : nullptr;
+            auto v = tspec->retsknown ? CheckValue(r->vals[0], one)
+                                      : CheckInferredResult(r->vals[0], tspec);
             if (auto call = Is<Call>(r->vals[0]); call && call->rettypes.size() > 1) {
                 vals = lastcallrets;  // Forward a multi-value call.
                 // Each value meets its return type as a value of its own
@@ -1941,7 +1962,8 @@ inline void TypeCheck::CheckReturn(Return *r) {
             }
         } else {
             for (size_t i = 0; i < r->vals.size(); i++) {
-                auto v = CheckValue(r->vals[i], expectone(i));
+                auto v = tspec->retsknown ? CheckValue(r->vals[i], expectone(i))
+                                          : CheckInferredResult(r->vals[i], tspec);
                 if (v.type->kind == TY_VOID) Error(r, "cannot return a valueless expression");
                 HoldValue(r->vals[i], v);
                 vals.push_back(v);

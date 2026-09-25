@@ -406,7 +406,14 @@ reads as `x` (`Unary::CgX`).
   `let`/`var` takes it (`CheckValue`'s `inferred` flag, `IsNonFixedRef`):
   the pointee is a non-fixed lvalue, which such a binding takes by
   reference (§4.1), so the variable is that reference, exactly as with `.=`;
-  `CheckVarDecl` keeps a multi-value binding's such results the same way;
+  `CheckVarDecl` keeps a multi-value binding's such results the same way,
+  and `CheckInferredResult` a return's or body tail's value that a result
+  type is inferred from (§7.1), which it takes as an un-annotated `let`
+  takes its initializer in the other cases too: an explicit `&x` as it is,
+  a non-fixed lvalue other than the function's own local (`IsOwnLocal`) by
+  `AutoRef`. Such a reference into storage the function owns, or into a
+  temporary, is rejected there with a `copy` hint, before `RecordReturn`
+  would reject its root;
 * rejects a non-fixed lvalue at a value destination unless it is a `copy`
   or the function's own local being returned, by a `return` or as the
   body's tail (`RequireCopyable`, §4.1; `inreturn`, which the statements,
@@ -1291,7 +1298,11 @@ requires exactly that many results and has no shared type annotation.
 one to the corresponding declared return type. Reference decay and lifetime
 checks apply separately to each received result. Inference fixes a
 function's result types from the first checked return; subsequent returns
-must fit them, rather than widening the result by a whole-body join.
+must fit them, rather than widening the result by a whole-body join. A
+result inferred as a reference has no cycle return roots to predict it
+(`Cycles().Seed` runs only for declared results), so a function in a cycle
+may not infer one (`NoInferredRefResult`): `JoinCycle` checks each function
+joining a cycle, `RecordReturn` one already in a cycle inferring its result.
 
 **Literal parameters** (§7.7): an argument that is a literal (or a literal
 parameter passed on) to an untyped parameter, or to a bare type variable no

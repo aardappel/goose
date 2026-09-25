@@ -984,6 +984,7 @@ struct TypeCheck {
     bool Referenceable(Node *n, const Val &v);
     [[noreturn]] void NoResizableRef(Node *at);
     bool UserRefOf(Node *n);
+    bool IsOwnLocal(Node *n);
     bool ImplicitCopy(const Val &v, Node *n, TypeExpr *dt);
     [[noreturn]] void ImplicitCopyError(Node *n);
     void RequireCopyable(const Val &v, Node *n, TypeExpr *dt) {
@@ -1004,6 +1005,7 @@ struct TypeCheck {
     };
     void BindBranchesByRef(vector<Node *> &argnodes, vector<Val> &argvals,
                            const vector<TypeExpr *> &paramtypes, int skip = -1);
+    Val CheckInferredResult(Node *&n, FnSpec *tspec);
     void WriteBackArgs(Call *c, Dot *d, vector<Node *> &argnodes);
     // A parameter that takes the value -- a slice, or a fixed-class value
     // that a non-fixed one constructs by copy (an array of another kind
@@ -1148,6 +1150,7 @@ struct TypeCheck {
     void ValidateCycle(FnSpec *spec, Node *callnode);
     static FnSpec *CycleHead(FnSpec *s);
     void JoinCycle(FnSpec *spec, Node *callnode);
+    void NoInferredRefResult(FnSpec *spec, Line at);
     string_view FrameFnName(int fi);
     static VarDef *UltimateRoot(VarDef *v);
     void ValidatePoolArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode);

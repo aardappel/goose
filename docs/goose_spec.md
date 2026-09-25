@@ -463,7 +463,8 @@ pointee where §4.1 asks for one).
   c.args;`, with `args: u8[>..]&`, binds what the field refers to, as `.=`
   does). To bind a reference-returning call to a fixed-size value, use `.=`
   (`let e .= pool.push(v);`) or annotate (`let e: T& = pool.push(v);`).
-  An untyped parameter is an
+  A function whose result type is inferred takes it from a return the same
+  way (§7.1). An untyped parameter is an
   anonymous type variable and binds the argument's exact type, reference or
   not, exactly as an explicit `<T>` does (§7.7): for a fixed value `f(&x)`
   hands `f` a reference and `f(x)` a copy; a non-fixed lvalue is a reference
@@ -677,7 +678,8 @@ depends on its size class (§1.1):
   resizable-class *lvalue* (a variable, field or element) reaching a
   destination binds by reference where the destination's type is a
   reference or slice, an untyped parameter (§7.7), an un-annotated `let`/
-  `var`, or a `for` binding — and is an error at a value-typed destination.
+  `var`, a `for` binding, or a result whose type is inferred (§7.1) — and
+  is an error at a value-typed destination.
   A value-typed destination takes an **rvalue** (a literal, a call's result,
   a constructing expression, built in place per §4.3) or an explicit
   **`copy(x)`**, which is a fresh copy of the stored value, constructed at
@@ -694,9 +696,9 @@ wherever the destination's own type is
 a reference it is redundant, and a redundant `&` is a warning.
 
 Where an `if`, `match`, `block`, `loop` or bare `{ }` has no destination
-type — an un-annotated `let`/`var`, an untyped parameter, an operand, or the
-value a `for`, `[..]` or builtin works on — its value is a copy of what the
-branch taken gives. A reference to a fixed-size value, `&x` included, is
+type — an un-annotated `let`/`var`, a result whose type is inferred (§7.1),
+an untyped parameter, an operand, or the value a `for`, `[..]` or builtin
+works on — its value is a copy of what the branch taken gives. A reference to a fixed-size value, `&x` included, is
 copied as its pointee there, as it is wherever a reference meets a value
 (§3.8): `let r = if c { &a } else { &b };` makes `r` a copy of `a` or `b`,
 so the `&`s are redundant and warn. A branch naming non-fixed storage, or a
@@ -1391,7 +1393,15 @@ fn also_generic(a, b) { ... }        // untyped params are generic
 * A parameter with no type annotation is generic (Lobster-style); explicit
   `<T>` parameters express same-type constraints and let signatures name
   types. Return types may be omitted where inferrable (required across
-  recursive cycles, §7.8).
+  recursive cycles, §7.8). An omitted result type is taken from the first
+  return checked, as an un-annotated `let` takes its initializer's (§3.8,
+  §4.1): a reference to a non-fixed value, a non-fixed lvalue other than the
+  function's own local (which the return moves, §7.3), or an explicit `&x`
+  makes the result a reference. `fn args(c: Ctx&) { c.args }` returns what
+  the field refers to, just as `c.args` would be, and `copy(args(c))` copies
+  it; a reference to a fixed-size value is returned as its pointee. A part of
+  the function's own local, or of a temporary, dies with it, so it is
+  returned by neither: `return copy(x)`.
 * Overloading by parameter types is allowed; resolution is static: the
   unique concrete exact match wins, then a generic exact match, then a
   match requiring coercion (array→slice §3.10, literal fit §3.1, implicit
@@ -1620,7 +1630,9 @@ Non-recursive call graphs are the default and require nothing. Recursion is
 opt-in and annotated: the entry function of every recursive cycle is marked
 `recursive fn` (the keyword alone: roots and destinations follow from the
 entry call as for any specialization, §7.7), all functions in the cycle need
-fully explicit signatures (no inference across the cycle back-edge), and —
+fully explicit signatures (no inference across the cycle back-edge; a
+result inferred as a reference, §7.1, is an error in any of them, since the
+back edges need its roots before its returns are checked), and —
 the key restriction — **no function in the cycle may call into the cycle
 while one of its nonfixed locals is in scope**. A call into the cycle is
 any call that can lead back to the caller: the back edge, and every other

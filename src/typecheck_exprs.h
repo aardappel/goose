@@ -396,10 +396,7 @@ inline bool TypeCheck::ImplicitCopy(const Val &v, Node *n, TypeExpr *dt) {
     // A varint is read as the i64 it decodes to (§3.6), like any scalar.
     if (ClassOf(src) == SC_FIXED || IsVarintT(src)) return false;
     if (!v.lvalue && !IsPlainRef(v.type)) return false;
-    if (inreturn && v.lvalue)
-        if (auto id = Is<Ident>(n); id && id->vdef && !id->vdef->isglobal &&
-                                    id->vdef->ownerspec == frames.back().spec)
-            return false;
+    if (inreturn && v.lvalue && IsOwnLocal(n)) return false;
     return true;
 }
 
@@ -423,6 +420,45 @@ inline void TypeCheck::CheckBranchCopy(const Val &v, Node *n, TypeExpr *dt, Val 
     if (!ImplicitCopy(v, n, dt)) return;
     if (argpath != n) ImplicitCopyError(n);
     if (!out.implicitcopy) out.implicitcopy = n;
+}
+
+// A local of the function being checked, which its return moves (§4.1).
+inline bool TypeCheck::IsOwnLocal(Node *n) {
+    auto id = Is<Ident>(n);
+    return id && id->vdef && !id->vdef->isglobal && id->vdef->ownerspec == frames.back().spec;
+}
+
+// A value that tspec's result type is inferred from (§7.1) is taken as an
+// un-annotated `let` takes its initializer (§3.8, §4.1): an explicit `&x`
+// keeps its reference, a reference to a non-fixed value stays that
+// reference, and a non-fixed lvalue is returned by reference, except the
+// function's own local, which the return moves. Storage that does not
+// outlive the function cannot be returned by reference, and a non-fixed
+// value in it is not copied implicitly either.
+inline Val TypeCheck::CheckInferredResult(Node *&n, FnSpec *tspec) {
+    if (auto u = Is<Unary>(n); UserRefOf(n)) {
+        auto v = CheckV(n, nullptr);
+        n->exprtype = v.type;
+        if (IsNonFixedRef(v) && !IsOwnLocal(u->child))
+            Warn(n, cat("redundant &: ", ExprStr(u->child),
+                        " is returned by reference without it (§4.1)"));
+        return v;
+    }
+    auto v = CheckValue(n, nullptr, false, false, true);
+    if (IsNonFixedLValue(v) && !IsOwnLocal(n)) n = AutoRef(n, v);
+    // All of a multi-value call's results are forwarded, as they are.
+    if (auto c = Is<Call>(n); c && c->rettypes.size() > 1) return v;
+    if (reachable && IsNonFixedRef(v)) {
+        auto root = CanonRoot(v.root);
+        if ((root && root->ownerspec == tspec) || IsTemp(root)) {
+            auto u = Is<Unary>(n);
+            auto what = ExprStr(u && u->synth ? u->child : n);
+            Error(n, cat(what, " is not fixed-size and is not copied implicitly (§4.1), and "
+                         "its storage does not outlive this function: return copy(", what,
+                         ")"));
+        }
+    }
+    return v;
 }
 
 // Argument nodes the checker rebound by reference
