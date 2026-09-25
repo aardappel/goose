@@ -627,23 +627,33 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
         // an activation that outlives this one, as the first binding did.
         auto spec = CurRealFrame().spec;
         auto ownvar = curdst.varbind && curdst.root && curdst.root->ownerspec == spec;
-        if ((!CycleStorable(root) || v.cyclelocal) && spec && !ownvar &&
-            (spec->incycle || spec->sf->isrec)) {
+        if ((!CycleStorable(root) || v.cyclelocal) && spec && !ownvar) {
             // A threaded parameter class may be stored while it stays
             // threaded, and only where every activation's store lands in
             // the same storage: a parameter's class the slot may be in must
             // stay threaded too. From here on the store relies on both.
-            if (v.cyclelocal || !ThreadStorable(root)) {
-                fitfail = CycleStoreError(root);
-                return false;
+            CycleStore s { spec, fitnode ? fitnode->line : Line {} };
+            s.refused = v.cyclelocal || !ThreadStorable(root);
+            s.refusedby = root;
+            s.relies.push_back(root);
+            for (auto &d : dsts) {
+                if (!s.refused && !ThreadedChain(d.root)) {
+                    s.refused = true;
+                    s.refusedby = d.root;
+                }
+                s.relies.push_back(d.root);
             }
-            for (auto &d : dsts)
-                if (!ThreadedChain(d.root)) {
-                    fitfail = CycleStoreError(d.root);
+            if (spec->incycle || spec->sf->isrec) {
+                if (s.refused) {
+                    fitfail = CycleStoreError(s.refusedby);
                     return false;
                 }
-            RelyOnThread(root);
-            for (auto &d : dsts) RelyOnThread(d.root);
+                for (auto r : s.relies) RelyOnThread(r, s.at);
+            } else {
+                // A call back into a cycle may yet show this function to be
+                // in one, and the store with it (JoinCycle).
+                cyclestores.push_back(std::move(s));
+            }
         }
         // Each storage the slot may be in holds the value from here on.
         for (auto &d : dsts) {

@@ -1152,6 +1152,21 @@ struct TypeCheck {
     static FnSpec *CycleHead(FnSpec *s);
     void JoinCycle(FnSpec *spec, Node *callnode);
     void NoInferredRefResult(FnSpec *spec, Line at);
+    // A store the cycle store rule refuses (§7.8), or admits only while the
+    // threaded classes it relies on stay threaded, made by a function that is
+    // neither recursive nor yet known to be in a cycle. A function calling
+    // back into one is in it from its first statement, but becomes known to
+    // be only at that call (JoinCycle), where its first such store the rule
+    // refuses is an error, and the others rely on their classes from then
+    // on. One whose check ends outside any cycle drops its own.
+    struct CycleStore {
+        FnSpec *spec = nullptr;
+        Line at;
+        bool refused = false;
+        VarDef *refusedby = nullptr;   // The root CycleStoreError explains.
+        vector<VarDef *> relies;       // The value's root, then the destination's.
+    };
+    vector<CycleStore> cyclestores;
     string_view FrameFnName(int fi);
     static VarDef *UltimateRoot(VarDef *v);
     void ValidatePoolArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode);
@@ -1177,9 +1192,9 @@ struct TypeCheck {
     void NoteThreadedClass(VarDef *cls);
     bool ThreadedChain(VarDef *r);
     bool ThreadStorable(VarDef *r);
-    void RelyOnThread(VarDef *r);
+    void RelyOnThread(VarDef *r, Line at);
     void Unthread(VarDef *cls, const string &why);
-    string CycleStoreError(VarDef *root);
+    string CycleStoreError(VarDef *root, const string &more = {});
     void ValidateNeeds(FnSpec *spec, Node *callnode);
     void AddNeed(FnSpec *s, FnSpec *t);
     CycleRoots::Cache cyclecache;   // Syntactic predictions, needed only during this pass.

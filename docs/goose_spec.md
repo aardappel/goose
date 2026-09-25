@@ -1702,7 +1702,9 @@ bound.
 same local are statically indistinguishable, so the §9.2 depth check is not
 sufficient there. Therefore: a reference whose root is a local of a cycle
 function may be passed *down* as an argument, but may not be stored into any
-location, nor returned. Rebinding one of the activation's own reference
+location, nor returned. A function is in the cycle for its whole body, not
+from its call into the cycle on: the stores it makes before that call are
+inside the cycle too. Rebinding one of the activation's own reference
 variables (`cur .= cur.next`) is not such a store: the variable dies with
 the activation, and what it is bound to came from one that outlives it.
 References rooted outside the cycle are

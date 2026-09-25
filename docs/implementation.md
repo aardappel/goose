@@ -1148,7 +1148,13 @@ specialization whose cycle's outermost member is still in progress leads
 back into that cycle as well and joins it the same way, so a later call to
 a cycle member, or a function that reaches the cycle only through one, is
 checked like a back edge; the explicit-type rule stays with back edges,
-where inference would cross the cycle. `ValidatePoolArgs`
+where inference would cross the cycle. A function marked this way was in the
+cycle from its first statement, so what its body stored before is inside the
+cycle too: a function neither recursive nor marked yet records each store
+§3.5 rule 4 refuses or admits only by relying on threaded classes (below,
+`cyclestores`), `JoinCycle` reports the first one of a function it marks
+that the rule refuses at the store, and a function whose check ends
+unmarked drops its own. `ValidatePoolArgs`
 requires every pool-class and pool-named parameter to be passed the same
 ultimate root the entry call passed (`UltimateRoot` follows `classfrom`
 chains). The cycle store rule is §3.5 rule 4; the optimizer never inlines
@@ -1178,8 +1184,11 @@ The store relies on the classes (`ThreadedClass::relied`): nothing makes a
 back edge pass them on, so they are restricted only once a store needs them,
 and a call that breaks one afterwards is an error at the first store that
 relied on it, naming the call and the parameter (`Unthread`), while one that
-broke it before makes the store the error (`CycleStoreError`). Only stores
-rely. A merged value or rebound variable that may hide a threaded class is
+broke it before makes the store the error (`CycleStoreError`). A store its
+function made before joining the cycle relies from the call that joined it
+on (`JoinCycle`), which is before that call's arguments are checked, and is
+the error there if one of its classes broke meanwhile. Only stores rely. A
+merged value or rebound variable that may hide a threaded class is
 `cyclelocal`, as for any class, since the store it reaches cannot see what
 it hides, and a return rooted at one counts as `local` to `ReturnConflict`.
 A back edge's result rooted at a threaded class is given as storable only

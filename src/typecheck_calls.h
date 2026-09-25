@@ -1152,6 +1152,21 @@ inline void TypeCheck::JoinCycle(FnSpec *spec, Node *callnode) {
                       "(§7.8): end its scope before the call"));
         }
     }
+    for (auto &s : cyclestores) {
+        auto si = s.spec->incycle ? FrameOfSpec(s.spec) : -1;
+        if (si < 0) continue;
+        // A class the store would have relied on may have broken since.
+        auto refused = s.refused;
+        auto by = s.refusedby;
+        for (size_t k = 0; !refused && k < s.relies.size(); k++) {
+            refused = !ThreadedChain(s.relies[k]);
+            by = s.relies[k];
+        }
+        if (refused)
+            Error(s.at, CycleStoreError(by, cat(s.spec->sf->name, " calls into its recursive "
+                                                "cycle at ", Where(frames[si].cyclecall))));
+        for (auto r : s.relies) RelyOnThread(r, s.at);
+    }
 }
 
 // A cycle's back edges take the roots of its functions' results before their
@@ -1279,13 +1294,13 @@ inline bool TypeCheck::ThreadStorable(VarDef *r) {
                  (u->ownerspec && !u->ownerspec->incycle && !u->ownerspec->sf->isrec));
 }
 
-// The store being checked (fitnode) relies on r staying threaded, where r is
-// a threaded class.
-inline void TypeCheck::RelyOnThread(VarDef *r) {
+// The store at `at` relies on r staying threaded, where r is a threaded
+// class.
+inline void TypeCheck::RelyOnThread(VarDef *r, Line at) {
     auto it = threadedclasses.find(r);
     if (it == threadedclasses.end() || it->second.relied) return;
     it->second.relied = true;
-    if (fitnode) it->second.reliedat = fitnode->line;
+    it->second.reliedat = at;
 }
 
 // A threaded class is broken, as `why` says: by a call back into its cycle,
@@ -1303,11 +1318,15 @@ inline void TypeCheck::Unthread(VarDef *cls, const string &why) {
 }
 
 // The cycle store rule's diagnostic (§7.8), with what broke the threaded
-// class the stored reference is rooted at, where it is one.
-inline string TypeCheck::CycleStoreError(VarDef *root) {
+// class the stored reference is rooted at, where it is one, and `more`.
+inline string TypeCheck::CycleStoreError(VarDef *root, const string &more) {
     string s = "references may only be passed down, not stored, inside a recursive cycle (§7.8)";
-    if (auto it = threadedclasses.find(root); it != threadedclasses.end() && it->second.broken)
-        Append(s, ": ", it->second.why);
+    auto sep = ": ";
+    if (auto it = threadedclasses.find(root); it != threadedclasses.end() && it->second.broken) {
+        Append(s, sep, it->second.why);
+        sep = "; ";
+    }
+    if (!more.empty()) Append(s, sep, more);
     return s;
 }
 
@@ -1467,6 +1486,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     if (sf->isextern) { CheckExternSpec(spec); return; }
     spec->inprogress = true;
     spec->eventstart = storeevents.size();
+    auto cyclestorebase = cyclestores.size();
     // A caller learns nothing about optionals from where this body ends: its
     // early returns never get there, and a cached body is not checked again.
     // What it rebinds reaches callers through ApplyCalleeRebinds.
@@ -1667,6 +1687,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     for (auto [v, n] : outernarrowed) v->narrowed = n;
     reachable = savereach;
     spec->inprogress = false;
+    cyclestores.resize(cyclestorebase);
     // The pairs a failed assumption brings back go into records the cycle's
     // calls are mapped from again, so they are settled first.
     if (assumedopen.erase(spec) && assumedopen.empty()) SettleAssumedShrinks();
