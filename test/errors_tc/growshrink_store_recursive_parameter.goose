@@ -1,8 +1,6 @@
-// error: storing a reference into s, which may be the result of a recursive call whose returned reference's root the cycle's returns do not determine
-// error: it may only be passed down
-// A parameter whose argument is a back edge's result of undetermined root
-// (§7.8) may view a grow-shrink array too, so wrap's literal may not hold
-// it (§5.2).
+// error: storing a reference into s, which holds a grow-shrink array
+// A parameter whose argument is a back edge's result views G, as the
+// cycle's returns give it (§7.8), so wrap's literal may not hold it (§5.2).
 struct H { s: const i64[:] }
 var G: i64[>..<] = [1, 2, 3];
 fn f(h: H) {

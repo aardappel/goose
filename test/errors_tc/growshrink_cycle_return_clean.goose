@@ -1,8 +1,7 @@
-// error: this return may point into a grow-shrink array, but the recursive cycle already used a result that does not
-// A back edge is given what the returns checked before it give (§7.8), here
-// something of cells or others, which kept may hold. The return checked
-// after it may be an element of the grow-shrink spare, which no store may
-// keep (§5.2), so it would take back what the back edge was given.
+// error: storing a reference that may point into spare, which holds a grow-shrink array
+// A back edge's result has every root the cycle's returns give (§7.8): an
+// element of cells or others, or of the grow-shrink spare, which no store
+// may keep (§5.2).
 struct Cell { v: i64 }
 var cells: Cell[>..] = [];
 var others: Cell[>..] = [];

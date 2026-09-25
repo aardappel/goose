@@ -752,6 +752,12 @@ inline bool TypeCheck::TempContents(const Val &v, ReadBack &contents) {
 inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool byteview,
                                      const ReadBack *contents) {
     Roots out;
+    // A container that points nowhere yet (Roots::unknown): neither do its
+    // contents.
+    if (container.Unknown()) {
+        out.unknown = true;
+        return out;
+    }
     auto relative = rt->kind == TY_REF && rt->ref->lenstorage >= 0;
     if (contents && !relative && container.Any([&](const RootAlt &a) { return IsTemp(a.root); }))
         return contents->roots;
@@ -764,6 +770,11 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
     auto of = PointeeOf(rt);
     for (auto &c : container.alts) {
         auto croot = c.root;
+        // A holder whose contents point nowhere yet (Roots::unknown).
+        if (croot && !croot->isglobal && croot->contents.Unknown()) {
+            out.unknown = true;
+            continue;
+        }
         if (byteview) {
             // A byte view can point at any typed storage: the container's
             // contents where they are known, else the container as a bound.
@@ -780,7 +791,7 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
             out.Add({ croot, c.exact });
             continue;
         }
-        if (!of || !croot || IsTemp(croot) || croot == cycleroot) {
+        if (!of || !croot || IsTemp(croot)) {
             out.Add({ croot, false });
             continue;
         }

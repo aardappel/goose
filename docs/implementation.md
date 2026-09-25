@@ -514,10 +514,8 @@ reference at all), which every rule lets pass as static data would.
 at its creation along the current compile-time call path. Because scopes
 accumulate along the path, a callee's locals are always deeper than
 anything its caller passed, and "A outlives B" is `Depth(A) <= Depth(B)`
-for variables live together on one path. Two sentinels have the largest
-depth: `temproot` (what a reference variable not bound yet points at) and
-`cycleroot` (the result of a back edge whose root the cycle does not
-determine, §3.11).
+for variables live together on one path. One sentinel has the largest
+depth: `temproot` (what a reference variable not bound yet points at).
 
 **Temporaries.** A value made without a name -- a literal or a call's
 result, `str`'s text, a popped element -- is rooted at a `VarDef` of its
@@ -572,8 +570,8 @@ keeps the weaker exactness. A literal's references (`NoteLitElem`) and a
 container's contents (`VarDef::contents`) are united the same way. The
 rules that ask what storage a root *is* -- the grow-shrink store rule
 (§3.5 rule 3, `GrowShrinkTaint`), the cycle store rule (rule 4,
-`CycleStorable`), a cycle's return-root prediction (§3.11) -- ask every
-alternative, so nothing a merge kept has to be carried beside it. What a
+`CycleStorable`) -- ask every alternative, so nothing a merge kept has to
+be carried beside it. What a
 parameter's class stands for at a call is the argument's whole set
 (`ClassArgRoots`), which is what the callee's stores, shrinks and growths
 map back to.
@@ -672,7 +670,9 @@ argument's root, so an argument is never a store. When a reference, slice,
 or **holder** value (a by-value struct, array or payload that contains plain
 references or slices, `HoldsPlainRef`) meets a destination with a root:
 
-1. a `cycleroot` value is rejected (pass-down only);
+1. a value that points nowhere yet (`Roots::unknown`: a cycle's first
+   round, §3.11, or a loop's discovery pass, §3.7) passes, to be checked
+   again once it does;
 2. every root of the value must be at or above the destination's depth, and
    where the destination has several alternatives or an inexact one, at or
    above the depth of every storage those may stand for (`ShrinkTargets` over the type
@@ -702,10 +702,11 @@ references or slices, `HoldsPlainRef`) meets a destination with a root:
 
 Rule 3 does not wait for a destination: a literal's field or element is
 storage wherever the literal lands, so `NoteLitElem` applies it to each one
-(`StoredIntoGrowShrink`), in an argument or a result too. A back edge's
-`cycleroot` may point into a grow-shrink array, and so may a parameter class
-created from one (`IsGrowShrinkRoot`), which `NeverStoredError` words as
-rule 1. No holder ever holds a reference into a grow-shrink array, then,
+(`StoredIntoGrowShrink`), in an argument or a result too. A parameter
+class created from a root that holds one may point into a grow-shrink array
+too (`IsGrowShrinkRoot`), and so may the holder result a back edge gets for
+a parameter the entry call gave static data (§3.11). No holder ever holds a
+reference into a grow-shrink array, then,
 which is what lets the §5.2 shrink scan look at variables only (§3.10). Nor
 may a variable that points into none be rebound to a value that may
 (`CheckRefRebindRoot`): a store or return checked before the rebind -- later
@@ -906,8 +907,8 @@ with its entry (`CheckLoopPasses`, §3.7) is what the body is checked in
 again, so a use that relied on the narrowing errors there; a `while`
 condition runs before every iteration, and its own narrowings hold in the
 body each time. A callee's rebinds of the caller's optionals reach the
-caller through `ApplyCalleeRebinds`, and for a callee still being checked
-through the syntactic `InProgressRebinds`.
+caller through `ApplyCalleeRebinds`, for a callee still being checked from
+the record of its cycle's previous round (§3.11), none in the first.
 
 ### 3.10 The shrink rules, and growth and uses during construction
 
@@ -1026,14 +1027,9 @@ of its type that the argument's root (a holder's contents' root) or the
 external bounds. The parameter's pointee decides the scan, or for a holder
 the array's own type: §5.1 where the array freed is grow-only (a struct's
 tail included, `GrowOnlyTail`), §5.2 otherwise. For a callee still being
-checked, the summary is incomplete: the callee's body is scanned textually
-(`SyntacticShrinks`: `pop`/`resize`/`clear` receivers and assignment
-targets, by parameter index, global name, and capture), every grow-shrink
-global and every grow-shrink array reachable from the lexical parents'
-locals (`LexicalLocals`, a function value's body among the parents) or
-through the references an argument or such a local holds
-(`ReachedThroughRefs`) counts as shrunk, and a grow-only local the text
-names does too.
+checked, the record read is the one its cycle's previous round made
+(`RecordOf`, §3.11), and none in the first round: a back edge then shrinks
+nothing, and the round after applies what the first recorded.
 
 **Parameters' views** (`FnSpec::liveshrinks`). The scans see the
 activation's variables only, and take a parameter's class for an array of
@@ -1059,16 +1055,13 @@ pair's classes onto the roots of the arguments passed for them
 it cannot tell apart are an error at the call, which names the array as the
 caller does, and a pair still open for the caller -- one of its roots is the
 caller's class -- is kept on the caller's record in turn, under that
-parameter's name. A callee in a recursive cycle still being checked has not
-recorded all its pairs: every call checked while a cycle is open keeps its
-arguments' roots (`cyclesites`), and once the outermost cycle on the path has
-been checked they are mapped again until no record grows
-(`ResolveCycleSites`). A pair that only a back edge's counted shrinks
-produced is `guessed`, which its error says as "may shrink".
+parameter's name. A callee in a recursive cycle still being checked has the
+pairs its cycle's previous round recorded, which the call maps (§3.11), and
+none in the first round.
 
 **Balanced calls** (§5.2). Each summary entry carries a `ShrinkBalance`,
-the worst of the shrinks `NoteShrink` recorded against it: balanced,
-assumed balanced (below), or not. A grow-shrink `resize` is balanced where
+the worst of the shrinks `NoteShrink` recorded against it: balanced or
+not. A grow-shrink `resize` is balanced where
 `ResizesToMark` holds: its length argument names a `let` of the activation
 (`ownerspec` is the current real frame's specialization, so a mark a nested
 function or a block's writer took before this activation began does not
@@ -1092,25 +1085,9 @@ reference to a slice variable reaches (`HeldRefsMayPointInto`): the
 variable still holds a slice taken before the call, since writing a view of
 the array into it through a reference is a store (§3.5 rule 3).
 
-A back edge is *assumed* balanced for every grow-shrink array it reaches
-(`SB_ASSUMED`), unless its callee has already recorded an unbalanced
-grow-shrink shrink (`FnSpec::unbalancedshrink`, set by `NoteShrink`). The
-checks it skips run anyway (`KeepShrinkChecks`), the §5.2 scan and then
-`NoteLiveViews`, whose pairs `NoteLiveShrink` puts aside (`livecapture`)
-rather than on their records; the first error ends them. The callee joins
-`assumedopen`, and a later call whose verdict rests on an assumed entry is
-assumed too and keeps its checks the same way (`assumedshrinks`). When the
-last callee in `assumedopen` has been checked (`CheckSpecBody` →
-`SettleAssumedShrinks`), every summary the assumptions went into is
-complete. They held if no callee assumed of has an unbalanced grow-shrink
-shrink, with the assumed entries counted as balanced: a run of the cycle
-then never shortens an array, by induction on how deeply it nests its
-calls, and every assumed entry becomes balanced. Otherwise the first kept
-error is reported, or else every kept pair goes into the record it was
-found for and every assumed entry becomes unbalanced: what judging those
-calls as shrinks from the start would have given. Those records belong to
-calls checked while the cycle was open, which `ResolveCycleSites` maps again
-afterwards, so `CheckSpecBody` settles the assumptions first.
+A back edge applies the balances its cycle's previous round recorded for
+its callee (§3.11), none in the first round; the round after the last that
+changed a record judges every call with the settled balances.
 
 **Format overloads** (§3.7). print, str and format check their arguments in
 order (`CheckPrintable`): each one's value, then its rendering
@@ -1209,11 +1186,9 @@ a cycle member, or a function that reaches the cycle only through one, is
 checked like a back edge; the explicit-type rule stays with back edges,
 where inference would cross the cycle. A function marked this way was in the
 cycle from its first statement, so what its body stored before is inside the
-cycle too: a function neither recursive nor marked yet records each store
-§3.5 rule 4 refuses or admits only by relying on threaded classes (below,
-`cyclestores`), `JoinCycle` reports the first one of a function it marks
-that the rule refuses at the store, and a function whose check ends
-unmarked drops its own. `ValidatePoolArgs`
+cycle too: the cycle's next round checks the body again with the mark set
+(**Rounds** below), and the error names the call that joined it
+(`FnSpec::joinedat`). `ValidatePoolArgs`
 requires every pool-class and pool-named parameter to be passed the same
 ultimate root the entry call passed (`UltimateRoot` follows `classfrom`
 chains). The cycle store rule is §3.5 rule 4; the optimizer never inlines
@@ -1239,21 +1214,13 @@ neither recursive nor in a cycle, as for a free variable -- may be stored
 inside the cycle (`ThreadStorable`), where every storage the destination
 may be (`ShrinkTargets`) is a variable, a pool, or a threaded class too,
 since the store lands where that class points, or leads, in each activation.
-The store relies on the classes (`ThreadedClass::relied`): nothing makes a
-back edge pass them on, so they are restricted only once a store needs them,
-and a call that breaks one afterwards is an error at the first store that
-relied on it, naming the call and the parameter (`Unthread`), while one that
-broke it before makes the store the error (`CycleStoreError`). A store its
-function made before joining the cycle relies from the call that joined it
-on (`JoinCycle`), which is before that call's arguments are checked, and is
-the error there if one of its classes broke meanwhile. Only stores rely. A
+Nothing makes a back edge pass a class on, so it is restricted only once a
+store needs it: a call that breaks it (`Unthread`, naming the call and the
+parameter in `ThreadedClass::why`) makes every store relying on it an error
+at the store (`CycleStoreError`), the ones checked before the call by the
+cycle's next round, which finds the class broken (**Rounds** below). A
 merged value or rebound variable that may be rooted at a threaded class
-relies on it like any other, every one of its roots having to be storable,
-and a return rooted at one counts as `local` to `ReturnConflict`.
-A back edge's result rooted at a threaded class is given as storable only
-while the class stays so (`RetRoot::usedthreads`): a later return that the
-cycle could not store breaks those classes instead of being an error, which
-only matters to a store of the result.
+relies on it like any other, every one of its roots having to be storable.
 
 A recursion whose types never repeat has no back edge: each round is a new
 specialization, checked inside the one before, until the native stack runs
@@ -1263,59 +1230,42 @@ exactly the ones on the current path since checking is depth-first (§7.8,
 polymorphic recursion). The error names the instantiation the call would
 have made, and the chain shows the ones before it.
 
-**Cycle return roots** (`CycleRoots`, `typecheck_cycles.h`): a back edge
-reaches a function whose returns are not checked yet, so before a
-`recursive fn` body is checked, `Seed` predicts each reference return's roots
-by a purely syntactic fixpoint over the returns of the function and of the
-functions those returns call. A `RootSet` holds every `RootDesc` a return
-may give -- a parameter index, a global, a free variable of an enclosing
-function, static data, one of the function's own locals (meaningful only to
-itself) -- or is unknown, the top; the join is their union.
-`ScanExpr`/`ScanBase`/`ScanCall` read `X.push(...)`, `X.alloc_ref(...)`,
-`&X[...]`, field and element steps whose declared types stay inside the
-base's storage, subranges, string literals, reference variables through
-their bindings, and calls to uniquely named functions through their own
-sets, each parameter mapped to what the call passes. The fixpoint iterates
-the closure of functions reached (`ReturnRootDescs`, at most 64 rounds); a
-scan run outside it, of a loop's rebinds (§3.7), runs that fixpoint for each
-function it calls before reading the function's sets.
-`ResolveDesc` turns each alternative into a `RootAlt` of the specialization
-(`RetRoot::pred`), which a back edge maps as any call maps a return's root
-(`RetAltVal`): a back edge reuses the body whatever it passes, so a
-parameter class maps through every argument the back edge gives the
-class's parameters, united, where an ordinary call, whose classes group the
-arguments as the key's, takes the first. A set that is unknown, or names a
-function's own local, predicts nothing (`predunknown`); until a return is
-checked, back edges then get `cycleroot`, and after it they map that return,
-which stands in for the prediction. A holder result (`HoldsPlainRef`, which
-the scan is handed as its `HoldsRefs` callback) is seeded too, by the roots
-of what it holds, which `CallResult`, `RecordReturn` and `RetAltVal` map and
-check as they do a reference's; the scan reads no holder, so it is always
-`predunknown`. What a checked return adds to a holder result's prediction,
-the stand-in included, is inexact whatever the return: a back edge's holder
-is taken apart by reading its fields, which re-derives their roots out of a
-named holder (§3.6), inexactly wherever static data or a parameter's bound
-is a candidate too, and an exact stand-in would be weakened by the first
-return built from them. A reference result's stand-in stays as exact as its
-return: a variable keeps its binding's root (§3.7), so a returned back-edge
-result is as exact as it was given, and exactness is what `index_of` and an
-exact shrink need. A parameter the key gave static data (class 0) has no
-class root for a prediction to name, so a back edge that passes it storage
-of its own gets a holder result that outlives nothing (`CallResult`); a
-reference result is mapped as predicted there, which parsers passing a
-literal key at the entry call rely on (`samples/18_json.goose`). Each real
-return is checked against the
-prediction as it is recorded (`ReturnConflict`): one it names narrows the
-alternative for later back edges, but may not take back what an earlier one
-was given (`RetRoot::usedexact`, `usedwritable`, `usedclean` for a
-grow-shrink taint -- for a holder, `IntoGrowShrink` over what it holds, as
-rule 3 of §3.5 stores it -- `usedstorable` for one the cycle cannot store);
-each alternative of a return is held against it on its own, and one it
-missed joins it where no back edge has used the prediction yet, and after
-that only a root every activation shares and no deeper than any back edge's
-result (`useddepth`): a parameter class no back edge was given is an error
-there. The callers of the finished specialization map the real returns'
-roots (`RetRoot::alts`), not the prediction.
+**Rounds** (`CheckSpecBody`). A back edge reaches a function whose returns,
+shrinks, growths, stores and rebinds are not recorded yet, so a cycle is
+checked in rounds until what its members record settles. The head -- the
+outermost member on the call path that found the cycle -- runs them: each
+round keeps every member's record from the round before (`FnSpec::prev`,
+read by `RecordOf` wherever a call applies its callee's record while the
+callee is in progress: `CallResult`, `ApplyCalleeShrinks`,
+`ApplyCalleeStores`, `ApplyCalleeGrows`, `ApplyCalleeLiveShrinks`,
+`ApplyCalleeRebinds`, `NamedOutside`), clears the members' records
+(`ResetRecord`), marks them `stale`, and checks the head's body again on the
+same clone; a stale member is checked again when a call reaches it
+(`GetOrCreateSpec`), with the parameters and class roots its first round
+made (`FnSpec::classroots`), so the records and the threaded classes name
+the same objects across rounds. In the first round a back edge has no
+record: it applies no effects, and its result points nowhere yet
+(`Roots::unknown`), which every rule passes by (`FitsAt`,
+`CheckRootedAtReceiver`, `BindRefProvenance`, the shrink scans), as does a
+holder's contents read out of one, a variable bound to one, and a call given
+one, whose specialization is keyed `RootArg::unknown`. A round that changed
+no member's record (`SameRecord`: return roots, shrinks and their balances,
+growths, stores through classes, pairs, rebinds) and broke no threaded class
+was checked against the settled facts, so its errors stood and it was the
+last; records only grow and balances only worsen, so the rounds are bounded
+(an internal limit of 8 holds a cycle that does not settle). A back edge's
+result is the union of the roots the cycle's returns give, mapped through
+the back edge's own arguments (`RetAltVal`: a parameter class maps through
+every argument the back edge gives the class's parameters, united, where an
+ordinary call, whose classes group the arguments as the key's, takes the
+first), read-only where any return is, and a byte view where any u8 view
+may be. A parameter the key gave static data (class 0) has no class root for
+a record to name, so a back edge that passes it storage of its own gets a
+holder result rooted at the activation itself, which may only be passed down
+(`CallResult`); a reference result is mapped as recorded, which parsers
+passing a literal key at the entry call rely on (`samples/18_json.goose`).
+What a return records drops the container it was read out of
+(`RootAlt::from`), which the next round's activation would take for its own.
 
 ### 3.12 Calls, generics, literal parameters, dispatch, function values
 
@@ -1381,8 +1331,8 @@ one to the corresponding declared return type. Reference decay and lifetime
 checks apply separately to each received result. Inference fixes a
 function's result types from the first checked return; subsequent returns
 must fit them, rather than widening the result by a whole-body join. A
-result inferred as a reference has no cycle return roots to predict it
-(`Cycles().Seed` runs only for declared results), so a function in a cycle
+result inferred as a reference would be inferred from the first return
+checked, which a back edge reaches before (§7.8), so a function in a cycle
 may not infer one (`NoInferredRefResult`): `JoinCycle` checks each function
 joining a cycle, `RecordReturn` one already in a cycle inferring its result.
 
@@ -2769,18 +2719,11 @@ specification allows, and the shapes the C backend refuses outright:
   refinement (TODO 5). Beyond the spec's rule, a merged value or a rebound
   variable that may be rooted at a threaded class, which the spec stores
   where each of its roots could be, is pass-down only.
-* The cycle return-root scan gives up on branch values, overload sets,
-  function values and nested functions it cannot resolve by name, and
-  reads no holder result at all; until a return is checked, a back edge's
-  result is then pass-down only (`cycleroot`), never unsound, and may point
-  into a grow-shrink array wherever it is passed (§3.5). A recursion that
-  builds its holder result from its children's before any return of it is
-  checked (recursing ahead of the base case's return) is refused for that.
 * A back edge that passes storage of its own to a reference, slice or
   holder parameter the entry call gave static data gets a holder result
   that may only be passed down: the body was checked with that parameter
-  as static data, which no prediction can map to what the back edge
-  passes (§3.11).
+  as static data, which no record can map to what the back edge passes
+  (§3.11).
 * A plain reference parameter's root class is identified with a global pool
   only inside a recursive cycle or through the `in pool` form (§9.5 above,
   `bench/notes.md` item 1), so `index_of`, a relative store and an exact

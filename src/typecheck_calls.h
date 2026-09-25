@@ -740,8 +740,9 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         auto r = ar.Root();
         argroots[i] = r;
         auto &ra = roots[i];
-        // A reference that points nowhere yet (RefProvOf): no class.
-        ra.unknown = isrs && ar.None();
+        // A reference that points nowhere yet, or a holder whose contents
+        // do (Roots::unknown): no class.
+        ra.unknown = isrs ? ar.None() : ar.Unknown();
         // A `const` parameter is read-only whatever the argument (§9.5).
         ra.writable = argvals[i].writable && !pt->cq;
         ra.reusable = argvals[i].reusable;
@@ -925,6 +926,11 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         spec->neededges.push_back({ callnode, std::move(path) });
         ValidateNeeds(spec, callnode);
         NoteLitArgs(spec, argvals, callnode);
+        // A member of a cycle whose next round has yet to check it again.
+        if (spec->stale) {
+            spec->stale = false;
+            CheckSpecBodyOnce(spec, &argvals, callnode->line);
+        }
         return spec;
     }
     // The specializations in progress are the ones this call path is
@@ -984,69 +990,15 @@ inline vector<VarDef *> TypeCheck::ExternalOptionals(
 }
 
 inline void TypeCheck::ApplyCalleeRebinds(FnSpec *spec) {
-    // A recursive body's summary may be incomplete until the cycle has
-    // finished checking.
-    auto changed = spec->reboundoptionals;
-    if (spec->inprogress)
-        for (auto v : InProgressRebinds(spec)) changed.insert(v);
+    // The record read: none in a cycle's first round (RecordOf), whose back
+    // edge rebinds nothing yet.
+    auto rec = RecordOf(spec);
+    if (!rec) return;
     auto caller = CurRealFrame().spec;
-    for (auto v : changed) {
+    for (auto v : rec->reboundoptionals) {
         v->narrowed = nullptr;
         if (caller && v->ownerspec != caller) caller->reboundoptionals.insert(v);
     }
-}
-
-// What a call to a specialization still being checked may rebind: the
-// optionals it reaches that some `.=` names in code the call can run. That
-// code is found by name, without checking it: the body; the function values
-// bound to it, to its lexical parents, and to the environments those values
-// were written in; every function any of it names; the field defaults that
-// literals and default<T>() fill in; and the format overloads that printing
-// calls.
-inline vector<VarDef *> TypeCheck::InProgressRebinds(FnSpec *spec) {
-    set<string_view> names, callees = { "format" };
-    set<Node *> seen;
-    auto leaf = [](string_view name) { return SplitName(name, {}).leaf; };
-    function<void(Node *)> walk = [&](Node *n) {
-        if (!n || !seen.insert(n).second) return;
-        if (auto a = Is<Assign>(n); a && a->op == T_DOTASSIGN)
-            if (auto id = Is<Ident>(a->lval)) names.insert(leaf(id->name));
-        // A named function reaches a call through any expression that yields
-        // it, a block's tail or a break's value as much as an argument, so
-        // every name may be a callee.
-        if (auto id = Is<Ident>(n)) callees.insert(leaf(id->name));
-        if (auto c = Is<Call>(n))
-            if (auto d = Is<Dot>(c->callee)) callees.insert(d->name);
-        n->Children(walk);
-    };
-    walk(spec->sf->body);
-    // Field defaults run where no code names them. Every instance checks a
-    // copy of its declaration's default expressions.
-    for (auto st : ast.structs)
-        for (auto &f : st->fields) walk(f.defaultval);
-    for (auto en : ast.enums)
-        for (auto &v : en->variants)
-            for (auto &f : v.fields) walk(f.defaultval);
-    set<FnSpec *> envs;
-    function<void(FnSpec *)> addenv = [&](FnSpec *e) {
-        if (!e || !envs.insert(e).second) return;
-        for (auto sp = e; sp; sp = sp->lexparent)
-            for (auto &fv : sp->fnvals) {
-                if (fv.second.fv) walk(fv.second.fv->body);
-                if (fv.second.named) walk(fv.second.named->body);
-                addenv(fv.second.env);
-            }
-    };
-    addenv(spec);
-    for (size_t known = 0; known != callees.size();) {
-        known = callees.size();
-        for (auto sf : ast.functions) if (callees.count(sf->name)) walk(sf->body);
-    }
-    vector<VarDef *> out;
-    if (names.empty()) return out;
-    for (auto v : ExternalOptionals(spec->lexparent, &spec->fnvals))
-        if (names.count(v->name)) out.push_back(v);
-    return out;
 }
 
 // A literal parameter's adaptation to a type (§7.7), recorded on the
@@ -1152,7 +1104,17 @@ inline void TypeCheck::JoinCycle(FnSpec *spec, Node *callnode) {
         f.cyclecalls++;
         if (!f.spec || !f.sf || f.isfunval) continue;
         f.spec->incycle = true;
-        if (auto h = CycleHead(f.spec); h != head) h->cyclelink = head;
+        // Cycles that meet are one: the head's members are checked in its
+        // rounds (CheckSpecBody).
+        if (auto h = CycleHead(f.spec); h != head) {
+            h->cyclelink = head;
+            for (auto m : h->cyclemembers) head->cyclemembers.push_back(m);
+            h->cyclemembers.clear();
+        }
+        auto &members = head->cyclemembers;
+        if (find(members.begin(), members.end(), f.spec) == members.end())
+            members.push_back(f.spec);
+        if (!f.spec->joinedat.line) f.spec->joinedat = f.cyclecall;
         NoInferredRefResult(f.spec, f.cyclecall);
     }
     for (auto i = fi; i <= last; i++) {
@@ -1170,21 +1132,6 @@ inline void TypeCheck::JoinCycle(FnSpec *spec, Node *callnode) {
                       "local ", v->name, " (declared at ", Where(v->line), ") is in scope "
                       "(§7.8): end its scope before the call"));
         }
-    }
-    for (auto &s : cyclestores) {
-        auto si = s.spec->incycle ? FrameOfSpec(s.spec) : -1;
-        if (si < 0) continue;
-        // A class the store would have relied on may have broken since.
-        auto refused = s.refused;
-        auto by = s.refusedby;
-        for (size_t k = 0; !refused && k < s.relies.size(); k++) {
-            refused = !ThreadedChain(s.relies[k]);
-            by = s.relies[k];
-        }
-        if (refused)
-            Error(s.at, CycleStoreError(by, cat(s.spec->sf->name, " calls into its recursive "
-                                                "cycle at ", Where(frames[si].cyclecall))));
-        for (auto r : s.relies) RelyOnThread(r, s.at);
     }
 }
 
@@ -1223,7 +1170,7 @@ inline VarDef *TypeCheck::UltimateRoot(VarDef *v) {
 inline void TypeCheck::ValidatePoolArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode) {
     for (size_t i = 0; i < spec->params.size() && i < argvals.size(); i++) {
         auto pr = spec->params[i]->ref.Root();
-        if (!pr) continue;
+        if (!pr || argvals[i].None()) continue;   // Nowhere yet: the next round knows.
         // A named pool is part of the specialization key everywhere else,
         // but a back edge reuses the in-progress spec whatever its roots.
         if (pr->classpool &&
@@ -1251,6 +1198,7 @@ inline void TypeCheck::ValidateThreadArgs(FnSpec *spec, vector<Val> &argvals, No
         auto pr = spec->params[i]->ref.Root();
         auto it = pr ? threadedclasses.find(pr) : threadedclasses.end();
         if (it == threadedclasses.end() || it->second.broken) continue;
+        if (argvals[i].None()) continue;   // Nowhere yet: the next round knows.
         auto ar = argvals[i].Root();
         if (!argvals[i].Exact() || UltimateRoot(pr) != UltimateRoot(ar) || !ThreadedChain(ar)) {
             Unthread(pr, cat(spec->inprogress ? "the recursive call at " : "the call at ",
@@ -1312,15 +1260,6 @@ inline bool TypeCheck::ThreadStorable(VarDef *r) {
                  (u->ownerspec && !u->ownerspec->incycle && !u->ownerspec->sf->isrec));
 }
 
-// The store at `at` relies on r staying threaded, where r is a threaded
-// class.
-inline void TypeCheck::RelyOnThread(VarDef *r, Line at) {
-    auto it = threadedclasses.find(r);
-    if (it == threadedclasses.end() || it->second.relied) return;
-    it->second.relied = true;
-    it->second.reliedat = at;
-}
-
 // A threaded class is broken, as `why` says: by a call back into its cycle,
 // or by a return the cycle cannot store that a result rooted at it may be. A
 // store that relied on it is an error there, and so is every store to come.
@@ -1331,7 +1270,6 @@ inline void TypeCheck::Unthread(VarDef *cls, const string &why) {
     auto &tc = it->second;
     tc.broken = true;
     tc.why = why;
-    if (tc.relied) Error(tc.reliedat, CycleStoreError(cls));
     for (size_t k = 0; k < tc.heirs.size(); k++) Unthread(tc.heirs[k], why);
 }
 
@@ -1383,16 +1321,6 @@ inline void TypeCheck::AddNeed(FnSpec *s, FnSpec *t) {
                            "long-distance return");
         for (auto i = found + 1; i < (int)path.size(); i++) AddNeed(path[i].second, t);
     }
-}
-
-// The §7.8 cycle return-root analysis, handed the checker state it cannot
-// derive from the syntax: the root a variable holds, the variable a name
-// denotes, and which checked types hold references.
-inline CycleRoots TypeCheck::Cycles() {
-    return CycleRoots(ast, cyclecache, cycleroot, [this](VarDef *vd, bool isref) {
-        return isref ? RefRootOf(vd) : vd;
-    }, [this](string_view name) { return LookupVar(name, CurNs()); },
-    [this](TypeExpr *t) { return HoldsPlainRef(t); });
 }
 
 // A fixed-size value C takes by value (§7.10): a scalar, bool, or a flat
@@ -1491,7 +1419,135 @@ inline int TypeCheck::EnvReach(const MatchInfo &mi) {
     return reach;
 }
 
+// A specialization's body, checked once -- or, for the head of a recursive
+// cycle, as many times as it takes for what the cycle's members record (the
+// roots their returns give, their shrinks, growths, stores and rebinds, and
+// the threaded classes that broke) to settle. Each round reads the round
+// before's records at its back edges (RecordOf), and the first reads none:
+// a back edge then has no effects and a result that points nowhere yet,
+// which every rule passes by. Every member is checked again in each round
+// (FnSpec::stale, GetOrCreateSpec) with the class roots its first round
+// made, so a store it made before a call joined it to the cycle is checked
+// as inside it, and one relying on a class a later call broke finds it
+// broken. A member whose calls a round no longer reaches is left as it is:
+// nothing checked afterwards names it.
 inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline) {
+    CheckSpecBodyOnce(spec, argvals, callline);
+    while (spec->incycle && CycleHead(spec) == spec) {
+        // What a round records only grows (a balance only worsens), so the
+        // rounds are bounded by the records' size.
+        if (spec->rounds >= 8)
+            Error(callline, cat("the recursive cycle through ", spec->sf->name,
+                                " does not settle (internal limit of 8 rounds)"));
+        auto broken = 0;
+        for (auto &[cls, tc] : threadedclasses) broken += tc.broken;
+        auto members = spec->cyclemembers;
+        if (getenv("GOOSE_ROUNDS"))
+            fprintf(stderr, "round %d of %.*s begins (%d members)\n", spec->rounds + 1,
+                    (int)spec->sf->name.size(), spec->sf->name.data(), (int)members.size());
+        for (auto m : members) {
+            m->prev = make_shared<FnSpec>(*m);
+            m->prev->prev = nullptr;
+            ResetRecord(m);
+            m->stale = m != spec;
+        }
+        CheckSpecBodyOnce(spec, argvals, callline);
+        for (auto &[cls, tc] : threadedclasses) broken -= tc.broken;
+        auto settled = broken == 0;
+        for (auto m : members) {
+            if (m->stale) {
+                m->stale = false;
+                continue;
+            }
+            settled = settled && SameRecord(m, m->prev.get());
+        }
+        for (auto m : members) m->prev = nullptr;
+        if (settled) break;
+    }
+}
+
+// What a body records for its callers, cleared before a round checks it
+// again (CheckSpecBody).
+inline void TypeCheck::ResetRecord(FnSpec *spec) {
+    spec->retroots.clear();
+    spec->shrinkexternals.clear();
+    spec->shrinkparams.clear();
+    spec->shrinkexternalbounds.clear();
+    spec->shrinkparambounds.clear();
+    spec->unbalancedshrink = false;
+    spec->liveshrinks.clear();
+    spec->growexternals.clear();
+    spec->growparams.clear();
+    spec->classevents.clear();
+    spec->reboundoptionals.clear();
+}
+
+inline bool TypeCheck::SameRecord(const FnSpec *a, const FnSpec *b) {
+    // A root's `from` names a container of the round's own body, which
+    // the next round makes anew.
+    auto sameroots = [&](const Roots &x, const Roots &y) {
+        if (x.alts.size() != y.alts.size() || x.unknown != y.unknown) return false;
+        for (size_t i = 0; i < x.alts.size(); i++) {
+            auto &p = x.alts[i], &q = y.alts[i];
+            if (p.root != q.root || p.exact != q.exact || p.slotread != q.slotread) return false;
+        }
+        return true;
+    };
+    // GOOSE_ROUNDS in the environment traces what keeps a cycle's rounds
+    // going.
+    // GOOSE_ROUNDS in the environment traces what keeps a cycle's rounds
+    // going.
+    auto why = [&](const char *what) {
+        if (getenv("GOOSE_ROUNDS"))
+            fprintf(stderr, "round %d of %.*s: %s changed\n", a->rounds, (int)a->sf->name.size(),
+                    a->sf->name.data(), what);
+        return false;
+    };
+    auto sametype = [&](TypeExpr *x, TypeExpr *y) { return !x == !y && (!x || TypeEq(x, y)); };
+    if (a->retroots.size() != b->retroots.size()) return why("returns");
+    for (size_t i = 0; i < a->retroots.size(); i++) {
+        auto &p = a->retroots[i], &q = b->retroots[i];
+        if (!sameroots(p.alts, q.alts) || p.writable != q.writable || p.byteview != q.byteview ||
+            p.set != q.set)
+            return why("return roots");
+    }
+    if (a->shrinkexternals != b->shrinkexternals || a->shrinkparams != b->shrinkparams ||
+        a->unbalancedshrink != b->unbalancedshrink)
+        return why("shrinks");
+    if (a->growexternals != b->growexternals || a->growparams != b->growparams)
+        return why("growths");
+    if (a->reboundoptionals != b->reboundoptionals) return why("rebinds");
+    auto samebounds = [&](const auto &x, const auto &y) {
+        if (x.size() != y.size()) return false;
+        for (size_t i = 0; i < x.size(); i++)
+            if (x[i].key != y[i].key || x[i].balance != y[i].balance ||
+                !sametype(x[i].type, y[i].type))
+                return false;
+        return true;
+    };
+    if (!samebounds(a->shrinkexternalbounds, b->shrinkexternalbounds) ||
+        !samebounds(a->shrinkparambounds, b->shrinkparambounds))
+        return why("shrink bounds");
+    if (a->liveshrinks.size() != b->liveshrinks.size()) return why("live shrinks");
+    for (size_t i = 0; i < a->liveshrinks.size(); i++) {
+        auto &p = a->liveshrinks[i], &q = b->liveshrinks[i];
+        if (p.shrunk != q.shrunk || p.shrunkexact != q.shrunkexact || p.live != q.live ||
+            p.liveexact != q.liveexact || p.byteview != q.byteview || p.growonly != q.growonly ||
+            !sametype(p.bound, q.bound) || !sametype(p.pointee, q.pointee))
+            return why("live shrinks");
+    }
+    auto sameevents = [&](const StoreEvent &p, const StoreEvent &q) {
+        return p.container == q.container && p.root == q.root && p.src == q.src &&
+               p.exact == q.exact && p.byteview == q.byteview && p.bound == q.bound &&
+               sametype(p.pointee, q.pointee) && sametype(p.reached, q.reached);
+    };
+    if (a->classevents.size() != b->classevents.size()) return why("class stores");
+    for (size_t i = 0; i < a->classevents.size(); i++)
+        if (!sameevents(a->classevents[i], b->classevents[i])) return why("class stores");
+    return true;
+}
+
+inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Line callline) {
     // A body is checked inside the call that first reaches it, so the native
     // stack holds one of these per call on the compile-time call path.
     if (StackLow()) {
@@ -1504,7 +1560,10 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     if (sf->isextern) { CheckExternSpec(spec); return; }
     spec->inprogress = true;
     spec->eventstart = storeevents.size();
-    auto cyclestorebase = cyclestores.size();
+    // A cycle's rounds keep the parameters' identity, as they keep the
+    // class roots: the records name them.
+    auto oldparams = std::move(spec->params);
+    spec->params.clear();
     // A caller learns nothing about optionals from where this body ends: its
     // early returns never get there, and a cached body is not checked again.
     // What it rebinds reaches callers through ApplyCalleeRebinds.
@@ -1555,22 +1614,25 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     reachable = true;
     PushScope(SK_FN);
     // Parameters. For reference/slice parameters, a synthetic root
-    // VarDef per call-site root class carries the caller-side depth.
-    vector<VarDef *> classroots(spec->roots.size() + 1, nullptr);
+    // VarDef per call-site root class carries the caller-side depth; a
+    // cycle's rounds keep them (FnSpec::classroots).
+    auto &classroots = spec->classroots;
+    classroots.resize(spec->roots.size() + 1, nullptr);
     // Classes whose members are all references or slices rooted exactly.
     vector<bool> exactrefs(classroots.size(), true);
     for (size_t i = 0; i < sf->params.size(); i++) {
         auto &p = sf->params[i];
         auto pt = spec->argtypes[i];
         ValidateType(pt, sf->line, VT_PARAM);
-        auto vd = NewVar(p.name, pt, sf->line, p.isvar);
+        auto vd = NewVar(p.name, pt, sf->line, p.isvar,
+                         i < oldparams.size() ? oldparams[i] : nullptr);
         vd->isparam = true;
         vd->assigned = true;
         for (auto li : spec->litparams) if (li == (int)i) vd->unsized = true;
         if (IsRefOrSlice(pt)) {
             auto &ra = spec->roots[i];
             if (ra.unknown) {
-                vd->ref.Clear();   // Nowhere yet: no rule reads it.
+                vd->ref.SetUnknown();   // Nowhere yet: no rule reads it.
             } else if (ra.cls == 0) {
                 vd->ref.Set(nullptr, true);  // Static data.
             } else {
@@ -1613,6 +1675,14 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
             // where they agreed its references all point into one
             // (RootArg::heldexact).
             auto &ra = spec->roots[i];
+            if (ra.unknown) {
+                // Its contents point nowhere yet: no rule reads them.
+                vd->ref.Clear();
+                vd->refrootknown = true;
+                vd->contents.SetUnknown();
+                spec->params.push_back(vd);
+                continue;
+            }
             VarDef *cr = nullptr;
             if (ra.cls != 0) {
                 if (!classroots[ra.cls]) {
@@ -1642,10 +1712,10 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
         }
         spec->params.push_back(vd);
     }
-    for (size_t k = 1; k < classroots.size(); k++)
+    for (size_t k = 1; !spec->rounds && k < classroots.size(); k++)
         if (classroots[k] && exactrefs[k] && !classroots[k]->poolclass)
             NoteThreadedClass(classroots[k]);
-    if (sf->has_rets) {
+    if (sf->has_rets && !spec->retsknown) {
         for (auto rt : sf->rets) {
             auto ct = Subst(rt);
             ValidateType(ct, sf->line, VT_RET);
@@ -1653,10 +1723,12 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
         }
         spec->retsknown = true;
     }
-    // A cycle's back edges reach this specialization before any of its own
-    // returns are checked, so predict their roots first (§7.8).
-    if (sf->isrec && spec->retsknown) Cycles().Seed(spec);
-    spec->body = (Block *)sf->body->Clone(ast);
+    // A cycle's later rounds check the same clone again, as a loop's passes
+    // do a body: what a round rewrote in it (an inserted &, a function value
+    // an argument yielded) is what the next round reads, and the function
+    // values written in it keep their identity, which specialization keys
+    // carry (FnValBind).
+    if (!spec->body) spec->body = (Block *)sf->body->Clone(ast);
     // The body: statements plus a value-producing tail (treated exactly
     // like `return tail`). A tail that produces on no path is a statement
     // instead, so a void function may end in one.
@@ -1712,11 +1784,8 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     for (auto [v, n] : outernarrowed) v->narrowed = n;
     reachable = savereach;
     spec->inprogress = false;
-    cyclestores.resize(cyclestorebase);
-    // The pairs a failed assumption brings back go into records the cycle's
-    // calls are mapped from again, so they are settled first.
-    if (assumedopen.erase(spec) && assumedopen.empty()) SettleAssumedShrinks();
-    if (spec->incycle && !cyclesites.empty() && !CycleOpen()) ResolveCycleSites();
+    spec->eventend = storeevents.size();
+    spec->rounds++;
 }
 
 // Shared by `return` statements and body tails: agree the values with
@@ -1759,7 +1828,13 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         // about that same pointee: a holder variable's own storage is exact,
         // its contents may not be.
         Roots roots = holder ? ContentsOf(vals[i]) : vals[i].AsRoots();
-        if (!isrs) for (auto &a : roots.alts) a.slotread = false;
+        // What a caller gets is the value, not the container of this
+        // activation it was read out of, which a cycle's next round would
+        // take for its own (RecordStore).
+        for (auto &a : roots.alts) {
+            a.from = nullptr;
+            if (!isrs) a.slotread = false;
+        }
         auto &rr = tspec->retroots[i];
         for (auto &a : roots.alts) {
             auto root = a.root;
@@ -1774,27 +1849,6 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
                                               : string()));
             if (IsTemp(root))
                 Error(at, "returning a reference into a temporary");
-            if (root && root == cycleroot)
-                Error(at, "returning the result of a recursive call whose returned "
-                          "reference's root the cycle's returns do not determine (§7.8)");
-            if (!rr.seeded) continue;
-            // Where a root the back edges were not given joins them, a store
-            // of it meets its own storage too.
-            Roots one;
-            one.Set(a.root, a.exact, a.from, a.slotread);
-            auto gs = holder ? IntoGrowShrink(vals[i], root, rt, true)
-                             : StoredIntoGrowShrink(vals[i], one, rt, false) != nullptr;
-            auto local = !CycleStorable(root);
-            auto unthread = false;
-            if (auto bad = Cycles().ReturnConflict(tspec, i, a, vals[i].writable, gs, local,
-                                                   unthread);
-                !bad.empty())
-                Error(at, bad);
-            if (unthread)
-                for (auto t : rr.usedthreads)
-                    Unthread(t, cat("the return at ", Where(at->line), " may be rooted where the "
-                                    "cycle stores nothing, and so may a recursive call's result "
-                                    "rooted at ", t->name));
         }
         // A result may come from any return: every root one gives is kept,
         // with the guarantees that hold on all paths to it.
@@ -1823,7 +1877,7 @@ inline Val TypeCheck::RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &a
         if (spec->params[p]->ref.Root() != alt.root) continue;
         auto &a = argvals[p];
         auto x = m;
-        x.alts = ClassArgRoots(spec->argtypes[p], a).alts;
+        x.TakeAlts(ClassArgRoots(spec->argtypes[p], a));
         if (!alt.exact) x.Weaken();
         for (auto &xa : x.alts) xa.slotread = alt.slotread && xa.slotread;
         x.writable = a.writable;
@@ -1837,12 +1891,16 @@ inline Val TypeCheck::RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &a
 inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
     c->rettypes = spec->rets;
     lastcallrets.clear();
-    // A back edge reuses the body whatever it passes (§7.8), and a parameter
-    // the key gave static data has no class for a prediction to name, so no
-    // mapping reaches what a back edge passes it instead: a holder result
-    // such a back edge gets outlives nothing. A reference result is mapped
-    // as predicted, which parsers rely on where the entry call passes a
-    // literal key and the back edges views of the input (samples/18_json).
+    // The record read: the callee's own, or a back edge's the round before's
+    // (RecordOf) -- none in a cycle's first round, whose result then points
+    // nowhere yet. A back edge reuses the body whatever it passes (§7.8), and
+    // a parameter the key gave static data has no class for a record to
+    // name, so no mapping reaches what a back edge passes it instead: a
+    // holder result such a back edge gets outlives nothing and may point
+    // into a grow-shrink array. A reference result is mapped as recorded,
+    // which parsers rely on where the entry call passes a literal key and
+    // the back edges views of the input (samples/18_json).
+    auto rec = RecordOf(spec);
     auto unkeyed = false;
     for (size_t p = 0; spec->inprogress && p < spec->params.size() && p < argvals.size(); p++) {
         auto pt = spec->argtypes[p];
@@ -1856,23 +1914,35 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
         auto holder = !IsRefOrSlice(v.type) && HoldsPlainRef(v.type);
         if (IsRefOrSlice(v.type) || holder) {
             RetRoot none;
-            auto &ri = i < spec->retroots.size() ? spec->retroots[i] : none;
-            // A back edge's target is still being checked: it maps the roots
-            // its returns were predicted to give (§7.8), and where there are
-            // none to map, it outlives nothing, which is not static data.
+            auto &ri = rec && i < rec->retroots.size() ? rec->retroots[i] : none;
             auto backedge = spec->inprogress;
-            if (backedge && (!ri.seeded || ri.predlost || ri.pred.None() ||
-                             (holder && unkeyed))) {
-                v.Set(cycleroot, false);
+            if (backedge && holder && unkeyed) {
+                // A root of this activation's own that outlives nothing it
+                // could be stored in and may point into a grow-shrink array:
+                // the result is passed down, and returning it is returning
+                // a reference rooted in the activation (RecordReturn).
+                auto t = ast.NewVarDef();
+                t->name = "<recursive result>";
+                t->depth = CurDepth();
+                t->ownerspec = CurRealFrame().spec;
+                t->growshrink = true;
+                v.Set(t, false);
             } else {
                 // Each root a return gives, merged as branches are (§9.2).
                 auto first = true;
-                for (auto &alt : (backedge ? ri.pred : ri.alts).alts) {
+                for (auto &alt : ri.alts.alts) {
                     auto m = RetAltVal(spec, alt, argvals, v.type, c);
                     v = first ? m : MergeVals(v, true, m, true, c, true, nullptr, nullptr);
                     first = false;
                 }
-                v.writable = v.writable && (backedge ? ri.predwritable : ri.writable);
+                if (first) {
+                    // No root yet: a first round's back edge, a record built
+                    // on one (Roots::unknown), or returns that only ever
+                    // give null.
+                    if (!rec || ri.alts.unknown) v.SetUnknown();
+                    v.writable = true;
+                }
+                v.writable = v.writable && ri.writable;
             }
             v.writable = v.writable && !v.type->cq;
             // A back edge's returns are not all known yet: any u8 view the
@@ -1898,29 +1968,6 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
         } else {
             v.Set(TempRoot(), false);
             v.writable = false;
-        }
-        if (spec->inprogress && i < spec->retroots.size()) {
-            // What a back edge was given, the returns checked after it may
-            // not take back (CycleRoots::ReturnConflict).
-            auto &rr = spec->retroots[i];
-            const Roots &given = ContentsOf(v);
-            if ((IsRefOrSlice(v.type) || holder) && !given.Has(cycleroot)) {
-                rr.used = true;
-                rr.useddepth = min(rr.useddepth, Depth(given.Root()));
-                rr.usedexact |= given.Exact();
-                rr.usedwritable |= v.writable;
-                rr.usedclean |= holder ? !IntoGrowShrink(v, given.Root(), v.type, true)
-                                       : !GrowShrinkTaint(v, v.type);
-                if (CycleStorable(given)) {
-                    rr.usedstorable = true;
-                } else {
-                    for (auto &a : given.alts)
-                        if (!CycleStorable(a.root) && ThreadStorable(a.root) &&
-                            find(rr.usedthreads.begin(), rr.usedthreads.end(), a.root) ==
-                                rr.usedthreads.end())
-                            rr.usedthreads.push_back(a.root);
-                }
-            }
         }
         lastcallrets.push_back(v);
     }

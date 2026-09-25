@@ -608,6 +608,38 @@ samples before each landing (`docs/testing.md`,
   or after the loop (rebind_root_identity, optional_loop_fnval_rebind,
   optional_while_condition_value). Loops with no rebind or store of an
   outer variable take one pass; the test suite's checking time is unchanged.
+* **3. Cycles checked in rounds** landed 2026-09-25, without the split of
+  lifetime analysis from type checking the item proposed: the fixpoint the
+  split was for is had by checking a cycle's bodies again (`CheckSpecBody`
+  runs `CheckSpecBodyOnce` for the head until no member's record changes,
+  members re-checked as calls reach them, `FnSpec::stale`), each round
+  reading the round before's records at its back edges (`FnSpec::prev`,
+  `RecordOf`) and the first reading none: a back edge's result then points
+  nowhere yet (`Roots::unknown`, the same bottom as item 6's discovery
+  passes, now a flag holder contents carry too), which every rule passes by.
+  Type checking is repeated per round, which costs nothing measurable.
+  Deleted: `typecheck_cycles.h` (669 lines: the syntactic return-root
+  predictor, `ReturnConflict`), `RetRoot::pred/used*`, the `cycleroot`
+  sentinel, `cyclestores` (a re-check with `incycle` set replaces the
+  replay), `ThreadedClass::relied`/`RelyOnThread` (a re-check finds the
+  class broken), `assumedshrinks`/`SettleAssumedShrinks`/`KeepShrinkChecks`/
+  `SB_ASSUMED`/`livecapture`, `cyclesites`/`ResolveCycleSites`/`CycleOpen`,
+  `SyntacticShrinks`/`SyntacticGrows`/`ScanReceivers`, `InProgressRebinds`,
+  `LiveShrink::guessed`, and the `inprogress` branch of every
+  `ApplyCallee*`: 719 lines against 433 added. The predictor's conflict
+  errors ("use one source", "back edges were not given") are gone: a
+  cycle's result is the union of what its returns give, checked at every
+  use like any call's, so 13 fixtures now report at the use (a store that
+  does not outlive, a view into a grow-shrink array) and two programs the
+  predictor refused for its own imprecision are accepted and became
+  positive fixtures (cycle_holder_unknown_store, cycle_threaded_return).
+  Cycles settle in two or three rounds (`GOOSE_ROUNDS=1` traces them).
+* **4. One storage and effect model** was reconsidered after item 3: BCE
+  and codegen summarize the optimized tree after inlining and folding,
+  which the checker's records, made before the optimizer runs, cannot
+  stand in for; sharing the region vocabulary (a variable, a class root, a
+  temporary, static data) is already the case through `VarDef`. Left as
+  is.
 * **2. Statement liveness from the tree** landed 2026-09-25: `nodepath`
   (`PathEntry`, `NodeScope`), `nodevals` and `ForOperands` in
   `typecheck.h`/`typecheck_exprs.h`; `HeldOperands` replaces `heldtemps`,

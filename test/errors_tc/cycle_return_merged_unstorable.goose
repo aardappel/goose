@@ -1,7 +1,6 @@
-// error: this return's reference is rooted at a, which the recursive cycle's back edges were not given
-// The back edge's result, rooted at the globals its argument may view, was
-// stored (§7.8). The return checked after it may be b, but may also be `a`,
-// which that back edge passed its own local for.
+// error: storing a reference rooted at loc, which does not outlive the destination
+// The back edge's result may be b, or `a`, which that back edge passed its
+// own local for (§7.8): it may not be kept in the global kept.
 var G: u8[>..] = "ggg";
 var G2: u8[>..] = "hhh";
 var base: u8[1] = [48];

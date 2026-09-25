@@ -189,7 +189,7 @@ inline void TypeCheck::ReadBackLVal(LVal &lv) {
     // What was stored into a slot passed the store rule (§5.2) with its own
     // provenance; the container's says nothing about it.
     auto slotread = lv.isslot && SlotReadable(lv.type);
-    lv.alts = rb.alts;
+    lv.TakeAlts(rb);
     for (auto &a : lv.alts) a.slotread = slotread;
     lv.reached = nullptr;
     lv.intemp = false;
@@ -389,7 +389,7 @@ void TypeCheck::HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent, const
         vector<TypeExpr *> pointees;
         RefPointees(t, pointees);
         auto held = v;
-        held.alts = ContentsOf(v).alts;
+        held.TakeAlts(ContentsOf(v));
         for (auto pt : pointees) {
             held.type = RefTo(pt, n->line);
             hold(held);
@@ -501,9 +501,9 @@ inline Val TypeCheck::DecayRef(Val v) {
     // container info, harmless, though crossing the reference drops what a
     // slot read says (RootAlt::slotread).
     if (r.type->kind == TY_SLICE) {
-        r.alts = SlotView(v, r.type).alts;
+        r.TakeAlts(SlotView(v, r.type));
     } else {
-        r.alts = v.alts;
+        r.TakeAlts(v);
         r.ClearSlotRead();
     }
     r.byteview = v.byteview && HoldsPlainRef(r.type);
@@ -780,10 +780,6 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
     // arguments' roots); an element or field being constructed does.
     if (((IsRefOrSlice(dt) && IsRefOrSlice(t)) || holder) && !curdst.roots.None()) {
         const Roots &roots = holder ? ContentsOf(v) : v.AsRoots();
-        if (roots.Has(cycleroot)) {
-            fitfail = NeverStoredError(cycleroot);
-            return false;
-        }
         // An inexact destination root only bounds the storage the slot is
         // in: that may be any storage there or further out that can hold
         // what the destination's path reached (Dest::reached), which holds
@@ -820,36 +816,26 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
         auto spec = CurRealFrame().spec;
         auto ownvar = curdst.varbind && curdst.roots.Exact() &&
                       curdst.roots.Root()->ownerspec == spec;
-        if (!CycleStorable(roots) && spec && !ownvar) {
+        if (!CycleStorable(roots) && spec && !ownvar && (spec->incycle || spec->sf->isrec)) {
             // A threaded parameter class may be stored while it stays
             // threaded, and only where every activation's store lands in
             // the same storage: a parameter's class the slot may be in must
-            // stay threaded too. From here on the store relies on both.
-            CycleStore s { spec, fitnode ? fitnode->line : Line {} };
+            // stay threaded too. A function the cycle's rounds found to be
+            // in it by a call back into the cycle (FnSpec::joinedat) is in
+            // it from its first statement.
+            auto joined = !spec->sf->isrec && spec->joinedat.line > 0
+                              ? cat(spec->sf->name, " calls into its recursive cycle at ",
+                                    Where(spec->joinedat))
+                              : string();
             for (auto &a : roots.alts) {
-                if (!s.refused && !CycleStorable(a.root) && !ThreadStorable(a.root)) {
-                    s.refused = true;
-                    s.refusedby = a.root;
-                }
-                s.relies.push_back(a.root);
+                if (CycleStorable(a.root) || ThreadStorable(a.root)) continue;
+                fitfail = CycleStoreError(a.root, joined);
+                return false;
             }
             for (auto &d : dsts) {
-                if (!s.refused && !ThreadedChain(d.root)) {
-                    s.refused = true;
-                    s.refusedby = d.root;
-                }
-                s.relies.push_back(d.root);
-            }
-            if (spec->incycle || spec->sf->isrec) {
-                if (s.refused) {
-                    fitfail = CycleStoreError(s.refusedby);
-                    return false;
-                }
-                for (auto r : s.relies) RelyOnThread(r, s.at);
-            } else {
-                // A call back into a cycle may yet show this function to be
-                // in one, and the store with it (JoinCycle).
-                cyclestores.push_back(std::move(s));
+                if (ThreadedChain(d.root)) continue;
+                fitfail = CycleStoreError(d.root, joined);
+                return false;
             }
         }
         // Each storage the slot may be in holds the value from here on; a

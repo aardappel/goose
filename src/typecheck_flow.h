@@ -60,10 +60,9 @@ inline TypeExpr *TypeCheck::ResizableArrayIn(TypeExpr *t) {
 }
 
 // Whether references rooted at r may point into a grow-shrink array
-// (§5.2): r holds one, or stands for a call-site root that does, or for the
-// undetermined root of a back edge's result (§7.8), which may be one.
+// (§5.2): r holds one, or stands for a call-site root that does.
 inline bool TypeCheck::IsGrowShrinkRoot(VarDef *r) {
-    return r && (r == cycleroot || r->growshrink || (r->type && ContainsGrowShrink(r->type)));
+    return r && (r->growshrink || (r->type && ContainsGrowShrink(r->type)));
 }
 
 // Whether a grow-shrink array inside a value of type t can hold an `of`
@@ -136,7 +135,7 @@ inline VarDef *TypeCheck::StoredIntoGrowShrink(const Val &v, const Roots &roots,
         return nullptr;
     }
     auto p = Prov(v);
-    p.alts = roots.alts;
+    p.TakeAlts(roots);
     return GrowShrinkTaint(p, t);
 }
 
@@ -149,12 +148,6 @@ inline VarDef *TypeCheck::StoredIntoGrowShrink(const Val &v, const Roots &roots,
 inline string TypeCheck::NeverStoredError(VarDef *root, bool may) {
     auto from = root;
     while (from && !from->type && from->classfrom) from = from->classfrom;
-    auto recresult = "the result of a recursive call whose returned reference's root the "
-                     "cycle's returns do not determine (§7.8); it may only be passed down";
-    if (root == cycleroot) return cat("storing ", may ? "what may be " : "", recresult);
-    if (from == cycleroot)
-        return cat("storing a reference ", may ? "that may point " : "", "into ", root->name,
-                   ", which may be ", recresult);
     auto stored = ": such a reference lives in a variable, is passed down or returned, and "
                   "is never stored (§5.2)";
     if (may && (!root->type || IsRefOrSlice(root->type)))
@@ -244,7 +237,7 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
     for (auto &a : p.alts) {
         auto r = a.root;
         auto slot = slotof(r);
-        if (r == root || r == cycleroot) return true;
+        if (r == root) return true;
         if (growonly && t->ref->sub->kind != TY_SLICE && a.exact && r && r->type &&
             !r->isglobal && !slot && !(v && v->isvar)) {
             auto arrtype = bound ? bound : root->type ? LoadType(root->type) : nullptr;
@@ -282,7 +275,7 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
 // slice is a slot read (Prov::slotread); what the reference was does not.
 inline Prov TypeCheck::SlotView(const Prov &p, TypeExpr *slice) {
     Prov out = p;
-    out.Clear();
+    out.alts.clear();
     for (auto &a : p.alts) {
         auto r = a.root;
         if (!r || !a.exact) {
@@ -324,10 +317,19 @@ inline void TypeCheck::BindProv(VarDef *vd, const Prov &p) {
 }
 
 // The first non-null binding of a reference variable fixes its provenance.
-// Null commits the variable to nothing, and neither does a value that
-// points nowhere yet (RefProvOf, a discovery pass).
+// Null commits the variable to nothing. A value that points nowhere yet
+// (Roots::unknown) binds the variable to nowhere yet: its reads are that,
+// and its next binding is its first.
 inline void TypeCheck::BindRefProvenance(VarDef *vd, const Val &v) {
-    if (!v.isnull && !v.None()) BindProv(vd, v);
+    if (v.isnull) return;
+    if (v.None()) {
+        if (vd->refrootknown && vd->ref.Unknown()) return;   // As it was.
+        vd->ref.SetUnknown();
+        vd->refrootknown = true;
+        NoteFact(vd);
+        return;
+    }
+    BindProv(vd, v);
 }
 
 // Where a reference variable's value points, as a read of it sees it: the
@@ -341,7 +343,7 @@ inline Prov TypeCheck::RefProvOf(VarDef *vd) {
     Prov p = vd->ref;
     if (!vd->refrootknown) {
         if (UnboundIsBottom()) {
-            p.Clear();
+            p.SetUnknown();
             return p;
         }
         p.Set(temproot, false);
@@ -656,7 +658,7 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     v.storagebranches = a.storagebranches && b.storagebranches;
     v.implicitcopy = a.implicitcopy ? a.implicitcopy : b.implicitcopy;
     // Wherever either branch's value may point, the merged one may (§9.2).
-    v.alts = a.alts;
+    v.TakeAlts(a);
     v.Add(b);
     v.writable = a.writable && b.writable;
     v.reusable = a.reusable & b.reusable;
@@ -694,9 +696,8 @@ inline void TypeCheck::CheckBranchRoot(const Val &v, int depth, Node *at, const 
     const Roots &roots = isrs ? v.AsRoots() : ContentsOf(v);
     for (auto &a : roots.alts) {
         auto root = a.root;
-        // The sentinels stand for roots not known yet, as for a binding.
-        if (!root || root == temproot || root == cycleroot ||
-            Depth(root) <= depth + (IsTemp(root) ? 1 : 0))
+        // The sentinel stands for a root not known yet, as for a binding.
+        if (!root || root == temproot || Depth(root) <= depth + (IsTemp(root) ? 1 : 0))
             continue;
         auto what = !isrs ? "holds references" : t->kind == TY_SLICE ? "is a slice"
                                                                        : "is a reference";
@@ -1055,7 +1056,11 @@ inline TypeCheck::Scope TypeCheck::CheckLoopPasses(Node *x, FlowState &head,
     auto warnbase = pendingwarnings.size();
     auto settled = false;
     Scope sc;
-    for (;;) {
+    for (auto passes = 0;; passes++) {
+        // What a pass feeds back only grows, so the passes are bounded by
+        // the variables in scope and their roots.
+        if (passes >= 16)
+            Error(x, "this loop's checking does not settle (internal limit of 16 passes)");
         RestoreFlow(head);
         pendingwarnings.resize(warnbase);
         looppasses.push_back({ (int)scopes.size(), firstbase, storeevents.size(), settled });
@@ -1194,7 +1199,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         auto rb = ReadBackRoot(elemtype, iterprov, iterprov.byteview,
                                intemp ? &contents : nullptr);
         auto slotread = SlotReadable(elemtype);
-        iterprov.alts = rb.alts;
+        iterprov.TakeAlts(rb);
         for (auto &a : iterprov.alts) a.slotread = slotread;
         if (elemtype->cq) iterprov.writable = false;
     }
@@ -1538,8 +1543,8 @@ inline void TypeCheck::CheckBindingRoot(VarDef *d, const Val &v, Node *at) {
     }
     for (auto &a : roots.alts) {
         auto root = a.root;
-        // The sentinels stand for roots not known yet, which a variable may hold.
-        if (!root || root == temproot || root == cycleroot || Depth(root) <= Depth(d)) continue;
+        // The sentinel stands for a root not known yet, which a variable may hold.
+        if (!root || root == temproot || Depth(root) <= Depth(d)) continue;
         auto what = !isrs ? "a value holding references" : t->kind == TY_SLICE ? "a slice"
                                                                                 : "a reference";
         if (IsTemp(root))
@@ -1688,7 +1693,7 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     if (lv.var) {
         // Slice variables carry their value's provenance (refs use .=).
         if (target->kind == TY_SLICE) {
-            if (!lv.var->refrootknown) BindRefProvenance(lv.var, v);
+            if (!lv.var->refrootknown || lv.var->ref.Unknown()) BindRefProvenance(lv.var, v);
             else CheckRefRebindRoot(a, lv.var, v);
         }
         lv.var->assigned = true;
@@ -1728,7 +1733,7 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
     }
     a->rhs->exprtype = v.type;
     if (lv.var) {
-        if (!lv.var->refrootknown) BindRefProvenance(lv.var, v);
+        if (!lv.var->refrootknown || lv.var->ref.Unknown()) BindRefProvenance(lv.var, v);
         else if (!v.isnull) CheckRefRebindRoot(a, lv.var, v);
         lv.var->assigned = true;
         // Rebinding an optional settles its nullness — narrowed only when

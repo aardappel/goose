@@ -11,7 +11,6 @@
 #include "builtins.h"
 #include "gfx.h"
 #include "physics.h"
-#include "typecheck_cycles.h"
 #include "typecheck.h"
 #include "typecheck_types.h"
 #include "typecheck_exprs.h"

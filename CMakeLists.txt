@@ -21,7 +21,6 @@ add_executable(goose
     src/parser.h
     src/resolve.h
     src/builtins.h
-    src/typecheck_cycles.h
     src/typecheck.h
     src/typecheck_types.h
     src/typecheck_exprs.h

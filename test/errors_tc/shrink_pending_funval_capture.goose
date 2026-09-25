@@ -1,8 +1,8 @@
-// error: cannot call step, which may shrink buf while r
+// error: cannot call step, which shrinks buf while r
 // error: is still used: it may refer into buf (§5.2)
 // A recursive function declared in a function value's body reaches the
-// body's locals: a call to it still being checked counts as shrinking them,
-// which may pop the element r refers to.
+// body's locals: a call to it applies what its first round recorded, which
+// may pop the element r refers to.
 fn apply<F>(n: i64) -> i64 { F(n) }
 fn main() {
     print(apply(1) {

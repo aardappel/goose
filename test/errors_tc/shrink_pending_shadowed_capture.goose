@@ -1,6 +1,6 @@
-// error: cannot call step, which may shrink buf while r is still used: it may hold a reference or slice into it
-// A lexical parent's local named like a global: a recursive call that
-// textually clears it counts as shrinking the local.
+// error: cannot call step, which shrinks buf while r is still used: it may hold a reference or slice into it
+// A lexical parent's local named like a global: the recursive call's
+// recorded clear is of the local.
 var buf: i64[>..] = [7];
 fn outer() {
     var buf: i64[>..] = [1, 2];

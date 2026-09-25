@@ -1,7 +1,7 @@
-// error: cannot call b, which may shrink g inside a larger expression: a reference taken earlier in it may still be live, so bind the result first
-// A recursive call counts as shrinking what every function still being
-// checked textually shrinks: the back edge into b holds g[0], and a, which
-// b calls further down, clears g.
+// error: cannot call b, which shrinks g inside a larger expression: a reference taken earlier in it may still be live, so bind the result first
+// A recursive call applies what the cycle's first round recorded (§7.8):
+// the back edge into b holds g[0], and a, which b calls further down,
+// clears g.
 var g: i64[>..] = [1, 2];
 fn read(r: i64&, unused: i64) -> i64 { return r; }
 recursive fn a(n: i64) -> i64 {

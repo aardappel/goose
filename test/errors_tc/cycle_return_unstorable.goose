@@ -1,9 +1,7 @@
-// error: this return may point into a grow-shrink array, but the recursive cycle already used a result that does not
-// A back edge's result may be stored where every root the cycle's scan
-// predicts could be (§7.8), so a real return the prediction missed, checked
-// after it, may not be one no store may keep. The scan resolves both calls
-// of `pick` to the first nested function of that name, a global's element;
-// the second returns an element of the grow-shrink `spare` (§5.2).
+// error: storing a reference that may point into spare, which holds a grow-shrink array
+// A back edge's result has every root the cycle's returns give (§7.8): the
+// second `pick` returns an element of the grow-shrink `spare`, which no
+// store may keep (§5.2).
 struct Cell { v: i64 }
 var cells: Cell[>..] = [];
 var others: Cell[>..] = [];

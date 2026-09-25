@@ -1,10 +1,8 @@
-// error: references may only be passed down, not stored, inside a recursive cycle
-// error: may be rooted where the cycle stores nothing, and so may a recursive call's result rooted at c
 // f stores the result of its call back into the cycle, rooted at the context
-// it reaches through outer's `c`, which the base case's return stands in
-// for (§7.8). A later return gives e, read out of b's pointee, which the
-// cycle may not store, and so the results of those calls may be it: the
-// store is the error.
+// it reaches through outer's `c` and at `e`, read out of b's pointee: both
+// are threaded parameter classes of outer whose ultimate roots are main's
+// locals, outside every cycle, so the cycle may store what is rooted at
+// them (§7.8).
 struct Ctx { text: u8[>..]&, keep: (const u8[:])[>..]& }
 struct Box { s: const u8[:] }
 

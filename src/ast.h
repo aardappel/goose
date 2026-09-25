@@ -413,12 +413,33 @@ struct RootAlt {
 // weaker of the two.
 struct Roots {
     vector<RootAlt> alts;
+    // No places yet: a reference variable read before its binding in a pass
+    // of a loop, or a recursive call's result in the first round of its
+    // cycle, which a later pass or round revisits (TypeCheck::RefProvOf,
+    // CallResult). A reference value with no alternatives is that whatever
+    // this says; a holder's contents are only where this says so, an empty
+    // set of contents being one that holds nothing.
+    bool unknown = false;
 
     bool None() const { return alts.empty(); }
-    void Clear() { alts.clear(); }
+    bool Unknown() const { return alts.empty() && unknown; }
+    void Clear() {
+        alts.clear();
+        unknown = false;
+    }
+    void SetUnknown() {
+        alts.clear();
+        unknown = true;
+    }
     void Set(VarDef *r, bool exact, VarDef *from = nullptr, bool slotread = false) {
         alts.clear();
+        unknown = false;
         alts.push_back({ r, exact, from, slotread });
+    }
+    // The places of another set, and whether they are none yet.
+    void TakeAlts(const Roots &o) {
+        alts = o.alts;
+        unknown = o.unknown;
     }
     // Whether the set changed: a new place, or one it had made weaker.
     bool Add(const RootAlt &a) {
@@ -436,6 +457,7 @@ struct Roots {
     }
     bool Add(const Roots &o) {
         auto changed = false;
+        unknown = unknown || o.unknown;
         for (auto &a : o.alts) changed = Add(a) || changed;
         return changed;
     }
@@ -1294,12 +1316,10 @@ struct RootArg {
 // How a body's shrinks of one array leave it (§5.2): balanced where each
 // resizes it back to a length it had during the call, or is a balanced call,
 // so that it is never shorter than when the call began and no view taken
-// before the call can tell; assumed balanced where that rests on calls into
-// a cycle still being checked being balanced too, which is settled once the
-// cycle is; unbalanced where one may leave it shorter. A grow-only array's
+// before the call can tell; unbalanced where one may leave it shorter. A grow-only array's
 // shrinks are never balanced (§5.1): a callee may store references to its
 // new elements into the caller's holders before popping them.
-enum ShrinkBalance { SB_BALANCED, SB_ASSUMED, SB_UNBALANCED };
+enum ShrinkBalance { SB_BALANCED, SB_UNBALANCED };
 
 // A shrink a body records against what one of its parameters' or outside
 // roots' storage only leads to, through the references it holds: an array
@@ -1352,9 +1372,6 @@ struct LiveShrink {
     TypeExpr *pointee = nullptr; // What it points at; null: unknown.
     bool byteview = false;
     bool growonly = false;       // The shrink is §5.1's, else §5.2's.
-    // Only a call into a recursive cycle still being checked, which counts
-    // as shrinking what the cycle may shrink, shrinks the array.
-    bool guessed = false;
     string name;                 // What is still used, as the error names it.
 };
 
@@ -1367,29 +1384,6 @@ struct RetRoot {
     bool writable = true;      // Writable only where every return is (§9.5).
     bool byteview = false;
     bool set = false;          // A non-null return has recorded its root.
-    // While a `recursive fn` body is checked, its back edges map `pred`, the
-    // roots its returns were predicted to give, or where the scan named none
-    // (`predunknown`), those of the returns checked so far; each checked
-    // return is held against it (CycleRoots::ReturnConflict). A return that
-    // may be a parameter's pointee none of them shows leaves back edges the
-    // cycleroot sentinel from then on (`predlost`).
-    bool seeded = false;
-    bool predunknown = false;
-    bool predlost = false;
-    Roots pred;
-    bool predwritable = true;
-    // What back edges were given (§7.8): a return checked later may not
-    // take it back, by being deeper, less exact, read-only, or what a store
-    // may not keep where theirs could be kept.
-    bool used = false;
-    int useddepth = INT32_MAX;
-    bool usedexact = false;
-    bool usedwritable = false;
-    bool usedclean = false;    // Given as pointing into no grow-shrink array.
-    bool usedstorable = false; // Given as a reference the cycle may store.
-    // Given as one the cycle may store while these threaded parameter classes
-    // stay threaded (TypeCheck::ThreadedClass).
-    vector<VarDef *> usedthreads;
 };
 
 // A literal parameter's contact with a type (§7.7): what the literal at
@@ -1448,6 +1442,19 @@ struct FnSpec {
     // is still in progress exactly while the cycle can grow (TypeCheck::
     // CycleHead).
     FnSpec *cyclelink = nullptr;
+    // A cycle is checked in rounds until what its bodies record settles
+    // (TypeCheck::CheckSpecBody): the head's members, and each member's
+    // record from the round before, which the calls back into it read while
+    // it is in progress -- none in the first round, whose back edges have no
+    // effects and results that point nowhere yet. `stale`: a member the
+    // next round has yet to check again. The class roots its parameters
+    // stand at are made once and kept across rounds (TypeCheck::ThreadedClass).
+    vector<FnSpec *> cyclemembers;
+    shared_ptr<FnSpec> prev;
+    int rounds = 0;
+    bool stale = false;
+    vector<VarDef *> classroots;
+    Line joinedat;                 // The call that joined it to its cycle.
     set<FnSpec *> needs;           // Concrete `return from` targets enclosing every call.
     // Calls that reused this spec, with the call path each was checked on: a
     // target recorded later applies to those paths too. The call that created
@@ -1482,6 +1489,7 @@ struct FnSpec {
     // class roots (§5.1): the call sites map them onto their arguments.
     vector<StoreEvent> classevents;
     size_t eventstart = 0;         // storeevents.size() when the body's check began.
+    size_t eventend = 0;           // And when it ended.
     int id = 0;                    // Unique, for diagnostics/codegen naming.
     // Filled by the optimizer (optimize.h):
     int uses = 0;                  // Call sites in live code (tag-dispatch entries included).

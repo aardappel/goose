@@ -40,11 +40,12 @@
 // it was first given, from storage outside every cycle (ThreadedClass). A
 // back edge may pass a threaded class something else, so a store relies on
 // it, and that call is then an error at the store (ValidateThreadArgs). A
-// cycle's *return* roots cannot come from its returns either, since a back
-// edge reaches a function before those are checked, so they are predicted by
-// a syntactic fixpoint over the cycle's returns before any body runs
-// (CycleRoots, typecheck_cycles.h) and verified against the real returns as
-// they are checked. Remaining conservatisms marked TODO: long-distance
+// cycle's *return* roots, shrinks, growths, stores and rebinds cannot come
+// from its bodies' records while a back edge reaches a function before its
+// body is checked through, so a cycle is checked in rounds: the first with
+// back edges that have no effects and results pointing nowhere yet, each
+// later one reading what the round before recorded, until nothing recorded
+// changes (CheckSpecBody). Remaining conservatisms marked TODO: long-distance
 // returns carry only global/static refs, and references rooted at a caller's
 // fixed-size local that a call back into the cycle replaces are still
 // pass-down-only inside a cycle.
@@ -345,8 +346,6 @@ struct TypeCheck {
     // bound yet points at (RefRootOf). A temporary has a root of its own
     // (TempRoot).
     VarDef *temproot = nullptr;
-    VarDef *cycleroot = nullptr; // Sentinel root for a back edge's result whose root
-                                 // the cycle's returns do not determine (§7.8).
     TypeExpr *fntype = nullptr;  // Shared type of function values.
     TypeExpr *u8slice = nullptr; // A slice of u8.
     TypeExpr *cu8slice = nullptr; // `const u8[:]`: the type of a string literal (§3.7).
@@ -848,7 +847,8 @@ struct TypeCheck {
     Roots RefRootsOf(VarDef *vd) {
         if (vd->refrootknown) return vd->ref;
         Roots r;
-        if (!UnboundIsBottom()) r.Set(temproot, false);
+        if (UnboundIsBottom()) r.SetUnknown();
+        else r.Set(temproot, false);
         return r;
     }
 
@@ -947,7 +947,6 @@ struct TypeCheck {
     vector<VarDef *> ExternalOptionals(FnSpec *env,
                                        const vector<pair<string_view, FnValBind>> *fnvals = nullptr);
     void ApplyCalleeRebinds(FnSpec *spec);
-    vector<VarDef *> InProgressRebinds(FnSpec *spec);
 
     // A loop body is checked as many times as it takes for what it feeds
     // back to its head to settle (CheckLoopPasses): the roots its rebinds
@@ -1279,14 +1278,6 @@ struct TypeCheck {
     // be only at that call (JoinCycle), where its first such store the rule
     // refuses is an error, and the others rely on their classes from then
     // on. One whose check ends outside any cycle drops its own.
-    struct CycleStore {
-        FnSpec *spec = nullptr;
-        Line at;
-        bool refused = false;
-        VarDef *refusedby = nullptr;   // The root CycleStoreError explains.
-        vector<VarDef *> relies;       // The value's root, then the destination's.
-    };
-    vector<CycleStore> cyclestores;
     string_view FrameFnName(int fi);
     static VarDef *UltimateRoot(VarDef *v);
     void ValidatePoolArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode);
@@ -1301,8 +1292,6 @@ struct TypeCheck {
     struct ThreadedClass {
         bool broken = false;
         string why;                  // What broke it, as the diagnostics say.
-        bool relied = false;
-        Line reliedat;               // The first store relying on it.
         // The classes created from its parameters' values, or given them at a
         // back edge: each points where it does only while it stays threaded.
         vector<VarDef *> heirs;
@@ -1312,13 +1301,17 @@ struct TypeCheck {
     void NoteThreadedClass(VarDef *cls);
     bool ThreadedChain(VarDef *r);
     bool ThreadStorable(VarDef *r);
-    void RelyOnThread(VarDef *r, Line at);
     void Unthread(VarDef *cls, const string &why);
     string CycleStoreError(VarDef *root, const string &more = {});
     void ValidateNeeds(FnSpec *spec, Node *callnode);
     void AddNeed(FnSpec *s, FnSpec *t);
-    CycleRoots::Cache cyclecache;   // Syntactic predictions, needed only during this pass.
-    CycleRoots Cycles();
+    // The record of a callee a call reads: the callee's own once it is
+    // checked, the round before's while it is in progress (a back edge), and
+    // none in a cycle's first round.
+    static FnSpec *RecordOf(FnSpec *spec) { return spec->inprogress ? spec->prev.get() : spec; }
+    void CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Line callline);
+    void ResetRecord(FnSpec *spec);
+    bool SameRecord(const FnSpec *a, const FnSpec *b);
     bool ExternValueOk(TypeExpr *t, string &why);
     bool ExternParamOk(TypeExpr *t, string &why);
     void CheckExternSpec(FnSpec *spec);
@@ -1416,23 +1409,6 @@ struct TypeCheck {
     void NoteHolderBinding(VarDef *d, const Val &v);
     bool GrowOnlyTail(TypeExpr *t);
     bool IsGrowOnlyRootVar(VarDef *r);
-    // Raw-body shrink facts needed only while a recursive call is checked.
-    // Cache membership means scanned; an empty summary is a valid result.
-    struct ShrinkSummary {
-        vector<string_view> globals;
-        vector<int> params;
-        vector<string_view> captures;   // Every other receiver, a global's name included.
-    };
-    map<SFunction *, ShrinkSummary> shrinkcache;
-    const ShrinkSummary &SyntacticShrinks(SFunction *sf);
-    // The same for the growths a body spells out, for a recursive callee's
-    // incomplete summary (ApplyCalleeGrows).
-    map<SFunction *, ShrinkSummary> growcache;
-    const ShrinkSummary &SyntacticGrows(SFunction *sf);
-    // Fills `summary` with the receivers of the calls in sf's body that
-    // `recv` picks out, plus the targets of whole assignments; `recv`
-    // returns the receiver node of a call it is interested in, or null.
-    template<typename F> void ScanReceivers(SFunction *sf, ShrinkSummary &summary, F recv);
     void RefPointees(TypeExpr *t, vector<TypeExpr *> &out);
     VarDef *HolderRootOf(const Val &v);
     Roots ClassArgRoots(TypeExpr *pt, const Val &v);
@@ -1458,27 +1434,6 @@ struct TypeCheck {
                           TypeExpr *bound = nullptr, ShrinkBalance balance = SB_UNBALANCED);
     bool ResizesToMark(Node *recv, Node *len);
     bool SamePath(Node *a, Node *b);
-    // Calls into a cycle still being checked that were taken to be balanced
-    // for every grow-shrink array they may shrink (§5.2), and calls judged
-    // balanced on the strength of that: settled once the outermost function
-    // assumed of has been checked (SettleAssumedShrinks). What the checks such
-    // a call skipped would have done is kept for the case the assumption
-    // fails: the first error, or else the pairs for the callers, each with
-    // the specialization whose record it goes into.
-    struct AssumedShrink {
-        FnSpec *callee = nullptr;   // A back edge's; null for a call relying on one.
-        string error;
-        vector<pair<FnSpec *, LiveShrink>> pairs;
-    };
-    vector<AssumedShrink> assumedshrinks;
-    set<FnSpec *> assumedopen;      // Callees still being checked some back edge assumed of.
-    set<FnSpec *> assumedspecs;     // Specializations with an entry noted SB_ASSUMED.
-    // Where NoteLiveShrink puts the pairs it would keep while such a call's
-    // skipped checks run (KeepShrinkChecks); null otherwise.
-    vector<pair<FnSpec *, LiveShrink>> *livecapture = nullptr;
-    void KeepShrinkChecks(Node *at, const string &op, VarDef *root, const string &what,
-                          TypeExpr *bound, AssumedShrink &kept);
-    void SettleAssumedShrinks();
     // An array a shrink may free (§5.1, §5.2): the one in root's own storage,
     // or, where root cannot hold one, one its storage leads to through the
     // references it holds (`bound`: root only bounds that array's lifetime).
@@ -1497,31 +1452,24 @@ struct TypeCheck {
     // views point into, is its callers' to judge, from the pairs a
     // specialization records (FnSpec::liveshrinks).
     bool IsClassRoot(VarDef *v) {
-        return v && !v->type && !v->isglobal && !IsTemp(v) && v != cycleroot;
+        return v && !v->type && !v->isglobal && !IsTemp(v);
     }
-    // The shrinks being checked are what a call into a recursive cycle still
-    // being checked is taken to do, not what it is known to do.
-    bool guessedshrink = false;
     bool CallersJudge(VarDef *r, VarDef *root);
     void NoteLiveViews(Node *at, const string &prefix, VarDef *root, const string &what,
                        bool growonly, TypeExpr *bound);
     template<typename F> void EachHolderRoot(VarDef *holder, size_t from, F f);
     int NoteLiveShrink(LiveShrink ls, FnSpec *current);
     void ApplyCalleeLiveShrinks(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
-    // A call checked while a recursive cycle is (§7.8), with its arguments'
-    // roots: the callee's pairs may still grow until the cycle is checked,
-    // and are mapped again then.
+    // A call, with its arguments' roots, whose callee's pairs are mapped
+    // onto them (MapLiveShrinks).
     struct CycleSite {
         Node *at = nullptr;
         FnSpec *caller = nullptr;
-        FnSpec *callee = nullptr;
+        FnSpec *callee = nullptr;   // The record read (RecordOf).
         vector<Roots> args;   // What each parameter's class stands for here.
         string name;
     };
-    vector<CycleSite> cyclesites;
     bool MapLiveShrinks(const CycleSite &site);
-    bool CycleOpen();
-    void ResolveCycleSites();
     // A growth of the array rooted at root -- a push, an append, a pool
     // allocation, format, resize, a whole assignment -- by this body or by
     // a callee. A value built in place at a root's top or slot is under
@@ -1595,9 +1543,6 @@ struct TypeCheck {
         temproot->name = "<temporary>";
         temproot->istemp = true;
         temproot->depth = INT32_MAX;
-        cycleroot = ast.NewVarDef();
-        cycleroot->name = "<recursive result>";
-        cycleroot->depth = INT32_MAX;
         fntype = ast.NewType(TY_FN, Line {});
         fntype->fn = ast.NewDetail<TypeFn>();
         u8slice = SliceOf(ast.inttypes[IS_U8], Line {});

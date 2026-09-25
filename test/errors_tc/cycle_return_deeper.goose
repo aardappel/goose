@@ -1,10 +1,7 @@
-// error: this return's reference is rooted at mine, deeper than the result the recursive cycle's back edges were given
-// A back edge takes the roots the cycle's scan predicts its returns give
-// (§7.8), and every real return is checked against what back edges were
-// given. The scan resolves both calls of `pick` to the first nested function
-// of that name, which returns a global's element, so the back edge's result
-// is rooted at the global and stored in one; the second `pick` returns an
-// element of `mine`, which dies with `walk`, after that result was used.
+// error: storing a reference rooted at mine, which does not outlive the destination
+// A back edge's result has every root the cycle's returns give (§7.8): the
+// first `pick` returns a global's element, the second an element of `mine`,
+// which dies with `walk`, so the result may not be kept in the global kept.
 struct Cell { v: i64 }
 var cells: Cell[>..] = [];
 var kept: Cell&? = null;

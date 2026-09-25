@@ -1717,8 +1717,8 @@ enclosing function outside the cycle — a free variable
 so a parser keeps its pool, its key table and its input as locals of a
 non-recursive `parse`, and the nested recursive functions store, link and
 return references rooted at them freely. Because the cycle's functions are
-checked once against the entry
-call's roots, every recursive call must pass such a pool by the same
+checked against the entry call's roots, every recursive call must pass such
+a pool by the same
 reference the entry call did: swapping two pools, or passing a different one,
 at a back edge is a compile error.
 
@@ -1741,62 +1741,28 @@ else is a compile error reported at the store, and one before any store
 makes the store the error. (Further refinements are future work, TODO.)
 
 **Cycle return roots.** A back edge reaches a function whose own returns may
-not have been checked yet, so the roots of its result cannot come from them.
-Instead, **the return roots of a cycle are the fixpoint over the returns of
-the functions in it**, computed before any of their bodies are checked, and
-each is a set, one root for each way a return can go: a return of
-`X.push(…)`, `X.alloc_ref(…)`, `&X[…]` or `X[i..j]` gives the root of `X` (a
-global, a free variable, or a parameter, whose pointee's root each call
-supplies); a string literal gives static data, and `null` nothing; a return
-of a reference variable gives the roots of what it was bound to; a return of
-`g(…)` gives `g`'s return roots, mapped through the arguments that carry
-them; iterating settles the mutual definitions. A back edge reuses the body
-whatever it passes, so it maps a parameter's root through the arguments it
-gives the parameters the entry call gave that root — it may give two of them
-two arrays where the entry call gave one — and merges the lot as a call
-merges its callee's returns (§9.2). A cycle function may therefore `return`
-the result of a back-edge call, and a parenthesised subexpression in a
-recursive-descent parser needs no wrapper node
-(`bench/goose/calc_noparen.goose`); one that returns either of two pools it
-is handed can store the result where both outlive the store.
-
-Every real return is then checked against what the back edges were given.
-A root the fixpoint names is fine, unless a back edge was already given a
-result that this return would make less exact, read-only, or impossible to
-store where the back edge's result could be stored (§5.2, and the store rule
-above). A result rooted at a parameter the cycle passes on is storable only
-on that condition, so such a return ends it instead: a store of the result
-is then the error. A root it missed joins the answer for the back edges
-checked later; after one has used the answer, only a root no deeper than
-that back edge's result is accepted, which every activation shares: a
-global, static data or a free variable. A return that may be the pointee of
-a parameter the answer does not map (a merged value, §9.2) leaves the back
-edges checked after it the root that outlives nothing (below), and is an
-error once one has used the answer.
-
-Where the fixpoint cannot determine a root — a return of a call to an
-overload set or a function value, say, or of an `if` — the first return
-checked stands in for its answer, as no back edge was given one before it.
-Before that, the result of a back edge is not treated as static data (that
-would let it be stored into a global and outlive the pool it points into).
-It carries instead a root that outlives nothing: such a result may be passed
-down, but storing or returning it is a compile error. It may point into a
-grow-shrink array, too, so what it is passed down to holds it the way §5.2
-holds references into one, in variables only: not in a literal, either.
-
-A result that *holds* references — a struct with slice fields, say — is
-predicted and checked the same way, by the roots of what it holds (§9.2): a
-back edge's result holds references rooted where the returns' results hold
-theirs, mapped through its own arguments, and each real return's holder is
-checked against what the back edges were given, as a returned reference is.
-The fixpoint reads no holder, so the first return checked stands in for its
-answer. A returned reference keeps its root through a variable, but a holder
-is taken apart by reading its fields, which re-derives their roots (§9.5),
-inexactly wherever static data or a parameter's storage is a candidate too.
-So what a checked return adds to a holder result's answer is inexact
-whatever the return: an exact one would be weakened by the first return
-built out of a back edge's fields. A recursive builder may thus return
-views into an arena that outlives the cycle, built from its children's:
+not have been checked yet, so the roots of its result cannot come from them
+at once. Instead **a cycle is checked in rounds**: in the first, a back
+edge's result points nowhere yet, and nothing checks or stores it, nor does
+the back edge shrink, grow, store or rebind anything; each later round gives
+every back edge what the round before recorded of its callee — the union of
+the roots its returns give, one root for each way a return can go, mapped
+through the back edge's own arguments (a back edge reuses the body whatever
+it passes, so it maps a parameter's root through the arguments it gives the
+parameters the entry call gave that root — it may give two of them two
+arrays where the entry call gave one — and merges the lot as a call merges
+its callee's returns, §9.2), read-only where any return is — and the round
+after the last that changed anything is the one whose errors stand. A cycle
+function may therefore `return` the result of a back-edge call, and a
+parenthesised subexpression in a recursive-descent parser needs no wrapper
+node (`bench/goose/calc_noparen.goose`); one that returns either of two
+pools it is handed can store the result where both outlive the store, and
+one that returns a view of a grow-shrink array on any path has a result no
+store may keep (§5.2). A result that *holds* references — a struct with
+slice fields, say — is checked the same way, by the roots of what it holds
+(§9.2), so a recursive builder may return views into an arena that outlives
+the cycle, built from its children's, with the recursive call ahead of the
+base case's return or after it:
 
 ```goose
 struct Fragment { text: const u8[:] }
@@ -1808,9 +1774,6 @@ recursive fn nest(n: i64) -> Fragment {
     return Fragment { text: child.text };
 }
 ```
-
-Written with the recursive call ahead of every return, the back edge would
-come before the stand-in, and `child`'s views could only be passed down.
 
 ### 7.9 `return … from` (long-distance return)
 
@@ -2778,21 +2741,14 @@ the end, each with where its resolution lives.
     it and where it was bound; specializations record what they shrink so
     that calls are checked the same way.
 0g. **Recursive results' roots at back edges** — DONE (§7.8, cycle return
-    roots): a cycle's return roots are the fixpoint over its returns,
-    computed before any body is checked, so a back edge's result carries the
-    merge of the real roots the fixpoint determines, mapped through that back
-    edge's own arguments, and an outlives-nothing root (pass-down-only) where
-    it determines none and no return has been checked yet. A result holding
-    references is predicted by the roots of what it holds, the same way.
-    What remains is the precision of the scan itself: it reads returns of
-    `X.push(…)`/`&X[…]`/`X[i..j]`, of string literals, of reference
-    variables, and of calls to uniquely named functions, and gives up on
-    anything else (branch values, overload sets, function values, nested
-    functions), which only ever costs a back-edge result its usability,
-    never soundness. It reads no holder at all (struct literals, holder
-    variables), so the back edge of a holder result checked before any of
-    its returns — recursing ahead of the base case's return — gives a
-    result that may only be passed down.
+    roots): a cycle is checked in rounds, so a back edge's result carries
+    the merge of the roots the cycle's returns give, mapped through that
+    back edge's own arguments, and points nowhere yet in the first round,
+    whose checks the next round repeats with it. A result holding
+    references is checked by the roots of what it holds, the same way. What
+    remains: a back edge that passes storage of its own for a parameter the
+    entry call gave static data gets a holder result that may only be
+    passed down.
 1. **varint format benchmark** — DONE, see `varint_bench/results.md`:
    ULEB128 adopted (§3.6). Break-even vs the best branchless format sits at
    ~70–75% single-byte values (a cliff, not a slope); above it ULEB wins

@@ -1,8 +1,7 @@
-// error: storing the result of a recursive call whose returned reference's root the cycle's returns do not determine
-// error: it may only be passed down
-// No scan of rec's returns can name the root of what the back edge returns
-// (§7.8), a view into G as it happens, so a literal may not hold it even
-// when the literal itself is only passed down (§5.2).
+// error: storing a reference into G, which holds a grow-shrink array
+// What the back edge returns is a view into G, as the cycle's returns give
+// it (§7.8), so a literal may not hold it even when the literal itself is
+// only passed down (§5.2).
 struct H { s: const i64[:] }
 var G: i64[>..<] = [1, 2, 3];
 fn f(h: H) {

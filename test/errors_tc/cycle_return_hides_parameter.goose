@@ -1,7 +1,6 @@
-// error: this return's reference is rooted at pool, which the recursive cycle's back edges were not given
-// The back edge's result, rooted at the globals x's argument may view, was
-// stored (§7.8). The last return may be x, but may also be an element of
-// the pool, a local of run that kept outlives, which no back edge was given.
+// error: storing a reference rooted at pool, which does not outlive the destination
+// The back edge's result may be x, or an element of the pool, a local of
+// run that kept outlives (§7.8): it may not be kept in kept.
 struct Cell { v: i64 }
 var gcells: Cell[>..] = [];
 var gcells2: Cell[>..] = [];

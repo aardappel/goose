@@ -1,5 +1,7 @@
-// error: cannot call step, which may shrink first: an earlier expression value
+// error: cannot call step, which shrinks first: an earlier expression value
 // error: may still refer into first
+//
+// Both captures share a root; seeing its scalar alias must not hide the array.
 fn read(r: i64&, unused: i64) -> i64 { return r; }
 // Both captures share a root; seeing its scalar alias must not hide the array.
 fn outer(first: i64&, xs: i64[>..<]&) {

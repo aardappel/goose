@@ -1,9 +1,7 @@
-// error: this return's reference is rooted at a, which the recursive cycle's back edges were not given
-// A back edge gives each parameter its own argument (§7.8), so a root it was
-// not given may not join the prediction once one has used it, even one the
-// entry call rooted at a global, as it did `a`. The scan resolves both calls
-// of `pick` to the first nested function of that name, a global's element;
-// the second returns `a`, which the back edge passes its own local for.
+// error: storing a reference rooted at loc, which does not outlive the destination
+// A back edge gives each parameter its own argument (§7.8): the second
+// `pick` returns `a`, which the back edge passes its own local for, so the
+// result may be rooted at loc and may not be kept in the global kept.
 struct Cell { v: i64 }
 var cells: Cell[>..] = [];
 var gcell = Cell { v: 3 };

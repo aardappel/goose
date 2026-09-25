@@ -506,7 +506,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             break;
         case 'r':
             v.type = RefTo(elem, c->line);
-            v.alts = rv.alts;
+            v.TakeAlts(rv);
             v.ClearSlotRead();
             v.writable = rv.writable;
             // What a receiver that decays the reference loads through.
@@ -514,7 +514,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             break;
         case 's':
             v.type = SliceOf(elem, c->line);
-            v.alts = rv.alts;
+            v.TakeAlts(rv);
             v.ClearSlotRead();
             v.writable = rv.writable;
             // What an adapting receiver (a limited array) constructs from.
@@ -583,7 +583,7 @@ inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, N
         if (throughref) {
             ReadBack contents;
             auto hascontents = TempContents(value, contents);
-            v.alts = ReadBackRoot(ft, value, value.byteview, hascontents ? &contents : nullptr).alts;
+            v.TakeAlts(ReadBackRoot(ft, value, value.byteview, hascontents ? &contents : nullptr));
         }
         CheckRenderable(c, what, ft, at, seen, v, out);
     };
@@ -946,8 +946,18 @@ inline void TypeCheck::HolderFromLit(Val &v, const LitDeep &deep) {
 // stands for -- the call sites map those back (§3.5).
 inline void TypeCheck::AddStoreEvent(const StoreEvent &e) {
     storeevents.push_back(e);
-    if (!e.container->type && !e.container->isglobal)
-        if (auto spec = CurRealFrame().spec) spec->classevents.push_back(e);
+    if (e.container->type || e.container->isglobal) return;
+    auto spec = CurRealFrame().spec;
+    if (!spec) return;
+    // A cycle's rounds map a back edge's record onto the same class roots
+    // again: one entry per fact.
+    for (auto &o : spec->classevents)
+        if (o.container == e.container && o.root == e.root && o.src == e.src &&
+            o.exact == e.exact && o.byteview == e.byteview && o.bound == e.bound &&
+            !o.pointee == !e.pointee && (!o.pointee || TypeEq(o.pointee, e.pointee)) &&
+            !o.reached == !e.reached && (!o.reached || TypeEq(o.reached, e.reached)))
+            return;
+    spec->classevents.push_back(e);
 }
 
 // One store on record per place the value may point (§9.2). The container's
@@ -964,6 +974,7 @@ inline void TypeCheck::RecordStore(VarDef *container, const Roots &roots, bool b
     if (src == container) return;
     auto holds = container->type && !IsRefOrSlice(container->type);
     container->contentbyteview |= byteview;
+    if (holds && roots.Unknown()) container->contents.unknown = true;
     for (auto &a : roots.alts) {
         if (!a.exact && a.from == container) continue;
         StoreEvent e;
@@ -1046,30 +1057,15 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         if (!exact) r.Weaken();
         return r;
     };
-    if (spec->inprogress) {
-        for (size_t p = 0; p < spec->argtypes.size() && p < argvals.size(); p++) {
-            auto pt = spec->argtypes[p];
-            if (!IsRefOrSlice(pt) || !HoldsPlainRef(PointeeOf(pt))) continue;
-            // Whatever slot a store through the parameter fills, it reaches
-            // the parameter's pointee first.
-            auto reached = PointeeOf(pt);
-            for (size_t q = 0; q < spec->argtypes.size() && q < argvals.size(); q++) {
-                auto qt = spec->argtypes[q];
-                if (!IsRefOrSlice(qt) && !HoldsPlainRef(qt)) continue;
-                for (auto &t : ShrinkTargets(argvals[p], reached))
-                    for (auto &a : argroots(q).alts)
-                        push(t.root, { a.root, false, a.from },
-                             IsRefOrSlice(qt) ? PointeeOf(qt) : nullptr, nullptr,
-                             argvals[q].byteview, reached, t.bound);
-            }
-        }
-        return;
-    }
+    // The record read: none in a cycle's first round (RecordOf), whose back
+    // edge stores nothing yet.
+    auto rec = RecordOf(spec);
+    if (!rec) return;
     // A function value's body, checked inside the callee, stores values
     // rooted at the callee's parameters into its own lexical containers:
     // those roots are this call's arguments, one event per place.
-    auto end = storeevents.size();
-    for (auto i = spec->eventstart; i < end; i++) {
+    auto end = min(rec->eventend, storeevents.size());
+    for (auto i = rec->eventstart; i < end; i++) {
         auto e = storeevents[i];
         auto r = mapped(e.root, e.exact);
         auto src = mapped(e.src, true).Root();
@@ -1085,7 +1081,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
     // A slice writes the caller's elements just as an array reference does.
     // Only a read-back from the same container preserves its existing
     // contents provenance (for example a permutation).
-    for (auto &e : spec->classevents) {
+    for (auto &e : rec->classevents) {
         auto p = paramof(e.container);
         if (p < 0 || e.src == e.container) continue;
         auto r = mapped(e.root, e.exact);
@@ -1196,112 +1192,6 @@ inline bool TypeCheck::IsGrowOnlyRootVar(VarDef *r) {
     return v && v->type && GrowOnlyTail(LoadType(v->type));
 }
 
-// The receivers a function's body textually shrinks: what a call into a
-// cycle still being checked is taken to shrink (§5.1). A parameter counts by
-// index; any other name counts as a capture, and as a global too where one
-// has that name. A local of the body that owns its array hides the name
-// until its block ends, while a name bound any other way may alias storage
-// outside the body and still counts.
-// The receiver of an array member operation spelled `a.op(...)` or
-// `op(a, ...)`, for the operations `pick` names; null for any other call.
-template<typename P> static Node *OpRecv(Call *c, P pick) {
-    if (auto d = Is<Dot>(c->callee)) return pick(d->name) ? d->obj : nullptr;
-    if (auto id = Is<Ident>(c->callee); id && !c->args.empty() && pick(id->name))
-        return c->args[0];
-    return nullptr;
-}
-
-inline const TypeCheck::ShrinkSummary &TypeCheck::SyntacticShrinks(SFunction *sf) {
-    auto [it, fresh] = shrinkcache.try_emplace(sf);
-    auto &summary = it->second;
-    if (!fresh || !sf->body) return summary;
-    ScanReceivers(sf, summary, [](Call *c) {
-        return OpRecv(c, [](string_view op) {
-            return op == "pop" || op == "resize" || op == "clear";
-        });
-    });
-    return summary;
-}
-
-inline const TypeCheck::ShrinkSummary &TypeCheck::SyntacticGrows(SFunction *sf) {
-    auto [it, fresh] = growcache.try_emplace(sf);
-    auto &summary = it->second;
-    if (!fresh || !sf->body) return summary;
-    ScanReceivers(sf, summary, [](Call *c) -> Node * {
-        // to_bytes(a, out) and a.to_bytes(out) grow out, not a.
-        if (auto d = Is<Dot>(c->callee); d && d->name == "to_bytes" && c->args.size() == 1)
-            return c->args[0];
-        if (auto id = Is<Ident>(c->callee); id && id->name == "to_bytes" && c->args.size() == 2)
-            return c->args[1];
-        return OpRecv(c, [](string_view op) {
-            return op == "push" || op == "append" || op == "alloc_index" ||
-                   op == "alloc_ref" || op == "format" || op == "resize";
-        });
-    });
-    return summary;
-}
-
-template<typename F>
-void TypeCheck::ScanReceivers(SFunction *sf, ShrinkSummary &summary, F recv) {
-    // A declaration owns its arrays when it binds array literals, or
-    // uninitialized arrays, by value: any other initializer may bind existing
-    // storage (§4.1).
-    auto owned = [](VarDecl *vd) {
-        if (vd->byref || (vd->type && vd->type->kind != TY_ARRAY)) return false;
-        if (vd->inits.empty()) return vd->type != nullptr;
-        for (auto init : vd->inits) if (!Is<ArrayLit>(init)) return false;
-        return true;
-    };
-    vector<pair<string_view, bool>> locals;   // The body's bindings in scope, innermost last.
-    auto note = [&](Node *r) {
-        auto id = r ? Is<Ident>(r) : nullptr;
-        if (!id) return;
-        for (auto l = locals.rbegin(); l != locals.rend(); ++l) {
-            if (l->first != id->name) continue;
-            if (l->second) return;
-            break;
-        }
-        for (size_t i = 0; i < sf->params.size(); i++)
-            if (sf->params[i].name == id->name) { summary.params.push_back((int)i); return; }
-        if (ast.LookupGlobal(id->name, id->ns)) summary.globals.push_back(id->name);
-        summary.captures.push_back(id->name);
-    };
-    function<void(Node *)> walk = [&](Node *n) {
-        if (!n) return;
-        auto base = locals.size();
-        if (auto c = Is<Call>(n)) note(recv(c));
-        if (auto a = Is<Assign>(n); a && a->op == T_ASSIGN) note(a->lval);
-        if (auto fl = Is<ForLoop>(n)) {
-            walk(fl->iter);
-            locals.push_back({ fl->var, false });
-            locals.push_back({ fl->idxvar, false });
-            walk(fl->body);
-        } else if (auto m = Is<MatchExpr>(n)) {
-            walk(m->scrutinee);
-            for (auto &arm : m->arms) {
-                walk(arm.pat.lo);
-                walk(arm.pat.hi);
-                locals.push_back({ arm.pat.binder, false });
-                walk(arm.body);
-                locals.resize(base);
-            }
-        } else if (auto fv = Is<FunVal>(n)) {
-            locals.push_back({ "it", false });
-            for (auto &p : fv->params) locals.push_back({ p.name, false });
-            walk(fv->body);
-        } else {
-            n->Children([&](Node *ch) { walk(ch); });
-        }
-        // A declaration's names stay bound for the rest of its block.
-        if (auto vd = Is<VarDecl>(n)) {
-            for (auto name : vd->names) locals.push_back({ name, owned(vd) });
-        } else {
-            locals.resize(base);
-        }
-    };
-    walk(sf->body);
-}
-
 // A shrink of the grow-shrink array rooted at root (§5.2): no variable in
 // scope may refer into it. Such references are held only by variables
 // (they cannot be stored), so the scan is exact, up to a `var` reference
@@ -1384,7 +1274,6 @@ inline void TypeCheck::NoteShrink(VarDef *root, TypeExpr *bound, ShrinkBalance b
         if (!fresh) it->second = std::max(it->second, balance);
     };
     auto noted = [&](FnSpec *s) {
-        if (balance == SB_ASSUMED) assumedspecs.insert(s);
         if (balance == SB_UNBALANCED && !growonly) s->unbalancedshrink = true;
     };
     NoteRootEvent(root,
@@ -1398,57 +1287,6 @@ inline void TypeCheck::NoteShrink(VarDef *root, TypeExpr *bound, ShrinkBalance b
                       else mark(s->shrinkexternals, r);
                       noted(s);
                   });
-}
-
-// What the §5.2 scan of a shrink and the pairs after it (NoteLiveViews)
-// would report or keep, for a call taken to be balanced before that is known:
-// kept, and reported or recorded should it not be (SettleAssumedShrinks).
-// The first error ends it, as it would have ended the check.
-inline void TypeCheck::KeepShrinkChecks(Node *at, const string &op, VarDef *root,
-                                        const string &what, TypeExpr *bound,
-                                        AssumedShrink &kept) {
-    if (!kept.error.empty()) return;
-    auto saved = livecapture;
-    livecapture = &kept.pairs;
-    try {
-        CheckShrinkHolders(at, op, root, what, bound);
-        NoteLiveViews(at, cat("cannot ", op), root, what, false, bound);
-    } catch (CompileError &e) {
-        kept.error = e.msg;
-    }
-    livecapture = saved;
-}
-
-// Once the outermost function a back edge took to be balanced is checked
-// (§5.2), every summary the assumption went into is complete. It held if no
-// function assumed of shrinks any grow-shrink array unbalanced: then no run
-// shortens one, by induction on the calls it makes, the calls back into the
-// cycle included. If it did not, every call judged by it is judged as one
-// that is not balanced: the first error its skipped checks found is
-// reported, or else the pairs they would have kept go into their records,
-// and what it recorded as balanced is not.
-inline void TypeCheck::SettleAssumedShrinks() {
-    auto held = true;
-    for (auto &a : assumedshrinks) held = held && !(a.callee && a.callee->unbalancedshrink);
-    if (!held) {
-        for (auto &a : assumedshrinks)
-            if (!a.error.empty()) throw CompileError { a.error };
-        for (auto &a : assumedshrinks)
-            for (auto &[s, ls] : a.pairs) NoteLiveShrink(ls, s);
-    }
-    for (auto s : assumedspecs) {
-        auto settle = [&](ShrinkBalance &b) {
-            if (b != SB_ASSUMED) return;
-            b = held ? SB_BALANCED : SB_UNBALANCED;
-            s->unbalancedshrink = s->unbalancedshrink || !held;
-        };
-        for (auto &e : s->shrinkparams) settle(e.second);
-        for (auto &e : s->shrinkexternals) settle(e.second);
-        for (auto &b : s->shrinkparambounds) settle(b.balance);
-        for (auto &b : s->shrinkexternalbounds) settle(b.balance);
-    }
-    assumedshrinks.clear();
-    assumedspecs.clear();
 }
 
 inline void TypeCheck::ShrinkGrowShrink(Node *at, const string &op, VarDef *root,
@@ -1522,7 +1360,7 @@ inline vector<TypeCheck::ShrinkTarget> TypeCheck::ShrinkTargets(const Roots &roo
         auto cands = RootCandidates(arr, Depth(root), false, true);
         if (root) {
             auto isbound = false;
-            if (!IsTemp(root) && root != cycleroot) {
+            if (!IsTemp(root)) {
                 isbound = true;
                 for (auto &c : cands.alts) if (c.root == root && c.exact) isbound = false;
             }
@@ -1569,7 +1407,7 @@ inline void TypeCheck::ShrinkThrough(Node *at, bool standalone, const string &ve
 // only the callers can tell apart from the array: one of the two is a
 // parameter's class. The scans judge every other view.
 inline bool TypeCheck::CallersJudge(VarDef *r, VarDef *root) {
-    return r && r != root && !IsTemp(r) && r != cycleroot && (IsClassRoot(r) || IsClassRoot(root));
+    return r && r != root && !IsTemp(r) && (IsClassRoot(r) || IsClassRoot(root));
 }
 
 // What the activation still uses after a shrink of root that only its
@@ -1633,8 +1471,7 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
             if (!CallersJudge(a.root, root)) continue;
             LiveShrink ls { .shrunk = root, .shrunkexact = !bound, .bound = bound,
                             .live = a.root, .liveexact = a.exact, .pointee = w.pointee,
-                            .byteview = w.p.byteview, .growonly = growonly,
-                            .guessed = guessedshrink, .name = name };
+                            .byteview = w.p.byteview, .growonly = growonly, .name = name };
             if (NoteLiveShrink(ls, current) < 0)
                 Error(at, cat(prefix, " while ", name, " is still used: it may refer into ", what,
                               growonly ? " (§5.1)" : " (§5.2)"));
@@ -1727,10 +1564,6 @@ inline int TypeCheck::NoteLiveShrink(LiveShrink ls, FnSpec *current) {
     };
     if (!current || s == l || (!IsClassRoot(s) && !IsClassRoot(l)) || !outside(s) || !outside(l))
         return -1;
-    if (livecapture) {
-        livecapture->push_back({ current, ls });
-        return 0;
-    }
     for (auto &e : current->liveshrinks) {
         if (e.shrunk != s || e.live != l || !e.bound != !ls.bound) continue;
         if (e.bound && !TypeEq(e.bound, ls.bound)) continue;
@@ -1739,10 +1572,8 @@ inline int TypeCheck::NoteLiveShrink(LiveShrink ls, FnSpec *current) {
         e.liveexact = e.liveexact && ls.liveexact;
         if (e.pointee && (!ls.pointee || !TypeEq(e.pointee, ls.pointee))) e.pointee = nullptr;
         e.byteview = e.byteview || ls.byteview;
-        e.guessed = e.guessed && ls.guessed;
         return e.shrunkexact != was.shrunkexact || e.liveexact != was.liveexact ||
-               e.pointee != was.pointee || e.byteview != was.byteview ||
-               e.guessed != was.guessed;
+               e.pointee != was.pointee || e.byteview != was.byteview;
     }
     current->liveshrinks.push_back(ls);
     return 1;
@@ -1757,11 +1588,11 @@ inline int TypeCheck::NoteLiveShrink(LiveShrink ls, FnSpec *current) {
 // is mapped again once the cycle is (ResolveCycleSites).
 inline void TypeCheck::ApplyCalleeLiveShrinks(Node *at, FnSpec *spec, vector<Val> &argvals,
                                               string_view name) {
-    CycleSite site { at, CurRealFrame().spec, spec, {}, string(name) };
+    CycleSite site { at, CurRealFrame().spec, RecordOf(spec), {}, string(name) };
+    if (!site.callee) return;   // A cycle's first round: no record yet.
     for (size_t q = 0; q < spec->argtypes.size() && q < argvals.size(); q++)
         site.args.push_back(ClassArgRoots(spec->argtypes[q], argvals[q]));
     MapLiveShrinks(site);
-    if (CycleOpen()) cyclesites.push_back(std::move(site));
 }
 
 // Maps the callee's pairs through one call's arguments into the caller's
@@ -1821,8 +1652,7 @@ inline bool TypeCheck::MapLiveShrinks(const CycleSite &site) {
                     auto what = ls.bound ? cat("an array ", ls.shrunk->name, " leads to")
                                          : string(arr->name);
                     Error(site.at, cat("cannot call ", site.name, ": it ",
-                                       ls.guessed || ls.bound || !shrunk.Exact() ? "may shrink "
-                                                                                  : "shrinks ",
+                                       ls.bound || !shrunk.Exact() ? "may shrink " : "shrinks ",
                                        what, " while ", name, " is still used, and ", name,
                                        " may refer into ", ls.bound ? "it" : what,
                                        ls.growonly ? " (§5.1)" : " (§5.2)"));
@@ -1832,25 +1662,6 @@ inline bool TypeCheck::MapLiveShrinks(const CycleSite &site) {
         }
     }
     return grew;
-}
-
-// Whether a recursive cycle is being checked: some specialization on the
-// call path is part of one (§7.8).
-inline bool TypeCheck::CycleOpen() {
-    for (auto &f : frames)
-        if (f.spec && f.spec->inprogress && f.spec->incycle) return true;
-    return false;
-}
-
-// The outermost recursive cycle on the call path is checked, so every
-// record the calls checked meanwhile read is complete: they are mapped
-// again until no record grows.
-inline void TypeCheck::ResolveCycleSites() {
-    for (auto grew = true; grew;) {
-        grew = false;
-        for (auto &site : cyclesites) grew = MapLiveShrinks(site) || grew;
-    }
-    cyclesites.clear();
 }
 
 // The callee's shrinks of grow-shrink arrays (§5.2) are the caller's:
@@ -1863,15 +1674,11 @@ inline void TypeCheck::ResolveCycleSites() {
 // done so far says otherwise (SettleAssumedShrinks).
 inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &argvals,
                                           string_view name) {
-    auto pending = spec->inprogress;
-    FlagScope guessing(guessedshrink, pending);
     auto standalone = Is<Call>(at) && Is<Call>(at)->standalone;
-    auto assume = pending && !spec->unbalancedshrink;
     // A shrink of an array the call may free: a grow-only array takes the
     // §5.1 scan (variables and recorded stores), a grow-shrink one the §5.2
     // scan (variables only) and the pairs its callers judge (NoteLiveViews),
-    // unless it is judged balanced. One judged so on an assumption keeps what
-    // the two would have done aside until the assumption is settled.
+    // unless it is judged balanced.
     struct Hit {
         VarDef *root;
         TypeExpr *bound;
@@ -1880,8 +1687,6 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
         const char *how;
     };
     vector<Hit> hits;
-    AssumedShrink kept;
-    kept.callee = assume ? spec : nullptr;
     auto apply = [&](const Hit &h, ShrinkBalance judged) {
         auto what = cat("call ", name, ", which ", h.how);
         auto op = cat(what, " ", h.root->name);
@@ -1890,159 +1695,80 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
         } else if (judged == SB_UNBALANCED) {
             ShrinkGrowShrink(at, op, h.root, string(h.root->name), h.bound);
         } else {
-            if (judged == SB_ASSUMED)
-                KeepShrinkChecks(at, op, h.root, string(h.root->name), h.bound, kept);
             NoteShrink(h.root, h.bound, judged);
         }
     };
     // A shrink of the `arr` at root, and, where root is inexact or only
     // bounds it, of every other array it may be (ShrinkTargets). An
     // external's type is its root's own, which a parameter class takes from
-    // its call site. A back edge's are applied as they come; a checked
-    // callee's once all of them are known.
+    // its call site. A callee's are applied once all of them are known.
     auto shrink = [&](const Roots &roots, TypeExpr *arr, const char *how,
                       ShrinkBalance balance) {
         auto growonly = arr ? GrowOnlyTail(arr) : IsGrowOnlyRootVar(roots.Root());
-        for (auto &t : ShrinkTargets(roots, arr)) {
-            Hit h { t.root, t.bound ? arr : nullptr, growonly,
-                    growonly ? SB_UNBALANCED : balance,
-                    roots.Exact() && t.root == roots.Root() ? how : "may shrink" };
-            if (pending) apply(h, assume ? SB_ASSUMED : SB_UNBALANCED);
-            else hits.push_back(h);
-        }
+        for (auto &t : ShrinkTargets(roots, arr))
+            hits.push_back({ t.root, t.bound ? arr : nullptr, growonly,
+                             growonly ? SB_UNBALANCED : balance,
+                             roots.Exact() && t.root == roots.Root() ? how : "may shrink" });
     };
-    auto pending_shrinks = pending ? &SyntacticShrinks(spec->sf) : nullptr;
     ApplyCalleeStores(spec, argvals, at);
+    // The record read: none in a cycle's first round (RecordOf), whose back
+    // edge shrinks nothing yet.
+    auto rec = RecordOf(spec);
+    if (!rec) return;
     for (size_t i = 0; i < argvals.size() && i < spec->argtypes.size(); i++) {
         auto pt = spec->argtypes[i];
-        auto entry = spec->shrinkparams.find((int)i);
-        auto recorded = entry != spec->shrinkparams.end();
+        auto entry = rec->shrinkparams.find((int)i);
+        auto recorded = entry != rec->shrinkparams.end();
+        if (!recorded) continue;
         // A shrink recorded against a by-value holder parameter is of the
         // array its references point into (ClassArgRoot), not of the holder,
         // which the callee received a copy of. Only a holder whose class is
         // that one array exactly has such an entry (RootArg::heldexact, or a
         // class shared with a reference); an inexact one's are bounds, below.
-        if (!pending && !IsRefOrSlice(pt)) {
-            if (recorded) shrink(ClassArgRoots(pt, argvals[i]), nullptr, "shrinks", entry->second);
+        if (!IsRefOrSlice(pt)) {
+            shrink(ClassArgRoots(pt, argvals[i]), nullptr, "shrinks", entry->second);
             continue;
         }
         // What shrinks through a parameter is its pointee: a resizable one,
         // which every other parameter in its class points into.
         if (!argvals[i].Root() || pt->kind != TY_REF || ClassOf(pt->ref->sub) != SC_RESIZABLE)
             continue;
-        auto arr = LoadType(pt->ref->sub);
-        bool shrinks;
-        if (!pending) {
-            shrinks = recorded;
-        } else if (GrowOnlyTail(arr)) {
-            // A back edge's summary is incomplete; a grow-only argument
-            // counts as shrunk where the callee textually shrinks it.
-            shrinks = false;
-            for (auto pi : pending_shrinks->params) shrinks |= pi == (int)i;
-        } else {
-            shrinks = ContainsGrowShrink(arr);
-        }
-        if (shrinks)
-            shrink(argvals[i], arr, "shrinks", recorded && !pending ? entry->second : SB_UNBALANCED);
+        shrink(argvals[i], LoadType(pt->ref->sub), "shrinks", entry->second);
     }
     // An array only reached through the references an argument holds or
     // points at: any of its type that the argument's roots, or its contents'
-    // for a by-value holder, bound. A back edge's shrinks are noted on the
-    // callee itself, so the list may grow meanwhile.
-    auto parambounds = spec->shrinkparambounds;
-    for (auto &b : parambounds) {
+    // for a by-value holder, bound.
+    for (auto &b : rec->shrinkparambounds) {
         if (b.key >= (int)argvals.size()) continue;
         auto roots = ClassArgRoots(spec->argtypes[b.key], argvals[b.key]);
         roots.Weaken();
-        shrink(roots, b.type, "may shrink", pending ? SB_UNBALANCED : b.balance);
+        shrink(roots, b.type, "may shrink", b.balance);
     }
-    if (pending) {
-        // What the references an argument or a lexical parent's local holds
-        // lead to is reached too: every grow-shrink array there, which the
-        // roots it is reached from bound.
-        auto reach = [&](Roots roots, TypeExpr *t) {
-            vector<TypeExpr *> reached;
-            ReachedThroughRefs(t, reached);
-            roots.Weaken();
-            for (auto p : reached)
-                if (ContainsGrowShrink(p)) shrink(roots, p, "may shrink", SB_UNBALANCED);
-        };
-        for (size_t i = 0; i < argvals.size() && i < spec->argtypes.size(); i++) {
-            auto pt = spec->argtypes[i];
-            if (IsRefOrSlice(pt)) reach(argvals[i], PointeeOf(pt));
-            else if (HoldsPlainRef(pt)) reach(ContentsOf(argvals[i]), pt);
-        }
-        // A nested recursive call can also reach its lexical parents' local
-        // storage, including arrays reached through captured parameters.
-        set<VarDef *> seen;
-        for (auto vd : LexicalLocals(spec->lexparent)) {
-            if (vd->isglobal || !vd->type) continue;
-            auto viaref = IsRefOrSlice(vd->type);
-            auto roots = viaref ? RefRootsOf(vd) : RootsOf(vd);
-            if (!roots.Root()) continue;
-            auto rt = viaref ? PointeeOf(vd->type) : LoadType(vd->type);
-            auto may = ContainsGrowShrink(rt);
-            if (IsArrayKind(rt, A_GROW))
-                for (auto external : pending_shrinks->captures) may |= external == vd->name;
-            if (may && seen.insert(roots.Root()).second)
-                shrink(roots, rt, "may shrink", SB_UNBALANCED);
-            reach(roots, rt);
-        }
-        // Every grow-shrink global, and every grow-only global some function
-        // still being checked textually shrinks.
-        for (auto g : ast.globals) {
-            for (auto vd : g->defs) {
-                if (!vd->type) continue;
-                if (ContainsGrowShrink(vd->type)) {
-                    apply({ vd, nullptr, false, SB_UNBALANCED, "may shrink" },
-                          assume ? SB_ASSUMED : SB_UNBALANCED);
-                } else if (IsArrayKind(vd->type, A_GROW)) {
-                    auto textual = false;
-                    for (auto &fr : frames) {
-                        if (!fr.spec || !fr.spec->inprogress) continue;
-                        for (auto gn : SyntacticShrinks(fr.spec->sf).globals)
-                            textual |= gn == vd->name;
-                    }
-                    if (textual)
-                        GrowOnlyShrinkAt(at, standalone, cat("call ", name, ", which may shrink"),
-                                         vd, string(vd->name));
-                }
-            }
-        }
-        if (assume) {
-            assumedshrinks.push_back(std::move(kept));
-            assumedopen.insert(spec);
-        }
-    } else {
-        for (auto &[vd, balance] : spec->shrinkexternals)
-            shrink(RootsOf(vd), nullptr, "shrinks", balance);
-        for (auto &b : spec->shrinkexternalbounds) {
-            Roots one;
-            one.Set(b.key, false);
-            shrink(one, b.type, "may shrink", b.balance);
-        }
-        // A balanced shrink frees nothing a view of the array taken before
-        // the call points into, unless the call may also shrink that array
-        // unbalanced, under its root or another that may name it: an inexact
-        // or bound one, or a parameter class, which may be a global, a
-        // captured variable or another class (MayAliasRoots; two classes of
-        // one activation only the call sites could tell apart). The verdict
-        // is only assumed where one of those shrinks is.
-        auto judge = [&](const Hit &h) {
-            if (h.growonly || h.balance == SB_UNBALANCED) return SB_UNBALANCED;
-            auto judged = h.balance;
-            for (auto &u : hits) {
-                if (u.growonly || MayAliasRoots(h.root, !h.bound, u.root, !u.bound) == AL_NO)
-                    continue;
-                if (u.balance == SB_UNBALANCED) return SB_UNBALANCED;
-                judged = std::max(judged, u.balance);
-            }
-            return judged;
-        };
-        for (auto &h : hits) apply(h, judge(h));
-        if (!kept.error.empty() || !kept.pairs.empty())
-            assumedshrinks.push_back(std::move(kept));
+    for (auto &[vd, balance] : rec->shrinkexternals)
+        shrink(RootsOf(vd), nullptr, "shrinks", balance);
+    for (auto &b : rec->shrinkexternalbounds) {
+        Roots one;
+        one.Set(b.key, false);
+        shrink(one, b.type, "may shrink", b.balance);
     }
+    // A balanced shrink frees nothing a view of the array taken before
+    // the call points into, unless the call may also shrink that array
+    // unbalanced, under its root or another that may name it: an inexact
+    // or bound one, or a parameter class, which may be a global, a
+    // captured variable or another class (MayAliasRoots; two classes of
+    // one activation only the call sites could tell apart).
+    auto judge = [&](const Hit &h) {
+        if (h.growonly || h.balance == SB_UNBALANCED) return SB_UNBALANCED;
+        auto judged = h.balance;
+        for (auto &u : hits) {
+            if (u.growonly || MayAliasRoots(h.root, !h.bound, u.root, !u.bound) == AL_NO)
+                continue;
+            if (u.balance == SB_UNBALANCED) return SB_UNBALANCED;
+            judged = std::max(judged, u.balance);
+        }
+        return judged;
+    };
+    for (auto &h : hits) apply(h, judge(h));
     ApplyCalleeLiveShrinks(at, spec, argvals, name);
 }
 
@@ -2154,13 +1880,10 @@ inline void TypeCheck::CheckGrowsSince(size_t base, const Roots &built, const st
 // handed (§7.10).
 inline void TypeCheck::ApplyCalleeGrows(Node *at, FnSpec *spec, vector<Val> &argvals,
                                         string_view name) {
-    // A summary records a growth of a parameter's class (ClassArgRoot); the
-    // text of a callee still being checked names the parameter itself, which
-    // for a by-value holder is the callee's own copy.
+    // A record notes a growth of a parameter's class (ClassArgRoot).
     auto grows = [&](size_t i, const char *how) {
         if (i >= argvals.size()) return;
-        auto roots = spec->inprogress ? argvals[i].AsRoots()
-                                      : ClassArgRoots(spec->argtypes[i], argvals[i]);
+        auto roots = ClassArgRoots(spec->argtypes[i], argvals[i]);
         auto root = roots.Root();
         if (!root || IsTemp(root)) return;
         NoteGrow(at, roots, cat("call ", name, ", which ", how, " ", root->name));
@@ -2172,30 +1895,13 @@ inline void TypeCheck::ApplyCalleeGrows(Node *at, FnSpec *spec, vector<Val> &arg
         }
         return;
     }
-    if (!spec->inprogress) {
-        for (auto pi : spec->growparams) grows((size_t)pi, "grows");
-        for (auto vd : spec->growexternals)
-            NoteGrow(at, RootsOf(vd), cat("call ", name, ", which grows ", vd->name));
-        return;
-    }
-    auto &textual = SyntacticGrows(spec->sf);
-    for (auto pi : textual.params) grows((size_t)pi, "may grow");
-    for (auto gn : textual.globals)
-        for (auto g : ast.globals)
-            for (auto vd : g->defs)
-                if (vd->type && vd->name == gn)
-                    NoteGrow(at, RootsOf(vd), cat("call ", name, ", which may grow ", vd->name));
-    // A nested recursive call can also reach its lexical parents' locals,
-    // arrays reached through captured references included.
-    for (auto vd : LexicalLocals(spec->lexparent)) {
-        if (vd->isglobal || !vd->type) continue;
-        auto named = false;
-        for (auto cn : textual.captures) named |= cn == vd->name;
-        if (!named) continue;
-        auto viaref = IsPlainRef(vd->type);
-        NoteGrow(at, viaref ? RefRootsOf(vd) : RootsOf(vd),
-                 cat("call ", name, ", which may grow ", vd->name));
-    }
+    // The record read: none in a cycle's first round (RecordOf), whose back
+    // edge grows nothing yet.
+    auto rec = RecordOf(spec);
+    if (!rec) return;
+    for (auto pi : rec->growparams) grows((size_t)pi, "grows");
+    for (auto vd : rec->growexternals)
+        NoteGrow(at, RootsOf(vd), cat("call ", name, ", which grows ", vd->name));
 }
 
 // Where naming v leads, if that can be the array under construction at
@@ -2342,11 +2048,14 @@ inline bool TypeCheck::NamedOutside(FnSpec *spec, vector<VarDef *> &out) {
     auto pending = false;
     function<void(FnSpec *)> visit = [&](FnSpec *sp) {
         if (sp->sf->isextern || !walked.insert(sp).second) return;
-        if (sp->inprogress) {
+            // A callee still being checked: what the round before saw it use
+        // (RecordOf), or in a cycle's first round anything at all.
+        auto rec = RecordOf(sp);
+        if (!rec) {
             pending = true;
             return;
         }
-        EachUse(sp->body, [&](Ident *id, Node *) { named.push_back(id->vdef); },
+        EachUse(rec->body, [&](Ident *id, Node *) { named.push_back(id->vdef); },
                 [&](Call *, FnSpec *callee) { visit(callee); });
     };
     visit(spec);

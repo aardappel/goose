@@ -1,4 +1,4 @@
-// error: cannot call step, which may shrink g while r is still used: it may hold a reference or slice into it
+// error: cannot call step, which shrinks g while r is still used: it may hold a reference or slice into it
 // A local bound by reference stands for whatever it may alias: clearing
 // through one named like the global it binds counts as clearing the global.
 var g: i64[>..] = [1, 2];

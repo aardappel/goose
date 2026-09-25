@@ -1,8 +1,7 @@
-// error: this return's reference is rooted at mine, deeper than the result the recursive cycle's back edges were given
-// A holder result's returns are checked against what back edges were given
-// (§7.8): the first return holds a string literal, so the back edge's
-// result may be kept in a global; the second holds a view of `mine`, which
-// dies with `walk`, after that result was kept.
+// error: storing a reference rooted at mine, which does not outlive the destination
+// A holder result's roots are those of every return (§7.8): the first holds
+// a string literal, the second a view of `mine`, which dies with `walk`, so
+// the result may not be kept in a global.
 struct Fragment { text: const u8[:] }
 var kept: Fragment[>..] = [];
 

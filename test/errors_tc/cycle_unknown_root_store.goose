@@ -1,9 +1,6 @@
-// error: storing the result of a recursive call whose returned reference's root the cycle's returns do not determine
-// error: it may only be passed down
-// A cycle's return roots are predicted by a scan of its returns (§7.8), which
-// does not resolve overload sets: `either` is one, so the prediction names
-// no root, and the back edge's result carries the root that outlives
-// nothing. Storing it into a global is rejected. (Passing it down would be
+// error: storing a reference rooted at p, which does not outlive the destination
+// A cycle's result has every root its returns give (§7.8): here an element
+// pushed into p, which the global slot outlives. (Passing it down would be
 // fine.)
 struct Cell { v: i64 }
 struct Other { w: i64 }

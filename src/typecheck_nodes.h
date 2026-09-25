@@ -111,7 +111,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
                 v.holderfrom = vd;
                 if (vd->isglobal) {
                     v.contents.Set(nullptr, false);
-                } else if (!vd->contents.None()) {
+                } else if (!vd->contents.None() || vd->contents.unknown) {
                     v.contents = vd->contents;
                 } else {
                     v.contents.Set(vd, false);

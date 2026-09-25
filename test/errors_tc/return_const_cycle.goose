@@ -1,4 +1,6 @@
-// error: this return is read-only, but the recursive cycle already used a writable result; declare the result const
+// error: cannot write through this reference: non-writable provenance
+// A cycle's result is read-only where any of its returns is (§9.5), so the
+// write through x, checked once the cycle's returns are known, is the error.
 recursive fn choose(r: i64&, depth: i64) -> i64& {
     if depth > 0 {
         let x .= choose(r, depth - 1);

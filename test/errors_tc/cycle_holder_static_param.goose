@@ -1,8 +1,8 @@
-// error: returning the result of a recursive call whose returned reference's root the cycle's returns do not determine
+// error: returning a reference rooted in <recursive result>, which dies with this function
 // The entry call gives `h` static data, which the body takes it for: its
-// return gives no root a back edge could map. The back edge gives `h` a
+// record gives no root a back edge could map. The back edge gives `h` a
 // view of this activation's `local` instead, so what it returns may hold
-// that view: its result may only be passed down (§7.8).
+// that view: its result may only be passed down (§7.8), not returned.
 struct Fragment { text: const u8[:] }
 
 recursive fn pass(h: Fragment, n: i64) -> Fragment {
