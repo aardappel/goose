@@ -432,7 +432,7 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
     if ((av.lvalue || av.storagebranches) && pt->kind == TY_REF && pt->ref->lenstorage < 0 &&
         av.type->kind != TY_REF) {
         Val rv = av;
-        rv.type = RefTo(av.type, pt->line);
+        rv.type = ast.RefTo(av.type, pt->line);
         rv.lvalue = false;
         return UnifyArgRaw(pt, rv, b, tier);
     }
@@ -481,13 +481,8 @@ inline bool TypeCheck::BindTypes(TypeExpr *pt, TypeExpr *at,
             auto bindto = at;
             if (pt->named->varmode) {
                 if (at->kind != TY_ENUM) return false;
-                if (at->enu->varmode) {
-                    auto base = ast.NewType(TY_ENUM, at->line);
-                    base->enu = ast.NewDetail<TypeEnum>();
-                    base->enu->en = at->enu->en;
-                    base->enu->args = at->enu->args;
-                    bindto = base;
-                }
+                if (at->enu->varmode)
+                    bindto = ast.EnumOf(at->enu->en, at->enu->args, false, at->line);
             }
             for (auto &[n, t] : b)
                 if (n == name) return TypeEq(t, bindto);
@@ -560,8 +555,8 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
         vector<MatchInfo> vm;
         auto allok = true;
         for (auto &var : en->variants) {
-            auto vt = VariantTypeOf(et, &var, c->line);
-            auto argt = isref ? RefTo(vt, c->line) : vt;
+            auto vt = ast.VariantTypeOf(et, &var, c->line);
+            auto argt = isref ? ast.RefTo(vt, c->line) : vt;
             Val vv = argvals[pos];
             vv.type = argt;
             auto saved = argvals[pos];
@@ -601,7 +596,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
     if (byref && !IsPlainRef(argvals[found].type)) {
         DestScope ds(*this, Dest {});
         SlotScope ss(*this, false);
-        argvals[found] = CheckValue(argnodes[found], RefTo(enumtype, c->line), true);
+        argvals[found] = CheckValue(argnodes[found], ast.RefTo(enumtype, c->line), true);
     }
     if (argvals[found].implicitcopy) ImplicitCopyError(argvals[found].implicitcopy);
     BindBranchesByRef(argnodes, argvals, matches[0].paramtypes, found);
@@ -614,9 +609,9 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
     FnSpec *first = nullptr;
     for (size_t vi = 0; vi < en->variants.size(); vi++) {
         auto &mi = matches[vi];
-        auto vt = VariantTypeOf(enumtype, &en->variants[vi], c->line);
+        auto vt = ast.VariantTypeOf(enumtype, &en->variants[vi], c->line);
         armvals[found] = argvals[found];
-        armvals[found].type = byref ? RefTo(vt, c->line) : vt;
+        armvals[found].type = byref ? ast.RefTo(vt, c->line) : vt;
         auto spec = GetOrCreateSpec(mi, armvals, c);
         ApplyCalleeShrinks(c, spec, armvals, name);
         ApplyCalleeGrows(c, spec, armvals, name);

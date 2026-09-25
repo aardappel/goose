@@ -349,7 +349,7 @@ void TypeCheck::HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent, const
                              : d.type->kind == TY_SLICE ? d.type->sub : nullptr;
             if (!elem) return;
             if (IsTemp(d.Root())) d.Set(d.Root(), true);
-            d.type = SliceOf(elem, n->line);
+            d.type = ast.SliceOf(elem, n->line);
             hold(d);
             return;
         }
@@ -361,9 +361,9 @@ void TypeCheck::HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent, const
             auto held = v;
             if (c->builtin == B_TO_BYTES || rt->kind == TY_SLICE) {
                 if (!elem) return;
-                held.type = SliceOf(elem, n->line);
+                held.type = ast.SliceOf(elem, n->line);
             } else if (held.type->kind != TY_REF) {
-                held.type = RefTo(rt, n->line);
+                held.type = ast.RefTo(rt, n->line);
             }
             if (IsTemp(held.Root()) && t->kind != TY_REF && t->kind != TY_SLICE)
                 held.Set(held.Root(), true);
@@ -382,7 +382,7 @@ void TypeCheck::HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent, const
     }
     if (kind == HK_VIEW && t->kind == TY_ARRAY && ClassOf(t) != SC_FIXED) {
         auto view = v;
-        view.type = SliceOf(t->arr->sub, n->line);
+        view.type = ast.SliceOf(t->arr->sub, n->line);
         hold(view);
     }
     if (HoldsPlainRef(t)) {
@@ -391,7 +391,7 @@ void TypeCheck::HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent, const
         auto held = v;
         held.TakeAlts(ContentsOf(v));
         for (auto pt : pointees) {
-            held.type = RefTo(pt, n->line);
+            held.type = ast.RefTo(pt, n->line);
             hold(held);
         }
     }
@@ -419,7 +419,7 @@ template<typename F> void TypeCheck::HeldOperands(F f) {
                 HoldAs(ch, it->second, HK_VIEW, e.node, rendering, f);
                 if (ch == renderwhere) {
                     auto where = it->second;
-                    where.type = RefTo(where.type, ch->line);
+                    where.type = ast.RefTo(where.type, ch->line);
                     f(Held { ch, std::move(where), false, rendering });
                 }
                 return;
@@ -526,7 +526,7 @@ inline Node *TypeCheck::AutoRef(Node *n, Val &v) {
     if (!Referenceable(n, v)) NoResizableRef(n);
     auto u = ast.New<Unary>(n->line, T_BITAND, n);
     u->synth = true;
-    v.type = RefTo(ast.PlainOf(v.type), n->line);
+    v.type = ast.RefTo(ast.PlainOf(v.type), n->line);
     v.type->cq = !v.writable;   // The reference carries a const value's qualifier.
     v.lvalue = false;
     u->exprtype = v.type;
@@ -744,7 +744,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
     // An lvalue at a reference destination is the reference to it (§4.1),
     // a `const T&` where the lvalue is read-only (§9.5).
     if (BindsRef(v, dt)) {
-        t = v.type = RefTo(ast.PlainOf(t), dt->line);
+        t = v.type = ast.RefTo(ast.PlainOf(t), dt->line);
         v.type->cq = !v.writable;
         v.lvalue = false;
     }
@@ -1054,15 +1054,6 @@ inline Val TypeCheck::VoidVal() {
     return v;
 }
 
-inline TypeExpr *TypeCheck::FixedArrayOf(TypeExpr *elem, int64_t count, Line l) {
-    auto t = ast.NewType(TY_ARRAY, l);
-    t->arr = ast.NewDetail<TypeArray>();
-    t->arr->sub = elem;
-    t->arr->akind = A_FIXED;
-    t->arr->size = count;
-    return t;
-}
-
 // &lvalue: reference creation (§3.8) with its restrictions. On a location
 // that itself holds a reference (a reference variable or field), yields
 // the stored reference — there are no references to references.
@@ -1083,7 +1074,7 @@ inline Val TypeCheck::CheckRefOf(Unary *x) {
         return v;
     }
     Val v;
-    v.type = RefTo(ast.PlainOf(lv.type), x->line);
+    v.type = ast.RefTo(ast.PlainOf(lv.type), x->line);
     v.SetProv(lv);
     v.writable = lv.writable && !lv.isvarint;
     v.type->cq = !v.writable;   // `&x` of a const value is a `const T&` (§9.5).
@@ -1319,9 +1310,7 @@ inline bool TypeCheck::ElementwiseOK(TypeExpr *t) {
 inline Val TypeCheck::CheckVariantConst(Dot *d, SEnum *en) {
     if (!en->generics.empty())
         Error(d, cat("generic enum ", en->name, " needs type arguments to name a variant"));
-    auto t = ast.NewType(TY_ENUM, d->line);
-    t->enu = ast.NewDetail<TypeEnum>();
-    t->enu->en = en;
+    auto t = ast.EnumOf(en, {}, false, d->line);
     auto inst = GetEnumInst(t);
     auto found = en->FindVariant(d->name);
     if (!found) Error(d, cat("enum ", en->name, " has no variant named ", d->name));
@@ -1334,24 +1323,6 @@ inline Val TypeCheck::CheckVariantConst(Dot *d, SEnum *en) {
     Val v;
     v.type = t;
     return v;
-}
-
-inline TypeExpr *TypeCheck::VariantTypeOf(TypeExpr *enumtype, SVariant *v, Line l) {
-    auto t = ast.NewType(TY_VARIANT, l);
-    t->var = ast.NewDetail<TypeVariant>();
-    // Variant types are mode-neutral; drop varmode from the adt type.
-    if (enumtype->enu->varmode) {
-        auto base = ast.NewType(TY_ENUM, l);
-        base->enu = ast.NewDetail<TypeEnum>();
-        base->enu->en = enumtype->enu->en;
-        base->enu->args = enumtype->enu->args;
-        t->var->adt = base;
-    } else {
-        t->var->adt = enumtype;
-    }
-    t->var->variant = v;
-    t->var->name = v->name;
-    return t;
 }
 
 // ------------------------------------------------------------------

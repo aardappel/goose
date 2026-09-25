@@ -895,7 +895,6 @@ struct CodeGen {
 
     string QueueFor(TypeExpr *t);
     Loc RecvLoc(Node *n);
-    TypeExpr *MakeSliceT(TypeExpr *elem, Line l);
     string LenCast(const Loc &lv);
     vector<string> EmitBuiltin(Call *c, Dst d0);
 
@@ -1030,7 +1029,7 @@ struct CodeGen {
         string externs;
         if (!usedexterns.empty() || !runtime_os_text.empty()) {
             EmitCoreTypes();
-            CT(MakeSliceT(ast.inttypes[IS_U8], Line {}));
+            CT(ast.SliceOf(ast.inttypes[IS_U8], Line {}));
         }
         for (auto sp : usedexterns) {
             if (runtime_os_text.find(cat(" ", sp->sf->cname, "(")) != string_view::npos) continue;

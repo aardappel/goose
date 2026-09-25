@@ -14,10 +14,7 @@ namespace goose {
 
 inline TypeExpr *CodeGen::GrowU8() {
     if (growu8) return growu8;
-    growu8 = ast.NewType(TY_ARRAY, Line {});
-    growu8->arr = ast.NewDetail<TypeArray>();
-    growu8->arr->sub = ast.inttypes[IS_U8];
-    growu8->arr->akind = A_GROW;
+    growu8 = ast.ArrayOf(ast.inttypes[IS_U8], A_GROW, Line {});
     return growu8;
 }
 

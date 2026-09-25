@@ -596,19 +596,10 @@ inline TypeExpr *CodeGen::VariantType(TypeExpr *enumtype, int vi) {
     auto key = pair<EnumInst *, int>(ei, vi);
     auto it = varianttypes.find(key);
     if (it != varianttypes.end()) return it->second;
-    auto t = ast.NewType(TY_VARIANT, enumtype->line);
-    t->var = ast.NewDetail<TypeVariant>();
-    auto base = enumtype;
-    if (enumtype->enu->varmode) {
-        base = ast.NewType(TY_ENUM, enumtype->line);
-        base->enu = ast.NewDetail<TypeEnum>();
-        base->enu->en = enumtype->enu->en;
-        base->enu->args = enumtype->enu->args;
-        base->enu->inst = ei;
-    }
-    t->var->adt = base;
-    t->var->variant = &ei->en->variants[vi];
-    t->var->name = t->var->variant->name;
+    auto t = ast.VariantTypeOf(enumtype, &ei->en->variants[vi], enumtype->line);
+    // The fixed-mode base made for a variable-mode enum names the same
+    // instantiation.
+    if (t->var->adt != enumtype) t->var->adt->enu->inst = ei;
     return varianttypes[key] = t;
 }
 

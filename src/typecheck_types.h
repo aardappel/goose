@@ -332,11 +332,7 @@ inline bool TypeCheck::HasDefault(TypeExpr *t, string &why) {
 // TypeExpr object.
 
 inline TypeExpr *TypeCheck::PendingArray(Line l) {
-    auto t = ast.NewType(TY_ARRAY, l);
-    t->arr = ast.NewDetail<TypeArray>();
-    t->arr->sub = ast.NewType(TY_VOID, l);
-    t->arr->akind = A_GROW;
-    return t;
+    return ast.ArrayOf(ast.NewType(TY_VOID, l), A_GROW, l);
 }
 
 // Distinct from an empty array literal's `void[0]`, which is fixed-size.
@@ -350,13 +346,7 @@ inline bool TypeCheck::IsPendingArray(TypeExpr *t) {
 inline TypeExpr *TypeCheck::PendingElemFrom(const Val &av, Node *at) {
     if (av.emptyarr || av.isnull || av.type->kind == TY_VOID || av.type == fntype)
         Error(at, "cannot infer the element type of this array from this value");
-    if (av.strlit) {
-        auto t = ast.NewType(TY_ARRAY, at->line);
-        t->arr = ast.NewDetail<TypeArray>();
-        t->arr->sub = ast.inttypes[IS_U8];
-        t->arr->akind = A_VAR;
-        return t;
-    }
+    if (av.strlit) return ast.ArrayOf(ast.inttypes[IS_U8], A_VAR, at->line);
     return av.type;
 }
 
@@ -467,21 +457,11 @@ inline void TypeCheck::ValidateType(TypeExpr *t, Line l, int pos) {
 // ------------------------------------------------------------------
 // Small type constructors and views.
 
-inline TypeExpr *TypeCheck::SliceOf(TypeExpr *t, Line l) {
-    auto s = ast.NewType(TY_SLICE, l);
-    s->sub = t;
-    return s;
-}
-
 // A fresh `u8[>..]`: the text str() builds and the image to_bytes() writes
 // (§3.7, docs/design/serialization.md). Fresh per call, since a result type
 // is the call's own.
 inline TypeExpr *TypeCheck::GrowU8Array(Line l) {
-    auto t = ast.NewType(TY_ARRAY, l);
-    t->arr = ast.NewDetail<TypeArray>();
-    t->arr->sub = ast.inttypes[IS_U8];
-    t->arr->akind = A_GROW;
-    return t;
+    return ast.ArrayOf(ast.inttypes[IS_U8], A_GROW, l);
 }
 
 // The value type a load from storage yields: numeric types load as
@@ -493,10 +473,7 @@ inline TypeExpr *TypeCheck::LoadType(TypeExpr *t) {
     // slice loads as itself, its qualifier being about the pointee.
     if (t->cq && !IsRefOrSlice(t)) return ast.PlainOf(t);
     if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
-        auto r = ast.NewType(TY_REF, t->line);
-        r->ref = ast.NewDetail<TypeRef>();
-        r->ref->sub = t->ref->sub;
-        r->ref->optional = t->ref->optional;
+        auto r = ast.RefTo(t->ref->sub, t->line, t->ref->optional);
         r->cq = t->cq;
         return r;
     }

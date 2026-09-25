@@ -192,7 +192,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             c->rettypes.push_back(t);
             if (!c->defaultinit) {
                 if (t->kind == TY_STRUCT || t->kind == TY_ENUM || t->kind == TY_VARIANT) {
-                    auto st = t->kind == TY_ENUM ? VariantTypeOf(t, &t->enu->en->variants[0], c->line) : t;
+                    auto st = t->kind == TY_ENUM ? ast.VariantTypeOf(t, &t->enu->en->variants[0], c->line) : t;
                     auto sl = ast.New<StructLit>(c->line, st);
                     sl->defaultall = true;
                     c->defaultinit = sl;
@@ -505,7 +505,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             c->rettypes.push_back(v.type);
             break;
         case 'r':
-            v.type = RefTo(elem, c->line);
+            v.type = ast.RefTo(elem, c->line);
             v.TakeAlts(rv);
             v.ClearSlotRead();
             v.writable = rv.writable;
@@ -513,7 +513,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             c->rettypes.push_back(v.type);
             break;
         case 's':
-            v.type = SliceOf(elem, c->line);
+            v.type = ast.SliceOf(elem, c->line);
             v.TakeAlts(rv);
             v.ClearSlotRead();
             v.writable = rv.writable;
@@ -1772,17 +1772,11 @@ inline bool TypeCheck::BuiltInPlace(TypeExpr *elem) {
 // A T[k] of the receiver's elements, or a T[] where they are not
 // fixed-size, as only variable and grow-only arrays hold those (§3.3).
 inline TypeExpr *TypeCheck::AppendedRun(TypeExpr *elem, ArrayLit *al) {
-    if (ClassOf(elem) != SC_FIXED) {
-        auto t = ast.NewType(TY_ARRAY, al->line);
-        t->arr = ast.NewDetail<TypeArray>();
-        t->arr->sub = elem;
-        t->arr->akind = A_VAR;
-        return t;
-    }
+    if (ClassOf(elem) != SC_FIXED) return ast.ArrayOf(elem, A_VAR, al->line);
     // A negative fill count is the literal's own error to report.
     auto n = al->fillval ? ConstIntOrError(al->fillcount, "array fill count")
                          : (int64_t)al->elems.size();
-    return FixedArrayOf(elem, std::max<int64_t>(n, 0), al->line);
+    return ast.ArrayOf(elem, A_FIXED, al->line, std::max<int64_t>(n, 0));
 }
 
 // A copied element would carry self-relative offsets still measured from

@@ -1671,6 +1671,69 @@ struct Ast {
         return d;
     }
 
+    // The type constructors every pass builds types with. Each gives a
+    // fresh node at `line`: a type's identity is structural
+    // (TypeCheck::TypeEq), and the line is the construction's own.
+    TypeExpr *SliceOf(TypeExpr *elem, Line line) {
+        auto t = NewType(TY_SLICE, line);
+        t->sub = elem;
+        return t;
+    }
+    // A plain or optional reference; a relative one sets its width and
+    // pool on the detail afterwards.
+    TypeExpr *RefTo(TypeExpr *sub, Line line, bool optional = false) {
+        auto t = NewType(TY_REF, line);
+        t->ref = NewDetail<TypeRef>();
+        t->ref->sub = sub;
+        t->ref->optional = optional;
+        return t;
+    }
+    // An array of `kind` over `elem`; `size` is a fixed array's length or
+    // a limited one's capacity where the maker knows it (-1: not yet, or
+    // none, for `[..]`).
+    TypeExpr *ArrayOf(TypeExpr *elem, ArrayKind kind, Line line, int64_t size = -1) {
+        auto t = NewType(TY_ARRAY, line);
+        t->arr = NewDetail<TypeArray>();
+        t->arr->sub = elem;
+        t->arr->akind = kind;
+        t->arr->size = size;
+        return t;
+    }
+    TypeExpr *StructOf(SStruct *st, vector<TypeExpr *> args, Line line) {
+        auto t = NewType(TY_STRUCT, line);
+        t->struc = NewDetail<TypeStruct>();
+        t->struc->st = st;
+        t->struc->args = std::move(args);
+        return t;
+    }
+    // An enum type in either mode (§3.5).
+    TypeExpr *EnumOf(SEnum *en, vector<TypeExpr *> args, bool varmode, Line line) {
+        auto t = NewType(TY_ENUM, line);
+        t->enu = NewDetail<TypeEnum>();
+        t->enu->en = en;
+        t->enu->args = std::move(args);
+        t->enu->varmode = varmode;
+        return t;
+    }
+    // The variant type `adt.name`; `variant` is its declaration where that
+    // is known (null in the parser, which resolution fills in).
+    TypeExpr *VariantOf(TypeExpr *adt, string_view name, SVariant *variant, Line line) {
+        auto t = NewType(TY_VARIANT, line);
+        t->var = NewDetail<TypeVariant>();
+        t->var->adt = adt;
+        t->var->name = name;
+        t->var->variant = variant;
+        return t;
+    }
+    // The variant type of a variant of a concrete enum type. A variant type
+    // is mode-neutral: its ADT is the enum's fixed-mode spelling (§3.5).
+    TypeExpr *VariantTypeOf(TypeExpr *enumtype, SVariant *v, Line line) {
+        auto base = enumtype->enu->varmode
+                        ? EnumOf(enumtype->enu->en, enumtype->enu->args, false, line)
+                        : enumtype;
+        return VariantOf(base, v->name, v, line);
+    }
+
     template<typename T, typename... Args> T *New(Args &&...args) {
         auto n = new T(std::forward<Args>(args)...);
         allnodes.push_back(n);

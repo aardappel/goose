@@ -817,11 +817,7 @@ inline string CodeGen::GenFixedArrayLit(ArrayLit *al) {
         // whole (§3.10; rooted as a temporary by the checker).
         auto count = al->fillval ? ((IntLit *)al->fillcount)->val
                                  : (int64_t)al->elems.size();
-        auto at = ast.NewType(TY_ARRAY, al->line);
-        at->arr = ast.NewDetail<TypeArray>();
-        at->arr->sub = et->sub;
-        at->arr->akind = A_FIXED;
-        at->arr->size = count;
+        auto at = ast.ArrayOf(et->sub, A_FIXED, al->line, count);
         auto save = al->exprtype;
         al->exprtype = at;
         auto av = GenFixedArrayLit(al);
@@ -1138,7 +1134,7 @@ inline string CodeGen::GenSlice(SliceExpr *se) {
     // Adapted contexts (slice constructing an array) leave an array
     // exprtype on the node; the slice value's own type comes from the
     // source element.
-    auto et = se->exprtype->kind == TY_SLICE ? se->exprtype : MakeSliceT(v.elem, se->line);
+    auto et = se->exprtype->kind == TY_SLICE ? se->exprtype : ast.SliceOf(v.elem, se->line);
     if (IsFix(v.elem)) {
         auto dp = v.typedelems ? v.elems
                                : cat("(", CT(v.elem), " *)(", v.elems, ")");

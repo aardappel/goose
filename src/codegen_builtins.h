@@ -60,12 +60,6 @@ inline CodeGen::Loc CodeGen::RecvLoc(Node *n) {
     return lv;
 }
 
-inline TypeExpr *CodeGen::MakeSliceT(TypeExpr *elem, Line l) {
-    auto t = ast.NewType(TY_SLICE, l);
-    t->sub = elem;
-    return t;
-}
-
 // The C type a length-field write casts to, per receiver representation.
 inline string CodeGen::LenCast(const Loc &lv) {
     auto ak = lv.t->arr->akind;
@@ -677,7 +671,7 @@ inline vector<string> CodeGen::EmitSlicePool(Call *c, vector<Node *> &an, Line l
         L("}");
     }
     auto r = T();
-    L(CT(MakeSliceT(elem, ln)), " ", r, " = { (", CT(elem), " *)(", ElemAddr(v, i), "), ", n,
+    L(CT(ast.SliceOf(elem, ln)), " ", r, " = { (", CT(elem), " *)(", ElemAddr(v, i), "), ", n,
       " };");
     return { r };
 }

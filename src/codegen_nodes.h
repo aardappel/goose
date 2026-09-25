@@ -283,7 +283,7 @@ inline string SliceExpr::CgX(CodeGen &cg) {
     CodeGen::Loc slv;
     slv.val = true;
     slv.s = s;
-    slv.t = cg.MakeSliceT(exprtype->arr->sub, line);
+    slv.t = cg.ast.SliceOf(exprtype->arr->sub, line);
     return cg.AdaptToFixed(slv, exprtype, line);
 }
 // `as` range-checks in debug builds (GS_RANGE and friends are identity

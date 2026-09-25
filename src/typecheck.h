@@ -646,33 +646,19 @@ struct TypeCheck {
                         Error(t->line, cat("variable mode (..) requires an ADT type, not ",
                                            TypeStr(b)));
                     if (b->enu->varmode) return b;
-                    auto n = ast.NewType(TY_ENUM, t->line);
-                    n->enu = ast.NewDetail<TypeEnum>();
-                    n->enu->en = b->enu->en;
-                    n->enu->args = b->enu->args;
-                    n->enu->varmode = true;
-                    return n;
+                    return ast.EnumOf(b->enu->en, b->enu->args, true, t->line);
                 }
                 return b;
             }
             case TY_STRUCT: {
                 auto args = SubstArgs(t->struc->args);
                 if (!args) return t;
-                auto n = ast.NewType(TY_STRUCT, t->line);
-                n->struc = ast.NewDetail<TypeStruct>();
-                n->struc->st = t->struc->st;
-                n->struc->args = std::move(*args);
-                return n;
+                return ast.StructOf(t->struc->st, std::move(*args), t->line);
             }
             case TY_ENUM: {
                 auto args = SubstArgs(t->enu->args);
                 if (!args) return t;
-                auto n = ast.NewType(TY_ENUM, t->line);
-                n->enu = ast.NewDetail<TypeEnum>();
-                n->enu->en = t->enu->en;
-                n->enu->args = std::move(*args);
-                n->enu->varmode = t->enu->varmode;
-                return n;
+                return ast.EnumOf(t->enu->en, std::move(*args), t->enu->varmode, t->line);
             }
             case TY_ARRAY: {
                 auto sub = Subst(t->arr->sub);
@@ -686,8 +672,7 @@ struct TypeCheck {
             case TY_SLICE: {
                 auto sub = Subst(t->sub);
                 if (sub == t->sub) return t;
-                auto n = ast.NewType(TY_SLICE, t->line);
-                n->sub = sub;
+                auto n = ast.SliceOf(sub, t->line);
                 n->cq = t->cq;
                 return n;
             }
@@ -706,16 +691,11 @@ struct TypeCheck {
                 if (adt == t->var->adt) return t;
                 if (adt->kind != TY_ENUM)
                     Error(t->line, cat("variant type of non-ADT type ", TypeStr(adt)));
-                auto n = ast.NewType(TY_VARIANT, t->line);
-                n->var = ast.NewDetail<TypeVariant>();
-                n->var->adt = adt;
                 auto name = t->var->name;
-                n->var->name = name;
                 auto found = adt->enu->en->FindVariant(name);
                 if (!found)
                     Error(t->line, cat("enum ", adt->enu->en->name, " has no variant named ", name));
-                n->var->variant = found;
-                return n;
+                return ast.VariantOf(adt, name, found, t->line);
             }
             default: return t;
         }
@@ -1026,9 +1006,7 @@ struct TypeCheck {
     // ------------------------------------------------------------------
     // Small type constructors and views.
 
-    TypeExpr *RefTo(TypeExpr *t, Line l);
     TypeExpr *NarrowedRef(TypeExpr *t, Line l);
-    TypeExpr *SliceOf(TypeExpr *t, Line l);
     TypeExpr *GrowU8Array(Line l);
 
     TypeExpr *LoadType(TypeExpr *t);
@@ -1196,7 +1174,6 @@ struct TypeCheck {
         if (!v.type) v.type = ast.voidtype;
         return v;
     }
-    TypeExpr *FixedArrayOf(TypeExpr *elem, int64_t count, Line l);
     Val CheckRefOf(Unary *x);
     void FoldInt(TType op, Val &l, Val &r, Val &out, Node *at);
     TypeExpr *UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, TypeExpr *lt, TypeExpr *rt,
@@ -1214,7 +1191,6 @@ struct TypeCheck {
     Val CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue, int scopekind,
                       Node *scopenode = nullptr);
     Val CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalue);
-    TypeExpr *VariantTypeOf(TypeExpr *enumtype, SVariant *v, Line l);
     Val CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wantvalue);
     void CheckLoopBody(Block *body);
     Scope CheckLoopPasses(Node *x, FlowState &head, const function<void()> &pass);
@@ -1567,13 +1543,10 @@ struct TypeCheck {
         temproot->depth = INT32_MAX;
         fntype = ast.NewType(TY_FN, Line {});
         fntype->fn = ast.NewDetail<TypeFn>();
-        u8slice = SliceOf(ast.inttypes[IS_U8], Line {});
-        cu8slice = SliceOf(ast.inttypes[IS_U8], Line {});
+        u8slice = ast.SliceOf(ast.inttypes[IS_U8], Line {});
+        cu8slice = ast.SliceOf(ast.inttypes[IS_U8], Line {});
         cu8slice->cq = true;
-        nulltype = ast.NewType(TY_REF, Line {});
-        nulltype->ref = ast.NewDetail<TypeRef>();
-        nulltype->ref->sub = ast.voidtype;
-        nulltype->ref->optional = true;
+        nulltype = ast.RefTo(ast.voidtype, Line {}, true);
         Frame f;
         frames.push_back(f);
         // Global VarDefs exist up front so names resolve in any order; reads
@@ -1592,21 +1565,10 @@ struct TypeCheck {
         ResolvePools();
         // Validate all non-generic type declarations up front: clearer errors
         // than at first use, and unused decls get checked too.
-        for (auto st : ast.structs) {
-            if (!st->generics.empty()) continue;
-            auto t = ast.NewType(TY_STRUCT, st->line);
-            t->struc = ast.NewDetail<TypeStruct>();
-            t->struc->st = st;
-            GetStructInst(t);
-        }
-        for (auto en : ast.enums) {
-            if (!en->generics.empty()) continue;
-            auto t = ast.NewType(TY_ENUM, en->line);
-            t->enu = ast.NewDetail<TypeEnum>();
-            t->enu->en = en;
-            t->enu->varmode = true;
-            GetEnumInst(t);
-        }
+        for (auto st : ast.structs)
+            if (st->generics.empty()) GetStructInst(ast.StructOf(st, {}, st->line));
+        for (auto en : ast.enums)
+            if (en->generics.empty()) GetEnumInst(ast.EnumOf(en, {}, true, en->line));
         for (auto g : ast.globals) {
             CheckVarDecl(g, true);
             for (auto d : g->defs) d->assigned = true;

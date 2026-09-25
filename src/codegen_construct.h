@@ -396,7 +396,7 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         Loc slv;
         slv.val = true;
         slv.s = GenSlice(se);
-        slv.t = MakeSliceT(et->arr->sub, n->line);
+        slv.t = ast.SliceOf(et->arr->sub, n->line);
         GenArrayFromLoc(slv, et, stk, n->line, lenlv);
         return;
     }
@@ -720,14 +720,8 @@ inline void CodeGen::FreezeFill(Node *n, TypeExpr *t, vector<Node *> &added) {
         }
     }
     if (IsVarintT(t)) t = ast.inttypes[IS_I64];
-    if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
-        auto pt = ast.NewType(TY_REF, n->line);
-        pt->ref = ast.NewDetail<TypeRef>();
-        *pt->ref = *t->ref;
-        pt->ref->lenstorage = -1;
-        pt->ref->pool = nullptr;
-        t = pt;
-    }
+    if (t->kind == TY_REF && t->ref->lenstorage >= 0)
+        t = ast.RefTo(t->ref->sub, n->line, t->ref->optional);
     Loc lv;
     lv.t = t;
     if (IsResz(t)) {

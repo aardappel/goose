@@ -454,8 +454,7 @@ struct Parser {
                     lex.Next();
                     if (IsNext(T_COLON)) {
                         Expect(T_RBRACKET, "slice type");
-                        auto sl = ast.NewType(TY_SLICE, line);
-                        sl->sub = t;
+                        auto sl = ast.SliceOf(t, line);
                         qualify(sl);
                         t = sl;
                         continue;
@@ -483,9 +482,7 @@ struct Parser {
                 }
                 case T_BITAND: {
                     lex.Next();
-                    auto r = ast.NewType(TY_REF, line);
-                    r->ref = ast.NewDetail<TypeRef>();
-                    r->ref->sub = t;
+                    auto r = ast.RefTo(t, line);
                     qualify(r);
                     if (IsNext(T_LT)) {
                         r->ref->lenstorage = ParseLengthStorage("relative reference width");
@@ -507,10 +504,7 @@ struct Parser {
                         if (t->ref->optional) Error("type is already optional");
                         t->ref->optional = true;
                     } else {
-                        auto o = ast.NewType(TY_REF, line);
-                        o->ref = ast.NewDetail<TypeRef>();
-                        o->ref->sub = t;
-                        o->ref->optional = true;
+                        auto o = ast.RefTo(t, line, true);
                         qualify(o);
                         t = o;
                     }
@@ -527,11 +521,8 @@ struct Parser {
                 }
                 case T_DOT: {
                     lex.Next();
-                    auto v = ast.NewType(TY_VARIANT, line);
-                    v->var = ast.NewDetail<TypeVariant>();
-                    v->var->adt = t;
-                    v->var->name = ExpectIdent("variant type");
-                    t = v;
+                    auto name = ExpectIdent("variant type");
+                    t = ast.VariantOf(t, name, nullptr, line);
                     continue;
                 }
                 default:
@@ -917,11 +908,7 @@ struct Parser {
                     // (fields, UFCS, payload-less variant constants).
                     if (lex.tok == T_LCURLY && !no_struct_lit && Is<Ident>(e)) {
                         auto base = NewUnresolvedType(Is<Ident>(e)->name, e->line);
-                        auto vt = ast.NewType(TY_VARIANT, line);
-                        vt->var = ast.NewDetail<TypeVariant>();
-                        vt->var->adt = base;
-                        vt->var->name = name;
-                        e = ParseStructLitBody(vt, line);
+                        e = ParseStructLitBody(ast.VariantOf(base, name, nullptr, line), line);
                     } else {
                         e = New<Dot>(line, e, name, curns);
                     }
@@ -1032,11 +1019,8 @@ struct Parser {
                         auto t = NewUnresolvedType(name, line);
                         t->named->args = std::move(tyargs);
                         if (IsNext(T_DOT)) {
-                            auto vt = ast.NewType(TY_VARIANT, line);
-                            vt->var = ast.NewDetail<TypeVariant>();
-                            vt->var->adt = t;
-                            vt->var->name = ExpectIdent("variant literal");
-                            return ParseStructLitBody(vt, line);
+                            auto vname = ExpectIdent("variant literal");
+                            return ParseStructLitBody(ast.VariantOf(t, vname, nullptr, line), line);
                         }
                         return ParseStructLitBody(t, line);
                     }

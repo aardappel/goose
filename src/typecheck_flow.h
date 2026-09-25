@@ -641,17 +641,10 @@ inline void TypeCheck::NoteHolderBinding(VarDef *d, const Val &v) {
 // ------------------------------------------------------------------
 // Small type constructors and views.
 
-inline TypeExpr *TypeCheck::RefTo(TypeExpr *t, Line l) {
-    auto r = ast.NewType(TY_REF, l);
-    r->ref = ast.NewDetail<TypeRef>();
-    r->ref->sub = t;
-    return r;
-}
-
 // What an optional reference type narrows to (§3.8): a plain reference to
 // the same pointee under the same qualifier.
 inline TypeExpr *TypeCheck::NarrowedRef(TypeExpr *t, Line l) {
-    auto r = RefTo(t->ref->sub, l);
+    auto r = ast.RefTo(t->ref->sub, l);
     r->cq = t->cq;
     return r;
 }
@@ -931,7 +924,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
             if (!arm.pat.binder.empty()) {
                 if (!found->has_payload)
                     Error(arm.body, cat("variant ", arm.pat.variant, " has no payload to bind"));
-                auto vt = VariantTypeOf(enumtype, found, m->line);
+                auto vt = ast.VariantTypeOf(enumtype, found, m->line);
                 // Packed resizable ADTs have one owning header, but no
                 // persistent header for a payload view (C.2). Do not let
                 // the backend manufacture a plain pointer or a stale copy.
@@ -963,7 +956,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                                             "whole assignment may replace its variant "
                                             "(§3.5); bind by value: ", arm.pat.variant,
                                             " ", arm.pat.binder));
-                    binder->type = RefTo(vt, m->line);
+                    binder->type = ast.RefTo(vt, m->line);
                     BindProv(binder, sv);
                 } else {
                     if (HasRelRefT(vt))
@@ -1210,7 +1203,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
             }
             byref = x->byref || ClassOf(elem) != SC_FIXED;
             if (byref) {
-                bindtype = RefTo(elem, x->line);
+                bindtype = ast.RefTo(elem, x->line);
             } else {
                 // An element that *is* a relative reference loads as a
                 // plain one, exactly as indexing it does; only a value
@@ -1661,7 +1654,7 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     // reference to the slot itself, not a read-back of what it holds.
     if (throughref || !infields(a->lval)) {
         Val loc;
-        loc.type = RefTo(held.type, a->line);
+        loc.type = ast.RefTo(held.type, a->line);
         loc.SetProv(held);
         nodevals[a->lval] = loc;
     } else {

@@ -170,11 +170,8 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     // variable and grow-only arrays hold those (§3.3).
     auto natural = [&](int64_t count) {
         if (elem == tc.fntype) tc.Error(this, "function values cannot be stored in arrays (§7.6)");
-        if (tc.ClassOf(elem) == SC_FIXED) return tc.FixedArrayOf(elem, count, line);
-        auto t = tc.ast.NewType(TY_ARRAY, line);
-        t->arr = tc.ast.NewDetail<TypeArray>();
-        t->arr->sub = elem;
-        t->arr->akind = A_VAR;
+        if (tc.ClassOf(elem) == SC_FIXED) return tc.ast.ArrayOf(elem, A_FIXED, line, count);
+        auto t = tc.ast.ArrayOf(elem, A_VAR, line);
         tc.ValidateType(t, line, VT_LOCAL);
         return t;
     };
@@ -215,7 +212,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         // [] adapts to any array type; callers re-check with an expected type
         // or report the missing context.
         v.emptyarr = true;
-        v.type = tc.FixedArrayOf(tc.ast.voidtype, 0, line);
+        v.type = tc.ast.ArrayOf(tc.ast.voidtype, A_FIXED, line, 0);
         return v;
     }
     tc.CheckArrayCount(this, expected, (int64_t)elems.size());
@@ -298,18 +295,16 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
                 auto nt = tc.NaturalType(av);
                 if (nt) tc.BindTypes(field->type, nt, b);
             }
-            auto nt2 = tc.ast.NewType(TY_STRUCT, line);
-            nt2->struc = tc.ast.NewDetail<TypeStruct>();
-            nt2->struc->st = st;
+            vector<TypeExpr *> args;
             for (auto &g : st->generics) {
                 TypeExpr *bound = nullptr;
                 for (auto &[n, bt] : b) if (n == g.name) bound = bt;
                 if (!bound)
                     tc.Error(this, cat("cannot infer generic parameter ", g.name, " of ",
                                        st->name, "; use ", st->name, "<...> { }"));
-                nt2->struc->args.push_back(bound);
+                args.push_back(bound);
             }
-            t = nt2;
+            t = tc.ast.StructOf(st, std::move(args), line);
         }
         auto inst = tc.GetStructInst(t);
         sinst = inst;
@@ -620,7 +615,7 @@ inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
     if (lo) tc.CheckIntAny(lo);
     if (hi) tc.CheckIntAny(hi);
     Val v;
-    v.type = tc.SliceOf(elem, line);
+    v.type = tc.ast.SliceOf(elem, line);
     v.SetProv(lv);
     v.reusable = false;   // A view of a pool is not the pool.
     v.type->cq = !v.writable;   // A slice of read-only storage is a `const T[:]` (§9.5).
