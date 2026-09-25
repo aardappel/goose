@@ -451,8 +451,7 @@ inline Val TypeCheck::CheckInferredResult(Node *&n, FnSpec *tspec) {
     if (reachable && IsNonFixedRef(v)) {
         auto root = CanonRoot(v.root);
         if ((root && root->ownerspec == tspec) || IsTemp(root)) {
-            auto u = Is<Unary>(n);
-            auto what = ExprStr(u && u->synth ? u->child : n);
+            auto what = ExprStr(n);
             Error(n, cat(what, " is not fixed-size and is not copied implicitly (§4.1), and "
                          "its storage does not outlive this function: return copy(", what,
                          ")"));

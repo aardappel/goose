@@ -171,6 +171,19 @@ inline bool EndsInBlock(const Node *n) {
     return false;
 }
 
+// Set while a diagnostic prints an expression (TypeCheck::ExprStr), which then
+// reads as the user wrote it: an lvalue the checker bound by reference (§4.1)
+// prints without the `&` it inserted. --dump and --specs print every node.
+inline thread_local bool dumpwritten = false;
+
+// The node that prints for n, which is also the one an operand is grouped by:
+// a receiver bound by reference prints as c.f(), not (c).f().
+inline const Node *Written(const Node *n) {
+    if (!dumpwritten) return n;
+    auto u = Is<Unary>(n);
+    return u && u->synth ? u->child : n;
+}
+
 // Control expressions need their own parens as operands (§2); the outer
 // parens around a binary expression or cast do not group either operand.
 // A postfix receiver additionally groups unary expressions so (-x).f()
@@ -178,6 +191,7 @@ inline bool EndsInBlock(const Node *n) {
 // float, and a constant the optimizer folds for --specs can be negative.
 // Struct literals need grouping in scrutinee contexts.
 inline void DumpOperand(string &s, const Node *n, int ind, bool postfix = false) {
+    n = Written(n);
     auto parens = EndsInBlock(n) || Is<StructLit>(n) || Is<Guard>(n) ||
                   Is<Return>(n) || Is<Break>(n) || Is<Continue>(n) ||
                   (postfix && (Is<Unary>(n) || Is<IntLit>(n) || Is<FltLit>(n)));
@@ -258,6 +272,10 @@ inline void StructLit::Dump(string &s, int ind) const {
 }
 
 inline void Unary::Dump(string &s, int ind) const {
+    if (Written(this) != this) {
+        child->Dump(s, ind);
+        return;
+    }
     s += TName(op);
     // Parens around a nested unary keep e.g. - -x from dumping as the -- token.
     DumpOperand(s, child, ind, true);

@@ -1334,7 +1334,9 @@ struct TypeCheck {
 
     string ExprStr(Node *n) {
         string s;
+        dumpwritten = true;
         n->Dump(s, 0);
+        dumpwritten = false;
         return s;
     }
 

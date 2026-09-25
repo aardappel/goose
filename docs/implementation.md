@@ -166,6 +166,10 @@ comparison.
 
 **Dump** (`dump.h`): `--dump` regenerates source from the parsed tree, and
 the test runner checks that dump, reparse and dump again are identical.
+Diagnostics name expressions with the same code (`TypeCheck::ExprStr`), as
+the user wrote them: under `dumpwritten` the `&` the checker inserts where
+an lvalue binds by reference (`Unary::synth`, §3.3) is left out, which
+`--specs` still shows.
 
 ---
 
