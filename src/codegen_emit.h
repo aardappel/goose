@@ -345,6 +345,9 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
         }
     }
     cscopes.clear();
+    // Stacks counted from 0 are the outermost callers' (CollectSpecs).
+    if (stkmax > 0 && !curinfo->needssp)
+        Fail(sp->sf->line, cat("internal: ", curinfo->cname, " uses data stacks without gs_sp"));
     // The regions and the markers resolve now that every stack this body
     // grows, and where it grows it, is known.
     auto plan = PlanTopCaches();

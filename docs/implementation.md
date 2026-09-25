@@ -1971,7 +1971,17 @@ The C return value is the first fixed result, even when it is not result
 zero; with none it is `void`.
 `CollectSpecs` computes per specialization, to a fixpoint over the call
 graph, the free variables it or its callees need, the stack-owning globals
-it can reach, and whether it needs `gs_sp` at all.
+it can reach, and whether it needs `gs_sp` at all. A body without it counts
+its stack indices from 0, which are the outermost callers' stacks, so it
+needs `gs_sp` wherever it builds anything on one: a node of a nonfixed type,
+and what no node's type shows -- a call's result built as its own nonfixed
+type where the checker fitted the call to a fixed-size slot (`str()` passed
+as a slice or returned as a `u8[..16]`, `to_bytes()` passed as a slice), a
+payload a match arm copies by value, a variable-mode scrutinee a dispatch
+copies for its by-value arms, a variable-mode value (a reference result's
+pointee included) adapted to a fixed-mode ADT, anything rendered
+structurally into a limited array. `EmitSpec` rejects a body that allocates
+a stack without `gs_sp` as an internal error.
 
 ### 6.5 Destinations and in-place construction
 

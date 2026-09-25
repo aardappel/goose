@@ -78,6 +78,12 @@ inline void CodeGen::CollectSpecs() {
     // Scan each finished body once. The call edges are local to this
     // analysis; only the summaries needed by emission survive it. Preserve
     // first-appearance order for captures, which fixes the C parameter order.
+    // A body needs gs_sp wherever codegen puts anything on an indexed stack
+    // (AllocStk): without it those indices count from 0, the outermost
+    // callers' stacks, whose arrays may be growing meanwhile or have their
+    // tops cached in locals. A node's type is the slot type the checker
+    // fitted it to (FitsAt), so a value built as another type is found
+    // where it is made.
     unordered_map<FnSpec *, vector<FnSpec *>> callees;
     for (auto sp : livespecs) {
         auto &si = sinfo[sp];
@@ -100,6 +106,13 @@ inline void CodeGen::CollectSpecs() {
             if (n->exprtype && n->exprtype->kind != TY_VOID && n->exprtype->kind != TY_FN &&
                 n->exprtype->kind != TY_GENERIC && IsBytesT(n->exprtype))
                 si.needssp = true;
+            // A payload bound by value is copied onto a stack of its own.
+            if (auto m = Is<MatchExpr>(n))
+                for (auto &arm : m->arms) si.needssp |= arm.binder && IsBytesT(arm.binder->type);
+            // A value adapted to a fixed-mode ADT from a variable-mode one, a
+            // reference result's pointee included, is built as that first
+            // (GenAdtAdapted).
+            if (auto from = AdtFrom(n)) si.needssp |= IsBytesT(from);
             if (auto c = Is<Call>(n)) {
                 auto add = [&](FnSpec *k) {
                     if (k && k != sp && sinfo.count(k) && seencalls.insert(k).second)
@@ -111,9 +124,29 @@ inline void CodeGen::CollectSpecs() {
                 // and thread_spawn assemble their text or packet on a stack.
                 for (auto &fs : c->fmtspecs) add(fs.second);
                 if (c->builtin == B_PRINT || c->builtin == B_THREAD_SPAWN) si.needssp = true;
-                if ((c->builtin == B_QGET || c->builtin == B_QPOLL) &&
-                    !c->rettypes.empty() && IsBytesT(c->rettypes[0]))
-                    si.needssp = true;
+                // A result is built as the call's own type (str() passed as
+                // a slice or returned as a u8[..16], say) before it is fitted.
+                for (auto rt : c->rettypes) si.needssp |= IsBytesT(rt);
+                // A limited receiver takes anything rendered structurally
+                // from a builder of its own (EmitFormatInto).
+                if (c->builtin == B_FORMAT) {
+                    auto an = CallArgNodes(c, c->args.size() + (Is<Dot>(c->callee) ? 1 : 0));
+                    auto recv = an[0]->exprtype;
+                    if (recv->kind == TY_REF) recv = recv->ref->sub;
+                    if (recv->kind == TY_ARRAY && recv->arr->akind == A_LIMITED)
+                        for (size_t i = 1; i < an.size(); i++)
+                            si.needssp |= !SimpleText(FmtContext(c, an[i]), an[i]->exprtype);
+                }
+                // A variable-mode scrutinee is copied for the arms that take
+                // their variant by value, even when it arrives by reference
+                // (EmitDispatch).
+                if (!c->dispatch.empty()) {
+                    auto pos = c->dispatcharg;
+                    auto st = CallArgNodes(c, c->dispatch[0]->params.size())[pos]->exprtype;
+                    if (st->kind == TY_REF) st = st->ref->sub;
+                    if (st->kind == TY_ENUM && st->enu->varmode)
+                        for (auto d : c->dispatch) si.needssp |= d->argtypes[pos]->kind != TY_REF;
+                }
             }
             RunChildren(n, walk);
         };
