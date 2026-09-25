@@ -123,4 +123,11 @@ inline const BuiltinDef *LookupBuiltin(string_view name) {
     return nullptr;
 }
 
+// The definition of a kind a checked Call records (Call::builtin).
+inline const BuiltinDef &BuiltinByKind(int kind) {
+    assert(kind >= 0 && kind < (int)(sizeof(builtindefs) / sizeof(builtindefs[0])) &&
+           builtindefs[kind].kind == kind);
+    return builtindefs[kind];
+}
+
 }  // namespace goose

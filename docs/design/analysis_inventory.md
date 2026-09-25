@@ -591,3 +591,15 @@ samples before each landing (`docs/testing.md`,
   syntactic scan cannot show it has is read as bounded by its roots inside
   the loop (`loopretargets`), the single-pass replacement for what the
   collapsed inexact root used to guarantee; item 6 removes that too.
+* **2. Statement liveness from the tree** landed 2026-09-25: `nodepath`
+  (`PathEntry`, `NodeScope`), `nodevals` and `ForOperands` in
+  `typecheck.h`/`typecheck_exprs.h`; `HeldOperands` replaces `heldtemps`,
+  `TempScope`, `HoldValue`/`HoldLocation`/`HoldSequence`, the receiver and
+  render pushes and the `render` flag (now `renderarg`/`renderwhere`);
+  `LaterOperands` replaces `shrinkrest`/`RestScope` and gives `UsedAfter`
+  the rest of the statement. The two phases of a call are stated once: a
+  call `discovering` its overload holds nothing, a call applying its
+  callee's summary has consumed its own operands. `UsedAfter`'s block and
+  loop rescans (`blockpos`, `MentionsName`) and `invalue` (§5.1's rule 3, a
+  language rule rather than tracking) stay for item 3, whose liveness pass
+  subsumes them.

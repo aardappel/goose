@@ -453,12 +453,28 @@ to `i64`, a relative reference loads as a plain one, a `const` value loads
 as a plain copy), the read-back provenance, and, for a reference or slice,
 exactly the writability the slot's type says.
 
-**Held temporaries.** Values evaluated earlier in a statement stay live until
-it ends: `HoldValue` pushes a reference, slice, sequence view or holder
-value onto `heldtemps` (scoped by `TempScope`), and the shrink checks consult
-it (§3.10). A receiver evaluated before its arguments, or a slice taken
-before a later operand, is therefore still live while the rest of the
-statement runs, in evaluation order.
+**The statement's operands.** Values evaluated earlier in a statement stay
+live until the operation consuming them ends, and what runs later in the
+statement is part of a variable's liveness; both are read off the tree
+rather than recorded along the way. The checker keeps the path of nodes it
+is inside (`nodepath`, one `PathEntry` per node with the count of its
+operands evaluated so far, entered by `NodeScope` in `CheckV`, `CheckStmt`,
+`CheckStmtExpr` and `CheckLValue`) and the checked value of every
+expression that points somewhere (`nodevals`, `RecordVal`). `ForOperands`
+states each node kind's operands in evaluation order with how the node
+consumes them (`HoldKind`: a value, a view of an array's elements as `==`
+takes, the elements an index or slice reaches, a builtin's receiver, an
+assignment's location), `HeldOperands` walks the path and hands every
+operand already evaluated to the shrink checks as its parent holds it
+(`HoldAs`: a reference or slice as it is, a holder as a reference per
+pointee, the receiver as a reference to the array or a view of its elements,
+a location as the slot alone), and `LaterOperands` names the operands not
+yet evaluated (`UsedAfter`, §3.10). A call resolving its overload is
+`discovering`: its operands' values are those its phase 2 checks, and a
+call applying its callee's summary has consumed its own operands, which the
+callee's parameter pairs judge (§3.10). A callee body checked meanwhile
+starts with an empty path (`CheckSpecBody`), the caller's statement being
+its own: the call site applies the summary against it.
 
 ### 3.4 Roots and provenance
 
@@ -893,10 +909,11 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
 3. the call is `standalone` (§2) and not inside a value-producing construct
    (`invalue`, set by `ValueRegion` for a valued `if`/`match`/`block`/`loop`
    and for a function value's body);
-4. no held temporary of this statement may refer into it
-   (`CheckHeldShrinks`), nor, where it is a reference to a slice or to a
-   holder, may what it holds; an assignment's location counts as the slot
-   alone, since the assignment overwrites what the slot holds;
+4. no operand evaluated earlier in this statement and still held may refer
+   into it (`CheckHeldShrinks` over `HeldOperands`, §3.3), nor, where it is
+   a reference to a slice or to a holder, may what it holds; an assignment's
+   location counts as the slot alone, since the assignment overwrites what
+   the slot holds;
 5. no variable in scope, on any frame, may refer into it: a reference or
    slice variable whose pointee the array's elements can contain (or a byte
    view), rooted at it -- or a `var` at the same depth, or an inexact root
@@ -922,12 +939,13 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
 
 **Liveness** (`UsedAfter`) is syntactic: the variable's name occurs in a
 later statement of an open block at or inside its scope, in that block's
-tail, anywhere in an enclosing loop it was declared outside of, or in what
-runs after the shrink within its own statement (`shrinkrest`): a whole
-assignment's right-hand side, and the arguments print, str and format render
-after the one being checked (**Format overloads** below); a `for` binding is
-always live; `MentionsName` follows calls of nested functions by name into
-their bodies. The test never depends on what the optimizer proves.
+tail, anywhere in an enclosing loop it was declared outside of, or in an
+operand of its own statement not yet evaluated (`LaterOperands`, §3.3): a
+whole assignment's right-hand side, a call's later arguments, the arguments
+print, str and format render after the one being checked (**Format
+overloads** below); a `for` binding is always live; `MentionsName` follows
+calls of nested functions by name into their bodies. The test never depends
+on what the optimizer proves.
 
 **Grow-shrink arrays** (§5.2): `ShrinkGrowShrink` runs from anywhere (a
 local, a reference, a global, a struct's tail, whole assignment) and scans
@@ -1009,10 +1027,11 @@ what another class names, which the arguments for the two may make one array
 (an inexactly rooted argument gets a class of its own, §3.4, and a caller may
 pass its own classes on). So after the scans `NoteLiveViews` looks again at
 what is still used -- a reference or slice variable (`UsedAfter`, which
-counts the rest of the statement, `shrinkrest`), a held temporary, a grow-only
-holder by its store record (`EachHolderRoot`), and what a reference to a
-slice or, for a grow-only array, to a holder reaches -- for a view only the
-callers can tell apart from the array (`CallersJudge`): its root is a
+counts the rest of the statement, `LaterOperands`), an operand still held
+(`HeldOperands`), a grow-only holder by its store record
+(`EachHolderRoot`), and what a reference to a slice or, for a grow-only
+array, to a holder reaches -- for a view only the callers can tell apart
+from the array (`CallersJudge`): its root is a
 parameter's class, or the array is. `NoteLiveShrink` keeps such a pair (a
 `LiveShrink`) on the specialization when `MayAliasRoots` does not rule it out
 and both roots are classes or storage outside the activation (globals, a
@@ -1086,20 +1105,21 @@ the format call's receiver where the text lands in it, else a temporary --
 and applies it as a call there (`UserFormatIn`: `ApplyCalleeShrinks`,
 `ApplyCalleeRebinds`, `ApplyCalleeGrows`). Codegen evaluates each argument
 just before rendering it (`EmitFormatInto`, `EmitStr`), so while argument i
-is checked the ones after it are in `shrinkrest`: a shrink in its evaluation
-(a call) or its rendering (an overload) finds a variable they name used
-after it. The rest of the argument is rendered around its overloads, and is
-held while they are applied (`heldtemps`, whose `render` names the builtin
-for the error): the views `HoldValue` holds for any argument (an optional
-reference or a slice, a non-fixed array's elements, a holder's references),
-and, for a struct, enum or array argument no overload takes whole, a
-reference to where it lies, which may be an element of the array an
-overload clears (a plain reference argument has decayed to its pointee,
-which lies where the reference points). `NoteLiveViews` sees both, so a
-function rendering its parameter around an overload, or after one, keeps
-the pair for its callers (**Parameters' views** above). A callee body
-checked meanwhile starts with an empty `shrinkrest` (`CheckSpecBody`), as
-with `heldtemps`: the call site applies its summary against the caller's.
+is checked the ones after it are later operands (`LaterOperands`): a shrink
+in its evaluation (a call) or its rendering (an overload) finds a variable
+they name used after it. The rest of the argument is rendered around its
+overloads, and is held while they are applied (`renderarg`, the one
+operand of print, str or format `HeldOperands` holds, with `Held::render`
+naming the builtin for the error): the views held for any argument (an
+optional reference or a slice, a non-fixed array's elements, a holder's
+references), and, for a struct, enum or array argument no overload takes
+whole (`renderwhere`), a reference to where it lies, which may be an element
+of the array an overload clears (a plain reference argument has decayed to
+its pointee, which lies where the reference points). `NoteLiveViews` sees
+both, so a function rendering its parameter around an overload, or after
+one, keeps the pair for its callers (**Parameters' views** above). A callee
+body checked meanwhile starts with an empty path (`CheckSpecBody`): the
+call site applies its summary against the caller's statement.
 
 **Growth during construction** (§1.3(4), §4.2). A value built in place at an
 array's top or slot is under construction while its expression is checked,

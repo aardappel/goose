@@ -11,6 +11,16 @@ namespace goose {
 // Lvalue paths: names, fields, elements, optionally through references.
 
 inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
+    NodeScope ns(*this, n);
+    // The value the path denotes, recorded as its Check would (Ident::Check,
+    // ContainerRead): what the operands evaluated before a later point of
+    // the statement hold (HeldOperands).
+    auto record = [&](const LVal &lv) {
+        Val v;
+        v.type = LoadType(lv.type);
+        v.SetProv(lv);
+        RecordVal(n, v);
+    };
     if (auto id = Is<Ident>(n)) {
         auto vd = LookupVar(id->name, id->ns, n);
         if (!vd) Error(n, cat("unknown variable: ", id->name));
@@ -29,6 +39,14 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         lv.copyof = vd->copybind ? vd : nullptr;
         lv.reusable = vd->reusable;
         n->exprtype = vd->type;
+        if (IsRefOrSlice(lv.type)) {
+            Val v;
+            v.type = LoadType(lv.type);
+            v.SetProv(RefProvOf(vd));
+            RecordVal(n, v);
+        } else {
+            record(lv);
+        }
         return lv;
     }
     if (auto d = Is<Dot>(n)) {
@@ -36,10 +54,10 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         DerefLValue(lv, d->obj);
         ResolveMemberLValue(lv, d);
         n->exprtype = lv.type;
+        RecordVal(n, ContainerRead(lv));
         return lv;
     }
     if (auto ix = Is<Index>(n)) {
-        TempScope temps(*this);
         auto lv = LValueBase(ix->obj);
         DerefLValue(lv, ix->obj);
         SliceProvenance(lv, ix->obj);
@@ -55,7 +73,6 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         if (ClassOf(elem) != SC_FIXED)
             Error(n, cat(lv.type->kind == TY_SLICE ? "slices" : "arrays",
                          " of variable-size elements cannot be indexed, only iterated"));
-        HoldSequence(ix->obj, lv, elem);
         CheckIntAny(ix->idx);
         if (lv.type->cq) lv.writable = false;   // An element of a const value.
         lv.letbound = false;
@@ -65,6 +82,7 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         lv.isslot = true;
         lv.isvarint = elem->kind == TY_INT && elem->intstorage == IS_VARINT;
         n->exprtype = lv.type;
+        RecordVal(n, ContainerRead(lv));
         return lv;
     }
     Error(n, "not an assignable location");
@@ -205,20 +223,167 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
     return v;
 }
 
-// Values constructed in argument, literal and result slots own their copies.
-// References, slices and reference fields still retain borrows. Array operands
-// used as sequence views also borrow their elements until the operation ends.
-inline void TypeCheck::HoldValue(Node *n, Val v, bool sequenceview) {
-    if (!v.type) return;
-    auto t = v.type;
-    if (IsRefOrSlice(t)) {
-        heldtemps.push_back({ n, v });
+// The operands of n, in evaluation order (§2), each with how n consumes it
+// once its later operands have run. A call consumes its receiver and
+// arguments at the call; print, str and format render each argument just
+// before the next runs (EmitFormatInto, EmitStr), so an earlier argument is
+// nothing afterwards, and only the one being rendered is held (HeldOperands).
+// A condition, a scrutinee and an iterated sequence are read before the
+// construct's parts run, so they hold nothing over them: a `for` binding
+// and a match binder are variables in scope, which the scans see.
+template<typename F> void TypeCheck::ForOperands(Node *n, F f) {
+    if (auto c = Is<Call>(n)) {
+        auto builtin = c->builtin >= 0;
+        auto member = builtin && (BuiltinByKind(c->builtin).flags & BF_MEMBER);
+        auto render = builtin && (c->builtin == B_PRINT || c->builtin == B_STR ||
+                                  c->builtin == B_FORMAT);
+        auto first = true;
+        auto kind = [&]() {
+            auto k = member && first ? HK_RECEIVER : render ? HK_NONE : HK_VALUE;
+            first = false;
+            return k;
+        };
+        if (auto d = Is<Dot>(c->callee)) f(d->obj, kind());
+        for (auto a : c->args) f(a, kind());
         return;
     }
-    if (sequenceview && t->kind == TY_ARRAY && ClassOf(t) != SC_FIXED) {
+    if (auto ix = Is<Index>(n)) {
+        f(ix->obj, HK_ELEMS);
+        f(ix->idx, HK_VALUE);
+        return;
+    }
+    if (auto se = Is<SliceExpr>(n)) {
+        f(se->obj, HK_ELEMS);
+        if (se->lo) f(se->lo, HK_VALUE);
+        if (se->hi) f(se->hi, HK_VALUE);
+        return;
+    }
+    if (auto b = Is<Binary>(n)) {
+        f(b->left, HK_VIEW);
+        f(b->right, HK_VALUE);
+        return;
+    }
+    if (auto a = Is<Assign>(n)) {
+        f(a->lval, HK_LOCATION);
+        f(a->rhs, HK_VALUE);
+        return;
+    }
+    if (auto al = Is<ArrayLit>(n)) {
+        for (auto e : al->elems) f(e, HK_VALUE);
+        if (al->fillval) f(al->fillval, HK_VALUE);
+        if (al->fillcount) f(al->fillcount, HK_VALUE);
+        if (al->capexpr) f(al->capexpr, HK_VALUE);
+        return;
+    }
+    if (auto sl = Is<StructLit>(n)) {
+        for (auto &fi : sl->inits) f(fi.val, HK_VALUE);
+        return;
+    }
+    if (auto r = Is<Return>(n)) {
+        for (auto v : r->vals) f(v, HK_VALUE);
+        return;
+    }
+    if (auto vd = Is<VarDecl>(n)) {
+        for (auto i : vd->inits) f(i, HK_VALUE);
+        return;
+    }
+    if (Is<Unary>(n) || Is<AsCast>(n) || Is<Dot>(n) || Is<IncDec>(n) || Is<Break>(n)) {
+        n->Children([&](Node *ch) { f(ch, HK_VALUE); });
+        return;
+    }
+    // Conditions, scrutinees, sequences, blocks and bodies: nothing held.
+}
+
+inline int TypeCheck::OperandIndex(Node *parent, Node *child) {
+    auto idx = -1, i = 0;
+    ForOperands(parent, [&](Node *ch, HoldKind) {
+        if (ch == child) idx = i;
+        i++;
+    });
+    return idx;
+}
+
+// Enters n, the operand its parent is at, or a node checked on its own (a
+// statement, a path the checker walks itself); the same node entered again
+// on the way, as a path is by its node's Check, stays one entry.
+inline bool TypeCheck::Descend(Node *n) {
+    if (!nodepath.empty() && nodepath.back().node == n) return false;
+    auto idx = nodepath.empty() ? -1 : OperandIndex(nodepath.back().node, n);
+    if (idx >= 0) nodepath.back().pos = idx;
+    nodepath.push_back({ n, idx, 0 });
+    return true;
+}
+
+// Leaves the innermost node: as an operand it has been evaluated, so its
+// parent stands past it. An error's unwinding leaves a path a body's check
+// replaced (CheckSpecBody) as it is.
+inline void TypeCheck::Ascend(Node *n) {
+    if (nodepath.empty() || nodepath.back().node != n) return;
+    auto e = nodepath.back();
+    nodepath.pop_back();
+    if (e.idx >= 0 && !nodepath.empty()) nodepath.back().pos = e.idx + 1;
+}
+
+// What the operand n of `parent`, whose value is v, holds live: its value
+// where it is a reference or slice; an array's elements where the parent
+// views them (HK_VIEW), or indexes or slices them (HK_ELEMS, the elements the
+// path leads to, a temporary's exactly); the references a holder holds,
+// each as a reference to its pointee; a builtin's receiver as a reference
+// to the array it is, or its elements where the builtin reads them
+// (to_bytes, a slice); an assignment's location as recorded (CheckAssign).
+template<typename F>
+void TypeCheck::HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent, const char *render,
+                       F f) {
+    if (!v.type || kind == HK_NONE) return;
+    auto t = v.type;
+    auto hold = [&](Val hv, bool location = false) {
+        f(Held { n, std::move(hv), location, render });
+    };
+    switch (kind) {
+        case HK_LOCATION:
+            hold(v, true);
+            return;
+        case HK_ELEMS: {
+            auto d = IsPlainRef(t) ? DecayRef(v) : v;
+            TypeExpr *elem = d.type->kind == TY_ARRAY ? d.type->arr->sub
+                             : d.type->kind == TY_SLICE ? d.type->sub : nullptr;
+            if (!elem) return;
+            if (IsTemp(d.Root())) d.Set(d.Root(), true);
+            d.type = SliceOf(elem, n->line);
+            hold(d);
+            return;
+        }
+        case HK_RECEIVER: {
+            auto c = (Call *)parent;
+            auto rt = IsPlainRef(t) ? t->ref->sub : t;
+            TypeExpr *elem = rt->kind == TY_ARRAY ? rt->arr->sub
+                             : rt->kind == TY_SLICE ? rt->sub : nullptr;
+            auto held = v;
+            if (c->builtin == B_TO_BYTES || rt->kind == TY_SLICE) {
+                if (!elem) return;
+                held.type = SliceOf(elem, n->line);
+            } else if (held.type->kind != TY_REF) {
+                held.type = RefTo(rt, n->line);
+            }
+            if (IsTemp(held.Root()) && t->kind != TY_REF && t->kind != TY_SLICE)
+                held.Set(held.Root(), true);
+            hold(held);
+            return;
+        }
+        default: break;
+    }
+    // HK_VALUE and HK_VIEW: values constructed in argument, literal and
+    // result slots own their copies; references, slices and reference fields
+    // still retain borrows, and an array operand viewed as a sequence its
+    // elements until the operation ends.
+    if (IsRefOrSlice(t)) {
+        hold(v);
+        return;
+    }
+    if (kind == HK_VIEW && t->kind == TY_ARRAY && ClassOf(t) != SC_FIXED) {
         auto view = v;
         view.type = SliceOf(t->arr->sub, n->line);
-        heldtemps.push_back({ n, view });
+        hold(view);
     }
     if (HoldsPlainRef(t)) {
         vector<TypeExpr *> pointees;
@@ -227,27 +392,57 @@ inline void TypeCheck::HoldValue(Node *n, Val v, bool sequenceview) {
         held.alts = ContentsOf(v).alts;
         for (auto pt : pointees) {
             held.type = RefTo(pt, n->line);
-            heldtemps.push_back({ n, held });
+            hold(held);
         }
     }
 }
 
-// An assignment has evaluated its destination address before its RHS. This
-// is a reference to the slot itself (including a reference/slice slot), not
-// a read-back of whatever value is currently stored there.
-inline void TypeCheck::HoldLocation(Node *n, const LVal &lv) {
-    Val v;
-    v.type = RefTo(lv.type, n->line);
-    v.SetProv(lv);
-    heldtemps.push_back({ n, v, true });
+// Every value evaluated before the point being checked that is still live:
+// the operands each node on the path has evaluated so far (its parent
+// consumes them after this point), as their parents hold them. A call at
+// the point itself, applying its callee's effects, has consumed its own
+// operands: what the callee does to them its parameters' pairs judge
+// (§5.1, NoteLiveViews). The exception is the argument print, str or format
+// is rendering (`renderarg`): its views, and where a struct, enum or array
+// argument lies (`renderwhere`), which an overload of a part runs in the
+// middle of rendering.
+template<typename F> void TypeCheck::HeldOperands(F f) {
+    for (auto &e : nodepath) {
+        auto own = e.discovering || (&e == &nodepath.back() && Is<Call>(e.node));
+        auto i = 0;
+        ForOperands(e.node, [&](Node *ch, HoldKind kind) {
+            auto at = i++;
+            if (at >= e.pos) return;
+            auto it = nodevals.find(ch);
+            if (it == nodevals.end()) return;
+            if (ch == renderarg && rendering) {
+                HoldAs(ch, it->second, HK_VIEW, e.node, rendering, f);
+                if (ch == renderwhere) {
+                    auto where = it->second;
+                    where.type = RefTo(where.type, ch->line);
+                    f(Held { ch, std::move(where), false, rendering });
+                }
+                return;
+            }
+            if (own) return;
+            HoldAs(ch, it->second, kind, e.node, nullptr, f);
+        });
+    }
 }
 
-// Index/slice receivers retain their element view while bounds evaluate.
-inline void TypeCheck::HoldSequence(Node *n, const LVal &lv, TypeExpr *elem) {
-    Val v;
-    v.type = SliceOf(elem, n->line);
-    v.SetProv(lv);
-    HoldValue(n, v);
+// Every part of the statement that runs after the point being checked: the
+// operands each node on the path has not evaluated yet, the one being
+// checked excluded.
+template<typename F> void TypeCheck::LaterOperands(F f) {
+    for (size_t k = 0; k < nodepath.size(); k++) {
+        auto &e = nodepath[k];
+        auto last = k + 1 == nodepath.size();
+        auto i = 0;
+        ForOperands(e.node, [&](Node *ch, HoldKind) {
+            auto at = i++;
+            if (at > e.pos || (last && at == e.pos)) f(ch);
+        });
+    }
 }
 
 // The root bounding the references inside a holder value: what was
@@ -512,6 +707,7 @@ inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bo
     v.storagebranches = branch.storagebranches;
     v.implicitcopy = branch.implicitcopy;
     n->exprtype = v.type;
+    RecordVal(n, v);
     return v;
 }
 
@@ -1182,7 +1378,6 @@ inline TypeExpr *TypeCheck::VariantTypeOf(TypeExpr *enumtype, SVariant *v, Line 
 inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fields,
                                                vector<TypeExpr *> &ftypes,
                                                string_view what, TypeExpr *selft) {
-    TempScope temps(*this);
     LitDeep deep;
     auto named = !sl->inits.empty() && !sl->inits[0].name.empty();
     vector<bool> got(fields.size(), false);
@@ -1236,7 +1431,6 @@ inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fi
             auto fv = fi.fromdefault ? CheckDefaultInit(fi.val, ftypes[i], selft)
                                      : CheckValue(fi.val, ftypes[i]);
             NoteLitElem(deep, fi.val, fv, ftypes[i]);
-            HoldValue(fi.val, fv);
         }
         sl->inits.push_back(fi);
         sl->fieldindices.push_back(i);
@@ -1319,8 +1513,9 @@ inline bool TypeCheck::MentionsName(Node *n, string_view name, set<SFunction *> 
 // part of the body again.
 inline bool TypeCheck::UsedAfter(VarDef *v) {
     set<SFunction *> seen;
-    for (auto n : shrinkrest)
-        if (MentionsName(n, v->name, seen)) return true;
+    auto later = false;
+    LaterOperands([&](Node *n) { later = later || MentionsName(n, v->name, seen); });
+    if (later) return true;
     for (auto i = 0; i < (int)scopes.size(); i++) {
         if (scopes[i].kind != SK_LOOP) continue;
         // A `for` binding is rebound by the loop itself at every iteration.
@@ -1344,6 +1539,7 @@ inline void TypeCheck::CheckStmt(Node *n) {
     // A statement inside a returned value's block is no part of that value:
     // the function's locals outlive it.
     FlagScope rs(inreturn, false);
+    NodeScope ns(*this, n);
     if (auto vd = Is<VarDecl>(n)) { CheckVarDecl(vd, false); return; }
     if (auto a = Is<Assign>(n)) { CheckAssign(a); return; }
     if (auto x = Is<IncDec>(n)) { CheckIncDec(x); return; }

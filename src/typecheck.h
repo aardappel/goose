@@ -192,19 +192,80 @@ struct TypeCheck {
     void CheckStmts(Block *b);
     bool MentionsName(Node *n, string_view name, set<SFunction *> &seen);
     bool UsedAfter(VarDef *v);
-    // The parts of the statement being checked that run after the shrink
-    // being checked: a whole assignment's right-hand side, and the arguments
-    // print, str and format render after the one being checked (§3.7, §5.1).
-    vector<Node *> shrinkrest;
-    struct RestScope {
-        TypeCheck &tc;
-        size_t base;
-        template <typename It>
-        RestScope(TypeCheck &t, It first, It last) : tc(t), base(t.shrinkrest.size()) {
-            t.shrinkrest.insert(t.shrinkrest.end(), first, last);
-        }
-        ~RestScope() { tc.shrinkrest.resize(base); }
+
+    // The node being checked and every node it is nested in, innermost last,
+    // from the statement being checked outward (CheckStmt, CheckV,
+    // CheckLValue), each with how many of its operands have been evaluated
+    // so far (`pos`), which is where the operand being checked stands. What
+    // a rule at some point of a statement asks about the rest of the
+    // statement it derives from this and from the values recorded per node
+    // (`nodevals`): the values evaluated before that point and still live --
+    // the earlier operands of every node on the path, which their parents
+    // consume after the point (HeldOperands, §5.1, §5.2) -- and the parts
+    // that run after it (LaterOperands, UsedAfter). Nothing is recorded
+    // along the way, so no construct can be left out.
+    struct PathEntry {
+        Node *node;
+        int idx;     // Its index among its parent's operands, or -1.
+        int pos;     // Operands evaluated so far.
+        // A call resolving its overload: its operands are checked for their
+        // types, and the values it keeps are those its phase 2 checks.
+        bool discovering = false;
     };
+    vector<PathEntry> nodepath;
+    struct Discovering {
+        TypeCheck &tc;
+        Node *node;
+        Discovering(TypeCheck &t, Node *n) : tc(t), node(n) { Set(true); }
+        ~Discovering() { Set(false); }
+        void Set(bool on) {
+            if (!tc.nodepath.empty() && tc.nodepath.back().node == node)
+                tc.nodepath.back().discovering = on;
+        }
+    };
+    struct NodeScope {
+        TypeCheck &tc;
+        Node *node;
+        bool pushed;
+        NodeScope(TypeCheck &t, Node *n) : tc(t), node(n), pushed(t.Descend(n)) {}
+        ~NodeScope() { if (pushed) tc.Ascend(node); }
+    };
+    bool Descend(Node *n);
+    void Ascend(Node *n);
+    // The checked value of every expression that points somewhere, by node.
+    unordered_map<Node *, Val> nodevals;
+    void RecordVal(Node *n, const Val &v) {
+        if (!v.None() || v.holderset) nodevals[n] = v;
+    }
+    // How a parent consumes an operand after its later operands ran: as its
+    // value (a reference or slice, a holder's references), as a view of an
+    // array's elements too (`==`), as the elements it indexes or slices, as
+    // a builtin's receiver, or as the location an assignment writes.
+    enum HoldKind { HK_NONE, HK_VALUE, HK_VIEW, HK_ELEMS, HK_RECEIVER, HK_LOCATION };
+    template<typename F> void ForOperands(Node *n, F f);
+    int OperandIndex(Node *parent, Node *child);
+    // A value evaluated earlier in the statement and still live: a reference
+    // or slice, a view of an array's elements, a holder's references, or an
+    // assignment's location, which is only the slot the value lands in (what
+    // the slot holds now is overwritten, so a shrink does not reach it).
+    struct Held {
+        Node *node;
+        Val v;
+        bool location = false;
+        // The builtin (print, str, format) rendering `node`, which runs the
+        // format overloads of its parts meanwhile.
+        const char *render = nullptr;
+    };
+    template<typename F> void HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent,
+                                     const char *render, F f);
+    template<typename F> void HeldOperands(F f);
+    template<typename F> void LaterOperands(F f);
+    // The argument print, str or format is rendering, and as which builtin:
+    // its views stay live while its parts' format overloads run, and so does
+    // where it lies (`renderwhere`) unless an overload takes it whole.
+    Node *renderarg = nullptr;
+    Node *renderwhere = nullptr;
+    const char *rendering = nullptr;
     vector<VarDef *> vars;                            // All in-scope variables, all frames.
     vector<pair<int, SFunction *>> localfns;          // Nested fns, with their scope index.
     int scopeserial = 0;
@@ -218,25 +279,6 @@ struct TypeCheck {
     // this point, which are in no variable and so invisible to the liveness
     // scan of CheckGrowShrink.
     bool invalue = false;
-    // Earlier references, views and assignment locations remain live while
-    // the rest of their expression evaluates, even without a named variable.
-    // An assignment's location is only the slot the value lands in: what the
-    // slot holds now is overwritten, so a shrink does not reach it.
-    struct Held {
-        Node *node;
-        Val v;
-        bool location = false;
-        // The builtin (print, str, format) rendering `node`, which runs the
-        // format overloads of its parts meanwhile.
-        const char *render = nullptr;
-    };
-    vector<Held> heldtemps;
-    struct TempScope {
-        TypeCheck &tc;
-        size_t base;
-        TempScope(TypeCheck &t) : tc(t), base(t.heldtemps.size()) {}
-        ~TempScope() { tc.heldtemps.resize(base); }
-    };
     // Checking what a return, or the body's tail, gives the caller: the
     // function's own locals move. The statements, conditions, scrutinees
     // and loops inside it are no part of that value; a valued block or loop
@@ -968,12 +1010,9 @@ struct TypeCheck {
     void ReadBackLVal(LVal &lv);
     Val ContainerRead(LVal lv);
     void ResolveMemberLValue(LVal &lv, Dot *d);
-    void HoldValue(Node *n, Val v, bool sequenceview = false);
     // Where a holder value's references point: what was derived for it, else
     // the value's own roots (a temporary's outlive nothing).
     static const Roots &ContentsOf(const Val &v) { return v.holderset ? v.contents : v; }
-    void HoldLocation(Node *n, const LVal &lv);
-    void HoldSequence(Node *n, const LVal &lv, TypeExpr *elem);
     bool ShrinkMayFree(VarDef *root, TypeExpr *bound, bool growonly, TypeExpr *of,
                        bool byteview);
     void CheckHeldShrinks(Node *at, const string &op, VarDef *root,
@@ -986,10 +1025,12 @@ struct TypeCheck {
     // reference. Consumers go through CheckValue/CheckArg/Operand, which
     // apply reference transparency.
     Val CheckV(Node *n, TypeExpr *expected) {
+        NodeScope ns(*this, n);
         auto v = n->Check(*this, expected);
         if (v.type == fntype && !Is<Ident>(n) && !Is<FunVal>(n))
             Error(n, "a function value must be a function name or block literal (§7.6); "
                      "evaluate runtime expressions separately");
+        RecordVal(n, v);
         return v;
     }
 
@@ -1039,9 +1080,7 @@ struct TypeCheck {
 
     Val CheckArg(Node *&n, TypeExpr *expected) {
         SlotScope ss(*this, false);
-        auto v = CheckValue(n, expected, true);
-        HoldValue(n, v);
-        return v;
+        return CheckValue(n, expected, true);
     }
 
     Val CheckValueAt(Node *&n, TypeExpr *expected, Dest d, bool callsite = false);

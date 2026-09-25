@@ -251,19 +251,6 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         if ((d.flags & BF_SLICEPOOL) && !(rv.reusable & RU_SLICES))
             Error(c, cat(".", d.name, " exists on reusable[] pools only",
                          rv.reusable ? ", not on the slot pools of reusable" : "", " (§5.4)"));
-        if (args.size() > 1) {
-            // The builtin keeps its receiver location while later arguments
-            // run. Serialization also retains a view of the source elements.
-            auto held = rv;
-            if (d.kind == B_TO_BYTES || rt->kind == TY_SLICE)
-                held.type = SliceOf(elem, args[0]->line);
-            else if (held.type->kind != TY_REF)
-                held.type = RefTo(rt, args[0]->line);
-            if (IsTemp(held.Root()) && rv.type->kind != TY_REF &&
-                rv.type->kind != TY_SLICE)
-                held.Set(held.Root(), true);
-            HoldValue(args[0], held);
-        }
     }
     // A pending `var x = []` receiver learns its element type from what
     // is first pushed or appended into it (§4.2).
@@ -549,12 +536,22 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
 // argument i use what they name after whatever it shrinks.
 inline void TypeCheck::CheckPrintable(Call *c, const char *what, vector<Node *> &args, size_t i,
                                       const Val *out) {
-    RestScope rest(*this, args.begin() + (long)i + 1, args.end());
     auto &a = args[i];
     auto av = CheckValue(a, nullptr);
-    TempScope temps(*this);
-    HoldValue(a, av, true);
-    for (auto j = temps.base; j < heldtemps.size(); j++) heldtemps[j].render = what;
+    // Rendered now (HeldOperands).
+    auto saverender = tuple(renderarg, renderwhere, rendering);
+    renderarg = a;
+    renderwhere = nullptr;
+    rendering = what;
+    struct Restore {
+        TypeCheck &tc;
+        tuple<Node *, Node *, const char *> saved;
+        ~Restore() {
+            tc.renderarg = get<0>(saved);
+            tc.renderwhere = get<1>(saved);
+            tc.rendering = get<2>(saved);
+        }
+    } restore { *this, saverender };
     Val builder;
     builder.Set(TempRoot(), true);
     builder.writable = true;
@@ -575,16 +572,12 @@ inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, N
     value.type = t;
     value.writable &= !t->cq;
     if (UserFormat(c, t, value, out)) return;
-    // The argument itself, unless an overload takes it whole: rendering reads
-    // it where it lies, around the overloads its parts run, so that storage
-    // stays in use meanwhile. HoldValue holds the views a reference, slice or
-    // array argument reads through.
+    // The argument itself, unless an overload takes it whole, is read where
+    // it lies, around the overloads its parts run, so that storage stays in
+    // use meanwhile (HeldOperands, the argument being rendered).
     if (seen.size() == 1 && (t->kind == TY_STRUCT || t->kind == TY_ENUM ||
-                             t->kind == TY_VARIANT || t->kind == TY_ARRAY)) {
-        auto where = value;
-        where.type = RefTo(t, at->line);
-        heldtemps.push_back({ at, where, false, what });
-    }
+                             t->kind == TY_VARIANT || t->kind == TY_ARRAY))
+        renderwhere = at;
     auto child = [&](TypeExpr *ft, bool throughref) {
         auto v = value;
         if (throughref) {
@@ -793,7 +786,8 @@ inline bool TypeCheck::ShrinkMayFree(VarDef *root, TypeExpr *bound, bool growonl
 // standalone RHS, where §5.1's syntax restriction alone is insufficient.
 inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root,
                                         const string &what, bool growonly, TypeExpr *bound) {
-    for (auto &[node, v, location, render] : heldtemps) {
+    HeldOperands([&](const Held &h) {
+        auto &[node, v, location, render] = h;
         auto path = v.type->kind == TY_REF && ClassOf(v.type->ref->sub) == SC_RESIZABLE;
         auto held = !path && ShrinkMayFree(root, bound, growonly, PointeeOf(v.type), v.byteview) &&
                     v.Any([&](const RootAlt &a) {
@@ -812,7 +806,7 @@ inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root
         if (!held && !location && v.type->kind == TY_REF &&
             (growonly ? HoldsPlainRef(v.type->ref->sub) : v.type->ref->sub->kind == TY_SLICE))
             held = HeldRefsMayPointInto(nullptr, v, v.type, root, bound, growonly);
-        if (!held) continue;
+        if (!held) return;
         auto sec = growonly ? " (§5.1)" : " (§5.2)";
         if (render) {
             // A §5.1 scan's op names no array.
@@ -824,7 +818,7 @@ inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root
         }
         Error(at, cat("cannot ", op, ": an earlier expression value at ", Where(node->line),
                       " may still refer into ", what, sec));
-    }
+    });
 }
 
 // A grow-only array shrinks wherever nothing can still point into it: a
@@ -1693,13 +1687,13 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
                  vs.end());
         return !vs.empty();
     };
-    for (auto &[node, v, location, render] : heldtemps) {
-        auto vs = views(v, v.type, location);
-        if (!judged(vs)) continue;
-        auto name = ExprStr(node);
+    HeldOperands([&](const Held &h) {
+        auto vs = views(h.v, h.v.type, h.location);
+        if (!judged(vs)) return;
+        auto name = ExprStr(h.node);
         if (name.find('\n') != string::npos) name = "an earlier expression value";
         for (auto &w : vs) note(w, name);
-    }
+    });
     VisibleVars([&](VarDef *v) {
         if (v == root || !v->type) return;
         auto t = v->type;

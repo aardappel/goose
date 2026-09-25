@@ -1581,6 +1581,7 @@ inline void TypeCheck::CheckContinue(Node *n) {
 // part of a value being returned (CheckStmt).
 inline void TypeCheck::CheckStmtExpr(Node *n) {
     FlagScope rs(inreturn, false);
+    NodeScope ns(*this, n);
     if (auto x = Is<IfExpr>(n)) { CheckIf(x, nullptr, false); n->exprtype = ast.voidtype; return; }
     if (auto x = Is<Block>(n)) {
         CheckBlockVal(x, nullptr, false, SK_PLAIN);
@@ -1810,10 +1811,7 @@ inline void TypeCheck::AssignableClassCheck(TypeExpr *t, Node *at) {
 inline Val TypeCheck::CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *arr,
                                          const Roots &built, Dest dest) {
     if (arr) {
-        {
-            RestScope rest(*this, &a->rhs, &a->rhs + 1);
-            ShrinkThrough(a, true, "assign", ExprStr(a->lval), built, target);
-        }
+        ShrinkThrough(a, true, "assign", ExprStr(a->lval), built, target);
         NoteGrow(a, built, cat("assign ", ExprStr(a->lval)));
     }
     SlotScope ss(*this, true);
@@ -1829,7 +1827,6 @@ inline Val TypeCheck::CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *
 }
 
 inline void TypeCheck::CheckAssign(Assign *a) {
-    TempScope temps(*this);
     auto lv = CheckLValue(a->lval);
     auto held = lv;
     auto throughref = a->op != T_DOTASSIGN && IsPlainRef(held.type);
@@ -1851,7 +1848,16 @@ inline void TypeCheck::CheckAssign(Assign *a) {
         auto id = Is<Ident>(n);
         return id && id->vdef && owns(id->vdef->type);
     };
-    if (throughref || !infields(a->lval)) HoldLocation(a->lval, held);
+    // The location, evaluated before the right-hand side (HeldOperands): a
+    // reference to the slot itself, not a read-back of what it holds.
+    if (throughref || !infields(a->lval)) {
+        Val loc;
+        loc.type = RefTo(held.type, a->line);
+        loc.SetProv(held);
+        nodevals[a->lval] = loc;
+    } else {
+        nodevals.erase(a->lval);
+    }
     if (a->op == T_DOTASSIGN) { CheckRebind(a, lv); return; }
     if (lv.isvarint)
         Error(a, "varint fields are written only at construction (§3.6)");

@@ -13,7 +13,6 @@ namespace goose {
 // generic inference (§7.1, §7.7), and case-function tag dispatch (§8.2).
 
 inline Val TypeCheck::CheckCall(Call *c) {
-    TempScope argscope(*this);
     // A node may be re-checked in argument phase 2; reset annotations.
     c->spec = nullptr;
     c->dispatch.clear();
@@ -158,23 +157,26 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         argnodes.push_back(prenode);
         argvals.push_back(v);
     }
-    for (auto &a : c->args) {
-        Val v;
-        {
-            PathScope ps(*this, a);
-            v = CheckV(a, nullptr);
+    {
+        Discovering discovering(*this, c);
+        for (auto &a : c->args) {
+            Val v;
+            {
+                PathScope ps(*this, a);
+                v = CheckV(a, nullptr);
+            }
+            // A pending array (`var out = []`) is completed by the builtin
+            // sharing this name (push, append, format), never by user code.
+            if (nomatch && IsPendingArray(v.type)) {
+                *nomatch = true;
+                return Val {};
+            }
+            RequireComplete(v.type, a->line);
+            byref(a, v);
+            argnodes.push_back(a);
+            a->exprtype = v.type;
+            argvals.push_back(v);
         }
-        // A pending array (`var out = []`) is completed by the builtin
-        // sharing this name (push, append, format), never by user code.
-        if (nomatch && IsPendingArray(v.type)) {
-            *nomatch = true;
-            return Val {};
-        }
-        RequireComplete(v.type, a->line);
-        byref(a, v);
-        argnodes.push_back(a);
-        a->exprtype = v.type;
-        argvals.push_back(v);
     }
     MatchInfo best;
     auto bestcount = 0;
@@ -227,6 +229,10 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
                 Warn(argnodes[i], cat("redundant &: ", ExprStr(Is<Unary>(argnodes[i])->child),
                                       " is passed by reference without it (§4.1)"));
             CheckArg(argnodes[i], best.paramtypes[i]);
+            // The call's own operands are what later arguments' checks see
+            // held (HeldOperands), so a rebound one replaces its original now.
+            if (prenode && i == 0) prenode = argnodes[0];
+            else c->args[i - (prenode ? 1 : 0)] = argnodes[i];
         }
     }
     // A C function's parameters are what they say (§7.10): a read-only
@@ -646,13 +652,17 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
             if ((int)i != found) {
                 UnrefForValueParam(argnodes[i], matches[0].paramtypes[i]);
                 CheckArg(argnodes[i], matches[0].paramtypes[i]);
+                // As in ResolveCall: the rebound argument replaces its original.
+                auto d = Is<Dot>(c->callee);
+                if (d && i == 0) d->obj = argnodes[0];
+                else c->args[i - (d ? 1 : 0)] = argnodes[i];
             } else {
                 // Value cases receive an enum snapshot before later arguments.
                 // A reference case retains the original storage instead.
                 auto byreference = false;
                 for (auto sp : c->dispatch)
                     byreference |= sp->argtypes[i]->kind == TY_REF;
-                HoldValue(argnodes[i], byreference ? argvals[i] : DecayRef(argvals[i]));
+                RecordVal(argnodes[i], byreference ? argvals[i] : DecayRef(argvals[i]));
             }
     }
     // Like an ordinary call's, the cases' rebinds follow the argument checks.
@@ -1517,13 +1527,15 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     // body's growths against them from the summary.
     auto savegrowlog = std::move(growlog);
     growlog.clear();
-    // The caller's pending temporaries, the rest of its statement and its
-    // value region are its own; the call site replays this body's shrinks
-    // against them.
-    auto saveheld = std::move(heldtemps);
-    heldtemps.clear();
-    auto saverest = std::move(shrinkrest);
-    shrinkrest.clear();
+    // The caller's statement -- the values it evaluated before the call, the
+    // rest of it, its value region, what it is rendering -- is its own; the
+    // call site replays this body's shrinks against it.
+    auto savepath = std::move(nodepath);
+    nodepath.clear();
+    auto saverender = tuple(renderarg, renderwhere, rendering);
+    renderarg = nullptr;
+    renderwhere = nullptr;
+    rendering = nullptr;
     auto saveinvalue = invalue;
     invalue = false;
     auto savereach = reachable;
@@ -1682,8 +1694,10 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     PopScope();
     pendingshrinks = std::move(savepending);
     growlog = std::move(savegrowlog);
-    heldtemps = std::move(saveheld);
-    shrinkrest = std::move(saverest);
+    nodepath = std::move(savepath);
+    renderarg = get<0>(saverender);
+    renderwhere = get<1>(saverender);
+    rendering = get<2>(saverender);
     invalue = saveinvalue;
     frames.pop_back();
     for (auto [v, n] : outernarrowed) v->narrowed = n;
@@ -1907,7 +1921,6 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
 
 inline void TypeCheck::CheckReturn(Return *r) {
     if (frames.back().isdefault) Error(r, "return outside of a function");
-    TempScope temps(*this);
     // Which function does this exit? `from f` names one on the current
     // compile-time path; a plain return inside a function value exits the
     // lexically enclosing named function (§7.6, §7.9).
@@ -1974,7 +1987,6 @@ inline void TypeCheck::CheckReturn(Return *r) {
                 auto v = tspec->retsknown ? CheckValue(r->vals[i], expectone(i))
                                           : CheckInferredResult(r->vals[i], tspec);
                 if (v.type->kind == TY_VOID) Error(r, "cannot return a valueless expression");
-                HoldValue(r->vals[i], v);
                 vals.push_back(v);
             }
         }
@@ -2076,7 +2088,6 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
     }
     {
         DestScope ds(*this, Dest {});
-        TempScope argscope(*this);
         for (size_t i = 0; i < ptypes.size(); i++) {
             auto v = CheckArg(c->args[i], ptypes[i]);
             // A control construct whose branches this bound by reference
