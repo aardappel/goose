@@ -30,7 +30,7 @@ inline CodeGen::Loc CodeGen::TempBuilder() {
 
 inline Call *CodeGen::FmtContext(Call *c, Node *arg) {
     if (!c || c->fmtcontexts.empty()) return c;
-    auto args = CallArgNodes(c, c->args.size() + (Is<Dot>(c->callee) ? 1 : 0));
+    auto args = c->ArgNodes();
     size_t start = c->builtin == B_FORMAT ? 1 : 0;
     for (size_t i = start; i < args.size(); i++)
         if (args[i] == arg) return c->fmtcontexts.at(i - start);

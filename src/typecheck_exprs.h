@@ -650,13 +650,6 @@ inline Val TypeCheck::CheckInferredResult(Node *&n, FnSpec *tspec) {
     return v;
 }
 
-// Argument nodes the checker rebound by reference
-// replace the originals: the receiver, then the call's own arguments.
-inline void TypeCheck::WriteBackArgs(Call *c, Dot *d, vector<Node *> &argnodes) {
-    d->obj = argnodes[0];
-    for (size_t i = 0; i < c->args.size(); i++) c->args[i] = argnodes[i + 1];
-}
-
 // The whole of array-valued n as a slice: `n[..]`, synthesized for an
 // equality between array kinds (§4.5).
 inline Node *TypeCheck::WholeSlice(Node *n) {

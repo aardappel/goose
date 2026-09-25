@@ -756,6 +756,28 @@ NODE(Call)
         if (auto d = dynamic_cast<Dot *>(callee)) return d->obj;
         return args[0];
     }
+    // Every argument in either spelling, the receiver of a.f(b) first: what
+    // a callee's parameters align with. A function value passed as an
+    // argument is among them, a trailing block is not.
+    vector<Node *> ArgNodes() const {
+        vector<Node *> an;
+        if (auto d = dynamic_cast<Dot *>(callee)) an.push_back(d->obj);
+        for (auto a : args) an.push_back(a);
+        return an;
+    }
+    // Replaces argument i of that list, the receiver included: the node a
+    // check of the argument made of it (TypeCheck::AutoRef) stands in for
+    // the original.
+    void SetArgNode(size_t i, Node *n) {
+        if (auto d = dynamic_cast<Dot *>(callee)) {
+            if (!i) { d->obj = n; return; }
+            i--;
+        }
+        args[i] = n;
+    }
+    void SetArgNodes(const vector<Node *> &an) {
+        for (size_t i = 0; i < an.size(); i++) SetArgNode(i, an[i]);
+    }
 NODE_END
 
 NODE(Index)

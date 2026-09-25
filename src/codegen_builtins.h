@@ -75,9 +75,7 @@ inline string CodeGen::LenCast(const Loc &lv) {
 }
 
 inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
-    vector<Node *> an;
-    if (auto dd = Is<Dot>(c->callee)) an.push_back(dd->obj);
-    for (auto a : c->args) an.push_back(a);
+    auto an = c->ArgNodes();
     auto ln = c->line;
     switch ((BuiltinKind)c->builtin) {
         case B_PRINT: {

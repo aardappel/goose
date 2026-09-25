@@ -104,11 +104,10 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d) {
         // A member works on the receiver's value, which for a control
         // construct is a copy of the branch taken.
         if (ov.implicitcopy) ImplicitCopyError(ov.implicitcopy);
-        vector<Node *> argnodes = { d->obj };
-        for (auto a : c->args) argnodes.push_back(a);
+        auto argnodes = c->ArgNodes();
         d->member = bd->kind;
         auto v = CheckBuiltin(c, *bd, argnodes, &ov);
-        WriteBackArgs(c, d, argnodes);
+        c->SetArgNodes(argnodes);
         return v;
     }
     if (rt->kind == TY_STRUCT) {
@@ -122,10 +121,9 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d) {
     else cands = ast.LookupFunctions(d->name, d->ns);
     if (!cands.empty()) return ResolveCall(c, cands, env, d->name, &ov, d->obj);
     if (bd && !(bd->flags & BF_PROPERTY)) {
-        vector<Node *> argnodes = { d->obj };
-        for (auto a : c->args) argnodes.push_back(a);
+        auto argnodes = c->ArgNodes();
         auto v = CheckBuiltin(c, *bd, argnodes, &ov);
-        WriteBackArgs(c, d, argnodes);
+        c->SetArgNodes(argnodes);
         return v;
     }
     if (bd) Error(c, cat(".", d->name, " is a property, not a call"));
@@ -231,8 +229,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
             CheckArg(argnodes[i], best.paramtypes[i]);
             // The call's own operands are what later arguments' checks see
             // held (HeldOperands), so a rebound one replaces its original now.
-            if (prenode && i == 0) prenode = argnodes[0];
-            else c->args[i - (prenode ? 1 : 0)] = argnodes[i];
+            c->SetArgNode(i, argnodes[i]);
         }
     }
     // A C function's parameters are what they say (§7.10): a read-only
@@ -248,11 +245,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         }
     }
     // Arguments the re-check rebound by reference replace the originals.
-    {
-        size_t off = 0;
-        if (prenode) { prenode = argnodes[0]; off = 1; }
-        for (size_t i = 0; i < c->args.size(); i++) c->args[i] = argnodes[i + off];
-    }
+    c->SetArgNodes(argnodes);
     c->spec = spec;
     ApplyCalleeRebinds(spec);
     return CallResult(c, spec, argvals);
@@ -653,9 +646,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
                 UnrefForValueParam(argnodes[i], matches[0].paramtypes[i]);
                 CheckArg(argnodes[i], matches[0].paramtypes[i]);
                 // As in ResolveCall: the rebound argument replaces its original.
-                auto d = Is<Dot>(c->callee);
-                if (d && i == 0) d->obj = argnodes[0];
-                else c->args[i - (d ? 1 : 0)] = argnodes[i];
+                c->SetArgNode(i, argnodes[i]);
             } else {
                 // Value cases receive an enum snapshot before later arguments.
                 // A reference case retains the original storage instead.

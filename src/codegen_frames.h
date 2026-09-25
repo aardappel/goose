@@ -130,7 +130,7 @@ inline void CodeGen::CollectSpecs() {
                 // A limited receiver takes anything rendered structurally
                 // from a builder of its own (EmitFormatInto).
                 if (c->builtin == B_FORMAT) {
-                    auto an = CallArgNodes(c, c->args.size() + (Is<Dot>(c->callee) ? 1 : 0));
+                    auto an = c->ArgNodes();
                     auto recv = an[0]->exprtype;
                     if (recv->kind == TY_REF) recv = recv->ref->sub;
                     if (recv->kind == TY_ARRAY && recv->arr->akind == A_LIMITED)

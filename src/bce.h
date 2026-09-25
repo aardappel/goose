@@ -1108,16 +1108,6 @@ struct BCE {
         }
     }
 
-    // The receiver and arguments of a call, aligned with the callee's
-    // parameters (a UFCS receiver is the first, §7.1). Function-value
-    // arguments are compile-time only and follow the real ones.
-    static vector<Node *> ArgNodes(Call *c) {
-        vector<Node *> an;
-        if (auto d = Is<Dot>(c->callee)) an.push_back(d->obj);
-        for (auto a : c->args) an.push_back(a);
-        return an;
-    }
-
     // Kills for a call with known effects, each translated to what it names
     // here: a parameter's to the argument bound to it, a global's or outer
     // local's to that variable. The translated effects are recorded on the
@@ -1162,7 +1152,7 @@ struct BCE {
         if (c->spec) merge(c->spec);
         for (auto d : c->dispatch) merge(d);
         if (!known) { KillByCall(true); return; }
-        ApplyEffects(e, ArgNodes(c));
+        ApplyEffects(e, c->ArgNodes());
     }
 
     // ------------------------------------------------------------------
@@ -2344,7 +2334,7 @@ inline bool Call::BceWalk(BCE &b) {
         b.StripKills(fvbody);
         return true;
     }
-    if (site) b.RecordSite(this, BCE::ArgNodes(this), ints, slens, moved);
+    if (site) b.RecordSite(this, ArgNodes(), ints, slens, moved);
     b.CallKills(this);
     return true;
 }
@@ -2511,16 +2501,9 @@ inline bool ForLoop::BceWalk(BCE &b) {
         set<int> otherbumps;
         for (auto st : body->stmts) {
             if (auto pc = Is<Call>(st); pc && pc->builtin == B_PUSH) {
-                Node *precv = nullptr, *parg = nullptr;
-                if (auto pd = Is<Dot>(pc->callee)) {
-                    precv = pd->obj;
-                    parg = pc->args.empty() ? nullptr : pc->args[0];
-                } else if (pc->args.size() == 2) {
-                    precv = pc->args[0];
-                    parg = pc->args[1];
-                }
-                auto pid = precv ? b.PlaceOf(precv) : -1;
-                if (pid >= 0 && (!parg || !b.HasKillEffects(parg))) {
+                auto pan = pc->ArgNodes();
+                auto pid = pan.size() == 2 ? b.PlaceOf(pan[0]) : -1;
+                if (pid >= 0 && !b.HasKillEffects(pan[1])) {
                     counts[pid]++;
                     continue;
                 }

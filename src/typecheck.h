@@ -1150,7 +1150,6 @@ struct TypeCheck {
     void BindBranchesByRef(vector<Node *> &argnodes, vector<Val> &argvals,
                            const vector<TypeExpr *> &paramtypes, int skip = -1);
     Val CheckInferredResult(Node *&n, FnSpec *tspec);
-    void WriteBackArgs(Call *c, Dot *d, vector<Node *> &argnodes);
     // A parameter that takes the value -- a slice, or a fixed-class value
     // that a non-fixed one constructs by copy (an array of another kind
     // into a static-capacity limited array, §4.2) -- takes the argument

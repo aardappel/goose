@@ -125,11 +125,11 @@ inline string CodeGen::ExternProto(FnSpec *sp) {
     return s;
 }
 
+// The arguments the callee's parameters take (Call::ArgNodes): the
+// function-value arguments that follow them are compile-time only.
 inline vector<Node *> CodeGen::CallArgNodes(Call *c, size_t nparams) {
-    vector<Node *> an;
-    if (auto dd = Is<Dot>(c->callee)) an.push_back(dd->obj);
-    for (auto a : c->args) an.push_back(a);
-    an.resize(nparams);   // Function-value arguments are compile-time only.
+    auto an = c->ArgNodes();
+    an.resize(nparams);
     return an;
 }
 

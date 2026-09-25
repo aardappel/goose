@@ -535,10 +535,7 @@ inline Node *Optimizer::TryInline(Call *c) {
     // stays, and a chain of single-use functions folds into one body per
     // MAXNEST levels rather than one as deep as the chain.
     if (depth + info.nest > MAXNEST) return nullptr;
-    // The argument list; a UFCS receiver is the first parameter (§7.1).
-    vector<Node *> argnodes;
-    if (auto d = Is<Dot>(c->callee)) argnodes.push_back(d->obj);
-    for (auto a : c->args) argnodes.push_back(a);
+    auto argnodes = c->ArgNodes();
     if (argnodes.size() != K->params.size()) return nullptr;
     Inliner inl { *this, ast, K, curspec, {}, {} };
     vector<Node *> decls;
