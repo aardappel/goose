@@ -1,7 +1,7 @@
-// error: optional opt is rebound later in this loop, so its narrowing does not hold on the next iteration
+// error: operator + cannot be applied to i64? and i64
 // A while condition runs again after the body: a call in it that rebinds
 // the optional through a function value breaks the narrowing its earlier
-// read relied on.
+// read relied on, which the condition's second run finds gone.
 fn apply<F>() -> bool { F(); true }
 var n = 41;
 var opt: i64? = null;

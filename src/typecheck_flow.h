@@ -22,7 +22,6 @@ inline void TypeCheck::PushScope(int kind, Node *node) {
 
 inline void TypeCheck::PopScope() {
     auto &s = scopes.back();
-    if (s.kind == SK_LOOP) ResolvePendingShrinks((int)scopes.size() - 1);
     // A `var x = []` that nothing ever pushed into has no type to give
     // codegen; the scope ending is the last chance to say so.
     for (auto i = s.varbase; i < (int)vars.size(); i++)
@@ -184,18 +183,6 @@ inline bool TypeCheck::Viewable(TypeExpr *t) {
     return AnyField(t, [&](TypeExpr *ft) { return Viewable(ft); });
 }
 
-// Reading a reference variable's roots as the places it may point. A loop
-// body is checked once, so a read here sees the value a later rebind in the
-// same loop leaves behind; noting the read lets that rebind reject a new
-// root instead of silently invalidating this one. Whether the variable
-// names one array exactly.
-inline bool TypeCheck::RefExactOf(VarDef *vd) {
-    if (!vd->refrootknown || !vd->ref.Exact()) return false;
-    for (auto i = (int)scopes.size() - 1; i >= vd->depth; i--)
-        if (scopes[i].kind == SK_LOOP) { vd->refidentityused = true; break; }
-    return true;
-}
-
 // Whether the reference or slice variable v may point into the array at
 // `root`, which a shrink of that array is checked against (§5.1, §5.2): it
 // is bound there; or a root of its only bounds the pointee's lifetime, at
@@ -211,24 +198,11 @@ inline bool TypeCheck::RefMayPointInto(VarDef *v, VarDef *root) {
 // Whether a binding of v that its record does not show may point into the
 // array at `root`: v is a `var` bound at that depth, which a same-depth
 // rebind could since have retargeted (§9.2), or it is not bound yet and may
-// still commit to the array further down a loop body.
+// commit to any array at its depth or outside -- unless this is a discovery
+// pass of a loop, whose next pass sees the binding (CheckLoopPasses).
 inline bool TypeCheck::RefMayRetarget(VarDef *v, VarDef *root) {
-    if (!v->refrootknown) return Depth(v) >= Depth(root);
+    if (!v->refrootknown) return !UnboundIsBottom() && Depth(v) >= Depth(root);
     return v->isvar && Depth(v->ref.Root()) == Depth(root);
-}
-
-// The same for a variable whose bindings on record are all slot reads
-// (RootAlt::slotread). Inside a loop it was declared outside of, a `var` may
-// hold what a rebind further down the body left there: a value whose root,
-// at the variable's depth, only bounds its pointee -- an `if` choosing
-// between a view of the array and one of a deeper array -- and so may be
-// in any array at or above that depth.
-inline bool TypeCheck::SlotReadMayRetarget(VarDef *v, VarDef *root) {
-    if (RefMayRetarget(v, root)) return true;
-    if (!v->isvar || Depth(RefRootOf(v)) < Depth(root)) return false;
-    for (auto i = (int)scopes.size() - 1; i >= v->depth; i--)
-        if (scopes[i].kind == SK_LOOP) return true;
-    return false;
 }
 
 // Whether a reference or slice of type t loaded out of a field, an element
@@ -266,7 +240,7 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
     for (auto pt : pointees)
         freed = freed || ShrinkMayFree(root, bound, growonly, pt, byteview && IsU8(pt));
     if (!freed) return false;
-    if (v && !v->refrootknown) return Depth(v) >= Depth(root);
+    if (v && !v->refrootknown) return !UnboundIsBottom() && Depth(v) >= Depth(root);
     for (auto &a : p.alts) {
         auto r = a.root;
         auto slot = slotof(r);
@@ -275,7 +249,7 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
             !r->isglobal && !slot && !(v && v->isvar)) {
             auto arrtype = bound ? bound : root->type ? LoadType(root->type) : nullptr;
             Line where;
-            if (HolderMayPointInto(r, root, arrtype, 0, &where)) return true;
+            if (HolderMayPointInto(r, root, arrtype, LiveEventBase(r), &where)) return true;
             continue;
         }
         if (growonly || !a.exact || (r && !r->type && r->viewslot)) {
@@ -346,34 +320,37 @@ inline void TypeCheck::BindProv(VarDef *vd, const Prov &p) {
     vd->ref = p;
     vd->ref.reached = nullptr;
     vd->refrootknown = true;
+    NoteFact(vd);
 }
 
 // The first non-null binding of a reference variable fixes its provenance.
+// Null commits the variable to nothing, and neither does a value that
+// points nowhere yet (RefProvOf, a discovery pass).
 inline void TypeCheck::BindRefProvenance(VarDef *vd, const Val &v) {
-    if (!v.isnull) BindProv(vd, v);
+    if (!v.isnull && !v.None()) BindProv(vd, v);
 }
 
 // Where a reference variable's value points, as a read of it sees it: the
-// root it is committed to (the temp sentinel before any), the exactness a
-// read may rely on (RefExactOf), and its provenance bits.
+// roots it is committed to, and its provenance bits. Before any binding it
+// points nowhere yet in a discovery pass of a loop, which a later pass
+// revisits with the binding a rebind further down the body gives it
+// (CheckLoopPasses); otherwise it is the temp sentinel, and for an optional,
+// which is bound only to null so far, whatever can hold the pointee type at
+// its own depth or outside -- the read-back rule's answer (§9.5).
 inline Prov TypeCheck::RefProvOf(VarDef *vd) {
     Prov p = vd->ref;
-    if (!vd->refrootknown) p.Set(temproot, false);
-    RefExactOf(vd);
-    // A variable of several roots, rebound further down a loop body to one
-    // it may not have yet, points at any array at its roots' depths
-    // (loopretargets); one of a single root is read as that root, and a
-    // rebind to another is then rejected (RefExactOf, CheckRefRebindRoot).
-    if (vd->isvar && vd->refrootknown && !vd->ref.Exact() && LoopRetargets(vd)) p.Weaken();
+    if (!vd->refrootknown) {
+        if (UnboundIsBottom()) {
+            p.Clear();
+            return p;
+        }
+        p.Set(temproot, false);
+    }
     // A global is storage like a field: no binding puts a reference into a
     // grow-shrink array there (FitsAt, CheckBindingRoot).
     if (vd->isglobal && vd->type && SlotReadable(vd->type))
         for (auto &a : p.alts) a.slotread = true;
     if (!vd->refrootknown && vd->type && vd->type->kind == TY_REF && vd->type->ref->optional) {
-        // Bound only to null so far (or bound later in a loop body this
-        // use precedes): what it can point at is whatever can hold the
-        // pointee type at its own depth or outside -- the read-back rule's
-        // answer (§9.5).
         auto cands = RootCandidates(LoadType(vd->type->ref->sub), Depth(vd), false,
                                     !vd->type->cq);
         if (cands.Any([](const RootAlt &a) { return a.root != nullptr; })) p.alts = cands.alts;
@@ -547,6 +524,23 @@ inline void TypeCheck::RestoreFlow(const FlowState &f) {
     reachable = f.reachable;
 }
 
+inline TypeCheck::FlowState TypeCheck::JoinFlow(const FlowState &a, const FlowState &b) {
+    auto now = SaveFlow();
+    MergeFlow(a, b);
+    auto joined = SaveFlow();
+    RestoreFlow(now);
+    return joined;
+}
+
+inline bool TypeCheck::SameFlow(const FlowState &a, const FlowState &b) {
+    if (a.reachable != b.reachable || a.st.size() != b.st.size()) return false;
+    for (size_t i = 0; i < a.st.size(); i++)
+        if (a.st[i] != b.st[i]) return false;
+    for (size_t i = 0; i < a.globals.size(); i++)
+        if (a.globals[i].second != b.globals[i].second) return false;
+    return true;
+}
+
 // Joins two branch end states into the current state: a fact holds after
 // the join iff it holds in every reachable branch.
 inline void TypeCheck::MergeFlow(const FlowState &a, const FlowState &b) {
@@ -601,253 +595,10 @@ inline void TypeCheck::NarrowCond(Node *cond, bool sense) {
     }
 }
 
-// Names rebound anywhere below n: loop bodies clear these narrowings up
-// front, since iteration 2 sees the rebind. A plain `=` writes through a
-// narrowed optional and leaves its nullness alone.
-inline void TypeCheck::CollectAssignedNames(Node *n, set<string_view> &out,
-                                            set<Node *> *seen,
-                                            const vector<SFunction *> &locals, bool outer) {
-    if (!n) return;
-    set<Node *> local;
-    if (!seen) seen = &local;
-    if (!seen->insert(n).second) return;
-    if (auto a = Is<Assign>(n); a && a->op == T_DOTASSIGN)
-        if (auto id = Is<Ident>(a->lval)) out.insert(id->name);
-    if (Is<FnDecl>(n)) return;  // Declaring an uncalled function has no effects.
-    if (auto b = Is<Block>(n)) {
-        auto nested = locals;
-        // A later local declaration cannot hide a call that precedes it.
-        // Track the same declaration order as CheckStmts while following
-        // only bodies reached by calls.
-        for (auto st : b->stmts) {
-            if (auto fd = Is<FnDecl>(st)) nested.push_back(fd->sf);
-            else CollectAssignedNames(st, out, seen, nested, outer);
-        }
-        CollectAssignedNames(b->tail, out, seen, nested, outer);
-        return;
-    }
-    auto localfn = [&](string_view name) -> SFunction * {
-        for (auto i = locals.rbegin(); i != locals.rend(); ++i)
-            if ((*i)->name == name) return *i;
-        return outer ? LookupLocalFn(name) : nullptr;
-    };
-    // The next iteration sees rebindings performed by callees too, even
-    // before their specializations have been checked for the first time.
-    if (auto c = Is<Call>(n)) {
-        vector<SFunction *> targets;
-        if (auto id = Is<Ident>(c->callee)) {
-            if (auto fb = outer ? LookupFnVal(id->name) : nullptr) {
-                if (fb->named) targets.push_back(fb->named);
-                else if (fb->fv) CollectAssignedNames(fb->fv->body, out, seen, locals, outer);
-            } else if (auto sf = localfn(id->name)) targets.push_back(sf);
-            else targets = ast.LookupFunctions(id->name, id->ns);
-        } else if (auto d = Is<Dot>(c->callee)) {
-            if (auto sf = localfn(d->name)) targets.push_back(sf);
-            else targets = ast.LookupFunctions(d->name, d->ns);
-        }
-        for (auto sf : targets) {
-            // A cached body may have bound its nested calls before a later
-            // scope shadowed those names. Its recorded effects still apply;
-            // scanning the source in the current environment cannot recover
-            // those earlier bindings.
-            for (auto spec : sf->specs)
-                for (auto vd : spec->reboundoptionals) out.insert(vd->name);
-            // Top-level functions cannot see the caller's local functions.
-            // Nested functions declared in their own bodies are still tracked.
-            if (sf->isnested) CollectAssignedNames(sf->body, out, seen, locals, outer);
-            else CollectAssignedNames(sf->body, out, seen, {}, false);
-        }
-    }
-    n->Children([&](Node *c) { CollectAssignedNames(c, out, seen, locals, outer); });
-}
-
-// The variables a loop body writes anywhere -- assigned whole, or through
-// a field, element or member call -- whose contents a read earlier in the
-// body cannot rely on: the next iteration sees the write.
-inline void TypeCheck::CollectAssignedBases(Node *n, set<string_view> &out) {
-    if (!n) return;
-    auto base = [&](Node *l) {
-        for (;;) {
-            if (auto d = Is<Dot>(l)) { l = d->obj; continue; }
-            if (auto ix = Is<Index>(l)) { l = ix->obj; continue; }
-            if (auto sl = Is<SliceExpr>(l)) { l = sl->obj; continue; }
-            if (auto u = Is<Unary>(l); u && u->op == T_BITAND) { l = u->child; continue; }
-            break;
-        }
-        if (auto id = Is<Ident>(l)) out.insert(id->name);
-    };
-    if (auto a = Is<Assign>(n)) base(a->lval);
-    if (auto c = Is<Call>(n))
-        if (auto d = Is<Dot>(c->callee)) base(d->obj);
-    n->Children([&](Node *c) { CollectAssignedBases(c, out); });
-}
-
 // A holder value bound to a new variable: the variable's contents are the
 // value's, and the binding is a store like any other for the shrink rules.
 inline void TypeCheck::NoteHolderBinding(VarDef *d, const Val &v) {
     RecordStore(d, ContentsOf(v), v.byteview, nullptr, v.holderfrom);
-}
-
-inline void TypeCheck::PushLoopAssigned(Node *body) {
-    set<string_view> names;
-    CollectAssignedBases(body, names);
-    loopassigned.push_back(std::move(names));
-    PrebindLoopRefs(body);
-    // The reference variables the body rebinds to roots they may not have
-    // yet: every `.=` target declared outside the loop whose right-hand
-    // sides the syntactic scan cannot all resolve to roots the variable has
-    // (RefProvOf reads them as bounds inside the loop).
-    set<VarDef *> retargets;
-    auto sf = frames.back().sf;
-    map<string_view, vector<Node *>> targets;
-    function<void(Node *)> walk = [&](Node *n) {
-        if (!n) return;
-        if (auto a = Is<Assign>(n); a && a->op == T_DOTASSIGN)
-            if (auto id = Is<Ident>(a->lval)) targets[id->name].push_back(a->rhs);
-        n->Children([&](Node *c) { walk(c); });
-    };
-    walk(body);
-    for (auto &[name, rhss] : targets) {
-        auto vd = LookupVar(name, CurNs());
-        if (!vd || !vd->isvar || !vd->refrootknown || !vd->type || !IsRefOrSlice(vd->type))
-            continue;
-        auto covered = sf && sf->body;
-        auto cy = Cycles();
-        for (auto rhs : rhss) {
-            if (!covered) break;
-            vector<string_view> busy;
-            auto s = cy.ScanExpr(sf, rhs, busy, 0);
-            if (s.unknown) { covered = false; break; }
-            for (auto &d : s.alts) {
-                VarDef *root = nullptr;
-                auto exact = false;
-                if (!ResolvePrebind(d, root, exact) || !vd->ref.Has(root)) covered = false;
-            }
-        }
-        if (!covered) retargets.insert(vd);
-    }
-    loopretargets.push_back(std::move(retargets));
-}
-
-// A reference variable declared outside a loop and bound only inside it
-// (`var last: Node? = null;` before the loop) would be rootless at a use
-// earlier in the body than its rebind. The body is scanned for its `.=`
-// targets ahead of the loop, and where every rebind resolves to one root
-// syntactically, the variable takes that root now (§9.2); the first real
-// binding then confirms it and supplies the full provenance.
-inline void TypeCheck::PrebindLoopRefs(Node *body) {
-    auto sf = frames.back().sf;
-    if (!sf || !sf->body) return;
-    map<string_view, vector<Node *>> targets;
-    function<void(Node *)> walk = [&](Node *n) {
-        if (!n) return;
-        if (auto a = Is<Assign>(n); a && a->op == T_DOTASSIGN)
-            if (auto id = Is<Ident>(a->lval)) targets[id->name].push_back(a->rhs);
-        n->Children([&](Node *c) { walk(c); });
-    };
-    walk(body);
-    for (auto &[name, rhss] : targets) {
-        auto vd = LookupVar(name, CurNs());
-        if (!vd || vd->isglobal || vd->refrootknown || !vd->type || vd->type->kind != TY_REF)
-            continue;
-        if (vd->ownerspec != frames.back().spec) continue;
-        auto cy = Cycles();
-        RootSet s;
-        for (auto rhs : rhss) {
-            vector<string_view> busy;
-            s.Join(cy.ScanExpr(sf, rhs, busy, 0));
-        }
-        VarDef *root = nullptr;
-        auto exact = false;
-        if (s.unknown || s.alts.size() != 1 || !ResolvePrebind(s.alts[0], root, exact)) continue;
-        vd->ref.Set(root, exact);
-        vd->refrootknown = true;
-        vd->refprebound = true;
-    }
-}
-
-// The variable a scanned root names from here, and whether it owns the
-// storage exactly.
-inline bool TypeCheck::ResolvePrebind(const RootDesc &d, VarDef *&root, bool &exact) {
-    auto ofvar = [&](VarDef *v) {
-        if (!v) return false;
-        auto isref = v->type && IsRefOrSlice(v->type);
-        if (isref) {
-            if (!v->refrootknown) return false;
-            root = v->ref.Root();
-            exact = v->ref.Exact();
-        } else {
-            root = v;
-            exact = true;
-        }
-        return true;
-    };
-    switch (d.kind) {
-        case RD_GLOBAL: return ofvar(d.glob);
-        case RD_LOCAL: case RD_FREE: return ofvar(LookupVar(d.name, CurNs()));
-        case RD_PARAM: {
-            auto spec = frames.back().spec;
-            if (!spec || d.param >= (int)spec->params.size()) return false;
-            return ofvar(spec->params[d.param]);
-        }
-        default: return false;
-    }
-}
-
-inline bool TypeCheck::AssignedInEnclosingLoop(VarDef *vd) {
-    for (auto &s : loopassigned) if (s.count(vd->name)) return true;
-    return false;
-}
-
-inline void TypeCheck::KillNarrowingsAssignedIn(Node *body) {
-    set<string_view> names;
-    CollectAssignedNames(body, names);
-    for (auto v : vars) if (names.count(v->name)) v->narrowed = nullptr;
-    for (auto g : ast.globals)
-        for (auto v : g->defs)
-            for (auto name : names) {
-                auto ref = SplitName(name, CurNs());
-                if (ref.leaf == v->name && (!ref.qualified || ref.ns == g->ns))
-                    v->narrowed = nullptr;
-            }
-}
-
-inline set<VarDef *> TypeCheck::NarrowedOptionals() {
-    set<VarDef *> out;
-    for (auto v : vars) if (v->narrowed) out.insert(v);
-    for (auto g : ast.globals) for (auto v : g->defs) if (v->narrowed) out.insert(v);
-    return out;
-}
-
-// The optionals a checked body rebinds through the calls it made.
-inline void TypeCheck::CollectCheckedRebinds(Node *n, set<VarDef *> &out) {
-    if (!n || Is<FnDecl>(n)) return;
-    if (auto c = Is<Call>(n)) {
-        auto add = [&](FnSpec *sp) {
-            if (!sp) return;
-            out.insert(sp->reboundoptionals.begin(), sp->reboundoptionals.end());
-            if (sp->inprogress)
-                for (auto v : InProgressRebinds(sp)) out.insert(v);
-        };
-        add(c->spec);
-        for (auto d : c->dispatch) add(d);
-        for (auto &fs : c->fmtspecs) add(fs.second);
-    }
-    RunChildren(n, [&](Node *ch) { CollectCheckedRebinds(ch, out); });
-}
-
-// A fact assumed at the start of a loop body that the loop rebinds through a
-// call the name scan could not follow did not hold on the next iteration, and
-// does not hold after the loop.
-inline void TypeCheck::FinishLoopNarrowing(Node *loop, const set<VarDef *> &assumed) {
-    set<VarDef *> rebound;
-    CollectCheckedRebinds(loop, rebound);
-    for (auto v : rebound) {
-        if (assumed.count(v))
-            Error(loop, cat("optional ", v->name, " is rebound later in this loop, so its "
-                            "narrowing does not hold on the next iteration (§3.8)"));
-        v->narrowed = nullptr;
-    }
 }
 
 // ------------------------------------------------------------------
@@ -1285,38 +1036,67 @@ inline void TypeCheck::CheckLoopBody(Block *body) {
     if (body->tail) CheckStmtExpr(body->tail);
 }
 
-// Closing a loop, whatever its header: the scope's record for the caller to
-// read the breaks off, the names its body assigns, the flow as it was before
-// the loop, and the narrowings its body turned out to rebind -- which the
-// body assumed on its first iteration and the next one would not have
-// (§3.8).
-inline TypeCheck::Scope TypeCheck::EndLoop(Node *x, Block *body, const FlowState &entry,
-                                           const set<VarDef *> &assumed) {
-    auto sc = scopes.back();
-    PopScope();
-    loopassigned.pop_back();
-    loopretargets.pop_back();
-    RestoreFlow(entry);
-    KillNarrowingsAssignedIn(body);
-    FinishLoopNarrowing(x, assumed);
+// A loop, whatever its header, checked to a fixpoint of what its body
+// feeds back to its head (LoopPass): `pass` checks one iteration in the
+// loop's scope, from the state `head`, which starts as the entry state and
+// becomes the join of the entry with the pass's back edges -- the end of
+// the body, every continue -- the state every iteration but the first
+// starts in. A pass that changed no fact fed back and read no variable
+// before its binding was checked against the settled facts, so its errors
+// stood and it was the last; one that read such a variable is followed by
+// a settled pass, which reads it as outside a loop would. The loop's
+// scope, with its breaks, is the caller's to read off; the flow is left at
+// the head, which is the state a loop exits in unless the caller knows
+// better (a while's condition).
+inline TypeCheck::Scope TypeCheck::CheckLoopPasses(Node *x, FlowState &head,
+                                                   const function<void()> &pass) {
+    auto entry = head;
+    auto firstbase = storeevents.size();
+    auto warnbase = pendingwarnings.size();
+    auto settled = false;
+    Scope sc;
+    for (;;) {
+        RestoreFlow(head);
+        pendingwarnings.resize(warnbase);
+        looppasses.push_back({ (int)scopes.size(), firstbase, storeevents.size(), settled });
+        PushScope(SK_LOOP, x);
+        pass();
+        auto &s = scopes.back();
+        if (reachable) {
+            s.backedge = s.backedges ? JoinFlow(s.backedge, SaveFlow()) : SaveFlow();
+            s.backedges = true;
+        }
+        sc = s;
+        PopScope();
+        auto lp = looppasses.back();
+        looppasses.pop_back();
+        auto next = sc.backedges ? JoinFlow(entry, sc.backedge) : entry;
+        auto changed = lp.changed || !SameFlow(next, head);
+        head = next;
+        if (changed) continue;
+        if (settled || !lp.sawunbound) break;
+        settled = true;
+    }
+    RestoreFlow(head);
+    if (looppasses.empty()) {
+        for (auto &w : pendingwarnings) fputs(w.c_str(), stderr);
+        pendingwarnings.clear();
+    }
     return sc;
 }
 
 inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue) {
     ValueRegion vr(*this, wantvalue);
-    KillNarrowingsAssignedIn(x->body);
-    auto assumed = NarrowedOptionals();
-    PushLoopAssigned(x->body);
-    auto entry = SaveFlow();
+    auto head = SaveFlow();
     auto onpath = argpath == x;
-    PushScope(SK_LOOP, x);
-    if (wantvalue) {
-        scopes.back().breakexpected = expected;
-        scopes.back().onargpath = onpath;
-        scopes.back().inreturn = inreturn;
-    }
-    CheckLoopBody(x->body);
-    auto sc = EndLoop(x, x->body, entry, assumed);
+    auto sc = CheckLoopPasses(x, head, [&] {
+        if (wantvalue) {
+            scopes.back().breakexpected = expected;
+            scopes.back().onargpath = onpath;
+            scopes.back().inreturn = inreturn;
+        }
+        CheckLoopBody(x->body);
+    });
     reachable = sc.hasbreak;  // A loop only exits via break.
     if (!wantvalue || !sc.breaktype) return VoidVal();
     CheckBranchRoot(sc.breakvalue, CurDepth(), x, "loop");
@@ -1324,31 +1104,19 @@ inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue)
 }
 
 inline void TypeCheck::CheckWhile(While *x) {
-    // Narrowings from before the loop that the body or the condition rebinds
-    // do not hold on the second iteration, nor in the condition that runs
-    // again after it; the condition's own narrowings do, since it runs before
-    // every iteration, and a rebind inside the body un-narrows from that
-    // point on.
-    KillNarrowingsAssignedIn(x->body);
-    KillNarrowingsAssignedIn(x->cond);
-    auto assumed = NarrowedOptionals();
-    CheckCond(x->cond);
-    auto entry = SaveFlow();
-    {
-        // What the condition narrows by itself holds in the body on every
-        // iteration, so only the narrowings from before the loop that it
-        // does not establish again are assumed across iterations.
-        auto keep = SaveFlow();
-        for (auto v : assumed) v->narrowed = nullptr;
+    // The condition runs before every iteration: what it narrows holds in
+    // the body each time, a rebind inside the body un-narrows from that
+    // point on, and the loop exits in the state the condition's last run
+    // leaves, it being false.
+    auto head = SaveFlow();
+    FlowState exit;
+    auto sc = CheckLoopPasses(x, head, [&] {
+        CheckCond(x->cond);
+        exit = SaveFlow();
         NarrowCond(x->cond, true);
-        for (auto v : NarrowedOptionals()) assumed.erase(v);
-        RestoreFlow(keep);
-    }
-    PushLoopAssigned(x->body);
-    NarrowCond(x->cond, true);
-    PushScope(SK_LOOP, x);
-    CheckLoopBody(x->body);
-    auto sc = EndLoop(x, x->body, entry, assumed);
+        CheckLoopBody(x->body);
+    });
+    RestoreFlow(exit);
     if (sc.breaktype)
         Error(x, "break with a value exits loop/block only, not while");
 }
@@ -1417,45 +1185,40 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
             Error(x, cat("cannot iterate a value of type ", TypeStr(t)));
         }
     }
-    auto entry = SaveFlow();
-    KillNarrowingsAssignedIn(x->body);
-    auto assumed = NarrowedOptionals();
-    PushLoopAssigned(x->body);
-    PushScope(SK_LOOP, x);
-    auto vd = NewVar(x->var, bindtype, x->line, false, x->vdef);
-    vd->assigned = true;
-    vd->copybind = (x->iterkind == IK_ARRAY || x->iterkind == IK_SLICE) && !byref;
-    if (!IsRefOrSlice(bindtype) && HoldsPlainRef(bindtype)) {
-        // A holder element copied out: its contents are the array's.
-        Roots held = intemp ? contents.roots : iterprov.AsRoots();
-        if (!intemp) held.Weaken();
-        RecordStore(vd, held, iterprov.byteview, nullptr,
-                    intemp ? contents.from : iterprov.Root());
+    // A relative-reference or slice element bound by value was read out of
+    // the array, so where it points follows the read-back rule (§9.5), not
+    // the array's own root.
+    if (IsRefOrSlice(bindtype) && !byref && elemtype &&
+        ((elemtype->kind == TY_REF && elemtype->ref->lenstorage >= 0) ||
+         elemtype->kind == TY_SLICE)) {
+        auto rb = ReadBackRoot(elemtype, iterprov, iterprov.byteview,
+                               intemp ? &contents : nullptr);
+        auto slotread = SlotReadable(elemtype);
+        iterprov.alts = rb.alts;
+        for (auto &a : iterprov.alts) a.slotread = slotread;
+        if (elemtype->cq) iterprov.writable = false;
     }
-    if (IsRefOrSlice(bindtype)) {
-        // A relative-reference or slice element bound by value was read
-        // out of the array, so where it points follows the read-back rule
-        // (§9.5), not the array's own root.
-        if (!byref && elemtype &&
-            ((elemtype->kind == TY_REF && elemtype->ref->lenstorage >= 0) ||
-             elemtype->kind == TY_SLICE)) {
-            auto rb = ReadBackRoot(elemtype, iterprov, iterprov.byteview,
-                                   intemp ? &contents : nullptr);
-            auto slotread = SlotReadable(elemtype);
-            iterprov.alts = rb.alts;
-            for (auto &a : iterprov.alts) a.slotread = slotread;
-            if (elemtype->cq) iterprov.writable = false;
+    auto head = SaveFlow();
+    auto sc = CheckLoopPasses(x, head, [&] {
+        auto vd = NewVar(x->var, bindtype, x->line, false, x->vdef);
+        vd->assigned = true;
+        vd->copybind = (x->iterkind == IK_ARRAY || x->iterkind == IK_SLICE) && !byref;
+        if (!IsRefOrSlice(bindtype) && HoldsPlainRef(bindtype)) {
+            // A holder element copied out: its contents are the array's.
+            Roots held = intemp ? contents.roots : iterprov.AsRoots();
+            if (!intemp) held.Weaken();
+            RecordStore(vd, held, iterprov.byteview, nullptr,
+                        intemp ? contents.from : iterprov.Root());
         }
-        BindProv(vd, iterprov);
-    }
-    x->vdef = vd;
-    if (!x->idxvar.empty()) {
-        auto idx = NewVar(x->idxvar, ast.inttypes[IS_I64], x->line, false, x->idxdef);
-        idx->assigned = true;
-        x->idxdef = idx;
-    }
-    CheckLoopBody(x->body);
-    auto sc = EndLoop(x, x->body, entry, assumed);
+        if (IsRefOrSlice(bindtype)) BindProv(vd, iterprov);
+        x->vdef = vd;
+        if (!x->idxvar.empty()) {
+            auto idx = NewVar(x->idxvar, ast.inttypes[IS_I64], x->line, false, x->idxdef);
+            idx->assigned = true;
+            x->idxdef = idx;
+        }
+        CheckLoopBody(x->body);
+    });
     if (sc.breaktype)
         Error(x, "break with a value exits loop/block only, not for");
 }
@@ -1568,8 +1331,14 @@ inline void TypeCheck::CheckBreak(Break *b) {
     reachable = false;
 }
 
+// A continue is a back edge of its loop: what holds here joins what the
+// next iteration starts in (CheckLoopPasses).
 inline void TypeCheck::CheckContinue(Node *n) {
-    if (FindBreakScope(true) < 0) Error(n, "continue outside of a loop");
+    auto si = FindBreakScope(true);
+    if (si < 0) Error(n, "continue outside of a loop");
+    auto &sc = scopes[si];
+    sc.backedge = sc.backedges ? JoinFlow(sc.backedge, SaveFlow()) : SaveFlow();
+    sc.backedges = true;
     reachable = false;
 }
 
@@ -1959,16 +1728,8 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
     }
     a->rhs->exprtype = v.type;
     if (lv.var) {
-        if (!lv.var->refrootknown) {
-            BindRefProvenance(lv.var, v);
-        } else if (lv.var->refprebound && !v.isnull && v.Root() == lv.var->ref.Root()) {
-            // The root the loop scan predicted; this binding's provenance
-            // is the real one.
-            BindRefProvenance(lv.var, v);
-            lv.var->refprebound = false;
-        } else if (!v.isnull) {
-            CheckRefRebindRoot(a, lv.var, v);
-        }
+        if (!lv.var->refrootknown) BindRefProvenance(lv.var, v);
+        else if (!v.isnull) CheckRefRebindRoot(a, lv.var, v);
         lv.var->assigned = true;
         // Rebinding an optional settles its nullness — narrowed only when
         // the new value is provably non-null (a plain reference).
@@ -2019,7 +1780,10 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv, const LVal &at) {
 // note): re-assignments must carry the same root, or one at the same
 // scope depth (which is equivalent for the outlives check).
 inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
-    vd->ref.byteview = vd->ref.byteview || rv.byteview;
+    if (rv.byteview && !vd->ref.byteview) {
+        vd->ref.byteview = true;
+        NoteFact(vd);
+    }
     // The variable may point wherever it did and wherever the new value may:
     // a later read sees either. A root it did not have joins only at the
     // depth of its binding.
@@ -2039,15 +1803,9 @@ inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
                           "not supported; declare a new variable (§5.2)"));
     }
     // A rebind to other storage keeps the lifetime bound but means the
-    // variable no longer names one array. A read earlier in an enclosing
-    // loop has already seen this value, and cannot be revisited, so its
-    // claim has to be rejected here.
-    if (added && vd->refidentityused)
-        Error(at, cat("re-binding ", vd->name, " to storage rooted at ",
-                      nr ? nr->name : string_view("static data"), " after its root ",
-                      vd->ref.Root() ? vd->ref.Root()->name : string_view("static data"),
-                      " was used as the identity of a relative reference (§3.9)"));
-    vd->ref.Add(rv);
+    // variable no longer names one array: a read inside a loop this rebind
+    // is in sees both on the next pass (CheckLoopPasses).
+    if (vd->ref.Add(rv)) NoteFact(vd);
 }
 
 // A `let` binding or field is not assigned as a whole (§4.4).

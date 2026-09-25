@@ -420,17 +420,25 @@ struct Roots {
         alts.clear();
         alts.push_back({ r, exact, from, slotread });
     }
-    void Add(const RootAlt &a) {
+    // Whether the set changed: a new place, or one it had made weaker.
+    bool Add(const RootAlt &a) {
         for (auto &b : alts) {
             if (b.root != a.root) continue;
+            auto changed = (b.exact && !a.exact) || (b.slotread && !a.slotread) ||
+                           (!b.from && a.from);
             b.exact = b.exact && a.exact;
             b.slotread = b.slotread && a.slotread;
             if (!b.from) b.from = a.from;
-            return;
+            return changed;
         }
         alts.push_back(a);
+        return true;
     }
-    void Add(const Roots &o) { for (auto &a : o.alts) Add(a); }
+    bool Add(const Roots &o) {
+        auto changed = false;
+        for (auto &a : o.alts) changed = Add(a) || changed;
+        return changed;
+    }
     // Every alternative made a bound: the pointee is bounded by each root
     // rather than known to be held in it.
     void Weaken() { for (auto &a : alts) a.exact = false; }
@@ -1101,13 +1109,6 @@ struct VarDef {
     // and counts as writable until it makes one.
     Prov ref { .writable = true };
     bool refrootknown = false;
-    // The root came from a scan of a loop body's rebinds ahead of the loop
-    // (§9.2), not from a binding; the first real binding replaces it.
-    bool refprebound = false;
-    // A read of this variable's exact root inside a loop it was declared
-    // outside of: a later rebind in that loop is observed by that read on the
-    // next iteration, so it may no longer change the root (typecheck.h).
-    bool refidentityused = false;
     // For variables whose type holds plain references or slices by value
     // (a struct with a slice field, an array of such): where the references
     // stored into it so far may point, which bounds what a copy of the value
@@ -1221,6 +1222,12 @@ struct RootArg {
     // the key, ORed over the call sites that reach the specialization.
     bool growshrink = false;
     bool gsvia = false;
+    // The argument points nowhere yet: a reference variable read in a pass of
+    // a loop before the pass that binds it (TypeCheck::RefProvOf). The
+    // parameter then has no roots in the body, which no rule reads, so the
+    // body's summary through it is empty; part of the key, so that only such
+    // a call reaches the specialization, and the loop's last pass never does.
+    bool unknown = false;
     // The argument is a bytes_of view (Prov::byteview). Part of the key for
     // the same reason growshrink is: the shrink scans dismiss a slice whose
     // pointee the root cannot hold, and this is the one that survives that.
@@ -1280,7 +1287,7 @@ struct RootArg {
     bool operator==(const RootArg &o) const {
         return cls == o.cls && writable == o.writable && reusable == o.reusable &&
                growshrink == o.growshrink && byteview == o.byteview && pool == o.pool &&
-               heldexact == o.heldexact && viewslot == o.viewslot;
+               heldexact == o.heldexact && viewslot == o.viewslot && unknown == o.unknown;
     }
 };
 

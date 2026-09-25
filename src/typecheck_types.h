@@ -767,8 +767,7 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
         if (byteview) {
             // A byte view can point at any typed storage: the container's
             // contents where they are known, else the container as a bound.
-            if (croot && !croot->isglobal && !croot->contents.None() &&
-                !AssignedInEnclosingLoop(croot)) {
+            if (croot && !croot->isglobal && !croot->contents.None()) {
                 for (auto &a : croot->contents.alts) out.Add({ a.root, false, croot });
             } else {
                 out.Add({ croot, false, croot });
@@ -844,6 +843,7 @@ inline void TypeCheck::CheckRootedAtReceiver(Call *c, const char *op, const Val 
                                              const Val &av, const char *what,
                                              const char *sec) {
     if (RootedAtReceiver(rv, av)) return;
+    if (av.None() || rv.None()) return;   // Nowhere yet (RefProvOf).
     auto why = av.Exact() ? string() : ReadBackWhy(av);
     auto root = av.Root() ? av.Root()->name : string_view("static data");
     Error(c, cat(".", op, " needs ", what, " rooted at the array itself (", sec, "); ",

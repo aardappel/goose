@@ -1,6 +1,7 @@
-// error: optional opt is rebound later in this loop, so its narrowing does not hold on the next iteration
+// error: operator + cannot be applied to i64? and i64
 // A loop body that rebinds a narrowed optional through a function value
-// breaks the narrowing its next iteration relies on.
+// breaks the narrowing its next iteration relies on: the body is checked
+// again in the state its first iteration ends in, where opt is not narrowed.
 fn apply<F>() { F(); }
 fn main() {
     var n = 41;

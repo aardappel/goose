@@ -808,7 +808,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
         }
         // Binding a global reference or slice variable stores into a global
         // (§5.2).
-        if (!curdst.varbind || curdst.roots.Root()->isglobal) {
+        if (!curdst.varbind || curdst.roots.None() || curdst.roots.Root()->isglobal) {
             if (auto gs = StoredIntoGrowShrink(v, roots, t, holder)) {
                 fitfail = NeverStoredError(gs, MayPointWording(roots, gs));
                 return false;
@@ -974,6 +974,12 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
                 // relative slot takes it wherever the slot is: a linked
                 // structure's sentinel end does not force plain links.
                 if (t->ref->optional && dt->ref->optional && v.Exact() && !v.Root()) {
+                    v.type = dt;
+                    return true;
+                }
+                // A reference that points nowhere yet (RefProvOf), or a
+                // location reached through one, is read again once it does.
+                if (v.None() || (!dt->ref->pool && curdst.unknown)) {
                     v.type = dt;
                     return true;
                 }

@@ -591,6 +591,23 @@ samples before each landing (`docs/testing.md`,
   syntactic scan cannot show it has is read as bounded by its roots inside
   the loop (`loopretargets`), the single-pass replacement for what the
   collapsed inexact root used to guarantee; item 6 removes that too.
+* **6. Loops checked to a fixpoint** landed 2026-09-25: `CheckLoopPasses`
+  (`typecheck_flow.h`) re-checks a body from the join of the loop's entry
+  with the previous pass's back edges until no fact fed back to the head
+  changes (`LoopPass`, `NoteFact` at `BindProv`/`CheckRefRebindRoot`/
+  `RecordStore`, the flow state compared), every pass but the last being
+  discovery, in which a variable read before its binding has no roots
+  (`RefProvOf`, `RootArg::unknown` for a call given one) and the shrink
+  scans pass it by. Deleted: `PrebindLoopRefs`/`ResolvePrebind`/
+  `refprebound`, `RefExactOf`/`refidentityused`, `PushLoopAssigned`/
+  `loopassigned`/`AssignedInEnclosingLoop`/`CollectAssignedBases`,
+  `loopretargets`, `pendingshrinks`/`ResolvePendingShrinks`,
+  `CollectAssignedNames`/`KillNarrowingsAssignedIn`, `NarrowedOptionals`/
+  `CollectCheckedRebinds`/`FinishLoopNarrowing`, `SlotReadMayRetarget`,
+  `EndLoop`. Three fixtures now report at the use instead of at the rebind
+  or after the loop (rebind_root_identity, optional_loop_fnval_rebind,
+  optional_while_condition_value). Loops with no rebind or store of an
+  outer variable take one pass; the test suite's checking time is unchanged.
 * **2. Statement liveness from the tree** landed 2026-09-25: `nodepath`
   (`PathEntry`, `NodeScope`), `nodevals` and `ForOperands` in
   `typecheck.h`/`typecheck_exprs.h`; `HeldOperands` replaces `heldtemps`,

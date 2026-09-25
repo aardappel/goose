@@ -154,6 +154,12 @@ struct TypeCheck {
     };
 
     enum ScopeKind { SK_PLAIN, SK_FN, SK_LOOP, SK_BLOCK };
+    // Snapshot of assigned/narrowed for every variable currently in scope.
+    struct FlowState {
+        vector<pair<bool, TypeExpr *>> st;
+        vector<pair<VarDef *, TypeExpr *>> globals;
+        bool reachable = true;
+    };
     struct Scope {
         int kind = SK_PLAIN;
         int serial = 0;              // Unique per scope opened: tells a later one at its index apart.
@@ -167,6 +173,11 @@ struct TypeCheck {
         bool inreturn = false;      // The construct's value is returned, as are its breaks' values.
         bool hasbreak = false;
         bool valuelessbreak = false;
+        // For SK_LOOP: the join of the states at its back edges so far (the
+        // end of the body, every continue), which the next iteration starts
+        // in (CheckLoopPasses).
+        FlowState backedge;
+        bool backedges = false;
     };
 
     vector<Frame> frames;
@@ -300,9 +311,12 @@ struct TypeCheck {
         // The type of the storage the path to it reached, which the slots it
         // fills lie in (Prov::reached); null where it crossed no reference.
         TypeExpr *reached = nullptr;
+        // A destination reached through a reference that points nowhere yet
+        // (RefProvOf): it has no roots, unlike no destination at all.
+        bool unknown = false;
         Dest() {}
         Dest(const Roots &r, bool vb = false, TypeExpr *re = nullptr)
-            : roots(r), varbind(vb), reached(re) {}
+            : roots(r), varbind(vb), reached(re), unknown(r.None()) {}
         // A variable's own storage.
         Dest(VarDef *vd, bool vb = false) : varbind(vb) { roots.Set(vd, true); }
     };
@@ -368,6 +382,8 @@ struct TypeCheck {
     static constexpr int MAXCHAIN = 20;
 
     [[noreturn]] void Error(Line l, const string &msg) {
+        for (auto &w : pendingwarnings) fputs(w.c_str(), stderr);
+        pendingwarnings.clear();
         auto s = cat(Where(l), ": error: ", msg);
         // Show the offending source line with a caret-less underline context.
         if (l.fileidx >= 0 && l.fileidx < (int)ast.sources.size() && l.line > 0) {
@@ -458,7 +474,12 @@ struct TypeCheck {
     bool quiet = false;
     void Warn(const Node *n, const string &msg) {
         if (quiet) return;
-        fprintf(stderr, "%s: warning: %s\n", Where(n->line).c_str(), msg.c_str());
+        auto text = cat(Where(n->line), ": warning: ", msg, "\n");
+        if (!looppasses.empty()) {
+            pendingwarnings.push_back(text);
+            return;
+        }
+        fputs(text.c_str(), stderr);
     }
 
     string TypeStr(const TypeExpr *t) {
@@ -822,11 +843,12 @@ struct TypeCheck {
     // optional has no commitment yet and reads as the temp sentinel, which no
     // store outlives (conservative).
     VarDef *RefRootOf(VarDef *vd) { return vd->refrootknown ? vd->ref.Root() : temproot; }
-    // Every root the reference a variable holds may have (§9.2).
+    // Every root the reference a variable holds may have (§9.2): none yet
+    // where it is unbound in a discovery pass of a loop (RefProvOf).
     Roots RefRootsOf(VarDef *vd) {
         if (vd->refrootknown) return vd->ref;
         Roots r;
-        r.Set(temproot, false);
+        if (!UnboundIsBottom()) r.Set(temproot, false);
         return r;
     }
 
@@ -843,10 +865,8 @@ struct TypeCheck {
     bool MayBeViewed(VarDef *r);
     bool Viewable(TypeExpr *t);
     bool GrowShrinkContains(TypeExpr *t, TypeExpr *of);
-    bool RefExactOf(VarDef *vd);
     bool RefMayPointInto(VarDef *v, VarDef *root);
     bool RefMayRetarget(VarDef *v, VarDef *root);
-    bool SlotReadMayRetarget(VarDef *v, VarDef *root);
     bool SlotReadable(TypeExpr *t);
     bool HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *t, VarDef *root,
                               TypeExpr *bound, bool growonly);
@@ -913,30 +933,73 @@ struct TypeCheck {
     vector<VarDef *> LexicalLocals(FnSpec *env);
     SFunction *LookupLocalFn(string_view name);
 
-    // Snapshot of assigned/narrowed for every variable currently in scope.
-    struct FlowState {
-        vector<pair<bool, TypeExpr *>> st;
-        vector<pair<VarDef *, TypeExpr *>> globals;
-        bool reachable = true;
-    };
-
     FlowState SaveFlow();
     void RestoreFlow(const FlowState &f);
     void MergeFlow(const FlowState &a, const FlowState &b);
     void NarrowCond(Node *cond, bool sense);
 
     void KillNarrow(VarDef *vd) { vd->narrowed = nullptr; }
+    // The join of two states, as MergeFlow leaves it: a fact holds iff it
+    // holds in every reachable one.
+    FlowState JoinFlow(const FlowState &a, const FlowState &b);
+    bool SameFlow(const FlowState &a, const FlowState &b);
 
-    void CollectAssignedNames(Node *n, set<string_view> &out, set<Node *> *seen = nullptr,
-                              const vector<SFunction *> &locals = {}, bool outer = true);
-    void KillNarrowingsAssignedIn(Node *body);
     vector<VarDef *> ExternalOptionals(FnSpec *env,
                                        const vector<pair<string_view, FnValBind>> *fnvals = nullptr);
     void ApplyCalleeRebinds(FnSpec *spec);
     vector<VarDef *> InProgressRebinds(FnSpec *spec);
-    set<VarDef *> NarrowedOptionals();
-    void CollectCheckedRebinds(Node *n, set<VarDef *> &out);
-    void FinishLoopNarrowing(Node *loop, const set<VarDef *> &assumed);
+
+    // A loop body is checked as many times as it takes for what it feeds
+    // back to its head to settle (CheckLoopPasses): the roots its rebinds
+    // give the variables declared outside it, the stores into their
+    // contents (NoteFact), the narrowings and assignments its back edges
+    // drop. Every pass but a settled one is discovery: a reference variable
+    // read before any binding points nowhere yet (RefProvOf), and every
+    // rule passes such a value by, as the shrink scans pass the variable
+    // by; the pass after the last that changed anything reads it as
+    // outside a loop would, and its errors stand.
+    struct LoopPass {
+        int scopeidx = 0;          // The loop's scope.
+        size_t firstbase = 0;      // storeevents.size() when the loop's first pass began.
+        size_t eventbase = 0;      // The same for this pass.
+        bool settled = false;
+        bool changed = false;      // A fact fed back to this loop's head changed.
+        bool sawunbound = false;   // A variable was read before any binding.
+    };
+    vector<LoopPass> looppasses;
+    bool InDiscovery() {
+        for (auto &lp : looppasses) if (!lp.settled) return true;
+        return false;
+    }
+    // A variable read before any binding: nowhere yet, in a discovery pass.
+    bool UnboundIsBottom() {
+        if (!InDiscovery()) return false;
+        looppasses.back().sawunbound = true;
+        return true;
+    }
+    // A fact about vd that every loop it is declared outside of feeds back
+    // to its head.
+    void NoteFact(const VarDef *vd) {
+        for (auto &lp : looppasses) if (Depth(vd) <= lp.scopeidx) lp.changed = true;
+    }
+    // The store events a holder still carries: all of them, but for one
+    // declared inside a loop only its current pass's, an earlier pass's
+    // being a previous iteration's, whose value died with it (a copy made
+    // then still leads to them, HolderMayPointInto's src).
+    size_t LiveEventBase(const VarDef *holder) {
+        for (auto i = looppasses.size(); i-- > 0;)
+            if (Depth(holder) > looppasses[i].scopeidx) return looppasses[i].eventbase;
+        return 0;
+    }
+    // Whether the store event at index i was recorded by an earlier pass of
+    // an enclosing loop: the next iteration reaches it.
+    bool CarriedEvent(size_t i) {
+        for (auto &lp : looppasses) if (lp.firstbase <= i && i < lp.eventbase) return true;
+        return false;
+    }
+    // A pass's warnings are kept back until the loop's last pass, whose
+    // warnings are the ones that stand (CheckLoopPasses).
+    vector<string> pendingwarnings;
 
     // ------------------------------------------------------------------
     // Small type constructors and views.
@@ -1133,7 +1196,7 @@ struct TypeCheck {
     TypeExpr *VariantTypeOf(TypeExpr *enumtype, SVariant *v, Line l);
     Val CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wantvalue);
     void CheckLoopBody(Block *body);
-    Scope EndLoop(Node *x, Block *body, const FlowState &entry, const set<VarDef *> &assumed);
+    Scope CheckLoopPasses(Node *x, FlowState &head, const function<void()> &pass);
     Val CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue);
     void CheckWhile(While *x);
     void CheckFor(ForLoop *x);
@@ -1325,22 +1388,6 @@ struct TypeCheck {
     // (ast.h StoreEvent), program-wide: a function value's body stores into
     // its lexical function's containers while being checked in another frame.
     vector<StoreEvent> storeevents;
-    // A shrink inside a loop is also checked against the stores the rest
-    // of the loop body makes, which the next iteration would reach; the
-    // check waits for the outermost enclosing loop to end.
-    struct PendingShrink {
-        Node *at = nullptr;
-        string op;
-        VarDef *vd = nullptr;
-        string what;
-        TypeExpr *arrtype = nullptr;   // The type HolderMayPointInto filters pointees by.
-        TypeExpr *bound = nullptr;     // As LiveShrink::bound.
-        vector<VarDef *> holders;
-        size_t eventstart = 0;
-        int loopscope = 0;
-        bool guessed = false;          // As LiveShrink::guessed.
-    };
-    vector<PendingShrink> pendingshrinks;
     Node *fitnode = nullptr;         // The node MustFit is fitting, for RecordStore.
     // The deepest root among the references a literal under construction
     // holds: its holder root (§9.2). Each literal owns its accumulator, so
@@ -1359,32 +1406,14 @@ struct TypeCheck {
     // contents updated (§9.2).
     void RecordStore(VarDef *container, const Roots &roots, bool byteview, TypeExpr *pointee,
                      VarDef *src = nullptr, TypeExpr *reached = nullptr, bool bound = false);
-    vector<set<string_view>> loopassigned;   // Per enclosing loop: names its body writes.
-    // Per enclosing loop: the `var` reference and slice variables declared
-    // outside it that its body may rebind to a root they do not have yet
-    // (LoopRetargets), as far as the syntactic scan of their rebinds can
-    // tell. A loop body is checked once, so a read of such a variable
-    // earlier in the body than the rebind sees only the roots it had: one
-    // of several roots is read as bounded by them instead, which covers
-    // whatever the rebind gives it at the same depth (§9.2); one of a single
-    // root keeps it, and the rebind is rejected where the read relied on it.
-    vector<set<VarDef *>> loopretargets;
-    bool LoopRetargets(VarDef *vd) {
-        for (auto &s : loopretargets) if (s.count(vd)) return true;
-        return false;
-    }
-    void CollectAssignedBases(Node *n, set<string_view> &out);
-    void PushLoopAssigned(Node *body);
-    void PrebindLoopRefs(Node *body);
-    bool ResolvePrebind(const RootDesc &d, VarDef *&root, bool &exact);
-    bool AssignedInEnclosingLoop(VarDef *vd);
+    // Whether a holder may hold a reference into arr: `hit` takes the index
+    // of the event that says so.
     bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
-                            Line *where);
+                            Line *where, size_t *hit = nullptr);
     bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
-                            Line *where, set<VarDef *> &seen);
+                            Line *where, set<VarDef *> &seen, size_t *hit);
     void ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Node *at);
     void NoteHolderBinding(VarDef *d, const Val &v);
-    void ResolvePendingShrinks(int scopeidx);
     bool GrowOnlyTail(TypeExpr *t);
     bool IsGrowOnlyRootVar(VarDef *r);
     // Raw-body shrink facts needed only while a recursive call is checked.

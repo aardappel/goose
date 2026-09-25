@@ -1033,9 +1033,9 @@ again against the pairs the cycle records once the whole cycle is.
   the array is not stored either, nor a function's result where one of its
   returns may, nor a reference to a slice variable whose slice may. A
   variable that points into no grow-shrink array may not be rebound to a
-  value that may: what read it earlier — in a loop, through a reference to
-  it, or in a nested function, whose bodies are checked once — may have
-  stored it. The rule is about references that can point *into* the array:
+  value that may: what read it earlier — through a reference to it, or in
+  a nested function, whose bodies are checked once — may have stored it.
+  The rule is about references that can point *into* the array:
   one merely rooted at a value that holds one, whose pointee type the
   array's elements cannot contain — a slice key read back out of a
   dictionary's slots — stores like any other.
@@ -2073,23 +2073,18 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
 * A reference *variable* commits to its first binding's root: `.=` may
   rebind it only within the same root, or to one at the same scope depth
   (the common case: retargeting to another element of the same or a sibling
-  container in a loop). Anything else needs a new variable. This keeps the
-  checker single-pass over loop bodies. A rebind to a different root leaves
-  the variable inexact, since it no longer names one array, and a merged
-  value (above), since it may still hold its earlier binding; and since a
-  loop body is checked once, such a rebind is rejected outright when the
-  variable's root has already been used as an identity earlier in that loop.
-  A variable declared before a loop and bound only inside it (`var last:
+  container in a loop). Anything else needs a new variable. A rebind to a
+  different root leaves the variable inexact, since it no longer names one
+  array, and a merged value (above), since it may still hold its earlier
+  binding. A loop body is checked in the state its earlier iterations leave
+  it in: a read earlier in the body than such a rebind sees both roots, so
+  it may not need the root exactly (a relative link's identity, §3.9), and
+  a variable declared before a loop and bound only inside it (`var last:
   Node? = null;` before `loop { if last { last.next .= child; } … last .=
-  child; }`) is bound *ahead* of the loop: the body is scanned for its
-  `.=` targets, and where every one of them resolves syntactically to one
-  root — a container's element or field, a `push` or `alloc_ref` into it,
-  a call whose return root is known (§7.8's scan), a reference variable
-  bound to such — the variable has that root, exactly where the root's
-  storage is its own, for the whole body; the first real rebind confirms
-  it and supplies the rest of the provenance. Where the scan cannot tell,
-  nothing changes, and a use before the rebind sees the read-back rule's
-  answer (§9.5).
+  child; }`) has, at a use earlier in the body than the rebind, the root
+  the rebind gives it, exactly where the root's storage is its own. A
+  variable the loop never binds is null throughout it, and a use of it sees
+  the read-back rule's answer (§9.5).
 * Inside recursive cycles the stricter §7.8 cycle store rule applies.
 * A **temporary** — an array, struct or variant literal, a call's result,
   `copy(x)`, `default<T>()`, or the value of an `if`, `match`, `block`,

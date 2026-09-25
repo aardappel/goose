@@ -740,6 +740,8 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         auto r = ar.Root();
         argroots[i] = r;
         auto &ra = roots[i];
+        // A reference that points nowhere yet (RefProvOf): no class.
+        ra.unknown = isrs && ar.None();
         // A `const` parameter is read-only whatever the argument (§9.5).
         ra.writable = argvals[i].writable && !pt->cq;
         ra.reusable = argvals[i].reusable;
@@ -1521,8 +1523,12 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     f.varbase = (int)vars.size();
     f.callline = callline;
     frames.push_back(f);
-    auto savepending = std::move(pendingshrinks);
-    pendingshrinks.clear();
+    // The caller's loop passes are its own: this body's loops run theirs,
+    // and its warnings stand as soon as they are given.
+    auto savepasses = std::move(looppasses);
+    looppasses.clear();
+    auto savewarnings = std::move(pendingwarnings);
+    pendingwarnings.clear();
     // The caller's constructions are its own too: the call site logs this
     // body's growths against them from the summary.
     auto savegrowlog = std::move(growlog);
@@ -1563,7 +1569,9 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
         for (auto li : spec->litparams) if (li == (int)i) vd->unsized = true;
         if (IsRefOrSlice(pt)) {
             auto &ra = spec->roots[i];
-            if (ra.cls == 0) {
+            if (ra.unknown) {
+                vd->ref.Clear();   // Nowhere yet: no rule reads it.
+            } else if (ra.cls == 0) {
                 vd->ref.Set(nullptr, true);  // Static data.
             } else {
                 if (!classroots[ra.cls]) {
@@ -1692,7 +1700,8 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     }
     if (!spec->retsknown) spec->retsknown = true;
     PopScope();
-    pendingshrinks = std::move(savepending);
+    looppasses = std::move(savepasses);
+    pendingwarnings = std::move(savewarnings);
     growlog = std::move(savegrowlog);
     nodepath = std::move(savepath);
     renderarg = get<0>(saverender);

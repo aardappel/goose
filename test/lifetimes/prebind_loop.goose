@@ -1,7 +1,8 @@
-// A reference variable bound only inside a loop body takes its root from a
-// scan of the body's `.=` targets ahead of the loop, so a use earlier in
-// the body than the rebind has it (§9.2). Two node pools are in scope, so
-// the pointee type alone could not have said which one.
+// A reference variable bound only inside a loop body: a use earlier in the
+// body than the rebind sees the root the rebind gives it, since the body is
+// checked again with what its first pass fed back to the loop's head (§9.2).
+// Two node pools are in scope, so the pointee type alone could not have said
+// which one.
 struct Node { v: i32, next: Node&<u32>? }
 
 fn main() {

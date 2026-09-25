@@ -829,21 +829,36 @@ a null-only optional answers the read-back rule for its own depth
 (`RefProvOf`). `CheckRefRebindRoot` implements §9.2's rebinding rule: the
 same roots keep everything (an inexact new value only weakens exactness);
 another root at the same depth joins the variable's alternatives; any other
-depth is an error. Since a loop body is checked once, a read of a variable
-that names one array *inside a loop it was declared outside of* is noted
-(`RefExactOf` sets `refidentityused`), and a later same-depth rebind to
-another root in that loop is then rejected rather than silently
-invalidating the earlier read; a `var` of several roots that such a loop
-rebinds to a root the syntactic scan of its `.=` right-hand sides cannot
-show it has (`PushLoopAssigned`, `loopretargets`) is read as bounded by its
-roots inside the loop instead (`RefProvOf`), which covers whatever the
-rebind gives it at their depth.
+depth is an error.
 
-`PrebindLoopRefs` handles the `var last: Node? = null;` idiom before a loop:
-every `.=` target in the body is scanned syntactically (with the cycle-root
-scanner of §3.11), and where all of them resolve to one root the variable
-takes it ahead of the loop (`refprebound`); the first real binding confirms
-it and supplies the full provenance.
+**Loops** (`CheckLoopPasses`). A loop body is checked as many times as it
+takes for what it feeds back to the loop's head to settle: the roots its
+rebinds give the variables declared outside it, the stores into their
+contents, the narrowings and assignments its back edges (the end of the
+body, every `continue`) drop. Each pass starts from the join of the loop's
+entry state with the previous pass's back edges -- the state every
+iteration but the first starts in -- so a read earlier in the body than a
+rebind sees, on the second pass, every root the rebind gives the variable,
+and a shrink earlier in the body than a store sees the store on record
+(**Grow-only arrays** below). A fact fed back is noted as it is recorded
+(`NoteFact`: `BindProv`, `CheckRefRebindRoot`, `RecordStore`), against
+every enclosing loop the variable is declared outside of (`LoopPass`); a
+pass that changed none and read no variable before its binding was checked
+against the settled facts, so its errors stood and it was the last. Every
+pass before that is *discovery*: a reference variable read before any
+binding -- `var last: Node? = null;` before `loop { if last { last.next .=
+child; } … last .= child; }` -- points nowhere yet (`RefProvOf` gives it no
+roots), which every rule passes by (`FitsAt`, `CheckRootedAtReceiver`,
+`BindRefProvenance`, a call's specialization keyed `RootArg::unknown`, the
+shrink scans through `UnboundIsBottom`), and the pass after the last one
+that changed anything reads such a variable as outside a loop would. A
+holder declared inside the loop carries only its current pass's store
+events (`LiveEventBase`), an earlier pass's being a previous iteration's;
+one declared outside carries them all, and a store an earlier pass recorded
+is reported as reaching the shrink on the next iteration (`CarriedEvent`).
+A pass's warnings are kept back until the loop's last pass. A callee body
+checked from inside a pass runs its own loops' passes (`CheckSpecBody`
+clears `looppasses`).
 
 ### 3.8 Writability
 
@@ -885,15 +900,14 @@ reads as `void` once the construct's node is left (`VoidIfBottom`).
 `NarrowCond` narrows on `if`/`while`/`guard`/`assert` conditions, through
 `!`, `&&` and `||` (a `&&`'s right operand may not run, so what it
 un-narrows is recorded as `Binary::rightkills`), and `== null`/`!= null`.
-Loops: narrowings of variables the body rebinds (`.=` in the body, in a
-function value it calls, in a nested function, or in the `reboundoptionals`
-summary of any callee's specialization) are killed before the body
-(`KillNarrowingsAssignedIn`); a `while` condition's own narrowings hold in
-the body on every iteration; after the loop `FinishLoopNarrowing` errors
-when a narrowing the body assumed turned out to be rebound through a call the
-name scan could not follow. A callee's rebinds of the caller's optionals
-reach the caller through `ApplyCalleeRebinds`, and for a callee still being
-checked through the syntactic `InProgressRebinds`.
+Loops: a rebind in the body (a `.=`, a callee's `reboundoptionals`) drops
+the narrowing from that point on, and the join of the loop's back edges
+with its entry (`CheckLoopPasses`, §3.7) is what the body is checked in
+again, so a use that relied on the narrowing errors there; a `while`
+condition runs before every iteration, and its own narrowings hold in the
+body each time. A callee's rebinds of the caller's optionals reach the
+caller through `ApplyCalleeRebinds`, and for a callee still being checked
+through the syntactic `InProgressRebinds`.
 
 ### 3.10 The shrink rules, and growth and uses during construction
 
@@ -932,10 +946,11 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
 7. the shrink is recorded for the callers (`NoteShrink`: `shrinkexternals`
    for globals and captured locals, `shrinkparams` for parameters), and so
    are the views still used that only the callers can tell apart from the
-   array (`NoteLiveViews`, **Parameters' views** below);
-8. inside a loop, the shrink is re-checked when the outermost loop ends
-   against stores the rest of the body made (`pendingshrinks`,
-   `ResolvePendingShrinks`), since the next iteration reaches it.
+   array (`NoteLiveViews`, **Parameters' views** below).
+
+Inside a loop, a store later in the body than the shrink is on record when
+the body is checked again (`CheckLoopPasses`, §3.7), so item 5 finds it, and
+names it as reaching the shrink on the next iteration (`CarriedEvent`).
 
 **Liveness** (`UsedAfter`) is syntactic: the variable's name occurs in a
 later statement of an open block at or inside its scope, in that block's
@@ -1037,8 +1052,8 @@ parameter's class, or the array is. `NoteLiveShrink` keeps such a pair (a
 and both roots are classes or storage outside the activation (globals, a
 lexical parent's variables and classes), with the array's type where the
 shrunk root only bounds it (`LiveShrink::bound`); a store a loop body's later
-iteration brings to the shrink is added when the loop ends
-(`ResolvePendingShrinks`). At a call, `ApplyCalleeLiveShrinks` maps each
+iteration brings to the shrink is on record when the body is checked again
+(§3.7). At a call, `ApplyCalleeLiveShrinks` maps each
 pair's classes onto the roots of the arguments passed for them
 (`ClassArgRoot`): two roots the caller can tell apart pass, one root or two
 it cannot tell apart are an error at the call, which names the array as the

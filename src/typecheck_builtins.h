@@ -880,7 +880,16 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
             // for one.
             if (!HoldsPlainRef(t)) continue;
             Line where;
-            if (!HolderMayPointInto(v, vd, arrtype, 0, &where) || !UsedAfter(v)) continue;
+            size_t hit = 0;
+            if (!HolderMayPointInto(v, vd, arrtype, LiveEventBase(v), &where, &hit) ||
+                !UsedAfter(v))
+                continue;
+            // A store later in the loop body than the shrink, which the
+            // next iteration reaches (a pass before this one recorded it).
+            if (CarriedEvent(hit))
+                Error(c, cat("cannot ", op, " ", what, " while ", v->name,
+                             " is in scope: a reference into it is stored there at ",
+                             Where(where), ", which the next iteration reaches (§5.1)"));
             Error(c, cat("cannot ", op, " ", what, " while ", v->name,
                          " is still used: a reference into it was stored there at ",
                          Where(where), " (§5.1)"));
@@ -906,30 +915,6 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
     }
     NoteLiveViews(c, cat("cannot ", op, " ", what), vd, what, true, bound);
     NoteShrink(vd, bound, SB_UNBALANCED, true);
-    // Inside a loop, a store later in the body reaches this shrink on the
-    // next iteration: those are checked when the outermost loop ends.
-    auto loopscope = -1;
-    for (auto i = CurRealFrame().scopebase; i < (int)scopes.size(); i++)
-        if (scopes[i].kind == SK_LOOP) { loopscope = i; break; }
-    if (loopscope >= 0) {
-        PendingShrink ps;
-        ps.at = c;
-        ps.op = op;
-        ps.vd = vd;
-        ps.what = what;
-        ps.arrtype = arrtype;
-        ps.bound = bound;
-        ps.eventstart = storeevents.size();
-        ps.loopscope = loopscope;
-        ps.guessed = guessedshrink;
-        // A holder declared inside the loop is fresh every iteration; only
-        // one declared outside it carries a store to the next.
-        for (auto v : vars)
-            if (v != vd && v->type && !IsRefOrSlice(v->type) &&
-                HoldsPlainRef(v->type) && Depth(v) <= loopscope)
-                ps.holders.push_back(v);
-        pendingshrinks.push_back(ps);
-    }
 }
 
 // A field or element of a literal that is a reference, slice or holder:
@@ -1000,7 +985,7 @@ inline void TypeCheck::RecordStore(VarDef *container, const Roots &roots, bool b
         e.bound = bound;
         if (fitnode) e.at = fitnode->line;
         AddStoreEvent(e);
-        if (holds) container->contents.Add({ a.root, a.exact, a.from });
+        if (holds && container->contents.Add({ a.root, a.exact, a.from })) NoteFact(container);
     }
 }
 
@@ -1136,13 +1121,14 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
 // `arrtype` is the type of the array whose elements are in question, null
 // where it is not known (a parameter class), which lets any pointee in.
 inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype,
-                                          size_t from, Line *where) {
+                                          size_t from, Line *where, size_t *hit) {
     set<VarDef *> seen;
-    return HolderMayPointInto(holder, arr, arrtype, from, where, seen);
+    return HolderMayPointInto(holder, arr, arrtype, from, where, seen, hit);
 }
 
 inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype,
-                                          size_t from, Line *where, set<VarDef *> &seen) {
+                                          size_t from, Line *where, set<VarDef *> &seen,
+                                          size_t *hitat) {
     if (!seen.insert(holder).second) return false;
     auto contains = [&](TypeExpr *pt) { return !arrtype || CanContain(arrtype, pt); };
     for (auto i = from; i < storeevents.size(); i++) {
@@ -1166,44 +1152,19 @@ inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr 
         } else if (e.src) {
             // A copy of another container's contents: whatever that one
             // holds, from its own first event on.
-            hit = HolderMayPointInto(e.src, arr, arrtype, 0, where, seen);
+            hit = HolderMayPointInto(e.src, arr, arrtype, 0, where, seen, nullptr);
         } else if (e.exact) {
             hit = e.root == arr;
         } else if (e.root) {
             hit = Depth(arr) <= Depth(e.root) && (!e.pointee || contains(e.pointee));
         }
-        if (hit) { if (!e.src) *where = e.at; return true; }
+        if (hit) {
+            if (!e.src) *where = e.at;
+            if (hitat) *hitat = i;
+            return true;
+        }
     }
     return false;
-}
-
-inline void TypeCheck::ResolvePendingShrinks(int scopeidx) {
-    for (size_t i = 0; i < pendingshrinks.size();) {
-        auto &ps = pendingshrinks[i];
-        if (ps.loopscope < scopeidx) { i++; continue; }
-        for (auto h : ps.holders) {
-            Line where;
-            if (HolderMayPointInto(h, ps.vd, ps.arrtype, ps.eventstart, &where))
-                Error(ps.at, cat("cannot ", ps.op, " ", ps.what, " while ", h->name,
-                                 " is in scope: a reference into it is stored there at ",
-                                 Where(where), ", which the next iteration reaches (§5.1)"));
-            // A store only the callers can tell apart from the array reaches
-            // the shrink as well.
-            EachHolderRoot(h, ps.eventstart, [&](const StoreEvent &e) {
-                if (!CallersJudge(e.root, ps.vd)) return;
-                LiveShrink ls { .shrunk = ps.vd, .shrunkexact = !ps.bound, .bound = ps.bound,
-                                .live = e.root, .liveexact = e.exact, .pointee = e.pointee,
-                                .byteview = e.byteview, .growonly = true, .guessed = ps.guessed,
-                                .name = string(h->name) };
-                if (NoteLiveShrink(ls, CurRealFrame().spec) < 0)
-                    Error(ps.at, cat("cannot ", ps.op, " ", ps.what, " while ", h->name,
-                                     " is in scope: a reference that may be into it is stored "
-                                     "there at ", Where(e.at), ", which the next iteration "
-                                     "reaches (§5.1)"));
-            });
-        }
-        pendingshrinks.erase(pendingshrinks.begin() + (long)i);
-    }
 }
 
 // The pointee types of the plain references and slices a value of type t
@@ -1367,8 +1328,7 @@ inline void TypeCheck::CheckShrinkHolders(Node *at, const string &op, VarDef *ro
                          return !a.slotread && (a.root == root ||
                                                 (!a.exact && Depth(a.root) >= Depth(root)));
                      }) ||
-                     (v->ref.AllSlotRead() ? SlotReadMayRetarget(v, root)
-                                           : RefMayRetarget(v, root)));
+                     RefMayRetarget(v, root));
         // A reference to a slice also reaches where the slice points: it may
         // name a variable holding one into the array, which is where such
         // slices are kept.
@@ -1647,7 +1607,10 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
             auto sv = p;
             if (r && p.Exact() && r->type && IsRefOrSlice(r->type)) {
                 sv = r->ref;
-                if (!r->refrootknown) sv.Set(temproot, false);
+                if (!r->refrootknown) {
+                    if (UnboundIsBottom()) sv.Clear();
+                    else sv.Set(temproot, false);
+                }
             } else {
                 sv = SlotView(p, sub);
             }
@@ -1704,7 +1667,7 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
         } else if (growonly && HoldsPlainRef(t)) {
             // A grow-only array's views may be stored (§5.1): the holder's
             // store record says where its references lead.
-            EachHolderRoot(v, 0, [&](const StoreEvent &e) {
+            EachHolderRoot(v, LiveEventBase(v), [&](const StoreEvent &e) {
                 Prov p;
                 p.Set(e.root, e.exact);
                 p.byteview = e.byteview;
@@ -2015,7 +1978,6 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
         for (auto vd : LexicalLocals(spec->lexparent)) {
             if (vd->isglobal || !vd->type) continue;
             auto viaref = IsRefOrSlice(vd->type);
-            if (viaref) RefExactOf(vd);
             auto roots = viaref ? RefRootsOf(vd) : RootsOf(vd);
             if (!roots.Root()) continue;
             auto rt = viaref ? PointeeOf(vd->type) : LoadType(vd->type);
@@ -2231,7 +2193,6 @@ inline void TypeCheck::ApplyCalleeGrows(Node *at, FnSpec *spec, vector<Val> &arg
         for (auto cn : textual.captures) named |= cn == vd->name;
         if (!named) continue;
         auto viaref = IsPlainRef(vd->type);
-        if (viaref) RefExactOf(vd);
         NoteGrow(at, viaref ? RefRootsOf(vd) : RootsOf(vd),
                  cat("call ", name, ", which may grow ", vd->name));
     }
@@ -2249,7 +2210,6 @@ inline TypeCheck::Alias TypeCheck::ReachesBuilt(VarDef *v, VarDef *built, bool e
         return AL_NO;
     auto isref = t->kind == TY_REF;
     if (!CanContain(isref ? t->ref->sub : t, arr)) return AL_NO;
-    if (isref) RefExactOf(v);
     auto roots = isref ? RefRootsOf(v) : RootsOf(v);
     auto worst = AL_NO;
     for (auto &a : roots.alts) {

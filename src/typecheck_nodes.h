@@ -105,14 +105,13 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
                 // What the references inside point at: a global's contents
                 // are rooted at globals or static data; anything else is
                 // bounded by the variable itself, which its contents
-                // outlive. The contents are what was stored so far in
-                // program order, unless a loop around this read writes
-                // them: the next iteration's contents are then unknown here.
+                // outlive. The contents are what was stored so far, a
+                // loop's later iterations' stores included (CheckLoopPasses).
                 v.holderset = true;
                 v.holderfrom = vd;
                 if (vd->isglobal) {
                     v.contents.Set(nullptr, false);
-                } else if (!vd->contents.None() && !tc.AssignedInEnclosingLoop(vd)) {
+                } else if (!vd->contents.None()) {
                     v.contents = vd->contents;
                 } else {
                     v.contents.Set(vd, false);
