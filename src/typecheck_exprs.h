@@ -18,8 +18,7 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         LVal lv;
         lv.type = vd->narrowed ? vd->narrowed : vd->type;
         lv.var = vd;
-        lv.root = vd;
-        lv.rootexact = true;
+        lv.Set(vd, true);
         lv.byteview = vd->contentbyteview;
         // Contents are writable unless the type says const or the binding
         // is a copy (§9.5). Whether the variable itself is assigned is up
@@ -87,7 +86,7 @@ inline TypeCheck::LVal TypeCheck::LValueBase(Node *n, bool cmpview) {
     // A value result is materialized in its own temporary storage. References
     // and slices instead retain the (possibly inexact) owner they borrow.
     lv.intemp = TempContents(v, lv.contents);
-    if (lv.intemp) lv.rootexact = true;
+    if (lv.intemp) lv.Set(v.Root(), true);
     return lv;
 }
 
@@ -126,9 +125,9 @@ inline void TypeCheck::DerefLValue(LVal &lv, Node *at) {
     lv.letbound = false;
     lv.throughref = true;
     // The pointee may be a whole grow-shrink array, or a variable holding a
-    // view into one (Prov::slotread).
+    // view into one (RootAlt::slotread).
     lv.isslot = false;
-    lv.slotread = false;
+    lv.ClearSlotRead();
     if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT) lv.isvarint = true;
 }
 
@@ -158,27 +157,23 @@ inline void TypeCheck::SliceProvenance(LVal &lv, Node *at) {
 // of it is a read-back, so its root is re-derived (§9.5).
 inline void TypeCheck::ReadBackLVal(LVal &lv) {
     if (!IsRefOrSlice(lv.type)) return;
-    auto cr = CanonRoot(lv.root);
     // A byte view can point at any typed storage. Its owner cannot be
     // recovered by enumerating u8 containers. Global slots may have been
     // filled by functions whose stores have not yet been checked. That
     // matters to a grow-only array's shrink (§5.1), whose byte views are
     // stored like any other view; a grow-shrink array's shrink passes over
     // a slot read, byte view or not (§5.2).
-    lv.byteview = lv.byteview || (cr && cr->contentbyteview) ||
-                  (cr && cr->isglobal && lv.type->cq && IsU8(PointeeOf(lv.type)));
-    auto rb = ReadBackRoot(lv.type, lv.root, lv.rootexact, lv.byteview,
-                           lv.intemp ? &lv.contents : nullptr);
-    lv.root = rb.root;
-    lv.rootexact = rb.exact;
-    lv.rootfrom = rb.from;
+    lv.byteview = lv.byteview || lv.Any([&](const RootAlt &a) {
+        return a.root && (a.root->contentbyteview ||
+                          (a.root->isglobal && lv.type->cq && IsU8(PointeeOf(lv.type))));
+    });
+    auto rb = ReadBackRoot(lv.type, lv, lv.byteview, lv.intemp ? &lv.contents : nullptr);
     // What was stored into a slot passed the store rule (§5.2) with its own
     // provenance; the container's says nothing about it.
-    lv.intogs = nullptr;
-    lv.cyclelocal = false;
-    lv.hidesclass = false;
+    auto slotread = lv.isslot && SlotReadable(lv.type);
+    lv.alts = rb.alts;
+    for (auto &a : lv.alts) a.slotread = slotread;
     lv.reached = nullptr;
-    lv.slotread = lv.isslot && SlotReadable(lv.type);
     lv.intemp = false;
     if (lv.type->cq) lv.writable = false;   // A `const` slot's contents (§9.5).
 }
@@ -197,10 +192,14 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
         // What a holder read out of a container points at is bounded by
         // the container: everything stored into it had to outlive it. Out
         // of a temporary, it points where the temporary's contents do.
-        v.holderroot = lv.intemp ? lv.contents.root : CanonRoot(lv.root);
-        v.holderexact = lv.intemp && lv.contents.exact;
+        if (lv.intemp) {
+            v.contents = lv.contents.roots;
+        } else {
+            v.contents = lv;
+            v.contents.Weaken();
+        }
         v.holderset = true;
-        v.holderfrom = lv.intemp ? lv.contents.from : CanonRoot(lv.root);
+        v.holderfrom = lv.intemp ? lv.contents.from : lv.Root();
     }
     v.lvalue = v.type->kind != TY_REF;
     return v;
@@ -225,9 +224,7 @@ inline void TypeCheck::HoldValue(Node *n, Val v, bool sequenceview) {
         vector<TypeExpr *> pointees;
         RefPointees(t, pointees);
         auto held = v;
-        held.root = HolderRootOf(v);
-        held.rootexact = v.holderset && v.holderexact;
-        held.rootfrom = v.holderfrom;
+        held.alts = ContentsOf(v).alts;
         for (auto pt : pointees) {
             held.type = RefTo(pt, n->line);
             heldtemps.push_back({ n, held });
@@ -255,9 +252,7 @@ inline void TypeCheck::HoldSequence(Node *n, const LVal &lv, TypeExpr *elem) {
 
 // The root bounding the references inside a holder value: what was
 // derived for it, else the value's own root (a temporary's outlives nothing).
-inline VarDef *TypeCheck::HolderRootOf(const Val &v) {
-    return v.holderset ? v.holderroot : v.root;
-}
+inline VarDef *TypeCheck::HolderRootOf(const Val &v) { return ContentsOf(v).Root(); }
 
 // Field / builtin-property resolution on an lvalue path.
 inline void TypeCheck::ResolveMemberLValue(LVal &lv, Dot *d) {
@@ -308,17 +303,15 @@ inline Val TypeCheck::DecayRef(Val v) {
     Val r;
     r.type = LoadType(v.type->ref->sub);
     // A slice is the one its slot holds; a compound pointee value keeps the
-    // container info, harmless.
-    auto p = r.type->kind == TY_SLICE ? SlotView(v, r.type) : Prov(v);
-    r.root = p.root;
-    r.rootexact = p.rootexact;
-    r.rootfrom = p.rootfrom;
-    r.byteview = p.byteview && HoldsPlainRef(r.type);
+    // container info, harmless, though crossing the reference drops what a
+    // slot read says (RootAlt::slotread).
     if (r.type->kind == TY_SLICE) {
-        r.intogs = p.intogs;
-        r.cyclelocal = p.cyclelocal;
-        r.hidesclass = p.hidesclass;
+        r.alts = SlotView(v, r.type).alts;
+    } else {
+        r.alts = v.alts;
+        r.ClearSlotRead();
     }
+    r.byteview = v.byteview && HoldsPlainRef(r.type);
     return r;
 }
 
@@ -449,8 +442,10 @@ inline Val TypeCheck::CheckInferredResult(Node *&n, FnSpec *tspec) {
     // All of a multi-value call's results are forwarded, as they are.
     if (auto c = Is<Call>(n); c && c->rettypes.size() > 1) return v;
     if (reachable && IsNonFixedRef(v)) {
-        auto root = CanonRoot(v.root);
-        if ((root && root->ownerspec == tspec) || IsTemp(root)) {
+        auto dies = v.Any([&](const RootAlt &a) {
+            return (a.root && a.root->ownerspec == tspec) || IsTemp(a.root);
+        });
+        if (dies) {
             auto what = ExprStr(n);
             Error(n, cat(what, " is not fixed-size and is not copied implicitly (§4.1), and "
                          "its storage does not outlive this function: return copy(", what,
@@ -587,10 +582,10 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
     auto holder = !IsRefOrSlice(dt) && !IsRefOrSlice(t) && HoldsPlainRef(dt);
     // Argument slots pass no destination (parameters die before their
     // arguments' roots); an element or field being constructed does.
-    if (((IsRefOrSlice(dt) && IsRefOrSlice(t)) || holder) && curdst.root) {
-        auto root = CanonRoot(holder ? HolderRootOf(v) : v.root);
-        if (root && root == cycleroot) {
-            fitfail = NeverStoredError(root);
+    if (((IsRefOrSlice(dt) && IsRefOrSlice(t)) || holder) && !curdst.roots.None()) {
+        const Roots &roots = holder ? ContentsOf(v) : v.AsRoots();
+        if (roots.Has(cycleroot)) {
+            fitfail = NeverStoredError(cycleroot);
             return false;
         }
         // An inexact destination root only bounds the storage the slot is
@@ -598,26 +593,28 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
         // what the destination's path reached (Dest::reached), which holds
         // the slot by value, so its owner holds one too (ShrinkTargets). What
         // can hold that can hold the slot, so of the storage the slot's type
-        // admits, this leaves out only what cannot be its owner. The value
-        // must outlive each (§9.2).
+        // admits, this leaves out only what cannot be its owner. Each place
+        // the value may point must outlive each (§9.2).
         auto reached = curdst.reached ? curdst.reached : dt;
-        auto dsts = ShrinkTargets(curdst.root, curdst.exact, reached);
-        for (auto &d : dsts) {
-            if (Depth(root) <= Depth(d.root)) continue;
-            fitfail = cat("storing a reference rooted at ",
-                          root ? root->name : string_view("static data"),
-                          ", which does not outlive the destination");
-            if (!curdst.exact)
-                Append(fitfail, ": it is reached through a reference that may point into ",
-                       TargetStr(d));
-            Append(fitfail, " (§9.2)");
-            return false;
+        auto dsts = ShrinkTargets(curdst.roots, reached);
+        for (auto &a : roots.alts) {
+            for (auto &d : dsts) {
+                if (Depth(a.root) <= Depth(d.root)) continue;
+                fitfail = cat("storing a reference rooted at ",
+                              a.root ? a.root->name : string_view("static data"),
+                              ", which does not outlive the destination");
+                if (!curdst.roots.Exact())
+                    Append(fitfail, ": it is reached through a reference that may point into ",
+                           TargetStr(d));
+                Append(fitfail, " (§9.2)");
+                return false;
+            }
         }
         // Binding a global reference or slice variable stores into a global
         // (§5.2).
-        if (!curdst.varbind || CanonRoot(curdst.root)->isglobal) {
-            if (auto gs = StoredIntoGrowShrink(v, root, t, holder)) {
-                fitfail = NeverStoredError(gs, gs != root);
+        if (!curdst.varbind || curdst.roots.Root()->isglobal) {
+            if (auto gs = StoredIntoGrowShrink(v, roots, t, holder)) {
+                fitfail = NeverStoredError(gs, MayPointWording(roots, gs));
                 return false;
             }
         }
@@ -625,16 +622,21 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
         // that could outlive it: what the variable is bound to came from
         // an activation that outlives this one, as the first binding did.
         auto spec = CurRealFrame().spec;
-        auto ownvar = curdst.varbind && curdst.root && curdst.root->ownerspec == spec;
-        if ((!CycleStorable(root) || v.cyclelocal) && spec && !ownvar) {
+        auto ownvar = curdst.varbind && curdst.roots.Exact() &&
+                      curdst.roots.Root()->ownerspec == spec;
+        if (!CycleStorable(roots) && spec && !ownvar) {
             // A threaded parameter class may be stored while it stays
             // threaded, and only where every activation's store lands in
             // the same storage: a parameter's class the slot may be in must
             // stay threaded too. From here on the store relies on both.
             CycleStore s { spec, fitnode ? fitnode->line : Line {} };
-            s.refused = v.cyclelocal || !ThreadStorable(root);
-            s.refusedby = root;
-            s.relies.push_back(root);
+            for (auto &a : roots.alts) {
+                if (!s.refused && !CycleStorable(a.root) && !ThreadStorable(a.root)) {
+                    s.refused = true;
+                    s.refusedby = a.root;
+                }
+                s.relies.push_back(a.root);
+            }
             for (auto &d : dsts) {
                 if (!s.refused && !ThreadedChain(d.root)) {
                     s.refused = true;
@@ -654,20 +656,21 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
                 cyclestores.push_back(std::move(s));
             }
         }
-        // Each storage the slot may be in holds the value from here on.
-        for (auto &d : dsts) {
-            if (holder) {
-                // A literal's fields were each recorded as they were stored; a
-                // whole-value event for it would only be a looser copy.
-                if (!Is<StructLit>(fitnode) && !Is<ArrayLit>(fitnode)) {
-                    Val hv = v;
-                    hv.root = root;
-                    hv.rootexact = v.holderset && v.holderexact;
-                    RecordStore(d.root, hv, nullptr, curdst.varbind, v.holderfrom, reached,
+        // Each storage the slot may be in holds the value from here on; a
+        // reference or slice variable itself holds it as its binding.
+        if (!curdst.varbind) {
+            for (auto &d : dsts) {
+                if (holder) {
+                    // A literal's fields were each recorded as they were
+                    // stored; a whole-value event for it would only be a
+                    // looser copy.
+                    if (!Is<StructLit>(fitnode) && !Is<ArrayLit>(fitnode))
+                        RecordStore(d.root, roots, v.byteview, nullptr, v.holderfrom, reached,
+                                    d.bound);
+                } else {
+                    RecordStore(d.root, roots, v.byteview, PointeeOf(t), nullptr, reached,
                                 d.bound);
                 }
-            } else {
-                RecordStore(d.root, v, PointeeOf(t), curdst.varbind, nullptr, reached, d.bound);
             }
         }
     }
@@ -753,7 +756,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
             if (IsPlainRef(t) && t->ref->sub->kind == TY_ARRAY) at = t->ref->sub;
             if (!callsite || at->kind != TY_ARRAY) return false;
             if (!TypeEq(at->arr->sub, dt->sub)) return false;
-            if (at != t) v.slotread = false;   // As DerefLValue.
+            if (at != t) v.ClearSlotRead();   // As DerefLValue.
             v.type = dt;
             return true;
         }
@@ -774,32 +777,28 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
                 // means the same in every location. So an optional
                 // relative slot takes it wherever the slot is: a linked
                 // structure's sentinel end does not force plain links.
-                if (t->ref->optional && dt->ref->optional && v.rootexact &&
-                    !CanonRoot(v.root)) {
+                if (t->ref->optional && dt->ref->optional && v.Exact() && !v.Root()) {
                     v.type = dt;
                     return true;
                 }
                 // The target must be the *same* array, so a root that only
                 // bounds the pointee's lifetime will not do (§9.5).
-                auto want = dt->ref->pool ? dt->ref->pool : CanonRoot(curdst.root);
-                auto have = dt->ref->pool ? PoolOf(v.root) : CanonRoot(v.root);
-                if (!want || (!dt->ref->pool && !curdst.exact) || !v.rootexact ||
+                auto want = dt->ref->pool ? dt->ref->pool : curdst.roots.Root();
+                auto have = dt->ref->pool ? PoolOf(v.Root()) : v.Root();
+                if (!want || (!dt->ref->pool && !curdst.roots.Exact()) || !v.Exact() ||
                     have != want) {
-                    auto why = v.rootexact ? string() : ReadBackWhy(v.type, v.rootfrom);
+                    auto why = v.Exact() ? string() : ReadBackWhy(v);
+                    auto vroot = v.Root() ? v.Root()->name : string_view("static data");
                     fitfail = cat(dt->ref->pool
                                       ? cat("a relative reference in ", want->name,
                                             " must point into ", want->name, " (§3.9); ")
                                       : string("a relative reference must point within the "
                                                "same root as its location (§3.9); "),
                                   !why.empty() ? why
-                                  : !v.rootexact
+                                  : !v.Exact()
                                       ? cat("this reference's root is not known exactly, "
-                                            "only that it outlives ",
-                                            v.root ? CanonRoot(v.root)->name
-                                                   : string_view("static data"))
-                                  : cat("this reference is rooted at ",
-                                        v.root ? CanonRoot(v.root)->name
-                                               : string_view("static data")));
+                                            "only that it outlives ", vroot)
+                                  : cat("this reference is rooted at ", vroot));
                     return false;
                 }
                 v.type = dt;
@@ -1262,7 +1261,7 @@ inline void TypeCheck::CheckSelfInit(Node *n, TypeExpr *ft, TypeExpr *selft) {
     // An `in pool` self is the value's own offset in the pool, so unlike a
     // self-relative one it only means anything where the literal is being
     // built: inside that pool.
-    if (ft->ref->pool && (!curdst.exact || PoolOf(curdst.root) != ft->ref->pool))
+    if (ft->ref->pool && (!curdst.roots.Exact() || PoolOf(curdst.roots.Root()) != ft->ref->pool))
         Error(n, cat("self initializes ", TypeStr(ft), " only in a literal being built "
                      "inside ", ft->ref->pool->name, " (a push, an append, an alloc, or an "
                      "element store), since it stores the value's own offset in it (§3.9)"));

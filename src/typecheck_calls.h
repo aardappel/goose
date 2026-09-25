@@ -724,25 +724,31 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         // "implicitly generic over those fields' roots" says.
         auto holder = !isrs && HoldsPlainRef(pt);
         if (!isrs && !holder) continue;
-        auto r = CanonRoot(holder ? HolderRootOf(argvals[i]) : argvals[i].root);
+        // The class stands for every place the argument may point; the
+        // innermost of them is where it stands in the body.
+        const Roots &ar = holder ? ContentsOf(argvals[i]) : argvals[i].AsRoots();
+        auto r = ar.Root();
         argroots[i] = r;
         auto &ra = roots[i];
         // A `const` parameter is read-only whatever the argument (§9.5).
         ra.writable = argvals[i].writable && !pt->cq;
         ra.reusable = argvals[i].reusable;
-        ra.exact = holder ? argvals[i].holderset && argvals[i].holderexact
-                          : argvals[i].rootexact;
+        ra.exact = ar.Exact();
         ra.heldexact = holder && ra.exact && !sf->isrec;
-        ra.growshrink = IsGrowShrinkRoot(r);
-        ra.viewslot = pt->kind == TY_REF && pt->ref->sub->kind == TY_SLICE && r && r->type &&
-                      IsRefOrSlice(r->type);
-        ra.byteview = argvals[i].byteview || (ra.viewslot && r->ref.byteview);
-        // What the argument, or a slice it refers to, may point into beyond
-        // what growshrink says of its root (Prov::intogs).
-        ra.intogs = isrs && (argvals[i].intogs ||
-                             (pt->kind == TY_REF && pt->ref->sub->kind == TY_SLICE &&
-                              GrowShrinkTaint(SlotView(argvals[i], pt->ref->sub),
-                                              pt->ref->sub)));
+        // Any root the argument may have that holds a grow-shrink array, or
+        // for a reference to a slice one that slice may point into.
+        ra.growshrink = ar.Any([&](const RootAlt &a) { return IsGrowShrinkRoot(a.root); }) ||
+                        (isrs && pt->kind == TY_REF && pt->ref->sub->kind == TY_SLICE &&
+                         GrowShrinkTaint(SlotView(argvals[i], pt->ref->sub), pt->ref->sub));
+        ra.gsvia = ra.growshrink && !(ar.Exact() && IsGrowShrinkRoot(r));
+        auto slotvar = [](const RootAlt &a) {
+            return a.root && a.root->type && IsRefOrSlice(a.root->type);
+        };
+        ra.viewslot = pt->kind == TY_REF && pt->ref->sub->kind == TY_SLICE && ar.Any(slotvar);
+        ra.byteview = argvals[i].byteview ||
+                      (ra.viewslot && ar.Any([&](const RootAlt &a) {
+                           return slotvar(a) && a.root->ref.byteview;
+                       }));
         if (ra.exact) ra.pool = PoolOf(r);
         if (!r) {
             ra.cls = 0;
@@ -804,7 +810,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     for (size_t i = 0; i < roots.size(); i++)
         for (auto fi = (int)frames.size() - 1; argroots[i] && !classes[i].first && fi >= 0; fi--)
             for (size_t j = 0; frames[fi].spec && j < frames[fi].spec->params.size(); j++)
-                if (frames[fi].spec->params[j]->ref.root == argroots[i]) {
+                if (frames[fi].spec->params[j]->ref.Root() == argroots[i]) {
                     classes[i] = { frames[fi].spec, (int)j };
                     break;
                 }
@@ -883,6 +889,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         for (size_t i = 0; i < roots.size() && i < spec->roots.size(); i++) {
             auto &sr = spec->roots[i];
             sr.exact = sr.exact && roots[i].exact;
+            sr.gsvia = sr.gsvia || roots[i].gsvia;
             sr.concrete = sr.concrete && roots[i].concrete && rootsok;
             for (auto &v : roots[i].via)
                 if (find(sr.via.begin(), sr.via.end(), v) == sr.via.end()) sr.via.push_back(v);
@@ -1192,7 +1199,7 @@ inline string_view TypeCheck::FrameFnName(int fi) {
 // the call sites that created it to a real variable (or null for static
 // data).
 inline VarDef *TypeCheck::UltimateRoot(VarDef *v) {
-    while (v && v->classfrom) v = CanonRoot(v->classfrom);
+    while (v && v->classfrom) v = v->classfrom;
     return v;
 }
 
@@ -1203,18 +1210,17 @@ inline VarDef *TypeCheck::UltimateRoot(VarDef *v) {
 // pool, or swaps two, is rejected here.
 inline void TypeCheck::ValidatePoolArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode) {
     for (size_t i = 0; i < spec->params.size() && i < argvals.size(); i++) {
-        auto pr = spec->params[i]->ref.root;
+        auto pr = spec->params[i]->ref.Root();
         if (!pr) continue;
         // A named pool is part of the specialization key everywhere else,
         // but a back edge reuses the in-progress spec whatever its roots.
         if (pr->classpool &&
-            (!argvals[i].rootexact || PoolOf(CanonRoot(argvals[i].root)) != pr->classpool))
+            (!argvals[i].Exact() || PoolOf(argvals[i].Root()) != pr->classpool))
             Error(callnode, cat("recursive call passes ", spec->params[i]->name,
                                 " rooted outside ", pr->classpool->name,
                                 ", which the cycle's entry call rooted there (§3.9)"));
         if (!pr->poolclass) continue;
-        if (!argvals[i].rootexact ||
-            UltimateRoot(pr) != UltimateRoot(CanonRoot(argvals[i].root)))
+        if (!argvals[i].Exact() || UltimateRoot(pr) != UltimateRoot(argvals[i].Root()))
             Error(callnode, cat("recursive call passes ", spec->params[i]->name,
                                 " rooted differently from the cycle's entry call, which "
                                 "stored references into it (§7.8)"));
@@ -1230,11 +1236,11 @@ inline void TypeCheck::ValidatePoolArgs(FnSpec *spec, vector<Val> &argvals, Node
 // given, so they pass on whatever this call gives it.
 inline void TypeCheck::ValidateThreadArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode) {
     for (size_t i = 0; i < spec->params.size() && i < argvals.size(); i++) {
-        auto pr = spec->params[i]->ref.root;
+        auto pr = spec->params[i]->ref.Root();
         auto it = pr ? threadedclasses.find(pr) : threadedclasses.end();
         if (it == threadedclasses.end() || it->second.broken) continue;
-        auto ar = CanonRoot(argvals[i].root);
-        if (!argvals[i].rootexact || UltimateRoot(pr) != UltimateRoot(ar) || !ThreadedChain(ar)) {
+        auto ar = argvals[i].Root();
+        if (!argvals[i].Exact() || UltimateRoot(pr) != UltimateRoot(ar) || !ThreadedChain(ar)) {
             Unthread(pr, cat(spec->inprogress ? "the recursive call at " : "the call at ",
                              Where(callnode->line), " passes ", spec->params[i]->name,
                              " rooted differently from ",
@@ -1372,7 +1378,7 @@ inline void TypeCheck::AddNeed(FnSpec *s, FnSpec *t) {
 // denotes, and which checked types hold references.
 inline CycleRoots TypeCheck::Cycles() {
     return CycleRoots(ast, cyclecache, cycleroot, [this](VarDef *vd, bool isref) {
-        return CanonRoot(isref ? RefRootOf(vd) : vd);
+        return isref ? RefRootOf(vd) : vd;
     }, [this](string_view name) { return LookupVar(name, CurNs()); },
     [this](TypeExpr *t) { return HoldsPlainRef(t); });
 }
@@ -1546,16 +1552,17 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
         if (IsRefOrSlice(pt)) {
             auto &ra = spec->roots[i];
             if (ra.cls == 0) {
-                vd->ref.root = nullptr;  // Static data.
+                vd->ref.Set(nullptr, true);  // Static data.
             } else {
                 if (!classroots[ra.cls]) {
                     auto rv = ast.NewVarDef();
                     rv->name = p.name;
                     rv->depth = ra.depth;
-                    rv->classfrom = argvals ? CanonRoot((*argvals)[i].root) : nullptr;
+                    rv->classfrom = argvals ? (*argvals)[i].Root() : nullptr;
                     rv->poolclass = true;
                     rv->classpool = ra.pool;
                     rv->growshrink = ra.growshrink;
+                    rv->gsvia = ra.gsvia;
                     classroots[ra.cls] = rv;
                 }
                 // Members of one class share a root, so they agree on the
@@ -1568,20 +1575,18 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
                     !ra.exact)
                     classroots[ra.cls]->poolclass = false;
                 if (!ra.exact) exactrefs[ra.cls] = false;
-                vd->ref.root = classroots[ra.cls];
+                // Every member of a class points into one array (see
+                // GetOrCreateSpec), so within this body the class names that
+                // array. Whether it is the array some *other* class names is a
+                // different question, and only ra.exact answers it.
+                vd->ref.Set(classroots[ra.cls], true);
                 classroots[ra.cls]->contentbyteview |= ra.byteview;
                 classroots[ra.cls]->viewslot |= ra.viewslot;
             }
             vd->refrootknown = true;
-            // Every member of a class points into one array (see
-            // GetOrCreateSpec), so within this body the class names that
-            // array. Whether it is the array some *other* class names is a
-            // different question, and only ra.exact answers it.
-            vd->ref.rootexact = true;
             vd->ref.writable = ra.writable;
             vd->ref.reusable = ra.reusable;
             vd->ref.byteview = ra.byteview;
-            if (ra.intogs) vd->ref.intogs = ra.cls ? classroots[ra.cls] : vd;
         } else if (HoldsPlainRef(pt)) {
             // A holder parameter: its contents are bounded by the class
             // root its call sites agreed on, and are that array exactly only
@@ -1594,29 +1599,26 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
                     auto rv = ast.NewVarDef();
                     rv->name = p.name;
                     rv->depth = ra.depth;
-                    rv->classfrom = argvals ? CanonRoot(HolderRootOf((*argvals)[i])) : nullptr;
+                    rv->classfrom = argvals ? HolderRootOf((*argvals)[i]) : nullptr;
                     rv->growshrink = ra.growshrink;
+                    rv->gsvia = ra.gsvia;
                     classroots[ra.cls] = rv;
                 }
                 classroots[ra.cls]->poolclass = false;
                 exactrefs[ra.cls] = false;
                 cr = classroots[ra.cls];
             }
-            vd->contentroot = cr;
-            vd->contentexact = ra.heldexact;
-            vd->contentset = true;
             vd->contentbyteview = ra.byteview;
             // A returned holder maps back at the call site through it, and a
             // read-back out of the parameter, or out of anything its contents
             // were copied into, is bounded by it (RootCandidates).
-            vd->ref.root = cr;
+            vd->ref.Set(cr, ra.heldexact);
             vd->refrootknown = true;
             // Its contents are whatever the call site's value pointed at:
             // bounded by the class root, as an event of its own.
-            Val hv;
-            hv.root = cr;
-            hv.rootexact = ra.heldexact;
-            RecordStore(vd, hv, nullptr, false);
+            Roots held;
+            held.Set(cr, ra.heldexact);
+            RecordStore(vd, held, ra.byteview, nullptr);
         }
         spec->params.push_back(vd);
     }
@@ -1730,36 +1732,40 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         // A null return names no root: it agrees with every other return.
         if (vals[i].isnull) continue;
         // A holder value's contents must outlive the caller like a
-        // returned reference would.
-        auto root = CanonRoot(holder ? HolderRootOf(vals[i]) : vals[i].root);
-        // What the result promises its callers is about that same pointee:
-        // a holder variable's own storage is exact, its contents may not be.
-        auto exact = holder ? vals[i].holderset && vals[i].holderexact : vals[i].rootexact;
-        // Anything whose storage the callee's frame owns dies on return;
-        // reference parameters' pointee roots are synthetic per-class
-        // VarDefs (no ownerspec), so they pass and map at the call site.
-        if (root && root->ownerspec == tspec)
-            Error(at, cat("returning a reference rooted in ", root->name,
-                          ", which dies with this function (§9.2)",
-                          inferredearlier ? cat("; the result type ", TypeStr(rt),
-                                                " is inferred from an earlier return")
-                                          : string()));
-        if (IsTemp(root))
-            Error(at, "returning a reference into a temporary");
-        if (root && root == cycleroot)
-            Error(at, "returning the result of a recursive call whose returned "
-                      "reference's root the cycle's returns do not determine (§7.8)");
-        RetAlt ret { root, exact, vals[i].writable, isrs ? vals[i].intogs : nullptr,
-                     vals[i].cyclelocal, vals[i].hidesclass, isrs && vals[i].slotread };
+        // returned reference would. What the result promises its callers is
+        // about that same pointee: a holder variable's own storage is exact,
+        // its contents may not be.
+        Roots roots = holder ? ContentsOf(vals[i]) : vals[i].AsRoots();
+        if (!isrs) for (auto &a : roots.alts) a.slotread = false;
         auto &rr = tspec->retroots[i];
-        if (rr.seeded) {
+        for (auto &a : roots.alts) {
+            auto root = a.root;
+            // Anything whose storage the callee's frame owns dies on return;
+            // reference parameters' pointee roots are synthetic per-class
+            // VarDefs (no ownerspec), so they pass and map at the call site.
+            if (root && root->ownerspec == tspec)
+                Error(at, cat("returning a reference rooted in ", root->name,
+                              ", which dies with this function (§9.2)",
+                              inferredearlier ? cat("; the result type ", TypeStr(rt),
+                                                    " is inferred from an earlier return")
+                                              : string()));
+            if (IsTemp(root))
+                Error(at, "returning a reference into a temporary");
+            if (root && root == cycleroot)
+                Error(at, "returning the result of a recursive call whose returned "
+                          "reference's root the cycle's returns do not determine (§7.8)");
+            if (!rr.seeded) continue;
             // Where a root the back edges were not given joins them, a store
             // of it meets its own storage too.
+            Roots one;
+            one.Set(a.root, a.exact, a.from, a.slotread);
             auto gs = holder ? IntoGrowShrink(vals[i], root, rt, true)
-                             : StoredIntoGrowShrink(vals[i], root, rt, false) != nullptr;
-            auto local = !CycleStorable(root) || ret.cyclelocal;
+                             : StoredIntoGrowShrink(vals[i], one, rt, false) != nullptr;
+            auto local = !CycleStorable(root);
             auto unthread = false;
-            if (auto bad = Cycles().ReturnConflict(tspec, i, ret, gs, local, unthread); !bad.empty())
+            if (auto bad = Cycles().ReturnConflict(tspec, i, a, vals[i].writable, gs, local,
+                                                   unthread);
+                !bad.empty())
                 Error(at, bad);
             if (unthread)
                 for (auto t : rr.usedthreads)
@@ -1769,18 +1775,8 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         }
         // A result may come from any return: every root one gives is kept,
         // with the guarantees that hold on all paths to it.
-        auto known = false;
-        for (auto &a : rr.alts) {
-            if (a.root != root) continue;
-            a.exact = a.exact && ret.exact;
-            a.writable = a.writable && ret.writable;
-            if (!a.intogs) a.intogs = ret.intogs;
-            a.cyclelocal = a.cyclelocal || ret.cyclelocal;
-            a.hidesclass = a.hidesclass || ret.hidesclass;
-            a.slotread = a.slotread && ret.slotread;
-            known = true;
-        }
-        if (!known) rr.alts.push_back(ret);
+        rr.alts.Add(roots);
+        rr.writable = rr.writable && vals[i].writable;
         rr.byteview = rr.byteview || vals[i].byteview;
         rr.set = true;
     }
@@ -1790,34 +1786,24 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
 // maps back to the argument's root -- at a back edge, which reuses the body
 // whatever it passes (§7.8), to every argument the class's parameters get,
 // merged; anything else is itself.
-inline Val TypeCheck::RetAltVal(FnSpec *spec, const RetAlt &alt, vector<Val> &argvals,
+inline Val TypeCheck::RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &argvals,
                                 TypeExpr *t, Node *at) {
     Val m;
     m.type = t;
-    m.root = alt.root;
-    m.rootexact = alt.exact && alt.root != nullptr;   // Static data is no array to name.
-    m.writable = alt.writable;
-    m.intogs = alt.intogs;
-    m.cyclelocal = alt.cyclelocal;
-    m.hidesclass = alt.hidesclass;
-    m.slotread = alt.slotread;
+    m.Set(alt.root, alt.exact && alt.root != nullptr, alt.from,   // Static data is no array to name.
+          alt.slotread);
+    m.writable = true;
     if (!alt.root || alt.root->isglobal || alt.root->ownerspec) return m;
     auto v = m;
     auto first = true;
     for (size_t p = 0; p < spec->params.size() && p < argvals.size(); p++) {
-        if (spec->params[p]->ref.root != alt.root) continue;
-        auto ph = !IsRefOrSlice(spec->argtypes[p]);
+        if (spec->params[p]->ref.Root() != alt.root) continue;
         auto &a = argvals[p];
         auto x = m;
-        x.root = CanonRoot(ph ? HolderRootOf(a) : a.root);
-        x.rootexact = alt.exact && (ph ? a.holderexact : a.rootexact);
-        x.rootfrom = a.rootfrom;
-        x.writable = alt.writable && a.writable;
-        if (!ph) {
-            if (!x.intogs) x.intogs = a.intogs;
-            x.cyclelocal = x.cyclelocal || a.cyclelocal;
-            x.hidesclass = x.hidesclass || a.hidesclass;
-        }
+        x.alts = ClassArgRoots(spec->argtypes[p], a).alts;
+        if (!alt.exact) x.Weaken();
+        for (auto &xa : x.alts) xa.slotread = alt.slotread && xa.slotread;
+        x.writable = a.writable;
         v = first ? x : MergeVals(v, true, x, true, at, true, nullptr, nullptr);
         first = false;
         if (!spec->inprogress) break;
@@ -1838,7 +1824,7 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
     for (size_t p = 0; spec->inprogress && p < spec->params.size() && p < argvals.size(); p++) {
         auto pt = spec->argtypes[p];
         if ((IsRefOrSlice(pt) || HoldsPlainRef(pt)) && spec->roots[p].cls == 0 &&
-            ClassArgRoot(pt, argvals[p]).first)
+            ClassArgRoots(pt, argvals[p]).Root())
             unkeyed = true;
     }
     for (size_t i = 0; i < spec->rets.size(); i++) {
@@ -1852,17 +1838,18 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
             // its returns were predicted to give (§7.8), and where there are
             // none to map, it outlives nothing, which is not static data.
             auto backedge = spec->inprogress;
-            if (backedge && (!ri.seeded || ri.predlost || ri.pred.empty() ||
+            if (backedge && (!ri.seeded || ri.predlost || ri.pred.None() ||
                              (holder && unkeyed))) {
-                v.root = cycleroot;
+                v.Set(cycleroot, false);
             } else {
                 // Each root a return gives, merged as branches are (§9.2).
                 auto first = true;
-                for (auto &alt : backedge ? ri.pred : ri.alts) {
+                for (auto &alt : (backedge ? ri.pred : ri.alts).alts) {
                     auto m = RetAltVal(spec, alt, argvals, v.type, c);
                     v = first ? m : MergeVals(v, true, m, true, c, true, nullptr, nullptr);
                     first = false;
                 }
+                v.writable = v.writable && (backedge ? ri.predwritable : ri.writable);
             }
             v.writable = v.writable && !v.type->cq;
             // A back edge's returns are not all known yet: any u8 view the
@@ -1876,39 +1863,40 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
             v.byteview = v.byteview || ri.byteview || u8view;
             // A slot read where every return is one, as MergeVals keeps it;
             // a back edge's returns are not all checked yet.
-            v.slotread = v.slotread && !holder && !backedge;
+            if (holder || backedge) v.ClearSlotRead();
             if (holder) {
                 // The bound travels as the holder root; the value itself is
                 // a temporary.
-                v.holderroot = v.root;
-                v.holderexact = v.rootexact;
+                v.contents = v;
                 v.holderset = true;
-                v.root = TempRoot();
-                v.rootexact = false;
+                v.Set(TempRoot(), false);
                 v.writable = false;
             }
         } else {
-            v.root = TempRoot();
+            v.Set(TempRoot(), false);
             v.writable = false;
         }
         if (spec->inprogress && i < spec->retroots.size()) {
             // What a back edge was given, the returns checked after it may
             // not take back (CycleRoots::ReturnConflict).
             auto &rr = spec->retroots[i];
-            auto root = CanonRoot(HolderRootOf(v));
-            if ((IsRefOrSlice(v.type) || holder) && root != cycleroot) {
+            const Roots &given = ContentsOf(v);
+            if ((IsRefOrSlice(v.type) || holder) && !given.Has(cycleroot)) {
                 rr.used = true;
-                rr.useddepth = min(rr.useddepth, Depth(root));
-                rr.usedexact |= holder ? v.holderexact : v.rootexact;
+                rr.useddepth = min(rr.useddepth, Depth(given.Root()));
+                rr.usedexact |= given.Exact();
                 rr.usedwritable |= v.writable;
-                rr.usedclean |= holder ? !IntoGrowShrink(v, root, v.type, true)
+                rr.usedclean |= holder ? !IntoGrowShrink(v, given.Root(), v.type, true)
                                        : !GrowShrinkTaint(v, v.type);
-                if (!v.cyclelocal && CycleStorable(root))
+                if (CycleStorable(given)) {
                     rr.usedstorable = true;
-                else if (!v.cyclelocal && ThreadStorable(root) &&
-                         find(rr.usedthreads.begin(), rr.usedthreads.end(), root) ==
-                             rr.usedthreads.end())
-                    rr.usedthreads.push_back(root);
+                } else {
+                    for (auto &a : given.alts)
+                        if (!CycleStorable(a.root) && ThreadStorable(a.root) &&
+                            find(rr.usedthreads.begin(), rr.usedthreads.end(), a.root) ==
+                                rr.usedthreads.end())
+                            rr.usedthreads.push_back(a.root);
+                }
             }
         }
         lastcallrets.push_back(v);
@@ -2001,8 +1989,8 @@ inline void TypeCheck::CheckReturn(Return *r) {
             for (auto &v : vals) {
                 auto isrs = IsRefOrSlice(v.type);
                 if (!isrs && !HoldsPlainRef(v.type)) continue;
-                auto root = isrs ? v.root : HolderRootOf(v);
-                if (root && !root->isglobal)
+                const Roots &roots = isrs ? v.AsRoots() : ContentsOf(v);
+                if (roots.Any([](const RootAlt &a) { return a.root && !a.root->isglobal; }))
                     Error(r, "a long-distance return may only carry references to "
                              "globals or static data");
             }

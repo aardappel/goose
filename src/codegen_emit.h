@@ -117,8 +117,8 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp) {
     for (size_t i = 0; i < sp->params.size(); i++) {
         auto vd = sp->params[i];
         if (!IsFatRef(sp->argtypes[i])) continue;
-        if (!vd->refrootknown || !vd->ref.root || !vd->ref.rootexact ||
-            !classes.insert(vd->ref.root).second)
+        if (!vd->refrootknown || !vd->ref.Root() || !vd->ref.Exact() ||
+            !classes.insert(vd->ref.Root()).second)
             return false;
         fatparams.insert(vd);
         pointees.push_back(sp->argtypes[i]->ref->sub);

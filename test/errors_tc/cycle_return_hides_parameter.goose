@@ -1,8 +1,7 @@
-// error: this return may point where a parameter other than its root's does, which the recursive cycle's back edges were not given
+// error: this return's reference is rooted at pool, which the recursive cycle's back edges were not given
 // The back edge's result, rooted at the globals x's argument may view, was
-// stored (§7.8). The last return is rooted at x too, which the entry call
-// gives the deeper argument, but may be an element of the pool, a local of
-// run that kept outlives.
+// stored (§7.8). The last return may be x, but may also be an element of
+// the pool, a local of run that kept outlives, which no back edge was given.
 struct Cell { v: i64 }
 var gcells: Cell[>..] = [];
 var gcells2: Cell[>..] = [];

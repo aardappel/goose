@@ -1,8 +1,7 @@
-// error: storing the result of a recursive call whose returned reference's root the cycle's returns do not determine
-// The first return is rooted at b, which the entry call gives the deeper
-// argument, but may be `a` (§9.2). A back edge may give `a` the deeper
-// argument instead (§7.8), here its own local, so its result carries no
-// root it could be stored by.
+// error: storing a reference rooted at loc, which does not outlive the destination
+// The first return may be `b` or `a` (§9.2). A back edge may give `a` the
+// deeper argument (§7.8), here its own local, so its result may be rooted
+// there, which the store into the global cannot outlive.
 var G: u8[>..] = "ggg";
 struct K { s: const u8[:] }
 var keep: K[>..] = [];

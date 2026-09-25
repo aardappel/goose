@@ -465,20 +465,34 @@ statement runs, in evaluation order.
 The lifetime system of §9 is one record on every reference-like value:
 
 ```
-struct Prov {
+struct RootAlt {         // one place the value may point
     VarDef *root;        // the variable whose scope bounds the pointee; null = static data
-    bool rootexact;      // root's own storage holds the pointee (else it only outlives it)
-    VarDef *rootfrom;    // for an inexact read-back: the container, for diagnostics
+    bool exact;          // root's own storage holds the pointee (else it only outlives it)
+    VarDef *from;        // for an inexact read-back: the container, for diagnostics
+    bool slotread;       // read out of a field, an element or a global (§3.10)
+};
+struct Roots {
+    vector<RootAlt> alts;   // every place the value may point, one per root
+};
+struct Prov : Roots {
     bool writable;       // §9.5
     int reusable;        // the root is a reusable pool (§5.4): RU_SLOTS or RU_SLICES bits
     bool byteview;       // a bytes_of view over typed storage
-    VarDef *intogs;      // a grow-shrink array it may point into that the root does not show
-    bool cyclelocal;     // may be rooted where a recursive cycle stores nothing, unshown
-    bool hidesclass;     // may be a parameter class's pointee the root does not show
-    bool slotread;       // read out of a field, an element or a global (§3.10)
     TypeExpr *reached;   // the pointee type of the last reference or slice its path crossed (§3.5)
 };
 ```
+
+A value that may point at several places -- an `if`'s branches, a
+variable's bindings, a function's returns, the candidates a read out of a
+container has (§3.6) -- has an alternative per root, and every rule asks
+each alternative: a store must outlive the destination by every one
+(`FitsAt`), a shrink frees what any one points into (§3.10), a value is
+storable inside a recursive cycle only where every one is (`CycleStorable`),
+and it names one array (`Roots::Exact`) only with a single, exact
+alternative. `Roots::Root` is the innermost alternative's root, the one
+scope every alternative outlives, which diagnostics name and a single
+bound stands for. Empty roots are a value with no provenance (a null, or no
+reference at all), which every rule lets pass as static data would.
 
 **Depth.** Every `VarDef` has a `depth`: 0 for globals, else the scope count
 at its creation along the current compile-time call path. Because scopes
@@ -526,8 +540,8 @@ temporary alone.
 | `a.push(v)`, `a.alloc_ref(v)`, `&a[i]` | `a`'s root | `a`'s exactness |
 | `a.alloc_slice(n)`, `a.realloc_slice(s, n)` | `a`'s root | `a`'s exactness |
 | `a[lo..hi]` (`SliceExpr::Check`) | `a`'s root | `a`'s exactness |
-| a call result (`CallResult`) | every root the callee's returns give (`RetRoot::alts`), mapped (`RetAltVal`: a parameter's class back to the argument's root at this site -- at a back edge, every argument the class's parameters get, merged -- a global or captured local as itself, null as static data) and merged as branches are (`MergeVals`) | only where they all map to one root exactly |
-| an `if`, `match`, `block` or `loop` value of reference or slice type (`MergeVals`) | the innermost of its branches' roots (`InnerRoot`) | only where they all name one root exactly |
+| a call result (`CallResult`) | every root the callee's returns give (`RetRoot::alts`), mapped (`RetAltVal`: a parameter's class back to the argument's roots at this site -- at a back edge, every argument the class's parameters get -- a global or captured local as itself, null as static data) and united as branches are (`MergeVals`) | only where they all map to one root exactly |
+| an `if`, `match`, `block` or `loop` value of reference or slice type (`MergeVals`) | every one of its branches' roots | only where they all name one root exactly |
 | an array, struct or variant literal, and a call's value result | a temporary (`TempRoot`): whatever views it rather than being built from it views a temporary | no |
 | any other `if`, `match`, `block`, `loop` or bare `{ }` value, a function value's call, and an array's `default<T>()` (`TempCopy`); `copy(x)` | a temporary (`TempRoot`), holding what the value it copied held | no; a copy's yes |
 | a string literal | static data (null) | yes |
@@ -536,35 +550,31 @@ temporary alone.
 **Merged roots.** A value that may be any of several -- an `if`'s branches, a
 reference variable's bindings before and after a rebind to another root at
 its depth (`CheckRefRebindRoot`), the roots a call's callee returns
-(`CallResult`) -- keeps one root, the innermost
-(`InnerRoot`): the deeper, and at a tie the checked function's own variable,
-since a temporary of the calling statement takes the depth of the function's
-outermost scope (`ClassDepth`) but outlives the variables declared there; a
-literal's references (`NoteLitElem`) and a container's contents
-(`NoteContentRoot`) are bounded the same way. The rules that ask what
-storage a root *is* would see only the one kept, so the merge also carries
-what the others would have shown them: `intogs`, a grow-shrink array one may
-point into (§3.5 rule 3, `GrowShrinkTaint`); `cyclelocal`, that one is rooted
-where a recursive cycle may not store (rule 4, `CycleStorable`); and
-`hidesclass`, that one is a parameter class's pointee, which a back edge may
-give another array than the entry call did (§3.11). They travel with the
-value: through a rebind, which keeps what the old binding hid, a load of a
-slice through a reference (`DecayRef`, `SlotView`), a parameter
-(`RootArg::intogs`, part of the key, makes the parameter's own `intogs` its
-class root, or the parameter where it has no class), a function's returns
-(`RetAlt::intogs`, `cyclelocal`, `hidesclass`) and the argument a call maps
-a result through. A read-back clears them: whatever was stored passed those
-rules already.
+(`CallResult`) -- has the union of their alternatives (`Roots::Add`): two
+alternatives never share a root, and one added for a root already present
+keeps the weaker exactness. A literal's references (`NoteLitElem`) and a
+container's contents (`VarDef::contents`) are united the same way. The
+rules that ask what storage a root *is* -- the grow-shrink store rule
+(§3.5 rule 3, `GrowShrinkTaint`), the cycle store rule (rule 4,
+`CycleStorable`), a cycle's return-root prediction (§3.11) -- ask every
+alternative, so nothing a merge kept has to be carried beside it. What a
+parameter's class stands for at a call is the argument's whole set
+(`ClassArgRoots`), which is what the callee's stores, shrinks and growths
+map back to.
 
 **Parameters and root classes.** A callee never sees the caller's variables;
 it sees *classes*. `GetOrCreateSpec` groups the reference, slice and holder
-arguments of a call by their canonical root: distinct exact roots get
-distinct classes numbered by depth (so a class number is an outlives rank),
-static data is class 0, and an *inexact* root always gets a class of its own
--- sharing a class asserts "the same array", which an inexact root does not
-establish. `CheckSpecBody` then creates one synthetic `VarDef` per class,
+arguments of a call by their root: distinct exact roots get distinct classes
+numbered by depth (so a class number is an outlives rank), static data is
+class 0, and an argument that is not exact -- one of several alternatives,
+or an inexact one -- always gets a class of its own, at the depth of its
+innermost alternative -- sharing a class asserts "the same array", which
+such an argument does not establish. A class whose grow-shrink array is not
+its own root's (`RootArg::gsvia`: another alternative's, or one a slice the
+argument refers to views) is taken to hold anything a grow-shrink array
+could (`GrowShrinkCanHold`). `CheckSpecBody` then creates one synthetic `VarDef` per class,
 carrying the call-site root's depth (`classfrom` remembers the root it came
-from), and every parameter of the class is bound to it, `rootexact` within
+from), and every parameter of the class is bound to it, exactly, within
 the body: inside the body a class names one array, whatever the call site.
 A holder parameter's class only bounds what it holds, by the deepest root
 its references point into, so its contents (`contentexact`, and the store
@@ -647,30 +657,32 @@ or **holder** value (a by-value struct, array or payload that contains plain
 references or slices, `HoldsPlainRef`) meets a destination with a root:
 
 1. a `cycleroot` value is rejected (pass-down only);
-2. the value's root must be at or above the destination's depth, and where
-   the destination's root is inexact, at or above the depth of every
-   storage that root may stand for (`ShrinkTargets` over the type the path
-   reached, or the slot's own where it crossed no reference: the root itself
-   and each read-back candidate at its depth or outside, a parameter's class
-   as the bound on the caller's storage behind it). Whatever owns the slot
+2. every root of the value must be at or above the destination's depth, and
+   where the destination has several alternatives or an inexact one, at or
+   above the depth of every storage those may stand for (`ShrinkTargets` over the type
+   the path reached, or the slot's own where it crossed no reference: each
+   exact alternative itself, and for an inexact one its root and each
+   read-back candidate at its depth or outside, a parameter's class as the
+   bound on the caller's storage behind it). Whatever owns the slot
    holds a value of the type reached, and whatever can hold one can hold the
    slot, so of the storage the slot's type admits this leaves out only what
    the slot cannot be in: beside a borrowed context's table of `Input`s, an
    argument list, which can hold an `Input`'s text but no `Input[>..]`;
 3. a reference that may point into a grow-shrink array's elements may be
    bound to a variable but never stored (§5.2, `StoredIntoGrowShrink`: by
-   its root, `GrowShrinkCanHold` with the byte-view exception `MayBeViewed`,
-   by `Prov::intogs`, or for a reference to a slice by what the slice may
-   point into); a global reference or slice variable is storage, so binding
-   one is a store here;
+   any of its roots, `GrowShrinkCanHold` with the byte-view exception
+   `MayBeViewed`, or for a reference to a slice by what the slice may point
+   into); a global reference or slice variable is storage, so binding one is
+   a store here;
 4. inside a recursive cycle, only a reference into a global, a pool-class
    parameter or a local of an enclosing non-cycle function
    (`CycleStorable`), or into a threaded parameter class where every class
    among the destination's storages is threaded too (`ThreadStorable`,
-   `ThreadedChain`, §3.11), and no merged value with `cyclelocal`, may be
-   stored, besides a rebind of the activation's own reference variable
-   (§7.8);
-5. the store is **recorded**, on each of those storages.
+   `ThreadedChain`, §3.11), may be stored -- every alternative of the value
+   must be one of those -- besides a rebind of the activation's own
+   reference variable (§7.8);
+5. the store is **recorded**, on each of those storages, one event per
+   alternative of the value.
 
 Rule 3 does not wait for a destination: a literal's field or element is
 storage wherever the literal lands, so `NoteLitElem` applies it to each one
@@ -706,13 +718,14 @@ statement, which last (a `match`'s scrutinee among them). A declaration of
 such a value meets this rule before `CheckBindingRoot`, so it is what keeps
 a variable from viewing a local of the block whose value it is.
 
-The record (`storeevents`, one `StoreEvent` per store, program-wide) is what
-the grow-only shrink rule of §5.1 consults: the container, the stored
-value's root and exactness, the pointee type, the byte-view flag, the source
-container for a holder copy (a copy holds what its source holds), and the
-line. `RecordStore` also maintains the container's `contentroot`: the
-innermost root stored into it so far (`InnerRoot`), exact only while every
-store agrees.
+The record (`storeevents`, one `StoreEvent` per alternative of each stored
+value, program-wide) is what the grow-only shrink rule of §5.1 consults: the
+container, the stored alternative's root and exactness, the pointee type,
+the byte-view flag, the source container for a holder copy (a copy holds
+what its source holds; an inexact read-back's is the container it came out
+of, and one out of a parameter's class is bounded by the class), and the
+line. `RecordStore` also maintains the container's `contents`: the union of
+every root stored into it so far.
 A store into a caller's storage -- through a parameter's class root -- is
 kept on the specialization as a `classevent`, and `ApplyCalleeStores`
 replays it at every call site with the class mapped back to the root it
@@ -735,23 +748,22 @@ edge) it conservatively records every reference argument as stored into
 every storage a reference argument whose pointee can hold references may be,
 the pointee's type being what a store through it reaches.
 
-Holder values carry their contents' bound as `holderroot`/`holderexact`
-(§9.2's "implicitly generic over the fields' roots"): a literal's is the
-deepest root among its reference initializers (`NoteLitElem`,
-`HolderFromLit`); a variable's is its `contentroot`, unless a loop around
-the read writes the variable, in which case the variable itself is the
-bound; a container read's is the container's root, inexact, and out of a
-temporary the temporary's own; a copy's (`TempCopy`) is its source's; a
-holder parameter is keyed by its holder root class like a reference, and by
-whether that class is exactly the one array it points into (§3.4), and the
-class (its `ref.root`) bounds what is read back out of it or out of a copy
-of it (§3.6).
+Holder values carry their contents' roots as `Val::contents` (§9.2's
+"implicitly generic over the fields' roots"): a literal's are those of its
+reference initializers (`NoteLitElem`, `HolderFromLit`); a variable's are
+its `contents`, unless a loop around the read writes the variable, in which
+case the variable itself is the bound; a container read's are the
+container's roots, inexact, and out of a temporary the temporary's own; a
+copy's (`TempCopy`) are its source's; a holder parameter is keyed by its
+contents' class like a reference, and by whether that class is exactly the
+one array they point into (§3.4), and the class (its `ref`) bounds what is
+read back out of it or out of a copy of it (§3.6).
 
 ### 3.6 Read-back roots
 
 A reference read out of a container names a scope, not the storage it points
 into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
-§9.5 describes:
+§9.5 describes, once, at the read, as one alternative per candidate:
 
 * a self-relative reference inherits the container's root and exactness; an
   `in pool` reference is rooted at its pool, exactly;
@@ -783,12 +795,15 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   over a temporary and a `match` binder copied out of one take the same
   answer.
 
-The root is the deepest candidate; it is exact only with exactly one
-candidate, no static data and no bound. `ReadBackWhy` turns the candidate
-list into the "may point into `pool` or `spare`" diagnostic the rules that
-need identity produce, naming a bound as "the caller's storage behind" its
-parameter. A byte view read back takes the container's `contentroot` where
-one is known.
+Each candidate is an alternative of the value: a variable's own storage
+exactly, a parameter's class as a bound, static data as the null root; the
+value names one array only with exactly one candidate. Which arrays the
+value may point into is settled here, so an array that comes into scope
+later at the same depth is not among them. `ReadBackWhy` turns the
+alternatives into the "may point into `pool` or `spare`" diagnostic the
+rules that need identity produce, naming a bound as "the caller's storage
+behind" its parameter. A byte view read back takes the container's
+`contents` where they are known.
 
 ### 3.7 Reference variables commit to a root
 
@@ -796,13 +811,17 @@ A reference or slice variable is bound at its first non-null binding
 (`BindRefProvenance`); before that it reads as `temproot` (`RefRootOf`), and
 a null-only optional answers the read-back rule for its own depth
 (`RefProvOf`). `CheckRefRebindRoot` implements §9.2's rebinding rule: the
-same root keeps everything (an inexact new value only weakens exactness);
-another root at the same depth keeps the lifetime bound but makes the
-variable inexact; any other depth is an error. Since a loop body is checked
-once, a read of the variable's exact root *inside a loop it was declared
-outside of* is noted (`RefExactOf` sets `refidentityused`), and a later
-same-depth rebind in that loop is then rejected rather than silently
-invalidating the earlier read.
+same roots keep everything (an inexact new value only weakens exactness);
+another root at the same depth joins the variable's alternatives; any other
+depth is an error. Since a loop body is checked once, a read of a variable
+that names one array *inside a loop it was declared outside of* is noted
+(`RefExactOf` sets `refidentityused`), and a later same-depth rebind to
+another root in that loop is then rejected rather than silently
+invalidating the earlier read; a `var` of several roots that such a loop
+rebinds to a root the syntactic scan of its `.=` right-hand sides cannot
+show it has (`PushLoopAssigned`, `loopretargets`) is read as bounded by its
+roots inside the loop instead (`RefProvOf`), which covers whatever the
+rebind gives it at their depth.
 
 `PrebindLoopRefs` handles the `var last: Node? = null;` idiom before a loop:
 every `.=` target in the body is scanned syntactically (with the cycle-root
@@ -921,7 +940,7 @@ root, or, the variable having been rebound, at an array of that root's depth;
 a slice variable named by an explicit `&` says so by its own binding, and a
 parameter's class of one only bounds it.
 
-**Slot reads** (`Prov::slotread`). For the same reason, a plain reference
+**Slot reads** (`RootAlt::slotread`). For the same reason, a plain reference
 or slice loaded out of a field or an element (`ReadBackLVal`, where
 `LVal::isslot` says the location is one, not the pointee of a reference), a
 global reference or slice variable (`RefProvOf`; rule 3 covers a global's
@@ -929,8 +948,8 @@ own bindings) and a `for` binder copying views out of an array (`CheckFor`)
 never point into a grow-shrink array's elements, whatever their read-back
 roots are. A slice of such a slice, and a reference into what it views, keep
 the bit; `MergeVals`, a rebind (`CheckRefRebindRoot`) and a call's result
-(`RetAlt::slotread` of every root its returns give, never a back edge's)
-keep it only where every value does; and
+(every root its returns give, never a back edge's) keep it only where every
+value does; and
 crossing a reference drops it (`DerefLValue`, `DecayRef`, `Dot::Check`'s
 auto-deref, a `for` loop or a builtin member through a reference, a whole
 array passed to a slice parameter through one), since what a reference read
@@ -949,10 +968,11 @@ reaches what a reference to a slice leads to (`HeldRefsMayPointInto`). The
 are stored like any others.
 
 **Inexact receivers.** Both scans run once per array the shrink may free
-(`ShrinkThrough` over `ShrinkTargets`). An exact root is the array. An
-inexact one -- a merge that kept the deeper of two roots (`MergeVals`), a
-read-back (§3.6), a back edge's unknown result -- only bounds it, so the
-array may be any one of its type owned at the root's depth or outside it:
+(`ShrinkThrough` over `ShrinkTargets`), one per alternative of the receiver's
+roots. An exact alternative is the array. An inexact one -- a container
+reached through a parameter (§3.6), a back edge's unknown result -- only
+bounds it, so the array may be any one of its type owned at the root's
+depth or outside it:
 every candidate `RootCandidates` finds for that type at the root's depth
 (locals, pointees of references in scope, parameter classes, globals, and
 the bounds standing for the caller's storage a parameter's references lead
@@ -1192,9 +1212,9 @@ broke it before makes the store the error (`CycleStoreError`). A store its
 function made before joining the cycle relies from the call that joined it
 on (`JoinCycle`), which is before that call's arguments are checked, and is
 the error there if one of its classes broke meanwhile. Only stores rely. A
-merged value or rebound variable that may hide a threaded class is
-`cyclelocal`, as for any class, since the store it reaches cannot see what
-it hides, and a return rooted at one counts as `local` to `ReturnConflict`.
+merged value or rebound variable that may be rooted at a threaded class
+relies on it like any other, every one of its roots having to be storable,
+and a return rooted at one counts as `local` to `ReturnConflict`.
 A back edge's result rooted at a threaded class is given as storable only
 while the class stays so (`RetRoot::usedthreads`): a later return that the
 cycle could not store breaks those classes instead of being an error, which
@@ -1224,11 +1244,11 @@ sets, each parameter mapped to what the call passes. The fixpoint iterates
 the closure of functions reached (`ReturnRootDescs`, at most 64 rounds); a
 scan run outside it, of a loop's rebinds (§3.7), runs that fixpoint for each
 function it calls before reading the function's sets.
-`ResolveDesc` turns each alternative into a `RetAlt` of the specialization
+`ResolveDesc` turns each alternative into a `RootAlt` of the specialization
 (`RetRoot::pred`), which a back edge maps as any call maps a return's root
 (`RetAltVal`): a back edge reuses the body whatever it passes, so a
 parameter class maps through every argument the back edge gives the
-class's parameters, merged, where an ordinary call, whose classes group the
+class's parameters, united, where an ordinary call, whose classes group the
 arguments as the key's, takes the first. A set that is unknown, or names a
 function's own local, predicts nothing (`predunknown`); until a return is
 checked, back edges then get `cycleroot`, and after it they map that return,
@@ -1254,15 +1274,13 @@ prediction as it is recorded (`ReturnConflict`): one it names narrows the
 alternative for later back edges, but may not take back what an earlier one
 was given (`RetRoot::usedexact`, `usedwritable`, `usedclean` for a
 grow-shrink taint -- for a holder, `IntoGrowShrink` over what it holds, as
-rule 3 of §3.5 stores it -- `usedstorable` for `cyclelocal`); one it missed
-joins it where no back edge has used the prediction yet, and after that only
-a root every activation shares and no deeper than any back edge's result
-(`useddepth`). A return with `hidesclass` may be the pointee of a parameter
-class no alternative names, which no mapping reaches: unless the prediction
-names every class, the back edges checked after it get `cycleroot`
-(`predlost`), and one after a back edge has used the prediction is an error
-(`RetRoot::used`). The callers of the finished specialization map the real
-returns' roots (`RetRoot::alts`), not the prediction.
+rule 3 of §3.5 stores it -- `usedstorable` for one the cycle cannot store);
+each alternative of a return is held against it on its own, and one it
+missed joins it where no back edge has used the prediction yet, and after
+that only a root every activation shares and no deeper than any back edge's
+result (`useddepth`): a parameter class no back edge was given is an error
+there. The callers of the finished specialization map the real returns'
+roots (`RetRoot::alts`), not the prediction.
 
 ### 3.12 Calls, generics, literal parameters, dispatch, function values
 
@@ -1410,8 +1428,8 @@ by which a specialization was later reused (`neededges`) is re-validated
 against it (`ValidateNeeds`, `AddNeed`). A long-distance return may carry
 only references rooted at globals or static data -- more conservative than
 the spec's "rooted at or above the target's frame" (TODO 0d). The returns of
-one function may give different roots: `RecordReturn` keeps one `RetAlt` per
-distinct root, the guarantees on it ANDed, and every call maps and merges
+one function may give different roots: `RecordReturn` keeps every distinct
+root (`RetRoot::alts`), the writability ANDed, and every call maps and unites
 them (`CallResult`, §3.4).
 
 ### 3.13 Relative references and pools
@@ -2728,18 +2746,6 @@ specification allows, and the shapes the C backend refuses outright:
   that may only be passed down: the body was checked with that parameter
   as static data, which no prediction can map to what the back edge
   passes (§3.11).
-* A return that may be a parameter class's pointee its root does not show
-  (`hidesclass`) makes the back edges after it pass-down only, unless the
-  prediction names every class, even where the class is a pool, whose
-  argument every back edge must pass as the entry call did (§3.11), and it
-  is kept on a merge of any class root, a class of an enclosing function
-  included.
-* A return whose value is itself merged from branches reaches its callers
-  as one root, the innermost, with `cyclelocal` set where the other one's
-  root is not a pool, a global or an enclosing function's local in the
-  callee (§3.4), so a recursive cycle cannot store the result even where the
-  argument behind that other root is a pool; the same function written
-  with a `return` per branch is mapped a root at a time.
 * A plain reference parameter's root class is identified with a global pool
   only inside a recursive cycle or through the `in pool` form (§9.5 above,
   `bench/notes.md` item 1), so `index_of`, a relative store and an exact

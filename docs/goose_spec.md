@@ -1982,11 +1982,13 @@ outlives-rule is the language's entire "borrow checker".
 
 ### 9.2 Roots and the depth check
 
-Every reference/slice value has a static **root**: a local or global
-variable, or a temporary (below), that bounds the scope its target lives in.
-The root is **exact** when that variable's own storage contains the target,
-and inexact when it only bounds the target's lifetime — the owner is then
-that variable or one further out.
+Every reference/slice value has one or more static **roots**: each a local
+or global variable, or a temporary (below), that bounds the scope its target
+lives in; a value that may point at several places has one root per place
+(merged values, below), and every rule asks each of them. A root is
+**exact** when that variable's own storage contains the target, and inexact
+when it only bounds the target's lifetime — the owner is then that variable
+or one further out.
 Every root a `&lvalue` creates is exact; the reads out of containers of §9.5
 are where inexact ones come from. Compilation in call-graph order with
 per-instantiation specialization means roots are always statically known —
@@ -2043,25 +2045,27 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
 * **Merged values**: a value that may be any of several — the branches of an
   `if` or `match`, the `break`s of a `block` or `loop`, a reference
   variable's bindings, or a function's `return`s, which each call maps to
-  its own arguments — is rooted at the innermost of their roots, the one
-  whose scope ends first, and exactly only where every one of them names that
-  one root exactly (a `null` names none); what a value holding references
-  holds is rooted the same way. It is writable only where all of them are
-  (§9.5), and it is stored only where each of them could be: not at all
-  where one may point into a grow-shrink array (§5.2), and not inside a
-  recursive cycle where one is rooted where the cycle stores nothing (§7.8).
-  A parameter given such a value, and a call's result where the argument
-  behind a return may be one, are stored the same way. So a function may
-  return a view of its input on one path and of a global arena or a string
-  literal on another, and `longer(x, y)`, for a `longer` returning whichever
-  of its two slice parameters is longer, is rooted at whichever of `x` and
-  `y` is declared further in, whichever it returns at run time.
+  its own arguments — has every one of their roots, and names one array
+  exactly only where every one of them names that one root exactly (a
+  `null` names none); what a value holding references holds is rooted the
+  same way. It must outlive a destination by every root, it is writable only
+  where all of them are (§9.5), and it is stored only where each of them
+  could be: not at all where one may point into a grow-shrink array (§5.2),
+  and not inside a recursive cycle where one is rooted where the cycle
+  stores nothing (§7.8). A shrink frees what any of them points into (§5.1).
+  A parameter given such a value stands for all of its places, and so does
+  a call's result where the argument behind a return may be one. So a
+  function may return a view of its input on one path and of a global arena
+  or a string literal on another, and `longer(x, y)`, for a `longer`
+  returning whichever of its two slice parameters is longer, may point into
+  either `x` or `y`, whichever it returns at run time, and into nothing
+  else.
 * Struct types with reference fields are implicitly generic over those
   fields' roots; struct instances with different root bindings are distinct
   types for checking purposes (same layout). One whose references all point
   into one variable is bound to that root exactly; one whose references
-  point into several is only bounded by the innermost of their roots, so a
-  function given both kinds is checked for each. A `recursive fn`'s back
+  point into several has each of their roots, so a function given both
+  kinds is checked for each. A `recursive fn`'s back
   edges reuse its body whatever they pass (§7.8), so its by-value parameters
   are always taken to be of the second kind.
 * References into a value being copied by value do not transfer to the copy;
@@ -2227,10 +2231,12 @@ root lies:
    function cannot enumerate that storage, and it all outlives the
    parameter's root — for a by-value parameter the root of what its
    argument held (§9.2's generic roots of reference fields) — so that root
-   is its candidate. The root is the innermost candidate — the true owner is
-   that one or one further out, so its scope bounds every possibility — and
-   is exact when there is exactly one candidate in all and it is not such a
-   parameter's root, which only bounds the storage behind it.
+   is its candidate. Every candidate is a root of the value: a local or a
+   global exactly, such a parameter's root as a bound on the storage behind
+   it. The value names one array only when there is exactly one candidate in
+   all, and it is not such a parameter's root. The candidates are the
+   variables in scope at the read: an array that comes into scope after it
+   cannot be the owner and is no root of it.
 3. **A reference parameter's pointee, or itself inexact.** The owner may be
    caller storage this function cannot enumerate: the root is `C`'s, inexact.
 4. **A temporary** (§9.2). Everything in it came from the literal's

@@ -564,9 +564,14 @@ inline Node *Optimizer::TryInline(Call *c) {
     };
     for (auto &kv : inl.vmap) {
         auto nv = kv.second;
-        remap(nv->ref.root);
-        remap(nv->ref.rootfrom);
-        remap(nv->contentroot);
+        for (auto &a : nv->ref.alts) {
+            remap(a.root);
+            remap(a.from);
+        }
+        for (auto &a : nv->contents.alts) {
+            remap(a.root);
+            remap(a.from);
+        }
     }
     body->stmts.insert(body->stmts.begin(), decls.begin(), decls.end());
     auto ib = ast.New<InlineBlock>(c->line, K->sf, K, body);

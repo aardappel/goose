@@ -576,3 +576,18 @@ are conservatisms, and item 3 in particular will lift some). Keep a scratch
 build of the pre-change compiler and diff verdicts over all fixtures and
 samples before each landing (`docs/testing.md`,
 `goose-branch-validation-snapshots`).
+
+## 7. Status
+
+* **1. Alternative sets** landed 2026-09-25: `Roots`/`RootAlt` in `ast.h`
+  replace `root`/`rootexact`/`rootfrom`/`intogs`/`cyclelocal`/`hidesclass`/
+  `slotread`, `Val::contents` replaces `holderroot`/`holderexact`,
+  `VarDef::contents` replaces `contentroot`/`contentexact`/`contentset`;
+  read-backs enumerate their candidates once, at the read, as exact
+  alternatives (§9.5), and the cycle predictor holds each alternative of a
+  return on its own. `RootArg::intogs` became `gsvia`; `InnerRoot`,
+  `CanonRoot` (`rootalias` was never set), `Hides` and `NoteContentRoot`
+  are gone. A `var` of several roots that a loop rebinds to one the
+  syntactic scan cannot show it has is read as bounded by its roots inside
+  the loop (`loopretargets`), the single-pass replacement for what the
+  collapsed inexact root used to guarantee; item 6 removes that too.

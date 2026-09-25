@@ -1,7 +1,7 @@
-// error: storing a reference that may point into a grow-shrink array, as s may
-// A string literal and a view of the grow-shrink G tie, and the argument is
-// rooted at static data (§9.2), which gives the parameter no class of its
-// own. It may still be G's view, which keepit may not store (§5.2).
+// error: storing a reference into s, which holds a grow-shrink array
+// A string literal and a view of the grow-shrink G are the argument's two
+// roots (§9.2): the parameter's class is G's, static data being no array to
+// name, so keepit may not store it (§5.2).
 var G: u8[>..<] = "xyz";
 struct K { s: const u8[:] }
 var keep: K[>..] = [];

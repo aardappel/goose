@@ -84,11 +84,11 @@ struct TypeCheck {
     // (Val, the checked value of an expression, lives in ast.h: node Check
     // overrides return it.)
 
-    // What the read-back rule makes of one load (§9.5).
+    // What a temporary holds (TempContents): where its contents point, and
+    // the container whose store events describe them exactly, if any.
     struct ReadBack {
-        VarDef *root = nullptr;
-        bool exact = false;
-        VarDef *from = nullptr;   // The container, where candidates were enumerated.
+        Roots roots;
+        VarDef *from = nullptr;
     };
 
     // An assignable/addressable path: Ident, field, or element. Its
@@ -251,14 +251,18 @@ struct TypeCheck {
         ~FlagScope() { flag = saved; }
     };
     // The destination of the value under construction (for reference stores):
-    // its root plus whether that root is the destination storage's owner.
+    // where the storage the value lands in may be (an lvalue's roots).
     struct Dest {
-        VarDef *root = nullptr;
-        bool exact = false;
+        Roots roots;
         bool varbind = false;  // A reference/slice variable itself: a binding, not a store.
         // The type of the storage the path to it reached, which the slots it
         // fills lie in (Prov::reached); null where it crossed no reference.
         TypeExpr *reached = nullptr;
+        Dest() {}
+        Dest(const Roots &r, bool vb = false, TypeExpr *re = nullptr)
+            : roots(r), varbind(vb), reached(re) {}
+        // A variable's own storage.
+        Dest(VarDef *vd, bool vb = false) : varbind(vb) { roots.Set(vd, true); }
     };
     Dest curdst;
     // Whether the value being checked lands in a typed slot -- a field, an
@@ -748,9 +752,13 @@ struct TypeCheck {
     void PopScope();
 
     int CurDepth() { return (int)scopes.size(); }
-    static int Depth(VarDef *v) { return v ? v->depth : 0; }
-    static VarDef *CanonRoot(VarDef *v);
-    VarDef *InnerRoot(VarDef *a, VarDef *b);
+    static int Depth(const VarDef *v) { return RootDepth(v); }
+    // One variable's own storage, as a value rooted there exactly.
+    static Roots RootsOf(VarDef *v) {
+        Roots r;
+        r.Set(v, true);
+        return r;
+    }
 
     // The storage of a temporary made here (a call's result, a literal): it
     // lasts until the statement being checked ends, or the block whose tail
@@ -767,10 +775,18 @@ struct TypeCheck {
     }
     static bool IsTemp(VarDef *v) { return v && v->istemp; }
 
-    // The root of the reference a variable holds; a null-initialized optional
-    // has no commitment yet and reads as the temp sentinel, which no store
-    // outlives (conservative).
-    VarDef *RefRootOf(VarDef *vd) { return vd->refrootknown ? vd->ref.root : temproot; }
+    // The root of the reference a variable holds -- one class root for a
+    // parameter, else the innermost of its binding's; a null-initialized
+    // optional has no commitment yet and reads as the temp sentinel, which no
+    // store outlives (conservative).
+    VarDef *RefRootOf(VarDef *vd) { return vd->refrootknown ? vd->ref.Root() : temproot; }
+    // Every root the reference a variable holds may have (§9.2).
+    Roots RefRootsOf(VarDef *vd) {
+        if (vd->refrootknown) return vd->ref;
+        Roots r;
+        r.Set(temproot, false);
+        return r;
+    }
 
     bool ContainsGrowShrink(TypeExpr *t);
     TypeExpr *ResizableArrayIn(TypeExpr *t);
@@ -778,10 +794,10 @@ struct TypeCheck {
     bool GrowShrinkCanHold(VarDef *r, TypeExpr *of);
     bool IntoGrowShrink(const Prov &v, VarDef *root, TypeExpr *t, bool holder);
     VarDef *GrowShrinkTaint(const Prov &p, TypeExpr *t);
-    VarDef *StoredIntoGrowShrink(const Val &v, VarDef *root, TypeExpr *t, bool holder);
+    VarDef *StoredIntoGrowShrink(const Val &v, const Roots &roots, TypeExpr *t, bool holder);
     string NeverStoredError(VarDef *root, bool may = false);
     bool CycleStorable(VarDef *r);
-    bool Hides(const Val &b, const Val &m, const function<bool(VarDef *)> &hidden);
+    bool CycleStorable(const Roots &r);
     bool MayBeViewed(VarDef *r);
     bool Viewable(TypeExpr *t);
     bool GrowShrinkContains(TypeExpr *t, TypeExpr *of);
@@ -930,13 +946,12 @@ struct TypeCheck {
     TypeExpr *PointeeOf(TypeExpr *t);
     void VisibleVars(const function<void(VarDef *)> &f);
     bool StaticCanContain(TypeExpr *of);
-    void RootCandidates(TypeExpr *of, int d, bool globalsonly, bool writable,
-                        vector<VarDef *> &out, bool &hasstatic, vector<VarDef *> &bounds);
+    Roots RootCandidates(TypeExpr *of, int d, bool globalsonly, bool writable);
 
     bool TempContents(const Val &v, ReadBack &contents);
-    ReadBack ReadBackRoot(TypeExpr *rt, VarDef *croot, bool cexact, bool byteview = false,
-                          const ReadBack *contents = nullptr);
-    string ReadBackWhy(TypeExpr *rt, VarDef *from);
+    Roots ReadBackRoot(TypeExpr *rt, const Roots &container, bool byteview = false,
+                       const ReadBack *contents = nullptr);
+    string ReadBackWhy(const Roots &r);
     bool RootedAtReceiver(const Val &rv, const Val &av);
     void CheckRootedAtReceiver(Call *c, const char *op, const Val &rv, const Val &av,
                                const char *what, const char *sec);
@@ -954,6 +969,9 @@ struct TypeCheck {
     Val ContainerRead(LVal lv);
     void ResolveMemberLValue(LVal &lv, Dot *d);
     void HoldValue(Node *n, Val v, bool sequenceview = false);
+    // Where a holder value's references point: what was derived for it, else
+    // the value's own roots (a temporary's outlive nothing).
+    static const Roots &ContentsOf(const Val &v) { return v.holderset ? v.contents : v; }
     void HoldLocation(Node *n, const LVal &lv);
     void HoldSequence(Node *n, const LVal &lv, TypeExpr *elem);
     bool ShrinkMayFree(VarDef *root, TypeExpr *bound, bool growonly, TypeExpr *of,
@@ -1206,7 +1224,7 @@ struct TypeCheck {
     int EnvReach(const MatchInfo &mi);
     void CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline);
     void RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at);
-    Val RetAltVal(FnSpec *spec, const RetAlt &alt, vector<Val> &argvals, TypeExpr *t, Node *at);
+    Val RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &argvals, TypeExpr *t, Node *at);
     Val CallResult(Call *c, FnSpec *spec, vector<Val> &argvals);
     void CheckReturn(Return *r);
     FnSpec *EnsureThreadSpec(SFunction *sf, Line l);
@@ -1215,11 +1233,9 @@ struct TypeCheck {
     // Struct and variant literals (§4.2). The per-node entry is
     // StructLit::Check in typecheck_nodes.h.
 
-    // The deepest lifetime root among one literal's initialized fields/elements.
+    // Where one literal's initialized fields and elements point.
     struct LitDeep {
-        VarDef *root = nullptr;
-        bool exact = false;
-        bool set = false;
+        Roots roots;
         bool byteview = false;
     };
     LitDeep CheckInits(StructLit *sl, vector<Field> &fields, vector<TypeExpr *> &ftypes,
@@ -1236,8 +1252,8 @@ struct TypeCheck {
     void CheckCycleInit(VarDef *d, int fi, int calls);
     void AssignableClassCheck(TypeExpr *t, Node *at);
     void CheckAssign(Assign *a);
-    Val CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *arr, VarDef *built,
-                           bool builtexact, Dest dest);
+    Val CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *arr, const Roots &built,
+                           Dest dest);
     void CheckRebind(Assign *a, LVal &lv);
     bool PointeeWritable(LVal &lv, Node *at);
     void PointeeAssign(Assign *a, LVal &lv, const LVal &at);
@@ -1293,10 +1309,31 @@ struct TypeCheck {
     void NoteLitElem(LitDeep &deep, Node *at, const Val &v, TypeExpr *t);
     void HolderFromLit(Val &v, const LitDeep &deep);
     void AddStoreEvent(const StoreEvent &e);
-    void NoteContentRoot(VarDef *container, VarDef *root, bool exact);
-    void RecordStore(VarDef *container, const Val &v, TypeExpr *pointee, bool varbind,
+    // How NeverStoredError words a grow-shrink array `gs` a value pointing at
+    // `roots` may point into: as the array itself where it is the value's one
+    // root, else as one it may point into.
+    static bool MayPointWording(const Roots &roots, VarDef *gs) {
+        return !(roots.alts.size() == 1 && roots.alts[0].root == gs);
+    }
+    // A store of what points at `roots` (a reference's, or a holder's
+    // contents) into container: one event per root, the container's
+    // contents updated (§9.2).
+    void RecordStore(VarDef *container, const Roots &roots, bool byteview, TypeExpr *pointee,
                      VarDef *src = nullptr, TypeExpr *reached = nullptr, bool bound = false);
     vector<set<string_view>> loopassigned;   // Per enclosing loop: names its body writes.
+    // Per enclosing loop: the `var` reference and slice variables declared
+    // outside it that its body may rebind to a root they do not have yet
+    // (LoopRetargets), as far as the syntactic scan of their rebinds can
+    // tell. A loop body is checked once, so a read of such a variable
+    // earlier in the body than the rebind sees only the roots it had: one
+    // of several roots is read as bounded by them instead, which covers
+    // whatever the rebind gives it at the same depth (§9.2); one of a single
+    // root keeps it, and the rebind is rejected where the read relied on it.
+    vector<set<VarDef *>> loopretargets;
+    bool LoopRetargets(VarDef *vd) {
+        for (auto &s : loopretargets) if (s.count(vd)) return true;
+        return false;
+    }
     void CollectAssignedBases(Node *n, set<string_view> &out);
     void PushLoopAssigned(Node *body);
     void PrebindLoopRefs(Node *body);
@@ -1330,7 +1367,7 @@ struct TypeCheck {
     template<typename F> void ScanReceivers(SFunction *sf, ShrinkSummary &summary, F recv);
     void RefPointees(TypeExpr *t, vector<TypeExpr *> &out);
     VarDef *HolderRootOf(const Val &v);
-    pair<VarDef *, bool> ClassArgRoot(TypeExpr *pt, const Val &v);
+    Roots ClassArgRoots(TypeExpr *pt, const Val &v);
 
     string ExprStr(Node *n) {
         string s;
@@ -1381,11 +1418,10 @@ struct TypeCheck {
         VarDef *root = nullptr;
         bool bound = false;
     };
-    vector<ShrinkTarget> ShrinkTargets(VarDef *root, bool exact, TypeExpr *arr);
+    vector<ShrinkTarget> ShrinkTargets(const Roots &roots, TypeExpr *arr);
     string TargetStr(const ShrinkTarget &t);
     void ShrinkThrough(Node *at, bool standalone, const string &verb, const string &recv,
-                       VarDef *root, bool exact, TypeExpr *arr,
-                       ShrinkBalance balance = SB_UNBALANCED);
+                       const Roots &roots, TypeExpr *arr, ShrinkBalance balance = SB_UNBALANCED);
     void ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
     // A shrink's scan sees the views of the activation only, and takes a
     // parameter's class for an array of its own: whether an argument was a
@@ -1411,7 +1447,7 @@ struct TypeCheck {
         Node *at = nullptr;
         FnSpec *caller = nullptr;
         FnSpec *callee = nullptr;
-        vector<pair<VarDef *, bool>> args;   // Root and exactness, per parameter.
+        vector<Roots> args;   // What each parameter's class stands for here.
         string name;
     };
     vector<CycleSite> cyclesites;
@@ -1431,8 +1467,8 @@ struct TypeCheck {
         string what;
     };
     vector<GrowEvent> growlog;
-    void NoteGrow(Node *at, VarDef *root, bool exact, const string &what);
-    void CheckGrowsSince(size_t base, VarDef *root, bool exact, const string &what);
+    void NoteGrow(Node *at, const Roots &roots, const string &what);
+    void CheckGrowsSince(size_t base, const Roots &built, const string &what);
     void ApplyCalleeGrows(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
     // Whether an element pushed into, or allocated in, an array of `elem`
     // is built in place at its slot: a variable-size one, or a fixed one
@@ -1466,7 +1502,7 @@ struct TypeCheck {
     // contents are built over its old ones (§4.4), so nothing it runs may
     // use the array: name it, or a reference to it, directly or in a
     // function it calls.
-    void CheckBuiltUses(Node *rhs, Node *lval, VarDef *built, bool exact, TypeExpr *arr);
+    void CheckBuiltUses(Node *rhs, Node *lval, const Roots &built, TypeExpr *arr);
     Alias ReachesBuilt(VarDef *v, VarDef *built, bool exact, TypeExpr *arr, VarDef *&root);
     template<typename F, typename G> void EachUse(Node *n, F named, G called);
     bool FieldsApart(Node *use, Node *lval);
@@ -1584,7 +1620,7 @@ struct TypeCheck {
                 auto found = false;
                 for (size_t i = 0; gc.spec && i < gc.spec->params.size() &&
                                    i < gc.spec->roots.size(); i++) {
-                    if (CanonRoot(gc.spec->params[i]->ref.root) != cr) continue;
+                    if (gc.spec->params[i]->ref.Root() != cr) continue;
                     if (!gc.spec->roots[i].concrete || !gc.spec->roots[i].exact) return false;
                     found = true;
                 }
@@ -1605,8 +1641,7 @@ struct TypeCheck {
             for (size_t i = 0; i < spec->params.size() && i < spec->argtypes.size(); i++) {
                 auto t = spec->argtypes[i];
                 if (!IsRefOrSlice(t)) continue;
-                if (!spec->roots[i].exact)
-                    spec->params[i]->ref.rootexact = false;
+                if (!spec->roots[i].exact) spec->params[i]->ref.Weaken();
             }
         }
         // A class passed on is concrete only while the parameter it stands for

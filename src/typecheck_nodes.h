@@ -53,7 +53,7 @@ inline Val SelfRef::Check(TypeCheck &tc, TypeExpr *) {
 inline Val StrLit::Check(TypeCheck &tc, TypeExpr *expected) {
     Val v;
     v.strlit = true;
-    v.rootexact = true;   // Static data owns what it holds.
+    v.Set(nullptr, true);   // Static data owns what it holds.
     v.writable = false;
     if (expected) {
         // A string literal constructs any u8-element array type (§3.7).
@@ -95,8 +95,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
             v.unsized = true;
             v.unsizedparam = vd->unsizedorigin ? vd->unsizedorigin : vd;
         } else {
-            v.root = vd;
-            v.rootexact = true;
+            v.Set(vd, true);
             v.byteview = vd->contentbyteview;
             v.writable = !vd->copybind && !(vd->type && vd->type->cq);
             v.reusable = vd->reusable;
@@ -112,12 +111,11 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
                 v.holderset = true;
                 v.holderfrom = vd;
                 if (vd->isglobal) {
-                    v.holderroot = nullptr;
-                } else if (vd->contentset && !tc.AssignedInEnclosingLoop(vd)) {
-                    v.holderroot = vd->contentroot;
-                    v.holderexact = vd->contentexact;
+                    v.contents.Set(nullptr, false);
+                } else if (!vd->contents.None() && !tc.AssignedInEnclosingLoop(vd)) {
+                    v.contents = vd->contents;
                 } else {
-                    v.holderroot = vd;
+                    v.contents.Set(vd, false);
                 }
             }
         }
@@ -211,7 +209,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
                                tc.TypeStr(expected)));
         v.type = expected && expected->kind == TY_ARRAY ? expected : natural(cnt);
         if (atslice) tc.NoTemporaryLiteral(this, v.type);
-        v.root = tc.TempRoot();
+        v.Set(tc.TempRoot(), false);
         tc.HolderFromLit(v, deep);
         return v;
     }
@@ -246,7 +244,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     // Anything that views the literal rather than building a destination
     // from it views a temporary (§9.2), whose elements point where its
     // holder root says.
-    v.root = tc.TempRoot();
+    v.Set(tc.TempRoot(), false);
     tc.HolderFromLit(v, deep);
     return v;
 }
@@ -274,7 +272,7 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
                          tc.TypeArgsEq(expected->enu->args, t->var->adt->enu->args)
                      ? expected : t;
         auto deep = tc.CheckInits(this, var->fields, ei->vftypes[vi], ei->en->name, v.type);
-        v.root = tc.TempRoot();   // A temporary, as an array literal is.
+        v.Set(tc.TempRoot(), false);   // A temporary, as an array literal is.
         tc.HolderFromLit(v, deep);
         return v;
     }
@@ -321,7 +319,7 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
         auto deep = tc.CheckInits(this, st->fields, inst->ftypes, st->name, t);
         Val v;
         v.type = t;
-        v.root = tc.TempRoot();
+        v.Set(tc.TempRoot(), false);
         tc.HolderFromLit(v, deep);
         return v;
     }
@@ -574,9 +572,9 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     if (t->kind == TY_REF) {
         if (t->ref->optional)
             tc.Error(this, "optional value must be narrowed (if/guard/assert) before use");
-        t = t->ref->sub;  // Auto-deref; ov.root is already the pointee's owner.
+        t = t->ref->sub;  // Auto-deref; ov's roots are already the pointee's owner.
         // As DerefLValue.
-        ov.slotread = false;
+        ov.ClearSlotRead();
         ov.reached = tc.LoadType(t);
     }
     // Builtin properties (.len/.cap) from the table.

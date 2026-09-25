@@ -222,8 +222,8 @@ struct BCE {
             auto t = v->type;
             if (!t) return { UK_OPAQUE, v };
             if (!IsRefOrSlice(t)) return { UK_OWNED, v };
-            if (!v->refrootknown || !v->ref.rootexact) return { UK_OPAQUE, nullptr };
-            v = v->ref.root;
+            if (!v->refrootknown || !v->ref.Exact()) return { UK_OPAQUE, nullptr };
+            v = v->ref.Root();
         }
         return { UK_OPAQUE, nullptr };
     }
@@ -1778,8 +1778,8 @@ struct BCE {
         for (size_t j = 0; j < sp->params.size(); j++) {
             auto p = sp->params[j];
             ownvars.insert(p);
-            if (p->type && IsRefOrSlice(p->type) && p->ref.root)
-                classparams[p->ref.root].push_back((int)j);
+            if (p->type && IsRefOrSlice(p->type) && p->ref.Root())
+                classparams[p->ref.Root()].push_back((int)j);
         }
         Mark(sp->body);
     }

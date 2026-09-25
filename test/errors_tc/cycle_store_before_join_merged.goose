@@ -1,10 +1,10 @@
 // error: references may only be passed down, not stored, inside a recursive cycle
-// error: g calls into its recursive cycle at
+// error: passes x rooted differently from the cycle's entry call
 // What a call returns of its parameter's pointee may be whatever the argument
-// may (§9.2): id(pick) is rooted at the pool, which a cycle may store into,
-// but may be x, which a back edge passes a local of f's activation for. g's
-// store comes before its call back into f, which makes g part of the cycle
-// from its first statement on (§7.8).
+// may (§9.2): id(pick) may be in the pool, which a cycle may store into, or
+// may be x, whose class the store relies on staying threaded (§7.8); the back
+// edge passes a local of f's activation for it, which is the error at g's
+// store, made before its call back into f made g part of the cycle.
 struct Cell { v: i64, prev: Cell&? }
 fn id(c: Cell&) -> Cell& { return c; }
 

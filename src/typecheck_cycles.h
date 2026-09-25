@@ -507,8 +507,9 @@ struct CycleRoots {
     // the call site passed static data); static data is read-only. False for
     // what only one activation knows: its own storage, or a name no enclosing
     // scope declares.
-    bool ResolveDesc(FnSpec *spec, const RootDesc &d, RetAlt &a) {
-        a = RetAlt {};
+    bool ResolveDesc(FnSpec *spec, const RootDesc &d, RootAlt &a, bool &writable) {
+        a = RootAlt {};
+        writable = true;
         switch (d.kind) {
             case RD_PARAM: {
                 if (d.param >= (int)spec->params.size() || d.param >= (int)spec->argtypes.size() ||
@@ -516,27 +517,27 @@ struct CycleRoots {
                     return false;
                 auto vd = spec->params[d.param];
                 a.root = rootof(vd, true);
-                a.exact = vd->refrootknown && vd->ref.rootexact;
-                a.writable = vd->ref.writable;
+                a.exact = vd->refrootknown && vd->ref.Exact();
+                writable = vd->ref.writable;
                 return true;
             }
             case RD_GLOBAL:
                 a.root = RootOfGlobal(d.glob);
                 a.exact = true;
-                a.writable = !(d.glob->type && d.glob->type->cq);
+                writable = !(d.glob->type && d.glob->type->cq);
                 return true;
             case RD_FREE: {
                 auto vd = freevar(d.name);
                 if (!vd) return false;
                 auto isref = vd->type && IsRefOrSlice(vd->type);
-                a.writable = isref ? vd->ref.writable : !(vd->type && vd->type->cq);
+                writable = isref ? vd->ref.writable : !(vd->type && vd->type->cq);
                 if (vd->isglobal) {
                     a.root = RootOfGlobal(vd);
                     a.exact = true;
                     return true;
                 }
                 a.root = rootof(vd, isref);
-                a.exact = isref ? vd->refrootknown && vd->ref.rootexact : true;
+                a.exact = isref ? vd->refrootknown && vd->ref.Exact() : true;
                 return true;
             }
             case RD_STATIC:
@@ -570,30 +571,34 @@ struct CycleRoots {
             // result's prediction is its first checked return.
             rr.predunknown = !isrs || i >= ds.size() || ds[i].unknown;
             for (size_t k = 0; !rr.predunknown && k < ds[i].alts.size(); k++) {
-                RetAlt a;
-                if (ResolveDesc(spec, ds[i].alts[k], a)) rr.pred.push_back(a);
-                else rr.predunknown = true;
+                RootAlt a;
+                auto writable = true;
+                if (ResolveDesc(spec, ds[i].alts[k], a, writable)) {
+                    rr.pred.Add(a);
+                    rr.predwritable = rr.predwritable && writable;
+                } else {
+                    rr.predunknown = true;
+                }
             }
-            if (rr.predunknown) rr.pred.clear();
+            if (rr.predunknown) rr.pred.Clear();
         }
     }
 
-    // A return checked while back edges map the prediction (§7.8): what is
-    // wrong with it, empty when it fits. Where the scan named nothing, the
-    // first return stands in for the prediction, since no back edge was
-    // given one before it. A root the prediction names may narrow what later
-    // back edges are given, but not take back what earlier ones used; one it
-    // misses joins it, which once a back edge has used the prediction only a
-    // root no deeper than that back edge's result may, and one every
-    // activation shares: a back edge gives a parameter's class the arguments
-    // it passes. A return that may be the pointee of a parameter none of the
-    // prediction's roots stands for leaves back edges nothing to map. `gs`
-    // and `local`: a store may not keep the returned reference, its root
-    // included, as it may not keep a reference into a grow-shrink array
-    // (§5.2) or into what the cycle stores nothing into (§7.8). `unthread`:
-    // the return may be what back edges were given as storable only while
-    // threaded parameter classes stay threaded (RetRoot::usedthreads), and
-    // is not storable itself; the caller breaks those classes.
+    // One root a return checked while back edges map the prediction may
+    // have (§7.8): what is wrong with it, empty when it fits. Where the scan
+    // named nothing, the first return stands in for the prediction, since no
+    // back edge was given one before it. A root the prediction names may
+    // narrow what later back edges are given, but not take back what earlier
+    // ones used; one it misses joins it, which once a back edge has used the
+    // prediction only a root no deeper than that back edge's result may, and
+    // one every activation shares: a back edge gives a parameter's class the
+    // arguments it passes. `gs` and `local`: a store may not keep the
+    // returned reference, its root included, as it may not keep a reference
+    // into a grow-shrink array (§5.2) or into what the cycle stores nothing
+    // into (§7.8). `unthread`: the return may be what back edges were given
+    // as storable only while threaded parameter classes stay threaded
+    // (RetRoot::usedthreads), and is not storable itself; the caller breaks
+    // those classes.
     //
     // A holder result's return joins the prediction inexact, whatever it
     // is: a back edge's holder is taken apart by reading its fields, which
@@ -601,8 +606,8 @@ struct CycleRoots {
     // exact prediction would be taken back by the first return built from
     // them. A returned reference keeps its root through a variable (§9.2),
     // so a reference result's return joins as exact as it is.
-    string ReturnConflict(FnSpec *spec, size_t i, const RetAlt &ret, bool gs, bool local,
-                          bool &unthread) {
+    string ReturnConflict(FnSpec *spec, size_t i, const RootAlt &ret, bool writable, bool gs,
+                          bool local, bool &unthread) {
         if (!spec->inprogress || i >= spec->retroots.size()) return {};
         auto &rr = spec->retroots[i];
         if (!rr.seeded || rr.predlost) return {};
@@ -626,49 +631,24 @@ struct CycleRoots {
             return {};
         };
         // The classes of this activation's parameters, which a back edge maps
-        // to the arguments it gives them, and whether the prediction has each.
+        // to the arguments it gives them.
         auto isclass = [&](VarDef *r) {
-            for (auto p : spec->params) if (r && p->ref.root == r) return true;
+            for (auto p : spec->params) if (r && p->ref.Root() == r) return true;
             return false;
         };
-        auto covered = true;
-        for (auto p : spec->params) {
-            auto c = p->ref.root;
-            if (!isclass(c)) continue;
-            auto has = false;
-            for (auto &a : rr.pred) has |= a.root == c;
-            covered &= has;
-        }
-        auto hidden = ret.hidesclass && !covered;
-        if (rr.predunknown || rr.pred.empty()) {
-            if (hidden) rr.predlost = true;
-            else rr.pred.push_back(joined);
+        if (rr.predunknown || rr.pred.None()) {
+            rr.pred.Add(joined);
+            rr.predwritable = rr.predwritable && writable;
             rr.predunknown = false;
             return {};
         }
-        auto named = false;
-        for (auto &a : rr.pred) {
+        for (auto &a : rr.pred.alts) {
             if (a.root != ret.root) continue;
-            named = true;
-            if (auto bad = weakens(!ret.exact, !ret.writable, ret.intogs && !a.intogs,
-                                   ret.cyclelocal && !a.cyclelocal);
-                !bad.empty())
-                return bad;
+            if (auto bad = weakens(!ret.exact, !writable, false, false); !bad.empty()) return bad;
             a.exact = a.exact && ret.exact;
-            a.writable = a.writable && ret.writable;
-            if (!a.intogs) a.intogs = ret.intogs;
-            a.cyclelocal = a.cyclelocal || ret.cyclelocal;
-            a.hidesclass = a.hidesclass || ret.hidesclass;
-        }
-        if (hidden) {
-            if (rr.used)
-                return "this return may point where a parameter other than its root's does, "
-                       "which the recursive cycle's back edges were not given (§7.8); use one "
-                       "source";
-            rr.predlost = true;
+            rr.predwritable = rr.predwritable && writable;
             return {};
         }
-        if (named) return {};
         if (rr.used) {
             if (isclass(ret.root))
                 return cat("this return's reference is rooted at ", ret.root->name,
@@ -678,9 +658,10 @@ struct CycleRoots {
                 return cat("this return's reference is rooted at ", ret.root->name,
                            ", deeper than the result the recursive cycle's back edges were "
                            "given (§7.8); use one source");
-            if (auto bad = weakens(true, !ret.writable, gs, local); !bad.empty()) return bad;
+            if (auto bad = weakens(true, !writable, gs, local); !bad.empty()) return bad;
         }
-        rr.pred.push_back(joined);
+        rr.pred.Add(joined);
+        rr.predwritable = rr.predwritable && writable;
         return {};
     }
 };

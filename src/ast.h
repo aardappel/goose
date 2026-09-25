@@ -381,19 +381,93 @@ struct FnValBind {
 // `reusable[]` pool of slices.
 enum { RU_SLOTS = 1, RU_SLICES = 2 };
 
-// Where a reference or slice points, as the lifetime system tracks it (§9):
-// the variable whose scope bounds the pointee's life, whether that variable
-// owns the pointee or only outlives it, and the provenance bits. The checked
-// value of an expression (Val), a location (TypeCheck::LVal) and the binding
-// a reference variable holds (VarDef::ref) all carry one.
-struct Prov {
+// One place a reference-like value may point (§9.2): the variable whose
+// scope bounds the pointee's life, whether that variable's own storage holds
+// the pointee or only outlives it, and, where it was loaded out of a
+// container the load could not see into, which one (§9.5).
+struct RootAlt {
     VarDef *root = nullptr;      // Owner or bound of the pointee (null = static data).
     // Is `root` the pointee's owner, or only a scope bound something the
-    // pointee outlives? A reference read out of a container names a scope,
-    // and only sometimes one variable in it (§9.5); rules that need the
-    // pointee's identity rather than its lifetime consult this.
-    bool rootexact = false;
-    VarDef *rootfrom = nullptr;  // Inexact read-back: the container, for diagnostics.
+    // pointee outlives? Rules that need the pointee's identity rather than
+    // its lifetime consult this (§9.2).
+    bool exact = false;
+    // For an inexact read-back: the container it came out of, whose stores
+    // say what it holds, and which a diagnostic names.
+    VarDef *from = nullptr;
+    // Loaded out of a field, an element or a global, or points into what
+    // such a slice points at (a location: lies there). No reference into a
+    // grow-shrink array's elements is ever stored in those (§5.2), so this
+    // does not point into one. A reference there may still lead to a whole
+    // grow-shrink array, or to a variable holding a view into one: nothing
+    // reached through a reference keeps it.
+    bool slotread = false;
+};
+
+// Every place a value may point, one alternative per root. A value that may
+// be any of several -- an `if`'s branches, a variable's bindings, a
+// function's returns, the candidates a read out of a container has (§9.5)
+// -- has all of theirs, so a rule asks each alternative where it may point
+// and whether it outlives a scope. Empty for a value with no provenance: a
+// null, or no reference at all, which every rule lets pass as static data
+// would. Two alternatives never share a root: adding one that does keeps the
+// weaker of the two.
+struct Roots {
+    vector<RootAlt> alts;
+
+    bool None() const { return alts.empty(); }
+    void Clear() { alts.clear(); }
+    void Set(VarDef *r, bool exact, VarDef *from = nullptr, bool slotread = false) {
+        alts.clear();
+        alts.push_back({ r, exact, from, slotread });
+    }
+    void Add(const RootAlt &a) {
+        for (auto &b : alts) {
+            if (b.root != a.root) continue;
+            b.exact = b.exact && a.exact;
+            b.slotread = b.slotread && a.slotread;
+            if (!b.from) b.from = a.from;
+            return;
+        }
+        alts.push_back(a);
+    }
+    void Add(const Roots &o) { for (auto &a : o.alts) Add(a); }
+    // Every alternative made a bound: the pointee is bounded by each root
+    // rather than known to be held in it.
+    void Weaken() { for (auto &a : alts) a.exact = false; }
+    void ClearSlotRead() { for (auto &a : alts) a.slotread = false; }
+    // One alternative, and it holds the pointee: the value names one array.
+    bool Exact() const { return alts.size() == 1 && alts[0].exact; }
+    // The one root of an exact value, else the innermost of the alternatives'
+    // roots: the scope every alternative outlives, which a diagnostic names
+    // and a single bound stands for. Null for static data and for no roots.
+    VarDef *Root() const;
+    // The container an alternative was read out of, for diagnostics.
+    VarDef *From() const;
+    // Every alternative was loaded out of storage (§5.2).
+    bool AllSlotRead() const {
+        if (alts.empty()) return false;
+        for (auto &a : alts) if (!a.slotread) return false;
+        return true;
+    }
+    bool Has(const VarDef *r) const {
+        for (auto &a : alts) if (a.root == r) return true;
+        return false;
+    }
+    template<typename F> bool Any(F f) const {
+        for (auto &a : alts) if (f(a)) return true;
+        return false;
+    }
+    template<typename F> bool All(F f) const {
+        for (auto &a : alts) if (!f(a)) return false;
+        return true;
+    }
+};
+
+// Where a reference or slice points, as the lifetime system tracks it (§9):
+// its roots, and the provenance bits. The checked value of an expression
+// (Val), a location (TypeCheck::LVal) and the binding a reference variable
+// holds (VarDef::ref) all carry one.
+struct Prov : Roots {
     bool writable = false;       // Writable provenance (§9.5).
     int reusable = 0;            // Root is a reusable pool (§5.4): its RU_ kind.
     // A `bytes_of` view (docs/design/serialization.md): a u8 slice over the
@@ -401,25 +475,6 @@ struct Prov {
     // and §5.2 otherwise dismiss a slice whose pointee the root's elements
     // cannot contain -- true of every other slice, and exactly wrong here.
     bool byteview = false;
-    // A grow-shrink array this may point into although its root does not
-    // hold one: a branch's value kept another branch's deeper root, a
-    // variable was rebound, a parameter was given such a value. The store
-    // rule (§5.2) reads it beside the root (TypeCheck::GrowShrinkTaint).
-    VarDef *intogs = nullptr;
-    // What else a merged value -- the branches of an `if`, a variable's
-    // bindings, a function's returns -- may be that its root does not show:
-    // rooted where a recursive cycle stores nothing (§7.8), or at a
-    // parameter's class, which a back edge may give other arrays than the
-    // entry call did (§7.8).
-    bool cyclelocal = false;
-    bool hidesclass = false;
-    // Every value this may hold was loaded out of a field, an element or a
-    // global, or points into what such a slice points at (a location: lies
-    // there). No reference into a grow-shrink array's elements is ever
-    // stored in those (§5.2), so this does not point into one. A reference
-    // there may still lead to a whole grow-shrink array, or to a variable
-    // holding a view into one: nothing reached through a reference keeps it.
-    bool slotread = false;
     // Where the path to the pointee crossed a reference or slice: the type of
     // the last one's pointee, which the fields and elements stepped into
     // after it lie in by value, as storage the root owns or bounds. Whatever
@@ -429,6 +484,7 @@ struct Prov {
     // (§9.5), or a variable's binding, which a read of it crosses again.
     TypeExpr *reached = nullptr;
     void SetProv(const Prov &p) { *this = p; }
+    const Roots &AsRoots() const { return *this; }
 };
 
 // The checked value of an expression (typecheck.h): its type, where it
@@ -465,11 +521,10 @@ struct Val : Prov {
     // comparison compiles never depends on how much the optimizer proved.
     bool nonneg = false;
     // For a value whose type holds plain references or slices (§9.2's
-    // holder values): the root bounding what those references point at,
-    // and whether it is exact. `holderset` says it was derived at all;
-    // an underived one is taken as the value's own root.
-    VarDef *holderroot = nullptr;
-    bool holderexact = false;
+    // holder values): where those references may point. `holderset` says it
+    // was derived at all; an underived one's contents are bounded by the
+    // value's own roots (TypeCheck::ContentsOf).
+    Roots contents;
     bool holderset = false;
     // The variable or container the holder value was read out of, whose
     // store events describe its contents exactly.
@@ -1018,7 +1073,6 @@ struct VarDef {
     // nested scope along the current compile-time call path. Only comparable
     // between variables simultaneously live on that path.
     int depth = 0;
-    VarDef *rootalias = nullptr;  // Params: canonical VarDef when call-site roots coincide.
     // Synthetic per-class parameter roots only (typecheck.h): the call-site
     // root the class was created from, and whether every parameter in the
     // class is a reference to a resizable-class value. No function in a
@@ -1031,8 +1085,12 @@ struct VarDef {
     // (§3.9); null where there is none, which is the usual case.
     VarDef *classpool = nullptr;
     // Synthetic class roots only: the call-site root holds a grow-shrink
-    // array, so the shrink rules follow the class into the body (§5.2).
+    // array, so the shrink rules follow the class into the body (§5.2);
+    // `gsvia`: that array is not classfrom's own but one the argument may
+    // point into otherwise -- another of its roots, or what a slice it
+    // refers to views -- so classfrom's type says nothing about it.
     bool growshrink = false;
+    bool gsvia = false;
     // Synthetic class roots only: the call-site root is a slice variable
     // named by an explicit `&` (RootArg::viewslot), which only bounds where
     // the slice it holds points.
@@ -1051,12 +1109,10 @@ struct VarDef {
     // next iteration, so it may no longer change the root (typecheck.h).
     bool refidentityused = false;
     // For variables whose type holds plain references or slices by value
-    // (a struct with a slice field, an array of such): the deepest root
-    // among the references stored into it so far, which bounds what a copy
-    // of the value may point at (§9.2). Set by every store into it.
-    VarDef *contentroot = nullptr;
-    bool contentexact = false;
-    bool contentset = false;
+    // (a struct with a slice field, an array of such): where the references
+    // stored into it so far may point, which bounds what a copy of the value
+    // may point at (§9.2). Every store into it adds to it; empty until one.
+    Roots contents;
     bool contentbyteview = false; // A stored reference may view raw typed storage.
     // A literal parameter (§7.7): reads as a constant of unknown value.
     // A function-value parameter bound from one stands for that one.
@@ -1067,6 +1123,26 @@ struct VarDef {
     TypeExpr *narrowed = nullptr;  // T? narrowed to T& in the current region.
     bool captured = false;         // Accessed from a nested fn / function value.
 };
+
+// Lifetime depth of a root (§9.2): a global's or static data's is 0.
+inline int RootDepth(const VarDef *v) { return v ? v->depth : 0; }
+
+inline VarDef *Roots::Root() const {
+    VarDef *r = nullptr;
+    for (size_t i = 0; i < alts.size(); i++) {
+        auto a = alts[i].root;
+        // Static data ties with the globals; a global is the one to name.
+        if (!i || RootDepth(a) > RootDepth(r) || (a && !r)) r = a;
+    }
+    return r;
+}
+
+inline VarDef *Roots::From() const {
+    VarDef *f = nullptr;
+    for (auto &a : alts)
+        if (a.from && (!f || RootDepth(a.root) > RootDepth(f))) f = a.from;
+    return f;
+}
 
 // A struct type with concrete generic arguments: substituted field types plus
 // the derived properties every user of the type needs.
@@ -1137,9 +1213,14 @@ struct RootArg {
     int cls = 0;
     bool writable = true;
     int reusable = 0;
-    // The argument's root holds a grow-shrink array (§5.2). Part of the key:
-    // a body is checked against its shrink rules only where they apply.
+    // The argument may point into a grow-shrink array (§5.2): some root of
+    // its holds one, or, for a reference to a slice, the slice may. Part of
+    // the key: a body is checked against its shrink rules only where they
+    // apply, and such a parameter is never stored. `gsvia`: that array is
+    // not the one the class's own root holds (VarDef::gsvia); not part of
+    // the key, ORed over the call sites that reach the specialization.
     bool growshrink = false;
+    bool gsvia = false;
     // The argument is a bytes_of view (Prov::byteview). Part of the key for
     // the same reason growshrink is: the shrink scans dismiss a slice whose
     // pointee the root cannot hold, and this is the one that survives that.
@@ -1149,10 +1230,6 @@ struct RootArg {
     // slice points, as binding the variable by reference is. Part of the key:
     // a slice loaded through such a class is only bounded by it.
     bool viewslot = false;
-    // The argument may point into a grow-shrink array its root does not hold
-    // (Prov::intogs), or, for a reference to a slice, the slice may. Part of
-    // the key for the reason growshrink is: the parameter is never stored.
-    bool intogs = false;
     // Val::rootexact of the argument, ANDed over every call site that reaches
     // the specialization. Deliberately not part of the key: within the callee
     // a class always names one array (typecheck.h keeps an inexactly rooted
@@ -1203,7 +1280,7 @@ struct RootArg {
     bool operator==(const RootArg &o) const {
         return cls == o.cls && writable == o.writable && reusable == o.reusable &&
                growshrink == o.growshrink && byteview == o.byteview && pool == o.pool &&
-               heldexact == o.heldexact && viewslot == o.viewslot && intogs == o.intogs;
+               heldexact == o.heldexact && viewslot == o.viewslot;
     }
 };
 
@@ -1274,24 +1351,13 @@ struct LiveShrink {
     string name;                 // What is still used, as the error names it.
 };
 
-// One root a function's result may have (§9.2): a checked return's, or one
-// the cycle fixpoint predicts (§7.8), with the guarantees that hold of it.
-struct RetAlt {
-    VarDef *root = nullptr;    // Param class root, global, captured outer local, or null = static data.
-    bool exact = false;        // Val::rootexact of the returned reference.
-    bool writable = false;
-    VarDef *intogs = nullptr;  // Prov::intogs of a return rooted here.
-    bool cyclelocal = false;   // Prov::cyclelocal of one.
-    bool hidesclass = false;   // Prov::hidesclass of one.
-    bool slotread = false;     // Prov::slotread of every one.
-};
-
 // One return value's reference roots, or for a holder the roots of what it
 // holds: every root a return gives, which each call maps and merges as it
 // would the branches of an `if` (§9.2), and the cycle fixpoint's prediction
 // of them (§7.8).
 struct RetRoot {
-    vector<RetAlt> alts;       // One per distinct root of the checked returns.
+    Roots alts;                // Every root the checked returns give.
+    bool writable = true;      // Writable only where every return is (§9.5).
     bool byteview = false;
     bool set = false;          // A non-null return has recorded its root.
     // While a `recursive fn` body is checked, its back edges map `pred`, the
@@ -1303,7 +1369,8 @@ struct RetRoot {
     bool seeded = false;
     bool predunknown = false;
     bool predlost = false;
-    vector<RetAlt> pred;
+    Roots pred;
+    bool predwritable = true;
     // What back edges were given (§7.8): a return checked later may not
     // take it back, by being deeper, less exact, read-only, or what a store
     // may not keep where theirs could be kept.

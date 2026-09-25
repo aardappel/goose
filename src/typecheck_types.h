@@ -586,7 +586,6 @@ inline void TypeCheck::ResolvePools() {
 // itself; a synthetic parameter class names what every call site that
 // reaches this specialization passed, which is part of its key.
 inline VarDef *TypeCheck::PoolOf(VarDef *r) {
-    r = CanonRoot(r);
     if (!r) return nullptr;
     if (r->isglobal) return poolglobals.count(r) ? r : nullptr;
     return r->classpool;
@@ -689,57 +688,51 @@ inline bool TypeCheck::ReachesThroughRefs(TypeExpr *t, TypeExpr *of) {
     return false;
 }
 
-// The candidates for a pointee of type `of`: every global whose own
-// storage can hold one, static data where a literal could supply one and,
-// unless `globalsonly`, every named local at scope depth `d` or shallower
-// that can hold one plus the pointee of every reference/slice in scope (a
-// parameter's caller-side storage is reachable only through it). The
-// references a parameter holds by value or points at lead on into more of
-// the caller's storage, which this function cannot enumerate: everything
-// stored there outlives the parameter's root, so that root stands in for
-// it, as a candidate that only bounds the owner (also listed in `bounds`).
-// Deduplicated by root; the caller picks the deepest.
-inline void TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, bool writable,
-                                      vector<VarDef *> &out, bool &hasstatic,
-                                      vector<VarDef *> &bounds) {
-    hasstatic = false;
-    bounds.clear();
-    auto add = [&](VarDef *r) {
-        r = CanonRoot(r);
-        if (!r) { hasstatic = true; return; }
-        for (auto o : out) if (o == r) return;
-        out.push_back(r);
-    };
+// The candidates for a pointee of type `of`, each an alternative of where it
+// may point (§9.5): every global whose own storage can hold one, exactly;
+// static data where a literal could supply one; and, unless `globalsonly`,
+// every named local at scope depth `d` or shallower that can hold one,
+// exactly, and the roots of the references and slices in scope whose
+// pointees can (a parameter's caller-side storage is reachable only through
+// it), as those references have them. The references a parameter holds by
+// value or points at lead on into more of the caller's storage, which this
+// function cannot enumerate: everything stored there outlives the
+// parameter's root, so that root stands in for it, as a bound.
+inline Roots TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, bool writable) {
+    Roots out;
     auto beyond = [&](VarDef *v, TypeExpr *t, int rd) {
         if (!v->isparam || !v->refrootknown || !ReachesThroughRefs(t, of)) return;
-        auto r = CanonRoot(v->ref.root);
-        if (Depth(r) > rd) return;
-        add(r);
-        if (r && std::find(bounds.begin(), bounds.end(), r) == bounds.end()) bounds.push_back(r);
+        for (auto &a : v->ref.alts)
+            if (Depth(a.root) <= rd) out.Add({ a.root, false });
     };
     auto consider = [&](VarDef *v, int rd) {
         if (!v->type) return;
         if (IsRefOrSlice(v->type)) {
             if (!v->refrootknown) return;   // No commitment yet; nothing stored from it.
-            auto r = CanonRoot(v->ref.root);
-            if (Depth(r) > rd) return;
             auto pt = PointeeOf(v->type);
             if (!pt) return;
-            if (CanContain(pt, of)) add(r);
+            if (CanContain(pt, of))
+                for (auto &a : v->ref.alts)
+                    if (Depth(a.root) <= rd) out.Add({ a.root, a.exact, a.from });
             beyond(v, pt, rd);
         } else {
-            if (Depth(v) <= rd && CanContain(v->type, of)) add(v);
+            if (Depth(v) <= rd && CanContain(v->type, of)) out.Add({ v, true });
             // A holder parameter's contents: its class root (CheckSpecBody).
             beyond(v, v->type, rd);
         }
     };
     if (!globalsonly) VisibleVars([&](VarDef *v) { if (!v->isglobal) consider(v, d); });
     for (auto g : ast.globals) for (auto gd : g->defs) consider(gd, 0);
-    if (StaticCanContain(of)) hasstatic = true;
     // A writable reference or slice is never given static data but a null or an
     // empty slice (§9.5: literals only go into const slots), which point at no
     // storage, so static data does not stand beside a real candidate for one.
-    if (writable && !out.empty()) hasstatic = false;
+    auto hasstatic = out.Has(nullptr) || StaticCanContain(of);
+    out.alts.erase(std::remove_if(out.alts.begin(), out.alts.end(),
+                                  [](const RootAlt &a) { return !a.root; }),
+                   out.alts.end());
+    if (writable && !out.None()) hasstatic = false;
+    if (hasstatic) out.Add({ nullptr, true });
+    return out;
 }
 
 // Whether v is a value in a temporary of its own (a literal, a call result,
@@ -748,89 +741,91 @@ inline void TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, boo
 // callee's result or the copy's source supplied everything it holds, but
 // where they point, its holder root (§9.2).
 inline bool TypeCheck::TempContents(const Val &v, ReadBack &contents) {
-    if (!IsTemp(CanonRoot(v.root)) || IsRefOrSlice(v.type)) return false;
-    contents.root = CanonRoot(HolderRootOf(v));
-    contents.exact = v.holderset && v.holderexact;
+    if (!IsTemp(v.Root()) || IsRefOrSlice(v.type)) return false;
+    contents.roots = ContentsOf(v);
     contents.from = v.holderfrom;
     return true;
 }
 
-// The root of a reference/slice of type `rt` loaded out of a container
-// whose own root is (croot, cexact); a temporary's `contents` are its
-// holder root.
-inline TypeCheck::ReadBack TypeCheck::ReadBackRoot(TypeExpr *rt, VarDef *croot, bool cexact,
-                                                bool byteview, const ReadBack *contents) {
-    ReadBack rb;
-    croot = CanonRoot(croot);
+// Where a reference/slice of type `rt` loaded out of a container rooted at
+// `container` points; a temporary's `contents` are its holder root.
+inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool byteview,
+                                     const ReadBack *contents) {
+    Roots out;
     auto relative = rt->kind == TY_REF && rt->ref->lenstorage >= 0;
-    if (contents && IsTemp(croot) && !relative) return *contents;
-    if (byteview) {
-        rb.root = croot && !croot->isglobal && croot->contentset &&
-                  !AssignedInEnclosingLoop(croot) ? croot->contentroot : croot;
-        rb.exact = false;
-        rb.from = croot;
-        return rb;
-    }
-    rb.root = croot;
-    // A relative reference points within its own root array by
-    // construction (§3.9), so it inherits the container's root outright —
-    // unless it named a pool, in which case the pool *is* the root, and
-    // exactly, wherever the container sits.
-    if (relative) {
-        if (rt->ref->pool) { rb.root = rt->ref->pool; rb.exact = true; return rb; }
-        rb.exact = cexact;
-        return rb;
+    if (contents && !relative && container.Any([&](const RootAlt &a) { return IsTemp(a.root); }))
+        return contents->roots;
+    // A relative reference that names a pool points into that pool, exactly,
+    // wherever the container sits (§3.9).
+    if (relative && rt->ref->pool) {
+        out.Set(rt->ref->pool, true);
+        return out;
     }
     auto of = PointeeOf(rt);
-    if (!of || !croot || IsTemp(croot) || croot == cycleroot) return rb;
-    // Case 3: the container came from a caller, or its own root is only a
-    // bound -- storage this function cannot enumerate may be behind it.
-    auto global = croot->isglobal;
-    if (!global && (!cexact || croot->ownerspec != CurRealFrame().spec)) {
-        rb.from = croot;   // Read out of it; its stores say what it holds.
-        return rb;
+    for (auto &c : container.alts) {
+        auto croot = c.root;
+        if (byteview) {
+            // A byte view can point at any typed storage: the container's
+            // contents where they are known, else the container as a bound.
+            if (croot && !croot->isglobal && !croot->contents.None() &&
+                !AssignedInEnclosingLoop(croot)) {
+                for (auto &a : croot->contents.alts) out.Add({ a.root, false, croot });
+            } else {
+                out.Add({ croot, false, croot });
+            }
+            continue;
+        }
+        // A self-relative reference points within its own root array by
+        // construction (§3.9), so it inherits the container's root outright.
+        if (relative) {
+            out.Add({ croot, c.exact });
+            continue;
+        }
+        if (!of || !croot || IsTemp(croot) || croot == cycleroot) {
+            out.Add({ croot, false });
+            continue;
+        }
+        // Case 3: the container came from a caller, or its own root is only a
+        // bound -- storage this function cannot enumerate may be behind it.
+        // Read out of it; its stores say what it holds.
+        auto global = croot->isglobal;
+        if (!global && (!c.exact || croot->ownerspec != CurRealFrame().spec)) {
+            out.Add({ croot, false, croot });
+            continue;
+        }
+        // Only globals outlive globals (§11.1), so a global container's
+        // pointee is owned by a global or by static data, whatever local scope
+        // is open here. A local container's was reachable from this frame and
+        // had to outlive the container, so its owner is a candidate at the
+        // container's depth or shallower: each is an alternative, exact where
+        // it is a variable's own storage, a bound where it is a parameter's.
+        auto cands = RootCandidates(of, Depth(croot), global, !rt->cq);
+        if (cands.None()) {
+            // Nothing can own the pointee: the container itself bounds it.
+            out.Add({ croot, false, croot });
+            continue;
+        }
+        for (auto &a : cands.alts) out.Add({ a.root, a.exact, croot });
     }
-    // Only globals outlive globals (§11.1), so a global container's
-    // pointee is owned by a global or by static data, whatever local scope
-    // is open here. A local container's was reachable from this frame and
-    // had to outlive the container, so its owner is a candidate at the
-    // container's depth or shallower.
-    vector<VarDef *> cands, bounds;
-    auto hasstatic = false;
-    RootCandidates(of, Depth(croot), global, !rt->cq, cands, hasstatic, bounds);
-    rb.from = croot;
-    if (cands.empty()) {
-        // Static data alone: null is its root, and it outlives everything.
-        if (hasstatic) { rb.root = nullptr; rb.exact = true; }
-        return rb;
-    }
-    // The deepest candidate is the conservative choice: the owner is that
-    // one or one further out, so its depth bounds every possibility.
-    rb.root = cands[0];
-    for (auto c : cands) if (Depth(c) > Depth(rb.root)) rb.root = c;
-    rb.exact = cands.size() == 1 && !hasstatic && bounds.empty();
-    return rb;
+    return out;
 }
 
 // "was read out of `slots` and may point into `pool` or `spare`": the
-// candidates a read-back could not choose between, for the diagnostics of
+// alternatives a read-back could not choose between, for the diagnostics of
 // the rules that need one (§3.9).
-inline string TypeCheck::ReadBackWhy(TypeExpr *rt, VarDef *from) {
-    auto of = PointeeOf(rt);
-    if (!from || !of) return {};
-    vector<VarDef *> cands, bounds;
-    auto hasstatic = false;
-    RootCandidates(of, Depth(from), from->isglobal, !rt->cq, cands, hasstatic, bounds);
-    auto n = cands.size() + (hasstatic ? 1 : 0);
+inline string TypeCheck::ReadBackWhy(const Roots &r) {
+    auto from = r.From();
+    if (!from) return {};
+    auto n = r.alts.size();
     if (n == 0) return cat("it was read out of ", from->name, ", whose contents this function cannot trace");
     string s = cat("it was read out of ", from->name, " and may point into ");
-    for (size_t i = 0; i < cands.size(); i++) {
+    for (size_t i = 0; i < n; i++) {
+        auto &a = r.alts[i];
         if (i) s += i + 1 == n ? " or " : ", ";
-        if (std::find(bounds.begin(), bounds.end(), cands[i]) != bounds.end())
-            s += "the caller's storage behind ";
-        s += cands[i]->name;
+        if (!a.root) { s += "static data"; continue; }
+        if (!a.exact && !a.root->type && !a.root->isglobal) s += "the caller's storage behind ";
+        s += a.root->name;
     }
-    if (hasstatic) { if (n > 1) s += " or "; s += "static data"; }
     return s;
 }
 
@@ -839,10 +834,9 @@ inline string TypeCheck::ReadBackWhy(TypeExpr *rt, VarDef *from) {
 // parameter in a pool class points into that global pool (§3.9), so it is
 // rooted there as exactly as a local one.
 inline bool TypeCheck::RootedAtReceiver(const Val &rv, const Val &av) {
-    auto recvroot = CanonRoot(rv.root);
-    auto sameroot = CanonRoot(av.root) == recvroot ||
-                    (recvroot && recvroot->isglobal && PoolOf(av.root) == recvroot);
-    return av.rootexact && sameroot;
+    if (!av.Exact() || !rv.Exact()) return false;
+    auto recvroot = rv.Root(), aroot = av.Root();
+    return aroot == recvroot || (recvroot && recvroot->isglobal && PoolOf(aroot) == recvroot);
 }
 
 // The same, required of what member `op` is handed.
@@ -850,12 +844,12 @@ inline void TypeCheck::CheckRootedAtReceiver(Call *c, const char *op, const Val 
                                              const Val &av, const char *what,
                                              const char *sec) {
     if (RootedAtReceiver(rv, av)) return;
-    auto why = av.rootexact ? string() : ReadBackWhy(av.type, av.rootfrom);
-    auto root = av.root ? CanonRoot(av.root)->name : string_view("static data");
+    auto why = av.Exact() ? string() : ReadBackWhy(av);
+    auto root = av.Root() ? av.Root()->name : string_view("static data");
     Error(c, cat(".", op, " needs ", what, " rooted at the array itself (", sec, "); ",
                  !why.empty() ? why
-                 : !av.rootexact ? cat("this one's root is not known exactly, only that it "
-                                       "outlives ", root)
+                 : !av.Exact() ? cat("this one's root is not known exactly, only that it "
+                                     "outlives ", root)
                  : cat("this one is rooted at ", root)));
 }
 

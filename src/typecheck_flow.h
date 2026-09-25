@@ -35,26 +35,6 @@ inline void TypeCheck::PopScope() {
     scopes.pop_back();
 }
 
-inline VarDef *TypeCheck::CanonRoot(VarDef *v) {
-    while (v && v->rootalias) v = v->rootalias;
-    return v;
-}
-
-// Of two roots, the one a value that may be either is bounded by: the deeper,
-// and at a tie a's, unless only b is the checked function's own variable. A
-// temporary of the calling statement, which that function's parameter class
-// stands for, takes the depth of the function's outermost scope (ClassDepth),
-// but its variables there die first.
-inline VarDef *TypeCheck::InnerRoot(VarDef *a, VarDef *b) {
-    if (Depth(a) != Depth(b)) return Depth(a) > Depth(b) ? a : b;
-    auto spec = CurRealFrame().spec;
-    auto own = [&](VarDef *r) {
-        r = CanonRoot(r);
-        return r && !r->isglobal && r->ownerspec && r->ownerspec == spec;
-    };
-    return own(b) && !own(a) ? b : a;
-}
-
 // A grow-shrink array anywhere in a value of type t: the array itself, or
 // the tail of a struct (elements are never resizable, §3.3).
 inline bool TypeCheck::ContainsGrowShrink(TypeExpr *t) {
@@ -114,6 +94,9 @@ inline bool TypeCheck::GrowShrinkCanHold(VarDef *r, TypeExpr *of) {
     if (!IsGrowShrinkRoot(r)) return false;
     if (!of) return true;
     auto v = r;
+    // A class whose grow-shrink array is not its own root's (VarDef::gsvia)
+    // is storage this frame cannot see: assume it can hold anything.
+    if (!v->type && v->gsvia) return true;
     while (v && !v->type && v->classfrom) v = v->classfrom;
     if (!v || !v->type) return true;   // Storage this frame cannot see: assume it can.
     return GrowShrinkContains(v->type, of);
@@ -131,27 +114,30 @@ inline bool TypeCheck::IntoGrowShrink(const Prov &v, VarDef *root, TypeExpr *t, 
 }
 
 // A grow-shrink array a reference or slice of type t with provenance p may
-// point into, or null: one its root holds, one a branch, a rebind or a call
-// left behind with another root (Prov::intogs), or, for a reference to a
-// slice, one that slice may point into.
+// point into, or null: one held by any root the value may have -- a
+// branch's, a rebind's, a call's -- or, for a reference to a slice, one
+// that slice may point into.
 inline VarDef *TypeCheck::GrowShrinkTaint(const Prov &p, TypeExpr *t) {
     if (!t || !IsRefOrSlice(t)) return nullptr;
-    auto r = CanonRoot(p.root);
-    if (IntoGrowShrink(p, r, t, false)) return r;
-    if (p.intogs) return p.intogs;
+    for (auto &a : p.alts)
+        if (IntoGrowShrink(p, a.root, t, false)) return a.root;
     if (t->kind == TY_REF && t->ref->sub->kind == TY_SLICE)
         return GrowShrinkTaint(SlotView(p, t->ref->sub), t->ref->sub);
     return nullptr;
 }
 
-// What the store rule (§5.2) checks v, rooted at root, against: a grow-shrink
-// array it may point into, or for a holder one a reference it holds may. A
-// holder's references were each checked where they were stored.
-inline VarDef *TypeCheck::StoredIntoGrowShrink(const Val &v, VarDef *root, TypeExpr *t,
+// What the store rule (§5.2) checks v, pointing at `roots`, against: a
+// grow-shrink array it may point into, or for a holder one a reference it
+// holds may. A holder's references were each checked where they were stored.
+inline VarDef *TypeCheck::StoredIntoGrowShrink(const Val &v, const Roots &roots, TypeExpr *t,
                                                bool holder) {
-    if (holder) return IntoGrowShrink(v, root, t, true) ? root : nullptr;
+    if (holder) {
+        for (auto &a : roots.alts)
+            if (IntoGrowShrink(v, a.root, t, true)) return a.root;
+        return nullptr;
+    }
     auto p = Prov(v);
-    p.root = root;
+    p.alts = roots.alts;
     return GrowShrinkTaint(p, t);
 }
 
@@ -198,12 +184,13 @@ inline bool TypeCheck::Viewable(TypeExpr *t) {
     return AnyField(t, [&](TypeExpr *ft) { return Viewable(ft); });
 }
 
-// Reading a reference variable's root as an identity. A loop body is
-// checked once, so a read here sees the value a later rebind in the same
-// loop leaves behind; noting the read lets that rebind reject the root
-// change instead of silently invalidating this one.
+// Reading a reference variable's roots as the places it may point. A loop
+// body is checked once, so a read here sees the value a later rebind in the
+// same loop leaves behind; noting the read lets that rebind reject a new
+// root instead of silently invalidating this one. Whether the variable
+// names one array exactly.
 inline bool TypeCheck::RefExactOf(VarDef *vd) {
-    if (!vd->refrootknown || !vd->ref.rootexact) return false;
+    if (!vd->refrootknown || !vd->ref.Exact()) return false;
     for (auto i = (int)scopes.size() - 1; i >= vd->depth; i--)
         if (scopes[i].kind == SK_LOOP) { vd->refidentityused = true; break; }
     return true;
@@ -211,13 +198,14 @@ inline bool TypeCheck::RefExactOf(VarDef *vd) {
 
 // Whether the reference or slice variable v may point into the array at
 // `root`, which a shrink of that array is checked against (§5.1, §5.2): it
-// is bound there; or its root only bounds the pointee's lifetime, at or
-// below that depth; or a binding its record does not show may have put it
-// there (RefMayRetarget).
+// is bound there; or a root of its only bounds the pointee's lifetime, at
+// or below that depth; or a binding its record does not show may have put
+// it there (RefMayRetarget).
 inline bool TypeCheck::RefMayPointInto(VarDef *v, VarDef *root) {
-    auto r = RefRootOf(v);
-    return r == root || (!v->ref.rootexact && Depth(r) >= Depth(root)) ||
-           RefMayRetarget(v, root);
+    if (v->refrootknown)
+        for (auto &a : v->ref.alts)
+            if (a.root == root || (!a.exact && Depth(a.root) >= Depth(root))) return true;
+    return RefMayRetarget(v, root);
 }
 
 // Whether a binding of v that its record does not show may point into the
@@ -225,12 +213,12 @@ inline bool TypeCheck::RefMayPointInto(VarDef *v, VarDef *root) {
 // rebind could since have retargeted (§9.2), or it is not bound yet and may
 // still commit to the array further down a loop body.
 inline bool TypeCheck::RefMayRetarget(VarDef *v, VarDef *root) {
-    return (v->isvar && Depth(RefRootOf(v)) == Depth(root)) ||
-           (!v->refrootknown && Depth(v) >= Depth(root));
+    if (!v->refrootknown) return Depth(v) >= Depth(root);
+    return v->isvar && Depth(v->ref.Root()) == Depth(root);
 }
 
 // The same for a variable whose bindings on record are all slot reads
-// (Prov::slotread). Inside a loop it was declared outside of, a `var` may
+// (RootAlt::slotread). Inside a loop it was declared outside of, a `var` may
 // hold what a rebind further down the body left there: a value whose root,
 // at the variable's depth, only bounds its pointee -- an `if` choosing
 // between a view of the array and one of a deeper array -- and so may be
@@ -267,9 +255,11 @@ inline bool TypeCheck::SlotReadable(TypeExpr *t) {
 // a parameter's class of an explicit `&s`, the root only bounds the array.
 inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *t,
                                             VarDef *root, TypeExpr *bound, bool growonly) {
-    auto r = CanonRoot(p.root);
-    auto slot = r && r->type && IsRefOrSlice(r->type) ? r : nullptr;
-    auto byteview = p.byteview || (r && r->contentbyteview) || (slot && slot->ref.byteview);
+    auto slotof = [](VarDef *r) { return r && r->type && IsRefOrSlice(r->type) ? r : nullptr; };
+    auto byteview = p.byteview || p.Any([&](const RootAlt &a) {
+        auto slot = slotof(a.root);
+        return (a.root && a.root->contentbyteview) || (slot && slot->ref.byteview);
+    });
     vector<TypeExpr *> pointees;
     RefPointees(t->ref->sub, pointees);
     auto freed = false;
@@ -277,20 +267,35 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
         freed = freed || ShrinkMayFree(root, bound, growonly, pt, byteview && IsU8(pt));
     if (!freed) return false;
     if (v && !v->refrootknown) return Depth(v) >= Depth(root);
-    if (r == root || r == cycleroot) return true;
-    if (growonly && t->ref->sub->kind != TY_SLICE && p.rootexact && r && r->type &&
-        !r->isglobal && !slot && !(v && v->isvar)) {
-        auto arrtype = bound ? bound : root->type ? LoadType(root->type) : nullptr;
-        Line where;
-        return HolderMayPointInto(r, root, arrtype, 0, &where);
+    for (auto &a : p.alts) {
+        auto r = a.root;
+        auto slot = slotof(r);
+        if (r == root || r == cycleroot) return true;
+        if (growonly && t->ref->sub->kind != TY_SLICE && a.exact && r && r->type &&
+            !r->isglobal && !slot && !(v && v->isvar)) {
+            auto arrtype = bound ? bound : root->type ? LoadType(root->type) : nullptr;
+            Line where;
+            if (HolderMayPointInto(r, root, arrtype, 0, &where)) return true;
+            continue;
+        }
+        if (growonly || !a.exact || (r && !r->type && r->viewslot)) {
+            if (Depth(r) >= Depth(root)) return true;
+            continue;
+        }
+        if (slot) {
+            if (RefMayPointInto(slot, root) || (v && v->isvar && Depth(slot) >= Depth(root)))
+                return true;
+            continue;
+        }
+        // A parameter's class is one array in the body; only rebinding the
+        // parameter moves it.
+        if (r && !r->type && !IsTemp(r)) {
+            if (v && v->isvar && Depth(r) == Depth(root)) return true;
+            continue;
+        }
+        if (Depth(r) == Depth(root)) return true;
     }
-    if (growonly || !p.rootexact || (r && !r->type && r->viewslot))
-        return Depth(r) >= Depth(root);
-    if (slot) return RefMayPointInto(slot, root) || (v && v->isvar && Depth(slot) >= Depth(root));
-    // A parameter's class is one array in the body; only rebinding the
-    // parameter moves it.
-    if (r && !r->type && !IsTemp(r)) return v && v->isvar && Depth(r) == Depth(root);
-    return Depth(r) == Depth(root);
+    return false;
 }
 
 // The slice a load through a reference to one sees. Bound by reference
@@ -302,34 +307,43 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
 // root bounds the slot. Only a slice variable's binding says whether its
 // slice is a slot read (Prov::slotread); what the reference was does not.
 inline Prov TypeCheck::SlotView(const Prov &p, TypeExpr *slice) {
-    auto ref = p;
-    ref.slotread = false;
-    auto r = CanonRoot(p.root);
-    if (!r || !p.rootexact) return ref;
-    if (r->type && IsRefOrSlice(r->type)) {
-        auto v = RefProvOf(r);
-        v.writable = v.writable && p.writable;
-        return v;
+    Prov out = p;
+    out.Clear();
+    for (auto &a : p.alts) {
+        auto r = a.root;
+        if (!r || !a.exact) {
+            out.Add({ r, a.exact, a.from, false });
+            continue;
+        }
+        if (r->type && IsRefOrSlice(r->type)) {
+            auto v = RefProvOf(r);
+            out.Add(v);
+            out.writable = out.writable && v.writable;
+            continue;
+        }
+        if (!r->type && r->viewslot) {
+            out.Add({ r, false, r, false });
+            out.byteview = out.byteview || r->contentbyteview;
+            continue;
+        }
+        if (!r->type || !CanContain(r->type, slice)) {
+            out.Add({ r, true, nullptr, false });
+            continue;
+        }
+        LVal lv;
+        lv.type = slice;
+        lv.SetProv(p);
+        lv.Set(r, true);
+        ReadBackLVal(lv);
+        out.Add(lv);
+        out.byteview = out.byteview || lv.byteview;
     }
-    if (!r->type && r->viewslot) {
-        auto v = ref;
-        v.rootexact = false;
-        v.rootfrom = r;
-        v.byteview = v.byteview || r->contentbyteview;
-        return v;
-    }
-    if (!r->type || !CanContain(r->type, slice)) return ref;
-    LVal lv;
-    lv.type = slice;
-    lv.SetProv(ref);
-    ReadBackLVal(lv);
-    return lv;
+    return out;
 }
 
 // Binds a reference variable to where p points.
 inline void TypeCheck::BindProv(VarDef *vd, const Prov &p) {
     vd->ref = p;
-    vd->ref.root = CanonRoot(p.root);
     vd->ref.reached = nullptr;
     vd->refrootknown = true;
 }
@@ -344,25 +358,25 @@ inline void TypeCheck::BindRefProvenance(VarDef *vd, const Val &v) {
 // read may rely on (RefExactOf), and its provenance bits.
 inline Prov TypeCheck::RefProvOf(VarDef *vd) {
     Prov p = vd->ref;
-    p.root = RefRootOf(vd);
-    p.rootexact = RefExactOf(vd);
+    if (!vd->refrootknown) p.Set(temproot, false);
+    RefExactOf(vd);
+    // A variable of several roots, rebound further down a loop body to one
+    // it may not have yet, points at any array at its roots' depths
+    // (loopretargets); one of a single root is read as that root, and a
+    // rebind to another is then rejected (RefExactOf, CheckRefRebindRoot).
+    if (vd->isvar && vd->refrootknown && !vd->ref.Exact() && LoopRetargets(vd)) p.Weaken();
     // A global is storage like a field: no binding puts a reference into a
     // grow-shrink array there (FitsAt, CheckBindingRoot).
-    if (vd->isglobal && vd->type) p.slotread = SlotReadable(vd->type);
+    if (vd->isglobal && vd->type && SlotReadable(vd->type))
+        for (auto &a : p.alts) a.slotread = true;
     if (!vd->refrootknown && vd->type && vd->type->kind == TY_REF && vd->type->ref->optional) {
         // Bound only to null so far (or bound later in a loop body this
         // use precedes): what it can point at is whatever can hold the
-        // pointee type at its own depth or outside, exactly when that is
-        // one variable -- the read-back rule's answer (§9.5).
-        vector<VarDef *> cands, bounds;
-        auto hasstatic = false;
-        RootCandidates(LoadType(vd->type->ref->sub), Depth(vd), false, !vd->type->cq, cands,
-                       hasstatic, bounds);
-        if (!cands.empty()) {
-            p.root = cands[0];
-            for (auto c : cands) if (Depth(c) > Depth(p.root)) p.root = c;
-            p.rootexact = cands.size() == 1 && !hasstatic && bounds.empty();
-        }
+        // pointee type at its own depth or outside -- the read-back rule's
+        // answer (§9.5).
+        auto cands = RootCandidates(LoadType(vd->type->ref->sub), Depth(vd), false,
+                                    !vd->type->cq);
+        if (cands.Any([](const RootAlt &a) { return a.root != nullptr; })) p.alts = cands.alts;
     }
     return p;
 }
@@ -671,10 +685,7 @@ inline void TypeCheck::CollectAssignedBases(Node *n, set<string_view> &out) {
 // A holder value bound to a new variable: the variable's contents are the
 // value's, and the binding is a store like any other for the shrink rules.
 inline void TypeCheck::NoteHolderBinding(VarDef *d, const Val &v) {
-    Val hv = v;
-    hv.root = CanonRoot(HolderRootOf(v));
-    hv.rootexact = v.holderset && v.holderexact;
-    RecordStore(d, hv, nullptr, false, v.holderfrom);
+    RecordStore(d, ContentsOf(v), v.byteview, nullptr, v.holderfrom);
 }
 
 inline void TypeCheck::PushLoopAssigned(Node *body) {
@@ -682,6 +693,40 @@ inline void TypeCheck::PushLoopAssigned(Node *body) {
     CollectAssignedBases(body, names);
     loopassigned.push_back(std::move(names));
     PrebindLoopRefs(body);
+    // The reference variables the body rebinds to roots they may not have
+    // yet: every `.=` target declared outside the loop whose right-hand
+    // sides the syntactic scan cannot all resolve to roots the variable has
+    // (RefProvOf reads them as bounds inside the loop).
+    set<VarDef *> retargets;
+    auto sf = frames.back().sf;
+    map<string_view, vector<Node *>> targets;
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n) return;
+        if (auto a = Is<Assign>(n); a && a->op == T_DOTASSIGN)
+            if (auto id = Is<Ident>(a->lval)) targets[id->name].push_back(a->rhs);
+        n->Children([&](Node *c) { walk(c); });
+    };
+    walk(body);
+    for (auto &[name, rhss] : targets) {
+        auto vd = LookupVar(name, CurNs());
+        if (!vd || !vd->isvar || !vd->refrootknown || !vd->type || !IsRefOrSlice(vd->type))
+            continue;
+        auto covered = sf && sf->body;
+        auto cy = Cycles();
+        for (auto rhs : rhss) {
+            if (!covered) break;
+            vector<string_view> busy;
+            auto s = cy.ScanExpr(sf, rhs, busy, 0);
+            if (s.unknown) { covered = false; break; }
+            for (auto &d : s.alts) {
+                VarDef *root = nullptr;
+                auto exact = false;
+                if (!ResolvePrebind(d, root, exact) || !vd->ref.Has(root)) covered = false;
+            }
+        }
+        if (!covered) retargets.insert(vd);
+    }
+    loopretargets.push_back(std::move(retargets));
 }
 
 // A reference variable declared outside a loop and bound only inside it
@@ -715,9 +760,7 @@ inline void TypeCheck::PrebindLoopRefs(Node *body) {
         VarDef *root = nullptr;
         auto exact = false;
         if (s.unknown || s.alts.size() != 1 || !ResolvePrebind(s.alts[0], root, exact)) continue;
-        vd->ref.root = CanonRoot(root);
-        vd->ref.rootexact = exact;
-        vd->ref.rootfrom = nullptr;
+        vd->ref.Set(root, exact);
         vd->refrootknown = true;
         vd->refprebound = true;
     }
@@ -731,8 +774,8 @@ inline bool TypeCheck::ResolvePrebind(const RootDesc &d, VarDef *&root, bool &ex
         auto isref = v->type && IsRefOrSlice(v->type);
         if (isref) {
             if (!v->refrootknown) return false;
-            root = RefRootOf(v);
-            exact = v->ref.rootexact;
+            root = v->ref.Root();
+            exact = v->ref.Exact();
         } else {
             root = v;
             exact = true;
@@ -852,50 +895,22 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     if (adapt(a, anode, b)) { v.type = b.type; }
     else if (adapt(b, bnode, a)) { v.type = a.type; }
     else v.type = UnifyBranch(a.type, b.type, at, wantvalue);
-    // A holder value from either branch: the deeper bound wins.
+    // A holder value from either branch: what either's contents may point at.
     if (a.holderset || b.holderset) {
-        auto ar = HolderRootOf(a), br = HolderRootOf(b);
         v.holderset = true;
-        v.holderroot = InnerRoot(ar, br);
-        v.holderexact = a.holderexact && b.holderexact && ar == br;
+        v.contents = ContentsOf(a);
+        v.contents.Add(ContentsOf(b));
     }
     v.isnull = a.isnull && b.isnull;   // Both null: still a null, which names no root.
     v.storagebranches = a.storagebranches && b.storagebranches;
     v.implicitcopy = a.implicitcopy ? a.implicitcopy : b.implicitcopy;
-    v.root = InnerRoot(a.root, b.root);
-    v.rootexact = a.rootexact && b.rootexact && CanonRoot(a.root) == CanonRoot(b.root);
-    v.rootfrom = a.rootfrom ? a.rootfrom : b.rootfrom;
+    // Wherever either branch's value may point, the merged one may (§9.2).
+    v.alts = a.alts;
+    v.Add(b);
     v.writable = a.writable && b.writable;
     v.reusable = a.reusable & b.reusable;
     v.byteview = a.byteview || b.byteview;
-    // The root kept may hold no grow-shrink array where the other branch's
-    // does: the value may point into that one all the same (§5.2).
-    if (v.type && IsRefOrSlice(v.type) && !GrowShrinkTaint(v, v.type)) {
-        v.intogs = GrowShrinkTaint(a, a.type);
-        if (!v.intogs) v.intogs = GrowShrinkTaint(b, b.type);
-    }
-    // Nor, where the other branch's value may be, what a recursive cycle
-    // stores nothing into, or a parameter's pointee, which a back edge may
-    // give another array than the entry call did (§7.8).
-    auto local = [&](VarDef *r) { return !CycleStorable(r); };
-    auto cls = [&](VarDef *r) { return IsClassRoot(r); };
-    v.cyclelocal = a.cyclelocal || b.cyclelocal || Hides(a, v, local) || Hides(b, v, local);
-    v.hidesclass = a.hidesclass || b.hidesclass || Hides(a, v, cls) || Hides(b, v, cls);
-    v.slotread = (a.slotread || a.isnull) && (b.slotread || b.isnull);
     return v;
-}
-
-// Whether branch value b, or what it holds, is rooted elsewhere than the
-// merged value m is, at a root `hidden` accepts, which m's root then hides.
-inline bool TypeCheck::Hides(const Val &b, const Val &m,
-                             const function<bool(VarDef *)> &hidden) {
-    if (!b.type || b.isnull) return false;
-    auto hides = [&](VarDef *r, VarDef *kept) {
-        r = CanonRoot(r);
-        return r != CanonRoot(kept) && hidden(r);
-    };
-    if (IsRefOrSlice(b.type)) return hides(b.root, m.root);
-    return HoldsPlainRef(b.type) && hides(HolderRootOf(b), HolderRootOf(m));
 }
 
 // Whether a reference rooted at r may be stored inside a recursive cycle
@@ -909,6 +924,11 @@ inline bool TypeCheck::CycleStorable(VarDef *r) {
             !r->ownerspec->sf->isrec);
 }
 
+// The same of a value that may point at any of several places: each must be.
+inline bool TypeCheck::CycleStorable(const Roots &r) {
+    return r.All([&](const RootAlt &a) { return CycleStorable(a.root); });
+}
+
 // A branch's value outlives the scopes the branch opened: whatever receives
 // the construct's value -- a call's argument, which is no store, included --
 // gets it after they end. So a reference or slice it is, or one it holds,
@@ -920,18 +940,22 @@ inline void TypeCheck::CheckBranchRoot(const Val &v, int depth, Node *at, const 
     if (!t || v.isnull) return;
     auto isrs = IsRefOrSlice(t);
     if (!isrs && !HoldsPlainRef(t)) return;
-    auto root = CanonRoot(isrs ? v.root : HolderRootOf(v));
-    // The sentinels stand for roots not known yet, as for a binding.
-    if (!root || root == temproot || root == cycleroot ||
-        Depth(root) <= depth + (IsTemp(root) ? 1 : 0))
-        return;
-    auto what = !isrs ? "holds references" : t->kind == TY_SLICE ? "is a slice" : "is a reference";
-    if (IsTemp(root))
-        Error(at, cat("the ", construct, "'s value ", what, " rooted at a temporary, which does "
-                      "not outlive it (§9.2): a temporary lasts until the end of its statement, "
-                      "or of the block whose final expression made it"));
-    Error(at, cat("the ", construct, "'s value ", what, " rooted at ", root->name,
-                  ", which does not outlive it (§9.2)"));
+    const Roots &roots = isrs ? v.AsRoots() : ContentsOf(v);
+    for (auto &a : roots.alts) {
+        auto root = a.root;
+        // The sentinels stand for roots not known yet, as for a binding.
+        if (!root || root == temproot || root == cycleroot ||
+            Depth(root) <= depth + (IsTemp(root) ? 1 : 0))
+            continue;
+        auto what = !isrs ? "holds references" : t->kind == TY_SLICE ? "is a slice"
+                                                                       : "is a reference";
+        if (IsTemp(root))
+            Error(at, cat("the ", construct, "'s value ", what, " rooted at a temporary, which "
+                          "does not outlive it (§9.2): a temporary lasts until the end of its "
+                          "statement, or of the block whose final expression made it"));
+        Error(at, cat("the ", construct, "'s value ", what, " rooted at ", root->name,
+                      ", which does not outlive it (§9.2)"));
+    }
 }
 
 // A by-value result codegen builds in temporary storage of its own (§9.2):
@@ -951,15 +975,13 @@ inline Val TypeCheck::TempCopy(Val v) {
     if (!v.holderset && HoldsPlainRef(v.type)) {
         // What the source holds is bounded by its storage, as a container
         // read's is (ContainerRead).
-        auto src = CanonRoot(v.root);
-        v.holderroot = src;
-        v.holderexact = false;
+        auto src = v.Root();
+        v.contents = v;
+        v.contents.Weaken();
         v.holderfrom = IsTemp(src) ? nullptr : src;
         v.holderset = true;
     }
-    v.root = TempRoot();
-    v.rootexact = false;
-    v.rootfrom = nullptr;
+    v.Set(TempRoot(), false);
     v.reached = nullptr;
     v.lvalue = false;
     v.writable = false;
@@ -1169,12 +1191,10 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                         // are the scrutinee's.
                         ReadBack contents;
                         auto intemp = TempContents(sv, contents);
-                        Val hv;
-                        hv.root = intemp ? contents.root : CanonRoot(sv.root);
-                        hv.rootexact = intemp && contents.exact;
-                        hv.byteview = sv.byteview;
-                        RecordStore(binder, hv, nullptr, false,
-                                    intemp ? contents.from : CanonRoot(sv.root));
+                        Roots held = intemp ? contents.roots : sv.AsRoots();
+                        if (!intemp) held.Weaken();
+                        RecordStore(binder, held, sv.byteview, nullptr,
+                                    intemp ? contents.from : sv.Root());
                     }
                 }
                 arm.binder = binder;
@@ -1275,6 +1295,7 @@ inline TypeCheck::Scope TypeCheck::EndLoop(Node *x, Block *body, const FlowState
     auto sc = scopes.back();
     PopScope();
     loopassigned.pop_back();
+    loopretargets.pop_back();
     RestoreFlow(entry);
     KillNarrowingsAssignedIn(body);
     FinishLoopNarrowing(x, assumed);
@@ -1358,7 +1379,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         intemp = TempContents(iv, contents);
         if (t->kind == TY_REF && !t->ref->optional) {
             t = t->ref->sub;  // Iterate through refs.
-            iterprov.slotread = false;   // As DerefLValue.
+            iterprov.ClearSlotRead();   // As DerefLValue.
             if (t->kind == TY_SLICE) iterprov = SlotView(iv, t);
         }
         t = LoadType(t);
@@ -1406,11 +1427,10 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     vd->copybind = (x->iterkind == IK_ARRAY || x->iterkind == IK_SLICE) && !byref;
     if (!IsRefOrSlice(bindtype) && HoldsPlainRef(bindtype)) {
         // A holder element copied out: its contents are the array's.
-        Val hv;
-        hv.root = intemp ? contents.root : CanonRoot(iterprov.root);
-        hv.rootexact = intemp && contents.exact;
-        hv.byteview = iterprov.byteview;
-        RecordStore(vd, hv, nullptr, false, intemp ? contents.from : CanonRoot(iterprov.root));
+        Roots held = intemp ? contents.roots : iterprov.AsRoots();
+        if (!intemp) held.Weaken();
+        RecordStore(vd, held, iterprov.byteview, nullptr,
+                    intemp ? contents.from : iterprov.Root());
     }
     if (IsRefOrSlice(bindtype)) {
         // A relative-reference or slice element bound by value was read
@@ -1419,12 +1439,11 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         if (!byref && elemtype &&
             ((elemtype->kind == TY_REF && elemtype->ref->lenstorage >= 0) ||
              elemtype->kind == TY_SLICE)) {
-            auto rb = ReadBackRoot(elemtype, CanonRoot(iterprov.root), iterprov.rootexact,
-                                   iterprov.byteview, intemp ? &contents : nullptr);
-            iterprov.root = rb.root;
-            iterprov.rootexact = rb.exact;
-            iterprov.rootfrom = rb.from;
-            iterprov.slotread = SlotReadable(elemtype);
+            auto rb = ReadBackRoot(elemtype, iterprov, iterprov.byteview,
+                                   intemp ? &contents : nullptr);
+            auto slotread = SlotReadable(elemtype);
+            iterprov.alts = rb.alts;
+            for (auto &a : iterprov.alts) a.slotread = slotread;
             if (elemtype->cq) iterprov.writable = false;
         }
         BindProv(vd, iterprov);
@@ -1522,8 +1541,7 @@ inline void TypeCheck::CheckBreak(Break *b) {
         exit.SetProv(v);
         exit.type = v.type;
         exit.isnull = v.isnull;
-        exit.holderroot = v.holderroot;
-        exit.holderexact = v.holderexact;
+        exit.contents = v.contents;
         exit.holderset = v.holderset;
         exit.holderfrom = v.holderfrom;
         exit.storagebranches = v.storagebranches;
@@ -1665,8 +1683,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             // The new variable's storage is the destination; a reference
             // or slice variable binds a value rather than storing one. An
             // annotated variable is a typed slot for constness (§9.5).
-            DestScope ds(*this, Dest { d, true, ann && (ann->kind == TY_REF ||
-                                                        ann->kind == TY_SLICE) });
+            DestScope ds(*this, Dest(d, ann && (ann->kind == TY_REF || ann->kind == TY_SLICE)));
             SlotScope ss(*this, ann != nullptr);
             auto refinit = Is<Unary>(vd->inits[i]);
             if (refinit && refinit->synth) {
@@ -1742,23 +1759,26 @@ inline void TypeCheck::CheckBindingRoot(VarDef *d, const Val &v, Node *at) {
     if (!t || v.isnull) return;
     auto isrs = IsRefOrSlice(t);
     if (!isrs && !HoldsPlainRef(t)) return;
-    auto root = CanonRoot(isrs ? v.root : HolderRootOf(v));
+    const Roots &roots = isrs ? v.AsRoots() : ContentsOf(v);
     // A global is storage, which no reference into a grow-shrink array is
     // stored in (§5.2), as FitsAt says of an annotated one.
     if (d->isglobal) {
-        if (auto gs = StoredIntoGrowShrink(v, root, t, !isrs))
-            Error(at, NeverStoredError(gs, gs != root));
+        if (auto gs = StoredIntoGrowShrink(v, roots, t, !isrs))
+            Error(at, NeverStoredError(gs, MayPointWording(roots, gs)));
     }
-    // The sentinels stand for roots not known yet, which a variable may hold.
-    if (!root || root == temproot || root == cycleroot || Depth(root) <= Depth(d)) return;
-    auto what = !isrs ? "a value holding references" : t->kind == TY_SLICE ? "a slice"
-                                                                            : "a reference";
-    if (IsTemp(root))
-        Error(at, cat("binding ", d->name, " to ", what, " rooted at a temporary, which does "
-                      "not outlive it (§9.2): a temporary lasts until the end of its "
-                      "statement, so bind it to a variable of its own first"));
-    Error(at, cat("binding ", d->name, " to ", what, " rooted at ", root->name,
-                  ", which does not outlive it (§9.2)"));
+    for (auto &a : roots.alts) {
+        auto root = a.root;
+        // The sentinels stand for roots not known yet, which a variable may hold.
+        if (!root || root == temproot || root == cycleroot || Depth(root) <= Depth(d)) continue;
+        auto what = !isrs ? "a value holding references" : t->kind == TY_SLICE ? "a slice"
+                                                                                : "a reference";
+        if (IsTemp(root))
+            Error(at, cat("binding ", d->name, " to ", what, " rooted at a temporary, which "
+                          "does not outlive it (§9.2): a temporary lasts until the end of its "
+                          "statement, so bind it to a variable of its own first"));
+        Error(at, cat("binding ", d->name, " to ", what, " rooted at ", root->name,
+                      ", which does not outlive it (§9.2)"));
+    }
 }
 
 // A non-fixed-size local is built where it is stored (§4.3), so its data
@@ -1788,20 +1808,20 @@ inline void TypeCheck::AssignableClassCheck(TypeExpr *t, Node *at) {
 // value then runs with that array under construction, which nothing it does
 // may grow (§1.3(4)) or even use (§4.4).
 inline Val TypeCheck::CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *arr,
-                                         VarDef *built, bool builtexact, Dest dest) {
+                                         const Roots &built, Dest dest) {
     if (arr) {
         {
             RestScope rest(*this, &a->rhs, &a->rhs + 1);
-            ShrinkThrough(a, true, "assign", ExprStr(a->lval), built, builtexact, target);
+            ShrinkThrough(a, true, "assign", ExprStr(a->lval), built, target);
         }
-        NoteGrow(a, built, builtexact, cat("assign ", ExprStr(a->lval)));
+        NoteGrow(a, built, cat("assign ", ExprStr(a->lval)));
     }
     SlotScope ss(*this, true);
     auto base = growlog.size();
     auto v = CheckValueAt(a->rhs, target, dest);
-    if (arr && built) {
-        CheckGrowsSince(base, built, builtexact, cat("the value assigned to ", ExprStr(a->lval)));
-        CheckBuiltUses(a->rhs, a->lval, built, builtexact, arr);
+    if (arr && !built.None()) {
+        CheckGrowsSince(base, built, cat("the value assigned to ", ExprStr(a->lval)));
+        CheckBuiltUses(a->rhs, a->lval, built, arr);
     }
     if (v.type->kind == TY_VOID && reachable)
         Error(a, "the right-hand side has no value");
@@ -1876,22 +1896,20 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     // An uninitialized local's first assignment constructs it; every other
     // assignment of a resizable array, or of a value holding one, replaces
     // elements that are already there.
-    VarDef *built = nullptr;
-    auto builtexact = false;
+    Roots built;
     auto arr = ResizableArrayIn(target);
     if (arr && (!lv.var || lv.var->assigned)) {
-        built = lv.var ? lv.var : CanonRoot(lv.root);
-        builtexact = lv.var != nullptr || lv.rootexact;
-        if (arr->arr->akind == A_GROW && (!built || !built->type))
+        if (lv.var) built.Set(lv.var, true); else built = lv;
+        if (arr->arr->akind == A_GROW &&
+            (built.None() || built.Any([](const RootAlt &r) { return !r.root || !r.root->type; })))
             Error(a, "cannot assign a grow-only array through a reference: a shrink of "
                      "a grow-only array applies to a local of the function that owns "
                      "it (§5.1)");
     } else {
         arr = nullptr;
     }
-    auto v = CheckAssignedValue(a, target, arr, built, builtexact,
-                                Dest { lv.root, lv.rootexact,
-                                       lv.var && IsRefOrSlice(target), lv.reached });
+    auto v = CheckAssignedValue(a, target, arr, built,
+                                Dest(lv, lv.var && IsRefOrSlice(target), lv.reached));
     if (lv.var) {
         // Slice variables carry their value's provenance (refs use .=).
         if (target->kind == TY_SLICE) {
@@ -1924,8 +1942,7 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
     Val v;
     bool wasplain;
     {
-        DestScope ds(*this, lv.var ? Dest { lv.var, true, true }
-                                   : Dest { lv.root, lv.rootexact, false, lv.reached });
+        DestScope ds(*this, lv.var ? Dest(lv.var, true) : Dest(lv, false, lv.reached));
         // `r .= &x` is the documented spelling of a rebind (§3.8), so an
         // explicit & is not redundant here as it is at a binding destination.
         SlotScope ss(*this, true);
@@ -1938,7 +1955,7 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
     if (lv.var) {
         if (!lv.var->refrootknown) {
             BindRefProvenance(lv.var, v);
-        } else if (lv.var->refprebound && !v.isnull && CanonRoot(v.root) == lv.var->ref.root) {
+        } else if (lv.var->refprebound && !v.isnull && v.Root() == lv.var->ref.Root()) {
             // The root the loop scan predicted; this binding's provenance
             // is the real one.
             BindRefProvenance(lv.var, v);
@@ -1987,10 +2004,9 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv, const LVal &at) {
         Error(a, cat("cannot assign ", arr == pt ? "a grow-only array" : "a value holding a "
                      "grow-only array", " through a reference: a shrink of a grow-only "
                      "array applies to a local of the function that owns it (§5.1)"));
-    auto built = arr ? CanonRoot(at.root) : nullptr;
-    auto builtexact = arr && at.rootexact;
-    CheckAssignedValue(a, pt, arr, built, builtexact,
-                       Dest { at.root, at.rootexact, false, at.reached });
+    Roots built;
+    if (arr) built = at;
+    CheckAssignedValue(a, pt, arr, built, Dest(at, false, at.reached));
 }
 
 // A reference variable keeps one root for its whole life (see header
@@ -1998,11 +2014,12 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv, const LVal &at) {
 // scope depth (which is equivalent for the outlives check).
 inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
     vd->ref.byteview = vd->ref.byteview || rv.byteview;
-    vd->ref.cyclelocal = vd->ref.cyclelocal || rv.cyclelocal;
-    vd->ref.hidesclass = vd->ref.hidesclass || rv.hidesclass;
-    vd->ref.slotread = vd->ref.slotread && rv.slotread;
-    auto nr = CanonRoot(rv.root);
-    if (nr != vd->ref.root && Depth(nr) != Depth(vd->ref.root))
+    // The variable may point wherever it did and wherever the new value may:
+    // a later read sees either. A root it did not have joins only at the
+    // depth of its binding.
+    auto added = rv.Any([&](const RootAlt &a) { return !vd->ref.Has(a.root); });
+    auto nr = rv.Root();
+    if (added && Depth(nr) != Depth(vd->ref.Root()))
         Error(at, cat("re-binding ", vd->name, " with a reference rooted at a different "
                       "scope depth is not supported; declare a new variable"));
     // Nor does a variable that points into no grow-shrink array start to:
@@ -2015,31 +2032,16 @@ inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
                           "grow-shrink array (", gs->name, "), where it pointed into none, is "
                           "not supported; declare a new variable (§5.2)"));
     }
-    if (nr == vd->ref.root) {
-        // The root is unchanged, so only the new value's own exactness can
-        // weaken what the variable stands for.
-        if (!rv.rootexact) { vd->ref.rootexact = false; vd->ref.rootfrom = rv.rootfrom; }
-        return;
-    }
-    // A same-depth rebind keeps the lifetime bound but moves the pointee to
-    // other storage, so the variable no longer names one array. A read
-    // earlier in an enclosing loop has already seen this value, and cannot
-    // be revisited, so its claim has to be rejected here.
-    if (vd->refidentityused)
+    // A rebind to other storage keeps the lifetime bound but means the
+    // variable no longer names one array. A read earlier in an enclosing
+    // loop has already seen this value, and cannot be revisited, so its
+    // claim has to be rejected here.
+    if (added && vd->refidentityused)
         Error(at, cat("re-binding ", vd->name, " to storage rooted at ",
                       nr ? nr->name : string_view("static data"), " after its root ",
-                      vd->ref.root ? vd->ref.root->name : string_view("static data"),
+                      vd->ref.Root() ? vd->ref.Root()->name : string_view("static data"),
                       " was used as the identity of a relative reference (§3.9)"));
-    // It may still point into the array its old root holds.
-    if (!vd->ref.intogs) vd->ref.intogs = was;
-    // And be what the root it no longer shows stands for.
-    auto kept = InnerRoot(nr, vd->ref.root);
-    auto hidden = kept == nr ? vd->ref.root : nr;
-    vd->ref.cyclelocal = vd->ref.cyclelocal || !CycleStorable(hidden);
-    vd->ref.hidesclass = vd->ref.hidesclass || IsClassRoot(hidden);
-    vd->ref.root = kept;
-    vd->ref.rootexact = false;
-    vd->ref.rootfrom = rv.rootfrom;
+    vd->ref.Add(rv);
 }
 
 // A `let` binding or field is not assigned as a whole (§4.4).
