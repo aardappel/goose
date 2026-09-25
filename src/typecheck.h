@@ -13,22 +13,26 @@
 // Plain `=` through a reference writes the pointee; `.=` rebinds it.
 //
 // The lifetime system (§9) is implemented as: every reference/slice-typed
-// value carries a static root (a VarDef, null = static data), an exactness
-// bit saying whether that root owns the target or merely outlives it, and
-// provenance bits (writable §9.5, reusable §5.4). Roots are compared by scope
-// depth along the current compile-time call path; only rules that need the
-// target's *identity* -- storing it as a relative reference (§3.9), and
-// codegen's proof that two fat reference parameters are distinct stacks --
-// consult the exactness bit, and fall back to the conservative path without
-// it. A reference read out of a container is re-rooted by ReadBackRoot: the
-// container bounds the lifetime, and the candidate variables of the enclosing
-// scope that can hold the pointee by value say which storage it can be, so a
-// sole candidate is exact (§9.5). Other deliberate v1 rules (now part of the
-// spec, §9.2/§9.5): a read-back reference is writable regardless of its
-// original provenance (writability launders through storage -- the language's
-// const-cast loophole); a reference variable commits to one root depth for
-// its whole life. A function's result is rooted as a branch value is: each
-// call merges the roots its returns give, mapped to its own arguments.
+// value carries every place it may point (Roots, ast.h): one alternative
+// per root, a VarDef (null = static data) with a bit saying whether that
+// root owns the pointee or merely outlives it, and the provenance bits
+// (writable §9.5, reusable §5.4). A value that may be any of several -- an
+// if's branches, a variable's bindings, a call's returns -- has all of
+// their alternatives, and every rule asks each of them. Roots are compared
+// by scope depth along the current compile-time call path; only rules that
+// need the pointee's *identity* -- storing it as a relative reference
+// (§3.9), and codegen's proof that two fat reference parameters are
+// distinct stacks -- need a single exact alternative, and fall back to the
+// conservative path without one. A reference read out of a container is
+// re-rooted by ReadBackRoot: the container bounds the lifetime, and the
+// candidate variables of the enclosing scope that can hold the pointee by
+// value are its alternatives, exact where one is a variable's own storage
+// (§9.5). Other deliberate v1 rules (now part of the spec, §9.2/§9.5): a
+// read-back reference is writable regardless of its original provenance
+// (writability launders through storage -- the language's const-cast
+// loophole); a reference variable commits to one root depth for its whole
+// life. A function's result is rooted as a branch value is: each call maps
+// the roots its returns give to its own arguments.
 // Inside a recursive cycle (§7.8) a reference may be stored
 // only if it is rooted at a global, at a local of an enclosing function
 // outside the cycle, at a pool parameter -- a parameter root class whose
@@ -1448,7 +1452,7 @@ struct TypeCheck {
     // (`param` gets it and the parameter's index).
     template <typename P, typename X> void NoteRootEvent(VarDef *root, P param, X external);
     void NoteShrink(VarDef *root, TypeExpr *bound = nullptr,
-                    ShrinkBalance balance = SB_UNBALANCED, bool growonly = false);
+                    ShrinkBalance balance = SB_UNBALANCED);
     void ShrinkGrowShrink(Node *at, const string &op, VarDef *root, const string &what,
                           TypeExpr *bound = nullptr, ShrinkBalance balance = SB_UNBALANCED);
     bool ResizesToMark(Node *recv, Node *len);
@@ -1481,14 +1485,14 @@ struct TypeCheck {
     void ApplyCalleeLiveShrinks(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
     // A call, with its arguments' roots, whose callee's pairs are mapped
     // onto them (MapLiveShrinks).
-    struct CycleSite {
+    struct CallSite {
         Node *at = nullptr;
         FnSpec *caller = nullptr;
         FnSpec *callee = nullptr;   // The record read (RecordOf).
         vector<Roots> args;   // What each parameter's class stands for here.
         string name;
     };
-    bool MapLiveShrinks(const CycleSite &site);
+    bool MapLiveShrinks(const CallSite &site);
     // A growth of the array rooted at root -- a push, an append, a pool
     // allocation, format, resize, a whole assignment -- by this body or by
     // a callee. A value built in place at a root's top or slot is under

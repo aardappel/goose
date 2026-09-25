@@ -1474,7 +1474,6 @@ inline void TypeCheck::ResetRecord(FnSpec *spec) {
     spec->shrinkparams.clear();
     spec->shrinkexternalbounds.clear();
     spec->shrinkparambounds.clear();
-    spec->unbalancedshrink = false;
     spec->liveshrinks.clear();
     spec->growexternals.clear();
     spec->growparams.clear();
@@ -1495,8 +1494,6 @@ inline bool TypeCheck::SameRecord(const FnSpec *a, const FnSpec *b) {
     };
     // GOOSE_ROUNDS in the environment traces what keeps a cycle's rounds
     // going.
-    // GOOSE_ROUNDS in the environment traces what keeps a cycle's rounds
-    // going.
     auto why = [&](const char *what) {
         if (getenv("GOOSE_ROUNDS"))
             fprintf(stderr, "round %d of %.*s: %s changed\n", a->rounds, (int)a->sf->name.size(),
@@ -1511,8 +1508,7 @@ inline bool TypeCheck::SameRecord(const FnSpec *a, const FnSpec *b) {
             p.set != q.set)
             return why("return roots");
     }
-    if (a->shrinkexternals != b->shrinkexternals || a->shrinkparams != b->shrinkparams ||
-        a->unbalancedshrink != b->unbalancedshrink)
+    if (a->shrinkexternals != b->shrinkexternals || a->shrinkparams != b->shrinkparams)
         return why("shrinks");
     if (a->growexternals != b->growexternals || a->growparams != b->growparams)
         return why("growths");

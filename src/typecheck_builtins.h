@@ -914,7 +914,7 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
         }
     }
     NoteLiveViews(c, cat("cannot ", op, " ", what), vd, what, true, bound);
-    NoteShrink(vd, bound, SB_UNBALANCED, true);
+    NoteShrink(vd, bound, SB_UNBALANCED);
 }
 
 // A field or element of a literal that is a reference, slice or holder:
@@ -1259,8 +1259,7 @@ inline void TypeCheck::NoteRootEvent(VarDef *root, P param, X external) {
 // Records a shrink for callers (§5.2), a bound's with the type of the array
 // its storage leads to. An array stays balanced only while every shrink of
 // it is.
-inline void TypeCheck::NoteShrink(VarDef *root, TypeExpr *bound, ShrinkBalance balance,
-                                  bool growonly) {
+inline void TypeCheck::NoteShrink(VarDef *root, TypeExpr *bound, ShrinkBalance balance) {
     auto note = [&](auto &bounds, auto key) {
         for (auto &b : bounds)
             if (b.key == key && TypeEq(b.type, bound)) {
@@ -1273,19 +1272,14 @@ inline void TypeCheck::NoteShrink(VarDef *root, TypeExpr *bound, ShrinkBalance b
         auto [it, fresh] = entries.try_emplace(key, balance);
         if (!fresh) it->second = std::max(it->second, balance);
     };
-    auto noted = [&](FnSpec *s) {
-        if (balance == SB_UNBALANCED && !growonly) s->unbalancedshrink = true;
-    };
     NoteRootEvent(root,
                   [&](FnSpec *s, int i) {
                       if (bound) note(s->shrinkparambounds, i);
                       else mark(s->shrinkparams, i);
-                      noted(s);
                   },
                   [&](FnSpec *s, VarDef *r) {
                       if (bound) note(s->shrinkexternalbounds, r);
                       else mark(s->shrinkexternals, r);
-                      noted(s);
                   });
 }
 
@@ -1584,11 +1578,11 @@ inline int TypeCheck::NoteLiveShrink(LiveShrink ls, FnSpec *current) {
 // class becomes the root of the argument passed for it (ClassArgRoot). Two
 // arrays the caller cannot tell apart are an error here; two it can only as
 // its own callers can are kept for them in turn. A callee in a recursive
-// cycle still being checked has not recorded all of them yet, so the call
-// is mapped again once the cycle is (ResolveCycleSites).
+// cycle still being checked has the pairs of the round before (RecordOf),
+// and none in the cycle's first round.
 inline void TypeCheck::ApplyCalleeLiveShrinks(Node *at, FnSpec *spec, vector<Val> &argvals,
                                               string_view name) {
-    CycleSite site { at, CurRealFrame().spec, RecordOf(spec), {}, string(name) };
+    CallSite site { at, CurRealFrame().spec, RecordOf(spec), {}, string(name) };
     if (!site.callee) return;   // A cycle's first round: no record yet.
     for (size_t q = 0; q < spec->argtypes.size() && q < argvals.size(); q++)
         site.args.push_back(ClassArgRoots(spec->argtypes[q], argvals[q]));
@@ -1597,7 +1591,7 @@ inline void TypeCheck::ApplyCalleeLiveShrinks(Node *at, FnSpec *spec, vector<Val
 
 // Maps the callee's pairs through one call's arguments into the caller's
 // record; whether that record grew.
-inline bool TypeCheck::MapLiveShrinks(const CycleSite &site) {
+inline bool TypeCheck::MapLiveShrinks(const CallSite &site) {
     auto spec = site.callee;
     // A class root of the callee, as seen from here: every place the
     // argument may point.
@@ -1669,9 +1663,8 @@ inline bool TypeCheck::MapLiveShrinks(const CycleSite &site) {
 // external owner it shrinks, and both are recorded for the caller's callers.
 // A balanced shrink (NoteShrink) frees nothing a view the caller holds can
 // reach, provided no other shrink of the call may be of the same array. A
-// back edge's summary is incomplete, so it counts as shrinking every
-// grow-shrink array it can reach, balanced as long as nothing the callee has
-// done so far says otherwise (SettleAssumedShrinks).
+// back edge applies the shrinks of the round before (RecordOf), and none
+// in the cycle's first round.
 inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &argvals,
                                           string_view name) {
     auto standalone = Is<Call>(at) && Is<Call>(at)->standalone;
@@ -2048,7 +2041,7 @@ inline bool TypeCheck::NamedOutside(FnSpec *spec, vector<VarDef *> &out) {
     auto pending = false;
     function<void(FnSpec *)> visit = [&](FnSpec *sp) {
         if (sp->sf->isextern || !walked.insert(sp).second) return;
-            // A callee still being checked: what the round before saw it use
+        // A callee still being checked: what the round before saw it use
         // (RecordOf), or in a cycle's first round anything at all.
         auto rec = RecordOf(sp);
         if (!rec) {

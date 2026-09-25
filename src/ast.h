@@ -1479,9 +1479,6 @@ struct FnSpec {
     // bounds (TypeCheck::ShrinkTargets).
     vector<BoundShrink<VarDef *>> shrinkexternalbounds;
     vector<BoundShrink<int>> shrinkparambounds;
-    // Some grow-shrink array's shrink above is unbalanced: a call into the
-    // body while it is still being checked is no longer taken to be balanced.
-    bool unbalancedshrink = false;
     // The body's shrinks, itself or through its callees, while something it
     // still uses may point into the shrunk array as only the call sites can
     // tell: each a parameter's class against another class, or against an
