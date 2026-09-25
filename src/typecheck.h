@@ -155,9 +155,16 @@ struct TypeCheck {
     };
 
     enum ScopeKind { SK_PLAIN, SK_FN, SK_LOOP, SK_BLOCK };
-    // Snapshot of assigned/narrowed for every variable currently in scope.
+    // Snapshot of assigned/narrowed for the variables the code between a
+    // save and its restore can name (NamedFrames): those of the current
+    // frame, of the frames it is lexically nested in, and of the frames the
+    // function values it can call were written in, and the globals'
+    // narrowing. The other frames on the call path hold variables no code
+    // checked meanwhile can name, so a deep call path does not copy them all
+    // at every branch.
     struct FlowState {
-        vector<pair<bool, TypeExpr *>> st;
+        vector<int> idx;                      // Into vars, ascending.
+        vector<pair<bool, TypeExpr *>> st;    // Aligned with idx.
         vector<pair<VarDef *, TypeExpr *>> globals;
         bool reachable = true;
     };
@@ -935,6 +942,18 @@ struct TypeCheck {
 
     FlowState SaveFlow();
     void RestoreFlow(const FlowState &f);
+    // The frames whose variables code in frame fi can name, ascending: it,
+    // the ones it is lexically nested in, the global initializers', and
+    // those the function values bound in `spec`, or in the specialization
+    // of any of those frames, were written in (which calling one reaches).
+    vector<int> NamedFrames(int fi, FnSpec *spec);
+    // The variables of those frames, in vars order.
+    template<typename F> void EachNamedVar(int fi, FnSpec *spec, F f) {
+        for (auto k : NamedFrames(fi, spec)) {
+            auto end = k + 1 < (int)frames.size() ? frames[k + 1].varbase : (int)vars.size();
+            for (auto i = frames[k].varbase; i < end; i++) f(i);
+        }
+    }
     void MergeFlow(const FlowState &a, const FlowState &b);
     void NarrowCond(Node *cond, bool sense);
 

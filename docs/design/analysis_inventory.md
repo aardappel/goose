@@ -640,6 +640,31 @@ samples before each landing (`docs/testing.md`,
   stand in for; sharing the region vocabulary (a variable, a class root, a
   temporary, static data) is already the case through `VarDef`. Left as
   is.
+* **5. Obligations instead of key facts** was measured before being
+  attempted (2026-09-25, a temporary `GOOSE_KEYSTATS` count over every
+  sample and the largest tests): no two specializations of any function
+  differed only in the depth key, and the fact bits (`growshrink`,
+  `byteview`, `viewslot`, `heldexact`) split one to four specializations
+  per program (twelve of 847 in the physics sample), class grouping a few
+  more. The redesign would move every class-dependent check in a body to
+  its call sites (outlives, grow-shrink taint, exactness, the shrink scans'
+  byte-view and view-slot exemptions), with the errors and their fixtures,
+  for a two-percent reduction in bodies: not done. `RootArg::unknown`
+  (item 3) is the one key bit added since.
+* **7. Smaller items** (2026-09-25): flow snapshots cover the variables
+  the code between a save and its restore can name (`NamedFrames`,
+  `SaveFlow`, `CheckSpecBodyOnce`'s restore of outer narrowings) instead of
+  every variable on the call path; measured on a chain of 3,000 nested
+  calls, checking is a fifth faster and peak memory unchanged, so the
+  "gigabytes" of §4.11 were the per-activation bodies and records, not the
+  snapshots. The by-value/by-reference decision (4.12), the temporary-copy
+  annotation for `OptViewed` (4.16) and codegen's marker expansion (4.17)
+  were left as they are: the first three of the six flags were each the
+  subject of a recent fix and the fixtures pin them, `OptViewed`'s
+  syntactic test (`r != n && NamesStorage(r)`) is equivalent to the
+  checker's `TempCopy` sites by construction (folding only rewrites a node
+  that was a construct or a call, whose value is a temporary copy), and the
+  text expansion is isolated and correct.
 * **2. Statement liveness from the tree** landed 2026-09-25: `nodepath`
   (`PathEntry`, `NodeScope`), `nodevals` and `ForOperands` in
   `typecheck.h`/`typecheck_exprs.h`; `HeldOperands` replaces `heldtemps`,

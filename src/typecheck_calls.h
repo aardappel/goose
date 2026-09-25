@@ -1566,9 +1566,11 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     spec->params.clear();
     // A caller learns nothing about optionals from where this body ends: its
     // early returns never get there, and a cached body is not checked again.
-    // What it rebinds reaches callers through ApplyCalleeRebinds.
+    // What it rebinds reaches callers through ApplyCalleeRebinds. The body
+    // can only name the variables of the frames it is nested in.
     vector<pair<VarDef *, TypeExpr *>> outernarrowed;
-    for (auto v : vars) outernarrowed.push_back({ v, v->narrowed });
+    EachNamedVar(spec->lexparent ? LexFrame(spec->lexparent) : -1, spec,
+                 [&](int i) { outernarrowed.push_back({ vars[i], vars[i]->narrowed }); });
     for (auto g : ast.globals) for (auto v : g->defs) outernarrowed.push_back({ v, v->narrowed });
     Frame f;
     f.sf = sf;

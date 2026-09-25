@@ -506,10 +506,33 @@ inline SFunction *TypeCheck::LookupLocalFn(string_view name) {
     return LookupLocalFnEnv(name, env);
 }
 
+inline vector<int> TypeCheck::NamedFrames(int fi, FnSpec *spec) {
+    vector<int> chain;
+    auto add = [&](int k) {
+        for (; k >= 0; k = frames[k].lexframe) {
+            if (find(chain.begin(), chain.end(), k) != chain.end()) break;
+            chain.push_back(k);
+            if (k == 0) break;
+        }
+    };
+    auto envs = [&](FnSpec *sp) {
+        if (!sp) return;
+        for (auto &fv : sp->fnvals) add(LexFrame(fv.second.env));
+    };
+    add(fi);
+    envs(spec);
+    for (size_t k = 0; k < chain.size(); k++) envs(frames[chain[k]].spec);
+    if (find(chain.begin(), chain.end(), 0) == chain.end()) chain.push_back(0);
+    sort(chain.begin(), chain.end());
+    return chain;
+}
+
 inline TypeCheck::FlowState TypeCheck::SaveFlow() {
     FlowState f;
-    f.st.reserve(vars.size());
-    for (auto v : vars) f.st.push_back({ v->assigned, v->narrowed });
+    EachNamedVar((int)frames.size() - 1, CurRealFrame().spec, [&](int i) {
+        f.idx.push_back(i);
+        f.st.push_back({ vars[i]->assigned, vars[i]->narrowed });
+    });
     // Globals' narrowing participates too (assignment in branches).
     for (auto g : ast.globals)
         for (auto v : g->defs) f.globals.push_back({ v, v->narrowed });
@@ -518,9 +541,10 @@ inline TypeCheck::FlowState TypeCheck::SaveFlow() {
 }
 
 inline void TypeCheck::RestoreFlow(const FlowState &f) {
-    for (size_t i = 0; i < f.st.size() && i < vars.size(); i++) {
-        vars[i]->assigned = f.st[i].first;
-        vars[i]->narrowed = f.st[i].second;
+    for (size_t k = 0; k < f.idx.size(); k++) {
+        if (f.idx[k] >= (int)vars.size()) break;
+        vars[f.idx[k]]->assigned = f.st[k].first;
+        vars[f.idx[k]]->narrowed = f.st[k].second;
     }
     for (auto [v, narrowed] : f.globals) v->narrowed = narrowed;
     reachable = f.reachable;
@@ -535,28 +559,39 @@ inline TypeCheck::FlowState TypeCheck::JoinFlow(const FlowState &a, const FlowSt
 }
 
 inline bool TypeCheck::SameFlow(const FlowState &a, const FlowState &b) {
-    if (a.reachable != b.reachable || a.st.size() != b.st.size()) return false;
-    for (size_t i = 0; i < a.st.size(); i++)
-        if (a.st[i] != b.st[i]) return false;
+    if (a.reachable != b.reachable || a.idx != b.idx || a.st != b.st) return false;
     for (size_t i = 0; i < a.globals.size(); i++)
         if (a.globals[i].second != b.globals[i].second) return false;
     return true;
 }
 
 // Joins two branch end states into the current state: a fact holds after
-// the join iff it holds in every reachable branch.
+// the join iff it holds in every reachable branch. A variable neither
+// state has -- declared in a branch and still in scope -- holds nothing.
 inline void TypeCheck::MergeFlow(const FlowState &a, const FlowState &b) {
-    for (size_t i = 0; i < vars.size(); i++) {
-        auto aa = i < a.st.size() ? a.st[i] : pair<bool, TypeExpr *> { false, nullptr };
-        auto bb = i < b.st.size() ? b.st[i] : pair<bool, TypeExpr *> { false, nullptr };
-        vars[i]->assigned = (a.reachable ? aa.first : true) &&
-                            (b.reachable ? bb.first : true);
+    auto join = [&](VarDef *v, pair<bool, TypeExpr *> aa, pair<bool, TypeExpr *> bb) {
+        v->assigned = (a.reachable ? aa.first : true) && (b.reachable ? bb.first : true);
         TypeExpr *n = nullptr;
         if (!a.reachable) n = bb.second;
         else if (!b.reachable) n = aa.second;
         else if (aa.second && bb.second) n = aa.second;
-        vars[i]->narrowed = n;
+        v->narrowed = n;
+    };
+    const pair<bool, TypeExpr *> none { false, nullptr };
+    size_t p = 0, q = 0;
+    auto last = -1;
+    while (p < a.idx.size() || q < b.idx.size()) {
+        auto ia = p < a.idx.size() ? a.idx[p] : INT32_MAX;
+        auto ib = q < b.idx.size() ? b.idx[q] : INT32_MAX;
+        auto i = min(ia, ib);
+        auto aa = ia == i ? a.st[p++] : none;
+        auto bb = ib == i ? b.st[q++] : none;
+        if (i >= (int)vars.size()) break;
+        join(vars[i], aa, bb);
+        last = i;
     }
+    for (auto i = max(last + 1, frames.back().varbase); i < (int)vars.size(); i++)
+        join(vars[i], none, none);
     for (size_t i = 0; i < a.globals.size(); i++) {
         auto [v, an] = a.globals[i];
         auto bn = b.globals[i].second;

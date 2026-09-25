@@ -243,9 +243,10 @@ the C++ compiler made: for a chain of functions shaped
 Debug build, 5,700 in a clang Debug or ASan one, 11,600 in an MSVC Release
 one and 18,700 in a clang -O3 one, and each block around the call costs
 another 1.6 to 2 KB per call in a Debug build and 0.7 to 1.3 KB in a Release
-one. Checking a path that deep takes seconds, and in a Release build
-gigabytes (each activation saves the narrowing of every variable in scope),
-so increasing the stack size would have limited benefit. The optimizer's `Reach` and BCE's
+one. Checking a path that deep takes seconds and, at about 175 KB per
+activation on the path (its cloned body, variables and records; a chain of
+3,000 peaks at 530 MB), in a Release build gigabytes, so increasing the
+stack size would have limited benefit. The optimizer's `Reach` and BCE's
 `BuildCallGraph` walk the same call graph recursively, with smaller frames,
 unchecked.
 
@@ -892,9 +893,14 @@ slot.
 
 Each `VarDef` carries `assigned` and `narrowed` (the `T&` type an optional is
 narrowed to). `SaveFlow`/`RestoreFlow`/`MergeFlow` snapshot and join them at
-every branch: a fact holds after a join iff it holds in every reachable
-branch, with `reachable` tracking divergence (`return`, `break`, `continue`,
-`abort`, `exit`, a `guard` else). A branch that diverges has the null
+every branch, for the variables the code between can name -- those of the
+current frame, of the frames it is lexically nested in, and of the frames
+the function values it can call were written in (`NamedFrames`), and the
+globals -- since no other frame's can change meanwhile (a callee restores
+the ones it can name, `CheckSpecBodyOnce`): a fact holds after a
+join iff it holds in every reachable branch, with `reachable` tracking
+divergence (`return`, `break`, `continue`, `abort`, `exit`, a `guard`
+else). A branch that diverges has the null
 "bottom" type, which unifies with anything (`UnifyBranch`, `MergeVals`), and
 reads as `void` once the construct's node is left (`VoidIfBottom`).
 
