@@ -419,7 +419,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                 Error(c, cat(".", d.name, " fills the elements it adds with default values, "
                              "and ", TypeStr(elem), " has none: ", why, " (§5.4)"));
             if (!c->defaultinit) c->defaultinit = DefaultCall(elem, c->line);
-            auto logbase = growlog.size();
+            auto logbase = cur.growlog.size();
             ElemArg(c->defaultinit, elem, rv);
             CheckGrowsSince(logbase, rv, "the default elements allocated in a slice pool");
         }
@@ -441,7 +441,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             case 'e': {
                 // An element built in place is under construction while
                 // its expression runs (§1.3(4)).
-                auto logbase = growlog.size();
+                auto logbase = cur.growlog.size();
                 ElemArg(an, elem, rv);
                 if (BuiltInPlace(elem))
                     CheckGrowsSince(logbase, rv,
@@ -451,7 +451,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                 break;
             }
             case 'a': {  // An array/slice of the receiver's element type.
-                auto logbase = growlog.size();
+                auto logbase = cur.growlog.size();
                 // An array literal is the run appended: its elements are the
                 // receiver's, constructed into its storage (§4.2).
                 auto al = Is<ArrayLit>(an);
@@ -539,17 +539,17 @@ inline void TypeCheck::CheckPrintable(Call *c, const char *what, vector<Node *> 
     auto &a = args[i];
     auto av = CheckValue(a, nullptr);
     // Rendered now (HeldOperands).
-    auto saverender = tuple(renderarg, renderwhere, rendering);
-    renderarg = a;
-    renderwhere = nullptr;
-    rendering = what;
+    auto saverender = tuple(cur.renderarg, cur.renderwhere, cur.rendering);
+    cur.renderarg = a;
+    cur.renderwhere = nullptr;
+    cur.rendering = what;
     struct Restore {
         TypeCheck &tc;
         tuple<Node *, Node *, const char *> saved;
         ~Restore() {
-            tc.renderarg = get<0>(saved);
-            tc.renderwhere = get<1>(saved);
-            tc.rendering = get<2>(saved);
+            tc.cur.renderarg = get<0>(saved);
+            tc.cur.renderwhere = get<1>(saved);
+            tc.cur.rendering = get<2>(saved);
         }
     } restore { *this, saverender };
     Val builder;
@@ -577,7 +577,7 @@ inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, N
     // use meanwhile (HeldOperands, the argument being rendered).
     if (seen.size() == 1 && (t->kind == TY_STRUCT || t->kind == TY_ENUM ||
                              t->kind == TY_VARIANT || t->kind == TY_ARRAY))
-        renderwhere = at;
+        cur.renderwhere = at;
     auto child = [&](TypeExpr *ft, bool throughref) {
         auto v = value;
         if (throughref) {
@@ -837,7 +837,7 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &
         Error(c, cat("cannot ", op, " ", what,
                      " inside a larger expression: a reference taken earlier in it may "
                      "still be live, so bind the result first (§5.1)"));
-    if (invalue)
+    if (cur.invalue)
         Error(c, cat("cannot ", op, " ", what,
                      " inside a value-producing expression: references taken earlier in "
                      "it may still be live (§5.1)"));
@@ -1835,19 +1835,19 @@ inline void TypeCheck::NoteGrow(Node *at, const Roots &roots, const string &what
     for (auto &a : roots.alts) {
         auto root = a.root;
         if (!root || IsTemp(root)) continue;
-        growlog.push_back({ at, root, a.exact, what });
+        cur.growlog.push_back({ at, root, a.exact, what });
         NoteRootEvent(root, [](FnSpec *s, int i) { s->growparams.insert(i); },
                       [](FnSpec *s, VarDef *r) { s->growexternals.insert(r); });
     }
 }
 
 // The value built at the top or in a slot of the array `built` may be, by
-// the expression checked since growlog was `base` long: none of the growths
+// the expression checked since cur.growlog was `base` long: none of the growths
 // logged meanwhile may have been of that array, or it would have landed
 // inside the value.
 inline void TypeCheck::CheckGrowsSince(size_t base, const Roots &built, const string &what) {
-    for (auto i = base; i < growlog.size(); i++) {
-        auto e = growlog[i];
+    for (auto i = base; i < cur.growlog.size(); i++) {
+        auto e = cur.growlog[i];
         for (auto &b : built.alts) {
             auto may = MayAliasRoots(e.root, e.exact, b.root, b.exact);
             if (may == AL_NO) continue;

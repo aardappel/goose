@@ -1081,7 +1081,7 @@ inline TypeCheck::Scope TypeCheck::CheckLoopPasses(Node *x, FlowState &head,
                                                    const function<void()> &pass) {
     auto entry = head;
     auto firstbase = storeevents.size();
-    auto warnbase = pendingwarnings.size();
+    auto warnbase = cur.pendingwarnings.size();
     auto settled = false;
     Scope sc;
     for (auto passes = 0;; passes++) {
@@ -1090,8 +1090,8 @@ inline TypeCheck::Scope TypeCheck::CheckLoopPasses(Node *x, FlowState &head,
         if (passes >= 16)
             Error(x, "this loop's checking does not settle (internal limit of 16 passes)");
         RestoreFlow(head);
-        pendingwarnings.resize(warnbase);
-        looppasses.push_back({ (int)scopes.size(), firstbase, storeevents.size(), settled });
+        cur.pendingwarnings.resize(warnbase);
+        cur.looppasses.push_back({ (int)scopes.size(), firstbase, storeevents.size(), settled });
         PushScope(SK_LOOP, x);
         pass();
         auto &s = scopes.back();
@@ -1101,8 +1101,8 @@ inline TypeCheck::Scope TypeCheck::CheckLoopPasses(Node *x, FlowState &head,
         }
         sc = s;
         PopScope();
-        auto lp = looppasses.back();
-        looppasses.pop_back();
+        auto lp = cur.looppasses.back();
+        cur.looppasses.pop_back();
         auto next = sc.backedges ? JoinFlow(entry, sc.backedge) : entry;
         auto changed = lp.changed || !SameFlow(next, head);
         head = next;
@@ -1111,9 +1111,9 @@ inline TypeCheck::Scope TypeCheck::CheckLoopPasses(Node *x, FlowState &head,
         settled = true;
     }
     RestoreFlow(head);
-    if (looppasses.empty()) {
-        for (auto &w : pendingwarnings) fputs(w.c_str(), stderr);
-        pendingwarnings.clear();
+    if (cur.looppasses.empty()) {
+        for (auto &w : cur.pendingwarnings) fputs(w.c_str(), stderr);
+        cur.pendingwarnings.clear();
     }
     return sc;
 }
@@ -1617,7 +1617,7 @@ inline Val TypeCheck::CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *
         NoteGrow(a, built, cat("assign ", ExprStr(a->lval)));
     }
     SlotScope ss(*this, true);
-    auto base = growlog.size();
+    auto base = cur.growlog.size();
     auto v = CheckValueAt(a->rhs, target, dest);
     if (arr && !built.None()) {
         CheckGrowsSince(base, built, cat("the value assigned to ", ExprStr(a->lval)));

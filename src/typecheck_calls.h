@@ -1566,27 +1566,11 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     f.varbase = (int)vars.size();
     f.callline = callline;
     frames.push_back(f);
-    // The caller's loop passes are its own: this body's loops run theirs,
-    // and its warnings stand as soon as they are given.
-    auto savepasses = std::move(looppasses);
-    looppasses.clear();
-    auto savewarnings = std::move(pendingwarnings);
-    pendingwarnings.clear();
-    // The caller's constructions are its own too: the call site logs this
-    // body's growths against them from the summary.
-    auto savegrowlog = std::move(growlog);
-    growlog.clear();
-    // The caller's statement -- the values it evaluated before the call, the
-    // rest of it, its value region, what it is rendering -- is its own; the
-    // call site replays this body's shrinks against it.
-    auto savepath = std::move(nodepath);
-    nodepath.clear();
-    auto saverender = tuple(renderarg, renderwhere, rendering);
-    renderarg = nullptr;
-    renderwhere = nullptr;
-    rendering = nullptr;
-    auto saveinvalue = invalue;
-    invalue = false;
+    // The caller's body state is its own (BodyState): this body's loops run
+    // their own passes and its warnings stand as soon as they are given,
+    // and the call site replays this body's shrinks and growths against
+    // the caller's statement and constructions from the summary.
+    BodyScope bodyscope(*this);
     auto savereach = reachable;
     DestScope ds(*this, Dest {});
     // Whatever the call's result is for -- the slot it lands in, the return
@@ -1756,14 +1740,6 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     }
     if (!spec->retsknown) spec->retsknown = true;
     PopScope();
-    looppasses = std::move(savepasses);
-    pendingwarnings = std::move(savewarnings);
-    growlog = std::move(savegrowlog);
-    nodepath = std::move(savepath);
-    renderarg = get<0>(saverender);
-    renderwhere = get<1>(saverender);
-    rendering = get<2>(saverender);
-    invalue = saveinvalue;
     frames.pop_back();
     for (auto [v, n] : outernarrowed) v->narrowed = n;
     reachable = savereach;

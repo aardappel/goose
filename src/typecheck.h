@@ -235,15 +235,14 @@ struct TypeCheck {
         // types, and the values it keeps are those its phase 2 checks.
         bool discovering = false;
     };
-    vector<PathEntry> nodepath;
     struct Discovering {
         TypeCheck &tc;
         Node *node;
         Discovering(TypeCheck &t, Node *n) : tc(t), node(n) { Set(true); }
         ~Discovering() { Set(false); }
         void Set(bool on) {
-            if (!tc.nodepath.empty() && tc.nodepath.back().node == node)
-                tc.nodepath.back().discovering = on;
+            if (!tc.cur.nodepath.empty() && tc.cur.nodepath.back().node == node)
+                tc.cur.nodepath.back().discovering = on;
         }
     };
     struct NodeScope {
@@ -283,12 +282,6 @@ struct TypeCheck {
                                      const char *render, F f);
     template<typename F> void HeldOperands(F f);
     template<typename F> void LaterOperands(F f);
-    // The argument print, str or format is rendering, and as which builtin:
-    // its views stay live while its parts' format overloads run, and so does
-    // where it lies (`renderwhere`) unless an overload takes it whole.
-    Node *renderarg = nullptr;
-    Node *renderwhere = nullptr;
-    const char *rendering = nullptr;
     vector<VarDef *> vars;                            // All in-scope variables, all frames.
     vector<pair<int, SFunction *>> localfns;          // Nested fns, with their scope index.
     int scopeserial = 0;
@@ -297,11 +290,6 @@ struct TypeCheck {
     // environment it is declared in: a call specializes it there.
     map<pair<FnSpec *, SFunction *>, DeclSite *> declsiteof;
     bool reachable = true;
-    // Inside a block/if/match/loop that produces a value, or a function-value
-    // body: an enclosing expression may hold references it evaluated before
-    // this point, which are in no variable and so invisible to the liveness
-    // scan of CheckGrowShrink.
-    bool invalue = false;
     // Checking what a return, or the body's tail, gives the caller: the
     // function's own locals move. The statements, conditions, scrutinees
     // and loops inside it are no part of that value; a valued block or loop
@@ -392,8 +380,8 @@ struct TypeCheck {
     static constexpr int MAXCHAIN = 20;
 
     [[noreturn]] void Error(Line l, const string &msg) {
-        for (auto &w : pendingwarnings) fputs(w.c_str(), stderr);
-        pendingwarnings.clear();
+        for (auto &w : cur.pendingwarnings) fputs(w.c_str(), stderr);
+        cur.pendingwarnings.clear();
         auto s = cat(Where(l), ": error: ", msg);
         // Show the offending source line with a caret-less underline context.
         if (l.fileidx >= 0 && l.fileidx < (int)ast.sources.size() && l.line > 0) {
@@ -485,8 +473,8 @@ struct TypeCheck {
     void Warn(const Node *n, const string &msg) {
         if (quiet) return;
         auto text = cat(Where(n->line), ": warning: ", msg, "\n");
-        if (!looppasses.empty()) {
-            pendingwarnings.push_back(text);
+        if (!cur.looppasses.empty()) {
+            cur.pendingwarnings.push_back(text);
             return;
         }
         fputs(text.c_str(), stderr);
@@ -790,15 +778,15 @@ struct TypeCheck {
     // narrowing, merged at control-flow joins).
 
     // Marks the statements of a construct that is producing a value for an
-    // enclosing expression (see `invalue`); nests, and restores itself on the
+    // enclosing expression (see `cur.invalue`); nests, and restores itself on the
     // throw an error does.
     struct ValueRegion {
         TypeCheck &tc;
         bool saved;
-        ValueRegion(TypeCheck &t, bool wantvalue) : tc(t), saved(t.invalue) {
-            tc.invalue = tc.invalue || wantvalue;
+        ValueRegion(TypeCheck &t, bool wantvalue) : tc(t), saved(t.cur.invalue) {
+            tc.cur.invalue = tc.cur.invalue || wantvalue;
         }
-        ~ValueRegion() { tc.invalue = saved; }
+        ~ValueRegion() { tc.cur.invalue = saved; }
     };
 
     void PushScope(int kind, Node *node = nullptr);
@@ -968,40 +956,36 @@ struct TypeCheck {
         bool changed = false;      // A fact fed back to this loop's head changed.
         bool sawunbound = false;   // A variable was read before any binding.
     };
-    vector<LoopPass> looppasses;
     bool InDiscovery() {
-        for (auto &lp : looppasses) if (!lp.settled) return true;
+        for (auto &lp : cur.looppasses) if (!lp.settled) return true;
         return false;
     }
     // A variable read before any binding: nowhere yet, in a discovery pass.
     bool UnboundIsBottom() {
         if (!InDiscovery()) return false;
-        looppasses.back().sawunbound = true;
+        cur.looppasses.back().sawunbound = true;
         return true;
     }
     // A fact about vd that every loop it is declared outside of feeds back
     // to its head.
     void NoteFact(const VarDef *vd) {
-        for (auto &lp : looppasses) if (Depth(vd) <= lp.scopeidx) lp.changed = true;
+        for (auto &lp : cur.looppasses) if (Depth(vd) <= lp.scopeidx) lp.changed = true;
     }
     // The store events a holder still carries: all of them, but for one
     // declared inside a loop only its current pass's, an earlier pass's
     // being a previous iteration's, whose value died with it (a copy made
     // then still leads to them, HolderMayPointInto's src).
     size_t LiveEventBase(const VarDef *holder) {
-        for (auto i = looppasses.size(); i-- > 0;)
-            if (Depth(holder) > looppasses[i].scopeidx) return looppasses[i].eventbase;
+        for (auto i = cur.looppasses.size(); i-- > 0;)
+            if (Depth(holder) > cur.looppasses[i].scopeidx) return cur.looppasses[i].eventbase;
         return 0;
     }
     // Whether the store event at index i was recorded by an earlier pass of
     // an enclosing loop: the next iteration reaches it.
     bool CarriedEvent(size_t i) {
-        for (auto &lp : looppasses) if (lp.firstbase <= i && i < lp.eventbase) return true;
+        for (auto &lp : cur.looppasses) if (lp.firstbase <= i && i < lp.eventbase) return true;
         return false;
     }
-    // A pass's warnings are kept back until the loop's last pass, whose
-    // warnings are the ones that stand (CheckLoopPasses).
-    vector<string> pendingwarnings;
 
     // ------------------------------------------------------------------
     // Small type constructors and views.
@@ -1480,7 +1464,47 @@ struct TypeCheck {
         bool exact = false;   // root is the array itself, not a bound on its lifetime.
         string what;
     };
-    vector<GrowEvent> growlog;
+
+    // The state of the body being checked, which a body checked inside it
+    // (a call's, CheckSpecBodyOnce) starts afresh and hands back when it
+    // ends, an error's throw included (BodyScope): the caller's statement
+    // is its own, and the call site replays the body's effects against it
+    // from the summary. A function value's body is checked in its call's
+    // statement and keeps it (CheckFunValCall).
+    struct BodyState {
+        // The node being checked and every node it is nested in (PathEntry).
+        vector<PathEntry> nodepath;
+        // The argument print, str or format is rendering, and as which
+        // builtin: its views stay live while its parts' format overloads run,
+        // and so does where it lies (`renderwhere`) unless an overload takes
+        // it whole.
+        Node *renderarg = nullptr;
+        Node *renderwhere = nullptr;
+        const char *rendering = nullptr;
+        // Inside a block/if/match/loop that produces a value, or a
+        // function-value body: an enclosing expression may hold references
+        // it evaluated before this point, which are in no variable and so
+        // invisible to the liveness scan of CheckGrowShrink.
+        bool invalue = false;
+        // The passes of the loops open around the point being checked,
+        // outermost first (LoopPass).
+        vector<LoopPass> looppasses;
+        // A pass's warnings are kept back until the loop's last pass, whose
+        // warnings are the ones that stand (CheckLoopPasses).
+        vector<string> pendingwarnings;
+        // Every growth so far (GrowEvent): a value built in place is checked
+        // against those logged while its expression ran (CheckGrowsSince).
+        vector<GrowEvent> growlog;
+    };
+    BodyState cur;
+    // A fresh body state for the extent of a scope; the enclosing one
+    // returns when it ends.
+    struct BodyScope {
+        TypeCheck &tc;
+        BodyState saved;
+        BodyScope(TypeCheck &t) : tc(t) { std::swap(tc.cur, saved); }
+        ~BodyScope() { std::swap(tc.cur, saved); }
+    };
     void NoteGrow(Node *at, const Roots &roots, const string &what);
     void CheckGrowsSince(size_t base, const Roots &built, const string &what);
     void ApplyCalleeGrows(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);

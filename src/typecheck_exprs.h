@@ -307,10 +307,10 @@ inline int TypeCheck::OperandIndex(Node *parent, Node *child) {
 // statement, a path the checker walks itself); the same node entered again
 // on the way, as a path is by its node's Check, stays one entry.
 inline bool TypeCheck::Descend(Node *n) {
-    if (!nodepath.empty() && nodepath.back().node == n) return false;
-    auto idx = nodepath.empty() ? -1 : OperandIndex(nodepath.back().node, n);
-    if (idx >= 0) nodepath.back().pos = idx;
-    nodepath.push_back({ n, idx, 0 });
+    if (!cur.nodepath.empty() && cur.nodepath.back().node == n) return false;
+    auto idx = cur.nodepath.empty() ? -1 : OperandIndex(cur.nodepath.back().node, n);
+    if (idx >= 0) cur.nodepath.back().pos = idx;
+    cur.nodepath.push_back({ n, idx, 0 });
     return true;
 }
 
@@ -318,10 +318,10 @@ inline bool TypeCheck::Descend(Node *n) {
 // parent stands past it. An error's unwinding leaves a path a body's check
 // replaced (CheckSpecBody) as it is.
 inline void TypeCheck::Ascend(Node *n) {
-    if (nodepath.empty() || nodepath.back().node != n) return;
-    auto e = nodepath.back();
-    nodepath.pop_back();
-    if (e.idx >= 0 && !nodepath.empty()) nodepath.back().pos = e.idx + 1;
+    if (cur.nodepath.empty() || cur.nodepath.back().node != n) return;
+    auto e = cur.nodepath.back();
+    cur.nodepath.pop_back();
+    if (e.idx >= 0 && !cur.nodepath.empty()) cur.nodepath.back().pos = e.idx + 1;
 }
 
 // What the operand n of `parent`, whose value is v, holds live: its value
@@ -403,24 +403,24 @@ void TypeCheck::HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent, const
 // the point itself, applying its callee's effects, has consumed its own
 // operands: what the callee does to them its parameters' pairs judge
 // (§5.1, NoteLiveViews). The exception is the argument print, str or format
-// is rendering (`renderarg`): its views, and where a struct, enum or array
-// argument lies (`renderwhere`), which an overload of a part runs in the
+// is rendering (`cur.renderarg`): its views, and where a struct, enum or array
+// argument lies (`cur.renderwhere`), which an overload of a part runs in the
 // middle of rendering.
 template<typename F> void TypeCheck::HeldOperands(F f) {
-    for (auto &e : nodepath) {
-        auto own = e.discovering || (&e == &nodepath.back() && Is<Call>(e.node));
+    for (auto &e : cur.nodepath) {
+        auto own = e.discovering || (&e == &cur.nodepath.back() && Is<Call>(e.node));
         auto i = 0;
         ForOperands(e.node, [&](Node *ch, HoldKind kind) {
             auto at = i++;
             if (at >= e.pos) return;
             auto it = nodevals.find(ch);
             if (it == nodevals.end()) return;
-            if (ch == renderarg && rendering) {
-                HoldAs(ch, it->second, HK_VIEW, e.node, rendering, f);
-                if (ch == renderwhere) {
+            if (ch == cur.renderarg && cur.rendering) {
+                HoldAs(ch, it->second, HK_VIEW, e.node, cur.rendering, f);
+                if (ch == cur.renderwhere) {
                     auto where = it->second;
                     where.type = ast.RefTo(where.type, ch->line);
-                    f(Held { ch, std::move(where), false, rendering });
+                    f(Held { ch, std::move(where), false, cur.rendering });
                 }
                 return;
             }
@@ -434,9 +434,9 @@ template<typename F> void TypeCheck::HeldOperands(F f) {
 // operands each node on the path has not evaluated yet, the one being
 // checked excluded.
 template<typename F> void TypeCheck::LaterOperands(F f) {
-    for (size_t k = 0; k < nodepath.size(); k++) {
-        auto &e = nodepath[k];
-        auto last = k + 1 == nodepath.size();
+    for (size_t k = 0; k < cur.nodepath.size(); k++) {
+        auto &e = cur.nodepath[k];
+        auto last = k + 1 == cur.nodepath.size();
         auto i = 0;
         ForOperands(e.node, [&](Node *ch, HoldKind) {
             auto at = i++;
