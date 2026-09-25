@@ -561,13 +561,8 @@ struct Parser {
 
     // A constant expression in type position: T[k] sizes, T[..k] capacities.
     Node *ParseTypeSizeExpr() {
-        auto save = no_struct_lit;
-        auto sub = EnterSub();
-        no_struct_lit = false;
-        auto e = ParseExpr();
-        no_struct_lit = save;
-        LeaveSub(sub);
-        return e;
+        auto sub = Sub();
+        return ParseExpr();
     }
 
     TypeExpr *ParseTypePrimary() {
@@ -631,16 +626,31 @@ struct Parser {
     // ------------------------------------------------------------------
     // Expressions.
 
-    // Sub-expression contexts (operands, arguments, bracketed positions) leave
-    // the statement spine; block-ended constructs inside them don't end the
-    // statement.
-    bool EnterSub() {
-        auto save = stmt_level;
-        stmt_level = false;
-        stmt_ended = false;
-        return save;
-    }
-    void LeaveSub(bool save) { stmt_level = save; }
+    // The expression state a construct parses its parts in: whether a name
+    // may be followed by a struct literal or trailing block (no_struct_lit
+    // says not), and whether the parts are on a statement's spine
+    // (stmt_level). Operands, arguments and bracketed positions leave the
+    // spine, so a block-ended construct inside them does not end the
+    // statement. The enclosing state returns when the guard ends, on the
+    // throw of an error a tentative parse backtracks over included.
+    struct Context {
+        Parser &p;
+        bool nsl, sl, se;
+        Context(Parser &_p, bool nostructlit, bool onspine)
+            : p(_p), nsl(_p.no_struct_lit), sl(_p.stmt_level), se(_p.stmt_ended) {
+            p.no_struct_lit = nostructlit;
+            p.stmt_level = onspine;
+            p.stmt_ended = false;
+        }
+        ~Context() {
+            p.no_struct_lit = nsl;
+            p.stmt_level = sl;
+            p.stmt_ended = se;
+        }
+    };
+    // An operand, argument or bracketed position: off the spine, struct
+    // literals allowed unless the position says otherwise.
+    Context Sub(bool nostructlit = false) { return Context(*this, nostructlit, false); }
 
     Node *ParseExpr() {
         auto line = CurLine();
@@ -696,7 +706,7 @@ struct Parser {
             }
             case T_RETURN: {
                 lex.Next();
-                auto sub = EnterSub();
+                auto sub = Sub(no_struct_lit);
                 auto r = New<Return>(line);
                 if (lex.tok != T_SEMI && lex.tok != T_RCURLY && !AtReturnFrom()) {
                     for (;;) {
@@ -709,14 +719,12 @@ struct Parser {
                     r->from = ParseQualifiedName("return from");
                     r->ns = curns;
                 }
-                LeaveSub(sub);
                 return r;
             }
             case T_BREAK: {
                 lex.Next();
-                auto sub = EnterSub();
+                auto sub = Sub(no_struct_lit);
                 auto val = lex.tok != T_SEMI && lex.tok != T_RCURLY ? ParseExpr() : nullptr;
-                LeaveSub(sub);
                 return New<Break>(line, val);
             }
             case T_CONTINUE:
@@ -730,13 +738,8 @@ struct Parser {
     // Scrutinee positions (if/while/for/match/guard headers) disallow struct
     // literals and trailing blocks so the following `{` reads as the body.
     Node *ParseScrutinee() {
-        auto save = no_struct_lit;
-        auto sub = EnterSub();
-        no_struct_lit = true;
-        auto e = ParseExpr();
-        no_struct_lit = save;
-        LeaveSub(sub);
-        return e;
+        auto sub = Sub(true);
+        return ParseExpr();
     }
 
     Node *ParseIf() {
@@ -758,11 +761,12 @@ struct Parser {
         string_view idxvar;
         if (IsNext(T_COMMA)) idxvar = ExpectIdent("for index binding");
         Expect(T_IN, "for statement");
-        auto save = no_struct_lit;
-        no_struct_lit = true;
-        auto iter = ParseExpr();
-        if (IsNext(T_DOTDOT)) iter = New<RangeExpr>(line, iter, ParseExpr());
-        no_struct_lit = save;
+        Node *iter;
+        {
+            auto sub = Sub(true);
+            iter = ParseExpr();
+            if (IsNext(T_DOTDOT)) iter = New<RangeExpr>(line, iter, ParseExpr());
+        }
         return New<ForLoop>(line, byref, var, idxvar, iter, ParseBlockExpr("for body"));
     }
 
@@ -771,16 +775,17 @@ struct Parser {
         lex.Next();
         auto m = New<MatchExpr>(line, ParseScrutinee());
         Expect(T_LCURLY, "match expression");
-        auto sub = EnterSub();
-        while (lex.tok != T_RCURLY) {
-            MatchArm arm;
-            arm.pat = ParsePattern();
-            Expect(T_FATARROW, "match arm");
-            arm.body = ParseExpr();
-            m->arms.push_back(arm);
-            if (!IsNext(T_COMMA)) break;
+        {
+            auto sub = Sub(no_struct_lit);
+            while (lex.tok != T_RCURLY) {
+                MatchArm arm;
+                arm.pat = ParsePattern();
+                Expect(T_FATARROW, "match arm");
+                arm.body = ParseExpr();
+                m->arms.push_back(arm);
+                if (!IsNext(T_COMMA)) break;
+            }
         }
-        LeaveSub(sub);
         Expect(T_RCURLY, "match expression");
         if (m->arms.empty()) Error("match must have at least one arm");
         return m;
@@ -869,9 +874,11 @@ struct Parser {
             auto op = lex.tok;
             auto line = CurLine();
             lex.Next();
-            auto sub = EnterSub();
-            auto r = ParseBinary(prec + 1);  // All binary operators left-associate.
-            LeaveSub(sub);
+            Node *r;
+            {
+                auto sub = Sub(no_struct_lit);
+                r = ParseBinary(prec + 1);  // All binary operators left-associate.
+            }
             l = New<Binary>(line, op, l, r);
         }
     }
@@ -882,10 +889,8 @@ struct Parser {
             case T_MINUS: case T_NOT: case T_BITNOT: case T_BITAND: {
                 auto op = lex.tok;
                 lex.Next();
-                auto sub = EnterSub();
-                auto e = New<Unary>(line, op, ParseUnary());
-                LeaveSub(sub);
-                return e;
+                auto sub = Sub(no_struct_lit);
+                return New<Unary>(line, op, ParseUnary());
             }
             default:
                 return ParsePostfix();
@@ -938,16 +943,14 @@ struct Parser {
     Node *ParseCallRest(Node *callee, vector<TypeExpr *> tyargs, Line line) {
         auto c = New<Call>(line, callee);
         c->tyargs = std::move(tyargs);
-        auto save = no_struct_lit;
-        auto sub = EnterSub();
-        no_struct_lit = false;
-        while (lex.tok != T_RPAREN) {
-            c->args.push_back(ParseExpr());
-            if (!IsNext(T_COMMA)) break;
+        {
+            auto sub = Sub();
+            while (lex.tok != T_RPAREN) {
+                c->args.push_back(ParseExpr());
+                if (!IsNext(T_COMMA)) break;
+            }
+            Expect(T_RPAREN, "call arguments");
         }
-        Expect(T_RPAREN, "call arguments");
-        no_struct_lit = save;
-        LeaveSub(sub);
         if (lex.tok == T_LCURLY && !no_struct_lit) {
             c->trailing = ParseFunVal();
             // In statement position a trailing block ends the statement.
@@ -958,9 +961,7 @@ struct Parser {
 
     Node *ParseIndexOrSlice(Node *obj, Line line) {
         lex.Next();
-        auto save = no_struct_lit;
-        auto sub = EnterSub();
-        no_struct_lit = false;
+        auto sub = Sub();
         Node *lo = nullptr;
         auto lo_from_end = false;
         auto isslice = lex.tok == T_DOTDOT;
@@ -985,8 +986,6 @@ struct Parser {
             result = New<Index>(line, obj, lo);
         }
         Expect(T_RBRACKET, "indexing");
-        no_struct_lit = save;
-        LeaveSub(sub);
         return result;
     }
 
@@ -1014,13 +1013,9 @@ struct Parser {
             case T_SELF:  lex.Next(); return New<SelfRef>(line);
             case T_LPAREN: {
                 lex.Next();
-                auto save = no_struct_lit;
-                auto sub = EnterSub();
-                no_struct_lit = false;
+                auto sub = Sub();
                 auto e = ParseExpr();
                 Expect(T_RPAREN, "parenthesized expression");
-                no_struct_lit = save;
-                LeaveSub(sub);
                 return e;
             }
             case T_LBRACKET: return ParseArrayLit(line);
@@ -1100,9 +1095,7 @@ struct Parser {
     Node *ParseArrayLit(Line line) {
         lex.Next();
         auto a = New<ArrayLit>(line);
-        auto save = no_struct_lit;
-        auto sub = EnterSub();
-        no_struct_lit = false;
+        auto sub = Sub();
         if (lex.tok == T_DOTDOT) {
             // [..cap]: an empty limited array with a construction-time
             // capacity (§5.3).
@@ -1120,17 +1113,13 @@ struct Parser {
             }
         }
         Expect(T_RBRACKET, "array literal");
-        no_struct_lit = save;
-        LeaveSub(sub);
         return a;
     }
 
     StructLit *ParseStructLitBody(TypeExpr *type, Line line) {
         Expect(T_LCURLY, "struct literal");
         auto sl = New<StructLit>(line, type);
-        auto save = no_struct_lit;
-        auto sub = EnterSub();
-        no_struct_lit = false;
+        auto sub = Sub();
         while (lex.tok != T_RCURLY) {
             FieldInit fi;
             if (lex.tok == T_IDENT) {
@@ -1145,8 +1134,6 @@ struct Parser {
             if (!IsNext(T_COMMA)) break;
         }
         Expect(T_RCURLY, "struct literal");
-        no_struct_lit = save;
-        LeaveSub(sub);
         auto named = 0;
         for (auto &fi : sl->inits) named += !fi.name.empty();
         if (named && named != (int)sl->inits.size())
@@ -1204,10 +1191,7 @@ struct Parser {
 
     // The '{' has been consumed; consumes the closing '}'.
     void ParseBlockBody(Block *b) {
-        auto save_nsl = no_struct_lit;
-        auto save_sl = stmt_level;
-        auto save_se = stmt_ended;
-        no_struct_lit = false;
+        auto ctx = Sub();
         for (;;) {
             stmt_level = false;
             stmt_ended = false;
@@ -1269,9 +1253,6 @@ struct Parser {
             }
             Error(cat("\';\' expected after expression, found \'", TokStr(), "\'"));
         }
-        no_struct_lit = save_nsl;
-        stmt_level = save_sl;
-        stmt_ended = save_se;
     }
 };
 

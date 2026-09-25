@@ -70,12 +70,13 @@ inline bool IsIdentStart(char c) { return isalpha((uint8_t)c) || c == '_'; }
 inline bool IsIdentCont(char c)  { return isalnum((uint8_t)c) || c == '_'; }
 
 // The lexer holds exactly one current token. The parser copies the whole Lexer
-// object where it needs to look ahead and backtrack (it is cheap to copy).
+// object where it needs to look ahead and backtrack, so it holds nothing
+// that is not that token's: the file name is a view of the driver's.
 struct Lexer {
     const char *p = nullptr;         // Scan position in the 0-terminated source.
     const char *linestart = nullptr;
     int line = 1;
-    string filename;
+    string_view filename;
 
     // Current token.
     TType tok = T_EOF;
