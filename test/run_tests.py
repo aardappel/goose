@@ -32,6 +32,9 @@ structs and constants.
 Profiles keep the CI coverage deliberate: baseline compares Goose/native C
 -O0 and -O2 plus the targeted debug-runtime runs; sanitize uses Goose -O2 and
 Clang -O1 with ASan/UBSan on Linux, including the samples and C runtime tests.
+The goose_in_goose/ compiler is one multi-file bootstrap fixture: build three
+native generations, require identical stage-2/stage-3 C, and run the last
+generation's self-check. TinyCC also emits the same C when available.
 
   python test/run_tests.py [--exe path/to/goose] [--nocgen] [--no-jit]
 """
@@ -195,6 +198,128 @@ class Runner:
             return True
         return False
 
+    def goose_in_goose(self, cc, profile, extra, jit):
+        """Exercise the compiler as a large program, then execute its output.
+
+        Stage 1 comes from the compiler under test; each subsequent stage is
+        emitted by the preceding executable from the same Goose sources.
+        All native stages use the selected toolchain/profile, including the
+        sanitizer flags. These modules are not standalone output fixtures.
+        """
+        source = HERE / "goose_in_goose" / "main.goose"
+        directory = tc.REPO_ROOT / "build" / "gen" / profile / "goose_in_goose"
+
+        def linux_stack():
+            # Generated compilers need the same stack budget as the host.
+            # Set only the child's soft limit; do not alter the suite process.
+            import resource
+            soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
+            target = 64 * 1024 * 1024
+            if hard != resource.RLIM_INFINITY:
+                target = min(target, hard)
+            if soft != resource.RLIM_INFINITY and soft < target:
+                resource.setrlimit(resource.RLIMIT_STACK, (target, hard))
+
+        def run(argv, label, log):
+            try:
+                result = subprocess.run([str(a) for a in argv], cwd=tc.REPO_ROOT,
+                                        capture_output=True, timeout=180,
+                                        preexec_fn=linux_stack if sys.platform.startswith("linux") else None)
+                code, out, err = result.returncode, tc.decode(result.stdout), tc.decode(result.stderr)
+            except subprocess.TimeoutExpired as exc:
+                code, out, err = -1, tc.decode(exc.stdout or b""), tc.decode(exc.stderr or b"") + "\n180s timeout"
+            except OSError as exc:
+                code, out, err = -1, "", str(exc)
+            tc.write_text(log, f"exit {code}\n{out}{err}")
+            if code != 0 or tc.sanitizer_failure(err):
+                self.fail(f"{label} (exit {code}; log: {log})", out + err)
+                return None
+            self.ok(label)
+            return out
+
+        stack_flags = []
+        if cc:
+            if cc.style == "msvc":
+                stack_flags = ["/F67108864"]
+            elif tc.IS_WINDOWS:
+                # A gcc-style Clang driver can still use the MSVC linker.
+                _, target, _ = tc.run_capture([cc.cc, "-dumpmachine"])
+                stack_flags = ["-Wl,/STACK:67108864"] if "msvc" in target else ["-Wl,--stack,67108864"]
+            elif tc.IS_MACOS:
+                stack_flags = ["-Wl,-stack_size,0x4000000"]
+        if not cc:
+            print("skip native goose_in_goose bootstrap (no C compiler found or --nocgen)")
+
+        native_outputs = {}
+        for ol in ((0, 2) if profile == "baseline" else (2,)):
+            label = f"goose_in_goose -O{ol}"
+            work = directory / f"O{ol}"
+            work.mkdir(parents=True, exist_ok=True)
+            native_c = None
+            if cc:
+                compiler = self.exe
+                cfiles = []
+                for stage in range(1, 4):
+                    cfile = work / f"stage{stage}.c"
+                    executable = work / f"stage{stage}{tc.EXE_SUFFIX}"
+                    cfile.unlink(missing_ok=True)
+                    executable.unlink(missing_ok=True)
+                    flags = [f"-O{ol}"] if stage == 1 else []
+                    what = f"{label} stage {stage}"
+                    if run([compiler, *flags, "-o", cfile, source], f"emit {what}",
+                           work / f"stage{stage}.emit.log") is None:
+                        break
+                    if not cfile.is_file() or not cfile.stat().st_size:
+                        self.fail(f"missing or empty C output {what}")
+                        break
+                    ok, log = cc.compile(cfile, executable, opt=ol if profile == "baseline" else 1,
+                                         extra=[*extra, *stack_flags], strict_decls=True,
+                                         log=work / f"stage{stage}.cc.log")
+                    if not ok:
+                        self.fail(f"cc {what}", log)
+                        break
+                    self.ok(f"cc {what}")
+                    cfiles.append(cfile)
+                    compiler = executable
+                else:
+                    native_c = cfiles[1].read_bytes()
+                    native_outputs[ol] = native_c
+                    if native_c != cfiles[2].read_bytes():
+                        self.fail(f"fixed point {label}", f"C differs: {cfiles[1]} vs {cfiles[2]}")
+                    else:
+                        self.ok(f"fixed point {label} ({len(native_c)} bytes)")
+                    # Repeated compilations also exercise context cleanup in
+                    # the final executable, without pinning internal counts.
+                    out = run([compiler, "--check-many", source, source], f"self-check {label} stage 3",
+                              work / "stage3.check.log")
+                    if out is not None:
+                        lines = out.splitlines()
+                        if (len(lines) != 2 or lines[0] != lines[1] or
+                                not re.fullmatch(r"checked \d+ specializations, \d+ types", lines[0])):
+                            self.fail(f"repeated self-check output {label}", out)
+            else:
+                run([self.exe, f"-O{ol}", "--check", source], f"typecheck {label}", work / "host.check.log")
+
+            if jit:
+                cfile = work / "jit-stage2.c"
+                cfile.unlink(missing_ok=True)
+                out = run([self.exe, f"-O{ol}", "--jit", source, "--", "-o", cfile, source],
+                          f"JIT self-compile {label}", work / "jit.emit.log")
+                if out is not None:
+                    if not cfile.is_file() or not cfile.stat().st_size:
+                        self.fail(f"missing or empty JIT C output {label}")
+                    elif native_c is not None:
+                        if cfile.read_bytes() != native_c:
+                            self.fail(f"JIT/native self-compile differs {label}")
+                        else:
+                            self.ok(f"JIT/native self-compile matches {label}")
+
+        if len(native_outputs) == 2:
+            if native_outputs[0] != native_outputs[2]:
+                self.fail("goose_in_goose self-compile differs between O0 and O2")
+            else:
+                self.ok("goose_in_goose self-compile matches between O0 and O2")
+
     def check_optimizer(self, level, specs):
         # Observe the transformed bodies, rather than accepting a successful
         # --specs command or pinning unstable specialization IDs/pass counts.
@@ -242,6 +367,8 @@ def main():
                     help="fail if the baseline's second C-front-end check is unavailable")
     ap.add_argument("--no-jit", action="store_true",
                     help="skip the in-process TinyCC runs even where they are available")
+    ap.add_argument("--goose-in-goose-only", action="store_true",
+                    help="run only the multi-stage Goose-written compiler regression")
     args = ap.parse_args()
 
     if args.nocgen and (args.cc or args.require_clang or args.profile != "baseline"):
@@ -266,6 +393,11 @@ def main():
     # is not itself instrumented, and its runtime allocations are still held
     # when the compiler exits, which LeakSanitizer reports against the compiler.
     jit = not args.no_jit and args.profile != "sanitize" and tc.have_jit(exe)
+    r = Runner(exe)
+    if args.goose_in_goose_only:
+        r.goose_in_goose(cc, args.profile, extra, jit)
+        print(f"{r.failures} FAILURE(S)" if r.failures else "all tests passed")
+        return int(r.failures != 0)
     # What a gfx or physics test program links, by the category directory it
     # is in, empty for a compiler built without that layer: those tests then
     # only generate C.
@@ -274,7 +406,6 @@ def main():
     print(f"profile: {args.profile}; C backend: {cc.desc if cc else 'none'}; "
           f"JIT backend: {'TinyCC' if jit else 'none'}; " +
           "; ".join(f"{m}: {'linked' if libs else 'not built in'}" for m, libs in native.items()))
-    r = Runner(exe)
     builddir = tc.REPO_ROOT / "build"
     builddir.mkdir(parents=True, exist_ok=True)
     dumpdir = builddir / "dump"
@@ -322,10 +453,10 @@ def main():
         else:
             r.ok(what)
 
-    # One level of category directories; nested syntax/ns and syntax/sub are
-    # import fixtures, exercised by their entry programs rather than alone.
+    # One level of category directories; nested syntax helpers and the modules
+    # of the goose_in_goose bootstrap are exercised through their entry points.
     tests = [f for f in sorted(HERE.glob("*/*.goose"))
-             if f.parent.name not in ("errors", "errors_tc") and f.name != "lexer_tokens.goose"]
+             if f.parent.name not in ("errors", "errors_tc", "goose_in_goose") and f.name != "lexer_tokens.goose"]
     if len({f.stem for f in tests}) != len(tests):
         ap.error("fixture names must be unique across categories (shared expected/ and build outputs)")
     # A gfx or physics fixture with error markers is a rejection test, kept
@@ -512,6 +643,8 @@ def main():
                 out = r.run_expected([out_exe], "codegen_exec", f"clang-{label} codegen_exec.goose")
                 if out is not None and r.check_stdout("codegen_exec", f"clang-{label}", out):
                     r.ok(f"cgen-clang-{label} codegen_exec.goose")
+
+    r.goose_in_goose(cc, args.profile, extra, jit)
 
     # --- JIT: the same programs, compiled and run inside the compiler --------
     # No C file, no external toolchain: what this checks is that the generated

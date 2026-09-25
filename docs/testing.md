@@ -16,6 +16,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `storage/` | Relative references, pools and serialization. |
 | `threads/` | Workers, queues, shared globals and the native runtime lifecycle test. |
 | `stdlib/` | Standard-library modules. |
+| `goose_in_goose/` | A Goose-written compiler used as one multi-file bootstrap regression: build and run three generations, check a C fixed point and repeated final-stage self-checks, and compare JIT/native self-compilation. |
 | `gfx/` | The `gfx` graphics module: headless rendering, textures, compute, frames and input, a runtime misuse, shaders from files and from the program; shader and threading rejections (fixtures with `// error:` markers). The programs hold their shaders; the shader files beside them are for the file form of `embed_shader` and `--compile-shader`. `gfx/window/` is the windowed showcase, not part of the suite. |
 | `physics/` | The `physics` module: worlds, bodies, every kind of shape and geometry, all joint kinds, queries, events, recording and replay, a runtime misuse, and the threading rejection. |
 | `errors/`, `errors_tc/` | Expected parser/resolver and semantic rejections. |
@@ -24,7 +25,9 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `api_check.py` | Checks `stdlib/gfx.goose` and `stdlib/physics.goose` against their C layers' headers; run by `run_tests.py`. |
 
 Positive fixtures are discovered one level below `test/`; nested import helpers
-run through their entry programs. Keep fixture stems unique across categories,
+run through their entry programs. `goose_in_goose/` is handled separately as one
+bootstrap program, rather than discovering its modules as standalone fixtures.
+Keep fixture stems unique across categories,
 since expectations and generated build artifacts use those names. The runner
 rejects duplicate names.
 
@@ -35,6 +38,15 @@ rejects duplicate names.
 | Additional Clang C build of `codegen_exec.goose`, native `-O1`, release/debug runtime | Keep a second C-front-end check on the central codegen coverage file without repeating the whole suite for every backend. |
 | Goose `-O0` and `-O2` through the in-process TinyCC backend, plus `GS_DEBUG=1` on the same selected fixtures, over every test and every sample | Check the generated C against a third, very different C implementation, and that a program means the same whichever backend builds it. |
 | One Linux Clang ASan/UBSan job | Instrument the C++ compiler, generated C, selected debug-runtime cases, all samples and the direct runtime lifecycle test. |
+| Goose-in-Goose bootstrap, both profiles | Build stage 1 with the real compiler, stage 2 with stage 1, and stage 3 with stage 2. Build all three executables, compare stage-2/stage-3 C, and run two self-checks in stage 3. Baseline requires equal self-compiled C across host/native O0 and O2 and JIT/native execution; sanitize instruments every native stage. |
+
+Run just the bootstrap with
+`python test/run_tests.py --goose-in-goose-only --exe <goose> --cc native`.
+The usual `--profile`, `--no-jit`, and `--nocgen` options apply. With no native
+C compiler, it still checks the source and, when available, self-compiles through
+the JIT, but reports the native chain skipped. Sources and the exact stage
+contract are in [goose_in_goose/README.md](../test/goose_in_goose/README.md);
+artifacts and logs go in `build/gen/<profile>/goose_in_goose/O<level>/`.
 
 The sanitizer job builds Goose with
 `-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all`,
