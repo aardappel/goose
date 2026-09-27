@@ -116,6 +116,14 @@ bool ui_atlas_in_use(ui_atlas *a);
 void ui_free_atlas(ui_atlas *a);
 /* The handle of the font Nuklear knows by `font`, or 0. */
 gs_ui_font ui_font_handle(const struct nk_user_font *font);
+/* Adds Nuklear's built-in font, one from TrueType bytes or one from a file
+   (`data` its path) to an atlas, what goes wrong named after `fn`. */
+enum { UI_FONT_DEFAULT, UI_FONT_MEMORY, UI_FONT_FILE };
+gs_ui_font ui_add_font(gs_ui_font_atlas h, int source, gs_ui_bytes data, float height,
+                       gs_ui_font_config config, gs_ui_u32_slice ranges, const char *fn);
+/* A TrueType or OpenType file's bytes, malloc'd, their count in *len; or
+   NULL, with the reason set. */
+uint8_t *ui_read_font_file(const char *path, int64_t *len);
 /* A ui scale or a font's baking one, a misuse naming `fn` if out of range. */
 bool ui_scale_ok(float scale, const char *fn);
 
@@ -163,6 +171,10 @@ typedef struct {
     uint32_t atlas;             /* of the font it was made with: its white texel draws shapes */
     bool owns_atlas;            /* made for it, and destroyed with it */
     float font_height;          /* of its own atlas's font */
+    /* That font's TrueType data, kept to bake it again; NULL for
+       Nuklear's built-in font. */
+    uint8_t *ttf;
+    int64_t ttf_len;
     /* Pixels per unit of the ui's own layout: what convert() multiplies
        positions by, and input divides them by. */
     float scale;

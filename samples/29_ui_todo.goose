@@ -52,10 +52,22 @@ fn main() {
         write_stderr(str("gfx: ", gfx::error(), "\n"));
         return;
     }
-    // A context holds the ui's state; this one draws with Nuklear's own
-    // font at its native 13 pixels. Its style is Nuklear's, but for a
-    // brighter mark in ticked check boxes and chosen options.
-    let ctx = ui::create(13.0);
+    // A context holds the ui's state; this one draws with Roboto, from the
+    // Nuklear submodule, 16 pixels high at a scale of 1 and baked again
+    // whenever the scale changes. The samples run from samples/; the second
+    // path is for running this one from the repository's top.
+    let fonts: const u8[:][2] = ["../third_party/nuklear/extra_font/Roboto-Regular.ttf",
+                                 "third_party/nuklear/extra_font/Roboto-Regular.ttf"];
+    var ctx = ui::Context { 0 };
+    for path in fonts {
+        if ctx.id == 0 { ctx = ui::create_from_file(path, 16.0); }
+    }
+    guard ctx.id != 0 else {
+        write_stderr(str("ui: ", ui::error(), "\n"));
+        return;
+    }
+    // Its style is Nuklear's, but for a brighter mark in ticked check boxes
+    // and chosen options.
     var colors = ui::default_color_table();
     colors[ui::COLOR_TOGGLE_CURSOR] = ui::rgb(120, 200, 140);
     ui::style_from_table(ctx, colors);

@@ -31,5 +31,10 @@ delta time 0.25
 copied '' false
 default context: valid true, atlas true baked true with 1 font of 16.00
 destroyed: context false, its atlas false
+from a file: valid true, 12.00 high, 'Goose' 36.00 wide
+at 2: a new font true, the old one gone true, 12.00 high, 'Goose' 36.00 wide
+from memory: valid true, 12.00 high
+from a missing file: handle 0, error 'cannot open font file no_such_font.ttf'
+destroyed: the file context's atlas false
 released textures: 1, 91; then 0
 all destroyed: false false false; misuses 0

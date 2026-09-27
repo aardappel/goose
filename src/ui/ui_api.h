@@ -405,6 +405,8 @@ typedef struct {
     /* Contexts. */ \
     X(gs_ui_context, gs_ui_create_context, (gs_ui_font font)) \
     X(gs_ui_context, gs_ui_create_default_context, (float font_height)) \
+    X(gs_ui_context, gs_ui_create_context_from_file, (gs_ui_bytes path, float font_height)) \
+    X(gs_ui_context, gs_ui_create_context_from_memory, (gs_ui_bytes ttf, float font_height)) \
     X(gs_ui_font_atlas, gs_ui_context_atlas, (gs_ui_context c)) \
     X(void, gs_ui_destroy_context, (gs_ui_context c)) \
     X(uint8_t, gs_ui_context_is_valid, (gs_ui_context c)) \

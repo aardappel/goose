@@ -30,6 +30,8 @@ fn main() {
     let junk: u8[4] = [1, 2, 3, 4];
     ui::add_font_from_memory(atlas, junk, 13.0);
     said("a font from junk");
+    ui::create_from_memory(junk, 13.0);
+    said("a context of a font from junk");
     ui::add_default_font(atlas, 13.0, ui::FontConfig { oversample_h: 0 });
     said("no oversampling");
     ui::add_default_font(atlas, 13.0, ui::FontConfig { merge_mode: true });

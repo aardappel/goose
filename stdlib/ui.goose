@@ -815,6 +815,13 @@ fn create(font_height: f32, scale: f32) -> Context {
     set_scale(c, scale);
     c
 }
+// The same with a TrueType or OpenType font, from a file or from its bytes:
+// kept to be baked again at each scale, where Nuklear's built-in font, a
+// bitmap one, only scales well by whole numbers.
+extern "gs_ui_create_context_from_file" fn create_from_file(path: const u8[:],
+                                                            font_height: f32) -> Context;
+extern "gs_ui_create_context_from_memory" fn create_from_memory(ttf: const u8[:],
+                                                                font_height: f32) -> Context;
 // The atlas of the font the context was made with, whose white texel
 // draws its shapes.
 extern "gs_ui_context_atlas" fn context_atlas(c: Context) -> FontAtlas;
@@ -853,10 +860,10 @@ extern "gs_ui_null_texture" fn null_texture(c: Context) -> u32;
 // The whole ui `scale` times bigger: laid out as before, in units of the
 // ui's own (window rectangles, rows, the font's size), and drawn with that
 // many pixels to each, which convert() and render() produce and input
-// comes in. A context made by create() has its font baked again at the
-// scale, which gives it a new font handle; another's text is as sharp as
-// its atlas was baked (bake(atlas, scale)). Not during a frame; 1 at
-// first.
+// comes in. A context made by create() or create_from_* has its font baked
+// again at the scale, which gives it a new font handle; another's text is
+// as sharp as its atlas was baked (bake(atlas, scale)). Not during a frame;
+// 1 at first.
 extern "gs_ui_set_scale" fn set_scale(c: Context, scale: f32) -> bool;
 extern "gs_ui_scale" fn scale(c: Context) -> f32;
 

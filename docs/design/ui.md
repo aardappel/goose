@@ -28,7 +28,7 @@ Nuklear's header.
 
 The API stays Nuklear's under Goose names -- `nk_button_label` is
 `ui::button_label` -- and covers nearly all of `nuklear.h` a program calls:
-361 functions. An immediate-mode program says each frame which windows and
+363 functions. An immediate-mode program says each frame which windows and
 widgets there are, and learns what the user did from the same calls; the
 program's data stays its own, passed in by reference where a widget edits
 it.
@@ -117,7 +117,9 @@ physics. The constants have Nuklear's values, a static assert in
   font's size before Nuklear rasterizes it and sets the font's height back
   after, and Nuklear, which scales a glyph by that height over the baked
   one, then measures at the size and draws from the bigger glyphs. A
-  context `create` made bakes its own font again when its scale changes.
+  context `create` or `create_from_*` made owns its font -- Nuklear's
+  built-in one, or TrueType data it keeps a copy of -- and bakes it again
+  when its scale changes.
   A destroyed atlas's texture is listed for the renderer that made it
   (`released_textures`), which `render` releases.
 
@@ -183,7 +185,7 @@ X1 and X2 mouse buttons.
   into C where it does not. Most drive a context with input of their own and
   check what comes back and what was drawn, headless and without gfx:
   `ui_fonts` (atlases, baking at 1 and 2, TrueType files, ranges, merging,
-  metrics, released textures),
+  metrics, released textures, contexts of their own TrueType fonts),
   `ui_windows` (window state and geometry, every kind of row, groups, trees,
   list views), `ui_widgets`, `ui_popups` (popups, combo boxes, contextual
   menus, tooltips, menus), `ui_edit` (filters, a text editor's operations,
@@ -195,9 +197,9 @@ X1 and X2 mouse buttons.
   context from injected gfx input: clicks, typing, editing keys, shortcuts
   and the clipboard; it reads back the screen and a render target, draws
   and clicks at twice the scale, and runs again after gfx is closed and
-  opened. The tests call 361 of the layer's 361 functions. `ui_misuse`
+  opened. The tests call 363 of the layer's 363 functions. `ui_misuse`
   checks a widget outside any window aborts the program at the next frame
-  with the reason, `ui_misuse_messages` shows what the layer says about 58
+  with the reason, `ui_misuse_messages` shows what the layer says about 59
   misuses, each skipped without harm, and `ui_err_thread` that a
   `thread_fn` reaching ui is a compile error.
 * **`samples/29_ui_todo.goose`**, a to-do list and a color mixer, runs

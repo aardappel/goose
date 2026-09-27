@@ -3,8 +3,8 @@
 // two sizes and a TrueType one from a file and from memory in one atlas,
 // glyph ranges of every kind, baking and what it leaves (the image, the
 // fonts' metrics, glyphs, text widths), baking at a scale, the texture
-// bookkeeping a renderer uses, contexts made on a font and by default, and
-// what each keeps.
+// bookkeeping a renderer uses, contexts made on a font, by default and on
+// a TrueType font of their own, and what each keeps.
 import std;
 import vec;
 import math;
@@ -154,6 +154,27 @@ fn main() {
     // Its atlas goes with it.
     ui::destroy(own_ctx);
     print("destroyed: context ", ui::is_valid(own_ctx), ", its atlas ", ui::is_valid(own_atlas));
+
+    // Contexts of a TrueType font of their own, from a file or from its
+    // bytes, which set_scale bakes again: a new font, the same size.
+    let file_ctx = ui::create_from_file(FONT_FILE, 12.0);
+    let from_file = ui::font(file_ctx);
+    print("from a file: valid ", ui::is_valid(file_ctx), ", ", num(ui::info(from_file).height),
+          " high, 'Goose' ", num(ui::text_width(from_file, "Goose")), " wide");
+    ui::set_scale(file_ctx, 2.0);
+    let rebaked = ui::font(file_ctx);
+    print("at 2: a new font ", rebaked != from_file, ", the old one gone ",
+          !ui::is_valid(from_file), ", ", num(ui::info(rebaked).height), " high, 'Goose' ",
+          num(ui::text_width(rebaked, "Goose")), " wide");
+    let memory_ctx = ui::create_from_memory(ttf, 12.0);
+    print("from memory: valid ", ui::is_valid(memory_ctx), ", ",
+          num(ui::info(ui::font(memory_ctx)).height), " high");
+    let no_ctx = ui::create_from_file("no_such_font.ttf", 12.0);
+    print("from a missing file: handle ", no_ctx.id, ", error '", ui::error(), "'");
+    let file_atlas = ui::context_atlas(file_ctx);
+    ui::destroy(file_ctx);
+    ui::destroy(memory_ctx);
+    print("destroyed: the file context's atlas ", ui::is_valid(file_atlas));
 
     // A destroyed atlas's texture comes back once, for the renderer that
     // made it to release; an atlas without one adds nothing.

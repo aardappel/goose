@@ -177,10 +177,29 @@ static bool ui_ttf_plausible(const uint8_t *data, int64_t len) {
     return true;
 }
 
-enum { UI_FONT_DEFAULT, UI_FONT_MEMORY, UI_FONT_FILE };
+uint8_t *ui_read_font_file(const char *path, int64_t *len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        ui_fail("cannot open font file %s", path);
+        return NULL;
+    }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *bytes = size > 0 ? (uint8_t *)malloc((size_t)size) : NULL;
+    bool read = bytes && fread(bytes, 1, (size_t)size, f) == (size_t)size;
+    fclose(f);
+    if (!read || !ui_ttf_plausible(bytes, size)) {
+        free(bytes);
+        ui_fail("%s is not a TrueType or OpenType font", path);
+        return NULL;
+    }
+    *len = size;
+    return bytes;
+}
 
-static gs_ui_font ui_add_font(gs_ui_font_atlas h, int source, gs_ui_bytes data, float height,
-                              gs_ui_font_config config, gs_ui_u32_slice ranges, const char *fn) {
+gs_ui_font ui_add_font(gs_ui_font_atlas h, int source, gs_ui_bytes data, float height,
+                       gs_ui_font_config config, gs_ui_u32_slice ranges, const char *fn) {
     const gs_ui_font_config *g = &config;
     gs_ui_font none = { 0 };
     ui_atlas *a = ui_atlas_get(h, fn);
@@ -273,23 +292,9 @@ static gs_ui_font ui_add_font(gs_ui_font_atlas h, int source, gs_ui_bytes data, 
         /* Nuklear copies the data into the atlas. */
         font = nk_font_atlas_add_from_memory(&a->atlas, data.data, (nk_size)data.len, height, &cfg);
     } else {
-        const char *path = ui_cstr(data, 0);
-        FILE *f = fopen(path, "rb");
-        if (!f) {
-            ui_fail("cannot open font file %s", path);
-            return none;
-        }
-        fseek(f, 0, SEEK_END);
-        long size = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        uint8_t *bytes = size > 0 ? (uint8_t *)malloc((size_t)size) : NULL;
-        bool read = bytes && fread(bytes, 1, (size_t)size, f) == (size_t)size;
-        fclose(f);
-        if (!read || !ui_ttf_plausible(bytes, size)) {
-            free(bytes);
-            ui_fail("%s is not a TrueType or OpenType font", path);
-            return none;
-        }
+        int64_t size = 0;
+        uint8_t *bytes = ui_read_font_file(ui_cstr(data, 0), &size);
+        if (!bytes) return none;
         font = nk_font_atlas_add_from_memory(&a->atlas, bytes, (nk_size)size, height, &cfg);
         free(bytes);
     }

@@ -1048,6 +1048,8 @@ fn error() -> u8[>..]     fn check()     fn misuse_count() -> i64     fn availab
 struct Context { id: u32 }
 fn create(font_height: f32) -> Context        // Nuklear's own font; 13 is its native size
 fn create(font_height: f32, scale: f32) -> Context      // drawn at a scale (set_scale)
+fn create_from_file(path: const u8[:], font_height: f32) -> Context   // a TrueType font of its own
+fn create_from_memory(ttf: const u8[:], font_height: f32) -> Context  // from the font's bytes
 fn create_context(font: Font) -> Context      // a font from a baked atlas
 fn destroy(c: Context)        fn is_valid(c: Context) -> bool
 fn context_atlas(c) -> FontAtlas              fn font(c) -> Font      // drawn with now
@@ -1069,9 +1071,11 @@ program picks as it likes -- from the window's size, the display, a
 setting. Layout stays the same: windows, rows, fonts and the style keep
 their sizes in the ui's own units, and the scale is the pixels to each
 unit, which `convert` and `render` draw with and input positions come in.
-A context made by `create` has its font baked again at the scale, so its
-text stays sharp; one made on a font of the program's keeps that atlas's,
-which `bake(atlas, scale)` makes sharp at a scale. It changes between
+A context made by `create` or `create_from_*` has its font baked again at
+the scale, so its text stays sharp -- Nuklear's built-in font imitates a
+bitmap one and scales well only by whole numbers, a TrueType one by any;
+one made on a font of the program's keeps that atlas's, which `bake(atlas,
+scale)` makes sharp at a scale. It changes between
 frames, not during one.
 
 Input goes between `input_begin` and `input_end`, before any window, one

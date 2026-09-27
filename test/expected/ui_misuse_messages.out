@@ -4,6 +4,7 @@ a destroyed text editor: ui::set_text: a text edit that was destroyed, or never 
 a font 0 high: ui::add_default_font: a font 0 pixels high (1 to 1000)
 baking no fonts: ui::bake: the atlas has no fonts (ui::add_default_font adds one)
 a font from junk: ui::add_font_from_memory: 4 bytes that are not a TrueType or OpenType font
+a context of a font from junk: ui::create_from_memory: 4 bytes that are not a TrueType or OpenType font
 no oversampling: ui::add_default_font: oversampling of 0 x 1 (1 to 8 each)
 merging into nothing: ui::add_default_font: merge_mode adds glyphs to the font added before, and the atlas has none
 a range set that is not one: ui::add_default_font: FontConfig.ranges 99 is not one of the RANGE_* constants
@@ -56,4 +57,4 @@ baked 100 times over: ui::bake: a scale of 100 (0.25 to 16)
 a scale set during input: ui::set_scale between ui::input_begin and ui::input_end
 five hexadecimal digits: ui::rgb_hex: "#12345" is not 6 hexadecimal digits, after an optional #
 a color past the last: '' ui::style_get_color_by_name: 32 is not one of the COLOR_* constants
-misuses counted: 60
+misuses counted: 61
