@@ -36,6 +36,7 @@ scancode of Left Shift true, named back Left Shift
 scancode of F1 true, named back F1
 scancode of Keypad Enter true, named back Keypad Enter
 no such key: 0
+one key by each platform's name: Left Alt true, Left GUI true, Right GUI true, Menu true
 clipboard at first ''
 set true: 'copied text'
 set empty true: ''

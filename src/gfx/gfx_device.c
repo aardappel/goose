@@ -631,9 +631,36 @@ int64_t gs_gfx_open_count(void) { return gfx_opens; }
 
 /* --- input ------------------------------------------------------------------- */
 
+/* SDL names a few keys after their platform's labels, and knows each only
+   by the name its own platform has: every one of them is taken everywhere. */
+static const struct {
+    SDL_Scancode scancode;
+    const char *name;
+} gfx_key_aliases[] = {
+    { SDL_SCANCODE_LALT, "Left Alt" },
+    { SDL_SCANCODE_LALT, "Left Option" },
+    { SDL_SCANCODE_RALT, "Right Alt" },
+    { SDL_SCANCODE_RALT, "Right Option" },
+    { SDL_SCANCODE_LGUI, "Left GUI" },
+    { SDL_SCANCODE_LGUI, "Left Command" },
+    { SDL_SCANCODE_LGUI, "Left Windows" },
+    { SDL_SCANCODE_RGUI, "Right GUI" },
+    { SDL_SCANCODE_RGUI, "Right Command" },
+    { SDL_SCANCODE_RGUI, "Right Windows" },
+    { SDL_SCANCODE_APPLICATION, "Application" },
+    { SDL_SCANCODE_APPLICATION, "Menu" },
+};
+
+static SDL_Scancode gfx_find_scancode(const char *name) {
+    SDL_Scancode sc = SDL_GetScancodeFromName(name);
+    for (size_t i = 0; sc == SDL_SCANCODE_UNKNOWN && i < SDL_arraysize(gfx_key_aliases); i++)
+        if (SDL_strcasecmp(name, gfx_key_aliases[i].name) == 0) sc = gfx_key_aliases[i].scancode;
+    return sc;
+}
+
 static SDL_Scancode gfx_scancode(gs_gfx_bytes name) {
     char buf[64];
-    SDL_Scancode sc = SDL_GetScancodeFromName(gfx_cstr(name, buf, sizeof buf));
+    SDL_Scancode sc = gfx_find_scancode(gfx_cstr(name, buf, sizeof buf));
     if (sc == SDL_SCANCODE_UNKNOWN) gfx_misuse("no key is called '%s'", buf);
     return sc;
 }
@@ -764,7 +791,7 @@ uint8_t gs_gfx_inject_text(gs_gfx_bytes text) {
 
 int64_t gs_gfx_scancode(gs_gfx_bytes name) {
     char buf[64];
-    return SDL_GetScancodeFromName(gfx_cstr(name, buf, sizeof buf));
+    return gfx_find_scancode(gfx_cstr(name, buf, sizeof buf));
 }
 
 int64_t gs_gfx_key_name(int64_t scancode, gs_gfx_bytes out) {

@@ -362,8 +362,10 @@ extern "gs_gfx_open_count" fn open_count() -> i64;
 // --- input -------------------------------------------------------------------
 
 // Keys by SDL's scancode names: "A", "1", "Space", "Return", "Escape",
-// "Left", "Left Shift", "F1". Down now; pressed or released since the last
-// frame(). The mouse is in the screen's pixels, which on a high-density
+// "Left", "Left Shift", "F1". The ones SDL names after a platform's labels
+// go by any of them everywhere: "Left Alt" or "Left Option", "Left GUI",
+// "Left Command" or "Left Windows", "Application" or "Menu". Down now;
+// pressed or released since the last frame(). The mouse is in the screen's pixels, which on a high-density
 // display outnumber the window's own coordinates.
 extern "gs_gfx_key_down" fn key_down(name: const u8[:]) -> bool;
 extern "gs_gfx_key_pressed" fn key_pressed(name: const u8[:]) -> bool;
@@ -407,7 +409,8 @@ fn events() -> Event[>..] {
 // Typed text comes as EVENT_TEXT only while text input is on: off by
 // default, since on some platforms it shows an on-screen keyboard.
 extern "gs_gfx_text_input" fn text_input(on: bool);
-// The scancode of the key of that name, as key_down takes it; 0 for none.
+// The scancode of the key of that name, as key_down takes it, 0 for none;
+// and the name the platform has for a key, as a label to show.
 extern "gs_gfx_scancode" fn scancode(name: const u8[:]) -> i64;
 extern "gs_gfx_key_name" fn key_name_into(scancode: i64, out: u8[:]) -> i64;
 fn key_name(scancode: i64) -> u8[>..] {

@@ -1,7 +1,8 @@
 // The gfx module's input events, headless: injected keys, text and mouse
 // input come back from events() in the order they came, keys with their
 // scancode, keycode and the modifiers held; scancodes and key names map
-// both ways; the clipboard, gfx's own without a window, holds text; and
+// both ways, and the names SDL gives keys after a platform's labels work on
+// every platform; the clipboard, gfx's own without a window, holds text; and
 // open_count tells a program gfx was closed and opened again.
 import std;
 import vec;
@@ -14,6 +15,16 @@ fn open_or_skip() -> bool {
     return false;
 }
 
+// A key by the name it was injected by: key_name gives the platform's
+// own, "Left Option" on a Mac for "Left Alt".
+fn name_of(scancode: i64) -> u8[>..] {
+    let injected: const u8[:][6] = ["Left Shift", "A", "Left Ctrl", "Left Alt", "Delete", "Return"];
+    for n in injected {
+        if gfx::scancode(n) == scancode { return str(n); }
+    }
+    gfx::key_name(scancode)
+}
+
 fn describe(e: gfx::Event) -> u8[>..] {
     if e.kind == gfx::EVENT_KEY {
         var mods: u8[>..] = [];
@@ -21,7 +32,7 @@ fn describe(e: gfx::Event) -> u8[>..] {
         if (e.mods & gfx::MOD_CTRL) != 0 { mods.append(" ctrl"); }
         if (e.mods & gfx::MOD_ALT) != 0 { mods.append(" alt"); }
         if (e.mods & gfx::MOD_GUI) != 0 { mods.append(" gui"); }
-        return str("key ", gfx::key_name(e.scancode as i64), if e.down { " down" } else { " up" },
+        return str("key ", name_of(e.scancode as i64), if e.down { " down" } else { " up" },
                    ", keycode ", e.keycode, if mods.len > 0 { str(", with", mods) } else { str("") },
                    if e.repeat { ", repeated" } else { "" });
     }
@@ -82,6 +93,13 @@ fn main() {
         print("scancode of ", n, " ", sc > 0, ", named back ", gfx::key_name(sc));
     }
     print("no such key: ", gfx::scancode("No Such Key"));
+    print("one key by each platform's name: Left Alt ",
+          gfx::scancode("Left Option") == gfx::scancode("Left Alt"), ", Left GUI ",
+          gfx::scancode("Left Command") == gfx::scancode("Left GUI") &&
+          gfx::scancode("Left Windows") == gfx::scancode("Left GUI"),
+          ", Right GUI ", gfx::scancode("right command") == gfx::scancode("Right Windows"),
+          ", Menu ", gfx::scancode("Menu") == gfx::scancode("Application") &&
+          gfx::scancode("Menu") > 0);
 
     print("clipboard at first '", gfx::clipboard(), "'");
     print("set ", gfx::set_clipboard("copied text"), ": '", gfx::clipboard(), "'");
