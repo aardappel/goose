@@ -98,8 +98,7 @@ fn main() {
           gfx::scancode("Left Command") == gfx::scancode("Left GUI") &&
           gfx::scancode("Left Windows") == gfx::scancode("Left GUI"),
           ", Right GUI ", gfx::scancode("right command") == gfx::scancode("Right Windows"),
-          ", Menu ", gfx::scancode("Menu") == gfx::scancode("Application") &&
-          gfx::scancode("Menu") > 0);
+          ", Application ", gfx::scancode("Application") > 0);
 
     print("clipboard at first '", gfx::clipboard(), "'");
     print("set ", gfx::set_clipboard("copied text"), ": '", gfx::clipboard(), "'");

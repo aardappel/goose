@@ -632,7 +632,9 @@ int64_t gs_gfx_open_count(void) { return gfx_opens; }
 /* --- input ------------------------------------------------------------------- */
 
 /* SDL names a few keys after their platform's labels, and knows each only
-   by the name its own platform has: every one of them is taken everywhere. */
+   by the name its own platform has: every one of them is taken everywhere.
+   Not "Menu", which Windows, X11 and Wayland call the Application key, but
+   which is also SDL's name for a key of its own. */
 static const struct {
     SDL_Scancode scancode;
     const char *name;
@@ -648,7 +650,6 @@ static const struct {
     { SDL_SCANCODE_RGUI, "Right Command" },
     { SDL_SCANCODE_RGUI, "Right Windows" },
     { SDL_SCANCODE_APPLICATION, "Application" },
-    { SDL_SCANCODE_APPLICATION, "Menu" },
 };
 
 static SDL_Scancode gfx_find_scancode(const char *name) {
