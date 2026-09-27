@@ -2,8 +2,9 @@
 // font configuration defaults against the Goose ones, the built-in font at
 // two sizes and a TrueType one from a file and from memory in one atlas,
 // glyph ranges of every kind, baking and what it leaves (the image, the
-// fonts' metrics, glyphs, text widths), the texture bookkeeping a renderer
-// uses, contexts made on a font and by default, and what each keeps.
+// fonts' metrics, glyphs, text widths), baking at a scale, the texture
+// bookkeeping a renderer uses, contexts made on a font and by default, and
+// what each keeps.
 import std;
 import vec;
 import math;
@@ -105,6 +106,24 @@ fn main() {
     print("'5' in the first font, merged digits too: own ", merged_own, ", ",
           merged_glyph.codepoint);
 
+    // The same font baked at two scales measures at its own size either way,
+    // with twice the texels to each glyph at 2.
+    let scales: f32[2] = [1.0, 2.0];
+    for s in scales {
+        let a = ui::create_font_atlas();
+        let f = ui::add_default_font(a, 13.0);
+        guard ui::bake(a, s) else { abort(str("bake: ", ui::error())); }
+        let info = ui::info(f);
+        let image = ui::atlas_size(a);
+        let glyph, found = ui::find_glyph(f, 'A');
+        print("baked at ", num(s), ": ", num(info.height), " high, ascent ", num(info.ascent),
+              ", 'Goose' ", num(ui::text_width(f, "Goose")), " wide; 'A' ", found, " ",
+              num(glyph.w), " x ", num(glyph.h), " from ",
+              num((glyph.u1 - glyph.u0) * image.x as f32), " x ",
+              num((glyph.v1 - glyph.v0) * image.y as f32), " texels");
+        ui::destroy(a);
+    }
+
     // The texture a renderer uploads the image to: none yet, so the atlas is
     // the one without; set, forgotten, set again.
     print("texture ", ui::texture(atlas), "; waiting ", ui::atlas_without_texture() == atlas);
@@ -135,6 +154,19 @@ fn main() {
     // Its atlas goes with it.
     ui::destroy(own_ctx);
     print("destroyed: context ", ui::is_valid(own_ctx), ", its atlas ", ui::is_valid(own_atlas));
+
+    // A destroyed atlas's texture comes back once, for the renderer that
+    // made it to release; an atlas without one adds nothing.
+    let textured = ui::create_font_atlas();
+    ui::add_default_font(textured, 13.0);
+    ui::bake(textured);
+    ui::set_texture(textured, 91);
+    let bare = ui::create_font_atlas();
+    ui::destroy(textured);
+    ui::destroy(bare);
+    let released = ui::released_textures();
+    print("released textures: ", released.len, ", ", released[0], "; then ",
+          ui::released_textures().len);
 
     ui::destroy(ctx);
     ui::destroy(atlas);

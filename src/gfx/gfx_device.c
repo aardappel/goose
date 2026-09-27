@@ -293,16 +293,23 @@ static const char *gfx_cstr(gs_gfx_bytes s, char *buf, size_t cap) {
 
 /* SDL reports the mouse in window coordinates, which a high-density display
    has fewer of than pixels; gfx reports pixels, as the screen has them. The
-   scale between the two, per axis, taken again whenever the window's size in
-   either changes. */
+   window's size in both, taken again whenever either changes. */
 static void gfx_update_input_scale(void) {
     int w = 0, h = 0, pw = 0, ph = 0;
     if (!gfx.window || !SDL_GetWindowSize(gfx.window, &w, &h) ||
         !SDL_GetWindowSizeInPixels(gfx.window, &pw, &ph) || w <= 0 || h <= 0 || pw <= 0 ||
         ph <= 0)
         return;
-    gfx.input_scale_x = (float)pw / (float)w;
-    gfx.input_scale_y = (float)ph / (float)h;
+    gfx.window_w = w;
+    gfx.window_h = h;
+    gfx.window_pw = pw;
+    gfx.window_ph = ph;
+}
+
+/* A window coordinate in pixels: multiplied before dividing, in double, so
+   one that is a whole number of pixels comes out exactly that. */
+static float gfx_to_pixels(float v, int pixels, int size) {
+    return (float)((double)v * pixels / size);
 }
 
 static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t height,
@@ -348,14 +355,15 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
                : (have & SDL_GPU_SHADERFORMAT_DXBC) ? SDL_GPU_SHADERFORMAT_DXBC
                : SDL_GPU_SHADERFORMAT_MSL;
     int pw = (int)width, ph = (int)height;
-    gfx.input_scale_x = gfx.input_scale_y = 1;
+    gfx.window_w = gfx.window_h = gfx.window_pw = gfx.window_ph = 1;
     if (windowed) {
         char buf[512];
-        SDL_WindowFlags wf = 0;
+        /* The display's every pixel, where some would otherwise draw fewer and
+           have the window scaled up. */
+        SDL_WindowFlags wf = SDL_WINDOW_HIGH_PIXEL_DENSITY;
         if (flags & GS_GFX_WINDOW_RESIZABLE) wf |= SDL_WINDOW_RESIZABLE;
         if (flags & GS_GFX_WINDOW_HIDDEN) wf |= SDL_WINDOW_HIDDEN;
         if (flags & GS_GFX_WINDOW_FULLSCREEN) wf |= SDL_WINDOW_FULLSCREEN;
-        if (flags & GS_GFX_WINDOW_HIGH_DPI) wf |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
         gfx.window = SDL_CreateWindow(gfx_cstr(title, buf, sizeof buf), (int)width, (int)height,
                                       wf);
         if (!gfx.window || !SDL_ClaimWindowForGPUDevice(gfx.dev, gfx.window)) {
@@ -546,11 +554,12 @@ uint8_t gs_gfx_frame(void) {
                 break;
             case SDL_EVENT_MOUSE_MOTION: {
                 bool injected = e.motion.which == GFX_INJECTED_MOUSE;
-                float sx = injected ? 1 : gfx.input_scale_x, sy = injected ? 1 : gfx.input_scale_y;
-                gfx.mouse_x = e.motion.x * sx;
-                gfx.mouse_y = e.motion.y * sy;
-                gfx.mouse_dx += e.motion.xrel * sx;
-                gfx.mouse_dy += e.motion.yrel * sy;
+                int pw = injected ? 1 : gfx.window_pw, w = injected ? 1 : gfx.window_w;
+                int ph = injected ? 1 : gfx.window_ph, h = injected ? 1 : gfx.window_h;
+                gfx.mouse_x = gfx_to_pixels(e.motion.x, pw, w);
+                gfx.mouse_y = gfx_to_pixels(e.motion.y, ph, h);
+                gfx.mouse_dx += gfx_to_pixels(e.motion.xrel, pw, w);
+                gfx.mouse_dy += gfx_to_pixels(e.motion.yrel, ph, h);
                 gs_gfx_event *ev = gfx_event(GS_GFX_EVENT_MOUSE_MOTION);
                 ev->x = gfx.mouse_x;
                 ev->y = gfx.mouse_y;
@@ -562,8 +571,10 @@ uint8_t gs_gfx_frame(void) {
                     gfx.buttons = e.button.down ? gfx.buttons | bit : gfx.buttons & ~bit;
                 }
                 bool injected = e.button.which == GFX_INJECTED_MOUSE;
-                gfx.mouse_x = e.button.x * (injected ? 1 : gfx.input_scale_x);
-                gfx.mouse_y = e.button.y * (injected ? 1 : gfx.input_scale_y);
+                gfx.mouse_x = injected ? e.button.x
+                                       : gfx_to_pixels(e.button.x, gfx.window_pw, gfx.window_w);
+                gfx.mouse_y = injected ? e.button.y
+                                       : gfx_to_pixels(e.button.y, gfx.window_ph, gfx.window_h);
                 gs_gfx_event *ev = gfx_event(GS_GFX_EVENT_MOUSE_BUTTON);
                 ev->button = e.button.button;
                 ev->clicks = e.button.clicks;

@@ -1,9 +1,9 @@
 // The ui module through gfx, headless: frames drawn over the screen and
 // over a render target, their solid parts read back; clicks, typing,
 // editing keys, shortcuts and the clipboard coming in through
-// input_from_gfx from injected input; and the renderer made again after
-// gfx is closed and opened. Solid parts cover whole pixels, so every
-// backend draws them alike.
+// input_from_gfx from injected input; the ui drawn and clicked at twice
+// the scale; and the renderer made again after gfx is closed and opened.
+// Solid parts cover whole pixels, so every backend draws them alike.
 import std;
 import vec;
 import math;
@@ -176,6 +176,26 @@ fn main() {
     print("half alpha: window ", faded[i] > 45 && faded[i] < 51, " ",
           faded[i + 2] > 45 && faded[i + 2] < 153);
     gfx::release(target);
+
+    // --- the ui at twice the scale: laid out as before, drawn twice as big
+    // (the screen shows its top left quarter), clicked in pixels ---
+    ui::set_scale(ctx, 2.0);
+    gfx::inject_mouse(5.0, 5.0, 0, false);
+    frame(ctx);
+    let before = clicks;
+    let bp = centre(button_at);
+    gfx::inject_mouse(bp.x * 2.0, bp.y * 2.0, gfx::MOUSE_LEFT, true);
+    frame(ctx);
+    gfx::inject_mouse(bp.x * 2.0, bp.y * 2.0, gfx::MOUSE_LEFT, false);
+    gfx::inject_mouse(5.0, 5.0, 0, false);
+    frame(ctx);
+    let big = gfx::read_pixels(gfx::screen());
+    let doubled = ui::Rect { button_at.x * 2.0, button_at.y * 2.0, button_at.w * 2.0,
+                             button_at.h * 2.0 };
+    print("at scale 2: outside ", px(big, 5.0, 5.0), ", title bar ", px(big, 150.0, 30.0),
+          ", button ", px(big, centre(doubled).x, doubled.y + 6.0), ", its text ",
+          has_text(big, doubled), "; clicked in pixels ", clicks == before + 1);
+    ui::set_scale(ctx, 1.0);
 
     // --- gfx closed and opened again ---
     gfx::close();

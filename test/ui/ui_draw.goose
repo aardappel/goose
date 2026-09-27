@@ -3,7 +3,8 @@
 // the scissor clips them; the frame converts to vertices, indices and draw
 // calls, which change with the conversion's settings; and the input queries
 // answer for the mouse, clicks in rectangles, hovering, hovering for a
-// while (counted in the program's timers), and scrolling.
+// while (counted in the program's timers), and scrolling; and the whole
+// ui at a scale, laid out as before, drawn and fed input in pixels.
 import std;
 import vec;
 import math;
@@ -215,5 +216,52 @@ fn main() {
         if step == 6 { clicked = true; }
     }
     ui::destroy(ctx);
+
+    // --- the whole ui at a scale ---
+    let big = ui::create(13.0);
+    let first_font = ui::font(big);
+    print("scale ", ui::scale(big), "; set to 2 ", ui::set_scale(big, 2.0), ": ", ui::scale(big),
+          "; its font baked again ", ui::font(big) != first_font, ", ",
+          ui::info(ui::font(big)).height, " high");
+    var pressed = false;
+    var button = ui::rect(0, 0, 0, 0);
+    for step in 3 {
+        // Pixels, twice the ui's units: the button's middle.
+        let px = ((button.x + button.w / 2.0) * 2.0) as! i64;
+        let py = ((button.y + button.h / 2.0) * 2.0) as! i64;
+        ui::input_begin(big);
+        ui::input_motion(big, px, py);
+        ui::input_button(big, ui::BUTTON_LEFT, px, py, step == 1);
+        ui::input_end(big);
+        if step == 1 {
+            let m = ui::input_mouse(big);
+            print("the mouse at pixel ", px, ",", py, " is at ", m.pos.x, ",", m.pos.y,
+                  " in the ui");
+        }
+        if ui::begin(big, "Scaled", ui::rect(10, 10, 100, 80), 0) {
+            ui::layout_row_dynamic(big, 20.0, 1);
+            button = ui::widget_bounds(big);
+            if ui::button_label(big, "Hi") { pressed = true; }
+        }
+        ui::end(big);
+    }
+    ui::convert(big, ui::ConvertConfig { line_aa: false, shape_aa: false });
+    var lo = float2 { 10000.0, 10000.0 };
+    var hi = float2 { -10000.0, -10000.0 };
+    for v in ui::vertices(big) {
+        lo = float2 { min(lo.x, v.pos.x), min(lo.y, v.pos.y) };
+        hi = float2 { max(hi.x, v.pos.x), max(hi.y, v.pos.y) };
+    }
+    let clip = ui::draw_commands(big)[1].clip_rect;
+    print("button at ", button.x, ",", button.y, " in the ui, clicked through pixels ", pressed,
+          "; the window at 10,10 100 x 80 drawn from ", lo.x, ",", lo.y, " to ", hi.x, ",", hi.y,
+          ", clipped to ", clip.x, ",", clip.y, " ", clip.w, " x ", clip.h);
+    print("back to 1 ", ui::set_scale(big, 1.0), ": ", ui::scale(big), ", ",
+          ui::info(ui::font(big)).height, " high");
+    ui::destroy(big);
+    let made_scaled = ui::create(16.0, 1.5);
+    print("made at 1.5: ", ui::scale(made_scaled), ", ", ui::info(ui::font(made_scaled)).height,
+          " high");
+    ui::destroy(made_scaled);
     print("misuses ", ui::misuse_count());
 }

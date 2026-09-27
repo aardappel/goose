@@ -159,6 +159,17 @@ fn main() {
     said("a header alignment that is not one");
     ui::rgb_factor(ui::rgb(1, 2, 3), 2.0);
     said("a factor past 1");
+    ui::set_scale(ctx, 0.0);
+    said("a scale of 0");
+    let unbaked = ui::create_font_atlas();
+    ui::add_default_font(unbaked, 13.0);
+    ui::bake(unbaked, 100.0);
+    said("baked 100 times over");
+    ui::destroy(unbaked);
+    ui::input_begin_raw(ctx);
+    ui::set_scale(ctx, 2.0);
+    said("a scale set during input");
+    ui::input_end(ctx);
     ui::rgb_hex("#12345");
     said("five hexadecimal digits");
     print("a color past the last: '", ui::style_get_color_by_name(ui::COLOR_COUNT), "' ",

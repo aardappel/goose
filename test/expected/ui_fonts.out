@@ -20,6 +20,8 @@ wider when bigger true; empty text 0.00
 'A' in the digits font: own false, drawn as 63
 '7' in the digits font: own true, codepoint 55
 '5' in the first font, merged digits too: own true, 53
+baked at 1.00: 13.00 high, ascent 9.50, 'Goose' 35.00 wide; 'A' true 6.50 x 8.00 from 6.00 x 8.00 texels
+baked at 2.00: 13.00 high, ascent 9.50, 'Goose' 35.00 wide; 'A' true 6.25 x 8.00 from 12.00 x 16.00 texels
 texture 0; waiting true
 texture 77; waiting 0
 forgotten: texture 0; waiting true
@@ -29,4 +31,5 @@ delta time 0.25
 copied '' false
 default context: valid true, atlas true baked true with 1 font of 16.00
 destroyed: context false, its atlas false
+released textures: 1, 91; then 0
 all destroyed: false false false; misuses 0

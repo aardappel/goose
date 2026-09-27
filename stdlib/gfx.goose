@@ -48,7 +48,6 @@ import math;
 let WINDOW_RESIZABLE: i32 = 1;
 let WINDOW_HIDDEN: i32 = 2;
 let WINDOW_FULLSCREEN: i32 = 4;
-let WINDOW_HIGH_DPI: i32 = 8;
 let NO_VSYNC: i32 = 16;
 let DEBUG: i32 = 32;            // validation layers, where installed; on in a debug build of gfx
 
@@ -281,8 +280,10 @@ struct PassDesc {
 // a gfx program in-process, so this is true wherever it runs.
 extern "gs_gfx_available" fn available() -> bool;
 
-// A window of width x height (in points: WINDOW_HIGH_DPI may give it more
-// pixels) and the GPU device, or false with error() set.
+// A window of width x height in the display's own coordinates, and the GPU
+// device, or false with error() set. The screen has every pixel of the
+// window, which a high-density display has more of: screen_size() says how
+// many.
 extern "gs_gfx_open" fn open(title: const u8[:], width: i64, height: i64, flags: i64) -> bool;
 fn open(title: const u8[:], width: i64, height: i64) -> bool { open(title, width, height, 0) }
 // The device alone, drawing into a screen of width x height that no window

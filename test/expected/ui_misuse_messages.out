@@ -51,6 +51,9 @@ two cursors: ui::style_load_all_cursors: 2 cursors, where there is one per CURSO
 a cursor that is not one: ui::style_set_cursor: 42 is not one of the CURSOR_* constants
 a header alignment that is not one: ui::set_style: the style's align is not a value it can have
 a factor past 1: ui::rgb_factor: a factor of 2 (0 to 1)
+a scale of 0: ui::set_scale: a scale of 0 (0.25 to 16)
+baked 100 times over: ui::bake: a scale of 100 (0.25 to 16)
+a scale set during input: ui::set_scale between ui::input_begin and ui::input_end
 five hexadecimal digits: ui::rgb_hex: "#12345" is not 6 hexadecimal digits, after an optional #
 a color past the last: '' ui::style_get_color_by_name: 32 is not one of the COLOR_* constants
-misuses counted: 57
+misuses counted: 60

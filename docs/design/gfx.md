@@ -124,6 +124,12 @@ fields in the same order, and the same constant values.
   screen are ordinary texture downloads, and a minimized window (no swapchain
   image) only skips the blit. A headless device (`open_headless`, or `open`
   under `GOOSE_GFX_HEADLESS=1`) has the same screen and no window.
+* **Everything is in pixels.** A window always asks for the display's full
+  pixel density, so on a high-density display its screen has more pixels
+  than its size in the display's coordinates, which SDL gives the mouse in:
+  positions and motion are multiplied by the window's size in pixels and
+  divided by its size in those coordinates, in double, so a whole pixel
+  comes out whole. Injected mouse input is in pixels already.
 * **Pipelines are created for their render targets.** A pipeline description
   does not name its targets. The layer creates a pipeline on first use with
   each combination of color formats, depth format, and sample count.

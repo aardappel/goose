@@ -378,6 +378,8 @@ struct FontConfig {
     fallback_glyph: u32 = 63,       // '?', drawn for a character the font lacks
 }
 
+// A font's metrics and glyphs at its own size, whatever scale it was baked
+// at; a glyph's u and v are in the atlas's image.
 struct FontInfo {
     height: f32,
     ascent: f32,
@@ -724,8 +726,12 @@ fn add_font_from_file(a: FontAtlas, path: const u8[:], height: f32, config: Font
 fn add_font_from_file(a: FontAtlas, path: const u8[:], height: f32) -> Font {
     add_font_from_file(a, path, height, FontConfig {})
 }
-// Rasterizes the fonts added into the atlas's image; no fonts are added after.
-extern "gs_ui_bake_font_atlas" fn bake(a: FontAtlas) -> bool;
+// Rasterizes the fonts added into the atlas's image; no fonts are added
+// after. At a `scale`, the glyphs are that many times the fonts' size
+// while the fonts measure at their own: sharp text for a ui drawn with
+// set_scale at the same scale.
+extern "gs_ui_bake_font_atlas" fn bake(a: FontAtlas, scale: f32) -> bool;
+fn bake(a: FontAtlas) -> bool { bake(a, 1.0) }
 extern "gs_ui_font_atlas_is_baked" fn is_baked(a: FontAtlas) -> bool;
 // The baked image: RGBA, width x height.
 extern "gs_ui_font_atlas_size" fn atlas_size_into(a: FontAtlas, out: int2&);
@@ -751,6 +757,16 @@ extern "gs_ui_font_atlas_texture" fn texture(a: FontAtlas) -> u32;
 extern "gs_ui_font_atlas_without_texture" fn atlas_without_texture() -> FontAtlas;
 // Forgets every atlas's texture, for a renderer whose textures are gone.
 extern "gs_ui_forget_font_atlas_textures" fn forget_textures();
+extern "gs_ui_released_textures" fn released_textures_into(out: u32[:]) -> i64;
+// The textures of the atlases destroyed since the last call, for the
+// renderer that made them to release.
+fn released_textures() -> u32[>..] {
+    var out: u32[>..] = [];
+    let n = released_textures_into(out);
+    out.resize(n, 0);
+    released_textures_into(out);
+    return out;
+}
 extern "gs_ui_font_atlas_fonts" fn fonts_into(a: FontAtlas, out: Font[:]) -> i64;
 // The atlas's fonts, in the order added.
 fn fonts(a: FontAtlas) -> Font[>..] {
@@ -790,9 +806,15 @@ fn glyph_ranges(which: i64) -> u32[>..] {
 // A context drawing with `font`, from a baked atlas; its windows and their
 // state live in it.
 extern "gs_ui_create_context" fn create_context(font: Font) -> Context;
-// A context drawing with Nuklear's built-in font at `font_height` pixels
-// (13 is its native size), in an atlas made for it and destroyed with it.
+// A context drawing with Nuklear's built-in font at `font_height` (13 is
+// its native size), in an atlas made for it and destroyed with it; given a
+// scale, drawn at it (set_scale).
 extern "gs_ui_create_default_context" fn create(font_height: f32) -> Context;
+fn create(font_height: f32, scale: f32) -> Context {
+    let c = create(font_height);
+    set_scale(c, scale);
+    c
+}
 // The atlas of the font the context was made with, whose white texel
 // draws its shapes.
 extern "gs_ui_context_atlas" fn context_atlas(c: Context) -> FontAtlas;
@@ -828,11 +850,21 @@ fn copied(c: Context) -> u8[>..], bool {
 }
 // The texture shapes are drawn with: the one holding its atlas's image.
 extern "gs_ui_null_texture" fn null_texture(c: Context) -> u32;
+// The whole ui `scale` times bigger: laid out as before, in units of the
+// ui's own (window rectangles, rows, the font's size), and drawn with that
+// many pixels to each, which convert() and render() produce and input
+// comes in. A context made by create() has its font baked again at the
+// scale, which gives it a new font handle; another's text is as sharp as
+// its atlas was baked (bake(atlas, scale)). Not during a frame; 1 at
+// first.
+extern "gs_ui_set_scale" fn set_scale(c: Context, scale: f32) -> bool;
+extern "gs_ui_scale" fn scale(c: Context) -> f32;
 
 // --- input -------------------------------------------------------------------
 
 // A frame's input goes between input_begin and input_end, before any
-// window; input_from_gfx below does it all from gfx's.
+// window; input_from_gfx below does it all from gfx's. Positions are
+// pixels, which the ui divides by its scale.
 extern "gs_ui_input_begin" fn input_begin_raw(c: Context);
 fn input_begin(c: Context) {
     input_begin_raw(c);
@@ -851,10 +883,11 @@ fn input_text(c: Context, text: const u8[:]) {
     each_utf8(text) { input_unicode(c, it as u32); };
 }
 
-// The input this frame, as widgets see it. A click is a button going down
-// or up, and a release completes one: the has_ queries look at where the
-// button's last click was, whenever that was, and the is_ ones at a click
-// this frame; has_mouse_click is a release this frame.
+// The input this frame, as widgets see it, in the ui's own units. A click
+// is a button going down or up, and a release completes one: the has_
+// queries look at where the button's last click was, whenever that was,
+// and the is_ ones at a click this frame; has_mouse_click is a release
+// this frame.
 extern "gs_ui_input_mouse" fn input_mouse(c: Context) -> Mouse;
 extern "gs_ui_input_has_mouse_click" fn input_has_mouse_click(c: Context, button: i64) -> bool;
 extern "gs_ui_input_has_mouse_click_in_rect" fn input_has_mouse_click_in_rect(c: Context,
@@ -1763,10 +1796,6 @@ struct Renderer {
 var renderer = Renderer { 0, gfx::Pipeline { 0 }, gfx::Sampler { 0 }, gfx::Buffer { 0 }, 0,
                           gfx::Buffer { 0 }, 0, false, [0; 16] };
 
-let gfx_key_names: const u8[:][16] = ["Left Shift", "Right Shift", "Left Ctrl", "Right Ctrl",
-                                      "Delete", "Return", "Keypad Enter", "Tab", "Backspace",
-                                      "Home", "End", "PageDown", "PageUp", "Up", "Down", "Escape"];
-
 fn make_renderer() {
     let vs = embed_shader("vert", """
         layout(location = 0) in vec2 a_pos;
@@ -1801,6 +1830,7 @@ fn make_renderer() {
     renderer.opened = gfx::open_count();
     // The atlases' textures died with the gfx they were made in.
     forget_textures();
+    for i in renderer_textures.len { renderer_textures[i] = 0; }
 }
 
 // A buffer of at least `bytes`, grown to the next power of two.
@@ -1812,8 +1842,21 @@ fn ensure_buffer(b: gfx::Buffer&, capacity: i64&, usage: i32, bytes: i64) {
     b = gfx::buffer(usage, capacity, none);
 }
 
-// Uploads the image of every baked atlas no texture holds yet.
+// The gfx textures upload_atlases made, which are released with their
+// atlases; a 0 is a free slot. A global array only grows: a program's
+// global strings could be views of it.
+var renderer_textures: u32[>..] = [];
+
+// Uploads the image of every baked atlas no texture holds yet, and releases
+// the textures of those destroyed.
 fn upload_atlases() {
+    for t in released_textures() {
+        let i = position(renderer_textures, t);
+        if i >= 0 {
+            gfx::release(gfx::Texture { t });
+            renderer_textures[i] = 0;
+        }
+    }
     loop {
         let a = atlas_without_texture();
         if a.id == 0 { break; }
@@ -1821,6 +1864,8 @@ fn upload_atlases() {
         let t = gfx::texture2d(size.x, size.y);
         gfx::update_texture(t, atlas_pixels(a));
         set_texture(a, t.id);
+        let free = position(renderer_textures, 0);
+        if free >= 0 { renderer_textures[free] = t.id; } else { renderer_textures.push(t.id); }
     }
 }
 
@@ -1870,9 +1915,13 @@ fn render(c: Context, target: gfx::Texture) { render(c, target, ConvertConfig {}
 // Over the screen.
 fn render(c: Context) { render(c, gfx::screen(), ConvertConfig {}) }
 
-// The scancode of one of gfx_key_names.
+// The scancode of one of the keys input_from_gfx maps, by the name gfx has
+// for it.
 fn gfx_key(i: i64) -> i64 {
-    if renderer.keys[i] == 0 { renderer.keys[i] = gfx::scancode(gfx_key_names[i]); }
+    let names: const u8[:][16] = ["Left Shift", "Right Shift", "Left Ctrl", "Right Ctrl", "Delete",
+                                  "Return", "Keypad Enter", "Tab", "Backspace", "Home", "End",
+                                  "PageDown", "PageUp", "Up", "Down", "Escape"];
+    if renderer.keys[i] == 0 { renderer.keys[i] = gfx::scancode(names[i]); }
     renderer.keys[i]
 }
 

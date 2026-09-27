@@ -312,6 +312,7 @@ gs_ui_context gs_ui_create_context(gs_ui_font font) {
         return none;
     }
     u->atlas = f->atlas;
+    u->scale = 1;
     nk_buffer_init_default(&u->cmds);
     nk_buffer_init_default(&u->verts);
     nk_buffer_init_default(&u->idx);
@@ -359,11 +360,53 @@ gs_ui_context gs_ui_create_default_context(float font_height) {
     gs_ui_font_config config = gs_ui_default_font_config();
     gs_ui_u32_slice ranges = { NULL, 0 };
     gs_ui_font f = gs_ui_add_default_font(a, font_height, config, ranges);
-    gs_ui_context c = f.id && gs_ui_bake_font_atlas(a) ? gs_ui_create_context(f) : none;
+    gs_ui_context c = f.id && gs_ui_bake_font_atlas(a, 1) ? gs_ui_create_context(f) : none;
     ui_ctx *u = (ui_ctx *)ui_table_find(&ui_contexts, c.id);
-    if (u) u->owns_atlas = true;
-    else gs_ui_destroy_font_atlas(a);
+    if (u) {
+        u->owns_atlas = true;
+        u->font_height = font_height;
+    } else {
+        gs_ui_destroy_font_atlas(a);
+    }
     return c;
+}
+
+bool ui_scale_ok(float scale, const char *fn) {
+    if (scale >= 0.25f && scale <= 16) return true;
+    return ui_misuse("%s: a scale of %g (0.25 to 16)", fn, (double)scale);
+}
+
+uint8_t gs_ui_set_scale(gs_ui_context c, float scale) {
+    UI_CTX(c, "ui::set_scale", 0);
+    if (!ui_outside(u, "ui::set_scale") || !ui_scale_ok(scale, "ui::set_scale")) return 0;
+    if (u->owns_atlas && scale != u->scale) {
+        /* Its own font, baked again at the scale for sharp text. */
+        if (ctx->stacks.fonts.head > 0)
+            return ui_misuse("ui::set_scale with fonts pushed: its own font is baked again, so "
+                             "ui::style_pop_font them first");
+        ui_atlas *old = (ui_atlas *)ui_table_find(&ui_atlases, u->atlas);
+        ui_font *oldf = (ui_font *)ui_table_find(&ui_fonts, old->fonts[0]);
+        gs_ui_font_atlas a = gs_ui_create_font_atlas();
+        if (!a.id) return 0;
+        gs_ui_u32_slice ranges = { NULL, 0 };
+        gs_ui_font nf = gs_ui_add_default_font(a, u->font_height, gs_ui_default_font_config(),
+                                               ranges);
+        if (!nf.id || !gs_ui_bake_font_atlas(a, scale)) {
+            gs_ui_destroy_font_atlas(a);
+            return 0;
+        }
+        ui_font *f = (ui_font *)ui_table_find(&ui_fonts, nf.id);
+        if (ctx->style.font == &oldf->font->handle) nk_style_set_font(ctx, &f->font->handle);
+        u->atlas = a.id;
+        if (!ui_atlas_in_use(old)) ui_free_atlas(old);
+    }
+    u->scale = scale;
+    return 1;
+}
+
+float gs_ui_scale(gs_ui_context c) {
+    UI_CTX(c, "ui::scale", 1);
+    return u->scale;
 }
 
 gs_ui_font_atlas gs_ui_context_atlas(gs_ui_context c) {
@@ -441,9 +484,16 @@ void gs_ui_input_begin(gs_ui_context c) {
     u->in_input = true;
 }
 
+/* Input comes in pixels, of which the ui's own units are `scale`, so it
+   lands between Nuklear's whole ones: kept as the floats Nuklear holds. */
 void gs_ui_input_motion(gs_ui_context c, int64_t x, int64_t y) {
     UI_INPUT(c, "ui::input_motion", );
+    struct nk_input *in = &ctx->input;
     nk_input_motion(ctx, ui_int(x), ui_int(y));
+    in->mouse.pos.x = (float)x / u->scale;
+    in->mouse.pos.y = (float)y / u->scale;
+    in->mouse.delta.x = in->mouse.pos.x - in->mouse.prev.x;
+    in->mouse.delta.y = in->mouse.pos.y - in->mouse.prev.y;
 }
 
 void gs_ui_input_key(gs_ui_context c, int64_t key, uint8_t down) {
@@ -453,8 +503,14 @@ void gs_ui_input_key(gs_ui_context c, int64_t key, uint8_t down) {
 
 void gs_ui_input_button(gs_ui_context c, int64_t button, int64_t x, int64_t y, uint8_t down) {
     UI_INPUT(c, "ui::input_button", );
-    if (ui_button_ok(button, "ui::input_button"))
-        nk_input_button(ctx, (enum nk_buttons)button, ui_int(x), ui_int(y), down != 0);
+    if (!ui_button_ok(button, "ui::input_button")) return;
+    struct nk_mouse_button *b = &ctx->input.mouse.buttons[button];
+    bool was = b->down;
+    nk_input_button(ctx, (enum nk_buttons)button, ui_int(x), ui_int(y), down != 0);
+    if (b->down != was) {
+        b->clicked_pos.x = (float)x / u->scale;
+        b->clicked_pos.y = (float)y / u->scale;
+    }
 }
 
 void gs_ui_input_scroll(gs_ui_context c, gs_ui_float2 amount) {
@@ -878,6 +934,14 @@ int64_t gs_ui_convert(gs_ui_context c, const gs_ui_convert_config *config) {
     nk_buffer_clear(&u->verts);
     nk_buffer_clear(&u->idx);
     nk_flags result = nk_convert(ctx, &u->cmds, &u->verts, &u->idx, &cfg);
+    /* In pixels, scale times the ui's own units. */
+    if (u->scale != 1) {
+        gs_ui_vertex *v = (gs_ui_vertex *)nk_buffer_memory(&u->verts);
+        for (nk_size i = 0; i < ctx->draw_list.vertex_count; i++) {
+            v[i].pos.x *= u->scale;
+            v[i].pos.y *= u->scale;
+        }
+    }
     /* The draws as they are now: Nuklear's iterator reads the context's
        draw list, which later calls change. Empty ones are left out. */
     u->ndraws = 0;
@@ -892,6 +956,10 @@ int64_t gs_ui_convert(gs_ui_context c, const gs_ui_convert_config *config) {
         gs_ui_draw_command *d = &u->draws[u->ndraws++];
         d->elem_count = cmd->elem_count;
         d->clip_rect = ui_rect_of(cmd->clip_rect);
+        d->clip_rect.x *= u->scale;
+        d->clip_rect.y *= u->scale;
+        d->clip_rect.w *= u->scale;
+        d->clip_rect.h *= u->scale;
         d->texture = (uint32_t)cmd->texture.id;
     }
     u->nverts = (int64_t)ctx->draw_list.vertex_count;

@@ -386,7 +386,7 @@ typedef struct {
     X(gs_ui_font, gs_ui_add_default_font, (gs_ui_font_atlas a, float height, gs_ui_font_config config, gs_ui_u32_slice ranges)) \
     X(gs_ui_font, gs_ui_add_font_from_memory, (gs_ui_font_atlas a, gs_ui_bytes ttf, float height, gs_ui_font_config config, gs_ui_u32_slice ranges)) \
     X(gs_ui_font, gs_ui_add_font_from_file, (gs_ui_font_atlas a, gs_ui_bytes path, float height, gs_ui_font_config config, gs_ui_u32_slice ranges)) \
-    X(uint8_t, gs_ui_bake_font_atlas, (gs_ui_font_atlas a)) \
+    X(uint8_t, gs_ui_bake_font_atlas, (gs_ui_font_atlas a, float scale)) \
     X(uint8_t, gs_ui_font_atlas_is_baked, (gs_ui_font_atlas a)) \
     X(void, gs_ui_font_atlas_size, (gs_ui_font_atlas a, gs_ui_int2 *out)) \
     X(int64_t, gs_ui_font_atlas_pixels, (gs_ui_font_atlas a, gs_ui_bytes out)) \
@@ -394,6 +394,7 @@ typedef struct {
     X(uint32_t, gs_ui_font_atlas_texture, (gs_ui_font_atlas a)) \
     X(gs_ui_font_atlas, gs_ui_font_atlas_without_texture, (void)) \
     X(void, gs_ui_forget_font_atlas_textures, (void)) \
+    X(int64_t, gs_ui_released_textures, (gs_ui_u32_slice out)) \
     X(int64_t, gs_ui_font_atlas_fonts, (gs_ui_font_atlas a, gs_ui_font_slice out)) \
     X(gs_ui_font_atlas, gs_ui_font_atlas_of, (gs_ui_font f)) \
     X(uint8_t, gs_ui_font_is_valid, (gs_ui_font f)) \
@@ -414,6 +415,8 @@ typedef struct {
     X(void, gs_ui_set_clipboard, (gs_ui_context c, gs_ui_bytes text)) \
     X(int64_t, gs_ui_copied, (gs_ui_context c, gs_ui_bytes out)) \
     X(uint32_t, gs_ui_null_texture, (gs_ui_context c)) \
+    X(uint8_t, gs_ui_set_scale, (gs_ui_context c, float scale)) \
+    X(float, gs_ui_scale, (gs_ui_context c)) \
     /* Input. */ \
     X(void, gs_ui_input_begin, (gs_ui_context c)) \
     X(void, gs_ui_input_motion, (gs_ui_context c, int64_t x, int64_t y)) \

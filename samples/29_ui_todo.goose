@@ -10,8 +10,9 @@
 // where the windows are and what is open or active.
 //
 // Type a task and press Enter or Add, tick tasks off, pick which to show,
-// and mix the backdrop. Escape or closing the window quits. `-- --frames N`
-// stops after N frames. Either way the last frame is saved as ui_todo.png.
+// mix the backdrop, and make the whole ui bigger or smaller. Escape or
+// closing the window quits. `-- --frames N` stops after N frames. Either
+// way the last frame is saved as ui_todo.png.
 //
 //   goose 29_ui_todo.goose
 //
@@ -66,6 +67,7 @@ fn main() {
     var entry: u8[..40] = [];
     var show = SHOW_ALL;
     var backdrop = ui::Colorf { 0.18, 0.24, 0.30, 1.0 };
+    var next_scale = ui::scale(ctx);
     let window = ui::WINDOW_BORDER | ui::WINDOW_MOVABLE | ui::WINDOW_SCALABLE |
                  ui::WINDOW_TITLE | ui::WINDOW_MINIMIZABLE;
     var drawn = 0;
@@ -76,7 +78,7 @@ fn main() {
         ui::input_from_gfx(ctx);
         var quit = false;
 
-        if ui::begin(ctx, "To do", ui::rect(30, 30, 380, 330), window) {
+        if ui::begin(ctx, "To do", ui::rect(30, 30, 380, 365), window) {
             // A menu bar goes first in its window.
             ui::menubar_begin(ctx);
             ui::layout_row_static(ctx, 20.0, 60, 1);
@@ -138,7 +140,7 @@ fn main() {
         }
         ui::end(ctx);
 
-        if ui::begin(ctx, "Backdrop", ui::rect(440, 30, 290, 330), window) {
+        if ui::begin(ctx, "Backdrop", ui::rect(440, 30, 290, 365), window) {
             ui::layout_row_dynamic(ctx, 20.0, 1);
             ui::label(ctx, "The color behind the windows:", ui::TEXT_LEFT);
             ui::layout_row_dynamic(ctx, 150.0, 1);
@@ -148,6 +150,15 @@ fn main() {
             ui::property_float(ctx, "#Red:", 0.0, backdrop.r, 1.0, 0.01, 0.005);
             ui::property_float(ctx, "#Green:", 0.0, backdrop.g, 1.0, 0.01, 0.005);
             ui::property_float(ctx, "#Blue:", 0.0, backdrop.b, 1.0, 0.01, 0.005);
+            // The whole ui bigger or smaller, from the next frame on.
+            ui::layout_row_dynamic(ctx, 24.0, 3);
+            ui::label(ctx, str("Scale ", ui::scale(ctx)), ui::TEXT_LEFT);
+            if ui::button_symbol(ctx, ui::SYMBOL_MINUS) {
+                next_scale = max(ui::scale(ctx) - 0.25, 0.5);
+            }
+            if ui::button_symbol(ctx, ui::SYMBOL_PLUS) {
+                next_scale = min(ui::scale(ctx) + 0.25, 3.0);
+            }
         }
         ui::end(ctx);
 
@@ -155,6 +166,8 @@ fn main() {
         gfx::begin_screen(float4 { backdrop.r, backdrop.g, backdrop.b, 1.0 });
         gfx::end_pass();
         ui::render(ctx);
+        // Between frames: the context's font is baked again at the scale.
+        if next_scale != ui::scale(ctx) { ui::set_scale(ctx, next_scale); }
         drawn++;
         if quit || drawn == frames { break; }
     }

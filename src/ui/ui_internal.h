@@ -94,6 +94,7 @@ typedef struct {
     int width, height;
     uint32_t texture;           /* what a renderer said holds the pixels; 0: none yet */
     struct nk_vec2 null_uv;     /* a white texel, for drawing shapes */
+    float scale;                /* its glyphs, baked this many times their fonts' size */
     uint32_t *fonts;            /* the handles of its fonts, in the order added */
     int nfonts;
     /* Custom glyph ranges, which Nuklear reads until the atlas is gone. */
@@ -115,6 +116,8 @@ bool ui_atlas_in_use(ui_atlas *a);
 void ui_free_atlas(ui_atlas *a);
 /* The handle of the font Nuklear knows by `font`, or 0. */
 gs_ui_font ui_font_handle(const struct nk_user_font *font);
+/* A ui scale or a font's baking one, a misuse naming `fn` if out of range. */
+bool ui_scale_ok(float scale, const char *fn);
 
 /* --- contexts ---------------------------------------------------------------- */
 
@@ -159,6 +162,10 @@ typedef struct {
     uint32_t id;
     uint32_t atlas;             /* of the font it was made with: its white texel draws shapes */
     bool owns_atlas;            /* made for it, and destroyed with it */
+    float font_height;          /* of its own atlas's font */
+    /* Pixels per unit of the ui's own layout: what convert() multiplies
+       positions by, and input divides them by. */
+    float scale;
     ui_scope scopes[UI_MAX_SCOPES];
     int nscopes;
     bool in_input;              /* between input_begin and input_end */

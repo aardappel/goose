@@ -203,7 +203,6 @@ GS_GFX_API(GS_GFX_PROTO)
     X(i32, WINDOW_RESIZABLE, 1) \
     X(i32, WINDOW_HIDDEN, 2) \
     X(i32, WINDOW_FULLSCREEN, 4) \
-    X(i32, WINDOW_HIGH_DPI, 8) \
     X(i32, NO_VSYNC, 16) \
     X(i32, DEBUG, 32) \
     /* Shader stages. */ \

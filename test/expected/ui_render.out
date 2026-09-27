@@ -13,5 +13,6 @@ select all, cut: '', the clipboard holds 'Agoos!'
 undo: ''
 render target: window 45 45 45, as on the screen true
 half alpha: window true true
+at scale 2: outside 51 102 153, title bar 40 40 40, button 50 50 50, its text true; clicked in pixels true
 opened again: outside 51 102 153, title bar 40 40 40, window 45 45 45, button 50 50 50, its text true
 misuses 0

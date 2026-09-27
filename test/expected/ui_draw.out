@@ -74,4 +74,9 @@ step 8: mouse 32,41 from 30,40 moved 2,1 scrolled 0; moved true, down false, pre
   clicks: any false, in target true, away false, in its button true, down in it false, up in it true
   this frame: clicked in target false, down false, any button false, hovered and clicked false
   hovering: target true, before false, still false; for 0.6s true (2), still true (0.75), unless clicked false (0)
+scale 1; set to 2 true: 2; its font baked again true, 13 high
+the mouse at pixel 110,48 is at 55,24 in the ui
+button at 14,14 in the ui, clicked through pixels true; the window at 10,10 100 x 80 drawn from 19,19 to 220,180, clipped to 28,20 164 x 140
+back to 1 true: 1, 13 high
+made at 1.5: 1.5, 16 high
 misuses 0

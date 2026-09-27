@@ -37,6 +37,7 @@ gs_ui_font_atlas gs_ui_create_font_atlas(void) {
     }
     nk_font_atlas_init_default(&a->atlas);
     nk_font_atlas_begin(&a->atlas);
+    a->scale = 1;
     a->id = ui_table_add(&ui_atlases, a);
     if (!a->id) {
         free(a);
@@ -75,7 +76,32 @@ void gs_ui_destroy_font_atlas(gs_ui_font_atlas h) {
     ui_free_atlas(a);
 }
 
+/* Textures that held a destroyed atlas's image, until a renderer takes the
+   list to release its own among them. */
+static uint32_t *ui_released;
+static int64_t ui_nreleased, ui_released_cap;
+
+int64_t gs_ui_released_textures(gs_ui_u32_slice out) {
+    int64_t n = ui_nreleased;
+    int64_t k = n < out.len ? n : out.len;
+    if (k > 0) memcpy(out.data, ui_released, sizeof(uint32_t) * (size_t)k);
+    /* Taken once they all fit: a call with no room asks for the count. */
+    if (out.len >= n) ui_nreleased = 0;
+    return n;
+}
+
 void ui_free_atlas(ui_atlas *a) {
+    if (a->texture) {
+        if (ui_nreleased == ui_released_cap) {
+            int64_t cap = ui_released_cap ? ui_released_cap * 2 : 8;
+            uint32_t *more = (uint32_t *)realloc(ui_released, sizeof(uint32_t) * (size_t)cap);
+            if (more) {
+                ui_released = more;
+                ui_released_cap = cap;
+            }
+        }
+        if (ui_nreleased < ui_released_cap) ui_released[ui_nreleased++] = a->texture;
+    }
     for (int i = 0; i < a->nfonts; i++) {
         free(ui_table_find(&ui_fonts, a->fonts[i]));
         ui_table_remove(&ui_fonts, a->fonts[i]);
@@ -317,12 +343,23 @@ static void ui_stamp_texture(ui_atlas *a, uint32_t texture) {
     a->texture = texture;
 }
 
-uint8_t gs_ui_bake_font_atlas(gs_ui_font_atlas h) {
+uint8_t gs_ui_bake_font_atlas(gs_ui_font_atlas h, float scale) {
     ui_atlas *a = ui_atlas_get(h, "ui::bake");
     if (!a) return 0;
     if (a->baked) return ui_misuse("ui::bake: the atlas is baked already");
     if (!a->nfonts)
         return ui_misuse("ui::bake: the atlas has no fonts (ui::add_default_font adds one)");
+    if (!ui_scale_ok(scale, "ui::bake")) return 0;
+    /* The glyphs at `scale` times their fonts' size, merged ones too, each
+       font measuring at its own size after (below): sharp text for a ui
+       drawn that many times bigger. */
+    for (struct nk_font_config *c = a->atlas.config; c; c = c->next) {
+        struct nk_font_config *it = c;
+        do {
+            it->size *= scale;
+            it = it->n;
+        } while (it != c);
+    }
     int w = 0, hgt = 0;
     const void *image = nk_font_atlas_bake(&a->atlas, &w, &hgt, NK_FONT_ATLAS_RGBA32);
     if (!image) return ui_fail("the font atlas could not be baked: a font is damaged, or its "
@@ -337,6 +374,13 @@ uint8_t gs_ui_bake_font_atlas(gs_ui_font_atlas h) {
     struct nk_draw_null_texture null_tex;
     nk_font_atlas_end(&a->atlas, nk_handle_id(0), &null_tex);
     nk_font_atlas_cleanup(&a->atlas);
+    /* Nuklear scales a glyph by the font's height over the height it was
+       baked at. */
+    for (int i = 0; i < a->nfonts; i++) {
+        ui_font *f = (ui_font *)ui_table_find(&ui_fonts, a->fonts[i]);
+        f->font->handle.height = f->font->info.height / scale;
+    }
+    a->scale = scale;
     a->null_uv = null_tex.uv;
     a->baked = true;
     ui_stamp_texture(a, 0);
@@ -432,10 +476,12 @@ gs_ui_font_info gs_ui_font_info_of(gs_ui_font h) {
     memset(&info, 0, sizeof info);
     ui_font *f = ui_baked_font(h, "ui::info");
     if (!f) return info;
-    /* Metrics at the size the font was baked, as Nuklear draws it. */
+    /* Metrics at the font's own size, as Nuklear lays it out, whatever
+       scale it was baked at. */
+    float k = f->font->handle.height / f->font->info.height;
     info.height = f->font->handle.height;
-    info.ascent = f->font->info.ascent * f->font->scale;
-    info.descent = f->font->info.descent * f->font->scale;
+    info.ascent = f->font->info.ascent * k;
+    info.descent = f->font->info.descent * k;
     info.glyph_count = (int32_t)f->font->info.glyph_count;
     info.fallback_codepoint = f->font->fallback_codepoint;
     return info;
@@ -447,10 +493,11 @@ uint8_t gs_ui_font_find_glyph(gs_ui_font h, uint32_t codepoint, gs_ui_font_glyph
     if (!f) return 0;
     const struct nk_font_glyph *g = nk_font_find_glyph(f->font, codepoint);
     if (!g) return 0;
+    float k = f->font->handle.height / f->font->info.height;
     out->codepoint = g->codepoint;
-    out->xadvance = g->xadvance;
-    out->x0 = g->x0, out->y0 = g->y0, out->x1 = g->x1, out->y1 = g->y1;
-    out->w = g->w, out->h = g->h;
+    out->xadvance = g->xadvance * k;
+    out->x0 = g->x0 * k, out->y0 = g->y0 * k, out->x1 = g->x1 * k, out->y1 = g->y1 * k;
+    out->w = g->w * k, out->h = g->h * k;
     out->u0 = g->u0, out->v0 = g->v0, out->u1 = g->u1, out->v1 = g->v1;
     /* The fallback stands in for a character the font lacks. */
     return g->codepoint == codepoint;

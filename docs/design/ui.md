@@ -28,7 +28,7 @@ Nuklear's header.
 
 The API stays Nuklear's under Goose names -- `nk_button_label` is
 `ui::button_label` -- and covers nearly all of `nuklear.h` a program calls:
-358 functions. An immediate-mode program says each frame which windows and
+361 functions. An immediate-mode program says each frame which windows and
 widgets there are, and learns what the user did from the same calls; the
 program's data stays its own, passed in by reference where a widget edits
 it.
@@ -108,6 +108,19 @@ physics. The constants have Nuklear's values, a static assert in
   `destroy(context)` or `check()`. Nuklear's own asserts are routed into the
   same path.
 
+* **Scale** is the layer's own: a context has one, the pixels to each
+  unit of the ui's layout. Nuklear lays out and draws in its units as ever;
+  `convert` multiplies the vertices and clip rectangles it produces, and
+  the input functions divide positions, keeping the fractions Nuklear's
+  whole-number input functions would lose. Text is sharp when its glyphs
+  were baked at the scale: baking an atlas at a scale multiplies each
+  font's size before Nuklear rasterizes it and sets the font's height back
+  after, and Nuklear, which scales a glyph by that height over the baked
+  one, then measures at the size and draws from the bigger glyphs. A
+  context `create` made bakes its own font again when its scale changes.
+  A destroyed atlas's texture is listed for the renderer that made it
+  (`released_textures`), which `render` releases.
+
 Where Nuklear misbehaves on its own, the layer steps around it:
 
 * A character typed into a full text field moves the cursor as if it went
@@ -169,20 +182,22 @@ X1 and X2 mouse buttons.
   TinyCC where the compiler has the layer, and only typechecked and turned
   into C where it does not. Most drive a context with input of their own and
   check what comes back and what was drawn, headless and without gfx:
-  `ui_fonts` (atlases, baking, TrueType files, ranges, merging, metrics),
+  `ui_fonts` (atlases, baking at 1 and 2, TrueType files, ranges, merging,
+  metrics, released textures),
   `ui_windows` (window state and geometry, every kind of row, groups, trees,
   list views), `ui_widgets`, `ui_popups` (popups, combo boxes, contextual
   menus, tooltips, menus), `ui_edit` (filters, a text editor's operations,
   fields over buffers and limited arrays, flags, full fields, an editor's
   modes, keys and clipboard), `ui_style` (the style whole, pushed, reset and
   from a table, fonts, cursors, colors, helpers), `ui_draw` (every canvas
-  command, conversion, the input queries) and `ui_charts`. `ui_render` draws
-  through headless gfx and drives the context from injected gfx input:
-  clicks, typing, editing keys, shortcuts and the clipboard; it reads back
-  the screen and a render target, and runs again after gfx is closed and
-  opened. The tests call 358 of the layer's 358 functions. `ui_misuse`
+  command, conversion, the input queries, the ui at a scale) and
+  `ui_charts`. `ui_render` draws through headless gfx and drives the
+  context from injected gfx input: clicks, typing, editing keys, shortcuts
+  and the clipboard; it reads back the screen and a render target, draws
+  and clicks at twice the scale, and runs again after gfx is closed and
+  opened. The tests call 361 of the layer's 361 functions. `ui_misuse`
   checks a widget outside any window aborts the program at the next frame
-  with the reason, `ui_misuse_messages` shows what the layer says about 55
+  with the reason, `ui_misuse_messages` shows what the layer says about 58
   misuses, each skipped without harm, and `ui_err_thread` that a
   `thread_fn` reaching ui is a compile error.
 * **`samples/29_ui_todo.goose`**, a to-do list and a color mixer, runs
@@ -210,8 +225,7 @@ lavapipe; the rest pass, the layer's allocations included.
   them on every call, so only `edit_buffer`'s text editors keep history.
 * Custom text filters, and fonts measured by the program, which need a way
   for C to call a Goose function.
-* High-density displays: the ui is laid out in the screen's pixels, as gfx
-  reports the mouse in, so it comes out small there; fonts and the style
-  scaled by the display's content scale would size it as elsewhere.
+* The display's content scale from gfx (SDL has it), for a program that
+  wants its ui sized as the system's own.
 * Mouse wheel and double-click injection in gfx, for tests of the rest of
   `input_from_gfx`.

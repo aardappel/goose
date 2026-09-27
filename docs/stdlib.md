@@ -408,11 +408,14 @@ fn time() -> f64            fn delta_time() -> f64            fn frame_count() -
 ```
 
 Flags for `open`: `WINDOW_RESIZABLE`, `WINDOW_HIDDEN`, `WINDOW_FULLSCREEN`,
-`WINDOW_HIGH_DPI`, `NO_VSYNC`, `DEBUG` (validation layers where installed; on
-in a debug build of the layer). With `GOOSE_GFX_HEADLESS=1` in the environment
-`open` opens no window, as the test runners use it. The screen is an RGBA8
-texture of the window's size in pixels, with a depth texture: a frame draws
-into it, and `frame()` shows it.
+`NO_VSYNC`, `DEBUG` (validation layers where installed; on in a debug build of
+the layer). With `GOOSE_GFX_HEADLESS=1` in the environment `open` opens no
+window, as the test runners use it. The screen is an RGBA8 texture of the
+window's size in pixels, with a depth texture: a frame draws into it, and
+`frame()` shows it. A window is as wide and high as `open` says in the
+display's own coordinates, and has every pixel the display has there: on a
+high-density display more than that, which `screen_size()` counts and the
+mouse is reported in.
 
 ```goose
 guard gfx::open("demo", 1280, 720) else { abort(str("gfx: ", gfx::error())); }
@@ -1044,10 +1047,12 @@ fn error() -> u8[>..]     fn check()     fn misuse_count() -> i64     fn availab
 ```goose
 struct Context { id: u32 }
 fn create(font_height: f32) -> Context        // Nuklear's own font; 13 is its native size
+fn create(font_height: f32, scale: f32) -> Context      // drawn at a scale (set_scale)
 fn create_context(font: Font) -> Context      // a font from a baked atlas
 fn destroy(c: Context)        fn is_valid(c: Context) -> bool
 fn context_atlas(c) -> FontAtlas              fn font(c) -> Font      // drawn with now
 fn clear(c)                   // ends a frame; input_begin does it for a frame that drew
+fn set_scale(c, scale: f32) -> bool           fn scale(c) -> f32      // pixels per ui unit
 fn set_delta_time(c, seconds: f32)            fn delta_time(c) -> f32
 fn set_clipboard(c, text: const u8[:])        // what KEY_PASTE pastes
 fn copied(c) -> u8[>..], bool                 // what a text field copied or cut, if any
@@ -1059,8 +1064,19 @@ fn input_key(c, key: i64, down: bool)         // KEY_*: editing keys and shortcu
 fn input_text(c, text: const u8[:])           // and input_char, input_glyph, input_unicode
 ```
 
+The whole ui can be drawn bigger or smaller with `set_scale`, which the
+program picks as it likes -- from the window's size, the display, a
+setting. Layout stays the same: windows, rows, fonts and the style keep
+their sizes in the ui's own units, and the scale is the pixels to each
+unit, which `convert` and `render` draw with and input positions come in.
+A context made by `create` has its font baked again at the scale, so its
+text stays sharp; one made on a font of the program's keeps that atlas's,
+which `bake(atlas, scale)` makes sharp at a scale. It changes between
+frames, not during one.
+
 Input goes between `input_begin` and `input_end`, before any window, one
-batch a frame; `input_from_gfx` below does it all. A key's press and
+batch a frame; `input_from_gfx` below does it all. Positions are pixels. A
+key's press and
 release in the same frame count as a press; Nuklear looks at a frame's keys
 after it, in the order of their `KEY_*` values. A button's press or release
 also zeroes the frame's mouse motion. What widgets see can be asked
@@ -1091,6 +1107,7 @@ fn add_font_from_file(a, path: const u8[:], height: f32) -> Font
 fn add_font_from_memory(a, ttf: const u8[:], height: f32) -> Font
     // each also (..., config: FontConfig) and (..., config, ranges: const u32[:])
 fn bake(a) -> bool                   // then the fonts can be used
+fn bake(a, scale: f32) -> bool       // glyphs scale times the size, for a ui at that scale
 fn atlas_size(a) -> int2             fn atlas_pixels(a) -> u8[>..]     // RGBA
 fn set_texture(a, texture: u32)      fn texture(a) -> u32
 fn fonts(a) -> Font[>..]             fn atlas(f: Font) -> FontAtlas
@@ -1325,14 +1342,15 @@ fn input_from_gfx(c: Context)                    // after gfx::frame(), before a
 ```
 
 `render` converts the frame and draws it with alpha blending, not inside a
-pass, uploading each font atlas to a gfx texture the first time. What it
-keeps -- a pipeline, a sampler, buffers -- is made once and again after gfx
-is closed and opened. `input_from_gfx` hands the context gfx's last frame
+pass, uploading each font atlas to a gfx texture the first time and
+releasing it with the atlas (`released_textures()` lists those destroyed,
+for a renderer of the program's own). What it keeps -- a pipeline, a
+sampler, buffers -- is made once and again after gfx is closed and
+opened. `input_from_gfx` hands the context gfx's last frame
 of input in order: the mouse, editing keys (Delete, Backspace, Enter, Tab,
 Home, End, the arrows, Page Up and Down, Escape), shortcuts with Ctrl or
 Command (A, C, X, V, Z, Y), typed text (it turns gfx's text input on), the
 frame's duration, and the clipboard both ways, pasting the system
 clipboard's text and putting there what a field copied. Both work in the
-screen's pixels, so on a high-density display (a window opened with
-`WINDOW_HIGH_DPI`) the ui comes out as many pixels as elsewhere, smaller,
-unless the program bakes its font larger.
+screen's pixels, so on a high-density display the ui is as many pixels as
+elsewhere, and smaller, until the program sets a scale.
