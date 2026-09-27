@@ -438,7 +438,9 @@ inline CodeGen::Loc CodeGen::GenLoc(Node *n) {
         assert(id->vdef);
         return VarLoc(id->vdef);
     }
-    if (auto d = Is<Dot>(n)) {
+    // A payload-less variant constant is a value, not a path: it is built on
+    // a temporary below like the other rvalues.
+    if (auto d = Is<Dot>(n); d && !d->variantconst) {
         auto lv = GenLoc(d->obj);
         if (lv.t->kind == TY_REF) DerefLoc(lv);
         return MemberLoc(lv, d);
@@ -807,6 +809,14 @@ inline void CodeGen::LeafAny(Node *n, const Dst &d) {
         return;
     }
     if (IsVoidT(n->exprtype)) { Fail(n->line, "internal: valueless leaf"); }
+    // A resizable value is reached through its location: a path's is where
+    // it is stored, anything else is built on a temporary stack the
+    // enclosing scope releases (GenRzTmp). The location is still evaluated
+    // for the index checks on its path.
+    if (IsResz(n->exprtype)) {
+        L("(void)(", GenLoc(n).s, ");");
+        return;
+    }
     L("(void)(", GenVal(n), ");");
 }
 
