@@ -259,7 +259,7 @@ struct Event {
     button: i32,            // button: MOUSE_*
     clicks: i32,            // button: 1, 2 for a double click, ...
     codepoint: u32,         // text: one character typed
-    x: f32,                 // motion, button: where the pointer is; wheel: how far
+    x: f32,                 // motion, button: where the pointer is, in pixels; wheel: how far
     y: f32,
 }
 
@@ -362,7 +362,8 @@ extern "gs_gfx_open_count" fn open_count() -> i64;
 
 // Keys by SDL's scancode names: "A", "1", "Space", "Return", "Escape",
 // "Left", "Left Shift", "F1". Down now; pressed or released since the last
-// frame().
+// frame(). The mouse is in the screen's pixels, which on a high-density
+// display outnumber the window's own coordinates.
 extern "gs_gfx_key_down" fn key_down(name: const u8[:]) -> bool;
 extern "gs_gfx_key_pressed" fn key_pressed(name: const u8[:]) -> bool;
 extern "gs_gfx_key_released" fn key_released(name: const u8[:]) -> bool;
@@ -384,7 +385,8 @@ fn mouse_delta() -> float2 {
 }
 
 // Input as if from the keyboard or mouse, seen at the next frame(): what a
-// test drives a program with. A mouse button of 0 only moves the pointer.
+// test drives a program with. The mouse goes to pixel x, y; a button of 0
+// only moves it.
 extern "gs_gfx_inject_key" fn inject_key(name: const u8[:], down: bool) -> bool;
 extern "gs_gfx_inject_mouse" fn inject_mouse(x: f32, y: f32, button: i64, down: bool);
 // Text as if typed: an EVENT_TEXT per character at the next frame().

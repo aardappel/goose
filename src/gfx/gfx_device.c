@@ -291,6 +291,20 @@ static const char *gfx_cstr(gs_gfx_bytes s, char *buf, size_t cap) {
     return buf;
 }
 
+/* SDL reports the mouse in window coordinates, which a high-density display
+   has fewer of than pixels; gfx reports pixels, as the screen has them. The
+   scale between the two, per axis, taken again whenever the window's size in
+   either changes. */
+static void gfx_update_input_scale(void) {
+    int w = 0, h = 0, pw = 0, ph = 0;
+    if (!gfx.window || !SDL_GetWindowSize(gfx.window, &w, &h) ||
+        !SDL_GetWindowSizeInPixels(gfx.window, &pw, &ph) || w <= 0 || h <= 0 || pw <= 0 ||
+        ph <= 0)
+        return;
+    gfx.input_scale_x = (float)pw / (float)w;
+    gfx.input_scale_y = (float)ph / (float)h;
+}
+
 static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t height,
                       int64_t flags) {
     if (gfx.dev) return gfx_misuse("gfx is already open: close() it first");
@@ -334,6 +348,7 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
                : (have & SDL_GPU_SHADERFORMAT_DXBC) ? SDL_GPU_SHADERFORMAT_DXBC
                : SDL_GPU_SHADERFORMAT_MSL;
     int pw = (int)width, ph = (int)height;
+    gfx.input_scale_x = gfx.input_scale_y = 1;
     if (windowed) {
         char buf[512];
         SDL_WindowFlags wf = 0;
@@ -360,6 +375,7 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
             }
         }
         SDL_GetWindowSizeInPixels(gfx.window, &pw, &ph);
+        gfx_update_input_scale();
     }
     if (!gfx_create_screen(pw, ph)) {
         char why[sizeof gfx.error];
@@ -472,6 +488,9 @@ static gs_gfx_event *gfx_event(int32_t kind) {
     return e;
 }
 
+/* The mouse injected input comes from, whose positions are pixels already. */
+#define GFX_INJECTED_MOUSE ((SDL_MouseID)-16)
+
 /* The modifier keys down now, from the keys' own state, which injected key
    events keep as real ones do. */
 static int32_t gfx_mods(void) {
@@ -526,13 +545,15 @@ uint8_t gs_gfx_frame(void) {
                 gfx_text_events(e.text.text);
                 break;
             case SDL_EVENT_MOUSE_MOTION: {
-                gfx.mouse_x = e.motion.x;
-                gfx.mouse_y = e.motion.y;
-                gfx.mouse_dx += e.motion.xrel;
-                gfx.mouse_dy += e.motion.yrel;
+                bool injected = e.motion.which == GFX_INJECTED_MOUSE;
+                float sx = injected ? 1 : gfx.input_scale_x, sy = injected ? 1 : gfx.input_scale_y;
+                gfx.mouse_x = e.motion.x * sx;
+                gfx.mouse_y = e.motion.y * sy;
+                gfx.mouse_dx += e.motion.xrel * sx;
+                gfx.mouse_dy += e.motion.yrel * sy;
                 gs_gfx_event *ev = gfx_event(GS_GFX_EVENT_MOUSE_MOTION);
-                ev->x = e.motion.x;
-                ev->y = e.motion.y;
+                ev->x = gfx.mouse_x;
+                ev->y = gfx.mouse_y;
             } break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
             case SDL_EVENT_MOUSE_BUTTON_UP: {
@@ -540,14 +561,15 @@ uint8_t gs_gfx_frame(void) {
                     uint32_t bit = 1u << e.button.button;
                     gfx.buttons = e.button.down ? gfx.buttons | bit : gfx.buttons & ~bit;
                 }
-                gfx.mouse_x = e.button.x;
-                gfx.mouse_y = e.button.y;
+                bool injected = e.button.which == GFX_INJECTED_MOUSE;
+                gfx.mouse_x = e.button.x * (injected ? 1 : gfx.input_scale_x);
+                gfx.mouse_y = e.button.y * (injected ? 1 : gfx.input_scale_y);
                 gs_gfx_event *ev = gfx_event(GS_GFX_EVENT_MOUSE_BUTTON);
                 ev->button = e.button.button;
                 ev->clicks = e.button.clicks;
                 ev->down = e.button.down;
-                ev->x = e.button.x;
-                ev->y = e.button.y;
+                ev->x = gfx.mouse_x;
+                ev->y = gfx.mouse_y;
             } break;
             case SDL_EVENT_MOUSE_WHEEL: {
                 gfx.wheel += e.wheel.y;
@@ -555,7 +577,11 @@ uint8_t gs_gfx_frame(void) {
                 ev->x = e.wheel.x;
                 ev->y = e.wheel.y;
             } break;
+            case SDL_EVENT_WINDOW_RESIZED:
+                gfx_update_input_scale();
+                break;
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+                gfx_update_input_scale();
                 resized = true;
                 break;
             default:
@@ -670,6 +696,7 @@ void gs_gfx_inject_mouse(float x, float y, int64_t button, uint8_t down) {
     SDL_zero(e);
     e.type = SDL_EVENT_MOUSE_MOTION;
     e.motion.timestamp = SDL_GetTicksNS();
+    e.motion.which = GFX_INJECTED_MOUSE;
     e.motion.x = x;
     e.motion.y = y;
     e.motion.xrel = x - gfx.mouse_x;
@@ -680,6 +707,7 @@ void gs_gfx_inject_mouse(float x, float y, int64_t button, uint8_t down) {
         SDL_zero(e);
         e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
         e.button.timestamp = SDL_GetTicksNS();
+        e.button.which = GFX_INJECTED_MOUSE;
         e.button.button = (Uint8)button;
         e.button.down = down != 0;
         e.button.clicks = 1;

@@ -439,9 +439,10 @@ fn key_pressed(name: const u8[:]) -> bool     // went down since the last frame(
 fn key_released(name: const u8[:]) -> bool
 fn mouse_down(button: i64) -> bool            // MOUSE_LEFT, MOUSE_MIDDLE, MOUSE_RIGHT
 fn mouse_pressed(button: i64) -> bool         fn mouse_released(button: i64) -> bool
-fn mouse_pos() -> float2    fn mouse_delta() -> float2    fn mouse_wheel() -> f32
+fn mouse_pos() -> float2    fn mouse_delta() -> float2      // in the screen's pixels
+fn mouse_wheel() -> f32
 fn inject_key(name: const u8[:], down: bool) -> bool           // as if typed, seen at the next frame()
-fn inject_mouse(x: f32, y: f32, button: i64, down: bool)       // button 0 only moves
+fn inject_mouse(x: f32, y: f32, button: i64, down: bool)       // to pixel x, y; button 0 only moves
 fn inject_text(text: const u8[:]) -> bool                      // an EVENT_TEXT per character
 fn events() -> Event[>..]           // the last frame's input, in the order it came
 fn text_input(on: bool)             // typed text as EVENT_TEXT: off by default
@@ -1331,6 +1332,7 @@ of input in order: the mouse, editing keys (Delete, Backspace, Enter, Tab,
 Home, End, the arrows, Page Up and Down, Escape), shortcuts with Ctrl or
 Command (A, C, X, V, Z, Y), typed text (it turns gfx's text input on), the
 frame's duration, and the clipboard both ways, pasting the system
-clipboard's text and putting there what a field copied. In a window opened
-with gfx's `WINDOW_HIGH_DPI` the two do not match yet: the ui draws in
-pixels, and gfx reports the mouse in window points.
+clipboard's text and putting there what a field copied. Both work in the
+screen's pixels, so on a high-density display (a window opened with
+`WINDOW_HIGH_DPI`) the ui comes out as many pixels as elsewhere, smaller,
+unless the program bakes its font larger.

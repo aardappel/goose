@@ -210,8 +210,8 @@ lavapipe; the rest pass, the layer's allocations included.
   them on every call, so only `edit_buffer`'s text editors keep history.
 * Custom text filters, and fonts measured by the program, which need a way
   for C to call a Goose function.
-* High-DPI windows: with gfx's `WINDOW_HIGH_DPI` the ui draws in pixels
-  while gfx reports the mouse in window points, so `input_from_gfx` needs
-  the ratio from gfx, and fonts baked at the pixel density for sharp text.
+* High-density displays: the ui is laid out in the screen's pixels, as gfx
+  reports the mouse in, so it comes out small there; fonts and the style
+  scaled by the display's content scale would size it as elsewhere.
 * Mouse wheel and double-click injection in gfx, for tests of the rest of
   `input_from_gfx`.

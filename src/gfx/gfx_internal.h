@@ -146,6 +146,9 @@ typedef struct {
     uint8_t keys[SDL_SCANCODE_COUNT], prev_keys[SDL_SCANCODE_COUNT];
     uint32_t buttons, prev_buttons;
     float mouse_x, mouse_y, mouse_dx, mouse_dy, wheel;
+    /* Pixels per window coordinate, which SDL gives the mouse in: more than
+       one on a high-density display. */
+    float input_scale_x, input_scale_y;
     /* This frame's events in order, for gs_gfx_events. */
     gs_gfx_event *events;
     int64_t nevents, events_cap;
