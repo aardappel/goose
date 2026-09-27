@@ -1,0 +1,87 @@
+filter default: ++++++++ (a F 7 9 1 . - e-acute)
+filter ascii: +++++++. (a F 7 9 1 . - e-acute)
+filter float: ..+++++. (a F 7 9 1 . - e-acute)
+filter decimal: ..+++.+. (a F 7 9 1 . - e-acute)
+filter hex: +++++... (a F 7 9 1 . - e-acute)
+filter oct: ..+.+... (a F 7 9 1 . - e-acute)
+filter binary: ....+... (a F 7 9 1 . - e-acute)
+editor valid true: '' cursor 0 selection 0..0 length 0, mode 0, single line true
+typing in view mode: '' cursor 0 selection 0..0 length 0
+typed: 'hello world' cursor 11 selection 0..0 length 11
+comma at 5: 'hello, world' cursor 6 selection 5..5 length 12
+first deleted: 'ello, world' cursor 6 selection 5..5 length 11
+cut 'ello': true ', world' cursor 0 selection 0..0 length 7
+paste 'HELLO': true 'HELLO, world' cursor 5 selection 0..0 length 12
+undone: ', world' cursor 0 selection 0..0 length 7
+redone: 'HELLO, world' cursor 5 selection 0..0 length 12
+all selected: 'HELLO, world' cursor 5 selection 0..12 length 12
+deleted: '' cursor 0 selection 0..0 length 0
+undone: 'HELLO, world' cursor 12 selection 0..0 length 12
+replace mode: 'JELLO, world' cursor 1 selection 0..0 length 12
+set_text: 'fresh' cursor 0 selection 0..0 length 5
+nothing to undo after set_text: 'fresh' cursor 0 selection 0..0 length 5
+paste of longer characters: true 'fresh-\xc3\xa9\xe2\x82\xac' cursor 8 selection 5..5 length 8
+paste in view mode: false 'fresh-\xc3\xa9\xe2\x82\xac' cursor 8 selection 5..5 length 8
+step 0: '' inactive
+step 1: '' active activated
+step 2: '' active
+step 3: 'G' active
+step 4: 'Go' active
+step 5: 'Goo' active
+step 6: 'Goose!' active
+step 7: 'Goose' active
+step 8: 'Goose' active committed
+step 9: 'Goose' inactive deactivated
+flags field: 'Zabc'
+flags auto select: 'Z'
+flags go to end: 'abcZ'
+flags no cursor: 'abcZ'
+flags read only: 'abc'
+name step 0: 'abc' (3 of 8) active
+name step 1: 'defghabc' (8 of 8) active
+name step 2: 'defghabc' (8 of 8) active
+name step 3: 'defghbc' (7 of 8) active
+name step 4: 'Xdefghbc' (8 of 8) active
+name step 5: 'Xdefghbc' (8 of 8) inactive
+full step 0: ''
+full step 1: 'ab'
+full step 2: 'abw'
+full step 3: 'abw'
+full step 4: 'abw'
+full step 5: 'abw'
+full step 6: 'ab'
+full step 7: 'ab'
+full step 8: 'abZ'
+full step 9: 'abZ'
+full step 10: 'YbZ'
+full step 11: 'YbZ'
+full step 12: '\xc3\xa9'
+doc step 0: 'one two three' cursor 0 selection 0..0 length 13, mode 0 inactive
+doc step 1: 'one two three' cursor 1 selection 1..1 length 13, mode 0 active activated
+doc step 2: 'one two three' cursor 1 selection 1..1 length 13, mode 0 active
+doc step 3: 'one two three' cursor 1 selection 1..1 length 13, mode 1 active
+doc step 4: 'one two three' cursor 13 selection 0..0 length 13, mode 1 active
+keys: shift down true, released false; copy pressed false
+doc step 5: 'one two three' cursor 8 selection 13..8 length 13, mode 1 active
+keys: shift down false, released true; copy pressed true
+doc step 6: 'one two three' cursor 8 selection 13..8 length 13, mode 1 active, copied 'three'
+doc step 7: 'one two ' cursor 8 selection 8..8 length 8, mode 1 active, copied 'three'
+doc step 8: 'one two PASTED' cursor 14 selection 8..8 length 14, mode 1 active
+doc step 9: 'one two ' cursor 8 selection 8..8 length 8, mode 1 active
+doc step 10: 'one two PASTED' cursor 14 selection 8..8 length 14, mode 1 active
+doc step 11: 'one two PASTED' cursor 4 selection 8..8 length 14, mode 2 active
+doc step 12: 'one TWO PASTED' cursor 7 selection 8..8 length 14, mode 2 active
+doc step 13: 'one TWO PASTED' cursor 7 selection 8..8 length 14, mode 1 active
+doc step 14: 'one TWO     PASTED' cursor 11 selection 8..8 length 18, mode 1 active
+doc step 15: 'one TWO     PASTED' cursor 18 selection 0..0 length 18, mode 1 active
+doc step 16: 'one TWO     PASTED\n' cursor 19 selection 0..0 length 19, mode 1 active
+doc step 17: 'one TWO     PASTED\nfour' cursor 23 selection 0..0 length 23, mode 1 active
+doc step 18: 'one TWO     PASTED\nfour' cursor 22 selection 0..0 length 23, mode 1 active
+doc step 19: 'one TWO     PASTED\nfour' cursor 3 selection 0..0 length 23, mode 1 active
+doc step 20: 'one TWO     PASTED\nfour' cursor 22 selection 0..0 length 23, mode 1 active
+doc step 21: 'one TWO     PASTED\nfour' cursor 22 selection 0..0 length 23, mode 0 active
+doc step 22: 'one TWO     PASTED\nfour' cursor 22 selection 0..0 length 23, mode 0 active
+doc step 23: 'one TWO     PASTED\nfour' cursor 22 selection 0..23 length 23, mode 0 active
+doc step 24: 'one TWO     PASTED\nfour' cursor 22 selection 0..23 length 23, mode 0 inactive deactivated
+hex field: 'c0ffee'
+editors valid false false; misuses 0

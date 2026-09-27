@@ -1,0 +1,29 @@
+texts: left | centered | right | red | a long line that has to wrap onto the next one in this  | window | wrapped and green | flag: true | count: -42 | big: 4000000000 | ratio: 0.125 | bytes: (1, 2, 3, 4) | floats: (1.00, 0.00, 0.20, 1.00) | hex: 12345678 | a link
+image 5 at 4,188 tinted 255
+image 5 at 202,188 tinted 128
+links clicked: true true true true true
+underlines drawn 4
+button clicks: 11111111111
+styled backgrounds drawn 4
+push true
+pop true
+push true
+pop true
+push true
+pop true
+push true
+pop true
+push true
+pop true
+held for 3 frames: 3 repeats
+check true true; flags 3; box true true; box flags 12; radio true true; option true true
+selectable true true true; select true true true; changes reported 8
+slider 0.80, int 8; slide 3.50, int 16; knob 0.77, int 77; changes 4
+progress moved to 75
+progress 75 (clicked at three quarters), fixed one 30
+progress of 250 of 100 held at 100, changed true; fixed one 100
+stepped: int 15, float 2, double 125; i 4, f 0.50, d 3
+property texts: int | 15 | float | 2 | double | 125 | i | 4 | f | 0.5 | d | 3
+color picked
+hue now true, still saturated 1, alpha 1; the other unchanged 1 0.50
+misuses 0

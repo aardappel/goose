@@ -1,15 +1,16 @@
 # The Goose standard library
 
-The standard library has seven modules under `stdlib/`: `std`, `dictionary`,
-`vec`, `math`, `os`, `gfx`, and `physics`. Import each module by name, for
-example `import std;`. The compiler locates the library in its source tree;
-use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location. Everything is
-written in Goose except the C behind `os` (`src/runtime/runtime_os.h`), libm
-behind `math`, the graphics layer behind `gfx` (`src/gfx/`) and the physics
-layer behind `physics` (`src/physics/`), all reached through `extern fn`
-(spec §7.10). The design and its rationale are in `design/stdlib_design.md`
-(and `design/gfx.md` for `gfx`, `design/physics.md` for `physics`); this is
-the reference.
+The standard library has eight modules under `stdlib/`: `std`, `dictionary`,
+`vec`, `math`, `os`, `gfx`, `physics`, and `ui`. Import each module by name,
+for example `import std;`. The compiler locates the library in its source
+tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
+Everything is written in Goose except the C behind `os`
+(`src/runtime/runtime_os.h`), libm behind `math`, the graphics layer behind
+`gfx` (`src/gfx/`), the physics layer behind `physics` (`src/physics/`) and
+the ui layer behind `ui` (`src/ui/`), all reached through `extern fn` (spec
+§7.10). The design and its rationale are in `design/stdlib_design.md` (and
+`design/gfx.md` for `gfx`, `design/physics.md` for `physics`, `design/ui.md`
+for `ui`); this is the reference.
 
 The library uses these conventions:
 
@@ -441,7 +442,20 @@ fn mouse_pressed(button: i64) -> bool         fn mouse_released(button: i64) -> 
 fn mouse_pos() -> float2    fn mouse_delta() -> float2    fn mouse_wheel() -> f32
 fn inject_key(name: const u8[:], down: bool) -> bool           // as if typed, seen at the next frame()
 fn inject_mouse(x: f32, y: f32, button: i64, down: bool)       // button 0 only moves
+fn inject_text(text: const u8[:]) -> bool                      // an EVENT_TEXT per character
+fn events() -> Event[>..]           // the last frame's input, in the order it came
+fn text_input(on: bool)             // typed text as EVENT_TEXT: off by default
+fn scancode(name: const u8[:]) -> i64       fn key_name(scancode: i64) -> u8[>..]
+fn clipboard() -> u8[>..]           fn set_clipboard(text: const u8[:]) -> bool
+fn open_count() -> i64              // times gfx was opened: older handles are gone
 ```
+
+The state functions say where things are at a frame; `events()` says what
+happened between two, which text editing needs: key presses and releases
+with their scancode, the character their key types (`keycode`) and the
+`MOD_*` keys held, typed characters, mouse motion, buttons (`MOUSE_*`, with
+X1 and X2) with their click count, and the wheel. Headless, the clipboard is
+gfx's own rather than the system's.
 
 ### Buffers
 
@@ -957,3 +971,366 @@ for i in 90 { physics::step(world, 1.0 / 60.0, 4); }
 print(physics::position(crate).y);        // resting on the ground: about 0.5
 physics::destroy(world);
 ```
+
+## ui
+
+Windows and widgets on Nuklear, the immediate-mode GUI library, drawn
+through `gfx`: windows, rows and layout spaces, groups, trees, list views,
+labels, buttons, check boxes, options, selectables, sliders, knobs, progress
+bars, color pickers, properties, text fields and editors, charts, popups,
+combo boxes, contextual menus, tooltips, menus, styles and fonts. Optional
+like `gfx`: it needs a compiler built with the `third_party/nuklear`
+submodule, and a program using it links what `goose --ui-link msvc|cc`
+prints, with gfx's if it renders through gfx (`cl app.c @<ui> @<gfx>`). A
+compiler without it still typechecks and generates C for such a program;
+only running it in-process fails. Everything is in namespace `ui`;
+`samples/29_ui_todo.goose` is a complete program, `design/ui.md` how it
+works.
+
+The API is Nuklear's under Goose names: `nk_button_label` is
+`button_label`. Immediate mode means each frame the program says which
+windows and widgets there are, in order, and learns what the user did from
+the same calls: `button_label` returns true on the frame the button is
+clicked, `checkbox_label` flips the `bool` it is given, `slider_float` moves
+the `f32`. The program's data stays its own; a context keeps only where
+windows are and what is open, active or scrolled.
+
+```goose
+guard gfx::open("sound", 400, 300) else { abort(str("gfx: ", gfx::error())); }
+let ctx = ui::create(13.0);
+var volume: f32 = 0.5;
+var muted = false;
+while gfx::frame() {
+    ui::input_from_gfx(ctx);
+    if ui::begin(ctx, "Sound", ui::rect(20, 20, 220, 130), ui::WINDOW_TITLE | ui::WINDOW_MOVABLE) {
+        ui::layout_row_dynamic(ctx, 24.0, 1);
+        ui::slider_float(ctx, 0.0, volume, 1.0, 0.05);
+        ui::checkbox_label(ctx, "Muted", muted);
+        if ui::button_label(ctx, "Reset") { volume = 0.5; }
+    }
+    ui::end(ctx);
+    gfx::begin_screen(float4 { 0.1, 0.1, 0.1, 1.0 });
+    gfx::end_pass();
+    ui::render(ctx);
+}
+ui::destroy(ctx);
+```
+
+A frame is: input (here from gfx), then windows, each `begin` followed by
+its `end` whether or not it returned true, then drawing what they built.
+Inside a window every widget takes the next place in the current row, so a
+row comes first (`layout_row_*`). The ui runs on the main thread; a
+`thread_fn` reaching it is a compile error.
+
+### Errors
+
+A call that can fail for reasons outside the program -- a font file that is
+not there, bytes that are not a font -- returns false or a zero handle, and
+`error()` says why. A call the program should not have made -- a widget
+outside a window, a group ended that was never begun, a window begun inside
+another, a key that is not one, a destroyed handle -- is printed as it
+happens, skipped, and aborts the program at the next `input_begin`,
+`convert`, `render`, `destroy(context)` or `check()`. Contexts, font
+atlases, fonts and text editors are handles with a generation, so a
+destroyed one is an error to use, not a crash.
+
+```goose
+fn error() -> u8[>..]     fn check()     fn misuse_count() -> i64     fn available() -> bool
+```
+
+### Contexts and input
+
+```goose
+struct Context { id: u32 }
+fn create(font_height: f32) -> Context        // Nuklear's own font; 13 is its native size
+fn create_context(font: Font) -> Context      // a font from a baked atlas
+fn destroy(c: Context)        fn is_valid(c: Context) -> bool
+fn context_atlas(c) -> FontAtlas              fn font(c) -> Font      // drawn with now
+fn clear(c)                   // ends a frame; input_begin does it for a frame that drew
+fn set_delta_time(c, seconds: f32)            fn delta_time(c) -> f32
+fn set_clipboard(c, text: const u8[:])        // what KEY_PASTE pastes
+fn copied(c) -> u8[>..], bool                 // what a text field copied or cut, if any
+fn input_begin(c)             fn input_end(c)
+fn input_motion(c, x: i64, y: i64)
+fn input_button(c, button: i64, x: i64, y: i64, down: bool)     // BUTTON_LEFT, _MIDDLE, _RIGHT, ...
+fn input_scroll(c, amount: float2)
+fn input_key(c, key: i64, down: bool)         // KEY_*: editing keys and shortcuts
+fn input_text(c, text: const u8[:])           // and input_char, input_glyph, input_unicode
+```
+
+Input goes between `input_begin` and `input_end`, before any window, one
+batch a frame; `input_from_gfx` below does it all. A key's press and
+release in the same frame count as a press; Nuklear looks at a frame's keys
+after it, in the order of their `KEY_*` values. A button's press or release
+also zeroes the frame's mouse motion. What widgets see can be asked
+directly:
+
+```goose
+fn input_mouse(c) -> Mouse           // pos, prev, delta, scroll_delta, grab state
+fn input_is_mouse_down(c, button) -> bool      // and _pressed, _released
+fn input_is_key_down(c, key) -> bool           // and _pressed, _released
+fn input_is_mouse_hovering_rect(c, r: Rect) -> bool     // and _prev_, _still_
+fn input_has_mouse_click_in_rect(c, button, r) -> bool  // where the last click was
+fn input_is_mouse_click_in_rect(c, button, r) -> bool   // a release there this frame
+fn input_is_mouse_hovering_delay_rect(c, r, timer: f32&, delay: f32) -> bool
+```
+
+A click is a button going down or up: the `has_` queries look at where the
+button's last one was, the `is_` ones at one this frame. The `_delay`
+queries count hovering time in a timer the program keeps between frames
+(also `_still_delay` and `_still_delay_clicked`).
+
+### Fonts
+
+```goose
+struct FontAtlas { id: u32 }         struct Font { id: u32 }
+fn create_font_atlas() -> FontAtlas              fn destroy(a: FontAtlas)
+fn add_default_font(a, height: f32) -> Font      // ProggyClean
+fn add_font_from_file(a, path: const u8[:], height: f32) -> Font
+fn add_font_from_memory(a, ttf: const u8[:], height: f32) -> Font
+    // each also (..., config: FontConfig) and (..., config, ranges: const u32[:])
+fn bake(a) -> bool                   // then the fonts can be used
+fn atlas_size(a) -> int2             fn atlas_pixels(a) -> u8[>..]     // RGBA
+fn set_texture(a, texture: u32)      fn texture(a) -> u32
+fn fonts(a) -> Font[>..]             fn atlas(f: Font) -> FontAtlas
+fn info(f) -> FontInfo               // height, ascent, descent, glyph count, fallback
+fn text_width(f, text: const u8[:]) -> f32
+fn find_glyph(f, codepoint: u32) -> FontGlyph, bool
+fn glyph_ranges(which: i64) -> u32[>..]          // RANGE_DEFAULT, _CHINESE, _CYRILLIC, _KOREAN
+```
+
+An atlas bakes its fonts into one image; a context draws with one of them
+and uses the atlas's white texel for its shapes. `FontConfig` has
+Nuklear's defaults: oversampling, pixel snapping, spacing, the characters
+to bake (`ranges`, a `RANGE_*` set, or pairs of first and last character
+given as an array), the fallback glyph, and `merge_mode`, which adds the
+glyphs to the atlas's first font. Destroying an atlas a context still uses
+is an error.
+
+### Windows and layout
+
+```goose
+fn begin(c, title: const u8[:], bounds: Rect, flags: i64) -> bool   // WINDOW_* flags
+fn begin_titled(c, name, title, bounds, flags) -> bool
+fn end(c)
+fn window_get_bounds(c) -> Rect      // and _position, _size, _content_region, _scroll, ...
+fn window_has_focus(c) -> bool       fn window_is_hovered(c) -> bool
+fn window_is_collapsed(c, name) -> bool       // and _closed, _hidden, _active
+fn window_set_bounds(c, name, bounds: Rect)   // and _position, _size, _focus, set_scroll
+fn window_close(c, name)       fn window_collapse(c, name, state: i64)   // MINIMIZED, MAXIMIZED
+fn window_show(c, name, state: i64)          // SHOWN, HIDDEN; and the _if forms
+fn layout_row_dynamic(c, height: f32, cols: i64)            // equal parts of the width
+fn layout_row_static(c, height: f32, item_width: i64, cols: i64)
+fn layout_row(c, format: i64, height: f32, ratios: const f32[:])    // DYNAMIC, STATIC
+fn layout_row_begin(c, format, height, cols)   fn layout_row_push(c, value: f32)   fn layout_row_end(c)
+fn layout_row_template_begin(c, height)   // push_dynamic, push_variable(min), push_static(w), _end
+fn layout_space_begin(c, format, height, widget_count)   fn layout_space_push(c, bounds: Rect)
+fn layout_space_end(c)       // and _bounds, _to_screen, _to_local
+fn layout_set_min_row_height(c, height)   fn spacer(c)   fn spacing(c, cols)
+```
+
+A row lays out the widgets after it, and repeats until the next row call.
+`begin` is false for a window collapsed or hidden, whose `end` still
+follows. Windows are found by name: two in one frame cannot share one.
+
+### Groups, trees and list views
+
+```goose
+fn group_begin(c, title, flags) -> bool          fn group_end(c)
+fn group_scrolled_begin(c, offset: Scroll, title, flags) -> bool
+fn group_scrolled_end(c) -> Scroll               fn group_get_scroll(c, id) -> Scroll
+fn tree_push(c, type: i64, title, initial: i64) -> bool    // TREE_NODE or _TAB, MINIMIZED..
+fn tree_pop(c)
+fn tree_push_id(c, type, title, initial, id: i64) -> bool     // same titles apart
+fn tree_image_push(c, type, img: Image, title, initial) -> bool
+fn tree_state_push(c, type, title, state: i64&) -> bool       fn tree_state_pop(c)
+fn tree_element_push(c, type, title, initial, selected: bool&) -> bool   fn tree_element_pop(c)
+fn list_view_begin(c, id, flags, row_height: i64, row_count: i64) -> ListView, bool
+fn list_view_end(c)          // build rows view.begin until view.end only
+```
+
+A group is a scrolled panel inside a window, with its own rows; its end
+follows only when it began. A tree node's contents go between a true push
+and its pop.
+
+### Widgets
+
+```goose
+fn label(c, text: const u8[:], align: i64)       // TEXT_LEFT, TEXT_CENTERED, TEXT_RIGHT
+fn label_colored(c, text, align, color: Color)   fn label_wrap(c, text)
+fn value_int(c, prefix, v: i64)                  // and _bool, _uint, _float, _color_*
+fn link_label(c, text, align) -> bool            // and _colored, _underline, _styled, ...
+fn image(c, img: Image)                          fn image_color(c, img, color)
+fn button_label(c, text) -> bool                 // clicked this frame
+fn button_symbol(c, symbol: i64) -> bool         // SYMBOL_*; and _color, _image, _*_label
+fn button_label_styled(c, style: const StyleButton&, text) -> bool    // and for each kind
+fn button_push_behavior(c, behavior: i64) -> bool    // BUTTON_DEFAULT, BUTTON_REPEATER
+fn button_pop_behavior(c) -> bool
+fn checkbox_label(c, text, active: bool&) -> bool          // and _align, _flags_label
+fn check_label(c, text, active: bool) -> bool              // the new state
+fn radio_label(c, text, active: bool&) -> bool   fn option_label(c, text, active: bool) -> bool
+fn selectable_label(c, text, align, value: bool&) -> bool  // and _image_, _symbol_; select_*
+fn slider_float(c, min: f32, value: f32&, max: f32, step: f32) -> bool    // and slider_int
+fn slide_float(c, min, value, max, step) -> f32           // and slide_int
+fn knob_float(c, min, value: f32&, max, step, zero_direction: i64, dead_zone_degrees: f32) -> bool
+fn progress(c, cur: i64&, max: i64, modifiable: bool) -> bool    fn prog(c, cur, max, modifiable) -> i64
+fn color_picker(c, color: Colorf, format: i64) -> Colorf    // RGB, RGBA
+fn color_pick(c, color: Colorf&, format) -> bool
+fn property_float(c, name, min, value: f32&, max, step, inc_per_pixel: f32) -> bool
+    // and _int, _double; propertyi, propertyf, propertyd return the value
+fn widget(c) -> i64, Rect            // a place for a widget of the program's own: WIDGET_*
+fn widget_bounds(c) -> Rect          // the next widget's place, and _position, _size, ...
+fn widget_is_hovered(c) -> bool      fn widget_is_mouse_clicked(c, button) -> bool
+fn widget_disable_begin(c)           fn widget_disable_end(c)     // shown dimmed, inert
+```
+
+The `_label` names take any Goose string: a Nuklear `_text` function is the
+same call. A property is dragged, stepped with its arrows or typed into; a
+name starting with `#` is not shown. Sliders and knobs need a non-empty
+range.
+
+### Text editing
+
+```goose
+fn edit_string(c, flags: i64, text: T&, filter: i64) -> i64     // u8[..k], u8[..]
+fn edit_string(c, flags, buffer: u8[:], len: i64&, filter) -> i64
+fn edit_buffer(c, flags, edit: TextEdit, filter) -> i64         // keeps undo
+fn edit_focus(c, flags)        fn edit_unfocus(c)                // the next edit
+fn filter_accepts(filter: i64, rune: u32) -> bool
+fn create_text_edit() -> TextEdit     fn destroy(e: TextEdit)
+fn text(e) -> u8[>..]          fn set_text(e, text)              fn state(e) -> TextEditState
+fn set_cursor(e, cursor, select_start, select_end)               fn set_mode(e, mode: i64)
+fn textedit_text(e, text)      fn textedit_delete(e, at, len)    fn textedit_delete_selection(e)
+fn textedit_select_all(e)      fn textedit_cut(e) -> bool        fn textedit_paste(e, text) -> bool
+fn textedit_undo(e)            fn textedit_redo(e)
+```
+
+Flags are `EDIT_*`, with the usual sets `EDIT_SIMPLE`, `EDIT_FIELD` (one
+line, selectable, clipboard) and `EDIT_BOX` (several lines); the result
+says `EDIT_ACTIVE` or `_INACTIVE`, `_ACTIVATED` and `_DEACTIVATED` this
+frame, and `_COMMITTED` for Enter with `EDIT_SIG_ENTER`. A field takes what
+fits in its text's capacity, through a `FILTER_*` (`DEFAULT`, `ASCII`,
+`FLOAT`, `DECIMAL`, `HEX`, `OCT`, `BINARY`); a paste takes what typing
+would. A text editor (`TextEdit`) holds its own text, cursor, selection,
+mode and undo history; a field over a buffer keeps no undo between frames.
+Editing keys are `KEY_*`; `KEY_COPY` and `KEY_CUT` hand the selection to
+`copied`, `KEY_PASTE` pastes `set_clipboard`'s text.
+
+### Popups, combo boxes, menus and tooltips
+
+```goose
+fn popup_begin(c, type: i64, title, flags, rect: Rect) -> bool     // POPUP_STATIC, _DYNAMIC
+fn popup_close(c)     fn popup_end(c)     // and popup_get_scroll, popup_set_scroll
+fn combo(c, items: const u8[:][:], selected: i64, item_height: i64, size: float2) -> i64
+fn combobox(c, items, selected: i64&, item_height, size) -> bool
+    // and combo_separator, combo_string over one string of items
+fn combo_begin_label(c, selected: const u8[:], size) -> bool   // and _color, _symbol, _image
+fn combo_item_label(c, text, align) -> bool     fn combo_close(c)     fn combo_end(c)
+fn contextual_begin(c, flags, size: float2, trigger_bounds: Rect) -> bool
+fn contextual_item_label(c, text, align) -> bool   fn contextual_close(c)   fn contextual_end(c)
+fn tooltip(c, text)       fn tooltip_offset(c, text, position: i64, offset: float2)   // TOP_LEFT..
+fn tooltip_begin(c, width: f32) -> bool           fn tooltip_end(c)
+fn do_tooltip(c, text, bounds: Rect)    // when hovering bounds; and _delay(.., timer: f32&)
+fn menubar_begin(c)       fn menubar_end(c)       // first in its window
+fn menu_begin_label(c, text, align, size: float2) -> bool    // and _image, _symbol forms
+fn menu_item_label(c, text, align) -> bool        fn menu_close(c)      fn menu_end(c)
+```
+
+A popup, combo box, contextual menu, menu or tooltip is a small window of
+its own, drawn above the one it opens from, with rows inside; each end
+follows only a true begin, and none opens inside another. A tooltip is
+asked for before the widget it is about, when `widget_is_hovered`.
+
+### Charts
+
+```goose
+fn chart_begin(c, type: i64, count: i64, min: f32, max: f32) -> bool   // CHART_LINES, _COLUMN
+fn chart_begin_colored(c, type, color: Color, active: Color, count, min, max) -> bool
+fn chart_add_slot(c, type, count, min, max)      // and _colored: another line or columns
+fn chart_push(c, value: f32) -> i64              // CHART_HOVERING, CHART_CLICKED
+fn chart_push_slot(c, value, slot: i64) -> i64
+fn chart_end(c)
+fn plot(c, type, values: const f32[:])           // a whole chart, scaled to the values
+```
+
+### Style and colors
+
+```goose
+fn style(c) -> Style              fn set_style(c, s: const Style&)
+fn push_style(c, s) -> bool       fn pop_style(c) -> bool
+fn style_default(c)               fn style_from_table(c, table: const Color[:])   // one per COLOR_*
+fn default_color_table() -> Color[>..]           fn style_get_color_by_name(color: i64) -> u8[>..]
+fn style_set_font(c, f: Font)     fn style_push_font(c, f) -> bool     fn style_pop_font(c) -> bool
+fn style_load_cursor(c, which: i64, cursor: Cursor)     // CURSOR_*
+fn style_load_all_cursors(c, cursors: const Cursor[:])  // one per CURSOR_*
+fn style_set_cursor(c, which: i64) -> bool     fn style_show_cursor(c)     fn style_hide_cursor(c)
+fn style_item_color(color) -> StyleItem          // and _image, _nine_slice, _hide
+fn rgb(r, g, b: i64) -> Color     // and rgba, rgba_u32, rgb_f, rgba_f, rgb_cf, rgb_hex, hsv, hsva, ...
+fn color_cf(c: Color) -> Colorf   // and color_u32, color_hex_rgba, color_hsv_f, color_hsva_f
+fn rgb_factor(c: Color, factor: f32) -> Color
+```
+
+`Style` mirrors Nuklear's `nk_style` field for field (text, link, buttons,
+toggles, selectables, sliders, knobs, progress bars, properties, edits,
+charts, scroll bars, tabs, combo boxes, windows), less its font and
+cursors: read it, change fields, set it back. A `StyleItem` is a color, an
+image or a nine-slice image, by `kind`. Software cursors are images Nuklear
+draws at the mouse.
+
+### Images and rectangles
+
+```goose
+struct Rect { x: f32, y: f32, w: f32, h: f32 }
+struct Image { texture: u32, w: u16, h: u16, region: u16[4] }    // a renderer's texture
+fn rect(x, y, w, h) -> Rect       // f32 or i64; and recta, rect_pos, rect_size, get_null_rect
+fn image_id(texture: u32) -> Image               fn texture_image(t: gfx::Texture) -> Image
+fn subimage_id(texture, w: u16, h: u16, region: Rect) -> Image     // part of a w x h texture
+fn nine_slice_id(texture, l, t, r, b: u16) -> NineSlice    // and sub9slice_id, with the size
+```
+
+### Drawing and what was drawn
+
+```goose
+fn stroke_line(c, x0, y0, x1, y1: f32, thickness: f32, color: Color)
+    // and stroke_curve, _rect, _circle, _arc, _triangle, _polyline, _polygon
+fn fill_rect(c, r: Rect, rounding: f32, color)
+    // and fill_rect_multi_color, _circle, _arc, _triangle, _polygon
+fn draw_image(c, r: Rect, img: Image, color)     fn draw_nine_slice(c, r, slice: NineSlice, color)
+fn draw_text(c, r: Rect, text, font: Font, background: Color, foreground: Color)
+fn push_scissor(c, r: Rect)
+fn commands(c) -> Command[>..]    fn command_points(c) -> int2[>..]    fn command_text(c) -> u8[>..]
+fn convert(c, config: ConvertConfig) -> i64      // CONVERT_SUCCESS or what went wrong
+fn vertices(c) -> Vertex[>..]     fn indices(c) -> u32[>..]    fn draw_commands(c) -> DrawCommand[>..]
+fn null_texture(c) -> u32
+```
+
+The canvas functions draw onto the window being built, in screen
+coordinates, clipped to the scissor: with `widget`, the way to draw a
+widget of the program's own. Once a frame's windows have ended, its drawing
+is available two ways, for any renderer: Nuklear's commands (one `Command`
+per shape, image or text, polygons' points and texts' bytes beside them),
+or triangles from `convert` -- vertices with a position, texture
+coordinate and color, 32-bit indices, and draw calls each with a scissor
+and a texture, shapes using the null texture. Both stay until the next
+frame's input.
+
+### Through gfx
+
+```goose
+fn render(c: Context)                            // over the screen
+fn render(c, target: gfx::Texture)               // over a COLOR_TARGET texture
+fn render(c, target, config: ConvertConfig)
+fn input_from_gfx(c: Context)                    // after gfx::frame(), before any window
+```
+
+`render` converts the frame and draws it with alpha blending, not inside a
+pass, uploading each font atlas to a gfx texture the first time. What it
+keeps -- a pipeline, a sampler, buffers -- is made once and again after gfx
+is closed and opened. `input_from_gfx` hands the context gfx's last frame
+of input in order: the mouse, editing keys (Delete, Backspace, Enter, Tab,
+Home, End, the arrows, Page Up and Down, Escape), shortcuts with Ctrl or
+Command (A, C, X, V, Z, Y), typed text (it turns gfx's text input on), the
+frame's duration, and the clipboard both ways, pasting the system
+clipboard's text and putting there what a field copied. In a window opened
+with gfx's `WINDOW_HIGH_DPI` the two do not match yet: the ui draws in
+pixels, and gfx reports the mouse in window points.

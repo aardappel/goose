@@ -1,0 +1,9 @@
+columns, step 0: nothing; bars 4, highlighted 0
+columns, step 1: hovering 2; bars 3, highlighted 1
+columns, step 2: hovering 2; bars 3, highlighted 1
+columns, step 3: hovering 2 clicked 2; bars 3, highlighted 1
+lines: 3 segments
+three slots: red columns 3, blue lines 2, lines in the style's color 2
+plots: 11 columns and point marks, 5 line segments
+the flat plot's segments level: true true
+misuses 0

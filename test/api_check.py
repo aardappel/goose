@@ -1,10 +1,11 @@
 """Checks that each stdlib module with a native layer and that layer's C API
 header describe the same boundary: stdlib/gfx.goose against
-src/gfx/gfx_api.h, and stdlib/physics.goose against
-src/physics/physics_api.h. Every `extern "gs_..." fn` against the header's
-list of functions, parameter by parameter; every struct that crosses, field
-by field; and every constant. A mismatch there compiles on both sides and
-then passes garbage, which is why it is checked rather than trusted.
+src/gfx/gfx_api.h, stdlib/physics.goose against src/physics/physics_api.h,
+and stdlib/ui.goose against src/ui/ui_api.h. Every `extern "gs_..." fn`
+against the header's list of functions, parameter by parameter; every struct
+that crosses, field by field; and every constant. A mismatch there compiles
+on both sides and then passes garbage, which is why it is checked rather
+than trusted.
 
 It also checks what the header passes by value is what TinyCC passes the way
 the C compilers do: TinyCC classifies a struct of up to 16 bytes as a whole,
@@ -14,10 +15,10 @@ mixing floats and integers would arrive in different registers.
 The naming convention the check relies on: the Goose struct `TextureDesc` is
 `gs_gfx_texture_desc` in C, a slice `const Buffer[:]` is
 `gs_gfx_buffer_slice`, `u8[:]` is `gs_gfx_bytes`, `T&` is a pointer; the
-same with `gs_phys_` for physics.
+same with `gs_phys_` for physics and `gs_ui_` for ui.
 
 Used by run_tests.py: check(module) returns a list of problems, empty when the
-two agree. Runnable alone: python test/api_check.py [gfx|physics]
+two agree. Runnable alone: python test/api_check.py [gfx|physics|ui]
 """
 
 import re
@@ -38,6 +39,7 @@ VECS = ("int2", "int3", "float2", "float3", "float4")
 MODULES = {
     "gfx": ("src/gfx/gfx_api.h", "stdlib/gfx.goose", "GFX", "gs_gfx_"),
     "physics": ("src/physics/physics_api.h", "stdlib/physics.goose", "PHYS", "gs_phys_"),
+    "ui": ("src/ui/ui_api.h", "stdlib/ui.goose", "UI", "gs_ui_"),
 }
 
 
@@ -147,7 +149,7 @@ def parse_goose(text, prefix):
             i += 1
         out = []
         for f in split_top(text[start:i - 1]):
-            if f.startswith("pad"):
+            if re.match(r"pad(\s|$)", f):
                 out.append(("pad", f, 1))
                 continue
             name, _, rest = f.partition(":")

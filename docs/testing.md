@@ -19,10 +19,11 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `goose_in_goose/` | A Goose-written compiler used as one multi-file bootstrap regression: build and run three generations, check a C fixed point and repeated final-stage self-checks, and compare JIT/native self-compilation. |
 | `gfx/` | The `gfx` graphics module: headless rendering, textures, compute, frames and input, a runtime misuse, shaders from files and from the program; shader and threading rejections (fixtures with `// error:` markers). The programs hold their shaders; the shader files beside them are for the file form of `embed_shader` and `--compile-shader`. `gfx/window/` is the windowed showcase, not part of the suite. |
 | `physics/` | The `physics` module: worlds, bodies, every kind of shape and geometry, all joint kinds, queries, events, recording and replay, a runtime misuse, and the threading rejection. |
+| `ui/` | The `ui` module: fonts, windows and layout, widgets, popups and menus, text editing, style, drawing and the input queries, charts, rendering and input through headless gfx, a runtime misuse, the layer's misuse messages, and the threading rejection. |
 | `errors/`, `errors_tc/` | Expected parser/resolver and semantic rejections. |
 | `expected/` | Shared output and runtime-diagnostic expectations. |
 | `run_tests.py` | The Python test runner. |
-| `api_check.py` | Checks `stdlib/gfx.goose` and `stdlib/physics.goose` against their C layers' headers; run by `run_tests.py`. |
+| `api_check.py` | Checks `stdlib/gfx.goose`, `stdlib/physics.goose` and `stdlib/ui.goose` against their C layers' headers; run by `run_tests.py`. |
 
 Positive fixtures are discovered one level below `test/`; nested import helpers
 run through their entry programs. `goose_in_goose/` is handled separately as one
@@ -80,8 +81,18 @@ is deterministic across platforms and worker counts, so they print physics
 results, rounded, and compare them exactly. Between them they call every
 function of the layer.
 
+The `ui/` tests exercise the Nuklear ui module (`docs/design/ui.md`) in the
+same way, linking `goose --ui-link` and, for the one that renders through
+gfx, `goose --gfx-link` too: a test needs the layers of its own category and
+of every module it imports, and is skipped where one is missing. They drive a
+context with input of their own and print what comes back and what was
+drawn; `ui_render` draws through headless gfx and reads back pixels only
+where the ui drew solid color. Between them they call every function of the
+layer.
+
 `api_check.py` compares the functions, structs, and constants in
-`stdlib/gfx.goose` and `stdlib/physics.goose` with their C headers. This catches
+`stdlib/gfx.goose`, `stdlib/physics.goose` and `stdlib/ui.goose` with their C
+headers. This catches
 interface mismatches that can compile successfully on both sides. It also
 rejects a struct the layer passes by value that TinyCC would pass differently
 from the C compilers on System V x86-64: one of at most 16 bytes with a

@@ -1,0 +1,77 @@
+widget read-only at 14 14 292 x 250
+31 commands, 12 polygon points, 11 bytes of text
+  filled rect 10 10 300 x 300 rounding 0 color 45 45 45 255
+  scissor 14 10 292 x 300
+  line 20,30 to 60,70 thickness 2 color 255 0 0 255
+  curve 20,80 40,60 60,100 80,80 thickness 1 color 0 255 0 255
+  rect 100 30 40 x 20 rounding 3 thickness 1 color 0 0 255 255
+  filled rect 100 60 40 x 20 rounding 0 color 0 0 255 255
+  multi-color rect 150 30 40 x 40 left 255 0 0 255 top 0 255 0 255 right 0 0 255 255 bottom 255 255 255 255
+  circle 200 30 30 x 30 thickness 2 color 0 255 0 255
+  filled circle 240 30 30 x 30 color 0 255 0 255
+  arc at 50,150 radius 20 from 0 to 314 hundredths thickness 1 color 255 0 0 255
+  filled arc at 100,150 radius 20 from 0 to 157 hundredths color 255 0 0 255
+  triangle 150,130 170,170 130,170 thickness 1 color 0 0 255 255
+  filled triangle 200,130 220,170 180,170 color 0 0 255 255
+  polyline 240,130 280,130 280,170 250,160 thickness 1 color 255 255 255 255
+  polygon 240,130 280,130 280,170 250,160 thickness 2 color 255 255 255 255
+  filled polygon 240,130 280,130 280,170 250,160 color 255 255 255 255
+  image 77 20 190 32 x 32 part 0 x 0 at 0,0 tint 255 255 255 255
+  image 77 60 190 32 x 32 part 64 x 64 at 16,16 tint 255 0 0 255
+  image 78 100 190 4 x 4 part 0 x 0 at 0,0 tint 255 255 255 255
+  image 78 104 190 52 x 4 part 0 x 0 at 4,0 tint 255 255 255 255
+  image 78 156 190 4 x 4 part 0 x 0 at 65532,0 tint 255 255 255 255
+  image 78 100 194 4 x 22 part 0 x 0 at 0,4 tint 255 255 255 255
+  image 78 104 194 52 x 22 part 0 x 0 at 4,4 tint 255 255 255 255
+  image 78 156 194 4 x 22 part 0 x 0 at 65532,4 tint 255 255 255 255
+  image 78 100 216 4 x 4 part 0 x 0 at 0,65532 tint 255 255 255 255
+  image 78 104 216 52 x 4 part 0 x 0 at 4,65532 tint 255 255 255 255
+  image 78 156 216 4 x 4 part 0 x 0 at 65532,65532 tint 255 255 255 255
+  text 'canvas text' 170 190 100 x 20 height 13 on 0 0 0 0 in 255 255 255 255
+  scissor 0 0 50 x 50
+  filled rect 20 20 10 x 10 rounding 0 color 0 255 0 255
+  scissor -8192 -8192 16384 x 16384
+null texture 0, the atlas's true
+default: result 0, 550 vertices, 2010 indices in 6 draws (indices counted true, in range true), textures null 77 78 null, background 45 45 45 255
+no anti-aliasing: result 0, 542 vertices, 870 indices in 6 draws (indices counted true, in range true), textures null 77 78 null, background 45 45 45 255
+finer curves: result 0, 1138 vertices, 4530 indices in 6 draws (indices counted true, in range true), textures null 77 78 null, background 45 45 45 255
+half alpha: result 0, 550 vertices, 2010 indices in 6 draws (indices counted true, in range true), textures null 77 78 null, background 45 45 45 127
+first draw clipped to -8192 -8192 16384 x 16384
+after clear: 0 commands, 0 vertices
+step 0: mouse 10,10 from 0,0 moved 10,10 scrolled 0; moved true, down false, pressed false, released false
+  clicks: any false, in target false, away false, in its button false, down in it false, up in it false
+  this frame: clicked in target false, down false, any button false, hovered and clicked false
+  hovering: target false, before true, still false; for 0.6s false (0), still false (0), unless clicked false (0)
+step 1: mouse 30,40 from 10,10 moved 0,0 scrolled 0; moved false, down true, pressed true, released false
+  clicks: any false, in target true, away false, in its button true, down in it true, up in it false
+  this frame: clicked in target false, down true, any button false, hovered and clicked false
+  hovering: target true, before true, still true; for 0.6s false (0.25), still false (0.25), unless clicked false (0.25)
+step 2: mouse 30,40 from 30,40 moved 0,0 scrolled 2; moved false, down false, pressed false, released true
+  clicks: any true, in target true, away false, in its button true, down in it false, up in it true
+  this frame: clicked in target true, down false, any button true, hovered and clicked true
+  hovering: target true, before false, still true; for 0.6s false (0.5), still false (0.5), unless clicked false (0.5)
+step 3: mouse 30,40 from 30,40 moved 0,0 scrolled 0; moved false, down false, pressed false, released false
+  clicks: any false, in target true, away false, in its button true, down in it false, up in it true
+  this frame: clicked in target false, down false, any button false, hovered and clicked false
+  hovering: target true, before false, still true; for 0.6s true (0.75), still true (0.75), unless clicked true (0.75)
+step 4: mouse 30,40 from 30,40 moved 0,0 scrolled 0; moved false, down false, pressed false, released false
+  clicks: any false, in target true, away false, in its button true, down in it false, up in it true
+  this frame: clicked in target false, down false, any button false, hovered and clicked false
+  hovering: target true, before false, still true; for 0.6s true (1), still true (0.75), unless clicked true (0.75)
+step 5: mouse 30,40 from 30,40 moved 0,0 scrolled 0; moved false, down false, pressed false, released false
+  clicks: any false, in target true, away false, in its button true, down in it false, up in it true
+  this frame: clicked in target false, down false, any button false, hovered and clicked false
+  hovering: target true, before false, still true; for 0.6s true (1.25), still true (0.75), unless clicked true (0.75)
+step 6: mouse 30,40 from 30,40 moved 0,0 scrolled 0; moved false, down true, pressed true, released false
+  clicks: any false, in target true, away false, in its button true, down in it true, up in it false
+  this frame: clicked in target false, down true, any button false, hovered and clicked false
+  hovering: target true, before false, still true; for 0.6s true (1.5), still true (0.75), unless clicked true (0.75)
+step 7: mouse 30,40 from 30,40 moved 0,0 scrolled 0; moved false, down false, pressed false, released true
+  clicks: any true, in target true, away false, in its button true, down in it false, up in it true
+  this frame: clicked in target true, down false, any button true, hovered and clicked true
+  hovering: target true, before false, still true; for 0.6s true (1.75), still true (0.75), unless clicked false (0.75, clicked)
+step 8: mouse 32,41 from 30,40 moved 2,1 scrolled 0; moved true, down false, pressed false, released false
+  clicks: any false, in target true, away false, in its button true, down in it false, up in it true
+  this frame: clicked in target false, down false, any button false, hovered and clicked false
+  hovering: target true, before false, still false; for 0.6s true (2), still true (0.75), unless clicked false (0)
+misuses 0

@@ -50,6 +50,7 @@ add_executable(goose
     src/runtime/runtime_os.h
     src/gfx.h
     src/physics.h
+    src/ui.h
 )
 
 # The compile runs on a thread of its own, with a larger stack (main.cpp).
@@ -138,6 +139,21 @@ if(GOOSE_HAVE_PHYSICS)
     target_link_libraries(goose PRIVATE goose_physics)
     target_compile_definitions(goose PRIVATE
         GOOSE_HAVE_PHYSICS=1 GOOSE_PHYSICS_LINK_PATH="${CMAKE_BINARY_DIR}/physics/$<CONFIG>")
+endif()
+
+# The optional ui module (stdlib/ui.goose): Nuklear from the third_party/nuklear
+# submodule and the C layer over it, built in and linked the way gfx is; it
+# renders through gfx. Without the submodule, or with -DGOOSE_UI=OFF, the
+# compiler builds and behaves the same, except that it cannot run a ui
+# program itself.
+option(GOOSE_UI "Build the Nuklear ui module when the submodule is present" ON)
+if(GOOSE_UI AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nuklear/nuklear.h")
+    include(cmake/ui.cmake)
+endif()
+if(GOOSE_HAVE_UI)
+    target_link_libraries(goose PRIVATE goose_ui)
+    target_compile_definitions(goose PRIVATE
+        GOOSE_HAVE_UI=1 GOOSE_UI_LINK_PATH="${CMAKE_BINARY_DIR}/ui/$<CONFIG>")
 endif()
 
 if(MSVC)

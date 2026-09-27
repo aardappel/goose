@@ -166,6 +166,19 @@ let LOAD_SRGB: i32 = 2;
 let MOUSE_LEFT: i32 = 1;
 let MOUSE_MIDDLE: i32 = 2;
 let MOUSE_RIGHT: i32 = 3;
+let MOUSE_X1: i32 = 4;
+let MOUSE_X2: i32 = 5;
+
+// Input events (Event.kind), and the modifier keys held with a key.
+let EVENT_KEY: i32 = 1;
+let EVENT_TEXT: i32 = 2;
+let EVENT_MOUSE_MOTION: i32 = 3;
+let EVENT_MOUSE_BUTTON: i32 = 4;
+let EVENT_MOUSE_WHEEL: i32 = 5;
+let MOD_SHIFT: i32 = 1;
+let MOD_CTRL: i32 = 2;
+let MOD_ALT: i32 = 4;
+let MOD_GUI: i32 = 8;
 
 // --- handles and descriptions: the structs of src/gfx/gfx_api.h -------------
 
@@ -232,6 +245,22 @@ struct PipelineDesc {
     depth_bias: f32 = 0.0,
     depth_bias_slope: f32 = 0.0,
     formats: u8[16] = [0; 16],      // by location, a VERTEX_* override
+}
+
+// One input event of the last frame. The fields a kind has are the ones
+// that mean something for it.
+struct Event {
+    kind: i32,              // EVENT_*
+    scancode: i32,          // key: where it is on the keyboard (key_name names it)
+    keycode: i32,           // key: what it means in the keyboard's layout: a character, for most
+    mods: i32,              // key: the MOD_* held down with it
+    down: bool,             // key, button: pressed rather than released
+    repeat: bool,           // key: repeated by being held down
+    button: i32,            // button: MOUSE_*
+    clicks: i32,            // button: 1, 2 for a double click, ...
+    codepoint: u32,         // text: one character typed
+    x: f32,                 // motion, button: where the pointer is; wheel: how far
+    y: f32,
 }
 
 struct PassDesc {
@@ -325,6 +354,9 @@ fn screen_size() -> int2 {
 extern "gs_gfx_time" fn time() -> f64;               // seconds since open
 extern "gs_gfx_delta_time" fn delta_time() -> f64;   // seconds the last frame took
 extern "gs_gfx_frame_count" fn frame_count() -> i64;
+// How many times gfx has been opened in this process: handles made before it
+// last changed were released by close().
+extern "gs_gfx_open_count" fn open_count() -> i64;
 
 // --- input -------------------------------------------------------------------
 
@@ -355,6 +387,44 @@ fn mouse_delta() -> float2 {
 // test drives a program with. A mouse button of 0 only moves the pointer.
 extern "gs_gfx_inject_key" fn inject_key(name: const u8[:], down: bool) -> bool;
 extern "gs_gfx_inject_mouse" fn inject_mouse(x: f32, y: f32, button: i64, down: bool);
+// Text as if typed: an EVENT_TEXT per character at the next frame().
+extern "gs_gfx_inject_text" fn inject_text(text: const u8[:]) -> bool;
+
+// The last frame's input in the order it came, key repeats and typed text
+// included: what text editing needs, where the state above loses what
+// happened between two frames.
+extern "gs_gfx_events" fn events_into(out: Event[:]) -> i64;
+fn events() -> Event[>..] {
+    var out: Event[>..] = [];
+    let n = events_into(out);
+    out.resize(n, default<Event>());
+    events_into(out);
+    return out;
+}
+// Typed text comes as EVENT_TEXT only while text input is on: off by
+// default, since on some platforms it shows an on-screen keyboard.
+extern "gs_gfx_text_input" fn text_input(on: bool);
+// The scancode of the key of that name, as key_down takes it; 0 for none.
+extern "gs_gfx_scancode" fn scancode(name: const u8[:]) -> i64;
+extern "gs_gfx_key_name" fn key_name_into(scancode: i64, out: u8[:]) -> i64;
+fn key_name(scancode: i64) -> u8[>..] {
+    var name: u8[>..] = [];
+    let n = key_name_into(scancode, name);
+    name.resize(n, 0);
+    key_name_into(scancode, name);
+    return name;
+}
+
+// The system clipboard's text; headless, gfx's own.
+extern "gs_gfx_clipboard" fn clipboard_into(out: u8[:]) -> i64;
+fn clipboard() -> u8[>..] {
+    var text: u8[>..] = [];
+    let n = clipboard_into(text);
+    text.resize(n, 0);
+    clipboard_into(text);
+    return text;
+}
+extern "gs_gfx_set_clipboard" fn set_clipboard(text: const u8[:]) -> bool;
 
 // --- buffers -----------------------------------------------------------------
 

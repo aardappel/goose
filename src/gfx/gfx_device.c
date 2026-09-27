@@ -8,6 +8,10 @@
 
 gfx_state gfx;
 
+/* How many times gfx was opened, which close() leaves: handles from an
+   earlier open are gone once it changes. */
+static int64_t gfx_opens;
+
 /* --- errors ---------------------------------------------------------------- */
 
 static void gfx_vset(const char *fmt, va_list args) {
@@ -365,6 +369,8 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
         return false;
     }
     gfx.start_ns = gfx.last_ns = SDL_GetTicksNS();
+    gfx.inject_event = SDL_RegisterEvents(1);
+    gfx_opens++;
     return true;
 }
 
@@ -390,6 +396,10 @@ void gs_gfx_close(void) {
         if (gfx.window) SDL_ReleaseWindowFromGPUDevice(gfx.dev, gfx.window);
         SDL_DestroyGPUDevice(gfx.dev);
     }
+    free(gfx.events);
+    for (int i = 0; i < gfx.ninjected; i++) SDL_free(gfx.injected[i]);
+    free(gfx.injected);
+    SDL_free(gfx.clipboard);
     if (gfx.window) SDL_DestroyWindow(gfx.window);
     if (gfx.video_inited) SDL_QuitSubSystem(SDL_INIT_VIDEO);
     /* What went wrong outlives the device, for gs_gfx_error after a failed
@@ -449,6 +459,38 @@ static void gfx_present(void) {
     SDL_BlitGPUTexture(cb, &bi);
 }
 
+/* A new event at the end of this frame's list. */
+static gs_gfx_event *gfx_event(int32_t kind) {
+    if (gfx.nevents == gfx.events_cap) {
+        gfx.events_cap = gfx.events_cap ? gfx.events_cap * 2 : 64;
+        gfx.events = (gs_gfx_event *)realloc(gfx.events,
+                                             sizeof(gs_gfx_event) * (size_t)gfx.events_cap);
+    }
+    gs_gfx_event *e = &gfx.events[gfx.nevents++];
+    memset(e, 0, sizeof *e);
+    e->kind = kind;
+    return e;
+}
+
+/* The modifier keys down now, from the keys' own state, which injected key
+   events keep as real ones do. */
+static int32_t gfx_mods(void) {
+    int32_t m = 0;
+    if (gfx.keys[SDL_SCANCODE_LSHIFT] || gfx.keys[SDL_SCANCODE_RSHIFT]) m |= GS_GFX_MOD_SHIFT;
+    if (gfx.keys[SDL_SCANCODE_LCTRL] || gfx.keys[SDL_SCANCODE_RCTRL]) m |= GS_GFX_MOD_CTRL;
+    if (gfx.keys[SDL_SCANCODE_LALT] || gfx.keys[SDL_SCANCODE_RALT]) m |= GS_GFX_MOD_ALT;
+    if (gfx.keys[SDL_SCANCODE_LGUI] || gfx.keys[SDL_SCANCODE_RGUI]) m |= GS_GFX_MOD_GUI;
+    return m;
+}
+
+/* One text event per character of UTF-8 `text`. */
+static void gfx_text_events(const char *text) {
+    if (!text) return;
+    Uint32 cp;
+    while ((cp = SDL_StepUTF8(&text, NULL)) != 0)
+        gfx_event(GS_GFX_EVENT_TEXT)->codepoint = cp;
+}
+
 uint8_t gs_gfx_frame(void) {
     if (!gfx_need_device("frame")) return 0;
     if (gfx.pass || gfx.cpass) {
@@ -461,6 +503,7 @@ uint8_t gs_gfx_frame(void) {
     memcpy(gfx.prev_keys, gfx.keys, sizeof gfx.keys);
     gfx.prev_buttons = gfx.buttons;
     gfx.mouse_dx = gfx.mouse_dy = gfx.wheel = 0;
+    gfx.nevents = 0;
     bool resized = false;
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
@@ -470,34 +513,63 @@ uint8_t gs_gfx_frame(void) {
                 gfx.quit = true;
                 break;
             case SDL_EVENT_KEY_DOWN:
-            case SDL_EVENT_KEY_UP:
+            case SDL_EVENT_KEY_UP: {
                 if (e.key.scancode < SDL_SCANCODE_COUNT) gfx.keys[e.key.scancode] = e.key.down;
+                gs_gfx_event *ev = gfx_event(GS_GFX_EVENT_KEY);
+                ev->scancode = (int32_t)e.key.scancode;
+                ev->keycode = (int32_t)e.key.key;
+                ev->mods = gfx_mods();
+                ev->down = e.key.down;
+                ev->repeat = e.key.repeat;
+            } break;
+            case SDL_EVENT_TEXT_INPUT:
+                gfx_text_events(e.text.text);
                 break;
-            case SDL_EVENT_MOUSE_MOTION:
+            case SDL_EVENT_MOUSE_MOTION: {
                 gfx.mouse_x = e.motion.x;
                 gfx.mouse_y = e.motion.y;
                 gfx.mouse_dx += e.motion.xrel;
                 gfx.mouse_dy += e.motion.yrel;
-                break;
+                gs_gfx_event *ev = gfx_event(GS_GFX_EVENT_MOUSE_MOTION);
+                ev->x = e.motion.x;
+                ev->y = e.motion.y;
+            } break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            case SDL_EVENT_MOUSE_BUTTON_UP:
+            case SDL_EVENT_MOUSE_BUTTON_UP: {
                 if (e.button.button < 32) {
                     uint32_t bit = 1u << e.button.button;
                     gfx.buttons = e.button.down ? gfx.buttons | bit : gfx.buttons & ~bit;
                 }
                 gfx.mouse_x = e.button.x;
                 gfx.mouse_y = e.button.y;
-                break;
-            case SDL_EVENT_MOUSE_WHEEL:
+                gs_gfx_event *ev = gfx_event(GS_GFX_EVENT_MOUSE_BUTTON);
+                ev->button = e.button.button;
+                ev->clicks = e.button.clicks;
+                ev->down = e.button.down;
+                ev->x = e.button.x;
+                ev->y = e.button.y;
+            } break;
+            case SDL_EVENT_MOUSE_WHEEL: {
                 gfx.wheel += e.wheel.y;
-                break;
+                gs_gfx_event *ev = gfx_event(GS_GFX_EVENT_MOUSE_WHEEL);
+                ev->x = e.wheel.x;
+                ev->y = e.wheel.y;
+            } break;
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
                 resized = true;
                 break;
             default:
+                if (gfx.inject_event && e.type == gfx.inject_event && e.user.code >= 0 &&
+                    e.user.code < gfx.ninjected) {
+                    gfx_text_events(gfx.injected[e.user.code]);
+                    SDL_free(gfx.injected[e.user.code]);
+                    gfx.injected[e.user.code] = NULL;
+                }
                 break;
         }
     }
+    /* Every injected text has been seen once the queue is empty. */
+    gfx.ninjected = 0;
     if (resized && gfx.window) {
         int w = 0, h = 0;
         SDL_GetWindowSizeInPixels(gfx.window, &w, &h);
@@ -517,6 +589,8 @@ double gs_gfx_time(void) {
 double gs_gfx_delta_time(void) { return gfx.delta; }
 
 int64_t gs_gfx_frame_count(void) { return gfx.frames; }
+
+int64_t gs_gfx_open_count(void) { return gfx_opens; }
 
 /* --- input ------------------------------------------------------------------- */
 
@@ -613,4 +687,84 @@ void gs_gfx_inject_mouse(float x, float y, int64_t button, uint8_t down) {
         e.button.y = y;
         SDL_PushEvent(&e);
     }
+}
+
+int64_t gs_gfx_events(gs_gfx_event_slice out) {
+    int64_t k = gfx.nevents < out.len ? gfx.nevents : out.len;
+    if (k > 0) memcpy(out.data, gfx.events, sizeof(gs_gfx_event) * (size_t)k);
+    return gfx.nevents;
+}
+
+void gs_gfx_text_input(uint8_t on) {
+    if (!gfx_need_device("text_input") || !gfx.window) return;
+    if (on) SDL_StartTextInput(gfx.window);
+    else SDL_StopTextInput(gfx.window);
+}
+
+/* Text as if typed, seen at the next frame(): a user event in the queue
+   keeps its place among injected keys and clicks. */
+uint8_t gs_gfx_inject_text(gs_gfx_bytes text) {
+    if (!gfx_need_device("inject_text")) return 0;
+    if (!gfx.inject_event) return gfx_fail("inject_text: SDL has no user event left");
+    if (gfx.ninjected == gfx.injected_cap) {
+        gfx.injected_cap = gfx.injected_cap ? gfx.injected_cap * 2 : 8;
+        gfx.injected = (char **)realloc(gfx.injected, sizeof(char *) * (size_t)gfx.injected_cap);
+    }
+    size_t n = text.len > 0 ? (size_t)text.len : 0;
+    char *copy = (char *)SDL_malloc(n + 1);
+    if (n) memcpy(copy, text.data, n);
+    copy[n] = 0;
+    SDL_Event e;
+    SDL_zero(e);
+    e.type = gfx.inject_event;
+    e.user.timestamp = SDL_GetTicksNS();
+    e.user.code = gfx.ninjected;
+    gfx.injected[gfx.ninjected++] = copy;
+    return SDL_PushEvent(&e);
+}
+
+int64_t gs_gfx_scancode(gs_gfx_bytes name) {
+    char buf[64];
+    return SDL_GetScancodeFromName(gfx_cstr(name, buf, sizeof buf));
+}
+
+int64_t gs_gfx_key_name(int64_t scancode, gs_gfx_bytes out) {
+    if (scancode < 0 || scancode >= SDL_SCANCODE_COUNT) {
+        gfx_misuse("key_name: no scancode %lld", (long long)scancode);
+        return 0;
+    }
+    const char *name = SDL_GetScancodeName((SDL_Scancode)scancode);
+    int64_t n = (int64_t)strlen(name);
+    int64_t k = n < out.len ? n : out.len;
+    if (k > 0) memcpy(out.data, name, (size_t)k);
+    return n;
+}
+
+/* Headless, gfx keeps a clipboard of its own, which keeps tests and the
+   programs a test runner drives off the system's. */
+int64_t gs_gfx_clipboard(gs_gfx_bytes out) {
+    if (!gfx_need_device("clipboard")) return 0;
+    char *text = gfx.window ? SDL_GetClipboardText() : gfx.clipboard;
+    int64_t n = text ? (int64_t)strlen(text) : 0;
+    int64_t k = n < out.len ? n : out.len;
+    if (k > 0) memcpy(out.data, text, (size_t)k);
+    if (gfx.window) SDL_free(text);
+    return n;
+}
+
+uint8_t gs_gfx_set_clipboard(gs_gfx_bytes text) {
+    if (!gfx_need_device("set_clipboard")) return 0;
+    size_t n = text.len > 0 ? (size_t)text.len : 0;
+    char *copy = (char *)SDL_malloc(n + 1);
+    if (!copy) return gfx_fail("out of memory for the clipboard");
+    if (n) memcpy(copy, text.data, n);
+    copy[n] = 0;
+    if (!gfx.window) {
+        SDL_free(gfx.clipboard);
+        gfx.clipboard = copy;
+        return 1;
+    }
+    bool ok = SDL_SetClipboardText(copy);
+    SDL_free(copy);
+    return ok || gfx_sdl_fail("set_clipboard");
 }

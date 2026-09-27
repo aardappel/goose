@@ -3,8 +3,8 @@
 This document records the original standard library design: its scope,
 conventions, and the builtins and language rules it required (§8). It
 preserves the reasoning at the time. Later changes include `const` types,
-namespaces, generic aliases, serialization, graphics, and physics; some
-rules and limitations below have therefore been superseded. See
+namespaces, generic aliases, serialization, graphics, physics, and user
+interfaces; some rules and limitations below have therefore been superseded. See
 `../stdlib.md` for the current API and `../goose_spec.md` for current language
 rules. References of the form §N refer to that specification.
 

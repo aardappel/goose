@@ -1,0 +1,56 @@
+no context: ui::clear: a null context handle
+a destroyed context: ui::clear: a context that was destroyed, or never created
+a destroyed text editor: ui::set_text: a text edit that was destroyed, or never created
+a font 0 high: ui::add_default_font: a font 0 pixels high (1 to 1000)
+baking no fonts: ui::bake: the atlas has no fonts (ui::add_default_font adds one)
+a font from junk: ui::add_font_from_memory: 4 bytes that are not a TrueType or OpenType font
+no oversampling: ui::add_default_font: oversampling of 0 x 1 (1 to 8 each)
+merging into nothing: ui::add_default_font: merge_mode adds glyphs to the font added before, and the atlas has none
+a range set that is not one: ui::add_default_font: FontConfig.ranges 99 is not one of the RANGE_* constants
+ranges not in pairs: ui::add_default_font: 3 glyph range bounds, where ranges come in pairs
+a fallback outside the ranges: ui::add_default_font: the fallback glyph 63 is not in the font's ranges
+glyph ranges of nothing: 0 ui::font_glyph_ranges: 99 is not one of the RANGE_* constants
+a context before baking: ui::create_context: the font's atlas is not baked yet (ui::bake it first)
+baking twice: ui::bake: the atlas is baked already
+a font after baking: ui::add_default_font: the atlas is baked already; fonts are added before ui::bake
+an atlas in use: ui::destroy: a context still uses a font of this atlas; destroy the context first
+input outside input: ui::input_motion outside input: input goes between ui::input_begin and ui::input_end
+input begun twice: ui::input_begin twice, without ui::input_end
+a window during input: ui::begin between ui::input_begin and ui::input_end
+a key that is not one: ui::input_key: 99 is not one of the KEY_* constants
+a button that is not one: ui::input_button: 99 is not one of the BUTTON_* mouse button constants
+an endless scroll: ui::input_scroll: a scroll of 0, inf
+a glyph of 5 bytes: ui::input_glyph: 5 bytes, where a glyph is 1 to 4
+a widget outside a window: ui::button_label outside a window: it goes between ui::begin and ui::end
+window flags that are not: ui::begin: flags 1099511627776 are not a combination of the WINDOW_* flags
+a widget before any row: ui::button_label before any row: a ui::layout_row_* call lays out where widgets go
+a row of no columns: ui::layout_row_dynamic: 0 columns (1 to 1024)
+a window in a window: ui::begin inside the window begun by ui::begin: windows do not nest
+ending no group: ui::group_end with no group begun
+popping no tree: ui::tree_pop with no tree node begun
+ending no popup: ui::popup_end with no popup begun
+ending the window inside a group: ui::end: the group begun by ui::group_begin is still open, and ui::group_end ends it
+an empty slider range: ui::slider_float: values from 1 to 1, where the range must not be empty
+progress before its start: ui::progress: -1 of 10
+a symbol that is not one: ui::button_symbol: 99 is not one of the SYMBOL_* constants
+text filling its whole buffer, with no room for Nuklear's zero: ui::edit_string: 4 bytes of text in a buffer of 4, which holds 3
+a filter that is not one: ui::edit_string: 42 is not one of the FILTER_* constants
+a combo item past the end: ui::combo_separator: item 5 selected, of 2
+drawing far away: ui::fill_rect: a coordinate or size of 40000, where it is from -32768 to 32767
+a line of negative thickness: ui::stroke_line: a line -1 thick
+ending no window: ui::end with no window begun
+converting at double alpha: ui::convert: a global alpha of 2 (0 to 1) and segment counts of 22, 22, 22 (3 to 1024)
+a frame of negative time: ui::set_delta_time: -1 seconds
+a cursor past the text: ui::set_cursor: the cursor at 5, the selection 0 to 0, in 3 characters
+deleting past the text: ui::textedit_delete: 5 characters from 2, of 3
+a filter that is not one: ui::filter_accepts: 7 is not one of the FILTER_* constants
+a table of two colors: ui::style_from_table: a table of 2 colors, where it has one per COLOR_* (32)
+popping no style: ui::pop_style with no style pushed
+popping no font: ui::style_pop_font with no font pushed
+two cursors: ui::style_load_all_cursors: 2 cursors, where there is one per CURSOR_* (7)
+a cursor that is not one: ui::style_set_cursor: 42 is not one of the CURSOR_* constants
+a header alignment that is not one: ui::set_style: the style's align is not a value it can have
+a factor past 1: ui::rgb_factor: a factor of 2 (0 to 1)
+five hexadecimal digits: ui::rgb_hex: "#12345" is not 6 hexadecimal digits, after an optional #
+a color past the last: '' ui::style_get_color_by_name: 32 is not one of the COLOR_* constants
+misuses counted: 57

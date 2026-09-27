@@ -39,7 +39,23 @@ typedef struct { uint32_t id; } gs_gfx_sampler;
 typedef struct { uint32_t id; } gs_gfx_pipeline;
 typedef struct { uint32_t id; } gs_gfx_compute_pipeline;
 
+/* One input event of a frame, in the order they came: the fields a kind has
+   are the ones that mean something for it. */
+typedef struct {
+    int32_t kind;               /* EVENT_* */
+    int32_t scancode;           /* key: where it is on the keyboard, as key names name it */
+    int32_t keycode;            /* key: what it means in the keyboard's layout (SDL_Keycode) */
+    int32_t mods;               /* key: the MOD_* held down with it */
+    uint8_t down;               /* key, button: pressed rather than released */
+    uint8_t repeat;             /* key: repeated by being held down */
+    int32_t button;             /* button: MOUSE_* */
+    int32_t clicks;             /* button: 1, 2 for a double click, ... */
+    uint32_t codepoint;         /* text: one character typed */
+    float x, y;                 /* motion, button: where the pointer is; wheel: how far */
+} gs_gfx_event;
+
 typedef struct { gs_gfx_buffer *data; int64_t len; } gs_gfx_buffer_slice;
+typedef struct { gs_gfx_event *data; int64_t len; } gs_gfx_event_slice;
 typedef struct { gs_gfx_texture *data; int64_t len; } gs_gfx_texture_slice;
 
 typedef struct { int32_t x, y; } gs_gfx_int2;
@@ -113,6 +129,7 @@ typedef struct {
     X(double, gs_gfx_time, (void)) \
     X(double, gs_gfx_delta_time, (void)) \
     X(int64_t, gs_gfx_frame_count, (void)) \
+    X(int64_t, gs_gfx_open_count, (void)) \
     /* Input. */ \
     X(uint8_t, gs_gfx_key_down, (gs_gfx_bytes name)) \
     X(uint8_t, gs_gfx_key_pressed, (gs_gfx_bytes name)) \
@@ -125,6 +142,13 @@ typedef struct {
     X(float, gs_gfx_mouse_wheel, (void)) \
     X(uint8_t, gs_gfx_inject_key, (gs_gfx_bytes name, uint8_t down)) \
     X(void, gs_gfx_inject_mouse, (float x, float y, int64_t button, uint8_t down)) \
+    X(int64_t, gs_gfx_events, (gs_gfx_event_slice out)) \
+    X(void, gs_gfx_text_input, (uint8_t on)) \
+    X(uint8_t, gs_gfx_inject_text, (gs_gfx_bytes text)) \
+    X(int64_t, gs_gfx_scancode, (gs_gfx_bytes name)) \
+    X(int64_t, gs_gfx_key_name, (int64_t scancode, gs_gfx_bytes out)) \
+    X(int64_t, gs_gfx_clipboard, (gs_gfx_bytes out)) \
+    X(uint8_t, gs_gfx_set_clipboard, (gs_gfx_bytes text)) \
     /* Buffers. */ \
     X(gs_gfx_buffer, gs_gfx_create_buffer, (int64_t usage, int64_t size, gs_gfx_bytes data)) \
     X(uint8_t, gs_gfx_update_buffer, (gs_gfx_buffer b, int64_t offset, gs_gfx_bytes data)) \
@@ -283,7 +307,19 @@ GS_GFX_API(GS_GFX_PROTO)
     /* Mouse buttons. */ \
     X(i32, MOUSE_LEFT, 1) \
     X(i32, MOUSE_MIDDLE, 2) \
-    X(i32, MOUSE_RIGHT, 3)
+    X(i32, MOUSE_RIGHT, 3) \
+    X(i32, MOUSE_X1, 4) \
+    X(i32, MOUSE_X2, 5) \
+    /* Input events, and the modifier keys held with a key. */ \
+    X(i32, EVENT_KEY, 1) \
+    X(i32, EVENT_TEXT, 2) \
+    X(i32, EVENT_MOUSE_MOTION, 3) \
+    X(i32, EVENT_MOUSE_BUTTON, 4) \
+    X(i32, EVENT_MOUSE_WHEEL, 5) \
+    X(i32, MOD_SHIFT, 1) \
+    X(i32, MOD_CTRL, 2) \
+    X(i32, MOD_ALT, 4) \
+    X(i32, MOD_GUI, 8)
 
 #define GS_GFX_ENUM(type, name, value) GS_GFX_##name = value,
 enum { GS_GFX_CONSTANTS(GS_GFX_ENUM) };

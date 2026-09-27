@@ -9,9 +9,9 @@ stderr, which is not compared.
 
 A sample importing gfx draws off screen here (GOOSE_GFX_HEADLESS), links what
 `goose --gfx-link` names, and is skipped where the compiler has no gfx layer
-or the machine no GPU device. A sample importing physics links what `goose
---physics-link` names, and is skipped where the compiler has no physics
-layer.
+or the machine no GPU device. A sample importing physics or ui links what
+`goose --physics-link` or `--ui-link` names, and is skipped where the
+compiler has no such layer.
 
 A compiler built with the TinyCC backend also runs every sample a second way,
 in JIT mode -- built and run inside the compiler process, with no C file and no
@@ -82,7 +82,8 @@ def main():
 
     failures, jitskips, nativeskips = 0, [], []
     native = {"gfx": tc.gfx_link(exe, cc) if cc else [],
-              "physics": tc.physics_link(exe, cc) if cc else []}
+              "physics": tc.physics_link(exe, cc) if cc else [],
+              "ui": tc.ui_link(exe, cc) if cc else []}
     for f in sorted(HERE.glob("*.goose")):
         # The number prefix orders the files for reading; outputs, data and
         # headers go by the bare name.
@@ -93,8 +94,7 @@ def main():
         argfile = HERE / "data" / f"{name}.args"
         progargs = argfile.read_text(encoding="utf-8").split() if argfile.exists() else []
         # The native modules the sample imports, whose layers it links.
-        text = f.read_text(encoding="utf-8")
-        modules = [m for m in native if re.search(rf"^import {m};", text, re.M)]
+        modules = tc.native_imports(f.read_text(encoding="utf-8"))
         libs = [lib for m in modules for lib in native[m]]
         expfile = HERE / "expected" / f"{name}.out"
         gargs = ["-O2"]
@@ -173,7 +173,7 @@ def main():
     if jitskips:
         print("skip JIT for sample(s) the backend cannot run yet: " + ", ".join(jitskips))
     if nativeskips:
-        print("skip gfx or physics sample(s) (no gfx or physics layer, or no GPU device): " +
+        print("skip gfx, physics or ui sample(s) (no layer for them, or no GPU device): " +
               ", ".join(sorted(set(nativeskips))))
     if failures:
         print(f"{failures} SAMPLE FAILURE(S)")

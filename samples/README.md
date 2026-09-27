@@ -96,3 +96,9 @@ calls it, so they are compiled and run as part of the test suite.
 |---|---|
 | [27_gfx_cube](27_gfx_cube.goose) | A window and a spinning, lit cube with the `gfx` module: GLSL shaders written in the program as `"""` strings and compiled in by `embed_shader`, vertex and index buffers from `bytes_of`, a uniform block as a packed struct, a depth buffer, the arrow keys; saves its last frame as `gfx_cube.png`. Needs a compiler built with SDL3 (`third_party/SDL`); the test runner draws it off screen. |
 | [28_physics_boxes](28_physics_boxes.goose) | Boxes fall into a walled arena containing two pyramids and a rotating arm. The `physics` module simulates them with Box3D on up to eight worker threads. Each frame retrieves all transforms in one call and writes them into an instance buffer. Each box is drawn as a unit cube with sunlight and shadows. Shaders are `"""` strings in the program; the two vertex shaders share their inputs through one global part. Space triggers an explosion, the mouse controls the view, and Up and Down adjust the rate at which boxes fall. Once the arena contains `--boxes` boxes, the oldest are returned to the top. Needs a compiler built with SDL3 and Box3D (`third_party/box3d`); the test runner draws 120 frames off screen. |
+
+## Windows and widgets
+
+| Sample | What it shows |
+|---|---|
+| [29_ui_todo](29_ui_todo.goose) | A to-do list and a color mixer with the `ui` module: Nuklear's immediate-mode widgets drawn through `gfx`. Each frame lists the windows and widgets and reads back what the user did to them: a text field committed with Enter, buttons, check boxes, options, a menu bar, a tooltip, a progress bar, a color picker and properties; the check marks recolored through Nuklear's color table. Saves its last frame as `ui_todo.png`. Needs a compiler built with SDL3 and Nuklear (`third_party/nuklear`); the test runner draws 30 frames off screen. |

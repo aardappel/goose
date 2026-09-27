@@ -20,14 +20,16 @@ inside the compiler process. Those runs are compared with the same blessed
 outputs. A first-line `no-jit` marker leaves a test out of them, and a program
 the backend refuses outright is counted as a skip, not a failure.
 
-The gfx/ tests use the SDL3 graphics module and the physics/ tests the Box3D
-physics module. They always parse, typecheck and generate C; they build and
-run where the compiler has that module's native layer built in, linking what
-`goose --gfx-link` or `--physics-link` names, and a machine without a GPU
-device counts as a skip for gfx. A fixture there with `// error:` markers is
-a rejection test, as in errors_tc/. test/api_check.py checks stdlib/gfx.goose
-and stdlib/physics.goose against their C layers' own lists of functions,
-structs and constants.
+The gfx/ tests use the SDL3 graphics module, the physics/ tests the Box3D
+physics module and the ui/ tests the Nuklear ui module. They always parse,
+typecheck and generate C; they build and run where the compiler has the
+native layers they use built in -- their category's, and any other they
+import, as a ui test drawing through gfx does -- linking what `goose
+--gfx-link`, `--physics-link` or `--ui-link` names, and a machine without a
+GPU device counts as a skip for gfx. A fixture there with `// error:`
+markers is a rejection test, as in errors_tc/. test/api_check.py checks
+stdlib/gfx.goose, stdlib/physics.goose and stdlib/ui.goose against their C
+layers' own lists of functions, structs and constants.
 
 Profiles keep the CI coverage deliberate: baseline compares Goose/native C
 -O0 and -O2 plus the targeted debug-runtime runs; sanitize uses Goose -O2 and
@@ -50,6 +52,16 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "scripts"))
 import toolchain as tc
 import api_check
+
+
+def native_modules(f, native):
+    """The native modules a fixture uses: its category directory's, and any
+    other it imports itself."""
+    mods = [f.parent.name] if f.parent.name in native else []
+    for m in tc.native_imports(f.read_text(encoding="utf-8")):
+        if m not in mods:
+            mods.append(m)
+    return mods
 
 
 def joined(text):
@@ -398,11 +410,12 @@ def main():
         r.goose_in_goose(cc, args.profile, extra, jit)
         print(f"{r.failures} FAILURE(S)" if r.failures else "all tests passed")
         return int(r.failures != 0)
-    # What a gfx or physics test program links, by the category directory it
-    # is in, empty for a compiler built without that layer: those tests then
-    # only generate C.
+    # What a gfx, physics or ui test program links, by the category directory
+    # it is in and what it imports, empty for a compiler built without that
+    # layer: those tests then only generate C.
     native = {"gfx": tc.gfx_link(exe, cc) if cc else [],
-              "physics": tc.physics_link(exe, cc) if cc else []}
+              "physics": tc.physics_link(exe, cc) if cc else [],
+              "ui": tc.ui_link(exe, cc) if cc else []}
     print(f"profile: {args.profile}; C backend: {cc.desc if cc else 'none'}; "
           f"JIT backend: {'TinyCC' if jit else 'none'}; " +
           "; ".join(f"{m}: {'linked' if libs else 'not built in'}" for m, libs in native.items()))
@@ -459,8 +472,8 @@ def main():
              if f.parent.name not in ("errors", "errors_tc", "goose_in_goose") and f.name != "lexer_tokens.goose"]
     if len({f.stem for f in tests}) != len(tests):
         ap.error("fixture names must be unique across categories (shared expected/ and build outputs)")
-    # A gfx or physics fixture with error markers is a rejection test, kept
-    # beside what it rejects (for gfx, shaders).
+    # A gfx, physics or ui fixture with error markers is a rejection test,
+    # kept beside what it rejects (for gfx, shaders).
     native_errors = [f for f in tests if f.parent.name in native and error_markers(f)]
     tests = [f for f in tests if f not in native_errors]
     native_skipped = []
@@ -511,7 +524,8 @@ def main():
             if "parse-only" in first_line(f):
                 continue
             name = f.stem
-            module = f.parent.name if f.parent.name in native else None
+            modules = native_modules(f, native)
+            libs = [lib for m in modules for lib in native[m]]
             runs, bad = {}, False
             levels = ("0", "2") if args.profile == "baseline" else ("2",)
             for ol in levels:
@@ -522,23 +536,22 @@ def main():
                     r.fail(f"cgen -O{ol} {f.name}", out + err)
                     bad = True
                     continue
-                # A gfx or physics program still generates C without the
-                # layer; there is just nothing to link it with.
-                if module and not native[module]:
+                # A program using a native module still generates C without
+                # the layer; there is just nothing to link it with.
+                if any(not native[m] for m in modules):
                     native_skipped.append(f.name)
                     bad = True
                     continue
                 ok, log = cc.compile(cfile, efile,
                                      opt=int(ol) if args.profile == "baseline" else 1,
-                                     extra=extra, strict_decls=True,
-                                     libs=native[module] if module else (),
+                                     extra=extra, strict_decls=True, libs=libs,
                                      log=gendir / f"{name}-O{ol}.cc.log")
                 if not ok:
                     r.fail(f"cc -O{ol} {f.name}", "\n".join(log.splitlines()[:8]))
                     bad = True
                     continue
                 code, out, err = tc.run_capture([efile])
-                if module == "gfx" and tc.GFX_NO_DEVICE in err:
+                if "gfx" in modules and tc.GFX_NO_DEVICE in err:
                     native_skipped.append(f.name)
                     bad = True
                     break
@@ -672,7 +685,7 @@ def main():
                     skipped.append(f.name)
                     bad = True
                     break
-                if f.parent.name in native and tc.native_unavailable(f.parent.name, err):
+                if any(tc.native_unavailable(m, err) for m in native_modules(f, native)):
                     native_skipped.append(f.name)
                     bad = True
                     break
@@ -708,8 +721,8 @@ def main():
             r.ok(f"error {f.name}")
 
     if native_skipped:
-        print(f"skip running {len(set(native_skipped))} gfx or physics test(s) (no gfx or "
-              f"physics layer, or no GPU device): " + ", ".join(sorted(set(native_skipped))))
+        print(f"skip running {len(set(native_skipped))} gfx, physics or ui test(s) (no "
+              f"layer for them, or no GPU device): " + ", ".join(sorted(set(native_skipped))))
 
     # Typecheck error tests: must parse, must fail the typechecker.
     for f in sorted((HERE / "errors_tc").glob("*.goose")) + native_errors:

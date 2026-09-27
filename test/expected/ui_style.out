@@ -1,0 +1,73 @@
+rgb 255 128 0 255; clamped 255 0 128 255
+rgba 1 2 3 4; u32 0x80FF4020 32 64 255 128
+rgb_f 255 127 0 255; rgba_f 0 63 255 127
+rgb_cf 51 102 153 255; rgba_cf 51 102 153 204
+rgb_hex 255 128 0 255; rgba_hex 17 34 51 68
+rgb_factor 0.5 of 200 100 50: 100 50 25 255
+hsv red 255 0 0 255; hsva 0 255 0 128
+hsv_f green 0 255 0 255; hsva_f blue 0 0 255 255
+hsva_colorf cyan 0 1 1 1
+colorf_hsva_f 0.5 1 1 1
+color_cf 1 0.501960813999176 0 1; color_u32 4278223103
+hex FF8000FF FF8000
+color_hsv_f 0.083660133183002472 1 1; color_hsva_f blue 0.66666662693023682 1 1 0.20000001788139343
+default style: window rounding 0, button rounding 4, text 175 175 175 255, header buttons right, tooltip delay 0.5
+button background kind 0, 50 50 50 255
+drawn in the default button color: true
+set: window rounding 6, button 200 10 20 255
+drawn in the set color: true
+pushed true: 1 2 3 255
+drawn in the pushed color: true
+popped true: 200 10 20 255
+default again: window rounding 0, button 50 50 50 255
+color table: 32 colors, text 175 175 175 255, window 45 45 45 255, button 50 50 50 255
+names: NK_COLOR_TEXT NK_COLOR_WINDOW NK_COLOR_HEADER NK_COLOR_BORDER
+names: NK_COLOR_BUTTON NK_COLOR_BUTTON_HOVER NK_COLOR_BUTTON_ACTIVE NK_COLOR_TOGGLE
+names: NK_COLOR_TOGGLE_HOVER NK_COLOR_TOGGLE_CURSOR NK_COLOR_SELECT NK_COLOR_SELECT_ACTIVE
+names: NK_COLOR_SLIDER NK_COLOR_SLIDER_CURSOR NK_COLOR_SLIDER_CURSOR_HOVER NK_COLOR_SLIDER_CURSOR_ACTIVE
+names: NK_COLOR_PROPERTY NK_COLOR_EDIT NK_COLOR_EDIT_CURSOR NK_COLOR_COMBO
+names: NK_COLOR_CHART NK_COLOR_CHART_COLOR NK_COLOR_CHART_COLOR_HIGHLIGHT NK_COLOR_SCROLLBAR
+names: NK_COLOR_SCROLLBAR_CURSOR NK_COLOR_SCROLLBAR_CURSOR_HOVER NK_COLOR_SCROLLBAR_CURSOR_ACTIVE NK_COLOR_TAB_HEADER
+names: NK_COLOR_KNOB NK_COLOR_KNOB_CURSOR NK_COLOR_KNOB_CURSOR_HOVER NK_COLOR_KNOB_CURSOR_ACTIVE
+from a table: button 0 128 255 255
+drawn in the table's color: true
+item kind 0, color 1 2 3 255, texture 0, borders 0 0 0 0
+item kind 1, color 0 0 0 0, texture 5, borders 0 0 0 0
+item kind 2, color 0 0 0 0, texture 7, borders 1 2 3 4
+item kind 0, color 0 0 0 0, texture 0, borders 0 0 0 0
+window background images 1, button nine-slice parts 9
+font: small true
+set: big true
+pushed small true: small true
+popped true: big true
+text 'big' in a font 20 high: big
+text 'small' in a font 10 high: small
+no cursors loaded: none
+all loaded, the arrow: 100 @ 48, 42 16 x 20
+over a text field clicked: 101 @ 48, 42 16 x 20
+set the move cursor: true
+set: 102 @ 48, 42 16 x 20
+hidden: none
+shown, another arrow: 200 @ 50, 45 8 x 8
+image 3 subimage false; part of 64 x 32 at 8 0 16 16 subimage true
+nine-slice 4 borders 1 2 3 4 sub false; of a part: 5 6 7 8 sub true
+texture image 42
+rects 1.5 2.5 3 4; 1 4; 5 6 7 8; pos 5 6 size 7 8
+null rect -8192 -8192 16384 16384
+murmur 2649154057 2856506138 0
+triangle up: 5,2 9,18 1,18
+triangle right: 1,2 9,10 1,18
+triangle down: 1,2 9,2 5,18
+triangle left: 1,10 9,2 9,18
+strfilter hello world world$: true
+strfilter hello world ^hello: true
+strfilter hello world ^world: false
+strfilter hello world h.llo: true
+strfilter hello world hel*o: true
+strfilter hello world xyz: false
+strfilter hello world ^h.*d$: true
+fuzzy 'hw': true score 11
+fuzzy 'wh': false
+fuzzy 'hello world': true score 70
+fuzzy 'lo w': true score 17
+misuses 0

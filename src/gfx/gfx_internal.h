@@ -146,6 +146,16 @@ typedef struct {
     uint8_t keys[SDL_SCANCODE_COUNT], prev_keys[SDL_SCANCODE_COUNT];
     uint32_t buttons, prev_buttons;
     float mouse_x, mouse_y, mouse_dx, mouse_dy, wheel;
+    /* This frame's events in order, for gs_gfx_events. */
+    gs_gfx_event *events;
+    int64_t nevents, events_cap;
+    /* Text injected and not yet seen: a user event of type inject_event
+       carries its index, so it comes in order with injected keys. */
+    char **injected;
+    int ninjected, injected_cap;
+    uint32_t inject_event;
+    /* The clipboard without a window: no one else is at it. */
+    char *clipboard;
 
     uint64_t start_ns, last_ns;
     double delta;

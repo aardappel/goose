@@ -18,6 +18,9 @@
 #ifdef GOOSE_HAVE_PHYSICS
 #include "physics/physics_api.h"
 #endif
+#ifdef GOOSE_HAVE_UI
+#include "ui/ui_api.h"
+#endif
 
 namespace goose {
 
@@ -79,11 +82,22 @@ inline void AddPhysicsSymbols(TCCState *s) {
     #endif
 }
 
+// The ui layer's functions (src/ui/ui_api.h), the same way.
+inline void AddUiSymbols(TCCState *s) {
+    #ifdef GOOSE_HAVE_UI
+        #define GS_UI_SYMBOL(ret, name, params) tcc_add_symbol(s, #name, (const void *)&name);
+        GS_UI_API(GS_UI_SYMBOL)
+        #undef GS_UI_SYMBOL
+    #else
+        (void)s;
+    #endif
+}
+
 // Compiles `csrc` in memory and calls its main, returning what the program
 // returned or exited with. `progargs` become the program's argv after argv[0].
-// `gfx` and `physics` say the program calls into those layers.
+// `layers` says which native layers the program calls into.
 inline int RunJit(const string &csrc, const string &libpath, const string &progname,
-                  const vector<string> &progargs, bool gfx, bool physics) {
+                  const vector<string> &progargs, const NativeLayers &layers) {
     string diags;
     auto s = tcc_new();
     if (!s) throw CompileError { "libtcc: out of memory" };
@@ -98,8 +112,9 @@ inline int RunJit(const string &csrc, const string &libpath, const string &progn
     };
     if (tcc_set_output_type(s, TCC_OUTPUT_MEMORY) < 0) fail("cannot target memory");
     if (tcc_compile_string(s, csrc.c_str()) < 0) fail("compiling the generated C failed");
-    if (gfx) AddGfxSymbols(s);
-    if (physics) AddPhysicsSymbols(s);
+    if (layers.gfx) AddGfxSymbols(s);
+    if (layers.physics) AddPhysicsSymbols(s);
+    if (layers.ui) AddUiSymbols(s);
     // tcc_run hands these to the program's main, which takes them as C main
     // does: an array of writable pointers. Hence the mutable copies.
     auto name = progname;
@@ -120,7 +135,7 @@ inline int RunJit(const string &csrc, const string &libpath, const string &progn
 #else
 
 inline int RunJit(const string &, const string &, const string &,
-                  const vector<string> &, bool, bool) {
+                  const vector<string> &, const NativeLayers &) {
     throw CompileError { "this compiler was built without the TinyCC backend; "
                          "check out third_party/tinycc and reconfigure, or pass -o" };
 }

@@ -1,0 +1,33 @@
+step 0: popup open, scroll 0,0
+step 1: popup open, scroll 0,0
+step 2: popup open, scroll 0,0
+closed by its button: show false
+dynamic popup open
+combos picked Blue: 2 2 2 2 2 2; boxes changed 3
+own combos picked: 222222
+step 1: open, closing it
+step 2: contextual open
+step 3: contextual open
+step 4: contextual open
+step 5: contextual open
+contextual menu chose Copy
+tooltip 'a plain tooltip' drawn: true
+tooltip 'an offset tooltip' drawn: true
+tooltip 'a widget tooltip' drawn: true
+tooltip 'above the pointer' drawn: true
+tooltip 'while over it' drawn: true
+delayed tooltip at 0: false
+delayed tooltip at 1: false
+delayed tooltip at 2: true
+delayed tooltip at 3: true
+delayed tooltip at 4: true
+clicked-delay tooltip at 0: false, clicked false
+clicked-delay tooltip at 1: false, clicked false
+clicked-delay tooltip at 2: true, clicked false
+clicked-delay tooltip at 3: false, clicked true
+clicked-delay tooltip at 4: false, clicked false
+clicked-delay tooltip at 5: false, clicked false
+clicked-delay tooltip at 6: false, clicked false
+menus' items clicked: 22222
+step 1: menu open, closing it
+misuses 0

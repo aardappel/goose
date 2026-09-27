@@ -68,7 +68,7 @@ The [tutorial](docs/tutorial.md) walks through all of this by example, the
 
 This section focuses on what distinguishes Goose. The [tutorial](docs/tutorial.md)
 explains these features in more detail, and the [samples](samples/README.md)
-show them in twenty-eight complete programs.
+show them in twenty-nine complete programs.
 
 ### One memory model: stacks, and scope exit is the free
 
@@ -389,11 +389,12 @@ The [summary](bench/summary.md) explains the gains and losses;
 ## Build and run
 
 You need CMake 3.20 or later, a C++20 compiler (MSVC, clang or gcc) and Python
-3 for the test and sample runners. Three submodules are optional: TinyCC,
+3 for the test and sample runners. Four submodules are optional: TinyCC,
 which the in-process backend is built from, SDL3, which the `gfx` graphics
-module is built from, and Box3D, which the `physics` module is built from.
-The compiler builds without these submodules, but the corresponding features
-are unavailable: JIT execution, graphics, or physics.
+module is built from, Box3D, which the `physics` module is built from, and
+Nuklear, which the `ui` module is built from. The compiler builds without
+these submodules, but the corresponding features are unavailable: JIT
+execution, graphics, physics, or windows of widgets.
 
 ```bash
 git clone --recursive https://github.com/aardappel/goose
@@ -402,9 +403,9 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
-To leave SDL or Box3D out, clone without `--recursive` and then run `git
-submodule update --init` on the ones wanted, or configure with
-`-DGOOSE_GFX=OFF` or `-DGOOSE_PHYSICS=OFF`. On
+To leave SDL, Box3D or Nuklear out, clone without `--recursive` and then run
+`git submodule update --init` on the ones wanted, or configure with
+`-DGOOSE_GFX=OFF`, `-DGOOSE_PHYSICS=OFF` or `-DGOOSE_UI=OFF`. On
 Linux, SDL needs the X11 or Wayland development packages
 ([`third_party/SDL/docs/README-linux.md`](https://github.com/libsdl-org/SDL/blob/main/docs/README-linux.md));
 without them the build leaves the `gfx` module out and says what to install.
@@ -446,6 +447,14 @@ build/goose samples/28_physics_boxes.goose
 build/goose -o boxes.c samples/28_physics_boxes.goose && cc boxes.c -o boxes @$(build/goose --gfx-link cc) @$(build/goose --physics-link cc)
 ```
 
+A program using `ui` links what `goose --ui-link` names, with the gfx one,
+since its windows are drawn through gfx:
+
+```bash
+build/goose samples/29_ui_todo.goose
+build/goose -o todo.c samples/29_ui_todo.goose && cc todo.c -o todo @$(build/goose --ui-link cc) @$(build/goose --gfx-link cc)
+```
+
 The test suite and the samples run on Windows, macOS and Linux:
 
 ```bash
@@ -466,14 +475,16 @@ code --install-extension vscode/goose-language.vsix
   this first.
 * [Language specification](docs/goose_spec.md): the exact rules, when you want
   to know why something did not compile.
-* [Samples](samples/README.md): twenty-eight complete programs in reading
+* [Samples](samples/README.md): twenty-nine complete programs in reading
   order, from a tour of the language to a JSON parser, a threaded Mandelbrot, a
-  file tree built from two pools, a spinning cube on the GPU and thousands of
-  boxes raining into a heap.
-* [Standard library](docs/stdlib.md): seven modules, all readable Goose under
+  file tree built from two pools, a spinning cube on the GPU, thousands of
+  boxes raining into a heap and a to-do list in windows of widgets.
+* [Standard library](docs/stdlib.md): eight modules, all readable Goose under
   `stdlib/`, including `gfx`, graphics on SDL3's GPU API
-  ([how it is built](docs/design/gfx.md)), and `physics`, rigid body physics
-  on Box3D ([how it is built](docs/design/physics.md)).
+  ([how it is built](docs/design/gfx.md)), `physics`, rigid body physics
+  on Box3D ([how it is built](docs/design/physics.md)), and `ui`, windows and
+  widgets on Nuklear, drawn through gfx
+  ([how it is built](docs/design/ui.md)).
 * [Benchmarks](bench/summary.md): the numbers, with the
   [full results](bench/results.md) and the [design](bench/design.md) behind them.
 * [Implementation notes](docs/implementation.md): how the compiler works, pass

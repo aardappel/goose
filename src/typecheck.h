@@ -1734,6 +1734,7 @@ struct TypeCheck {
                         auto &cname = c->spec->sf->cname;
                         auto module = cname.rfind("gs_gfx_", 0) == 0    ? "gfx"
                                       : cname.rfind("gs_phys_", 0) == 0 ? "physics"
+                                      : cname.rfind("gs_ui_", 0) == 0   ? "ui"
                                                                         : nullptr;
                         if (module)
                             Error(n, cat(module, " runs on the main thread only: ",

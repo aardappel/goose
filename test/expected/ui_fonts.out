@@ -1,0 +1,32 @@
+available true; misuses 0; error ''
+config defaults are Nuklear's: true
+range set 0: 1 ranges, the first 32..255
+range set 1: 5 ranges, the first 32..255
+range set 2: 4 ranges, the first 32..255
+range set 3: 3 ranges, the first 32..255
+atlas valid true, baked false, fonts 0
+read the font file true (true); fonts valid true true true true true; merged into the first true
+fonts in order: 5 true true true true true; each in the atlas true
+missing file: handle 0, error 'cannot open font file no_such_font.ttf'
+not a font: handle 0, error 'test/ui/ui_fonts.goose is not a TrueType or OpenType font'; misuses 0
+baked true: 1024 wide, true high, 524288 bytes = w x h x 4 true
+opaque texels true; all white true
+font 13.00 high: ascent 9.50, descent -3.50, 235 glyphs, fallback 63; 'Goose' 35.00 wide
+font 26.00 high: ascent 19.00, descent -7.00, 224 glyphs, fallback 63; 'Goose' 75.00 wide
+font 20.00 high: ascent 14.62, descent -5.38, 11 glyphs, fallback 63; 'Goose' 53.85 wide
+font 10.00 high: ascent 7.50, descent -2.50, 224 glyphs, fallback 63; 'Goose' 30.00 wide
+wider when bigger true; empty text 0.00
+'A': own true, codepoint 65, advance 7.00, size 6.50 x 8.00, in the image true
+'A' in the digits font: own false, drawn as 63
+'7' in the digits font: own true, codepoint 55
+'5' in the first font, merged digits too: own true, 53
+texture 0; waiting true
+texture 77; waiting 0
+forgotten: texture 0; waiting true
+context valid true; font true; atlas true; null texture 78
+delta time 0.00
+delta time 0.25
+copied '' false
+default context: valid true, atlas true baked true with 1 font of 16.00
+destroyed: context false, its atlas false
+all destroyed: false false false; misuses 0

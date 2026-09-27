@@ -11,6 +11,7 @@
 #include "builtins.h"
 #include "gfx.h"
 #include "physics.h"
+#include "ui.h"
 #include "typecheck.h"
 #include "typecheck_types.h"
 #include "typecheck_exprs.h"
@@ -287,11 +288,13 @@ int Main(int argc, char **argv) {
         // Hidden: what a shader compiles to, without a program around it.
         else if (arg == "--compile-shader" && i + 1 < argc) shaderfile = argv[++i];
         else if (arg == "--shader-source" && i + 1 < argc) shadersource = argv[++i];
-        else if ((arg == "--gfx-link" || arg == "--physics-link") && i + 1 < argc) {
+        else if ((arg == "--gfx-link" || arg == "--physics-link" || arg == "--ui-link") &&
+                 i + 1 < argc) {
             try {
                 auto style = argv[++i];
-                auto path = arg == "--gfx-link" ? GfxLinkFile(DirOf(argv[0]), style)
-                                                : PhysicsLinkFile(DirOf(argv[0]), style);
+                auto path = arg == "--gfx-link"       ? GfxLinkFile(DirOf(argv[0]), style)
+                            : arg == "--physics-link" ? PhysicsLinkFile(DirOf(argv[0]), style)
+                                                      : UiLinkFile(DirOf(argv[0]), style);
                 printf("%s\n", path.c_str());
             } catch (CompileError &e) {
                 fprintf(stderr, "%s\n", e.msg.c_str());
@@ -330,7 +333,7 @@ int Main(int argc, char **argv) {
                         "[--no-bce] [--bce-test] [--bce-lines] [--unsafe-no-rf-check] [-O0|-O1|-O2] "
                         "[-o out.c] [--jit] [-DNAME=VALUE]... [--include header.h]... [--stdlib dir] "
                         "file.goose [-- program args...] | --gen-runtime-header | "
-                        "--gfx-link msvc|cc | --physics-link msvc|cc\n");
+                        "--gfx-link msvc|cc | --physics-link msvc|cc | --ui-link msvc|cc\n");
         fprintf(stderr, "without -o the program is compiled and run in this process%s.\n",
                 have_jit ? " by TinyCC" : " -- unavailable in this build, so the .c is written");
         return 1;
@@ -347,8 +350,7 @@ int Main(int argc, char **argv) {
     auto msgs = jit ? stderr : stdout;
     // What a JIT run compiles and starts, once the compile produced it.
     string program;
-    auto usesgfx = false;
-    auto usesphysics = false;
+    NativeLayers layers;
     auto compile = [&]() -> int {
         if (tokens) {
             DumpTokens(filename);
@@ -457,11 +459,11 @@ int Main(int argc, char **argv) {
                                      "place thread-local storage in an in-memory run); "
                                      "compile with -o and a C compiler instead" };
             // The native layers are this compiler's own, handed to the program.
-            if (cg.usesgfx && !have_gfx) throw CompileError { no_gfx_error };
-            if (cg.usesphysics && !have_physics) throw CompileError { no_physics_error };
+            if (cg.layers.gfx && !have_gfx) throw CompileError { no_gfx_error };
+            if (cg.layers.physics && !have_physics) throw CompileError { no_physics_error };
+            if (cg.layers.ui && !have_ui) throw CompileError { no_ui_error };
             program = std::move(out);
-            usesgfx = cg.usesgfx;
-            usesphysics = cg.usesphysics;
+            layers = cg.layers;
         }
         return 0;
     };
@@ -475,8 +477,7 @@ int Main(int argc, char **argv) {
         // The program shares this process, so its exit code becomes ours
         // and whatever it wrote is already on the same streams.
         fflush(msgs);
-        return RunJit(program, JitLibPath(DirOf(argv[0])), filename, progargs, usesgfx,
-                      usesphysics);
+        return RunJit(program, JitLibPath(DirOf(argv[0])), filename, progargs, layers);
     } catch (CompileError &e) {
         fprintf(stderr, "%s\n", e.msg.c_str());
         return 1;

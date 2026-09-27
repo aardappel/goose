@@ -1,0 +1,17 @@
+first frame: outside 51 102 153, title bar 40 40 40, window 45 45 45, button 50 50 50, its text true
+hovered: outside 51 102 153, title bar 40 40 40, window 45 45 45, button 40 40 40, its text true
+pressed: outside 51 102 153, title bar 40 40 40, window 45 45 45, button 35 35 35, its text true
+clicks 1
+released: clicks 1
+check box clicked: true, its box 100 100 100 before, 45 45 45 after
+typed: 'goose'
+backspace: 'goos'
+home, A: 'Agoos'
+select all, copy: the clipboard holds 'Agoos'
+end, paste: 'Agoos!'
+select all, cut: '', the clipboard holds 'Agoos!'
+undo: ''
+render target: window 45 45 45, as on the screen true
+half alpha: window true true
+opened again: outside 51 102 153, title bar 40 40 40, window 45 45 45, button 50 50 50, its text true
+misuses 0

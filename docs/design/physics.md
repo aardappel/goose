@@ -59,7 +59,7 @@ The compiler integration is small: physics has no compile-time processing
 comparable to shader compilation by `embed_shader`.
 
 * **Calls into the layer** are recognized by their C symbol's `gs_phys_`
-  prefix: codegen sets `usesphysics`, a JIT run registers the layer's
+  prefix: codegen notes it in `NativeLayers`, a JIT run registers the layer's
   functions, and a compiler without the layer refuses the run.
 * **A `thread_fn` never reaches the layer**, as with gfx: the layer keeps
   its error text, misuse count and geometry tables for the process, and

@@ -112,7 +112,7 @@ def have_gfx(exe):
 
 def native_link(exe, cc, module):
     """The link inputs a program using a stdlib module with a native layer
-    (gfx, physics) needs with this toolchain, as a list for CC.compile's
+    (gfx, physics, ui) needs with this toolchain, as a list for CC.compile's
     `libs`: the response file cmake/<module>.cmake wrote. An empty list when
     the compiler was built without that module."""
     code, out, _ = run_capture([exe, f"--{module}-link", "msvc" if cc.style == "msvc" else "cc"])
@@ -127,12 +127,28 @@ def physics_link(exe, cc):
     return native_link(exe, cc, "physics")
 
 
-# What the compiler says when asked to run a gfx or physics program without
-# that layer built in, and what a gfx test prints when there is no GPU device
-# to run on. The runners report these as skips.
+def ui_link(exe, cc):
+    return native_link(exe, cc, "ui")
+
+
+# The stdlib modules with a native layer, and the pattern of a program's own
+# import of one: the layers it links. The ui module draws through gfx, so a
+# program showing its ui imports both.
+NATIVE_MODULES = ("gfx", "physics", "ui")
+
+
+def native_imports(text):
+    """The native modules a program imports itself."""
+    return [m for m in NATIVE_MODULES if re.search(rf"^import {m};", text, re.M)]
+
+
+# What the compiler says when asked to run a gfx, physics or ui program
+# without that layer built in, and what a gfx test prints when there is no
+# GPU device to run on. The runners report these as skips.
 GFX_UNAVAILABLE = "built without SDL3"
 GFX_NO_DEVICE = "gfx: no GPU device"
 PHYSICS_UNAVAILABLE = "built without Box3D"
+UI_UNAVAILABLE = "built without Nuklear"
 
 
 def native_unavailable(module, err):
@@ -140,6 +156,8 @@ def native_unavailable(module, err):
     what it printed: a compiler without the layer, or for gfx no GPU."""
     if module == "gfx":
         return GFX_UNAVAILABLE in err or GFX_NO_DEVICE in err
+    if module == "ui":
+        return UI_UNAVAILABLE in err
     return PHYSICS_UNAVAILABLE in err
 
 

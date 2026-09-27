@@ -95,6 +95,7 @@ process started with (`ulimit -s`), which nothing in the executable sets.
 | `-o out.c`, `--jit`, `-D`, `--include`, `--stdlib`, `--` | output file, in-process run, a define written into the generated C, a user header, the stdlib directory, program arguments |
 | `--gfx-link msvc\|cc` | print the response file of link inputs a program using `gfx` needs (`gfx.h`, `GfxLinkFile`) |
 | `--physics-link msvc\|cc` | the same for `physics` (`physics.h`, `PhysicsLinkFile`) |
+| `--ui-link msvc\|cc` | the same for `ui` (`ui.h`, `UiLinkFile`) |
 | `--compile-shader f [--shader-source msl\|hlsl]` | hidden: what a shader compiles to, without a program around it |
 
 The debug build of the *generated* C is `-DGS_DEBUG=1` on the C compiler (or
@@ -2435,7 +2436,11 @@ and `AddGfxSymbols` (`jit.h`) defines them for a JIT run. `docs/design/gfx.md`
 describes it. **The physics layer** behind `stdlib/physics.goose` is built
 the same way over Box3D, in `src/physics/`, its functions `gs_phys_*` and
 their JIT definitions `AddPhysicsSymbols`; `docs/design/physics.md`
-describes it.
+describes it. **The ui layer** behind `stdlib/ui.goose` is built the same
+way over Nuklear, in `src/ui/`, its functions `gs_ui_*` and their JIT
+definitions `AddUiSymbols`; `docs/design/ui.md` describes it. Codegen notes
+which of the three a program calls in `NativeLayers` (`utils.h`), by symbol
+prefix, for the JIT run to register.
 
 **Varints**: ULEB128 read/write/size, zigzag for signed positions, the
 one-byte fast path macros `GS_ULEB_READ`/`GS_ULEB_SIZE` for length prefixes

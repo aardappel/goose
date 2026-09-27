@@ -1,0 +1,62 @@
+begin true
+bounds 10,20 240x300; position 10,20; size 240,300; 240 x 300
+content 16,51 218x257, from 16,51 to 234,308, size 218,257
+focus true; hovered true; scroll 0
+titled begin true
+find Alpha true, Gamma false
+Beta active true, collapsed false, hidden false, closed false; Gamma closed true, hidden true
+any hovered true, item active true
+Beta set: 320,40 180x120
+Alpha active true; any hovered false
+Alpha scrolled to 40
+Beta moved and sized: 330,50 150x100
+collapsed: begin false, is collapsed true
+collapse_if false leaves it: true
+expanded: begin true
+hidden: begin false, is hidden true
+show_if false leaves it: true
+shown: begin true, is hidden false
+closed true
+after closing, found false
+dynamic: next 104,4 392x24; 50 px is 0.50 (by the window's x, as Nuklear has it)
+  widget 2 at 104,4 128x20
+  widget 2 at 236,4 128x20
+  widget 2 at 368,4 128x20
+static: widget at 104,28 80x25
+static: widget at 188,28 80x25
+row of ratios: 104,57 97x30; 205,57 291x30
+row of widths: 104,91 50x30; 158,91 120x30
+layout_row: 104,125 76x22
+layout_row: 184,125 191x22
+layout_row: 380,125 114x22
+template: 104,151 60x24
+template: 168,151 162x24
+template: 334,151 162x24
+minimum height 40: 104,179 392x10
+after a spacer and 2 spaces: 401,193 95x10
+space bounds 104,0 392x104
+in the space: 114,217 50x20; 204,257 60x30
+local 10,10 is 114,217 on screen, and back 10,10
+rect to screen 104,207 5x5, back 0,0 5x5
+dynamic space, right half: 300,311 196x54
+next: 4,4 144x30 at 4,4 size 144,30 = 144 x 30; hovered true; clicked false; down false
+taken: state 1 (valid true)
+disabled: state true; button false
+below the window: state true at 4,242 292x30
+pressed: clicked false; down true
+released: clicked true; down false
+group content 9,34 104.67x79
+scrolled group keeps 0,30; Second at 0
+First scrolled to 25
+scrolled group keeps 0,30; Second at 0
+frame 0: tab true, kept true (state 1), element true selected false, image element false
+frame 1: tab false, kept true (state 1), element true selected false, image element false
+frame 2: tab false, kept true (state 1), element true selected false, image element false
+frame 3: tab false, kept true (state 1), element true selected true, image element false
+frame 4: tab false, kept true (state 1), element true selected true, image element false
+state set to minimized: open false
+same titles, frame 0: true false true false
+same titles, frame 1: true false true false
+list view open true: rows 0 to 8, 8 built of 1000
+scrolled 480 pixels: rows 20 to 28
+misuses 0

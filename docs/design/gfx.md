@@ -92,9 +92,10 @@ and reconfigure". `--gfx-link` fails the same way.
   works on no backend or on only some; here it is a compile error naming the
   rule (`test/gfx/gfx_err_shader_binding.goose`).
 * **Calls into the layer** are recognized by their C symbol's `gs_gfx_` prefix.
-  Codegen sets `usesgfx`, a JIT run of such a program registers the layer's
-  functions before relocating it (`AddGfxSymbols`, `src/jit.h`), and a
-  compiler without the layer refuses the run.
+  Codegen notes it in `NativeLayers` (`src/utils.h`), a JIT run of such a
+  program registers the layer's functions before relocating it
+  (`AddGfxSymbols`, `src/jit.h`), and a compiler without the layer refuses
+  the run.
 * **A `thread_fn` never reaches the layer**: SDL_GPU and windowing are
   main-thread only, and a thread program calling into gfx is a compile error.
 
@@ -161,7 +162,8 @@ SDL_GPU's clip space. `docs/stdlib.md` is the reference.
   vertex pulling, blending, MSAA resolve; 2D, 3D, cube and array textures,
   regions, mips, float texels, rendering into a cube face), compute (storage
   buffers, a storage texture, atomics, a compute shader sampling a texture),
-  frames and injected input, and one runtime misuse aborting as designed. They
+  frames and injected input, input events in order with key names and the
+  headless clipboard, and one runtime misuse aborting as designed. They
   draw only on pixel boundaries, so their output is exact on every backend.
   They build and run AOT and JIT where the compiler has the layer, and a
   machine without a GPU device reports them skipped (the program prints `gfx:
@@ -221,7 +223,7 @@ until CI or a Mac runs them.
   function's slice parameter produces invalid C at `-O1`/`-O2` (bind it to a
   local first); and a struct field's default cannot name a global constant
   (the gfx descriptions spell their defaults as numbers).
-* **API**: text input, gamepads and audio (SDL has them all), indirect draws,
+* **API**: gamepads and audio (SDL has them all), indirect draws,
   stencil, blend constants, debug labels, a `Region` for readback of depth
   textures (SDL_GPU cannot download one directly), checking uniform block
   member offsets rather than size alone, and readback forms that return a

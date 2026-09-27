@@ -68,8 +68,16 @@ inline bool LoadFile(const string &path, string &dest) {
     return read == (size_t)len;
 }
 
+// The stdlib modules with a native layer a program calls into, which a JIT
+// run hands it from the compiler's own copies of them.
+struct NativeLayers {
+    bool gfx = false;
+    bool physics = false;
+    bool ui = false;
+};
+
 // The response file of link inputs a program built from the generated C
-// needs for a stdlib module with a native layer (gfx, physics), which CMake
+// needs for a stdlib module with a native layer (gfx, physics, ui), which CMake
 // writes: `style` is "msvc" for cl and clang-cl, "cc" for gcc and clang.
 // Looked for in the directory `env` names, for a moved build tree, then in
 // `<module>/` next to the compiler binary, for an installed one, then where

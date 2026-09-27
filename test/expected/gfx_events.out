@@ -1,0 +1,42 @@
+opened at least once: true
+nothing: 0 events
+keys: 10 events
+  key Left Shift down, keycode 1073742049, with shift
+  key A down, keycode 97, with shift
+  key A up, keycode 97, with shift
+  key Left Shift up, keycode 1073742049
+  key Left Ctrl down, keycode 1073742048, with ctrl
+  key Left Alt down, keycode 1073742050, with ctrl alt
+  key Delete down, keycode 127, with ctrl alt
+  key Left Alt up, keycode 1073742050, with ctrl
+  key Left Ctrl up, keycode 1073742048
+  key Delete up, keycode 127
+text among keys: 6 events
+  text 104
+  text 105
+  text 233
+  key Return down, keycode 13
+  text 33
+  key Return up, keycode 13
+the mouse: 7 events
+  motion to 5,6
+  motion to 7,8
+  button 1 down at 7,8, clicks 1
+  motion to 7,8
+  button 1 up at 7,8, clicks 1
+  motion to 9,10
+  button 5 down at 9,10, clicks 1
+X2 down true, X1 down false
+released: 2 events
+  motion to 9,10
+  button 5 up at 9,10, clicks 1
+scancode of A true, named back A
+scancode of Return true, named back Return
+scancode of Left Shift true, named back Left Shift
+scancode of F1 true, named back F1
+scancode of Keypad Enter true, named back Keypad Enter
+no such key: 0
+clipboard at first ''
+set true: 'copied text'
+set empty true: ''
+opened again: count up by one true, clipboard ''
