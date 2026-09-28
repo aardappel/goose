@@ -115,6 +115,12 @@ inline bool IsValuelessTail(const Node *n) {
     return false;
 }
 
+// A control construct, whose value is what one of its branches gives (§6.4).
+inline bool IsBranchConstruct(const Node *n) {
+    return Is<IfExpr>(n) || Is<MatchExpr>(n) || Is<Block>(n) || Is<EarlyBlock>(n) ||
+           Is<LoopExpr>(n);
+}
+
 struct TypeCheck {
     Ast &ast;
 
@@ -220,6 +226,7 @@ struct TypeCheck {
         Val breakvalue;             // Roots and permissions of all valued exits.
         TypeExpr *breakexpected = nullptr;   // The construct's expected value type.
         bool onargpath = false;     // The construct is on argpath, and so are its breaks' values.
+        bool onjoinpath = false;    // The same of joinpath.
         bool inreturn = false;      // The construct's value is returned, as are its breaks' values.
         bool hasbreak = false;
         bool valuelessbreak = false;
@@ -541,11 +548,19 @@ struct TypeCheck {
     void Warn(const Node *n, const string &msg) {
         if (quiet) return;
         auto text = cat(Where(n->line), ": warning: ", msg, "\n");
-        if (!cur.looppasses.empty()) {
+        if (WarningsHeld()) {
             cur.pendingwarnings.push_back(text);
             return;
         }
         fputs(text.c_str(), stderr);
+    }
+    // Warnings wait while a check may yet be repeated: a loop's pass
+    // (CheckLoopPasses), or a construct's first check of its branches
+    // (CheckJoin). The repetition's warnings are the ones that stand.
+    bool WarningsHeld() { return !cur.looppasses.empty() || cur.joinprobes > 0; }
+    void FlushWarnings() {
+        for (auto &w : cur.pendingwarnings) fputs(w.c_str(), stderr);
+        cur.pendingwarnings.clear();
     }
 
     string TypeStr(const TypeExpr *t) {
@@ -1180,10 +1195,29 @@ struct TypeCheck {
         PathScope(TypeCheck &t, Node *n) : tc(t), saved(t.argpath) { tc.argpath = n; }
         ~PathScope() { tc.argpath = saved; }
     };
+    // The value path of a control construct whose branches no destination
+    // type adapts, checked a first time to learn whether they join as a
+    // slice (CheckJoin): the construct, then each branch it checks next, a
+    // construct there included, whose value the first one settles. The copy
+    // CheckBranchCopy would report waits for that as well.
+    Node *joinpath = nullptr;
+    struct JoinPathScope {
+        TypeCheck &tc;
+        Node *saved;
+        JoinPathScope(TypeCheck &t, Node *n) : tc(t), saved(t.joinpath) { tc.joinpath = n; }
+        ~JoinPathScope() { tc.joinpath = saved; }
+    };
+    // How a value is a branch's: not at all, the value of a branch of a
+    // construct with a destination type, or of one with none, whose value
+    // is a copy of it (CheckBranchCopy).
+    enum BranchKind { BR_NONE, BR_VALUE, BR_COPY };
+    static int BranchAt(TypeExpr *dest) {
+        return !dest || dest->kind == TY_VOID ? BR_COPY : BR_VALUE;
+    }
     void BindBranchesByRef(vector<Node *> &argnodes, vector<Val> &argvals,
-                           const vector<TypeExpr *> &paramtypes, int skip = -1,
+                           const vector<TypeExpr *> &paramtypes, SFunction *sf, int skip = -1,
                            size_t end = SIZE_MAX);
-    void BindBranchByRef(Node *&n, Val &v, TypeExpr *pt);
+    void BindBranchByRef(Node *&n, Val &v, TypeExpr *pt, TypeExpr *declared);
     Val CheckInferredResult(Node *&n, FnSpec *tspec);
     // A parameter that takes the value -- a slice, or a fixed-class value
     // that a non-fixed one constructs by copy (an array of another kind
@@ -1194,7 +1228,7 @@ struct TypeCheck {
         if (pt->kind != TY_SLICE && (pt->kind == TY_REF || ClassOf(pt) != SC_FIXED)) return;
         if (auto u = Is<Unary>(a); u && u->synth) a = u->child;
     }
-    Val CheckValue(Node *&n, TypeExpr *expected, bool callsite = false, bool branchcopy = false,
+    Val CheckValue(Node *&n, TypeExpr *expected, bool callsite = false, int branch = BR_NONE,
                    bool inferred = false);
 
     Val CheckArg(Node *&n, TypeExpr *expected) {
@@ -1207,7 +1241,7 @@ struct TypeCheck {
 
     string fitfail;  // A specific reason from the last failing FitsAt, if any.
 
-    void MustFit(Val &v, Node *n, TypeExpr *dt, bool callsite);
+    void MustFit(Val &v, Node *n, TypeExpr *dt, bool wholeslice);
     void CheckArrayCount(Node *n, TypeExpr *t, int64_t count) {
         if (!t || t->kind != TY_ARRAY) return;
         auto a = t->arr;
@@ -1217,7 +1251,7 @@ struct TypeCheck {
             (uint64_t)count >= (1ull << IntBits(ls)))
             Error(n, cat("array length ", count, " exceeds storage range of ", TypeStr(t)));
     }
-    bool FitsAt(Val &v, TypeExpr *dt, bool callsite);
+    bool FitsAt(Val &v, TypeExpr *dt, bool wholeslice);
     static string ConstStr(const Val &v);
     Val CheckCond(Node *n);
     TypeExpr *UnifyBranch(TypeExpr *a, TypeExpr *b, Node *at, bool wantvalue);
@@ -1240,6 +1274,24 @@ struct TypeCheck {
     Val CheckVariantConst(Dot *d, SEnum *en);
     Val MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at, bool wantvalue,
                   Node *anode = nullptr, Node *bnode = nullptr);
+    Val JoinBranches(const Val &a, bool areach, const Val &b, bool breach, Node *at,
+                     bool wantvalue, bool onjoin, Node *anode = nullptr, Node *bnode = nullptr);
+    template<typename F> Val CheckJoin(Node *x, TypeExpr *expected, F check);
+    // A join of arrays of different types with no slice among them
+    // (JoinBranches), which stands only where a parameter declared a slice
+    // takes it.
+    void NoArrayJoin(const Val &v) {
+        if (v.joinslice && !v.joinhasslice)
+            Error(v.joinat, cat("branches have mismatched types: ", TypeStr(v.joina), " vs ",
+                                TypeStr(v.joinb)));
+    }
+    // An argument a slice parameter views whole rather than taking as its
+    // first check left it: a control construct's array value, a copy of its
+    // branch, or its branches' arrays of different types (§6.4).
+    static bool ViewedBranches(Node *arg, const Val &v, TypeExpr *pt) {
+        return pt->kind == TY_SLICE && (v.type->kind == TY_ARRAY || v.joinslice) &&
+               IsBranchConstruct(arg);
+    }
     void CheckBranchRoot(const Val &v, int depth, Node *at, const char *construct);
     Val TempCopy(Val v);
     void RetypeConstBranch(Node *n, TypeExpr *t);
@@ -1637,8 +1689,10 @@ struct TypeCheck {
         // outermost first (LoopPass).
         vector<LoopPass> looppasses;
         // A pass's warnings are kept back until the loop's last pass, whose
-        // warnings are the ones that stand (CheckLoopPasses).
+        // warnings are the ones that stand (CheckLoopPasses), and so are
+        // those of a construct's first check of its branches (CheckJoin).
         vector<string> pendingwarnings;
+        int joinprobes = 0;
         // Every growth and shrink so far (GrowEvent): a value built in place
         // is checked against those logged while its expression ran
         // (CheckGrowsSince).

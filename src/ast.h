@@ -547,6 +547,19 @@ struct Val : Prov {
     // check against its parameter (TypeCheck::argpath).
     bool storagebranches = false;
     Node *implicitcopy = nullptr;
+    // A control construct's branches checked with no destination type that
+    // are arrays and slices of one element type (TypeCheck::JoinBranches):
+    // the construct's value is a slice of that element, of this Val's type,
+    // which its branches are checked again as (§6.4). `joinslice` marks such
+    // a value, which carries nothing else yet; `joinhasslice`, that one of
+    // the branches is a slice of its own. Arrays of different types join
+    // only where one is, or a slice parameter takes them: `joinat` and the
+    // two types say where they first did not agree.
+    bool joinslice = false;
+    bool joinhasslice = false;
+    Node *joinat = nullptr;
+    TypeExpr *joina = nullptr;
+    TypeExpr *joinb = nullptr;
     // A signed value the compiler knows cannot be negative, which is what
     // lets it meet a u64 in a comparison (§6.1). Deliberately syntactic --
     // a literal, a .len/.cap, or a `let` bound to one -- so that whether a

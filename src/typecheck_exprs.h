@@ -691,14 +691,15 @@ inline void TypeCheck::ImplicitCopyError(Node *n) {
 // construct's value is a copy of it, of type dt, which non-fixed storage, or
 // a reference to it, reaches only through copy(x), as at a value destination
 // (§4.1). On an argument's path (argpath) a reference parameter may yet bind
-// the branch by reference instead; `out`, the value the branch gives its
-// construct, notes both for that argument.
+// the branch by reference instead, and on a construct's first check of its
+// branches (joinpath) they may yet join as a slice; `out`, the value the
+// branch gives its construct, notes both for that argument or construct.
 inline void TypeCheck::CheckBranchCopy(const Val &v, Node *n, TypeExpr *dt, Val &out) {
     out.storagebranches = v.storagebranches || (IsNonFixedLValue(v) && Referenceable(n, v)) ||
                           IsNonFixedRef(v);
     out.implicitcopy = v.implicitcopy;
     if (!ImplicitCopy(v, n, dt)) return;
-    if (argpath != n) ImplicitCopyError(n);
+    if (argpath != n && joinpath != n) ImplicitCopyError(n);
     if (!out.implicitcopy) out.implicitcopy = n;
 }
 
@@ -724,7 +725,7 @@ inline Val TypeCheck::CheckInferredResult(Node *&n, FnSpec *tspec) {
                         " is returned by reference without it (§4.1)"));
         return v;
     }
-    auto v = CheckValue(n, nullptr, false, false, true);
+    auto v = CheckValue(n, nullptr, false, BR_NONE, true);
     if (IsNonFixedLValue(v) && !IsOwnLocal(n)) n = AutoRef(n, v);
     // All of a multi-value call's results are forwarded, as they are.
     if (auto c = Is<Call>(n); c && c->rettypes.size() > 1) return v;
@@ -756,11 +757,13 @@ inline Node *TypeCheck::WholeSlice(Node *n) {
 // resolution, where an explicit & may have picked the overload. A variable
 // whose type is `inferred` from the value is no destination type either, but
 // binds a reference to a non-fixed value rather than copying the pointee
-// (§3.8, §4.1). `branchcopy`: n is a branch's value whose construct has no
-// destination type, which copies it (CheckBranchCopy), and `expected` at
-// most the type an earlier break gave the construct.
-inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bool branchcopy,
+// (§3.8, §4.1). A `branch` value (BranchKind) allows the array→slice
+// coercion too, where its construct's value is a slice (§6.4); BR_COPY: its
+// construct has no destination type, which copies it (CheckBranchCopy), and
+// `expected` is at most the type an earlier break gave the construct.
+inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, int branch,
                                  bool inferred) {
+    auto branchcopy = branch == BR_COPY;
     auto v = CheckV(n, expected);
     // A nominal default is an ordinary construction at this destination,
     // including relative fields; do not turn it into a copied call result.
@@ -774,23 +777,23 @@ inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bo
         Warn(n, cat("redundant &: the construct's value is a copy of ", what, " either way "
                     "(§4.1); a reference-typed binding binds ", what, " without it"));
     }
-    Val branch;
+    Val copied;
     if (!expected || expected->kind == TY_VOID) {
-        if (branchcopy) CheckBranchCopy(v, n, dt, branch);
+        if (branchcopy) CheckBranchCopy(v, n, dt, copied);
         if (!inferred || !IsNonFixedRef(v)) v = DecayRef(v);
     } else {
         if (!callsite && expected->kind == TY_REF && UserRefOf(n))
             Warn(n, cat("redundant &: ", ExprStr(Is<Unary>(n)->child),
                         " binds by reference here without it (§4.1)"));
         if (BindsRef(v, expected)) n = AutoRef(n, v);
-        if (branchcopy) CheckBranchCopy(v, n, expected, branch);
+        if (branchcopy) CheckBranchCopy(v, n, expected, copied);
         else RequireCopyable(v, n, expected);
         if (!KeepsRef(v, expected)) v = DecayRef(v);
-        MustFit(v, n, expected, callsite);
+        MustFit(v, n, expected, callsite || branch != BR_NONE);
         NoRelRefCopy(n, expected);
     }
-    v.storagebranches = branch.storagebranches;
-    v.implicitcopy = branch.implicitcopy;
+    v.storagebranches = copied.storagebranches;
+    v.implicitcopy = copied.implicitcopy;
     n->exprtype = v.type;
     RecordVal(n, v);
     return v;
@@ -809,19 +812,28 @@ inline Val TypeCheck::Operand(Node *n) {
     return v;
 }
 
-inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt, bool callsite) {
+inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt, bool wholeslice) {
     auto vt = DecayRef(v).type;
     if (vt->kind == TY_ARRAY && vt->arr->akind == A_FIXED)
         CheckArrayCount(n, dt, ArraySize(vt->arr));
     if (!reachable) return;  // A diverging operand fits anything.
     fitfail.clear();
     fitnode = n;
-    if (!FitsAt(v, dt, callsite)) {
+    if (!FitsAt(v, dt, wholeslice)) {
         if (!fitfail.empty()) Error(n, fitfail);
-        Error(n, cat("expected a value of type ", TypeStr(dt), ", got ", TypeStr(v.type),
-                     v.type->kind == TY_INT && dt->kind == TY_INT
-                         ? " (narrowing and sign changes require an explicit `as`)"
-                         : ""));
+        string why;
+        if (v.type->kind == TY_INT && dt->kind == TY_INT) {
+            why = " (narrowing and sign changes require an explicit `as`)";
+        } else if (dt->kind == TY_SLICE && vt->kind == TY_ARRAY &&
+                   TypeEq(vt->arr->sub, dt->sub)) {
+            auto e = n;
+            if (auto u = Is<Unary>(n); u && u->op == T_BITAND) e = u->child;
+            // A binary operation's dump has its parentheses already.
+            auto what = Is<Unary>(e) ? cat("(", ExprStr(e), ")") : ExprStr(e);
+            why = cat(": an array is a slice of itself only as a call's argument (§3.10) or "
+                      "a branch's value (§6.4); slice it whole: ", what, "[..]");
+        }
+        Error(n, cat("expected a value of type ", TypeStr(dt), ", got ", TypeStr(v.type), why));
     }
 }
 
@@ -830,8 +842,10 @@ inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt, bool callsite) {
 // point of the store rule (§9.2): a reference/slice stored into storage
 // owned by curdst must be rooted at least as shallow (call-site argument
 // slots pass curdst null: parameters always die before their arguments'
-// roots).
-inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
+// roots). `wholeslice`: an array, or a reference to one, is a slice of the
+// whole array where a slice is expected -- a call's argument (§3.10) or a
+// branch's value (§6.4).
+inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool wholeslice) {
     auto t = v.type;
     // An lvalue at a reference destination is the reference to it (§4.1),
     // a `const T&` where the lvalue is read-only (§9.5).
@@ -845,6 +859,18 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
         if (dt->kind == TY_REF && dt->ref->optional) { v.type = dt; return true; }
         fitfail = cat("null is only a value of optional types, not ", TypeStr(dt));
         return false;
+    }
+    // The whole array as a slice, where it is stored, and through a
+    // reference where the reference points: a `const` one where the array is
+    // read-only, which the rules below then judge as any slice (§9.5).
+    if (wholeslice && dt->kind == TY_SLICE) {
+        auto at = IsPlainRef(t) && t->ref->sub->kind == TY_ARRAY ? t->ref->sub : t;
+        if (at->kind == TY_ARRAY && TypeEq(at->arr->sub, dt->sub)) {
+            if (at != t) v.ClearSlotRead();   // As DerefLValue.
+            t = v.type = ast.SliceOf(at->arr->sub, dt->line);
+            t->cq = !v.writable;
+            v.lvalue = false;
+        }
     }
     // The store rule (§9.2) applies to a reference or slice, and to a value
     // holding references or slices by value (a struct with a slice field),
@@ -1013,7 +1039,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
             v.type = dt;
             return true;
         }
-        case TY_SLICE: {
+        case TY_SLICE:
             // The same slice type but for constness: adding `const` is
             // implicit, and dropping it was rejected above for a slot and
             // is the read-only instantiation everywhere else (§9.5).
@@ -1021,16 +1047,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
                 v.type = dt;
                 return true;
             }
-            // Whole-array argument to a slice parameter, call sites only;
-            // through a reference the pointee array is sliced in place.
-            auto at = t;
-            if (IsPlainRef(t) && t->ref->sub->kind == TY_ARRAY) at = t->ref->sub;
-            if (!callsite || at->kind != TY_ARRAY) return false;
-            if (!TypeEq(at->arr->sub, dt->sub)) return false;
-            if (at != t) v.ClearSlotRead();   // As DerefLValue.
-            v.type = dt;
-            return true;
-        }
+            return false;
         case TY_REF: {
             if (t->kind != TY_REF) return false;
             if (!TypeEq(t->ref->sub, dt->ref->sub)) return false;

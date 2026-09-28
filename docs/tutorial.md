@@ -457,6 +457,16 @@ print(people);
 [ada (36), grace (45), linus (20)]
 ```
 
+A value that is one string or another is a view of whichever it is: where
+one branch is a slice, as a literal is, a branch giving such a field gives
+a whole-array slice of it, with nothing copied, and the `if` is a
+`const u8[:]`:
+
+```goose
+let who = if people.len > 3 { "a crowd" } else { people[1].name };
+print(who);                             // grace
+```
+
 ---
 
 ## 7. Slices that cannot dangle

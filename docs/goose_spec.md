@@ -653,7 +653,10 @@ but writes through a slice are legal when its provenance is writable (§9.5).
   array argument passed where a slice parameter is expected implicitly
   becomes a whole-array slice; an exact-type overload wins over this
   coercion. (An array literal of variable-size elements is not such an
-  argument: it has no temporary to be sliced, §4.2.)
+  argument: it has no temporary to be sliced, §4.2.) So does an array a
+  branch gives where its construct's value is a slice (§6.4). Anywhere
+  else — a variable, a return, a field — the whole array is sliced as
+  `a[..]`.
 * Slices of fixed-element arrays index and iterate, bounds-checked against
   the slice's own length. Slices never grow; shrinking a slice (re-slicing)
   is always safe.
@@ -704,9 +707,10 @@ a reference it is redundant, and a redundant `&` is a warning.
 Where an `if`, `match`, `block`, `loop` or bare `{ }` has no destination
 type — an un-annotated `let`/`var`, a result whose type is inferred (§7.1),
 an untyped parameter, an operand, or the value a `for`, `[..]` or builtin
-works on — its value is a copy of what the branch taken gives. A reference to a fixed-size value, `&x` included, is
-copied as its pointee there, as it is wherever a reference meets a value
-(§3.8): `let r = if c { &a } else { &b };` makes `r` a copy of `a` or `b`,
+works on — its value is a copy of what the branch taken gives, unless its
+branches join as a slice (§6.4). A reference to a fixed-size value, `&x`
+included, is copied as its pointee there, as it is wherever a reference
+meets a value (§3.8): `let r = if c { &a } else { &b };` makes `r` a copy of `a` or `b`,
 so the `&`s are redundant and warn. A branch naming non-fixed storage, or a
 reference to it, is an error there, as at a value-typed destination:
 `let x = if c { copy(a) } else { copy(b) };` spells the copy. At a
@@ -1384,6 +1388,23 @@ type; as at any destination (§3.1), an integer literal in one arm adapts to
 the other arm's type (`if c { x } else { 0 }` has `x`'s type).
 A bare `{ … }` in expression position — a match arm of several statements,
 say — is only a scope: `break` inside it still leaves the enclosing loop.
+
+Arrays and slices of one element type join as a slice. Where one branch's
+value is a slice — a string literal, say — and another's is an array of the
+same element type, or where the construct's destination type is such a
+slice (an annotated variable, a declared result, a parameter declared as a
+slice), an array a branch gives is a whole-array slice of that array itself
+(§3.10) rather than a copy of it (§4.1): `let name = if item.count == 0 {
+"none" } else { item.name };` makes `name` a `const u8[:]`, which views the
+`u8[..48]` `item.name` where that branch is taken. The slice is read-only
+where any branch is: a `const` slice (a string literal among them), or an
+array a view of which would be (§9.5). Like any slice it must not outlive
+what it views (§9.2): an array declared in the branch, or a temporary made
+there — a call's array result, an array literal — is an error. Arrays of
+two different types join so only where a slice joins them as well, or the
+destination is one; otherwise they do not agree. A `break` agrees with the
+first: after a slice, a break's array is a slice of itself, while an array
+first is what a later slice constructs, where it can.
 
 `guard c else { s }`: the block runs when `c` is false and must diverge
 (`return`, `break`, `continue`, or a call that never returns: `abort(msg)`,
@@ -2116,7 +2137,9 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   slice that value is, or holds, must not be rooted at a variable declared
   in them, a match arm's binder included, or at a temporary made there:
   `f(if c { var t: i64[>..] = [1, 2]; t[..] } else { a[..] })` is an error,
-  as is the declaration above.
+  as is the declaration above, and so is `f(if c { var t: i64[>..] = [1,
+  2]; t } else { a })` for a slice parameter, where the arrays join as a
+  slice (§6.4).
 * **Return**: a returned reference's root must be visible to the caller (a
   caller-supplied root, a global, or the function's own in-place-constructed
   return value) — every return's, whatever the others give.
@@ -2166,21 +2189,22 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
 * Inside recursive cycles the stricter §7.8 cycle store rule applies.
 * A **temporary** — an array, struct or variant literal, a call's result,
   `copy(x)`, `default<T>()`, or the value of an `if`, `match`, `block`,
-  `loop` or bare `{ }`, which is a copy of what the branch taken produced
-  even where that names a variable — viewed where it stands rather than
-  built into a destination (by a slice parameter, a `for`, `[..]`,
-  `bytes_of` or a path into it, §4.2) — lasts for the rest of its
-  statement, or of the block whose final expression made it. Its scope is
-  that statement's: the variables the statement declares outlive it, and
-  those of the scopes the statement opens — the body of a `for` over it,
-  the arms of a `match` on it — do not. So a reference or slice into it
-  may be passed down, and stored or bound only in those inner scopes:
-  `let s = f()[..];` is an error, while `let t = f(); let s = t[..];` is
-  not, and neither is a view into `x` bound inside `for x in f() { … }`;
-  it is never returned. A function it is passed to may keep it in its own
-  locals, which die first. What a temporary *holds* is not rooted at the
-  temporary (§9.5). A temporary is no storage for `.=` or a reference
-  parameter to bind (§4.1), and a view of one is read-only (§9.5).
+  `loop` or bare `{ }` whose branches do not join as a slice (§6.4), which
+  is a copy of what the branch taken produced even where that names a
+  variable — viewed where it stands rather than built into a destination
+  (by a slice parameter, a `for`, `[..]`, `bytes_of` or a path into it,
+  §4.2) — lasts for the rest of its statement, or of the block whose final
+  expression made it. Its scope is that statement's: the variables the
+  statement declares outlive it, and those of the scopes the statement
+  opens — the body of a `for` over it, the arms of a `match` on it — do
+  not. So a reference or slice into it may be passed down, and stored or
+  bound only in those inner scopes: `let s = f()[..];` is an error, while
+  `let t = f(); let s = t[..];` is not, and neither is a view into `x`
+  bound inside `for x in f() { … }`; it is never returned. A function it
+  is passed to may keep it in its own locals, which die first. What a
+  temporary *holds* is not rooted at the temporary (§9.5). A temporary is
+  no storage for `.=` or a reference parameter to bind (§4.1), and a view
+  of one is read-only (§9.5).
 
 Violations are compile errors. There is no escape hatch in v1.
 

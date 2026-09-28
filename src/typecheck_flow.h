@@ -775,6 +775,62 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     return v;
 }
 
+// Merges two branches' values as MergeVals does, but for a construct whose
+// branches are checked a first time with no destination type (`onjoin`,
+// CheckJoin): there arrays and slices of one element type join as a slice
+// of it (§6.4) -- a slice and an array, or anything and a value joined so
+// already -- and so do arrays of two different types, which stay an error
+// unless a slice joins them too (joinhasslice). The joined value is only
+// its type: the construct checks its branches again as values of it, each
+// array a whole-array slice of itself, and they point where that says.
+inline Val TypeCheck::JoinBranches(const Val &a, bool areach, const Val &b, bool breach,
+                                   Node *at, bool wantvalue, bool onjoin, Node *anode,
+                                   Node *bnode) {
+    if (!areach) return b;
+    if (!breach) return a;
+    auto elem = [](const Val &x) -> TypeExpr * {
+        if (!x.type) return nullptr;
+        if (x.type->kind == TY_SLICE) return x.type->sub;
+        if (x.type->kind == TY_ARRAY) return x.type->arr->sub;
+        return nullptr;
+    };
+    auto isslice = [](const Val &x) { return x.type->kind == TY_SLICE && !x.joinslice; };
+    auto ea = elem(a), eb = elem(b);
+    auto joins = onjoin && wantvalue && ea && eb && TypeEq(ea, eb);
+    // Two slices, and two arrays of one type, are as they are.
+    if (joins && !a.joinslice && !b.joinslice && isslice(a) == isslice(b) &&
+        (isslice(a) || TypeEq(a.type, b.type)))
+        joins = false;
+    if (!joins) {
+        // Arrays joined alone, meeting what joins nothing: they were the
+        // first branches not to agree.
+        NoArrayJoin(a);
+        NoArrayJoin(b);
+        return MergeVals(a, areach, b, breach, at, wantvalue, anode, bnode);
+    }
+    Val v;
+    v.type = ast.SliceOf(ea, at->line);
+    // Read-only where a branch is: a const slice, or an array a view of
+    // which would be (§9.5).
+    auto readonly = [](const Val &x) {
+        return x.type->kind == TY_SLICE ? x.type->cq : !x.writable;
+    };
+    v.type->cq = readonly(a) || readonly(b);
+    v.joinslice = true;
+    v.joinhasslice = a.joinhasslice || b.joinhasslice || isslice(a) || isslice(b);
+    if (a.joinslice || b.joinslice) {
+        auto &j = a.joinslice && !a.joinhasslice ? a : b;
+        v.joinat = j.joinat;
+        v.joina = j.joina;
+        v.joinb = j.joinb;
+    } else {
+        v.joinat = at;
+        v.joina = a.type;
+        v.joinb = b.type;
+    }
+    return v;
+}
+
 // Whether a reference rooted at r may be stored inside a recursive cycle
 // (§7.8): it points into static data, a global, a pool handed to the cycle,
 // or a local of an enclosing function outside it, which all outlive every
@@ -862,14 +918,68 @@ inline void TypeCheck::RetypeConstBranch(Node *n, TypeExpr *t) {
     }
 }
 
+// A control construct's value (§6.4), which `check` checks at a
+// destination type. With none, a first check takes its branches as they
+// are, the construct on joinpath; where they join as a slice there
+// (JoinBranches) -- a string literal in one, an array in another -- a
+// second checks them as values of that slice type, each array a
+// whole-array slice of itself rather than the copy the construct's value
+// otherwise is (TempCopy). The first check's warnings, and the copies of
+// non-fixed storage it would report (CheckBranchCopy), wait until it is
+// known to stand, and the second replaces what it logged for the
+// construction checks (growlog). A construct already on the path is a
+// branch of the one whose first check it is part of, which settles its
+// value.
+template<typename F> Val TypeCheck::CheckJoin(Node *x, TypeExpr *expected, F check) {
+    if ((expected && expected->kind != TY_VOID) || joinpath == x) return check(expected);
+    auto entry = SaveFlow();
+    auto warnbase = cur.pendingwarnings.size();
+    auto growbase = cur.growlog.size();
+    Val v;
+    {
+        struct Probe {
+            TypeCheck &tc;
+            JoinPathScope js;
+            Probe(TypeCheck &t, Node *n) : tc(t), js(t, n) { tc.cur.joinprobes++; }
+            ~Probe() { tc.cur.joinprobes--; }
+        } probe(*this, x);
+        v = check(expected);
+    }
+    // Arrays of different types alone: an argument's are its call's to
+    // judge against the parameter (argpath).
+    if (v.joinslice && !v.joinhasslice) {
+        if (argpath != x) NoArrayJoin(v);
+        if (!WarningsHeld()) FlushWarnings();
+        return v;
+    }
+    if (v.joinslice) {
+        RestoreFlow(entry);
+        cur.pendingwarnings.resize(warnbase);
+        // The second check logs the growths and shrinks in the branches
+        // again, for the values under construction around the construct.
+        cur.growlog.resize(growbase);
+        // The construct is no typed slot and constructs into no storage of
+        // its own: what receives its value judges it as a slice's.
+        DestScope ds(*this, Dest {});
+        SlotScope ss(*this, false);
+        return check(v.type);
+    }
+    if (!WarningsHeld()) FlushWarnings();
+    // An argument's is left to its check against its parameter (argpath).
+    if (v.implicitcopy && argpath != x) ImplicitCopyError(v.implicitcopy);
+    return TempCopy(v);
+}
+
 inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
     auto onpath = argpath == x;
+    auto onjoin = joinpath == x;
     CheckCond(x->cond);
     auto entry = SaveFlow();
     NarrowCond(x->cond, true);
     Val tv;
     {
         PathScope ps(*this, onpath ? x->thenb : nullptr);
+        JoinPathScope js(*this, onjoin ? x->thenb : nullptr);
         tv = CheckBlockVal(x->thenb, expected, wantvalue, SK_PLAIN);
     }
     auto aflow = SaveFlow();
@@ -877,6 +987,7 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
     Val ev = VoidVal();
     NarrowCond(x->cond, false);
     PathScope ps(*this, onpath ? x->elseb : nullptr);
+    JoinPathScope js(*this, onjoin ? x->elseb : nullptr);
     if (auto ei = Is<IfExpr>(x->elseb)) {
         // On the node path, whose later parts are what its own condition
         // decides between (AfterHead).
@@ -894,13 +1005,16 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
     RestoreFlow(entry);
     MergeFlow(aflow, bflow);
     if (!wantvalue) return VoidVal();
-    return TempCopy(MergeVals(tv, aflow.reachable, ev, bflow.reachable, x, wantvalue, x->thenb,
-                              x->elseb));
+    auto v = JoinBranches(tv, aflow.reachable, ev, bflow.reachable, x, wantvalue, onjoin,
+                          x->thenb, x->elseb);
+    // On joinpath the construct that started it makes the copy (CheckJoin).
+    return onjoin ? v : TempCopy(v);
 }
 
 inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue, int scopekind,
                                     Node *scopenode) {
     auto onpath = argpath == b;
+    auto onjoin = joinpath == b;
     PushScope(scopekind, scopenode);
     BlockScope bs(*this, b);
     CheckStmts(b);
@@ -908,7 +1022,8 @@ inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue
     if (b->tail) {
         if (wantvalue) {
             PathScope ps(*this, onpath ? b->tail : nullptr);
-            v = CheckValue(b->tail, expected, false, !expected || expected->kind == TY_VOID);
+            JoinPathScope js(*this, onjoin ? b->tail : nullptr);
+            v = CheckValue(b->tail, expected, false, BranchAt(expected));
         } else {
             CheckStmtExpr(b->tail);
         }
@@ -924,6 +1039,7 @@ inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue
 
 inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalue) {
     auto onpath = argpath == m;
+    auto onjoin = joinpath == m;
     Val sv;
     {
         FlagScope rs(inreturn, false);
@@ -955,7 +1071,8 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
         Val av;
         if (wantvalue) {
             PathScope ps(*this, onpath ? arm.body : nullptr);
-            av = CheckValue(arm.body, expected, false, !expected || expected->kind == TY_VOID);
+            JoinPathScope js(*this, onjoin ? arm.body : nullptr);
+            av = CheckValue(arm.body, expected, false, BranchAt(expected));
         } else {
             CheckStmtExpr(arm.body);
         }
@@ -970,8 +1087,8 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
             acc = aflow;
             first = false;
         } else {
-            result = MergeVals(result, resultreach, av, aflow.reachable, m, wantvalue,
-                               resultnode, arm.body);
+            result = JoinBranches(result, resultreach, av, aflow.reachable, m, wantvalue, onjoin,
+                                  resultnode, arm.body);
             resultnode = nullptr;
             resultreach = resultreach || aflow.reachable;
             // Accumulate the join of all arms' flow.
@@ -1127,15 +1244,18 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
     }
     if (!first) RestoreFlow(acc);
     reachable = resultreach;
-    return wantvalue ? TempCopy(result) : VoidVal();
+    if (!wantvalue) return VoidVal();
+    return onjoin ? result : TempCopy(result);
 }
 
 inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wantvalue) {
     auto onpath = argpath == x;
+    auto onjoin = joinpath == x;
     PushScope(SK_BLOCK, x);
     if (wantvalue) {
         scopes.back().breakexpected = expected;
         scopes.back().onargpath = onpath;
+        scopes.back().onjoinpath = onjoin;
         scopes.back().inreturn = inreturn;
     }
     BlockScope bs(*this, x->body);
@@ -1144,7 +1264,8 @@ inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wa
     if (x->body->tail) {
         if (wantvalue) {
             PathScope ps(*this, onpath ? x->body->tail : nullptr);
-            v = CheckValue(x->body->tail, expected, false, !expected || expected->kind == TY_VOID);
+            JoinPathScope js(*this, onjoin ? x->body->tail : nullptr);
+            v = CheckValue(x->body->tail, expected, false, BranchAt(expected));
         } else {
             CheckStmtExpr(x->body->tail);
         }
@@ -1157,11 +1278,11 @@ inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wa
     if (!wantvalue) return VoidVal();
     CheckBranchRoot(v, CurDepth(), x->body->tail, "block");
     if (sc.breaktype) CheckBranchRoot(sc.breakvalue, CurDepth(), x, "block");
-    Val r = sc.breaktype ? MergeVals(v, v.type != nullptr, sc.breakvalue, true,
-                                     x, wantvalue, x->body->tail, nullptr) : v;
-    r.type = UnifyBranch(v.type, sc.breaktype, x, wantvalue);
+    Val r = sc.breaktype ? JoinBranches(v, v.type != nullptr, sc.breakvalue, true, x, wantvalue,
+                                        onjoin, x->body->tail, nullptr) : v;
+    if (!r.joinslice) r.type = UnifyBranch(v.type, sc.breaktype, x, wantvalue);
     if (!r.type) r.type = ast.voidtype;
-    return TempCopy(r);
+    return onjoin ? r : TempCopy(r);
 }
 
 // A loop body: its statements, then a tail that is a statement like any
@@ -1218,20 +1339,19 @@ inline TypeCheck::Scope TypeCheck::CheckLoopPasses(Node *x, FlowState &head,
         settled = true;
     }
     RestoreFlow(head);
-    if (cur.looppasses.empty()) {
-        for (auto &w : cur.pendingwarnings) fputs(w.c_str(), stderr);
-        cur.pendingwarnings.clear();
-    }
+    if (!WarningsHeld()) FlushWarnings();
     return sc;
 }
 
 inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue) {
     auto head = SaveFlow();
     auto onpath = argpath == x;
+    auto onjoin = joinpath == x;
     auto sc = CheckLoopPasses(x, head, [&] {
         if (wantvalue) {
             scopes.back().breakexpected = expected;
             scopes.back().onargpath = onpath;
+            scopes.back().onjoinpath = onjoin;
             scopes.back().inreturn = inreturn;
         }
         CheckLoopBody(x->body);
@@ -1239,7 +1359,7 @@ inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue)
     reachable = sc.hasbreak;  // A loop only exits via break.
     if (!wantvalue || !sc.breaktype) return VoidVal();
     CheckBranchRoot(sc.breakvalue, CurDepth(), x, "loop");
-    return TempCopy(sc.breakvalue);
+    return onjoin ? sc.breakvalue : TempCopy(sc.breakvalue);
 }
 
 inline void TypeCheck::CheckWhile(While *x) {
@@ -1427,15 +1547,23 @@ inline void TypeCheck::CheckBreak(Break *b) {
         if (scopes[si].valuelessbreak)
             Error(b, "this construct mixes valueless and valued breaks");
         // Later breaks agree with the first; the first constructs into the
-        // type the construct is expected to have, as its tail value does.
-        auto expected = scopes[si].breaktype ? scopes[si].breaktype : scopes[si].breakexpected;
+        // type the construct is expected to have, as its tail value does. A
+        // first break's value that joins branches as a slice settles no type
+        // yet (JoinBranches). Where the construct has no destination type,
+        // a reference or slice that agrees with the first is stored nowhere
+        // by that: what receives the construct's value judges it.
         auto be = scopes[si].breakexpected;
+        auto agree = scopes[si].breaktype && !scopes[si].breakvalue.joinslice;
+        auto expected = agree ? scopes[si].breaktype : be;
+        auto unstored = agree && BranchAt(be) == BR_COPY && IsRefOrSlice(expected);
         Val v;
         {
             // The break is a statement, but its value is the construct's.
             PathScope ps(*this, scopes[si].onargpath ? b->val : nullptr);
+            JoinPathScope js(*this, scopes[si].onjoinpath ? b->val : nullptr);
             FlagScope rs(inreturn, scopes[si].inreturn);
-            v = CheckValue(b->val, expected, false, !be || be->kind == TY_VOID);
+            DestScope ds(*this, unstored ? Dest {} : curdst);
+            v = CheckValue(b->val, expected, false, BranchAt(be));
         }
         // The construct's value is a new one: the break's type and what its
         // references point at, never the operand's storage or literal form.
@@ -1448,6 +1576,11 @@ inline void TypeCheck::CheckBreak(Break *b) {
         exit.holderfrom = v.holderfrom;
         exit.storagebranches = v.storagebranches;
         exit.implicitcopy = v.implicitcopy;
+        exit.joinslice = v.joinslice;
+        exit.joinhasslice = v.joinhasslice;
+        exit.joinat = v.joinat;
+        exit.joina = v.joina;
+        exit.joinb = v.joinb;
         exit.fnv = v.fnv;  // Which function it names, as static as its type (§7.6).
         // Nothing after the break can complete a [] that took no element type
         // here: the construct's value does not carry the literal form.
@@ -1456,8 +1589,8 @@ inline void TypeCheck::CheckBreak(Break *b) {
         // construct's scope is addressed afresh rather than through a
         // reference taken before.
         auto &sc = scopes[si];
-        sc.breakvalue = MergeVals(sc.breakvalue, sc.breaktype != nullptr, exit, true, b, true,
-                                  nullptr, b->val);
+        sc.breakvalue = JoinBranches(sc.breakvalue, sc.breaktype != nullptr, exit, true, b, true,
+                                     sc.onjoinpath, nullptr, b->val);
         if (!sc.breaktype) sc.breaktype = v.type;
         sc.hasbreak = true;
     } else {
@@ -1633,7 +1766,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
                     Warn(vd->inits[i], cat("redundant &: ", ExprStr(refinit->child),
                                            " binds by reference without it (§4.1)"));
             } else {
-                v = CheckValue(vd->inits[i], ann, false, false, !ann);
+                v = CheckValue(vd->inits[i], ann, false, BR_NONE, !ann);
                 // An un-annotated binding of a non-fixed lvalue is a
                 // reference to it (§4.1), like an untyped parameter's, and
                 // one of a reference to such a value is that reference,

@@ -25,8 +25,10 @@ inline Val TypeCheck::CheckCall(Call *c) {
                   c->args.begin() + c->firstdefault + c->ndefaults);
     c->firstdefault = c->ndefaults = 0;
     // Arguments construct into parameter slots, not whatever destination
-    // encloses this call; member ops re-set curdst for element pushes.
+    // encloses this call, and a parameter's constness is its instantiation's
+    // (§9.5); member ops re-set both for element pushes.
     DestScope ds(*this, Dest {});
+    SlotScope ss(*this, false);
     if (auto d = Is<Dot>(c->callee)) return CheckUfcsCall(c, d);
     if (auto id = Is<Ident>(c->callee)) return CheckNamedCall(c, id);
     Error(c, "this expression cannot be called");
@@ -131,6 +133,8 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d) {
         cands = ast.LookupFunctions(d->name, d->ns);
     }
     if (!cands.empty()) return ResolveCall(c, cands, env, d->name, &ov, d->obj);
+    // A member builtin taking any receiver (bytes_of) takes it as checked.
+    NoArrayJoin(ov);
     if (bd && !(bd->flags & BF_PROPERTY)) {
         auto argnodes = c->ArgNodes();
         auto v = CheckBuiltin(c, *bd, argnodes, &ov);
@@ -213,11 +217,12 @@ inline void TypeCheck::AddParamDefaults(Call *c, MatchInfo &best, vector<Node *>
             vector<pair<string_view, TypeExpr *>> nobindings;
             auto tier = 0;
             fitfail.clear();
+            if (p.type->kind != TY_SLICE) NoArrayJoin(v);
             if (!UnifyArg(pt, v, nobindings, tier))
                 Error(d, cat("the default of parameter ", p.name, " cannot be passed as ",
                              TypeStr(pt), ": ",
                              fitfail.empty() ? cat("it is ", TypeStr(v.type)) : fitfail));
-            BindBranchByRef(argnodes[i], v, pt);
+            BindBranchByRef(argnodes[i], v, pt, p.type);
         });
         c->args[i - shift] = argnodes[i];
         argvals.insert(argvals.begin() + (int)i, v);
@@ -298,6 +303,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
             *nomatch = true;
             return Val {};
         }
+        for (auto &av : argvals) NoArrayJoin(av);
         Error(c, cat("no matching overload for call to ", name, failures));
     }
     FnSpec *denv = nullptr;
@@ -306,7 +312,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         AddParamDefaults(c, best, argnodes, argvals, prenode != nullptr, denv);
     }
     LoadSliceArgs(argvals, best.paramtypes);
-    BindBranchesByRef(argnodes, argvals, best.paramtypes, -1, best.nwritten);
+    BindBranchesByRef(argnodes, argvals, best.paramtypes, best.sf, -1, best.nwritten);
     auto spec = GetOrCreateSpec(best, argvals, c);
     ApplyCalleeShrinks(c, spec, argvals, name);
     ApplyCalleeGrows(c, spec, argvals, name);
@@ -352,20 +358,28 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
 }
 
 // A control construct whose branches are all non-fixed storage binds each
-// by reference at a reference parameter (§4.1): the argument is checked as
-// that reference, rooted where its branches are, before the specialization
-// and the callee's effects are keyed on it; phase 2 checks it so again, in
-// order with the other arguments. `skip` is a dispatch position, whose value
-// the cases take as it is.
+// by reference at a reference parameter (§4.1), and one whose branches are
+// arrays views each whole at a slice parameter (§6.4): the argument is
+// checked as that reference or slice, rooted where its branches are, before
+// the specialization and the callee's effects are keyed on it; phase 2
+// checks it so again, in order with the other arguments. `skip` is a
+// dispatch position, whose value the cases take as it is; the arguments from
+// `end` on are defaults, which AddParamDefaults binds as it checks them.
 inline void TypeCheck::BindBranchesByRef(vector<Node *> &argnodes, vector<Val> &argvals,
-                                         const vector<TypeExpr *> &paramtypes, int skip,
-                                         size_t end) {
+                                         const vector<TypeExpr *> &paramtypes, SFunction *sf,
+                                         int skip, size_t end) {
     for (size_t i = 0; i < paramtypes.size() && i < argvals.size() && i < end; i++)
-        if ((int)i != skip) BindBranchByRef(argnodes[i], argvals[i], paramtypes[i]);
+        if ((int)i != skip)
+            BindBranchByRef(argnodes[i], argvals[i], paramtypes[i], sf->params[i].type);
 }
 
-inline void TypeCheck::BindBranchByRef(Node *&n, Val &v, TypeExpr *pt) {
-    if (!v.storagebranches || pt->kind != TY_REF || pt->ref->lenstorage >= 0) return;
+// One argument of those, for a parameter of type pt, `declared` as written
+// (null where it is untyped): arrays of different types join as a slice only
+// at a parameter declared a slice.
+inline void TypeCheck::BindBranchByRef(Node *&n, Val &v, TypeExpr *pt, TypeExpr *declared) {
+    if (!declared || declared->kind != TY_SLICE) NoArrayJoin(v);
+    auto byref = v.storagebranches && pt->kind == TY_REF && pt->ref->lenstorage < 0;
+    if (!byref && !ViewedBranches(n, v, pt)) return;
     DestScope ds(*this, Dest {});
     SlotScope ss(*this, false);
     FlagScope q(quiet, true);
@@ -755,7 +769,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
         argvals[found] = CheckValue(argnodes[found], ast.RefTo(enumtype, c->line), true);
     }
     if (argvals[found].implicitcopy) ImplicitCopyError(argvals[found].implicitcopy);
-    BindBranchesByRef(argnodes, argvals, matches[0].paramtypes, found);
+    BindBranchesByRef(argnodes, argvals, matches[0].paramtypes, matches[0].sf, found);
     // Specialize every arm; return types and the other parameters must
     // agree across the set.
     c->dispatcharg = found;
@@ -2260,14 +2274,18 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
                 Error(c->args[i], "cannot infer a type for this argument");
             ptypes.push_back(nt);
         }
+        if (!params[i].type || params[i].type->kind != TY_SLICE) NoArrayJoin(argvals[i]);
     }
     {
         DestScope ds(*this, Dest {});
         for (size_t i = 0; i < ptypes.size(); i++) {
+            auto viewed = ViewedBranches(c->args[i], argvals[i], ptypes[i]);
             auto v = CheckArg(c->args[i], ptypes[i]);
-            // A control construct whose branches this bound by reference
-            // is that reference, rooted where its branches are.
-            if (argvals[i].storagebranches && ptypes[i]->kind == TY_REF) argvals[i] = v;
+            // A control construct whose branches this bound by reference, or
+            // viewed whole, is that reference or slice, rooted where its
+            // branches are.
+            if ((argvals[i].storagebranches && ptypes[i]->kind == TY_REF) || viewed)
+                argvals[i] = v;
         }
     }
     // Check the body inline, with lookups chaining to the definer. The body

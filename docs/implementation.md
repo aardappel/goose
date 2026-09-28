@@ -396,7 +396,8 @@ Every `Check` returns a `Val` (`ast.h`): the type, the constant value where
 the expression folds, the literal flags (`strlit`, `emptyarr`, `isnull`,
 `unsized`), `lvalue` (denotes storage), `nonneg` (§3.14), the holder fields
 (§3.5), what a control construct's branches are (`storagebranches`,
-`implicitcopy`, §3.12), and a `Prov` -- the provenance of §3.4.
+`implicitcopy`, §3.12; `joinslice` and its companions, §3.4), and a
+`Prov` -- the provenance of §3.4.
 
 References are transparent (§3.8), which the checker implements as
 *decay*: `CheckV` is the raw per-node check whose result may still denote a
@@ -435,14 +436,19 @@ reads as `x` (`Unary::CgX`).
   and a valued `block` or `loop` keeps for its breaks' values), and so a
   branch's value, or a reference to it, where its construct has no
   destination type and the construct's value is a copy of it
-  (`CheckValue`'s `branchcopy` flag, `CheckBranchCopy`);
+  (`CheckValue`'s `branch` kind, `BR_COPY`, `CheckBranchCopy`);
 * warns on a branch's redundant `&x` where its construct has no destination
-  type and copies the fixed-size pointee (`branchcopy` again);
+  type and copies the fixed-size pointee (`BR_COPY` again);
 * fits the value to the destination (`MustFit`/`FitsAt`, §3.5); the node's
   `exprtype` becomes the destination's type, which can be wider than the
   type its operation computes at (an `i8` cast stored into an `i64`), so
   that type is read elsewhere: a cast's `AsCast::totype`, an operator's
-  operands' `exprtype`;
+  operands' `exprtype`. A call's argument, or a branch's value (any
+  `branch` kind), that is an array or a reference to one meeting a slice
+  of its element type is a whole-array slice of it (`FitsAt`'s
+  `wholeslice`), `const` where the array is read-only, which the store and
+  constness rules then judge as the slice it is: pushed into an array of
+  slices, say. Elsewhere the error says to slice the array with `[..]`;
 * rejects copies of values holding self-relative references
   (`NoRelRefCopy`, §3.13).
 
@@ -565,6 +571,37 @@ place. Where the optimizer folds a construct to the branch taken,
 which is what lets the shrink rules take a view of it for a view of the
 temporary alone.
 
+A construct whose branches are arrays and slices of one element type is no
+such copy: its value is a slice of that element (spec §6.4), each array
+branch a whole-array slice of itself (`FitsAt`'s `wholeslice`), rooted
+where the array is, so `CheckBranchRoot` holds the array to the
+construct's scope. With a slice destination type the branches are simply
+checked against it. With none, which branches join is known only once all
+of them are checked, so the construct's `Check` (`CheckJoin`) checks them
+twice where they do: a first time as they are, the construct on `joinpath`
+-- the construct and each branch value it checks next, a construct there
+included, like `argpath` (§3.12) -- where `JoinBranches` merges a slice and
+an array, or arrays of two types, into a value that is only a slice type
+(`Val::joinslice`; `joinhasslice` where a branch is a slice of its own), and
+then a second time against that type, from the flow state before the first,
+with no destination for stores and no typed slot (the value's receiver
+judges it). A construct on `joinpath` is part of the first construct's
+check: it leaves its value uncopied (`TempCopy` is the first construct's
+to apply where nothing joins) and its joins to it. Until the first check
+is known to stand, its warnings are held (`BodyState::joinprobes`, as
+loop passes hold theirs, §3.7) and the copies of non-fixed storage it would
+report are noted (`CheckBranchCopy` defers them on `joinpath` as on
+`argpath`) and reported after it; the growths and shrinks it logged for the
+values under construction around the construct (`growlog`, §3.10) are
+dropped, the second check logging them again. Arrays of two types with no
+slice among them join only for a parameter declared a slice, so a
+construct on `argpath` leaves such a join to its call (`NoArrayJoin`,
+§3.12) and every other one reports them as mismatched there. Each `break`
+after the first is checked against the first's type (spec §6.4) unless
+that joined arrays (`CheckBreak`), and one agreeing with a slice type
+where the construct has no destination type is stored nowhere by that, as
+a branch of an `if` would not be.
+
 **Where a root comes from:**
 
 | Expression | Root | Exact |
@@ -578,7 +615,7 @@ temporary alone.
 | `a.alloc_slice(n)`, `a.realloc_slice(s, n)` | `a`'s root | `a`'s exactness |
 | `a[lo..hi]` (`SliceExpr::Check`) | `a`'s root | `a`'s exactness |
 | a call result (`CallResult`) | every root the callee's returns give (`RetRoot::alts`), mapped (`RetAltVal`: a parameter's class back to the argument's roots at this site -- at a back edge, every argument the class's parameters get -- a global or captured local as itself, null as static data) and united as branches are (`MergeVals`) | only where they all map to one root exactly |
-| an `if`, `match`, `block` or `loop` value of reference or slice type (`MergeVals`) | every one of its branches' roots | only where they all name one root exactly |
+| an `if`, `match`, `block` or `loop` value of reference or slice type (`MergeVals`), array branches joined as a slice included (`CheckJoin`) | every one of its branches' roots, an array's where it is stored | only where they all name one root exactly |
 | an array, struct or variant literal, and a call's value result | a temporary (`TempRoot`): whatever views it rather than being built from it views a temporary | no |
 | any other `if`, `match`, `block`, `loop` or bare `{ }` value, a function value's call, and an array's `default<T>()` (`TempCopy`); `copy(x)` | a temporary (`TempRoot`), holding what the value it copied held | no; a copy's yes |
 | a string literal | static data (null) | yes |
@@ -885,23 +922,24 @@ holder declared inside the loop carries only its current pass's store
 events (`LiveEventBase`), an earlier pass's being a previous iteration's;
 one declared outside carries them all, and a store an earlier pass recorded
 is reported as reaching the shrink on the next iteration (`CarriedEvent`).
-A pass's warnings are kept back until the loop's last pass. A callee body
-checked from inside a pass runs its own loops' passes (`CheckSpecBody`
-clears `looppasses`).
+A pass's warnings are kept back until the loop's last pass, as a
+construct's first check of its branches keeps its own (`WarningsHeld`,
+§3.4). A callee body checked from inside a pass runs its own loops' passes
+(`CheckSpecBody` clears `looppasses`).
 
 ### 3.8 Writability
 
 `const` is the `cq` bit on the type (§9.5); writability of a *value* is the
 `writable` provenance bit. The checker keeps the two consistent at slots:
 `constslot` (set by `SlotScope` for fields, elements, annotated variables,
-assignment targets and literal initializers; cleared for call arguments and
-returns) makes `FitsAt` reject a read-only reference or slice landing in a
-slot whose type is not `const`. What is read out of a slot is therefore as
-writable as the slot's type says (`ContainerRead`), and parameters and
-results are generic over constness: `RootArg::writable` is part of the
-specialization key, so a function given a literal and the same function
-given a buffer are two specializations, and a write through the parameter
-is an error only in the first.
+assignment targets and literal initializers; cleared for calls, their
+overload resolution included, and returns) makes `FitsAt` reject a
+read-only reference or slice landing in a slot whose type is not `const`.
+What is read out of a slot is therefore as writable as the slot's type says
+(`ContainerRead`), and parameters and results are generic over constness:
+`RootArg::writable` is part of the specialization key, so a function given
+a literal and the same function given a buffer are two specializations, and
+a write through the parameter is an error only in the first.
 
 `let` prevents whole-binding assignment (`NoLetAssign`, via
 `LVal::letbound`) but does not restrict writes to contents. By-value `for`
@@ -1387,10 +1425,20 @@ value is not rewritten to a reference, but matches a reference parameter
 as an lvalue does (`UnifyArgRaw`), and `BindBranchesByRef` checks it
 against that parameter before the specialization and the callee's effects
 are keyed on it: each branch binds by reference (`AutoRef`), and the
-argument takes the branches' merged root and writability. At any other
-parameter phase 2 reports the copy, an untyped one included, which takes
-the construct's value type. Tag dispatch binds such a construct at the
-dispatch position by reference as well, and reports a copy noted on one it
+argument takes the branches' merged root and writability. A slice
+parameter views a construct's array branches where they lie (spec §6.4),
+so `BindBranchesByRef` checks the argument against it in the same way
+where phase 1 left an array, a copy of the branch taken, or arrays of two
+types joined as a slice with no slice among them, which `CheckJoin` leaves
+to the call on `argpath` (§3.4): those join only at a parameter declared a
+slice, and `NoArrayJoin` reports them anywhere else, a failed resolution
+and a builtin's UFCS receiver (which a member takes as checked) included.
+`BindBranchByRef` does this per argument, for a parameter default as well
+(`AddParamDefaults`, before `UnifyArg` judges it), and a function value's
+call (`CheckFunValCall`) the same for its block's parameters. At any other
+parameter phase 2 reports the copy, an untyped one included, which takes the
+construct's value type. Tag dispatch binds such a construct at the dispatch
+position by reference as well, and reports a copy noted on one it
 dispatches by value, which phase 2 does not check again; a member builtin
 reports one noted on its receiver, which it takes as checked; a function
 value's declared reference parameter takes its provenance from the

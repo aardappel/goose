@@ -650,20 +650,25 @@ inline Val RangeExpr::Check(TypeCheck &tc, TypeExpr *) {
 }
 
 inline Val Block::Check(TypeCheck &tc, TypeExpr *expected) {
-    return tc.VoidIfBottom(tc.TempCopy(tc.CheckBlockVal(this, expected, true,
-                                                        TypeCheck::SK_PLAIN)));
+    // On joinpath the construct that started it makes the copy (CheckJoin).
+    auto onjoin = tc.joinpath == this;
+    auto v = tc.CheckBlockVal(this, expected, true, TypeCheck::SK_PLAIN);
+    return tc.VoidIfBottom(onjoin ? v : tc.TempCopy(v));
 }
 
 inline Val IfExpr::Check(TypeCheck &tc, TypeExpr *expected) {
-    return tc.VoidIfBottom(tc.CheckIf(this, expected, true));
+    return tc.VoidIfBottom(
+        tc.CheckJoin(this, expected, [&](TypeExpr *e) { return tc.CheckIf(this, e, true); }));
 }
 
 inline Val MatchExpr::Check(TypeCheck &tc, TypeExpr *expected) {
-    return tc.VoidIfBottom(tc.CheckMatch(this, expected, true));
+    return tc.VoidIfBottom(
+        tc.CheckJoin(this, expected, [&](TypeExpr *e) { return tc.CheckMatch(this, e, true); }));
 }
 
 inline Val EarlyBlock::Check(TypeCheck &tc, TypeExpr *expected) {
-    return tc.VoidIfBottom(tc.CheckEarlyBlock(this, expected, true));
+    return tc.VoidIfBottom(tc.CheckJoin(
+        this, expected, [&](TypeExpr *e) { return tc.CheckEarlyBlock(this, e, true); }));
 }
 
 inline Val While::Check(TypeCheck &tc, TypeExpr *) {
@@ -672,7 +677,8 @@ inline Val While::Check(TypeCheck &tc, TypeExpr *) {
 }
 
 inline Val LoopExpr::Check(TypeCheck &tc, TypeExpr *expected) {
-    return tc.VoidIfBottom(tc.CheckLoop(this, expected, true));
+    return tc.VoidIfBottom(
+        tc.CheckJoin(this, expected, [&](TypeExpr *e) { return tc.CheckLoop(this, e, true); }));
 }
 
 inline Val ForLoop::Check(TypeCheck &tc, TypeExpr *) {
