@@ -21,6 +21,11 @@ fn hashing() {
           hash("abc") != hash("abd"));                                          // true true true true
     print(hash_combine(hash(1), hash(2)) != hash_combine(hash(2), hash(1)));   // true
     print(hash(true) != hash(false), " ", hash(1.5) == hash(1.5));             // true true
+    let n8: i8 = -1;
+    let n16: i16 = -1;
+    let n32: i32 = -1;
+    print(hash(n8) != hash(1), " ", hash(n16) != hash(1), " ", hash(n32) != hash(1), " ",
+          hash(-1) != hash(1));                                                 // true true true true
     print(hash(0.1) == hash(0.1), " ", hash(-1.5) != hash(1.5));               // true true
     let q: f32 = 0.1;
     print(hash(q) == hash(q), " ", hash(q) != hash(-q));                       // true true

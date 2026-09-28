@@ -1,4 +1,5 @@
-// stdlib/dictionary.goose: integer, slice and struct keys, growth, deletion.
+// runtime-debug: stdlib/dictionary.goose: integer, slice and struct keys,
+// growth, deletion.
 import dictionary;
 
 struct key { a: i64, b: i64 }
@@ -28,6 +29,10 @@ fn main() {
         if g { if g != i { ok = false; } } else { ok = false; }
     }
     print(ok);                                                            // true
+    for i in 500 { d.remove(i * 14); }
+    var left = true;
+    for i in 1000 { if d.contains(i * 7) != (i % 2 == 1) { left = false; } }
+    print(d.count, " ", left);                                            // 502 true
     d.clear();
     print(d.count, " ", d.contains(14));                                  // 0 false
     var sd = dictionary<const u8[:], i32> {};
@@ -44,4 +49,7 @@ fn main() {
     var rs = dictionary<i64, bool> {};
     rs.reserve(100);
     print(rs.slots.len >= 150, " ", rs.count);                            // true 0
+    var nd = dictionary<i64, i64> {};
+    for i in 50 { nd.insert(-i, i * i); }
+    block { let n7 = nd.get(-7); if n7 { print(n7, " ", nd.count); } }    // 49 50
 }

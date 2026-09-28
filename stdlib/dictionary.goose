@@ -19,7 +19,7 @@ struct dictionary<K, V> { count: i64 = 0, slots: dictionary_slot<K, V>[>..<] = [
 fn dict_probe<K, V>(d: dictionary<K, V>&, key: K) -> i64 {
     if d.slots.len == 0 { return -1; }
     let mask = d.slots.len - 1;
-    var i = (hash(key) as i64) & mask;
+    var i = (hash(key) & (mask as u64)) as i64;
     loop {
         if !d.slots[i].used { return -1; }
         if d.slots[i].key == key { return i; }
@@ -34,7 +34,7 @@ fn dict_grow<K, V>(d: dictionary<K, V>&, cap: i64) {
     let mask = cap - 1;
     for s in d.slots {
         if s.used {
-            var i = (hash(s.key) as i64) & mask;
+            var i = (hash(s.key) & (mask as u64)) as i64;
             while ns[i].used { i = (i + 1) & mask; }
             ns[i] = s;
         }
@@ -55,7 +55,7 @@ fn contains<K, V>(d: dictionary<K, V>&, key: K) -> bool { dict_probe(d, key) >= 
 fn insert<K, V>(d: dictionary<K, V>&, key: K, val: V) -> bool {
     if (d.count + 1) * 3 > d.slots.len * 2 { dict_grow(d, max(d.slots.len * 2, 8)); }
     let mask = d.slots.len - 1;
-    var i = (hash(key) as i64) & mask;
+    var i = (hash(key) & (mask as u64)) as i64;
     while d.slots[i].used {
         if d.slots[i].key == key {
             d.slots[i].val = val;
@@ -99,7 +99,7 @@ fn remove<K, V>(d: dictionary<K, V>&, key: K) -> bool {
         if !d.slots[j].used { break; }
         // An entry whose home is not in the cyclic range (i, j] can move up
         // into the hole without leaving its probe sequence.
-        let h = (hash(d.slots[j].key) as i64) & mask;
+        let h = (hash(d.slots[j].key) & (mask as u64)) as i64;
         var stays = false;
         if i <= j { stays = h > i && h <= j; } else { stays = h > i || h <= j; }
         if !stays {

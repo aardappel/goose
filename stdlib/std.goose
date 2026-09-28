@@ -86,9 +86,10 @@ fn swap<T>(a: T&, b: T&) {
 // ---- hashing -------------------------------------------------------------
 // One overload per scalar type: a u8 widens equally well into i64 and u64,
 // so a single generic would be ambiguous. Integers get a multiply-xorshift
-// mix (the low bits are what `dictionary` masks), bytes FNV-1a. A float
-// mixes as its count of 1/65536ths, truncated and wrapped to 64 bits: `as!`,
-// since that conversion drops the rest on purpose.
+// mix (the low bits are what `dictionary` masks), bytes FNV-1a. A negative
+// integer mixes as its two's-complement bits, and a float as its count of
+// 1/65536ths, truncated and wrapped to 64 bits: `as!`, since those
+// conversions change the value on purpose.
 
 fn hash_mix(x: u64) -> u64 {
     var h = x * 11400714819323198485;
@@ -96,10 +97,10 @@ fn hash_mix(x: u64) -> u64 {
     return h;
 }
 
-fn hash(x: i8) -> u64 { hash_mix(x as u64) }
-fn hash(x: i16) -> u64 { hash_mix(x as u64) }
-fn hash(x: i32) -> u64 { hash_mix(x as u64) }
-fn hash(x: i64) -> u64 { hash_mix(x as u64) }
+fn hash(x: i8) -> u64 { hash_mix(x as! u64) }
+fn hash(x: i16) -> u64 { hash_mix(x as! u64) }
+fn hash(x: i32) -> u64 { hash_mix(x as! u64) }
+fn hash(x: i64) -> u64 { hash_mix(x as! u64) }
 fn hash(x: u8) -> u64 { hash_mix(x as u64) }
 fn hash(x: u16) -> u64 { hash_mix(x as u64) }
 fn hash(x: u32) -> u64 { hash_mix(x as u64) }
