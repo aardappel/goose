@@ -1,5 +1,5 @@
-// stdlib/os.goose: a temp file written, appended, read back and deleted;
-// arguments, environment, clocks.
+// runtime-debug: stdlib/os.goose: a temp file written, appended, read back
+// and deleted; arguments, environment, clocks.
 import os;
 
 fn main() {
@@ -21,7 +21,7 @@ fn main() {
     print(time() > 1600000000.0);                               // true
     var e: u8[>..] = [];
     print(env("GOOSE_NO_SUCH_VAR_", e), " ", e.len);            // false 0
-    sleep(0.001);
+    sleep(0.0015);                                              // 1 ms: the fraction is dropped
     let seed = random_seed();
     print(seed == seed);                                        // true
     write_stdout("out\n");                                      // out

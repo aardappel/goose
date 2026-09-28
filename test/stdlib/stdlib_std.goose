@@ -1,5 +1,6 @@
-// stdlib/std.goose, one function group per section; the expected values
-// are worked out by hand in the comments.
+// runtime-debug: stdlib/std.goose, one function group per section; the
+// expected values are worked out by hand in the comments. Valid input trips
+// none of GS_DEBUG's checks inside std.
 import std;
 
 fn scalars() {
@@ -20,6 +21,9 @@ fn hashing() {
           hash("abc") != hash("abd"));                                          // true true true true
     print(hash_combine(hash(1), hash(2)) != hash_combine(hash(2), hash(1)));   // true
     print(hash(true) != hash(false), " ", hash(1.5) == hash(1.5));             // true true
+    print(hash(0.1) == hash(0.1), " ", hash(-1.5) != hash(1.5));               // true true
+    let q: f32 = 0.1;
+    print(hash(q) == hash(q), " ", hash(q) != hash(-q));                       // true true
 }
 
 fn random() {
@@ -176,6 +180,9 @@ fn strings() {
     print(fl, " ", okf);                                                       // -150 true
     let fl2, okf2 = parse_flt("abc");
     print(okf2);                                                               // false
+    // 2^53 + 1 takes 54 bits: the mantissa rounds (to even) as it converts.
+    let fl3, okf3 = parse_flt("9007199254740993");
+    print(fl3 == 9007199254740992.0, " ", okf3);                               // true true
     print(compare("abc", "abd"), " ", compare("b", "a"), " ", compare("a", "a"), " ",
           compare("ab", "abc"));                                               // -1 1 0 -1
     print(trim("  hi \n"), "|", trim_start("  x"), "|", trim_end("y  "), "|");   // hi|x|y|

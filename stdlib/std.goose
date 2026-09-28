@@ -86,7 +86,9 @@ fn swap<T>(a: T&, b: T&) {
 // ---- hashing -------------------------------------------------------------
 // One overload per scalar type: a u8 widens equally well into i64 and u64,
 // so a single generic would be ambiguous. Integers get a multiply-xorshift
-// mix (the low bits are what `dictionary` masks), bytes FNV-1a.
+// mix (the low bits are what `dictionary` masks), bytes FNV-1a. A float
+// mixes as its count of 1/65536ths, truncated and wrapped to 64 bits: `as!`,
+// since that conversion drops the rest on purpose.
 
 fn hash_mix(x: u64) -> u64 {
     var h = x * 11400714819323198485;
@@ -103,8 +105,8 @@ fn hash(x: u16) -> u64 { hash_mix(x as u64) }
 fn hash(x: u32) -> u64 { hash_mix(x as u64) }
 fn hash(x: u64) -> u64 { hash_mix(x) }
 fn hash(x: bool) -> u64 { if x { return hash_mix(1); } return hash_mix(2); }
-fn hash(x: f32) -> u64 { hash_mix((x * 65536.0) as i64 as u64) }
-fn hash(x: f64) -> u64 { hash_mix((x * 65536.0) as i64 as u64) }
+fn hash(x: f32) -> u64 { hash_mix((x * 65536.0) as! u64) }
+fn hash(x: f64) -> u64 { hash_mix((x * 65536.0) as! u64) }
 
 fn hash(s: u8[:]) -> u64 {
     var h: u64 = 14695981039346656037;
@@ -650,7 +652,9 @@ fn format_flt(out: u8[>..]&, v: f64, decimals: i64) {
     }
     var scale = 1.0;
     for i in decimals { scale *= 10.0; }
-    let scaled = (x * scale + 0.5) as i64;
+    // x is not negative, so truncation is floor and adding 0.5 first rounds
+    // half up: `as!`, since dropping the fraction is the point.
+    let scaled = (x * scale + 0.5) as! i64;
     let iscale = scale as i64;
     format_uint(out, (scaled / iscale) as u64, 10, 0, ' ');
     if decimals > 0 {
@@ -738,8 +742,9 @@ fn parse_flt(s: u8[:]) -> f64, bool {
     // A mantissa below 2^53 converts exactly and a power of ten up to 10^22
     // is exact in binary64, so one multiply or divide is correctly rounded
     // (Clinger's fast path); longer inputs and larger exponents scale in
-    // steps and may be off by an ulp.
-    var v = mant as f64;
+    // steps and may be off by an ulp. A longer mantissa rounds as it
+    // converts, hence `as!`.
+    var v = mant as! f64;
     var e = exp10;
     while e > 22 { v *= 1e22; e -= 22; }
     while e < -22 { v /= 1e22; e += 22; }
