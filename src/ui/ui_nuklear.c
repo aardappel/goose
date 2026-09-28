@@ -46,6 +46,33 @@ bool ui_textedit_paste(struct nk_text_edit *e, const char *text, int len) {
     return pasted;
 }
 
+/* Here, where Nuklear's property states are in scope. Typed text reaches
+   a window only while it takes input: it is not hidden, closed or
+   minimized, nor read only, which Nuklear makes the windows behind the
+   one in front (background ones aside) and a window with a popup open.
+   There the text goes to the property being typed into, or else to the
+   text field that has the keyboard: edit.active, which a property sets
+   too while it is dragged, if the window had a text field in that place
+   last frame. */
+static bool ui_takes_text(const struct nk_window *w) {
+    if (w->flags & (NK_WINDOW_HIDDEN | NK_WINDOW_CLOSED | NK_WINDOW_MINIMIZED | NK_WINDOW_ROM))
+        return false;
+    if (w->property.active) return w->property.state == NK_PROPERTY_EDIT;
+    return w->edit.active && w->edit.name < w->edit.old;
+}
+
+uint8_t gs_ui_wants_keyboard(gs_ui_context c) {
+    UI_CTX(c, "ui::wants_keyboard", 0);
+    for (const struct nk_window *w = ctx->begin; w; w = w->next) {
+        if (!ui_window_current(u, w)) continue;
+        if (ui_takes_text(w)) return 1;
+        if (w->popup.active && w->popup.win && !(w->flags & NK_WINDOW_HIDDEN) &&
+            ui_takes_text(w->popup.win))
+            return 1;
+    }
+    return 0;
+}
+
 /* Every constant of ui_api.h has the value of Nuklear's of the same name,
    but the few that are the layer's own, which stand in for themselves (the
    end of the file, where Nuklear's NK_FILTER_FLOAT is no longer used). */

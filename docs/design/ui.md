@@ -28,7 +28,7 @@ Nuklear's header.
 
 The API stays Nuklear's under Goose names -- `nk_button_label` is
 `ui::button_label` -- and covers nearly all of `nuklear.h` a program calls:
-363 functions. An immediate-mode program says each frame which windows and
+365 functions. An immediate-mode program says each frame which windows and
 widgets there are, and learns what the user did from the same calls; the
 program's data stays its own, passed in by reference where a widget edits
 it.
@@ -122,6 +122,21 @@ physics. The constants have Nuklear's values, a static assert in
   when its scale changes.
   A destroyed atlas's texture is listed for the renderer that made it
   (`released_textures`), which `render` releases.
+* **Whose input it is**, for a program with keys and clicks of its own:
+  Nuklear's `nk_item_is_any_active` is true whenever the mouse is over a
+  window, whatever has the keyboard. `wants_keyboard` reads the windows'
+  own state instead, over the frame's windows: those begun since the last
+  clear, or all of them before any is, as a window the program stopped
+  beginning waits in Nuklear's list for the next clear. A window takes
+  keys unless it is hidden, closed, minimized or read only, as Nuklear
+  makes the ones behind the window in front and one under its own popup;
+  in one that does, a property in its typing state has them, or else the
+  text field the window's edit state marks, if the window had a text field
+  there last frame -- Nuklear sets that mark for a dragged property too,
+  and `edit_focus` can point it past the last field. `wants_mouse`, over
+  the same windows, gives a held button to where it went down: a drag
+  begun on a window stays the ui's off it, and one begun outside stays the
+  program's over one.
 
 Where Nuklear misbehaves on its own, the layer steps around it:
 
@@ -197,11 +212,13 @@ X1 and X2 mouse buttons.
   context from injected gfx input: clicks, typing, editing keys, shortcuts
   and the clipboard; it reads back the screen and a render target, draws
   and clicks at twice the scale, and runs again after gfx is closed and
-  opened. The tests call 363 of the layer's 363 functions. `ui_misuse`
-  checks a widget outside any window aborts the program at the next frame
-  with the reason, `ui_misuse_messages` shows what the layer says about 59
-  misuses, each skipped without harm, and `ui_err_thread` that a
-  `thread_fn` reaching ui is a compile error.
+  opened. `ui_wants_input` drives windows, a popup and a property the same
+  way and asks `wants_keyboard` and `wants_mouse` at each step, printing
+  where typed text lands. The tests call 365 of the layer's 365 functions.
+  `ui_misuse` checks a widget outside any window aborts the program at the
+  next frame with the reason, `ui_misuse_messages` shows what the layer
+  says about 59 misuses, each skipped without harm, and `ui_err_thread`
+  that a `thread_fn` reaching ui is a compile error.
 * **`samples/29_ui_todo.goose`**, a to-do list and a color mixer, runs
   headless in the samples runner for 30 frames, JIT and AOT.
 
@@ -231,3 +248,10 @@ lavapipe; the rest pass, the layer's allocations included.
   wants its ui sized as the system's own.
 * Mouse wheel and double-click injection in gfx, for tests of the rest of
   `input_from_gfx`.
+* A property being typed into marks its window's text field focus
+  (`edit.active`) without saying which field (`edit.name`), so the field
+  last focused there -- the window's first if none was -- takes the typed
+  text and the property commits its old value; and a field clicked while a
+  property after it in the window is being typed into loses the focus
+  again when the property ends. The layer could point that mark at no
+  field while a property holds it, and give a field that took it back.

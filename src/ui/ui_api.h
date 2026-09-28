@@ -482,6 +482,8 @@ typedef struct {
     X(uint8_t, gs_ui_window_is_active, (gs_ui_context c, gs_ui_bytes name)) \
     X(uint8_t, gs_ui_window_is_any_hovered, (gs_ui_context c)) \
     X(uint8_t, gs_ui_item_is_any_active, (gs_ui_context c)) \
+    X(uint8_t, gs_ui_wants_keyboard, (gs_ui_context c)) \
+    X(uint8_t, gs_ui_wants_mouse, (gs_ui_context c)) \
     X(void, gs_ui_window_set_bounds, (gs_ui_context c, gs_ui_bytes name, gs_ui_rect bounds)) \
     X(void, gs_ui_window_set_position, (gs_ui_context c, gs_ui_bytes name, gs_ui_float2 pos)) \
     X(void, gs_ui_window_set_size, (gs_ui_context c, gs_ui_bytes name, gs_ui_float2 size)) \

@@ -1033,11 +1033,22 @@ extern "gs_ui_window_is_collapsed" fn window_is_collapsed(c: Context, name: cons
 extern "gs_ui_window_is_closed" fn window_is_closed(c: Context, name: const u8[:]) -> bool;
 extern "gs_ui_window_is_hidden" fn window_is_hidden(c: Context, name: const u8[:]) -> bool;
 extern "gs_ui_window_is_active" fn window_is_active(c: Context, name: const u8[:]) -> bool;
-// Whether the mouse is over any window: whether input is the ui's, not the
-// program's.
+// Whether the mouse is over any window.
 extern "gs_ui_window_is_any_hovered" fn window_is_any_hovered(c: Context) -> bool;
-// That, or a widget is being used.
+// That, or a widget is being used (Nuklear's): true over a window whether
+// or not the keys are the ui's.
 extern "gs_ui_item_is_any_active" fn item_is_any_active(c: Context) -> bool;
+// Whether input is the ui's rather than the program's. The keys are while
+// a text field, or a property being typed into, has the keyboard in a
+// window that takes input: a field has it from the click that focuses it
+// until a click outside it, edit_unfocus, or its window closing or being
+// left out of a frame, and a window takes none while hidden, behind
+// another or under its own popup.
+extern "gs_ui_wants_keyboard" fn wants_keyboard(c: Context) -> bool;
+// The mouse is over a window or a popup, or holds a button that went down
+// over one; a button that went down elsewhere keeps it the program's until
+// released.
+extern "gs_ui_wants_mouse" fn wants_mouse(c: Context) -> bool;
 extern "gs_ui_window_set_bounds" fn window_set_bounds(c: Context, name: const u8[:], bounds: Rect);
 extern "gs_ui_window_set_position" fn window_set_position(c: Context, name: const u8[:],
                                                           pos: float2);

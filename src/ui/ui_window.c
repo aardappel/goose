@@ -203,6 +203,41 @@ uint8_t gs_ui_item_is_any_active(gs_ui_context c) {
     return nk_item_is_any_active(ctx) != 0;
 }
 
+/* Whether `p` is over one of the frame's windows, or over a popup open in
+   one, as nk_window_is_any_hovered asks it of the mouse. */
+static bool ui_over_window(const ui_ctx *u, struct nk_vec2 p) {
+    const struct nk_context *ctx = &u->nk;
+    for (const struct nk_window *w = ctx->begin; w; w = w->next) {
+        if ((w->flags & NK_WINDOW_HIDDEN) || !ui_window_current(u, w)) continue;
+        struct nk_rect r = w->bounds;
+        if (w->flags & NK_WINDOW_MINIMIZED)
+            r.h = ctx->style.font->height + 2 * ctx->style.window.header.padding.y;
+        bool in = p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h;
+        if (w->popup.active && w->popup.win) {
+            struct nk_rect q = w->popup.win->bounds;
+            in = in || (p.x >= q.x && p.x < q.x + q.w && p.y >= q.y && p.y < q.y + q.h);
+        }
+        if (in) return true;
+    }
+    return false;
+}
+
+/* A button held down belongs to where it went down: a drag begun in the
+   ui stays the ui's off its windows, and one begun outside stays the
+   program's over them. With none held, the mouse is the ui's over a
+   window. */
+uint8_t gs_ui_wants_mouse(gs_ui_context c) {
+    UI_CTX(c, "ui::wants_mouse", 0);
+    const struct nk_mouse *m = &ctx->input.mouse;
+    bool held = false;
+    for (int b = 0; b < NK_BUTTON_MAX; b++) {
+        if (!m->buttons[b].down) continue;
+        if (ui_over_window(u, m->buttons[b].clicked_pos)) return 1;
+        held = true;
+    }
+    return !held && ui_over_window(u, m->pos);
+}
+
 void gs_ui_window_set_bounds(gs_ui_context c, gs_ui_bytes name, gs_ui_rect bounds) {
     UI_CTX(c, "ui::window_set_bounds", );
     if (ui_rect_ok(bounds, "ui::window_set_bounds"))

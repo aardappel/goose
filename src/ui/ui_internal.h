@@ -252,6 +252,13 @@ bool ui_popup_allowed(ui_ctx *u, const char *fn);
 float *ui_frame_floats(ui_ctx *u, int64_t n);
 /* The frame's end: Nuklear's clear, and the layer's per-frame state. */
 void ui_end_frame(ui_ctx *u);
+/* Whether a window is one of the frame's: begun since the last clear, or,
+   while nothing has been begun since, any, since the clear left only the
+   last frame's. A window the program stopped beginning stays in Nuklear's
+   list until the next clear frees it. */
+static inline bool ui_window_current(const ui_ctx *u, const struct nk_window *w) {
+    return !u->drawn || w->seq == u->nk.seq;
+}
 
 /* --- values ---------------------------------------------------------------- */
 

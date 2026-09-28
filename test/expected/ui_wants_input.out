@@ -1,0 +1,55 @@
+first frame: keyboard false, mouse false
+over a window: keyboard false, mouse true
+  window_is_any_hovered true, item_is_any_active true
+text field clicked: keyboard true, mouse true
+mouse off the windows: keyboard true, mouse false
+typed: keyboard true, mouse false
+  name 'goose', note '', rename '', count 5
+pressed outside: keyboard false, mouse false
+held over a window: keyboard false, mouse false
+released there: keyboard false, mouse true
+  name 'goose', note '', rename '', count 5
+pressed on a window: keyboard false, mouse true
+held off it: keyboard false, mouse true
+released there: keyboard false, mouse false
+property clicked: keyboard true, mouse true
+typing into it: keyboard true, mouse true
+entered: keyboard false, mouse true
+  name 'goose', note '', rename '', count 42
+property pressed on its name: keyboard false, mouse true
+dragged: keyboard false, mouse true
+released: keyboard false, mouse true
+  name 'goose', note '', rename '', count 52
+edit_focus after the last text field: keyboard false, mouse true
+the right window's field clicked: keyboard true, mouse true
+the left window clicked: keyboard false, mouse true
+typed: keyboard false, mouse true
+  name 'goose', note '', rename '', count 52
+the field clicked again and typed into: keyboard true, mouse true
+  name 'goose', note 'hi', rename '', count 52
+the left window's field clicked: keyboard true, mouse true
+a popup opened over it: keyboard false, mouse true
+mouse over the popup: keyboard false, mouse true
+  below the window true
+the popup's field clicked and typed into: keyboard true, mouse true
+  name 'goose', note 'hi', rename 'new', count 52
+popup closed: keyboard true, mouse false
+  name 'goose?', note 'hi', rename 'new', count 52
+edit_unfocus: keyboard false, mouse false
+  name 'goose?', note 'hi', rename 'new', count 52
+the right window's field clicked: keyboard true, mouse true
+the right window left out: keyboard false, mouse false
+and begun again: keyboard false, mouse true
+  name 'goose?', note 'hi', rename 'new', count 52
+its field clicked: keyboard true, mouse true
+its window closed: keyboard false, mouse false
+a frame later: keyboard false, mouse false
+the left window's field clicked: keyboard true, mouse true
+its window hidden: keyboard false, mouse false
+typed: keyboard false, mouse false
+shown again and typed: keyboard true, mouse true
+  name 'goose?+', note 'hi', rename 'new', count 52
+its window minimized: keyboard false, mouse false
+maximized and typed: keyboard false, mouse true
+  name 'goose?+', note 'hi', rename 'new', count 52
+misuses 0

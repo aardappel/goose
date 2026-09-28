@@ -1101,6 +1101,24 @@ button's last one was, the `is_` ones at one this frame. The `_delay`
 queries count hovering time in a timer the program keeps between frames
 (also `_still_delay` and `_still_delay_clicked`).
 
+A program that shares its input with the ui -- a game with keys of its own
+-- asks whose it is:
+
+```goose
+fn wants_keyboard(c) -> bool     // a text field or a property being typed into has the keys
+fn wants_mouse(c) -> bool        // over a window or popup, or dragging from one
+```
+
+A text field has the keyboard from the click that focuses it until a click
+outside it, `edit_unfocus`, or its window closing or being left out of a
+frame, wherever the mouse goes meanwhile; its window keeps it focused
+behind another window, under a popup of its own or hidden, but takes no
+keys until it is in front, the popup closed or the window shown again. The
+mouse is the ui's over a window or a popup, and while it holds a button
+that went down over one; a button that went down elsewhere keeps it the
+program's until released. Nuklear's `item_is_any_active` is true whenever
+the mouse is over a window, so it cannot say whose the keys are.
+
 ### Fonts
 
 ```goose
