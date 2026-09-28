@@ -1552,6 +1552,15 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             vars.push_back(d);
         }
     };
+    // A var global declared without an initializer starts as its type's
+    // default value (§11.1), as if that were written as its initializer.
+    if (global && vd->inits.empty() && ann) {
+        string why;
+        if (!HasDefault(ann, why))
+            Error(vd, cat("global ", vd->names[0], " needs an initializer, since ",
+                          TypeStr(ann), " has no default value: ", why));
+        vd->inits.push_back(DefaultValue(ann, vd->line));
+    }
     if (vd->inits.empty()) {
         if (!ann) Error(vd, "a declaration without an initializer needs a type");
         if (!UninitOK(ann))

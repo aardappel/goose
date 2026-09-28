@@ -2518,6 +2518,11 @@ the caller's own facts about `src` intact.
   natural whole-program arena). That outermost scope is a frame like any
   other: a global's storage belongs to the program instance running it and
   is never shared with another (§11.2).
+  Every global has an initializer, except that `var g: T;` leaves it to its
+  type: `g` starts as `T`'s default value (§4.2), taken where an
+  initializer would run, so `var log: i64[>..];` is `var log: i64[>..] =
+  [];`, and a `T` without one (a reference) is an error. A `let` or
+  `const` global must be given its value, since it can never take another.
   `const` globals (`let` ones of a `const` type; a `var` of one is
   assigned as a whole, §4.4) of flat fixed type with compile-time-evaluable
   initializers live in static data; the initializer of any `let` or
@@ -3025,7 +3030,8 @@ param       := "var"? ident (":" type ("=" expr)?)?
                                                  // untyped => generic; defaults
                                                  // trailing, not in a block (§7.1)
 rettypes    := type ("," type)*                  // no parens in declarations
-globaldecl  := ("reusable" ("[" "]")?)? ("let" | "var" | "const") declname (":" type)? "=" expr ";"
+globaldecl  := ("reusable" ("[" "]")?)? ("let" | "var" | "const") declname (":" type)? ("=" expr)? ";"
+                                                 // no initializer: var with a type only
 
 type        := "const"? (prim | qname tyargs? | "(" type ")") postfix*
                                                  // const: the first & or [:] (§9.5)

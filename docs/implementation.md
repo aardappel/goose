@@ -179,7 +179,9 @@ The typechecker (`TypeCheck`, `typecheck.h`) checks the program from its
 roots: the `TypeCheck` constructor creates a `VarDef` for every global up
 front (so names resolve in any order), resolves the pools named by relative
 reference types, validates every non-generic struct and enum declaration,
-checks the global initializers in order, then `main`, then every
+checks the global initializers in order (a `var` global declared with only
+a type gets its type's default value there, `DefaultValue`, which the rest
+of the compiler sees as written), then `main`, then every
 `thread_fn`, and finally eligible functions nothing reached (`CheckUnreached`).
 That last check covers only top-level functions with fully annotated
 parameters, no generics, and no syntactically detected `return from` to an

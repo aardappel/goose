@@ -426,7 +426,10 @@ struct Parser {
             }
         }
         if (isglobal) {
-            if (vd->inits.empty()) Error("global declarations require an initializer");
+            // A var global may leave its initial value to its type (§11.1);
+            // a let or const one would keep that value for good.
+            if (vd->inits.empty() && !vd->isvar)
+                Error("let and const global declarations require an initializer");
             if (vd->names.size() != 1) Error("global declarations declare a single name");
             auto name = vd->names[0];
             auto &ns = ast.NS(vd->ns);

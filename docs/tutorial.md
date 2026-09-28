@@ -109,12 +109,15 @@ count++;              // a statement, not an expression
 A struct literal names its fields or lists them in order, and may leave out
 those that declare a default. Ending it in `..` leaves out any field: one
 without a declared default gets its type's own (zero, an empty array or
-string, null):
+string, null). Globals are declared like locals, and a `var` global given
+only a type starts out the same way:
 
 ```goose
 struct Unit { kind: i32, hp: i32 = 100, x: f32, y: f32, name: u8[] }
 
 let scout = Unit { kind: 2, x: 1.5, .. };   // hp 100, y 0, name ""
+var selected: Unit;                         // kind 0, hp 100, x 0, y 0, name ""
+var log: u8[][>..];                         // empty
 ```
 
 Functions are free functions. There are no methods and no `impl` blocks, but
