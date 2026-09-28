@@ -353,10 +353,16 @@ inline void TypeCheck::BindRefProvenance(VarDef *vd, const Val &v) {
 // roots it is committed to, and its provenance bits. Before any binding it
 // points nowhere yet in a discovery pass of a loop, which a later pass
 // revisits with the binding a rebind further down the body gives it
-// (CheckLoopPasses); otherwise it is the temp sentinel, and for an optional,
-// which is bound only to null so far, whatever can hold the pointee type at
-// its own depth or outside -- the read-back rule's answer (§9.5). `target`:
-// the variable is only named as what an assignment or a rebind binds.
+// (CheckLoopPasses). Otherwise an optional bound only to null so far holds
+// null where every binding that can come before the read has been checked:
+// in the body declaring it, and for a global `let`, which only its
+// initializer binds. It has no roots there, as the literal has none (§9.5).
+// A global `var`, which any function may bind, or a local one read in a
+// nested function's or a function value's body, which later calls reuse,
+// may have been bound since: its read is the read-back rule's answer,
+// whatever can hold the pointee type at its own depth or outside. Anything
+// else is the temp sentinel. `target`: the variable is only named as what an
+// assignment or a rebind binds.
 inline Prov TypeCheck::RefProvOf(VarDef *vd, bool target) {
     // A body checked in another frame than the variable's own reads it once
     // for all the calls that reuse it (staleroots).
@@ -369,6 +375,9 @@ inline Prov TypeCheck::RefProvOf(VarDef *vd, bool target) {
             p.SetUnknown();
             return p;
         }
+        auto optional = vd->type && vd->type->kind == TY_REF && vd->type->ref->optional;
+        auto seen = vd->isglobal ? !vd->isvar : vd->ownerspec == CurRealFrame().spec;
+        if (optional && seen) return p;
         p.Set(temproot, false);
     }
     // A global is storage like a field: no binding puts a reference into a

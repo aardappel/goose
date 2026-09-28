@@ -896,12 +896,16 @@ behind" its parameter. A byte view read back takes the container's
 ### 3.7 Reference variables commit to a root
 
 A reference or slice variable is bound at its first non-null binding
-(`BindRefProvenance`); before that it reads as `temproot` (`RefRootOf`), and
-a null-only optional answers the read-back rule for its own depth
-(`RefProvOf`). `CheckRefRebindRoot` implements §9.2's rebinding rule: the
-same roots keep everything (an inexact new value only weakens exactness);
-another root at the same depth joins the variable's alternatives; any other
-depth is an error.
+(`BindRefProvenance`); before that it reads as `temproot` (`RefRootOf`). A
+null-only optional reads as null, with no roots, where every binding that
+can come before the read has been checked: in the frame declaring it
+(`ownerspec` is `CurRealFrame().spec`), and for a global `let`. A global
+`var`, and a local one read in a nested function's or a function value's
+body, which later calls reuse, answer the read-back rule for their own
+depth instead (`RefProvOf`). `CheckRefRebindRoot` implements §9.2's
+rebinding rule: the same roots keep everything (an inexact new value only
+weakens exactness); another root at the same depth joins the variable's
+alternatives; any other depth is an error.
 
 **Loops** (`CheckLoopPasses`). A loop body is checked as many times as it
 takes for what it feeds back to the loop's head to settle: the roots its
@@ -1594,11 +1598,17 @@ requires a `var` grow-only global whose elements can contain the pointee.
 `PoolOf(root)` answers which global pool a root is: the global itself, or a
 parameter class's `classpool`, agreed by every call site.
 
-The relative store rule in `FitsAt` (§3.9): `null` stores into any optional
-relative slot; otherwise the destination must be exact (or name a pool), the
-value must be exactly rooted, and the two roots must coincide -- the
-destination's root for the self-relative form, the named pool for `in pool`.
-The diagnostic names the read-back candidates when the value is inexact.
+The relative store rule in `FitsAt` (§3.9): a null stores into any optional
+relative slot. That is a value with no roots (the literal, a null-only
+variable, a parameter given null, a call returning only null), and an
+alternative rooted exactly at static data where that is null: the value is
+writable, or `StaticCanContain` says no literal holds its pointee (a
+read-only `u8` reference may point into a string literal). Such
+alternatives drop out of a merged value; of the rest, the destination must
+be exact (or name a pool), the value must be exactly rooted, and the two
+roots must coincide -- the destination's root for the self-relative form,
+the named pool for `in pool`. The diagnostic names the read-back candidates
+when the value is inexact.
 `index_of` needs the same exactness at the receiver. `self` (`CheckSelfInit`)
 is only the whole initializer of a non-optional relative field whose pointee
 is the literal's own type; the `in pool` form additionally needs the literal

@@ -526,10 +526,16 @@ known collision may be rejected during compilation. A non-optional
 self-relative reference has no null sentinel: offset 0 denotes its field
 address, as in `self` in a value's first field. Null is
 therefore representable in any relative location whatever the location's
-root: a value known to be null — the literal, or a reference whose root is
-static data, which nothing but null has — stores into an optional relative
-slot without a root check of its own. So a sentinel-ended chain does not
-force plain links on the whole structure.
+root: a value known to be null stores into an optional relative slot
+without a root check of its own. Known to be null are the literal; a
+variable bound to nothing but null so far (§9.5), a parameter given null,
+and a call whose every `return` gives null, none of which has a root; and
+an optional reference whose only root is static data where static data
+holds nothing but null: a writable one (§9.5), or one whose pointee type no
+literal supplies, since a read-only `u8` reference may point into a string
+literal. As one alternative of a merged value (§9.2) a null names no
+array: `if c { null } else { &pool[i] }` is a link into `pool`. So a
+sentinel-ended chain does not force plain links on the whole structure.
 
 **Self-relative.** Constrained to point within the *same enclosing
 array/pool* as the location storing it.
@@ -2203,8 +2209,8 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   Node? = null;` before `loop { if last { last.next .= child; } … last .=
   child; }`) has, at a use earlier in the body than the rebind, the root
   the rebind gives it, exactly where the root's storage is its own. A
-  variable the loop never binds is null throughout it, and a use of it sees
-  the read-back rule's answer (§9.5).
+  variable the loop never binds is null throughout it, and a use of it is
+  that null (§9.5).
 * Inside recursive cycles the stricter §7.8 cycle store rule applies.
 * A **temporary** — an array, struct or variant literal, a call's result,
   `copy(x)`, `default<T>()`, or the value of an `if`, `match`, `block`,
@@ -2361,11 +2367,17 @@ root lies:
    initializers, the one the result's contents are rooted at, or the one
    the copied value's are, exact when that is one variable exactly.
 
-An optional variable bound only to `null` so far (`var best: Node? = null;`
-before the loop that binds it) has no binding to take a root from; a use of
-it there takes the answer the read-back rule gives a local container: the
-innermost candidate for its pointee type at its own depth or outside, exact
-when there is exactly one.
+An optional variable bound only to `null` so far (`let none: Node? =
+null;`, or `var best: Node? = null;` before anything binds it) holds null.
+Where every binding that can come before a use of it has been checked — in
+the body of the function declaring it, a loop's later bindings included
+(§9.2), and anywhere for a global `let`, which only its initializer binds —
+the use is a null, which has no root (§3.9). A global `var` may have been
+bound by any function, and a local one after a nested function's or a
+function value's body read it, since that check serves the later calls
+too: a use there takes the answer the read-back rule gives a local
+container, the innermost candidate for its pointee type at its own depth or
+outside, exact when there is exactly one.
 
 A relative reference `T&<w>` read out of `C` points within `C`'s own root
 array by construction (§3.9), so it takes `C`'s root and `C`'s exactness

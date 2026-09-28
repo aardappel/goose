@@ -1,0 +1,23 @@
+0 -> null
+1 -> null
+2 -> null
+3 -> null
+4 -> 5
+5 -> null
+6 -> 0
+7 -> 2
+tail -1
+slot 0: null
+slot 1: null
+slot 2: null
+slot 10: null
+slot 11: null
+slot 12: null
+slot 20: 6
+slot 30: null
+slot 40: null
+link 0 -> 1
+link 1 -> null
+byte 0: null
+byte 1: null
+byte 2: 7

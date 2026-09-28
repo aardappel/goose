@@ -1068,38 +1068,44 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
                 // the same root array; an `in pool` one needs the value in
                 // the pool, and takes the destination wherever it is.
                 if (t->ref->optional && !dt->ref->optional) return false;
-                // Null is the only reference value rooted at static data
-                // (§9.5's read-back rule says so too, and a null argument
-                // is what puts a reference parameter in the static root
-                // class), and it stores as the sentinel offset, which
-                // means the same in every location. So an optional
-                // relative slot takes it wherever the slot is: a linked
-                // structure's sentinel end does not force plain links.
-                if (t->ref->optional && dt->ref->optional && v.Exact() && !v.Root()) {
-                    v.type = dt;
-                    return true;
-                }
+                // Null stores as the sentinel offset, which means the same
+                // in every location, so an optional relative slot takes a
+                // null wherever the slot is: a linked structure's sentinel
+                // end does not force plain links. A null has no roots
+                // (NullLit, RefProvOf), or static data exactly
+                // (default<T>(), a parameter given one), where nothing else
+                // a writable reference is given points (§9.5), nor one to a
+                // type no literal supplies; a read-only u8 one may point
+                // into a string literal. As one alternative of a merged
+                // value it names no array (§9.2): the others say where the
+                // value points.
+                auto nullalt = [&](const RootAlt &a) {
+                    return !a.root && a.exact && t->ref->optional &&
+                           (v.writable || !StaticCanContain(t->ref->sub));
+                };
+                Roots links;
+                for (auto &a : v.alts) if (!nullalt(a)) links.Add(a);
                 // A reference that points nowhere yet (RefProvOf), or a
                 // location reached through one, is read again once it does.
-                if (v.None() || (!dt->ref->pool && curdst.unknown)) {
+                if (links.None() || (!dt->ref->pool && curdst.unknown)) {
                     v.type = dt;
                     return true;
                 }
                 // The target must be the *same* array, so a root that only
                 // bounds the pointee's lifetime will not do (§9.5).
                 auto want = dt->ref->pool ? dt->ref->pool : curdst.roots.Root();
-                auto have = dt->ref->pool ? PoolOf(v.Root()) : v.Root();
-                if (!want || (!dt->ref->pool && !curdst.roots.Exact()) || !v.Exact() ||
+                auto have = dt->ref->pool ? PoolOf(links.Root()) : links.Root();
+                if (!want || (!dt->ref->pool && !curdst.roots.Exact()) || !links.Exact() ||
                     have != want) {
-                    auto why = v.Exact() ? string() : ReadBackWhy(v);
-                    auto vroot = v.Root() ? v.Root()->name : string_view("static data");
+                    auto why = links.Exact() ? string() : ReadBackWhy(links);
+                    auto vroot = links.Root() ? links.Root()->name : string_view("static data");
                     fitfail = cat(dt->ref->pool
                                       ? cat("a relative reference in ", want->name,
                                             " must point into ", want->name, " (§3.9); ")
                                       : string("a relative reference must point within the "
                                                "same root as its location (§3.9); "),
                                   !why.empty() ? why
-                                  : !v.Exact()
+                                  : !links.Exact()
                                       ? cat("this reference's root is not known exactly, "
                                             "only that it outlives ", vroot)
                                   : cat("this reference is rooted at ", vroot));
