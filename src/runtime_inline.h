@@ -424,8 +424,8 @@ static int64_t gs_f2iwrap(double d) {
 /* `as` conversion checks (§6.3): abort in debug builds whenever the
    conversion would change the value, naming the value, the target type and
    the cast's file and line; identity/plain casts in release, which drop all
-   three unevaluated. A conversion to f32 is a plain C cast in every build and
-   has none. */
+   three unevaluated. A conversion to a float is a plain C cast in every build
+   and has none. */
 #if GS_DEBUG
 
 static int64_t gs_fmt_f64(uint8_t *dst, double v);
@@ -483,24 +483,10 @@ static uint64_t gs_f2uchk(double d, const char *file, int line) {
     if ((double)v != d) gs_asfail_f("changes the value", d, "u64", file, line);
     return v;
 }
-static double gs_i2fchk(int64_t v, const char *file, int line) {
-    double d = (double)v;
-    if ((int64_t)d != v || d >= 9223372036854775808.0)
-        gs_asfail_i("changes the value", v, "f64", file, line);
-    return d;
-}
-static double gs_u2fchk(uint64_t v, const char *file, int line) {
-    double d = (double)v;
-    if (d >= 18446744073709551616.0 || (uint64_t)d != v)
-        gs_asfail_u("changes the value", v, "f64", file, line);
-    return d;
-}
 #define GS_RANGE(v, lo, hi, t, f, l) gs_rangechk((v), (lo), (hi), (t), (f), (l))
 #define GS_RANGE_U(v, hi, t, f, l)   gs_rangechk_u((v), (hi), (t), (f), (l))
 #define GS_F2I(d, lo, hi, t, f, l)   gs_f2ichk((d), (lo), (hi), (t), (f), (l))
 #define GS_F2U(d, f, l)              gs_f2uchk((d), (f), (l))
-#define GS_I2F(v, f, l)              gs_i2fchk((v), (f), (l))
-#define GS_U2F(v, f, l)              gs_u2fchk((v), (f), (l))
 
 #else
 
@@ -509,8 +495,6 @@ static double gs_u2fchk(uint64_t v, const char *file, int line) {
 /* Deterministic truncation in release too. */
 #define GS_F2I(d, lo, hi, t, f, l)   gs_f2iwrap(d)
 #define GS_F2U(d, f, l)              ((uint64_t)gs_f2iwrap(d))
-#define GS_I2F(v, f, l)              ((double)(v))
-#define GS_U2F(v, f, l)              ((double)(uint64_t)(v))
 
 #endif
 
@@ -569,8 +553,7 @@ static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
             if (hit < base + GS_STACK_RESERVE) {
                 uint8_t *page = (uint8_t *)((size_t)hit & ~(gs_page_size - 1));
                 size_t n = GS_COMMIT_CHUNK;
-)GSRT"
-R"GSRT(                if (page + n > base + GS_STACK_RESERVE)
+                if (page + n > base + GS_STACK_RESERVE)
                     n = (size_t)(base + GS_STACK_RESERVE - page);
                 if (VirtualAlloc(page, n, MEM_COMMIT, PAGE_READWRITE))
                     return EXCEPTION_CONTINUE_EXECUTION;
@@ -588,7 +571,8 @@ static void gs_regions_init(void) {
     GetSystemInfo(&si);
     gs_page_size = si.dwPageSize;
     if (!AddVectoredExceptionHandler(1, gs_fault_filter))
-        gs_panic("cannot install data stack fault handler");
+)GSRT"
+R"GSRT(        gs_panic("cannot install data stack fault handler");
 }
 
 /* Run by each thread program's thread as it starts. TinyCC's kernel32.def
@@ -784,8 +768,7 @@ static void gs_stks_grow(int64_t n, const char *file, int line) {
     while (gs_nstks < n) {
         gs_stack *s = &gs_stks[gs_nstks++];
         s->top = gs_reserve_region();
-)GSRT"
-R"GSRT(    }
+    }
 }
 
 #define GS_ENSURE(n, f, l) do { if ((n) > gs_nstks) gs_stks_grow((n), (f), (l)); } while (0)
@@ -804,7 +787,8 @@ static void gs_stack_init(gs_stack *s) {
    Goose reference to these mappings may outlive the worker. Unregister
    before unmapping, then discard the now-useless bump pointers. The
    thread's alternate signal stack goes with them. */
-static void gs_free_thread_stacks(void) {
+)GSRT"
+R"GSRT(static void gs_free_thread_stacks(void) {
     while (gs_nregions) {
         long i = gs_nregions - 1;
         uint8_t *base = gs_regions[i];
@@ -1002,8 +986,7 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
    a malformed encoding instead of running past it. */
 
 /* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
-)GSRT"
-R"GSRT(   payload bits above the 64th, or is not shortest. The result is the byte count. */
+   payload bits above the 64th, or is not shortest. The result is the byte count. */
 static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
     uint64_t v = 0;
     int shift = 0;
@@ -1025,7 +1008,8 @@ static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out
 }
 
 /* The same for a signed (zigzag) varint: a value field or a self-relative
-   offset of varint width (3.6). */
+)GSRT"
+R"GSRT(   offset of varint width (3.6). */
 static int64_t gs_zig_check(const uint8_t *p, const uint8_t *end, int64_t *out) {
     uint64_t u = 0;
     int64_t k = gs_uleb_check(p, end, &u);

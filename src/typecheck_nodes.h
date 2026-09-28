@@ -325,6 +325,7 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
 }
 
 inline Val Unary::Check(TypeCheck &tc, TypeExpr *) {
+    litfloat = false;
     if (op == T_BITAND) return tc.CheckRefOf(this);
     auto v = tc.Operand(child);
     auto t = tc.LoadType(v.type);
@@ -353,6 +354,7 @@ inline Val Unary::Check(TypeCheck &tc, TypeExpr *) {
             } else if (t->kind == TY_FLT) {
                 r.type = t;
                 if (v.ck == CK_FLT) { r.ck = CK_FLT; r.fval = -v.fval; }
+                else r.litfloat = litfloat = TypeCheck::LitFloat(v);
             } else {
                 tc.Error(this, cat("cannot negate a value of type ", tc.TypeStr(t)));
             }
@@ -383,6 +385,7 @@ inline Val Unary::Check(TypeCheck &tc, TypeExpr *) {
 }
 
 inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
+    litfloat = false;
     if (op == T_DOTEQ || op == T_DOTNEQ) {
         // Reference identity (§4.5): the addresses, never the pointees. Each
         // side is a reference (plain or optional) or null, or storage taken
@@ -516,9 +519,16 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
             return v;
         }
         case T_PLUS: case T_MINUS: case T_MUL: case T_DIV: case T_MOD: {
-            if ((IsIntT(lt) && IsIntT(rt)) ||
-                (lt->kind == TY_FLT && rt->kind == TY_FLT)) {
+            auto numeric = [](TypeExpr *t) { return IsIntT(t) || t->kind == TY_FLT; };
+            if (numeric(lt) && numeric(rt)) {
                 auto ct = tc.UnifyNumeric(this, op, lv, rv, lt, rt);
+                // Where no operand has a float type of its own, the result
+                // takes the type its destination or other operand has, as a
+                // float literal does (Val::litfloat).
+                auto literal = [&](const Val &x, TypeExpr *t) {
+                    return IsIntT(t) || TypeCheck::LitFloat(x);
+                };
+                auto flex = ct->kind == TY_FLT && literal(lv, lt) && literal(rv, rt);
                 tc.RetypeOperands(left, right, lv, rv, ct);
                 v.type = ct;
                 if (ct->kind == TY_INT) {
@@ -536,6 +546,7 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
                     }
                     if (IsF32(ct)) v.fval = (double)(float)v.fval;
                 }
+                v.litfloat = litfloat = flex && v.ck != CK_FLT;
                 return v;
             }
             // Elementwise math on identical struct / fixed array types whose
@@ -543,11 +554,6 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
             if (tc.TypeEq(lt, rt) && tc.ElementwiseOK(lt)) {
                 v.type = lt;
                 return v;
-            }
-            if ((lt->kind == TY_FLT && rv.ck == CK_INT) || (rt->kind == TY_FLT && lv.ck == CK_INT)) {
-                auto &c = lv.ck == CK_INT ? lv : rv;
-                tc.Error(this, cat("an integer literal in a float expression: write ",
-                                   tc.ConstStr(c), ".0"));
             }
             tc.Error(this, cat("operator ", TName(op), " cannot be applied to ",
                                tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
@@ -632,6 +638,10 @@ inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
 }
 
 inline Val AsCast::Check(TypeCheck &tc, TypeExpr *) {
+    // A conversion the checker inserted is checked again as the integer it
+    // converts, which its destination or operator converts again
+    // (TypeCheck::ToFloat).
+    if (implicit) return tc.Operand(child);
     auto cv = tc.Operand(child);
     auto st = tc.LoadType(cv.type);
     if (!IsIntT(st) && st->kind != TY_FLT)

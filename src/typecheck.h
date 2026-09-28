@@ -1266,7 +1266,15 @@ struct TypeCheck {
     void FoldInt(TType op, Val &l, Val &r, Val &out, Node *at);
     TypeExpr *UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, TypeExpr *lt, TypeExpr *rt,
                            bool cmp = false);
-    void RetypeOperands(Node *left, Node *right, Val &lv, Val &rv, TypeExpr *ct);
+    void RetypeOperands(Node *&left, Node *&right, Val &lv, Val &rv, TypeExpr *ct);
+    // A float whose type comes from float literals alone (§6.3): a constant,
+    // a literal parameter (§7.7), or a Val::litfloat.
+    static bool LitFloat(const Val &v) {
+        return v.type && v.type->kind == TY_FLT && (v.ck == CK_FLT || v.unsized || v.litfloat);
+    }
+    static void IntToFloat(Val &v, TypeExpr *ft);
+    void ToFloat(Node *&n, TypeExpr *from, TypeExpr *ft);
+    void RetypeFlex(Node *n, TypeExpr *t);
     bool ElementwiseOK(TypeExpr *t);
     Val CheckVariantConst(Dot *d, SEnum *en);
     Val MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at, bool wantvalue,
@@ -1318,8 +1326,11 @@ struct TypeCheck {
     vector<Val> lastcallrets;
 
     struct MatchInfo {
+        // 0 = exact, 1 = generic binding, 2 = coercions, INTTOFLOAT = an
+        // integer converted to a float (§6.3), the last resort (ResolveCall).
+        static constexpr int INTTOFLOAT = 3;
         SFunction *sf = nullptr;
-        int tier = 0;  // 0 = exact, 1 = generic binding, 2 = coercions.
+        int tier = 0;
         vector<pair<string_view, TypeExpr *>> bindings;
         vector<pair<string_view, FnValBind>> fnvals;
         vector<TypeExpr *> paramtypes;  // Concrete, one per declared parameter.

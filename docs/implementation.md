@@ -1410,8 +1410,10 @@ then the remaining builtins; a plain call tries functions then builtins, with
 a user overload set sharing a builtin's name (`format`) taking the calls it
 matches. `ResolveCall` checks the arguments once bottom-up (phase 1),
 rewriting non-fixed lvalues to references, tries every candidate
-(`TryMatch`, tiers: 0 exact, 1 generic binding, 2 coercion; the unique best
-tier wins), falls back to tag dispatch, then undoes that reference for a
+(`TryMatch`, tiers: 0 exact, 1 generic binding, 2 coercion, 3
+`INTTOFLOAT`; the unique best tier below 3 wins), falls back to tag
+dispatch, to a builtin of the name, then to the unique candidate
+converting an integer argument to a float, then undoes that reference for a
 parameter that takes the value -- a slice, or a fixed-class type an array of
 another kind constructs by copy (`UnrefForValueParam`) -- re-checks each
 argument against the resolved parameter type (phase 2, `CheckArg`), applies
@@ -1465,6 +1467,14 @@ arguments bind the initial generic parameters in declaration order. A
 selected body's error is an error at that call, not a reason to retry a
 worse overload. Dispatch is attempted only when no ordinary candidate
 matches, so an overload for the entire ADT takes precedence over its cases.
+A candidate converting an integer argument to a float (`UnifyArgRaw`'s
+`MatchInfo::INTTOFLOAT`) is no ordinary candidate here: it is taken after
+dispatch and after a builtin sharing the name, and a dispatch case counts it
+only where the variant has no other match, so that every call resolving
+before integers converted to floats resolves as it did. Literal arguments
+unify in two groups, the float ones (`LitFloat`: constants, literal
+parameters and `Val::litfloat` values) before the integer ones, which then
+convert to the float type the first bound.
 
 **Multiple results.** Results are not tuples. An ordinary value use of a
 call takes its first result and discards the others; a call statement
@@ -1629,13 +1639,31 @@ typed operand, one implicit widening (`ImplicitInt`: wider same signedness,
 or unsigned into strictly wider signed) wins, and the `u64`-against-signed
 comparison is admitted only when the signed side's `nonneg` bit is set --
 a syntactic bit from a non-negative literal, a `.len`/`.cap`, or a `let`
-bound to one (`CheckVarDecl` copies it to the `VarDef` of a `let`). The
+bound to one (`CheckVarDecl` copies it to the `VarDef` of a `let`). An
+integer meeting a float takes the float's type, and an `f64` that takes its
+type from float literals (`LitFloat`) adapts to an `f32` operand. The
 checker folds constants at the operands' type (`FoldInt`, over the shared
 `FoldIntOp` of `ast.h`: unsigned wraps, a shift wraps at its width too, and
 a signed result that leaves the type is left unfolded for the runtime to
 abort on or wrap; a constant zero divisor is an error here rather than an
 abort); `ConstIntValue` evaluates the constant expressions of array sizes,
 fill counts and match arms through `let` globals and arithmetic.
+
+Integers become floats (§6.3) in a node of their own: `ToFloat` wraps the
+integer expression in an implicit `AsCast` wherever a destination
+(`CheckValue`, after `FitsAt`) or an operator (`RetypeOperands`) converts
+it, so that the conversion survives whatever the optimizer makes of the
+integer below it (an inlined call, a block reduced to its tail, which would
+otherwise hand a float operator an integer operand). A later check of the
+node sees the integer again (`AsCast::Check` of an implicit cast checks its
+child) and retargets the cast rather than wrapping it twice; diagnostics
+print the expression without it (`Written`). A float computed from float
+literals and integers alone carries `Val::litfloat` (`Binary::Check`,
+unary minus, and a block's tail through `TempCopy`) and the node flag of
+the same name: typed at the literals' `f64`, it is retyped by `RetypeFlex`
+wherever it meets an `f32` destination or operand -- each flagged node, the
+implicit casts of its integers and its literals take the new type, while a
+constant part keeps its nodes, which fold at full precision and round once.
 
 Builtins are one X-macro table (`builtins.h`) driving arity, receiver kinds,
 provenance requirements and simple signatures; `CheckBuiltin` handles the
@@ -1757,8 +1785,9 @@ operands are `f32`), `&&`/`||`
 with a constant left, `!`, `~`, unary minus (where the result fits, as for
 the binary operators; the `u64` literal 2^63 negates to exactly `i64.min`,
 so a minimum written as a literal never reaches the checked negation at run
-time), casts (checked casts only when
-exact; a float-to-int only in range and integral), `.len` of a fixed array
+time), casts (a checked integer cast only when exact; a float-to-int only
+in range and integral; a conversion to a float of anything but a `u64`
+above `i64.max`), `.len` of a fixed array
 and `.cap` of a static-capacity limited array on a plain variable receiver,
 `if` on a constant condition, `match` on a constant integer, `while false`,
 `guard` on a constant, `assert(true)`, and statements after a `return`,
@@ -2606,7 +2635,7 @@ under `GS_DEBUG` and macros equal to the release expression otherwise
 (measured at 13--37% of runtime under a non-inlining backend when they were
 functions); division and modulo are always functions, zero-checked, with
 Euclidean `%`. `as` goes through `GS_RANGE`/`GS_F2I`/... macros that check in
-debug and cast in release, except to `f32`, and from an integer type whose
+debug and cast in release, except to a float, and from an integer type whose
 every value the target holds, which are plain C casts in every build; `as!`
 and release float-to-int use the defined wrap of `gs_f2iwrap`. A signed type's
 add, sub, mul and neg helper and every checked cast also take the file and

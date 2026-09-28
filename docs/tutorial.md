@@ -197,6 +197,11 @@ A narrower type widens into a wider one implicitly; nothing narrows without
 `as` (range-checked in debug) or `as!` (never checked). `u32 + i32` is a
 compile error asking which one you meant — the language will not silently
 promote both to 64 bits. The declared widths determine the operation.
+Integers become floats implicitly, so `n * x` with `x: f32` is an `f32`
+multiply; a float becomes an integer only through `as`. A float literal has
+no width of its own, and neither does an expression of float literals and
+integers: `n * 0.5` is computed in `f32` when it is passed to an `f32`
+parameter, and is an `f64` in `let h = n * 0.5;`.
 
 **`%` is Euclidean.** The result is in `[0, |b|)` and never negative, at
 every integer type. So `x % n` is a valid index into a length-`n` array for

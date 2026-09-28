@@ -808,8 +808,14 @@ inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bo
         if (branchcopy) CheckBranchCopy(v, n, expected, copied);
         else RequireCopyable(v, n, expected);
         if (!KeepsRef(v, expected)) v = DecayRef(v);
+        auto from = LoadType(v.type);
+        auto litfloat = v.litfloat;
         MustFit(v, n, expected);
         NoRelRefCopy(n, expected);
+        if (reachable && expected->kind == TY_FLT) {
+            if (IsIntT(from)) ToFloat(n, from, expected);
+            else if (litfloat && !TypeEq(from, expected)) RetypeFlex(n, expected);
+        }
     }
     v.storagebranches = copied.storagebranches;
     v.implicitcopy = copied.implicitcopy;
@@ -843,6 +849,8 @@ inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt) {
         Error(n, cat("expected a value of type ", TypeStr(dt), ", got ", TypeStr(v.type),
                      v.type->kind == TY_INT && dt->kind == TY_INT
                          ? " (narrowing and sign changes require an explicit `as`)"
+                     : v.type->kind == TY_FLT && dt->kind == TY_INT
+                         ? " (a float converts to an integer only with an explicit `as`)"
                          : ""));
     }
 }
@@ -1016,17 +1024,15 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
             }
             return false;
         case TY_FLT:
-            if (t->kind != TY_FLT) {
-                if (v.ck == CK_INT)
-                    fitfail = cat("an integer literal where ", TypeStr(dt),
-                                  " is expected: write ", ConstStr(v), ".0");
-                else if (v.unsized)
-                    fitfail = cat("an integer literal argument where ", TypeStr(dt),
-                                  " is expected: pass a float literal");
-                return false;
+            // Every integer converts to either float type (§6.3).
+            if (t->kind == TY_INT) {
+                IntToFloat(v, dt);
+                return true;
             }
-            // Literals adapt to f32; f32 widens to f64.
-            if (IsF32(dt)) { if (v.ck != CK_FLT && !v.unsized) return false; }
+            if (t->kind != TY_FLT) return false;
+            // A float taking its type from its literals adapts to f32; f32
+            // widens to f64.
+            if (IsF32(dt)) { if (!LitFloat(v)) return false; }
             else if (!IsF32(t)) return false;
             if (v.unsized) RecordLitAdapt(v, dt, fitnode ? fitnode->line : Line {});
             v.type = dt;
@@ -1173,6 +1179,9 @@ inline TypeExpr *TypeCheck::UnifyBranch(TypeExpr *a, TypeExpr *b, Node *at, bool
         if (ImplicitInt(b->intstorage, a->intstorage)) return a;
     }
     if (a->kind == TY_FLT && b->kind == TY_FLT) return ast.flttypes[FS_F64];
+    // An integer branch converts to the other's float type (§6.3).
+    if (a->kind == TY_INT && b->kind == TY_FLT) return b;
+    if (a->kind == TY_FLT && b->kind == TY_INT) return a;
     if (!wantvalue) return ast.voidtype;
     Error(at, cat("branches have mismatched types: ", TypeStr(a), " vs ", TypeStr(b)));
 }
@@ -1291,30 +1300,95 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
     }
     if (lt->kind == TY_FLT && rt->kind == TY_FLT) {
         if (TypeEq(lt, rt)) return lt;
-        // One side is f32, the other f64: a literal adapts to the typed
-        // side, otherwise f32 widens (§6.3).
-        if (lv.unsized && !rv.unsized && rv.ck == CK_NONE) {
-            RecordLitAdapt(lv, rt, at->line);
-            return rt;
+        // One side is f32, the other f64: an f64 taking its type from its
+        // literals adapts to the typed side, otherwise f32 widens (§6.3).
+        auto &wide = IsF32(lt) ? rv : lv;
+        auto narrow = IsF32(lt) ? lt : rt;
+        if (LitFloat(wide)) {
+            RecordLitAdapt(wide, narrow, at->line);
+            return narrow;
         }
-        if (rv.unsized && !lv.unsized && lv.ck == CK_NONE) {
-            RecordLitAdapt(rv, lt, at->line);
-            return lt;
-        }
-        if (lv.ck == CK_FLT) return rt;
-        if (rv.ck == CK_FLT) return lt;
         return ast.flttypes[FS_F64];
     }
+    // An integer operand converts to the float operand's type (§6.3).
+    if (lt->kind == TY_FLT && IsIntT(rt)) return lt;
+    if (IsIntT(lt) && rt->kind == TY_FLT) return rt;
     return nullptr;
 }
 
 // Re-types both operands to the unified type ct: adapted constants and
-// implicitly widened operands emit at ct downstream.
-inline void TypeCheck::RetypeOperands(Node *left, Node *right, Val &lv, Val &rv, TypeExpr *ct) {
-    lv.type = ct;
-    rv.type = ct;
-    left->exprtype = ct;
-    right->exprtype = ct;
+// implicitly widened operands emit at ct downstream, an integer converts to
+// a float ct in a node of its own, and a float of literals and integers is
+// computed at ct throughout.
+inline void TypeCheck::RetypeOperands(Node *&left, Node *&right, Val &lv, Val &rv,
+                                      TypeExpr *ct) {
+    auto retype = [&](Node *&n, Val &v) {
+        if (auto t = LoadType(v.type); ct->kind == TY_FLT && IsIntT(t)) {
+            ToFloat(n, t, ct);
+            IntToFloat(v, ct);
+            return;
+        }
+        if (v.litfloat && !TypeEq(v.type, ct)) RetypeFlex(n, ct);
+        v.type = ct;
+        n->exprtype = ct;
+    };
+    retype(left, lv);
+    retype(right, rv);
+}
+
+// An integer value converted to the float type ft (§6.3): a constant stays
+// one, now of the float's value; a literal parameter is one only where it
+// is an integer.
+inline void TypeCheck::IntToFloat(Val &v, TypeExpr *ft) {
+    if (v.ck == CK_INT) {
+        v.ck = CK_FLT;
+        v.fval = v.uns ? (double)(uint64_t)v.ival : (double)v.ival;
+        if (IsF32(ft)) v.fval = v.uns ? (double)(float)(uint64_t)v.ival : (double)(float)v.ival;
+        v.uns = false;
+    }
+    v.unsized = false;
+    v.unsizedparam = nullptr;
+    v.nonneg = false;
+    v.lvalue = false;
+    v.type = ft;
+}
+
+// An integer converted to a float (§6.3) is a node of its own, an implicit
+// cast, which a later check of the node retargets rather than wraps again:
+// the conversion then survives whatever the optimizer makes of the integer
+// expression, such as an inlined call or a block reduced to its value.
+// `from` is the integer's type.
+inline void TypeCheck::ToFloat(Node *&n, TypeExpr *from, TypeExpr *ft) {
+    auto a = Is<AsCast>(n);
+    if (!a || !a->implicit) {
+        n->exprtype = from;
+        a = ast.New<AsCast>(n->line, n, ft, false);
+        a->implicit = true;
+        n = a;
+    }
+    a->type = a->totype = ft;
+    a->exprtype = ft;
+}
+
+// A float of literals and integers (Val::litfloat) takes the float type t
+// its destination or other operand has: each node computing it, down to its
+// literals and the conversions of its integers. A constant part keeps its
+// own nodes, which the optimizer folds at full precision before the result
+// rounds to t, as a constant at t is anywhere.
+inline void TypeCheck::RetypeFlex(Node *n, TypeExpr *t) {
+    n->exprtype = t;
+    if (auto b = Is<Binary>(n); b && b->litfloat) {
+        RetypeFlex(b->left, t);
+        RetypeFlex(b->right, t);
+    } else if (auto u = Is<Unary>(n); u && u->litfloat) {
+        RetypeFlex(u->child, t);
+    } else if (auto a = Is<AsCast>(n); a && a->implicit) {
+        a->type = a->totype = t;
+    } else if (auto bl = Is<Block>(n); bl && bl->tail) {
+        RetypeFlex(bl->tail, t);
+    } else if (auto e = Is<EarlyBlock>(n)) {
+        RetypeFlex(e->body, t);
+    }
 }
 
 // Array extents and fill counts obey the same integer types as expressions

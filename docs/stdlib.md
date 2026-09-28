@@ -301,7 +301,9 @@ Elementwise `+ - * /` are the language's: `a + b`, `p - q`. Per-component
 
 libm, both widths (`sqrt(x)` picks `sqrt` or `sqrtf` by the argument's
 type): `sqrt sin cos tan asin acos atan atan2 exp log log2 log10 pow floor
-ceil round trunc`, returning floats as C does (`as i64` converts). Plus:
+ceil round trunc`, returning floats as C does (`as i64` converts). An
+integer argument suits both widths, so it names one (`sqrt(n as f64)`);
+`sqrt(n * 0.5)` is the `f64` one, as `sqrt(0.5)` is. Plus:
 
 ```goose
 let PI = 3.141592653589793;   let TAU = 6.283185307179586;

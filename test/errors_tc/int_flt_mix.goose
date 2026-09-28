@@ -1,8 +1,9 @@
-// error: operator + cannot be applied to i64 and f64
-// No implicit i64/f64 mixing in expressions (§6.3).
+// error: expected a value of type i64, got f64 (a float converts to an integer only with an explicit `as`)
+// An integer mixed with a float is a float (§6.1), which converts back to an
+// integer only with an explicit `as` (§6.3).
 fn main() {
     var integer: i64 = 1;
     var floating: f64 = 2.0;
-    let x = integer + floating;
-    print(x);
+    integer = integer + floating;
+    print(integer);
 }

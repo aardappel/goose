@@ -263,7 +263,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         }
     }
     MatchInfo best;
-    vector<MatchInfo> tied;
+    vector<MatchInfo> tied, converting;
     string failures;
     for (auto sf : cands) {
         MatchInfo mi;
@@ -274,19 +274,20 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
             Append(failures, "\n  candidate ", name, " at ", Where(sf->line), ": ", why);
             continue;
         }
-        if (tied.empty() || mi.tier < best.tier) {
+        if (mi.tier == MatchInfo::INTTOFLOAT) {
+            converting.push_back(mi);
+        } else if (tied.empty() || mi.tier < best.tier) {
             best = mi;
             tied = { mi };
         } else if (mi.tier == best.tier) {
             tied.push_back(mi);
         }
     }
-    auto bestcount = tied.size();
-    if (bestcount > 1) {
+    auto ambiguous = [&](const vector<MatchInfo> &set) {
         // A default is no argument, and ranks as none (§7.1): `f(a, b = 0)`
         // beside `f(a)` makes every `f(x)` ambiguous, which says so.
         string which;
-        for (auto &mi : tied) {
+        for (auto &mi : set) {
             Append(which, "\n  candidate ", name, " at ", Where(mi.sf->line));
             for (auto i = mi.nwritten; i < mi.sf->params.size(); i++)
                 Append(which, i == mi.nwritten ? ", taking the default of " : ", ",
@@ -294,8 +295,9 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         }
         Error(c, cat("ambiguous call to ", name, ": multiple overloads match equally well",
                      which));
-    }
-    if (!bestcount) {
+    };
+    if (tied.size() > 1) ambiguous(tied);
+    if (tied.empty()) {
         // Tag dispatch (§8.2): the match-as-overload-set form.
         auto v = TryDispatch(c, cands, argnodes, argvals, name);
         if (v.type) return v;
@@ -303,8 +305,15 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
             *nomatch = true;
             return Val {};
         }
-        for (auto &av : argvals) NoArrayJoin(av);
-        Error(c, cat("no matching overload for call to ", name, failures));
+        // An overload converting an integer argument to a float is the last
+        // resort, after dispatch and a builtin: a call either took before
+        // the conversion was implicit takes it still (§7.1).
+        if (converting.empty()) {
+            for (auto &av : argvals) NoArrayJoin(av);
+            Error(c, cat("no matching overload for call to ", name, failures));
+        }
+        if (converting.size() > 1) ambiguous(converting);
+        best = converting[0];
     }
     FnSpec *denv = nullptr;
     if (best.nwritten < best.paramtypes.size()) {
@@ -439,10 +448,13 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
     litrecord = false;
     auto paramsok = [&]() {
         // A literal argument adapts to whatever type the other arguments
-        // give a type parameter (§3.1), so they unify last.
+        // give a type parameter (§3.1), so they unify last: a float one
+        // first, whose type an integer one converts to (§6.3). A float of
+        // literals and integers adapts as a float literal does.
+        auto late = [&](const Val &av) { return LitFloat(av) ? 1 : isliteral(av) ? 2 : 0; };
         vector<size_t> order;
-        for (size_t i = 0; i < K; i++) if (!isliteral(argvals[i])) order.push_back(i);
-        for (size_t i = 0; i < K; i++) if (isliteral(argvals[i])) order.push_back(i);
+        for (auto k = 0; k < 3; k++)
+            for (size_t i = 0; i < K; i++) if (late(argvals[i]) == k) order.push_back(i);
         for (auto i : order) {
             auto &p = sf->params[i];
             auto &av = argvals[i];
@@ -610,7 +622,7 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
     }
     Val tmp = av;
     if (!FitsAt(tmp, ct)) return nullptr;
-    tier = std::max(tier, 2);
+    tier = std::max(tier, IsIntT(at) && ct->kind == TY_FLT ? MatchInfo::INTTOFLOAT : 2);
     return ct;
 }
 
@@ -694,25 +706,34 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
     // which vm collects. A dispatched call evaluates its arguments once,
     // before the tag picks the case, so the cases get every argument
     // written, and none of their defaults (§8.2): only `defaults` tries
-    // with them, to say so.
+    // with them, to say so. A case converting an integer argument to a
+    // float counts only where no other matches (ResolveCall).
     auto dispatches = [&](size_t pos, TypeExpr *et, bool isref, bool defaults,
                           vector<MatchInfo> &vm) {
         for (auto &var : et->enu->en->variants) {
             auto vt = ast.VariantTypeOf(et, &var, c->line);
             auto saved = argvals[pos];
             argvals[pos].type = isref ? ast.RefTo(vt, c->line) : vt;
-            MatchInfo onlymatch;
-            auto count = 0;
+            MatchInfo onlymatch, onlyconverting;
+            auto count = 0, converting = 0;
             for (auto sf : cands) {
                 MatchInfo mi;
                 mi.sf = sf;
                 string why;
-                if (TryMatch(sf, c, argvals, mi, why, defaults)) {
+                if (!TryMatch(sf, c, argvals, mi, why, defaults)) continue;
+                if (mi.tier == MatchInfo::INTTOFLOAT) {
+                    onlyconverting = mi;
+                    converting++;
+                } else {
                     onlymatch = mi;
                     count++;
                 }
             }
             argvals[pos] = saved;
+            if (!count) {
+                count = converting;
+                onlymatch = onlyconverting;
+            }
             if (count != 1) return false;
             vm.push_back(onlymatch);
         }

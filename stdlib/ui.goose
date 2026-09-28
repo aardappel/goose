@@ -1719,7 +1719,7 @@ fn sub9slice_id(texture: u32, w: u16, h: u16, region: Rect, l: u16, t: u16, r: u
 fn nine_slice_is_sub9slice(s: NineSlice) -> bool { image_is_subimage(s.img) }
 
 fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect { Rect { x, y, w, h } }
-fn rect(x: i64, y: i64, w: i64, h: i64) -> Rect { Rect { x as f32, y as f32, w as f32, h as f32 } }
+fn rect(x: i64, y: i64, w: i64, h: i64) -> Rect { Rect { x, y, w, h } }
 fn recta(pos: float2, size: float2) -> Rect { Rect { pos.x, pos.y, size.x, size.y } }
 fn rect_pos(r: Rect) -> float2 { float2 { r.x, r.y } }
 fn rect_size(r: Rect) -> float2 { float2 { r.w, r.h } }
@@ -1912,7 +1912,7 @@ fn render(c: Context, target: gfx::Texture, config: ConvertConfig) {
     gfx::bind(renderer.pipeline);
     gfx::bind_vertex_buffer(renderer.vertex_buffer);
     gfx::bind_index_buffer(renderer.index_buffer, 4);
-    gfx::uniforms(gfx::VERTEX, 0, float4 { info.width as f32, info.height as f32, 0.0, 0.0 });
+    gfx::uniforms(gfx::VERTEX, 0, float4 { info.width, info.height, 0.0, 0.0 });
     var first = 0;
     for d in draws {
         // Scissors in whole pixels, inside the target.

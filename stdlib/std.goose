@@ -136,7 +136,7 @@ fn rand_u64(r: rng&) -> u64 {
 fn rand_int(r: rng&, n: i64) -> i64 { (rand_u64(r) % (n as u64)) as i64 }
 
 // Uniform in [0, 1).
-fn rand_flt(r: rng&) -> f64 { ((rand_u64(r) >> 11) as f64) * (1.0 / 9007199254740992.0) }
+fn rand_flt(r: rng&) -> f64 { (rand_u64(r) >> 11) * (1.0 / 9007199254740992.0) }
 
 // Fisher-Yates.
 fn shuffle<T>(xs: T[:], r: rng&) {
@@ -744,8 +744,8 @@ fn parse_flt(s: u8[:]) -> f64, bool {
     // is exact in binary64, so one multiply or divide is correctly rounded
     // (Clinger's fast path); longer inputs and larger exponents scale in
     // steps and may be off by an ulp. A longer mantissa rounds as it
-    // converts, hence `as!`.
-    var v = mant as! f64;
+    // converts.
+    var v: f64 = mant;
     var e = exp10;
     while e > 22 { v *= 1e22; e -= 22; }
     while e < -22 { v /= 1e22; e += 22; }

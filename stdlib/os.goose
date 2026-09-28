@@ -54,10 +54,10 @@ extern "gs_os_time_ns" fn time_ns() -> i64;      // wall clock, nanoseconds sinc
 extern "gs_os_clock_ns" fn clock_ns() -> i64;    // monotonic, high resolution
 extern "gs_os_sleep_ms" fn sleep_ms(ms: i64);
 
-// A nanosecond count past 2^53 rounds to the nearest f64, and a sleep is
-// whole milliseconds, truncated: `as!`, since both drop bits on purpose.
-fn time() -> f64 { (time_ns() as! f64) / 1000000000.0 }
-fn clock() -> f64 { (clock_ns() as! f64) / 1000000000.0 }
+// A nanosecond count past 2^53 rounds to the nearest f64. A sleep is whole
+// milliseconds, truncated: `as!`, since that drops the fraction on purpose.
+fn time() -> f64 { time_ns() / 1000000000.0 }
+fn clock() -> f64 { clock_ns() / 1000000000.0 }
 fn sleep(seconds: f64) { sleep_ms((seconds * 1000.0) as! i64) }
 
 // Entropy, for seeding an rng.

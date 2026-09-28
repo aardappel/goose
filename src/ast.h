@@ -548,6 +548,11 @@ struct Val : Prov {
     // kind; the parameter it came from is where the adaptation is recorded.
     bool unsized = false;
     VarDef *unsizedparam = nullptr;
+    // A float computed from float literals and integers alone, and no
+    // constant (`n * 0.5`): like a float literal it takes the float type its
+    // destination or other operand has, and is f64 where nothing gives it
+    // one (§6.3). TypeCheck::RetypeFlex retypes the nodes computing it.
+    bool litfloat = false;
     bool lvalue = false;         // Denotes storage (a variable, field or element), not a temporary.
     // A control construct's value, whose branches a destination with no type
     // of its own copies (TypeCheck::CheckBranchCopy): whether every branch is
@@ -722,6 +727,7 @@ NODE(Unary)
     TType op;                   // T_MINUS, T_NOT, T_BITNOT, T_BITAND (ref-of).
     Node *child;
     bool synth = false;         // A `&` the checker inserted (§4.1), not written by the user.
+    bool litfloat = false;      // Filled by typecheck: its value is a Val::litfloat.
     Unary(Line l, TType _op, Node *_child) : Node(l), op(_op), child(_child) {}
 NODE_END
 
@@ -731,6 +737,7 @@ NODE(Binary)
     Node *left, *right;
     // Filled by typecheck for && and ||: optionals the right operand un-narrows.
     vector<VarDef *> rightkills;
+    bool litfloat = false;      // Filled by typecheck: its value is a Val::litfloat.
     Binary(Line l, TType _op, Node *_l, Node *_r) : Node(l), op(_op), left(_l), right(_r) {}
 NODE_END
 
@@ -838,6 +845,9 @@ NODE(AsCast)
     Node *child;
     TypeExpr *type;
     bool unchecked;             // as! vs as.
+    // An integer's conversion to a float the checker inserted (§6.3), not
+    // written by the user: TypeCheck::ToFloat.
+    bool implicit = false;
     // Filled by typecheck: the concrete type the cast converts to. exprtype
     // can be wider: it is the slot the result lands in (an i8 cast stored
     // into an i64), and the cast still wraps and checks at its own type.

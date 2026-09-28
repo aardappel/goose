@@ -173,13 +173,15 @@ inline bool EndsInBlock(const Node *n) {
 
 // Set while a diagnostic prints an expression (TypeCheck::ExprStr), which then
 // reads as the user wrote it: an lvalue the checker bound by reference (§4.1)
-// prints without the `&` it inserted. --dump and --specs print every node.
+// prints without the `&` it inserted, an integer it converted to a float
+// (§6.3) without the conversion. --dump and --specs print every node.
 inline thread_local bool dumpwritten = false;
 
 // The node that prints for n, which is also the one an operand is grouped by:
 // a receiver bound by reference prints as c.f(), not (c).f().
 inline const Node *Written(const Node *n) {
     if (!dumpwritten) return n;
+    if (auto a = Is<AsCast>(n); a && a->implicit) return Written(a->child);
     auto u = Is<Unary>(n);
     return u && u->synth ? u->child : n;
 }
@@ -344,6 +346,10 @@ inline void SliceExpr::Dump(string &s, int ind) const {
 }
 
 inline void AsCast::Dump(string &s, int ind) const {
+    if (Written(this) != this) {
+        child->Dump(s, ind);
+        return;
+    }
     s += "(";
     DumpOperand(s, child, ind, true);
     s += unchecked ? " as! " : " as ";

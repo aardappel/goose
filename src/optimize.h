@@ -703,6 +703,7 @@ inline Node *SliceExpr::Cp1(Inliner &inl) const {
 
 inline Node *AsCast::Cp1(Inliner &inl) const {
     auto c = inl.ast.New<AsCast>(line, inl.Cp(child), type, unchecked);
+    c->implicit = implicit;
     c->totype = totype;
     return c;
 }
@@ -1052,11 +1053,7 @@ inline Node *AsCast::Opt(Optimizer &o) {
             if (suns) return this;   // u64-range sources are for the runtime.
             // Rounded once, straight from the integer, as the C cast does.
             if (IsF32(tt)) return o.NewFlt(this, (double)(float)i->val);
-            // A checked f64 cast folds only when the conversion is exact;
-            // ±2^53 guarantees that without round-trip games.
-            auto lim = (int64_t)1 << 53;
-            if (unchecked || (i->val > -lim && i->val < lim))
-                return o.NewFlt(this, (double)i->val);
+            return o.NewFlt(this, (double)i->val);
         }
         return this;
     }

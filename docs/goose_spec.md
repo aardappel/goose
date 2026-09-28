@@ -187,9 +187,11 @@ A grammar sketch and precedence table are in Appendix D.
   `i64`; writable only at construction.
 * `f32 f64` — IEEE floats, likewise usable everywhere. `f32` arithmetic
   stays 32-bit; `f32` widens to `f64` implicitly (§6.3), never the reverse.
-  Float literals adapt to either type; an integer literal never adapts to a
-  float type (`let x: f64 = 2;` is an error asking for `2.0`), so a float
-  expression reads as one.
+  Every integer converts to either float type implicitly, so where a float
+  is expected `2` works as well as `2.0`. Float literals adapt to either
+  type, and so does an expression whose float-ness comes only from float
+  literals and integers: `n * 0.5` computes in 32 bits where an `f32` is
+  expected and is an `f64` where nothing asks for a type (§6.3).
 * `bool` — 1-byte storage, values `true`/`false`. Produced by comparisons;
   required by `if`/`while` conditions (no int-to-bool coercion).
 
@@ -198,7 +200,8 @@ integer type whose range holds their value (`let x: u8 = 255;` is fine,
 `= 256` is a compile error), and where nothing constrains them they are
 `i64` (`u64` for values above `i64.max`). All other conversions follow one
 rule — **implicit when provably value-preserving, an explicit cast
-otherwise** (§6.3).
+otherwise** — with one exception: an integer becomes a float implicitly,
+rounding as float arithmetic does (§6.3).
 
 ### 3.2 Structs
 
@@ -1272,10 +1275,16 @@ match arms.
 *one common type*, which is also the result type, found as follows: equal
 types stand; a constant adapts to the other operand's type (compile error
 if its value does not fit); otherwise, if exactly one operand implicitly
-widens into the other's type (§6.3), the wider type wins. Anything else —
-same-width signed/unsigned, `u64` with anything signed, int with float — is
-a compile error asking for a cast. Nothing here invents a type absent from
-the expression: `u8 + i64` is an `i64` add, but `u32 + i32` does not
+widens into the other's type (§6.3), the wider type wins; and an integer
+operand meeting a float one converts to the float's type, so `i32 * f32`
+is an `f32` multiply and `i64 + f64` an `f64` add. A float that takes its
+type from float literals — the literal itself, or `n * 0.5` built from
+literals and integers — adapts to the other operand's float type as a
+literal does (`x * (n * 0.5)` with `x: f32` computes in 32 bits
+throughout), and is an `f64` where neither operand gives it a type.
+Anything else — same-width signed/unsigned, `u64` with anything signed —
+is a compile error asking for a cast. Nothing here invents a type absent
+from the expression: `u8 + i64` is an `i64` add, but `u32 + i32` does not
 become 64-bit arithmetic implicitly. Exceptions: shifts take the *left* operand's
 type as the result (the count is any integer type, masked per §6.2), and
 `==`/`!=`/orderings unify the same way but produce `bool`. Unary `-`
@@ -1348,29 +1357,47 @@ ordinary stdlib overloads per math type, not language builtins.
 
 One principle: within a kind, a conversion the machine can prove
 value-preserving is implicit; anything that could lose a bit or flip a sign
-takes a cast — and crossing between int and float is always a cast, exact
-or not.
+takes a cast. Between the kinds, an integer becomes a float implicitly, and
+a float becomes an integer only through a cast: dropping the fraction is the
+real loss of information, while an integer too large for the float's
+mantissa rounds as every float result does.
 
 * **Implicit** (silent, everywhere a value meets a differently-typed
   destination or operand): to a *wider* integer type of the same
   signedness (`i8→i16/i32/i64`, `u8→u16/u32/u64`); from an unsigned type to
   any *strictly wider* signed type (`u8→i16..i64`, `u32→i64`); `f32 → f64`;
-  and constants into any type their value fits (§3.1). Also: any integer
-  type except `u64` into a `varint` store (§3.6).
+  constants into any type their value fits (§3.1); and every integer type
+  into both float types, `i64` and `u64` included, a literal as much as any
+  other value (`2` works where a float is expected as well as `2.0` does).
+  Also: any integer type except `u64` into a `varint` store (§3.6).
+* An integer becoming a float takes the float's nearest value where it has
+  no exact one (beyond 2^24 in magnitude for `f32`, 2^53 for `f64`). No
+  conversion to a float traps, in a debug build either.
+* **Float literal types.** A float literal has no committed type: it adapts
+  to `f32` or `f64`, whichever its destination or other operand has, and is
+  an `f64` where nothing gives it a type. So does every float whose
+  float-ness comes only from float literals and the integers they meet:
+  `n * 0.5`, `-(i + 0.25)`, `(n - 1) * 2.5` with integer `n` and `i`. Such
+  an expression is computed at the type it adapts to, throughout — an `f32`
+  argument, field or operand gets `(n as f32) * 0.5` in 32 bits — and is an
+  `f64` in an unannotated `let` (`let h = n * 0.5;`), which commits `h` to
+  `f64` from then on, as a variable, parameter, call result or explicit
+  `as` commits a type. A constant part of it is folded at full precision and
+  rounds once to the type the whole adapts to, as a constant does anywhere.
 * **Never implicit**: narrowing; same-width signedness changes (`i32 ↔ u32`);
   anything signed into any unsigned type (a negative value can hide in any
   signed operand — so `u32→i64` is silent but `i32→u64` is not); `u64` into
-  any signed type; `f64 → f32`; and int ↔ float in either direction — an
-  integer *literal* included: `2.0`, not `2`, where a float is expected.
+  any signed type; `f64 → f32`; and float → int.
 * `x as T` — explicit conversion between any two numeric types,
   **range-checked in debug** (abort on value change), truncates/wraps/
-  rounds-toward-zero silently in release. A conversion to `f32` is never
-  checked, in any build: from an `f64` or from any integer it rounds to the
-  nearest `f32`, as float arithmetic rounds every result it computes, and a
-  value beyond `f32`'s range (about ±3.4e38) becomes an infinity — nothing
-  there that a debug abort would usefully catch.
+  rounds-toward-zero silently in release. A conversion to a float is never
+  checked, in any build: from an integer it rounds as the implicit one
+  does, from an `f64` to the nearest `f32`, as float arithmetic rounds every
+  result it computes, and a value beyond `f32`'s range (about ±3.4e38)
+  becomes an infinity — nothing there that a debug abort would usefully
+  catch.
 * `x as! T` — always-unchecked wrap/truncate, for when losing bits is what
-  is intended, even in debug. To `f32` it is the same conversion as `as`.
+  is intended, even in debug. To a float it is the same conversion as `as`.
 * float → int (both forms in release, `as!` always) is defined exactly:
   truncate toward zero, then wrap modulo 2^64 into the target's width; NaN
   yields 0. The common in-range case is one compare and a hardware
@@ -1397,7 +1424,9 @@ continue
 top level. `break` binds to the innermost `loop`/`while`/`for`/`block`;
 labels are not in v1. All `break E` of one construct must agree on E's
 type; as at any destination (§3.1), an integer literal in one arm adapts to
-the other arm's type (`if c { x } else { 0 }` has `x`'s type).
+the other arm's type (`if c { x } else { 0 }` has `x`'s type), and an
+integer arm beside a float one converts to the float's type (§6.3): `if c {
+n } else { 0.5 }` is an `f64`.
 A bare `{ … }` in expression position — a match arm of several statements,
 say — is only a scope: `break` inside it still leaves the enclosing loop.
 
@@ -1508,11 +1537,12 @@ fn scaled(a: i32, b: i32 = 0, c: f32 = 1.0) -> f32 { ... }   // scaled(2) is sca
   arguments, in parameter order, and anew each time: `scaled(2)` above is
   `scaled(2, 0, 1.0)`. The default is a value of its parameter's type as the
   written arguments and any explicit type arguments make it, adapting as an
-  argument would — `fn scale<T>(x: T, by: T = 2)` doubles a `u8` — and is
-  an error at a call where it does not fit: `scale(1.5)` is one, since an
-  `f64` needs `2.0`. It decides no type variable itself: `fn f<T>(a: i64,
-  b: T = 0)` is called `f<i32>(1)` to leave `b` out. Each call leaving a
-  default out checks it there, as the argument written in its place. A
+  argument would — `fn scale<T>(x: T, by: T = 2)` doubles a `u8` and an
+  `f64` alike — and is an error at a call where it does not fit: `fn
+  back<T>(x: T, by: T = -1)` takes no `u8`. It decides no type variable
+  itself: `fn f<T>(a: i64, b: T = 0)` is called `f<i32>(1)` to leave `b`
+  out. Each call leaving a default out checks it there, as the argument
+  written in its place. A
   named function passed as a static function value keeps its defaults
   (§7.6); a block literal's parameters, a `thread_fn`'s (§11.2) and a
   tag-dispatched call (§8.2) have none.
@@ -1534,6 +1564,12 @@ fn scaled(a: i32, b: i32 = 0, c: f32 = 1.0) -> f32 { ... }   // scaled(2) is sca
   their defaults ranks by the written arguments alone, so `f(a, b = 0)`
   beside `f(a)` makes every one-argument call of `f` ambiguous.
   Only if no ordinary candidate matches is tag dispatch (§8.2) tried.
+  A candidate that converts an integer argument to a float (§6.3) is the
+  last resort, after tag dispatch and after a builtin of the same name:
+  `f(2)` calls `f(i32)` beside `f(f64)`, and `abs(n)` std's `abs<T>`, not
+  `abs(f64)`. An integer converts to either float type equally well, so two
+  such candidates are ambiguous: `sqrt(n)` with integer `n` has to say
+  `sqrt(n as f64)`, while `sqrt(n * 0.5)` is `sqrt(f64)`, as `sqrt(0.5)` is.
   The expected result type neither selects an overload nor binds generics.
 * Multiple return values: `fn f() -> A, B`; received as `let a, b = f();`.
   There is no tuple *type* — multiple returns are a calling convention;
@@ -1722,7 +1758,10 @@ must support inference for both `<T>`-style and untyped (implicitly generic)
 parameters. Where
 several arguments mention one type variable, the typed ones bind it and a
 literal then adapts (`max(n, 0)` with `n: u32` is the `u32` instantiation),
-so an `i64` literal never fixes the type by coming first. An
+so an `i64` literal never fixes the type by coming first; among literals, a
+float one binds before an integer one, which converts to it (§6.3):
+`max(1, 0.5)` is the `f64` instantiation. A float of literals and integers
+(`n * 0.5`) binds as a float literal does. An
 explicit list `f<i64>(x)` is allowed; it is *needed* when no argument
 mentions the parameter (e.g. `qget<i64>()`, or `zero<f64>()` for
 `fn zero<T>() -> T`); it binds the leading type parameters in order, and
@@ -2251,7 +2290,8 @@ Aborts (message + exit; not catchable):
 * relative-reference offset overflow at store (only where a root array, or
   a named pool, can span more than the width holds, §3.9);
 * debug only: integer overflow (per operation as it executes, §6.2), `as`
-  conversions that change the value (§6.3; conversions to `f32` excepted);
+  conversions that change the value (§6.3; conversions to a float
+  excepted);
 * division by zero (always);
 * `assert` failures, and the program's own `abort(msg)` (`msg` any `u8`
   array or slice; printed as `goose runtime error: <msg>`);

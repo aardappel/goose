@@ -410,8 +410,8 @@ static int64_t gs_f2iwrap(double d) {
 /* `as` conversion checks (§6.3): abort in debug builds whenever the
    conversion would change the value, naming the value, the target type and
    the cast's file and line; identity/plain casts in release, which drop all
-   three unevaluated. A conversion to f32 is a plain C cast in every build and
-   has none. */
+   three unevaluated. A conversion to a float is a plain C cast in every build
+   and has none. */
 #if GS_DEBUG
 
 static int64_t gs_fmt_f64(uint8_t *dst, double v);
@@ -469,24 +469,10 @@ static uint64_t gs_f2uchk(double d, const char *file, int line) {
     if ((double)v != d) gs_asfail_f("changes the value", d, "u64", file, line);
     return v;
 }
-static double gs_i2fchk(int64_t v, const char *file, int line) {
-    double d = (double)v;
-    if ((int64_t)d != v || d >= 9223372036854775808.0)
-        gs_asfail_i("changes the value", v, "f64", file, line);
-    return d;
-}
-static double gs_u2fchk(uint64_t v, const char *file, int line) {
-    double d = (double)v;
-    if (d >= 18446744073709551616.0 || (uint64_t)d != v)
-        gs_asfail_u("changes the value", v, "f64", file, line);
-    return d;
-}
 #define GS_RANGE(v, lo, hi, t, f, l) gs_rangechk((v), (lo), (hi), (t), (f), (l))
 #define GS_RANGE_U(v, hi, t, f, l)   gs_rangechk_u((v), (hi), (t), (f), (l))
 #define GS_F2I(d, lo, hi, t, f, l)   gs_f2ichk((d), (lo), (hi), (t), (f), (l))
 #define GS_F2U(d, f, l)              gs_f2uchk((d), (f), (l))
-#define GS_I2F(v, f, l)              gs_i2fchk((v), (f), (l))
-#define GS_U2F(v, f, l)              gs_u2fchk((v), (f), (l))
 
 #else
 
@@ -495,8 +481,6 @@ static double gs_u2fchk(uint64_t v, const char *file, int line) {
 /* Deterministic truncation in release too. */
 #define GS_F2I(d, lo, hi, t, f, l)   gs_f2iwrap(d)
 #define GS_F2U(d, f, l)              ((uint64_t)gs_f2iwrap(d))
-#define GS_I2F(v, f, l)              ((double)(v))
-#define GS_U2F(v, f, l)              ((double)(uint64_t)(v))
 
 #endif
 
