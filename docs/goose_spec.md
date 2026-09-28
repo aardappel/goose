@@ -1003,7 +1003,9 @@ references point to: a shrink or a store through one of them is of the
 caller's storage, not of the callee's copy of the holder. A global receiver
 additionally counts every other global whose type can hold a reference to
 something the array can contain as holding one, since its stores may come
-from functions not yet checked. A call into a recursive cycle still being
+from functions not yet checked — except a `let` reference, or a `let` slice
+of a `const` type, whose slot no reference can write (§9.5): it points where
+its initializer said for good. A call into a recursive cycle still being
 checked counts as shrinking every array a function of the cycle textually
 shrinks. A user `format` overload (§3.7) is a call at the `print`, `str` or
 `format` that renders a value through it, with the `format` call's receiver

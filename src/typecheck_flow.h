@@ -314,6 +314,23 @@ inline void TypeCheck::BindProv(VarDef *vd, const Prov &p) {
     vd->ref.reached = nullptr;
     vd->refrootknown = true;
     NoteFact(vd);
+    NoteCapturedBinding(vd);
+}
+
+// A binding of vd, which a nested function's or a function value's body may
+// have read before (staleroots).
+inline void TypeCheck::NoteCapturedBinding(VarDef *vd) {
+    auto it = capturedroots.find(vd);
+    if (it == capturedroots.end()) return;
+    auto &seen = it->second;
+    auto grew = vd->ref.Any([&](const RootAlt &a) {
+        return seen.unknown || !seen.Any([&](const RootAlt &s) {
+            return s.root == a.root && (!s.exact || a.exact);
+        });
+    });
+    if (grew)
+        NoteStaleRoots(cat(vd->name, " (bound at ", Where(vd->line),
+                           ") gains a root after a nested function or a function value read it"));
 }
 
 // The first non-null binding of a reference variable fixes its provenance.
@@ -338,8 +355,14 @@ inline void TypeCheck::BindRefProvenance(VarDef *vd, const Val &v) {
 // revisits with the binding a rebind further down the body gives it
 // (CheckLoopPasses); otherwise it is the temp sentinel, and for an optional,
 // which is bound only to null so far, whatever can hold the pointee type at
-// its own depth or outside -- the read-back rule's answer (§9.5).
-inline Prov TypeCheck::RefProvOf(VarDef *vd) {
+// its own depth or outside -- the read-back rule's answer (§9.5). `target`:
+// the variable is only named as what an assignment or a rebind binds.
+inline Prov TypeCheck::RefProvOf(VarDef *vd, bool target) {
+    // A body checked in another frame than the variable's own reads it once
+    // for all the calls that reuse it (staleroots).
+    if (!target && !vd->isglobal && vd->refrootknown && vd->ownerspec &&
+        vd->ownerspec != CurRealFrame().spec)
+        capturedroots[vd].Add(vd->ref);
     Prov p = vd->ref;
     if (!vd->refrootknown) {
         if (UnboundIsBottom()) {
@@ -1875,6 +1898,8 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv, const LVal &at) {
     auto pt = lv.type->ref->sub;
     if (!PointeeWritable(lv, a))
         Error(a, "cannot write through this reference: non-writable provenance (§9.5)");
+    if (pt->kind == TY_SLICE)
+        NoteStaleRoots(cat("a slice is written through a reference at ", Where(a->line)));
     if (pt->kind == TY_INT && pt->intstorage == IS_VARINT)
         Error(a, "varint fields are written only at construction (§3.6)");
     AssignableClassCheck(pt, a);
@@ -1917,7 +1942,10 @@ inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
     // A rebind to other storage keeps the lifetime bound but means the
     // variable no longer names one array: a read inside a loop this rebind
     // is in sees both on the next pass (CheckLoopPasses).
-    if (vd->ref.Add(rv)) NoteFact(vd);
+    if (vd->ref.Add(rv)) {
+        NoteFact(vd);
+        NoteCapturedBinding(vd);
+    }
 }
 
 // A `let` binding or field is not assigned as a whole (§4.4).

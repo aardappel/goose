@@ -909,7 +909,7 @@ struct TypeCheck {
     Prov SlotView(const Prov &p, TypeExpr *slice);
     void BindProv(VarDef *vd, const Prov &p);
     void BindRefProvenance(VarDef *vd, const Val &v);
-    Prov RefProvOf(VarDef *vd);
+    Prov RefProvOf(VarDef *vd, bool target = false);
     VarDef *ResetLocal(VarDef *previous);
     VarDef *NewVar(string_view name, TypeExpr *type, Line l, bool isvar,
                    VarDef *previous = nullptr);
@@ -1434,6 +1434,21 @@ struct TypeCheck {
     // only bounds it (ShrinkTarget).
     void GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd, const string &what,
                           TypeExpr *bound = nullptr);
+
+    // Where the roots on record may say less than where a value points: once
+    // a slice slot is written through a reference, which puts the store on
+    // record where the slice pointed rather than on the slot and leaves a
+    // slice variable's binding as it was, and once a variable gains a root
+    // after a nested function's or a function value's body -- checked once
+    // for every later call -- read it. A judgement resting on a global's
+    // roots for good (a `let` view's) cannot then; `staleroots` says where it
+    // first happened, empty where it never did.
+    string staleroots;
+    map<VarDef *, Roots> capturedroots;   // What those bodies read of a variable.
+    void NoteStaleRoots(const string &why) {
+        if (staleroots.empty()) staleroots = why;
+    }
+    void NoteCapturedBinding(VarDef *vd);
 
     // Every store of a reference, slice or holder value into a container
     // (ast.h StoreEvent), program-wide: a function value's body stores into

@@ -970,7 +970,10 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    first caller's too (**Calls** below), where the rest of its statement is
    in view;
 5. for a global receiver, every other global whose type can hold a reference
-   to something the array contains counts as holding one;
+   to something the array contains counts as holding one, but a `let`
+   reference, or a `let` slice of a `const` type, is judged by the roots of
+   its initializer (`RefMayPointInto`): nothing can rebind it or write its
+   slot. Not where those roots may be stale (§10, `staleroots`);
 6. the shrink is recorded for the callers (`NoteShrink`: `shrinkexternals`
    for globals and captured locals, `shrinkparams` for parameters), and so
    are the views still used that only the callers can tell apart from the
@@ -2848,6 +2851,15 @@ specification allows, and the shapes the C backend refuses outright:
   bound summaries (`BoundShrink`) carry the array's type alone, so narrowing
   the shrink by what its path reached would only move the rejection to the
   call.
+* A shrink of a global array counts every other global whose type can hold a
+  reference into it as holding one, but for a `let` reference or a `let`
+  slice of a const type, whose initializer's roots decide (§3.10) -- unless
+  the program writes a slice through a reference, which the store record
+  puts where the slice pointed rather than on the slot, leaving the
+  variable's binding as it was, or gives a variable a new root after a
+  nested function's or a function value's body, checked once for all its
+  calls, read it (`staleroots`). Roots derived since may then miss where a
+  value points, and those globals count by their type too.
 * The growth-during-construction rule (§3.10) takes a parameter class to be
   possibly any global or captured local a callee grows, two classes of one
   activation to be one array unless every call site keeps both concrete and

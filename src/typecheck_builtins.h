@@ -913,16 +913,28 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd,
     if (vd->isglobal) {
         // What other globals hold cannot be enumerated from here: any one
         // whose type can hold a reference to something this array can
-        // contain counts as holding one.
+        // contain counts as holding one. Not one bound by its initializer
+        // for good, whose roots say where it points: a `let` reference, or a
+        // `let` slice whose type is const, the slot of which no reference can
+        // write either (§9.5) -- as long as those roots are what they seem.
         for (auto g : ast.globals) {
             for (auto gd : g->defs) {
                 if (gd == vd || !gd->type || !HoldsPlainRef(gd->type)) continue;
+                auto settled = !bound && !gd->isvar && gd->refrootknown &&
+                               IsRefOrSlice(gd->type) &&
+                               (gd->type->kind == TY_REF || gd->type->cq) &&
+                               !RefMayPointInto(gd, vd);
+                if (settled && staleroots.empty()) continue;
                 vector<TypeExpr *> ps;
                 RefPointees(gd->type, ps);
                 for (auto pt : ps)
                     if ((IsU8(pt) && Viewable(arrtype)) || CanContain(arrtype, pt))
                         Error(c, cat("cannot ", op, " ", what, ": global ", gd->name,
-                                     " may hold a reference into it (§5.1)"));
+                                     " may hold a reference into it",
+                                     settled ? cat(": its initializer's roots may not say all "
+                                                   "it points at, since ", staleroots)
+                                             : string(),
+                                     " (§5.1)"));
             }
         }
     }
