@@ -202,6 +202,9 @@ struct CodeGen {
     string FoTailHdr(TypeExpr *t, const string &obj);
     TypeExpr *FoTailArr(TypeExpr *t);
     string FoPrefixSize(TypeExpr *t);
+    // The same type as the tail of a value that is not a frame object keeps
+    // its fixed fields as bytes in that value, like the enclosing fields.
+    int64_t FoBytesPrefix(TypeExpr *t);
     bool IsFatRef(TypeExpr *t);
     bool HoldsFatRef(TypeExpr *t);
     bool HoldsFatRefIn(TypeExpr *t, set<const void *> &open);
@@ -788,6 +791,9 @@ struct CodeGen {
     void GenArrayFromLoc(Loc lv, TypeExpr *et, const string &stk, Line ln,
                          const string &lenlv = "");
     void EmitRzCopy(Loc lv, TypeExpr *et, const string &stk, const string &lenlv, Line ln);
+    void FoBytes(TypeExpr *t, const string &obj, const string &p, bool tobytes);
+    Loc FoView(const Loc &lv);
+    void GenFoAsBytes(Node *n, const string &stk, TypeExpr *t, const string &lenlv);
     bool RzShape(TypeExpr *t, int64_t &prefix, TypeExpr *&elem);
     void GenVarEnumFromLoc(Loc lv, TypeExpr *et, const string &stk);
     void FixedLitAtStk(Node *n, const string &stk);

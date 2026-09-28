@@ -547,7 +547,7 @@ inline void TypeCheck::ResolveMemberLValue(LVal &lv, Dot *d) {
     // Steps the path into the named field of a field run; a frame
     // object's resizable tail has a header of its own to address (C.2).
     auto step = [&](const vector<Field> &fields, const vector<TypeExpr *> &ftypes,
-                    bool frameobj) {
+                    bool inframe) {
         for (auto i = 0; i < (int)fields.size(); i++) {
             auto &f = fields[i];
             if (f.ispad || f.name != d->name) continue;
@@ -559,7 +559,7 @@ inline void TypeCheck::ResolveMemberLValue(LVal &lv, Dot *d) {
             lv.var = nullptr;
             lv.fromstorage = true;
             lv.isslot = true;
-            lv.fotail = frameobj && ClassOf(lv.type) == SC_RESIZABLE;
+            lv.fotail = inframe && ClassOf(lv.type) == SC_RESIZABLE;
             lv.isvarint = lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT;
             return true;
         }
@@ -567,7 +567,7 @@ inline void TypeCheck::ResolveMemberLValue(LVal &lv, Dot *d) {
     };
     if (t->kind == TY_STRUCT) {
         auto inst = GetStructInst(t);
-        if (step(inst->st->fields, inst->ftypes, inst->frameobj)) return;
+        if (step(inst->st->fields, inst->ftypes, FieldsInFrame(d))) return;
         Error(d, cat("struct ", inst->st->name, " has no field ", d->name));
     }
     if (t->kind == TY_VARIANT) {
@@ -646,10 +646,21 @@ inline bool TypeCheck::Referenceable(Node *n, const Val &v) {
     if (ClassOf(v.type) != SC_RESIZABLE) return true;
     if (Is<Ident>(n)) return true;
     auto d = Is<Dot>(n);
-    if (!d || !d->obj->exprtype) return false;
+    return d && FieldsInFrame(d);
+}
+
+// Whether the struct d steps into is a frame object held as one (C.2): a
+// variable, a reference's pointee, a temporary, or the tail of a frame
+// object held so in turn. As the tail of a value that is not a frame object
+// it is bytes of that value, and its own tail has no header either.
+inline bool TypeCheck::FieldsInFrame(Dot *d) {
     auto ot = d->obj->exprtype;
-    if (ot->kind == TY_REF) ot = ot->ref->sub;
-    return ot->kind == TY_STRUCT && GetStructInst(ot)->frameobj;
+    if (!ot) return false;
+    auto pointee = ot->kind == TY_REF;
+    if (pointee) ot = ot->ref->sub;
+    if (ot->kind != TY_STRUCT || !GetStructInst(ot)->frameobj) return false;
+    auto od = Is<Dot>(d->obj);
+    return pointee || !od || FieldsInFrame(od);
 }
 
 // A reference to a resizable value is a reference to its header (C.2), and

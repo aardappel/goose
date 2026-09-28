@@ -611,7 +611,7 @@ inline void CodeGen::EmitRzCopy(Loc lv, TypeExpr *et, const string &stk, const s
     if (IsFrameObj(et)) {
         // The frame object copies as a C value; the innermost tail's
         // elements follow it onto the stack behind a fresh base.
-        assert(lv.val);
+        if (!lv.val) lv = FoView(lv);
         auto src = T();
         L(CT(et), " ", src, " = ", lv.s, ";");
         L(lenlv, " = ", src, ";");
@@ -632,6 +632,78 @@ inline void CodeGen::EmitRzCopy(Loc lv, TypeExpr *et, const string &stk, const s
     }
     EmitCopyElems(stk, elem, cat("(", lv.s, ") + ", prefix), len);
     L(lenlv, " = ", len, ";");
+}
+
+// Frame object `obj`'s fixed fields, at every nesting level, against the
+// bytes layout the same type takes at `p` as the tail of a value that is not
+// a frame object (C.2): stored there, explicit pads zeroed as GenFieldInits
+// zeroes them, or (`tobytes` false) loaded back.
+inline void CodeGen::FoBytes(TypeExpr *t, const string &obj, const string &p, bool tobytes) {
+    auto si = SI(t);
+    auto &fields = si->st->fields;
+    int64_t off = 0;
+    for (size_t i = 0; i < fields.size(); i++) {
+        auto at = off ? cat("(", p, " + ", off, ")") : p;
+        if (fields[i].ispad) {
+            if (fields[i].padsize <= 0) continue;
+            if (tobytes) L("memset(", at, ", 0, ", fields[i].padsize, ");");
+            off += fields[i].padsize;
+            continue;
+        }
+        auto ft = si->ftypes[i];
+        auto flv = cat(obj, ".", Sanitize(fields[i].name));
+        if (IsResz(ft)) {
+            if (IsFrameObj(ft)) FoBytes(ft, flv, at, tobytes);
+            return;
+        }
+        if (tobytes) L("*(", CT(ft), " *)", at, " = ", flv, ";");
+        else L(flv, " = *(", CT(ft), " *)", at, ";");
+        off += FixedSize(ft);
+    }
+}
+
+// A frame object laid out as bytes (FoBytes) as the C frame object a whole
+// read of it takes: its fixed fields loaded, its innermost tail's header
+// pointing at the elements where they lie.
+inline CodeGen::Loc CodeGen::FoView(const Loc &lv) {
+    assert(!lv.val && !lv.lenlv.empty());
+    Loc r;
+    r.t = lv.t;
+    r.val = true;
+    r.s = T();
+    L(CT(lv.t), " ", r.s, ";");
+    FoBytes(lv.t, r.s, lv.s, false);
+    auto th = FoTailHdr(lv.t, r.s);
+    L(th, ".base = (", lv.s, ") + ", FoBytesPrefix(lv.t), ";");
+    L(th, ".len = ", lv.lenlv, ";");
+    return r;
+}
+
+// Constructs n's value, of frame object type t, at stk's top as the tail of
+// a value that is not a frame object: its fixed fields as bytes (FoBytes),
+// its innermost tail's count into the enclosing header's `lenlv`. A literal
+// builds that way directly. Anything else is built as the frame object it is
+// everywhere else, its elements landing behind room left for the fixed
+// fields, which are stored there after it.
+inline void CodeGen::GenFoAsBytes(Node *n, const string &stk, TypeExpr *t, const string &lenlv) {
+    OpenAt open(*this, stk);
+    if (auto sl = Is<StructLit>(n); sl && TEq(sl->exprtype, t) && !fillvalues.count(n)) {
+        auto si = SI(t);
+        GenFieldInits(sl, si->st->fields, si->ftypes, stk, lenlv);
+        return;
+    }
+    auto pre = FoBytesPrefix(t);
+    string p;
+    if (pre) {
+        p = T();
+        L("uint8_t *", p, " = ", Top(stk), ";");
+        Bump(stk, cat(pre));
+    }
+    auto h = T();
+    L(CT(t), " ", h, ";");
+    GenConstruct(n, stk, t, h);
+    if (pre) FoBytes(t, h, p, true);
+    L(lenlv, " = ", FoTailHdr(t, h), ".len;");
 }
 
 // The static byte size before a resizable value's tail elements, plus the
@@ -1139,8 +1211,10 @@ inline void CodeGen::GenFieldInits(StructLit *sl, const vector<Field> &fields,
             continue;
         }
         // The resizable tail (if any) receives the enclosing header's
-        // length; every other field constructs plainly.
-        GenConstruct(init, stk, ft, IsResz(ft) ? lenlv : "");
+        // length, a frame object one laid out as bytes like the rest of this
+        // value; every other field constructs plainly.
+        if (IsResz(ft) && IsFrameObj(ft)) GenFoAsBytes(init, stk, ft, lenlv);
+        else GenConstruct(init, stk, ft, IsResz(ft) ? lenlv : "");
     }
 }
 

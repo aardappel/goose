@@ -456,7 +456,8 @@ Lvalue paths (`CheckLValue`, `LValueBase`) resolve `Ident`/`Dot`/`Index`
 chains to an `LVal`: the location's type, its owning variable when it is a
 bare name, its provenance, whether it is `let`-bound, whether it starts at a
 by-value binding, whether it was reached through a field or element step
-(`fromstorage`), whether it is a frame object's tail, whether it is a
+(`fromstorage`), whether it is the tail of a frame object held as one, with
+a header of its own (`fotail`, `FieldsInFrame`), whether it is a
 `varint`, and, for a path into a temporary, where what the temporary holds
 points (`intemp`, §3.6). Crossing a reference on the way (`DerefLValue`)
 replaces the provenance by the reference's: a reference *variable*'s
@@ -2118,7 +2119,12 @@ Layout details needed for byte/C compatibility (`FixedSize`, `LayoutFields`,
   len }` -- with the elements on a data stack, or, for a frame object, the C
   struct of the fixed fields with the tail's header (or nested frame object)
   as its last member (`EmitCFields`). Growth bumps the stack top and the
-  count; the base never moves.
+  count; the base never moves. A frame object's type as the tail of a
+  resizable that is not one is bytes of that value like its other fields
+  (`FoBytes`): a literal builds it so, anything else as a C frame object
+  whose elements land behind room left for the fixed fields
+  (`GenFoAsBytes`), and a whole read loads it into one that views the
+  elements in place (`FoView`).
 * **Fat references** (`gs_rref { hdr, stk }`) are references to
   resizable-class values: the header address plus the stack, so a callee can
   push through them. A reference with `reusable`-pool provenance is a

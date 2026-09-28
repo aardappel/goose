@@ -823,15 +823,17 @@ inline void Assign::CgStmt(CodeGen &cg) {
     if (cg.IsResz(t)) {
         // Whole-resizable assignment: clear (top back to the value start),
         // then construct the new contents in place (§4.4).
-        if (cg.IsFrameObj(t)) {
-            assert(lv.val && !lv.stk.empty());
+        if (cg.IsFrameObj(t) && lv.val) {
+            assert(!lv.stk.empty());
             cg.L(cg.TopW(lv.stk), " = ", cg.FoTailHdr(t, lv.s), ".base;");
             cg.GenConstruct(rhs, lv.stk, lv.t, lv.s);
             return;
         }
         assert(!lv.val && !lv.stk.empty() && !lv.lenlv.empty());
         cg.L(cg.TopW(lv.stk), " = ", lv.s, ";");
-        cg.GenConstruct(rhs, lv.stk, lv.t, lv.lenlv);
+        // A frame object's type here is the tail of a value that is not one.
+        if (cg.IsFrameObj(t)) cg.GenFoAsBytes(rhs, lv.stk, t, lv.lenlv);
+        else cg.GenConstruct(rhs, lv.stk, lv.t, lv.lenlv);
         return;
     }
     if (!lv.val) {

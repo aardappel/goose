@@ -2996,7 +2996,10 @@ behind a base pointer: a struct with a *variable-size* prefix (a `u8[]`
 field before the tail) and a resizable-class ADT, whose payload shape is
 per variant. Their header's `base` is the value's start on the data stack
 and `len` the tail's count; a reference to such a nested tail is a compile
-error — reference the owning variable.
+error — reference the owning variable. A tail of such a shape whose type is
+a frame object takes the same form: its fixed fields are bytes of the
+value, where a bare `pad` inserts nothing (§3.2), and its own tail's count
+is that header's `len`, so its tail cannot be referenced either.
 
 ### C.3 Calling convention
 

@@ -134,6 +134,22 @@ inline string CodeGen::FoPrefixSize(TypeExpr *t) {
     return cat("(sizeof(", CT(t), ") - sizeof(gs_rhdr))");
 }
 
+// Where the innermost tail's elements start in that bytes layout (FoBytes),
+// in which a bare pad inserts nothing, as in any variable-class layout.
+inline int64_t CodeGen::FoBytesPrefix(TypeExpr *t) {
+    auto si = SI(t);
+    int64_t n = 0;
+    for (size_t i = 0; i < si->st->fields.size(); i++) {
+        auto &f = si->st->fields[i];
+        if (f.ispad) { n += f.padsize > 0 ? f.padsize : 0; continue; }
+        auto ft = si->ftypes[i];
+        if (IsResz(ft)) return n + (IsFrameObj(ft) ? FoBytesPrefix(ft) : 0);
+        n += FixedSize(ft);
+    }
+    assert(false);   // A frame object ends in its tail.
+    return n;
+}
+
 inline bool CodeGen::IsFatRef(TypeExpr *t) {
     return t->kind == TY_REF && t->ref->lenstorage < 0 && IsResz(t->ref->sub);
 }

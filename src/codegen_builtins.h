@@ -735,7 +735,7 @@ inline void CodeGen::EmitDefaultElems(const ArrView &v, const string &first,
 // the static prefix EmitRzCopy walks.
 inline void CodeGen::EmitRzImage(Loc src, TypeExpr *t, const string &stk, Line ln) {
     if (IsFrameObj(t)) {
-        assert(src.val);
+        if (!src.val) src = FoView(src);
         auto th = FoTailHdr(t, src.s);
         EmitValStore(stk, ast.inttypes[IS_I64], cat(th, ".len"));
         auto pre = FoPrefixSize(t);

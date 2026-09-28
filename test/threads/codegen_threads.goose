@@ -5,6 +5,8 @@ struct Job { id: i64, weight: i16 }
 
 // A flat resizable-tailed struct (a frame object, C.2) crosses whole.
 struct Packet { id: i64, tag: u8, data: i64[>..] }
+// Behind a variable-size prefix, one is bytes of its owner.
+struct Wrapped { name: u8[], packet: Packet }
 
 thread_fn worker(a: i64, name: u8[]) {
     qput(a * 2);
@@ -40,6 +42,11 @@ fn main_codegen_threads() {
     print(q.id, " ", q.tag, " ", q.data.len, " ", q.data[2]);   // 9 3 3 30
     let r, ok3 = qpoll<Packet>();
     print(ok3, " ", r.id, " ", r.data.len);                      // false 0 0
+    var w = Wrapped { name: "w", packet: Packet { id: 4, tag: 5, data: [6] } };
+    qput(w.packet);
+    var w2 = Wrapped { name: "w2", packet: qget<Packet>() };
+    w2.packet.data.push(7);
+    print(w2.name, " ", w2.packet.id, " ", w2.packet.tag, " ", w2.packet.data);   // w2 4 5 [6, 7]
 }
 
 // Standalone entry; ignored when this file is imported (§11.1).

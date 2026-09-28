@@ -1174,6 +1174,7 @@ struct TypeCheck {
     bool IsNonFixedLValue(const Val &v);
     bool IsNonFixedRef(const Val &v);
     bool Referenceable(Node *n, const Val &v);
+    bool FieldsInFrame(Dot *d);
     [[noreturn]] void NoResizableRef(Node *at);
     bool UserRefOf(Node *n);
     bool IsOwnLocal(Node *n);
