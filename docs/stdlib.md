@@ -187,8 +187,7 @@ let smallest = q.heap_pop();
 fn format_int(out: u8[>..]&, v: i64, base: i64, width: i64, padc: u8)   // base 2..36, right-aligned
 fn format_uint(out: u8[>..]&, v: u64, base: i64, width: i64, padc: u8)
 fn format_flt(out: u8[>..]&, v: f64, decimals: i64)        // fixed decimals, rounded half up
-fn parse_int(s: u8[:]) -> i64, bool                        // optional sign, whole string
-fn parse_int(s: u8[:], base: i64) -> i64, bool
+fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool        // optional sign, whole string
 fn parse_flt(s: u8[:]) -> f64, bool                        // sign, fraction, exponent
 fn format_uleb(out: u8[>..]&, v: i64)                     // LEB128 (3.6), 1-10 bytes
 fn parse_uleb(s: u8[:]) -> i64, i64                       // value and byte count; 0, 0 if malformed

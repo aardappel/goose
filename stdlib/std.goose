@@ -660,8 +660,7 @@ fn format_flt(out: u8[>..]&, v: f64, decimals: i64) {
 }
 
 // An optionally signed whole-string integer; false on anything else.
-fn parse_int(s: u8[:]) -> i64, bool { return parse_int(s, 10); }
-fn parse_int(s: u8[:], base: i64) -> i64, bool {
+fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool {
     var i = 0;
     var neg = false;
     if s.len > 0 && (s[0] == '-' || s[0] == '+') {
