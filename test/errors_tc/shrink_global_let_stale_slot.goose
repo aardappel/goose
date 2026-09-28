@@ -1,5 +1,5 @@
 // error: cannot clear bs: global P may hold a reference into it
-// error: its initializer's roots may not say all it points at, since a slice is written through a reference
+// error: the roots on record may not say all a value points at, since a slice is written through a reference
 // pick returns s after aim has written a view of bs's element into it
 // through a reference, which leaves s's roots saying arr: P, bound for good
 // to pick's result, views bs, so the roots its initializer was given cannot

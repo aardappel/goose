@@ -910,34 +910,9 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd,
         Error(c, cat("cannot ", op, " ", what, " while ", v->name,
                      " is still used: it may hold a reference or slice into it (§5.1)"));
     });
-    if (vd->isglobal) {
-        // What other globals hold cannot be enumerated from here: any one
-        // whose type can hold a reference to something this array can
-        // contain counts as holding one. Not one bound by its initializer
-        // for good, whose roots say where it points: a `let` reference, or a
-        // `let` slice whose type is const, the slot of which no reference can
-        // write either (§9.5) -- as long as those roots are what they seem.
-        for (auto g : ast.globals) {
-            for (auto gd : g->defs) {
-                if (gd == vd || !gd->type || !HoldsPlainRef(gd->type)) continue;
-                auto settled = !bound && !gd->isvar && gd->refrootknown &&
-                               IsRefOrSlice(gd->type) &&
-                               (gd->type->kind == TY_REF || gd->type->cq) &&
-                               !RefMayPointInto(gd, vd);
-                if (settled && staleroots.empty()) continue;
-                vector<TypeExpr *> ps;
-                RefPointees(gd->type, ps);
-                for (auto pt : ps)
-                    if ((IsU8(pt) && Viewable(arrtype)) || CanContain(arrtype, pt))
-                        Error(c, cat("cannot ", op, " ", what, ": global ", gd->name,
-                                     " may hold a reference into it",
-                                     settled ? cat(": its initializer's roots may not say all "
-                                                   "it points at, since ", staleroots)
-                                             : string(),
-                                     " (§5.1)"));
-            }
-        }
-    }
+    // What the other globals hold may yet be stored by functions not checked
+    // so far: they are judged once every one has been.
+    if (vd->isglobal) NoteGlobalShrink(c, cat("cannot ", op, " ", what), vd, bound);
     NoteLiveViews(c, cat("cannot ", op, " ", what), vd, what, true, bound);
     NoteShrink(vd, bound, SB_UNBALANCED);
 }
@@ -971,6 +946,7 @@ inline void TypeCheck::HolderFromLit(Val &v, const LitDeep &deep) {
 // stands for -- the call sites map those back (§3.5).
 inline void TypeCheck::AddStoreEvent(const StoreEvent &e) {
     storeevents.push_back(e);
+    madestores.push_back(e);
     if (e.container->type || e.container->isglobal) return;
     auto spec = CurRealFrame().spec;
     if (!spec) return;
@@ -1082,6 +1058,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         if (!exact) r.Weaken();
         return r;
     };
+    NoteClassUses(spec, argvals);
     // The record read: none in a cycle's first round (RecordOf), whose back
     // edge stores nothing yet.
     auto rec = RecordOf(spec);
@@ -1107,10 +1084,18 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
     // Only a read-back from the same container preserves its existing
     // contents provenance (for example a permutation).
     for (auto &e : rec->classevents) {
+        if (e.src == e.container) continue;
         auto p = paramof(e.container);
-        if (p < 0 || e.src == e.container) continue;
         auto r = mapped(e.root, e.exact);
         auto src = mapped(e.src, true).Root();
+        if (p < 0) {
+            // Not the callee's class but a lexical parent's, which a nested
+            // function or a function value's body stored into: the storage
+            // the parent's callers passed, whose record carries it to them.
+            for (auto &a : r.alts)
+                push(e.container, a, e.pointee, src, e.byteview, e.reached, e.bound);
+            continue;
+        }
         auto cr = argroots((size_t)p);
         // Where the argument's root only bounds the storage, or the store
         // went into storage the class only leads to, the store lands in
@@ -1134,6 +1119,209 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
             }
         }
     }
+}
+
+// What each parameter class of the callee stands for at this call: where
+// its argument may point, or for a by-value holder where the references it
+// holds may (ClassArgRoots), and the container the holder is a copy of.
+inline void TypeCheck::NoteClassUses(FnSpec *spec, const vector<Val> &argvals) {
+    for (size_t p = 0; p < spec->params.size() && p < argvals.size() &&
+                       p < spec->argtypes.size(); p++) {
+        auto cr = spec->params[p]->ref.Root();
+        if (!IsClassRoot(cr)) continue;
+        auto pt = spec->argtypes[p];
+        ClassUse u;
+        u.roots = ClassArgRoots(pt, argvals[p]);
+        if (!IsRefOrSlice(pt) && !IsTemp(argvals[p].holderfrom)) u.src = argvals[p].holderfrom;
+        u.byteview = argvals[p].byteview;
+        auto same = [&](const ClassUse &o) {
+            if (o.src != u.src || o.byteview != u.byteview ||
+                o.roots.alts.size() != u.roots.alts.size())
+                return false;
+            for (size_t i = 0; i < o.roots.alts.size(); i++) {
+                auto &x = o.roots.alts[i];
+                auto &y = u.roots.alts[i];
+                if (x.root != y.root || x.exact != y.exact || x.from != y.from) return false;
+            }
+            return true;
+        };
+        auto &uses = classuses[cr];
+        if (none_of(uses.begin(), uses.end(), same)) uses.push_back(u);
+    }
+}
+
+// A binding of global reference or slice variable gd, which is no store for
+// FitsAt: for the judgement of the globals it is one, of where it points.
+inline void TypeCheck::NoteGlobalBinding(VarDef *gd, const Roots &roots, bool byteview,
+                                         TypeExpr *pointee, Line at) {
+    for (auto &a : roots.alts) {
+        StoreEvent e;
+        e.container = gd;
+        e.root = a.root;
+        e.exact = a.exact;
+        if (!a.exact && a.from && a.from != gd && !IsTemp(a.from)) e.src = a.from;
+        e.pointee = byteview ? nullptr : pointee;
+        e.byteview = byteview;
+        e.at = at;
+        madestores.push_back(e);
+    }
+}
+
+// A shrink of global array vd, or of what vd only bounds, for
+// CheckGlobalShrinks. The first shrink checked stands for the others of the
+// same array, which differ in nothing that judgement asks.
+inline void TypeCheck::NoteGlobalShrink(Node *at, const string &prefix, VarDef *vd,
+                                        TypeExpr *bound) {
+    for (auto &gs : globalshrinks)
+        if (gs.arr == vd && !gs.bound == !bound && (!bound || TypeEq(gs.bound, bound))) return;
+    globalshrinks.push_back({ vd, bound, at->line, prefix, InstantiationChain() });
+}
+
+// A global may hold a reference into a global array only where a store, or
+// the binding of a reference or slice global, put one there, and once every
+// function has been checked every store is on record, however late the
+// function making it was checked: a shrink of the array is an error where
+// another global may hold one (§5.1). Where the roots on record may say
+// less than where a value points (staleroots), any global whose type can
+// hold a reference into the array counts. A bound stands for every array
+// of its type the root's references may lead to, which for a global are
+// globals.
+inline void TypeCheck::CheckGlobalShrinks() {
+    if (globalshrinks.empty()) return;
+    map<VarDef *, vector<size_t>> bycontainer;
+    for (size_t i = 0; i < madestores.size(); i++)
+        bycontainer[madestores[i].container].push_back(i);
+    for (auto &gs : globalshrinks) {
+        vector<VarDef *> arrays;
+        if (!gs.bound) arrays.push_back(gs.arr);
+        else
+            for (auto g : ast.globals)
+                for (auto gd : g->defs)
+                    if (gd->type && !IsRefOrSlice(gd->type) &&
+                        CanContain(LoadType(gd->type), gs.bound))
+                        arrays.push_back(gd);
+        for (auto arr : arrays) {
+            auto arrtype = gs.bound ? gs.bound : LoadType(arr->type);
+            for (auto g : ast.globals) {
+                for (auto gd : g->defs) {
+                    if (gd == arr || !gd->type || !HoldsPlainRef(gd->type)) continue;
+                    // A reference to nothing the array's storage can hold,
+                    // nor a u8 that may be a byte view of it, is no concern.
+                    vector<TypeExpr *> ps;
+                    RefPointees(gd->type, ps);
+                    auto fits = false;
+                    for (auto pt : ps)
+                        fits = fits || (IsU8(pt) && Viewable(arrtype)) || CanContain(arrtype, pt);
+                    if (!fits) continue;
+                    auto into = cat(gs.prefix, ": global ", gd->name,
+                                    " may hold a reference into ",
+                                    gs.bound ? string(arr->name) : string("it"));
+                    if (!staleroots.empty())
+                        ErrorIn(gs.at, cat(into, ": the roots on record may not say all a "
+                                           "value points at, since ", staleroots, " (§5.1)"),
+                                gs.chain);
+                    GlobalReach reach { *this, arr, arrtype, bycontainer, {}, {} };
+                    Line where;
+                    if (!reach.Holds(gd, &where)) continue;
+                    ErrorIn(gs.at, cat(into, ", stored at ", Where(where), " (§5.1)"), gs.chain);
+                }
+            }
+        }
+    }
+}
+
+// Whether a reference to a pointee of this type, or a byte view, can point
+// into the array.
+inline bool TypeCheck::GlobalReach::Fits(TypeExpr *pointee, bool byteview) {
+    if (byteview) return tc.Viewable(arrtype);
+    return !pointee || tc.CanContain(arrtype, pointee);
+}
+
+// A reference rooted at r. A parameter's class stands for what the calls
+// passed. An exact root is its own storage. An inexact one read out of a
+// container points where the stores into that container put, and any other
+// only bounds the storage, which then may be the array wherever the pointee
+// fits it: nothing outlives a global.
+inline bool TypeCheck::GlobalReach::Root(VarDef *r, bool exact, VarDef *from, TypeExpr *pointee,
+                                         bool byteview) {
+    if (tc.IsClassRoot(r)) return Class(r, exact, pointee, byteview);
+    if (exact) return r == arr;
+    if (from && !IsTemp(from)) return Holds(from);
+    return Fits(pointee, byteview);
+}
+
+// A reference rooted at a parameter's class: where the argument of each call
+// that reached it may point, each only as a bound where the reference was
+// one. A holder argument copied out of a container holds what that one
+// does. A class no call reached stands for nothing.
+inline bool TypeCheck::GlobalReach::Class(VarDef *cr, bool exact, TypeExpr *pointee,
+                                          bool byteview) {
+    if (!rooted.insert({ cr, exact }).second) return false;
+    auto it = tc.classuses.find(cr);
+    if (it == tc.classuses.end()) return false;
+    for (auto &u : it->second) {
+        if (u.src && Holds(u.src)) return true;
+        for (auto &a : u.roots.alts) {
+            if (u.src && Covered(u.src, a.root, a.exact)) continue;
+            if (Root(a.root, a.exact && exact, a.from, pointee, byteview || u.byteview))
+                return true;
+        }
+    }
+    return false;
+}
+
+// What container x holds: what the stores into it put there, and for a
+// reference or slice variable where its bindings point. A parameter's class
+// stands for the caller's storage behind it: what each call's argument
+// points at, anything where it only bounds that. `where` gets the line of
+// the store into x that leads to the array.
+inline bool TypeCheck::GlobalReach::Holds(VarDef *x, Line *where) {
+    if (!x || !held.insert(x).second) return false;
+    if (tc.IsClassRoot(x)) {
+        auto it = tc.classuses.find(x);
+        if (it == tc.classuses.end()) return false;
+        for (auto &u : it->second)
+            for (auto &a : u.roots.alts)
+                if (!a.exact || (a.root && Holds(a.root))) return true;
+        return false;
+    }
+    if (auto it = bycontainer.find(x); it != bycontainer.end()) {
+        for (auto i : it->second) {
+            auto &e = tc.madestores[i];
+            if (!Event(e)) continue;
+            if (where) *where = e.at;
+            return true;
+        }
+    }
+    if (x->type && IsRefOrSlice(x->type) && x->refrootknown) {
+        for (auto &a : x->ref.alts) {
+            if (!Root(a.root, a.exact, a.from, tc.PointeeOf(x->type), x->ref.byteview)) continue;
+            if (where) *where = x->line;
+            return true;
+        }
+    }
+    return false;
+}
+
+// A store on record. A copy of a container's contents holds what that one
+// does; its own roots add only what is not among those (Covered).
+inline bool TypeCheck::GlobalReach::Event(const StoreEvent &e) {
+    if (e.src) {
+        if (Holds(e.src)) return true;
+        if (Covered(e.src, e.root, e.exact)) return false;
+    }
+    return Root(e.root, e.exact, nullptr, e.pointee, e.byteview);
+}
+
+// Whether a root a copy of src's contents carries is judged by following
+// src's stores: src itself or a global's static bound, which is how the
+// copy of a container's or a global's contents is rooted, or one of the
+// roots its stores put there, no more exact than there.
+inline bool TypeCheck::GlobalReach::Covered(VarDef *src, VarDef *root, bool exact) {
+    if (!exact && (root == src || (!root && src->isglobal))) return true;
+    for (auto &c : src->contents.alts)
+        if (c.root == root && (exact || !c.exact)) return true;
+    return false;
 }
 
 // Whether a store into `holder`, from event `from` on, may have put a

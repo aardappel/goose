@@ -710,9 +710,13 @@ inline void TypeCheck::NarrowCond(Node *cond, bool sense) {
 }
 
 // A holder value bound to a new variable: the variable's contents are the
-// value's, and the binding is a store like any other for the shrink rules.
-inline void TypeCheck::NoteHolderBinding(VarDef *d, const Val &v) {
+// value's, and the binding is a store like any other for the shrink rules,
+// made where the initializer is.
+inline void TypeCheck::NoteHolderBinding(VarDef *d, const Val &v, Node *at) {
+    auto saved = fitnode;
+    fitnode = at;
     RecordStore(d, ContentsOf(v), v.byteview, nullptr, v.holderfrom);
+    fitnode = saved;
 }
 
 // ------------------------------------------------------------------
@@ -1521,7 +1525,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
     // initializer about to be checked (CheckCycleInit).
     auto fi = (int)frames.size() - 1;
     auto calls = frames[fi].cyclecalls;
-    auto Finish = [&](VarDef *d, TypeExpr *t, const Val *v) {
+    auto Finish = [&](VarDef *d, TypeExpr *t, const Val *v, Node *init) {
         if (vd->isconst) t = ast.ConstOf(t);
         if (t->kind == TY_VOID) Error(vd, "initializer has no value");
         if (t->kind == TY_FN)
@@ -1530,8 +1534,11 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         if (v && IsRefOrSlice(t)) {
             BindRefProvenance(d, *v);
             if (t->cq) d->ref.writable = false;
+            // An annotated one's binding FitsAt has noted.
+            if (global && !ann && !v->isnull)
+                NoteGlobalBinding(d, v->AsRoots(), v->byteview, PointeeOf(t), init->line);
         } else if (v && HoldsPlainRef(t)) {
-            NoteHolderBinding(d, *v);
+            NoteHolderBinding(d, *v, init);
         }
         if (vd->reusable) {
             auto kw = vd->reusable == RU_SLICES ? "reusable[]" : "reusable";
@@ -1553,7 +1560,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         for (size_t i = 0; i < vd->names.size(); i++) {
             auto d = MakeDef(i);
             d->assigned = false;
-            Finish(d, ann, nullptr);
+            Finish(d, ann, nullptr, nullptr);
         }
         return;
     }
@@ -1573,7 +1580,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             // reference (`.=`); one to a non-fixed value binds it (§4.1).
             auto rv = vd->byref || IsNonFixedRef(rets[i]) ? rets[i] : DecayRef(rets[i]);
             CheckBindingRoot(d, rv, vd->inits[0]);
-            Finish(d, rv.type, &rv);
+            Finish(d, rv.type, &rv, vd->inits[0]);
         }
         return;
     }
@@ -1646,7 +1653,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         // non-negativity is the name's for good (§6.1). A `var` can be
         // assigned anything later.
         d->nonneg = !vd->isvar && v.nonneg;
-        Finish(d, ann ? ann : v.type, &v);
+        Finish(d, ann ? ann : v.type, &v, vd->inits[i]);
         auto len = Is<Dot>(vd->inits[i]);
         if (!vd->isvar && !global && len && len->member == B_LEN &&
             d->type->kind == TY_INT && d->type->intstorage == IS_I64)

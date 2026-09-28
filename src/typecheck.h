@@ -431,7 +431,11 @@ struct TypeCheck {
 
     static constexpr int MAXCHAIN = 20;
 
-    [[noreturn]] void Error(Line l, const string &msg) {
+    [[noreturn]] void Error(Line l, const string &msg) { ErrorIn(l, msg, InstantiationChain()); }
+
+    // An error at code checked earlier, with the instantiation chain taken
+    // there: how a check made once the whole program has been reports one.
+    [[noreturn]] void ErrorIn(Line l, const string &msg, const string &chain) {
         for (auto &w : cur.pendingwarnings) fputs(w.c_str(), stderr);
         cur.pendingwarnings.clear();
         auto s = cat(Where(l), ": error: ", msg);
@@ -444,6 +448,12 @@ struct TypeCheck {
             while (*end && *end != '\n' && *end != '\r') end++;
             Append(s, "\n", string_view(p, (size_t)(end - p)));
         }
+        s += chain;
+        throw CompileError { s };
+    }
+
+    string InstantiationChain() {
+        string s;
         // A long chain shows its innermost and outermost instantiations.
         auto chain = 0, nth = 0;
         for (auto &f : frames) chain += f.sf && !f.isfunval;
@@ -468,7 +478,7 @@ struct TypeCheck {
                               f.spec->fnvals);
             Append(s, " instantiated from ", Where(f.callline));
         }
-        throw CompileError { s };
+        return s;
     }
 
     // A specialization as a diagnostic names it. The argument types show the
@@ -1440,9 +1450,9 @@ struct TypeCheck {
     // record where the slice pointed rather than on the slot and leaves a
     // slice variable's binding as it was, and once a variable gains a root
     // after a nested function's or a function value's body -- checked once
-    // for every later call -- read it. A judgement resting on a global's
-    // roots for good (a `let` view's) cannot then; `staleroots` says where it
-    // first happened, empty where it never did.
+    // for every later call -- read it. The judgement of what the globals
+    // hold (CheckGlobalShrinks) cannot rest on those roots then; `staleroots`
+    // says where it first happened, empty where it never did.
     string staleroots;
     map<VarDef *, Roots> capturedroots;   // What those bodies read of a variable.
     void NoteStaleRoots(const string &why) {
@@ -1479,7 +1489,55 @@ struct TypeCheck {
     bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
                             Line *where, set<VarDef *> &seen, size_t *hit);
     void ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Node *at);
-    void NoteHolderBinding(VarDef *d, const Val &v);
+    void NoteHolderBinding(VarDef *d, const Val &v, Node *at);
+
+    // Whether a global may hold a reference into a global array is known
+    // only once every function has been checked, since a store into it may
+    // come from one checked after the shrink (CheckGlobalShrinks). What that
+    // judgement follows: every store as it was made -- `storeevents` has a
+    // callee's events mapped in place for its first call -- and every
+    // binding of a global reference or slice, and what each parameter's
+    // class stood for at every call.
+    vector<StoreEvent> madestores;
+    struct ClassUse {
+        Roots roots;               // Where the argument may point (ClassArgRoots).
+        VarDef *src = nullptr;     // The container a holder argument is a copy of.
+        bool byteview = false;
+    };
+    map<VarDef *, vector<ClassUse>> classuses;
+    void NoteClassUses(FnSpec *spec, const vector<Val> &argvals);
+    void NoteGlobalBinding(VarDef *gd, const Roots &roots, bool byteview, TypeExpr *pointee,
+                           Line at);
+    // A shrink of a global array, judged against every other global once
+    // checking is over (CheckGlobalShrinks), with the instantiation chain
+    // its error reports.
+    struct GlobalShrink {
+        VarDef *arr = nullptr;
+        TypeExpr *bound = nullptr;
+        Line at;
+        string prefix;
+        string chain;
+    };
+    vector<GlobalShrink> globalshrinks;
+    void NoteGlobalShrink(Node *at, const string &prefix, VarDef *vd, TypeExpr *bound);
+    void CheckGlobalShrinks();
+    // Whether what a store record leads to may point into the array `arr`
+    // of type `arrtype`: its stores followed through the containers they
+    // copied and the calls that passed the parameter classes they name.
+    struct GlobalReach {
+        TypeCheck &tc;
+        VarDef *arr;
+        TypeExpr *arrtype;
+        const map<VarDef *, vector<size_t>> &bycontainer;
+        set<VarDef *> held;
+        set<pair<VarDef *, bool>> rooted;
+        bool Fits(TypeExpr *pointee, bool byteview);
+        bool Root(VarDef *r, bool exact, VarDef *from, TypeExpr *pointee, bool byteview);
+        bool Class(VarDef *cr, bool exact, TypeExpr *pointee, bool byteview);
+        bool Holds(VarDef *x, Line *where = nullptr);
+        bool Event(const StoreEvent &e);
+        bool Covered(VarDef *src, VarDef *root, bool exact);
+    };
     bool GrowOnlyTail(TypeExpr *t);
     bool IsGrowOnlyRootVar(VarDef *r);
     void RefPointees(TypeExpr *t, vector<TypeExpr *> &out);
@@ -1718,6 +1776,7 @@ struct TypeCheck {
         // Errors these produce are real; a lack of errors is weaker than for
         // reached code, since no call-site facts were available.
         for (auto sf : ast.functions) CheckUnreached(sf);
+        CheckGlobalShrinks();
         SettleParamRootExactness();
         ResolveGrowConflicts();
         VerifyLiterals();

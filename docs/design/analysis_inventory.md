@@ -229,7 +229,8 @@ storage", both derived.
 **Tracks.** At a shrink, every live thing that may point into the array:
 held temporaries of the statement, reference and slice variables in scope
 (and what a reference to a slice or holder reaches), holders by their store
-record, other globals by type.
+record, and, once the whole program has been checked, other globals by
+theirs (`CheckGlobalShrinks`).
 
 **How.** Three scans (`CheckHeldShrinks`, `GrowOnlyShrinkAt` over `vars`,
 `CheckShrinkHolders` over `VisibleVars`), each with its own case analysis

@@ -1,5 +1,5 @@
 // error: cannot clear bs: global P may hold a reference into it
-// error: its initializer's roots may not say all it points at, since s
+// error: the roots on record may not say all a value points at, since s
 // keep's body is checked once, at its first call, when s still views arr;
 // its second call copies the view of bs's element s holds by then into out,
 // and pick returns that. P, bound for good to pick's result, views bs,

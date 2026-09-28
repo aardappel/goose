@@ -763,7 +763,12 @@ A store into a caller's storage -- through a parameter's class root -- is
 kept on the specialization as a `classevent`, and `ApplyCalleeStores`
 replays it at every call site with the class mapped back to the root it
 stands for there (§3.4), what a holder's references point into for a holder
-parameter. Semantically this includes stores through slices: writing a
+parameter. A nested function's store through a parameter of the function
+it is declared in, or a function value's through one of the function it is
+written in, is into a class of that function's, not the callee's: the call
+keeps it on the caller's own record, its value's roots mapped, until it
+reaches the record of the function whose class it is, whose callers map
+it. Semantically this includes stores through slices: writing a
 reference into a viewed element changes the caller's container just as
 writing through an array reference does. A permutation may preserve the
 container's existing contents provenance, but a new incoming reference
@@ -969,11 +974,23 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    (`ShrinkScanVars`); every caller's are judged at its call instead, the
    first caller's too (**Calls** below), where the rest of its statement is
    in view;
-5. for a global receiver, every other global whose type can hold a reference
-   to something the array contains counts as holding one, but a `let`
-   reference, or a `let` slice of a `const` type, is judged by the roots of
-   its initializer (`RefMayPointInto`): nothing can rebind it or write its
-   slot. Not where those roots may be stale (§10, `staleroots`);
+5. for a global receiver, the other globals are judged once every function
+   has been checked (`NoteGlobalShrink` keeps the first shrink of each
+   array, with its instantiation chain, for `CheckGlobalShrinks`): a global
+   the record leaves able to hold a reference into the array fails the
+   shrink, the error naming the store. The record followed is the stores as
+   made (`madestores`, which a call's mapping of its callee's events in
+   place, for the first call only, leaves alone) and the bindings of global
+   references and slices (`NoteGlobalBinding`, beside `VarDef::ref`);
+   through the containers a copy came out of (`src`, `from`); and through
+   the calls that passed a parameter's class (`classuses`, which
+   `NoteClassUses` fills at every call, back edges included), a class
+   standing for every argument its calls gave it. A root that bounds the
+   storage and names no container it was read out of -- static data a call
+   returns included, which `RetAltVal` makes inexact -- may be any array
+   its pointee fits. Where the roots on record may be stale (§10,
+   `staleroots`), every other global whose type can hold a reference to
+   something the array contains counts;
 6. the shrink is recorded for the callers (`NoteShrink`: `shrinkexternals`
    for globals and captured locals, `shrinkparams` for parameters), and so
    are the views still used that only the callers can tell apart from the
@@ -2851,15 +2868,19 @@ specification allows, and the shapes the C backend refuses outright:
   bound summaries (`BoundShrink`) carry the array's type alone, so narrowing
   the shrink by what its path reached would only move the rejection to the
   call.
-* A shrink of a global array counts every other global whose type can hold a
-  reference into it as holding one, but for a `let` reference or a `let`
-  slice of a const type, whose initializer's roots decide (§3.10) -- unless
-  the program writes a slice through a reference, which the store record
-  puts where the slice pointed rather than on the slot, leaving the
-  variable's binding as it was, or gives a variable a new root after a
-  nested function's or a function value's body, checked once for all its
-  calls, read it (`staleroots`). Roots derived since may then miss where a
-  value points, and those globals count by their type too.
+* A shrink of a global array counts another global as holding a reference
+  into it where the store record says it may (§3.10) -- but where the
+  program writes a slice through a reference, which the record puts where
+  the slice pointed rather than on the slot, leaving a slice variable's
+  binding as it was, or gives a variable a new root after a nested
+  function's or a function value's body, checked once for all its calls,
+  read it (`staleroots`), every other global whose type can hold one
+  counts: roots derived since may miss where a value points. The record
+  itself is coarse in two places: static data a call returns is an inexact
+  root (`RetAltVal`), which may be any array its pointee fits, so a global
+  given such a result counts wherever it could; and a global holder passed
+  to a by-value holder parameter gives it class 0, with no call-site facts
+  for the class, so what the callee stores of it counts the same.
 * The growth-during-construction rule (§3.10) takes a parameter class to be
   possibly any global or captured local a callee grows, two classes of one
   activation to be one array unless every call site keeps both concrete and

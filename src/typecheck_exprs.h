@@ -924,7 +924,8 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
             }
         }
         // Each storage the slot may be in holds the value from here on; a
-        // reference or slice variable itself holds it as its binding.
+        // reference or slice variable itself holds it as its binding, which
+        // for a global is a store all the same (CheckGlobalShrinks).
         if (!curdst.varbind) {
             for (auto &d : dsts) {
                 if (holder) {
@@ -939,6 +940,9 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt, bool callsite) {
                                 d.bound);
                 }
             }
+        } else if (curdst.roots.Exact() && curdst.roots.Root()->isglobal) {
+            NoteGlobalBinding(curdst.roots.Root(), roots, v.byteview, PointeeOf(t),
+                              fitnode ? fitnode->line : Line {});
         }
     }
     if (TypeEq(t, dt)) { v.type = dt; return true; }
