@@ -345,6 +345,21 @@ struct Parser {
             for (auto &prev : sf->params)
                 if (prev.name == p.name) Error(cat("duplicate parameter name: ", p.name));
             if (IsNext(T_COLON)) p.type = ParseType();
+            if (IsNext(T_ASSIGN)) {
+                // A default is a value of the parameter's type (§7.1), which
+                // an untyped parameter has only from an argument.
+                if (!p.type)
+                    Error(cat("parameter ", p.name, " has a default but no type: an untyped "
+                              "parameter takes its type from its argument (§7.1)"));
+                if (sf->isthread)
+                    Error(cat("thread_fn parameter ", p.name, " cannot have a default: "
+                              "thread_spawn passes every argument (§11.2)"));
+                p.defaultval = ParseExpr();
+            } else if (!sf->params.empty() && sf->params.back().defaultval) {
+                Error(cat("parameter ", p.name, " needs a default: only trailing parameters "
+                          "have defaults, and ", sf->params.back().name,
+                          " before it has one (§7.1)"));
+            }
             sf->params.push_back(p);
             if (!IsNext(T_COMMA)) break;
         }

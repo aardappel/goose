@@ -21,6 +21,9 @@ inline Val TypeCheck::CheckCall(Call *c) {
     c->fmtspecs.clear();
     c->fmtcontexts.clear();
     lastcallrets.clear();
+    c->args.erase(c->args.begin() + c->firstdefault,
+                  c->args.begin() + c->firstdefault + c->ndefaults);
+    c->firstdefault = c->ndefaults = 0;
     // Arguments construct into parameter slots, not whatever destination
     // encloses this call; member ops re-set curdst for element pushes.
     DestScope ds(*this, Dest {});
@@ -38,8 +41,12 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id) {
     }
     FnSpec *env = nullptr;
     vector<SFunction *> cands;
-    if (auto nf = LookupLocalFnEnv(id->name, env)) cands.push_back(nf);
-    else cands = ast.LookupFunctions(id->name, id->ns);
+    if (auto nf = LookupLocalFnEnv(id->name, env)) {
+        cands.push_back(nf);
+    } else {
+        DefaultScopeName(id->name, c, false);
+        cands = ast.LookupFunctions(id->name, id->ns);
+    }
     // The builtins are global: `::f` reaches one past a namespaced f, and
     // `ns::f` never names one.
     auto bd = LookupBuiltin(GlobalLeaf(id->name));
@@ -117,8 +124,12 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d) {
     }
     FnSpec *env = nullptr;
     vector<SFunction *> cands;
-    if (auto nf = LookupLocalFnEnv(d->name, env)) cands.push_back(nf);
-    else cands = ast.LookupFunctions(d->name, d->ns);
+    if (auto nf = LookupLocalFnEnv(d->name, env)) {
+        cands.push_back(nf);
+    } else {
+        DefaultScopeName(d->name, c, true);
+        cands = ast.LookupFunctions(d->name, d->ns);
+    }
     if (!cands.empty()) return ResolveCall(c, cands, env, d->name, &ov, d->obj);
     if (bd && !(bd->flags & BF_PROPERTY)) {
         auto argnodes = c->ArgNodes();
@@ -130,28 +141,98 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d) {
     Error(c, cat("unknown function or member: ", d->name));
 }
 
+// A non-fixed lvalue argument passes by reference (§4.1): it becomes `&a`
+// before any candidate sees it. The user's own `&` on one is redundant. A
+// control construct's value is no storage, even where its one branch is: a
+// reference parameter binds its branches instead (BindBranchesByRef).
+inline void TypeCheck::RefArg(Node *&a, Val &v) {
+    // A resizable without a header of its own (C.2) stays a value, which a
+    // slice parameter still takes whole.
+    if (IsNonFixedLValue(v) && !v.storagebranches && Referenceable(a, v)) a = AutoRef(a, v);
+    else if (UserRefOf(a) && IsPlainRef(v.type) && ClassOf(v.type->ref->sub) != SC_FIXED)
+        Warn(a, cat("redundant &: ", ExprStr(Is<Unary>(a)->child),
+                    " is passed by reference without it (§4.1)"));
+}
+
+// The type bindings a parameter default sees (§7.1): the function's own, and
+// those of the functions a nested one is declared in, but no function value
+// bound to a generic parameter, which a default does not call.
+inline FnSpec *TypeCheck::ParamDefaultEnv(const MatchInfo &mi) {
+    auto env = ast.NewFunValEnv();
+    env->bindings = mi.bindings;
+    for (auto sp = mi.env; sp; sp = sp->lexparent)
+        for (auto &b : sp->bindings) env->bindings.push_back(b);
+    return env;
+}
+
+// Runs f, which checks the default of parameter `param` of the function
+// mi resolved c to, in the default's own frame (DefaultScope).
+template<typename F>
+void TypeCheck::InParamDefault(Call *c, const MatchInfo &mi, FnSpec *env, size_t param, F f) {
+    for (auto &fr : frames)
+        if (fr.defaultfn == mi.sf && fr.defaultparam == (int)param)
+            Error(c, cat("the default of parameter ", mi.sf->params[param].name, " of ",
+                         mi.sf->qname, " leads to this call, which takes it again (§7.1)"));
+    DefaultScope ds(*this, env, c->line);
+    auto &fr = frames.back();
+    fr.defaultfn = mi.sf;
+    fr.defaultparam = (int)param;
+    if (auto it = declsiteof.find({ mi.env, mi.sf }); mi.sf->isnested && it != declsiteof.end())
+        fr.defaultsite = it->second;
+    f();
+}
+
+// Each parameter the call leaves out takes its default (§7.1): a fresh clone
+// of the declaration's expression, among the arguments where the missing one
+// would be, checked as they are -- for the specialization's key here, and
+// against its parameter in phase 2 -- but in a frame of its own
+// (InParamDefault). A default is no argument in overload resolution: it only
+// has to fit the type its parameter has there, as an argument would.
+inline void TypeCheck::AddParamDefaults(Call *c, MatchInfo &best, vector<Node *> &argnodes,
+                                        vector<Val> &argvals, bool receiver, FnSpec *env) {
+    auto shift = receiver ? 1 : 0;
+    auto P = best.paramtypes.size();
+    c->firstdefault = (int)best.nwritten - shift;
+    c->ndefaults = (int)(P - best.nwritten);
+    Discovering discovering(*this, c);
+    for (auto i = best.nwritten; i < P; i++) {
+        auto &p = best.sf->params[i];
+        auto pt = best.paramtypes[i];
+        auto d = p.defaultval->Clone(ast);
+        c->args.insert(c->args.begin() + (int)(i - shift), d);
+        argnodes.insert(argnodes.begin() + (int)i, d);
+        Val v;
+        InParamDefault(c, best, env, i, [&]() {
+            {
+                PathScope ps(*this, d);
+                v = CheckV(argnodes[i], nullptr);
+            }
+            RequireComplete(v.type, d->line);
+            RefArg(argnodes[i], v);
+            argnodes[i]->exprtype = v.type;
+            vector<pair<string_view, TypeExpr *>> nobindings;
+            auto tier = 0;
+            fitfail.clear();
+            if (!UnifyArg(pt, v, nobindings, tier))
+                Error(d, cat("the default of parameter ", p.name, " cannot be passed as ",
+                             TypeStr(pt), ": ",
+                             fitfail.empty() ? cat("it is ", TypeStr(v.type)) : fitfail));
+            BindBranchByRef(argnodes[i], v, pt);
+        });
+        c->args[i - shift] = argnodes[i];
+        argvals.insert(argvals.begin() + (int)i, v);
+    }
+}
+
 // Phase 1 checks arguments bottom-up for resolution; phase 2 re-checks
 // each against its concrete parameter type (adapting literals etc.).
 inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *env,
                                   string_view name, Val *preval, Node *&prenode, bool *nomatch) {
     vector<Node *> argnodes;
     vector<Val> argvals;
-    // A non-fixed lvalue argument passes by reference (§4.1): it becomes
-    // `&a` before any candidate sees it. The user's own `&` on one is
-    // redundant. A control construct's value is no storage, even where its
-    // one branch is: a reference parameter binds its branches instead
-    // (BindBranchesByRef).
-    auto byref = [&](Node *&a, Val &v) {
-        // A resizable without a header of its own (C.2) stays a value,
-        // which a slice parameter still takes whole.
-        if (IsNonFixedLValue(v) && !v.storagebranches && Referenceable(a, v)) a = AutoRef(a, v);
-        else if (UserRefOf(a) && IsPlainRef(v.type) && ClassOf(v.type->ref->sub) != SC_FIXED)
-            Warn(a, cat("redundant &: ", ExprStr(Is<Unary>(a)->child),
-                        " is passed by reference without it (§4.1)"));
-    };
     if (prenode) {
         auto v = *preval;
-        byref(prenode, v);
+        RefArg(prenode, v);
         argnodes.push_back(prenode);
         argvals.push_back(v);
     }
@@ -170,33 +251,45 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
                 return Val {};
             }
             RequireComplete(v.type, a->line);
-            byref(a, v);
+            RefArg(a, v);
             argnodes.push_back(a);
             a->exprtype = v.type;
             argvals.push_back(v);
         }
     }
     MatchInfo best;
-    auto bestcount = 0;
+    vector<MatchInfo> tied;
     string failures;
     for (auto sf : cands) {
         MatchInfo mi;
         mi.sf = sf;
         mi.env = env;
         string why;
-        if (!TryMatch(sf, c, argvals, mi, why)) {
+        if (!TryMatch(sf, c, argvals, mi, why, true)) {
             Append(failures, "\n  candidate ", name, " at ", Where(sf->line), ": ", why);
             continue;
         }
-        if (!bestcount || mi.tier < best.tier) {
+        if (tied.empty() || mi.tier < best.tier) {
             best = mi;
-            bestcount = 1;
+            tied = { mi };
         } else if (mi.tier == best.tier) {
-            bestcount++;
+            tied.push_back(mi);
         }
     }
-    if (bestcount > 1)
-        Error(c, cat("ambiguous call to ", name, ": multiple overloads match equally well"));
+    auto bestcount = tied.size();
+    if (bestcount > 1) {
+        // A default is no argument, and ranks as none (§7.1): `f(a, b = 0)`
+        // beside `f(a)` makes every `f(x)` ambiguous, which says so.
+        string which;
+        for (auto &mi : tied) {
+            Append(which, "\n  candidate ", name, " at ", Where(mi.sf->line));
+            for (auto i = mi.nwritten; i < mi.sf->params.size(); i++)
+                Append(which, i == mi.nwritten ? ", taking the default of " : ", ",
+                       mi.sf->params[i].name);
+        }
+        Error(c, cat("ambiguous call to ", name, ": multiple overloads match equally well",
+                     which));
+    }
     if (!bestcount) {
         // Tag dispatch (§8.2): the match-as-overload-set form.
         auto v = TryDispatch(c, cands, argnodes, argvals, name);
@@ -207,8 +300,13 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         }
         Error(c, cat("no matching overload for call to ", name, failures));
     }
+    FnSpec *denv = nullptr;
+    if (best.nwritten < best.paramtypes.size()) {
+        denv = ParamDefaultEnv(best);
+        AddParamDefaults(c, best, argnodes, argvals, prenode != nullptr, denv);
+    }
     LoadSliceArgs(argvals, best.paramtypes);
-    BindBranchesByRef(argnodes, argvals, best.paramtypes);
+    BindBranchesByRef(argnodes, argvals, best.paramtypes, -1, best.nwritten);
     auto spec = GetOrCreateSpec(best, argvals, c);
     ApplyCalleeShrinks(c, spec, argvals, name);
     ApplyCalleeGrows(c, spec, argvals, name);
@@ -221,12 +319,14 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
             // A `&` at a parameter declared as a reference is redundant
             // (§4.1) -- unless it picked this overload.
             auto &p = best.sf->params[i];
-            if (UserRefOf(argnodes[i]) && cands.size() == 1 && p.type &&
+            if (i < best.nwritten && UserRefOf(argnodes[i]) && cands.size() == 1 && p.type &&
                 !HasGenerics(p.type) && p.type->kind == TY_REF &&
                 ClassOf(p.type->ref->sub) == SC_FIXED)
                 Warn(argnodes[i], cat("redundant &: ", ExprStr(Is<Unary>(argnodes[i])->child),
                                       " is passed by reference without it (§4.1)"));
-            CheckArg(argnodes[i], best.paramtypes[i]);
+            if (i < best.nwritten) CheckArg(argnodes[i], best.paramtypes[i]);
+            else InParamDefault(c, best, denv, i,
+                                [&]() { CheckArg(argnodes[i], best.paramtypes[i]); });
             // The call's own operands are what later arguments' checks see
             // held (HeldOperands), so a rebound one replaces its original now.
             c->SetArgNode(i, argnodes[i]);
@@ -258,27 +358,41 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
 // order with the other arguments. `skip` is a dispatch position, whose value
 // the cases take as it is.
 inline void TypeCheck::BindBranchesByRef(vector<Node *> &argnodes, vector<Val> &argvals,
-                                         const vector<TypeExpr *> &paramtypes, int skip) {
-    for (size_t i = 0; i < paramtypes.size() && i < argvals.size(); i++) {
-        auto pt = paramtypes[i];
-        if ((int)i == skip || !argvals[i].storagebranches || pt->kind != TY_REF ||
-            pt->ref->lenstorage >= 0)
-            continue;
-        DestScope ds(*this, Dest {});
-        SlotScope ss(*this, false);
-        FlagScope q(quiet, true);
-        argvals[i] = CheckValue(argnodes[i], pt, true);
-    }
+                                         const vector<TypeExpr *> &paramtypes, int skip,
+                                         size_t end) {
+    for (size_t i = 0; i < paramtypes.size() && i < argvals.size() && i < end; i++)
+        if ((int)i != skip) BindBranchByRef(argnodes[i], argvals[i], paramtypes[i]);
+}
+
+inline void TypeCheck::BindBranchByRef(Node *&n, Val &v, TypeExpr *pt) {
+    if (!v.storagebranches || pt->kind != TY_REF || pt->ref->lenstorage >= 0) return;
+    DestScope ds(*this, Dest {});
+    SlotScope ss(*this, false);
+    FlagScope q(quiet, true);
+    v = CheckValue(n, pt, true);
 }
 
 inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, MatchInfo &mi,
-                                string &why) {
+                                string &why, bool defaults) {
     auto P = sf->params.size();
     auto N = argvals.size();
-    if (N < P) { why = "too few arguments"; return false; }
-    for (auto i = P; i < N; i++) {
+    auto R = P;   // The parameters without a default, which every call gives.
+    if (defaults)
+        for (R = 0; R < P && !sf->params[R].defaultval;) R++;
+    // The arguments bind the parameters in order, and any function values
+    // for the leftover generics come after them (§7.6), which leaves the
+    // parameters from there on to their defaults.
+    auto K = std::min(N, P);
+    while (K > R && argvals[K - 1].type == fntype) K--;
+    if (K < R) {
+        why = cat("too few arguments: ", (int64_t)K, " given, ", R < P ? "at least " : "",
+                  (int64_t)R, " needed");
+        return false;
+    }
+    for (auto i = K; i < N; i++) {
         if (argvals[i].type != fntype) { why = "too many arguments"; return false; }
     }
+    mi.nwritten = K;
     if (c->tyargs.size() > sf->generics.size()) {
         why = "too many explicit type arguments";
         return false;
@@ -313,8 +427,8 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
         // A literal argument adapts to whatever type the other arguments
         // give a type parameter (§3.1), so they unify last.
         vector<size_t> order;
-        for (size_t i = 0; i < P; i++) if (!isliteral(argvals[i])) order.push_back(i);
-        for (size_t i = 0; i < P; i++) if (isliteral(argvals[i])) order.push_back(i);
+        for (size_t i = 0; i < K; i++) if (!isliteral(argvals[i])) order.push_back(i);
+        for (size_t i = 0; i < K; i++) if (isliteral(argvals[i])) order.push_back(i);
         for (auto i : order) {
             auto &p = sf->params[i];
             auto &av = argvals[i];
@@ -368,20 +482,48 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
         for (auto &[n, t] : mi.bindings) found |= n == g.name;
         if (!found) unbound.push_back(g.name);
     }
-    auto need = (N - P) + (c->trailing ? 1 : 0);
+    // A left-out parameter has the type the arguments give it: its default
+    // is a value of that type, and decides no type variable itself (§7.1).
+    auto undecided = [&](string_view g) {
+        for (auto i = K; i < P; i++) {
+            if (!NamesGeneric(sf->params[i].type, g)) continue;
+            why = cat("cannot infer ", g, ", which the default of parameter ",
+                      sf->params[i].name, " does not decide (use explicit <...>)");
+            return true;
+        }
+        return false;
+    };
+    auto need = (N - K) + (c->trailing ? 1 : 0);
     if (unbound.size() != need) {
+        if (!need)
+            for (auto g : unbound) if (undecided(g)) return false;
         why = need ? cat((int64_t)need, " function value(s) for ",
                          (int64_t)unbound.size(), " unbound generic parameter(s)")
                    : "cannot infer all generic parameters (use explicit <...>)";
         return false;
     }
-    for (size_t k = 0; P + k < N; k++)
-        mi.fnvals.push_back({ unbound[k], argvals[P + k].fnv });
+    for (size_t k = 0; K + k < N; k++)
+        mi.fnvals.push_back({ unbound[k], argvals[K + k].fnv });
     if (c->trailing) {
         FnValBind fb;
         fb.fv = c->trailing;
         fb.env = frames.back().lexspec;
         mi.fnvals.push_back({ unbound.back(), fb });
+    }
+    // The left-out parameters' types, as the arguments made them. A type
+    // variable a function value took leaves one undecided as well.
+    for (auto i = K; i < P; i++) {
+        ownexclude = &sf->generics;
+        auto pt = Subst(sf->params[i].type);
+        ownexclude = saveex;
+        auto ct = SubstOwn(pt, mi.bindings);
+        if (HasGenerics(ct)) {
+            for (auto g : unbound) if (undecided(g)) return false;
+            why = cat("cannot infer the type of parameter ", sf->params[i].name,
+                      ", which its default does not decide (use explicit <...>)");
+            return false;
+        }
+        mi.paramtypes[i] = ct;
     }
     return true;
 }
@@ -534,6 +676,35 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
     vector<MatchInfo> matches;  // Per variant, for the found position.
     TypeExpr *enumtype = nullptr;
     auto byref = false;
+    // Whether each variant of et, passed at pos, matches exactly one case,
+    // which vm collects. A dispatched call evaluates its arguments once,
+    // before the tag picks the case, so the cases get every argument
+    // written, and none of their defaults (§8.2): only `defaults` tries
+    // with them, to say so.
+    auto dispatches = [&](size_t pos, TypeExpr *et, bool isref, bool defaults,
+                          vector<MatchInfo> &vm) {
+        for (auto &var : et->enu->en->variants) {
+            auto vt = ast.VariantTypeOf(et, &var, c->line);
+            auto saved = argvals[pos];
+            argvals[pos].type = isref ? ast.RefTo(vt, c->line) : vt;
+            MatchInfo onlymatch;
+            auto count = 0;
+            for (auto sf : cands) {
+                MatchInfo mi;
+                mi.sf = sf;
+                string why;
+                if (TryMatch(sf, c, argvals, mi, why, defaults)) {
+                    onlymatch = mi;
+                    count++;
+                }
+            }
+            argvals[pos] = saved;
+            if (count != 1) return false;
+            vm.push_back(onlymatch);
+        }
+        return true;
+    };
+    auto withdefaults = false;
     for (size_t pos = 0; pos < argvals.size(); pos++) {
         auto at = argvals[pos].type;
         TypeExpr *et = nullptr;
@@ -551,32 +722,12 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
         // Fixed-mode payloads pass by copy even through a reference, for
         // the same soundness reason as match binders (§3.5).
         isref = isref && et->enu->varmode;
-        auto en = et->enu->en;
         vector<MatchInfo> vm;
-        auto allok = true;
-        for (auto &var : en->variants) {
-            auto vt = ast.VariantTypeOf(et, &var, c->line);
-            auto argt = isref ? ast.RefTo(vt, c->line) : vt;
-            Val vv = argvals[pos];
-            vv.type = argt;
-            auto saved = argvals[pos];
-            argvals[pos] = vv;
-            MatchInfo onlymatch;
-            auto count = 0;
-            for (auto sf : cands) {
-                MatchInfo mi;
-                mi.sf = sf;
-                string why;
-                if (TryMatch(sf, c, argvals, mi, why)) {
-                    onlymatch = mi;
-                    count++;
-                }
-            }
-            argvals[pos] = saved;
-            if (count != 1) { allok = false; break; }
-            vm.push_back(onlymatch);
+        if (!dispatches(pos, et, isref, false, vm)) {
+            vector<MatchInfo> unused;
+            withdefaults = withdefaults || dispatches(pos, et, isref, true, unused);
+            continue;
         }
-        if (!allok) continue;
         if (found >= 0)
             Error(c, cat("call to ", name, " could dispatch on more than one argument "
                          "(v1 allows a single dispatch position)"));
@@ -585,7 +736,12 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
         enumtype = et;
         byref = isref;
     }
-    if (found < 0) return Val {};
+    if (found < 0) {
+        if (withdefaults)
+            Error(c, cat("call to ", name, " dispatches on a variant only with every argument "
+                         "written: a dispatched call passes no case's defaults (§8.2)"));
+        return Val {};
+    }
     if (ClassOf(enumtype) == SC_RESIZABLE)
         Error(c, "dispatching a resizable ADT payload is not supported by the C backend "
                  "yet; match its tag without a payload binder, or use a standalone "

@@ -106,6 +106,8 @@ fn bounded<F: fn(i64)>(n: i64) { F(n); }
 fn bare_bound<F>(n: i64) { F(n); }
 fn multi_ret(a: i64) -> i64, bool { return a, a > 0; }
 fn multi_ret_nonfixed(n: i64) -> u8[], i64 { return "x", n; }
+fn with_defaults(a: i64, b: i64 = N * 2, s: const u8[:] = "s", p: Slot2 = Slot2 { v: -1 },
+                 k: i64 = { let t = N; t + 1 },) -> i64 { a + b + s.len + p.v + k }
 recursive fn fact(n: i64) -> i64 { if n <= 1 { 1 } else { n * fact(n - 1) } }
 thread_fn worker_pa(id: i64) {
     qput(id);
@@ -236,6 +238,7 @@ fn calls_and_ufcs() {
     let u = typed_generic(1.0, 2.0);
     print(t);
     print(u);
+    print(with_defaults(1), " ", 2.with_defaults(3, "abc"));
     var b: i64[>..<] = [];
     b.push(1);
     b.append([2, 3]);

@@ -306,8 +306,11 @@ inline void Call::Dump(string &s, int ind) const {
         s += ">";
     }
     s += "(";
+    auto first = true;
     for (size_t i = 0; i < args.size(); i++) {
-        if (i) s += ", ";
+        if (dumpwritten && IsDefaultArg(i)) continue;
+        if (!first) s += ", ";
+        first = false;
         args[i]->Dump(s, ind);
     }
     s += ")";
@@ -565,6 +568,10 @@ inline void FnDecl::Dump(string &s, int ind) const {
         if (sf->params[i].isvar) s += "var ";
         s += sf->params[i].name;
         if (sf->params[i].type) { s += ": "; sf->params[i].type->Dump(s); }
+        if (sf->params[i].defaultval) {
+            s += " = ";
+            sf->params[i].defaultval->Dump(s, ind);
+        }
     }
     s += ")";
     if (sf->has_rets) {

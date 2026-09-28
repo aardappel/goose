@@ -184,6 +184,12 @@ struct TypeCheck {
         Line callline;               // Call site, for instantiation chain diagnostics.
         bool isfunval = false;
         bool isdefault = false;    // Lexically isolated, but caller values remain live.
+        // A parameter default's (§7.1): the function, which parameter, and
+        // for a nested function its declaration site, whose names the
+        // default may not use (DefaultScopeName).
+        SFunction *defaultfn = nullptr;
+        int defaultparam = -1;
+        DeclSite *defaultsite = nullptr;
         // Calls into a recursive cycle this frame has been inside so far, and
         // where it made the latest (JoinCycle).
         int cyclecalls = 0;
@@ -429,6 +435,12 @@ struct TypeCheck {
         for (auto &f : frames) chain += f.sf && !f.isfunval;
         for (auto i = (int)frames.size() - 1; i > 0; i--) {
             auto &f = frames[i];
+            if (f.defaultfn) {
+                Append(s, "\n  in the default of parameter ",
+                       f.defaultfn->params[f.defaultparam].name, " of ", f.defaultfn->qname,
+                       ", for the call at ", Where(f.callline));
+                continue;
+            }
             if (!f.sf || f.isfunval) continue;
             nth++;
             if (chain > MAXCHAIN && nth > MAXCHAIN / 2 && nth <= chain - MAXCHAIN / 2) {
@@ -771,6 +783,17 @@ struct TypeCheck {
     // for each of them; instantiating t as FieldRuns does.
     template<typename F> bool AnyField(TypeExpr *t, F f) { return AnyFieldOf(FieldRuns(t), f); }
     template<typename F> void EachField(TypeExpr *t, F f) { EachFieldOf(FieldRuns(t), f); }
+    // A default is checked where it runs, in a frame of its own (§3.2,
+    // §7.1): it names what its declaration would at the top level, with
+    // `env`'s type bindings, and none of the locals of the code it runs in,
+    // whose values stay live and whose effects it shares. A parameter's
+    // default gives the call it is part of as `callline`; a field default's
+    // frame names none and is part of the construction's frame (JoinCycle).
+    struct DefaultScope {
+        TypeCheck &tc;
+        DefaultScope(TypeCheck &t, FnSpec *env, Line callline);
+        ~DefaultScope() { tc.frames.pop_back(); }
+    };
     Val CheckDefaultInit(Node *&n, TypeExpr *ft, TypeExpr *owner);
     Call *DefaultCall(TypeExpr *t, Line line);
     SizeClass ClassOf(TypeExpr *t);
@@ -1142,7 +1165,9 @@ struct TypeCheck {
         ~PathScope() { tc.argpath = saved; }
     };
     void BindBranchesByRef(vector<Node *> &argnodes, vector<Val> &argvals,
-                           const vector<TypeExpr *> &paramtypes, int skip = -1);
+                           const vector<TypeExpr *> &paramtypes, int skip = -1,
+                           size_t end = SIZE_MAX);
+    void BindBranchByRef(Node *&n, Val &v, TypeExpr *pt);
     Val CheckInferredResult(Node *&n, FnSpec *tspec);
     // A parameter that takes the value -- a slice, or a fixed-class value
     // that a non-fixed one constructs by copy (an array of another kind
@@ -1235,6 +1260,9 @@ struct TypeCheck {
         vector<TypeExpr *> paramtypes;  // Concrete, one per declared parameter.
         vector<int> litparams;          // Literal arguments to type variables (§7.7).
         FnSpec *env = nullptr;          // Lexical parent for nested functions.
+        // The parameters the call's arguments bind, in order; the rest take
+        // their defaults (§7.1).
+        size_t nwritten = 0;
     };
 
     // Literal parameters (§7.7). A literal at a call site is checked against
@@ -1259,7 +1287,18 @@ struct TypeCheck {
     Val CheckUfcsCall(Call *c, Dot *d);
     Val ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *env, string_view name, Val *preval,
                     Node *&prenode, bool *nomatch = nullptr);
-    bool TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, MatchInfo &mi, string &why);
+    // `defaults`: the call may leave out parameters that have a default
+    // (§7.1), which ResolveCall then passes. Tag dispatch and rendering
+    // hooks give every argument.
+    bool TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, MatchInfo &mi, string &why,
+                  bool defaults = false);
+    FnSpec *ParamDefaultEnv(const MatchInfo &mi);
+    void AddParamDefaults(Call *c, MatchInfo &best, vector<Node *> &argnodes,
+                          vector<Val> &argvals, bool receiver, FnSpec *env);
+    template<typename F> void InParamDefault(Call *c, const MatchInfo &mi, FnSpec *env,
+                                             size_t param, F f);
+    void DefaultScopeName(string_view name, Node *at, bool fnonly);
+    void RefArg(Node *&a, Val &v);
     TypeExpr *NaturalType(const Val &av);
     TypeExpr *UnifyArg(TypeExpr *pt, Val &av, vector<pair<string_view, TypeExpr *>> &b, int &tier);
     TypeExpr *UnifyArgRaw(TypeExpr *pt, Val &av, vector<pair<string_view, TypeExpr *>> &b,

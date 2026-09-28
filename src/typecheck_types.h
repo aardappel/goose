@@ -123,6 +123,18 @@ inline EnumInst *TypeCheck::GetEnumInst(TypeExpr *t) {
     return inst;
 }
 
+inline TypeCheck::DefaultScope::DefaultScope(TypeCheck &t, FnSpec *env, Line callline) : tc(t) {
+    Frame f;
+    f.spec = tc.CurRealFrame().spec;
+    f.lexspec = env;
+    f.isfunval = true;  // Effects belong to the caller, lexical lookup does not.
+    f.isdefault = true;
+    f.scopebase = (int)tc.scopes.size();
+    f.varbase = (int)tc.vars.size();
+    f.callline = callline;
+    tc.frames.push_back(f);
+}
+
 // Defaults are checked at their execution sites, after the surrounding
 // globals have initialized, with the actual destination and live values.
 inline Val TypeCheck::CheckDefaultInit(Node *&n, TypeExpr *ft, TypeExpr *owner) {
@@ -134,17 +146,8 @@ inline Val TypeCheck::CheckDefaultInit(Node *&n, TypeExpr *ft, TypeExpr *owner) 
     else
         BindGenerics(t->enu->en->generics, t->enu->args, "enum", t->enu->en->name,
                      n->line, env->bindings);
-    Frame f;
-    f.spec = CurRealFrame().spec;
-    f.lexspec = env;
-    f.isfunval = true;  // Effects belong to the caller, lexical lookup does not.
-    f.isdefault = true;
-    f.scopebase = (int)scopes.size();
-    f.varbase = (int)vars.size();
-    frames.push_back(f);
-    auto v = CheckValue(n, ft);
-    frames.pop_back();
-    return v;
+    DefaultScope ds(*this, env, Line {});
+    return CheckValue(n, ft);
 }
 
 inline Call *TypeCheck::DefaultCall(TypeExpr *t, Line line) {

@@ -326,6 +326,7 @@ struct GenericParam {
 struct Param {
     string_view name;
     TypeExpr *type = nullptr;   // Null = untyped, i.e. generic.
+    Node *defaultval = nullptr; // What a call leaving the argument out passes (§7.1).
     bool isvar = false;
 };
 
@@ -747,6 +748,12 @@ NODE(Call)
     vector<pair<TypeExpr *, FnSpec *>> fmtspecs;
     vector<Call *> fmtcontexts; // One immutable hook set per rendered argument.
     bool standalone = false;            // A whole statement, initializer or assignment rhs (§5.1).
+    // Typecheck: the defaults of the trailing parameters the call leaves out
+    // (§7.1), `ndefaults` fresh clones in args from args[firstdefault] on,
+    // where the arguments would be. A diagnostic prints the call without
+    // them, and checking the call again starts from it as written.
+    int firstdefault = 0;
+    int ndefaults = 0;
     // free_slice/realloc_slice: the slice handed back is not provably the pool's,
     // so codegen checks at run time that it lies inside the pool (§5.4).
     bool poolcheck = false;
@@ -778,6 +785,10 @@ NODE(Call)
     }
     void SetArgNodes(const vector<Node *> &an) {
         for (size_t i = 0; i < an.size(); i++) SetArgNode(i, an[i]);
+    }
+    // Whether args[i] is one of those defaults.
+    bool IsDefaultArg(size_t i) const {
+        return (int)i >= firstdefault && (int)i < firstdefault + ndefaults;
     }
 NODE_END
 

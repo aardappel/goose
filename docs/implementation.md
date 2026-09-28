@@ -383,6 +383,8 @@ construction and optimization checks as an explicit initializer. The
 checked expressions are part of that construction's tree, including
 `default<T>()` and slice-pool initialization. Unused defaults are checked
 when a construction first uses them, not merely on type instantiation.
+A parameter's default is checked in the same kind of frame
+(`DefaultScope`), at each call leaving it out (§3.12).
 
 ### 3.3 Values, lvalues, and reference transparency
 
@@ -1356,6 +1358,31 @@ specialization; passing it on as a literal records a `LitFlow`;
 those records after the whole program is checked. Codegen passes the
 parameter at its nominal type and casts at each use.
 
+**Parameter defaults** (§7.1): `TryMatch` binds the written arguments to
+the leading parameters (`MatchInfo::nwritten`); function values for the
+leftover generics may follow as few as the parameters without a default,
+and each parameter left out has the type the arguments and explicit type
+arguments give it, so a default decides no type variable and plays no part
+in ranking. `AddParamDefaults` clones each missing default into
+`Call::args` where its argument would be (`firstdefault`, `ndefaults`) and
+checks it as a written argument is checked -- in the discovery phase for the
+specialization's key, where `UnifyArg` must accept it at its parameter's
+type, and against its parameter in phase 2 -- but in a frame of its own
+(`InParamDefault`, the `DefaultScope` a field default gets): its type
+bindings are the function's own and the enclosing functions', with no
+function values (`ParamDefaultEnv`), its lookups hide every local of the
+calling code, and its effects and the values live around it are the
+caller's, as a written argument's are. `DefaultScopeName` rejects a name the
+declaration's own scope would give a parameter, a type parameter bound to a
+function value, or, for a nested function, a variable or function of its
+`DeclSite`; a default leading to a call that takes it again is an error
+rather than an endless check. `CheckCall` erases the inserted defaults
+before it checks a call again, so every check (an argument's two phases, a
+loop's passes, a cycle's rounds) resolves the call as written; `Call::Clone`
+drops them, and a diagnostic prints the call without them (`dumpwritten`).
+Tag dispatch and rendering hooks give every argument (`TryMatch`'s
+`defaults` off). Later passes see ordinary arguments.
+
 **Tag dispatch** (`TryDispatch`, §8.2): for each argument position holding an
 enum (or a reference to one), every variant type is tried against the
 overload set and exactly one candidate must match per variant; one such
@@ -1363,7 +1390,8 @@ position is allowed; each arm is specialized, return counts and types and
 the non-dispatch parameter types must agree; a fixed-mode scrutinee
 dispatches by value even through a reference; the result's provenance is the
 merge of the arms' (deeper root, exact only when the same, writable only if
-all are).
+all are). The cases get every argument written: a call that would dispatch
+only by leaving parameters to their defaults is an error.
 
 **Nested functions** (`DeclareLocalFn`, §7.5): checking a declaration
 records a `DeclSite` for the function, under the environment declaring it

@@ -162,6 +162,20 @@ fn divide(a: i64, b: i64) -> i64, bool {
 let q, ok = divide(7, 2);
 ```
 
+Trailing parameters can have defaults, which a call may leave out:
+
+```goose
+fn limit(x: i64, lo: i64 = 0, hi: i64 = 100) -> i64 {
+    if x < lo { lo } else if x > hi { hi } else { x }
+}
+
+print(limit(250), " ", limit(-5, -10));   // 100 -5
+```
+
+A default is evaluated at each call that leaves it out. It names what a
+top-level declaration can — globals, constants, functions — and never the
+caller's variables, whatever their names.
+
 Three arithmetic rules need particular attention:
 
 **Arithmetic happens at the operands' own width.** `u8 + u8` is an 8-bit add.

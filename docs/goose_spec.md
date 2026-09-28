@@ -1389,6 +1389,7 @@ element just as reaching the end of the body does.
 fn name(a: i64, var b: f64, xs: i32[:]) -> i64 { ... }
 fn generic<T>(a: T, b: T) -> T { ... }
 fn also_generic(a, b) { ... }        // untyped params are generic
+fn scaled(a: i32, b: i32 = 0, c: f32 = 1.0) -> f32 { ... }   // scaled(2) is scaled(2, 0, 1.0)
 ```
 
 * Free functions only. No methods, no impl blocks. UFCS: `x.f(a)` is exactly
@@ -1408,11 +1409,39 @@ fn also_generic(a, b) { ... }        // untyped params are generic
   it; a reference to a fixed-size value is returned as its pointee. A part of
   the function's own local, or of a temporary, dies with it, so it is
   returned by neither: `return copy(x)`.
+* A trailing parameter may declare a **default value**, `c: f32 = 1.0`: the
+  parameters after one with a default have one too, and one with a default
+  has a type (an untyped parameter's is its argument's). A call may leave
+  out any number of the trailing parameters that have defaults; each one
+  left out takes its default, evaluated at that call after the written
+  arguments, in parameter order, and anew each time: `scaled(2)` above is
+  `scaled(2, 0, 1.0)`. The default is a value of its parameter's type as the
+  written arguments and any explicit type arguments make it, adapting as an
+  argument would — `fn scale<T>(x: T, by: T = 2)` doubles a `u8` — and is
+  an error at a call where it does not fit: `scale(1.5)` is one, since an
+  `f64` needs `2.0`. It decides no type variable itself: `fn f<T>(a: i64,
+  b: T = 0)` is called `f<i32>(1)` to leave `b` out. Each call leaving a
+  default out checks it there, as the argument written in its place. A
+  named function passed as a static function value keeps its defaults
+  (§7.6); a block literal's parameters, a `thread_fn`'s (§11.2) and a
+  tag-dispatched call (§8.2) have none.
+* A default names what a top-level declaration would, in the declaration's
+  namespace: globals, constants, top-level functions and types, and the
+  function's type parameters as the call binds them. It never sees a local
+  of the code calling the function, whatever its name. A name the
+  declaration's own scope makes something else is an error in a default
+  rather than the global of that name: a parameter of the function (`::x`
+  names the global `x`), a type parameter bound to a function value (§7.6),
+  and for a nested function (§7.5) a variable or nested function around its
+  declaration.
 * Overloading by parameter types is allowed; resolution is static: the
   unique concrete exact match wins, then a generic exact match, then a
   match requiring coercion (array→slice §3.10, literal fit §3.1, implicit
   widening §6.3). A candidate's rank is its worst argument rank; ties are
   errors, without further specificity or declaration-order tiebreaking.
+  A default is no argument: a candidate the call leaves parameters of to
+  their defaults ranks by the written arguments alone, so `f(a, b = 0)`
+  beside `f(a)` makes every one-argument call of `f` ambiguous.
   Only if no ordinary candidate matches is tag dispatch (§8.2) tried.
   The expected result type neither selects an overload nor binds generics.
 * Multiple return values: `fn f() -> A, B`; received as `let a, b = f();`.
@@ -1442,7 +1471,9 @@ constructs the result in the parameter's slot (§4.3). Array→slice at call
 sites (§3.10) is the one shape change, cheap and copy-free by definition.
 A by-value non-fixed parameter reserves the statically assigned stack region
 for the value at the call site, constructs it there, and the callee owns it
-like any local.
+like any local. A parameter the call leaves to its default (§7.1) takes it
+the same way, as the argument written in its place: `xs: T[>..] = []` builds
+an empty array in the slot, and `r: i64& = counter` binds the global.
 
 ### 7.3 Return values and result placement
 
@@ -1554,7 +1585,12 @@ A function argument must be a function name (including a bound generic
 function parameter) or a block literal. Runtime expressions producing a
 function value, such as a call, `if`, `match`, `block`, or `loop`, are
 rejected. Evaluate runtime work in ordinary statements before the call;
-use locals when its ordering with other arguments matters.
+use locals when its ordering with other arguments matters. A named
+function keeps its parameter defaults (§7.1) as a value: `F(x)` may leave
+out what it declares defaults for. A block's parameters have none. A
+function value passed as an argument may follow fewer arguments than the
+callee has parameters where the rest have defaults: `each_step(5, show)`
+for `fn each_step<F>(n: i64, step: i64 = 1)`.
 
 Function values capture enclosing locals per §7.5, and cannot escape:
 storing them, returning them, or putting them in data is a compile error.
@@ -1853,6 +1889,9 @@ without depending on a list of names to avoid. A namespaced declaration
 no namespaced name coincides with a global one. An `extern fn`'s own symbol is
 the exception: that is the C name the declaration gives, unchanged.
 
+An `extern fn`'s trailing parameters may have defaults (§7.1), which each call
+passes: the C function gets every argument.
+
 What crosses (layouts per C.2): the integer and float scalars and `bool`;
 any flat fixed-size value (including structs, fixed and static-capacity
 limited arrays, and fixed-mode ADTs), by value as its packed C type;
@@ -1940,6 +1979,9 @@ let a = area(s);     // s: Shape — dispatches on the tag, like a match
   variant parameters only.
 * Dispatch is on one parameter position (v1 rule: multi-position dispatch is
   an error). Other parameters pass through unchanged.
+* A dispatched call writes every argument: it evaluates them once, before
+  the tag picks the case, so no case's defaults (§7.1) are passed, and a
+  call that would dispatch only by leaving parameters to them is an error.
 
 This is the language's "virtual function" idiom, without vtables or
 inheritance, and it keeps the closed-world exhaustiveness guarantee.
@@ -2474,7 +2516,9 @@ the Linda tuple-space / coordination style.
   initializers are static data (§1.2), read-only and therefore shared as
   they are.
 * Args and queue elements must be **flat** types (§1.1); values are copied
-  in and out, which is cheap because Goose values are contiguous.
+  in and out, which is cheap because Goose values are contiguous. A
+  `thread_fn`'s parameters have no defaults (§7.1): `thread_spawn` passes
+  every argument.
 * **Typed queues**: conceptually one queue per flat element type;
   `qput(v)`, `qget<T>() -> T` (blocking), `qpoll<T>() -> T, bool`
   (non-blocking; bool = got one; on a miss the value is T's zero value —
@@ -2919,7 +2963,9 @@ fndecl      := ("extern" strlit?)? "recursive"? ("fn" | "thread_fn") declname
                generics? "(" params? ")" ("->" rettypes)? (blockexpr | ";")
                                                  // nested: ident only
 params      := param ("," param)* ","?
-param       := "var"? ident (":" type)?          // untyped => generic
+param       := "var"? ident (":" type ("=" expr)?)?
+                                                 // untyped => generic; defaults
+                                                 // trailing, not in a block (§7.1)
 rettypes    := type ("," type)*                  // no parens in declarations
 globaldecl  := ("reusable" ("[" "]")?)? ("let" | "var" | "const") declname (":" type)? "=" expr ";"
 

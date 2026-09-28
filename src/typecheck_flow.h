@@ -405,8 +405,45 @@ inline VarDef *TypeCheck::LookupVar(string_view name, string_view ns, Node *use)
         return true;
     });
     if (found) return found;
+    if (use) DefaultScopeName(name, use, false);
     auto g = ast.LookupGlobal(name, ns);
     return g && !g->defs.empty() ? g->defs[0] : nullptr;
+}
+
+// A parameter default names what a top-level declaration would (§7.1). The
+// scope it is written in makes some names something else: a parameter of
+// its function, a type parameter bound to a function value, and for a
+// nested function a variable or nested function around the declaration.
+// Such a name in a default is an error, not the global or function of that
+// name. `fnonly`: a function is looked up (a member call), which no
+// variable of the name would be.
+inline void TypeCheck::DefaultScopeName(string_view name, Node *at, bool fnonly) {
+    if (name.find("::") != string_view::npos) return;
+    auto fi = (int)frames.size() - 1;
+    while (fi >= 0 && !frames[fi].decl && !frames[fi].defaultfn) fi = frames[fi].lexframe;
+    if (fi < 0 || !frames[fi].defaultfn) return;
+    auto &fr = frames[fi];
+    auto sf = fr.defaultfn;
+    auto error = [&](const string &what) {
+        Error(at, cat("the default of parameter ", sf->params[fr.defaultparam].name, " of ",
+                      sf->qname, " names ", what, ", which a default cannot: it names what a "
+                      "top-level declaration can (§7.1)"));
+    };
+    if (!fnonly) {
+        for (auto &p : sf->params)
+            if (p.name == name) error(cat("parameter ", name));
+        for (auto &g : sf->generics) {
+            auto istype = false;
+            for (auto &[n, t] : fr.lexspec->bindings) istype = istype || n == g.name;
+            if (g.name == name && !istype) error(cat("function value ", name));
+        }
+    }
+    if (!fr.defaultsite) return;
+    if (!fnonly)
+        for (auto [v, i] : fr.defaultsite->vars)
+            if (v->name == name) error(cat(name, ", a local where ", sf->name, " is declared"));
+    for (auto [f, env] : fr.defaultsite->fns)
+        if (f->name == name) error(cat(name, ", a nested function"));
 }
 
 // Whether the scope a nested function is declared in has ended: its value
@@ -1308,7 +1345,7 @@ inline void TypeCheck::CheckGuard(Guard *g) {
 }
 
 inline void TypeCheck::ImplicitEmptyReturn(Node *at) {
-    if (frames.back().isdefault) Error(at, "guard shorthand cannot exit a field default");
+    if (frames.back().isdefault) Error(at, "guard shorthand cannot exit a default");
     auto &f = CurRealFrame();
     if (!f.sf) Error(at, "guard shorthand cannot exit the top level");
     auto spec = f.spec;

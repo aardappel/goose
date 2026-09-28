@@ -45,7 +45,8 @@ fn main() {
   the whole overload set; sets do not merge across namespaces, so a
   namespaced `hash` overload calls the global integer ones as `::hash(k.a)`.
   A generic body resolves names in its definition's namespace, not the
-  instantiating caller's.
+  instantiating caller's, and so does a field or parameter default, whatever
+  the namespace of the construction or call that uses it.
 * UFCS lookup follows those same function-name rules for the namespace the
   call is written in. A caller in another namespace uses
   `image::brightness(p)` explicitly; associated-namespace lookup and
