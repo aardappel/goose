@@ -1131,9 +1131,7 @@ inline Node *MatchExpr::Opt(Optimizer &o) {
         };
         MatchArm *sel = nullptr;
         for (auto &arm : arms) {
-            auto hit = arm.pat.kind == P_WILDCARD ||
-                       ((arm.pat.kind == P_INT || arm.pat.kind == P_RANGE) && inrange(arm));
-            if (hit) { sel = &arm; break; }
+            if (arm.pat.kind == P_WILDCARD || inrange(arm)) { sel = &arm; break; }
         }
         if (sel && (exprtype->kind == TY_VOID ||
                     Optimizer::SameType(sel->body->exprtype, exprtype))) {

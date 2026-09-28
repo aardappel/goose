@@ -348,11 +348,12 @@ enum PatKind { P_WILDCARD, P_VARIANT, P_INT, P_RANGE };
 
 struct Pattern {
     PatKind kind = P_WILDCARD;
-    string_view variant;        // P_VARIANT: variant name.
+    string_view variant;        // P_VARIANT: a bare name, which in an integer match
+                                // names a constant (lo) instead of a variant.
     string_view binder;         // P_VARIANT: optional payload binding.
     bool byref = false;         // `Variant &b`: bind the payload by reference (§8.1).
-    Node *lo = nullptr;         // P_INT / P_RANGE bounds (const exprs).
-    Node *hi = nullptr;
+    Node *lo = nullptr;         // P_INT / P_RANGE bounds, P_VARIANT's name: literals and
+    Node *hi = nullptr;         // unchecked Idents, either one maybe negated.
 };
 
 struct MatchArm {

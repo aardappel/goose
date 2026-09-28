@@ -2389,7 +2389,7 @@ inline bool MatchExpr::BceWalk(BCE &b) {
     auto anyfell = false;
     for (auto &arm : arms) {
         b.flow = base;
-        if (admissible && (arm.pat.kind == P_INT || arm.pat.kind == P_RANGE)) {
+        if (admissible && arm.pat.kind != P_WILDCARD) {
             b.AddFactB(BCE::Zero(), st.b, BCE::SatSub(st.off, arm.lo));
             b.AddFactB(st.b, BCE::Zero(), BCE::SatSub(arm.hi, st.off));
         }

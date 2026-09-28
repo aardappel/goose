@@ -77,8 +77,9 @@ fn main() {
 
 * Lexer: the `namespace` keyword and the `::` token. Parser: the directive,
   qualified declaration names, and qualified references wherever a
-  declaration can be named (expressions, types, `return ... from`, and the
-  pool of a `T&<w in pool>` type). A qualified reference is interned as one
+  declaration can be named (expressions, types, `return ... from`, the
+  pool of a `T&<w in pool>` type, and the constants of an integer match's
+  patterns). A qualified reference is interned as one
   string (`Ident::name` is `"image::Pixel"` as written), so it can never
   coincide with a local's name and every existing lexical comparison stays
   correct; every reference also records the namespace it was written in
@@ -109,7 +110,8 @@ fn main() {
   fallback and shadowing, imported main handling, custom formatting across
   namespaces, a dictionary with a namespaced key and global hash bridge,
   same-leaf `return from` targets, and collision-free generated C symbols;
-  `test/errors*/ns_*.goose` cover the diagnostics.
+  `test/syntax/match_constants.goose` names another namespace's constants in
+  match patterns; `test/errors*/ns_*.goose` cover the diagnostics.
 
 This extension changes name resolution. It does not add separate compilation,
 package resolution, privacy, re-exports, or first-class module values.

@@ -654,6 +654,21 @@ fn name(s: Shape) -> u8[:] {
 }
 ```
 
+A match on an integer takes literals, half-open ranges and named constants
+(`let` globals, `ns::NAME` from another namespace), so a program's own
+codes read as names there too. Whether a bare name is a variant or a
+constant is up to the scrutinee's type:
+
+```goose
+let GROUND = 0;
+let SHALLOW = 1;
+let DEEP = 4;
+
+fn terrain(t: i64) -> u8[:] {
+    match t { GROUND => "ground", SHALLOW..DEEP => "water", _ => "rock" }
+}
+```
+
 The other form is **case functions**: one overload per variant, called with
 the enum. This is the virtual-call idiom, without the vtable:
 

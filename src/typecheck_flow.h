@@ -989,20 +989,40 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
     } else if (IsIntT(LoadType(st))) {
         auto sit = LoadType(st)->intstorage;
         auto haswild = false;
+        // A pattern's value: a literal or a named constant, which is a let
+        // or const global, as an array size names (§11.1). A local of the
+        // name hides the global here as it does anywhere else.
+        auto PatternValue = [&](Node *n, bool &uns) {
+            auto u = Is<Unary>(n);
+            if (auto id = Is<Ident>(u ? u->child : n)) {
+                if (auto vd = LookupVar(id->name, id->ns); vd && !vd->isglobal)
+                    Error(n, cat("match pattern ", id->name, " names a local variable, "
+                                 "not a constant"));
+                auto g = ast.LookupGlobal(id->name, id->ns);
+                if (!g) Error(n, cat("unknown constant ", id->name, " in an integer match"));
+                if (g->isvar)
+                    Error(n, cat("match pattern ", id->name, " names a var global, "
+                                 "not a constant"));
+            }
+            Val v;
+            bool literal;
+            set<VarDecl *> visiting;
+            if (!ConstIntValue(n, v, literal, visiting))
+                Error(n, "constant integer expression expected for match pattern");
+            uns = v.uns;
+            return v.ival;
+        };
         for (auto &arm : m->arms) {
             if (arm.pat.kind == P_WILDCARD) { haswild = true; DoArm(arm, nullptr); continue; }
-            if (arm.pat.kind == P_VARIANT)
-                Error(arm.body, cat("unknown pattern ", arm.pat.variant,
-                                    " in an integer match"));
-            arm.lo = ConstIntOrError(arm.pat.lo, "match pattern");
-            auto end = arm.pat.kind == P_RANGE ? ConstIntOrError(arm.pat.hi, "match pattern")
-                                               : arm.lo;
+            if (arm.pat.kind == P_VARIANT && !arm.pat.binder.empty())
+                Error(arm.pat.lo, cat("constant pattern ", arm.pat.variant,
+                                      " has no payload to bind"));
+            auto ul = false, uh = false;
+            arm.lo = PatternValue(arm.pat.lo, ul);
+            auto end = arm.pat.kind == P_RANGE ? PatternValue(arm.pat.hi, uh) : arm.lo;
             // Pattern values must fit the scrutinee's type (a u64
             // scrutinee accepts any 64-bit pattern).
             if (sit != IS_U64) {
-                auto ul = Is<IntLit>(arm.pat.lo) && Is<IntLit>(arm.pat.lo)->uns;
-                auto uh = arm.pat.hi && Is<IntLit>(arm.pat.hi) &&
-                          Is<IntLit>(arm.pat.hi)->uns;
                 if (!FitsIntStorage(arm.lo, ul, sit) ||
                     (arm.pat.kind == P_RANGE && !FitsIntStorage(end, uh, sit)))
                     Error(arm.body, cat("match pattern does not fit the scrutinee "

@@ -784,37 +784,44 @@ struct Parser {
 
     Pattern ParsePattern() {
         Pattern p;
-        if (lex.tok == T_IDENT) {
-            if (lex.attr == "_") {
-                p.kind = P_WILDCARD;
-                lex.Next();
-            } else {
-                p.kind = P_VARIANT;
-                p.variant = lex.attr;
-                lex.Next();
-                if (IsNext(T_BITAND)) {
-                    // `Variant &b`: an explicit by-reference payload binding.
-                    p.byref = true;
-                    p.binder = ExpectIdent("match binding");
-                } else if (lex.tok == T_IDENT) {
-                    p.binder = lex.attr;
-                    lex.Next();
-                }
-            }
+        if (lex.tok == T_IDENT && lex.attr == "_") {
+            p.kind = P_WILDCARD;
+            lex.Next();
             return p;
         }
         p.kind = P_INT;
-        p.lo = ParsePatternInt();
+        p.lo = ParsePatternBound();
         if (IsNext(T_DOTDOT)) {
             p.kind = P_RANGE;
-            p.hi = ParsePatternInt();
+            p.hi = ParsePatternBound();
+            return p;
+        }
+        // A bare name is a variant or, in an integer match, a constant: the
+        // scrutinee's type decides (§8.1).
+        if (auto id = Is<Ident>(p.lo); id && id->name.find("::") == string_view::npos) {
+            p.kind = P_VARIANT;
+            p.variant = id->name;
+            if (IsNext(T_BITAND)) {
+                // `Variant &b`: an explicit by-reference payload binding.
+                p.byref = true;
+                p.binder = ExpectIdent("match binding");
+            } else if (lex.tok == T_IDENT) {
+                p.binder = lex.attr;
+                lex.Next();
+            }
         }
         return p;
     }
 
-    Node *ParsePatternInt() {
+    // An integer pattern's value or range bound: a literal, or the name of
+    // a constant, either one negated.
+    Node *ParsePatternBound() {
         auto line = CurLine();
         auto neg = IsNext(T_MINUS);
+        if (lex.tok == T_IDENT || lex.tok == T_COLONCOLON) {
+            Node *n = New<Ident>(line, ParseQualifiedName("match pattern"), curns);
+            return neg ? New<Unary>(line, T_MINUS, n) : n;
+        }
         if (lex.tok != T_INTLIT)
             Error(cat("integer constant expected in match pattern, found \'", TokStr(), "\'"));
         if (neg && lex.iuns && lex.ival != INT64_MIN)

@@ -1887,12 +1887,21 @@ match sexp {
     List &l  => walk(l.kids),
 }
 match n { 0 => "zero", 1..10 => "small", _ => "big" }
+match t { GROUND => "ground", world::GATE => "gate", LO..HI => "mid", _ => "other" }
 ```
 
 * Over ADTs: exhaustive over variants; `_ =>` wildcard allowed; arm binds
   the variant payload (`c: Shape.Circle` above).
 * Over integers (any integer type): constant and half-open-range arms; `_`
-  required; pattern values must fit the scrutinee's type.
+  required; pattern values must fit the scrutinee's type. A constant or a
+  range bound is an integer literal or a named constant — a `let` or
+  `const` global whose initializer is a constant expression, as an array
+  size may name (§11.1) — either one optionally negated: `GROUND`,
+  `world::GATE`, `::GATE`, `LO..HI`, `-LIMIT..0`. The name resolves as
+  any other does (§11.1): a local of that name hides the global and is no
+  constant, and neither is a `var` global. A bare name is a variant when
+  the scrutinee is an ADT and a constant when it is an integer, where it
+  binds nothing.
 * Arm binders are explicit about copy vs reference, like the rest of the
   language: `Circle c =>` binds the payload *by value* — a copy, potentially
   a large one for variable-size payloads, and not written, as a `for` copy
@@ -2947,7 +2956,8 @@ iter        := expr | expr ".." expr
 jumps       := "return" exprlist? ("from" qname)? | "break" expr? | "continue"
 matchexpr   := "match" expr "{" arm ("," arm)* ","? "}"
 arm         := pattern "=>" expr
-pattern     := ident ("&"? ident)? | "-"? intlit (".." "-"? intlit)? | "_"
+pattern     := ident ("&"? ident)? | bound (".." bound)? | "_"
+bound       := "-"? (intlit | qname)             // qname: a constant (§8.1)
 blockexpr   := "{" stmt* expr? "}"
 
 binary      := (precedence climbing; tightest → loosest)
