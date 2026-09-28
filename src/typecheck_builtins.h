@@ -1199,7 +1199,7 @@ inline bool TypeCheck::IsGrowOnlyRootVar(VarDef *r) {
 inline void TypeCheck::CheckShrinkHolders(Node *at, const string &op, VarDef *root,
                                           const string &what, TypeExpr *bound) {
     CheckHeldShrinks(at, op, root, what, false, bound);
-    VisibleVars([&](VarDef *v) {
+    ShrinkScanVars([&](VarDef *v) {
         if (v == root || !v->type) return;
         if (!IsRefOrSlice(v->type)) return;
         // A reference to the whole array (or the value holding it) is the
@@ -1394,6 +1394,7 @@ inline void TypeCheck::ShrinkThrough(Node *at, bool standalone, const string &ve
                                                     " may point at");
             ShrinkGrowShrink(at, cat(verb, " ", recv), t.root, what, bound, balance);
         }
+        NoteShrinkEvent(at, t.root, bound, cat(verb, " ", recv));
     }
 }
 
@@ -1488,7 +1489,7 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
         if (name.find('\n') != string::npos) name = "an earlier expression value";
         for (auto &w : vs) note(w, name);
     });
-    VisibleVars([&](VarDef *v) {
+    ShrinkScanVars([&](VarDef *v) {
         if (v == root || !v->type) return;
         auto t = v->type;
         vector<View> vs;
@@ -1690,6 +1691,7 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
         } else {
             NoteShrink(h.root, h.bound, judged);
         }
+        NoteShrinkEvent(at, h.root, h.bound, op);
     };
     // A shrink of the `arr` at root, and, where root is inexact or only
     // bounds it, of every other array it may be (ShrinkTargets). An
@@ -1841,10 +1843,19 @@ inline void TypeCheck::NoteGrow(Node *at, const Roots &roots, const string &what
     }
 }
 
+// A shrink of the array at root, or of one of its type that root bounds,
+// logged with the growths: a value under construction in the array meanwhile
+// would be freed under it (CheckGrowsSince).
+inline void TypeCheck::NoteShrinkEvent(Node *at, VarDef *root, TypeExpr *bound,
+                                       const string &what) {
+    if (!root || IsTemp(root)) return;
+    cur.growlog.push_back({ at, root, !bound, what, true });
+}
+
 // The value built at the top or in a slot of the array `built` may be, by
 // the expression checked since cur.growlog was `base` long: none of the growths
 // logged meanwhile may have been of that array, or it would have landed
-// inside the value.
+// inside the value, and none of the shrinks.
 inline void TypeCheck::CheckGrowsSince(size_t base, const Roots &built, const string &what) {
     for (auto i = base; i < cur.growlog.size(); i++) {
         auto e = cur.growlog[i];
@@ -1852,7 +1863,8 @@ inline void TypeCheck::CheckGrowsSince(size_t base, const Roots &built, const st
             auto may = MayAliasRoots(e.root, e.exact, b.root, b.exact);
             if (may == AL_NO) continue;
             auto msg = cat("cannot ", e.what, ": ", what, " is still under construction, and "
-                           "the growth would land inside it (§1.3)");
+                           "the ", e.shrink ? "shrink would free the storage it is built in"
+                                            : "growth would land inside it", " (§1.3)");
             if (may == AL_YES) Error(e.at, msg);
             growconflicts.push_back({ e.at, CurRealFrame().spec, e.root, b.root, msg });
         }

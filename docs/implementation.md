@@ -475,12 +475,17 @@ operand already evaluated to the shrink checks as its parent holds it
 (`HoldAs`: a reference or slice as it is, a holder as a reference per
 pointee, the receiver as a reference to the array or a view of its elements,
 a location as the slot alone), and `LaterOperands` names the operands not
-yet evaluated (`UsedAfter`, §3.10). A call resolving its overload is
-`discovering`: its operands' values are those its phase 2 checks, and a
-call applying its callee's summary has consumed its own operands, which the
-callee's parameter pairs judge (§3.10). A callee body checked meanwhile
-starts with an empty path (`CheckSpecBody`), the caller's statement being
-its own: the call site applies the summary against it.
+yet evaluated, and, inside the condition of an `if` or `guard`, the
+scrutinee of a `match` or the sequence of a `for`, the parts it leads to
+(`AfterHead`; `UsedAfter`, §3.10). A struct literal lays all its
+initializers out, defaults included, before checking the first
+(`CheckInits`), so each field stands at its own position among them. A call
+resolving its overload is `discovering`: its operands' values are those its
+phase 2 checks, and a call applying its callee's summary has consumed its
+own operands, which the callee's parameter pairs judge (§3.10). A callee
+body checked meanwhile starts with an empty path (`CheckSpecBody`), the
+caller's statement being its own: the call site applies the summary against
+it.
 
 ### 3.4 Roots and provenance
 
@@ -958,7 +963,9 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
 7. the shrink is recorded for the callers (`NoteShrink`: `shrinkexternals`
    for globals and captured locals, `shrinkparams` for parameters), and so
    are the views still used that only the callers can tell apart from the
-   array (`NoteLiveViews`, **Parameters' views** below).
+   array (`NoteLiveViews`, **Parameters' views** below), and it is logged
+   for the values under construction around it (`NoteShrinkEvent`,
+   **Growth during construction** below).
 
 Inside a loop, a store later in the body than the shrink is on record when
 the body is checked again (`CheckLoopPasses`, §3.7), so item 5 finds it, and
@@ -966,19 +973,24 @@ names it as reaching the shrink on the next iteration (`CarriedEvent`).
 
 **Liveness** (`UsedAfter`) is syntactic: the variable's name occurs in a
 later statement of an open block at or inside its scope, in that block's
-tail, anywhere in an enclosing loop it was declared outside of, or in an
-operand of its own statement not yet evaluated (`LaterOperands`, §3.3): a
-whole assignment's right-hand side, a call's later arguments, the arguments
-print, str and format render after the one being checked (**Format
-overloads** below); a `for` binding is always live; `MentionsName` follows
-calls of nested functions by name into their bodies. The test never depends
-on what the optimizer proves.
+tail, anywhere in an enclosing loop it was declared outside of, or in a part
+of its own statement not yet evaluated (`LaterOperands`, §3.3): a whole
+assignment's right-hand side, a call's later arguments, a literal's later
+fields, the arguments print, str and format render after the one being
+checked (**Format overloads** below), and, where the shrink is in the head
+of a construct on the path -- an `if`'s or `guard`'s condition, a `match`'s
+scrutinee, a `for`'s sequence -- the parts that head leads to (`AfterHead`;
+an else-if is on the path of its own for this); a `for` binding is always
+live; `MentionsName` follows calls of nested functions by name into their
+bodies. The test never depends on what the optimizer proves.
 
 **Grow-shrink arrays** (§5.2): `ShrinkGrowShrink` runs from anywhere (a
 local, a reference, a global, a struct's tail, whole assignment) and scans
-held temporaries and the visible reference and slice variables only
-(`CheckShrinkHolders`): references into such an array can never be stored
-(§3.5 rule 3), so checking those variables and temporaries is sufficient.
+held temporaries and the reference and slice variables in scope only
+(`CheckShrinkHolders`), inside a function value's body those of the function
+running it included (`ShrinkScanVars`): references into such an array can
+never be stored (§3.5 rule 3), so checking those variables and temporaries
+is sufficient.
 That includes a reference to a slice variable, whose slice may view the
 array: where the reference bound the slice by reference, the slice is at its
 root, or, the variable having been rebound, at an array of that root's depth;
@@ -1049,7 +1061,9 @@ what another class names, which the arguments for the two may make one array
 (an inexactly rooted argument gets a class of its own, §3.4, and a caller may
 pass its own classes on). So after the scans `NoteLiveViews` looks again at
 what is still used -- a reference or slice variable (`UsedAfter`, which
-counts the rest of the statement, `LaterOperands`), an operand still held
+counts the rest of the statement, `LaterOperands`; inside a function value's
+body, one of the function running it too, `ShrinkScanVars`, whose parameters'
+pairs are its own record's), an operand still held
 (`HeldOperands`), a grow-only holder by its store record
 (`EachHolderRoot`), and what a reference to a slice or, for a grow-only
 array, to a holder reaches -- for a view only the callers can tell apart
@@ -1126,7 +1140,7 @@ call site applies its summary against the caller's statement.
 
 **Growth during construction** (§1.3(4), §4.2). A value built in place at an
 array's top or slot is under construction while its expression is checked,
-and nothing may grow that array meanwhile: a pushed or pool-allocated
+and nothing may grow or shrink that array meanwhile: a pushed or pool-allocated
 element that is variable-size or holds relative references of either form
 (`BuiltInPlace`: `EmitPush` builds such an element in its slot, and
 `EmitAlloc` a literal of one; any other fixed-size element is evaluated
@@ -1144,17 +1158,21 @@ for, §3.4, `growexternals` for globals and captured locals, recorded per
 specialization by `NoteRootEvent` exactly as shrinks are; a callee still
 being checked contributes what its text grows, `SyntacticGrows`, the shrink
 scanner with the growth operations; a C function is taken to append to
-every builder it is handed). When the constructed expression's check ends,
-the growths logged meanwhile are judged against the constructed root
-(`CheckGrowsSince`, `MayAliasRoots`): the same root conflicts; two
-variables are distinct unless one is inexact and at or below the other's
-depth (as in the held-temporary scan); a parameter class is distinct from a
-variable of the activation named exactly, may be a global or a captured
-local, and two classes of one activation are settled once every call site
-has been seen (`growconflicts`, `ResolveGrowConflicts`): distinct only where
-both are concrete and exact (§3.4). The log is per activation
-(`CheckSpecBody` saves and clears it), so a callee's growths reach the
-caller's constructions only through the summary.
+every builder it is handed). So is every shrink, of either kind of array, as
+a `GrowEvent` with `shrink` set (`NoteShrinkEvent`: per target in
+`ShrinkThrough` for a builtin's or a whole assignment's, and in
+`ApplyCalleeShrinks` for a callee's, a balanced one included, since even a
+resize back to a mark drops the top onto the value). When the constructed
+expression's check ends, the growths and shrinks logged meanwhile are judged
+against the constructed root (`CheckGrowsSince`, `MayAliasRoots`): the same
+root conflicts; two variables are distinct unless one is inexact and at or
+below the other's depth (as in the held-temporary scan); a parameter class
+is distinct from a variable of the activation named exactly, may be a global
+or a captured local, and two classes of one activation are settled once
+every call site has been seen (`growconflicts`, `ResolveGrowConflicts`):
+distinct only where both are concrete and exact (§3.4). The log is per
+activation (`CheckSpecBody` saves and clears it), so a callee's growths and
+shrinks reach the caller's constructions only through the summary.
 
 **Uses during a whole assignment** (§4.4). The new contents are built over
 the old ones, so once the right-hand side is checked, `CheckBuiltUses`
@@ -1414,7 +1432,10 @@ binding codegen declares. `VisibleVars`, which the shrink rules and the
 read-back candidates enumerate (§3.6, §3.10), keeps the lexical parents'
 frames as the call finds them: a reference handed to the body, a later nested function's
 result or one a function value written at the call returns, can point into
-a variable the declaration does not see.
+a variable the declaration does not see. The §5.2 scan and `NoteLiveViews`
+add, inside a function value's body, the frame of the function running it
+and that frame's lexical parents (`ShrinkScanVars`): the body runs in the
+middle of one of its statements.
 
 **Function values** (`CheckFunValCall`, §7.6) are restricted by `CheckV` to
 names and block literals; runtime expressions producing them are rejected

@@ -432,7 +432,8 @@ template<typename F> void TypeCheck::HeldOperands(F f) {
 
 // Every part of the statement that runs after the point being checked: the
 // operands each node on the path has not evaluated yet, the one being
-// checked excluded.
+// checked excluded, and where the point is in the head of a construct, the
+// parts the head decides between.
 template<typename F> void TypeCheck::LaterOperands(F f) {
     for (size_t k = 0; k < cur.nodepath.size(); k++) {
         auto &e = cur.nodepath[k];
@@ -442,6 +443,31 @@ template<typename F> void TypeCheck::LaterOperands(F f) {
             auto at = i++;
             if (at > e.pos || (last && at == e.pos)) f(ch);
         });
+        if (!last) AfterHead(e.node, cur.nodepath[k + 1].node, f);
+    }
+}
+
+// What construct n runs after its head -- an if's or a guard's condition, a
+// match's scrutinee, a for's sequence, a while's condition -- where `next`
+// is the node being checked inside it: while that is the head, every part
+// the head leads to; while it is one of those parts, nothing more of n, since
+// the other branches do not run.
+template<typename F> void TypeCheck::AfterHead(Node *n, Node *next, F f) {
+    if (auto fi = Is<IfExpr>(n)) {
+        if (next != fi->cond) return;
+        f(fi->thenb);
+        if (fi->elseb) f(fi->elseb);
+    } else if (auto m = Is<MatchExpr>(n)) {
+        if (next != m->scrutinee) return;
+        for (auto &arm : m->arms) f(arm.body);
+    } else if (auto fl = Is<ForLoop>(n)) {
+        auto r = Is<RangeExpr>(fl->iter);
+        if (r && next == r->lo) f(r->hi);
+        if (next == fl->iter || (r && (next == r->lo || next == r->hi))) f(fl->body);
+    } else if (auto w = Is<While>(n)) {
+        if (next == w->cond) f(w->body);
+    } else if (auto g = Is<Guard>(n)) {
+        if (next == g->cond && g->elseb) f(g->elseb);
     }
 }
 
@@ -1381,15 +1407,21 @@ inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fi
             else Error(sl, cat("missing initializer for field ", fields[i].name, " of ", what,
                                " (it has no default)"));
         }
-        if (Is<SelfRef>(fi.val)) CheckSelfInit(fi.val, ftypes[i], selft);
-        else {
-            SlotScope ss(*this, true);
-            auto fv = fi.fromdefault ? CheckDefaultInit(fi.val, ftypes[i], selft)
-                                     : CheckValue(fi.val, ftypes[i]);
-            NoteLitElem(deep, fi.val, fv, ftypes[i]);
-        }
         sl->inits.push_back(fi);
         sl->fieldindices.push_back(i);
+    }
+    // Every initializer is in place before any is checked: each is an
+    // operand of the literal, the ones before it held and the ones after it
+    // still to run (HeldOperands, LaterOperands).
+    for (size_t k = 0; k < sl->inits.size(); k++) {
+        auto &fi = sl->inits[k];
+        auto ft = ftypes[sl->fieldindices[k]];
+        if (Is<SelfRef>(fi.val)) CheckSelfInit(fi.val, ft, selft);
+        else {
+            SlotScope ss(*this, true);
+            auto fv = fi.fromdefault ? CheckDefaultInit(fi.val, ft, selft) : CheckValue(fi.val, ft);
+            NoteLitElem(deep, fi.val, fv, ft);
+        }
     }
     return deep;
 }

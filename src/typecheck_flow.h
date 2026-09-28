@@ -834,6 +834,9 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
     NarrowCond(x->cond, false);
     PathScope ps(*this, onpath ? x->elseb : nullptr);
     if (auto ei = Is<IfExpr>(x->elseb)) {
+        // On the node path, whose later parts are what its own condition
+        // decides between (AfterHead).
+        NodeScope ns(*this, ei);
         ev = CheckIf(ei, expected, wantvalue);
     } else if (x->elseb) {
         ev = CheckBlockVal((Block *)x->elseb, expected, wantvalue, SK_PLAIN);

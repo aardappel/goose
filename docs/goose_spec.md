@@ -69,8 +69,9 @@ For each data stack:
    disjoint (sequential) lifetimes reuse stacks.
 4. A *variable* value may be buried under later allocations on the same stack
    once its construction completes. While a value is under construction on
-   stack S, nothing else may allocate on S; construction of nested variable
-   parts proceeds in order as part of the same construction.
+   stack S, nothing else may allocate on S, nor may the resizable value it is
+   being added to shrink; construction of nested variable parts proceeds in
+   order as part of the same construction.
 5. Fixed-size values are placed on the native stack / in registers whenever
    possible; the length header of an outermost resizable local likewise
    lives in the owning frame, not on the data stack (Appendix C).
@@ -951,16 +952,21 @@ or to a holder counts as what it refers to: while the reference is live,
 so is whatever that slice or holder may refer into.
 
 A variable is live at the shrink when it can be read again afterwards:
-it is named later in its own block or in an enclosing block it was
-declared in, or anywhere in a loop that contains the shrink and that the
-variable was declared outside of, since the next iteration runs the rest of
-the body again. "Named" is syntactic — any mention, a call of a nested
-function that mentions it included — so the test never depends on what
-the optimizer proved. A reference whose last use is before the shrink is
-dead, and its block need not end: `let w = line[..5]; print(w);
-line.clear();` is fine, and a scratch buffer refilled per iteration, or a
-stack popped between phases, hands out slices of itself freely — "reusable
-scratch" and "structure I can point into" are the same type. The operations
+it is named later in the shrink's statement — in an operand evaluated after
+it, or, where the shrink is in the condition of an `if` or `guard`, the
+scrutinee of a `match` or the sequence of a `for`, in the parts that one
+leads to — later in its own block or in an enclosing block it was declared
+in, or anywhere in a loop that contains the shrink and that the variable was
+declared outside of, since the next iteration runs the rest of the body
+again. A function value's body runs in the middle of a statement of the
+function calling it (§7.6), so that function's variables count as well.
+"Named" is syntactic — any mention, a call of a nested function that
+mentions it included — so the test never depends on what the optimizer
+proved. A reference whose last use is before the shrink is dead, and its
+block need not end: `let w = line[..5]; print(w); line.clear();` is fine,
+and a scratch buffer refilled per iteration, or a stack popped between
+phases, hands out slices of itself freely — "reusable scratch" and
+"structure I can point into" are the same type. The operations
 themselves are the grow-shrink ones: a stack-top move and a length store.
 Assigning the array whole (`a = …`), or a value holding it, replaces its
 elements and is a shrink under the same rule; the right-hand side runs after
@@ -1061,7 +1067,8 @@ again against the pairs the cycle records once the whole cycle is.
   shrink. A call into a recursive cycle still being checked counts as
   shrinking every grow-shrink array it can reach, through the references its
   arguments hold as well. Function values run inline, so a shrink inside a
-  block is checked against the block's own enclosing scopes.
+  block is checked against the block's own enclosing scopes, and against the
+  function calling it, in the middle of whose statement it runs.
 * **Balanced calls.** A call is *balanced* for an array when the array is never
   shorter, while the call runs, than it was when the call began. Such a call
   frees nothing a view taken before it points into: a live view lies within the

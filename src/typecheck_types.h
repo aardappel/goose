@@ -633,6 +633,28 @@ inline void TypeCheck::VisibleVars(const function<void(VarDef *)> &f) {
     }
 }
 
+// The variables a shrink at the point being checked may leave pointing into
+// freed storage: those VisibleVars gives, and inside a function value's body
+// those of the function running it, which the body cannot name but runs in
+// the middle of (§7.6), with that function's lexical parents in turn.
+inline void TypeCheck::ShrinkScanVars(const function<void(VarDef *)> &f) {
+    vector<bool> seen(frames.size(), false);
+    auto walk = [&](int fi) {
+        while (fi >= 0 && !seen[fi]) {
+            seen[fi] = true;
+            auto &fr = frames[fi];
+            auto limit = fi == (int)frames.size() - 1 ? (int)vars.size()
+                                                      : frames[fi + 1].varbase;
+            for (auto i = limit - 1; i >= fr.varbase; i--) f(vars[i]);
+            fi = fr.isdefault ? fi - 1 : fr.lexframe;
+        }
+    };
+    for (auto fi = (int)frames.size() - 1; fi >= 0; fi--) {
+        walk(fi);
+        if (!frames[fi].isfunval) break;
+    }
+}
+
 // A string literal is a run of u8s, so static data owns anything a
 // literal could supply.
 inline bool TypeCheck::StaticCanContain(TypeExpr *of) {

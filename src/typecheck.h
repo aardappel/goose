@@ -320,6 +320,7 @@ struct TypeCheck {
                                      const char *render, F f);
     template<typename F> void HeldOperands(F f);
     template<typename F> void LaterOperands(F f);
+    template<typename F> void AfterHead(Node *n, Node *next, F f);
     vector<VarDef *> vars;                            // All in-scope variables, all frames.
     vector<pair<int, SFunction *>> localfns;          // Nested fns, with their scope index.
     int scopeserial = 0;
@@ -1089,6 +1090,7 @@ struct TypeCheck {
     bool ReachesThroughRefs(TypeExpr *t, TypeExpr *of);
     TypeExpr *PointeeOf(TypeExpr *t);
     void VisibleVars(const function<void(VarDef *)> &f);
+    void ShrinkScanVars(const function<void(VarDef *)> &f);
     bool StaticCanContain(TypeExpr *of);
     Roots RootCandidates(TypeExpr *of, int d, bool globalsonly, bool writable);
 
@@ -1525,15 +1527,17 @@ struct TypeCheck {
     bool MapLiveShrinks(const CallSite &site);
     // A growth of the array rooted at root -- a push, an append, a pool
     // allocation, format, resize, a whole assignment -- by this body or by
-    // a callee. A value built in place at a root's top or slot is under
-    // construction while its expression runs (§1.3(4)): it is checked
-    // against the growths logged meanwhile (CheckGrowsSince), and callers
-    // learn a body's growths as they learn its shrinks.
+    // a callee, or a shrink of it. A value built in place at a root's top or
+    // slot is under construction while its expression runs (§1.3(4)): it is
+    // checked against the growths and shrinks logged meanwhile
+    // (CheckGrowsSince), and callers learn a body's growths as they learn
+    // its shrinks.
     struct GrowEvent {
         Node *at = nullptr;
         VarDef *root = nullptr;
         bool exact = false;   // root is the array itself, not a bound on its lifetime.
         string what;
+        bool shrink = false;
     };
 
     // The state of the body being checked, which a body checked inside it
@@ -1563,8 +1567,9 @@ struct TypeCheck {
         // A pass's warnings are kept back until the loop's last pass, whose
         // warnings are the ones that stand (CheckLoopPasses).
         vector<string> pendingwarnings;
-        // Every growth so far (GrowEvent): a value built in place is checked
-        // against those logged while its expression ran (CheckGrowsSince).
+        // Every growth and shrink so far (GrowEvent): a value built in place
+        // is checked against those logged while its expression ran
+        // (CheckGrowsSince).
         vector<GrowEvent> growlog;
     };
     BodyState cur;
@@ -1577,6 +1582,7 @@ struct TypeCheck {
         ~BodyScope() { std::swap(tc.cur, saved); }
     };
     void NoteGrow(Node *at, const Roots &roots, const string &what);
+    void NoteShrinkEvent(Node *at, VarDef *root, TypeExpr *bound, const string &what);
     void CheckGrowsSince(size_t base, const Roots &built, const string &what);
     void ApplyCalleeGrows(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
     // Whether an element pushed into, or allocated in, an array of `elem`
