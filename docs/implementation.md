@@ -2415,8 +2415,9 @@ under `GS_DEBUG` and macros equal to the release expression otherwise
 (measured at 13--37% of runtime under a non-inlining backend when they were
 functions); division and modulo are always functions, zero-checked, with
 Euclidean `%`. `as` goes through `GS_RANGE`/`GS_F2I`/... macros that check in
-debug and cast in release; `as!` and release float-to-int use the defined
-wrap of `gs_f2iwrap`. Bounds checks are one unsigned compare (`GS_IDX`).
+debug and cast in release, except to `f32`, which is a plain C cast in every
+build; `as!` and release float-to-int use the defined wrap of `gs_f2iwrap`.
+Bounds checks are one unsigned compare (`GS_IDX`).
 
 **Slice pools** (§5.4): the `gs_spans_*` functions keep a `reusable[]`
 pool's freelist, a sorted run of `gs_span { idx, cnt }` on the freelist's own

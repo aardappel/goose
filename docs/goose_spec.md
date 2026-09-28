@@ -1302,9 +1302,13 @@ or not.
   integer *literal* included: `2.0`, not `2`, where a float is expected.
 * `x as T` — explicit conversion between any two numeric types,
   **range-checked in debug** (abort on value change), truncates/wraps/
-  rounds-toward-zero silently in release.
+  rounds-toward-zero silently in release. A conversion to `f32` is never
+  checked, in any build: from an `f64` or from any integer it rounds to the
+  nearest `f32`, as float arithmetic rounds every result it computes, and a
+  value beyond `f32`'s range (about ±3.4e38) becomes an infinity — nothing
+  there that a debug abort would usefully catch.
 * `x as! T` — always-unchecked wrap/truncate, for when losing bits is what
-  is intended, even in debug.
+  is intended, even in debug. To `f32` it is the same conversion as `as`.
 * float → int (both forms in release, `as!` always) is defined exactly:
   truncate toward zero, then wrap modulo 2^64 into the target's width; NaN
   yields 0. The common in-range case is one compare and a hardware
@@ -2089,7 +2093,7 @@ Aborts (message + exit; not catchable):
 * relative-reference offset overflow at store (only where a root array, or
   a named pool, can span more than the width holds, §3.9);
 * debug only: integer overflow (per operation as it executes, §6.2), `as`
-  range violations;
+  conversions that change the value (§6.3; conversions to `f32` excepted);
 * division by zero (always);
 * `assert` failures, and the program's own `abort(msg)` (`msg` any `u8`
   array or slice; printed as `goose runtime error: <msg>`);

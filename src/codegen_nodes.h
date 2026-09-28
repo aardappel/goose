@@ -288,7 +288,8 @@ inline string SliceExpr::CgX(CodeGen &cg) {
 }
 // `as` range-checks in debug builds (GS_RANGE and friends are identity
 // casts unless the C is compiled with -DGS_DEBUG=1); `as!` always wraps
-// or truncates (§6.3).
+// or truncates (§6.3). A conversion to f32 is never checked: it rounds
+// like float arithmetic does, and beyond f32's range it is an infinity.
 inline string AsCast::CgX(CodeGen &cg) {
     auto x = cg.GenX(child);
     auto st = child->exprtype;
@@ -324,16 +325,7 @@ inline string AsCast::CgX(CodeGen &cg) {
                    cg.IntStr(hi), ")");
     }
     assert(tt->kind == TY_FLT);
-    if (tt->fltstorage == FS_F32) {
-        if (!unchecked && st->kind == TY_FLT && st->fltstorage != FS_F32)
-            return cat("GS_F2F32(", x, ")");
-        if (!unchecked && st->kind == TY_INT) {
-            if (IntBits(st->intstorage) <= 16) return cat("(float)(", x, ")");  // Exact.
-            if (su64) return cat("GS_U2F32(", x, ")");
-            return cat("GS_I2F32((int64_t)(", x, "))");
-        }
-        return cat("(float)(", x, ")");
-    }
+    if (tt->fltstorage == FS_F32) return cat("(float)(", x, ")");
     if (!unchecked && st->kind == TY_INT) {
         if (IntBits(st->intstorage) <= 32) return cat("(double)(", x, ")");  // Exact.
         if (su64) return cat("GS_U2F(", x, ")");

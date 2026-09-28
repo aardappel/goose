@@ -392,7 +392,8 @@ static int64_t gs_f2iwrap(double d) {
 }
 
 /* `as` conversion checks (§6.3): abort in debug builds whenever the
-   conversion would change the value; identity/plain casts in release. */
+   conversion would change the value; identity/plain casts in release. A
+   conversion to f32 is a plain C cast in every build and has none. */
 #if GS_DEBUG
 
 static int64_t gs_rangechk(int64_t v, int64_t lo, int64_t hi) {
@@ -429,20 +430,12 @@ static double gs_u2fchk(uint64_t v) {
         gs_panic("as conversion changes the value (debug)");
     return d;
 }
-static float gs_f2f32chk(double d) {
-    float f = (float)d;
-    if ((double)f != d) gs_panic("as conversion changes the value (debug)");
-    return f;
-}
 #define GS_RANGE(v, lo, hi) gs_rangechk((v), (lo), (hi))
 #define GS_RANGE_U(v, hi)   gs_rangechk_u((v), (hi))
 #define GS_F2I(d)    gs_f2ichk(d)
 #define GS_F2U(d)    gs_f2uchk(d)
 #define GS_I2F(v)    gs_i2fchk(v)
 #define GS_U2F(v)    gs_u2fchk(v)
-#define GS_I2F32(v)  gs_f2f32chk(gs_i2fchk(v))
-#define GS_U2F32(v)  gs_f2f32chk(gs_u2fchk(v))
-#define GS_F2F32(d)  gs_f2f32chk(d)
 
 #else
 
@@ -452,9 +445,6 @@ static float gs_f2f32chk(double d) {
 #define GS_F2U(d)    ((uint64_t)gs_f2iwrap(d))
 #define GS_I2F(v)    ((double)(v))
 #define GS_U2F(v)    ((double)(uint64_t)(v))
-#define GS_I2F32(v)  ((float)(v))
-#define GS_U2F32(v)  ((float)(uint64_t)(v))
-#define GS_F2F32(d)  ((float)(d))
 
 #endif
 

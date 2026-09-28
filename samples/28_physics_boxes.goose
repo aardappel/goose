@@ -86,7 +86,7 @@ fn hue(h: f32) -> u8[4] {
 }
 
 // A random number from lo to hi; the f64 rounds to the nearest f32.
-fn flt(r: rng&, lo: f32, hi: f32) -> f32 { lo + (hi - lo) * r.rand_flt() as! f32 }
+fn flt(r: rng&, lo: f32, hi: f32) -> f32 { lo + (hi - lo) * r.rand_flt() as f32 }
 
 // Where the n-th box starts: 263 shares no factor with the 576 cells, so
 // stepping by it visits them all before any twice.

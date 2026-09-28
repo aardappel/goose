@@ -1040,12 +1040,13 @@ inline Node *AsCast::Opt(Optimizer &o) {
                 return o.NewInt(this, i->val);
         } else if (tt->kind == TY_FLT) {
             if (suns) return this;   // u64-range sources are for the runtime.
-            auto d = (double)i->val;
-            if (IsF32(tt)) d = (double)(float)d;
-            // Checked casts fold only when the conversion is exact; ±2^53
-            // (2^24 for f32) guarantees that without round-trip games.
-            auto lim = IsF32(tt) ? (int64_t)1 << 24 : (int64_t)1 << 53;
-            if (unchecked || (i->val > -lim && i->val < lim)) return o.NewFlt(this, d);
+            // Rounded once, straight from the integer, as the C cast does.
+            if (IsF32(tt)) return o.NewFlt(this, (double)(float)i->val);
+            // A checked f64 cast folds only when the conversion is exact;
+            // ±2^53 guarantees that without round-trip games.
+            auto lim = (int64_t)1 << 53;
+            if (unchecked || (i->val > -lim && i->val < lim))
+                return o.NewFlt(this, (double)i->val);
         }
         return this;
     }
@@ -1062,9 +1063,7 @@ inline Node *AsCast::Opt(Optimizer &o) {
                     return o.NewInt(this, t);
             }
         } else if (tt->kind == TY_FLT) {
-            if (!IsF32(tt)) return o.NewFlt(this, fl->val);
-            auto f = (double)(float)fl->val;
-            if (unchecked || f == fl->val) return o.NewFlt(this, f);
+            return o.NewFlt(this, IsF32(tt) ? (double)(float)fl->val : fl->val);
         }
         return this;
     }

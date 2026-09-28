@@ -1,8 +1,8 @@
 // A cast, `~` and unary `-` compute at their own type (§6.1–6.3) wherever
 // their value lands: stored into a wider slot, or widened as the operand of a
 // wider operation, an i8 cast still wraps at i8 and ~ on a u8 still flips 8
-// bits. Release semantics throughout: the checked `as` and the `-` below
-// change their value, which a GS_DEBUG build aborts on.
+// bits. Release semantics throughout: the checked integer `as` and the `-`
+// below change their value, which a GS_DEBUG build aborts on.
 struct VF { a: varint, b: varint }
 struct Wide { a: i64, b: u16 }
 

@@ -2012,5 +2012,5 @@ fn input_from_gfx(c: Context) {
         }
     }
     input_end(c);
-    set_delta_time(c, gfx::delta_time() as! f32);
+    set_delta_time(c, gfx::delta_time() as f32);
 }

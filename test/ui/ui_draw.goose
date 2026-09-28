@@ -97,8 +97,8 @@ fn main() {
         ui::fill_rect_multi_color(ctx, ui::rect(150, 30, 40, 40), red, green, blue, white);
         ui::stroke_circle(ctx, ui::rect(200, 30, 30, 30), 2.0, green);
         ui::fill_circle(ctx, ui::rect(240, 30, 30, 30), green);
-        ui::stroke_arc(ctx, 50.0, 150.0, 20.0, 0.0, PI as! f32, 1.0, red);
-        ui::fill_arc(ctx, 100.0, 150.0, 20.0, 0.0, (PI / 2.0) as! f32, red);
+        ui::stroke_arc(ctx, 50.0, 150.0, 20.0, 0.0, PI as f32, 1.0, red);
+        ui::fill_arc(ctx, 100.0, 150.0, 20.0, 0.0, (PI / 2.0) as f32, red);
         ui::stroke_triangle(ctx, 150.0, 130.0, 170.0, 170.0, 130.0, 170.0, 1.0, blue);
         ui::fill_triangle(ctx, 200.0, 130.0, 220.0, 170.0, 180.0, 170.0, blue);
         let pts: float2[4] = [float2 { 240.0, 130.0 }, float2 { 280.0, 130.0 },

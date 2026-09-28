@@ -406,7 +406,8 @@ static int64_t gs_f2iwrap(double d) {
 
 /* `as` conversion checks (§6.3): abort in debug builds whenever the
 )GSRT"
-R"GSRT(   conversion would change the value; identity/plain casts in release. */
+R"GSRT(   conversion would change the value; identity/plain casts in release. A
+   conversion to f32 is a plain C cast in every build and has none. */
 #if GS_DEBUG
 
 static int64_t gs_rangechk(int64_t v, int64_t lo, int64_t hi) {
@@ -443,20 +444,12 @@ static double gs_u2fchk(uint64_t v) {
         gs_panic("as conversion changes the value (debug)");
     return d;
 }
-static float gs_f2f32chk(double d) {
-    float f = (float)d;
-    if ((double)f != d) gs_panic("as conversion changes the value (debug)");
-    return f;
-}
 #define GS_RANGE(v, lo, hi) gs_rangechk((v), (lo), (hi))
 #define GS_RANGE_U(v, hi)   gs_rangechk_u((v), (hi))
 #define GS_F2I(d)    gs_f2ichk(d)
 #define GS_F2U(d)    gs_f2uchk(d)
 #define GS_I2F(v)    gs_i2fchk(v)
 #define GS_U2F(v)    gs_u2fchk(v)
-#define GS_I2F32(v)  gs_f2f32chk(gs_i2fchk(v))
-#define GS_U2F32(v)  gs_f2f32chk(gs_u2fchk(v))
-#define GS_F2F32(d)  gs_f2f32chk(d)
 
 #else
 
@@ -466,9 +459,6 @@ static float gs_f2f32chk(double d) {
 #define GS_F2U(d)    ((uint64_t)gs_f2iwrap(d))
 #define GS_I2F(v)    ((double)(v))
 #define GS_U2F(v)    ((double)(uint64_t)(v))
-#define GS_I2F32(v)  ((float)(v))
-#define GS_U2F32(v)  ((float)(uint64_t)(v))
-#define GS_F2F32(d)  ((float)(d))
 
 #endif
 
@@ -612,8 +602,7 @@ static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
         }
     }
     if ((uintptr_t)hit - gs_native_lo < gs_native_hi - gs_native_lo) {
-)GSRT"
-R"GSRT(        static const char msg[] = "goose runtime error: native call stack overflow\n";
+        static const char msg[] = "goose runtime error: native call stack overflow\n";
         ssize_t w = write(2, msg, sizeof(msg) - 1);
         (void)w;
         _exit(1);
@@ -623,7 +612,8 @@ R"GSRT(        static const char msg[] = "goose runtime error: native call stack
     sigaction(sig, sig == SIGSEGV ? &gs_prev_segv : &gs_prev_bus, NULL);
 }
 
-static void gs_regions_init(void) {
+)GSRT"
+R"GSRT(static void gs_regions_init(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = gs_fault_handler;
@@ -830,8 +820,7 @@ static void gs_spans_take(gs_span *s, int64_t *n, uint8_t **top, int64_t at, int
    the end starts the run. The caller grows the array to the returned index
    plus cnt. First fit rather than best: in index order it packs runs toward
    the start and leaves the end free, and it stops scanning at the fit. */
-)GSRT"
-R"GSRT(static int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
+static int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
                               int64_t cnt) {
     gs_span *s = (gs_span *)base;
     int64_t at = 0, idx;
@@ -842,7 +831,8 @@ R"GSRT(static int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, i
         at = *n - 1;
     }
     idx = s[at].idx;
-    gs_spans_take(s, n, top, at, cnt);
+)GSRT"
+R"GSRT(    gs_spans_take(s, n, top, at, cnt);
     return idx;
 }
 
@@ -1042,8 +1032,7 @@ static int gs_fmt_exp(char *s, int n) {
 static int64_t gs_fmt_f64(uint8_t *dst, double v) {
     int n = snprintf((char *)dst, GS_FMT_MAX, "%.15g", v);
     if (strtod((char *)dst, NULL) != v) n = snprintf((char *)dst, GS_FMT_MAX, "%.17g", v);
-)GSRT"
-R"GSRT(    return gs_fmt_exp((char *)dst, n);
+    return gs_fmt_exp((char *)dst, n);
 }
 
 static int64_t gs_fmt_bool(uint8_t *dst, int64_t v) {
@@ -1056,7 +1045,8 @@ static int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n) {
     uint8_t *d = dst;
     *d++ = '"';
     for (int64_t i = 0; i < n; i++) {
-        uint8_t c = s[i];
+)GSRT"
+R"GSRT(        uint8_t c = s[i];
         switch (c) {
             case '"': *d++ = '\\'; *d++ = '"'; break;
             case '\\': *d++ = '\\'; *d++ = '\\'; break;
