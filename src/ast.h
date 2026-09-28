@@ -940,6 +940,9 @@ NODE(ForLoop)
     bool byref;                 // for &x in ...
     string_view var;
     string_view idxvar;         // Optional second binding; empty if absent.
+    // The integer types written for a range's or count's binder and for an
+    // array's index binder (`for i: i32 in a..b`, `for x, i: u8 in arr`).
+    TypeExpr *vartype = nullptr, *idxtype = nullptr;
     Node *iter;                 // Expression or RangeExpr.
     Block *body;
     // Filled by typecheck:

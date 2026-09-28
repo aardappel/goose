@@ -887,32 +887,31 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
     CodeGen::ViewScope vs(cg, hoistrefs);
     auto iv = vdef ? cg.LocalName(vdef) : cg.T();
     auto ix = idxdef ? cg.LocalName(idxdef) : "";
-    if (iterkind == IK_RANGE) {
+    if (iterkind == IK_RANGE || iterkind == IK_COUNT) {
         // The loop variable runs at the range's own type: narrow counters
-        // stay narrow through the body (§6.5).
-        auto ict = cg.CT(vdef->type);
+        // stay narrow through the body (§6.5). A binder whose type ends
+        // where the range does (`for i: u8 in 0..256`) is a copy of a counter
+        // of the range's own, wider type, which cannot overflow at the end.
         auto r = Is<RangeExpr>(iter);
-        auto lo = cg.GenX(r->lo);
-        auto lov = cg.T();
-        cg.L(ict, " ", lov, " = ", lo, ";");
-        auto hi = cg.GenX(r->hi);
+        auto ct = r ? r->exprtype : iter->exprtype;
+        auto ict = cg.CT(ct);
+        string lov = "0";
+        if (r) {
+            auto lo = cg.GenX(r->lo);
+            lov = cg.T();
+            cg.L(ict, " ", lov, " = ", lo, ";");
+        }
+        auto hi = cg.GenX(r ? r->hi : iter);
         auto hiv = cg.T();
         cg.L(ict, " ", hiv, " = ", hi, ";");
         if (!ix.empty()) cg.L("int64_t ", ix, " = 0;");
-        cg.GenLoopBody({}, body, d,
-                    cat("for (", ict, " ", iv, " = ", lov, "; ", iv, " < ", hiv, "; ", iv,
-                        "++", ix.empty() ? "" : cat(", ", ix, "++"), ") {"));
-        return;
-    }
-    if (iterkind == IK_COUNT) {
-        auto ict = cg.CT(vdef->type);
-        auto n = cg.GenX(iter);
-        auto nv = cg.T();
-        cg.L(ict, " ", nv, " = ", n, ";");
-        if (!ix.empty()) cg.L("int64_t ", ix, " = 0;");
-        cg.GenLoopBody({}, body, d,
-                    cat("for (", ict, " ", iv, " = 0; ", iv, " < ", nv, "; ", iv, "++",
-                        ix.empty() ? "" : cat(", ", ix, "++"), ") {"));
+        auto wide = ct->intstorage != vdef->type->intstorage;
+        auto ctr = wide ? cg.T() : iv;
+        cg.GenLoopBody([&]() {
+            if (wide) cg.L(cg.CT(vdef->type), " ", iv, " = (", cg.CT(vdef->type), ")", ctr, ";");
+        }, body, d,
+            cat("for (", ict, " ", ctr, " = ", lov, "; ", ctr, " < ", hiv, "; ", ctr, "++",
+                ix.empty() ? "" : cat(", ", ix, "++"), ") {"));
         return;
     }
     // Arrays and slices. The length re-reads each iteration (growth during
@@ -941,7 +940,13 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         v.len = nv;
         v.elems = bv;
     }
-    auto gi = ix.empty() ? cg.T() : ix;
+    // An index binder of a type of its own is a copy of the i64 counter.
+    auto typedix = idxdef && idxdef->type->intstorage != IS_I64;
+    auto gi = ix.empty() || typedix ? cg.T() : ix;
+    auto bindix = [&]() {
+        if (typedix)
+            cg.L(cg.CT(idxdef->type), " ", ix, " = (", cg.CT(idxdef->type), ")", gi, ";");
+    };
     auto et = vdef->type;
     if (!cg.IsFix(v.elem)) {
         // Sequential walk, &-binding only; the cursor advances in the
@@ -949,6 +954,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         auto p = cg.T();
         cg.L("uint8_t *", p, " = (uint8_t *)(", v.elems, ");");
         cg.GenLoopBody([&]() {
+            bindix();
             if (!vdef->copybind) cg.L("uint8_t *", iv, " = ", p, ";");
         }, body, d,
             cat("for (int64_t ", gi, " = 0; ", gi, " < (", v.len, "); ", gi, "++, ", p,
@@ -957,6 +963,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
     }
     auto esz = cg.FixedSize(v.elem);
     cg.GenLoopBody([&]() {
+        bindix();
         string elem = v.typedelems
                           ? cat(v.elems, "[", gi, "]")
                           : cat("(*(", cg.CT(v.elem), " *)((", v.elems, ") + ", gi, " * ",

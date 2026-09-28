@@ -1521,15 +1521,50 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     Prov iterprov;   // What a reference binding points into.
     ReadBack contents;   // Where the elements point, when the array is a temporary.
     auto intemp = false;
+    // A binder's written integer type (§6.5).
+    auto written = [&](TypeExpr *te, const char *what) -> TypeExpr * {
+        if (!te) return nullptr;
+        auto t = Subst(te);
+        ValidateType(t, x->line, VT_LOCAL);
+        if (!IsIntT(t))
+            Error(x, cat("a for loop's ", what, " takes an integer type, not ", TypeStr(t)));
+        return t;
+    };
+    auto vartype = written(x->vartype, "binder");
+    auto idxtype = written(x->idxtype, "index binder");
+    // The end of a range, or a count, that is one past the binder's largest
+    // value: a literal one, whose loop visits every value of a type narrower
+    // than 64 bits with a counter of i64 (`for i: u8 in 0..256`).
+    auto pastend = [&](Node *end) {
+        Val c;
+        bool literal;
+        set<VarDecl *> visiting;
+        return IntBits(vartype->intstorage) < 64 && ConstIntValue(end, c, literal, visiting) &&
+               literal && !c.uns && c.ival == IntRange(vartype->intstorage).second + 1;
+    };
     if (auto r = Is<RangeExpr>(x->iter)) {
-        auto lo = CheckIntAny(r->lo);
-        auto hi = CheckIntAny(r->hi);
-        auto ct = UnifyNumeric(r, T_DOTDOT, lo, hi, lo.type, hi.type);
-        RetypeOperands(r->lo, r->hi, lo, hi, ct);
-        r->exprtype = ct;
         x->iterkind = IK_RANGE;
         if (x->byref) Error(x, "cannot iterate an integer range by reference");
-        bindtype = ct;
+        if (vartype) {
+            // The bounds are values of the binder's type, a constant adapting
+            // as at any typed destination (§3.1), and the loop counts at it.
+            CheckValue(r->lo, vartype);
+            if (pastend(r->hi)) {
+                CheckIntAny(r->hi);
+                r->exprtype = r->hi->exprtype = ast.inttypes[IS_I64];
+            } else {
+                CheckValue(r->hi, vartype);
+                r->exprtype = vartype;
+            }
+            bindtype = vartype;
+        } else {
+            auto lo = CheckIntAny(r->lo);
+            auto hi = CheckIntAny(r->hi);
+            auto ct = UnifyNumeric(r, T_DOTDOT, lo, hi, lo.type, hi.type);
+            RetypeOperands(r->lo, r->hi, lo, hi, ct);
+            r->exprtype = ct;
+            bindtype = ct;
+        }
     } else {
         auto iv = CheckV(x->iter, nullptr);
         NoTemporaryLiteral(x->iter, iv.type);
@@ -1549,9 +1584,22 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
             if (x->byref) Error(x, "cannot iterate an integer count by reference");
             // A count reads a reference as its pointee (§3.8); a sequence
             // keeps the reference, the loop iterating it where it lies.
-            x->iter->exprtype = DecayRef(iv).type;
+            auto nv = DecayRef(iv);
+            x->iter->exprtype = nv.type;
             bindtype = t;
+            if (vartype) {
+                // The count is the end of the range from 0, as above.
+                if (!pastend(x->iter)) {
+                    MustFit(nv, x->iter, vartype);
+                    if (nv.litint) RetypeBranches(x->iter, vartype);
+                    x->iter->exprtype = vartype;
+                }
+                bindtype = vartype;
+            }
         } else if (t->kind == TY_ARRAY || t->kind == TY_SLICE) {
+            if (vartype)
+                Error(x, cat("an array's element binds at its element type; a type on a for "
+                             "loop's binder is for an integer range or count"));
             auto elem = t->kind == TY_ARRAY ? t->arr->sub : t->sub;
             elemtype = elem;
             x->iterkind = t->kind == TY_ARRAY ? IK_ARRAY : IK_SLICE;
@@ -1576,7 +1624,24 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         } else {
             Error(x, cat("cannot iterate a value of type ", TypeStr(t)));
         }
+        // An index binder's type holds every index the sequence can have: a
+        // fixed-size or static-capacity array's length bounds them, anything
+        // else's only the largest length there is (§10.4).
+        if (idxtype && (x->iterkind == IK_ARRAY || x->iterkind == IK_SLICE)) {
+            auto len = int64_t(1) << 48;
+            if (t->kind == TY_ARRAY &&
+                (t->arr->akind == A_FIXED || (t->arr->akind == A_LIMITED && t->arr->sizeexpr)))
+                len = ArraySize(t->arr);
+            if (len > 0 && !FitsIntStorage(len - 1, false, idxtype->intstorage))
+                Error(x, cat("an index into ", TypeStr(t), " can reach ",
+                             len == int64_t(1) << 48 ? string("2^48 - 1") : cat(len - 1),
+                             ", which ", TypeStr(idxtype), " does not hold; bind the index as "
+                             "an i64 and convert it with `as` (§6.5)"));
+        }
     }
+    if (idxtype && x->iterkind != IK_ARRAY && x->iterkind != IK_SLICE)
+        Error(x, "the index of a range or count counts its iterations as an i64; a type on "
+                 "the loop's binder gives the values their type");
     // A relative-reference or slice element bound by value was read out of
     // the array, so where it points follows the read-back rule (§9.5), not
     // the array's own root.
@@ -1605,7 +1670,8 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         if (IsRefOrSlice(bindtype)) BindProv(vd, iterprov);
         x->vdef = vd;
         if (!x->idxvar.empty()) {
-            auto idx = NewVar(x->idxvar, ast.inttypes[IS_I64], x->line, false, x->idxdef);
+            auto idx = NewVar(x->idxvar, idxtype ? idxtype : ast.inttypes[IS_I64], x->line,
+                              false, x->idxdef);
             idx->assigned = true;
             x->idxdef = idx;
         }

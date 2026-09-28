@@ -1479,7 +1479,14 @@ Built-in iteration only (no iterator protocol):
 
 * `for i in a..b` — integer range, half-open `[a..b)`; the bounds unify per
   §6.1 and `i` runs at that type (an `i32` range gives a 32-bit loop variable).
-* `for i in n` — sugar for `0..n`; `i` has `n`'s type.
+* `for i: T in a..b` — the same range with `i` of the integer type `T`: each
+  bound is a value of `T`, a constant adapting as at any typed destination
+  (§3.1) and a typed bound only by implicit widening (§6.3), so with an
+  `n: i64`, `for i: i32 in 0..n` is an error asking for `n as i32`. The end
+  may be one past `T`'s largest value, where `T` is narrower than 64 bits:
+  `for i: u8 in 0..256` visits every `u8`, its counter never overflowing.
+* `for i in n` — sugar for `0..n`; `i` has `n`'s type. `for i: T in n` is
+  `for i: T in 0..n`.
 * `for x in arr` — element copies for fixed-size elements, at the element's
   type; element references for non-fixed ones (§4.1), whose walk is
   sequential. A copy is not written (`x.f = 1` is an error naming `&x`):
@@ -1492,6 +1499,13 @@ Built-in iteration only (no iterator protocol):
   elements; redundant, and a warning, for non-fixed ones). Over a `[>..<]`,
   the binding is a reference in scope: no shrink inside the loop (§5.2).
 * `for x, i in arr` / `for &x, i in arr` — with index (`i: i64`).
+  `for x, i: T in arr` gives the index the integer type `T` where `T` holds
+  every index `arr` can have: a fixed-size or static-capacity array's length
+  bounds them, while any other array's or slice's index can reach
+  2^48 − 1 (§10.4), which no type narrower than 64 bits holds, and converts
+  with `as` in the body. A range's or count's index counts iterations as an
+  `i64` and takes no type; an element binder has its element's type and
+  takes none either.
 
 All array-family types and slices are iterable. Custom access patterns are
 provided by HOFs taking static function values (§7.6), which compile to
@@ -3180,7 +3194,7 @@ control     := ifexpr | matchexpr | blockexpr | loops | jumps | guardstmt
 ifexpr      := "if" expr blockexpr ("else" (ifexpr | blockexpr))?
 guardstmt   := "guard" expr ("else" blockexpr | ";")
 loops       := ("while" expr | "for" forbind "in" iter | "loop") blockexpr
-forbind     := "&"? ident ("," ident)?
+forbind     := "&"? ident (":" type)? ("," ident (":" type)?)?
 iter        := expr | expr ".." expr
 jumps       := "return" exprlist? ("from" qname)? | "break" expr? | "continue"
 matchexpr   := "match" expr "{" arm ("," arm)* ","? "}"

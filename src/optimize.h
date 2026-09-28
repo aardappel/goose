@@ -756,6 +756,8 @@ inline Node *LoopExpr::Cp1(Inliner &inl) const {
 
 inline Node *ForLoop::Cp1(Inliner &inl) const {
     auto c = inl.ast.New<ForLoop>(line, byref, var, idxvar, inl.Cp(iter), inl.CpBlock(body));
+    c->vartype = vartype;
+    c->idxtype = idxtype;
     c->vdef = inl.Remap(vdef);
     c->idxdef = inl.Remap(idxdef);
     c->iterkind = iterkind;

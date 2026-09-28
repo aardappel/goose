@@ -158,6 +158,8 @@ Loops are `for x in range_or_array`, `while`, and `loop`:
 ```goose
 for i in 3 { }              // 0, 1, 2
 for i in 10..13 { }         // 10, 11, 12
+for i: i32 in 0..n { }      // i is an i32; n must widen to one
+for i: u8 in 0..256 { }     // every u8
 for x in xs { }             // copies, for fixed-size elements
 for &x in xs { x *= 2; }    // references: the mutation form
 for x, i in xs { }          // with the index

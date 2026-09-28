@@ -132,8 +132,11 @@ inline Node *LoopExpr::Clone(Ast &ast) const {
 }
 
 inline Node *ForLoop::Clone(Ast &ast) const {
-    return ast.New<ForLoop>(line, byref, var, idxvar, iter->Clone(ast),
-                            (Block *)body->Clone(ast));
+    auto f = ast.New<ForLoop>(line, byref, var, idxvar, iter->Clone(ast),
+                              (Block *)body->Clone(ast));
+    f->vartype = vartype;
+    f->idxtype = idxtype;
+    return f;
 }
 
 inline Node *Guard::Clone(Ast &ast) const {

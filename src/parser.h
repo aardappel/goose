@@ -759,8 +759,13 @@ struct Parser {
         lex.Next();
         auto byref = IsNext(T_BITAND);
         auto var = ExpectIdent("for binding");
+        TypeExpr *vartype = nullptr, *idxtype = nullptr;
+        if (IsNext(T_COLON)) vartype = ParseType();
         string_view idxvar;
-        if (IsNext(T_COMMA)) idxvar = ExpectIdent("for index binding");
+        if (IsNext(T_COMMA)) {
+            idxvar = ExpectIdent("for index binding");
+            if (IsNext(T_COLON)) idxtype = ParseType();
+        }
         Expect(T_IN, "for statement");
         Node *iter;
         {
@@ -768,7 +773,10 @@ struct Parser {
             iter = ParseExpr();
             if (IsNext(T_DOTDOT)) iter = New<RangeExpr>(line, iter, ParseExpr());
         }
-        return New<ForLoop>(line, byref, var, idxvar, iter, ParseBlockExpr("for body"));
+        auto f = New<ForLoop>(line, byref, var, idxvar, iter, ParseBlockExpr("for body"));
+        f->vartype = vartype;
+        f->idxtype = idxtype;
+        return f;
     }
 
     Node *ParseMatch() {

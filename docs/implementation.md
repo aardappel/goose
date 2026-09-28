@@ -1679,6 +1679,15 @@ construct converts in a node of its own, a constant takes the type, a float
 of literals is retyped as above; and a literal-like construct meeting a type
 later is retyped the same way (`RetypeFlex`, `RetypeOperands`).
 
+A `for` binder's written type (§6.5, `ForLoop::vartype`) makes a range's
+bounds values of it (`CheckValue`) and a count a value fitted to it
+(`MustFit`). The range's or the count's `exprtype` is the type the loop
+counts at, which is the binder's but for an end one past the type's
+largest value, a literal (`pastend`): that loop counts at i64 and binds the
+binder to a copy of the counter each iteration (`ForLoop::CgStmt`), which
+cannot overflow at the end. A typed index binder (`idxtype`) must hold every
+index the sequence can have, and is likewise a copy of the i64 index.
+
 Builtins are one X-macro table (`builtins.h`) driving arity, receiver kinds,
 provenance requirements and simple signatures; `CheckBuiltin` handles the
 custom ones. `print`/`str`/`format` check renderability per type

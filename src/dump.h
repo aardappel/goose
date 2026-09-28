@@ -441,7 +441,15 @@ inline void ForLoop::Dump(string &s, int ind) const {
     s += "for ";
     if (byref) s += "&";
     s += var;
+    if (vartype) {
+        s += ": ";
+        vartype->Dump(s);
+    }
     if (!idxvar.empty()) Append(s, ", ", idxvar);
+    if (idxtype) {
+        s += ": ";
+        idxtype->Dump(s);
+    }
     s += " in ";
     DumpOperand(s, iter, ind);
     s += " ";

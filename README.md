@@ -94,7 +94,7 @@ struct Item { id: i32, weight: f32 }
 
 var items: Item[>..] = [];
 let first .= items.push(Item { 1, 0.5 });             // a reference to element 0
-for i in 2..1000001 { items.push(Item { i as i32, 0.0 }); }
+for i: i32 in 2..1000001 { items.push(Item { i, 0.0 }); }
 first.weight = 99.5;                                  // still valid, a million pushes later
 ```
 
