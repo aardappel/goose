@@ -320,17 +320,16 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         ConstructCall(c, et, stk, want, lenlv);
         return;
     }
+    // A reference landing in a relative-reference slot -- an element of a
+    // `(T&<w>)[>..]`, a variable of a varint width, say -- stores the offset
+    // from that slot, not the pointer (§3.9), and null the optional's zero.
+    // Reference values always reach here as plain pointers, relative ones
+    // having been decoded on the read.
+    if (want && want->kind == TY_REF && want->ref->lenstorage >= 0 && et->kind == TY_REF) {
+        EmitRelStore(stk, want, GenX(n), n->line);
+        return;
+    }
     if (!IsBytesT(et)) {
-        // A reference landing in a relative-reference slot -- an element
-        // of a `(T&<w>)[>..]`, say -- stores the offset from that slot,
-        // not the pointer (§3.9), and null the optional's zero. Reference
-        // values always reach here as plain pointers, relative ones having
-        // been decoded on the read.
-        if (want && want->kind == TY_REF && want->ref->lenstorage >= 0 &&
-            et->kind == TY_REF) {
-            EmitRelStore(stk, want, GenX(n), n->line);
-            return;
-        }
         // Fixed values normally construct as C values; ones containing
         // relative references must be built at their final address.
         if ((Is<StructLit>(n) || Is<ArrayLit>(n)) && HasRelRef(et)) {

@@ -254,6 +254,13 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
         L("gs_pref ", name, " = ", GenPrefVal(init), ";");
         return;
     }
+    // A relative reference variable holds the offset (§3.9): whatever the
+    // initializer, its value is the plain reference to encode.
+    if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
+        L(CT(t), " ", name, ";");
+        EmitRelStoreAt(cat("(uint8_t *)&", name), t, GenX(init), init->line, true);
+        return;
+    }
     // Literals holding relative references construct into the variable
     // itself rather than through an initializer copy.
     if (IsCtl(init) || Is<Call>(init) ||

@@ -158,15 +158,17 @@ inline Call *TypeCheck::DefaultCall(TypeExpr *t, Line line) {
 
 // The default value of a type that has one (HasDefault), as the expression
 // that builds it where a literal's `..` or a global's missing initializer
-// asks for it: default<T>() of a fixed-size type; otherwise `[]`, 0 for a
-// varint, null, or a literal of the struct, variant or first variant that
-// fills in its own fields the same way.
+// asks for it: null for an optional reference; default<T>() of another
+// fixed-size type; otherwise `[]`, 0 for a varint, or a literal of the
+// struct, variant or first variant that fills in its own fields the same way.
+// A relative reference's default<T>() would be the offset its slot holds,
+// where every other value stored there is the reference it encodes (§3.9).
 inline Node *TypeCheck::DefaultValue(TypeExpr *t, Line line) {
+    if (t->kind == TY_REF) return ast.New<NullLit>(line);
     if (ClassOf(t) == SC_FIXED) return DefaultCall(t, line);
     switch (t->kind) {
         case TY_ARRAY: return ast.New<ArrayLit>(line);
         case TY_INT:   return ast.New<IntLit>(line, 0);
-        case TY_REF:   return ast.New<NullLit>(line);
         default: {
             auto lt = t->kind == TY_ENUM
                           ? ast.VariantTypeOf(t, &t->enu->en->variants[0], line) : t;

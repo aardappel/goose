@@ -376,10 +376,11 @@ object. A pending array that reaches a scope exit uncompleted is an error.
 default. Other omitted fields need a declared default, unless the literal
 ends in `..` (`StructLit::defaultall`, which `default<T>()` also sets on
 the literal it synthesizes): a field without one then gets its type's
-default value (`DefaultValue`), a `default<T>()` call for a fixed-size
-type, and otherwise `[]` for an array, 0 for a varint, or a literal of its
-struct, variant or first variant ending in `..` in turn; one whose type has
-no default value (`HasDefault`) is an error naming the field. A declared
+default value (`DefaultValue`), null for an optional reference, a
+`default<T>()` call for another fixed-size type, and otherwise `[]` for an
+array, 0 for a varint, or a literal of its struct, variant or first variant
+ending in `..` in turn; one whose type has no default value (`HasDefault`)
+is an error naming the field. A declared
 default resolves in its type declaration's namespace and generic bindings,
 with access to globals, not the constructor's locals or sibling fields.
 It is evaluated at each construction that uses it, in field order among
@@ -2391,11 +2392,17 @@ reference: a branch's or an inlined body's value for a relative slot is
 computed into a plain-reference temporary (`CtlValX`), a call's result is
 encoded where it lands (`ConstructCall`), and a frame object literal stores
 an `in pool` field, a C member of the object, through the same helper
-(`GenFrameObjLit`). The store's range check is emitted only where a root can
-exceed the width: for `in pool` under `#if GS_STACK_RESERVE >= 2^bits`, for
-self-relative under `#if GS_STACK_RESERVE > 2^(bits-1)` when no fixed-size
-root in the program is wider than the width (`relrootmax`), so a `u32` link
-on the default 256 MB reservation stores unchecked. A pool's base is loaded
+(`GenFrameObjLit`). A local, global or parameter declared with a relative
+type is such a slot too: its initializer or argument is encoded into it
+(`BindLocal`, `EmitGlobalInit`, `EmitArg`), at varint width on a data stack
+as any variable-size value is (`GenConstruct`), and a `var` global without
+an initializer starts as `null`, where `default<T>()`'s value would be the
+offset itself (`DefaultValue`). The store's range check is emitted only
+where a root can exceed the width: for `in pool` under
+`#if GS_STACK_RESERVE >= 2^bits`, for self-relative under
+`#if GS_STACK_RESERVE > 2^(bits-1)` when no fixed-size root in the program
+is wider than the width (`relrootmax`), so a `u32` link on the default
+256 MB reservation stores unchecked. A pool's base is loaded
 once per function into a local (`PoolBase`), and element access through a
 pool global reads that local too. `self` stores minus the field's own offset
 (self-relative) or the value's own pool offset (`in pool`, only where the

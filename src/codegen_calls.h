@@ -160,6 +160,16 @@ inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &a
         args.push_back(base);
         return;
     }
+    // A relative reference parameter takes the argument's offset (§3.9). The
+    // `in pool` form's is the same in the callee's copy; a self-relative one
+    // can only be null, which is zero wherever it is.
+    if (pt->kind == TY_REF && pt->ref->lenstorage >= 0) {
+        auto t = T();
+        L(CT(pt), " ", t, ";");
+        EmitRelStoreAt(cat("(uint8_t *)&", t), pt, GenX(node), node->line, true);
+        args.push_back(t);
+        return;
+    }
     args.push_back(Snapshot(pt, GenXD(node, pt)));
 }
 
