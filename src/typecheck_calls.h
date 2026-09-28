@@ -1960,7 +1960,10 @@ inline void TypeCheck::CheckReturn(Return *r) {
             Error(r, cat("return from ", r->from, ": no enclosing call of ", r->from,
                          " on this compile-time call path"));
     } else if (frames.back().isfunval) {
-        tf = FrameOfSpec(NamedSpec(frames.back().lexspec));
+        // One written in a global initializer or a default has none.
+        auto named = NamedSpec(frames.back().lexspec);
+        if (!named) Error(r, "return outside of a function");
+        tf = FrameOfSpec(named);
         if (tf < 0) Error(r, "cannot resolve the enclosing function of this value");
     } else {
         tf = (int)frames.size() - 1;
