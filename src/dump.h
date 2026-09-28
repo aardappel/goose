@@ -385,11 +385,15 @@ inline void MatchExpr::Dump(string &s, int ind) const {
                 if (!arm.pat.binder.empty())
                     Append(s, arm.pat.byref ? " &" : " ", arm.pat.binder);
                 break;
-            case P_INT: arm.pat.lo->Dump(s, ind); break;
-            case P_RANGE:
-                arm.pat.lo->Dump(s, ind);
-                s += "..";
-                arm.pat.hi->Dump(s, ind);
+            case P_INTS:
+                for (auto &pi : arm.pat.ints) {
+                    if (&pi != &arm.pat.ints[0]) s += ", ";
+                    pi.lo->Dump(s, ind);
+                    if (pi.hi) {
+                        s += "..";
+                        pi.hi->Dump(s, ind);
+                    }
+                }
                 break;
         }
         s += " => ";

@@ -2012,20 +2012,23 @@ match sexp {
 }
 match n { 0 => "zero", 1..10 => "small", _ => "big" }
 match t { GROUND => "ground", world::GATE => "gate", LO..HI => "mid", _ => "other" }
+match d { 0, 6 => "weekend", 1..6 => "weekday", _ => "no day" }
 ```
 
 * Over ADTs: exhaustive over variants; `_ =>` wildcard allowed; arm binds
   the variant payload (`c: Shape.Circle` above).
-* Over integers (any integer type): constant and half-open-range arms; `_`
-  required; pattern values must fit the scrutinee's type. A constant or a
-  range bound is an integer literal or a named constant — a `let` or
-  `const` global whose initializer is a constant expression, as an array
-  size may name (§11.1) — either one optionally negated: `GROUND`,
-  `world::GATE`, `::GATE`, `LO..HI`, `-LIMIT..0`. The name resolves as
-  any other does (§11.1): a local of that name hides the global and is no
-  constant, and neither is a `var` global. A bare name is a variant when
-  the scrutinee is an ADT and a constant when it is an integer, where it
-  binds nothing.
+* Over integers (any integer type): constant and half-open-range arms, or
+  a comma-separated list of them (`0, 6`, `1, 3..5, LAST`) that matches
+  when any one of them does; `_` required, and never in a list; every
+  pattern value must fit the scrutinee's type. The first arm that matches
+  is taken. A constant or a range bound is an integer literal or a named
+  constant — a `let` or `const` global whose initializer is a constant
+  expression, as an array size may name (§11.1) — either one optionally
+  negated: `GROUND`, `world::GATE`, `::GATE`, `LO..HI`, `-LIMIT..0`. The
+  name resolves as any other does (§11.1): a local of that name hides the
+  global and is no constant, and neither is a `var` global. A bare name is
+  a variant when the scrutinee is an ADT and a constant when it is an
+  integer, where it binds nothing.
 * Arm binders are explicit about copy vs reference, like the rest of the
   language: `Circle c =>` binds the payload *by value* — a copy, potentially
   a large one for variable-size payloads, and not written, as a `for` copy
@@ -3099,7 +3102,8 @@ iter        := expr | expr ".." expr
 jumps       := "return" exprlist? ("from" qname)? | "break" expr? | "continue"
 matchexpr   := "match" expr "{" arm ("," arm)* ","? "}"
 arm         := pattern "=>" expr
-pattern     := ident ("&"? ident)? | bound (".." bound)? | "_"
+pattern     := ident ("&"? ident)? | intpattern ("," intpattern)* | "_"
+intpattern  := bound (".." bound)?
 bound       := "-"? (intlit | qname)             // qname: a constant (§8.1)
 blockexpr   := "{" stmt* expr? "}"
 

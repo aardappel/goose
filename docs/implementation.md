@@ -1952,9 +1952,10 @@ and kill the variable otherwise; a set `v = e` re-pins `v` and records
 
 `CondFacts` adds the comparison of an `if`, `while`, `guard`, `assert` or
 short-circuit operand (both senses, through `!`, `&&` and `||`), an integer
-`match` arm's range, and a `for` header's bounds (`0 <= i < n` against the
-snapshots taken at loop entry for ranges and counts, against the re-read
-length for arrays and slices). A condition that itself changed tracked state
+`match` arm's range (the hull of a listed arm's values and ranges), and a
+`for` header's bounds (`0 <= i < n` against the snapshots taken at loop
+entry for ranges and counts, against the re-read length for arrays and
+slices). A condition that itself changed tracked state
 -- a mutating call inside it -- adds nothing (`HasKillEffects`), since the
 comparison ran against pre-kill values. A completed `pop` proves the old
 length was at least one; a `resize` states the new length when the count's

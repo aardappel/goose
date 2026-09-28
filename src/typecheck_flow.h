@@ -1110,7 +1110,10 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                 continue;
             }
             if (arm.pat.kind != P_VARIANT)
-                Error(arm.body, "ADT match arms are variant names (or _)");
+                Error(arm.body, arm.pat.ints.size() > 1
+                                    ? "a list of patterns matches integers only: an ADT match "
+                                      "arm names one variant"
+                                    : "ADT match arms are variant names (or _)");
             auto found = en->FindVariant(arm.pat.variant);
             if (!found)
                 Error(arm.body, cat("enum ", en->name, " has no variant named ",
@@ -1215,26 +1218,30 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
         for (auto &arm : m->arms) {
             if (arm.pat.kind == P_WILDCARD) { haswild = true; DoArm(arm, nullptr); continue; }
             if (arm.pat.kind == P_VARIANT && !arm.pat.binder.empty())
-                Error(arm.pat.lo, cat("constant pattern ", arm.pat.variant,
-                                      " has no payload to bind"));
-            auto ul = false, uh = false;
-            arm.lo = PatternValue(arm.pat.lo, ul);
-            auto end = arm.pat.kind == P_RANGE ? PatternValue(arm.pat.hi, uh) : arm.lo;
-            // Pattern values must fit the scrutinee's type (a u64
-            // scrutinee accepts any 64-bit pattern).
-            if (sit != IS_U64) {
-                if (!FitsIntStorage(arm.lo, ul, sit) ||
-                    (arm.pat.kind == P_RANGE && !FitsIntStorage(end, uh, sit)))
-                    Error(arm.body, cat("match pattern does not fit the scrutinee "
-                                        "type ", TypeStr(st)));
-            }
-            // The arm keeps the last value it matches: the value past it,
-            // which a range's end names, does not exist at the top of a type.
-            arm.hi = arm.lo;
-            if (arm.pat.kind == P_RANGE) {
-                if (sit == IS_U64 ? (uint64_t)end <= (uint64_t)arm.lo : end <= arm.lo)
-                    Error(arm.body, "empty range in match pattern");
-                arm.hi = (int64_t)((uint64_t)end - 1);
+                Error(arm.pat.ints[0].lo, cat("constant pattern ", arm.pat.variant,
+                                              " has no payload to bind"));
+            arm.ranges.clear();
+            for (auto &pi : arm.pat.ints) {
+                auto ul = false, uh = false;
+                ArmRange r;
+                r.lo = PatternValue(pi.lo, ul);
+                auto end = pi.hi ? PatternValue(pi.hi, uh) : r.lo;
+                // Pattern values must fit the scrutinee's type (a u64
+                // scrutinee accepts any 64-bit pattern).
+                if (sit != IS_U64) {
+                    if (!FitsIntStorage(r.lo, ul, sit) || (pi.hi && !FitsIntStorage(end, uh, sit)))
+                        Error(arm.body, cat("match pattern does not fit the scrutinee "
+                                            "type ", TypeStr(st)));
+                }
+                // The arm keeps the last value it matches: the value past it,
+                // which a range's end names, does not exist at the top of a type.
+                r.hi = r.lo;
+                if (pi.hi) {
+                    if (sit == IS_U64 ? (uint64_t)end <= (uint64_t)r.lo : end <= r.lo)
+                        Error(arm.body, "empty range in match pattern");
+                    r.hi = (int64_t)((uint64_t)end - 1);
+                }
+                arm.ranges.push_back(r);
             }
             DoArm(arm, nullptr);
         }

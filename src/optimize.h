@@ -728,12 +728,13 @@ inline Node *MatchExpr::Cp1(Inliner &inl) const {
     for (auto &arm : arms) {
         MatchArm a;
         a.pat = arm.pat;
-        if (a.pat.lo) a.pat.lo = inl.Cp(a.pat.lo);
-        if (a.pat.hi) a.pat.hi = inl.Cp(a.pat.hi);
+        for (auto &pi : a.pat.ints) {
+            pi.lo = inl.Cp(pi.lo);
+            if (pi.hi) pi.hi = inl.Cp(pi.hi);
+        }
         a.variant = arm.variant;
         a.binder = inl.Remap(arm.binder);
-        a.lo = arm.lo;
-        a.hi = arm.hi;
+        a.ranges = arm.ranges;
         a.body = inl.Cp(arm.body);
         c->arms.push_back(a);
     }
@@ -1133,10 +1134,11 @@ inline Node *MatchExpr::Opt(Optimizer &o) {
         auto st = Optimizer::IntTypeOf(scrutinee);
         auto uns = st && IsUnsigned(st->intstorage);
         auto inrange = [&](const MatchArm &arm) {
-            if (uns)
-                return (uint64_t)iv->val >= (uint64_t)arm.lo &&
-                       (uint64_t)iv->val <= (uint64_t)arm.hi;
-            return iv->val >= arm.lo && iv->val <= arm.hi;
+            for (auto &r : arm.ranges)
+                if (uns ? (uint64_t)iv->val >= (uint64_t)r.lo && (uint64_t)iv->val <= (uint64_t)r.hi
+                        : iv->val >= r.lo && iv->val <= r.hi)
+                    return true;
+            return false;
         };
         MatchArm *sel = nullptr;
         for (auto &arm : arms) {

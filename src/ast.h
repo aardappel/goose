@@ -345,16 +345,28 @@ struct FieldInit {
     bool fromdefault = false;   // Checked in the type declaration's environment.
 };
 
-enum PatKind { P_WILDCARD, P_VARIANT, P_INT, P_RANGE };
+enum PatKind { P_WILDCARD, P_VARIANT, P_INTS };
+
+// An integer pattern's value, or its half-open range when hi is set: literals
+// and unchecked Idents, either one maybe negated.
+struct PatInt {
+    Node *lo = nullptr;
+    Node *hi = nullptr;
+};
 
 struct Pattern {
     PatKind kind = P_WILDCARD;
     string_view variant;        // P_VARIANT: a bare name, which in an integer match
-                                // names a constant (lo) instead of a variant.
+                                // names a constant (ints[0].lo) instead of a variant.
     string_view binder;         // P_VARIANT: optional payload binding.
     bool byref = false;         // `Variant &b`: bind the payload by reference (§8.1).
-    Node *lo = nullptr;         // P_INT / P_RANGE bounds, P_VARIANT's name: literals and
-    Node *hi = nullptr;         // unchecked Idents, either one maybe negated.
+    vector<PatInt> ints;        // P_INTS: the values and ranges, any one of which
+                                // matches; P_VARIANT: its name.
+};
+
+// The first and last value an integer arm's value or range matches.
+struct ArmRange {
+    int64_t lo = 0, hi = 0;
 };
 
 struct MatchArm {
@@ -363,7 +375,7 @@ struct MatchArm {
     // Filled by typecheck:
     SVariant *variant = nullptr;    // P_VARIANT arms.
     VarDef *binder = nullptr;       // P_VARIANT payload binding, if any.
-    int64_t lo = 0, hi = 0;         // P_INT / P_RANGE first and last value matched.
+    vector<ArmRange> ranges;        // Integer arms but _: one per pattern value/range.
 };
 
 // A function value bound to a generic parameter at some call (typecheck):

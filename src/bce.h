@@ -2390,8 +2390,14 @@ inline bool MatchExpr::BceWalk(BCE &b) {
     for (auto &arm : arms) {
         b.flow = base;
         if (admissible && arm.pat.kind != P_WILDCARD) {
-            b.AddFactB(BCE::Zero(), st.b, BCE::SatSub(st.off, arm.lo));
-            b.AddFactB(st.b, BCE::Zero(), BCE::SatSub(arm.hi, st.off));
+            // Several values and ranges bound the scrutinee by their hull.
+            auto lo = arm.ranges[0].lo, hi = arm.ranges[0].hi;
+            for (auto &r : arm.ranges) {
+                lo = std::min(lo, r.lo);
+                hi = std::max(hi, r.hi);
+            }
+            b.AddFactB(BCE::Zero(), st.b, BCE::SatSub(st.off, lo));
+            b.AddFactB(st.b, BCE::Zero(), BCE::SatSub(hi, st.off));
         }
         if (b.Walk(arm.body)) {
             if (!anyfell) acc = std::move(b.flow);

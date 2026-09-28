@@ -794,21 +794,18 @@ struct Parser {
 
     Pattern ParsePattern() {
         Pattern p;
-        if (lex.tok == T_IDENT && lex.attr == "_") {
-            p.kind = P_WILDCARD;
+        auto wildcard = [&]() { return lex.tok == T_IDENT && lex.attr == "_"; };
+        if (wildcard()) {
             lex.Next();
+            if (lex.tok == T_COMMA) Error("_ cannot be listed with other patterns");
             return p;
         }
-        p.kind = P_INT;
-        p.lo = ParsePatternBound();
-        if (IsNext(T_DOTDOT)) {
-            p.kind = P_RANGE;
-            p.hi = ParsePatternBound();
-            return p;
-        }
-        // A bare name is a variant or, in an integer match, a constant: the
-        // scrutinee's type decides (§8.1).
-        if (auto id = Is<Ident>(p.lo); id && id->name.find("::") == string_view::npos) {
+        p.kind = P_INTS;
+        p.ints.push_back(ParsePatternInt());
+        // A lone bare name is a variant or, in an integer match, a constant:
+        // the scrutinee's type decides (§8.1). A list holds only integers.
+        auto id = Is<Ident>(p.ints[0].lo);
+        if (id && !p.ints[0].hi && lex.tok != T_COMMA && id->name.find("::") == string_view::npos) {
             p.kind = P_VARIANT;
             p.variant = id->name;
             if (IsNext(T_BITAND)) {
@@ -819,8 +816,20 @@ struct Parser {
                 p.binder = lex.attr;
                 lex.Next();
             }
+            return p;
+        }
+        while (IsNext(T_COMMA)) {
+            if (wildcard()) Error("_ cannot be listed with other patterns");
+            p.ints.push_back(ParsePatternInt());
         }
         return p;
+    }
+
+    PatInt ParsePatternInt() {
+        PatInt r;
+        r.lo = ParsePatternBound();
+        if (IsNext(T_DOTDOT)) r.hi = ParsePatternBound();
+        return r;
     }
 
     // An integer pattern's value or range bound: a literal, or the name of

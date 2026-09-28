@@ -443,11 +443,16 @@ inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
         for (auto &arm : arms) {
             if (arm.pat.kind == P_WILDCARD) {
                 cg.L(first ? "{" : "} else {");
-            } else if (arm.hi == arm.lo) {
-                cg.L(first ? "" : "} else ", "if (", xs, " == ", k(arm.lo), ") {");
             } else {
-                cg.L(first ? "" : "} else ", "if (", xs, " >= ", k(arm.lo), " && ", xs,
-                  " <= ", k(arm.hi), ") {");
+                auto several = arm.ranges.size() > 1;
+                string c;
+                for (auto &r : arm.ranges) {
+                    if (!c.empty()) c += " || ";
+                    if (r.hi == r.lo) Append(c, xs, " == ", k(r.lo));
+                    else Append(c, several ? "(" : "", xs, " >= ", k(r.lo), " && ", xs, " <= ",
+                                k(r.hi), several ? ")" : "");
+                }
+                cg.L(first ? "" : "} else ", "if (", c, ") {");
             }
             first = false;
             cg.ind++;

@@ -107,8 +107,10 @@ inline Node *MatchExpr::Clone(Ast &ast) const {
     for (auto &arm : arms) {
         MatchArm a;
         a.pat = arm.pat;
-        a.pat.lo = CloneOrNull(ast, arm.pat.lo);
-        a.pat.hi = CloneOrNull(ast, arm.pat.hi);
+        for (auto &pi : a.pat.ints) {
+            pi.lo = pi.lo->Clone(ast);
+            pi.hi = CloneOrNull(ast, pi.hi);
+        }
         a.body = arm.body->Clone(ast);
         m->arms.push_back(a);
     }
@@ -270,8 +272,10 @@ inline void IfExpr::Children(const function<void(Node *)> &f) const {
 inline void MatchExpr::Children(const function<void(Node *)> &f) const {
     f(scrutinee);
     for (auto &arm : arms) {
-        CH(arm.pat.lo);
-        CH(arm.pat.hi);
+        for (auto &pi : arm.pat.ints) {
+            f(pi.lo);
+            CH(pi.hi);
+        }
         f(arm.body);
     }
 }
