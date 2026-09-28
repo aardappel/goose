@@ -609,7 +609,7 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
         return ct;
     }
     Val tmp = av;
-    if (!FitsAt(tmp, ct, true)) return nullptr;
+    if (!FitsAt(tmp, ct)) return nullptr;
     tier = std::max(tier, 2);
     return ct;
 }
@@ -2164,7 +2164,7 @@ inline void TypeCheck::CheckReturn(Return *r) {
                         auto rt = tspec->rets[i];
                         RequireCopyable(vals[i], r->vals[0], rt);
                         if (!KeepsRef(vals[i], rt)) vals[i] = DecayRef(vals[i]);
-                        MustFit(vals[i], r->vals[0], rt, false);
+                        MustFit(vals[i], r->vals[0], rt);
                     }
                 }
             } else {

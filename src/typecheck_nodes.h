@@ -293,7 +293,13 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
                 auto av = tc.CheckV(fi.val, nullptr);
                 fi.val->exprtype = av.type;
                 auto nt = tc.NaturalType(av);
-                if (nt) tc.BindTypes(field->type, nt, b);
+                // The shape-changing coercion generics see through, as a
+                // call's do: an array, or a reference to one, meeting a
+                // slice field is a slice of its elements (§3.10).
+                if (nt && !tc.BindTypes(field->type, nt, b) && field->type->kind == TY_SLICE) {
+                    auto at = IsPlainRef(nt) ? nt->ref->sub : nt;
+                    if (at->kind == TY_ARRAY) tc.BindTypes(field->type->sub, at->arr->sub, b);
+                }
             }
             vector<TypeExpr *> args;
             for (auto &g : st->generics) {

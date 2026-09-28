@@ -1023,7 +1023,7 @@ inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue
         if (wantvalue) {
             PathScope ps(*this, onpath ? b->tail : nullptr);
             JoinPathScope js(*this, onjoin ? b->tail : nullptr);
-            v = CheckValue(b->tail, expected, false, BranchAt(expected));
+            v = CheckValue(b->tail, expected, false, CopiesBranch(expected));
         } else {
             CheckStmtExpr(b->tail);
         }
@@ -1072,7 +1072,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
         if (wantvalue) {
             PathScope ps(*this, onpath ? arm.body : nullptr);
             JoinPathScope js(*this, onjoin ? arm.body : nullptr);
-            av = CheckValue(arm.body, expected, false, BranchAt(expected));
+            av = CheckValue(arm.body, expected, false, CopiesBranch(expected));
         } else {
             CheckStmtExpr(arm.body);
         }
@@ -1265,7 +1265,7 @@ inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wa
         if (wantvalue) {
             PathScope ps(*this, onpath ? x->body->tail : nullptr);
             JoinPathScope js(*this, onjoin ? x->body->tail : nullptr);
-            v = CheckValue(x->body->tail, expected, false, BranchAt(expected));
+            v = CheckValue(x->body->tail, expected, false, CopiesBranch(expected));
         } else {
             CheckStmtExpr(x->body->tail);
         }
@@ -1555,7 +1555,7 @@ inline void TypeCheck::CheckBreak(Break *b) {
         auto be = scopes[si].breakexpected;
         auto agree = scopes[si].breaktype && !scopes[si].breakvalue.joinslice;
         auto expected = agree ? scopes[si].breaktype : be;
-        auto unstored = agree && BranchAt(be) == BR_COPY && IsRefOrSlice(expected);
+        auto unstored = agree && CopiesBranch(be) && IsRefOrSlice(expected);
         Val v;
         {
             // The break is a statement, but its value is the construct's.
@@ -1563,7 +1563,7 @@ inline void TypeCheck::CheckBreak(Break *b) {
             JoinPathScope js(*this, scopes[si].onjoinpath ? b->val : nullptr);
             FlagScope rs(inreturn, scopes[si].inreturn);
             DestScope ds(*this, unstored ? Dest {} : curdst);
-            v = CheckValue(b->val, expected, false, BranchAt(be));
+            v = CheckValue(b->val, expected, false, CopiesBranch(be));
         }
         // The construct's value is a new one: the break's type and what its
         // references point at, never the operand's storage or literal form.
@@ -1766,7 +1766,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
                     Warn(vd->inits[i], cat("redundant &: ", ExprStr(refinit->child),
                                            " binds by reference without it (§4.1)"));
             } else {
-                v = CheckValue(vd->inits[i], ann, false, BR_NONE, !ann);
+                v = CheckValue(vd->inits[i], ann, false, false, !ann);
                 // An un-annotated binding of a non-fixed lvalue is a
                 // reference to it (§4.1), like an untyped parameter's, and
                 // one of a reference to such a value is that reference,
@@ -2008,7 +2008,7 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
         v = CheckV(a->rhs, target);
         if (BindsRef(v, target)) a->rhs = AutoRef(a->rhs, v);
         wasplain = IsPlainRef(v.type);
-        MustFit(v, a->rhs, target, false);
+        MustFit(v, a->rhs, target);
     }
     a->rhs->exprtype = v.type;
     if (lv.var) {

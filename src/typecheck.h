@@ -1207,13 +1207,9 @@ struct TypeCheck {
         JoinPathScope(TypeCheck &t, Node *n) : tc(t), saved(t.joinpath) { tc.joinpath = n; }
         ~JoinPathScope() { tc.joinpath = saved; }
     };
-    // How a value is a branch's: not at all, the value of a branch of a
-    // construct with a destination type, or of one with none, whose value
-    // is a copy of it (CheckBranchCopy).
-    enum BranchKind { BR_NONE, BR_VALUE, BR_COPY };
-    static int BranchAt(TypeExpr *dest) {
-        return !dest || dest->kind == TY_VOID ? BR_COPY : BR_VALUE;
-    }
+    // Whether a construct with destination type `dest` makes its value a
+    // copy of the branch taken (CheckBranchCopy): where it has none.
+    static bool CopiesBranch(TypeExpr *dest) { return !dest || dest->kind == TY_VOID; }
     void BindBranchesByRef(vector<Node *> &argnodes, vector<Val> &argvals,
                            const vector<TypeExpr *> &paramtypes, SFunction *sf, int skip = -1,
                            size_t end = SIZE_MAX);
@@ -1228,7 +1224,7 @@ struct TypeCheck {
         if (pt->kind != TY_SLICE && (pt->kind == TY_REF || ClassOf(pt) != SC_FIXED)) return;
         if (auto u = Is<Unary>(a); u && u->synth) a = u->child;
     }
-    Val CheckValue(Node *&n, TypeExpr *expected, bool callsite = false, int branch = BR_NONE,
+    Val CheckValue(Node *&n, TypeExpr *expected, bool callsite = false, bool branchcopy = false,
                    bool inferred = false);
 
     Val CheckArg(Node *&n, TypeExpr *expected) {
@@ -1241,7 +1237,7 @@ struct TypeCheck {
 
     string fitfail;  // A specific reason from the last failing FitsAt, if any.
 
-    void MustFit(Val &v, Node *n, TypeExpr *dt, bool wholeslice);
+    void MustFit(Val &v, Node *n, TypeExpr *dt);
     void CheckArrayCount(Node *n, TypeExpr *t, int64_t count) {
         if (!t || t->kind != TY_ARRAY) return;
         auto a = t->arr;
@@ -1251,7 +1247,7 @@ struct TypeCheck {
             (uint64_t)count >= (1ull << IntBits(ls)))
             Error(n, cat("array length ", count, " exceeds storage range of ", TypeStr(t)));
     }
-    bool FitsAt(Val &v, TypeExpr *dt, bool wholeslice);
+    bool FitsAt(Val &v, TypeExpr *dt);
     static string ConstStr(const Val &v);
     Val CheckCond(Node *n);
     TypeExpr *UnifyBranch(TypeExpr *a, TypeExpr *b, Node *at, bool wantvalue);

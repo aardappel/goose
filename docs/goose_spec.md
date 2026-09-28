@@ -649,14 +649,19 @@ but writes through a slice are legal when its provenance is writable (§9.5).
 
 * Created by slicing any array-family value or slice: `a[x..y]` (x inclusive,
   y exclusive; omit for 0 / len; `^k` means "len − k"), or allocated from a
-  slice pool (§5.4). At call sites, an
-  array argument passed where a slice parameter is expected implicitly
-  becomes a whole-array slice; an exact-type overload wins over this
-  coercion. (An array literal of variable-size elements is not such an
-  argument: it has no temporary to be sliced, §4.2.) So does an array a
-  branch gives where its construct's value is a slice (§6.4). Anywhere
-  else — a variable, a return, a field — the whole array is sliced as
-  `a[..]`.
+  slice pool (§5.4). An array, or a reference to one, reaching a
+  destination whose type is a slice of its element type implicitly becomes
+  a whole-array slice of that array itself, as `a[..]` would: a parameter
+  (where an exact-type overload wins over this coercion), an annotated
+  `let`/`var` or global, an assignment to a slice variable, field or
+  element, a struct or variant literal's field and a field's default, an
+  array literal's element, a `push`, a `return` or a body's final
+  expression, and a branch whose construct's value is a slice (§6.4). The
+  slice is `const` where the array is read-only (§9.5), and the lifetime
+  rules judge it as any other (§9.2): `let s: const u8[:] = item.name;`
+  views `item.name`, while `let s: const u8[:] = make();` binds a view of a
+  temporary and is an error. (An array literal of variable-size elements is
+  not such an array: it has no temporary to be sliced, §4.2.)
 * Slices of fixed-element arrays index and iterate, bounds-checked against
   the slice's own length. Slices never grow; shrinking a slice (re-slicing)
   is always safe.
@@ -682,7 +687,8 @@ depends on its size class (§1.1):
 * **Fixed-size values connect by value.** Scalars, structs, fixed arrays,
   references and slices are copied — a reference or slice copy is the
   reference/slice itself, never the pointee. Large fixed values copy
-  silently; there is no size threshold.
+  silently; there is no size threshold. A fixed array meeting a slice of its
+  element type is not copied but viewed, as any array is (§3.10).
 * **Non-fixed values are never copied implicitly.** A variable- or
   resizable-class *lvalue* (a variable, field or element) reaching a
   destination binds by reference where the destination's type is a
@@ -769,8 +775,8 @@ Literal forms usable in any construction context:
   every destination; `self` in a literal refers to each constructed element.
   A literal whose destination names no array type is a `T[k]`, or a `T[]`
   when its elements are not fixed-size (§3.3). A fixed one may also be a
-  temporary for a slice parameter, a `for`, `[..]` or `bytes_of` to view; a
-  `T[]` one is a variable value and exists only in a construction context,
+  temporary for a slice destination, a `for`, `[..]` or `bytes_of` to view;
+  a `T[]` one is a variable value and exists only in a construction context,
   so viewing it takes a variable bound to it first. `==` and `!=` compare
   either one with any array or slice of its element type (§4.5), since
   their result holds no view of it. An `append`ed literal is the run it adds:
@@ -2192,7 +2198,7 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   `loop` or bare `{ }` whose branches do not join as a slice (§6.4), which
   is a copy of what the branch taken produced even where that names a
   variable — viewed where it stands rather than built into a destination
-  (by a slice parameter, a `for`, `[..]`, `bytes_of` or a path into it,
+  (by a slice destination, a `for`, `[..]`, `bytes_of` or a path into it,
   §4.2) — lasts for the rest of its statement, or of the block whose final
   expression made it. Its scope is that statement's: the variables the
   statement declares outlive it, and those of the scopes the statement

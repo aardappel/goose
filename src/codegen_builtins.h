@@ -104,7 +104,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
         case B_COPY: {
             if (c->exprtype->kind != TY_SLICE)
                 return { LoadLoc(GenLoc(an[0]), c->exprtype, ln) };
-            // A slice parameter views the copy's temporary, not its source.
+            // A slice destination views the copy's temporary, not its source.
             auto slice = c->exprtype;
             c->exprtype = c->rettypes[0];
             auto lv = GenLoc(c);

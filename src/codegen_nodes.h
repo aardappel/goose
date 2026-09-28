@@ -72,7 +72,7 @@ inline string Unary::CgX(CodeGen &cg) {
         // Where the checker decayed the reference (an operand, a value
         // destination, a rendered value, a construct's branch with no
         // reference destination), `&x` reads as its pointee (§3.8); a whole
-        // array's `&x` at a slice parameter reads as that slice (§3.10).
+        // array's `&x` at a slice destination reads as that slice (§3.10).
         if (exprtype && exprtype->kind != TY_REF)
             return cg.LoadLoc(cg.GenLoc(child), exprtype, line);
         return cg.GenRefVal(child, line);

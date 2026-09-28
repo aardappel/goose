@@ -622,7 +622,7 @@ inline string CodeGen::LoadLoc(Loc lv, TypeExpr *et, Line ln) {
         return cat("((", CT(r.sub), " *)", p, ")");
     }
     if (et && et->kind == TY_SLICE && lv.t->kind == TY_ARRAY) {
-        // Whole-array argument to a slice parameter (§3.10), any loc form
+        // A whole array at a slice destination (§3.10), any loc form
         // (fixed value or bytes/resizable pointer).
         auto v = ArrayView(lv);
         auto t = T();

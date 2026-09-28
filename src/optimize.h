@@ -258,7 +258,7 @@ struct Optimizer {
     Node *viewed = nullptr;
 
     // Whether the field or element n is viewed: it is the operand OptViewed
-    // is at, or an array passed whole to a slice parameter, which takes the
+    // is at, or an array a slice destination takes whole, which has the
     // slice's type (§3.10).
     bool Viewed(Node *n) {
         return viewed == n || (n->exprtype && n->exprtype->kind == TY_SLICE);

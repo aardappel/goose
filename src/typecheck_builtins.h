@@ -2013,7 +2013,7 @@ inline void TypeCheck::AppendedCopies(Node *an, const Val &av, TypeExpr *elem, c
         ev = ContainerRead(lv);
     }
     DestScope ds(*this, Dest(rv, false, rv.reached));
-    MustFit(ev, an, ev.type, false);
+    MustFit(ev, an, ev.type);
 }
 
 inline TypeCheck::Alias TypeCheck::MayAliasRoots(VarDef *a, bool aexact, VarDef *b,

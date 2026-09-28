@@ -484,6 +484,16 @@ total(grow[1..4]);    // a sub-range
 total(grow[^2..]);    // ^k counts from the end
 ```
 
+Any slice-typed destination takes an array that way, not only a parameter:
+a variable, a field, an element or a return. The slice views the array
+itself, as `fixed[..]` would, and is `const` where the array is:
+
+```goose
+let view: const i64[:] = fixed;   // fixed itself, not a copy
+fixed[0] = 99;
+print(view[0]);                   // 99
+```
+
 The difference from `string_view` is that this one is checked. Every
 reference and slice carries a static **root** — the variable that bounds the
 lifetime of what it points at — and the entire lifetime system is one rule:

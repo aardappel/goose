@@ -404,7 +404,7 @@ References are transparent (§3.8), which the checker implements as
 reference; every consumer goes through `CheckValue`, `CheckArg` or `Operand`
 (`typecheck_exprs.h`), which load the pointee (`DecayRef`) unless the
 destination keeps the reference (`KeepsRef`: a reference-typed destination,
-or a whole-array reference meeting a slice parameter). A condition
+or a whole-array reference meeting a slice destination). A condition
 (`CheckCond`), an integer `match`'s scrutinee (`CheckMatch`) and a `for`
 loop's count (`CheckFor`) decay the same way; a reference to an ADT
 scrutinee is kept, its tag and payload read where the value lies, and so is
@@ -436,19 +436,19 @@ reads as `x` (`Unary::CgX`).
   and a valued `block` or `loop` keeps for its breaks' values), and so a
   branch's value, or a reference to it, where its construct has no
   destination type and the construct's value is a copy of it
-  (`CheckValue`'s `branch` kind, `BR_COPY`, `CheckBranchCopy`);
+  (`CheckValue`'s `branchcopy` flag, `CheckBranchCopy`);
 * warns on a branch's redundant `&x` where its construct has no destination
-  type and copies the fixed-size pointee (`BR_COPY` again);
+  type and copies the fixed-size pointee (`branchcopy` again);
 * fits the value to the destination (`MustFit`/`FitsAt`, §3.5); the node's
   `exprtype` becomes the destination's type, which can be wider than the
   type its operation computes at (an `i8` cast stored into an `i64`), so
   that type is read elsewhere: a cast's `AsCast::totype`, an operator's
-  operands' `exprtype`. A call's argument, or a branch's value (any
-  `branch` kind), that is an array or a reference to one meeting a slice
-  of its element type is a whole-array slice of it (`FitsAt`'s
-  `wholeslice`), `const` where the array is read-only, which the store and
-  constness rules then judge as the slice it is: pushed into an array of
-  slices, say. Elsewhere the error says to slice the array with `[..]`;
+  operands' `exprtype`. An array, or a reference to one, meeting a slice
+  of its element type is a whole-array slice of it (`FitsAt`), whatever the
+  destination, `const` where the array is read-only and no pool (as `a[..]`
+  is not, `Val::reusable`), which the store and constness rules then judge
+  as the slice it is. A generic struct literal binds a slice field's
+  element type through it, as `UnifyArgRaw` does a slice parameter's;
 * rejects copies of values holding self-relative references
   (`NoRelRefCopy`, §3.13).
 
@@ -573,7 +573,7 @@ temporary alone.
 
 A construct whose branches are arrays and slices of one element type is no
 such copy: its value is a slice of that element (spec §6.4), each array
-branch a whole-array slice of itself (`FitsAt`'s `wholeslice`), rooted
+branch a whole-array slice of itself (`FitsAt`, spec §3.10), rooted
 where the array is, so `CheckBranchRoot` holds the array to the
 construct's scope. With a slice destination type the branches are simply
 checked against it. With none, which branches join is known only once all
@@ -1104,7 +1104,7 @@ the bit; `MergeVals`, a rebind (`CheckRefRebindRoot`) and a call's result
 value does; and
 crossing a reference drops it (`DerefLValue`, `DecayRef`, `Dot::Check`'s
 auto-deref, a `for` loop or a builtin member through a reference, a whole
-array passed to a slice parameter through one), since what a reference read
+array meeting a slice destination through one), since what a reference read
 out of a field leads to may be a whole grow-shrink array, or a variable
 holding a view into one. A slice loaded through a reference to a slice
 variable named by an explicit `&` has what the variable's binding has
@@ -1783,8 +1783,8 @@ shrink that storage. Those places are a slice's base, an index's base where
 the index runs code (the element is read after it; `CodeFree`), a `for`'s
 iterable, the operand of `&` (explicit, or a reference parameter binding
 it), a member builtin's receiver (`bytes_of` returns a view of it), and the
-base of a field or element that is itself viewed or is an array passed
-whole to a slice parameter. There such a path goes back into a block, which
+base of a field or element that is itself viewed or is an array a slice
+destination takes whole. There such a path goes back into a block, which
 codegen evaluates into a temporary as the construct would have:
 `f(get()[..], a.pop())` for `fn get() -> i64[3] { a[0] }` would otherwise
 hand `f` a view of the slot the pop frees.
@@ -2832,7 +2832,7 @@ A loop that only updates elements therefore needs no register for a cached top.
   has that base case inlined at every self-call (`-O1` and above), halving
   the calls of a complete tree walk; a statement before the test, a UFCS
   self-call, or mutual recursion disables it, and a self-call whose array
-  result is passed straight to a slice parameter stays a call.
+  result a slice destination takes whole stays a call.
 * A self-recursive integer function whose tail returns fold with one
   associative operator becomes a loop; `1 + f(l) + f(r)` loses its right
   spine. Floats, `%`, returns inside nested loops, and callees that can
