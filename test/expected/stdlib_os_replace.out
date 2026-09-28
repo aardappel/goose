@@ -1,0 +1,29 @@
+true true
+true true
+true missing [apple]
+true missing [apple]
+false [apple]
+false [apple] true
+false [apple]
+true [first]
+true [second, longer]
+true [3rd]
+true []
+true [banana]
+false true
+false
+list true:
+b.txt
+save.dat
+sub
+4096 missing false false
+false false false false false false false false
+false 0 [banana] missing
+25 missing false false
+false false false false false false false false
+false 0 [banana] missing
+list true:
+b.txt
+save.dat
+sub
+false

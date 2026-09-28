@@ -312,9 +312,15 @@ A small interface to `src/runtime/runtime_os.h`:
 ```goose
 fn read_file(path: const u8[:], out: u8[>..]&) -> bool     // appends the whole file
 fn write_file(path: const u8[:], data: const u8[:]) -> bool
+fn write_file_atomic(path: const u8[:], data: const u8[:]) -> bool   // the old file or all of the new
 fn append_file(path: const u8[:], data: const u8[:]) -> bool
-fn file_exists(path: const u8[:]) -> bool
+fn file_exists(path: const u8[:]) -> bool                  // a file, not a directory
 fn delete_file(path: const u8[:]) -> bool
+fn rename_file(from: const u8[:], to: const u8[:]) -> bool // replaces `to` atomically
+fn make_dir(path: const u8[:]) -> bool                     // true if one is there afterwards
+fn is_dir(path: const u8[:]) -> bool
+fn delete_dir(path: const u8[:]) -> bool                   // an empty one
+fn list_dir(path: const u8[:], out: u8[>..]&) -> bool      // appends each name and '\n', sorted
 fn read_line(out: u8[>..]&) -> bool                  // stdin, newline stripped; false at end
 fn read_stdin(out: u8[>..]&)                         // everything until end of input
 fn write_stdout(s: const u8[:])   fn write_stderr(s: const u8[:])   fn flush_stdout()
@@ -328,9 +334,39 @@ fn sleep(seconds: f64)      fn sleep_ms(ms: i64)
 fn random_seed() -> u64                              // entropy, for rng
 ```
 
+Paths are UTF-8 on every platform: on Windows the runtime converts them to
+UTF-16 for the system's wide APIs. So are environment values, and the
+arguments, which on Windows arrive through the ANSI code page first and so
+keep only the characters it has. A path is refused, and the call returns
+`false`, if it is longer than 4095 bytes, contains a NUL byte, or on Windows
+is not valid UTF-8: cut short or read another way, it could name a
+different file.
+
+`write_file_atomic` is for files that must never be seen half-written, such
+as saved games. It writes the data to a new file beside `path`, named after
+it with a random tag and `.tmp` added, flushes that file to disk and renames
+it over `path`. A crash or a failure at any point leaves `path` with either
+its old contents or all of the new ones. On a failure the new file is
+removed; after a crash it can remain, its name ending in `.tmp`.
+`rename_file` is the same one-step replacement for a file the program wrote
+itself, within one volume.
+
+`list_dir` leaves out `.` and `..` and sorts the names bytewise, so a
+listing does not depend on the file system. A name that cannot be one line
+of UTF-8, a POSIX name with a newline in it or a Windows name that is not
+valid UTF-16, is left out too. On a failure nothing is appended.
+
+```goose
+var names: u8[>..] = [];
+if list_dir("saves", names) {
+    each_split(names, '\n') { if it.len > 0 { load_save(str("saves/", it)); } };
+}
+if !write_file_atomic("saves/slot1.sav", image) { write_stderr("not saved\n"); }
+```
+
 `exit(code)` and `abort(msg)` are builtins, since the checker knows they
-diverge. Directory listing, subprocesses and networking are not in v1; they
-arrive as `extern fn`s when a program needs them.
+diverge. Subprocesses and networking are not in v1; they arrive as
+`extern fn`s when a program needs them.
 
 ## gfx
 

@@ -5,12 +5,23 @@
 
 import std;
 
-// Files.
+// Files. Paths are UTF-8 everywhere, Windows included.
 extern "gs_os_read_file" fn read_file(path: const u8[:], out: u8[>..]&) -> bool;      // appends the whole file
 extern "gs_os_write_file" fn write_file(path: const u8[:], data: const u8[:]) -> bool;
+// All or nothing: a new file beside `path`, flushed to disk and renamed over it.
+extern "gs_os_write_file_atomic" fn write_file_atomic(path: const u8[:], data: const u8[:]) -> bool;
 extern "gs_os_append_file" fn append_file(path: const u8[:], data: const u8[:]) -> bool;
-extern "gs_os_file_exists" fn file_exists(path: const u8[:]) -> bool;
+extern "gs_os_file_exists" fn file_exists(path: const u8[:]) -> bool;      // a file, not a directory
 extern "gs_os_remove_file" fn delete_file(path: const u8[:]) -> bool;
+// Replaces `to`, if there is one, in a single step.
+extern "gs_os_rename_file" fn rename_file(from: const u8[:], to: const u8[:]) -> bool;
+
+// Directories.
+extern "gs_os_make_dir" fn make_dir(path: const u8[:]) -> bool;           // true if one is there afterwards
+extern "gs_os_is_dir" fn is_dir(path: const u8[:]) -> bool;
+extern "gs_os_remove_dir" fn delete_dir(path: const u8[:]) -> bool;       // an empty one
+// Appends each entry's name and a '\n', sorted bytewise, "." and ".." left out.
+extern "gs_os_list_dir" fn list_dir(path: const u8[:], out: u8[>..]&) -> bool;
 
 // Standard streams.
 extern "gs_os_read_line" fn read_line(out: u8[>..]&) -> bool;    // one line of stdin, no newline; false at end

@@ -1342,7 +1342,7 @@ You will meet all of these.
   whatever its next owner put there — the array equivalent of a stale index,
   and yours to avoid.
 * **v1 omissions** you will notice: no move for resizables, one resizable per
-  struct, no labeled break, no namespace privacy, no directory listing or
+  struct, no labeled break, no namespace privacy, no subprocesses or
   networking in the library yet.
 
 ---

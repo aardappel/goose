@@ -5,9 +5,8 @@
    shared machinery lives here (data stacks, varints, printing, aborts,
    threads/queues in runtime_threads.h). */
 
-/* The OS layer (runtime_os.h) calls fopen and getenv, which the Microsoft
-   CRT deprecates in favour of its own _s variants; the portable ones are
-   what this runtime uses everywhere. */
+/* The OS layer (runtime_os.h) opens files on Windows with _wfopen, which the
+   Microsoft CRT deprecates in favour of its own _s variant. */
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS 1
 #endif
