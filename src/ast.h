@@ -7,6 +7,7 @@ namespace goose {
 
 struct Node;
 struct Block;
+struct Break;
 struct FunVal;
 struct TypeExpr;
 struct SFunction;
@@ -549,10 +550,17 @@ struct Val : Prov {
     bool unsized = false;
     VarDef *unsizedparam = nullptr;
     // A float computed from float literals and integers alone, and no
-    // constant (`n * 0.5`): like a float literal it takes the float type its
-    // destination or other operand has, and is f64 where nothing gives it
-    // one (§6.3). TypeCheck::RetypeFlex retypes the nodes computing it.
+    // constant (`n * 0.5`, `if c { 0.5 } else { 0.25 }`): like a float
+    // literal it takes the float type its destination or other operand has,
+    // and is f64 where nothing gives it one (§6.3). TypeCheck::RetypeFlex
+    // retypes the nodes computing it.
     bool litfloat = false;
+    // A construct whose branches' values are all integer constants (§6.4):
+    // one of the constants from litlo to lithi (their bits read as u64 where
+    // `uns`, as a u64 constant's are), adapting as a constant does to any
+    // integer type they all fit.
+    bool litint = false;
+    int64_t litlo = 0, lithi = 0;
     bool lvalue = false;         // Denotes storage (a variable, field or element), not a temporary.
     // A control construct's value, whose branches a destination with no type
     // of its own copies (TypeCheck::CheckBranchCopy): whether every branch is
@@ -897,6 +905,7 @@ NODE_END
 NODE(EarlyBlock)                // "block { }": breakable early-out construct.
     BCE_WALK
     Block *body;
+    vector<Break *> breaks;     // Filled by typecheck: the breaks giving it a value.
     EarlyBlock(Line l, Block *_body) : Node(l), body(_body) {}
 NODE_END
 
@@ -915,6 +924,7 @@ NODE(LoopExpr)
     BCE_WALK
     vector<VarDef *> hoistrefs;   // See While.
     Block *body;
+    vector<Break *> breaks;       // Filled by typecheck: the breaks giving it a value.
     LoopExpr(Line l, Block *_body) : Node(l), body(_body) {}
 NODE_END
 

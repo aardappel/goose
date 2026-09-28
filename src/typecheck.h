@@ -1272,15 +1272,33 @@ struct TypeCheck {
     static bool LitFloat(const Val &v) {
         return v.type && v.type->kind == TY_FLT && (v.ck == CK_FLT || v.unsized || v.litfloat);
     }
+    // The integer constants a value may be, lo to hi: a constant's value, or
+    // a construct's constants (Val::litint). A u64 constant above i64.max is
+    // left to the rules for constants alone.
+    static bool IntConsts(const Val &v, int64_t &lo, int64_t &hi) {
+        if (v.ck == CK_INT && !v.uns) { lo = hi = v.ival; return true; }
+        if (v.litint) { lo = v.litlo; hi = v.lithi; return true; }
+        return false;
+    }
+    static bool ConstsFit(const Val &v, IntStorage s) {
+        int64_t lo, hi;
+        return IntConsts(v, lo, hi) && FitsIntStorage(lo, false, s) && FitsIntStorage(hi, false, s);
+    }
+    string ConstsNoFit(const Val &v, TypeExpr *t) {
+        if (!v.litint) return cat("constant ", ConstStr(v), " does not fit ", TypeStr(t));
+        return cat("the branches' constants ", v.litlo, " to ", v.lithi, " do not all fit ",
+                   TypeStr(t));
+    }
     static void IntToFloat(Val &v, TypeExpr *ft);
     void ToFloat(Node *&n, TypeExpr *from, TypeExpr *ft);
-    void RetypeFlex(Node *n, TypeExpr *t);
+    void RetypeFlex(Node *&n, TypeExpr *t);
+    void RetypeBranch(Node *&n, TypeExpr *t);
+    void RetypeBranches(Node *x, TypeExpr *t);
     bool ElementwiseOK(TypeExpr *t);
     Val CheckVariantConst(Dot *d, SEnum *en);
-    Val MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at, bool wantvalue,
-                  Node *anode = nullptr, Node *bnode = nullptr);
+    Val MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at, bool wantvalue);
     Val JoinBranches(const Val &a, bool areach, const Val &b, bool breach, Node *at,
-                     bool wantvalue, bool onjoin, Node *anode = nullptr, Node *bnode = nullptr);
+                     bool wantvalue, bool onjoin);
     template<typename F> Val CheckJoin(Node *x, TypeExpr *expected, F check);
     // A join of arrays of different types with no slice among them
     // (JoinBranches), which stands only where a parameter declared a slice
@@ -1299,7 +1317,6 @@ struct TypeCheck {
     }
     void CheckBranchRoot(const Val &v, int depth, Node *at, const char *construct);
     Val TempCopy(Val v);
-    void RetypeConstBranch(Node *n, TypeExpr *t);
     Node *WholeSlice(Node *n);
     Val CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue);
     Val CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue, int scopekind,

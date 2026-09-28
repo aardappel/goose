@@ -450,8 +450,11 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
         // A literal argument adapts to whatever type the other arguments
         // give a type parameter (§3.1), so they unify last: a float one
         // first, whose type an integer one converts to (§6.3). A float of
-        // literals and integers adapts as a float literal does.
-        auto late = [&](const Val &av) { return LitFloat(av) ? 1 : isliteral(av) ? 2 : 0; };
+        // literals and integers adapts as a float literal does, and a
+        // construct of integer constants as they do (§6.4).
+        auto late = [&](const Val &av) {
+            return LitFloat(av) ? 1 : isliteral(av) || av.litint ? 2 : 0;
+        };
         vector<size_t> order;
         for (auto k = 0; k < 3; k++)
             for (size_t i = 0; i < K; i++) if (late(argvals[i]) == k) order.push_back(i);
@@ -857,8 +860,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
         for (size_t r = 0; r < lastcallrets.size(); r++) {
             auto reaches = spec->inprogress ||
                            (r < spec->retroots.size() && spec->retroots[r].set);
-            results[r] = MergeVals(results[r], reached[r], lastcallrets[r], reaches, c, true,
-                                   nullptr, nullptr);
+            results[r] = MergeVals(results[r], reached[r], lastcallrets[r], reaches, c, true);
             reached[r] = reached[r] || reaches;
         }
     }
@@ -2032,7 +2034,7 @@ inline Val TypeCheck::RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &a
         if (!alt.exact) x.Weaken();
         for (auto &xa : x.alts) xa.slotread = alt.slotread && xa.slotread;
         x.writable = a.writable;
-        v = first ? x : MergeVals(v, true, x, true, at, true, nullptr, nullptr);
+        v = first ? x : MergeVals(v, true, x, true, at, true);
         first = false;
         if (!spec->inprogress) break;
     }
@@ -2083,7 +2085,7 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
                 auto first = true;
                 for (auto &alt : ri.alts.alts) {
                     auto m = RetAltVal(spec, alt, argvals, v.type, c);
-                    v = first ? m : MergeVals(v, true, m, true, c, true, nullptr, nullptr);
+                    v = first ? m : MergeVals(v, true, m, true, c, true);
                     first = false;
                 }
                 if (first) {

@@ -1377,7 +1377,8 @@ mantissa rounds as every float result does.
   to `f32` or `f64`, whichever its destination or other operand has, and is
   an `f64` where nothing gives it a type. So does every float whose
   float-ness comes only from float literals and the integers they meet:
-  `n * 0.5`, `-(i + 0.25)`, `(n - 1) * 2.5` with integer `n` and `i`. Such
+  `n * 0.5`, `-(i + 0.25)`, `(n - 1) * 2.5` with integer `n` and `i`, and a
+  construct whose branches are all such (§6.4). Such
   an expression is computed at the type it adapts to, throughout — an `f32`
   argument, field or operand gets `(n as f32) * 0.5` in 32 bits — and is an
   `f64` in an unannotated `let` (`let h = n * 0.5;`), which commits `h` to
@@ -1423,10 +1424,26 @@ continue
 `block { }` exists to promote early-out style anywhere, not just at function
 top level. `break` binds to the innermost `loop`/`while`/`for`/`block`;
 labels are not in v1. All `break E` of one construct must agree on E's
-type; as at any destination (§3.1), an integer literal in one arm adapts to
-the other arm's type (`if c { x } else { 0 }` has `x`'s type), and an
-integer arm beside a float one converts to the float's type (§6.3): `if c {
-n } else { 0.5 }` is an `f64`.
+type: a later break's value constructs into the type an earlier one gave
+the construct.
+
+A construct's branches — its arms, its tail and its breaks — join into one
+type. A literal branch adapts to the others' type, as at any typed
+destination (§3.1): an integer constant to an integer type it fits (`if c {
+x } else { 0 }` has `x`'s type, a `u8` for an `x: u8`), and a float literal,
+or a float of literals and integers (§6.3), to an `f32` (`if c { x } else
+{ 0.62 }` is an `f32` for an `x: f32`). An integer branch beside a float
+one converts to the float's type (§6.3): `if c { n } else { 0.5 }` is an
+`f64` for an integer `n`. A construct whose branches are all literals is
+itself literal-like, wherever it meets a type, as at a typed destination:
+integer constants adapt to any integer type every one of them fits (`g(if c
+{ 1 } else { 2 })` passes an `i32` to `fn g(x: i32)`, and `(if c { 200 }
+else { 100 }) + b` is a `u8` add for a `b: u8`), and are an `i64` where
+nothing gives them a type; float literals, and floats of literals and the
+integers among them, adapt to either float width (`k(if c { 0.5 } else {
+0.25 })` passes an `f32` to `fn k(x: f32)`), and are an `f64` where nothing
+gives them a type. A break with such a value settles no type for the later
+ones: `loop { if c { break 1; } break 2.5; }` is an `f64`.
 A bare `{ … }` in expression position — a match arm of several statements,
 say — is only a scope: `break` inside it still leaves the enclosing loop.
 

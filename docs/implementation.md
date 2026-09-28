@@ -1665,6 +1665,20 @@ wherever it meets an `f32` destination or operand -- each flagged node, the
 implicit casts of its integers and its literals take the new type, while a
 constant part keeps its nodes, which fold at full precision and round once.
 
+A construct's numeric branches join in `MergeVals` (§6.4): branches that are
+all integer constants give a `Val::litint`, the range of the constants,
+which adapts wherever a constant would (`FitsAt`, `UnifyNumeric`) to a type
+the whole range fits; floats of literals, with integers among them, give a
+`litfloat`; and a literal branch beside a typed one takes its type. A break
+passes its value's literal form on (`CheckBreak`), and a literal one leaves
+the later breaks unconstrained, as a slice join does; the `block` or `loop`
+records its valued breaks (`EarlyBlock::breaks`, `LoopExpr::breaks`). The
+branches' nodes take the joined type once the construct's first check
+settles it (`CheckJoin` → `RetypeBranches`): an integer branch in a float
+construct converts in a node of its own, a constant takes the type, a float
+of literals is retyped as above; and a literal-like construct meeting a type
+later is retyped the same way (`RetypeFlex`, `RetypeOperands`).
+
 Builtins are one X-macro table (`builtins.h`) driving arity, receiver kinds,
 provenance requirements and simple signatures; `CheckBuiltin` handles the
 custom ones. `print`/`str`/`format` check renderability per type

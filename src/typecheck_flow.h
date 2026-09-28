@@ -743,29 +743,53 @@ inline TypeExpr *TypeCheck::NarrowedRef(TypeExpr *t, Line l) {
 // conservative — root wins; writability must hold in both). A call merges
 // the roots its callee's returns give the same way (CallResult).
 inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at,
-                                bool wantvalue, Node *anode, Node *bnode) {
+                                bool wantvalue) {
     if (!areach) return b;
     if (!breach) return a;
     Val v;
-    // An integer constant in one branch adapts to the other branch's
-    // integer type, as it would at any typed destination (§3.1).
-    auto adapt = [&](const Val &c, Node *cn, const Val &o) {
-        if (!o.type || o.type->kind != TY_INT || !c.type || c.type->kind != TY_INT ||
-            TypeEq(c.type, o.type) || o.ck == CK_INT || o.unsized)
-            return false;
+    // Branches that are all integer constants are one of them, a constant
+    // of no committed type yet (Val::litint); floats of literals and the
+    // integers beside them a float of literals (Val::litfloat). Either kind
+    // of branch beside one of a type of its own adapts to that type, as it
+    // would at any typed destination (§3.1, §6.3, §6.4): an integer constant
+    // to an integer type it fits, a float of literals to a float's width.
+    // The branches' nodes take the type the construct settles on
+    // (RetypeBranches).
+    auto isint = [&](const Val &x) { return x.type && IsIntT(LoadType(x.type)); };
+    auto intlit = [&](const Val &x) {
+        return x.unsized || x.ck == CK_INT || x.litint;
+    };
+    auto fltlit = [&](const Val &x) { return LitFloat(x) || isint(x); };
+    auto adapt = [&](const Val &c, const Val &o) {
+        if (!o.type || !c.type || TypeEq(c.type, o.type)) return false;
+        if (o.type->kind == TY_FLT) return LitFloat(c) && !LitFloat(o);
+        if (o.type->kind != TY_INT || !isint(c) || intlit(o)) return false;
         if (c.unsized) {
             // A literal parameter adapts to the other branch like a
             // constant (§7.7).
             RecordLitAdapt(c, o.type, at->line);
-        } else if (c.ck != CK_INT || !FitsIntStorage(c.ival, c.uns, o.type->intstorage)) {
-            return false;
+            return true;
         }
-        if (cn) RetypeConstBranch(cn, o.type);
-        return true;
+        return ConstsFit(c, o.type->intstorage);
     };
-    if (adapt(a, anode, b)) { v.type = b.type; }
-    else if (adapt(b, bnode, a)) { v.type = a.type; }
-    else v.type = UnifyBranch(a.type, b.type, at, wantvalue);
+    int64_t alo, ahi, blo, bhi;
+    if (IntConsts(a, alo, ahi) && IntConsts(b, blo, bhi)) {
+        v.type = TypeEq(a.type, b.type) ? a.type : ast.inttypes[IS_I64];
+        v.litint = true;
+        v.litlo = std::min(alo, blo);
+        v.lithi = std::max(ahi, bhi);
+        v.nonneg = v.litlo >= 0;
+    } else if (fltlit(a) && fltlit(b) && (LitFloat(a) || LitFloat(b))) {
+        v.type = !LitFloat(a) ? b.type : !LitFloat(b) ? a.type
+                                        : UnifyBranch(a.type, b.type, at, wantvalue);
+        v.litfloat = true;
+    } else if (adapt(a, b)) {
+        v.type = b.type;
+    } else if (adapt(b, a)) {
+        v.type = a.type;
+    } else {
+        v.type = UnifyBranch(a.type, b.type, at, wantvalue);
+    }
     // A holder value from either branch: what either's contents may point at.
     if (a.holderset || b.holderset) {
         v.holderset = true;
@@ -793,8 +817,7 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
 // its type: the construct checks its branches again as values of it, each
 // array a whole-array slice of itself, and they point where that says.
 inline Val TypeCheck::JoinBranches(const Val &a, bool areach, const Val &b, bool breach,
-                                   Node *at, bool wantvalue, bool onjoin, Node *anode,
-                                   Node *bnode) {
+                                   Node *at, bool wantvalue, bool onjoin) {
     if (!areach) return b;
     if (!breach) return a;
     auto elem = [](const Val &x) -> TypeExpr * {
@@ -815,7 +838,7 @@ inline Val TypeCheck::JoinBranches(const Val &a, bool areach, const Val &b, bool
         // first branches not to agree.
         NoArrayJoin(a);
         NoArrayJoin(b);
-        return MergeVals(a, areach, b, breach, at, wantvalue, anode, bnode);
+        return MergeVals(a, areach, b, breach, at, wantvalue);
     }
     Val v;
     v.type = ast.SliceOf(ea, at->line);
@@ -914,17 +937,49 @@ inline Val TypeCheck::TempCopy(Val v) {
     return v;
 }
 
-// A branch that was an integer constant now has the merged type: the
-// constant node and the blocks down to it.
-inline void TypeCheck::RetypeConstBranch(Node *n, TypeExpr *t) {
-    if (!n) return;
-    n->exprtype = t;
-    if (auto b = Is<Block>(n)) { RetypeConstBranch(b->tail, t); return; }
-    if (auto e = Is<EarlyBlock>(n)) { RetypeConstBranch(e->body, t); return; }
-    if (auto i = Is<IfExpr>(n)) {
-        RetypeConstBranch(i->thenb, t);
-        RetypeConstBranch(i->elseb, t);
+// A construct whose value settled on the numeric type t (§6.3, §6.4): each
+// branch's value takes it, and each break's that gives the construct one,
+// down through the constructs nested as branches.
+inline void TypeCheck::RetypeBranches(Node *x, TypeExpr *t) {
+    auto block = [&](Block *b) {
+        if (!b || !b->tail || !b->exprtype || b->exprtype->kind == TY_VOID) return;
+        b->exprtype = t;
+        RetypeBranch(b->tail, t);
+    };
+    auto breaks = [&](vector<Break *> &bs) { for (auto br : bs) RetypeBranch(br->val, t); };
+    if (auto b = Is<Block>(x)) {
+        block(b);
+    } else if (auto e = Is<EarlyBlock>(x)) {
+        block(e->body);
+        breaks(e->breaks);
+    } else if (auto l = Is<LoopExpr>(x)) {
+        breaks(l->breaks);
+    } else if (auto i = Is<IfExpr>(x)) {
+        block(i->thenb);
+        if (i->elseb) RetypeBranch(i->elseb, t);
+    } else if (auto m = Is<MatchExpr>(x)) {
+        for (auto &arm : m->arms) RetypeBranch(arm.body, t);
     }
+}
+
+// One branch's value, of a construct now of type t: an integer converts to a
+// float t in a node of its own (ToFloat); an integer constant, which a type
+// wider than its own receives as it is, takes any other t; and a float of
+// literals takes an f32 t in every node computing it (RetypeFlex).
+inline void TypeCheck::RetypeBranch(Node *&n, TypeExpr *t) {
+    if (!n || !n->exprtype || n->exprtype->kind == TY_VOID) return;   // It diverges.
+    if (Is<Block>(n) || Is<EarlyBlock>(n) || Is<IfExpr>(n) || Is<MatchExpr>(n) ||
+        Is<LoopExpr>(n)) {
+        n->exprtype = t;
+        RetypeBranches(n, t);
+        return;
+    }
+    auto nt = LoadType(n->exprtype);
+    if (TypeEq(nt, t)) return;
+    if (IsIntT(nt) && t->kind == TY_FLT) ToFloat(n, nt, t);
+    else if (IsIntT(nt) && IsIntT(t) && !ImplicitInt(nt->intstorage, t->intstorage))
+        n->exprtype = t;
+    else if (nt->kind == TY_FLT && IsF32(t)) RetypeFlex(n, t);
 }
 
 // A control construct's value (§6.4), which `check` checks at a
@@ -976,6 +1031,9 @@ template<typename F> Val TypeCheck::CheckJoin(Node *x, TypeExpr *expected, F che
     if (!WarningsHeld()) FlushWarnings();
     // An argument's is left to its check against its parameter (argpath).
     if (v.implicitcopy && argpath != x) ImplicitCopyError(v.implicitcopy);
+    // Numeric branches join as one type (MergeVals), which each branch's
+    // value, checked with none, now takes.
+    if (v.type && (IsIntT(v.type) || v.type->kind == TY_FLT)) RetypeBranches(x, v.type);
     return TempCopy(v);
 }
 
@@ -1014,8 +1072,7 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
     RestoreFlow(entry);
     MergeFlow(aflow, bflow);
     if (!wantvalue) return VoidVal();
-    auto v = JoinBranches(tv, aflow.reachable, ev, bflow.reachable, x, wantvalue, onjoin,
-                          x->thenb, x->elseb);
+    auto v = JoinBranches(tv, aflow.reachable, ev, bflow.reachable, x, wantvalue, onjoin);
     // On joinpath the construct that started it makes the copy (CheckJoin).
     return onjoin ? v : TempCopy(v);
 }
@@ -1069,7 +1126,6 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
     }
     auto entry = SaveFlow();
     Val result;
-    Node *resultnode = nullptr;   // The arm `result` came from, while it is one arm's.
     auto resultreach = false;
     auto first = true;
     FlowState acc;
@@ -1091,14 +1147,11 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
         CheckBranchRoot(av, CurDepth(), arm.body, "match arm");
         if (first) {
             result = av;
-            resultnode = arm.body;
             resultreach = aflow.reachable;
             acc = aflow;
             first = false;
         } else {
-            result = JoinBranches(result, resultreach, av, aflow.reachable, m, wantvalue, onjoin,
-                                  resultnode, arm.body);
-            resultnode = nullptr;
+            result = JoinBranches(result, resultreach, av, aflow.reachable, m, wantvalue, onjoin);
             resultreach = resultreach || aflow.reachable;
             // Accumulate the join of all arms' flow.
             auto save = SaveFlow();
@@ -1330,6 +1383,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
 inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wantvalue) {
     auto onpath = argpath == x;
     auto onjoin = joinpath == x;
+    x->breaks.clear();
     PushScope(SK_BLOCK, x);
     if (wantvalue) {
         scopes.back().breakexpected = expected;
@@ -1358,8 +1412,7 @@ inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wa
     CheckBranchRoot(v, CurDepth(), x->body->tail, "block");
     if (sc.breaktype) CheckBranchRoot(sc.breakvalue, CurDepth(), x, "block");
     Val r = sc.breaktype ? JoinBranches(v, v.type != nullptr, sc.breakvalue, true, x, wantvalue,
-                                        onjoin, x->body->tail, nullptr) : v;
-    if (!r.joinslice) r.type = UnifyBranch(v.type, sc.breaktype, x, wantvalue);
+                                        onjoin) : v;
     if (!r.type) r.type = ast.voidtype;
     return onjoin ? r : TempCopy(r);
 }
@@ -1427,6 +1480,7 @@ inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue)
     auto onpath = argpath == x;
     auto onjoin = joinpath == x;
     auto sc = CheckLoopPasses(x, head, [&] {
+        x->breaks.clear();
         if (wantvalue) {
             scopes.back().breakexpected = expected;
             scopes.back().onargpath = onpath;
@@ -1628,12 +1682,15 @@ inline void TypeCheck::CheckBreak(Break *b) {
         // Later breaks agree with the first; the first constructs into the
         // type the construct is expected to have, as its tail value does. A
         // first break's value that joins branches as a slice settles no type
-        // yet (JoinBranches). Where the construct has no destination type,
-        // a reference or slice that agrees with the first is stored nowhere
-        // by that: what receives the construct's value judges it.
+        // yet (JoinBranches), and neither do integer constants or floats of
+        // literals, which adapt to what a later break gives (§6.4). Where the
+        // construct has no destination type, a reference or slice that
+        // agrees with the first is stored nowhere by that: what receives the
+        // construct's value judges it.
         auto be = scopes[si].breakexpected;
-        auto agree = scopes[si].breaktype && !scopes[si].breakvalue.joinslice;
-        auto expected = agree ? scopes[si].breaktype : be;
+        auto prior = scopes[si].breakvalue;
+        auto agree = scopes[si].breaktype && !prior.joinslice && !prior.litint && !prior.litfloat;
+        auto expected = agree ? prior.type : be;
         auto unstored = agree && CopiesBranch(be) && IsRefOrSlice(expected);
         Val v;
         {
@@ -1645,10 +1702,17 @@ inline void TypeCheck::CheckBreak(Break *b) {
             v = CheckValue(b->val, expected, false, CopiesBranch(be));
         }
         // The construct's value is a new one: the break's type and what its
-        // references point at, never the operand's storage or literal form.
+        // references point at, never the operand's storage or literal form,
+        // but for a number's: an integer constant, or a float of literals,
+        // adapts as a branch's does (§6.4).
         Val exit;
         exit.SetProv(v);
         exit.type = v.type;
+        if (IntConsts(v, exit.litlo, exit.lithi)) {
+            exit.litint = true;
+            exit.nonneg = exit.litlo >= 0;
+        }
+        exit.litfloat = LitFloat(v);
         exit.isnull = v.isnull;
         exit.contents = v.contents;
         exit.holderset = v.holderset;
@@ -1669,9 +1733,11 @@ inline void TypeCheck::CheckBreak(Break *b) {
         // reference taken before.
         auto &sc = scopes[si];
         sc.breakvalue = JoinBranches(sc.breakvalue, sc.breaktype != nullptr, exit, true, b, true,
-                                     sc.onjoinpath, nullptr, b->val);
+                                     sc.onjoinpath);
         if (!sc.breaktype) sc.breaktype = v.type;
         sc.hasbreak = true;
+        if (auto e = Is<EarlyBlock>(sc.node)) e->breaks.push_back(b);
+        else if (auto l = Is<LoopExpr>(sc.node)) l->breaks.push_back(b);
     } else {
         auto &sc = scopes[si];
         if (sc.breaktype)

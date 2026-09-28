@@ -1000,13 +1000,15 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
                 v.type = dt;
                 return true;
             }
-            // A constant adapts to any integer type its value fits.
-            if (v.ck == CK_INT) {
-                if (FitsIntStorage(v.ival, v.uns, dt->intstorage)) {
+            // A constant adapts to any integer type its value fits, and a
+            // construct of constants to any type they all fit (§6.4).
+            if (v.ck == CK_INT || (v.litint && dt->intstorage != IS_VARINT)) {
+                if (v.litint ? ConstsFit(v, dt->intstorage)
+                             : FitsIntStorage(v.ival, v.uns, dt->intstorage)) {
                     v.type = dt;
                     return true;
                 }
-                fitfail = cat("constant ", ConstStr(v), " does not fit ", TypeStr(dt));
+                fitfail = ConstsNoFit(v, dt);
                 return false;
             }
             if (dt->intstorage == IS_VARINT) {
@@ -1243,33 +1245,39 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
                                          TypeExpr *rt, bool cmp) {
     if (IsIntT(lt) && IsIntT(rt)) {
         if (TypeEq(lt, rt)) return lt;
+        // A construct of integer constants (Val::litint) adapts as the
+        // constants would.
+        auto lconst = lv.ck == CK_INT || lv.litint, rconst = rv.ck == CK_INT || rv.litint;
         // A literal parameter adapts to a typed operand, as a constant
         // does; meeting a constant, it stays at its own type (§7.7).
-        if (lv.unsized && !rv.unsized && rv.ck == CK_NONE) {
+        if (lv.unsized && !rv.unsized && !rconst) {
             RecordLitAdapt(lv, rt, at->line);
             return rt;
         }
-        if (rv.unsized && !lv.unsized && lv.ck == CK_NONE) {
+        if (rv.unsized && !lv.unsized && !lconst) {
             RecordLitAdapt(rv, lt, at->line);
             return lt;
         }
-        if (lv.ck == CK_INT && rv.ck == CK_INT) {
+        if (lconst && rconst) {
             if (lv.uns || rv.uns) {
-                if ((!lv.uns && lv.ival < 0) || (!rv.uns && rv.ival < 0))
+                if ((!lv.uns && lv.ival < 0) || (!rv.uns && rv.ival < 0) ||
+                    (lv.litint && lv.litlo < 0) || (rv.litint && rv.litlo < 0))
                     Error(at, "constant operands have no common type (one is above "
                               "i64.max, the other negative)");
                 return ast.inttypes[IS_U64];
             }
             return ast.inttypes[IS_I64];
         }
-        if (lv.ck == CK_INT) {
-            if (!FitsIntStorage(lv.ival, lv.uns, rt->intstorage))
-                Error(at, cat("constant ", ConstStr(lv), " does not fit ", TypeStr(rt)));
+        auto fits = [&](const Val &c, TypeExpr *t) {
+            return c.litint ? ConstsFit(c, t->intstorage)
+                            : FitsIntStorage(c.ival, c.uns, t->intstorage);
+        };
+        if (lconst) {
+            if (!fits(lv, rt)) Error(at, ConstsNoFit(lv, rt));
             return rt;
         }
-        if (rv.ck == CK_INT) {
-            if (!FitsIntStorage(rv.ival, rv.uns, lt->intstorage))
-                Error(at, cat("constant ", ConstStr(rv), " does not fit ", TypeStr(lt)));
+        if (rconst) {
+            if (!fits(rv, lt)) Error(at, ConstsNoFit(rv, lt));
             return lt;
         }
         if (ImplicitInt(lt->intstorage, rt->intstorage)) return rt;
@@ -1329,6 +1337,7 @@ inline void TypeCheck::RetypeOperands(Node *&left, Node *&right, Val &lv, Val &r
             return;
         }
         if (v.litfloat && !TypeEq(v.type, ct)) RetypeFlex(n, ct);
+        else if (v.litint && !TypeEq(v.type, ct)) RetypeBranches(n, ct);
         v.type = ct;
         n->exprtype = ct;
     };
@@ -1348,6 +1357,7 @@ inline void TypeCheck::IntToFloat(Val &v, TypeExpr *ft) {
     }
     v.unsized = false;
     v.unsizedparam = nullptr;
+    v.litint = false;
     v.nonneg = false;
     v.lvalue = false;
     v.type = ft;
@@ -1372,10 +1382,11 @@ inline void TypeCheck::ToFloat(Node *&n, TypeExpr *from, TypeExpr *ft) {
 
 // A float of literals and integers (Val::litfloat) takes the float type t
 // its destination or other operand has: each node computing it, down to its
-// literals and the conversions of its integers. A constant part keeps its
-// own nodes, which the optimizer folds at full precision before the result
-// rounds to t, as a constant at t is anywhere.
-inline void TypeCheck::RetypeFlex(Node *n, TypeExpr *t) {
+// literals and the conversions of its integers, and a construct's branches
+// (RetypeBranches). A constant part keeps its own nodes, which the optimizer
+// folds at full precision before the result rounds to t, as a constant at t
+// is anywhere.
+inline void TypeCheck::RetypeFlex(Node *&n, TypeExpr *t) {
     n->exprtype = t;
     if (auto b = Is<Binary>(n); b && b->litfloat) {
         RetypeFlex(b->left, t);
@@ -1384,10 +1395,8 @@ inline void TypeCheck::RetypeFlex(Node *n, TypeExpr *t) {
         RetypeFlex(u->child, t);
     } else if (auto a = Is<AsCast>(n); a && a->implicit) {
         a->type = a->totype = t;
-    } else if (auto bl = Is<Block>(n); bl && bl->tail) {
-        RetypeFlex(bl->tail, t);
-    } else if (auto e = Is<EarlyBlock>(n)) {
-        RetypeFlex(e->body, t);
+    } else {
+        RetypeBranches(n, t);
     }
 }
 
