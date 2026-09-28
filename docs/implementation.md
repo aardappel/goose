@@ -981,7 +981,16 @@ of a construct on the path -- an `if`'s or `guard`'s condition, a `match`'s
 scrutinee, a `for`'s sequence -- the parts that head leads to (`AfterHead`;
 an else-if is on the path of its own for this); a `for` binding is always
 live; `MentionsName` follows calls of nested functions by name into their
-bodies. The test never depends on what the optimizer proves.
+bodies. The body of a function value being checked (an `isfunval` frame's
+own block) counts whole for a variable declared outside it, since the
+function running it may call it again. Only what is checked in the
+variable's own frame or in one lexically nested in it counts (`NamesFrame`
+over `lexframe`: a nested function's body, a function value's written
+there): a path entry records the frame checking it (`PathEntry::frame`), a
+block or a loop is in its scope's (`FrameOfScope`), and the same name in
+any other frame -- the function running a function value's body, a callee
+checked inside its first caller's check -- is another variable, whose own
+frame judges it. The test never depends on what the optimizer proves.
 
 **Grow-shrink arrays** (§5.2): `ShrinkGrowShrink` runs from anywhere (a
 local, a reference, a global, a struct's tail, whole assignment) and scans

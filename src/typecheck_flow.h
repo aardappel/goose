@@ -513,6 +513,23 @@ inline int TypeCheck::LexFrame(FnSpec *env) {
     return fi;
 }
 
+// The frame scope index s belongs to: the innermost one whose scopes start
+// at or below it.
+inline int TypeCheck::FrameOfScope(int s) {
+    for (auto fi = (int)frames.size() - 1; fi > 0; fi--)
+        if (frames[fi].scopebase <= s) return fi;
+    return 0;
+}
+
+// Whether code checked in frame fi can name the variables of frame target:
+// fi is that frame, or nested in it lexically, as the bodies of the nested
+// functions declared and the function values written there are (§7.5, §7.6).
+inline bool TypeCheck::NamesFrame(int fi, int target) {
+    for (; fi >= 0; fi = frames[fi].lexframe)
+        if (fi == target) return true;
+    return false;
+}
+
 // The specialization of the named function a lexical environment is in
 // (null at globals): a function value's body is in the one it was written in.
 inline FnSpec *TypeCheck::NamedSpec(FnSpec *env) {

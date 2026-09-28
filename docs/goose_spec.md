@@ -966,10 +966,14 @@ leads to — later in its own block or in an enclosing block it was declared
 in, or anywhere in a loop that contains the shrink and that the variable was
 declared outside of, since the next iteration runs the rest of the body
 again. A function value's body runs in the middle of a statement of the
-function calling it (§7.6), so that function's variables count as well.
-"Named" is syntactic — any mention, a call of a nested function that
-mentions it included — so the test never depends on what the optimizer
-proved. A reference whose last use is before the shrink is dead, and its
+function calling it (§7.6), so that function's variables count as well, and
+that function may call it again: a variable declared outside the body counts
+wherever the body names it, as in a loop. Only code that can name the
+variable counts — its own function's, and that of the nested functions and
+function values written in it — so the same name in another function is
+another variable. "Named" is syntactic — any mention, a call of a nested
+function that mentions it included — so the test never depends on what the
+optimizer proved. A reference whose last use is before the shrink is dead, and its
 block need not end: `let w = line[..5]; print(w); line.clear();` is fine,
 and a scratch buffer refilled per iteration, or a stack popped between
 phases, hands out slices of itself freely — "reusable scratch" and

@@ -272,6 +272,9 @@ struct TypeCheck {
         // A call resolving its overload: its operands are checked for their
         // types, and the values it keeps are those its phase 2 checks.
         bool discovering = false;
+        // The frame checking it, whose variables and lexical parents' its
+        // names are (UsedAfter).
+        int frame = 0;
     };
     struct Discovering {
         TypeCheck &tc;
@@ -954,6 +957,8 @@ struct TypeCheck {
     string_view CurNs();
     int FrameOfSpec(FnSpec *sp);
     int LexFrame(FnSpec *env);
+    int FrameOfScope(int s);
+    bool NamesFrame(int fi, int target);
     FnSpec *NamedSpec(FnSpec *env);
     vector<VarDef *> LexicalLocals(FnSpec *env);
     SFunction *LookupLocalFn(string_view name);

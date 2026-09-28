@@ -310,7 +310,7 @@ inline bool TypeCheck::Descend(Node *n) {
     if (!cur.nodepath.empty() && cur.nodepath.back().node == n) return false;
     auto idx = cur.nodepath.empty() ? -1 : OperandIndex(cur.nodepath.back().node, n);
     if (idx >= 0) cur.nodepath.back().pos = idx;
-    cur.nodepath.push_back({ n, idx, 0 });
+    cur.nodepath.push_back({ n, idx, 0, false, (int)frames.size() - 1 });
     return true;
 }
 
@@ -434,7 +434,7 @@ template<typename F> void TypeCheck::HeldOperands(F f) {
 // Every part of the statement that runs after the point being checked: the
 // operands each node on the path has not evaluated yet, the one being
 // checked excluded, and where the point is in the head of a construct, the
-// parts the head decides between.
+// parts the head decides between. Each comes with the frame it is checked in.
 template<typename F> void TypeCheck::LaterOperands(F f) {
     for (size_t k = 0; k < cur.nodepath.size(); k++) {
         auto &e = cur.nodepath[k];
@@ -442,9 +442,9 @@ template<typename F> void TypeCheck::LaterOperands(F f) {
         auto i = 0;
         ForOperands(e.node, [&](Node *ch, HoldKind) {
             auto at = i++;
-            if (at > e.pos || (last && at == e.pos)) f(ch);
+            if (at > e.pos || (last && at == e.pos)) f(ch, e.frame);
         });
-        if (!last) AfterHead(e.node, cur.nodepath[k + 1].node, f);
+        if (!last) AfterHead(e.node, cur.nodepath[k + 1].node, [&](Node *p) { f(p, e.frame); });
     }
 }
 
@@ -1499,26 +1499,40 @@ inline bool TypeCheck::MentionsName(Node *n, string_view name, set<SFunction *> 
 // (§5.1): in the rest of its statement, later in an open block at or
 // inside v's scope, or anywhere in a loop that contains this point and
 // that v was declared outside of, whose next iteration runs the earlier
-// part of the body again.
+// part of the body again; so too anywhere in the body of a function value
+// being run that v was declared outside of, which the function running it
+// may call again. Only code of v's own frame, or of one nested in it, can
+// name v: the same name in another frame -- the function running a function
+// value's body, a callee checked inside its caller's check -- is another
+// variable.
 inline bool TypeCheck::UsedAfter(VarDef *v) {
     set<SFunction *> seen;
+    auto vframe = FrameOfScope(Depth(v) - 1);
+    auto mentions = [&](Node *n, int fi) {
+        return NamesFrame(fi, vframe) && MentionsName(n, v->name, seen);
+    };
     auto later = false;
-    LaterOperands([&](Node *n) { later = later || MentionsName(n, v->name, seen); });
+    LaterOperands([&](Node *n, int fi) { later = later || mentions(n, fi); });
     if (later) return true;
     for (auto i = 0; i < (int)scopes.size(); i++) {
         if (scopes[i].kind != SK_LOOP) continue;
         // A `for` binding is rebound by the loop itself at every iteration.
         if (auto fl = Is<ForLoop>(scopes[i].node); fl && (fl->vdef == v || fl->idxdef == v))
             return true;
-        if (Depth(v) <= i && scopes[i].node && MentionsName(scopes[i].node, v->name, seen))
+        if (Depth(v) <= i && scopes[i].node && mentions(scopes[i].node, FrameOfScope(i)))
             return true;
     }
     for (auto &bp : blockpos) {
         if (bp.scopeidx < Depth(v) - 1) continue;
+        auto fi = FrameOfScope(bp.scopeidx);
+        auto &fr = frames[fi];
+        // A function value's body, whole.
+        if (fr.isfunval && !fr.isdefault && bp.scopeidx == fr.scopebase &&
+            Depth(v) - 1 < bp.scopeidx && mentions(bp.block, fi))
+            return true;
         for (auto i = bp.idx + 1; i < bp.block->stmts.size(); i++)
-            if (MentionsName(bp.block->stmts[i], v->name, seen)) return true;
-        if (bp.idx < bp.block->stmts.size() && bp.block->tail &&
-            MentionsName(bp.block->tail, v->name, seen))
+            if (mentions(bp.block->stmts[i], fi)) return true;
+        if (bp.idx < bp.block->stmts.size() && bp.block->tail && mentions(bp.block->tail, fi))
             return true;
     }
     return false;
