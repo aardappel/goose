@@ -995,9 +995,8 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                 Error(arm.body, cat("unknown pattern ", arm.pat.variant,
                                     " in an integer match"));
             arm.lo = ConstIntOrError(arm.pat.lo, "match pattern");
-            arm.hi = arm.pat.kind == P_RANGE
-                         ? ConstIntOrError(arm.pat.hi, "match pattern")
-                         : arm.lo + 1;
+            auto end = arm.pat.kind == P_RANGE ? ConstIntOrError(arm.pat.hi, "match pattern")
+                                               : arm.lo;
             // Pattern values must fit the scrutinee's type (a u64
             // scrutinee accepts any 64-bit pattern).
             if (sit != IS_U64) {
@@ -1005,12 +1004,18 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                 auto uh = arm.pat.hi && Is<IntLit>(arm.pat.hi) &&
                           Is<IntLit>(arm.pat.hi)->uns;
                 if (!FitsIntStorage(arm.lo, ul, sit) ||
-                    (arm.pat.kind == P_RANGE && !FitsIntStorage(arm.hi, uh, sit)))
+                    (arm.pat.kind == P_RANGE && !FitsIntStorage(end, uh, sit)))
                     Error(arm.body, cat("match pattern does not fit the scrutinee "
                                         "type ", TypeStr(st)));
             }
-            if (arm.hi <= arm.lo && !(sit == IS_U64 && (arm.lo < 0 || arm.hi < 0)))
-                Error(arm.body, "empty range in match pattern");
+            // The arm keeps the last value it matches: the value past it,
+            // which a range's end names, does not exist at the top of a type.
+            arm.hi = arm.lo;
+            if (arm.pat.kind == P_RANGE) {
+                if (sit == IS_U64 ? (uint64_t)end <= (uint64_t)arm.lo : end <= arm.lo)
+                    Error(arm.body, "empty range in match pattern");
+                arm.hi = (int64_t)((uint64_t)end - 1);
+            }
             DoArm(arm, nullptr);
         }
         if (!haswild) Error(m, "integer match requires a _ arm");

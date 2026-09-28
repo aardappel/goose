@@ -1126,8 +1126,8 @@ inline Node *MatchExpr::Opt(Optimizer &o) {
         auto inrange = [&](const MatchArm &arm) {
             if (uns)
                 return (uint64_t)iv->val >= (uint64_t)arm.lo &&
-                       (uint64_t)iv->val < (uint64_t)arm.hi;
-            return iv->val >= arm.lo && iv->val < arm.hi;
+                       (uint64_t)iv->val <= (uint64_t)arm.hi;
+            return iv->val >= arm.lo && iv->val <= arm.hi;
         };
         MatchArm *sel = nullptr;
         for (auto &arm : arms) {

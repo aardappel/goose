@@ -361,7 +361,7 @@ struct MatchArm {
     // Filled by typecheck:
     SVariant *variant = nullptr;    // P_VARIANT arms.
     VarDef *binder = nullptr;       // P_VARIANT payload binding, if any.
-    int64_t lo = 0, hi = 0;         // P_INT / P_RANGE evaluated bounds (hi exclusive).
+    int64_t lo = 0, hi = 0;         // P_INT / P_RANGE first and last value matched.
 };
 
 // A function value bound to a generic parameter at some call (typecheck):

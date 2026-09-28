@@ -2391,7 +2391,7 @@ inline bool MatchExpr::BceWalk(BCE &b) {
         b.flow = base;
         if (admissible && (arm.pat.kind == P_INT || arm.pat.kind == P_RANGE)) {
             b.AddFactB(BCE::Zero(), st.b, BCE::SatSub(st.off, arm.lo));
-            b.AddFactB(st.b, BCE::Zero(), BCE::SatSub(BCE::SatSub(arm.hi, 1), st.off));
+            b.AddFactB(st.b, BCE::Zero(), BCE::SatSub(arm.hi, st.off));
         }
         if (b.Walk(arm.body)) {
             if (!anyfell) acc = std::move(b.flow);
