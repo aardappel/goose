@@ -106,6 +106,17 @@ count += 1;
 count++;              // a statement, not an expression
 ```
 
+A struct literal names its fields or lists them in order, and may leave out
+those that declare a default. Ending it in `..` leaves out any field: one
+without a declared default gets its type's own (zero, an empty array or
+string, null):
+
+```goose
+struct Unit { kind: i32, hp: i32 = 100, x: f32, y: f32, name: u8[] }
+
+let scout = Unit { kind: 2, x: 1.5, .. };   // hp 100, y 0, name ""
+```
+
 Functions are free functions. There are no methods and no `impl` blocks, but
 `x.f(a)` is *exactly* `f(x, a)`, so you can write method-call syntax
 wherever it reads better:

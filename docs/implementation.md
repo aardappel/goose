@@ -367,8 +367,13 @@ already checked and in the literal, since all of them share the one type
 object. A pending array that reaches a scope exit uncompleted is an error.
 
 **Defaults.** An omitted optional field is null even without an explicit
-default. Other omitted fields need a declared default; a constructor does
-not implicitly apply `default<T>()` to every missing field. A declared
+default. Other omitted fields need a declared default, unless the literal
+ends in `..` (`StructLit::defaultall`, which `default<T>()` also sets on
+the literal it synthesizes): a field without one then gets its type's
+default value (`DefaultValue`), a `default<T>()` call for a fixed-size
+type, and otherwise `[]` for an array, 0 for a varint, or a literal of its
+struct, variant or first variant ending in `..` in turn; one whose type has
+no default value (`HasDefault`) is an error naming the field. A declared
 default resolves in its type declaration's namespace and generic bindings,
 with access to globals, not the constructor's locals or sibling fields.
 It is evaluated at each construction that uses it, in field order among

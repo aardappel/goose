@@ -219,12 +219,15 @@ struct X { a: i8[3], b: i32, c: i64 = 0 }
 * Fields are mutable by default; `let` before a field name means the field
   is not assigned after construction (§4.4), and `const f: T` is `let f:
   const T`: its contents are read-only too (§9.5).
-* A field may declare a default value (`c: i64 = 0` above); constructors may
-  then omit it (§4.2). Defaults resolve in the declaration's namespace and
-  generic environment, can name globals, and cannot name the constructor's
-  locals or sibling fields. A used default executes at each construction,
-  in field order among explicit initializers; it is not a cached value.
-  Its effects obey the same rules as an explicit initializer's.
+* A field may declare a default value (`c: i64 = 0` above, `name: u8[] =
+  []`); constructors may then omit it (§4.2), and a literal ending in `..`
+  may also omit a field without one, which takes its type's default value
+  (an array's is empty). Defaults resolve in the declaration's namespace
+  and generic environment, can name globals, and cannot name the
+  constructor's locals or sibling fields. A used default executes at each
+  construction, in field order among explicit initializers; it is not a
+  cached value. Its effects obey the same rules as an explicit
+  initializer's.
 * Layout is declaration order; variable/resizable fields obey §3.4.
 
 Struct and enum declarations introduce **nominal** types. `type Name = T;`
@@ -780,12 +783,16 @@ Literal forms usable in any construction context:
   front-to-back, and reordering would obscure either evaluation order or copying
   cost). Fields with declared defaults (§3.2) may be omitted: trailing ones in
   the positional form, any of them in the named form. An omitted optional
-  field without a declared default is null; other omitted fields are errors;
+  field without a declared default is null; other omitted fields are errors,
+  unless the literal ends in `..` (`Entity { kind: k, .. }`): each of them
+  then takes its type's default value (below), `[]` for an array field, and
+  one whose type has none is still an error;
 * `[..cap]` — an empty limited array `T[..]` with the given construction-time
   capacity (`cap` a runtime expression); the reserved slots stay
   uninitialized (§5.3, C.4). An array or string literal constructing a
   limited array of static capacity must fit it (a compile error otherwise);
-* variant literals `Shape.Circle { r: 1.0 }`;
+* variant literals `Shape.Circle { r: 1.0 }`, whose fields follow a struct
+  literal's rules, `..` included;
 * `self`, inside a struct or variant literal only, as the initializer of a
   non-optional relative-reference field pointing at the very value being
   constructed (`Node { prev: self, next: self }`, §3.9) — the one way to give
@@ -804,7 +811,12 @@ Literal forms usable in any construction context:
   contains a non-optional reference without a declared default has no
   default value, and `default<T>()` for it is a compile error. (The zero
   value a missed `qpoll` yields, §11.2, is the all-zero-bytes value; the two
-  agree except where a field declares a non-zero default.)
+  agree except where a field declares a non-zero default.) A type that is
+  not fixed-size has a default value too, which a literal's `..` gives a
+  field though `default<T>()` does not: an array other than a fixed one is
+  empty (`[]`; a `T[..]` then has no capacity), a `varint` is 0, and a
+  struct, a variant or an ADT's first variant is built from its fields'
+  declared defaults and default values the same way (`S { .. }`).
 
 ### 4.3 The in-place construction guarantee
 
@@ -3065,7 +3077,8 @@ trailingblock := "{" (params "=>")? stmt* expr? "}"
 sliceargs   := expr | bound? ".." bound?         // bound := "^"? expr
 args        := (expr ("," expr)* ","?)?
 arraylit    := "[" (exprlist ","? | expr ";" expr)? "]"
-structlit   := (qname tyargs? | varianttype) "{" (fieldinit ("," fieldinit)* ","?)? "}"
+structlit   := (qname tyargs? | varianttype) "{" (fieldinits | fieldinits? "..")? "}"
+fieldinits  := fieldinit ("," fieldinit)* ","?   // before "..": the "," required
 fieldinit   := (ident ":")? expr
 ```
 

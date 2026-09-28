@@ -675,7 +675,8 @@ NODE_END
 NODE(StructLit)
     TypeExpr *type;             // Named type or variant type.
     vector<FieldInit> inits;
-    bool defaultall = false;    // Synthesized by default<T>(), including undeclared defaults.
+    bool defaultall = false;    // A trailing `..`, or synthesized by default<T>(): a field
+                                // not given takes its declared default, else its type's.
     // Filled by typecheck:
     StructInst *sinst = nullptr;    // Struct literals.
     EnumInst *einst = nullptr;      // Variant literals.
@@ -684,8 +685,8 @@ NODE(StructLit)
     StructLit(Line l, TypeExpr *_type) : Node(l), type(_type) {}
     // The initializer of field `fieldidx` once the literal is checked
     // (TypeCheck::CheckInits): the one written, the field's declared
-    // default, or the default<T>() call default<T>() fills it with; null
-    // for an omitted optional field, which is null.
+    // default, or the default<T>() call a `..` or default<T>() fills it
+    // with; null for an omitted optional field, which is null.
     Node *InitFor(int fieldidx) const {
         for (size_t k = 0; k < fieldindices.size(); k++)
             if (fieldindices[k] == fieldidx) return inits[k].val;

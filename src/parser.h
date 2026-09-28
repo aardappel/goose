@@ -1126,6 +1126,11 @@ struct Parser {
         auto sl = New<StructLit>(line, type);
         auto sub = Sub();
         while (lex.tok != T_RCURLY) {
+            // A trailing `..` fills in every field not given (§4.2).
+            if (IsNext(T_DOTDOT)) {
+                sl->defaultall = true;
+                break;
+            }
             FieldInit fi;
             if (lex.tok == T_IDENT) {
                 // Only an `ident :` pair is a named initializer.

@@ -156,6 +156,27 @@ inline Call *TypeCheck::DefaultCall(TypeExpr *t, Line line) {
     return c;
 }
 
+// The default value of a type that has one (HasDefault), as the expression
+// that builds it where a literal's `..` or a global's missing initializer
+// asks for it: default<T>() of a fixed-size type; otherwise `[]`, 0 for a
+// varint, null, or a literal of the struct, variant or first variant that
+// fills in its own fields the same way.
+inline Node *TypeCheck::DefaultValue(TypeExpr *t, Line line) {
+    if (ClassOf(t) == SC_FIXED) return DefaultCall(t, line);
+    switch (t->kind) {
+        case TY_ARRAY: return ast.New<ArrayLit>(line);
+        case TY_INT:   return ast.New<IntLit>(line, 0);
+        case TY_REF:   return ast.New<NullLit>(line);
+        default: {
+            auto lt = t->kind == TY_ENUM
+                          ? ast.VariantTypeOf(t, &t->enu->en->variants[0], line) : t;
+            auto sl = ast.New<StructLit>(line, lt);
+            sl->defaultall = true;
+            return sl;
+        }
+    }
+}
+
 inline vector<FieldRun> TypeCheck::FieldRuns(TypeExpr *t) {
     vector<FieldRun> runs;
     switch (t->kind) {
@@ -291,9 +312,10 @@ inline bool TypeCheck::VerifiableElem(TypeExpr *t, TypeExpr *elem, string &why) 
     }
 }
 
-// Does a fixed-size type have a default value (§4.2)? Everything does
-// except a non-optional reference, which has nothing to point at, and so
-// anything containing one without a declared field default.
+// Does a type have a default value (§4.2)? Everything does except a
+// non-optional reference, which has nothing to point at, and so anything
+// containing one without a declared field default. default<T>() gives it
+// for a fixed-size T only; DefaultValue builds it for any.
 inline bool TypeCheck::HasDefault(TypeExpr *t, string &why) {
     switch (t->kind) {
         case TY_INT: case TY_FLT: case TY_BOOL: case TY_SLICE: return true;
@@ -317,7 +339,7 @@ inline bool TypeCheck::HasDefault(TypeExpr *t, string &why) {
             return true;
         }
         case TY_ARRAY:
-            if (t->arr->akind == A_LIMITED) return true;   // Empty.
+            if (t->arr->akind != A_FIXED) return true;   // Empty.
             return HasDefault(t->arr->sub, why);
         default:
             why = cat(TypeStr(t), " has no default value");

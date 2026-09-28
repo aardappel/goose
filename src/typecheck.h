@@ -820,6 +820,7 @@ struct TypeCheck {
     };
     Val CheckDefaultInit(Node *&n, TypeExpr *ft, TypeExpr *owner);
     Call *DefaultCall(TypeExpr *t, Line line);
+    Node *DefaultValue(TypeExpr *t, Line line);
     SizeClass ClassOf(TypeExpr *t);
     bool IsFlat(TypeExpr *t);
     bool HoldsPlainRef(TypeExpr *t);

@@ -268,7 +268,8 @@ inline void StructLit::Dump(string &s, int ind) const {
         if (!inits[i].name.empty()) Append(s, inits[i].name, ": ");
         inits[i].val->Dump(s, ind);
     }
-    s += inits.empty() ? "}" : " }";
+    if (defaultall) s += inits.empty() ? ".." : ", ..";
+    s += inits.empty() && !defaultall ? "}" : " }";
 }
 
 inline void Unary::Dump(string &s, int ind) const {

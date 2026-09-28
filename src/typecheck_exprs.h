@@ -1472,7 +1472,11 @@ inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fi
                 fi.fromdefault = true;
             } else if (IsOptional(ftypes[i])) continue;
             else if (sl->defaultall) {
-                fi.val = DefaultCall(ftypes[i], sl->line);
+                string why;
+                if (!HasDefault(ftypes[i], why))
+                    Error(sl, cat("missing initializer for field ", fields[i].name, " of ", what,
+                                  " (it has no declared default, and ", why, ")"));
+                fi.val = DefaultValue(ftypes[i], sl->line);
             }
             else Error(sl, cat("missing initializer for field ", fields[i].name, " of ", what,
                                " (it has no default)"));
