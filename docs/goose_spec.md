@@ -2558,9 +2558,13 @@ the caller's own facts about `src` intact.
   file and imported-file-first across files (so a global initializer may name
   one from a module it imports; their initializers may call functions), and a
   global resizable simply owns a stack's bottom for the program's life (a
-  natural whole-program arena). That outermost scope is a frame like any
-  other: a global's storage belongs to the program instance running it and
-  is never shared with another (§11.2).
+  natural whole-program arena). A global has no value until its initializer
+  has run, and nothing else can give it one: naming it earlier, to read or
+  to write it, in an earlier global's initializer, in its own or in a
+  function one of those calls, is an error (§4.4). A compile-time size or
+  match pattern may still name a later named constant (below). That
+  outermost scope is a frame like any other: a global's storage belongs to
+  the program instance running it and is never shared with another (§11.2).
   Every global has an initializer, except that `var g: T;` leaves it to its
   type: `g` starts as `T`'s default value (§4.2), taken where an
   initializer would run, so `var log: i64[>..];` is `var log: i64[>..] =

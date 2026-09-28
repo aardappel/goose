@@ -24,6 +24,10 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
     if (auto id = Is<Ident>(n)) {
         auto vd = LookupVar(id->name, id->ns, n);
         if (!vd) Error(n, cat("unknown variable: ", id->name));
+        // A local's first assignment may construct it, but a global is
+        // constructed only by its own initializer (§11.1): before that has
+        // run, no path may start at it, whether it reads or writes.
+        if (vd->isglobal) RequireAssigned(vd, n);
         id->vdef = vd;
         LVal lv;
         lv.type = vd->narrowed ? vd->narrowed : vd->type;
@@ -149,9 +153,16 @@ inline void TypeCheck::DerefLValue(LVal &lv, Node *at) {
     if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT) lv.isvarint = true;
 }
 
+// A global is unassigned until the driver reaches its declaration, which
+// is when its initializer runs (§11.1).
 inline void TypeCheck::RequireAssigned(VarDef *vd, Node *at) {
-    if (!vd->assigned)
-        Error(at, cat("variable ", vd->name, " may be used before it is assigned"));
+    if (vd->assigned) return;
+    auto order = vd->isglobal
+                     ? cat(": globals initialize in declaration order, imported files first "
+                           "(§11.1), so ", vd->name, " has no value until its initializer at ",
+                           Where(vd->line), " has run")
+                     : string();
+    Error(at, cat("variable ", vd->name, " may be used before it is assigned", order));
 }
 
 // Accessing through a slice variable: writes and roots follow the slice

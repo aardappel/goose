@@ -144,9 +144,13 @@ function per construct. Points that matter to later passes:
 Import traversal visits a file's imports in source order; an edge to a file
 already being visited contributes no second visit. This also determines
 the initializer order in import cycles. Within a file, declaration order
-is preserved. Name visibility does not make a global initialized: reading
-one before its initializer, including through a called function, fails
-definite assignment. The standard-library search order in `StdlibDirs` is
+is preserved. Name visibility does not make a global initialized: its
+`VarDef` exists from the start, so names resolve in any order, but has no
+type and is unassigned until the driver checks its declaration. Naming it
+before then, to read or to write, in its own initializer or through a
+called function too, fails definite assignment (`RequireAssigned`, which
+`Ident::Check` asks of every variable and `CheckLValue` of a global before
+reading its type). The standard-library search order in `StdlibDirs` is
 `--stdlib`, `GOOSE_STDLIB`, `stdlib/` beside the executable and up to three
 ancestors, then `stdlib/` in the working directory; the first existing
 candidate wins, after the root-file-relative candidate.
