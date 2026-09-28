@@ -195,8 +195,11 @@ fn compare(a: u8[:], b: u8[:]) -> i64                      // bytewise: -1, 0, 1
 fn trim(s: u8[:]) -> u8[:]                                 // ASCII whitespace; a sub-slice
 fn trim_start(s: u8[:]) -> u8[:]                           fn trim_end(s: u8[:]) -> u8[:]
 fn split(s: u8[:], sep: u8) -> const u8[:][>..]            // read-only slices into s; empty parts kept
+fn split(s: u8[:], sep: u8[:]) -> const u8[:][>..]         // matched from the left; an empty sep: [s]
 fn each_split<F>(s: u8[:], sep: u8)                        // F(part); no array built
 fn each_split<F>(s: u8[:], sep: u8[:])
+fn words(s: u8[:]) -> const u8[:][>..]                     // split at runs of ASCII whitespace; no empty words
+fn each_word<F>(s: u8[:])                                  // F(word)
 fn join<T>(out: u8[>..]&, parts: T[:], sep: u8[:])         // T any u8 array/slice type
 fn format_replaced(out: u8[>..]&, s: u8[:], old: u8[:], with: u8[:])
 fn each_utf8<F>(s: u8[:])                                  // F(codepoint); malformed bytes give 0xFFFD
@@ -213,6 +216,8 @@ format(line, "x=");
 format_int(line, x, 16, 8, '0');
 each_split(text, '\n') { handle(trim(it)); };
 let n, ok = parse_int(trim(field));
+let cmd = words(input);                   // "take  the sword": ["take", "the", "sword"]
+if cmd.len > 1 && cmd[0] == "take" { take(cmd[cmd.len - 1]); }
 ```
 
 `format_uleb` and `parse_uleb` write and read the length prefix used by

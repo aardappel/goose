@@ -427,8 +427,11 @@ fn trim(s: u8[:]) -> u8[:]                       // ASCII whitespace; a sub-slic
 fn trim_start(s: u8[:]) -> u8[:]
 fn trim_end(s: u8[:]) -> u8[:]
 fn split(s: u8[:], sep: u8) -> u8[:][>..]        // slices into s; empty parts kept
+fn split(s: u8[:], sep: u8[:]) -> u8[:][>..]     // a separator of several bytes
 fn each_split<F>(s: u8[:], sep: u8)              // F(part: u8[:]); no array built
 fn each_split<F>(s: u8[:], sep: u8[:])
+fn words(s: u8[:]) -> u8[:][>..]                 // the runs between whitespace; none empty
+fn each_word<F>(s: u8[:])                        // F(word: u8[:])
 fn join<T>(out: u8[>..]&, parts: T[:], sep: u8[:])   // T any u8 array/slice type
 fn format_replaced(out: u8[>..]&, s: u8[:], old: u8[:], with: u8[:])   // `from` is a keyword
 fn each_utf8<F>(s: u8[:])                        // F(cp: i64); malformed bytes yield 0xFFFD
@@ -439,7 +442,9 @@ Plain rendering of scalars and strings is the builtin `format` (§8.1); the
 functions here add formatting control and parsing. `split` returning slices
 into its input (no copies, elements rooted at the caller's text) is the
 Goose replacement for Lobster's `tokenize`; the `each_split` form does not
-even build the array.
+even build the array. `words` is the whitespace tokenizer a command line
+wants, which `split` at `' '` is not: it drops the empty parts repeated
+spaces and tabs would leave.
 
 ---
 
@@ -926,8 +931,9 @@ These operations can be expressed using existing functions and short loops:
 * `keys`/`values` of a dictionary: `each` plus a push.
 * String `concat` of many pieces, `repeat`, `pad`, `capitalize`, `escape`:
   `str(a, b, c)`, `push_n`, `format_int`'s width, and a loop.
-* `lines`/`words`: `each_split(s, '\n')` and `each_split(s, ' ')` plus
-  `trim`; a whitespace-class tokenizer belongs in the user's lexer.
+* `lines`: `each_split(s, '\n')` plus `trim`. (`words` is in §4.8:
+  `each_split(s, ' ')` keeps the empty parts repeated spaces leave, which a
+  command line wants dropped.)
 * Multiple-resizable containers (a deque, an owning string dictionary): the
   language has one resizable per struct (§3.4); idioms in §5.3.
 * Binary serialization: Goose data is already its own serialized form

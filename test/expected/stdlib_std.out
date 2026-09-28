@@ -64,6 +64,12 @@ hi|x|y|
 4 ac 0
 11
 3
+5 xyz 00
+2 0 a
+1 a b
+3 take|the|sword
+true 0 0
+25
 a+b++c
 the cog sog
 6 8364

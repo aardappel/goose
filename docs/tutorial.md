@@ -427,6 +427,14 @@ let parts = split("alice,30,paris", ',');
 print(parts.len, " parts: ", parts);      // 3 parts: ["alice", "30", "paris"]
 ```
 
+`words` splits at runs of whitespace instead, and drops the empty parts, as a
+command line wants:
+
+```goose
+let cmd = words("  go   north ");
+print(cmd.len, " words: ", cmd);          // 2 words: ["go", "north"]
+```
+
 And a struct can hold its strings inline, so an array of them is one block
 you can sort and copy as plain data:
 

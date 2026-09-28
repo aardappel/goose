@@ -199,6 +199,21 @@ fn strings() {
     var m = 0;
     each_split("a--b--c", "--") { m += 1; };
     print(m);                                                                  // 3
+    let fields = split("::x::y::::z", "::");
+    print(fields.len, " ", fields[1], fields[2], fields[4], " ", fields[0].len,
+          fields[3].len);                                                      // 5 xyz 00
+    let over = split("aaa", "aa");
+    print(over.len, " ", over[0].len, " ", over[1]);                           // 2 0 a
+    let whole = split("a b", "");
+    print(whole.len, " ", whole[0]);                                           // 1 a b
+    var line: u8[>..] = [];
+    format(line, "  take \t the\r\nsword  ");
+    let cmd = words(line);
+    print(cmd.len, " ", cmd[0], "|", cmd[1], "|", cmd[2]);                     // 3 take|the|sword
+    print(cmd[0] == "take", " ", words("").len, " ", words(" \t\r\n ").len);   // true 0 0
+    var wl = 0;
+    each_word(" go north\n") { wl = wl * 10 + it.len; };
+    print(wl);                                                                 // 25
     var j: u8[>..] = [];
     join(j, parts, "+");
     print(j);                                                                  // a+b++c

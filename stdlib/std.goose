@@ -797,6 +797,28 @@ fn split(s: u8[:], sep: u8) -> const u8[:][>..] {
     out.push(s[start..]);
     return out;
 }
+// A separator of several bytes, matched from the left, so occurrences never
+// overlap; an empty one leaves s whole.
+fn split(s: u8[:], sep: u8[:]) -> const u8[:][>..] {
+    var out: const u8[:][>..] = [];
+    if sep.len == 0 {
+        out.push(s);
+        return out;
+    }
+    var start = 0;
+    var i = 0;
+    while i + sep.len <= s.len {
+        if s[i..i + sep.len] == sep {
+            out.push(s[start..i]);
+            i += sep.len;
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    out.push(s[start..]);
+    return out;
+}
 
 // F(part) for each part, without building the array.
 fn each_split<F>(s: u8[:], sep: u8) {
@@ -826,6 +848,31 @@ fn each_split<F>(s: u8[:], sep: u8[:]) {
         }
     }
     F(s[start..]);
+}
+
+// The words of s, as slices into it: the runs of bytes between ASCII
+// whitespace (is_space, as trim), so no word is empty.
+fn words(s: u8[:]) -> const u8[:][>..] {
+    var out: const u8[:][>..] = [];
+    var i = 0;
+    while i < s.len {
+        while i < s.len && is_space(s[i]) { i += 1; }
+        let start = i;
+        while i < s.len && !is_space(s[i]) { i += 1; }
+        if i > start { out.push(s[start..i]); }
+    }
+    return out;
+}
+
+// F(word) for each word, without building the array.
+fn each_word<F>(s: u8[:]) {
+    var i = 0;
+    while i < s.len {
+        while i < s.len && is_space(s[i]) { i += 1; }
+        let start = i;
+        while i < s.len && !is_space(s[i]) { i += 1; }
+        if i > start { F(s[start..i]); }
+    }
 }
 
 // The parts with sep between them, appended to out; T any u8 array or slice type.
