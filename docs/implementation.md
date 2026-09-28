@@ -2386,7 +2386,12 @@ behind the prefix the fixup moves.
 A relative load is the field's own address (or, `in pool`, the pool's base
 minus one) plus the stored offset, with a null test only for the optional
 spelling (`LoadLoc`, `RelOrigin`); a store subtracts the same origin
-(`EmitRelStoreAt`). The store's range check is emitted only where a root can
+(`EmitRelStoreAt`). Whatever produces the value, the store encodes a plain
+reference: a branch's or an inlined body's value for a relative slot is
+computed into a plain-reference temporary (`CtlValX`), a call's result is
+encoded where it lands (`ConstructCall`), and a frame object literal stores
+an `in pool` field, a C member of the object, through the same helper
+(`GenFrameObjLit`). The store's range check is emitted only where a root can
 exceed the width: for `in pool` under `#if GS_STACK_RESERVE >= 2^bits`, for
 self-relative under `#if GS_STACK_RESERVE > 2^(bits-1)` when no fixed-size
 root in the program is wider than the width (`relrootmax`), so a `u32` link

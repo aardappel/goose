@@ -464,6 +464,13 @@ inline void CodeGen::ConstructCall(Call *c, TypeExpr *et, const string &stk, Typ
     auto own = rt0 && IsBytesT(rt0) && !IsBytesT(et);
     auto rets = EmitCall(c, own ? Dst {} : Dst { DK_STACK, stk, want, lenlv });
     if (rets.empty() || IsVoidT(et)) return;
+    // A returned reference landing in a relative-reference slot stores the
+    // offset, as any other reference value does there (§3.9).
+    auto slot = want ? want : et;
+    if (slot->kind == TY_REF && slot->ref->lenstorage >= 0) {
+        EmitRelStore(stk, slot, CallVal0(c, rets[0], slot), c->line);
+        return;
+    }
     // A resizable result with no receiving header was built behind a
     // temporary one: copy it into the slot as the slot's array kind.
     if (rt0 && IsResz(rt0) && rt0->kind == TY_ARRAY && lenlv.empty() &&
@@ -1172,6 +1179,12 @@ inline void CodeGen::GenFrameObjLit(StructLit *sl, StructInst *si, const string 
         if (!init || Is<NullLit>(init)) {
             assert(ft->kind == TY_REF && ft->ref->optional);
             L("memset(&", flv, ", 0, sizeof(", flv, "));");
+            continue;
+        }
+        // Only the `in pool` form can be a frame object's field (C.2), so
+        // the offset does not depend on where the object is built.
+        if (ft->kind == TY_REF && ft->ref->lenstorage >= 0) {
+            EmitRelStoreAt(cat("(uint8_t *)&", flv), ft, GenX(init), sl->line, true);
             continue;
         }
         GenAny(init, Dst { DK_LVALUE, flv, ft });

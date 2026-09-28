@@ -785,11 +785,16 @@ inline string CodeGen::GenTruth(Node *n) {
 
 // A control construct used as a fixed-class value: route it into a temp.
 // A varint-typed value (an inlined call initializing a varint field or
-// element) is held in its decoded i64 form, like every other varint read.
+// element) is held in its decoded i64 form, like every other varint read,
+// and a relative-reference-typed one (an `if` choosing a relative field's
+// target) as the plain reference every relative load gives and every
+// relative store encodes (§3.9).
 inline string CodeGen::CtlValX(Node *n) {
     auto t = T();
     auto vt = n->exprtype;
     if (vt->kind == TY_INT && vt->intstorage == IS_VARINT) vt = ast.inttypes[IS_I64];
+    if (vt->kind == TY_REF && vt->ref->lenstorage >= 0)
+        vt = ast.RefTo(vt->ref->sub, n->line, vt->ref->optional);
     L(CT(vt), " ", t, ";");
     // The type rides along: a spliced body may deliver a reference where
     // the checked value had already decayed (NeedsDeref).
