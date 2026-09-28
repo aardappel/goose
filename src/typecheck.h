@@ -1654,8 +1654,9 @@ struct TypeCheck {
         // typechecked at all. That is right for generic functions (they need a
         // caller's types), but silently skipping plain dead code makes for a
         // confusing experience, so leftover non-generic functions are checked
-        // standalone here with permissive assumptions (every reference
-        // parameter distinct-rooted, writable, reusable where it could be).
+        // standalone here with permissive assumptions (every reference, slice
+        // or holder parameter rooted at a global of its own, writable,
+        // reusable where it could be).
         // Errors these produce are real; a lack of errors is weaker than for
         // reached code, since no call-site facts were available.
         for (auto sf : ast.functions) CheckUnreached(sf);
@@ -1715,6 +1716,13 @@ struct TypeCheck {
         }
     }
 
+    // A function nothing calls is checked as if the global initializers
+    // called it with a global of its own for each reference, slice or holder
+    // parameter, made up here: a class to itself at the globals' depth
+    // (RootArg's defaults), concrete and exact, standing for that global
+    // (VarDef::classfrom). So the body may shrink or grow the array apart
+    // from the others' and store its references wherever a global's may go,
+    // inside a recursive cycle too.
     void CheckUnreached(SFunction *sf) {
         if (!sf->specs.empty() || sf->isthread || sf->isnested) return;
         if (!sf->generics.empty()) return;
@@ -1725,22 +1733,37 @@ struct TypeCheck {
         if (foreign) return;
         auto spec = ast.NewFnSpec();
         spec->sf = sf;
-        for (auto &p : sf->params) {
+        vector<Val> args(sf->params.size());
+        auto classes = 0;
+        for (size_t i = 0; i < sf->params.size(); i++) {
+            auto &p = sf->params[i];
             auto t = Subst(p.type);
             ValidateType(t, sf->line, VT_PARAM);
             spec->argtypes.push_back(t);
             RootArg ra;
+            auto holder = !IsRefOrSlice(t) && HoldsPlainRef(t);
+            if (IsRefOrSlice(t) || holder) {
+                ra.cls = ++classes;
+                ra.concrete = true;
+                auto g = ast.NewVarDef();
+                g->name = p.name;
+                g->isglobal = true;
+                args[i].Set(g, true);
+            }
             if (IsRefOrSlice(t)) {
-                ra.cls = 0;
                 ra.writable = true;
                 if (t->kind == TY_REF && IsArrayKind(t->ref->sub, A_GROW) &&
                     ClassOf(t->ref->sub->arr->sub) == SC_FIXED)
                     ra.reusable = RU_SLOTS | RU_SLICES;
+            } else if (holder) {
+                // What it holds points into its class's array, as a literal's
+                // references into one global would.
+                ra.heldexact = !sf->isrec;
             }
             spec->roots.push_back(ra);
         }
         sf->specs.push_back(spec);
-        CheckSpecBody(spec, nullptr, sf->line);
+        CheckSpecBody(spec, &args, sf->line);
     }
 
     // Walks a thread program's call graph: a worker's program has its own

@@ -187,8 +187,10 @@ checks the global initializers in order, then `main`, then every
 That last check covers only top-level functions with fully annotated
 parameters, no generics, and no syntactically detected `return from` to an
 outside target. Unused generic and nested bodies are checked only when
-instantiated. The standalone check gives reference parameters static-root,
-writable provenance, and eligible grow-only parameters both reusable-pool
+instantiated. The standalone check roots each reference, slice and holder
+parameter at a class of its own at the globals' depth, as a call from the
+global initializers passing distinct globals would, with writable
+provenance, and gives eligible grow-only parameters both reusable-pool
 capabilities; it is not evidence that every possible call is valid.
 Two whole-program fixups run after that: `SettleParamRootExactness`
 (§3.4) and `VerifyLiterals` (§3.12).
