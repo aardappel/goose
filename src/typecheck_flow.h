@@ -1098,6 +1098,9 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
             RestoreFlow(save);
         }
     };
+    for (size_t i = 0; i + 1 < m->arms.size(); i++)
+        if (m->arms[i].pat.kind == P_WILDCARD)
+            Error(m->arms[i + 1].body, "_ must be the last match arm");
     if (enumtype) {
         auto inst = GetEnumInst(enumtype);
         auto en = inst->en;
@@ -1222,6 +1225,30 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
             uns = v.uns;
             return v.ival;
         };
+        // Values order as unsigned keys: a u64's as they are, any other type's
+        // (which fit an i64) with the sign bit flipped.
+        auto key = [&](int64_t v) {
+            return sit == IS_U64 ? (uint64_t)v : (uint64_t)v ^ (1ull << 63);
+        };
+        auto written = [&](const PatItem &pi) {
+            return pi.hi ? cat(ExprStr(pi.lo), "..", ExprStr(pi.hi)) : ExprStr(pi.lo);
+        };
+        // Literals, negated ones included (the parser folds those), which
+        // unlike named constants cannot be aliases of each other.
+        auto literal = [](const PatItem &pi) {
+            return Is<IntLit>(pi.lo) && (!pi.hi || Is<IntLit>(pi.hi));
+        };
+        auto shown = [&](const PatItem &pi, const ArmRange &r) {
+            if (literal(pi)) return written(pi);
+            auto num = [&](int64_t v) {
+                return sit == IS_U64 ? to_string((uint64_t)v) : to_string(v);
+            };
+            return cat(written(pi), " (", num(r.lo),
+                       pi.hi ? cat("..", num((int64_t)((uint64_t)r.hi + 1))) : "", ")");
+        };
+        // What earlier arms match: sorted, disjoint, non-adjacent key ranges,
+        // so a pattern that several arms cover between them lies in one.
+        vector<pair<uint64_t, uint64_t>> earlier;
         for (auto &arm : m->arms) {
             if (arm.pat.kind == P_WILDCARD) { haswild = true; DoArm(arm, nullptr); continue; }
             if (!arm.pat.binder.empty())
@@ -1249,8 +1276,36 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                         Error(arm.body, "empty range in match pattern");
                     r.hi = (int64_t)((uint64_t)end - 1);
                 }
+                auto klo = key(r.lo), khi = key(r.hi);
+                for (auto &[a, b] : earlier)
+                    if (a <= klo && khi <= b)
+                        Error(pi.lo, cat("match pattern ", shown(pi, r), " never matches: "
+                                         "earlier arms match all of its values"));
+                // Within an arm, differently named constants may overlap: they
+                // can be one value's aliases.
+                for (size_t j = 0; j < arm.ranges.size(); j++) {
+                    auto &pj = arm.pat.items[j];
+                    auto &rj = arm.ranges[j];
+                    if (std::max(klo, key(rj.lo)) > std::min(khi, key(rj.hi))) continue;
+                    if (written(pi) == written(pj))
+                        Error(pi.lo, cat("match pattern ", written(pi), " is listed twice"));
+                    if (literal(pi) && literal(pj))
+                        Error(pi.lo, cat("match patterns ", written(pj), " and ", written(pi),
+                                         " overlap"));
+                }
                 arm.ranges.push_back(r);
             }
+            for (auto &r : arm.ranges) earlier.push_back({ key(r.lo), key(r.hi) });
+            sort(earlier.begin(), earlier.end());
+            vector<pair<uint64_t, uint64_t>> merged;
+            for (auto &kr : earlier) {
+                if (merged.empty() || (merged.back().second != UINT64_MAX &&
+                                       kr.first > merged.back().second + 1))
+                    merged.push_back(kr);
+                else
+                    merged.back().second = std::max(merged.back().second, kr.second);
+            }
+            earlier = std::move(merged);
             DoArm(arm, nullptr);
         }
         if (!haswild) Error(m, "integer match requires a _ arm");

@@ -2032,6 +2032,13 @@ match dir { North, South => "vertical", East, West => "horizontal" }
   global and is no constant, and neither is a `var` global. A bare name is
   a variant when the scrutinee is an ADT and a constant when it is an
   integer, where it binds nothing.
+* Every pattern must be able to select its arm: `_` is the last arm, and a
+  value or range that earlier arms match whole is an error (`1..5 => a,
+  3 => b`). Overlap that leaves a pattern something to match is fine:
+  `0 => "none", 0..10 => "few"` takes 1 to 9 to its second arm. Within one
+  arm, a pattern listed twice and literals that overlap are errors, but
+  differently named constants may overlap, being possibly one value's
+  aliases (`EAGAIN, EWOULDBLOCK`, which Linux gives one number).
 * Arm binders are explicit about copy vs reference, like the rest of the
   language: `Circle c =>` binds the payload *by value* — a copy, potentially
   a large one for variable-size payloads, and not written, as a `for` copy
