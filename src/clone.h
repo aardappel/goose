@@ -64,7 +64,6 @@ inline Node *Call::Clone(Ast &ast) const {
     for (size_t i = 0; i < args.size(); i++)
         if (!IsDefaultArg(i)) c->args.push_back(args[i]->Clone(ast));
     c->trailing = (FunVal *)CloneOrNull(ast, (Node *)trailing);
-    c->standalone = standalone;
     return c;
 }
 

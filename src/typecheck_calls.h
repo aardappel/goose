@@ -2305,7 +2305,6 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
     }
     c->fvtarget = env->sf;
     c->fvbody = (Block *)fv->body->Clone(ast);
-    ValueRegion vr(*this, true);   // The body runs inside this call's expression.
     BlockScope bs(*this, c->fvbody);
     CheckStmts(c->fvbody);
     Val v = VoidVal();

@@ -1,4 +1,4 @@
-// error: cannot pop p.y: an earlier expression value
+// error: cannot pop p.y: p.y, evaluated earlier in the statement
 // error: may still refer into p.y
 // The reference in p.y, read out of a field, leads to a whole grow-shrink
 // array, which a field may hold a reference to (§5.2): the slice of it

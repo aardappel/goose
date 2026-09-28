@@ -1,4 +1,5 @@
-// error: cannot call remove, which shrinks a inside a larger expression: a reference taken earlier in it may still be live, so bind the result first
+// error: cannot call remove, which shrinks a: a[0], evaluated earlier in the statement
+// error: may still refer into a
 fn read(r: i64&, unused: i64) { print(r); }
 fn remove(a: i64[>..]&) -> i64 { let v = a.pop(); return v; }
 fn main() {

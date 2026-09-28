@@ -1,4 +1,4 @@
-// error: cannot pop a: an earlier expression value
+// error: cannot pop a: a[..], evaluated earlier in the statement
 // error: may still refer into a
 fn values(a: i64[>..<]&) -> i64[:], i64 {
     return a[..], a.pop();

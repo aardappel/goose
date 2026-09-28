@@ -1,5 +1,5 @@
-// error: cannot call replace, which shrinks xs: an earlier expression value
-// error: may still refer into xs
+// error: cannot call replace, which shrinks xs: the elements of xs, which the statement reads after it
+// error: may be in xs
 fn main() {
     var xs: i64[>..<] = [1, 2];
     var out: u8[>..] = [];

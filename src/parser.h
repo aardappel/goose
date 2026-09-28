@@ -390,12 +390,6 @@ struct Parser {
         return New<FnDecl>(line, sf);
     }
 
-    // A call that is a whole statement, initializer or assignment right-hand
-    // side: the only positions where a grow-only array may shrink (§5.1).
-    static void Standalone(Node *e) {
-        if (auto c = Is<Call>(e)) c->standalone = true;
-    }
-
     VarDecl *ParseVarDecl(bool isglobal) {
         auto line = CurLine();
         auto reusable = 0;
@@ -427,9 +421,7 @@ struct Parser {
         if (IsNext(T_DOTASSIGN)) vd->byref = true;
         if (vd->byref || IsNext(T_ASSIGN)) {
             for (;;) {
-                auto init = ParseExpr();
-                Standalone(init);
-                vd->inits.push_back(init);
+                vd->inits.push_back(ParseExpr());
                 if (!IsNext(T_COMMA)) break;
             }
         }
@@ -1234,7 +1226,6 @@ struct Parser {
                         lex.Next();
                         auto rhs = ParseExpr();
                         Expect(T_SEMI, "assignment statement");
-                        if (Is<Ident>(e)) Standalone(rhs);
                         b->stmts.push_back(New<Assign>(line, op, e, rhs));
                         continue;
                     }
@@ -1249,18 +1240,15 @@ struct Parser {
                 }
             }
             if (IsNext(T_SEMI)) {  // A ';' is always accepted, even when optional.
-                Standalone(e);
                 b->stmts.push_back(e);
                 continue;
             }
             if (IsNext(T_RCURLY)) {
-                Standalone(e);
                 b->tail = e;  // Trailing expression: the block's value.
                 break;
             }
             // Block-ended constructs stand as statements without a semicolon.
             if (stmt_ended) {
-                Standalone(e);
                 b->stmts.push_back(e);
                 continue;
             }

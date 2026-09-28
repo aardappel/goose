@@ -1,4 +1,4 @@
-// error: cannot pop r: an earlier expression value
+// error: cannot pop r: b[..], evaluated earlier in the statement
 // error: may still refer into b, which r may point at
 // The slice of b is held by the call while its next argument pops through r,
 // which may point at b (§5.2).

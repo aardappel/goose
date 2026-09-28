@@ -674,6 +674,8 @@ samples before each landing (`docs/testing.md`,
   the rest of the statement. The two phases of a call are stated once: a
   call `discovering` its overload holds nothing, a call applying its
   callee's summary has consumed its own operands. `UsedAfter`'s block and
-  loop rescans (`blockpos`, `MentionsName`) and `invalue` (§5.1's rule 3, a
-  language rule rather than tracking) stay for item 3, whose liveness pass
-  subsumes them.
+  loop rescans (`blockpos`, `MentionsName`) stay for item 3, whose liveness
+  pass subsumes them. §5.1's syntactic position rules (`Call::standalone`,
+  `invalue`) were dropped afterwards for the held operands, the parts a
+  construct's head leads to (`AfterHead`) and shrinks logged against values
+  under construction.

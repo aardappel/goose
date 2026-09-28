@@ -857,7 +857,6 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
 inline Val TypeCheck::CheckBlockVal(Block *b, TypeExpr *expected, bool wantvalue, int scopekind,
                                     Node *scopenode) {
     auto onpath = argpath == b;
-    ValueRegion vr(*this, wantvalue);
     PushScope(scopekind, scopenode);
     BlockScope bs(*this, b);
     CheckStmts(b);
@@ -1089,7 +1088,6 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
 
 inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wantvalue) {
     auto onpath = argpath == x;
-    ValueRegion vr(*this, wantvalue);
     PushScope(SK_BLOCK, x);
     if (wantvalue) {
         scopes.back().breakexpected = expected;
@@ -1184,7 +1182,6 @@ inline TypeCheck::Scope TypeCheck::CheckLoopPasses(Node *x, FlowState &head,
 }
 
 inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue) {
-    ValueRegion vr(*this, wantvalue);
     auto head = SaveFlow();
     auto onpath = argpath == x;
     auto sc = CheckLoopPasses(x, head, [&] {
@@ -1678,7 +1675,7 @@ inline void TypeCheck::AssignableClassCheck(TypeExpr *t, Node *at) {
 inline Val TypeCheck::CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *arr,
                                          const Roots &built, Dest dest) {
     if (arr) {
-        ShrinkThrough(a, true, "assign", ExprStr(a->lval), built, target);
+        ShrinkThrough(a, "assign", ExprStr(a->lval), built, target);
         NoteGrow(a, built, cat("assign ", ExprStr(a->lval)));
     }
     SlotScope ss(*this, true);

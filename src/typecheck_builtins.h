@@ -340,7 +340,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
     // it (§5.1); pop and resize also need an element the shrink can find,
     // which a sequential array has not got.
     if (ak == A_GROW && (d.kind == B_POP || d.kind == B_RESIZE || d.kind == B_CLEAR)) {
-        CheckGrowShrink(c, c->standalone, d.name, args[0], rv);
+        CheckGrowShrink(c, d.name, args[0], rv);
         if (d.kind != B_CLEAR && ClassOf(elem) != SC_FIXED)
             Error(c, cat(".", d.name, " needs fixed-size elements: ", TypeStr(rv.type),
                          " is sequential (§3.3)"));
@@ -348,7 +348,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
     // A grow-shrink array shrinks from anywhere, provided nothing in scope
     // refers into it (§5.2).
     if (ak == A_GROWSHRINK && (d.kind == B_POP || d.kind == B_RESIZE || d.kind == B_CLEAR))
-        ShrinkThrough(c, c->standalone, d.name, ExprStr(args[0]), rv,
+        ShrinkThrough(c, d.name, ExprStr(args[0]), rv,
                       IsPlainRef(rv.type) ? rv.type->ref->sub : rv.type,
                       d.kind == B_RESIZE && ResizesToMark(args[0], args[1]) ? SB_BALANCED
                                                                             : SB_UNBALANCED);
@@ -557,7 +557,6 @@ inline void TypeCheck::CheckPrintable(Call *c, const char *what, vector<Node *> 
     builder.writable = true;
     if (out && ClassOf(DecayRef(*out).type) == SC_RESIZABLE) builder = *out;
     auto context = ast.New<Call>(c->line, c->callee);
-    context->standalone = c->standalone;
     vector<TypeExpr *> seen;
     CheckRenderable(context, what, av.type, a, seen, av, builder);
     c->fmtcontexts.push_back(context);
@@ -746,16 +745,14 @@ inline const string *TypeCheck::EmbedShader(Call *c, vector<Node *> &args) {
 // A shrink (`pop`, `resize` down, `clear`) of a grow-only array (§5.1).
 // Everything below the stack top belongs to the array's elements for as
 // long as it lives, so handing part of the region back is safe exactly
-// when nothing can still point into it: the call stands on its own (a
-// statement, an initializer, or the right-hand side of an assignment to a
-// variable), so no reference taken earlier in the same expression outlives
-// it; no reference or slice variable in scope points into the array; and
-// no container in scope had a reference into it stored, which every store
-// the checker has seen is on record for (storeevents). The receiver is
-// named directly, or through a reference variable or parameter, in which
-// case the array behind the reference is what shrinks.
-inline void TypeCheck::CheckGrowShrink(Node *at, bool standalone, const char *op, Node *recv,
-                                       const Val &rv) {
+// when nothing can still point into it: no value its statement evaluated
+// earlier and still uses refers into the array; no reference or slice
+// variable in scope points into it; and no container in scope had a
+// reference into it stored, which every store the checker has seen is on
+// record for (storeevents). The receiver is named directly, or through a
+// reference variable or parameter, in which case the array behind the
+// reference is what shrinks.
+inline void TypeCheck::CheckGrowShrink(Node *at, const char *op, Node *recv, const Val &rv) {
     auto id = Is<Ident>(recv);
     auto vd = id ? id->vdef : nullptr;
     auto at_type = rv.type->kind == TY_REF ? rv.type->ref->sub : rv.type;
@@ -767,7 +764,7 @@ inline void TypeCheck::CheckGrowShrink(Node *at, bool standalone, const char *op
     auto roots = viaref ? RefRootsOf(vd) : RootsOf(vd);
     if (roots.Any([&](const RootAlt &a) { return !a.root || IsTemp(a.root); }))
         Error(at, cat(op, " through a reference whose array is not known (§5.1)"));
-    ShrinkThrough(at, standalone, op, ExprStr(recv), roots, at_type);
+    ShrinkThrough(at, op, ExprStr(recv), roots, at_type);
 }
 
 // Whether a reference to `of`, or a byte view, may point into what a shrink
@@ -782,12 +779,12 @@ inline bool TypeCheck::ShrinkMayFree(VarDef *root, TypeExpr *bound, bool growonl
 }
 
 // Unnamed locations and views retained by an enclosing operation are live
-// just like named references. This also covers a reference assignment's
-// standalone RHS, where §5.1's syntax restriction alone is insufficient.
+// just like named references: the values the statement evaluated before the
+// shrink and uses after it (HeldOperands).
 inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root,
                                         const string &what, bool growonly, TypeExpr *bound) {
     HeldOperands([&](const Held &h) {
-        auto &[node, v, location, render] = h;
+        auto &[node, v, location, render, elems] = h;
         auto path = v.type->kind == TY_REF && ClassOf(v.type->ref->sub) == SC_RESIZABLE;
         auto held = !path && ShrinkMayFree(root, bound, growonly, PointeeOf(v.type), v.byteview) &&
                     v.Any([&](const RootAlt &a) {
@@ -808,16 +805,25 @@ inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root
             held = HeldRefsMayPointInto(nullptr, v, v.type, root, bound, growonly);
         if (!held) return;
         auto sec = growonly ? " (§5.1)" : " (§5.2)";
+        // A §5.1 scan's op names no array.
+        auto shrink = cat("cannot ", op, growonly ? cat(" ", what) : string(), ": ");
+        auto expr = ExprStr(node);
         if (render) {
-            // A §5.1 scan's op names no array.
-            auto arg = ExprStr(node);
-            if (arg.find('\n') != string::npos) arg = "its argument";
-            Error(at, cat("cannot ", op, growonly ? cat(" ", what) : string(), ": ", render,
-                          " runs it in the middle of rendering ", arg, ", which may refer into ",
-                          what, sec));
+            if (expr.find('\n') != string::npos) expr = "its argument";
+            Error(at, cat(shrink, render, " runs it in the middle of rendering ", expr,
+                          ", which may refer into ", what, sec));
         }
-        Error(at, cat("cannot ", op, ": an earlier expression value at ", Where(node->line),
-                      " may still refer into ", what, sec));
+        if (expr.find('\n') != string::npos) expr = "the value";
+        if (node->line.line != at->line.line || node->line.fileidx != at->line.fileidx)
+            expr = cat(expr, " (at ", Where(node->line), ")");
+        if (location)
+            Error(at, cat(shrink, expr, ", which the assignment writes after it, may be in ",
+                          what, sec));
+        if (elems)
+            Error(at, cat(shrink, "the elements of ", expr,
+                          ", which the statement reads after it, may be in ", what, sec));
+        Error(at, cat(shrink, expr, ", evaluated earlier in the statement, may still refer into ",
+                      what, sec));
     });
 }
 
@@ -826,21 +832,13 @@ inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root
 // parameter, a global, or an enclosing function's local. Everything in
 // scope is scanned; a shrink through a parameter or of a global is also
 // recorded for the callers, whose own scopes are scanned at the call.
-inline void TypeCheck::GrowOnlyShrinkAt(Node *c, bool standalone, const string &op, VarDef *vd,
+inline void TypeCheck::GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd,
                                         const string &what, TypeExpr *bound) {
     if (!frames.back().spec)
         Error(c, cat("cannot ", op, " ", what, " in a global initializer (§5.1)"));
     if (vd->reusable)
         Error(c, cat("cannot ", op, " reusable pool ", what,
                      ": its slots stay live for the freelist (§5.4)"));
-    if (!standalone)
-        Error(c, cat("cannot ", op, " ", what,
-                     " inside a larger expression: a reference taken earlier in it may "
-                     "still be live, so bind the result first (§5.1)"));
-    if (cur.invalue)
-        Error(c, cat("cannot ", op, " ", what,
-                     " inside a value-producing expression: references taken earlier in "
-                     "it may still be live (§5.1)"));
     // The elements freed: of the array itself, or for a bound, of an array
     // of its type. A parameter class's storage is not known here.
     auto arrtype = bound ? bound : vd->type ? LoadType(vd->type) : nullptr;
@@ -1378,9 +1376,8 @@ inline string TypeCheck::TargetStr(const ShrinkTarget &t) {
 // `recv` (§5.1, §5.2): of every array it may free (ShrinkTargets). The
 // diagnostics name the root's array as the receiver does, and any other by
 // its own name and the receiver's.
-inline void TypeCheck::ShrinkThrough(Node *at, bool standalone, const string &verb,
-                                     const string &recv, const Roots &roots, TypeExpr *arr,
-                                     ShrinkBalance balance) {
+inline void TypeCheck::ShrinkThrough(Node *at, const string &verb, const string &recv,
+                                     const Roots &roots, TypeExpr *arr, ShrinkBalance balance) {
     auto root = roots.Root();
     auto growonly = GrowOnlyTail(arr);
     for (auto &t : ShrinkTargets(roots, arr)) {
@@ -1388,7 +1385,7 @@ inline void TypeCheck::ShrinkThrough(Node *at, bool standalone, const string &ve
         if (growonly) {
             auto what = t.root == root ? string(t.root->name)
                                        : cat(t.root->name, " (which ", recv, " may point at)");
-            GrowOnlyShrinkAt(at, standalone, verb, t.root, what, bound);
+            GrowOnlyShrinkAt(at, verb, t.root, what, bound);
         } else {
             auto what = t.root == root ? recv : cat(t.root->name, ", which ", recv,
                                                     " may point at");
@@ -1668,7 +1665,6 @@ inline bool TypeCheck::MapLiveShrinks(const CallSite &site) {
 // in the cycle's first round.
 inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &argvals,
                                           string_view name) {
-    auto standalone = Is<Call>(at) && Is<Call>(at)->standalone;
     // A shrink of an array the call may free: a grow-only array takes the
     // §5.1 scan (variables and recorded stores), a grow-shrink one the §5.2
     // scan (variables only) and the pairs its callers judge (NoteLiveViews),
@@ -1685,7 +1681,7 @@ inline void TypeCheck::ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &a
         auto what = cat("call ", name, ", which ", h.how);
         auto op = cat(what, " ", h.root->name);
         if (h.growonly) {
-            GrowOnlyShrinkAt(at, standalone, what, h.root, string(h.root->name), h.bound);
+            GrowOnlyShrinkAt(at, what, h.root, string(h.root->name), h.bound);
         } else if (judged == SB_UNBALANCED) {
             ShrinkGrowShrink(at, op, h.root, string(h.root->name), h.bound);
         } else {

@@ -315,6 +315,8 @@ struct TypeCheck {
         // The builtin (print, str, format) rendering `node`, which runs the
         // format overloads of its parts meanwhile.
         const char *render = nullptr;
+        // `v` views the elements of `node`, which its parent reads.
+        bool elems = false;
     };
     template<typename F> void HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent,
                                      const char *render, F f);
@@ -832,18 +834,6 @@ struct TypeCheck {
     // ------------------------------------------------------------------
     // Scopes, variables, and flow state (definite assignment + optional
     // narrowing, merged at control-flow joins).
-
-    // Marks the statements of a construct that is producing a value for an
-    // enclosing expression (see `cur.invalue`); nests, and restores itself on the
-    // throw an error does.
-    struct ValueRegion {
-        TypeCheck &tc;
-        bool saved;
-        ValueRegion(TypeCheck &t, bool wantvalue) : tc(t), saved(t.cur.invalue) {
-            tc.cur.invalue = tc.cur.invalue || wantvalue;
-        }
-        ~ValueRegion() { tc.cur.invalue = saved; }
-    };
 
     void PushScope(int kind, Node *node = nullptr);
     void PopScope();
@@ -1426,11 +1416,11 @@ struct TypeCheck {
     FnSpec *UserFormatIn(Call *c, TypeExpr *t, string_view ns, const Val &value, const Val &out);
     StrLit *ConstStrLit(Node *n);
     const string *EmbedShader(Call *c, vector<Node *> &args);
-    void CheckGrowShrink(Node *at, bool standalone, const char *op, Node *recv, const Val &rv);
+    void CheckGrowShrink(Node *at, const char *op, Node *recv, const Val &rv);
     // `what` names the array in the diagnostics; `bound` is its type where vd
     // only bounds it (ShrinkTarget).
-    void GrowOnlyShrinkAt(Node *c, bool standalone, const string &op, VarDef *vd,
-                          const string &what, TypeExpr *bound = nullptr);
+    void GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd, const string &what,
+                          TypeExpr *bound = nullptr);
 
     // Every store of a reference, slice or holder value into a container
     // (ast.h StoreEvent), program-wide: a function value's body stores into
@@ -1498,8 +1488,8 @@ struct TypeCheck {
     };
     vector<ShrinkTarget> ShrinkTargets(const Roots &roots, TypeExpr *arr);
     string TargetStr(const ShrinkTarget &t);
-    void ShrinkThrough(Node *at, bool standalone, const string &verb, const string &recv,
-                       const Roots &roots, TypeExpr *arr, ShrinkBalance balance = SB_UNBALANCED);
+    void ShrinkThrough(Node *at, const string &verb, const string &recv, const Roots &roots,
+                       TypeExpr *arr, ShrinkBalance balance = SB_UNBALANCED);
     void ApplyCalleeShrinks(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
     // A shrink's scan sees the views of the activation only, and takes a
     // parameter's class for an array of its own: whether an argument was a
@@ -1556,11 +1546,6 @@ struct TypeCheck {
         Node *renderarg = nullptr;
         Node *renderwhere = nullptr;
         const char *rendering = nullptr;
-        // Inside a block/if/match/loop that produces a value, or a
-        // function-value body: an enclosing expression may hold references
-        // it evaluated before this point, which are in no variable and so
-        // invisible to the liveness scan of CheckGrowShrink.
-        bool invalue = false;
         // The passes of the loops open around the point being checked,
         // outermost first (LoopPass).
         vector<LoopPass> looppasses;

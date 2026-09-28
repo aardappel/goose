@@ -133,9 +133,6 @@ function per construct. Points that matter to later passes:
   `Return::ns`), which is where an unqualified name resolves first. A
   declaration may spell its own namespace, which sets `curns` for the rest
   of it.
-* `Call::standalone` is set by `Parser::Standalone` on a call that is a
-  whole statement, a declaration's initializer, or an assignment's
-  right-hand side: exactly the positions §5.1 allows a grow-only shrink in.
 * Only the root file's `main` is registered; an imported file's is dropped
   at the declaration (§11.1).
 * Imports are collected per file; `ParseProgram` resolves `import a.b` against
@@ -224,7 +221,7 @@ variable lookup, the call line for diagnostics), creates the parameter
 types, seeds the cycle return roots where the function is `recursive`,
 clones the body, checks its statements, and treats a value-producing tail as
 `return tail`. Per-body state is saved on entry and restored on exit: pending shrinks,
-held temporaries, the value-region flag, reachability, the construction
+held temporaries, reachability, the construction
 destination, the slot and return flags (§3.8), and narrowings of outer
 variables. Only the specialization's effect summaries reach the caller.
 
@@ -937,15 +934,17 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    parameter whose root is known (the array behind it shrinks); not an
    element of another value, and not in a global initializer;
 2. not a `reusable` pool;
-3. the call is `standalone` (§2) and not inside a value-producing construct
-   (`invalue`, set by `ValueRegion` for a valued `if`/`match`/`block`/`loop`
-   and for a function value's body);
-4. no operand evaluated earlier in this statement and still held may refer
+3. no operand evaluated earlier in this statement and still held may refer
    into it (`CheckHeldShrinks` over `HeldOperands`, §3.3), nor, where it is
    a reference to a slice or to a holder, may what it holds; an assignment's
    location counts as the slot alone, since the assignment overwrites what
-   the slot holds;
-5. no variable in scope, on any frame, may refer into it: a reference or
+   the slot holds. The shrink may be anywhere in its statement: the node
+   path holds whatever the enclosing expressions evaluated before it, inside
+   the value of an `if`, `match`, block or loop as well, and a function
+   value's body is checked on the path of the statement calling it
+   (`CheckFunValCall`), whose own caller applies the shrink against its
+   statement from the summary;
+4. no variable in scope, on any frame, may refer into it: a reference or
    slice variable whose pointee the array's elements can contain (or a byte
    view), rooted at it -- or a `var` at the same depth, or an inexact root
    at or below its depth, or a not-yet-bound variable declared at or below
@@ -958,9 +957,9 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    own binding, otherwise by the reference's root, as a bound, since stores
    through references to the slot may have replaced the slice), and used
    afterwards;
-6. for a global receiver, every other global whose type can hold a reference
+5. for a global receiver, every other global whose type can hold a reference
    to something the array contains counts as holding one;
-7. the shrink is recorded for the callers (`NoteShrink`: `shrinkexternals`
+6. the shrink is recorded for the callers (`NoteShrink`: `shrinkexternals`
    for globals and captured locals, `shrinkparams` for parameters), and so
    are the views still used that only the callers can tell apart from the
    array (`NoteLiveViews`, **Parameters' views** below), and it is logged
@@ -968,7 +967,7 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    **Growth during construction** below).
 
 Inside a loop, a store later in the body than the shrink is on record when
-the body is checked again (`CheckLoopPasses`, §3.7), so item 5 finds it, and
+the body is checked again (`CheckLoopPasses`, §3.7), so item 4 finds it, and
 names it as reaching the shrink on the next iteration (`CarriedEvent`).
 
 **Liveness** (`UsedAfter`) is syntactic: the variable's name occurs in a

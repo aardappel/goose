@@ -1,4 +1,4 @@
-// error: cannot call replace, which shrinks rows: an earlier expression value
+// error: cannot call replace, which shrinks rows: rows[0], evaluated earlier in the statement
 // error: may still refer into rows
 fn main() {
     var rows: i64[..3][>..<] = [[1]];

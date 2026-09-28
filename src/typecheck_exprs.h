@@ -336,8 +336,8 @@ void TypeCheck::HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent, const
                        F f) {
     if (!v.type || kind == HK_NONE) return;
     auto t = v.type;
-    auto hold = [&](Val hv, bool location = false) {
-        f(Held { n, std::move(hv), location, render });
+    auto hold = [&](Val hv, bool location = false, bool elems = false) {
+        f(Held { n, std::move(hv), location, render, elems });
     };
     switch (kind) {
         case HK_LOCATION:
@@ -350,7 +350,7 @@ void TypeCheck::HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent, const
             if (!elem) return;
             if (IsTemp(d.Root())) d.Set(d.Root(), true);
             d.type = ast.SliceOf(elem, n->line);
-            hold(d);
+            hold(d, false, true);
             return;
         }
         case HK_RECEIVER: {
@@ -359,7 +359,8 @@ void TypeCheck::HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent, const
             TypeExpr *elem = rt->kind == TY_ARRAY ? rt->arr->sub
                              : rt->kind == TY_SLICE ? rt->sub : nullptr;
             auto held = v;
-            if (c->builtin == B_TO_BYTES || rt->kind == TY_SLICE) {
+            auto elems = c->builtin == B_TO_BYTES || rt->kind == TY_SLICE;
+            if (elems) {
                 if (!elem) return;
                 held.type = ast.SliceOf(elem, n->line);
             } else if (held.type->kind != TY_REF) {
@@ -367,7 +368,7 @@ void TypeCheck::HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent, const
             }
             if (IsTemp(held.Root()) && t->kind != TY_REF && t->kind != TY_SLICE)
                 held.Set(held.Root(), true);
-            hold(held);
+            hold(held, false, elems);
             return;
         }
         default: break;
@@ -383,7 +384,7 @@ void TypeCheck::HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent, const
     if (kind == HK_VIEW && t->kind == TY_ARRAY && ClassOf(t) != SC_FIXED) {
         auto view = v;
         view.type = ast.SliceOf(t->arr->sub, n->line);
-        hold(view);
+        hold(view, false, true);
     }
     if (HoldsPlainRef(t)) {
         vector<TypeExpr *> pointees;

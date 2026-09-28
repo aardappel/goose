@@ -1,4 +1,4 @@
-// error: cannot call step, which shrinks first: an earlier expression value
+// error: cannot call step, which shrinks first: xs[0], evaluated earlier in the statement
 // error: may still refer into first
 //
 // Both captures share a root; seeing its scalar alias must not hide the array.

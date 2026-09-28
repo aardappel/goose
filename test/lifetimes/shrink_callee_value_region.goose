@@ -1,5 +1,6 @@
-// A callee first checked inside a value-producing region shrinks its own
-// local freely: the region belongs to the caller's expression.
+// A callee first checked inside a function value's body, in the middle of
+// the caller's expression, shrinks its own local freely: nothing of that
+// expression can refer into it.
 fn scratch() -> i64 {
     var buf: i64[>..] = [1, 2];
     buf.clear();

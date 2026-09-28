@@ -747,7 +747,6 @@ NODE(Call)
     // occur in the arguments, by type (§3.7).
     vector<pair<TypeExpr *, FnSpec *>> fmtspecs;
     vector<Call *> fmtcontexts; // One immutable hook set per rendered argument.
-    bool standalone = false;            // A whole statement, initializer or assignment rhs (§5.1).
     // Typecheck: the defaults of the trailing parameters the call leaves out
     // (§7.1), `ndefaults` fresh clones in args from args[firstdefault] on,
     // where the arguments would be. A diagnostic prints the call without

@@ -931,20 +931,27 @@ scratch buffers that are refilled or popped between phases.
 **When a grow-only array may shrink.** The receiver is the array's variable,
 a reference variable or parameter bound to the whole array, or a global —
 not an element of a larger value, and not a `reusable` pool (§5.4: its
-freelist keeps every slot live). The call must stand on its own: a
-statement, the initializer of a declaration, or the right-hand side of an
-assignment to a variable, so that no reference taken earlier in the same
-expression outlives the shrink; and not inside a block, `if`, `match` or
-loop that produces a value, whose enclosing expression may hold such
-references too. At the shrink, nothing *live* may refer into the array: no
-reference or slice variable rooted at it (a `var` reference the same-depth
-rebinding rule (§9.2) could retarget into it counts, as does one not bound
-yet further down a loop body), and no value that *holds* a reference into
-it — a struct with a reference field, an array of slices, a `let` copy of
-an element of such. Values hold references only where a store put them,
-and every store the checker has seen is on record (§9.2), so this half of
-the test is exact to the store: the error names the holder and the line
-where a reference into the array was stored into it. A value whose type
+freelist keeps every slot live). The shrink may be anywhere in an
+expression — an operand, an argument, a condition, the value of a block,
+`if`, `match` or loop — so `print(a.pop())` and `if !load(s) { … }` are
+fine. At the shrink, nothing *live* may refer into the array. That rules
+out what its statement evaluated before the shrink and uses after it (§2):
+an earlier argument or operand that is, or holds, a reference or slice, an
+earlier field or element of a literal being built, the array an indexing
+or slicing reads, the destination of an assignment. So
+`use(a[0], a.pop())`, `a[a.pop()]`, `S { r: a[0], n: a.pop() }` and
+`a[0] = a.pop()` are errors, while `a[0] + a.pop()` reads its left operand
+first and is not. Nor may a value be under construction in the array's
+storage (§1.3): an element `push` builds in place (§4.3), a literal run
+`append` builds, or a call's result appended. And it rules out any
+reference or slice variable rooted at the array (a `var` reference the
+same-depth rebinding rule (§9.2) could retarget into it counts, as does one
+not bound yet further down a loop body), and any value that *holds* a
+reference into it — a struct with a reference field, an array of slices, a
+`let` copy of an element of such. Values hold references only where a store
+put them, and every store the checker has seen is on record (§9.2), so this
+half of the test is exact to the store: the error names the holder and the
+line where a reference into the array was stored into it. A value whose type
 cannot hold a reference to anything the array's elements contain by value
 is never a holder, nor is one linked by relative references alone (a node
 pool): those point within their own root. A reference to a slice variable
@@ -1047,16 +1054,18 @@ again against the pairs the cycle records once the whole cycle is.
   one merely rooted at a value that holds one, whose pointee type the
   array's elements cannot contain — a slice key read back out of a
   dictionary's slots — stores like any other.
-* **A shrink is an error while any live variable may refer into the array** —
-  the test a grow-only shrink applies (§5.1), its liveness rule and its call
-  summaries for a shrink through a reference or of a global included, minus the
-  store record: references into a grow-shrink array live only in variables, so
-  checking those still in use is sufficient, a reference to a slice variable
-  among them. For the same reason a plain reference or slice read out of a
-  field, an element or a global never refers into a grow-shrink array, since
-  none is ever stored there: the shrink does not consider it, nor a slice of
-  such a slice or a reference into what it views, whatever else the read-back
-  rule (§9.5) says it may point into. That stops at a reference, since what
+* **A shrink is an error while any live variable or value may refer into the
+  array** — the test a grow-only shrink applies (§5.1), the values its
+  statement still uses, its liveness rule and its call summaries for a shrink
+  through a reference or of a global included, minus the store record:
+  references into a grow-shrink array live only in variables and in the
+  values of the statement being run, so checking those still in use is
+  sufficient, a reference to a slice variable among them. For the same
+  reason a plain reference or slice read out of a field, an element or a
+  global never refers into a grow-shrink array, since none is ever stored
+  there: the shrink does not consider it, nor a slice of such a slice or a
+  reference into what it views, whatever else the read-back rule (§9.5)
+  says it may point into. That stops at a reference, since what
   one read out of a field leads to may be a whole grow-shrink array, or a
   variable holding a view into one; and a `var` bound to such reads still
   counts where a rebind could retarget it into the array: a same-depth one

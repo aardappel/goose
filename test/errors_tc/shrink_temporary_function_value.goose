@@ -1,4 +1,4 @@
-// error: cannot pop a: an earlier expression value
+// error: cannot pop a: a[0], evaluated earlier in the statement
 // error: may still refer into a
 fn exercise<F>() {
     var a: i64[>..<] = [42];
