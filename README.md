@@ -428,7 +428,8 @@ build/goose -o tour.c samples/01_tour.goose && cc tour.c -o tour -lm -pthread &&
 On Windows that is `cl tour.c`. Useful flags: `--check` typechecks without
 emitting C, `-O0`/`-O1`/`-O2` set the inlining level, `--bce-lines` reports the
 bounds checks kept per line, and `-DGS_DEBUG=1` turns on the overflow, range
-and tag checks in the generated C.
+and tag checks in the generated C, each abort naming its source line (and an
+overflow or a cast the values involved).
 
 A program using `gfx` also links the graphics layer and SDL, which the compiler
 names in a response file:

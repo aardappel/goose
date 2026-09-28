@@ -1056,10 +1056,11 @@ inline void CodeGen::GenElemwiseInto(Binary *b, const string &l, const string &r
                     }
                 } else {
                     auto sfx = IntSfx(tt->intstorage);
+                    auto ovf = OvfLocArgs(tt->intstorage, b->line);
                     switch (b->op) {
-                        case T_PLUS:  x = cat("gs_add_", sfx, "(", a, ", ", c, ")"); break;
-                        case T_MINUS: x = cat("gs_sub_", sfx, "(", a, ", ", c, ")"); break;
-                        case T_MUL:   x = cat("gs_mul_", sfx, "(", a, ", ", c, ")"); break;
+                        case T_PLUS:  x = cat("gs_add_", sfx, "(", a, ", ", c, ovf, ")"); break;
+                        case T_MINUS: x = cat("gs_sub_", sfx, "(", a, ", ", c, ovf, ")"); break;
+                        case T_MUL:   x = cat("gs_mul_", sfx, "(", a, ", ", c, ovf, ")"); break;
                         case T_DIV:   x = cat("gs_div_", sfx, "(", a, ", ", c, ", ",
                                               LocArgs(b->line), ")"); break;
                         default:      x = cat("gs_mod_", sfx, "(", a, ", ", c, ", ",

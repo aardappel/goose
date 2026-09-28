@@ -2383,10 +2383,11 @@ bytes (default 256 MB, capped at 2^48 by §10.4) plus a `GS_STACK_GAP`
 unmapped tail; Windows commits on fault through a vectored handler that
 tells a commit from an overrun, POSIX reserves with overcommit and protects
 the gap. A thread program's stacks live in a block reached through
-thread-local `gs_stks` and are created lazily as `GS_ENSURE` first asks for
-them; a worker's are released when it exits. Every region owned by the
-current thread program is registered thread-locally so the fault handler
-never touches another worker's state.
+thread-local `gs_stks` and are created lazily as `GS_ENSURE`, in a function's
+prologue, first asks for them (past `GS_MAX_STACKS` it aborts, naming the
+function's declaration); a worker's are released when it exits. Every region
+owned by the current thread program is registered thread-locally so the fault
+handler never touches another worker's state.
 
 **Native stacks.** Recursion consumes only the native call stack (spec
 §7.8), whose size is set as its thread starts; running out of it ends the
@@ -2415,8 +2416,14 @@ under `GS_DEBUG` and macros equal to the release expression otherwise
 (measured at 13--37% of runtime under a non-inlining backend when they were
 functions); division and modulo are always functions, zero-checked, with
 Euclidean `%`. `as` goes through `GS_RANGE`/`GS_F2I`/... macros that check in
-debug and cast in release, except to `f32`, which is a plain C cast in every
-build; `as!` and release float-to-int use the defined wrap of `gs_f2iwrap`.
+debug and cast in release, except to `f32`, and from an integer type whose
+every value the target holds, which are plain C casts in every build; `as!`
+and release float-to-int use the defined wrap of `gs_f2iwrap`. A signed type's
+add, sub, mul and neg helper and every checked cast also take the file and
+line of the operation, and a debug check that fails prints them with the
+operands or the value and the type. The release macros drop them unevaluated,
+so release builds compile to the code they would without them; the arguments
+cost about 1% of the generated C, and no measurable TinyCC compile time.
 Bounds checks are one unsigned compare (`GS_IDX`).
 
 **Slice pools** (§5.4): the `gs_spans_*` functions keep a `reusable[]`

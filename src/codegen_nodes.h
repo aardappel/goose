@@ -81,7 +81,8 @@ inline string Unary::CgX(CodeGen &cg) {
     switch (op) {
         case T_MINUS:
             if (child->exprtype->kind == TY_FLT) return cat("(-", x, ")");
-            return cat("gs_neg_", cg.IntSfx(child->exprtype->intstorage), "(", x, ")");
+            return cat("gs_neg_", cg.IntSfx(child->exprtype->intstorage), "(", x,
+                       cg.OvfLocArgs(child->exprtype->intstorage, line), ")");
         case T_NOT: {
             auto ct = child->exprtype;
             if (ct->kind == TY_REF && cg.IsResz(ct->ref->sub))
@@ -208,9 +209,12 @@ inline string Binary::CgX(CodeGen &cg) {
             if (isint) {
                 auto sfx = cg.IntSfx(lt->intstorage);
                 switch (op) {
-                    case T_PLUS:  return cat("gs_add_", sfx, "(", l, ", ", r, ")");
-                    case T_MINUS: return cat("gs_sub_", sfx, "(", l, ", ", r, ")");
-                    case T_MUL:   return cat("gs_mul_", sfx, "(", l, ", ", r, ")");
+                    case T_PLUS:  return cat("gs_add_", sfx, "(", l, ", ", r,
+                                             cg.OvfLocArgs(lt->intstorage, line), ")");
+                    case T_MINUS: return cat("gs_sub_", sfx, "(", l, ", ", r,
+                                             cg.OvfLocArgs(lt->intstorage, line), ")");
+                    case T_MUL:   return cat("gs_mul_", sfx, "(", l, ", ", r,
+                                             cg.OvfLocArgs(lt->intstorage, line), ")");
                     case T_DIV:   return cat("gs_div_", sfx, "(", l, ", ", r, ", ",
                                              cg.LocArgs(line), ")");
                     default:      return cat("gs_mod_", sfx, "(", l, ", ", r, ", ",
@@ -287,9 +291,11 @@ inline string SliceExpr::CgX(CodeGen &cg) {
     return cg.AdaptToFixed(slv, exprtype, line);
 }
 // `as` range-checks in debug builds (GS_RANGE and friends are identity
-// casts unless the C is compiled with -DGS_DEBUG=1); `as!` always wraps
-// or truncates (§6.3). A conversion to f32 is never checked: it rounds
-// like float arithmetic does, and beyond f32's range it is an infinity.
+// casts unless the C is compiled with -DGS_DEBUG=1, and a failing check
+// names the value, the target type and the cast's location); `as!` always
+// wraps or truncates (§6.3). A conversion to f32 is never checked: it
+// rounds like float arithmetic does, and beyond f32's range it is an
+// infinity.
 inline string AsCast::CgX(CodeGen &cg) {
     auto x = cg.GenX(child);
     auto st = child->exprtype;
@@ -300,14 +306,13 @@ inline string AsCast::CgX(CodeGen &cg) {
     if (tt->kind == TY_INT) {
         auto is = tt->intstorage;
         auto tct = cg.IntCT(is);
+        auto named = [&] { return cat("\"", IntStorageName(is), "\", ", cg.LocArgs(line)); };
         if (st->kind == TY_FLT) {
             if (unchecked) return cat("(", tct, ")gs_f2iwrap(", x, ")");
-            if (is == IS_U64) return cat("(uint64_t)GS_F2U(", x, ")");
-            // GS_F2I checks the exact i64 value; GS_RANGE narrows further.
-            if (cg.IntSize(is) == 8) return cat("(", tct, ")GS_F2I(", x, ")");
+            if (is == IS_U64) return cat("(uint64_t)GS_F2U(", x, ", ", cg.LocArgs(line), ")");
             auto [lo, hi] = IntRange(is);
-            return cat("(", tct, ")GS_RANGE(GS_F2I(", x, "), ", cg.IntStr(lo), ", ",
-                       cg.IntStr(hi), ")");
+            return cat("(", tct, ")GS_F2I(", x, ", ", cg.IntStr(lo), ", ", cg.IntStr(hi), ", ",
+                       named(), ")");
         }
         if (unchecked || cg.TEq(st, tt)) return cat("(", tct, ")(", x, ")");
         if (su64) {
@@ -315,21 +320,22 @@ inline string AsCast::CgX(CodeGen &cg) {
             // maximum (all targets' maxima fit an unsigned compare).
             if (is == IS_U64) return cat("(", x, ")");
             auto hi = IntRange(is).second;
-            return cat("(", tct, ")GS_RANGE_U(", x, ", ", (uint64_t)hi, "ULL)");
+            return cat("(", tct, ")GS_RANGE_U(", x, ", ", (uint64_t)hi, "ULL, ", named(), ")");
         }
-        if (is == IS_U64)   // Source ≤ i64.max: only negatives are out of range.
-            return cat("(uint64_t)GS_RANGE((int64_t)(", x, "), 0, INT64_MAX)");
-        if (cg.IntSize(is) == 8) return cat("(", tct, ")(", x, ")");
+        // The source is at most i64.max, so a u64 target is its 0..i64.max
+        // part (IntRange); a source whose every value fits needs no check.
+        auto [slo, shi] = IntRange(st->intstorage);
         auto [lo, hi] = IntRange(is);
+        if (slo >= lo && shi <= hi) return cat("(", tct, ")(", x, ")");
         return cat("(", tct, ")GS_RANGE((int64_t)(", x, "), ", cg.IntStr(lo), ", ",
-                   cg.IntStr(hi), ")");
+                   cg.IntStr(hi), ", ", named(), ")");
     }
     assert(tt->kind == TY_FLT);
     if (tt->fltstorage == FS_F32) return cat("(float)(", x, ")");
     if (!unchecked && st->kind == TY_INT) {
         if (IntBits(st->intstorage) <= 32) return cat("(double)(", x, ")");  // Exact.
-        if (su64) return cat("GS_U2F(", x, ")");
-        return cat("GS_I2F(", x, ")");
+        if (su64) return cat("GS_U2F(", x, ", ", cg.LocArgs(line), ")");
+        return cat("GS_I2F(", x, ", ", cg.LocArgs(line), ")");
     }
     return cat("(double)(", x, ")");
 }
@@ -768,18 +774,19 @@ inline void Assign::CgStmt(CodeGen &cg) {
         auto old = cg.Snapshot(lv.t, lv.s);
         auto r = cg.GenX(rhs);
         auto sfx = lv.t->kind == TY_INT ? cg.IntSfx(lv.t->intstorage) : "";
+        auto ovf = [&] { return cg.OvfLocArgs(lv.t->intstorage, line); };
         switch (op) {
             case T_PLUSEQ:
                 if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", old, " + (", r, ");");
-                else cg.L(lv.s, " = gs_add_", sfx, "(", old, ", ", r, ");");
+                else cg.L(lv.s, " = gs_add_", sfx, "(", old, ", ", r, ovf(), ");");
                 break;
             case T_MINUSEQ:
                 if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", old, " - (", r, ");");
-                else cg.L(lv.s, " = gs_sub_", sfx, "(", old, ", ", r, ");");
+                else cg.L(lv.s, " = gs_sub_", sfx, "(", old, ", ", r, ovf(), ");");
                 break;
             case T_MULEQ:
                 if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", old, " * (", r, ");");
-                else cg.L(lv.s, " = gs_mul_", sfx, "(", old, ", ", r, ");");
+                else cg.L(lv.s, " = gs_mul_", sfx, "(", old, ", ", r, ovf(), ");");
                 break;
             case T_DIVEQ:
                 if (lv.t->kind == TY_FLT) cg.L(lv.s, " = ", old, " / (", r, ");");
@@ -849,7 +856,8 @@ inline void IncDec::CgStmt(CodeGen &cg) {
     if (lv.t->kind == TY_REF) cg.DerefLoc(lv);
     assert(lv.val);
     auto o = op == T_INC ? "gs_add_" : "gs_sub_";
-    cg.L(lv.s, " = ", o, cg.IntSfx(lv.t->intstorage), "(", lv.s, ", 1);");
+    cg.L(lv.s, " = ", o, cg.IntSfx(lv.t->intstorage), "(", lv.s, ", 1",
+         cg.OvfLocArgs(lv.t->intstorage, line), ");");
 }
 
 inline void FnDecl::CgStmt(CodeGen &) {}   // Nested declarations are separate specs.

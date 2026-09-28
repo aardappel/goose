@@ -130,7 +130,11 @@ temporary result stacks that output-only comparisons would miss,
 `cycle_scratch_locals.goose` to show that a recursion's scratch locals take
 the same few stacks at every level, and `discarded_resizable_results.goose`
 shrinks each stack's reservation (`GS_STACK_RESERVE`) so that its loops
-overflow one unless every discarded result is released.
+overflow one unless every discarded result is released;
+`data_stacks_exhausted.goose` runs out of stacks on purpose. A fixture
+expecting a debug-only abort sets `GS_DEBUG=1` the same way, which makes
+every run of it a debug build: `cast_abort_location.goose` and
+`overflow_abort_location.goose` check the location a failing check reports.
 
 Parser/resolver errors live in `test/errors/`; semantic errors live in
 `test/errors_tc/` and must first pass `--parse`. Each source declares one or

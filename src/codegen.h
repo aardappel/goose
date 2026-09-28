@@ -149,6 +149,13 @@ struct CodeGen {
         return cat(it->second, ", ", l.line);
     }
 
+    // The trailing arguments of a gs_add/sub/mul/neg helper call: a signed
+    // type's operation takes its location, for the debug build's overflow
+    // message (§6.2); unsigned arithmetic wraps and takes none.
+    string OvfLocArgs(IntStorage s, Line l) {
+        return IsUnsigned(s) ? string() : cat(", ", LocArgs(l));
+    }
+
     // ------------------------------------------------------------------
     // Type utilities on concrete (post-typecheck) types. Sizes of fixed and
     // limited arrays were evaluated during checking; assert rather than

@@ -97,6 +97,7 @@ enum {
     GS_E_SLICELEN,     /* slice pool length negative or beyond any data stack */
     GS_E_POOLSLICE,    /* a slice handed to a slice pool is not one of its runs */
     GS_E_RELNULL,      /* a non-null optional self-relative target has offset zero */
+    GS_E_STACKS,       /* a function needs more data stacks than GS_MAX_STACKS */
 };
 
 static const char *gs_errmsgs[] = {
@@ -115,6 +116,7 @@ static const char *gs_errmsgs[] = {
     "invalid slice length",
     "slice not from this pool",
     "non-null relative reference encodes as null",
+    "too many data stacks (deep call nesting?)",
 };
 
 static GS_NORETURN void gs_panic(const char *msg) {
@@ -189,13 +191,29 @@ static int gs_memcmp(const void *a, const void *b, size_t n) {
    inlines either form to the same instruction, but a backend that does not
    inline (libtcc, or any -O0 build) would otherwise pay a call for every
    arithmetic operation in the program — which measured as 13-37% of total
-   runtime across the benchmarks. */
+   runtime across the benchmarks.
+
+   The signed types' add, sub, mul and neg also take the file and line of the
+   operation, for the debug build's overflow message; the release macros
+   drop them unevaluated. */
 
 #if GS_DEBUG
-static void gs_ovf(void) { gs_panic("integer overflow (debug)"); }
-#define GS_OVFCHK(r, MIN, MAX) do { if ((r) < (MIN) || (r) > (MAX)) gs_ovf(); } while (0)
+static GS_NORETURN void gs_ovf(int64_t a, const char *op, int64_t b, const char *type,
+                               const char *file, int line) {
+    fprintf(stderr, "goose runtime error: integer overflow (debug): %lld %s %lld at %s "
+            "(%s:%d)\n", (long long)a, op, (long long)b, type, file, line);
+    exit(1);
+}
+static GS_NORETURN void gs_ovf_neg(int64_t a, const char *type, const char *file, int line) {
+    fprintf(stderr, "goose runtime error: integer overflow (debug): -(%lld) at %s (%s:%d)\n",
+            (long long)a, type, file, line);
+)GSRT"
+R"GSRT(    exit(1);
+}
+#define GS_OVFCHK(r, MIN, MAX, a, op, b, type, file, line) \
+    do { if ((r) < (MIN) || (r) > (MAX)) gs_ovf((a), (op), (b), (type), (file), (line)); } while (0)
 #else
-#define GS_OVFCHK(r, MIN, MAX) ((void)0)
+#define GS_OVFCHK(r, MIN, MAX, a, op, b, type, file, line) ((void)0)
 #endif
 
 static GS_NORETURN void gs_divfail(const char *file, int line) {
@@ -209,13 +227,12 @@ static GS_NORETURN void gs_divfail(const char *file, int line) {
 static T gs_div_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
     int64_t r = (int64_t)a / (int64_t)b; \
-    GS_OVFCHK(r, MIN, MAX); \
+    GS_OVFCHK(r, MIN, MAX, a, "/", b, #SFX, file, line); \
     return (T)r; } \
 static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
     int64_t r = (int64_t)a % (int64_t)b; \
-)GSRT"
-R"GSRT(    if (r < 0) r += (int64_t)b < 0 ? -(int64_t)b : (int64_t)b; \
+    if (r < 0) r += (int64_t)b < 0 ? -(int64_t)b : (int64_t)b; \
     return (T)r; }
 
 #define GS_DIVOPS_U(SFX, T) \
@@ -238,21 +255,21 @@ GS_DIVOPS_U(u32, uint32_t)
 /* Signed narrow types (8/16/32 bits): 64-bit signed math covers every
    intermediate result. */
 #define GS_INTOPS_S(SFX, T, MIN, MAX, BITS) \
-static T gs_add_##SFX(T a, T b) { \
+static T gs_add_##SFX(T a, T b, const char *file, int line) { \
     int64_t r = (int64_t)a + (int64_t)b; \
-    if (r < MIN || r > MAX) gs_ovf(); \
+    if (r < MIN || r > MAX) gs_ovf(a, "+", b, #SFX, file, line); \
     return (T)r; } \
-static T gs_sub_##SFX(T a, T b) { \
+static T gs_sub_##SFX(T a, T b, const char *file, int line) { \
     int64_t r = (int64_t)a - (int64_t)b; \
-    if (r < MIN || r > MAX) gs_ovf(); \
+    if (r < MIN || r > MAX) gs_ovf(a, "-", b, #SFX, file, line); \
     return (T)r; } \
-static T gs_mul_##SFX(T a, T b) { \
+static T gs_mul_##SFX(T a, T b, const char *file, int line) { \
     int64_t r = (int64_t)a * (int64_t)b; \
-    if (r < MIN || r > MAX) gs_ovf(); \
+    if (r < MIN || r > MAX) gs_ovf(a, "*", b, #SFX, file, line); \
     return (T)r; } \
-static T gs_neg_##SFX(T a) { \
+static T gs_neg_##SFX(T a, const char *file, int line) { \
     int64_t r = -(int64_t)a; \
-    if (r < MIN || r > MAX) gs_ovf(); \
+    if (r < MIN || r > MAX) gs_ovf_neg(a, #SFX, file, line); \
     return (T)r; } \
 static T gs_shl_##SFX(T a, int64_t n) { \
     return (T)((uint64_t)a << (n & (BITS - 1))); } \
@@ -278,25 +295,25 @@ GS_INTOPS_U(u16, uint16_t, 65535u, 16)
 GS_INTOPS_U(u32, uint32_t, 4294967295u, 32)
 
 /* The 64-bit types detect overflow on the value itself. */
-static int64_t gs_add_i64(int64_t a, int64_t b) {
+static int64_t gs_add_i64(int64_t a, int64_t b, const char *file, int line) {
     int64_t r = (int64_t)((uint64_t)a + (uint64_t)b);
-    if (((a ^ r) & (b ^ r)) < 0) gs_ovf();
+    if (((a ^ r) & (b ^ r)) < 0) gs_ovf(a, "+", b, "i64", file, line);
     return r;
 }
-static int64_t gs_sub_i64(int64_t a, int64_t b) {
+static int64_t gs_sub_i64(int64_t a, int64_t b, const char *file, int line) {
     int64_t r = (int64_t)((uint64_t)a - (uint64_t)b);
-    if (((a ^ b) & (a ^ r)) < 0) gs_ovf();
+    if (((a ^ b) & (a ^ r)) < 0) gs_ovf(a, "-", b, "i64", file, line);
     return r;
 }
-static int64_t gs_mul_i64(int64_t a, int64_t b) {
+static int64_t gs_mul_i64(int64_t a, int64_t b, const char *file, int line) {
     int64_t r = (int64_t)((uint64_t)a * (uint64_t)b);
     if (a && b &&
         ((a == -1 && b == INT64_MIN) || (b == -1 && a == INT64_MIN) || r / b != a))
-        gs_ovf();
+        gs_ovf(a, "*", b, "i64", file, line);
     return r;
 }
-static int64_t gs_neg_i64(int64_t a) {
-    if (a == INT64_MIN) gs_ovf();
+static int64_t gs_neg_i64(int64_t a, const char *file, int line) {
+    if (a == INT64_MIN) gs_ovf_neg(a, "i64", file, line);
     return (int64_t)(0u - (uint64_t)a);
 }
 static int64_t gs_shl_i64(int64_t a, int64_t n) {
@@ -311,24 +328,24 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 
 #else  /* release: each operation is the expression the function returned */
 
-#define gs_add_i8(a, b)  ((int8_t)((int64_t)(a) + (int64_t)(b)))
-#define gs_sub_i8(a, b)  ((int8_t)((int64_t)(a) - (int64_t)(b)))
-#define gs_mul_i8(a, b)  ((int8_t)((int64_t)(a) * (int64_t)(b)))
-#define gs_neg_i8(a)     ((int8_t)(-(int64_t)(a)))
+#define gs_add_i8(a, b, f, l)  ((int8_t)((int64_t)(a) + (int64_t)(b)))
+#define gs_sub_i8(a, b, f, l)  ((int8_t)((int64_t)(a) - (int64_t)(b)))
+#define gs_mul_i8(a, b, f, l)  ((int8_t)((int64_t)(a) * (int64_t)(b)))
+#define gs_neg_i8(a, f, l)     ((int8_t)(-(int64_t)(a)))
 #define gs_shl_i8(a, n)  ((int8_t)((uint64_t)(a) << ((n) & 7)))
 #define gs_shr_i8(a, n)  ((int8_t)((int64_t)(a) >> ((n) & 7)))
 
-#define gs_add_i16(a, b) ((int16_t)((int64_t)(a) + (int64_t)(b)))
-#define gs_sub_i16(a, b) ((int16_t)((int64_t)(a) - (int64_t)(b)))
-#define gs_mul_i16(a, b) ((int16_t)((int64_t)(a) * (int64_t)(b)))
-#define gs_neg_i16(a)    ((int16_t)(-(int64_t)(a)))
+#define gs_add_i16(a, b, f, l) ((int16_t)((int64_t)(a) + (int64_t)(b)))
+#define gs_sub_i16(a, b, f, l) ((int16_t)((int64_t)(a) - (int64_t)(b)))
+#define gs_mul_i16(a, b, f, l) ((int16_t)((int64_t)(a) * (int64_t)(b)))
+#define gs_neg_i16(a, f, l)    ((int16_t)(-(int64_t)(a)))
 #define gs_shl_i16(a, n) ((int16_t)((uint64_t)(a) << ((n) & 15)))
 #define gs_shr_i16(a, n) ((int16_t)((int64_t)(a) >> ((n) & 15)))
 
-#define gs_add_i32(a, b) ((int32_t)((int64_t)(a) + (int64_t)(b)))
-#define gs_sub_i32(a, b) ((int32_t)((int64_t)(a) - (int64_t)(b)))
-#define gs_mul_i32(a, b) ((int32_t)((int64_t)(a) * (int64_t)(b)))
-#define gs_neg_i32(a)    ((int32_t)(-(int64_t)(a)))
+#define gs_add_i32(a, b, f, l) ((int32_t)((int64_t)(a) + (int64_t)(b)))
+#define gs_sub_i32(a, b, f, l) ((int32_t)((int64_t)(a) - (int64_t)(b)))
+#define gs_mul_i32(a, b, f, l) ((int32_t)((int64_t)(a) * (int64_t)(b)))
+#define gs_neg_i32(a, f, l)    ((int32_t)(-(int64_t)(a)))
 #define gs_shl_i32(a, n) ((int32_t)((uint64_t)(a) << ((n) & 31)))
 #define gs_shr_i32(a, n) ((int32_t)((int64_t)(a) >> ((n) & 31)))
 
@@ -350,10 +367,10 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 #define gs_shl_u32(a, n) ((uint32_t)((uint64_t)(a) << ((n) & 31)))
 #define gs_shr_u32(a, n) ((uint32_t)((uint64_t)(a) >> ((n) & 31)))
 
-#define gs_add_i64(a, b) ((int64_t)((uint64_t)(a) + (uint64_t)(b)))
-#define gs_sub_i64(a, b) ((int64_t)((uint64_t)(a) - (uint64_t)(b)))
-#define gs_mul_i64(a, b) ((int64_t)((uint64_t)(a) * (uint64_t)(b)))
-#define gs_neg_i64(a)    ((int64_t)(0u - (uint64_t)(a)))
+#define gs_add_i64(a, b, f, l) ((int64_t)((uint64_t)(a) + (uint64_t)(b)))
+#define gs_sub_i64(a, b, f, l) ((int64_t)((uint64_t)(a) - (uint64_t)(b)))
+#define gs_mul_i64(a, b, f, l) ((int64_t)((uint64_t)(a) * (uint64_t)(b)))
+#define gs_neg_i64(a, f, l)    ((int64_t)(0u - (uint64_t)(a)))
 #define gs_shl_i64(a, n) ((int64_t)((uint64_t)(a) << ((n) & 63)))
 #define gs_shr_i64(a, n) ((int64_t)((a) >> ((n) & 63)))
 
@@ -367,7 +384,8 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 
 /* 64-bit division and modulo. Division overflow (i64.min / -1) would trap in
    hardware and aborts in every build. */
-static int64_t gs_div_i64(int64_t a, int64_t b, const char *file, int line) {
+)GSRT"
+R"GSRT(static int64_t gs_div_i64(int64_t a, int64_t b, const char *file, int line) {
     if (b == 0) gs_divfail(file, line);
     if (a == INT64_MIN && b == -1) {
         fprintf(stderr, "goose runtime error: integer overflow in division (%s:%d)\n",
@@ -405,60 +423,95 @@ static int64_t gs_f2iwrap(double d) {
 }
 
 /* `as` conversion checks (§6.3): abort in debug builds whenever the
-)GSRT"
-R"GSRT(   conversion would change the value; identity/plain casts in release. A
-   conversion to f32 is a plain C cast in every build and has none. */
+   conversion would change the value, naming the value, the target type and
+   the cast's file and line; identity/plain casts in release, which drop all
+   three unevaluated. A conversion to f32 is a plain C cast in every build and
+   has none. */
 #if GS_DEBUG
 
-static int64_t gs_rangechk(int64_t v, int64_t lo, int64_t hi) {
-    if (v < lo || v > hi) gs_panic("as conversion out of range (debug)");
+static int64_t gs_fmt_f64(uint8_t *dst, double v);
+
+/* The message of a failing check, with the source value as text. */
+static GS_NORETURN void gs_asfail(const char *why, const char *num, const char *type,
+                                  const char *file, int line) {
+    fprintf(stderr, "goose runtime error: as conversion %s (debug): %s as %s (%s:%d)\n",
+            why, num, type, file, line);
+    exit(1);
+}
+static GS_NORETURN void gs_asfail_i(const char *why, int64_t v, const char *type,
+                                    const char *file, int line) {
+    char num[24];
+    snprintf(num, sizeof(num), "%lld", (long long)v);
+    gs_asfail(why, num, type, file, line);
+}
+static GS_NORETURN void gs_asfail_u(const char *why, uint64_t v, const char *type,
+                                    const char *file, int line) {
+    char num[24];
+    snprintf(num, sizeof(num), "%llu", (unsigned long long)v);
+    gs_asfail(why, num, type, file, line);
+}
+static GS_NORETURN void gs_asfail_f(const char *why, double d, const char *type,
+                                    const char *file, int line) {
+    uint8_t num[32];
+    gs_fmt_f64(num, d);
+    gs_asfail(why, (const char *)num, type, file, line);
+}
+
+static int64_t gs_rangechk(int64_t v, int64_t lo, int64_t hi, const char *type,
+                           const char *file, int line) {
+    if (v < lo || v > hi) gs_asfail_i("out of range", v, type, file, line);
     return v;
 }
-static uint64_t gs_rangechk_u(uint64_t v, uint64_t hi) {
-    if (v > hi) gs_panic("as conversion out of range (debug)");
+static uint64_t gs_rangechk_u(uint64_t v, uint64_t hi, const char *type, const char *file,
+                              int line) {
+    if (v > hi) gs_asfail_u("out of range", v, type, file, line);
     return v;
 }
-static int64_t gs_f2ichk(double d) {
+/* To a signed type or a narrower unsigned one, whose range is lo..hi. */
+static int64_t gs_f2ichk(double d, int64_t lo, int64_t hi, const char *type, const char *file,
+                         int line) {
     if (!(d >= -9223372036854775808.0 && d < 9223372036854775808.0))
-        gs_panic("as conversion out of range (debug)");
+        gs_asfail_f("out of range", d, type, file, line);
     int64_t v = (int64_t)d;
-    if ((double)v != d) gs_panic("as conversion changes the value (debug)");
+    if (v < lo || v > hi) gs_asfail_f("out of range", d, type, file, line);
+    if ((double)v != d) gs_asfail_f("changes the value", d, type, file, line);
     return v;
 }
-static uint64_t gs_f2uchk(double d) {
+static uint64_t gs_f2uchk(double d, const char *file, int line) {
     if (!(d >= 0 && d < 18446744073709551616.0))
-        gs_panic("as conversion out of range (debug)");
+        gs_asfail_f("out of range", d, "u64", file, line);
     uint64_t v = (uint64_t)d;
-    if ((double)v != d) gs_panic("as conversion changes the value (debug)");
+    if ((double)v != d) gs_asfail_f("changes the value", d, "u64", file, line);
     return v;
 }
-static double gs_i2fchk(int64_t v) {
+static double gs_i2fchk(int64_t v, const char *file, int line) {
     double d = (double)v;
     if ((int64_t)d != v || d >= 9223372036854775808.0)
-        gs_panic("as conversion changes the value (debug)");
+        gs_asfail_i("changes the value", v, "f64", file, line);
     return d;
 }
-static double gs_u2fchk(uint64_t v) {
+static double gs_u2fchk(uint64_t v, const char *file, int line) {
     double d = (double)v;
     if (d >= 18446744073709551616.0 || (uint64_t)d != v)
-        gs_panic("as conversion changes the value (debug)");
+        gs_asfail_u("changes the value", v, "f64", file, line);
     return d;
 }
-#define GS_RANGE(v, lo, hi) gs_rangechk((v), (lo), (hi))
-#define GS_RANGE_U(v, hi)   gs_rangechk_u((v), (hi))
-#define GS_F2I(d)    gs_f2ichk(d)
-#define GS_F2U(d)    gs_f2uchk(d)
-#define GS_I2F(v)    gs_i2fchk(v)
-#define GS_U2F(v)    gs_u2fchk(v)
+#define GS_RANGE(v, lo, hi, t, f, l) gs_rangechk((v), (lo), (hi), (t), (f), (l))
+#define GS_RANGE_U(v, hi, t, f, l)   gs_rangechk_u((v), (hi), (t), (f), (l))
+#define GS_F2I(d, lo, hi, t, f, l)   gs_f2ichk((d), (lo), (hi), (t), (f), (l))
+#define GS_F2U(d, f, l)              gs_f2uchk((d), (f), (l))
+#define GS_I2F(v, f, l)              gs_i2fchk((v), (f), (l))
+#define GS_U2F(v, f, l)              gs_u2fchk((v), (f), (l))
 
 #else
 
-#define GS_RANGE(v, lo, hi) (v)
-#define GS_RANGE_U(v, hi)   (v)
-#define GS_F2I(d)    gs_f2iwrap(d)   /* Deterministic truncation in release too. */
-#define GS_F2U(d)    ((uint64_t)gs_f2iwrap(d))
-#define GS_I2F(v)    ((double)(v))
-#define GS_U2F(v)    ((double)(uint64_t)(v))
+#define GS_RANGE(v, lo, hi, t, f, l) (v)
+#define GS_RANGE_U(v, hi, t, f, l)   (v)
+/* Deterministic truncation in release too. */
+#define GS_F2I(d, lo, hi, t, f, l)   gs_f2iwrap(d)
+#define GS_F2U(d, f, l)              ((uint64_t)gs_f2iwrap(d))
+#define GS_I2F(v, f, l)              ((double)(v))
+#define GS_U2F(v, f, l)              ((double)(uint64_t)(v))
 
 #endif
 
@@ -517,7 +570,8 @@ static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
             if (hit < base + GS_STACK_RESERVE) {
                 uint8_t *page = (uint8_t *)((size_t)hit & ~(gs_page_size - 1));
                 size_t n = GS_COMMIT_CHUNK;
-                if (page + n > base + GS_STACK_RESERVE)
+)GSRT"
+R"GSRT(                if (page + n > base + GS_STACK_RESERVE)
                     n = (size_t)(base + GS_STACK_RESERVE - page);
                 if (VirtualAlloc(page, n, MEM_COMMIT, PAGE_READWRITE))
                     return EXCEPTION_CONTINUE_EXECUTION;
@@ -612,8 +666,7 @@ static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
     sigaction(sig, sig == SIGSEGV ? &gs_prev_segv : &gs_prev_bus, NULL);
 }
 
-)GSRT"
-R"GSRT(static void gs_regions_init(void) {
+static void gs_regions_init(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = gs_fault_handler;
@@ -724,15 +777,19 @@ static GS_TLS void *gs_gl;
 
 #define GS(i) (&gs_stks[i])
 
-static void gs_stks_grow(int64_t n) {
-    if (n > GS_MAX_STACKS) gs_panic("too many data stacks (deep call nesting?)");
+/* A function's prologue asks for the stacks it uses, naming its declaration
+   (gs_init_globals names an initializer) for the abort when there are not
+   enough. */
+static void gs_stks_grow(int64_t n, const char *file, int line) {
+    if (n > GS_MAX_STACKS) gs_abort(GS_E_STACKS, file, line);
     while (gs_nstks < n) {
         gs_stack *s = &gs_stks[gs_nstks++];
         s->top = gs_reserve_region();
-    }
+)GSRT"
+R"GSRT(    }
 }
 
-#define GS_ENSURE(n) do { if ((n) > gs_nstks) gs_stks_grow(n); } while (0)
+#define GS_ENSURE(n, f, l) do { if ((n) > gs_nstks) gs_stks_grow((n), (f), (l)); } while (0)
 
 static gs_stack *gs_new_stack_block(void) {
     gs_stack *b = (gs_stack *)calloc(GS_MAX_STACKS, sizeof(gs_stack));
@@ -831,8 +888,7 @@ static int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t 
         at = *n - 1;
     }
     idx = s[at].idx;
-)GSRT"
-R"GSRT(    gs_spans_take(s, n, top, at, cnt);
+    gs_spans_take(s, n, top, at, cnt);
     return idx;
 }
 
@@ -947,7 +1003,8 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
    a malformed encoding instead of running past it. */
 
 /* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
-   payload bits above the 64th, or is not shortest. The result is the byte count. */
+)GSRT"
+R"GSRT(   payload bits above the 64th, or is not shortest. The result is the byte count. */
 static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
     uint64_t v = 0;
     int shift = 0;
@@ -1045,8 +1102,7 @@ static int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n) {
     uint8_t *d = dst;
     *d++ = '"';
     for (int64_t i = 0; i < n; i++) {
-)GSRT"
-R"GSRT(        uint8_t c = s[i];
+        uint8_t c = s[i];
         switch (c) {
             case '"': *d++ = '\\'; *d++ = '"'; break;
             case '\\': *d++ = '\\'; *d++ = '\\'; break;

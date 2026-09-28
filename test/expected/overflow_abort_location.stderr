@@ -1,0 +1,2 @@
+integer overflow (debug): 2000000000 + 1000000000 at i32
+overflow_abort_location.goose:6)

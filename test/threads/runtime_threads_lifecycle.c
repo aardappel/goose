@@ -97,7 +97,7 @@ static void exercise_stacks(uint8_t *args) {
     int64_t stamp;
     memcpy(&stamp, args, sizeof(stamp));
     check(gs_nregions == 0, "worker starts without old mappings");
-    GS_ENSURE(GS_MAX_STACKS);
+    GS_ENSURE(GS_MAX_STACKS, __FILE__, __LINE__);
     check(gs_nregions == GS_MAX_STACKS, "worker owns its region registry");
     for (int i = 0; i < GS_MAX_STACKS; ++i) {
         GS(i)->top[0] = (uint8_t)stamp;
@@ -155,7 +155,7 @@ static void check_baseline(long allocations, long regions) {
 
 int main(void) {
     gs_rt_init();
-    GS_ENSURE(1);
+    GS_ENSURE(1, __FILE__, __LINE__);
     GS(0)->top[0] = 99;
     long allocations = counter_add(&live_allocations, 0);
     long regions = counter_add(&live_regions, 0);

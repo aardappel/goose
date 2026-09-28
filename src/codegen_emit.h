@@ -358,7 +358,8 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
            params, ") {\n");
     code += decls;
     if (stkmax > 0)
-        Append(code, "    GS_ENSURE(", spexpr, " + ", stkmax, ");\n");
+        Append(code, "    GS_ENSURE(", spexpr, " + ", stkmax, ", ", LocArgs(sp->sf->line),
+               ");\n");
     // A whole-body cache loads once the stacks are known to exist; a
     // per-loop one declares and loads itself at its loop's edge.
     for (size_t i = 0; i < toporder.size(); i++)
@@ -512,8 +513,12 @@ inline void CodeGen::EmitGlobalInit() {
     ResetFnState();
     spexpr = "0";
     PushSc(SC_FN);
+    // Running out of data stacks is reported at the initializer that needs
+    // the most of them.
+    Line deepest;
     for (auto g : ast.globals) {
         if (g->inits.empty()) continue;
+        auto before = stkmax;
         PushSc(SC_STMT);
         if (g->defs.size() > 1 && g->inits.size() == 1) {
             auto c = Is<Call>(g->inits[0]);
@@ -552,13 +557,14 @@ inline void CodeGen::EmitGlobalInit() {
         if (termjump) cscopes.back().saves.clear();
         PopSc();
         termjump = false;
+        if (stkmax > before) deepest = g->line;
     }
     EmitExitRestores(0);
     cscopes.clear();
     auto decls = HoistAggregateDecls(body);
     Append(code, "static void gs_init_globals(void) {\n");
     code += decls;
-    if (stkmax > 0) Append(code, "    GS_ENSURE(", stkmax, ");\n");
+    if (stkmax > 0) Append(code, "    GS_ENSURE(", stkmax, ", ", LocArgs(deepest), ");\n");
     code += body;
     code += "}\n\n";
 }
