@@ -1643,6 +1643,16 @@ struct Ast {
         return t;
     }
 
+    // Deletes the types and functions made since the two lists had these
+    // sizes: a parse the parser backtracked over made them, and the passes
+    // that walk the lists would take them for written ones.
+    void DropSince(size_t ntypes, size_t nfunctions) {
+        for (auto i = ntypes; i < alltypes.size(); i++) delete alltypes[i];
+        alltypes.resize(ntypes);
+        for (auto i = nfunctions; i < functions.size(); i++) delete functions[i];
+        functions.resize(nfunctions);
+    }
+
     // The same type with its contents read-only (§9.5): a fresh node, since
     // a primitive type's node is shared.
     TypeExpr *ConstOf(TypeExpr *t) {

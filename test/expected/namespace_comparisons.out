@@ -1,0 +1,8 @@
+a < lim::COUNT
+a<lim::COUNT
+a == lim::sizes.len
+a < lim::sizes[1]
+both
+true true false
+3 10
+3 9

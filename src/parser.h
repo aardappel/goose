@@ -1037,8 +1037,19 @@ struct Parser {
 
     // Tentatively parse `<` type, ... `>` immediately followed by `(` or `{`;
     // restores the lexer and returns false when it is really a comparison.
+    // Backtracking also deletes the types parsed meanwhile, and any function
+    // a block in an array size among them declared: resolution would take
+    // them for written ones, and the `ns::limit` of `a < ns::limit` is no type.
     bool TryParseTyArgs(vector<TypeExpr *> &tyargs) {
         auto save = lex;
+        auto ntypes = ast.alltypes.size();
+        auto nfunctions = ast.functions.size();
+        auto backtrack = [&]() {
+            lex = save;
+            tyargs.clear();
+            ast.DropSince(ntypes, nfunctions);
+            return false;
+        };
         lex.Next();  // The '<'.
         try {
             for (;;) {
@@ -1051,9 +1062,7 @@ struct Parser {
             } else if (lex.tok == T_GT) {
                 lex.Next();
             } else {
-                lex = save;
-                tyargs.clear();
-                return false;
+                return backtrack();
             }
             if (lex.tok == T_LPAREN || (lex.tok == T_LCURLY && !no_struct_lit)) return true;
             if (lex.tok == T_DOT && !no_struct_lit) {
@@ -1071,9 +1080,7 @@ struct Parser {
                 lex = save2;
             }
         } catch (CompileError &) {}
-        lex = save;
-        tyargs.clear();
-        return false;
+        return backtrack();
     }
 
     Node *ParseArrayLit(Line line) {

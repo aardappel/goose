@@ -87,7 +87,11 @@ fn main() {
 * `Ast` keeps one `Namespace` of declaration maps per namespace name, and one
   lookup rule (`Ast::Lookup`) routes type resolution, function, global and
   enum lookup through it. Unknown qualified type names are errors in
-  resolution rather than generic type-parameter candidates.
+  resolution rather than generic type-parameter candidates. The parser
+  tries a `<` after a name as a type argument list first (§7.7); when it
+  takes the `<` back as a comparison, it deletes the types it parsed in
+  the attempt, so the `ns::limit` of `a < ns::limit` is no type name
+  (`test/syntax/namespace_comparisons.goose`).
 * The dump prints declarations with their qualified names (`fn
   image::brightness(p: Pixel)`) and references as written, so a dump of a
   multi-file program reparses to the same program; resolution runs after the
