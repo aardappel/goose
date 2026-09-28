@@ -326,7 +326,10 @@ inline Val Unary::Check(TypeCheck &tc, TypeExpr *) {
     switch (op) {
         case T_MINUS:
             if (IsIntT(t)) {
-                if (v.ck == CK_INT) {
+                // -(i64.min) leaves i64, so like a signed op that overflows
+                // (FoldIntOp) it is no constant: a debug build aborts on it
+                // at run time.
+                if (v.ck == CK_INT && (v.uns || v.ival != INT64_MIN)) {
                     // -(2^63) is exactly i64.min; any other u64-range value
                     // cannot be negated.
                     if (v.uns && v.ival != INT64_MIN)

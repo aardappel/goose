@@ -865,9 +865,16 @@ inline Node *Unary::Opt(Optimizer &o) {
         case T_MINUS:
             if (auto i = Is<IntLit>(child)) {
                 auto t = Optimizer::IntTypeOf(child);
-                // An unrepresentable negation overflows; the runtime decides.
-                if (!t || i->val == INT64_MIN ||
-                    !FitsIntStorage(-i->val, false, t->intstorage))
+                if (!t) break;
+                // The literal 2^63 carries i64.min's bits and is the one u64
+                // constant the checker lets `-` take: its negation is i64.min
+                // exactly. Any other negation that leaves the type overflows;
+                // the runtime decides.
+                if (i->uns) {
+                    if (i->val != INT64_MIN) break;
+                    return o.NewInt(this, INT64_MIN);
+                }
+                if (i->val == INT64_MIN || !FitsIntStorage(-i->val, false, t->intstorage))
                     break;
                 return o.NewInt(this, -i->val);
             }

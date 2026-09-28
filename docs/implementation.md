@@ -1645,7 +1645,10 @@ width (`FoldIntOp`, `ast.h`, which the checker folds with too: unsigned and
 shifts wrap, a signed result only when it fits), comparisons at the
 operands' signedness, float operators (at `f32` precision when both
 operands are `f32`), `&&`/`||`
-with a constant left, `!`, `~`, unary minus, casts (checked casts only when
+with a constant left, `!`, `~`, unary minus (where the result fits, as for
+the binary operators; the `u64` literal 2^63 negates to exactly `i64.min`,
+so a minimum written as a literal never reaches the checked negation at run
+time), casts (checked casts only when
 exact; a float-to-int only in range and integral), `.len` of a fixed array
 and `.cap` of a static-capacity limited array on a plain variable receiver,
 `if` on a constant condition, `match` on a constant integer, `while false`,
