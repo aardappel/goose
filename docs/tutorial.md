@@ -710,6 +710,9 @@ fn name(s: Shape) -> u8[:] {
 }
 ```
 
+An arm may list several variants, as in `Circle, Dot => "round"`, and then
+binds no payload: each variant's payload is a type of its own.
+
 A match on an integer takes literals, half-open ranges and named constants
 (`let` globals, `ns::NAME` from another namespace), so a program's own
 codes read as names there too; one arm may list several of them. Whether

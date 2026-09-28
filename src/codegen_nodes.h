@@ -493,19 +493,22 @@ inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
             haswild = true;
             cg.L("default: {");
         } else {
-            auto vi = ei->en->VariantIndex(arm.variant);
-            cg.L("case ", cg.TagConst(ei, vi), ": {");
+            string cases;
+            for (auto v : arm.variants)
+                Append(cases, "case ", cg.TagConst(ei, ei->en->VariantIndex(v)), ": ");
+            cg.L(cases, "{");
         }
         cg.ind++;
         cg.PushSc(CodeGen::SC_PLAIN);
         if (arm.binder) {
-            auto vi = ei->en->VariantIndex(arm.variant);
+            auto variant = arm.variants[0];     // A binder's arm matches one variant.
+            auto vi = ei->en->VariantIndex(variant);
             auto vt = cg.VariantType(enumtype, vi);
             auto bn = cg.LocalName(arm.binder);
             string payload = varmode
                 ? cat("(", p, " + ", ts, ")")
                 : (isref ? cat("((uint8_t *)&((", cg.CT(enumtype), " *)", p, ")->u.v_",
-                               cg.Sanitize(arm.variant->name), ")")
+                               cg.Sanitize(variant->name), ")")
                          : "");
             if (arm.pat.byref) {
                 // Variable-mode payloads only (§8.1).
@@ -521,12 +524,12 @@ inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
                 cg.L("int64_t ", sz, " = ", cg.SizeX(vt, payload), ";");
                 cg.L("memcpy(", cg.Top(stk), ", ", payload, ", (size_t)", sz, ");");
                 cg.Bump(stk, sz);
-            } else if (arm.variant->fields.empty()) {
+            } else if (variant->fields.empty()) {
                 cg.L(cg.CT(vt), " ", bn, " = {0};");
             } else if (!payload.empty()) {
                 cg.L(cg.CT(vt), " ", bn, " = *(", cg.CT(vt), " *)(", payload, ");");
             } else {
-                cg.L(cg.CT(vt), " ", bn, " = ", sv, ".u.v_", cg.Sanitize(arm.variant->name), ";");
+                cg.L(cg.CT(vt), " ", bn, " = ", sv, ".u.v_", cg.Sanitize(variant->name), ";");
             }
         }
         cg.GenAny(arm.body, d);

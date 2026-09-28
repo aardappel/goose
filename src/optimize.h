@@ -728,11 +728,11 @@ inline Node *MatchExpr::Cp1(Inliner &inl) const {
     for (auto &arm : arms) {
         MatchArm a;
         a.pat = arm.pat;
-        for (auto &pi : a.pat.ints) {
+        for (auto &pi : a.pat.items) {
             pi.lo = inl.Cp(pi.lo);
             if (pi.hi) pi.hi = inl.Cp(pi.hi);
         }
-        a.variant = arm.variant;
+        a.variants = arm.variants;
         a.binder = inl.Remap(arm.binder);
         a.ranges = arm.ranges;
         a.body = inl.Cp(arm.body);

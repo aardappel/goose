@@ -2013,10 +2013,13 @@ match sexp {
 match n { 0 => "zero", 1..10 => "small", _ => "big" }
 match t { GROUND => "ground", world::GATE => "gate", LO..HI => "mid", _ => "other" }
 match d { 0, 6 => "weekend", 1..6 => "weekday", _ => "no day" }
+match dir { North, South => "vertical", East, West => "horizontal" }
 ```
 
-* Over ADTs: exhaustive over variants; `_ =>` wildcard allowed; arm binds
-  the variant payload (`c: Shape.Circle` above).
+* Over ADTs: exhaustive over variants; `_ =>` wildcard allowed, never in a
+  list; an arm names a variant and may bind its payload (`c: Shape.Circle`
+  above), or lists several (`North, South =>`) and binds none, since their
+  payloads differ in type. No variant is named twice.
 * Over integers (any integer type): constant and half-open-range arms, or
   a comma-separated list of them (`0, 6`, `1, 3..5, LAST`) that matches
   when any one of them does; `_` required, and never in a list; every
@@ -3102,9 +3105,9 @@ iter        := expr | expr ".." expr
 jumps       := "return" exprlist? ("from" qname)? | "break" expr? | "continue"
 matchexpr   := "match" expr "{" arm ("," arm)* ","? "}"
 arm         := pattern "=>" expr
-pattern     := ident ("&"? ident)? | intpattern ("," intpattern)* | "_"
-intpattern  := bound (".." bound)?
-bound       := "-"? (intlit | qname)             // qname: a constant (§8.1)
+pattern     := ident "&"? ident | item ("," item)* | "_"   // a variant and its binder, ...
+item        := bound (".." bound)?
+bound       := "-"? (intlit | qname)             // qname: a variant or a constant (§8.1)
 blockexpr   := "{" stmt* expr? "}"
 
 binary      := (precedence climbing; tightest → loosest)

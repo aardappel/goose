@@ -800,33 +800,32 @@ struct Parser {
             if (lex.tok == T_COMMA) Error("_ cannot be listed with other patterns");
             return p;
         }
-        p.kind = P_INTS;
-        p.ints.push_back(ParsePatternInt());
-        // A lone bare name is a variant or, in an integer match, a constant:
-        // the scrutinee's type decides (§8.1). A list holds only integers.
-        auto id = Is<Ident>(p.ints[0].lo);
-        if (id && !p.ints[0].hi && lex.tok != T_COMMA && id->name.find("::") == string_view::npos) {
-            p.kind = P_VARIANT;
-            p.variant = id->name;
-            if (IsNext(T_BITAND)) {
+        p.kind = P_LIST;
+        for (;;) {
+            p.items.push_back(ParsePatternItem());
+            // A bare name is a variant or, in an integer match, a constant:
+            // the scrutinee's type decides (§8.1). Only a lone variant binds
+            // its payload: listed variants' payloads differ in type.
+            auto &item = p.items.back();
+            auto id = Is<Ident>(item.lo);
+            if (id && !item.hi && id->name.find("::") == string_view::npos &&
+                (lex.tok == T_BITAND || lex.tok == T_IDENT)) {
+                auto inlist = "a list of patterns binds no payload: give the variant an arm "
+                              "of its own";
+                if (p.items.size() > 1) Error(inlist);
                 // `Variant &b`: an explicit by-reference payload binding.
-                p.byref = true;
+                p.byref = IsNext(T_BITAND);
                 p.binder = ExpectIdent("match binding");
-            } else if (lex.tok == T_IDENT) {
-                p.binder = lex.attr;
-                lex.Next();
+                if (lex.tok == T_COMMA) Error(inlist);
+                return p;
             }
-            return p;
-        }
-        while (IsNext(T_COMMA)) {
+            if (!IsNext(T_COMMA)) return p;
             if (wildcard()) Error("_ cannot be listed with other patterns");
-            p.ints.push_back(ParsePatternInt());
         }
-        return p;
     }
 
-    PatInt ParsePatternInt() {
-        PatInt r;
+    PatItem ParsePatternItem() {
+        PatItem r;
         r.lo = ParsePatternBound();
         if (IsNext(T_DOTDOT)) r.hi = ParsePatternBound();
         return r;

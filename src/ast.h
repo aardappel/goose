@@ -345,23 +345,21 @@ struct FieldInit {
     bool fromdefault = false;   // Checked in the type declaration's environment.
 };
 
-enum PatKind { P_WILDCARD, P_VARIANT, P_INTS };
+enum PatKind { P_WILDCARD, P_LIST };
 
-// An integer pattern's value, or its half-open range when hi is set: literals
-// and unchecked Idents, either one maybe negated.
-struct PatInt {
+// One item of a pattern list: a value, or a half-open range when hi is set.
+// Its bounds are literals and unchecked Idents, either one maybe negated. A
+// bare name is a variant in an ADT's match and a constant in an integer's.
+struct PatItem {
     Node *lo = nullptr;
     Node *hi = nullptr;
 };
 
 struct Pattern {
     PatKind kind = P_WILDCARD;
-    string_view variant;        // P_VARIANT: a bare name, which in an integer match
-                                // names a constant (ints[0].lo) instead of a variant.
-    string_view binder;         // P_VARIANT: optional payload binding.
+    vector<PatItem> items;      // P_LIST: any one of them matches.
+    string_view binder;         // A lone variant's optional payload binding.
     bool byref = false;         // `Variant &b`: bind the payload by reference (§8.1).
-    vector<PatInt> ints;        // P_INTS: the values and ranges, any one of which
-                                // matches; P_VARIANT: its name.
 };
 
 // The first and last value an integer arm's value or range matches.
@@ -372,10 +370,10 @@ struct ArmRange {
 struct MatchArm {
     Pattern pat;
     Node *body = nullptr;
-    // Filled by typecheck:
-    SVariant *variant = nullptr;    // P_VARIANT arms.
-    VarDef *binder = nullptr;       // P_VARIANT payload binding, if any.
-    vector<ArmRange> ranges;        // Integer arms but _: one per pattern value/range.
+    // Filled by typecheck, for arms but _:
+    vector<SVariant *> variants;    // ADT arms: one per listed variant.
+    VarDef *binder = nullptr;       // A lone variant's payload binding, if any.
+    vector<ArmRange> ranges;        // Integer arms: one per listed value or range.
 };
 
 // A function value bound to a generic parameter at some call (typecheck):

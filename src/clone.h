@@ -107,7 +107,7 @@ inline Node *MatchExpr::Clone(Ast &ast) const {
     for (auto &arm : arms) {
         MatchArm a;
         a.pat = arm.pat;
-        for (auto &pi : a.pat.ints) {
+        for (auto &pi : a.pat.items) {
             pi.lo = pi.lo->Clone(ast);
             pi.hi = CloneOrNull(ast, pi.hi);
         }
@@ -272,7 +272,7 @@ inline void IfExpr::Children(const function<void(Node *)> &f) const {
 inline void MatchExpr::Children(const function<void(Node *)> &f) const {
     f(scrutinee);
     for (auto &arm : arms) {
-        for (auto &pi : arm.pat.ints) {
+        for (auto &pi : arm.pat.items) {
             f(pi.lo);
             CH(pi.hi);
         }

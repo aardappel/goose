@@ -1,0 +1,12 @@
+vertical
+horizontal
+vertical
+horizontal
+true 0 1
+false 4 3
+false 3 3
+false 3 2
+false 0 1
+false 40 3
+121 [Circle { 1 }, Shape.Dot, Rect { 3, 3 }, Line { 5 }]
+110110

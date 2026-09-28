@@ -1109,24 +1109,31 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                 DoArm(arm, nullptr);
                 continue;
             }
-            if (arm.pat.kind != P_VARIANT)
-                Error(arm.body, arm.pat.ints.size() > 1
-                                    ? "a list of patterns matches integers only: an ADT match "
-                                      "arm names one variant"
-                                    : "ADT match arms are variant names (or _)");
-            auto found = en->FindVariant(arm.pat.variant);
-            if (!found)
-                Error(arm.body, cat("enum ", en->name, " has no variant named ",
-                                    arm.pat.variant));
-            auto vi = en->VariantIndex(found);
-            if (covered[vi])
-                Error(arm.body, cat("duplicate match arm for variant ", arm.pat.variant));
-            covered[vi] = true;
-            arm.variant = found;
+            arm.variants.clear();
+            for (auto &pi : arm.pat.items) {
+                auto id = Is<Ident>(pi.lo);
+                if (!id || pi.hi || id->name.find("::") != string_view::npos)
+                    Error(arm.body, "ADT match arms are variant names (or _)");
+                auto found = en->FindVariant(id->name);
+                if (!found)
+                    Error(arm.body, cat("enum ", en->name, " has no variant named ", id->name));
+                auto vi = en->VariantIndex(found);
+                if (covered[vi]) {
+                    auto &vs = arm.variants;
+                    Error(arm.body, find(vs.begin(), vs.end(), found) != vs.end()
+                                        ? cat("variant ", id->name, " is listed twice")
+                                        : cat("variant ", id->name, " is already matched by "
+                                              "an earlier arm"));
+                }
+                covered[vi] = true;
+                arm.variants.push_back(found);
+            }
+            // Only a lone variant has a binder (the parser's rule).
+            auto found = arm.variants[0];
             VarDef *binder = nullptr;
             if (!arm.pat.binder.empty()) {
                 if (!found->has_payload)
-                    Error(arm.body, cat("variant ", arm.pat.variant, " has no payload to bind"));
+                    Error(arm.body, cat("variant ", found->name, " has no payload to bind"));
                 auto vt = ast.VariantTypeOf(enumtype, found, m->line);
                 // Packed resizable ADTs have one owning header, but no
                 // persistent header for a payload view (C.2). Do not let
@@ -1151,19 +1158,19 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                     if (!enumtype->enu->varmode)
                         Error(arm.body, cat("cannot bind the payload of fixed-mode ",
                                             enumtype->enu->en->name, " by reference "
-                                            "(§3.5); bind by value: ", arm.pat.variant,
+                                            "(§3.5); bind by value: ", found->name,
                                             " ", arm.pat.binder));
                     if (ClassOf(enumtype) == SC_RESIZABLE)
                         Error(arm.body, cat("cannot bind the payload of resizable ",
                                             enumtype->enu->en->name, " by reference: a "
                                             "whole assignment may replace its variant "
-                                            "(§3.5); bind by value: ", arm.pat.variant,
+                                            "(§3.5); bind by value: ", found->name,
                                             " ", arm.pat.binder));
                     binder->type = ast.RefTo(vt, m->line);
                     BindProv(binder, sv);
                 } else {
                     if (HasRelRefT(vt))
-                        Error(arm.body, cat("payload of ", arm.pat.variant, " contains "
+                        Error(arm.body, cat("payload of ", found->name, " contains "
                                             "relative references; bind it by reference "
                                             "(&", arm.pat.binder, ")"));
                     binder->type = vt;  // Payload copy, any mode (§8.1).
@@ -1217,11 +1224,12 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
         };
         for (auto &arm : m->arms) {
             if (arm.pat.kind == P_WILDCARD) { haswild = true; DoArm(arm, nullptr); continue; }
-            if (arm.pat.kind == P_VARIANT && !arm.pat.binder.empty())
-                Error(arm.pat.ints[0].lo, cat("constant pattern ", arm.pat.variant,
-                                              " has no payload to bind"));
+            if (!arm.pat.binder.empty())
+                Error(arm.pat.items[0].lo, cat("constant pattern ",
+                                               Is<Ident>(arm.pat.items[0].lo)->name,
+                                               " has no payload to bind"));
             arm.ranges.clear();
-            for (auto &pi : arm.pat.ints) {
+            for (auto &pi : arm.pat.items) {
                 auto ul = false, uh = false;
                 ArmRange r;
                 r.lo = PatternValue(pi.lo, ul);

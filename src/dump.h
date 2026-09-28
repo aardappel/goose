@@ -378,24 +378,16 @@ inline void MatchExpr::Dump(string &s, int ind) const {
     s += " {";
     for (auto &arm : arms) {
         NL(s, ind + 1);
-        switch (arm.pat.kind) {
-            case P_WILDCARD: s += "_"; break;
-            case P_VARIANT:
-                s += arm.pat.variant;
-                if (!arm.pat.binder.empty())
-                    Append(s, arm.pat.byref ? " &" : " ", arm.pat.binder);
-                break;
-            case P_INTS:
-                for (auto &pi : arm.pat.ints) {
-                    if (&pi != &arm.pat.ints[0]) s += ", ";
-                    pi.lo->Dump(s, ind);
-                    if (pi.hi) {
-                        s += "..";
-                        pi.hi->Dump(s, ind);
-                    }
-                }
-                break;
+        if (arm.pat.kind == P_WILDCARD) s += "_";
+        for (auto &pi : arm.pat.items) {
+            if (&pi != &arm.pat.items[0]) s += ", ";
+            pi.lo->Dump(s, ind);
+            if (pi.hi) {
+                s += "..";
+                pi.hi->Dump(s, ind);
+            }
         }
+        if (!arm.pat.binder.empty()) Append(s, arm.pat.byref ? " &" : " ", arm.pat.binder);
         s += " => ";
         // The arm's comma would read as a return value or as a break's value.
         // A valueless one has no parenthesized form, so it gets the block a
