@@ -909,7 +909,11 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         return;
     }
     // Arrays and slices. The length re-reads each iteration (growth during
-    // iteration is legal, §5.2); element access goes through the view.
+    // iteration is legal, §5.2); element access goes through the view. The
+    // location's text is spelled into the loop, so the references and slices
+    // on its path are loaded again each iteration and the sequence is walked
+    // where it lies: the checker keeps the arrays those lie in from shrinking
+    // in the body (HoldForSequence).
     auto lv = cg.GenLoc(iter);
     if (lv.t->kind == TY_REF) cg.DerefLoc(lv);
     auto v = cg.ArrayView(lv);

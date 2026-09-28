@@ -303,8 +303,10 @@ struct TypeCheck {
     // How a parent consumes an operand after its later operands ran: as its
     // value (a reference or slice, a holder's references), as a view of an
     // array's elements too (`==`), as the elements it indexes or slices, as
-    // a builtin's receiver, or as the location an assignment writes.
-    enum HoldKind { HK_NONE, HK_VALUE, HK_VIEW, HK_ELEMS, HK_RECEIVER, HK_LOCATION };
+    // a builtin's receiver, as the location an assignment writes, or as the
+    // sequence a `for` walks while its body runs.
+    enum HoldKind { HK_NONE, HK_VALUE, HK_VIEW, HK_ELEMS, HK_RECEIVER, HK_LOCATION,
+                    HK_SEQUENCE };
     template<typename F> void ForOperands(Node *n, F f);
     int OperandIndex(Node *parent, Node *child);
     // A value evaluated earlier in the statement and still live: a reference
@@ -320,9 +322,15 @@ struct TypeCheck {
         const char *render = nullptr;
         // `v` views the elements of `node`, which its parent reads.
         bool elems = false;
+        // The `for` whose body runs meanwhile, which walks `node`, its
+        // sequence, in place, or, where `reread`, loads the reference or
+        // slice `node` is out of storage again on every iteration.
+        ForLoop *loop = nullptr;
+        bool reread = false;
     };
     template<typename F> void HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent,
                                      const char *render, F f);
+    template<typename F> void HoldForSequence(ForLoop *fl, const Val &v, F f);
     template<typename F> void HeldOperands(F f);
     template<typename F> void LaterOperands(F f);
     template<typename F> void AfterHead(Node *n, Node *next, F f);

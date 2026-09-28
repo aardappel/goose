@@ -784,7 +784,7 @@ inline bool TypeCheck::ShrinkMayFree(VarDef *root, TypeExpr *bound, bool growonl
 inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root,
                                         const string &what, bool growonly, TypeExpr *bound) {
     HeldOperands([&](const Held &h) {
-        auto &[node, v, location, render, elems] = h;
+        auto &[node, v, location, render, elems, loop, reread] = h;
         auto path = v.type->kind == TY_REF && ClassOf(v.type->ref->sub) == SC_RESIZABLE;
         auto held = !path && ShrinkMayFree(root, bound, growonly, PointeeOf(v.type), v.byteview) &&
                     v.Any([&](const RootAlt &a) {
@@ -812,6 +812,17 @@ inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root
             if (expr.find('\n') != string::npos) expr = "its argument";
             Error(at, cat(shrink, render, " runs it in the middle of rendering ", expr,
                           ", which may refer into ", what, sec));
+        }
+        if (loop) {
+            if (expr.find('\n') != string::npos)
+                expr = reread ? "a reference or slice on the path to its sequence"
+                              : "its sequence";
+            Error(at, cat(shrink, "the for loop at ", Where(loop->line),
+                          reread ? cat(" reads ", expr, " again on every iteration, which may lie in ")
+                          : IsRefOrSlice(node->exprtype)
+                              ? cat(" iterates ", expr, ", which may refer into ")
+                              : cat(" iterates ", expr, " in place, which may lie in "),
+                          what, sec));
         }
         if (expr.find('\n') != string::npos) expr = "the value";
         if (node->line.line != at->line.line || node->line.fileidx != at->line.fileidx)
@@ -1487,7 +1498,8 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
         auto vs = views(h.v, h.v.type, h.location);
         if (!judged(vs)) return;
         auto name = ExprStr(h.node);
-        if (name.find('\n') != string::npos) name = "an earlier expression value";
+        if (name.find('\n') != string::npos)
+            name = h.loop ? "a for loop's sequence" : "an earlier expression value";
         for (auto &w : vs) note(w, name);
     });
     ShrinkScanVars([&](VarDef *v) {

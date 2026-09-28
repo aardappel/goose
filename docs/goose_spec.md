@@ -958,6 +958,12 @@ pool): those point within their own root. A reference to a slice variable
 or to a holder counts as what it refers to: while the reference is live,
 so is whatever that slice or holder may refer into.
 
+Nor may the shrink free what a `for` loop around it walks (§6.5): each
+reference or slice on the path to its sequence, which the loop loads again
+on every iteration, and the sequence it iterates in place — a slice, an
+element, a field — unless that is a resizable array, whose length the loop
+reads again.
+
 A variable is live at the shrink when it can be read again afterwards:
 it is named later in the shrink's statement — in an operand evaluated after
 it, or, where the shrink is in the condition of an `if` or `guard`, the
@@ -1118,10 +1124,14 @@ again against the pairs the cycle records once the whole cycle is.
   to judge.
 * `push` returns a reference to the new element, and `index_of` works, as on
   grow-only arrays.
-* Iterating with `for` uses indices under the hood; the `&x` binding is a
-  variable in scope, so a shrink inside such a loop is an error, while
-  mutating the length inside a by-value `for x` loop is legal and merely a
-  logic hazard (bounds checks keep it safe).
+* Iterating the array with `for` uses indices under the hood and reads its
+  length on every iteration, so changing the length inside a by-value
+  `for x` loop over it is legal and merely a logic hazard (bounds checks
+  keep it safe); the `&x` binding is a variable in scope, so a shrink inside
+  such a loop is an error. So is a shrink inside a loop over a slice, an
+  element or a field of the array, which the loop walks in place, or over a
+  sequence it reaches through a reference or slice stored in the array
+  (§5.1, §6.5).
 
 ### 5.3 Limited arrays `[..k]` / `[..]`
 
@@ -1393,11 +1403,23 @@ provided by HOFs taking static function values (§7.6), which compile to
 plain loops.
 
 Range/count bounds are evaluated once, before the first iteration; an
-empty or reversed range performs no iterations. Array traversal tests the
-current length before each iteration, so permitted growth can add elements
-to the traversal. A slice keeps its own length: growing its source does
-not extend that view. `continue` advances to the next index or sequential
-element just as reaching the end of the body does.
+empty or reversed range performs no iterations. `continue` advances to the
+next index or sequential element just as reaching the end of the body does.
+
+A loop iterates its sequence in place, not a copy of it. Traversal of a
+resizable array tests the current length before each iteration, so
+permitted growth can add elements to the traversal and a shrink ends it
+early; its elements never move. A slice keeps its own length: growing its
+source does not extend that view. A slice, and anything else the loop walks
+in place — a fixed or limited array, an element or a field of a larger
+value — is live for the whole body, as a slice variable would be: a shrink
+of a resizable array it lies in or views is an error, however the body
+reaches it (a call, a function value; §5.1, §5.2). An index on the path to
+the sequence is evaluated once, but the references and slices on it
+(`refs[i].items`) are loaded again on every iteration, so the arrays they
+lie in may not shrink either. Iterating a copy (`let row = a[i]; for x in
+row` over fixed-size rows), or a reference read out first (`let r .=
+refs[i]; for x in r`), leaves the array free.
 
 ---
 
@@ -3133,7 +3155,9 @@ compiler's own description, pass by pass and analysis by analysis, is
   open block; a holder is live when its name occurs in a later statement
   of an open block at or inside its scope, in that block's tail, or
   anywhere in an enclosing loop it outlives. Nested functions in scope are
-  followed by name from the calls in that code.
+  followed by name from the calls in that code. What a `for` walks in
+  place, and the references and slices on the path to it that the loop
+  loads again, are live throughout its body (§6.5).
 * **Literal parameters** (§7.7). Which parameters are literals is part of
   the specialization key, their values are not. A read of one is a value
   with no constant folding but the literal's adaptability; every

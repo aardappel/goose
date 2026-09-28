@@ -228,9 +228,10 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
 // arguments at the call; print, str and format render each argument just
 // before the next runs (EmitFormatInto, EmitStr), so an earlier argument is
 // nothing afterwards, and only the one being rendered is held (HeldOperands).
-// A condition, a scrutinee and an iterated sequence are read before the
-// construct's parts run, so they hold nothing over them: a `for` binding
-// and a match binder are variables in scope, which the scans see.
+// A condition and a scrutinee are read before the construct's parts run, so
+// they hold nothing over them: a match binder is a variable in scope, which
+// the scans see. A `for` walks its sequence in place, so that is held while
+// the body runs (HoldForSequence).
 template<typename F> void TypeCheck::ForOperands(Node *n, F f) {
     if (auto c = Is<Call>(n)) {
         auto builtin = c->builtin >= 0;
@@ -291,7 +292,13 @@ template<typename F> void TypeCheck::ForOperands(Node *n, F f) {
         n->Children([&](Node *ch) { f(ch, HK_VALUE); });
         return;
     }
-    // Conditions, scrutinees, sequences, blocks and bodies: nothing held.
+    // A range's bounds, like a count, are read once, before the first
+    // iteration: they hold nothing.
+    if (auto fl = Is<ForLoop>(n)) {
+        if (!Is<RangeExpr>(fl->iter)) f(fl->iter, HK_SEQUENCE);
+        return;
+    }
+    // Conditions, scrutinees, blocks and bodies: nothing held.
 }
 
 inline int TypeCheck::OperandIndex(Node *parent, Node *child) {
@@ -371,6 +378,9 @@ void TypeCheck::HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent, const
             hold(held, false, elems);
             return;
         }
+        case HK_SEQUENCE:
+            HoldForSequence((ForLoop *)parent, v, f);
+            return;
         default: break;
     }
     // HK_VALUE and HK_VIEW: values constructed in argument, literal and
@@ -395,6 +405,61 @@ void TypeCheck::HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent, const
             held.type = ast.RefTo(pt, n->line);
             hold(held);
         }
+    }
+}
+
+// What a `for` over an array or slice, whose sequence has the value v, reads
+// on every iteration while its body runs (§6.5). Codegen spells the path to
+// the sequence into the loop (ForLoop::CgStmt, GenLoc): each reference or
+// slice the path loads out of a field or element is loaded again, from where
+// it lies, and the sequence is walked in place, as a view of its elements --
+// unless it is a variable, which the loop names and the scans see, or a
+// resizable array, whose length the loop reads again and whose elements
+// never move. A reference to a slice is held as it is: the slice it refers
+// to is read again too (HeldRefsMayPointInto).
+template<typename F> void TypeCheck::HoldForSequence(ForLoop *fl, const Val &v, F f) {
+    if (fl->iterkind != IK_ARRAY && fl->iterkind != IK_SLICE) return;
+    auto hold = [&](Node *n, Val hv, bool reread) {
+        // A temporary is storage of its own, which nothing names to shrink.
+        for (auto &a : hv.alts)
+            if (IsTemp(a.root)) a.exact = true;
+        f(Held { .node = n, .v = std::move(hv), .loop = fl, .reread = reread });
+    };
+    // `&` of a path is that path.
+    auto unwrap = [](Node *n) {
+        auto u = Is<Unary>(n);
+        if (u && u->op == T_BITAND && (Is<Ident>(u->child) || Is<Dot>(u->child) ||
+                                       Is<Index>(u->child)) &&
+            u->child->exprtype && u->child->exprtype->kind != TY_REF)
+            return u->child;
+        return n;
+    };
+    auto path = unwrap(fl->iter);
+    if (!Is<Ident>(path)) {
+        auto seq = v;
+        if (IsPlainRef(seq.type) && seq.type->ref->sub->kind != TY_SLICE) seq = DecayRef(seq);
+        auto st = seq.type;
+        if (st->kind != TY_ARRAY) {
+            hold(fl->iter, seq, false);
+        } else if (ClassOf(st) != SC_RESIZABLE) {
+            seq.type = ast.SliceOf(st->arr->sub, fl->iter->line);
+            hold(fl->iter, seq, false);
+        }
+    }
+    for (auto n = path;;) {
+        Node *obj;
+        if (auto d = Is<Dot>(n); d && !d->variantconst) obj = d->obj;
+        else if (auto ix = Is<Index>(n)) obj = ix->obj;
+        else break;
+        // The slot lies in what obj is, or leads to.
+        auto it = nodevals.find(obj);
+        if (n->exprtype && IsRefOrSlice(n->exprtype) && it != nodevals.end()) {
+            auto slot = DecayRef(it->second);
+            slot.byteview = false;
+            slot.type = ast.SliceOf(LoadType(n->exprtype), n->line);
+            hold(n, slot, true);
+        }
+        n = unwrap(obj);
     }
 }
 

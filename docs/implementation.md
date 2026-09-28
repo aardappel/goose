@@ -467,14 +467,22 @@ expression that points somewhere (`nodevals`, `RecordVal`). `ForOperands`
 states each node kind's operands in evaluation order with how the node
 consumes them (`HoldKind`: a value, a view of an array's elements as `==`
 takes, the elements an index or slice reaches, a builtin's receiver, an
-assignment's location), `HeldOperands` walks the path and hands every
-operand already evaluated to the shrink checks as its parent holds it
-(`HoldAs`: a reference or slice as it is, a holder as a reference per
-pointee, the receiver as a reference to the array or a view of its elements,
-a location as the slot alone), and `LaterOperands` names the operands not
-yet evaluated, and, inside the condition of an `if` or `guard`, the
-scrutinee of a `match` or the sequence of a `for`, the parts it leads to
-(`AfterHead`; `UsedAfter`, §3.10). A struct literal lays all its
+assignment's location, the sequence a `for` walks), `HeldOperands` walks
+the path and hands every operand already evaluated to the shrink checks as
+its parent holds it (`HoldAs`: a reference or slice as it is, a holder as a
+reference per pointee, the receiver as a reference to the array or a view of
+its elements, a location as the slot alone), and `LaterOperands` names the
+operands not yet evaluated, and, inside the condition of an `if` or
+`guard`, the scrutinee of a `match` or the sequence of a `for`, the parts
+it leads to (`AfterHead`; `UsedAfter`, §3.10). A `for`'s sequence is the
+one operand held over a construct's parts, while its body is checked
+(`HoldForSequence`, §6.5): codegen spells the path to it into the loop
+(`ForLoop::CgStmt`, `GenLoc`), so each reference or slice the path loads
+out of a field or element (a `Dot` or `Index` of such a type, `&` of a path
+being the path) is held as a view of the storage it lies in
+(`Held::reread`), and the sequence as a view of its elements, unless it is
+a variable, which the loop names and so the scans see, or a resizable
+array, whose length the loop reads again. A struct literal lays all its
 initializers out, defaults included, before checking the first
 (`CheckInits`), so each field stands at its own position among them. A call
 resolving its overload is `discovering`: its operands' values are those its
@@ -973,6 +981,16 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
 Inside a loop, a store later in the body than the shrink is on record when
 the body is checked again (`CheckLoopPasses`, §3.7), so item 4 finds it, and
 names it as reaching the shrink on the next iteration (`CarriedEvent`).
+
+**`for` loops** (§6.5). A `for` around the shrink holds what it walks while
+its body is checked (`HoldForSequence`, §3.3): item 4, and the grow-shrink
+scan below, meet its sequence and the references and slices on the path to
+it as held operands, whatever statement of the body the shrink is in, and
+name the loop (`Held::loop`); a callee's shrinks meet them at the call
+through its summary, a function value's at the call that runs it, and the
+pairs `NoteLiveViews` keeps carry them to the callers. A resizable array
+iterated itself is not held: the loop reads its length again on every
+iteration, and its elements never move.
 
 **Liveness** (`UsedAfter`) is syntactic: the variable's name occurs in a
 later statement of an open block at or inside its scope, in that block's
