@@ -944,8 +944,8 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    value's body is checked on the path of the statement calling it
    (`CheckFunValCall`), whose own caller applies the shrink against its
    statement from the summary;
-4. no variable in scope, on any frame, may refer into it: a reference or
-   slice variable whose pointee the array's elements can contain (or a byte
+4. no variable in scope may refer into it: a reference or slice variable
+   whose pointee the array's elements can contain (or a byte
    view), rooted at it -- or a `var` at the same depth, or an inexact root
    at or below its depth, or a not-yet-bound variable declared at or below
    it -- **and used afterwards**; a holder variable into which a store of a
@@ -956,7 +956,11 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    (`HeldRefsMayPointInto`: a slice variable named by an explicit `&` by its
    own binding, otherwise by the reference's root, as a bound, since stores
    through references to the slot may have replaced the slice), and used
-   afterwards;
+   afterwards. The variables are the body's and its lexical parents', and in
+   a function value's body those of the function running it too
+   (`ShrinkScanVars`); every caller's are judged at its call instead, the
+   first caller's too (**Calls** below), where the rest of its statement is
+   in view;
 5. for a global receiver, every other global whose type can hold a reference
    to something the array contains counts as holding one;
 6. the shrink is recorded for the callers (`NoteShrink`: `shrinkexternals`

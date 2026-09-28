@@ -830,8 +830,12 @@ inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root
 // A grow-only array shrinks wherever nothing can still point into it: a
 // local of this function, a caller's array reached through a reference
 // parameter, a global, or an enclosing function's local. Everything in
-// scope is scanned; a shrink through a parameter or of a global is also
-// recorded for the callers, whose own scopes are scanned at the call.
+// scope is scanned: the body's variables and its lexical parents', and in a
+// function value's body those of the function running it (ShrinkScanVars).
+// A shrink through a parameter or of a global is also recorded for the
+// callers, and each caller's variables are scanned at its call, from that
+// record -- the first caller's too, though this body is checked inside its
+// check -- where the rest of the caller's statement is in view.
 inline void TypeCheck::GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd,
                                         const string &what, TypeExpr *bound) {
     if (!frames.back().spec)
@@ -843,8 +847,8 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd,
     // of its type. A parameter class's storage is not known here.
     auto arrtype = bound ? bound : vd->type ? LoadType(vd->type) : nullptr;
     CheckHeldShrinks(c, op, vd, what, true, bound);
-    for (auto v : vars) {
-        if (v == vd || !v->type) continue;
+    ShrinkScanVars([&](VarDef *v) {
+        if (v == vd || !v->type) return;
         auto t = v->type;
         if (IsRefOrSlice(t)) {
             // A recorded root is exact only while the variable keeps its
@@ -863,7 +867,7 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd,
             // path to an array included, also reaches what those point at.
             auto via = !into && t->kind == TY_REF && HoldsPlainRef(t->ref->sub) &&
                        HeldRefsMayPointInto(v, v->ref, t, vd, bound, true);
-            if ((!into && !via) || !UsedAfter(v)) continue;
+            if ((!into && !via) || !UsedAfter(v)) return;
             if (via)
                 Error(c, cat("cannot ", op, " ", what, " while ", v->name, " is still used: ",
                              t->ref->sub->kind == TY_SLICE
@@ -876,12 +880,12 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd,
             // (§9.2); a type without a plain reference or slice in it
             // (flat, or linked by relative references only) has no room
             // for one.
-            if (!HoldsPlainRef(t)) continue;
+            if (!HoldsPlainRef(t)) return;
             Line where;
             size_t hit = 0;
             if (!HolderMayPointInto(v, vd, arrtype, LiveEventBase(v), &where, &hit) ||
                 !UsedAfter(v))
-                continue;
+                return;
             // A store later in the loop body than the shrink, which the
             // next iteration reaches (a pass before this one recorded it).
             if (CarriedEvent(hit))
@@ -894,7 +898,7 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd,
         }
         Error(c, cat("cannot ", op, " ", what, " while ", v->name,
                      " is still used: it may hold a reference or slice into it (§5.1)"));
-    }
+    });
     if (vd->isglobal) {
         // What other globals hold cannot be enumerated from here: any one
         // whose type can hold a reference to something this array can

@@ -1,6 +1,6 @@
-// error: cannot pop xs while h is still used: a reference into it was stored there
-// g's shrink of xs is checked against every holder on the compile-time call
-// path. The slice stored into h was read out of src, a parameter whose
+// error: cannot call g, which shrinks xs while h is still used: a reference into it was stored there
+// g's shrink of xs is checked at f's call of g against f's holders, from g's
+// summary. The slice stored into h was read out of src, a parameter whose
 // contents f cannot see: it is bounded by src's class, as deep as xs's, so it
 // may point into xs's array too (§5.1).
 struct H { s: const i64[:] }
