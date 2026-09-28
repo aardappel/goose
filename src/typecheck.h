@@ -68,15 +68,47 @@ enum IterKind { IK_RANGE, IK_COUNT, IK_ARRAY, IK_SLICE };
 // Type validation positions: what may be declared where.
 enum ValidPos { VT_LOCAL, VT_GLOBAL, VT_PARAM, VT_RET, VT_FIELD, VT_ELEM, VT_POINTEE };
 
-// Whether a trailing expression is one a value can never be asked of: an
-// else-less `if` and a `guard` produce nothing on either path, and a block
-// ending in one of those produces nothing either. Callers that decide
-// whether a body's tail is its result consult this first, so that wrapping
-// such a tail in `block { }` or a bare scope does not turn it into a value
-// the construct then has no way to supply.
+// Whether a `break` in a loop's body gives the loop a value: one no construct
+// inside the body is the target of instead (FindBreakScope) -- a nested
+// loop, a `block` or a function value. A `for`'s iterated expression runs
+// before its loop does.
+inline bool BreaksWithValue(Node *body) {
+    auto found = false;
+    function<void(Node *)> walk = [&](Node *n) {
+        if (found) return;
+        if (auto b = Is<Break>(n); b && b->val) {
+            found = true;
+            return;
+        }
+        if (auto f = Is<ForLoop>(n)) {
+            walk(f->iter);
+            return;
+        }
+        if (Is<LoopExpr>(n) || Is<While>(n) || Is<EarlyBlock>(n) || Is<FunVal>(n)) return;
+        n->Children(walk);
+    };
+    walk(body);
+    return found;
+}
+
+// Whether a trailing expression can never supply a value: an `if` without a
+// final `else`, or with a branch that cannot; a `match` with an arm that
+// cannot; a `loop` none of whose `break`s carries a value; a `guard`; and a
+// block ending in one of those. Callers that decide whether a body's tail is
+// its result consult this first, so that such a tail -- inside `block { }`
+// or a bare scope or not -- is a statement, checked as one, rather than a
+// value the construct has no way to supply. A block ending in a statement
+// is not one: its end may be unreachable (`if a { 1 } else { return 2; }`).
 inline bool IsValuelessTail(const Node *n) {
     if (!n) return false;
-    if (auto fi = Is<IfExpr>(n)) return !fi->elseb;
+    if (auto fi = Is<IfExpr>(n))
+        return !fi->elseb || IsValuelessTail(fi->thenb) || IsValuelessTail(fi->elseb);
+    if (auto m = Is<MatchExpr>(n)) {
+        for (auto &arm : m->arms)
+            if (IsValuelessTail(arm.body)) return true;
+        return false;
+    }
+    if (auto l = Is<LoopExpr>(n)) return !BreaksWithValue(l->body);
     if (Is<Guard>(n)) return true;
     if (auto b = Is<Block>(n)) return IsValuelessTail(b->tail);
     if (auto e = Is<EarlyBlock>(n)) return IsValuelessTail(e->body);

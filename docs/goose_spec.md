@@ -121,10 +121,12 @@ Literals:
 The language is **expression-oriented**: `if`, `match`, `block` and a bare
 `{ … }` block are expressions; a block's value is its trailing expression.
 Assignment and `++`/`--` are *statements*, not expressions. A trailing
-construct that produces a value on no path — an else-less `if`, a `guard`, or
-a block or scope ending in one of those — is a statement rather than the
-block's value, so a function whose result type is inferred, and a function
-value's body, may end in one and produce nothing.
+construct that cannot supply a value — an `if` without a final `else` (an
+`else if` chain included) or with a branch that cannot, a `match` with an
+arm that cannot, a `loop` none of whose `break`s carries a value (§6.4), a
+`guard`, or a block or scope ending in one of those — is a statement rather
+than the block's value, so a function whose result type is inferred, and a
+function value's body, may end in one and produce nothing.
 
 **Statement termination.** Expression statements end with `;`, but a
 statement that *is* a block-ended construct — `if`, `match`, `block`, the
