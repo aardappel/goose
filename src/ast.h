@@ -581,6 +581,12 @@ struct Val : Prov {
     // (TypeCheck::AutoRef), as `&` of the slot is (§3.8).
     Prov slot;
     bool hasslot = false;
+    // A reference to a slice passed to a `T[:]&` parameter: the slice its
+    // slot holds as the call is made, which the callee's view class of it
+    // stands for there (FnSpec::views). Binding a slice lvalue by reference
+    // sets it to what the lvalue loaded (TypeCheck::SlotRoots).
+    Prov held;
+    bool hasheld = false;
     // A control construct's value, whose branches a destination with no type
     // of its own copies (TypeCheck::CheckBranchCopy): whether every branch is
     // non-fixed storage, or a reference to it, which a reference parameter
@@ -1243,6 +1249,12 @@ struct VarDef {
     // inexact root at the class stands for beside the class's own storage
     // (TypeCheck::BoundReach).
     vector<TypeExpr *> classreach;
+    // Synthetic class roots of a `T[:]&` parameter with a view only
+    // (FnSpec::views): a variable of the body standing for the slice the
+    // caller's slot holds, whose binding a load through the class sees and
+    // every store that may write the slot joins (TypeCheck::SlotView,
+    // NoteSlotStore).
+    VarDef *heldslice = nullptr;
     // For variables of reference/slice type: where the value they hold
     // points, fixed at first binding (see typecheck.h header note). A
     // null-initialized optional has no commitment yet (refrootknown false),
@@ -1584,6 +1596,13 @@ struct FnSpec {
     // Aligned with argtypes/params; a parameter holding no roots has the
     // default entry. Every pass uses the parameter index directly.
     vector<RootArg> roots;
+    // Aligned the same way, for a `T[:]&` parameter whose argument is a slot
+    // only the callee's parameters reach (TypeCheck::HasView): the class of
+    // the slice that slot holds as the call is made, numbered with the
+    // classes of `roots`, which a load through the parameter's class sees
+    // (VarDef::heldslice); cls is -1 for every other parameter. Part of the
+    // key, like `roots`.
+    vector<RootArg> views;
     // A nested function reached after the scope declaring it ended, its
     // value having left that block or function value body (§7.5): part of
     // the key, since its body may name nothing the scope declared, and one

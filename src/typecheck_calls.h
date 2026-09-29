@@ -966,18 +966,52 @@ inline void TypeCheck::LoadSliceArgs(vector<Val> &argvals, const vector<TypeExpr
 
 // A slice lvalue passed to a reference-to-slice parameter binds by reference
 // (§4.1): the specialization and the callee's effects are keyed on the
-// reference phase 2's AutoRef makes of it, rooted at the slot.
+// reference phase 2's AutoRef makes of it, rooted at the slot. What the slot
+// holds as the call is made is what a view of it stands for (NoteHeld).
 inline void TypeCheck::RefSliceArgs(vector<Val> &argvals, const vector<TypeExpr *> &ptypes,
                                     Line at) {
     for (size_t i = 0; i < argvals.size() && i < ptypes.size(); i++) {
         auto &av = argvals[i];
         auto pt = ptypes[i];
-        if (!IsPlainRef(pt) || pt->ref->sub->kind != TY_SLICE || !BindsRef(av, pt)) continue;
-        SlotRoots(av);
-        av.type = ast.RefTo(ast.PlainOf(av.type), at);
-        av.type->cq = !av.writable;
-        av.lvalue = false;
+        if (!IsPlainRef(pt) || pt->ref->sub->kind != TY_SLICE) continue;
+        if (BindsRef(av, pt)) {
+            SlotRoots(av);
+            av.type = ast.RefTo(ast.PlainOf(av.type), at);
+            av.type->cq = !av.writable;
+            av.lvalue = false;
+        }
+        NoteHeld(av, pt->ref->sub);
     }
+}
+
+// The slice the slot a reference to a slice names holds (Val::held): its
+// slot view, but for a temporary's slot, which nothing can load again, what
+// binding it by reference loaded (SlotRoots).
+inline void TypeCheck::NoteHeld(Val &av, TypeExpr *slice) {
+    if (av.hasheld && IsTemp(av.Root())) return;
+    av.held = SlotView(av, slice);
+    av.hasheld = true;
+}
+
+// Whether a `T[:]&` parameter gets a view: a class of its own for the slice
+// its argument's slot holds as the call is made, which a load through the
+// parameter's class sees (FnSpec::views, VarDef::heldslice). Its body must
+// see every store into that slot while it runs (NoteSlotStore), so the slot
+// is one it reaches only through references: a slice variable it cannot
+// name (EnvReach), so no global, a temporary, or a caller's parameter class
+// with a view of its own. A recursive fn gets none: its back edges reuse its
+// body whatever their slots hold.
+inline bool TypeCheck::HasView(Val &av, TypeExpr *pt, int reach, SFunction *sf) {
+    if (sf->isrec || sf->isextern || !IsPlainRef(pt) || pt->ref->sub->kind != TY_SLICE ||
+        av.alts.size() != 1)
+        return false;
+    // A path into a call's result is rooted at its temporary as the result
+    // is, inexactly, but lies in it all the same.
+    auto r = av.Root();
+    if (!r || (!av.alts[0].exact && !IsTemp(r)) || ClassDepth(r) <= reach) return false;
+    if (r->type ? r->type->kind != TY_SLICE : !IsTemp(r) && !r->heldslice) return false;
+    if (!av.hasheld) NoteHeld(av, pt->ref->sub);
+    return true;
 }
 
 // ------------------------------------------------------------------
@@ -1003,8 +1037,39 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         if (v->narrowed) narrowedenv.push_back(v);
     // Root classes: distinct roots of ref/slice args ordered by depth.
     vector<RootArg> roots(mi.paramtypes.size());
+    vector<RootArg> views(mi.paramtypes.size());
+    for (auto &va : views) va.cls = -1;
     vector<VarDef *> argroots(mi.paramtypes.size(), nullptr);
     vector<VarDef *> distinct;
+    // The entries given a class so far, each with the root it was given for.
+    vector<pair<RootArg *, VarDef *>> members;
+    auto classify = [&](RootArg &ra, VarDef *r) {
+        if (!r) {
+            ra.cls = 0;
+            return;
+        }
+        auto idx = -1;
+        // Sharing a class says the two arguments point into the same
+        // array, which an inexactly rooted one does not establish: it
+        // names a scope its pointee outlives, not the storage that
+        // owns it (§9.5). Such an argument gets a class to itself, one
+        // an exact argument with the same root does not join either, so
+        // a class is always one array whatever the call site.
+        if (ra.exact)
+            for (auto [m, mr] : members)
+                if (mr == r && m->exact) idx = m->cls - 1;
+        if (idx < 0) {
+            // Keep distinct ordered by the depths the classes take in
+            // the body, so classes mean outlives-rank there.
+            auto ins = distinct.size();
+            while (ins > 0 && ClassDepth(distinct[ins - 1]) > ClassDepth(r)) ins--;
+            distinct.insert(distinct.begin() + ins, r);
+            for (auto [m, mr] : members) if (m->cls > (int)ins) m->cls++;
+            idx = (int)ins;
+        }
+        ra.cls = idx + 1;
+        members.push_back({ &ra, r });
+    };
     for (size_t i = 0; i < mi.paramtypes.size(); i++) {
         auto pt = mi.paramtypes[i];
         auto isrs = IsRefOrSlice(pt);
@@ -1057,37 +1122,44 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
                                   a.root->ref.byteview;
                        }));
         if (ra.exact) ra.pool = PoolOf(r);
-        if (!r) {
-            ra.cls = 0;
-        } else {
-            auto idx = -1;
-            // Sharing a class says the two arguments point into the same
-            // array, which an inexactly rooted one does not establish: it
-            // names a scope its pointee outlives, not the storage that
-            // owns it (§9.5). Such an argument gets a class to itself, one
-            // an exact argument with the same root does not join either, so
-            // a class is always one array whatever the call site.
-            if (ra.exact)
-                for (size_t j = 0; j < i; j++)
-                    if (argroots[j] == r && roots[j].exact) idx = roots[j].cls - 1;
-            if (idx < 0) {
-                // Keep distinct ordered by the depths the classes take in
-                // the body, so classes mean outlives-rank there.
-                auto ins = distinct.size();
-                while (ins > 0 && ClassDepth(distinct[ins - 1]) > ClassDepth(r)) ins--;
-                distinct.insert(distinct.begin() + ins, r);
-                for (auto &rr : roots) if (rr.cls > (int)ins) rr.cls++;
-                idx = (int)ins;
-            }
-            ra.cls = idx + 1;
+        classify(ra, r);
+    }
+    // A reference to a slice whose slot only the callee's parameters reach:
+    // the slice that slot holds is a class of its own, which a load through
+    // the parameter's class sees (HasView).
+    auto reach = EnvReach(mi);
+    for (size_t i = 0; i < mi.paramtypes.size(); i++) {
+        auto pt = mi.paramtypes[i];
+        if (!HasView(argvals[i], pt, reach, sf)) continue;
+        auto &hp = argvals[i].held;
+        auto hr = hp.Root();
+        auto &va = views[i];
+        va.unknown = hp.None();
+        va.writable = hp.writable && !pt->ref->sub->cq;
+        va.reusable = CarriesPool(pt->ref->sub) ? hp.reusable : 0;
+        va.exact = hp.Exact();
+        auto slice = pt->ref->sub;
+        auto gsroot = hp.Any([&](const RootAlt &a) { return IsGrowShrinkRoot(a.root); });
+        auto gspointee = hp.Any([&](const RootAlt &a) {
+            return !a.exact && ContainsGrowShrink(PointeeOf(slice));
+        });
+        va.growshrink = gsroot || gspointee || GrowShrinkTaint(hp, slice);
+        va.gsvia = va.growshrink && !(hp.Exact() && IsGrowShrinkRoot(hr));
+        if (va.growshrink && !va.gsvia) {
+            if (hr->type) GrowShrinkElems(hr->type, va.gselems);
+            else va.gselems = hr->gselems;
+            va.gsvia = va.gselems.empty();
         }
+        va.slotread = (gsroot || gspointee) && hp.AllSlotRead();
+        va.byteview = hp.byteview;
+        if (va.exact) va.pool = PoolOf(hr);
+        classify(va, hr);
     }
     // Class numbers alone cannot tell equal depths from a strict order, or a
     // global from a local, and a body that sees a lexical environment
     // compares its classes with that environment's variables too; the
     // depth keys say all of that (RootArg::depthkey). An extern function's
     // body is C, which compares none.
-    auto reach = EnvReach(mi);
     vector<int> depthkeys(distinct.size());
     for (size_t k = 0, rank = 0; k < distinct.size() && !sf->isextern; k++) {
         auto d = ClassDepth(distinct[k]);
@@ -1098,10 +1170,9 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         if (k == 0 || ClassDepth(distinct[k - 1]) != d) rank++;
         depthkeys[k] = -(int)rank;
     }
-    for (auto &ra : roots) {
-        if (!ra.cls) continue;
-        ra.depth = ClassDepth(distinct[ra.cls - 1]);
-        ra.depthkey = depthkeys[ra.cls - 1];
+    for (auto [ra, r] : members) {
+        ra->depth = ClassDepth(distinct[ra->cls - 1]);
+        ra->depthkey = depthkeys[ra->cls - 1];
     }
     // A class of a parameter names whatever that parameter does, so it is as
     // concrete as the parameter (`via`, settled after checking), provided
@@ -1169,12 +1240,14 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         for (size_t i = 0; i < mi.fnvals.size(); i++)
             fvok &= spec->fnvals[i].second == mi.fnvals[i].second;
         if (!fvok) continue;
-        auto rootsok = spec->roots == roots;
+        auto rootsok = spec->roots == roots && spec->views == views;
         for (size_t i = 0; rootsok && i < roots.size(); i++)
-            rootsok = TypeArgsEq(spec->roots[i].gselems, roots[i].gselems);
+            rootsok = TypeArgsEq(spec->roots[i].gselems, roots[i].gselems) &&
+                      TypeArgsEq(spec->views[i].gselems, views[i].gselems);
         auto depthsok = rootsok;
         for (size_t i = 0; depthsok && i < roots.size(); i++)
-            depthsok = spec->roots[i].depthkey == roots[i].depthkey;
+            depthsok = spec->roots[i].depthkey == roots[i].depthkey &&
+                       spec->views[i].depthkey == views[i].depthkey;
         // A back edge must reuse the in-progress spec whatever the roots
         // (§7.8): inside a cycle, references rooted at cycle locals may
         // not be stored or returned, so their identity is irrelevant, and
@@ -1204,6 +1277,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
             sr.concrete = sr.concrete && roots[i].concrete && rootsok;
             for (auto &v : roots[i].via)
                 if (find(sr.via.begin(), sr.via.end(), v) == sr.via.end()) sr.via.push_back(v);
+            if (rootsok) spec->views[i].exact = spec->views[i].exact && views[i].exact;
         }
         if (spec->inprogress) {
             for (auto v : spec->narrowedenv)
@@ -1253,6 +1327,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     spec->narrowedenv = narrowedenv;
     spec->argtypes = mi.paramtypes;
     spec->roots = roots;
+    spec->views = views;
     spec->litparams = mi.litparams;
     spec->fnvals = mi.fnvals;
     spec->bindings = mi.bindings;
@@ -2109,7 +2184,10 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     // VarDef per call-site root class carries the caller-side depth; a
     // cycle's rounds keep them (FnSpec::classroots).
     auto &classroots = spec->classroots;
-    classroots.resize(spec->roots.size() + 1, nullptr);
+    auto nclasses = 0;
+    for (auto &ra : spec->roots) nclasses = max(nclasses, ra.cls);
+    for (auto &va : spec->views) nclasses = max(nclasses, va.cls);
+    classroots.resize(nclasses + 1, nullptr);
     // Classes whose members are all references or slices rooted exactly.
     vector<bool> exactrefs(classroots.size(), true);
     for (size_t i = 0; i < sf->params.size(); i++) {
@@ -2206,6 +2284,58 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
             RecordStore(vd, held, ra.byteview, nullptr);
         }
         spec->params.push_back(vd);
+    }
+    // A reference to a slice with a view (FnSpec::views): the slice its slot
+    // holds is a class of its own, bound to a variable of the body that loads
+    // through the slot's class see (VarDef::heldslice), at the parameters'
+    // depth, outside every loop of the body. Stores into the slot join it
+    // (NoteSlotStore); each round of a cycle starts it afresh. A view is no
+    // pool and is never threaded: what a slice points into outlives its
+    // slot, which no call back into a cycle passes on (§7.8).
+    set<VarDef *> heldset;
+    for (size_t i = 0; i < sf->params.size() && i < spec->views.size(); i++) {
+        auto &va = spec->views[i];
+        if (va.cls < 0) continue;
+        auto pt = spec->argtypes[i];
+        auto vd = spec->params[i];
+        VarDef *vr = nullptr;
+        if (va.cls > 0) {
+            auto &rv = classroots[va.cls];
+            if (!rv) {
+                rv = ast.NewVarDef();
+                rv->name = sf->params[i].name;
+                rv->depth = va.depth;
+                rv->classfrom = argvals ? (*argvals)[i].held.Root() : nullptr;
+                rv->classpool = va.pool;
+                rv->growshrink = va.growshrink;
+                rv->gsvia = va.gsvia;
+                rv->gselems = va.gselems;
+            }
+            ReachedThroughRefs(pt->ref->sub, rv->classreach);
+            rv->poolclass = false;
+            if (!va.pool) rv->classpool = nullptr;
+            rv->contentbyteview |= va.byteview;
+            exactrefs[va.cls] = false;
+            vr = rv;
+        }
+        auto slot = vd->ref.Root();
+        if (!slot || !heldset.insert(slot).second) continue;
+        auto h = slot->heldslice;
+        if (h) *h = VarDef {};
+        else h = slot->heldslice = ast.NewVarDef();
+        h->name = sf->params[i].name;
+        h->type = pt->ref->sub;
+        h->line = sf->line;
+        h->depth = vd->depth;
+        h->ownerspec = spec;
+        h->assigned = true;
+        h->refrootknown = true;
+        if (va.unknown) h->ref.SetUnknown();
+        else h->ref.Set(vr, true, nullptr, va.slotread);
+        h->ref.writable = va.writable;
+        h->ref.reusable = va.reusable;
+        h->ref.byteview = va.byteview;
+        h->ref.freshview = va.byteview;
     }
     for (size_t k = 1; !spec->rounds && k < classroots.size(); k++)
         if (classroots[k] && exactrefs[k] && !classroots[k]->poolclass)
@@ -2369,8 +2499,9 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
 }
 
 // One root a result may have, as this call sees it: a parameter's class root
-// maps back to the argument's roots, as bounds where the class only bounds
-// the result (Bounds) -- at a back edge, which reuses the body whatever it
+// maps back to the argument's roots, a view's to the slice its argument's
+// slot held (Val::held), as bounds where the class only bounds the result
+// (Bounds) -- at a back edge, which reuses the body whatever it
 // passes (§7.8), to every argument the class's parameters get, merged;
 // anything else is itself.
 inline Val TypeCheck::RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &argvals,
@@ -2384,16 +2515,18 @@ inline Val TypeCheck::RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &a
     auto v = m;
     auto first = true;
     for (size_t p = 0; p < spec->params.size() && p < argvals.size(); p++) {
-        if (spec->params[p]->ref.Root() != alt.root) continue;
+        auto view = ViewClassOf(spec, p) == alt.root;
+        if (spec->params[p]->ref.Root() != alt.root && !view) continue;
         auto &a = argvals[p];
         auto x = m;
-        auto ar = ClassArgRoots(spec->argtypes[p], a);
+        auto ar = view ? a.held.AsRoots() : ClassArgRoots(spec->argtypes[p], a);
         x.TakeAlts(alt.exact ? ar : Bounds(ar));
         for (auto &xa : x.alts) xa.slotread = alt.slotread && xa.slotread;
         // The argument itself, or a view of it, where the result is no load
         // out of a slot.
-        x.freshview = IsRefOrSlice(spec->argtypes[p]) && a.freshview && !alt.slotread;
-        x.writable = a.writable;
+        x.freshview = (view ? a.held.freshview : IsRefOrSlice(spec->argtypes[p]) && a.freshview) &&
+                      !alt.slotread;
+        x.writable = view ? a.held.writable : a.writable;
         v = first ? x : MergeVals(v, true, x, true, at, true);
         first = false;
         if (!spec->inprogress) break;
@@ -2609,6 +2742,9 @@ inline FnSpec *TypeCheck::EnsureThreadSpec(SFunction *sf, Line l) {
         spec->argtypes.push_back(t);
     }
     spec->roots.resize(spec->argtypes.size());
+    RootArg noview;
+    noview.cls = -1;
+    spec->views.resize(spec->argtypes.size(), noview);
     sf->specs.push_back(spec);
     CheckSpecBody(spec, nullptr, l);
     return spec;

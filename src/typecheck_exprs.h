@@ -662,6 +662,8 @@ inline Node *TypeCheck::AutoRef(Node *n, Val &v, bool writes) {
 // points (Val::slot).
 inline void TypeCheck::SlotRoots(Val &v) {
     if (!v.hasslot || v.type->kind != TY_SLICE) return;
+    v.held = v;
+    v.hasheld = true;
     v.TakeAlts(v.slot);
     v.hasslot = false;
     for (auto &a : v.alts)

@@ -260,14 +260,22 @@ inline bool TypeCheck::SlotReadable(TypeExpr *t) {
 // A reference to a holder is rooted at the holder, whose store record says
 // what it holds, as it does for the holder itself. One to a slice is rooted
 // at the slot holding the slice, a slice variable's own binding saying where
-// that points (SlotView). The slot may since have been rebound, a slice
-// variable at its root's depth, and a slice into a grow-only array stored
-// into it through a reference, with anything at that depth or outside it;
-// there, as behind a `var` reference, an inexact one or a parameter's class,
-// which stands for a slot of the caller's, the root only bounds the array.
+// that points (SlotView), as the variable a parameter's class with a view
+// has for the caller's slot does, which every store into it joins
+// (VarDef::heldslice). A slice variable may since have been rebound at its
+// root's depth, and a slice into a grow-only array stored into it through a
+// reference, with anything at that depth or outside it; there, as behind a
+// `var` reference, an inexact one or any other parameter's class, which
+// stands for a slot of the caller's, the root only bounds the array.
 inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *t,
                                             VarDef *root, TypeExpr *bound, bool growonly) {
-    auto slotof = [](VarDef *r) { return r && r->type && IsRefOrSlice(r->type) ? r : nullptr; };
+    // A slice variable, or the one a parameter's class with a view has for
+    // the caller's slot, which every store into that slot joins while the
+    // body runs (VarDef::heldslice).
+    auto slotof = [&](VarDef *r) {
+        if (r && !r->type && t->ref->sub->kind == TY_SLICE) return r->heldslice;
+        return r && r->type && IsRefOrSlice(r->type) ? r : nullptr;
+    };
     auto byteview = p.byteview || p.Any([&](const RootAlt &a) {
         auto slot = slotof(a.root);
         return (a.root && a.root->contentbyteview) || (slot && slot->ref.byteview);
@@ -288,6 +296,14 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
             auto arrtype = bound ? bound : root->type ? LoadType(root->type) : nullptr;
             Line where;
             if (HolderMayPointInto(r, root, arrtype, LiveEventBase(r), &where)) return true;
+            continue;
+        }
+        // Every store into the slot of a parameter's class with a view joins
+        // the variable standing for its slice, a grow-only array's views
+        // included, so that says where it points.
+        if (r && !r->type && a.exact && slot) {
+            if (RefMayPointInto(slot, root) || (v && v->isvar && Depth(r) >= Depth(root)))
+                return true;
             continue;
         }
         if (growonly || !a.exact || (r && !r->type && t->ref->sub->kind == TY_SLICE)) {
@@ -313,14 +329,16 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
 // The slice a load through a reference to one sees. The reference is rooted
 // where the slice variable, field or element holding it lives, whether it
 // bound that slot by reference (§4.1) or was taken with an explicit `&`
-// (§3.8): a variable's own binding says where its slice points, and the
-// stores into a container only bound it, as the caller's slot behind a
-// parameter's class does, a temporary's behind its root, and an inexact root
-// the slot. A slice variable's binding says whether its slice is a slot read
-// (RootAlt::slotread), and one a container holds is, lying in a field or an
-// element; what the reference was says nothing. Nor is the container a
-// reference was read out of where its slice lies: only a slot the reference
-// names exactly is the container the slice is read out of (RootAlt::from).
+// (§3.8): a variable's own binding says where its slice points, as does the
+// variable a parameter's class with a view has for the caller's slot
+// (VarDef::heldslice), and the stores into a container only bound it, as the
+// caller's slot behind any other parameter's class does, a temporary's
+// behind its root, and an inexact root the slot. A slice variable's binding
+// says whether its slice is a slot read (RootAlt::slotread), and one a
+// container holds is, lying in a field or an element; what the reference was
+// says nothing. Nor is the container a reference was read out of where its
+// slice lies: only a slot the reference names exactly is the container the
+// slice is read out of (RootAlt::from).
 inline Prov TypeCheck::SlotView(const Prov &p, TypeExpr *slice) {
     Prov out = p;
     out.alts.clear();
@@ -328,6 +346,16 @@ inline Prov TypeCheck::SlotView(const Prov &p, TypeExpr *slice) {
         auto r = a.root;
         if (!r || !a.exact) {
             out.Add({ r, a.exact, nullptr, false });
+            continue;
+        }
+        if (auto h = r->type ? nullptr : r->heldslice) {
+            // A body nested in the one the view is of reads it outside its
+            // activation (FnSpec::envreads).
+            NoteEnvRead(h);
+            out.Add(h->ref);
+            out.writable = out.writable && h->ref.writable;
+            out.byteview = out.byteview || h->ref.byteview;
+            out.freshview = out.freshview || h->ref.freshview;
             continue;
         }
         if (r->type && IsRefOrSlice(r->type)) {

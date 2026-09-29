@@ -974,6 +974,7 @@ inline void TypeCheck::HolderFromLit(Val &v, const LitDeep &deep) {
 inline void TypeCheck::AddStoreEvent(const StoreEvent &e) {
     storeevents.push_back(e);
     madestores.push_back(e);
+    NoteSlotStore(e);
     if (e.container->type || e.container->isglobal) return;
     auto spec = CurRealFrame().spec;
     if (!spec) return;
@@ -987,6 +988,43 @@ inline void TypeCheck::AddStoreEvent(const StoreEvent &e) {
             !o.reached == !e.reached && (!o.reached || TypeEq(o.reached, e.reached)))
             return;
     spec->classevents.push_back(e);
+}
+
+// A store that may write the slot a parameter's view stands for joins what
+// the variable standing for the slice there holds (VarDef::heldslice): a
+// store into the slot's own class, or into any other class or bound, which
+// may be that slot where some call site passes it to both (§3.4), unless it
+// cannot hold a slice of the slot's type. The views are those of the bodies
+// whose classes the code being checked can name: its own and its lexical
+// parents', and those of the bodies its function values were written in.
+// Only the activation's own stores name roots its body can bind the variable
+// to: a store checked in a body nested in it, or in a function value it
+// wrote, leaves the slot holding what outlives the slot, which its class
+// bounds; its callers' calls map what it stored as they reach the body.
+inline void TypeCheck::NoteSlotStore(const StoreEvent &e) {
+    auto x = e.container;
+    if (x->type || x->isglobal || IsTemp(x)) return;
+    auto own = CurRealFrame().spec;
+    set<FnSpec *> seen;
+    for (auto fi = (int)frames.size() - 1; fi >= RealFrameIndex(); fi--) {
+        for (auto s = frames[fi].lexspec; s && seen.insert(s).second; s = s->lexparent) {
+            for (auto slot : s->classroots) {
+                auto h = slot ? slot->heldslice : nullptr;
+                if (!h) continue;
+                if (x != slot && ((e.pointee && !TopConstEq(e.pointee, h->type->sub)) ||
+                                  (e.reached && !CanContain(e.reached, h->type))))
+                    continue;
+                RootAlt a { e.root, e.exact };
+                if (h->ownerspec != own) a = { slot, false };
+                auto changed = h->ref.Add(a);
+                if (e.byteview && !h->ref.byteview) {
+                    h->ref.byteview = true;
+                    changed = true;
+                }
+                if (changed) NoteFact(h);
+            }
+        }
+    }
 }
 
 // One store on record per place the value may point (§9.2). The container's
@@ -1044,7 +1082,8 @@ inline Roots TypeCheck::ClassArgRoots(TypeExpr *pt, const Val &v) {
 // own events: a store through reference parameter p, or through the
 // references by-value holder p holds, into something rooted at parameter q
 // becomes a store into what argument p's class stands for (ClassArgRoot) of
-// a value rooted at argument q's. Where that argument's root only bounds
+// a value rooted at argument q's, a view's class standing for the slice its
+// argument's slot held (Val::held). Where that argument's root only bounds
 // the storage, or the store went into storage the class only leads to, it
 // is a store into each storage there that can hold what the store reached
 // (StoreEvent::reached, ShrinkTargets), which the value must outlive (§9.2):
@@ -1053,7 +1092,21 @@ inline Roots TypeCheck::ClassArgRoots(TypeExpr *pt, const Val &v) {
 // A callee still being checked (a back edge) may have stored any reference
 // argument into any container argument.
 inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Node *at) {
-    auto argroots = [&](size_t q) { return ClassArgRoots(spec->argtypes[q], argvals[q]); };
+    // What class root cr of the callee stands for here: the argument's roots,
+    // or for a view the slice its slot held (Val::held).
+    auto classat = [&](VarDef *cr, Roots &out) -> int {
+        for (size_t p = 0; cr && p < spec->params.size() && p < argvals.size(); p++) {
+            if (spec->params[p]->ref.Root() == cr) {
+                out = ClassArgRoots(spec->argtypes[p], argvals[p]);
+                return (int)p;
+            }
+            if (ViewClassOf(spec, p) == cr) {
+                out = argvals[p].held;
+                return (int)p;
+            }
+        }
+        return -1;
+    };
     auto paramof = [&](VarDef *cr) -> int {
         for (size_t p = 0; p < spec->params.size() && p < argvals.size(); p++)
             if (cr && spec->params[p]->ref.Root() == cr) return (int)p;
@@ -1078,27 +1131,25 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
             container->contents.Add({ a.root, a.exact, a.from, a.slotread });
         AddStoreEvent(e);
     };
-    // A class root of the callee, as seen from here: the argument's roots,
-    // each only a bound where the callee's was (Bounds).
+    // A class root of the callee, as seen from here (classat), each root
+    // only a bound where the callee's was (Bounds).
     auto mapped = [&](VarDef *cr, bool exact) -> Roots {
-        auto q = paramof(cr);
         Roots r;
-        if (q < 0) {
+        if (classat(cr, r) < 0) {
             r.Set(cr, exact);
             return r;
         }
-        r = argroots((size_t)q);
         return exact ? r : Bounds(r);
     };
     // A class as the container a stored value was copied or read out of, as
-    // seen from here: the one container the argument names exactly, if it
-    // does (StoreSource). Anywhere else the value's mapped roots bound it: an
-    // argument that may point at any of several places, or only within one,
-    // or at a slice variable's slot, whose binding says what it holds.
+    // seen from here: the one container the argument, or the slice a view's
+    // slot held, names exactly, if it does (StoreSource). Anywhere else the
+    // value's mapped roots bound it: an argument that may point at any of
+    // several places, or only within one, or at a slice variable's slot,
+    // whose binding says what it holds.
     auto source = [&](VarDef *src) {
-        auto q = paramof(src);
-        if (q < 0) return src;
-        auto r = argroots((size_t)q);
+        Roots r;
+        if (classat(src, r) < 0) return src;
         return r.Exact() ? StoreSource(r.alts[0].root) : nullptr;
     };
     NoteClassUses(spec, argvals);
@@ -1157,7 +1208,8 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
     // contents provenance (for example a permutation).
     for (auto &e : rec->classevents) {
         if (e.src == e.container) continue;
-        auto p = paramof(e.container);
+        Roots cr;
+        auto p = classat(e.container, cr);
         auto r = mapped(e.root, e.exact);
         auto src = source(e.src);
         if (p < 0) {
@@ -1168,7 +1220,6 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
                 push(e.container, a, e.pointee, src, e.byteview, e.reached, e.bound, e.slot);
             continue;
         }
-        auto cr = argroots((size_t)p);
         // Where the argument's root only bounds the storage, or the store
         // went into storage the class only leads to, the store lands in
         // every storage there may be behind it.
@@ -1207,10 +1258,17 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
 
 // What each parameter class of the callee stands for at this call: where
 // its argument may point, or for a by-value holder where the references it
-// holds may (ClassArgRoots), and the container the holder is a copy of.
+// holds may (ClassArgRoots), and the container the holder is a copy of; and
+// what a view's class does, the slice its argument's slot held.
 inline void TypeCheck::NoteClassUses(FnSpec *spec, const vector<Val> &argvals) {
     for (size_t p = 0; p < spec->params.size() && p < argvals.size() &&
                        p < spec->argtypes.size(); p++) {
+        if (auto vr = ViewClassOf(spec, p)) {
+            ClassUse u;
+            u.roots = argvals[p].held;
+            u.byteview = argvals[p].held.byteview;
+            NoteClassUse(vr, u);
+        }
         auto cr = spec->params[p]->ref.Root();
         if (!IsClassRoot(cr)) continue;
         auto pt = spec->argtypes[p];
@@ -1218,20 +1276,24 @@ inline void TypeCheck::NoteClassUses(FnSpec *spec, const vector<Val> &argvals) {
         u.roots = ClassArgRoots(pt, argvals[p]);
         if (!IsRefOrSlice(pt) && !IsTemp(argvals[p].holderfrom)) u.src = argvals[p].holderfrom;
         u.byteview = argvals[p].byteview;
-        auto same = [&](const ClassUse &o) {
-            if (o.src != u.src || o.byteview != u.byteview ||
-                o.roots.alts.size() != u.roots.alts.size())
-                return false;
-            for (size_t i = 0; i < o.roots.alts.size(); i++) {
-                auto &x = o.roots.alts[i];
-                auto &y = u.roots.alts[i];
-                if (x.root != y.root || x.exact != y.exact || x.from != y.from) return false;
-            }
-            return true;
-        };
-        auto &uses = classuses[cr];
-        if (none_of(uses.begin(), uses.end(), same)) uses.push_back(u);
+        NoteClassUse(cr, u);
     }
+}
+
+inline void TypeCheck::NoteClassUse(VarDef *cr, const ClassUse &u) {
+    auto same = [&](const ClassUse &o) {
+        if (o.src != u.src || o.byteview != u.byteview ||
+            o.roots.alts.size() != u.roots.alts.size())
+            return false;
+        for (size_t i = 0; i < o.roots.alts.size(); i++) {
+            auto &x = o.roots.alts[i];
+            auto &y = u.roots.alts[i];
+            if (x.root != y.root || x.exact != y.exact || x.from != y.from) return false;
+        }
+        return true;
+    };
+    auto &uses = classuses[cr];
+    if (none_of(uses.begin(), uses.end(), same)) uses.push_back(u);
 }
 
 // A binding of global reference or slice variable gd, which is no store for
@@ -1534,8 +1596,10 @@ inline void TypeCheck::NoteRootEvent(VarDef *root, P param, X external) {
         auto spec = frames[fi].spec;
         if (!spec) continue;
         auto found = false;
+        // A view's class is reached through its parameter's slot, which its
+        // callers' storage behind the slot bounds (FnSpec::views).
         for (size_t i = 0; i < spec->params.size(); i++) {
-            if (RefRootOf(spec->params[i]) != root) continue;
+            if (RefRootOf(spec->params[i]) != root && ViewClassOf(spec, i) != root) continue;
             param(spec, (int)i);
             found = true;
         }
@@ -1892,17 +1956,20 @@ inline int TypeCheck::NoteLiveShrink(LiveShrink ls, FnSpec *current) {
 
 // The callee's shrinks of arrays something it still uses may point into
 // (FnSpec::liveshrinks), mapped onto this call's arguments: a parameter's
-// class becomes the root of the argument passed for it (ClassArgRoot). Two
-// arrays the caller cannot tell apart are an error here; two it can only as
-// its own callers can are kept for them in turn. A callee in a recursive
-// cycle still being checked has the pairs of the round before (RecordOf),
-// and none in the cycle's first round.
+// class becomes the root of the argument passed for it (ClassArgRoot), a
+// view's the slice its argument's slot held (Val::held). Two arrays the
+// caller cannot tell apart are an error here; two it can only as its own
+// callers can are kept for them in turn. A callee in a recursive cycle still
+// being checked has the pairs of the round before (RecordOf), and none in
+// the cycle's first round.
 inline void TypeCheck::ApplyCalleeLiveShrinks(Node *at, FnSpec *spec, vector<Val> &argvals,
                                               string_view name) {
-    CallSite site { at, CurRealFrame().spec, RecordOf(spec), {}, string(name) };
+    CallSite site { at, CurRealFrame().spec, RecordOf(spec), {}, string(name), {} };
     if (!site.callee) return;   // A cycle's first round: no record yet.
-    for (size_t q = 0; q < spec->argtypes.size() && q < argvals.size(); q++)
+    for (size_t q = 0; q < spec->argtypes.size() && q < argvals.size(); q++) {
         site.args.push_back(ClassArgRoots(spec->argtypes[q], argvals[q]));
+        site.views.push_back(ViewClassOf(spec, q) ? argvals[q].held.AsRoots() : Roots {});
+    }
     MapLiveShrinks(site);
 }
 
@@ -1911,11 +1978,12 @@ inline void TypeCheck::ApplyCalleeLiveShrinks(Node *at, FnSpec *spec, vector<Val
 inline bool TypeCheck::MapLiveShrinks(const CallSite &site) {
     auto spec = site.callee;
     // A class root of the callee, as seen from here: every place the
-    // argument may point.
+    // argument may point, or for a view every place its slot's slice may.
     auto mapped = [&](VarDef *r, bool exact) -> Roots {
-        for (size_t p = 0; p < spec->params.size() && p < site.args.size(); p++) {
-            if (!r || spec->params[p]->ref.Root() != r) continue;
-            auto m = site.args[p];
+        for (size_t p = 0; r && p < spec->params.size() && p < site.args.size(); p++) {
+            auto view = ViewClassOf(spec, p) == r;
+            if (spec->params[p]->ref.Root() != r && !view) continue;
+            auto m = view ? site.views[p] : site.args[p];
             if (!exact) m.Weaken();
             return m;
         }

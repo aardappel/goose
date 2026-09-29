@@ -1637,6 +1637,16 @@ struct TypeCheck {
     FnSpec *GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, Node *callnode);
     void LoadSliceArgs(vector<Val> &argvals, const vector<TypeExpr *> &ptypes);
     void RefSliceArgs(vector<Val> &argvals, const vector<TypeExpr *> &ptypes, Line at);
+    void NoteHeld(Val &av, TypeExpr *slice);
+    bool HasView(Val &av, TypeExpr *pt, int reach, SFunction *sf);
+    // The class root of parameter p's view in spec's body (FnSpec::views),
+    // or null where it has none or the slot holds static data.
+    static VarDef *ViewClassOf(const FnSpec *spec, size_t p) {
+        if (p >= spec->views.size() || spec->views[p].cls <= 0 ||
+            spec->views[p].cls >= (int)spec->classroots.size())
+            return nullptr;
+        return spec->classroots[spec->views[p].cls];
+    }
     void ValidateCycle(FnSpec *spec, Node *callnode);
     static FnSpec *CycleHead(FnSpec *s);
     void JoinCycle(FnSpec *spec, Node *callnode);
@@ -1773,6 +1783,7 @@ struct TypeCheck {
     void NoteLitElem(LitDeep &deep, Node *at, const Val &v, TypeExpr *t);
     void HolderFromLit(Val &v, const LitDeep &deep);
     void AddStoreEvent(const StoreEvent &e);
+    void NoteSlotStore(const StoreEvent &e);
     // How NeverStoredError words a grow-shrink array `gs` a value pointing at
     // `roots` may point into: as the array itself where it is the value's one
     // root, else as one it may point into.
@@ -1809,6 +1820,7 @@ struct TypeCheck {
     };
     map<VarDef *, vector<ClassUse>> classuses;
     void NoteClassUses(FnSpec *spec, const vector<Val> &argvals);
+    void NoteClassUse(VarDef *cr, const ClassUse &u);
     void NoteGlobalBinding(VarDef *gd, const Roots &roots, bool byteview, TypeExpr *pointee,
                            Line at);
     // A shrink of a global array, judged against every other global once
@@ -1902,6 +1914,7 @@ struct TypeCheck {
         FnSpec *callee = nullptr;   // The record read (RecordOf).
         vector<Roots> args;   // What each parameter's class stands for here.
         string name;
+        vector<Roots> views;  // And each parameter's view, the slice its slot held.
     };
     bool MapLiveShrinks(const CallSite &site);
     // A growth of the array rooted at root -- a push, an append, a pool
@@ -2192,6 +2205,9 @@ struct TypeCheck {
                 ra.heldexact = !sf->isrec;
             }
             spec->roots.push_back(ra);
+            RootArg noview;
+            noview.cls = -1;
+            spec->views.push_back(noview);
         }
         sf->specs.push_back(spec);
         CheckSpecBody(spec, &args, sf->line);

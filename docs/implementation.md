@@ -628,7 +628,7 @@ a branch of an `if` would not be.
 | `&lvalue` (`CheckRefOf`), or an lvalue bound by reference (`AutoRef`, a slice's slot being `Val::slot`) | the lvalue's owner | as the path |
 | a reference or slice variable (`RefProvOf`) | its committed binding (§3.7); for a global `var` used in a function's body, the read-back rule (`GlobalVarRead`) | its binding's, weakened by rebinds; the read-back's |
 | a reference read out of a field or element (`ContainerRead`) | the read-back rule (§3.6) | only with one candidate |
-| a slice loaded through a reference to one (`SlotView`) | for a reference to a slice variable, that variable's binding; out of a field or element, the read-back rule; behind a parameter's class or a temporary, the root as a bound | as that |
+| a slice loaded through a reference to one (`SlotView`) | for a reference to a slice variable, that variable's binding; behind a parameter's class that has a class for the slice its slot holds (below), the binding of the variable standing for that slice (`VarDef::heldslice`); out of a field or element, the read-back rule; behind any other parameter's class or a temporary, the root as a bound | as that |
 | `a.push(v)`, `a.alloc_ref(v)`, `&a[i]` | `a`'s root | `a`'s exactness |
 | `a.alloc_slice(n)`, `a.realloc_slice(s, n)` | `a`'s root | `a`'s exactness |
 | `a[lo..hi]` (`SliceExpr::Check`) | `a`'s root | `a`'s exactness |
@@ -695,10 +695,31 @@ pass.
 A reference to a slice is rooted at the slot holding the slice, whether it
 binds a slice lvalue by reference (`RefSliceArgs` gives the argument the
 slot's roots, as `AutoRef` gives the phase-2 check) or is written `&s`, so its
-class stands for a slot of the caller's -- a variable, a field or an element
--- and only bounds the slice loaded through it (`SlotView`); a slice
-parameter given a reference to a slice takes that slice's root
-(`LoadSliceArgs`).
+class stands for a slot of the caller's -- a variable, a field or an element.
+Where the body reaches that slot through references alone -- a slice variable
+beyond the variables it can name (`EnvReach`), so no global, a temporary, or
+a caller's class that has one of these itself (`HasView`) -- and its function
+is not `recursive`, the slice the slot holds as the call is made
+(`Val::held`) is a class of its own, numbered with the parameters' and keyed
+the same way (`FnSpec::views`, its `gselems` its root's), whose
+`classreach` is what the slice leads to. The body binds a variable standing
+for that slice to it (`VarDef::heldslice`), which a load through the slot's
+class sees (`SlotView`) and every store that may write the slot joins
+(below); a call maps the class back to what its argument's slot held, as it
+maps a parameter's class to the argument (`RetAltVal`, `ApplyCalleeStores`,
+`MapLiveShrinks`, `NoteClassUses`, `NoteRootEvent`). Any other slot's class
+only bounds the slice loaded through it. A slice parameter given a reference
+to a slice takes that slice's root (`LoadSliceArgs`).
+Every store event (`AddStoreEvent`, a callee's mapped at its call included)
+into the class of a slot with such a variable joins the stored roots to it
+(`NoteSlotStore`), and so does one into any other class or bound that can
+hold a slice of its type, which may be the same slot where some call site
+passes it to both. A store checked in a body nested in it, or in a function
+value written there, joins the slot's class as a bound instead, since the
+stored roots are that body's own; the call reaching the body maps its record
+to precise ones. A loop feeds a join back as it does a rebind (`NoteFact`),
+and a nested body reading the variable reads it outside its activation
+(`FnSpec::envreads`).
 A temporary of the calling statement outlives the call, so its class takes
 the body's own outermost depth instead (`ClassDepth`): the body may keep it
 in its locals, but not in anything of the caller's. Classes are numbered by
@@ -906,12 +927,13 @@ only bounded the value (`Bounds`). A class the callee named as a source
 maps to the one container the argument names exactly, if there is one: for
 a reference to a slice, the struct or array whose field or element is the
 slot, but not a slice variable, whose slot the callee's record bounds
-instead. A nested function's store through a parameter of the function
-it is declared in, or a function value's through one of the function it is
-written in, is into a class of that function's, not the callee's: the call
-keeps it on the caller's own record, its value's roots mapped, until it
-reaches the record of the function whose class it is, whose callers map
-it. Semantically this includes stores through slices: writing a
+instead; for the class of the slice a slot holds (§3.4), the one container
+that slice names exactly. A nested function's store through a parameter of
+the function it is declared in, or a function value's through one of the
+function it is written in, is into a class of that function's, not the
+callee's: the call keeps it on the caller's own record, its value's roots
+mapped, until it reaches the record of the function whose class it is, whose
+callers map it. Semantically this includes stores through slices: writing a
 reference into a viewed element changes the caller's container just as
 writing through an array reference does. A permutation may preserve the
 container's existing contents provenance, but a new incoming reference
@@ -1207,8 +1229,10 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    by its type) and used afterwards; a reference to a holder whose store
    record says the same, or to a slice that may point into it
    (`HeldRefsMayPointInto`: a slice variable the reference names by its own
-   binding, otherwise by the reference's root, as a bound, since stores
-   through references to the slot may have replaced the slice), and used
+   binding, a parameter's class with a class of its own for the slice its
+   slot holds by the binding of the variable standing for that slice (§3.4),
+   otherwise by the reference's root, as a bound, since stores through
+   references to the slot may have replaced the slice), and used
    afterwards. The variables are the body's and its lexical parents', and in
    a function value's body those of the function running it too
    (`ShrinkScanVars`); every caller's are judged at its call instead, the
@@ -1281,8 +1305,10 @@ running it included (`ShrinkScanVars`): references into such an array can
 never be stored (§3.5 rule 3), so checking those variables and temporaries
 is sufficient.
 That includes a reference to a slice variable, whose slice may view the
-array: the variable's own binding says where, and a parameter's class, which
-stands for a slot of the caller's, only bounds it.
+array: the variable's own binding says where, as the variable standing for
+the slice a parameter's slot holds does where it has one (§3.4), and any
+other parameter's class, which stands for a slot of the caller's, only
+bounds it.
 
 **Slot reads** (`RootAlt::slotread`). For the same reason, a plain reference
 or slice loaded out of a field or an element (`ReadBackLVal`, where
@@ -3335,18 +3361,23 @@ specification allows, and the shapes the C backend refuses outright:
   that, at the cost of one specialization per distinct global passed.
 * Bounds-check elimination tracks no array contents and no `u64` variables
   (§5.12).
-* A slice loaded through a reference-to-slice parameter is only bounded by
-  the caller's slot the parameter names (`SlotView`), not rooted where the
-  slice in that slot points: what the callee returns of it may point into
-  anything the slot outlives, so a cursor helper's token (`take(cur, 5)`
-  with `fn take(p: u8[:]&, n: i64) -> u8[:]`) cannot be returned past the
-  function owning `cur`, and a callee shrinking an array at the slot's depth
-  or outside while such a slice is still used is an error in the callee,
-  whatever its call sites pass. Where the slot is a slice variable's own,
-  what the callee stores of that slice is bounded by the variable too, not
-  traced to its binding (§3.5). A class of its own for the slice a slot
-  holds, mapped at a call to that slice's roots and to what the callee
-  stores through the reference, would lift all three.
+* A slice loaded through a reference-to-slice parameter is a class of its
+  own only where the body reaches the argument's slot through references
+  alone (§3.4). Behind a parameter given a field or an element, a slice
+  variable the callee can name -- a global's, or one a nested function or a
+  function value handed to it sees -- or a caller's parameter class without
+  such a class, and in a `recursive fn`, it is only bounded by the caller's
+  slot (`SlotView`): what the callee returns of it may point into anything
+  the slot outlives, so a nested cursor helper's token (`take(cur, 5)` with
+  `fn take(p: u8[:]&, n: i64) -> u8[:]` declared where `cur` is) cannot be
+  returned past the function owning `cur`, and a callee shrinking an array
+  at the slot's depth or outside while such a slice is still used is an
+  error in the callee, whatever its call sites pass. Where the slot is a
+  slice variable's own, what the callee stores of that slice is bounded by
+  the variable too, not traced to its binding (§3.5). Where the slice is a
+  class of its own, a store that may write the slot through another class
+  or a bound joins it, whatever slot the call sites give that class, and a
+  store in a nested body leaves it bounded by the slot there.
 * A parameter is a slot read (§3.10) only where its argument has a root, or
   a holder's contents one, that holds a grow-shrink array (§3.4): the key
   records the bit only there, so that a function given no such argument is

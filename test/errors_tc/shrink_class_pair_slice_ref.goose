@@ -1,9 +1,7 @@
-// error: cannot clear gs while pp
-// error: is still used: the slice it refers to may point into gs
-// pp refers to the caller's slice variable itself (§3.8, §4.1), which only
-// bounds where the slice it holds points, so peek cannot tell that slice
-// from the array gs names, a or b (§9.2): clearing gs may free the element
-// the slice behind pp still reads (§5.2).
+// error: cannot call peek: it may shrink a while pp is still used, and pp may refer into a
+// pp's slot holds s's slice, a view of a, which peek cannot tell from the
+// array gs names: this call passes a or b there (§9.2), so clearing gs may
+// free the element the slice behind pp still reads (§5.2).
 fn peek(pp: i64[:]&, gs: i64[>..<]&) {
     gs.clear();
     gs.push(5);
