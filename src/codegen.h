@@ -597,6 +597,7 @@ struct CodeGen {
     Loc BytesLoc(const string &ptr, TypeExpr *t, const Loc &from);
     void RelParts(const Loc &lv, string &faddr, string &off);
     string RelOrigin(TypeExpr *rt, const string &faddr);
+    string PointeeLv(const string &p, TypeExpr *t);
     void DerefLoc(Loc &lv);
     Loc VarLoc(VarDef *vd);
     string HdrLv(VarDef *vd);

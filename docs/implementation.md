@@ -2268,8 +2268,11 @@ Layout details needed for byte/C compatibility (`FixedSize`, `LayoutFields`,
   copies and compares out of a slice go through the runtime's `gs_memcpy` and
   `gs_memcmp` (`ArrView::nullable`, `CopyFn`). `CT` emits typedefs on first use;
   struct-like kinds get a forward typedef so a node type can reference
-  itself (`NameCT`). Every program name carries the `_g` suffix (`Sanitize`),
-  namespaced ones the namespace's length as well.
+  itself (`NameCT`), and their body at the first use by value or through a
+  pointer (`PointeeLv`): a struct the program only reaches through
+  references gets it at the first access through one. Every program name
+  carries the `_g` suffix (`Sanitize`), namespaced ones the namespace's
+  length as well.
 * **Bytes values** (variable class) are self-describing byte images held as
   a `uint8_t *` to the value's start; a field behind a variable-size field
   is reached by a cursor that walks the intervening sizes (`FieldPtr`,

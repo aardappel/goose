@@ -88,6 +88,15 @@ inline string CodeGen::RelOrigin(TypeExpr *rt, const string &faddr) {
     return cat("(", PoolBase(rt->ref->pool), " - 1)");
 }
 
+// The pointee of `p`, a plain pointer to a fixed-class value of type t, as a
+// C lvalue. A reference's C type names a struct-like pointee by its forward
+// typedef only (CT), which is all passing the pointer on needs; a member
+// access, a load or a store through it needs the body, so this emits it.
+inline string CodeGen::PointeeLv(const string &p, TypeExpr *t) {
+    CT(t);
+    return cat("(*", p, ")");
+}
+
 // Loads the value of a loc holding a (plain or relative) reference and
 // steps to the pointee. Optional locs never get here (narrowing).
 inline void CodeGen::DerefLoc(Loc &lv) {
@@ -140,7 +149,7 @@ inline void CodeGen::DerefLoc(Loc &lv) {
     Loc nl;
     nl.t = r.sub;
     nl.val = true;
-    nl.s = cat("(*", rv, ")");
+    nl.s = PointeeLv(rv, r.sub);
     nl.hlen = lv.hlen;
     nl.viaref = lv.viaref;
     lv = nl;
@@ -771,7 +780,7 @@ inline string CodeGen::GenXD(Node *n, TypeExpr *want) {
         auto x = GenX(n);
         if (IsVarintT(sub)) return cat("gs_zig_read(", x, ")");
         if (IsResz(sub) || IsBytesT(sub)) return x;   // Byte-pointer currency.
-        return cat("(*", x, ")");
+        return PointeeLv(x, sub);
     }
     return GenX(n);
 }

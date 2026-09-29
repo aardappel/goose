@@ -541,7 +541,7 @@ inline string CodeGen::CT(TypeExpr *t) {
 // Fixed-class kinds that C declares as a named struct: they get a
 // forward typedef the moment they are named (NameCT), so a reference to
 // one needs only the name and the body follows when the type is first
-// needed by value.
+// needed by value or through a pointer (PointeeLv).
 inline bool CodeGen::StructLike(TypeExpr *t) {
     return t->kind == TY_STRUCT || t->kind == TY_VARIANT ||
            (t->kind == TY_ENUM && !t->enu->varmode);

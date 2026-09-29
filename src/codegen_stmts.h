@@ -617,7 +617,7 @@ inline string CodeGen::CallVal0(Call *c, const string &r0, TypeExpr *want) {
         et->kind != TY_REF && et->kind != TY_VOID) {
         if (IsVarintT(rt->ref->sub)) return cat("gs_zig_read(", r0, ")");
         if (IsResz(rt->ref->sub) || IsBytesT(rt->ref->sub)) return r0;
-        return cat("(*", r0, ")");
+        return PointeeLv(r0, rt->ref->sub);
     }
     return r0;
 }
@@ -634,7 +634,7 @@ inline CodeGen::Loc CodeGen::CallResLoc(Call *c, const string &r0) {
         if (IsBytesT(sub)) return BytesLoc(r0, sub, Loc {});
         lv.t = sub;
         lv.val = true;
-        lv.s = cat("(*", r0, ")");
+        lv.s = PointeeLv(r0, sub);
         return lv;
     }
     if (IsResz(rt)) return RzTempLoc(rt, r0, "");
