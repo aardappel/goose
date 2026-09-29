@@ -640,24 +640,6 @@ inline FnSpec *TypeCheck::NamedSpec(FnSpec *env) {
     return env;
 }
 
-// The locals a function nested in `env` can reach outside its own body:
-// those of each lexical parent, a function value's body holding the ones
-// its frame declares.
-inline vector<VarDef *> TypeCheck::LexicalLocals(FnSpec *env) {
-    vector<VarDef *> out;
-    for (; env; env = env->lexparent) {
-        if (!env->isfunval) {
-            for (auto vd : vars) if (vd->ownerspec == env) out.push_back(vd);
-            continue;
-        }
-        auto fi = FrameOfSpec(env);
-        if (fi < 0) continue;
-        auto end = fi + 1 < (int)frames.size() ? frames[fi + 1].varbase : (int)vars.size();
-        for (auto i = frames[fi].varbase; i < end; i++) out.push_back(vars[i]);
-    }
-    return out;
-}
-
 inline SFunction *TypeCheck::LookupLocalFn(string_view name) {
     FnSpec *env;
     return LookupLocalFnEnv(name, env);

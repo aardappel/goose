@@ -1050,7 +1050,6 @@ struct TypeCheck {
     int FrameOfScope(int s);
     bool NamesFrame(int fi, int target);
     FnSpec *NamedSpec(FnSpec *env);
-    vector<VarDef *> LexicalLocals(FnSpec *env);
     SFunction *LookupLocalFn(string_view name);
 
     FlowState SaveFlow();

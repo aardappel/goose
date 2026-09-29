@@ -1744,9 +1744,7 @@ keyed on one captures that clone's variables: another call site of the
 value, or the same call checked again as an argument, specializes anew
 instead of reusing one whose captures codegen never declares. `NamedSpec`
 gives the named function around such an environment, which a plain `return`
-inside it targets (`CheckReturn`); that
-is how HOF-based iteration returns. `LexicalLocals` gives a nested recursive
-call's lexical parents' locals, the body's included (§3.10).
+inside it targets (`CheckReturn`); that is how HOF-based iteration returns.
 
 **`return ... from`** (`CheckReturn`, §7.9): the target resolves in the
 returning function's definition context (a nested function in scope, else
