@@ -389,6 +389,9 @@ struct TypeCheck {
         // A destination reached through a reference that points nowhere yet
         // (RefProvOf): it has no roots, unlike no destination at all.
         bool unknown = false;
+        // The slot a reference to a slice names, which may be a slice
+        // variable's own (StoreIntoSlot).
+        bool slot = false;
         Dest() {}
         Dest(const Roots &r, bool vb = false, TypeExpr *re = nullptr)
             : roots(r), varbind(vb), reached(re), unknown(r.None()) {}
@@ -1224,7 +1227,10 @@ struct TypeCheck {
     void VisibleVars(const function<void(VarDef *)> &f);
     void ShrinkScanVars(const function<void(VarDef *)> &f);
     bool StaticCanContain(TypeExpr *of);
-    Roots RootCandidates(TypeExpr *of, int d, bool globalsonly, bool writable);
+    // `slots`: the pointee is the slot a reference names, which may be a
+    // slice variable's own.
+    Roots RootCandidates(TypeExpr *of, int d, bool globalsonly, bool writable,
+                         bool slots = false);
 
     bool TempContents(const Val &v, ReadBack &contents);
     Roots ReadBackRoot(TypeExpr *rt, const Roots &container, bool byteview = false,
@@ -1672,7 +1678,20 @@ struct TypeCheck {
     void CheckRebind(Assign *a, LVal &lv);
     bool PointeeWritable(LVal &lv, Node *at);
     void PointeeAssign(Assign *a, LVal &lv, const LVal &at);
-    void CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv);
+    // `via`: how a store through a reference reached slice variable vd
+    // (" through a reference"), where it did not assign vd itself.
+    bool CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv, const string &via = {});
+    // A slice stored into the slot of type `slice` a reference to a slice
+    // names: into storage r owns, or where `bound`, storage r's references
+    // lead to.
+    bool StoreIntoSlot(Node *at, VarDef *r, bool bound, TypeExpr *slice, const Val &v,
+                       const string &via);
+    bool RebindSliceVar(Node *at, VarDef *sv, const Val &v, const string &via);
+    // The slice variable storage r is, whose own slot a reference to a slice
+    // may name; null for any other storage.
+    static VarDef *SliceVarOf(VarDef *r) {
+        return r && r->type && r->type->kind == TY_SLICE ? r : nullptr;
+    }
     void CompoundAssign(Assign *a, TypeExpr *st, bool writable);
     void NoLetAssign(Node *at, const LVal &lv);
     void NoCopyWrite(Node *at, const LVal &lv);
@@ -1697,17 +1716,6 @@ struct TypeCheck {
     void GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd, const string &what,
                           TypeExpr *bound = nullptr);
 
-    // Where the roots on record may say less than where a value points: once
-    // a slice slot is written through a reference, which puts the store on
-    // record where the slice pointed rather than on the slot and leaves a
-    // slice variable's binding as it was. The judgement of what the globals
-    // hold (CheckGlobalShrinks) cannot rest on those roots then; `staleroots`
-    // says where it first happened, empty where it never did.
-    string staleroots;
-    void NoteStaleRoots(const string &why) {
-        if (staleroots.empty()) staleroots = why;
-    }
-
     // Every store of a reference, slice or holder value into a container
     // (ast.h StoreEvent), program-wide: a function value's body stores into
     // its lexical function's containers while being checked in another frame.
@@ -1729,7 +1737,8 @@ struct TypeCheck {
     // contents) into container: one event per root, the container's
     // contents updated (§9.2).
     void RecordStore(VarDef *container, const Roots &roots, bool byteview, TypeExpr *pointee,
-                     VarDef *src = nullptr, TypeExpr *reached = nullptr, bool bound = false);
+                     VarDef *src = nullptr, TypeExpr *reached = nullptr, bool bound = false,
+                     bool slot = false);
     // Whether a holder may hold a reference into arr: `hit` takes the index
     // of the event that says so.
     bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
@@ -1820,7 +1829,7 @@ struct TypeCheck {
         VarDef *root = nullptr;
         bool bound = false;
     };
-    vector<ShrinkTarget> ShrinkTargets(const Roots &roots, TypeExpr *arr);
+    vector<ShrinkTarget> ShrinkTargets(const Roots &roots, TypeExpr *arr, bool slots = false);
     string TargetStr(const ShrinkTarget &t);
     void ShrinkThrough(Node *at, const string &verb, const string &recv, const Roots &roots,
                        TypeExpr *arr, ShrinkBalance balance = SB_UNBALANCED);

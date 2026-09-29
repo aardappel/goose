@@ -733,11 +733,16 @@ inline void TypeCheck::BoundReach(VarDef *r, vector<TypeExpr *> &out) {
 // every named local at scope depth `d` or shallower that can hold one,
 // exactly, and the roots of the references and slices in scope whose
 // pointees can (a parameter's caller-side storage is reachable only through
-// it), as those references have them. The references a parameter holds by
-// value or points at lead on into more of the caller's storage, which this
-// function cannot enumerate: everything stored there outlives the
-// parameter's root, so that root stands in for it, as a bound.
-inline Roots TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, bool writable) {
+// it), as those references have them. Where the pointee is the slot a
+// reference names (`slots`), a slice variable's own storage holds a slice
+// (§3.8): a local's once a reference to it has been made (VarDef::slotref),
+// before which nothing can hold one, a global's always, since a function
+// checked later may make one. The references a parameter holds by value or
+// points at lead on into more of the caller's storage, which this function
+// cannot enumerate: everything stored there outlives the parameter's root,
+// so that root stands in for it, as a bound.
+inline Roots TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, bool writable,
+                                       bool slots) {
     Roots out;
     auto beyond = [&](VarDef *v, TypeExpr *t, int rd) {
         if (!v->isparam || !v->refrootknown || !ReachesThroughRefs(t, of)) return;
@@ -748,6 +753,9 @@ inline Roots TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, bo
         if (!v->type) return;
         if (IsRefOrSlice(v->type)) {
             if (!v->refrootknown) return;   // No commitment yet; nothing stored from it.
+            if (slots && SliceVarOf(v) && (v->slotref || v->isglobal) && Depth(v) <= rd &&
+                CanContain(v->type, of))
+                out.Add({ v, true });
             auto pt = PointeeOf(v->type);
             if (!pt) return;
             if (CanContain(pt, of))
@@ -861,7 +869,7 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
         // had to outlive the container, so its owner is a candidate at the
         // container's depth or shallower: each is an alternative, exact where
         // it is a variable's own storage, a bound where it is a parameter's.
-        auto cands = RootCandidates(of, Depth(croot), global, !rt->cq);
+        auto cands = RootCandidates(of, Depth(croot), global, !rt->cq, rt->kind == TY_REF);
         // Out of a slot, the pointee lies in no grow-shrink array's
         // elements: the store rule keeps every reference rooted at storage
         // whose grow-shrink array could hold one out of slots (§5.2), so that

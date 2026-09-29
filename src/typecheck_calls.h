@@ -1284,7 +1284,8 @@ inline vector<VarDef *> TypeCheck::ExternalOptionals(const MatchInfo &mi) {
 }
 
 inline EnvRead TypeCheck::EnvReadOf(VarDef *vd) {
-    return { vd, vd->assigned, vd->refrootknown, vd->ref, vd->contents, vd->contentbyteview };
+    return { vd, vd->assigned, vd->refrootknown, vd->ref, vd->contents, vd->contentbyteview,
+             vd->slotref };
 }
 
 // A body names vd outside its activation: a nested function one of its
@@ -1316,7 +1317,8 @@ inline void TypeCheck::NoteCalleeEnvReads(FnSpec *callee) {
 }
 
 // Whether vd is as r found it: the same roots, the same contents, assigned
-// or not as it was.
+// or not as it was, a slot a reference has been made to or not
+// (StoreIntoSlot).
 inline bool TypeCheck::EnvIs(const VarDef *vd, const EnvRead &r) {
     auto sameroots = [](const Roots &a, const Roots &b) {
         if (a.alts.size() != b.alts.size() || a.unknown != b.unknown) return false;
@@ -1334,7 +1336,7 @@ inline bool TypeCheck::EnvIs(const VarDef *vd, const EnvRead &r) {
            vd->ref.reusable == r.ref.reusable && vd->ref.byteview == r.ref.byteview &&
            vd->ref.freshview == r.ref.freshview && vd->ref.reached == r.ref.reached &&
            sameroots(vd->contents, r.contents) &&
-           vd->contentbyteview == r.contentbyteview;
+           vd->contentbyteview == r.contentbyteview && vd->slotref == r.slotref;
 }
 
 // Whether each variable the body read outside its activation is as it was
@@ -1370,6 +1372,7 @@ inline void TypeCheck::ReplayEnvExits(FnSpec *spec) {
         v->ref = x.ref;
         v->contents = x.contents;
         v->contentbyteview = x.contentbyteview;
+        v->slotref = v->slotref || x.slotref;
         NoteFact(v);
     }
 }
@@ -1995,7 +1998,8 @@ inline bool TypeCheck::SameRecord(const FnSpec *a, const FnSpec *b) {
     auto sameevents = [&](const StoreEvent &p, const StoreEvent &q) {
         return p.container == q.container && p.root == q.root && p.src == q.src &&
                p.exact == q.exact && p.byteview == q.byteview && p.bound == q.bound &&
-               sametype(p.pointee, q.pointee) && sametype(p.reached, q.reached);
+               p.slot == q.slot && sametype(p.pointee, q.pointee) &&
+               sametype(p.reached, q.reached);
     };
     if (a->classevents.size() != b->classevents.size()) return why("class stores");
     for (size_t i = 0; i < a->classevents.size(); i++)

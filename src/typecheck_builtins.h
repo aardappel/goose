@@ -984,7 +984,8 @@ inline void TypeCheck::AddStoreEvent(const StoreEvent &e) {
     for (auto &o : spec->classevents)
         if (o.container == e.container && o.root == e.root && o.src == e.src &&
             o.exact == e.exact && o.byteview == e.byteview && o.bound == e.bound &&
-            !o.pointee == !e.pointee && (!o.pointee || TypeEq(o.pointee, e.pointee)) &&
+            o.slot == e.slot && !o.pointee == !e.pointee &&
+            (!o.pointee || TypeEq(o.pointee, e.pointee)) &&
             !o.reached == !e.reached && (!o.reached || TypeEq(o.reached, e.reached)))
             return;
     spec->classevents.push_back(e);
@@ -997,7 +998,7 @@ inline void TypeCheck::AddStoreEvent(const StoreEvent &e) {
 // contents are the caller's to know.
 inline void TypeCheck::RecordStore(VarDef *container, const Roots &roots, bool byteview,
                                     TypeExpr *pointee, VarDef *src, TypeExpr *reached,
-                                    bool bound) {
+                                    bool bound, bool slot) {
     if (!container) return;
     // Putting a container's own read-back contents back into it adds no
     // incoming lifetime. Keep this distinction before discarding src.
@@ -1024,6 +1025,7 @@ inline void TypeCheck::RecordStore(VarDef *container, const Roots &roots, bool b
         e.byteview = byteview;
         e.reached = reached;
         e.bound = bound;
+        e.slot = slot;
         if (fitnode) e.at = fitnode->line;
         AddStoreEvent(e);
         if (holds && container->contents.Add({ a.root, a.exact, a.from, a.slotread }))
@@ -1049,8 +1051,10 @@ inline Roots TypeCheck::ClassArgRoots(TypeExpr *pt, const Val &v) {
 // the storage, or the store went into storage the class only leads to, it
 // is a store into each storage there that can hold what the store reached
 // (StoreEvent::reached, ShrinkTargets), which the value must outlive (§9.2):
-// the body saw only the bound. A callee still being checked (a back edge)
-// may have stored any reference argument into any container argument.
+// the body saw only the bound. A store into the slot a reference to a slice
+// names assigns the slice variable each such storage may be (StoreIntoSlot).
+// A callee still being checked (a back edge) may have stored any reference
+// argument into any container argument.
 inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Node *at) {
     auto argroots = [&](size_t q) { return ClassArgRoots(spec->argtypes[q], argvals[q]); };
     auto paramof = [&](VarDef *cr) -> int {
@@ -1059,7 +1063,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         return -1;
     };
     auto push = [&](VarDef *container, const RootAlt &a, TypeExpr *pointee, VarDef *src,
-                    bool byteview, TypeExpr *reached, bool bound) {
+                    bool byteview, TypeExpr *reached, bool bound, bool slot) {
         if (!container || src == container) return;
         StoreEvent e;
         e.container = container;
@@ -1071,6 +1075,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         e.at = at->line;
         e.reached = reached;
         e.bound = bound;
+        e.slot = slot;
         container->contentbyteview |= byteview;
         if (container->type && !IsRefOrSlice(container->type))
             container->contents.Add({ a.root, a.exact, a.from, a.slotread });
@@ -1110,6 +1115,35 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
             else storeevents.push_back(e);
         }
     }
+    // What a store into a slot put there, as seen from here. A slice loaded
+    // through a reference to a slice whose elements hold no references is
+    // one of the slice the argument's slot holds (SlotView), which nothing
+    // else of the slot's type lying behind the class can be; anything else
+    // rooted at a class is bounded by the argument (mapped).
+    auto slotval = [&](const StoreEvent &e) {
+        Val v;
+        v.type = e.reached;
+        v.byteview = e.byteview;
+        auto q = paramof(e.root);
+        auto qt = q >= 0 ? spec->argtypes[(size_t)q] : nullptr;
+        if (qt && qt->kind == TY_REF && qt->ref->sub->kind == TY_SLICE && !e.exact &&
+            !IsRefOrSlice(qt->ref->sub->sub) && !HoldsPlainRef(qt->ref->sub->sub)) {
+            auto held = SlotView(argvals[(size_t)q], qt->ref->sub);
+            v.TakeAlts(held);
+            v.byteview = v.byteview || held.byteview;
+            v.freshview = held.freshview;
+        } else {
+            v.TakeAlts(mapped(e.root, e.exact));
+        }
+        return v;
+    };
+    struct SlotStore {
+        VarDef *root;
+        bool bound;
+        StoreEvent e;
+        string via;
+    };
+    vector<SlotStore> slotstores;
     // A slice writes the caller's elements just as an array reference does.
     // Only a read-back from the same container preserves its existing
     // contents provenance (for example a permutation).
@@ -1123,7 +1157,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
             // function or a function value's body stored into: the storage
             // the parent's callers passed, whose record carries it to them.
             for (auto &a : r.alts)
-                push(e.container, a, e.pointee, src, e.byteview, e.reached, e.bound);
+                push(e.container, a, e.pointee, src, e.byteview, e.reached, e.bound, e.slot);
             continue;
         }
         auto cr = argroots((size_t)p);
@@ -1132,11 +1166,11 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         // every storage there may be behind it.
         auto widen = e.bound || !cr.Exact();
         if (e.bound) cr.Weaken();
-        for (auto &t : ShrinkTargets(cr, e.reached)) {
+        auto pname = spec->sf->params[(size_t)p].name;
+        for (auto &t : ShrinkTargets(cr, e.reached, e.slot)) {
             for (auto &a : r.alts) {
                 if (widen && Depth(a.root) > Depth(t.root)) {
                     auto rname = a.root ? a.root->name : string_view("static data");
-                    auto pname = spec->sf->params[(size_t)p].name;
                     Error(at, cat("call ", spec->sf->name, " stores a reference rooted at ",
                                   rname,
                                   e.bound ? cat(" into what its parameter ", pname,
@@ -1145,9 +1179,21 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
                                                 ", whose argument may point into "),
                                   TargetStr(t), ", which ", rname, " does not outlive (§9.2)"));
                 }
-                push(t.root, a, e.pointee, src, e.byteview, e.reached, t.bound);
+                push(t.root, a, e.pointee, src, e.byteview, e.reached, t.bound, e.slot);
             }
+            if (e.slot)
+                slotstores.push_back({ t.root, t.bound, e,
+                                       cat(" through ", spec->sf->name, "'s parameter ", pname,
+                                           widen ? ", which may name it" : "") });
         }
+    }
+    // A slice loaded through one slot may be stored into another, and the
+    // record keeps no order: the re-bindings are applied until none changes
+    // what a slot holds.
+    for (auto again = !slotstores.empty(); again;) {
+        again = false;
+        for (auto &s : slotstores)
+            again = StoreIntoSlot(at, s.root, s.bound, s.e.reached, slotval(s.e), s.via) || again;
     }
 }
 
@@ -1211,11 +1257,8 @@ inline void TypeCheck::NoteGlobalShrink(Node *at, const string &prefix, VarDef *
 // the binding of a reference or slice global, put one there, and once every
 // function has been checked every store is on record, however late the
 // function making it was checked: a shrink of the array is an error where
-// another global may hold one (§5.1). Where the roots on record may say
-// less than where a value points (staleroots), any global whose type can
-// hold a reference into the array counts. A bound stands for every array
-// of its type the root's references may lead to, which for a global are
-// globals.
+// another global may hold one (§5.1). A bound stands for every array of its
+// type the root's references may lead to, which for a global are globals.
 inline void TypeCheck::CheckGlobalShrinks() {
     if (globalshrinks.empty()) return;
     map<VarDef *, vector<size_t>> bycontainer;
@@ -1246,10 +1289,6 @@ inline void TypeCheck::CheckGlobalShrinks() {
                     auto into = cat(gs.prefix, ": global ", gd->name,
                                     " may hold a reference into ",
                                     gs.bound ? string(arr->name) : string("it"));
-                    if (!staleroots.empty())
-                        ErrorIn(gs.at, cat(into, ": the roots on record may not say all a "
-                                           "value points at, since ", staleroots, " (§5.1)"),
-                                gs.chain);
                     GlobalReach reach { *this, arr, arrtype, bycontainer, {}, {} };
                     Line where;
                     if (!reach.Holds(gd, &where)) continue;
@@ -1582,9 +1621,10 @@ inline bool TypeCheck::SamePath(Node *a, Node *b) {
 // was read out of something whose references lead to the array. A null
 // root is static data where exact, and where not, the globals. The same
 // storage is where a store rooted there into a slot inside an `arr` may land
-// (FitsAt, ApplyCalleeStores).
+// (FitsAt, ApplyCalleeStores), and where the slot is one a reference to a
+// slice names (`slots`), a slice variable may be it.
 inline vector<TypeCheck::ShrinkTarget> TypeCheck::ShrinkTargets(const Roots &roots,
-                                                                 TypeExpr *arr) {
+                                                                 TypeExpr *arr, bool slots) {
     vector<ShrinkTarget> out;
     auto add = [&](VarDef *r, bool bound) {
         for (auto &t : out)
@@ -1600,7 +1640,7 @@ inline vector<TypeCheck::ShrinkTarget> TypeCheck::ShrinkTargets(const Roots &roo
             if (root) add(root, false);
             continue;
         }
-        auto cands = RootCandidates(arr, Depth(root), false, true);
+        auto cands = RootCandidates(arr, Depth(root), false, true, slots);
         if (root) {
             auto isbound = false;
             if (!IsTemp(root)) {

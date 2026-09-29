@@ -1,8 +1,6 @@
-// error: cannot clear bs: global P may hold a reference into it
-// error: the roots on record may not say all a value points at, since a slice is written through a reference
+// error: cannot clear bs: global P may hold a reference into it, stored at
 // aim writes the view into P's slot through a reference bound to it, which
-// the store record puts where P pointed: every global that can hold a view
-// into bs counts.
+// assigns P (§3.8): the record says P may view bs (§5.1).
 struct B { name: u8[..8] }
 struct H { s: const u8[:] }
 var bs: B[>..] = [];

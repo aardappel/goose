@@ -433,7 +433,7 @@ inline Prov TypeCheck::RefProvOf(VarDef *vd) {
         for (auto &a : p.alts) a.slotread = true;
     if (!vd->refrootknown && vd->type && vd->type->kind == TY_REF && vd->type->ref->optional) {
         auto cands = RootCandidates(LoadType(vd->type->ref->sub), Depth(vd), false,
-                                    !vd->type->cq);
+                                    !vd->type->cq, true);
         if (cands.Any([](const RootAlt &a) { return a.root != nullptr; })) p.alts = cands.alts;
     }
     return p;
@@ -448,11 +448,13 @@ inline VarDef *TypeCheck::ResetLocal(VarDef *previous) {
     auto captured = previous->captured;
     auto nonneguse = previous->nonneguse, markuse = previous->markuse;
     auto refwrite = previous->refwrite;
+    auto slotref = previous->slotref;
     *previous = VarDef {};
     previous->captured = captured;
     previous->nonneguse = nonneguse;
     previous->markuse = markuse;
     previous->refwrite = refwrite;
+    previous->slotref = slotref;
     return previous;
 }
 
@@ -2304,13 +2306,12 @@ inline bool TypeCheck::PointeeWritable(LVal &lv, Node *at) {
 }
 
 // `r = v` through the reference at lv, whose pointee is the location `at`
-// (DerefLValue): where the reference points is the destination.
+// (DerefLValue): where the reference points is the destination, which for a
+// reference to a slice is the slot it names (StoreIntoSlot).
 inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv, const LVal &at) {
     auto pt = lv.type->ref->sub;
     if (!PointeeWritable(lv, a))
         Error(a, "cannot write through this reference: non-writable provenance (§9.5)");
-    if (pt->kind == TY_SLICE)
-        NoteStaleRoots(cat("a slice is written through a reference at ", Where(a->line)));
     if (pt->kind == TY_INT && pt->intstorage == IS_VARINT)
         Error(a, "varint fields are written only at construction (§3.6)");
     AssignableClassCheck(pt, a);
@@ -2321,29 +2322,85 @@ inline void TypeCheck::PointeeAssign(Assign *a, LVal &lv, const LVal &at) {
                      "array applies to a local of the function that owns it (§5.1)"));
     Roots built;
     if (arr) built = at;
-    CheckAssignedValue(a, pt, arr, built, Dest(at, false, at.reached));
+    Dest dest(at, false, at.reached);
+    dest.slot = pt->kind == TY_SLICE;
+    CheckAssignedValue(a, pt, arr, built, dest);
+}
+
+// A slice v stored into the slot a reference to a slice names, which lies in
+// storage r owns, or where `bound` in storage r's references lead to (§3.8).
+// A slice variable's own slot is assigned as `s = v` would assign it
+// (RebindSliceVar), whether it is the one place the store went or one it may
+// have. A parameter's class stands for a slot of the caller's, whose
+// variable the call re-binds (ApplyCalleeStores), but it may also be a
+// variable of a function the body is nested in, which the body names itself:
+// each such one a reference has been made to (VarDef::slotref) is re-bound
+// here, but for what was loaded through the class, which the slot held
+// already. A body naming one is checked again for a call after a reference
+// to it is made (EnvIs). A global's binding matters only to the judgement of
+// the globals, which the calls' re-bindings reach. Returns whether a binding
+// changed.
+inline bool TypeCheck::StoreIntoSlot(Node *at, VarDef *r, bool bound, TypeExpr *slice,
+                                     const Val &v, const string &via) {
+    if (bound) return false;
+    if (auto sv = SliceVarOf(r)) return RebindSliceVar(at, sv, v, via);
+    if (!IsClassRoot(r)) return false;
+    Val nv = v;
+    std::erase_if(nv.alts, [&](const RootAlt &a) { return !a.exact && a.from == r; });
+    if (nv.None()) return false;
+    auto changed = false;
+    VisibleVars([&](VarDef *x) {
+        auto sv = SliceVarOf(x);
+        if (sv && sv->slotref && !sv->isglobal && Depth(sv) <= Depth(r) &&
+            TypeEq(sv->type, slice))
+            changed = RebindSliceVar(at, sv, nv, " through a reference that may name it") ||
+                      changed;
+    });
+    return changed;
+}
+
+// Slice variable sv, assigned v through a reference (StoreIntoSlot): checked
+// and bound as its own assignment would be (CheckAssign). One that points
+// nowhere yet, in a loop's discovery pass or a cycle's first round, is left
+// to the pass or round that binds it. A body nested in sv's function names
+// sv this way as surely as by its name (NoteEnvRead).
+inline bool TypeCheck::RebindSliceVar(Node *at, VarDef *sv, const Val &v, const string &via) {
+    if (!sv->refrootknown || sv->ref.Unknown()) return false;
+    NoteEnvRead(sv);
+    return CheckRefRebindRoot(at, sv, v, via);
 }
 
 // A reference variable keeps one root for its whole life (see header
 // note): re-assignments must carry the same root, or one at the same
-// scope depth (which is equivalent for the outlives check).
-inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
+// scope depth (which is equivalent for the outlives check). Returns whether
+// the binding changed.
+inline bool TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv,
+                                          const string &via) {
+    auto changed = false;
     if (rv.byteview && !vd->ref.byteview) {
         vd->ref.byteview = true;
         NoteFact(vd);
+        changed = true;
     }
     if (rv.freshview && !vd->ref.freshview) {
         vd->ref.freshview = true;
         NoteFact(vd);
+        changed = true;
     }
+    auto rootname = [](VarDef *r) { return r ? r->name : string_view("static data"); };
     // The variable may point wherever it did and wherever the new value may:
     // a later read sees either. A root it did not have joins only at the
     // depth of its binding.
     auto added = rv.Any([&](const RootAlt &a) { return !vd->ref.Has(a.root); });
     auto nr = rv.Root();
-    if (added && Depth(nr) != Depth(vd->ref.Root()))
+    if (added && Depth(nr) != Depth(vd->ref.Root())) {
+        if (!via.empty())
+            Error(at, cat("storing a slice rooted at ", rootname(nr), " into ", vd->name, via,
+                          ": ", vd->name, " is bound to one rooted at ",
+                          rootname(vd->ref.Root()), ", at a different scope depth (§9.2)"));
         Error(at, cat("re-binding ", vd->name, " with a reference rooted at a different "
                       "scope depth is not supported; declare a new variable"));
+    }
     // Nor does a variable that points into no grow-shrink array start to:
     // what read it before -- earlier in a loop, through a reference to it --
     // may have stored it (§5.2).
@@ -2365,6 +2422,7 @@ inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
             // no call has given a pool (CheckUnreached): the rebind settles it.
             vd->ref.reusable &= rv.reusable;
             NoteFact(vd);
+            changed = true;
         } else {
             auto kind = [](int ru) { return ru == RU_SLICES ? "reusable[]" : "reusable"; };
             Error(at, cat("re-binding ", vd->name, " to a reference ",
@@ -2377,7 +2435,11 @@ inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
     // A rebind to other storage keeps the lifetime bound but means the
     // variable no longer names one array: a read inside a loop this rebind
     // is in sees both on the next pass (CheckLoopPasses).
-    if (vd->ref.Add(rv)) NoteFact(vd);
+    if (vd->ref.Add(rv)) {
+        NoteFact(vd);
+        changed = true;
+    }
+    return changed;
 }
 
 // A `let` binding or field is not assigned as a whole (§4.4).

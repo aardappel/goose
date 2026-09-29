@@ -831,7 +831,31 @@ back edge's u8 result is one whatever its record says.
 
 An assignment through a reference (`PointeeAssign`) stores where the
 reference points, which for a reference read out of a field is where the
-read-back rule says (`DerefLValue`), not the field's container.
+read-back rule says (`DerefLValue`), not the field's container. Through a
+reference to a slice that is the slot it names (`Dest::slot`), which may be
+a slice variable's own: each storage the store lands in that is one is
+assigned the value as `s = v` would assign it (`StoreIntoSlot`,
+`RebindSliceVar`, §3.7), whether the reference names it exactly or only
+may. The storage a reference to a slice may name, where it has an inexact
+root, includes each slice variable of the slot's type at that depth or
+outside that a reference has been made to (`VarDef::slotref`, set by
+`SlotRoots` and `&s`, before which nothing can name one) and every global
+slice variable, to which a function checked later may make one
+(`RootCandidates`' `slots`, which a read-back of a reference to a slice
+passes as well, §3.6). A parameter's class stands for a slot of the
+caller's: the event says so (`StoreEvent::slot`), and the call assigns each
+slice variable among the storages its argument may be (`ApplyCalleeStores`)
+what the callee stored, as seen from the call -- a slice the callee loaded
+through another reference-to-slice parameter, whose slice's elements hold
+no references, is the slice that argument's slot holds (`SlotView`),
+anything else of a class the argument as a bound -- until no binding
+changes, since the callee's record keeps no execution order. A body nested
+in the functions whose variables it names may be storing into one of those
+through its class too: each slice variable of the slot's type there, at the
+class's depth or outside, that a reference has been made to is assigned the
+value at the store, but for what the body loaded through the class itself,
+which the slot held already; a body naming such a variable is checked again
+for a call after a reference to it is made (`EnvRead::slotref`).
 
 A declaration without a type annotation infers its type from the value, so
 `FitsAt` has no destination type to check. `CheckBindingRoot` applies rule 2
@@ -924,7 +948,9 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   the candidates are the visible locals declared at the container's depth or
   outside it that can hold the pointee, the pointees of reference and slice
   variables in scope with committed roots at that depth, the globals, and
-  static data -- and the class root of every parameter in scope whose
+  static data (for a reference to a slice, the slice variables among them
+  as §3.5 says: a local once a reference to it has been made, every
+  global) -- and the class root of every parameter in scope whose
   pointee, or whose by-value contents, lead through references to storage
   that can hold the pointee (`ReachesThroughRefs`). That storage is the
   caller's, which the body cannot enumerate: a holder parameter is a local,
@@ -977,7 +1003,11 @@ binds it as the check did (`ReplayEnvExits`). A global `var` read in a
 function's body is `GlobalVarRead` instead (below). `CheckRefRebindRoot`
 implements §9.2's rebinding rule: the same roots keep everything (an
 inexact new value only weakens exactness); another root at the same depth
-joins the variable's alternatives; any other depth is an error.
+joins the variable's alternatives; any other depth is an error. A store
+through a reference into a slice variable's slot binds it the same way,
+`let` or `var` (§3.5, `StoreIntoSlot`), where the variable is bound
+already: one bound to what points nowhere yet is left to the pass or round
+that binds it.
 
 **Global `var`s** (`BoundAnywhere`). A function checked after a body reading
 a global `var` of reference or slice type may bind it, and the body's check
@@ -1158,9 +1188,8 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    standing for every argument its calls gave it. A root that bounds the
    storage and names no container it was read out of -- static data a call
    returns included, which `RetAltVal` makes inexact -- may be any array
-   its pointee fits. Where the roots on record may be stale (§10,
-   `staleroots`), every other global whose type can hold a reference to
-   something the array contains counts;
+   its pointee fits. A store through a reference into a global slice
+   variable's slot is both an event on it and its binding (§3.5);
 6. the shrink is recorded for the callers (`NoteShrink`: `shrinkexternals`
    for globals and captured locals, `shrinkparams` for parameters), and so
    are the views still used that only the callers can tell apart from the
@@ -3307,16 +3336,29 @@ specification allows, and the shapes the C backend refuses outright:
   the shrink by what its path reached would only move the rejection to the
   call.
 * A shrink of a global array counts another global as holding a reference
-  into it where the store record says it may (§3.10) -- but where the
-  program writes a slice through a reference, which the record puts where
-  the slice pointed rather than on the slot, leaving a slice variable's
-  binding as it was (`staleroots`), every other global whose type can hold
-  one counts: roots derived since may miss where a value points. The record
-  itself is coarse in two places: static data a call returns is an inexact
-  root (`RetAltVal`), which may be any array its pointee fits, so a global
-  given such a result counts wherever it could; and a global holder passed
-  to a by-value holder parameter gives it class 0, with no call-site facts
-  for the class, so what the callee stores of it counts the same.
+  into it where the store record says it may (§3.10). The record is coarse
+  in two places: static data a call returns is an inexact root
+  (`RetAltVal`), which may be any array its pointee fits, so a global given
+  such a result counts wherever it could; and a global holder passed to a
+  by-value holder parameter gives it class 0, with no call-site facts for
+  the class, so what the callee stores of it counts the same.
+* A store through a reference to a slice that may name several slots -- one
+  read out of storage, a merge, a parameter given such an argument, or the
+  class of a nested function's parameter beside the variables of the frames
+  around it -- binds every slice variable it may name (§3.5), each under
+  §9.2's depth rule: a view of an array at another depth than one of them is
+  bound at is an error there, though the store may never land in it. Every
+  global slice variable of the slot's type is among them, a reference to it
+  being one a function checked later may make; a local only once one has
+  been made. A class of its own for each captured variable a nested
+  function's parameter names exactly, in the specialization key, would
+  spare those beside it.
+* What a callee stores through a reference-to-slice parameter binds the
+  caller's variable to what the callee stored as its argument bounds it,
+  unless it loaded the slice through another such parameter whose slice's
+  elements hold no references (§3.5): a slice read out of a slice of slices
+  behind a parameter binds the variable to anything the argument outlives,
+  which may then break the depth rule.
 * The growth-during-construction rule (§3.10) takes a parameter class to be
   possibly any global or captured local a callee grows, two classes of one
   activation to be one array unless every call site keeps both concrete and

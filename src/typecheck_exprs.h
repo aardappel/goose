@@ -658,6 +658,8 @@ inline void TypeCheck::SlotRoots(Val &v) {
     if (!v.hasslot || v.type->kind != TY_SLICE) return;
     v.TakeAlts(v.slot);
     v.hasslot = false;
+    for (auto &a : v.alts)
+        if (auto sv = SliceVarOf(a.root)) sv->slotref = true;
 }
 
 inline bool TypeCheck::BindsRef(const Val &v, TypeExpr *dt) {
@@ -945,7 +947,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
         // admits, this leaves out only what cannot be its owner. Each place
         // the value may point must outlive each (§9.2).
         auto reached = curdst.reached ? curdst.reached : dt;
-        auto dsts = ShrinkTargets(curdst.roots, reached);
+        auto dsts = ShrinkTargets(curdst.roots, reached, curdst.slot);
         for (auto &a : roots.alts) {
             for (auto &d : dsts) {
                 if (Depth(a.root) <= Depth(d.root)) continue;
@@ -1010,7 +1012,12 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
                                     d.bound);
                 } else {
                     RecordStore(d.root, roots, v.byteview, PointeeOf(t), nullptr, reached,
-                                d.bound);
+                                d.bound, curdst.slot);
+                    if (curdst.slot)
+                        StoreIntoSlot(fitnode, d.root, d.bound, dt, v,
+                                      curdst.roots.Exact()
+                                          ? " through a reference"
+                                          : " through a reference that may name it");
                 }
             }
         } else if (curdst.roots.Exact() && curdst.roots.Root()->isglobal) {
@@ -1248,6 +1255,7 @@ inline Val TypeCheck::CheckRefOf(Unary *x) {
     v.writable = lv.writable && !lv.isvarint;
     v.type->cq = !v.writable;   // `&x` of a const value is a `const T&` (§9.5).
     if (lv.var && v.writable) NoteWritableRef(lv.var, x);
+    if (auto sv = SliceVarOf(lv.var)) sv->slotref = true;
     return v;
 }
 

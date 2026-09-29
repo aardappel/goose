@@ -2370,7 +2370,11 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
 * A reference *variable* commits to its first binding's root: `.=` may
   rebind it only within the same root, or to one at the same scope depth
   (the common case: retargeting to another element of the same or a sibling
-  container in a loop). Anything else needs a new variable. A rebind to a
+  container in a loop). Anything else needs a new variable. A slice
+  variable commits the same way, and a store through a reference to its
+  slot (§3.8) assigns it as `s = v` does, a `let` included (§4.4): through
+  one that may name it -- read out of storage, merged, or a parameter given
+  one of those -- as well as through one that does. A rebind to a
   different root leaves the variable inexact, since it no longer names one
   array, and a merged value (above), since it may still hold its earlier
   binding. A loop body is checked in the state its earlier iterations leave

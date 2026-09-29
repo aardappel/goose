@@ -1266,6 +1266,10 @@ struct VarDef {
     Node *nonneguse = nullptr;
     Node *markuse = nullptr;
     Node *refwrite = nullptr;
+    // A slice variable a reference to whose slot has been made (§3.8), so
+    // that a reference read out of storage, or a parameter's class, may name
+    // it (TypeCheck::RootCandidates, StoreIntoSlot). Kept as the marks are.
+    bool slotref = false;
 };
 
 // Lifetime depth of a root (§9.2): a global's or static data's is 0.
@@ -1476,6 +1480,9 @@ struct StoreEvent {
     // references lead to, which it only bounds: a parameter's class stands
     // for the caller's, which the call widens to the candidates there.
     bool bound = false;
+    // Stored into the slot a reference to a slice names, which assigns the
+    // slice variable that slot may be (TypeCheck::StoreIntoSlot).
+    bool slot = false;
 };
 
 // A shrink, and a reference, slice or holder still used after it that only
@@ -1533,6 +1540,7 @@ struct EnvRead {
     Prov ref;
     Roots contents;
     bool contentbyteview = false;
+    bool slotref = false;
 };
 
 // One monomorphic specialization of a function: the unit of typechecking and

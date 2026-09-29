@@ -1,9 +1,7 @@
-// error: cannot clear bs: global P may hold a reference into it
-// error: the roots on record may not say all a value points at, since a slice is written through a reference
-// pick returns s after aim has written a view of bs's element into it
-// through a reference, which leaves s's roots saying arr: P, bound for good
-// to pick's result, views bs, so the roots its initializer was given cannot
-// settle that it does not (§5.1).
+// error: cannot clear bs: global P may hold a reference into it, stored at
+// aim writes a view of bs's element into pick's s through a reference to
+// its slot, which assigns s (§3.8): P, bound for good to pick's result,
+// views bs (§5.1).
 struct B { name: u8[..8] }
 var arr: u8[4] = [1, 2, 3, 4];
 var bs: B[>..] = [B { name: "a" }];
