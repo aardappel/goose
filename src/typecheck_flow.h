@@ -113,12 +113,13 @@ inline bool TypeCheck::IntoGrowShrink(const Prov &v, VarDef *root, TypeExpr *t, 
 
 // A grow-shrink array a reference or slice of type t with provenance p may
 // point into, or null: one held by any root the value may have -- a
-// branch's, a rebind's, a call's -- or, for a reference to a slice, one
-// that slice may point into.
+// branch's, a rebind's, a call's -- where it was not loaded out of a slot,
+// since what was never points into one (RootAlt::slotread), or, for a
+// reference to a slice, one that slice may point into.
 inline VarDef *TypeCheck::GrowShrinkTaint(const Prov &p, TypeExpr *t) {
     if (!t || !IsRefOrSlice(t)) return nullptr;
     for (auto &a : p.alts)
-        if (IntoGrowShrink(p, a.root, t, false)) return a.root;
+        if (!a.slotread && IntoGrowShrink(p, a.root, t, false)) return a.root;
     if (t->kind == TY_REF && t->ref->sub->kind == TY_SLICE)
         return GrowShrinkTaint(SlotView(p, t->ref->sub), t->ref->sub);
     return nullptr;
@@ -271,8 +272,9 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
 // or element lives: a variable's own binding says where its slice points,
 // and the stores into a container only bound it, as the caller's variable
 // behind a parameter's class of an explicit `&s` does, and as an inexact
-// root bounds the slot. Only a slice variable's binding says whether its
-// slice is a slot read (Prov::slotread); what the reference was does not.
+// root bounds the slot. A slice variable's binding says whether its slice is
+// a slot read (RootAlt::slotread), and one a container holds is, lying in a
+// field or an element; what the reference was says nothing.
 inline Prov TypeCheck::SlotView(const Prov &p, TypeExpr *slice) {
     Prov out = p;
     out.alts.clear();
@@ -301,6 +303,7 @@ inline Prov TypeCheck::SlotView(const Prov &p, TypeExpr *slice) {
         lv.type = slice;
         lv.SetProv(p);
         lv.Set(r, true);
+        lv.isslot = true;
         ReadBackLVal(lv);
         out.Add(lv);
         out.byteview = out.byteview || lv.byteview;
@@ -348,17 +351,18 @@ inline bool TypeCheck::BoundAnywhere(VarDef *vd) {
 // can be given: the read-back rule's answer for a global container (§9.5),
 // since only globals and static data outlive a global. That is each global
 // whose storage can hold the pointee, exact where there is one, or the pool
-// a relative one names, but for one the store rule keeps every binding of a
-// global from (§5.2, FitsAt and CheckBindingRoot): a grow-shrink array that
-// can hold the pointee. Like a slot's contents, it is a slot read.
+// a relative one names. Like a slot's contents, it is a slot read, the store
+// rule keeping every binding of a global out of a grow-shrink array (§5.2,
+// FitsAt and CheckBindingRoot), so no global holding one that can hold the
+// pointee is among them.
 inline Prov TypeCheck::GlobalVarRead(VarDef *vd) {
     auto t = vd->type;
     Prov p = vd->ref;
     Roots self;
     self.Set(vd, true);
-    p.TakeAlts(ReadBackRoot(t, self, p.byteview));
-    std::erase_if(p.alts, [&](const RootAlt &a) { return IntoGrowShrink(p, a.root, t, false); });
-    for (auto &a : p.alts) a.slotread = SlotReadable(t);
+    auto slotread = SlotReadable(t);
+    p.TakeAlts(ReadBackRoot(t, self, p.byteview, nullptr, slotread));
+    for (auto &a : p.alts) a.slotread = slotread;
     return p;
 }
 
@@ -1670,9 +1674,9 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     if (IsRefOrSlice(bindtype) && elemtype && (!byref || elemtype->kind == TY_REF) &&
         ((elemtype->kind == TY_REF && elemtype->ref->lenstorage >= 0) ||
          elemtype->kind == TY_SLICE)) {
-        auto rb = ReadBackRoot(elemtype, iterprov, iterprov.byteview,
-                               intemp ? &contents : nullptr);
         auto slotread = SlotReadable(elemtype);
+        auto rb = ReadBackRoot(elemtype, iterprov, iterprov.byteview,
+                               intemp ? &contents : nullptr, slotread);
         iterprov.TakeAlts(rb);
         for (auto &a : iterprov.alts) a.slotread = slotread;
         if (elemtype->cq) iterprov.writable = false;

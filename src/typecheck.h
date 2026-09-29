@@ -1191,7 +1191,7 @@ struct TypeCheck {
 
     bool TempContents(const Val &v, ReadBack &contents);
     Roots ReadBackRoot(TypeExpr *rt, const Roots &container, bool byteview = false,
-                       const ReadBack *contents = nullptr);
+                       const ReadBack *contents = nullptr, bool slotread = false);
     string ReadBackWhy(const Roots &r);
     bool RootedAtReceiver(const Val &rv, const Val &av);
     void CheckRootedAtReceiver(Call *c, const char *op, const Val &rv, const Val &av,

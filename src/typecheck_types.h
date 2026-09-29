@@ -787,8 +787,10 @@ inline bool TypeCheck::TempContents(const Val &v, ReadBack &contents) {
 
 // Where a reference/slice of type `rt` loaded out of a container rooted at
 // `container` points; a temporary's `contents` are its holder root.
+// `slotread`: it was loaded out of a field, an element or a global
+// (RootAlt::slotread).
 inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool byteview,
-                                     const ReadBack *contents) {
+                                     const ReadBack *contents, bool slotread) {
     Roots out;
     // A container that points nowhere yet (Roots::unknown): neither do its
     // contents.
@@ -848,6 +850,15 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
         // container's depth or shallower: each is an alternative, exact where
         // it is a variable's own storage, a bound where it is a parameter's.
         auto cands = RootCandidates(of, Depth(croot), global, !rt->cq);
+        // Out of a slot, the pointee lies in no grow-shrink array's
+        // elements: the store rule keeps every reference rooted at storage
+        // whose grow-shrink array could hold one out of slots (§5.2), so that
+        // storage owns nothing a slot holds. A bound stays, for the lifetime
+        // it gives, and so does the owner of a whole grow-shrink array.
+        if (slotread)
+            std::erase_if(cands.alts, [&](const RootAlt &a) {
+                return a.exact && GrowShrinkCanHold(a.root, of);
+            });
         if (cands.None()) {
             // Nothing can own the pointee: the container itself bounds it.
             out.Add({ croot, false, croot });

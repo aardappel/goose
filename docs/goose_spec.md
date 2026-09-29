@@ -1106,9 +1106,12 @@ again against the pairs the cycle records once the whole cycle is.
   where each of them could be, and a parameter given one that may point into
   the array is not stored either, nor a function's result where one of its
   returns may, nor a reference to a slice variable whose slice may. A
-  variable that points into no grow-shrink array may not be rebound to a
-  value that may: what read it earlier through a reference to it may have
-  stored it.
+  reference or slice read out of a field, an element or a global never may,
+  having been stored there, whatever storage bounds it (§9.5), nor may a
+  slice such a slot holds, loaded through a reference to the slot. A
+  variable that points into no grow-shrink array — one bound to such a read,
+  say — may not be rebound to a value that may: what read it earlier through
+  a reference to it may have stored it.
   The rule is about references that can point *into* the array:
   one merely rooted at a value that holds one, whose pointee type the
   array's elements cannot contain — a slice key read back out of a
@@ -1123,8 +1126,8 @@ again against the pairs the cycle records once the whole cycle is.
   reason a plain reference or slice read out of a field, an element or a
   global never refers into a grow-shrink array, since none is ever stored
   there: the shrink does not consider it, nor a slice of such a slice or a
-  reference into what it views, whatever else the read-back rule (§9.5)
-  says it may point into. That stops at a reference, since what
+  reference into what it views, whatever storage the read-back rule (§9.5)
+  bounds it by. That stops at a reference, since what
   one read out of a field leads to may be a whole grow-shrink array, or a
   variable holding a view into one; and a `var` bound to such reads still
   counts where a rebind could retarget it into the array: a same-depth one
@@ -2477,8 +2480,12 @@ nesting; a variable that merely holds *references* to `T` is not one, and a
 reference or slice field ends the search. Static data is a candidate for the
 element types a literal can supply; for a writable reference or slice only when
 nothing else is, since a writable slot is never given a literal (above) and so
-holds static data only as a null or an empty slice. Then, by where `C`'s own
-root lies:
+holds static data only as a null or an empty slice. Out of a field, an element
+or a global, a variable holding a grow-shrink array whose elements can hold a
+`T` is no candidate either: a reference rooted at it is never stored (§5.2),
+whatever else of it could hold the `T`. A reference to the whole array, or to
+what holds it, is stored like any other: its pointee is no element, and the
+variable stays its candidate. Then, by where `C`'s own root lies:
 
 1. **A global.** Only globals outlive globals (§11.1), so the owner is a
    global candidate whatever local scope is open. One candidate: that

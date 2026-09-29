@@ -196,10 +196,11 @@ inline void TypeCheck::ReadBackLVal(LVal &lv) {
         return a.root && (a.root->contentbyteview ||
                           (a.root->isglobal && lv.type->cq && IsU8(PointeeOf(lv.type))));
     });
-    auto rb = ReadBackRoot(lv.type, lv, lv.byteview, lv.intemp ? &lv.contents : nullptr);
     // What was stored into a slot passed the store rule (§5.2) with its own
     // provenance; the container's says nothing about it.
     auto slotread = lv.isslot && SlotReadable(lv.type);
+    auto rb = ReadBackRoot(lv.type, lv, lv.byteview, lv.intemp ? &lv.contents : nullptr,
+                           slotread);
     lv.TakeAlts(rb);
     for (auto &a : lv.alts) a.slotread = slotread;
     lv.reached = nullptr;

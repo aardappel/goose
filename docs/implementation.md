@@ -756,10 +756,10 @@ references or slices, `HoldsPlainRef`) meets a destination with a root:
    argument list, which can hold an `Input`'s text but no `Input[>..]`;
 3. a reference that may point into a grow-shrink array's elements may be
    bound to a variable but never stored (§5.2, `StoredIntoGrowShrink`: by
-   any of its roots, `GrowShrinkCanHold` with the byte-view exception
-   `MayBeViewed`, or for a reference to a slice by what the slice may point
-   into); a global reference or slice variable is storage, so binding one is
-   a store here;
+   any of its roots but a slot read's (`GrowShrinkTaint`, §3.10),
+   `GrowShrinkCanHold` with the byte-view exception `MayBeViewed`, or for a
+   reference to a slice by what the slice may point into); a global
+   reference or slice variable is storage, so binding one is a store here;
 4. inside a recursive cycle, only a reference into a global, a pool-class
    parameter or a local of an enclosing non-cycle function
    (`CycleStorable`), or into a threaded parameter class where every class
@@ -893,7 +893,17 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
 
 Each candidate is an alternative of the value: a variable's own storage
 exactly, a parameter's class as a bound, static data as the null root; the
-value names one array only with exactly one candidate. Which arrays the
+value names one array only with exactly one candidate. Read out of a slot
+(the `slotread` of §3.10), an exact candidate whose grow-shrink array could
+hold the pointee (`GrowShrinkCanHold`) is left out: rule 3 of §3.5 keeps
+every reference rooted there out of slots, whatever else of it could hold
+the pointee, so it owns nothing a slot holds. A bound stays, since it
+carries the lifetime, and so does the owner of a whole grow-shrink array,
+which a slot may refer to. What is left names the array exactly more often --
+`index_of`, relative stores and class grouping see it -- and the arguments,
+results and bindings the read reaches name no such array: a parameter's
+class made from it may be stored, and a caller's shrink pair passes it
+(§3.10, parameters' views). Which arrays the
 value may point into is settled here, so an array that comes into scope
 later at the same depth is not among them. `ReadBackWhy` turns the
 alternatives into the "may point into `pool` or `spare`" diagnostic the
@@ -925,17 +935,17 @@ serves every call (`NoteEnvRead` keys a body by the locals it reads outside
 its activation, not by globals), so in a function's body
 (`CurRealFrame().spec` set) its reads, `RefProvOf` and `RefRootsOf` alike,
 are not its binding but `GlobalVarRead`: `ReadBackRoot` of the global as a
-container of itself -- the globals that can own the pointee, exact where
-there is one, the pool for an `in pool` one -- less the grow-shrink arrays
-`IntoGrowShrink` finds for the pointee, which the store rule keeps every
-binding of a global out of (§3.5, rule 3), each alternative a slot read with
-`from` the global, which `ReadBackWhy` words as a global any function may
-bind. Its `writable` is the binding's, which the global's type decides
-(§3.8), and so is its `reusable`, which says how the variable is represented
-(`PrefVar`). Its `byteview` is the bindings' so far: a `const u8` one always
-has static data among its candidates, so no identity rule takes it exactly,
-and the shrink of a global array a later byte view binding makes it view is
-judged against the recorded bindings (`NoteGlobalBinding`,
+container of itself, read as a slot (§3.6) -- the globals that can own the
+pointee, exact where there is one, the pool for an `in pool` one, less the
+grow-shrink arrays that could hold the pointee, which the store rule keeps
+every binding of a global out of (§3.5, rule 3) -- each alternative a slot
+read with `from` the global, which `ReadBackWhy` words as a global any
+function may bind. Its `writable` is the binding's, which the global's type
+decides (§3.8), and so is its `reusable`, which says how the variable is
+represented (`PrefVar`). Its `byteview` is the bindings' so far: a
+`const u8` one always has static data among its candidates, so no identity
+rule takes it exactly, and the shrink of a global array a later byte view binding
+makes it view is judged against the recorded bindings (`NoteGlobalBinding`,
 `CheckGlobalShrinks`). A self-relative one only ever holds null and keeps
 the variable rules.
 
@@ -1145,20 +1155,25 @@ or slice loaded out of a field or an element (`ReadBackLVal`, where
 `LVal::isslot` says the location is one, not the pointee of a reference), a
 global reference or slice variable (`RefProvOf`; rule 3 covers a global's
 own bindings) and a `for` binder copying views out of an array (`CheckFor`)
-never point into a grow-shrink array's elements, whatever their read-back
-roots are. A slice of such a slice, and a reference into what it views, keep
-the bit; `MergeVals`, a rebind (`CheckRefRebindRoot`) and a call's result
-(every root its returns give, never a back edge's) keep it only where every
-value does; and
-crossing a reference drops it (`DerefLValue`, `DecayRef`, `Dot::Check`'s
-auto-deref, a `for` loop or a builtin member through a reference, a whole
-array meeting a slice destination through one), since what a reference read
+never point into a grow-shrink array's elements: their read-back leaves out
+the storage that could own them there (§3.6), though what still bounds them
+may hold such an array. A slice of such a slice, and a reference into what
+it views, keep the bit; `MergeVals`, a rebind (`CheckRefRebindRoot`) and a
+call's result (every root its returns give, never a back edge's) keep it
+only where every value does; and crossing a reference drops it
+(`DerefLValue`, `DecayRef`, `Dot::Check`'s auto-deref, a `for` loop or a
+builtin member through a reference, a whole array meeting a slice
+destination through one), since what a reference read
 out of a field leads to may be a whole grow-shrink array, or a variable
 holding a view into one. A slice loaded through a reference to a slice
 variable named by an explicit `&` has what the variable's binding has
-(`SlotView`). A relative reference never has it: it points within the array
-that holds it. The §5.2 scans pass over a held temporary that has it, and
-over a variable that has it unless a binding its record does not show could
+(`SlotView`), and one a container holds, loaded through a reference to its
+field or element, is a slot read of its own. A relative reference never has
+it: it points within the array that holds it. The store rule passes over it
+(`GrowShrinkTaint`, §3.5 rule 3), so a variable bound to it points into no
+grow-shrink array and may not be rebound into one. The §5.2 scans pass over
+a held temporary that has it, and over a variable that has it unless a
+binding its record does not show could
 put a view of the array there (`SlotReadMayRetarget`): one not bound yet, a
 `var` rooted at the array's depth, and, inside a loop the `var` was declared
 outside of, one rooted at that depth or deeper, which a rebind later in the
@@ -3127,9 +3142,11 @@ specification allows, and the shapes the C backend refuses outright:
 * Bounds-check elimination tracks no array contents and no `u64` variables
   (§5.12).
 * A parameter is never a slot read (§3.10), whatever its argument: the
-  specialization key does not record the bit, so inside the callee a
-  grow-shrink shrink still counts a view passed in from a field as one that
-  may point into the array.
+  specialization key does not record the bit. An argument read out of a
+  slot names no grow-shrink array that could not own it (§3.6), but where
+  what bounds it holds one -- a view read out of a parameter's container,
+  passed on -- its class may point into that array: the callee may not
+  store it, and a grow-shrink shrink there still counts it.
 * A shrink of an array in what an inexactly rooted reference points at
   (`c.s.arr.pop()`, with `c.s` read out of `c`) counts as a shrink of every
   array of that array's type the root bounds, not only of those in storage

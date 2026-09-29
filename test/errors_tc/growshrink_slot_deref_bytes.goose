@@ -1,7 +1,7 @@
-// error: cannot clear related while b
-// error: is still used: it may refer into related
-// The bytes of the slice r refers to are those of related once s is rebound
-// (§5.2).
+// error: re-binding s to a reference that may point into a grow-shrink array (related), where it pointed into none
+// s, bound to a view read out of a field, points into no grow-shrink array
+// (§5.2), so it may not be rebound into related: the bytes of the slice r
+// refers to would then be related's, which the clear frees.
 struct Entry { text: u8[:] }
 fn main() {
     var chars: u8[>..] = [];

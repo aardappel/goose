@@ -1,7 +1,7 @@
 // error: re-binding s to a reference that may point into a grow-shrink array (related), where it pointed into none
-// s, bound to a view read out of a field, points into no grow-shrink array
-// (§5.2), so it may not be rebound into related: iterating through r would
-// then walk related, which the clear frees.
+// A view read out of a field never points into a grow-shrink array (§5.2),
+// related included, though related is declared before the read: s, bound
+// to one, points into none, and may not start to.
 struct Entry { text: u8[:] }
 fn main() {
     var chars: u8[>..] = [];
@@ -11,10 +11,6 @@ fn main() {
     related.push(99);
     entries.push(Entry { text: chars[..] });
     var s = entries[0].text;
-    let r: u8[:]& = s;
     s = related[..];
-    for &x in r {
-        related.clear();
-        print(x);
-    }
+    print(s);
 }
