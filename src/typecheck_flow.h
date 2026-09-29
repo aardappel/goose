@@ -566,6 +566,19 @@ inline int TypeCheck::LexFrame(FnSpec *env) {
     return fi;
 }
 
+// The same for a specialization of sf in env. A global initializer's frame
+// has no environment, so a function declared right in it has none either,
+// as a top-level function has none, and continues in that frame, 0.
+inline int TypeCheck::LexFrame(FnSpec *env, SFunction *sf) {
+    return env ? LexFrame(env) : sf->isnested ? 0 : -1;
+}
+
+// The same for a function value's body: a block written in a global
+// initializer continues in its frame too.
+inline int TypeCheck::LexFrame(const FnValBind &fb) {
+    return fb.named ? LexFrame(fb.env, fb.named) : fb.env ? LexFrame(fb.env) : 0;
+}
+
 // The frame scope index s belongs to: the innermost one whose scopes start
 // at or below it.
 inline int TypeCheck::FrameOfScope(int s) {

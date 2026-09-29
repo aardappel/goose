@@ -991,7 +991,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     // function declared earlier calling it) would have it name variables
     // not bound yet; one after its declaring scope ended is keyed apart.
     auto escaped = false;
-    if (sf->isnested && mi.env && LexFrame(mi.env) >= 0) {
+    if (sf->isnested && LexFrame(mi.env, sf) >= 0) {
         auto it = declsiteof.find({ mi.env, sf });
         if (it == declsiteof.end())
             Error(callnode, cat(sf->name, " (declared at ", Where(sf->line),
@@ -999,7 +999,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         escaped = ScopeEnded(*it->second);
     }
     vector<VarDef *> narrowedenv;
-    for (auto v : ExternalOptionals(mi.env, &mi.fnvals))
+    for (auto v : ExternalOptionals(mi))
         if (v->narrowed) narrowedenv.push_back(v);
     // Root classes: distinct roots of ref/slice args ordered by depth.
     vector<RootArg> roots(mi.paramtypes.size());
@@ -1252,8 +1252,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
 
 // Only the callee's lexical environment is shared; ordinary caller locals
 // are separate from a non-nested function. Globals are always shared.
-inline vector<VarDef *> TypeCheck::ExternalOptionals(
-    FnSpec *env, const vector<pair<string_view, FnValBind>> *fnvals) {
+inline vector<VarDef *> TypeCheck::ExternalOptionals(const MatchInfo &mi) {
     vector<VarDef *> out;
     set<VarDef *> seenvars;
     set<FnSpec *> seenenvs;
@@ -1264,18 +1263,18 @@ inline vector<VarDef *> TypeCheck::ExternalOptionals(
     };
     for (auto g : ast.globals) for (auto v : g->defs) add(v);
     // A function value reaches the environment it was written in, whichever
-    // function it is handed to.
-    function<void(FnSpec *)> addenv = [&](FnSpec *e) {
-        if (!e || !seenenvs.insert(e).second) return;
-        for (auto fi = LexFrame(e); fi >= 0; fi = frames[fi].lexframe) {
+    // function it is handed to; fi is that environment's frame (LexFrame).
+    function<void(FnSpec *, int)> addenv = [&](FnSpec *e, int fi) {
+        if (e && !seenenvs.insert(e).second) return;
+        for (; fi >= 0; fi = frames[fi].lexframe) {
             auto end = fi + 1 < (int)frames.size() ? frames[fi + 1].varbase : (int)vars.size();
             for (auto i = frames[fi].varbase; i < end; i++) add(vars[i]);
         }
         for (auto sp = e; sp; sp = sp->lexparent)
-            for (auto &fv : sp->fnvals) addenv(fv.second.env);
+            for (auto &fv : sp->fnvals) addenv(fv.second.env, LexFrame(fv.second));
     };
-    addenv(env);
-    if (fnvals) for (auto &fv : *fnvals) addenv(fv.second.env);
+    addenv(mi.env, LexFrame(mi.env, mi.sf));
+    for (auto &fv : mi.fnvals) addenv(fv.second.env, LexFrame(fv.second));
     return out;
 }
 
@@ -1852,14 +1851,13 @@ inline int TypeCheck::ClassDepth(VarDef *r) {
 // path, and its variables lie within the scopes that frame has open.
 inline int TypeCheck::EnvReach(const MatchInfo &mi) {
     auto reach = 0;
-    auto add = [&](FnSpec *env) {
-        if (!env) return;
-        auto fi = LexFrame(env);
+    auto add = [&](FnSpec *env, int fi) {
+        if (!env && fi < 0) return;
         auto open = fi < 0 || fi + 1 == (int)frames.size() ? CurDepth() : frames[fi + 1].scopebase;
         reach = max(reach, open);
     };
-    add(mi.env);
-    for (auto &fv : mi.fnvals) add(fv.second.env);
+    add(mi.env, LexFrame(mi.env, mi.sf));
+    for (auto &fv : mi.fnvals) add(fv.second.env, LexFrame(fv.second));
     return reach;
 }
 
@@ -2025,7 +2023,8 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     // it is nested in, and only assign those of them unassigned here.
     vector<pair<VarDef *, TypeExpr *>> outernarrowed;
     BodyExits exits;
-    EachNamedVar(spec->lexparent ? LexFrame(spec->lexparent) : -1, spec, [&](int i) {
+    auto lexframe = LexFrame(spec->lexparent, sf);
+    EachNamedVar(lexframe, spec, [&](int i) {
         outernarrowed.push_back({ vars[i], vars[i]->narrowed });
         if (!vars[i]->assigned) exits.vars.push_back(vars[i]);
     });
@@ -2035,7 +2034,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     f.sf = sf;
     f.spec = spec;
     f.lexspec = spec;
-    f.lexframe = spec->lexparent ? LexFrame(spec->lexparent) : -1;
+    f.lexframe = lexframe;
     if (f.lexframe >= 0)
         if (auto it = declsiteof.find({ spec->lexparent, sf }); it != declsiteof.end())
             f.decl = it->second;

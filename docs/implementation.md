@@ -205,14 +205,14 @@ function and no existing specialization matches. `GetOrCreateSpec`
 
 | Part of the key | What it records |
 |---|---|
-| `lexparent` | the lexical environment a nested function is declared in: a specialization, or a function value's body as one check of its call sees it (`FnSpec::isfunval`, §3.12) |
+| `lexparent` | the lexical environment a nested function is declared in: a specialization, or a function value's body as one check of its call sees it (`FnSpec::isfunval`, §3.12); none for one declared right in a global initializer, whose frame has none (§3.12) |
 | `argtypes` | the concrete parameter types after generic inference |
 | `bindings` | the concrete type of each of the function's own type variables, explicit or inferred, in any order: the only record of one no parameter type mentions (`size<u8>()`) |
 | `roots` (`RootArg` per parameter) | the reference root *class* of each reference, slice or reference-holding argument, where the class's depth stands (`depthkey`), its writability, `reusable` and grow-shrink provenance, whether it is a `bytes_of` view, and the global pool it is rooted in (§3.4) |
 | `litparams` | which parameters are literal parameters (§7.7) |
 | `fnvals` | the identity of each bound function value (the block node or named function, plus the environment it captures) |
 | `narrowedenv` | which optionals of the lexical environment were narrowed at the call (a nested function or block sees them narrowed) |
-| `envreads` | the state of each variable outside the body's activation that it names, or that a callee checked or reused for it named, as the body's check began with it: assigned or not, where it points (`ref`, `refrootknown`), what it holds (`contents`). A nested function's free variables are hidden parameters (§7.5), a global initializer's locals among them when a function value written there reads them: a later call finding one otherwise gets a body of its own. Filled by `NoteEnvRead` (`LookupVar`) and `NoteCalleeEnvReads` (after each call), shared among a cycle's members (`ShareCycleEnvReads`), compared by `EnvUnchanged`. The same variables as the check left them (`envexits`) are where a call reusing the body leaves them (`ReplayEnvExits`) |
+| `envreads` | the state of each variable outside the body's activation that it names, or that a callee checked or reused for it named, as the body's check began with it: assigned or not, where it points (`ref`, `refrootknown`), what it holds (`contents`). A nested function's free variables are hidden parameters (§7.5), a global initializer's locals among them when a function declared or a function value written there reads them: a later call finding one otherwise gets a body of its own. Filled by `NoteEnvRead` (`LookupVar`) and `NoteCalleeEnvReads` (after each call), shared among a cycle's members (`ShareCycleEnvReads`), compared by `EnvUnchanged`. The same variables as the check left them (`envexits`) are where a call reusing the body leaves them (`ReplayEnvExits`) |
 | `needs` | the concrete specializations of every `return ... from` target enclosing the call must be the same on this path |
 
 `RootArg::exact` and `RootArg::concrete` are excluded from the key: they are
@@ -712,17 +712,18 @@ variables it captures, and a function given a function value does the same
 while it checks that value's body. So each class carries `RootArg::depthkey`
 as well: its body depth itself where that is within `EnvReach`, the scopes
 open in the frames of the lexical environments the body can see -- its
-`lexparent` and those its function values were written in, which hold every
-variable it can name outside itself -- with only 0, the globals, for a body
-that sees none; past that, its rank among the distinct depths of the call's
-classes beyond, negated. Calls with equal keys agree on every such
-comparison, and a call that does not gets a specialization of its own,
-checked for its depths. A function called once with a global and once with
-a local is split even where its body compares nothing; an extern function,
-whose body is C, keeps every key 0. A back edge reuses the specialization in
-progress whatever its depth keys, as whatever its classes (§3.11), and they
-have no say in whether those classes still describe the arrays it passes
-(`concrete`).
+`lexparent` and those its function values were written in, or a global
+initializer's frame for a function declared or a block written right in one
+(`LexFrame`), which hold every variable it can name outside itself -- with
+only 0, the globals, for a body that sees none; past that, its rank among
+the distinct depths of the call's classes beyond, negated. Calls with equal
+keys agree on every such comparison, and a call that does not gets a
+specialization of its own, checked for its depths. A function called once
+with a global and once with a local is split even where its body compares
+nothing; an extern function, whose body is C, keeps every key 0. A back
+edge reuses the specialization in progress whatever its depth keys, as
+whatever its classes (§3.11), and they have no say in whether those classes
+still describe the arrays it passes (`concrete`).
 
 A class is a **pool class** (`VarDef::poolclass`) when every member is an
 exactly rooted reference to a resizable-class value: no function in a
@@ -1657,7 +1658,14 @@ not or the other way round, gets a specialization of its own.
 `GetOrCreateSpec` rejects
 a call that reaches a nested function before its declaration is checked (a
 nested function declared earlier calling it), since the variables its site
-lists do not exist yet. Rechecking a declaration, loop or match binding
+lists do not exist yet. A global initializer's frame has no environment, so
+a function declared right in one has no `lexparent`, as a top-level function
+has none. `LexFrame(env, sf)` tells them apart by `SFunction::isnested` and
+gives such a function the initializer's frame, 0, as `LexFrame(fb)` gives a
+block written there: its body's lookups continue there, through its site,
+and the check above, `narrowedenv` and the depth keys (`ExternalOptionals`,
+`EnvReach`) cover that frame's variables as they do a function's.
+Rechecking a declaration, loop or match binding
 resets its checking state while preserving its `VarDef` identity, capture
 flag and the marks of §3.14 (`ResetLocal`), so cached specializations still
 name the binding codegen declares. A loop's next pass, or a cycle's next

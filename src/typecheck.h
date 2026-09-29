@@ -1036,6 +1036,8 @@ struct TypeCheck {
     string_view CurNs();
     int FrameOfSpec(FnSpec *sp);
     int LexFrame(FnSpec *env);
+    int LexFrame(FnSpec *env, SFunction *sf);
+    int LexFrame(const FnValBind &fb);
     int FrameOfScope(int s);
     bool NamesFrame(int fi, int target);
     FnSpec *NamedSpec(FnSpec *env);
@@ -1065,8 +1067,6 @@ struct TypeCheck {
     FlowState JoinFlow(const FlowState &a, const FlowState &b);
     bool SameFlow(const FlowState &a, const FlowState &b);
 
-    vector<VarDef *> ExternalOptionals(FnSpec *env,
-                                       const vector<pair<string_view, FnValBind>> *fnvals = nullptr);
     void ApplyCalleeRebinds(FnSpec *spec);
     // What a body reads of the variables outside its activation
     // (FnSpec::envreads): noted where the body first names one, and where a
@@ -1626,6 +1626,7 @@ struct TypeCheck {
     bool ExternParamOk(TypeExpr *t, string &why);
     void CheckExternSpec(FnSpec *spec);
     int ClassDepth(VarDef *r);
+    vector<VarDef *> ExternalOptionals(const MatchInfo &mi);
     int EnvReach(const MatchInfo &mi);
     void CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline);
     void RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at);
