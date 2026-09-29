@@ -65,22 +65,31 @@ inline bool TypeCheck::IsGrowShrinkRoot(VarDef *r) {
     return r && (r->growshrink || (r->type && ContainsGrowShrink(r->type)));
 }
 
+// The element types of the grow-shrink arrays a value of type t holds by
+// value.
+inline void TypeCheck::GrowShrinkElems(TypeExpr *t, vector<TypeExpr *> &out) {
+    switch (t->kind) {
+        case TY_ARRAY:
+            if (t->arr->akind == A_GROWSHRINK) out.push_back(t->arr->sub);
+            else GrowShrinkElems(t->arr->sub, out);
+            return;
+        case TY_STRUCT:
+            for (auto ft : GetStructInst(t)->ftypes)
+                if (ft) GrowShrinkElems(ft, out);
+            return;
+        default: return;
+    }
+}
+
 // Whether a grow-shrink array inside a value of type t can hold an `of`
 // by value: the storage a reference to `of` rooted at that value could
 // point into and a shrink could then reuse.
 inline bool TypeCheck::GrowShrinkContains(TypeExpr *t, TypeExpr *of) {
-    switch (t->kind) {
-        case TY_ARRAY:
-            if (t->arr->akind == A_GROWSHRINK) return CanContain(t->arr->sub, of);
-            return GrowShrinkContains(t->arr->sub, of);
-        case TY_STRUCT: {
-            auto inst = GetStructInst(t);
-            for (auto ft : inst->ftypes)
-                if (ft && GrowShrinkContains(ft, of)) return true;
-            return false;
-        }
-        default: return false;
-    }
+    vector<TypeExpr *> elems;
+    GrowShrinkElems(t, elems);
+    for (auto e : elems)
+        if (CanContain(e, of)) return true;
+    return false;
 }
 
 // Whether a reference to `of` rooted at r may point into a grow-shrink
@@ -91,13 +100,15 @@ inline bool TypeCheck::GrowShrinkContains(TypeExpr *t, TypeExpr *of) {
 inline bool TypeCheck::GrowShrinkCanHold(VarDef *r, TypeExpr *of) {
     if (!IsGrowShrinkRoot(r)) return false;
     if (!of) return true;
-    auto v = r;
-    // A class whose grow-shrink array is not its own root's (VarDef::gsvia)
-    // is storage this frame cannot see: assume it can hold anything.
-    if (!v->type && v->gsvia) return true;
-    while (v && !v->type && v->classfrom) v = v->classfrom;
-    if (!v || !v->type) return true;   // Storage this frame cannot see: assume it can.
-    return GrowShrinkContains(v->type, of);
+    if (r->type) return GrowShrinkContains(r->type, of);
+    // A parameter's class answers for every call site its body serves by
+    // what the key fixed (VarDef::gselems); one whose array is not its
+    // root's own (VarDef::gsvia), or any other root without a type, is
+    // storage this frame cannot see: assume it can hold anything.
+    if (r->gsvia || r->gselems.empty()) return true;
+    for (auto e : r->gselems)
+        if (CanContain(e, of)) return true;
+    return false;
 }
 
 // Whether a reference to `of`, or a byte view, that the inexact root r only
@@ -171,8 +182,6 @@ inline VarDef *TypeCheck::StoredIntoGrowShrink(const Val &v, const Roots &roots,
 // may. `reach`: root only bounds the reference, and the array is one root
 // leads to (GrowShrinkTaint).
 inline string TypeCheck::NeverStoredError(VarDef *root, bool may, bool reach) {
-    auto from = root;
-    while (from && !from->type && from->classfrom) from = from->classfrom;
     auto stored = ": such a reference lives in a variable, is passed down or returned, and "
                   "is never stored (§5.2)";
     if (reach)

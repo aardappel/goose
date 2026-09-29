@@ -1040,6 +1040,13 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         });
         ra.growshrink = gsroot || gspointee || (isrs && GrowShrinkTaint(argvals[i], pt));
         ra.gsvia = ra.growshrink && !(ar.Exact() && IsGrowShrinkRoot(r));
+        // Where the array is the root's own, what its elements can be: a
+        // class passed on names the same array its root named.
+        if (ra.growshrink && !ra.gsvia) {
+            if (r->type) GrowShrinkElems(r->type, ra.gselems);
+            else ra.gselems = r->gselems;
+            ra.gsvia = ra.gselems.empty();
+        }
         ra.slotread = (gsroot || gspointee) && ar.AllSlotRead();
         // A reference to a slice names the slot holding it: the class is a
         // byte view where a slice variable it names holds one.
@@ -1163,6 +1170,8 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
             fvok &= spec->fnvals[i].second == mi.fnvals[i].second;
         if (!fvok) continue;
         auto rootsok = spec->roots == roots;
+        for (size_t i = 0; rootsok && i < roots.size(); i++)
+            rootsok = TypeArgsEq(spec->roots[i].gselems, roots[i].gselems);
         auto depthsok = rootsok;
         for (size_t i = 0; depthsok && i < roots.size(); i++)
             depthsok = spec->roots[i].depthkey == roots[i].depthkey;
@@ -1192,7 +1201,6 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         for (size_t i = 0; i < roots.size() && i < spec->roots.size(); i++) {
             auto &sr = spec->roots[i];
             sr.exact = sr.exact && roots[i].exact;
-            sr.gsvia = sr.gsvia || roots[i].gsvia;
             sr.concrete = sr.concrete && roots[i].concrete && rootsok;
             for (auto &v : roots[i].via)
                 if (find(sr.via.begin(), sr.via.end(), v) == sr.via.end()) sr.via.push_back(v);
@@ -2101,6 +2109,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
                     rv->classpool = ra.pool;
                     rv->growshrink = ra.growshrink;
                     rv->gsvia = ra.gsvia;
+                    rv->gselems = ra.gselems;
                     classroots[ra.cls] = rv;
                 }
                 ReachedThroughRefs(pt, classroots[ra.cls]->classreach);
@@ -2148,6 +2157,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
                     rv->classfrom = argvals ? HolderRootOf((*argvals)[i]) : nullptr;
                     rv->growshrink = ra.growshrink;
                     rv->gsvia = ra.gsvia;
+                    rv->gselems = ra.gselems;
                     classroots[ra.cls] = rv;
                 }
                 classroots[ra.cls]->poolclass = false;

@@ -979,6 +979,7 @@ struct TypeCheck {
     bool CycleStorable(const Roots &r);
     bool MayBeViewed(VarDef *r);
     bool Viewable(TypeExpr *t);
+    void GrowShrinkElems(TypeExpr *t, vector<TypeExpr *> &out);
     bool GrowShrinkContains(TypeExpr *t, TypeExpr *of);
     bool RefMayPointInto(VarDef *v, VarDef *root);
     bool RefMayRetarget(VarDef *v, VarDef *root);

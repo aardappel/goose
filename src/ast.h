@@ -1225,11 +1225,16 @@ struct VarDef {
     VarDef *classpool = nullptr;
     // Synthetic class roots only: the call-site root holds a grow-shrink
     // array, so the shrink rules follow the class into the body (§5.2);
-    // `gsvia`: that array is not classfrom's own but one the argument may
-    // point into otherwise -- another of its roots, or what a slice it
-    // refers to views -- so classfrom's type says nothing about it.
+    // `gselems`: the element types of the grow-shrink arrays that root
+    // holds, which say what a pointee lying in one can be
+    // (TypeCheck::GrowShrinkCanHold); `gsvia`: the array is not that root's
+    // own but one the argument may point into otherwise -- another of its
+    // roots, or what a slice it refers to views -- so its elements may be
+    // anything. Keyed (RootArg), so every call site the body serves agrees
+    // on them, which classfrom, the first one's root, need not.
     bool growshrink = false;
     bool gsvia = false;
+    vector<TypeExpr *> gselems;
     // Synthetic class roots only: the types of the caller's storage the
     // class's parameters lead to through their references, at any remove
     // (TypeCheck::ReachedThroughRefs of each parameter's type), which an
@@ -1363,10 +1368,15 @@ struct RootArg {
     // its holds one, or, for a reference to a slice, the slice may. Part of
     // the key: a body is checked against its shrink rules only where they
     // apply, and such a parameter is never stored. `gsvia`: that array is
-    // not the one the class's own root holds (VarDef::gsvia); not part of
-    // the key, ORed over the call sites that reach the specialization.
+    // not the one the class's own root holds (VarDef::gsvia); else
+    // `gselems`, the element types of the root's grow-shrink arrays
+    // (VarDef::gselems). Both part of the key, `gselems` compared apart
+    // from the rest (GetOrCreateSpec), as types: the body's store rule and
+    // shrink scans ask them what a reference into the argument's storage
+    // may point into (TypeCheck::GrowShrinkCanHold).
     bool growshrink = false;
     bool gsvia = false;
+    vector<TypeExpr *> gselems;
     // Where `growshrink` is set by a root of the argument, or of a holder's
     // contents, or by a grow-shrink array the argument's pointee holds:
     // every place it may point was loaded out of a field, an element or a
@@ -1434,8 +1444,9 @@ struct RootArg {
     int depthkey = 0;
     bool operator==(const RootArg &o) const {
         return cls == o.cls && writable == o.writable && reusable == o.reusable &&
-               growshrink == o.growshrink && slotread == o.slotread && byteview == o.byteview &&
-               pool == o.pool && heldexact == o.heldexact && unknown == o.unknown;
+               growshrink == o.growshrink && gsvia == o.gsvia && slotread == o.slotread &&
+               byteview == o.byteview && pool == o.pool && heldexact == o.heldexact &&
+               unknown == o.unknown;
     }
 };
 

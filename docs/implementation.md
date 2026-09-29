@@ -661,12 +661,19 @@ numbered by depth (so a class number is an outlives rank), static data is
 class 0, and an argument that is not exact -- one of several alternatives,
 or an inexact one -- always gets a class of its own, at the depth of its
 innermost alternative -- sharing a class asserts "the same array", which
-such an argument does not establish. A class whose grow-shrink array is not
-its own root's (`RootArg::gsvia`: another alternative's, one a slice the
-argument refers to views, or one in what an inexact alternative's root
-leads to that the argument may point into or that its pointee holds, a
-whole grow-shrink array read back out of a parameter's storage among them)
-is taken to hold anything a grow-shrink array could (`GrowShrinkCanHold`).
+such an argument does not establish. What a class's grow-shrink array can
+hold is part of the key: the element types of the grow-shrink arrays its
+root holds (`RootArg::gselems`, a class passed on naming its own root's),
+against which the body's store rule and shrink scans test a pointee
+(`GrowShrinkCanHold`), so that every call site a body serves gets the same
+answer -- `k(bag.n)`, where `bag` holds only an array of `Pt`s, and
+`k(others[0].w)`, where `others` holds `i64`s, reach bodies of their own,
+and only the first may store its `i64&`. A class whose grow-shrink array is
+not its own root's (`RootArg::gsvia`, keyed as well: another alternative's,
+one a slice the argument refers to views, or one in what an inexact
+alternative's root leads to that the argument may point into or that its
+pointee holds, a whole grow-shrink array read back out of a parameter's
+storage among them) is taken to hold anything a grow-shrink array could.
 Where every place an argument with such a root, or with a pointee holding
 one, may point, or for a holder every place its references may, is a slot
 read (§3.10), it points into no grow-shrink array's elements all the same:
@@ -674,8 +681,9 @@ the key records that (`RootArg::slotread`), and in the body the parameter,
 or the holder's contents, is a slot read, which may be stored, while what
 the body reaches through it still meets the class's grow-shrink array.
 `CheckSpecBody` then creates one synthetic `VarDef` per class,
-carrying the call-site root's depth (`classfrom` remembers the root it came
-from) and the types its parameters' references lead to (`classreach`), and
+carrying the call-site root's depth and the key's grow-shrink facts
+(`classfrom` remembers the root it came from) and the types its parameters'
+references lead to (`classreach`), and
 every parameter of the class is bound to it, exactly, within
 the body: inside the body a class names one array, whatever the call site.
 A holder parameter's class only bounds what it holds, by the deepest root
