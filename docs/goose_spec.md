@@ -1779,7 +1779,9 @@ variable it names is out of scope is rejected, so every call can pass them.
 As by its parameters, a nested function is specialized by how a call finds
 its free variables (§10.2): where each points, what it holds and whether it
 is assigned. So is a function calling it, and one calling a function value
-that names such a variable.
+that names such a variable. A call sharing a specialization with an earlier
+one leaves them as that one's check did: rebound, assigned, holding what the
+body stored.
 When a nested function is passed as a static function value and inlined into
 its HOF — the expected, common case — the hidden parameters disappear
 entirely; un-inlined builds (debug) keep them as real arguments.

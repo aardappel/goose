@@ -1195,6 +1195,8 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         if (spec->stale) {
             spec->stale = false;
             CheckSpecBodyOnce(spec, &argvals, callnode->line);
+        } else if (!spec->inprogress) {
+            ReplayEnvExits(spec);
         }
         NoteCalleeEnvReads(spec);
         return spec;
@@ -1287,10 +1289,9 @@ inline void TypeCheck::NoteCalleeEnvReads(FnSpec *callee) {
     }
 }
 
-// Whether each variable the body read outside its activation is as it was
-// then, so its check stands for a call now: the same roots, the same
-// contents, assigned or not as it was.
-inline bool TypeCheck::EnvUnchanged(const FnSpec *spec) {
+// Whether vd is as r found it: the same roots, the same contents, assigned
+// or not as it was.
+inline bool TypeCheck::EnvIs(const VarDef *vd, const EnvRead &r) {
     auto sameroots = [](const Roots &a, const Roots &b) {
         if (a.alts.size() != b.alts.size() || a.unknown != b.unknown) return false;
         for (auto &x : a.alts) {
@@ -1302,16 +1303,48 @@ inline bool TypeCheck::EnvUnchanged(const FnSpec *spec) {
         }
         return true;
     };
-    for (auto &r : spec->envreads) {
-        auto v = r.var;
-        if (v->assigned != r.assigned || v->refrootknown != r.refrootknown ||
-            !sameroots(v->ref, r.ref) || v->ref.writable != r.ref.writable ||
-            v->ref.reusable != r.ref.reusable || v->ref.byteview != r.ref.byteview ||
-            v->ref.reached != r.ref.reached || !sameroots(v->contents, r.contents) ||
-            v->contentbyteview != r.contentbyteview)
-            return false;
-    }
+    return vd->assigned == r.assigned && vd->refrootknown == r.refrootknown &&
+           sameroots(vd->ref, r.ref) && vd->ref.writable == r.ref.writable &&
+           vd->ref.reusable == r.ref.reusable && vd->ref.byteview == r.ref.byteview &&
+           vd->ref.reached == r.ref.reached && sameroots(vd->contents, r.contents) &&
+           vd->contentbyteview == r.contentbyteview;
+}
+
+// Whether each variable the body read outside its activation is as it was
+// then, so its check stands for a call now.
+inline bool TypeCheck::EnvUnchanged(const FnSpec *spec) {
+    for (auto &r : spec->envreads) if (!EnvIs(r.var, r)) return false;
     return true;
+}
+
+// Where a body's check left the variables outside its activation that it
+// read, recorded after each check. A cycle's last round changes none of
+// them (CycleRound), so the ones its members take over from each other
+// once it has settled (ShareCycleEnvReads) are left as they were found.
+inline void TypeCheck::RecordEnvExits(FnSpec *spec) {
+    spec->envexits.clear();
+    for (auto &r : spec->envreads) spec->envexits.push_back(EnvReadOf(r.var));
+}
+
+// A call reusing a body finds the variables outside its activation as its
+// check began with them (EnvUnchanged), and leaves them as the check did:
+// rebound, assigned, holding what the body stored. That is not how they
+// already are where their declaration was checked again since -- in a
+// loop's next pass, a cycle's next round -- or where the flow of another
+// branch dropped an assignment.
+inline void TypeCheck::ReplayEnvExits(FnSpec *spec) {
+    for (auto &x : spec->envexits) {
+        auto v = x.var;
+        // Whether it is assigned is flow, which a loop's passes compare at
+        // its head (SameFlow), not a fact fed back.
+        v->assigned = x.assigned;
+        if (EnvIs(v, x)) continue;
+        v->refrootknown = x.refrootknown;
+        v->ref = x.ref;
+        v->contents = x.contents;
+        v->contentbyteview = x.contentbyteview;
+        NoteFact(v);
+    }
 }
 
 // A cycle's members read each other's records at their back edges, so each
@@ -2121,6 +2154,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     frames.pop_back();
     for (auto [v, n] : outernarrowed) v->narrowed = n;
     reachable = savereach;
+    RecordEnvExits(spec);
     spec->inprogress = false;
     spec->eventend = storeevents.size();
     spec->rounds++;

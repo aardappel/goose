@@ -212,7 +212,7 @@ function and no existing specialization matches. `GetOrCreateSpec`
 | `litparams` | which parameters are literal parameters (§7.7) |
 | `fnvals` | the identity of each bound function value (the block node or named function, plus the environment it captures) |
 | `narrowedenv` | which optionals of the lexical environment were narrowed at the call (a nested function or block sees them narrowed) |
-| `envreads` | the state of each variable outside the body's activation that it names, or that a callee checked or reused for it named, as the body's check began with it: assigned or not, where it points (`ref`, `refrootknown`), what it holds (`contents`). A nested function's free variables are hidden parameters (§7.5): a later call finding one otherwise gets a body of its own. Filled by `NoteEnvRead` (`LookupVar`) and `NoteCalleeEnvReads` (after each call), shared among a cycle's members (`ShareCycleEnvReads`), compared by `EnvUnchanged` |
+| `envreads` | the state of each variable outside the body's activation that it names, or that a callee checked or reused for it named, as the body's check began with it: assigned or not, where it points (`ref`, `refrootknown`), what it holds (`contents`). A nested function's free variables are hidden parameters (§7.5): a later call finding one otherwise gets a body of its own. Filled by `NoteEnvRead` (`LookupVar`) and `NoteCalleeEnvReads` (after each call), shared among a cycle's members (`ShareCycleEnvReads`), compared by `EnvUnchanged`. The same variables as the check left them (`envexits`) are where a call reusing the body leaves them (`ReplayEnvExits`) |
 | `needs` | the concrete specializations of every `return ... from` target enclosing the call must be the same on this path |
 
 `RootArg::exact` and `RootArg::concrete` are excluded from the key: they are
@@ -1601,9 +1601,16 @@ nested function declared earlier calling it), since the variables its site
 lists do not exist yet. Rechecking a declaration, loop or match binding
 resets its checking state while preserving its `VarDef` identity, capture
 flag and the marks of §3.14 (`ResetLocal`), so cached specializations still
-name the binding codegen declares. `VisibleVars`, which the shrink rules and the
-read-back candidates enumerate (§3.6, §3.10), keeps the lexical parents'
-frames as the call finds them: a reference handed to the body, a later nested function's
+name the binding codegen declares. A loop's next pass, or a cycle's next
+round, finds such a variable as the first found its own, so a
+specialization checked then serves it; a call reusing one sets the
+variables it read to where its check left them (`envexits`,
+`ReplayEnvExits`), as the check itself did the first time, and notes a
+changed fact for the loops and rounds around it (`NoteFact`). The same
+holds where the flow of another branch dropped an assignment the check
+made. `VisibleVars`, which the shrink rules and the read-back candidates
+enumerate (§3.6, §3.10), keeps the lexical parents' frames as the call
+finds them: a reference handed to the body, a later nested function's
 result or one a function value written at the call returns, can point into
 a variable the declaration does not see. The §5.2 scan and `NoteLiveViews`
 add, inside a function value's body, the frame of the function running it

@@ -1058,12 +1058,17 @@ struct TypeCheck {
     void ApplyCalleeRebinds(FnSpec *spec);
     // What a body reads of the variables outside its activation
     // (FnSpec::envreads): noted where the body first names one, and where a
-    // callee it calls read one, and compared at every later call.
+    // callee it calls read one, and compared at every later call; and where
+    // its check leaves them (FnSpec::envexits), which a call reusing it
+    // leaves them as too.
     static EnvRead EnvReadOf(VarDef *vd);
+    static bool EnvIs(const VarDef *vd, const EnvRead &r);
     void NoteEnvRead(VarDef *vd);
     void NoteCalleeEnvReads(FnSpec *callee);
     bool EnvUnchanged(const FnSpec *spec);
     void ShareCycleEnvReads(FnSpec *head);
+    void RecordEnvExits(FnSpec *spec);
+    void ReplayEnvExits(FnSpec *spec);
 
     // A loop body is checked as many times as it takes for what it feeds
     // back to its head to settle (CheckLoopPasses): the roots its rebinds

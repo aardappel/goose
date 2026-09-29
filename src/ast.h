@@ -1555,6 +1555,9 @@ struct FnSpec {
     // references elsewhere, says nothing of a call where it is otherwise
     // (TypeCheck::EnvUnchanged). Filled while the body is checked.
     vector<EnvRead> envreads;
+    // The same variables as the check left them, which a call reusing it
+    // leaves them as too (TypeCheck::ReplayEnvExits).
+    vector<EnvRead> envexits;
     // External optional bindings this body (or a callee) may rebind.
     set<VarDef *> reboundoptionals;
     vector<int> litparams;         // Parameters that are literals (§7.7): part of the key.
