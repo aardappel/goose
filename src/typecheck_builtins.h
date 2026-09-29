@@ -418,12 +418,15 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                              TypeStr(sv.type)));
             if (!RootedAtReceiver(rv, sv)) {
                 // Globals and this function's own variables are separate storage,
-                // so a slice exactly rooted at another one is not the pool's.
-                // Any other slice may be, and is checked when the call runs.
+                // so a slice exactly rooted at one is not the pool's when every
+                // pool the receiver may be (a branch's value may choose among
+                // several) is another. Any other slice may be, and is checked
+                // when the call runs.
                 auto own = [&](VarDef *r) {
                     return r && (r->isglobal || r->ownerspec == CurRealFrame().spec);
                 };
-                if (sv.Exact() && own(sv.Root()) && own(rv.Root()))
+                if (sv.Exact() && own(sv.Root()) && !rv.None() && !rv.Has(sv.Root()) &&
+                    rv.All([&](const RootAlt &a) { return own(a.root); }) && !VerdictDeferred())
                     Error(c, cat(".", d.name, " needs a slice of the pool it is called on (§5.4); "
                                  "this one is rooted at ", sv.Root()->name));
                 c->poolcheck = true;

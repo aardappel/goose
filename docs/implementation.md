@@ -969,7 +969,12 @@ child; } … last .= child; }` -- points nowhere yet (`RefProvOf` gives it no
 roots), which every rule passes by (`FitsAt`, `CheckRootedAtReceiver`,
 `BindRefProvenance`, a call's specialization keyed `RootArg::unknown`, the
 shrink scans through `UnboundIsBottom`), and the pass after the last one
-that changed anything reads such a variable as outside a loop would. A
+that changed anything reads such a variable as outside a loop would. A rule
+that errs where a value cannot point somewhere -- `free_slice` given a run of
+an array the receiver can be none of (§3.14) -- needs every place the value
+may point, which a later pass can still add: in a discovery pass it passes the
+value by (`VerdictDeferred`), and every loop still discovering then runs the
+settled pass that judges it. A
 holder declared inside the loop carries only its current pass's store
 events (`LiveEventBase`), an earlier pass's being a previous iteration's;
 one declared outside carries them all, and a store an earlier pass recorded
@@ -1851,7 +1856,9 @@ value layouts.
 
 A pool's kind travels with its provenance as bits, `RU_SLOTS` for `reusable`
 and `RU_SLICES` for `reusable[]` (`Prov::reusable`, `RootArg::reusable`), so
-merging two branches keeps only what both allow, and the table's
+merging two branches keeps only what both allow -- a construct choosing among
+pools of one kind is a pool reference, whose `gs_pref` each branch builds
+(§6.1) -- and the table's
 `BF_REUSABLE`/`BF_SLICEPOOL` flags each require their bit. Only a binding
 whose type can carry the freelist, a plain reference to a grow-only array
 (`CarriesPool`), keeps them: `BindProv` drops them for any other variable
@@ -1864,8 +1871,10 @@ no reached binding's, and there a rebind narrows them instead: the rebind
 settles what calls could pass. `free_slice` and `realloc_slice`
 use `index_of`'s exact-root test (`RootedAtReceiver`) only to leave out a
 run-time test: a slice it does not place in the pool is an error when it is
-rooted exactly at a global or a variable of the checked function, and
-otherwise sets `Call::poolcheck`, which codegen turns into a range test.
+rooted exactly at a global or a variable of the checked function that the
+receiver can be none of, every alternative the receiver has being another
+such (a loop leaves that verdict to its settled pass, §3.7), and otherwise
+sets `Call::poolcheck`, which codegen turns into a range test.
 `alloc_slice` and `realloc_slice` need an element type with a default value,
 and `realloc_slice` one without self-relative references (`HasRelRefT`),
 since it may copy the slice.
@@ -2341,7 +2350,10 @@ Layout details needed for byte/C compatibility (`FixedSize`, `LayoutFields`,
   is fat or pool-shaped comes from the specialization's types and
   `RootArg::reusable`, not from surface syntax; a variable is pool-shaped
   (`PrefVar`) by its binding's bits, which its rebinds keep (§3.14), and
-  each binding and rebind stores a whole `gs_pref` (`GenPrefVal`).
+  each binding and rebind stores a whole `gs_pref` (`GenPrefVal`): an `if`,
+  `match` or block choosing among pools builds one in each branch, into a
+  temporary the construct is generated to as a destination asking for the
+  pool form (`Dst::pool`).
 * String literals are `static const` byte arrays (`StrRaw`), sliced as
   `{ data, len }` or emitted as static `[len][bytes]` images when used as a
   `u8[]` value (`GenStrBytes`).

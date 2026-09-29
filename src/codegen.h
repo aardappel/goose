@@ -55,13 +55,16 @@ namespace goose {
 // or constructed at the top of the data stack `s`. `t` is the wanted type
 // where the receiver knows it; `lenlv` is set for stack destinations of
 // resizable class: elements go to the stack, and the construction assigns
-// the element count (or the whole frame object) to it.
+// the element count (or the whole frame object) to it. A `pool` lvalue is a
+// gs_pref, which a construct's value choosing among pools reaches as each
+// branch's pool reference (GenPrefVal).
 enum DstKind { DK_DISCARD, DK_LVALUE, DK_STACK };
 struct Dst {
     DstKind k = DK_DISCARD;
     string s;
     TypeExpr *t = nullptr;
     string lenlv;
+    bool pool = false;
 };
 
 struct CodeGen {

@@ -1078,7 +1078,10 @@ struct TypeCheck {
     // read before any binding points nowhere yet (RefProvOf), and every
     // rule passes such a value by, as the shrink scans pass the variable
     // by; the pass after the last that changed anything reads it as
-    // outside a loop would, and its errors stand.
+    // outside a loop would, and its errors stand. A rule that errs where a
+    // value cannot point somewhere needs every place the value may point,
+    // which a later pass can still add, so it leaves its verdict to that
+    // pass (VerdictDeferred).
     struct LoopPass {
         int scopeidx = 0;          // The loop's scope.
         size_t firstbase = 0;      // storeevents.size() when the loop's first pass began.
@@ -1086,6 +1089,7 @@ struct TypeCheck {
         bool settled = false;
         bool changed = false;      // A fact fed back to this loop's head changed.
         bool sawunbound = false;   // A variable was read before any binding.
+        bool deferred = false;     // A rule waits for the settled pass.
     };
     bool InDiscovery() {
         for (auto &lp : cur.looppasses) if (!lp.settled) return true;
@@ -1095,6 +1099,13 @@ struct TypeCheck {
     bool UnboundIsBottom() {
         if (!InDiscovery()) return false;
         cur.looppasses.back().sawunbound = true;
+        return true;
+    }
+    // A rule that errs where a value cannot point somewhere, in a discovery
+    // pass: every loop still discovering runs a settled pass, which judges it.
+    bool VerdictDeferred() {
+        if (!InDiscovery()) return false;
+        for (auto &lp : cur.looppasses) if (!lp.settled) lp.deferred = true;
         return true;
     }
     // A fact about vd that every loop it is declared outside of feeds back

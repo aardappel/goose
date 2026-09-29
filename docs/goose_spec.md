@@ -1257,10 +1257,12 @@ a negative one, or one no data stack could hold, aborts before the pool
 changes. The slice handed to `free_slice` or `realloc_slice` must be one of the
 pool's runs: one the pool handed out, a re-slice of it, or a slice of the pool
 itself. Where the checker sees that, because the slice is rooted at the pool
-exactly (§9.2), nothing is checked when the call runs. A slice rooted exactly at
-another global, or at another variable of the calling function, is a compile
-error. Any other slice, such as one read out of storage where runs of other
-arrays could be kept as well, is checked when the call runs: unless it is
+exactly (§9.2), nothing is checked when the call runs. Where the pool is a
+global or a variable of the calling function, or a pool reference that can only
+be one of several such (**Pool references** below), a slice rooted exactly at a
+global or a variable of the calling function that the pool cannot be is a
+compile error. Any other slice, such as one read out of storage where runs of
+other arrays could be kept as well, is checked when the call runs: unless it is
 empty, its elements must lie inside the pool's length starting on an element
 boundary, or the call aborts before the pool changes. An empty slice frees
 nothing and grows like a new run, wherever it points. A grown slice may be copied, which a value holding
@@ -1277,14 +1279,18 @@ same elements out twice, but never anything outside the array.
 
 **Pool references.** A `T[>..]&` variable or parameter bound to a pool is a
 *pool reference*: the pool's operations work through it as on the pool, since
-it carries the pool's freelist beside the address. A variable is one from its
-first binding on, and `.=` rebinds it only to a pool of the same kind, or to
-a pool reference to one; pointing it at any other array needs a new variable.
-A variable first bound to anything else stays a plain reference, which `.=`
-may point at a pool, as at any array, but which offers none of the pool's
-operations. Only a plain reference variable or parameter is a pool reference:
-an optional one, a field, an element and a function's result are not, even
-where they point at a pool.
+it carries the pool's freelist beside the address. So is one bound to a value
+that chooses among pools of one kind, or pool references to them — an `if`, a
+`match` or a block giving one wherever it gives a value — which carries the
+freelist of the pool it chose; a choice between the two kinds of pool, or
+between a pool and another array, binds a plain reference. A variable is one
+from its first binding on, and `.=` rebinds it only to a pool of the same kind,
+or to a pool reference to one; pointing it at any other array needs a new
+variable. A variable first bound to anything else stays a plain reference,
+which `.=` may point at a pool, as at any array, but which offers none of the
+pool's operations. Only a plain reference variable or parameter is a pool
+reference: an optional one, a field, an element and a function's result are
+not, even where they point at a pool.
 
 ---
 

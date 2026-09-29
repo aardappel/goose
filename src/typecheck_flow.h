@@ -1491,7 +1491,7 @@ inline TypeCheck::Scope TypeCheck::CheckLoopPasses(Node *x, FlowState &head,
         auto changed = lp.changed || !SameFlow(next, head);
         head = next;
         if (changed) continue;
-        if (settled || !lp.sawunbound) break;
+        if (settled || !(lp.sawunbound || lp.deferred)) break;
         settled = true;
     }
     RestoreFlow(head);

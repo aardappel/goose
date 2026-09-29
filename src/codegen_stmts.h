@@ -272,8 +272,16 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
     L(CT(t), " ", name, " = ", GenXD(init, t), ";");
 }
 
-// A gs_pref value from a &pool expression or another pool reference.
+// A gs_pref value from a &pool expression or another pool reference, or
+// from a construct choosing among pools of one kind (MergeVals keeps the
+// bits they share), which each branch builds into one temporary.
 inline string CodeGen::GenPrefVal(Node *n) {
+    if (IsCtl(n)) {
+        auto t = T();
+        L("gs_pref ", t, ";");
+        GenAny(n, Dst { DK_LVALUE, t, n->exprtype, "", true });
+        return t;
+    }
     if (auto u = Is<Unary>(n); u && u->op == T_BITAND) {
         if (auto id = Is<Ident>(u->child); id && id->vdef && id->vdef->reusable) {
             auto vd = id->vdef;
