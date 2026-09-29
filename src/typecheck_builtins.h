@@ -381,7 +381,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                          " is sequential (§3.3)"));
         auto av = CheckV(args[1], nullptr);
         if (av.lvalue && av.type->kind != TY_REF && TypeEq(av.type, elem))
-            args[1] = AutoRef(args[1], av);
+            args[1] = AutoRef(args[1], av, false);
         else if (UserRefOf(args[1]))
             Warn(args[1], cat("redundant &: ", ExprStr(Is<Unary>(args[1])->child),
                               " is passed by reference without it (§4.1)"));

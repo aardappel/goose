@@ -588,6 +588,10 @@ struct Val : Prov {
     // a literal, a .len/.cap, or a `let` bound to one -- so that whether a
     // comparison compiles never depends on how much the optimizer proved.
     bool nonneg = false;
+    // The `let` it was read from, if any, whose value a writable reference
+    // could still change (TypeCheck::RelyOnNonneg); that `let`'s own
+    // nonnegfrom continues the chain.
+    VarDef *nonnegfrom = nullptr;
     // For a value whose type holds plain references or slices (§9.2's
     // holder values): where those references may point. `holderset` says it
     // was derived at all; an underived one's contents are bounded by the
@@ -1184,6 +1188,7 @@ struct VarDef {
     bool istemp = false;
     int reusable = 0;           // A reusable pool (§5.4): RU_SLOTS or RU_SLICES.
     bool nonneg = false;        // A `let` whose initializer was non-negative (§6.1).
+    VarDef *nonnegfrom = nullptr;   // The initializer's Val::nonnegfrom.
     // A `let` initialized to exactly `X.len` (§5.2): the path X, as checked
     // there. Resizing the same X back to it is a balanced shrink.
     Node *markof = nullptr;
@@ -1234,6 +1239,12 @@ struct VarDef {
     bool assigned = false;
     TypeExpr *narrowed = nullptr;  // T? narrowed to T& in the current region.
     bool captured = false;         // Accessed from a nested fn / function value.
+    // The first comparison relying on the variable being non-negative
+    // (§6.1), and the first writable reference bound to it (§4.4), whichever
+    // makes the other an error (TypeCheck::RelyOnNonneg, NoteWritableRef).
+    // Like `captured`, they outlast a re-check of the variable's scope.
+    Node *nonneguse = nullptr;
+    Node *refwrite = nullptr;
 };
 
 // Lifetime depth of a root (§9.2): a global's or static data's is 0.

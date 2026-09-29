@@ -1314,7 +1314,12 @@ unsigned one — no wider than either operand, and never a hidden branch.
 
 "Known non-negative" is deliberately a *syntactic* property, not an inferred
 one: a non-negative integer literal, a `.len` or `.cap` (non-negative by
-§10.4), or a `let` bound to one of those. Whether a comparison compiles thus
+§10.4), or a `let` bound to one of those. A `let` is never reassigned, but a
+writable reference to it can still change its value (§4.4), so a comparison
+may not rely on a `let` (or on one it was bound to) that is also bound to a
+writable reference anywhere: by `&`, `.=`, or a reference parameter, field or
+binding that is not `const`, in a nested function too. Either order is an
+error. Whether a comparison compiles thus
 depends only on what is written, never on how much the optimizer managed to
 prove. Other cases require an explicit cast because conversion may change the
 value. A cast does not, however, preserve every comparison: `x as! i64`

@@ -372,10 +372,15 @@ inline Prov TypeCheck::RefProvOf(VarDef *vd) {
 inline VarDef *TypeCheck::ResetLocal(VarDef *previous) {
     if (!previous) return ast.NewVarDef();
     // Cached nested specializations capture this identity. Recompute its
-    // checking state, but retain the capture discovered on an earlier pass.
+    // checking state, but retain the capture discovered on an earlier pass,
+    // and the marks no pass may lose (a nested function checked once set
+    // them for every pass).
     auto captured = previous->captured;
+    auto nonneguse = previous->nonneguse, refwrite = previous->refwrite;
     *previous = VarDef {};
     previous->captured = captured;
+    previous->nonneguse = nonneguse;
+    previous->refwrite = refwrite;
     return previous;
 }
 
@@ -1985,10 +1990,12 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             CheckBindingRoot(d, v, vd->inits[i]);
         }
         d->assigned = true;
-        // A `let` has exactly one value, so its initializer's
-        // non-negativity is the name's for good (§6.1). A `var` can be
-        // assigned anything later.
+        // A `let` is never assigned again, so its initializer's
+        // non-negativity is the name's, unless a writable reference to it
+        // (or to a `let` the initializer read) changes it (§4.4,
+        // RelyOnNonneg). A `var` can be assigned anything later.
         d->nonneg = !vd->isvar && v.nonneg;
+        d->nonnegfrom = d->nonneg ? v.nonnegfrom : nullptr;
         Finish(d, ann ? ann : v.type, &v, vd->inits[i]);
         auto len = Is<Dot>(vd->inits[i]);
         if (!vd->isvar && !global && len && len->member == B_LEN &&
@@ -2200,7 +2207,7 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
         // explicit & is not redundant here as it is at a binding destination.
         SlotScope ss(*this, true);
         v = CheckV(a->rhs, target);
-        if (BindsRef(v, target)) a->rhs = AutoRef(a->rhs, v);
+        if (BindsRef(v, target)) a->rhs = AutoRef(a->rhs, v, !target->cq);
         wasplain = IsPlainRef(v.type);
         MustFit(v, a->rhs, target);
     }

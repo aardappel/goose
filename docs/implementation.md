@@ -1561,9 +1561,9 @@ not or the other way round, gets a specialization of its own.
 a call that reaches a nested function before its declaration is checked (a
 nested function declared earlier calling it), since the variables its site
 lists do not exist yet. Rechecking a declaration, loop or match binding
-resets its checking state while preserving its `VarDef` identity and
-capture flag (`ResetLocal`), so cached specializations still name the
-binding codegen declares. `VisibleVars`, which the shrink rules and the
+resets its checking state while preserving its `VarDef` identity, capture
+flag and the marks of §3.14 (`ResetLocal`), so cached specializations still
+name the binding codegen declares. `VisibleVars`, which the shrink rules and the
 read-back candidates enumerate (§3.6, §3.10), keeps the lexical parents'
 frames as the call finds them: a reference handed to the body, a later nested function's
 result or one a function value written at the call returns, can point into
@@ -1657,7 +1657,16 @@ typed operand, one implicit widening (`ImplicitInt`: wider same signedness,
 or unsigned into strictly wider signed) wins, and the `u64`-against-signed
 comparison is admitted only when the signed side's `nonneg` bit is set --
 a syntactic bit from a non-negative literal, a `.len`/`.cap`, or a `let`
-bound to one (`CheckVarDecl` copies it to the `VarDef` of a `let`). An
+bound to one (`CheckVarDecl` copies it to the `VarDef` of a `let`, and the
+`let` its initializer read, if any, as `nonnegfrom`). Since a writable
+reference can still change a `let` (§4.4), the comparison marks each `let`
+along the `nonnegfrom` chain as relied on (`RelyOnNonneg`, `nonneguse`),
+`CheckRefOf` and `AutoRef` mark a variable bound to a writable reference
+(`NoteWritableRef`, `refwrite`; not for an identity comparison, `index_of`
+or a `const T&` destination), and whichever mark comes second is an error.
+The marks do not follow the flow, and `ResetLocal` keeps them, so neither a
+loop's later pass, a cycle's later round nor a nested function checked once
+gets past them. An
 integer meeting a float takes the float's type, and an `f64` that takes its
 type from float literals (`LitFloat`) adapts to an `f32` operand. The
 checker folds constants at the operands' type (`FoldInt`, over the shared

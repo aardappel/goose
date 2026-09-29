@@ -100,6 +100,7 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
             v.writable = !vd->copybind && !(vd->type && vd->type->cq);
             v.reusable = vd->reusable;
             v.nonneg = vd->nonneg;
+            if (vd->nonneg) v.nonnegfrom = vd;
             v.lvalue = true;
             if (tc.HoldsPlainRef(v.type)) {
                 // What the references inside point at: a global's contents
@@ -392,12 +393,12 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
         // by reference as a `.=` binding takes it; the pointee types agree.
         auto lv = tc.CheckV(left, nullptr);
         if (lv.lvalue && !IsRefOrSlice(lv.type)) {
-            left = tc.AutoRef(left, lv);
+            left = tc.AutoRef(left, lv, false);
             tc.RecordVal(left, lv);
         }
         auto rv = tc.CheckV(right, nullptr);
         if (rv.lvalue && !IsRefOrSlice(rv.type))
-            right = tc.AutoRef(right, rv);
+            right = tc.AutoRef(right, rv, false);
         left->exprtype = lv.type;
         right->exprtype = rv.type;
         auto isref = [&](const Val &v) { return v.isnull || v.type->kind == TY_REF; };

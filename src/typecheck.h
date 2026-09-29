@@ -1192,7 +1192,9 @@ struct TypeCheck {
 
     Val DecayRef(Val v);
     bool KeepsRef(const Val &v, TypeExpr *dt);
-    Node *AutoRef(Node *n, Val &v);
+    Node *AutoRef(Node *n, Val &v, bool writes = true);
+    void NoteWritableRef(VarDef *d, Node *at);
+    VarDef *RelyOnNonneg(const Val &v, Node *at);
     bool BindsRef(const Val &v, TypeExpr *dt);
     bool IsNonFixedLValue(const Val &v);
     bool IsNonFixedRef(const Val &v);

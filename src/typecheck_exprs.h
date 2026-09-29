@@ -624,9 +624,13 @@ inline bool TypeCheck::KeepsRef(const Val &v, TypeExpr *dt) {
 
 // An lvalue of a reference destination's pointee type binds by reference
 // (§4.1): the node becomes `&node`, as if written, so every later pass
-// sees an ordinary reference argument.
-inline Node *TypeCheck::AutoRef(Node *n, Val &v) {
+// sees an ordinary reference argument. `writes`: something may write
+// through the reference, which is not so of an identity comparison's,
+// index_of's, or one bound to a `const T&`.
+inline Node *TypeCheck::AutoRef(Node *n, Val &v, bool writes) {
     if (!Referenceable(n, v)) NoResizableRef(n);
+    if (auto id = Is<Ident>(n); id && id->vdef && writes && v.writable)
+        NoteWritableRef(id->vdef, n);
     auto u = ast.New<Unary>(n->line, T_BITAND, n);
     u->synth = true;
     v.type = ast.RefTo(ast.PlainOf(v.type), n->line);
@@ -804,7 +808,7 @@ inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bo
         if (!callsite && expected->kind == TY_REF && UserRefOf(n))
             Warn(n, cat("redundant &: ", ExprStr(Is<Unary>(n)->child),
                         " binds by reference here without it (§4.1)"));
-        if (BindsRef(v, expected)) n = AutoRef(n, v);
+        if (BindsRef(v, expected)) n = AutoRef(n, v, !expected->cq);
         if (branchcopy) CheckBranchCopy(v, n, expected, copied);
         else RequireCopyable(v, n, expected);
         if (!KeepsRef(v, expected)) v = DecayRef(v);
@@ -1218,7 +1222,35 @@ inline Val TypeCheck::CheckRefOf(Unary *x) {
     v.SetProv(lv);
     v.writable = lv.writable && !lv.isvarint;
     v.type->cq = !v.writable;   // `&x` of a const value is a `const T&` (§9.5).
+    if (lv.var && v.writable) NoteWritableRef(lv.var, x);
     return v;
+}
+
+// A writable reference to d is made at `at` (§4.1: `&d`, or d bound by
+// reference). A `let` is written through one as a `var` is (§4.4), before
+// or after anything that relies on its value: the marks this and
+// RelyOnNonneg leave do not follow the flow, so neither a loop's later pass,
+// a cycle's later round nor a nested function checked only once can get
+// past them, and whichever comes second is an error.
+inline void TypeCheck::NoteWritableRef(VarDef *d, Node *at) {
+    if (!d->refwrite) d->refwrite = at;
+    if (d->nonneguse)
+        Error(at, cat(d->name, " is bound to a writable reference here, through which it may "
+                      "become negative, while the comparison with a u64 at ",
+                      Where(d->nonneguse->line), " relies on its value being non-negative "
+                      "(§4.4, §6.1); convert the signed side with `as` there"));
+}
+
+// A comparison with a u64 at `at` relies on v being non-negative (§6.1),
+// and so on the `let`s it was read from keeping their initializers'
+// values. Returns one bound to a writable reference (NoteWritableRef),
+// which may not have.
+inline VarDef *TypeCheck::RelyOnNonneg(const Val &v, Node *at) {
+    for (auto d = v.nonnegfrom; d; d = d->nonnegfrom) {
+        if (d->refwrite) return d;
+        if (!d->nonneguse) d->nonneguse = at;
+    }
+    return nullptr;
 }
 
 // Folds a constant binary op at the width and signedness of out.type
@@ -1295,7 +1327,18 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
                 auto &sv = isu64(lt) ? rv : lv;
                 auto st = isu64(lt) ? rt : lt;
                 if (!IsUnsigned(st->intstorage)) {
-                    if (sv.nonneg) return ast.inttypes[IS_U64];
+                    if (sv.nonneg) {
+                        if (auto w = RelyOnNonneg(sv, at)) {
+                            auto d = sv.nonnegfrom;
+                            Error(at, cat("comparing ", TypeStr(lt), " with ", TypeStr(rt),
+                                          " relies on ", d->name, " being non-negative",
+                                          w != d ? cat(", which rests on ", w->name) : string(),
+                                          ", but a writable reference bound to ", w->name,
+                                          " at ", Where(w->refwrite->line), " may make it "
+                                          "negative (§4.4, §6.1); convert it with `as`"));
+                        }
+                        return ast.inttypes[IS_U64];
+                    }
                     Error(at, cat("comparing ", TypeStr(lt), " with ", TypeStr(rt),
                                   " needs the signed side to be known non-negative "
                                   "(a literal, .len/.cap, or a `let` bound to one); "
