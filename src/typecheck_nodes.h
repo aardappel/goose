@@ -386,16 +386,20 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
         tc.CheckCond(right);
         // The right operand may not run, and runs after the left test: what
         // it un-narrows is un-narrowed after the condition, and the left test
-        // cannot narrow it for the region the condition guards.
+        // cannot narrow it for the region the condition guards; what it
+        // assigns may be assigned after the condition.
         rightkills.clear();
+        vector<VarDef *> mayassign;
         for (size_t k = 0; k < mid.st.size() && mid.idx[k] < (int)tc.vars.size(); k++) {
             auto v = tc.vars[mid.idx[k]];
-            if (mid.st[k].second && !v->narrowed) rightkills.push_back(v);
+            if (mid.st[k].narrowed && !v->narrowed) rightkills.push_back(v);
+            if (v->maybeassigned) mayassign.push_back(v);
         }
         for (auto [gv, gn] : mid.globals)
             if (gn && !gv->narrowed) rightkills.push_back(gv);
         tc.RestoreFlow(snap);
         for (auto kv : rightkills) kv->narrowed = nullptr;
+        for (auto v : mayassign) v->maybeassigned = true;
         Val v;
         v.type = tc.ast.booltype;
         return v;

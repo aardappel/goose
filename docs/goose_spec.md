@@ -924,8 +924,14 @@ and `const x = e;` declares a `let` of type `const T`: neither reassigned
 nor written into. A `var` of type `const T` is the converse: reassigned
 (`=`, compound assignment, `++`), never written into. Definite assignment
 is enforced: no reads of uninitialized locals; every declaration either has
-an initializer or is provably assigned on all paths before use. Fixed
-arrays require full initialization (every slot is indexable); the
+an initializer or is provably assigned on all paths before use. A `let`
+declared without an initializer gets its value once: assigning it, or
+binding it with `.=` (§3.8), is an error wherever some path may have given
+it one already -- in a branch that joins there, an earlier iteration of a
+loop it is declared outside of, or a function called on the way, the
+assigned value's own calls included (§7.5). A recursive cycle (§7.8) cannot
+assign such a `let` declared outside it, which all its activations share.
+Fixed arrays require full initialization (every slot is indexable); the
 `[v; n]` fill literal makes large ones cheap.
 
 ### 4.5 Equality and comparison
@@ -1792,7 +1798,9 @@ write the enclosing function's locals ("free variables"), subject to those
 variables' normal rules (writability §9.5, roots §9.2, shrink rules §5).
 For definite assignment (§4.4), a call assigns a free variable only where
 every way out of the body does: each `return`, those of a function value's
-body and a callee's `return … from` among them (§7.6, §7.9), and the end.
+body and a callee's `return … from` among them (§7.6, §7.9), and the end;
+where any of them may have assigned it, a `let` declared without an
+initializer takes no value after the call.
 A function value's body (§7.6) encloses what is written in it the same way:
 a function declared there, or a function value written there, may also name
 the value's parameters and the body's locals.
@@ -1814,10 +1822,10 @@ declaring it (function values do not escape, §7.6), and a call where a
 variable it names is out of scope is rejected, so every call can pass them.
 As by its parameters, a nested function is specialized by how a call finds
 its free variables (§10.2): where each points, what it holds and whether it
-is assigned. So is a function calling it, and one calling a function value
-that names such a variable. A call sharing a specialization with an earlier
-one leaves them as that one's check did: rebound, assigned, holding what the
-body stored.
+is assigned, and for a `let` whether it may be. So is a function calling
+it, and one calling a function value that names such a variable. A call
+sharing a specialization with an earlier one leaves them as that one's check
+did: rebound, assigned, holding what the body stored.
 When a nested function is passed as a static function value and inlined into
 its HOF — the expected, common case — the hidden parameters disappear
 entirely; un-inlined builds (debug) keep them as real arguments.

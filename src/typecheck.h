@@ -177,11 +177,12 @@ struct TypeCheck {
 
     // A function body's exits as its caller's flow sees them (§4.4): the
     // variables outside it that it can name and were unassigned when its
-    // check began -- the ones it may assign -- and whether each is assigned
-    // at every exit reached so far (NoteExit).
+    // check began -- the ones it may assign -- whether each is assigned at
+    // every exit reached so far and may be at any of them (NoteExit), and
+    // whether it may have been when the check began.
     struct BodyExits {
         vector<VarDef *> vars;
-        vector<bool> assigned;
+        vector<bool> assigned, maybeassigned, maybeonentry;
         bool reached = false;
     };
 
@@ -221,9 +222,15 @@ struct TypeCheck {
     // narrowing. The other frames on the call path hold variables no code
     // checked meanwhile can name, so a deep call path does not copy them all
     // at every branch.
+    struct VarFlow {
+        bool assigned = false;
+        bool maybeassigned = false;
+        TypeExpr *narrowed = nullptr;
+        bool operator==(const VarFlow &) const = default;
+    };
     struct FlowState {
         vector<int> idx;                      // Into vars, ascending.
-        vector<pair<bool, TypeExpr *>> st;    // Aligned with idx.
+        vector<VarFlow> st;                   // Aligned with idx.
         vector<pair<VarDef *, TypeExpr *>> globals;
         bool reachable = true;
     };
@@ -1073,7 +1080,8 @@ struct TypeCheck {
 
     void KillNarrow(VarDef *vd) { vd->narrowed = nullptr; }
     // The join of two states, as MergeFlow leaves it: a fact holds iff it
-    // holds in every reachable one.
+    // holds in every reachable one, and a variable may be assigned iff it
+    // may be in any.
     FlowState JoinFlow(const FlowState &a, const FlowState &b);
     bool SameFlow(const FlowState &a, const FlowState &b);
 
@@ -1092,25 +1100,27 @@ struct TypeCheck {
     void RecordEnvExits(FnSpec *spec);
     void ReplayEnvExits(FnSpec *spec);
     // A body's caller finds the variables outside it assigned as all of the
-    // body's exits agree (BodyExits): its returns, the tail, a reachable end,
-    // and an exit of it that a callee takes -- a function value's `return`,
-    // a `return from`. A callee records such an exit (FnSpec::outerexits),
-    // which a call reusing it takes again.
-    void NoteExit(int tf, const set<VarDef *> *added = nullptr);
+    // body's exits agree, and maybe assigned where any may be (BodyExits):
+    // its returns, the tail, a reachable end, and an exit of it that a
+    // callee takes -- a function value's `return`, a `return from`. A
+    // callee records such an exit (FnSpec::outerexits), which a call reusing
+    // it takes again.
+    void NoteExit(int tf, const OuterExit *added = nullptr);
     void ReplayOuterExits(FnSpec *spec);
 
     // A loop body is checked as many times as it takes for what it feeds
     // back to its head to settle (CheckLoopPasses): the roots its rebinds
     // give the variables declared outside it, the stores into their
     // contents (NoteFact), the narrowings and assignments its back edges
-    // drop. Every pass but a settled one is discovery: a reference variable
-    // read before any binding points nowhere yet (RefProvOf), and every
-    // rule passes such a value by, as the shrink scans pass the variable
-    // by; the pass after the last that changed anything reads it as
-    // outside a loop would, and its errors stand. A rule that errs where a
-    // value cannot point somewhere needs every place the value may point,
-    // which a later pass can still add, so it leaves its verdict to that
-    // pass (VerdictDeferred).
+    // drop, and the assignments they may have made, which a `let` assigned
+    // in the loop meets on the next pass (§4.4). Every pass but a settled
+    // one is discovery: a reference variable read before any binding points
+    // nowhere yet (RefProvOf), and every rule passes such a value by, as the
+    // shrink scans pass the variable by; the pass after the last that
+    // changed anything reads it as outside a loop would, and its errors
+    // stand. A rule that errs where a value cannot point somewhere needs
+    // every place the value may point, which a later pass can still add, so
+    // it leaves its verdict to that pass (VerdictDeferred).
     struct LoopPass {
         int scopeidx = 0;          // The loop's scope.
         size_t firstbase = 0;      // storeevents.size() when the loop's first pass began.
@@ -1729,6 +1739,7 @@ struct TypeCheck {
     }
     void CompoundAssign(Assign *a, TypeExpr *st, bool writable);
     void NoLetAssign(Node *at, const LVal &lv);
+    void NoLetReassign(Node *at, const VarDef *vd, const char *verb, const char *done);
     void NoCopyWrite(Node *at, const LVal &lv);
     bool WholeWritable(const LVal &lv);
     void CheckIncDec(IncDec *x);
@@ -2046,7 +2057,7 @@ struct TypeCheck {
             if (en->generics.empty()) GetEnumInst(ast.EnumOf(en, {}, true, en->line));
         for (auto g : ast.globals) {
             CheckVarDecl(g, true);
-            for (auto d : g->defs) d->assigned = true;
+            for (auto d : g->defs) d->assigned = d->maybeassigned = true;
         }
         // Concrete ones only; a pointee still spelled with a type parameter
         // gets here again once a specialization substitutes it.

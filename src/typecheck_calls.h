@@ -1292,8 +1292,8 @@ inline vector<VarDef *> TypeCheck::ExternalOptionals(const MatchInfo &mi) {
 }
 
 inline EnvRead TypeCheck::EnvReadOf(VarDef *vd) {
-    return { vd, vd->assigned, vd->refrootknown, vd->ref, vd->contents, vd->contentbyteview,
-             vd->slotref };
+    return { vd, vd->assigned, vd->maybeassigned, vd->refrootknown, vd->ref, vd->contents,
+             vd->contentbyteview, vd->slotref };
 }
 
 // A body names vd outside its activation: a nested function one of its
@@ -1326,7 +1326,8 @@ inline void TypeCheck::NoteCalleeEnvReads(FnSpec *callee) {
 
 // Whether vd is as r found it: the same roots, the same contents, assigned
 // or not as it was, a slot a reference has been made to or not
-// (StoreIntoSlot).
+// (StoreIntoSlot), and for a `let`, which is assigned only where it cannot
+// be already (§4.4), maybe assigned or not as it was.
 inline bool TypeCheck::EnvIs(const VarDef *vd, const EnvRead &r) {
     auto sameroots = [](const Roots &a, const Roots &b) {
         if (a.alts.size() != b.alts.size() || a.unknown != b.unknown) return false;
@@ -1339,7 +1340,9 @@ inline bool TypeCheck::EnvIs(const VarDef *vd, const EnvRead &r) {
         }
         return true;
     };
-    return vd->assigned == r.assigned && vd->refrootknown == r.refrootknown &&
+    return vd->assigned == r.assigned &&
+           (vd->isvar || vd->maybeassigned == r.maybeassigned) &&
+           vd->refrootknown == r.refrootknown &&
            sameroots(vd->ref, r.ref) && vd->ref.writable == r.ref.writable &&
            vd->ref.reusable == r.ref.reusable && vd->ref.byteview == r.ref.byteview &&
            vd->ref.freshview == r.ref.freshview && vd->ref.reached == r.ref.reached &&
@@ -1373,8 +1376,10 @@ inline void TypeCheck::ReplayEnvExits(FnSpec *spec) {
     for (auto &x : spec->envexits) {
         auto v = x.var;
         // Whether it is assigned is flow, which a loop's passes compare at
-        // its head (SameFlow), not a fact fed back.
+        // its head (SameFlow), not a fact fed back. A `var` is not keyed by
+        // whether it may be assigned (EnvIs), and stays so where it was.
         v->assigned = x.assigned;
+        v->maybeassigned = v->maybeassigned || x.maybeassigned;
         if (EnvIs(v, x)) continue;
         v->refrootknown = x.refrootknown;
         v->ref = x.ref;
@@ -1386,47 +1391,62 @@ inline void TypeCheck::ReplayEnvExits(FnSpec *spec) {
 }
 
 // An exit of the body that frame tf checks, reached here: its caller finds a
-// variable outside it assigned where every exit does (§4.4). `added`: those
-// a reused callee's activation had assigned when it took the exit, where they
-// were unassigned when it began (FnSpec::outerexits). The exit leaves the
-// bodies checked in the frames above tf too, each of which records what it
-// had assigned by then for a call reusing it.
-inline void TypeCheck::NoteExit(int tf, const set<VarDef *> *added) {
+// variable outside it assigned where every exit does, and maybe assigned
+// where any may be (§4.4). `added`: those a reused callee's activation had
+// assigned when it took the exit, where they were unassigned when it began,
+// and those it may have assigned, where none could be (FnSpec::outerexits).
+// The exit leaves the bodies checked in the frames above tf too, each of
+// which records what it had assigned by then for a call reusing it.
+inline void TypeCheck::NoteExit(int tf, const OuterExit *added) {
     auto e = frames[tf].exits;
     if (!reachable || !e) return;
-    auto isassigned = [&](VarDef *v) { return v->assigned || (added && added->count(v)); };
-    for (size_t i = 0; i < e->vars.size(); i++)
+    auto isassigned = [&](VarDef *v) {
+        return v->assigned || (added && added->assigned.count(v));
+    };
+    auto maybe = [&](VarDef *v) {
+        return v->maybeassigned || (added && added->maybeassigned.count(v));
+    };
+    for (size_t i = 0; i < e->vars.size(); i++) {
         e->assigned[i] = (!e->reached || e->assigned[i]) && isassigned(e->vars[i]);
+        e->maybeassigned[i] = (e->reached && e->maybeassigned[i]) || maybe(e->vars[i]);
+    }
     e->reached = true;
     auto target = frames[tf].spec;
     for (auto k = tf + 1; k < (int)frames.size(); k++) {
         auto mine = frames[k].exits;
         if (!mine) continue;
-        set<VarDef *> assigned;
-        for (auto v : e->vars)
-            if (isassigned(v) && find(mine->vars.begin(), mine->vars.end(), v) != mine->vars.end())
-                assigned.insert(v);
+        OuterExit x { target };
+        for (auto v : e->vars) {
+            auto at = find(mine->vars.begin(), mine->vars.end(), v);
+            if (at == mine->vars.end()) continue;
+            if (isassigned(v)) x.assigned.insert(v);
+            if (maybe(v) && !mine->maybeonentry[at - mine->vars.begin()])
+                x.maybeassigned.insert(v);
+        }
         auto &outer = frames[k].spec->outerexits;
         auto known = false;
-        for (auto &[t, a] : outer) {
-            if (t != target) continue;
-            // What every exit of the target it takes has assigned.
-            std::erase_if(a, [&](VarDef *v) { return !assigned.count(v); });
+        for (auto &o : outer) {
+            if (o.target != target) continue;
+            // What every exit of the target it takes has assigned, and what
+            // any of them may have.
+            std::erase_if(o.assigned, [&](VarDef *v) { return !x.assigned.count(v); });
+            o.maybeassigned.insert(x.maybeassigned.begin(), x.maybeassigned.end());
             known = true;
         }
-        if (!known) outer.push_back({ target, std::move(assigned) });
+        if (!known) outer.push_back(std::move(x));
     }
 }
 
 // A call reusing a body takes the exits of the bodies outside it that its
-// check took, having assigned what the check had by each. Their targets are
-// on the call path, the body being reused only under the specializations its
-// long-distance returns were checked against (FnSpec::needs).
+// check took, having assigned what the check had by each, and maybe what it
+// may have by any. Their targets are on the call path, the body being reused
+// only under the specializations its long-distance returns were checked
+// against (FnSpec::needs).
 inline void TypeCheck::ReplayOuterExits(FnSpec *spec) {
-    for (auto &[target, added] : spec->outerexits) {
+    for (auto &x : spec->outerexits) {
         for (auto i = (int)frames.size() - 1; i >= 0; i--) {
-            if (frames[i].isfunval || frames[i].spec != target) continue;
-            NoteExit(i, &added);
+            if (frames[i].isfunval || frames[i].spec != x.target) continue;
+            NoteExit(i, &x);
             break;
         }
     }
@@ -2034,19 +2054,27 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     auto oldparams = std::move(spec->params);
     spec->params.clear();
     // The caller goes on from the body's exits, not from where its text ends:
-    // it finds a variable outside the body assigned where every exit does
-    // (NoteExit), and narrowed as it was, since a cached body is not checked
-    // again; what the body rebinds reaches callers through
-    // ApplyCalleeRebinds. The body can only name the variables of the frames
-    // it is nested in, and only assign those of them unassigned here.
+    // it finds a variable outside the body assigned where every exit does,
+    // maybe assigned where any may be (NoteExit), and narrowed as it was,
+    // since a cached body is not checked again; what the body rebinds
+    // reaches callers through ApplyCalleeRebinds. The body can only name the
+    // variables of the frames it is nested in, and only assign those of them
+    // unassigned here.
     vector<pair<VarDef *, TypeExpr *>> outernarrowed;
+    vector<pair<VarDef *, bool>> outerassigned;
     BodyExits exits;
     auto lexframe = LexFrame(spec->lexparent, sf);
     EachNamedVar(lexframe, spec, [&](int i) {
         outernarrowed.push_back({ vars[i], vars[i]->narrowed });
-        if (!vars[i]->assigned) exits.vars.push_back(vars[i]);
+        if (vars[i]->assigned) {
+            outerassigned.push_back({ vars[i], vars[i]->maybeassigned });
+            return;
+        }
+        exits.vars.push_back(vars[i]);
+        exits.maybeonentry.push_back(vars[i]->maybeassigned);
     });
     exits.assigned.resize(exits.vars.size());
+    exits.maybeassigned.resize(exits.vars.size());
     for (auto g : ast.globals) for (auto v : g->defs) outernarrowed.push_back({ v, v->narrowed });
     Frame f;
     f.sf = sf;
@@ -2091,7 +2119,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
         auto vd = NewVar(p.name, pt, sf->line, p.isvar,
                          i < oldparams.size() ? oldparams[i] : nullptr);
         vd->isparam = true;
-        vd->assigned = true;
+        vd->assigned = vd->maybeassigned = true;
         for (auto li : spec->litparams) if (li == (int)i) vd->unsized = true;
         if (IsRefOrSlice(pt)) {
             auto &ra = spec->roots[i];
@@ -2252,10 +2280,18 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     PopScope();
     frames.pop_back();
     for (auto [v, n] : outernarrowed) v->narrowed = n;
+    // Where the body's text ends no path may reach, as after an if whose
+    // branches both return, a variable holds every fact and may be assigned
+    // on no path; one the body found assigned is still as it was.
+    for (auto [v, m] : outerassigned) v->maybeassigned = m;
     // A body whose exits all leave callers further out, or none at all, is
     // never returned from, and leaves them as its end did.
-    if (exits.reached)
-        for (size_t i = 0; i < exits.vars.size(); i++) exits.vars[i]->assigned = exits.assigned[i];
+    if (exits.reached) {
+        for (size_t i = 0; i < exits.vars.size(); i++) {
+            exits.vars[i]->assigned = exits.assigned[i];
+            exits.vars[i]->maybeassigned = exits.maybeassigned[i];
+        }
+    }
     reachable = savereach;
     RecordEnvExits(spec);
     spec->inprogress = false;
@@ -2661,7 +2697,7 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
     c->fvparams.clear();
     for (size_t i = 0; i < params.size(); i++) {
         auto vd = NewVar(params[i].name, ptypes[i], c->line, params[i].isvar);
-        vd->assigned = true;
+        vd->assigned = vd->maybeassigned = true;
         if (IsRefOrSlice(ptypes[i])) {
             BindRefProvenance(vd, argvals[i]);
             if (ptypes[i]->cq) vd->ref.writable = false;

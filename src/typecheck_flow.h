@@ -683,7 +683,7 @@ inline TypeCheck::FlowState TypeCheck::SaveFlow() {
     FlowState f;
     EachNamedVar((int)frames.size() - 1, CurRealFrame().spec, [&](int i) {
         f.idx.push_back(i);
-        f.st.push_back({ vars[i]->assigned, vars[i]->narrowed });
+        f.st.push_back({ vars[i]->assigned, vars[i]->maybeassigned, vars[i]->narrowed });
     });
     // Globals' narrowing participates too (assignment in branches).
     for (auto g : ast.globals)
@@ -695,8 +695,10 @@ inline TypeCheck::FlowState TypeCheck::SaveFlow() {
 inline void TypeCheck::RestoreFlow(const FlowState &f) {
     for (size_t k = 0; k < f.idx.size(); k++) {
         if (f.idx[k] >= (int)vars.size()) break;
-        vars[f.idx[k]]->assigned = f.st[k].first;
-        vars[f.idx[k]]->narrowed = f.st[k].second;
+        auto v = vars[f.idx[k]];
+        v->assigned = f.st[k].assigned;
+        v->maybeassigned = f.st[k].maybeassigned;
+        v->narrowed = f.st[k].narrowed;
     }
     for (auto [v, narrowed] : f.globals) v->narrowed = narrowed;
     reachable = f.reachable;
@@ -718,18 +720,20 @@ inline bool TypeCheck::SameFlow(const FlowState &a, const FlowState &b) {
 }
 
 // Joins two branch end states into the current state: a fact holds after
-// the join iff it holds in every reachable branch. A variable neither
-// state has -- declared in a branch and still in scope -- holds nothing.
+// the join iff it holds in every reachable branch, and a variable may be
+// assigned iff it may be in any. A variable neither state has -- declared
+// in a branch and still in scope -- holds nothing.
 inline void TypeCheck::MergeFlow(const FlowState &a, const FlowState &b) {
-    auto join = [&](VarDef *v, pair<bool, TypeExpr *> aa, pair<bool, TypeExpr *> bb) {
-        v->assigned = (a.reachable ? aa.first : true) && (b.reachable ? bb.first : true);
+    auto join = [&](VarDef *v, const VarFlow &aa, const VarFlow &bb) {
+        v->assigned = (a.reachable ? aa.assigned : true) && (b.reachable ? bb.assigned : true);
+        v->maybeassigned = (a.reachable && aa.maybeassigned) || (b.reachable && bb.maybeassigned);
         TypeExpr *n = nullptr;
-        if (!a.reachable) n = bb.second;
-        else if (!b.reachable) n = aa.second;
-        else if (aa.second && bb.second) n = aa.second;
+        if (!a.reachable) n = bb.narrowed;
+        else if (!b.reachable) n = aa.narrowed;
+        else if (aa.narrowed && bb.narrowed) n = aa.narrowed;
         v->narrowed = n;
     };
-    const pair<bool, TypeExpr *> none { false, nullptr };
+    const VarFlow none;
     size_t p = 0, q = 0;
     auto last = -1;
     while (p < a.idx.size() || q < b.idx.size()) {
@@ -1277,7 +1281,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                 binder->line = m->line;
                 binder->depth = CurDepth() + 1;
                 binder->ownerspec = frames.back().spec;
-                binder->assigned = true;
+                binder->assigned = binder->maybeassigned = true;
                 if (arm.pat.byref) {
                     // `Variant &b`: only variable-mode payloads may be
                     // bound by reference — a fixed-mode value may be
@@ -1733,7 +1737,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     auto head = SaveFlow();
     auto sc = CheckLoopPasses(x, head, [&] {
         auto vd = NewVar(x->var, bindtype, x->line, false, x->vdef);
-        vd->assigned = true;
+        vd->assigned = vd->maybeassigned = true;
         vd->copybind = (x->iterkind == IK_ARRAY || x->iterkind == IK_SLICE) && !byref;
         if (!IsRefOrSlice(bindtype) && HoldsPlainRef(bindtype)) {
             // A holder element copied out: its contents are the array's, as
@@ -1751,7 +1755,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         if (!x->idxvar.empty()) {
             auto idx = NewVar(x->idxvar, idxtype ? idxtype : ast.inttypes[IS_I64], x->line,
                               false, x->idxdef);
-            idx->assigned = true;
+            idx->assigned = idx->maybeassigned = true;
             x->idxdef = idx;
         }
         CheckLoopBody(x->body);
@@ -1971,7 +1975,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
                           " must be constructed at its declaration (§4.2)"));
         for (size_t i = 0; i < vd->names.size(); i++) {
             auto d = MakeDef(i);
-            d->assigned = false;
+            d->assigned = d->maybeassigned = false;
             Finish(d, ann, nullptr, nullptr);
         }
         return;
@@ -1986,7 +1990,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         auto rets = lastcallrets;
         for (size_t i = 0; i < vd->names.size(); i++) {
             auto d = MakeDef(i);
-            d->assigned = true;
+            d->assigned = d->maybeassigned = true;
             // A reference result decays to a copy of a fixed-size pointee,
             // as a single binding's does, unless the declaration binds by
             // reference (`.=`); one to a non-fixed value binds it (§4.1).
@@ -2060,7 +2064,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
             NoRelRefCopy(vd->inits[i], v.type);
             CheckBindingRoot(d, v, vd->inits[i]);
         }
-        d->assigned = true;
+        d->assigned = d->maybeassigned = true;
         // A `let` is never assigned again, so its initializer's
         // non-negativity is the name's, unless a writable reference to it
         // (or to a `let` the initializer read) changes it (§4.4,
@@ -2243,12 +2247,13 @@ inline void TypeCheck::CheckAssign(Assign *a) {
     auto v = CheckAssignedValue(a, target, arr, built,
                                 Dest(lv, lv.var && IsRefOrSlice(target), lv.reached));
     if (lv.var) {
+        NoLetReassign(a, lv.var, "assign to", "assigned");
         // Slice variables carry their value's provenance (refs use .=).
         if (target->kind == TY_SLICE) {
             if (!lv.var->refrootknown || lv.var->ref.Unknown()) BindRefProvenance(lv.var, v);
             else CheckRefRebindRoot(a, lv.var, v);
         }
-        lv.var->assigned = true;
+        lv.var->assigned = lv.var->maybeassigned = true;
         KillNarrow(lv.var);
     }
 }
@@ -2285,9 +2290,10 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
     }
     a->rhs->exprtype = v.type;
     if (lv.var) {
+        NoLetReassign(a, lv.var, "rebind", "bound");
         if (!lv.var->refrootknown || lv.var->ref.Unknown()) BindRefProvenance(lv.var, v);
         else if (!v.isnull) CheckRefRebindRoot(a, lv.var, v);
-        lv.var->assigned = true;
+        lv.var->assigned = lv.var->maybeassigned = true;
         // Rebinding an optional settles its nullness — narrowed only when
         // the new value is provably non-null (a plain reference).
         if (target->ref->optional) {
@@ -2455,6 +2461,15 @@ inline bool TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv,
 inline void TypeCheck::NoLetAssign(Node *at, const LVal &lv) {
     if (lv.letbound && !lv.copyof)
         Error(at, cat("cannot assign to let ", lv.letname, " (§4.4)"));
+}
+
+// A `let` declared without a value gets one once: where it does, no path
+// may have given it one before, the value just checked included (§4.4).
+inline void TypeCheck::NoLetReassign(Node *at, const VarDef *vd, const char *verb,
+                                     const char *done) {
+    if (!vd->isvar && vd->maybeassigned)
+        Error(at, cat("cannot ", verb, " let ", vd->name, ", which may be ", done,
+                      " already (§4.4)"));
 }
 
 // A by-value `for` or `match` binding is a copy of the element: a write

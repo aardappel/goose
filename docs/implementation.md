@@ -218,7 +218,7 @@ function and no existing specialization matches. `GetOrCreateSpec`
 | `litparams` | which parameters are literal parameters (§7.7) |
 | `fnvals` | the identity of each bound function value (the block node or named function, plus the environment it captures) |
 | `narrowedenv` | which optionals of the lexical environment were narrowed at the call (a nested function or block sees them narrowed) |
-| `envreads` | the state of each variable outside the body's activation that it names, or that a callee checked or reused for it named, as the body's check began with it: assigned or not, where it points (`ref`, `refrootknown`), what it holds (`contents`). A nested function's free variables are hidden parameters (§7.5), a global initializer's locals among them when a function declared or a function value written there reads them: a later call finding one otherwise gets a body of its own. Filled by `NoteEnvRead` (`LookupVar`) and `NoteCalleeEnvReads` (after each call), shared among a cycle's members (`ShareCycleEnvReads`), compared by `EnvUnchanged`. The same variables as the check left them (`envexits`) are where a call reusing the body leaves them (`ReplayEnvExits`) |
+| `envreads` | the state of each variable outside the body's activation that it names, or that a callee checked or reused for it named, as the body's check began with it: assigned or not, for a `let` whether it may be assigned (§3.9), where it points (`ref`, `refrootknown`), what it holds (`contents`). A nested function's free variables are hidden parameters (§7.5), a global initializer's locals among them when a function declared or a function value written there reads them: a later call finding one otherwise gets a body of its own. Filled by `NoteEnvRead` (`LookupVar`) and `NoteCalleeEnvReads` (after each call), shared among a cycle's members (`ShareCycleEnvReads`), compared by `EnvUnchanged`. The same variables as the check left them (`envexits`) are where a call reusing the body leaves them (`ReplayEnvExits`) |
 | `needs` | the concrete specializations of every `return ... from` target enclosing the call must be the same on this path |
 
 `RootArg::exact` and `RootArg::concrete` are excluded from the key: they are
@@ -237,8 +237,8 @@ clones the body, checks its statements, and treats a value-producing tail as
 held temporaries, reachability, the construction
 destination, the slot and return flags (§3.8), and narrowings of outer
 variables; the outer variables it assigns are left assigned where all of
-its exits agree (§3.9). Only the specialization's effect summaries reach
-the caller.
+its exits agree, and maybe assigned where any of them may be (§3.9). Only
+the specialization's effect summaries reach the caller.
 
 **Depth.** Since a body is checked inside the call that first reaches it,
 the native stack holds a `CheckSpecBody` activation for every call on the
@@ -1122,30 +1122,47 @@ slot.
 
 ### 3.9 Flow state: definite assignment and narrowing
 
-Each `VarDef` carries `assigned` and `narrowed` (the `T&` type an optional is
-narrowed to). `SaveFlow`/`RestoreFlow`/`MergeFlow` snapshot and join them at
-every branch, for the variables the code between can name -- those of the
-current frame, of the frames it is lexically nested in, and of the frames
-the function values it can call were written in (`NamedFrames`), and the
-globals -- since no other frame's can change meanwhile: a fact holds after a
-join iff it holds in every reachable branch, with `reachable` tracking
-divergence (`return`, `break`, `continue`, `abort`, `exit`). A loop or
-`block` is left in the join of the states at its exits: each reachable
-`break` out of it joins its state into the construct's scope (`NoteBreak`,
-`Scope::breakflow`), and `JoinBreakFlow` joins that with the construct's
-own exit -- the end of a block's body, a `while`'s condition found false, a
-`for`'s head once its iterations run out -- or, for a `loop`, which has
-none, takes it alone. A callee's check leaves the ones it can name narrowed
-as it found them, and assigned where all of its exits agree
-(`CheckSpecBodyOnce`, `BodyExits`, `NoteExit`), not as the end of its text
-does: each `return`, the tail and a reachable end. A function value's
-`return`, or a `return from` in a callee, exits the body it names
+Each `VarDef` carries `assigned`, `maybeassigned` and `narrowed` (the `T&`
+type an optional is narrowed to). `SaveFlow`/`RestoreFlow`/`MergeFlow`
+snapshot and join them at every branch, for the variables the code between
+can name -- those of the current frame, of the frames it is lexically nested
+in, and of the frames the function values it can call were written in
+(`NamedFrames`), and the globals -- since no other frame's can change
+meanwhile: a fact holds after a join iff it holds in every reachable branch,
+and a variable is maybe assigned iff it is in some reachable one, with
+`reachable` tracking divergence (`return`, `break`, `continue`, `abort`,
+`exit`). A loop or `block` is left in the join of the states at its exits:
+each reachable `break` out of it joins its state into the construct's scope
+(`NoteBreak`, `Scope::breakflow`), and `JoinBreakFlow` joins that with the
+construct's own exit -- the end of a block's body, a `while`'s condition
+found false, a `for`'s head once its iterations run out -- or, for a
+`loop`, which has none, takes it alone. A callee's check leaves the ones it
+can name narrowed as it found them, assigned where all of its exits agree
+and maybe assigned where any may be (`CheckSpecBodyOnce`, `BodyExits`,
+`NoteExit`), not as the end of its text does: each `return`, the tail and a
+reachable end. Those it found assigned stay as they were: where its text
+ends no path may reach, as after an `if` whose branches both return, every
+variable holds every fact and may be assigned on no path. A function
+value's `return`, or a `return from` in a callee, exits the body it names
 (`Frame::exits`), and every body checked in the frames between records what
-its activation had assigned by then (`FnSpec::outerexits`), which a call
-reusing it takes again (`ReplayOuterExits`). A body with no exit its caller
-reaches leaves them as its end did: the code after the call never runs. A branch that diverges has the null
-"bottom" type, which unifies with anything (`UnifyBranch`, `MergeVals`), and
-reads as `void` once the construct's node is left (`VoidIfBottom`).
+its activation had assigned by then, and what it may have assigned since it
+began (`FnSpec::outerexits`), which a call reusing it takes again
+(`ReplayOuterExits`). A body with no exit its caller reaches leaves them as
+its end did: the code after the call never runs. A branch that diverges has
+the null "bottom" type, which unifies with anything (`UnifyBranch`,
+`MergeVals`), and reads as `void` once the construct's node is left
+(`VoidIfBottom`).
+
+A `let` declared without an initializer is assigned, or bound with `.=`,
+only where it is not maybe assigned (`NoLetReassign`, §4.4), which is
+judged once the value is checked, since computing it may assign the `let`
+too. Every assignment and binding sets the bit. A `&&`'s or `||`'s right
+operand may run, so what it assigns is maybe assigned after the condition.
+A loop's head joins its back edges (§3.7), so a `let` declared outside the
+loop and assigned in it is maybe assigned in the next pass, where the
+assignment errs. A nested function's key holds the bit for a `let` only
+(`EnvIs`), whose check reads it; a call reusing the body leaves a `var`
+maybe assigned where it was or where the check left it (`ReplayEnvExits`).
 
 `NarrowCond` narrows on `if`/`while`/`assert` conditions, through
 `!`, `&&` and `||` (a `&&`'s right operand may not run, so what it
@@ -1568,8 +1585,12 @@ callee is in progress: `CallResult`, `ApplyCalleeShrinks`,
 same clone; a stale member is checked again when a call reaches it
 (`GetOrCreateSpec`), with the parameters and class roots its first round
 made (`FnSpec::classroots`), so the records and the threaded classes name
-the same objects across rounds. In the first round a back edge has no
-record: it applies no effects, and its result points nowhere yet
+the same objects across rounds. The variables outside the cycle's
+activations start each round as the round before left them, so a `let`
+declared outside the cycle that a round may assign is maybe assigned in the
+next, where assigning it errs (§3.9): every activation shares it. In the
+first round a back edge has no record: it applies no effects, and its
+result points nowhere yet
 (`Roots::unknown`), which every rule passes by (`FitsAt`,
 `CheckRootedAtReceiver`, `BindRefProvenance`, the shrink scans), as does a
 holder's contents read out of one, a variable bound to one, and a call given
@@ -1747,7 +1768,8 @@ scope around the call that shadows or adds a name changes nothing, and a
 specialization per `lexparent` serves every call that finds the variables
 the body names as its check found them (`envreads`, §3.1): a call where one
 of them points or holds references elsewhere, or is assigned where it was
-not or the other way round, gets a specialization of its own.
+not or the other way round, or is a `let` that may be assigned where it
+could not be or the other way round, gets a specialization of its own.
 `GetOrCreateSpec` rejects
 a call that reaches a nested function before its declaration is checked (a
 nested function declared earlier calling it), since the variables its site

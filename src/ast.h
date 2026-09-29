@@ -1259,8 +1259,10 @@ struct VarDef {
     // A function-value parameter bound from one stands for that one.
     bool unsized = false;
     VarDef *unsizedorigin = nullptr;
-    // Flow state during checking:
+    // Flow state during checking: assigned on every path here, and on some
+    // path here -- a `let` is assigned only where it is on none (§4.4).
     bool assigned = false;
+    bool maybeassigned = false;
     TypeExpr *narrowed = nullptr;  // T? narrowed to T& in the current region.
     bool captured = false;         // Accessed from a nested fn / function value.
     // The first comparison relying on the variable being non-negative
@@ -1551,11 +1553,19 @@ struct LitFlow {
 struct EnvRead {
     VarDef *var = nullptr;
     bool assigned = false;
+    bool maybeassigned = false;
     bool refrootknown = false;
     Prov ref;
     Roots contents;
     bool contentbyteview = false;
     bool slotref = false;
+};
+
+// An exit of a body outside a specialization's activation that its check
+// took (FnSpec::outerexits).
+struct OuterExit {
+    FnSpec *target = nullptr;
+    set<VarDef *> assigned, maybeassigned;
 };
 
 // One monomorphic specialization of a function: the unit of typechecking and
@@ -1593,9 +1603,10 @@ struct FnSpec {
     // Exits of the bodies outside this one's activation that its check took
     // -- a function value's `return`, a `return from` -- each target with
     // the variables outside it that the activation had assigned at all of
-    // them, where they were unassigned when it began: a call reusing it
-    // takes them again (TypeCheck::ReplayOuterExits).
-    vector<pair<FnSpec *, set<VarDef *>>> outerexits;
+    // them, where they were unassigned when it began, and those it may have
+    // assigned at any of them, where none could be when it began: a call
+    // reusing it takes them again (TypeCheck::ReplayOuterExits).
+    vector<OuterExit> outerexits;
     // External optional bindings this body (or a callee) may rebind.
     set<VarDef *> reboundoptionals;
     vector<int> litparams;         // Parameters that are literals (§7.7): part of the key.
