@@ -1635,6 +1635,14 @@ is itself a self-relative reference included), and a `resize` fill value,
 literal or not, which is built once and copied into every slot added.
 Varint-width relative references are construction-only.
 
+A value is never relative (`FitsAt` refuses one anywhere but an identical
+slot), so neither is a result: `CheckSpecBody` rejects a result type written
+as a relative reference, and gives one a type argument makes relative its
+loaded plain reference (`ValueType`), which the callee's returns are checked
+against and the call yields. `default<T>()` of an optional relative reference
+is typed the same way, as the plain null, so it exists at the varint width
+too.
+
 ### 3.14 Arithmetic, constants, and the rest
 
 `UnifyNumeric` (§6.1) unifies operands: equal types stand, a constant adapts
@@ -2462,8 +2470,10 @@ an `in pool` field, a C member of the object, through the same helper
 type is such a slot too: its initializer or argument is encoded into it
 (`BindLocal`, `EmitGlobalInit`, `EmitArg`), at varint width on a data stack
 as any variable-size value is (`GenConstruct`), and a `var` global without
-an initializer starts as `null`, where `default<T>()`'s value would be the
-offset itself (`DefaultValue`). The store's range check is emitted only
+an initializer starts as `null` (`DefaultValue`). A call's value is plain
+too, `default<T>()` of a relative reference being the null pointer, so where
+`default<Rel[N]>()` fills its temporary's elements with it, the lvalue store
+encodes it (`Call::CgAny`). The store's range check is emitted only
 where a root can exceed the width: for `in pool` under
 `#if GS_STACK_RESERVE >= 2^bits`, for self-relative under
 `#if GS_STACK_RESERVE > 2^(bits-1)` when no fixed-size root in the program

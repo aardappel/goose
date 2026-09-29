@@ -1961,6 +1961,15 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     if (sf->has_rets && !spec->retsknown) {
         for (auto rt : sf->rets) {
             auto ct = Subst(rt);
+            // A result is a value, which is never relative (§3.9): written so,
+            // it is an error, and one a type argument makes relative is the
+            // plain reference a load of it gives.
+            if (rt->kind == TY_REF && rt->ref->lenstorage >= 0)
+                Error(sf->line, cat("function ", sf->name, " cannot return ", TypeStr(ct),
+                                    ": a result is a value, never a relative reference "
+                                    "(§3.9); return ", TypeStr(LoadType(ct)),
+                                    ", which a relative slot receiving it encodes"));
+            ct = ValueType(ct);
             ValidateType(ct, sf->line, VT_RET);
             spec->rets.push_back(ct);
         }

@@ -161,8 +161,6 @@ inline Call *TypeCheck::DefaultCall(TypeExpr *t, Line line) {
 // asks for it: null for an optional reference; default<T>() of another
 // fixed-size type; otherwise `[]`, 0 for a varint, or a literal of the
 // struct, variant or first variant that fills in its own fields the same way.
-// A relative reference's default<T>() would be the offset its slot holds,
-// where every other value stored there is the reference it encodes (§3.9).
 inline Node *TypeCheck::DefaultValue(TypeExpr *t, Line line) {
     if (t->kind == TY_REF) return ast.New<NullLit>(line);
     if (ClassOf(t) == SC_FIXED) return DefaultCall(t, line);
@@ -505,6 +503,13 @@ inline TypeExpr *TypeCheck::LoadType(TypeExpr *t) {
         return r;
     }
     return t;
+}
+
+// The type a value that a type argument gives type t has: a function result
+// or a default<T>(). A relative reference is only ever storage, so as a
+// value it is the plain reference a load of it gives (§3.9).
+inline TypeExpr *TypeCheck::ValueType(TypeExpr *t) {
+    return t->kind == TY_REF && t->ref->lenstorage >= 0 ? LoadType(t) : t;
 }
 
 // The implicit numeric widenings (§6.3): conversions that can never

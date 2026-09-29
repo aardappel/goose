@@ -647,12 +647,16 @@ inline void Call::CgAny(CodeGen &cg, const Dst &d) {
     auto rets = cg.EmitCall(this, d);
     // A fixed-value result wires into the lvalue here; a channel-passed one
     // was written in place. A varint-typed one is the i64 it will encode to,
-    // and one typed as a varint-width relative reference (a branch's value
-    // for such a slot, CtlValX) the plain reference it will encode.
+    // and one typed as a relative reference (a branch's value for such a
+    // slot, CtlValX) the plain reference it will encode. A relative lvalue --
+    // an element of default<Rel[N]>()'s temporary, copied into place later --
+    // takes the encoding.
     if (!rets.empty() && !cg.IsVoidT(exprtype) &&
         (!cg.IsBytesT(exprtype) || IsVarintT(exprtype) || exprtype->kind == TY_REF)) {
         auto r0 = cg.CallVal0(this, rets[0], d.t);
-        if (d.k == DK_LVALUE && r0 != d.s) cg.L(d.s, " = ", r0, ";");
+        if (d.k == DK_LVALUE && d.t && d.t->kind == TY_REF && d.t->ref->lenstorage >= 0)
+            cg.EmitRelStoreAt(cat("(uint8_t *)&", d.s), d.t, r0, line, false);
+        else if (d.k == DK_LVALUE && r0 != d.s) cg.L(d.s, " = ", r0, ";");
     }
 }
 

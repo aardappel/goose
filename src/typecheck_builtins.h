@@ -184,12 +184,15 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                 Error(c, "default<T>() needs exactly one explicit type argument");
             auto t = Subst(c->tyargs[0]);
             ValidateType(t, c->line, VT_LOCAL);
-            if (ClassOf(t) != SC_FIXED)
+            // A relative reference's is the null of its zero offset, whatever
+            // the width, and as a value the plain reference a load gives.
+            auto vt = ValueType(t);
+            if (ClassOf(vt) != SC_FIXED)
                 Error(c, cat("default<T>() needs a fixed-size type, not ", TypeStr(t)));
             string why;
             if (!HasDefault(t, why))
                 Error(c, cat("default<", TypeStr(t), ">() does not exist: ", why));
-            c->rettypes.push_back(t);
+            c->rettypes.push_back(vt);
             if (!c->defaultinit) {
                 if (t->kind == TY_STRUCT || t->kind == TY_ENUM || t->kind == TY_VARIANT) {
                     auto st = t->kind == TY_ENUM ? ast.VariantTypeOf(t, &t->enu->en->variants[0], c->line) : t;
@@ -209,7 +212,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                 return v;
             }
             Val v;
-            v.type = t;
+            v.type = vt;
             v.Set(nullptr, true);   // A null optional or an empty slice: static.
             v.writable = true;      // And nothing to write, so it fits any slot (§9.5).
             return v;

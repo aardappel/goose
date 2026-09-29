@@ -614,6 +614,16 @@ where the field is declared, and a local's name means nothing there.
   per pool like every other root class (§10.2) and needs nothing passed to
   it.
 
+**Values.** A relative reference is storage — a field, an element, or a
+variable or parameter declared with the type — and never a value: loading
+one yields the plain reference, and that is what anything else receives. A
+function's result may not be declared relative (declare the plain `T&` or
+`T?`, which a relative slot receiving it encodes), while a result a type
+argument makes relative, the `-> T` of `fn get<T>(a: T[>..]&, i: i64)` over
+an array of links, is the plain reference, as indexing gives it.
+`default<T>()` of an optional relative reference is likewise the plain null,
+at any width.
+
 **`self`.** A non-optional relative reference has no null, so a value whose
 links point back at itself — the sentinel of a circular list, the first node
 of a pool — could not be constructed at all: there is nothing yet for it to

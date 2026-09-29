@@ -1087,6 +1087,7 @@ struct TypeCheck {
     TypeExpr *GrowU8Array(Line l);
 
     TypeExpr *LoadType(TypeExpr *t);
+    TypeExpr *ValueType(TypeExpr *t);
     static bool ImplicitInt(IntStorage from, IntStorage to);
     TypeExpr *DerefType(TypeExpr *t);
     Val CheckIntAny(Node *n);
