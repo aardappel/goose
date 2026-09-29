@@ -560,7 +560,7 @@ inline void CodeGen::GenFromReturn(Return *r) {
             else if (IsBytesT(rets[i]))
                 dsts.push_back(Dst { DK_STACK, cat("gs_fdst_", tid, "_", i) });
             else
-                dsts.push_back(Dst { DK_LVALUE, cat("gs_lret_", tid, "_", i) });
+                dsts.push_back(Dst { DK_LVALUE, cat("gs_lret_", tid, "_", i), rets[i] });
         }
         EmitCallInto(c, dsts);
     }

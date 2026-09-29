@@ -757,7 +757,7 @@ inline void VarDecl::CgStmt(CodeGen &cg) {
                 dsts.push_back(Dst { DK_STACK, stk });
             } else {
                 cg.L(cg.CT(d->type), " ", name, ";");
-                dsts.push_back(Dst { DK_LVALUE, name });
+                dsts.push_back(Dst { DK_LVALUE, name, d->type });
             }
         }
         cg.EmitCallInto(c, dsts);

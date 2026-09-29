@@ -2642,6 +2642,11 @@ destination `gs_stack *` and, for a resizable, the count out-parameter or
 frame object out-parameter); and `gs_sp` when the function touches stacks.
 The C return value is the first fixed result, even when it is not result
 zero; with none it is `void`.
+A multi-value binding, and a long-distance return forwarding a call, takes
+each fixed result straight into its variable or the target's channel
+(`EmitCallInto`), except a reference result the checker decayed to a copy of
+its fixed-size pointee (§4.1): that one arrives in a temporary and is loaded
+through it, as the destination's type (`Dst::t`) asks.
 `CollectSpecs` computes per specialization, to a fixpoint over the call
 graph, the free variables it or its callees need, the stack-owning globals
 it can reach, and whether it needs `gs_sp` at all. A body without it counts

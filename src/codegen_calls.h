@@ -70,11 +70,22 @@ inline vector<string> CodeGen::EmitCall(Call *c, Dst d0, vector<Dst> *alldst) {
 // A call whose every return value has a destination: bytes results land
 // there directly, and a fixed result that came back as a C value is
 // assigned to its lvalue (a channel the callee wrote itself needs nothing).
+// A reference result whose destination wants the pointee's value (Dst::t,
+// a binding the checker decayed) loads through the reference.
 inline void CodeGen::EmitCallInto(Call *c, vector<Dst> &dsts) {
     auto rets = EmitCall(c, dsts.empty() ? Dst {} : dsts[0], &dsts);
-    for (size_t i = 0; i < dsts.size() && i < rets.size(); i++)
-        if (dsts[i].k == DK_LVALUE && !rets[i].empty() && rets[i] != dsts[i].s)
+    for (size_t i = 0; i < dsts.size() && i < rets.size(); i++) {
+        if (dsts[i].k != DK_LVALUE || rets[i].empty()) continue;
+        if (NeedsDeref(c->rettypes[i], dsts[i].t)) {
+            Loc lv;
+            lv.t = c->rettypes[i];
+            lv.val = true;
+            lv.s = rets[i];
+            L(dsts[i].s, " = ", LoadLoc(lv, dsts[i].t, c->line), ";");
+        } else if (rets[i] != dsts[i].s) {
             L(dsts[i].s, " = ", rets[i], ";");
+        }
+    }
 }
 
 // A call to an extern fn (§7.10): the C function directly, each argument
@@ -295,7 +306,9 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
             retex[i] = BytesResultBase(dd, stk);
             args.push_back(stk);
         } else if ((int)i != ki.cret) {
-            if (dd.k == DK_LVALUE) {
+            // A reference the destination loads through lands in a
+            // temporary first (EmitCallInto).
+            if (dd.k == DK_LVALUE && !NeedsDeref(rt, dd.t)) {
                 retex[i] = dd.s;
                 args.push_back(cat("&", dd.s));
             } else {
