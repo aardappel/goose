@@ -380,10 +380,6 @@ recursive fn check_expression(ctx: Compiler&, n: i64, scope: i64, expected: i64)
         if ctx.loop_depth == 0 { error_at(ctx, x.token, "loop exit outside a loop or block"); }
         if x.first >= 0 { error_at(ctx, x.token, "not implemented yet: value-producing break"); }
         v.ty = intern_type(ctx, Type { kind: T_BOTTOM });
-    } else if tag == N_GUARD {
-        let c = decay(ctx, check_expression(ctx, x.a, scope, -1)); require_fit(ctx, x.a, c, boolean_type(ctx));
-        if x.b >= 0 { let failure = check_expression(ctx, x.b, scope, 0); if ctx.types[failure.ty].kind != T_BOTTOM { error_at(ctx, x.token, "guard else block must diverge"); } }
-        else if ctx.loop_depth == 0 && ctx.checking_function >= 0 && ctx.specializations[ctx.checking_function].result > 0 { error_at(ctx, x.token, "bare guard cannot return from a valued function"); }
     } else if tag == N_EXPR_STMT { let inner = check_expression(ctx, x.a, scope, -1); if ctx.types[inner.ty].kind == T_BOTTOM { v = inner; } }
     else if tag == N_BIND { check_binding(ctx, n, scope); }
     else if tag == N_ASSIGN { check_assignment(ctx, n, scope); }

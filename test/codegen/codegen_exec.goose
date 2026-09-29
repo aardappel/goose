@@ -202,7 +202,7 @@ fn rel_refs() {
     var walk = 0;
     var cur: Link? = last;
     loop {
-        guard cur;                       // Narrows (or exits the loop on null).
+        guard cur else { break; }        // Narrows (or exits the loop on null).
         walk = walk * 10 + cur.v;
         cur .= cur.prev;                 // Rebind through the loaded link.
     }
@@ -317,7 +317,7 @@ fn controls(n: i64) {
     var i = 0;
     loop {
         i++;
-        guard i < 4;                     // Bare guard: valueless loop exit.
+        guard i < 4 else { break; }      // A valueless loop exit.
     }
     print(i);                            // 4
     void_like();
@@ -921,8 +921,8 @@ fn lru_order() -> i64 {
     var order = 0;
     var cur = lrupool[0].next;
     loop {
-        guard cur;
-        guard cur.key >= 0;
+        guard cur else { break; }
+        guard cur.key >= 0 else { break; }
         order = order * 10 + cur.key;
         cur .= cur.next;
     }

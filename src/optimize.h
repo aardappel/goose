@@ -764,25 +764,6 @@ inline Node *ForLoop::Cp1(Inliner &inl) const {
     return c;
 }
 
-inline Node *Guard::Cp1(Inliner &inl) const {
-    auto g = inl.ast.New<Guard>(line, inl.Cp(cond), elseb ? inl.CpBlock(elseb) : nullptr);
-    g->implicitexit = implicitexit;
-    if (!g->elseb && implicitexit == 2) {
-        // The bare form's implicit `return` exits the function being inlined;
-        // make it explicit so it targets the InlineBlock and not the new host
-        // function.
-        auto ret = inl.ast.New<Return>(line);
-        ret->target = inl.src->sf;
-        ret->exprtype = inl.ast.voidtype;
-        auto b = inl.ast.New<Block>(line);
-        b->stmts.push_back(ret);
-        b->exprtype = inl.ast.voidtype;
-        g->elseb = b;
-        g->implicitexit = 0;
-    }
-    return g;
-}
-
 inline Node *Return::Cp1(Inliner &inl) const {
     auto r = inl.ast.New<Return>(line);
     for (auto v : vals) r->vals.push_back(inl.Cp(v));
@@ -1176,27 +1157,6 @@ inline Node *LoopExpr::Opt(Optimizer &o) {
 inline Node *ForLoop::Opt(Optimizer &o) {
     iter = o.OptViewed(iter);
     o.OptBlock(body);
-    return this;
-}
-
-inline Node *Guard::Opt(Optimizer &o) {
-    cond = o.Opt(cond);
-    if (auto b = Is<BoolLit>(cond)) {
-        o.folded++;
-        if (b->val) return o.EmptyBlock(this);   // Always passes.
-        if (elseb) return o.Opt(elseb);          // Always takes the (diverging) else.
-        if (implicitexit == 1) {
-            auto br = o.ast.New<Break>(line, nullptr);
-            br->exprtype = o.ast.voidtype;
-            return br;
-        }
-        assert(implicitexit == 2 && o.cursf);
-        auto r = o.ast.New<Return>(line);
-        r->target = o.cursf;
-        r->exprtype = o.ast.voidtype;
-        return r;
-    }
-    if (elseb) o.OptBlock(elseb);
     return this;
 }
 

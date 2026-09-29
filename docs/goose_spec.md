@@ -124,10 +124,10 @@ The language is **expression-oriented**: `if`, `match`, `block` and a bare
 Assignment and `++`/`--` are *statements*, not expressions. A trailing
 construct that cannot supply a value — an `if` without a final `else` (an
 `else if` chain included) or with a branch that cannot, a `match` with an
-arm that cannot, a `loop` none of whose `break`s carries a value (§6.4), a
-`guard`, or a block or scope ending in one of those — is a statement rather
-than the block's value, so a function whose result type is inferred, and a
-function value's body, may end in one and produce nothing.
+arm that cannot, a `loop` none of whose `break`s carries a value (§6.4), or
+a block or scope ending in one of those — is a statement rather than the
+block's value, so a function whose result type is inferred, and a function
+value's body, may end in one and produce nothing.
 
 **Statement termination.** Expression statements end with `;`, but a
 statement that *is* a block-ended construct — `if`, `match`, `block`, the
@@ -1485,8 +1485,8 @@ for v in e { s }             // see §6.5
 loop { s }                   // infinite; exit via break
 block { s }                  // early-out construct: break E exits with value E
 { s }                        // a plain scope with a value; not a break target
-guard c else { s }           // s must diverge; after the guard, c holds
-guard c;                     // shorthand: exit the innermost valueless construct
+guard c else { s } …         // if c { … } else { s }: … is the rest of the block
+guard c; …                   // if c { … }
 match e { ... }              // §8
 return e? (from f)?          // §7.3, §7.9
 break e?                     // exits innermost loop/block, optionally with value
@@ -1497,9 +1497,8 @@ continue
 top level. `break` binds to the innermost `loop`/`while`/`for`/`block`;
 labels are not in v1. For definite assignment (§4.4) and narrowing (§3.8),
 what holds after one of these is what holds at every way out of it: each
-`break` (a bare `guard`'s among them), and the end of a `block`'s body, a
-`while`'s condition found false or a `for`'s last iteration; a `loop` has
-only its breaks. All `break E` of one construct must agree on E's
+`break`, and the end of a `block`'s body, a `while`'s condition found false
+or a `for`'s last iteration; a `loop` has only its breaks. All `break E` of one construct must agree on E's
 type: a later break's value constructs into the type an earlier one gave
 the construct.
 
@@ -1540,14 +1539,24 @@ destination is one; otherwise they do not agree. A `break` agrees with the
 first: after a slice, a break's array is a slice of itself, while an array
 first is what a later slice constructs, where it can.
 
-`guard c else { s }`: the block runs when `c` is false and must diverge
-(`return`, `break`, `continue`, or a call that never returns: `abort(msg)`,
-`exit(code)`, §9.3); code
-after the guard proceeds with `c` known true — including flow-narrowing of
-`T?` (`guard r else { return; }` leaves `r: T&`). The bare form `guard c;`
-is shorthand for `guard c else { break }` inside a loop or `block`, and for
-`guard c else { return }` otherwise; it is valid only where that implicit
-exit requires no value.
+`guard` guards the rest of the block it is in, whatever kind of block that
+is — a function's body, a loop's, a branch, a `block`, a plain scope, a
+function value's body (§7.6): `{ s1; guard c; s2 }` is
+`{ s1; if c { s2 } }`, and `{ s1; guard c else { s3 } s2 }` is
+`{ s1; if c { s2 } else { s3 } }`. The code after a guard runs only where
+`c` holds, and knows it — including flow-narrowing of `T?`
+(`guard r else { return; }` leaves `r: T&`). A guard jumps nowhere:
+`guard c;` skips the rest of its block, which directly in a function's body
+returns from it, in a loop's body goes on to the next iteration, and in a
+function value's body ends that call of the value, not the function running
+it. Leaving more than the block is the `else` block's job:
+`guard c else { break; }` leaves the loop, `guard c else { return; }` the
+function. An `else` block that does not leave runs instead of the rest of
+the block, which then ends. Where the rest of the block ends in a value,
+the `if` is the block's value (`block { guard ok else { break 0; } n * 2 }`);
+a guard is a statement of its block, never an operand. What is declared
+after a guard is declared in the `if`'s block, so a nested function
+declared before the guard cannot call one declared after it (§7.5).
 
 ### 6.5 `for`
 
@@ -2428,8 +2437,7 @@ Aborts (message + exit; not catchable):
 
 `exit(code)` ends the program normally with the given process exit code.
 Both `abort` and `exit` never return, which the checker knows: code after
-them is unreachable, and either may be the whole of a `guard`'s else block
-(§6.4).
+them is unreachable, so a branch ending in one gives no value (§6.4).
 
 ### 9.4 Type-safe reuse and stale references
 
@@ -3300,17 +3308,17 @@ postfix     := "[" expr "]"                      // fixed array (const expr)
              | ".."                              // variable-mode ADT
              | "." ident                         // variant type
 
-stmt        := decl | assign | incdec | exprstmt
+stmt        := decl | assign | incdec | guardstmt | exprstmt
 decl        := ("reusable" ("[" "]")?)? ("let" | "var" | "const") identlist (":" type)?
                (("=" | ".=") exprlist)? ";"     // .= binds by reference (§3.8)
 assign      := lvalue assignop expr ";"          // = .= += -= *= /= %= &= |= ^= <<= >>=
 incdec      := lvalue ("++" | "--") ";"
 exprstmt    := expr ";"
+guardstmt   := "guard" expr ("else" blockexpr | ";")  // guards the rest of its block (§6.4)
 
 expr        := control | binary
-control     := ifexpr | matchexpr | blockexpr | loops | jumps | guardstmt
+control     := ifexpr | matchexpr | blockexpr | loops | jumps
 ifexpr      := "if" expr blockexpr ("else" (ifexpr | blockexpr))?
-guardstmt   := "guard" expr ("else" blockexpr | ";")
 loops       := ("while" expr | "for" forbind "in" iter | "loop") blockexpr
 forbind     := "&"? ident (":" type)? ("," ident (":" type)?)?
 iter        := expr | expr ".." expr

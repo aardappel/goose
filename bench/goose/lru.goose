@@ -47,7 +47,7 @@ fn find(key: i64) -> i64 {
     var i = home(key);
     loop {
         let s = slots[i];
-        guard s.node != null && s.key != key;
+        guard s.node != null && s.key != key else { break; }
         i = (((i + 1) as u64) & mask) as! i64;
     }
     return i;
@@ -62,7 +62,7 @@ fn map_remove(at: i64) {
     loop {
         j = (((j + 1) as u64) & mask) as! i64;
         let s = slots[j];
-        guard s.node != null;
+        guard s.node != null else { break; }
         let h = home(s.key);
         if (i < j && (h <= i || h > j)) || (i > j && h <= i && h > j) {
             slots[i] = s;
@@ -153,8 +153,8 @@ fn main() {
     var vals = 0;
     var cur = pool[hi].next;
     loop {
-        guard cur;
-        guard cur.key >= 0;
+        guard cur else { break; }
+        guard cur.key >= 0 else { break; }
         walk = walk * 31 + cur.key as u64;
         vals += cur.val;
         cur .= cur.next;

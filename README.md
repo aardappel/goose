@@ -320,7 +320,7 @@ enclosing function's locals.
 thread_fn worker() {                                // a separate program with its own memory
     loop {
         let job = qget<Job>();                      // blocks on the typed queue for Job
-        guard job.n >= 0;                           // -1 means stop
+        guard job.n >= 0 else { break; }            // -1 means stop
         qput(Result { n: job.n, digits: count_digits(job.n) });
     }
 }

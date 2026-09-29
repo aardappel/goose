@@ -980,14 +980,6 @@ NODE(ForLoop)
         : Node(l), byref(_byref), var(_var), idxvar(_idxvar), iter(_iter), body(_body) {}
 NODE_END
 
-NODE(Guard)
-    BCE_WALK
-    Node *cond;
-    Block *elseb;               // Null for the bare "guard c;" shorthand.
-    int implicitexit = 0;       // Bare form resolution (typecheck): 1 = break, 2 = return.
-    Guard(Line l, Node *_cond, Block *_elseb) : Node(l), cond(_cond), elseb(_elseb) {}
-NODE_END
-
 NODE(Return)
     BCE_WALK
     vector<Node *> vals;

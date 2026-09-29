@@ -1,0 +1,32 @@
+block 0
+block 1
+each done
+5
+each done
+5
+via 0
+via 2
+each done
+each_via done
+first 1
+first 2
+7
+even 0
+even 2
+even 4
+while 1
+while 2
+while 4
+while 5
+loop 1
+loop 2
+then
+after true
+2 2 4
+scope
+after false
+1 1 3
+positive: 3
+not positive: -3
+4 -1
+40 0

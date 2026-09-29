@@ -664,8 +664,8 @@ and because the field defaults are the compiler's to know.
 
 ### 8.3 `abort(msg: u8[:])` and `exit(code: i64)`
 
-Diverging calls, so `guard c else { abort("bad input"); }` typechecks (§6.4
-requires the else block to diverge). `abort` prints `goose runtime error:
+Diverging calls: code after them is unreachable, so a branch ending in one
+gives no value (§6.4). `abort` prints `goose runtime error:
 <msg>` and exits nonzero, like the checked aborts of §9.3; `exit` flushes
 and exits with the code. The library uses `abort` for contract violations
 that are not plain `assert`s (an unknown base in `format_int`).

@@ -169,7 +169,7 @@ fn precedence(ctx: Compiler&, s: const u8[:]) -> i64 {
 }
 fn ended(ctx: Compiler&, n: i64) -> bool {
     let t = ctx.nodes[n].tag;
-    return t == N_BLOCK || t == N_IF || t == N_WHILE || t == N_FOR || t == N_LOOP || t == N_EARLY || t == N_MATCH || t == N_FUNCTION || t == N_FUNVAL || t == N_GUARD || (t == N_CALL && ctx.nodes[n].flags & 128 != 0);
+    return t == N_BLOCK || t == N_IF || t == N_WHILE || t == N_FOR || t == N_LOOP || t == N_EARLY || t == N_MATCH || t == N_FUNCTION || t == N_FUNVAL || (t == N_CALL && ctx.nodes[n].flags & 128 != 0);
 }
 
 recursive fn expression(ctx: Compiler&, minimum: i64, constructs: bool, statement: bool) -> i64 {
@@ -272,12 +272,6 @@ recursive fn primary(ctx: Compiler&, constructs: bool) -> i64 {
         }
         ctx.nodes[n].c = parse_block(ctx); return n;
     }
-    if take(ctx, "guard") {
-        let n = node(ctx, N_GUARD, t); ctx.nodes[n].a = expression(ctx, 0, false, false);
-        if take(ctx, "else") { ctx.nodes[n].b = parse_block(ctx); }
-        else { expect(ctx, ";"); }
-        return n;
-    }
     if take(ctx, "return") || take(ctx, "break") || take(ctx, "continue") {
         var tag = N_RETURN;
         if ctx.tokens[t].text == "break" { tag = N_BREAK; }
@@ -376,6 +370,7 @@ recursive fn block_contents(ctx: Compiler&, t: i64) -> i64 {
         if take(ctx, ";") { continue; }
         if at(ctx, "let") || at(ctx, "var") || at(ctx, "const") || at(ctx, "reusable") { child(ctx, n, binding(ctx)); continue; }
         if at(ctx, "fn") || at(ctx, "recursive") { child(ctx, n, function_decl(ctx, true)); continue; }
+        if at(ctx, "guard") { guard_statement(ctx, n); return n; }
         let e = expression(ctx, 0, true, true);
         if assignment_op(ctx, ctx.tokens[ctx.cursor].text) {
             let a = node(ctx, N_ASSIGN, ctx.cursor); ctx.cursor++; ctx.nodes[a].a = e;
@@ -389,6 +384,17 @@ recursive fn block_contents(ctx: Compiler&, t: i64) -> i64 {
     expect(ctx, "}"); return n;
 }
 recursive fn parse_block(ctx: Compiler&) -> i64 { let t = expect(ctx, "{"); return block_contents(ctx, t); }
+// `guard c; rest` is `if c { rest }` and `guard c else { s } rest` is
+// `if c { rest } else { s }`, rest being the rest of block n, '}' included:
+// the if stands where the guard did, as n's value where rest has one.
+recursive fn guard_statement(ctx: Compiler&, n: i64) {
+    let g = node(ctx, N_IF, ctx.cursor); ctx.cursor++;
+    ctx.nodes[g].a = expression(ctx, 0, false, false);
+    if take(ctx, "else") { ctx.nodes[g].c = parse_block(ctx); } else { expect(ctx, ";"); }
+    let rest = block_contents(ctx, ctx.nodes[g].token);
+    ctx.nodes[g].b = rest;
+    if ctx.nodes[rest].a >= 0 { ctx.nodes[n].a = g; } else { child(ctx, n, g); }
+}
 
 recursive fn generics(ctx: Compiler&, n: i64) {
     if !take(ctx, "<") { return; }

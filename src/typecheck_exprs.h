@@ -533,11 +533,11 @@ template<typename F> void TypeCheck::LaterOperands(F f) {
     }
 }
 
-// What construct n runs after its head -- an if's or a guard's condition, a
-// match's scrutinee, a for's sequence, a while's condition -- where `next`
-// is the node being checked inside it: while that is the head, every part
-// the head leads to; while it is one of those parts, nothing more of n, since
-// the other branches do not run.
+// What construct n runs after its head -- an if's condition, a match's
+// scrutinee, a for's sequence, a while's condition -- where `next` is the
+// node being checked inside it: while that is the head, every part the head
+// leads to; while it is one of those parts, nothing more of n, since the
+// other branches do not run.
 template<typename F> void TypeCheck::AfterHead(Node *n, Node *next, F f) {
     if (auto fi = Is<IfExpr>(n)) {
         if (next != fi->cond) return;
@@ -552,8 +552,6 @@ template<typename F> void TypeCheck::AfterHead(Node *n, Node *next, F f) {
         if (next == fl->iter || (r && (next == r->lo || next == r->hi))) f(fl->body);
     } else if (auto w = Is<While>(n)) {
         if (next == w->cond) f(w->body);
-    } else if (auto g = Is<Guard>(n)) {
-        if (next == g->cond && g->elseb) f(g->elseb);
     }
 }
 

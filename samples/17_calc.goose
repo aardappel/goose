@@ -171,8 +171,8 @@ fn main() {
     loop {
         write_stdout("> ");
         flush_stdout();
-        line.clear();                    // nothing points into it here
-        guard read_line(line);           // false at the end of input
+        line.clear();                         // nothing points into it here
+        guard read_line(line) else { break; } // false at the end of input
         let t = trim(line);
         if t.len == 0 { continue; }
         if t == "quit" { break; }

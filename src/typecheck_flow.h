@@ -1750,52 +1750,6 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         Error(x, "break with a value exits loop/block only, not for");
 }
 
-inline void TypeCheck::CheckGuard(Guard *g) {
-    CheckCond(g->cond);
-    auto entry = SaveFlow();
-    if (g->elseb) {
-        NarrowCond(g->cond, false);
-        CheckBlockVal(g->elseb, nullptr, false, SK_PLAIN);
-        if (reachable)
-            Error(g, "guard else block must diverge (return, break, continue, or abort)");
-    } else {
-        auto si = FindBreakScope(false);
-        if (si >= 0) {
-            auto &sc = scopes[si];
-            if (sc.breaktype)
-                Error(g, "bare guard exits a construct that requires a break value");
-            sc.valuelessbreak = true;
-            // The implicit break is taken where c is false, as `guard c else
-            // { break }` takes its.
-            NarrowCond(g->cond, false);
-            NoteBreak(si);
-            g->implicitexit = 1;
-        } else {
-            ImplicitEmptyReturn(g);
-            g->implicitexit = 2;
-        }
-    }
-    RestoreFlow(entry);
-    NarrowCond(g->cond, true);
-}
-
-inline void TypeCheck::ImplicitEmptyReturn(Node *at) {
-    if (frames.back().isdefault) Error(at, "guard shorthand cannot exit a default");
-    auto fi = RealFrameIndex();
-    auto &f = frames[fi];
-    if (!f.sf) Error(at, "guard shorthand cannot exit the top level");
-    auto spec = f.spec;
-    if (spec->retsknown) {
-        if (!spec->rets.empty())
-            Error(at, cat("bare guard would return without the required value(s) of ",
-                          f.sf->name));
-    } else {
-        spec->rets.clear();
-        spec->retsknown = true;
-    }
-    NoteExit(fi);
-}
-
 inline int TypeCheck::RealFrameIndex() {
     for (auto i = (int)frames.size() - 1; i >= 0; i--)
         if (!frames[i].isfunval) return i;
@@ -1887,8 +1841,8 @@ inline void TypeCheck::CheckBreak(Break *b) {
     reachable = false;
 }
 
-// A break out of the loop or block of scope si, a bare guard's among them:
-// where it can be reached, the construct exits in what holds here too.
+// A break out of the loop or block of scope si: where it can be reached,
+// the construct exits in what holds here too.
 inline void TypeCheck::NoteBreak(int si) {
     auto &sc = scopes[si];
     sc.hasbreak = true;

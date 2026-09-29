@@ -26,7 +26,7 @@
 // across their kill points.
 //
 // Facts come from: `for` headers (0 <= i < n at the appropriate snapshot),
-// while/if/guard/assert conditions and their negations (through !/&&/||),
+// while/if/assert conditions and their negations (through !/&&/||),
 // integer match arms, declaration and assignment equalities with
 // recognizable right-hand sides, and ++/--/+=/-= which shift facts in place
 // when the pre-state provably cannot wrap at the variable's width. Condition
@@ -1764,7 +1764,6 @@ struct BCE {
     bool HasJumps(Node *n, bool iteration) {
         if (!n) return false;
         if (Is<Break>(n) || (iteration && Is<Continue>(n))) return true;
-        if (auto g = Is<Guard>(n); g && !g->elseb && g->implicitexit == 1) return true;
         if (Is<While>(n) || Is<LoopExpr>(n) || Is<ForLoop>(n) || Is<EarlyBlock>(n))
             return false;
         auto found = false;
@@ -2714,23 +2713,6 @@ inline bool ForLoop::BceWalk(BCE &b) {
             }
         }
     }
-    return true;
-}
-
-inline bool Guard::BceWalk(BCE &b) {
-    b.Walk(cond);
-    if (b.mode == BCE::M_KILLS) {
-        b.Walk(elseb);
-        return true;
-    }
-    auto killfree = !b.HasKillEffects(cond);
-    if (elseb) {
-        auto save = b.flow;
-        if (killfree) b.CondFacts(cond, false);
-        b.Walk(elseb);   // Must diverge (TC).
-        b.flow = std::move(save);
-    }
-    if (killfree) b.CondFacts(cond, true);
     return true;
 }
 

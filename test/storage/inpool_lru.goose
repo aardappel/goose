@@ -18,7 +18,7 @@ fn kfind(key: i64) -> i64 {
     var i = khome(key);
     loop {
         let s = kslots[i];
-        guard s.node != null && s.key != key;
+        guard s.node != null && s.key != key else { break; }
         i = (((i + 1) as u64) & kmask) as! i64;
     }
     return i;
@@ -33,7 +33,7 @@ fn kremove(at: i64) {
     loop {
         j = (((j + 1) as u64) & kmask) as! i64;
         let s = kslots[j];
-        guard s.node != null;
+        guard s.node != null else { break; }
         let h = khome(s.key);
         if (i < j && (h <= i || h > j)) || (i > j && h <= i && h > j) {
             kslots[i] = s;
@@ -63,7 +63,7 @@ fn korder() -> i64 {
     var order = 0;
     var cur: KNode& = kpool[0].next;
     loop {
-        guard cur.key >= 0;
+        guard cur.key >= 0 else { break; }
         order = order * 10 + cur.key;
         cur .= cur.next;
     }

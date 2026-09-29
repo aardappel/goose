@@ -326,7 +326,6 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     if (auto tail = sp->body->tail) {
         auto asvalue = !sp->rets.empty();
         if (auto fi = Is<IfExpr>(tail); fi && !fi->elseb) asvalue = false;
-        if (Is<Guard>(tail)) asvalue = false;
         if (asvalue && !IsVoidT(tail->exprtype)) {
             vector<Node *> vals = { tail };
             GenNormalReturn(vals);

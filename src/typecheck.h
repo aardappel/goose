@@ -93,8 +93,8 @@ inline bool BreaksWithValue(Node *body) {
 
 // Whether a trailing expression can never supply a value: an `if` without a
 // final `else`, or with a branch that cannot; a `match` with an arm that
-// cannot; a `loop` none of whose `break`s carries a value; a `guard`; and a
-// block ending in one of those. Callers that decide whether a body's tail is
+// cannot; a `loop` none of whose `break`s carries a value; and a block
+// ending in one of those. Callers that decide whether a body's tail is
 // its result consult this first, so that such a tail -- inside `block { }`
 // or a bare scope or not -- is a statement, checked as one, rather than a
 // value the construct has no way to supply. A block ending in a statement
@@ -109,7 +109,6 @@ inline bool IsValuelessTail(const Node *n) {
         return false;
     }
     if (auto l = Is<LoopExpr>(n)) return !BreaksWithValue(l->body);
-    if (Is<Guard>(n)) return true;
     if (auto b = Is<Block>(n)) return IsValuelessTail(b->tail);
     if (auto e = Is<EarlyBlock>(n)) return IsValuelessTail(e->body);
     return false;
@@ -243,9 +242,8 @@ struct TypeCheck {
         bool hasbreak = false;
         bool valuelessbreak = false;
         // For SK_LOOP/SK_BLOCK: the join of the states at the breaks out of
-        // it reached so far, a bare guard's among them, which the construct
-        // exits in besides its own exit, if it has one (NoteBreak,
-        // JoinBreakFlow).
+        // it reached so far, which the construct exits in besides its own
+        // exit, if it has one (NoteBreak, JoinBreakFlow).
         FlowState breakflow;
         bool breakflows = false;
         // For SK_LOOP: the join of the states at its back edges so far (the
@@ -1494,8 +1492,6 @@ struct TypeCheck {
     Val CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue);
     void CheckWhile(While *x);
     void CheckFor(ForLoop *x);
-    void CheckGuard(Guard *g);
-    void ImplicitEmptyReturn(Node *at);
     int RealFrameIndex();
     Frame &CurRealFrame() { return frames[RealFrameIndex()]; }
     int FindBreakScope(bool forcontinue);

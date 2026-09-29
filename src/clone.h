@@ -140,10 +140,6 @@ inline Node *ForLoop::Clone(Ast &ast) const {
     return f;
 }
 
-inline Node *Guard::Clone(Ast &ast) const {
-    return ast.New<Guard>(line, cond->Clone(ast), (Block *)CloneOrNull(ast, (Node *)elseb));
-}
-
 inline Node *Return::Clone(Ast &ast) const {
     auto r = ast.New<Return>(line);
     CloneNodes(ast, vals, r->vals);
@@ -300,11 +296,6 @@ inline void LoopExpr::Children(const function<void(Node *)> &f) const { f(body);
 inline void ForLoop::Children(const function<void(Node *)> &f) const {
     f(iter);
     f(body);
-}
-
-inline void Guard::Children(const function<void(Node *)> &f) const {
-    f(cond);
-    CH((Node *)elseb);
 }
 
 inline void Return::Children(const function<void(Node *)> &f) const {

@@ -100,7 +100,7 @@ recursive fn parse_node(prev: Sexp..&?) -> Sexp..& {
 fn parse_all() -> i64, u8[] {
     loop {
         skip_space();
-        guard pos < text.len;
+        guard pos < text.len else { break; }
         let r: Sexp..& = parse_node(null);
         roots.push(r);
     }

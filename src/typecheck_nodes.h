@@ -606,11 +606,6 @@ inline Val ForLoop::Check(TypeCheck &tc, TypeExpr *) {
     return tc.VoidVal();
 }
 
-inline Val Guard::Check(TypeCheck &tc, TypeExpr *) {
-    tc.CheckGuard(this);
-    return tc.VoidVal();
-}
-
 inline Val Return::Check(TypeCheck &tc, TypeExpr *) {
     tc.CheckReturn(this);
     return tc.VoidVal();

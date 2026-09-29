@@ -1,9 +1,9 @@
 // Code after a block or a loop runs in what holds at every exit of it that
 // can be taken: the end of a block's body, a while's condition found false,
-// a for's last iteration, and each break, a bare guard's among them, which
-// is taken where the guard's condition is false. A loop exits at its breaks
-// alone, so what all of them agree on holds after it, as a do-while's
-// assignment does (§3.8, §4.4, §6.4).
+// a for's last iteration, and each break; where a bare guard skips the rest
+// of a block, its condition is false. A loop exits at its breaks alone, so
+// what all of them agree on holds after it, as a do-while's assignment does
+// (§3.8, §4.4, §6.4).
 var g = 5;
 fn pick(i: i64) -> i64? { if i == 3 { return g; } return null; }
 

@@ -698,13 +698,8 @@ struct Parser {
                 if (stmt_level) stmt_ended = true;
                 return e;
             }
-            case T_GUARD: {
-                lex.Next();
-                auto cond = ParseScrutinee();
-                auto elseb = IsNext(T_ELSE) ? ParseBlockExpr("guard else") : nullptr;
-                if (stmt_level && elseb) stmt_ended = true;
-                return New<Guard>(line, cond, elseb);
-            }
+            case T_GUARD:
+                Error("guard is a statement: it guards the rest of the block it is in");
             case T_RETURN: {
                 lex.Next();
                 auto sub = Sub(no_struct_lit);
@@ -1235,6 +1230,9 @@ struct Parser {
                 case T_RECURSIVE: case T_FN: case T_THREADFN: case T_EXTERN:
                     b->stmts.push_back(ParseFnDecl(true));
                     continue;
+                case T_GUARD:
+                    ParseGuard(b);
+                    return;
                 default: break;
             }
             stmt_level = true;
@@ -1278,6 +1276,28 @@ struct Parser {
             }
             Error(cat("\';\' expected after expression, found \'", TokStr(), "\'"));
         }
+    }
+
+    // `guard c; rest` is `if c { rest }`, and `guard c else { s } rest` is
+    // `if c { rest } else { s }` (§6.4), where rest is the rest of the block
+    // the guard is in: nothing after the parser sees a guard. The if stands
+    // where the guard did, as the block's value where rest ends in one and
+    // as its last statement otherwise.
+    void ParseGuard(Block *b) {
+        auto line = CurLine();
+        lex.Next();
+        auto cond = ParseScrutinee();
+        Block *elseb = nullptr;
+        if (IsNext(T_ELSE)) {
+            elseb = ParseBlockExpr("guard else");
+            IsNext(T_SEMI);  // A redundant ';' after the block.
+        } else {
+            Expect(T_SEMI, "guard");
+        }
+        auto rest = New<Block>(line);
+        ParseBlockBody(rest);  // Through the '}' that ends b.
+        auto ife = New<IfExpr>(line, cond, rest, elseb);
+        if (rest->tail) b->tail = ife; else b->stmts.push_back(ife);
     }
 };
 

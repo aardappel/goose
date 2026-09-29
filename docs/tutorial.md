@@ -141,9 +141,11 @@ let kind  = if hp > 50 { "healthy" } else { "hurt" };
 let level = match hp { 0 => "dead", 1..50 => "low", _ => "fine" };
 ```
 
-`guard` states what the code after it depends on; its `else` must leave
-(`return`, `break`, `continue`, `abort`, `exit`). `block` gives `break` a
-target without a loop, so a chain of checks can bail out with a value:
+`guard` states what the rest of its block depends on: `guard c;` runs the
+rest of the block only where `c` holds, and `guard c else { … }` runs the
+`else` block instead, which is where a `return`, `break` or `continue`
+leaves more than the block. `block` gives `break` a target without a loop,
+so a chain of checks can bail out with a value:
 
 ```goose
 let verdict = block {
@@ -1015,7 +1017,7 @@ meet it.
 
 And the ones that stop the program rather than reporting: `assert(c)` for
 invariants, `abort(msg)` with a message, `exit(code)`. The checker knows the
-last two never return, so either can be the whole of a `guard`'s else.
+last two never return, so a branch ending in either gives no value.
 
 ---
 
@@ -1227,8 +1229,8 @@ struct Result { n: i32, digits: i32 }
 
 thread_fn worker() {
     loop {
-        let job = qget<Job>();          // blocks
-        guard job.n >= 0;               // -1 means stop
+        let job = qget<Job>();           // blocks
+        guard job.n >= 0 else { break; } // -1 means stop
         qput(Result { n: job.n, digits: count_digits(job.n) });
     }
 }

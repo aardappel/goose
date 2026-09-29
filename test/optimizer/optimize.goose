@@ -145,7 +145,7 @@ fn controlflow() -> i64 {
     assert(true);                                    // Removed.
     assert(m > 0);                                   // Condition folds, then removed.
     loop {
-        guard i < 6;                                 // Bare guard: implicit break.
+        guard i < 6 else { break; }                  // Leaves the loop.
         i += 1;
     }
     block {

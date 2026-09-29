@@ -50,7 +50,7 @@ fn render_row(y: i64) -> u8[>..] {
 thread_fn worker() {
     loop {
         let job = qget<Job>();
-        guard job.y >= 0;
+        guard job.y >= 0 else { break; }
         qput(Row { y: job.y, cells: render_row(job.y) });   // one flat value, copied once into the queue
     }
 }

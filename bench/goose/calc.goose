@@ -93,7 +93,7 @@ recursive fn parse_expr(pool: Expr..[>..]&) -> Expr..& {
     var lhs: Expr..& = parse_term(pool);
     loop {
         skip();
-        guard pos < text.len && (text[pos] == '+' || text[pos] == '-');
+        guard pos < text.len && (text[pos] == '+' || text[pos] == '-') else { break; }
         let op = text[pos];
         pos++;
         let rhs: Expr..& = parse_term(pool);
@@ -107,7 +107,7 @@ recursive fn parse_term(pool: Expr..[>..]&) -> Expr..& {
     var lhs: Expr..& = parse_factor(pool);
     loop {
         skip();
-        guard pos < text.len && (text[pos] == '*' || text[pos] == '/');
+        guard pos < text.len && (text[pos] == '*' || text[pos] == '/') else { break; }
         let op = text[pos];
         pos++;
         let rhs: Expr..& = parse_factor(pool);

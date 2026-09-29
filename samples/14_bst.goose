@@ -48,7 +48,7 @@ fn min_key(pool: Node[>..]&) -> i32 {
     var cur .= pool[0];
     loop {
         let l = cur.left;
-        guard l;                         // leaves the loop when null
+        guard l else { break; }          // leaves the loop when null
         cur .= l;
     }
     return cur.key;
@@ -58,7 +58,7 @@ fn max_key(pool: Node[>..]&) -> i32 {
     var cur .= pool[0];
     loop {
         let r = cur.right;
-        guard r;
+        guard r else { break; }
         cur .= r;
     }
     return cur.key;

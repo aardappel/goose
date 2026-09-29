@@ -1,13 +1,13 @@
 // A trailing construct that cannot supply a value is a statement, however
 // many blocks it sits inside. A function whose return type is inferred
 // checks its tail as the value it returns, so the test for "this tail cannot
-// be a value" -- an if without a final else, or with a branch that cannot be
-// one; a match with an arm that cannot; a loop no break of which carries a
-// value; a guard -- has to look through the `block { }` and bare scopes that
-// may wrap one. Function-value bodies take their result from their tail the
-// same way and ask the same question. The point of the test is that every
-// function here compiles; what still produces a value, and gives a function
-// its result, is the other half, at the end.
+// be a value" -- an if without a final else, as a bare guard is, or with a
+// branch that cannot be one; a match with an arm that cannot; a loop no
+// break of which carries a value -- has to look through the `block { }` and
+// bare scopes that may wrap one. Function-value bodies take their result
+// from their tail the same way and ask the same question. The point of the
+// test is that every function here compiles; what still produces a value,
+// and gives a function its result, is the other half, at the end.
 
 fn bare(n: i64) { if n > 0 { print(n); } }
 fn in_scope(n: i64) { { if n > 0 { print(n); } } }

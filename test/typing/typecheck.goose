@@ -351,7 +351,7 @@ var ppos = 0;
 recursive fn pexpr(pool: PNode..[>..]&) -> PNode..& {
     var lhs: PNode..& = pfactor(pool);
     loop {
-        guard ppos < ptext.len && ptext[ppos] == '+';
+        guard ppos < ptext.len && ptext[ppos] == '+' else { break; }
         ppos++;
         let rhs: PNode..& = pfactor(pool);
         lhs .= pool.push(PNode.PSum { l: lhs, r: rhs });
@@ -583,7 +583,7 @@ fn guards_blocks(n: i64) -> i64 {
     };
     var i = 0;
     while true {
-        guard i < 3;
+        guard i < 3 else { break; }
         i++;
     }
     for j in 2..5 {

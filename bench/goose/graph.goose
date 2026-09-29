@@ -54,7 +54,7 @@ fn main() {
             total += d;
             var cur: Edge? = pool[u].next;
             loop {
-                guard cur;
+                guard cur else { break; }
                 let w = cur.to;
                 if dist[w] < 0 {
                     dist[w] = d + 1;

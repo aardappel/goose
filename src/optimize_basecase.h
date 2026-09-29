@@ -5,10 +5,10 @@
 //
 // Cycle members never inline, so the leaf call of a recursive tree walk is
 // always a real frame. Where a self-recursive body *starts* with
-// `if c { return e; }` — or the `guard c else { return e; }` spelling of the
-// same test, negated — and both c and e read nothing but the parameters,
-// globals and their own bindings, every direct self-call `f(a...)` is
-// rewritten to
+// `if c { return e; }` — or with `if c { ... } else { return e; }`, the same
+// test negated, as `guard c else { return e; }` parses — and both c and e
+// read nothing but the parameters, globals and their own bindings, every
+// direct self-call `f(a...)` is rewritten to
 //
 //     { let p1 = a1; ...; if c[p := t] { e[p := t] } else { f(t...) } }
 //
@@ -36,7 +36,7 @@ struct BaseCaseInliner {
     FnSpec *basespec = nullptr;   // Spec the template below belongs to.
     Node *basecond = nullptr;     // Private copy of its base-case test, and
     Node *baseexpr = nullptr;     //   of the result (null: a valueless one).
-    bool basenot = false;         // The `guard` form: the arms swap.
+    bool basenot = false;         // The test negated: the arms swap.
 
     BaseCaseInliner(Optimizer &_o) : o(_o), ast(_o.ast) {}
 
@@ -95,7 +95,6 @@ struct BaseCaseInliner {
         // A jump out of the subtree would land in the caller instead of the
         // callee; a nested declaration is a separate tree left behind.
         if (Is<Break>(n) || Is<Continue>(n) || Is<FnDecl>(n) || Is<FunVal>(n)) return false;
-        if (auto g = Is<Guard>(n); g && g->implicitexit) return false;
         if (auto r = Is<Return>(n)) {
             auto inside = false;
             for (auto sf : ibs) inside = inside || sf == r->target;
@@ -131,25 +130,19 @@ struct BaseCaseInliner {
         basespec = nullptr;
         basecond = baseexpr = nullptr;
         basenot = false;
-        if (!o.caninline || !sp->sf->isrec || !sp->body || sp->body->stmts.empty()) return;
+        if (!o.caninline || !sp->sf->isrec || !sp->body) return;
         // Binding a non-fixed parameter to a temporary would give a cycle
         // member a non-fixed local in scope at the self-call, which §7.8
         // forbids — and copy the value at every level besides, where
         // passing it costs nothing.
         for (auto pv : sp->params) if (!FixedType(pv->type)) return;
-        Node *cond = nullptr;
-        Block *arm = nullptr;
-        auto neg = false;
-        if (auto ife = Is<IfExpr>(sp->body->stmts[0])) {
-            if (ife->elseb) return;
-            cond = ife->cond;
-            arm = ife->thenb;
-        } else if (auto g = Is<Guard>(sp->body->stmts[0]); g && g->elseb) {
-            cond = g->cond;
-            arm = g->elseb;
-            neg = true;
-        } else return;
-        if (arm->tail || arm->stmts.size() != 1) return;
+        auto &stmts = sp->body->stmts;
+        auto ife = Is<IfExpr>(stmts.empty() ? sp->body->tail : stmts[0]);
+        if (!ife) return;
+        auto cond = ife->cond;
+        auto neg = ife->elseb != nullptr;
+        auto arm = neg ? Is<Block>(ife->elseb) : ife->thenb;
+        if (!arm || arm->tail || arm->stmts.size() != 1) return;
         auto r = Is<Return>(arm->stmts[0]);
         if (!r || r->target != sp->sf || !r->from.empty()) return;
         if (r->vals.size() > 1 || r->vals.size() != sp->rets.size()) return;
@@ -217,8 +210,8 @@ struct BaseCaseInliner {
             b->exprtype = vt;
             return b;
         };
-        // The guard spelling tests the continuing case, so its arms are the
-        // other way round.
+        // A negated test is the continuing case, so its arms are the other
+        // way round.
         auto ife = ast.New<IfExpr>(c->line, cond, arm(basenot ? (Node *)c : val),
                                    arm(basenot ? val : (Node *)c));
         ife->exprtype = vt;

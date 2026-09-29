@@ -48,7 +48,6 @@ const N_EARLY = 24;
 const N_RETURN = 25;
 const N_BREAK = 26;
 const N_CONTINUE = 27;
-const N_GUARD = 28;
 const N_MATCH = 29;
 const N_ARM = 30;
 const N_BIND = 31;

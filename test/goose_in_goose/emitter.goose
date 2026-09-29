@@ -458,13 +458,6 @@ recursive fn c_statement(ctx: Compiler&, n: i64) {
         }
         emit(ctx, str("label", done, ":;\n")); controls.resize(control_mark); return;
     }
-    if x.tag == N_GUARD {
-        let condition = c_decay(ctx, c_expression(ctx, x.a)); emit(ctx, str("  if (!(", condition.code, ")) {\n"));
-        if x.b >= 0 { c_statement(ctx, x.b); }
-        else if ctx.c_controls.len > 0 { emit(ctx, str("  goto label", ctx.c_controls[ctx.c_controls.len - 1].done, ";\n")); }
-        else { emit(ctx, "  goto gg_done;\n"); }
-        emit(ctx, "  }\n"); return;
-    }
     if x.tag == N_EXPR_STMT { c_into(ctx, x.a, no_c_value(ctx)); return; }
     c_into(ctx, n, no_c_value(ctx));
 }

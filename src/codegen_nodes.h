@@ -366,7 +366,6 @@ inline string InlineBlock::CgX(CodeGen &cg) { return cg.CtlValX(this); }
 // Statements and compile-time-only nodes have no value expression.
 inline string While::CgX(CodeGen &cg) { cg.Fail(line, "internal: While as value"); }
 inline string ForLoop::CgX(CodeGen &cg) { cg.Fail(line, "internal: ForLoop as value"); }
-inline string Guard::CgX(CodeGen &cg) { cg.Fail(line, "internal: Guard as value"); }
 inline string Return::CgX(CodeGen &cg) { cg.Fail(line, "internal: Return as value"); }
 inline string Break::CgX(CodeGen &cg) { cg.Fail(line, "internal: Break as value"); }
 inline string Continue::CgX(CodeGen &cg) { cg.Fail(line, "internal: Continue as value"); }
@@ -691,7 +690,6 @@ inline void RangeExpr::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
 // Statement nodes reached with a discard destination just emit themselves.
 inline void While::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
 inline void ForLoop::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
-inline void Guard::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
 inline void Return::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
 inline void Break::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
 inline void Continue::CgAny(CodeGen &cg, const Dst &) { cg.GenStmt2(this); }
@@ -1001,25 +999,6 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         }
     }, body, d,
         cat("for (int64_t ", gi, " = 0; ", gi, " < (", v.len, "); ", gi, "++) {"));
-}
-
-inline void Guard::CgStmt(CodeGen &cg) {
-    auto c = cg.GenTruth(cond);
-    cg.L("if (!(", c, ")) {");
-    cg.ind++;
-    cg.PushSc(CodeGen::SC_PLAIN);
-    if (elseb) {
-        cg.GenBlockInner(elseb, Dst {});
-    } else if (implicitexit == 1) {
-        cg.GenBreakPath(nullptr);
-    } else {
-        cg.GenNormalReturn({});
-    }
-    cg.cscopes.back().saves.clear();   // The block diverged.
-    cg.PopSc();
-    cg.ind--;
-    cg.L("}");
-    cg.termjump = false;
 }
 
 inline void Return::CgStmt(CodeGen &cg) {

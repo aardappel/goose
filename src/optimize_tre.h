@@ -395,8 +395,7 @@ struct TailRecursion {
         // anyway), but it is not a Return node yet, so it is classified here
         // and restated below once the rewrite is going ahead.
         auto tail = sp->body->tail;
-        auto tailisvalue = tail && tail->exprtype && tail->exprtype->kind != TY_VOID &&
-                           !Is<Guard>(tail);
+        auto tailisvalue = tail && tail->exprtype && tail->exprtype->kind != TY_VOID;
         if (auto fi = Is<IfExpr>(tail); fi && !fi->elseb) tailisvalue = false;
         vector<pair<Return *, Tail>> found, cands;
         Collect(sp->body, true, found);

@@ -166,7 +166,6 @@ inline bool EndsInBlock(const Node *n) {
     if (Is<IfExpr>(n) || Is<MatchExpr>(n) || Is<EarlyBlock>(n) || Is<While>(n) ||
         Is<LoopExpr>(n) || Is<ForLoop>(n) || Is<FnDecl>(n) || Is<Block>(n) ||
         Is<InlineBlock>(n)) return true;
-    if (auto g = Is<Guard>(n)) return g->elseb != nullptr;
     if (auto c = Is<Call>(n)) return c->trailing != nullptr;
     return false;
 }
@@ -194,7 +193,7 @@ inline const Node *Written(const Node *n) {
 // Struct literals need grouping in scrutinee contexts.
 inline void DumpOperand(string &s, const Node *n, int ind, bool postfix = false) {
     n = Written(n);
-    auto parens = EndsInBlock(n) || Is<StructLit>(n) || Is<Guard>(n) ||
+    auto parens = EndsInBlock(n) || Is<StructLit>(n) ||
                   Is<Return>(n) || Is<Break>(n) || Is<Continue>(n) ||
                   (postfix && (Is<Unary>(n) || Is<IntLit>(n) || Is<FltLit>(n)));
     if (parens) s += "(";
@@ -454,15 +453,6 @@ inline void ForLoop::Dump(string &s, int ind) const {
     DumpOperand(s, iter, ind);
     s += " ";
     body->Dump(s, ind);
-}
-
-inline void Guard::Dump(string &s, int ind) const {
-    s += "guard ";
-    DumpOperand(s, cond, ind);
-    if (elseb) {
-        s += " else ";
-        elseb->Dump(s, ind);
-    }
 }
 
 inline void Return::Dump(string &s, int ind) const {

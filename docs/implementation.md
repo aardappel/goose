@@ -135,6 +135,12 @@ function per construct. Points that matter to later passes:
   of it.
 * Only the root file's `main` is registered; an imported file's is dropped
   at the declaration (§11.1).
+* A `guard` is an `if` from the parser on (`ParseGuard`, §6.4): the rest of
+  the block it is in parses as the if's then-block, its `else` block as the
+  if's, and the if takes the guard's place, as the block's tail where the
+  rest ends in one and as its last statement otherwise. No later pass has a
+  guard node, and `--dump` prints the `if`. A guard anywhere but among a
+  block's statements is a parse error.
 * Imports are collected per file; `ParseProgram` resolves `import a.b` against
   the root file's directory then the stdlib directories (`StdlibDirs`), and
   `import .a.b` against the importing file, loads each file once, and
@@ -497,10 +503,10 @@ the path and hands every operand already evaluated to the shrink checks as
 its parent holds it (`HoldAs`: a reference or slice as it is, a holder as a
 reference per pointee, the receiver as a reference to the array or a view of
 its elements, a location as the slot alone), and `LaterOperands` names the
-operands not yet evaluated, and, inside the condition of an `if` or
-`guard`, the scrutinee of a `match` or the sequence of a `for`, the parts
-it leads to (`AfterHead`; `UsedAfter`, §3.10). A `for`'s sequence is the
-one operand held over a construct's parts, while its body is checked
+operands not yet evaluated, and, inside the condition of an `if`, the
+scrutinee of a `match` or the sequence of a `for`, the parts it leads to
+(`AfterHead`; `UsedAfter`, §3.10). A `for`'s sequence is the one operand
+held over a construct's parts, while its body is checked
 (`HoldForSequence`, §6.5): codegen spells the path to it into the loop
 (`ForLoop::CgStmt`, `GenLoc`), so each reference or slice the path loads
 out of a field or element (a `Dot` or `Index` of such a type, `&` of a path
@@ -1070,19 +1076,17 @@ current frame, of the frames it is lexically nested in, and of the frames
 the function values it can call were written in (`NamedFrames`), and the
 globals -- since no other frame's can change meanwhile: a fact holds after a
 join iff it holds in every reachable branch, with `reachable` tracking
-divergence (`return`, `break`, `continue`, `abort`, `exit`, a `guard`
-else). A loop or `block` is left in the join of the states at its exits:
-each reachable `break` out of it, a bare `guard`'s with the guard's
-condition false, joins its state into the construct's scope (`NoteBreak`,
+divergence (`return`, `break`, `continue`, `abort`, `exit`). A loop or
+`block` is left in the join of the states at its exits: each reachable
+`break` out of it joins its state into the construct's scope (`NoteBreak`,
 `Scope::breakflow`), and `JoinBreakFlow` joins that with the construct's
 own exit -- the end of a block's body, a `while`'s condition found false, a
 `for`'s head once its iterations run out -- or, for a `loop`, which has
-none, takes it alone.
-A callee's check leaves the ones it can name narrowed as it found
-them, and assigned where all of its exits agree (`CheckSpecBodyOnce`,
-`BodyExits`, `NoteExit`), not as the end of its text does: each `return`,
-the one a bare `guard` makes, the tail and a reachable end. A function
-value's `return`, or a `return from` in a callee, exits the body it names
+none, takes it alone. A callee's check leaves the ones it can name narrowed
+as it found them, and assigned where all of its exits agree
+(`CheckSpecBodyOnce`, `BodyExits`, `NoteExit`), not as the end of its text
+does: each `return`, the tail and a reachable end. A function value's
+`return`, or a `return from` in a callee, exits the body it names
 (`Frame::exits`), and every body checked in the frames between records what
 its activation had assigned by then (`FnSpec::outerexits`), which a call
 reusing it takes again (`ReplayOuterExits`). A body with no exit its caller
@@ -1090,7 +1094,7 @@ reaches leaves them as its end did: the code after the call never runs. A branch
 "bottom" type, which unifies with anything (`UnifyBranch`, `MergeVals`), and
 reads as `void` once the construct's node is left (`VoidIfBottom`).
 
-`NarrowCond` narrows on `if`/`while`/`guard`/`assert` conditions, through
+`NarrowCond` narrows on `if`/`while`/`assert` conditions, through
 `!`, `&&` and `||` (a `&&`'s right operand may not run, so what it
 un-narrows is recorded as `Binary::rightkills`), and `== null`/`!= null`.
 Loops: a rebind in the body (a `.=`, a callee's `reboundoptionals`) drops
@@ -1185,8 +1189,8 @@ of its own statement not yet evaluated (`LaterOperands`, §3.3): a whole
 assignment's right-hand side, a call's later arguments, a literal's later
 fields, the arguments print, str and format render after the one being
 checked (**Format overloads** below), and, where the shrink is in the head
-of a construct on the path -- an `if`'s or `guard`'s condition, a `match`'s
-scrutinee, a `for`'s sequence -- the parts that head leads to (`AfterHead`;
+of a construct on the path -- an `if`'s condition, a `match`'s scrutinee, a
+`for`'s sequence -- the parts that head leads to (`AfterHead`;
 an else-if is on the path of its own for this); a `for` binding is always
 live; `MentionsName` follows calls of nested functions by name into their
 bodies. The body of a function value being checked (an `isfunval` frame's
@@ -2039,8 +2043,8 @@ in range and integral; a conversion to a float of anything but a `u64`
 above `i64.max`), `.len` of a fixed array
 and `.cap` of a static-capacity limited array on a plain variable receiver,
 `if` on a constant condition, `match` on a constant integer, `while false`,
-`guard` on a constant, `assert(true)`, and statements after a `return`,
-`break` or `continue` in a block.
+`assert(true)`, and statements after a `return`, `break` or `continue` in a
+block.
 
 **Inlining** (`TryInline`): a call is replaced by an `InlineBlock` holding
 the callee's parameter bindings as `VarDecl`s (marked `inline_arg`, evaluated
@@ -2112,10 +2116,11 @@ benchmarks lands 18 blocks deep.
 
 **Base-case inlining** (`BaseCaseInliner`, `optimize_basecase.h`): a
 `recursive fn` whose body *starts* with `if c { return e; }` (or the negated
-`guard c else { return e; }`), with every parameter fixed-size, `c` a pure
-read of parameters and globals, and `e` calling nothing in the cycle, gets
-each direct self-call `f(a...)` rewritten to `{ let p = a; ...; if c[p] {
-e[p] } else { f(p...) } }` under the inliner's size thresholds. This removes
+`if c { … } else { return e; }` that `guard c else { return e; }` parses
+to), with every parameter fixed-size, `c` a pure read of parameters and
+globals, and `e` calling nothing in the cycle, gets each direct self-call
+`f(a...)` rewritten to `{ let p = a; ...; if c[p] { e[p] } else {
+f(p...) } }` under the inliner's size thresholds. This removes
 half the calls of a complete tree walk. The bindings are marked
 `inline_arg`, like an inlined call's, and made in the scope around the block
 (`GenInlineArgs`): a slice argument can view a temporary, which has to last
@@ -2257,7 +2262,7 @@ that cannot have wrapped.
 
 ### 5.6 Facts from control flow
 
-`CondFacts` adds the comparison of an `if`, `while`, `guard`, `assert` or
+`CondFacts` adds the comparison of an `if`, `while`, `assert` or
 short-circuit operand (both senses, through `!`, `&&` and `||`), an integer
 `match` arm's range (the hull of a listed arm's values and ranges), and a
 `for` header's bounds (`0 <= i < n` against the snapshots taken at loop

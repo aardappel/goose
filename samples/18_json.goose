@@ -291,7 +291,7 @@ fn main() {
         var i = 0;
         loop {
             let a = element(authors, i);
-            guard a;
+            guard a else { break; }
             let born = number_of(member(a, "born"));
             var s: u8[>..] = [];
             let nm = member(a, "name");
