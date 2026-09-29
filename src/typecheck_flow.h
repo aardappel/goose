@@ -1590,7 +1590,9 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
                         "(§4.1)");
             }
             byref = x->byref || ClassOf(elem) != SC_FIXED;
-            if (byref) {
+            // An element that is itself a reference binds as the one it holds
+            // either way, there being no references to references (§3.8).
+            if (byref && elem->kind != TY_REF) {
                 bindtype = ast.RefTo(elem, x->line);
             } else {
                 // An element that *is* a relative reference loads as a
@@ -1623,10 +1625,10 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     if (idxtype && x->iterkind != IK_ARRAY && x->iterkind != IK_SLICE)
         Error(x, "the index of a range or count counts its iterations as an i64; a type on "
                  "the loop's binder gives the values their type");
-    // A relative-reference or slice element bound by value was read out of
-    // the array, so where it points follows the read-back rule (§9.5), not
-    // the array's own root.
-    if (IsRefOrSlice(bindtype) && !byref && elemtype &&
+    // A slice element bound by value, or a relative-reference one however it
+    // is bound, was read out of the array, so where it points follows the
+    // read-back rule (§9.5), not the array's own root.
+    if (IsRefOrSlice(bindtype) && elemtype && (!byref || elemtype->kind == TY_REF) &&
         ((elemtype->kind == TY_REF && elemtype->ref->lenstorage >= 0) ||
          elemtype->kind == TY_SLICE)) {
         auto rb = ReadBackRoot(elemtype, iterprov, iterprov.byteview,

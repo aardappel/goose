@@ -486,7 +486,11 @@ T*: represented as a nullable reference to T (null = address 0, no space
 cost), with all reference semantics and restrictions (roots, lifetimes,
 writability). This composes with any type — pass `i64?` for an optional
 integer. Applied to a type that is already a reference, `?` simply makes
-that reference nullable (`T&?` ≡ `T?`). The literal `null` is the empty
+that reference nullable (`T&?` ≡ `T?`), and so does it to a type argument
+that is one: `T?` of `Node&` is `Node?`, of `Node&<u32 in pool>` the
+optional relative reference. `T&` of a reference type argument is that
+reference itself, as `&` of a location holding one gives the stored one
+(loaded, if relative). The literal `null` is the empty
 value of any optional type; an optional struct field with no declared
 default defaults to null. Optionals are *not* transparent: access requires
 narrowing via `if`/`while`/`guard`/`assert(r)`/`== null`/`!= null` tests.
@@ -1508,6 +1512,10 @@ Built-in iteration only (no iterator protocol):
 * `for &x in arr` — element references (the mutation form for fixed-size
   elements; redundant, and a warning, for non-fixed ones). Over a `[>..<]`,
   the binding is a reference in scope: no shrink inside the loop (§5.2).
+  An element that is itself a reference binds as the one it holds, loaded
+  if relative (there are no references to references): `&x` makes that
+  binding one that writes through, and a varint-width relative element,
+  non-fixed, binds so without the `&`.
 * `for x, i in arr` / `for &x, i in arr` — with index (`i: i64`).
   `for x, i: T in arr` gives the index the integer type `T` where `T` holds
   every index `arr` can have: a fixed-size or static-capacity array's length

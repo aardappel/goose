@@ -303,8 +303,11 @@ where a parameter or result is compared (`TopConstEq`: constness of the
 type itself is inferred per instantiation, constness nested deeper is part
 of the type). `Subst` substitutes generic names through the lexical binding
 chain (`LookupBinding`: the current specialization, then its lexical
-parents); `ownexclude` keeps a callee's own generic names from resolving to
-an enclosing function's same-named binding while a call is unified;
+parents), collapsing a reference built on a type argument that is itself
+one: `T?` makes it optional and `T&` is it, loaded where relative (no
+references to references, §3.8); `ownexclude` keeps a callee's own generic
+names from resolving to an enclosing function's same-named binding while a
+call is unified;
 `WithBindings`/`bindonly` restrict substitution to an instantiation's own
 bindings while its field types are computed.
 
@@ -954,7 +957,10 @@ a write through the parameter is an error only in the first.
 `let` prevents whole-binding assignment (`NoLetAssign`, via
 `LVal::letbound`) but does not restrict writes to contents. By-value `for`
 and `match` bindings are copies; writes to them are rejected by
-`NoCopyWrite` using `VarDef::copybind`. A variable's `const` type works the
+`NoCopyWrite` using `VarDef::copybind`. A `for` element that is itself a
+reference binds as the one it holds either way, loaded and rooted by the
+read-back rule where relative; `&x` only makes it a binding that writes
+through (`ForLoop::CgStmt` loads it, never the slot's address). A variable's `const` type works the
 other way round: a bare name's `LVal::writable` is its *contents'*
 writability, which `&x` and the paths into it inherit, while a write of the
 variable itself (`=`, a compound assignment, `++`/`--`) is left to those two

@@ -750,6 +750,20 @@ struct TypeCheck {
             case TY_REF: {
                 auto sub = Subst(t->ref->sub);
                 if (sub == t->ref->sub) return t;
+                // There are no references to references (§3.8): `T?` of a
+                // reference makes that reference nullable, as `X&?` does,
+                // and `T&` is the reference itself, as `&` of a location
+                // holding one gives the stored one, loaded if relative.
+                if (sub->kind == TY_REF && t->ref->lenstorage < 0) {
+                    if (!t->ref->optional) return LoadType(sub);
+                    if (sub->ref->optional) return sub;
+                    auto n = ast.NewType(TY_REF, t->line);
+                    n->ref = ast.NewDetail<TypeRef>();
+                    *n->ref = *sub->ref;
+                    n->ref->optional = true;
+                    n->cq = sub->cq;
+                    return n;
+                }
                 auto n = ast.NewType(TY_REF, t->line);
                 n->ref = ast.NewDetail<TypeRef>();
                 *n->ref = *t->ref;

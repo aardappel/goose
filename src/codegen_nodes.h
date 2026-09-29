@@ -952,6 +952,9 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
             cg.L(cg.CT(idxdef->type), " ", ix, " = (", cg.CT(idxdef->type), ")", gi, ";");
     };
     auto et = vdef->type;
+    // An element that is a reference binds as the reference it holds, by
+    // `&x` too (the checker's binding type), decoded if relative (§3.9).
+    auto held = v.elem->kind == TY_REF;
     if (!cg.IsFix(v.elem)) {
         // Sequential walk, &-binding only; the cursor advances in the
         // increment clause so `continue` behaves.
@@ -959,7 +962,14 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         cg.L("uint8_t *", p, " = (uint8_t *)(", v.elems, ");");
         cg.GenLoopBody([&]() {
             bindix();
-            if (!vdef->copybind) cg.L("uint8_t *", iv, " = ", p, ";");
+            if (held) {
+                CodeGen::Loc el;
+                el.t = v.elem;
+                el.s = p;
+                cg.L(cg.CT(et), " ", iv, " = ", cg.LoadLoc(el, et, line), ";");
+            } else if (!vdef->copybind) {
+                cg.L("uint8_t *", iv, " = ", p, ";");
+            }
         }, body, d,
             cat("for (int64_t ", gi, " = 0; ", gi, " < (", v.len, "); ", gi, "++, ", p,
                 " += ", cg.SizeX(v.elem, p), ") {"));
@@ -972,7 +982,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
                           ? cat(v.elems, "[", gi, "]")
                           : cat("(*(", cg.CT(v.elem), " *)((", v.elems, ") + ", gi, " * ",
                                 esz, "))");
-        if (!vdef->copybind) {
+        if (!vdef->copybind && !held) {
             cg.L(cg.CT(et), " ", iv, " = &", elem, ";");
         } else if (v.elem->kind == TY_REF && v.elem->ref->lenstorage >= 0) {
             // A relative-reference element bound by value: the binding is the
