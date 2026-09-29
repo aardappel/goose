@@ -1272,6 +1272,17 @@ their next owner wrote, or the default values an allocation put there. Freeing
 a run twice is a logic error of the same kind — the freelist can then hand the
 same elements out twice, but never anything outside the array.
 
+**Pool references.** A `T[>..]&` variable or parameter bound to a pool is a
+*pool reference*: the pool's operations work through it as on the pool, since
+it carries the pool's freelist beside the address. A variable is one from its
+first binding on, and `.=` rebinds it only to a pool of the same kind, or to
+a pool reference to one; pointing it at any other array needs a new variable.
+A variable first bound to anything else stays a plain reference, which `.=`
+may point at a pool, as at any array, but which offers none of the pool's
+operations. Only a plain reference variable or parameter is a pool reference:
+an optional one, a field, an element and a function's result are not, even
+where they point at a pool.
+
 ---
 
 ## 6. Expressions and arithmetic
@@ -3332,9 +3343,9 @@ compiler's own description, pass by pass and analysis by analysis, is
   (`push` through a `f64[>..]&`) must know which data stack to bump. The
   compiler does not pin that stack per call site (§10.2): every reference
   to a resizable-class value carries the stack identity beside the header
-  address (C.2), and a reference with reusable-pool provenance (§5.4)
-  carries the freelist as well. There is no surface syntax; the form is per
-  instantiation and invisible to the program.
+  address (C.2), and a pool reference (§5.4) carries the freelist as well.
+  There is no surface syntax; the form is per instantiation, and a variable
+  keeps the one its first binding gives it (§5.4).
 * **Stack assignment** is the hidden-argument strategy §10.3 permits: every
   function that uses data stacks takes its base index as a hidden argument
   and addresses its nonfixed locals at constant offsets from it, callees

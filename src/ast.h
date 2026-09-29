@@ -308,6 +308,13 @@ inline bool IsPlainRef(const TypeExpr *t) {
 inline bool IsArrayKind(const TypeExpr *t, ArrayKind k) {
     return t->kind == TY_ARRAY && t->arr->akind == k;
 }
+// Whether a variable or parameter of this type bound to a reusable pool is a
+// pool reference (§5.4), carrying the pool's freelist beside the address (a
+// gs_pref in the generated C): a plain reference to a grow-only array. One of
+// any other type refers to the pool as to any array.
+inline bool CarriesPool(const TypeExpr *t) {
+    return IsPlainRef(t) && IsArrayKind(t->ref->sub, A_GROW);
+}
 // A machine integer: any integer type but varint, the storage-only encoding.
 inline bool IsIntT(const TypeExpr *t) { return t->kind == TY_INT && t->intstorage != IS_VARINT; }
 inline bool IsVarintT(const TypeExpr *t) {

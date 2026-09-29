@@ -1006,7 +1006,8 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         ra.unknown = isrs ? ar.None() : ar.Unknown();
         // A `const` parameter is read-only whatever the argument (§9.5).
         ra.writable = argvals[i].writable && !pt->cq;
-        ra.reusable = argvals[i].reusable;
+        // A pool reference only where the parameter can carry the freelist (§5.4).
+        ra.reusable = CarriesPool(pt) ? argvals[i].reusable : 0;
         ra.exact = ar.Exact();
         ra.heldexact = holder && ra.exact && !sf->isrec;
         // Any root the argument may have that holds a grow-shrink array, or

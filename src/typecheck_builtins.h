@@ -248,12 +248,24 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         if ((d.flags & BF_WRITE) && !rv.writable)
             Error(c, cat("cannot .", d.name, " through a non-writable value "
                          "(let, const, or a read-only instantiation, §9.5)"));
+        // A reference that may point at such a pool, but is not a pool
+        // reference, says so.
+        auto notpoolref = [&](int ru) -> string {
+            if (rv.reusable) return "";
+            for (auto &a : rv.alts)
+                if (a.root && (a.root->reusable & ru))
+                    return cat(": ", ExprStr(args[0]), " may point at ", a.root->name,
+                               ", but is not a pool reference");
+            return "";
+        };
         if ((d.flags & BF_REUSABLE) && !(rv.reusable & RU_SLOTS))
             Error(c, cat(".", d.name, " exists on reusable pools only",
-                         rv.reusable ? ", not on the slice pools of reusable[]" : "", " (§5.4)"));
+                         rv.reusable ? ", not on the slice pools of reusable[]" : "",
+                         notpoolref(RU_SLOTS), " (§5.4)"));
         if ((d.flags & BF_SLICEPOOL) && !(rv.reusable & RU_SLICES))
             Error(c, cat(".", d.name, " exists on reusable[] pools only",
-                         rv.reusable ? ", not on the slot pools of reusable" : "", " (§5.4)"));
+                         rv.reusable ? ", not on the slot pools of reusable" : "",
+                         notpoolref(RU_SLICES), " (§5.4)"));
     }
     // A pending `var x = []` receiver learns its element type from what
     // is first pushed or appended into it (§4.2).

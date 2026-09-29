@@ -2053,8 +2053,7 @@ struct TypeCheck {
             }
             if (IsRefOrSlice(t)) {
                 ra.writable = true;
-                if (t->kind == TY_REF && IsArrayKind(t->ref->sub, A_GROW) &&
-                    ClassOf(t->ref->sub->arr->sub) == SC_FIXED)
+                if (CarriesPool(t) && ClassOf(t->ref->sub->arr->sub) == SC_FIXED)
                     ra.reusable = RU_SLOTS | RU_SLICES;
             } else if (holder) {
                 // What it holds points into its class's array, as a literal's

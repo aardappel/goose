@@ -1819,8 +1819,16 @@ value layouts.
 A pool's kind travels with its provenance as bits, `RU_SLOTS` for `reusable`
 and `RU_SLICES` for `reusable[]` (`Prov::reusable`, `RootArg::reusable`), so
 merging two branches keeps only what both allow, and the table's
-`BF_REUSABLE`/`BF_SLICEPOOL` flags each require their bit. A function checked
-standalone (`CheckUnreached`) assumes both. `free_slice` and `realloc_slice`
+`BF_REUSABLE`/`BF_SLICEPOOL` flags each require their bit. Only a binding
+whose type can carry the freelist, a plain reference to a grow-only array
+(`CarriesPool`), keeps them: `BindProv` drops them for any other variable
+and `GetOrCreateSpec` for any other parameter, so an optional reference to a
+pool is an optional reference to an array. A pool reference variable keeps
+its first binding's bits, since codegen gives it one representation for its
+life (§6.1): `CheckRefRebindRoot` rejects a rebind to a value lacking one of
+them. A function checked standalone (`CheckUnreached`) assumes both, which is
+no reached binding's, and there a rebind narrows them instead: the rebind
+settles what calls could pass. `free_slice` and `realloc_slice`
 use `index_of`'s exact-root test (`RootedAtReceiver`) only to leave out a
 run-time test: a slice it does not place in the pool is an error when it is
 rooted exactly at a global or a variable of the checked function, and
@@ -2298,7 +2306,9 @@ Layout details needed for byte/C compatibility (`FixedSize`, `LayoutFields`,
   push through them. A reference with `reusable`-pool provenance is a
   `gs_pref`, which adds the freelist's header and stack. Whether a parameter
   is fat or pool-shaped comes from the specialization's types and
-  `RootArg::reusable`, not from surface syntax.
+  `RootArg::reusable`, not from surface syntax; a variable is pool-shaped
+  (`PrefVar`) by its binding's bits, which its rebinds keep (§3.14), and
+  each binding and rebind stores a whole `gs_pref` (`GenPrefVal`).
 * String literals are `static const` byte arrays (`StrRaw`), sliced as
   `{ data, len }` or emitted as static `[len][bytes]` images when used as a
   `u8[]` value (`GenStrBytes`).

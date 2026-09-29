@@ -760,7 +760,7 @@ inline void Assign::CgStmt(CodeGen &cg) {
     // cannot move and keep their spelling, so the cached tops still apply.
     if (lv.val) {
         auto p = cg.T();
-        cg.L(cg.CT(lv.t), " *", p, " = &(", lv.s, ");");
+        cg.L(lv.ispref ? string("gs_pref") : cg.CT(lv.t), " *", p, " = &(", lv.s, ");");
         lv.s = cat("(*", p, ")");
     } else if (!cg.IsResz(lv.t)) {
         auto p = cg.T();

@@ -279,7 +279,8 @@ inline string CodeGen::GenPrefVal(Node *n) {
             auto vd = id->vdef;
             auto pit = vpool.find(vd);
             auto git = gpools.find(vd);
-            assert(pit != vpool.end() || git != gpools.end());
+            // A captured pool arrives as a gs_pref (VarLoc).
+            if (pit == vpool.end() && git == gpools.end()) return VName(vd);
             auto &pl = pit != vpool.end() ? pit->second : git->second;
             auto t = T();
             L("gs_pref ", t, " = { &", HdrLv(vd), ", ", VStkOf(vd), ", &", pl.first,
@@ -316,7 +317,7 @@ inline void CodeGen::GenRebind(Assign *a, Loc lv) {
         else L(lv.s, " = NULL;");
         return;
     }
-    L(lv.s, " = ", GenX(a->rhs), ";");
+    L(lv.s, " = ", lv.ispref ? GenPrefVal(a->rhs) : GenX(a->rhs), ";");
 }
 
 // ------------------------------------------------------------------

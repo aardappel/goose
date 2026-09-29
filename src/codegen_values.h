@@ -15,8 +15,7 @@ namespace goose {
 // gs_pref so pool operations stay available through them (§5.4). This is
 // a property of the VarDef (provenance), shared by caller and callee.
 inline bool CodeGen::PrefVar(const VarDef *vd) {
-    auto t = vd->type;
-    return t && IsPlainRef(t) && IsArrayKind(t->ref->sub, A_GROW) && vd->ref.reusable;
+    return vd->type && CarriesPool(vd->type) && vd->ref.reusable;
 }
 
 // Whether a value of type `have` needs a pointee load to serve as `want`:

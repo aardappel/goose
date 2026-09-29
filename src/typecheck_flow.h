@@ -308,10 +308,12 @@ inline Prov TypeCheck::SlotView(const Prov &p, TypeExpr *slice) {
     return out;
 }
 
-// Binds a reference variable to where p points.
+// Binds a reference variable to where p points. A pool's operations stay
+// available through it only where its type carries the freelist (§5.4).
 inline void TypeCheck::BindProv(VarDef *vd, const Prov &p) {
     vd->ref = p;
     vd->ref.reached = nullptr;
+    if (!vd->type || !CarriesPool(vd->type)) vd->ref.reusable = 0;
     vd->refrootknown = true;
     NoteFact(vd);
 }
@@ -2320,6 +2322,24 @@ inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
             Error(at, cat("re-binding ", vd->name, " to a reference that may point into a "
                           "grow-shrink array (", gs->name, "), where it pointed into none, is "
                           "not supported; declare a new variable (§5.2)"));
+    }
+    // A pool reference is one for its whole life, carrying the freelist of
+    // the pool it points at (codegen's gs_pref): a rebind gives it a pool of
+    // each kind it has (§5.4).
+    if (vd->ref.reusable & ~rv.reusable) {
+        if (vd->ref.reusable == (RU_SLOTS | RU_SLICES)) {
+            // Both kinds are what a standalone check assumes for a parameter
+            // no call has given a pool (CheckUnreached): the rebind settles it.
+            vd->ref.reusable &= rv.reusable;
+            NoteFact(vd);
+        } else {
+            auto kind = [](int ru) { return ru == RU_SLICES ? "reusable[]" : "reusable"; };
+            Error(at, cat("re-binding ", vd->name, " to a reference ",
+                          rv.reusable ? cat("to a ", kind(rv.reusable), " pool")
+                                      : string("that is not a pool reference"),
+                          ", where it was bound to a ", kind(vd->ref.reusable),
+                          " pool, is not supported; declare a new variable (§5.4)"));
+        }
     }
     // A rebind to other storage keeps the lifetime bound but means the
     // variable no longer names one array: a read inside a loop this rebind

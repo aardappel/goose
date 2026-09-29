@@ -17,9 +17,7 @@ namespace goose {
 // from` discriminant travels in the thread-local gs_rf, not the signature.
 
 inline bool CodeGen::IsPoolParam(FnSpec *sp, size_t i) {
-    return sp->roots[i].reusable && sp->argtypes[i]->kind == TY_REF &&
-           sp->argtypes[i]->ref->sub->kind == TY_ARRAY &&
-           sp->argtypes[i]->ref->sub->arr->akind == A_GROW;
+    return sp->roots[i].reusable && CarriesPool(sp->argtypes[i]);
 }
 
 // A pool or fat-reference argument carries its stack inside the value, so
