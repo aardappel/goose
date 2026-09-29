@@ -1247,8 +1247,12 @@ struct VarDef {
     // The first comparison relying on the variable being non-negative
     // (§6.1), and the first writable reference bound to it (§4.4), whichever
     // makes the other an error (TypeCheck::RelyOnNonneg, NoteWritableRef).
-    // Like `captured`, they outlast a re-check of the variable's scope.
+    // The first balanced resize back to it as a mark (§5.2) relies on it
+    // too, but a resize after the reference is merely unbalanced
+    // (TypeCheck::ResizesToMark). Like `captured`, they outlast a re-check
+    // of the variable's scope.
     Node *nonneguse = nullptr;
+    Node *markuse = nullptr;
     Node *refwrite = nullptr;
 };
 

@@ -1514,13 +1514,19 @@ inline void TypeCheck::ShrinkGrowShrink(Node *at, const string &op, VarDef *root
 // of this activation initialized to exactly `recv.len`, with recv the same
 // path there, so the resize goes back to a length recv has had since the
 // activation began. While every shrink of it is such a resize or a balanced
-// call, no such length is shorter than the one it began with.
+// call, no such length is shorter than the one it began with. A writable
+// reference bound to the `let` may have changed it (§4.4), which makes the
+// resize an ordinary shrink, and one bound after the resize relied on it an
+// error (NoteWritableRef), since the balance has been recorded by then.
 inline bool TypeCheck::ResizesToMark(Node *recv, Node *len) {
     auto id = Is<Ident>(len);
     auto m = id ? LookupVar(id->name, id->ns) : nullptr;
     auto spec = CurRealFrame().spec;
-    return m && m->markof && !m->isvar && spec && m->ownerspec == spec &&
-           SamePath(m->markof, recv);
+    if (!m || !m->markof || m->isvar || !spec || m->ownerspec != spec || m->refwrite ||
+        !SamePath(m->markof, recv))
+        return false;
+    if (!m->markuse) m->markuse = len;
+    return true;
 }
 
 // Whether two checked paths name the same storage whenever both run under

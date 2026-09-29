@@ -406,10 +406,12 @@ inline VarDef *TypeCheck::ResetLocal(VarDef *previous) {
     // and the marks no pass may lose (a nested function checked once set
     // them for every pass).
     auto captured = previous->captured;
-    auto nonneguse = previous->nonneguse, refwrite = previous->refwrite;
+    auto nonneguse = previous->nonneguse, markuse = previous->markuse;
+    auto refwrite = previous->refwrite;
     *previous = VarDef {};
     previous->captured = captured;
     previous->nonneguse = nonneguse;
+    previous->markuse = markuse;
     previous->refwrite = refwrite;
     return previous;
 }

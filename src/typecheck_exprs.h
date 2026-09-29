@@ -1231,10 +1231,11 @@ inline Val TypeCheck::CheckRefOf(Unary *x) {
 
 // A writable reference to d is made at `at` (§4.1: `&d`, or d bound by
 // reference). A `let` is written through one as a `var` is (§4.4), before
-// or after anything that relies on its value: the marks this and
-// RelyOnNonneg leave do not follow the flow, so neither a loop's later pass,
-// a cycle's later round nor a nested function checked only once can get
-// past them, and whichever comes second is an error.
+// or after anything that relies on its value: the marks this, RelyOnNonneg
+// and ResizesToMark leave do not follow the flow, so neither a loop's later
+// pass, a cycle's later round nor a nested function checked only once can
+// get past them, and whichever comes second is an error (but for a resize,
+// which is merely unbalanced after the reference).
 inline void TypeCheck::NoteWritableRef(VarDef *d, Node *at) {
     if (!d->refwrite) d->refwrite = at;
     if (d->nonneguse)
@@ -1242,6 +1243,11 @@ inline void TypeCheck::NoteWritableRef(VarDef *d, Node *at) {
                       "become negative, while the comparison with a u64 at ",
                       Where(d->nonneguse->line), " relies on its value being non-negative "
                       "(§4.4, §6.1); convert the signed side with `as` there"));
+    if (d->markuse)
+        Error(at, cat(d->name, " is bound to a writable reference here, through which it may "
+                      "change, while the resize at ", Where(d->markuse->line), " relies on it "
+                      "still holding the length it was bound to (§4.4, §5.2); bind the "
+                      "reference to a copy of it, or make ", d->name, " a var"));
 }
 
 // A comparison with a u64 at `at` relies on v being non-negative (§6.1),

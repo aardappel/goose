@@ -1154,7 +1154,12 @@ again against the pairs the cycle records once the whole cycle is.
   call that is balanced for X. The same path is one variable that cannot be
   rebound (a `var` reference can), then the same fields, none of them a
   reference. `pop`, `clear`, a resize to anything else, and assigning X or a
-  value holding it whole are not balanced. Every length X has during such an
+  value holding it whole are not balanced, and neither is a resize to an `m`
+  bound to a writable reference (§4.4): by `&`, `.=`, or a reference parameter,
+  field or binding that is not `const`, in a nested function too, since a write
+  through it can lower `m`. Binding `m` to one after a resize back to it is an
+  error: that resize has already been judged balanced, while a loop can run the
+  write before it the next time round. Every length X has during such an
   activation is at least its length on entry, so every mark is too, and so is
   every resize back to one. A call is balanced for an array of the caller's
   when each shrink it may make of any array that can be that one is balanced:

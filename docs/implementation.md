@@ -1229,7 +1229,13 @@ function or a block's writer took before this activation began does not
 count) whose initializer was exactly `X.len` (`VarDef::markof`, set by
 `CheckVarDecl`), and `SamePath` finds that `X` and the receiver name the
 same storage: the same variable, not a `var` reference, then the same
-fields, none of them read out as a reference or slice. No other shrink in a
+fields, none of them read out as a reference or slice. A writable
+reference can still change the `let` (§4.4), so a mark with `refwrite`
+(`NoteWritableRef`, §3.14) is none, and one a balanced resize accepted is
+marked relied on (`markuse`), which makes a writable reference noted later
+an error: the resize's balance is recorded by then, and a loop checked in
+one pass, or a nested function checked once, can run the write before the
+resize's next run, which nothing judges again. No other shrink in a
 body is balanced: `pop`, `clear`, other resizes, whole assignment, and a
 grow-only array's shrinks (`GrowOnlyShrinkAt` records every shrink
 unbalanced). The body's own scans are unchanged, a balanced resize
@@ -1689,9 +1695,9 @@ along the `nonnegfrom` chain as relied on (`RelyOnNonneg`, `nonneguse`),
 `CheckRefOf` and `AutoRef` mark a variable bound to a writable reference
 (`NoteWritableRef`, `refwrite`; not for an identity comparison, `index_of`
 or a `const T&` destination), and whichever mark comes second is an error.
-The marks do not follow the flow, and `ResetLocal` keeps them, so neither a
-loop's later pass, a cycle's later round nor a nested function checked once
-gets past them. An
+The marks do not follow the flow, and `ResetLocal` keeps them, as it keeps
+a balanced resize's `markuse` (§3.10), so neither a loop's later pass, a
+cycle's later round nor a nested function checked once gets past them. An
 integer meeting a float takes the float's type, and an `f64` that takes its
 type from float literals (`LitFloat`) adapts to an `f32` operand. The
 checker folds constants at the operands' type (`FoldInt`, over the shared
