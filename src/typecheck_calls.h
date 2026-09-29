@@ -1264,12 +1264,13 @@ inline EnvRead TypeCheck::EnvReadOf(VarDef *vd) {
 
 // A body names vd outside its activation: a nested function one of its
 // lexical parents' variables, a function value's body one of the frame it
-// was written in. Named first, vd is as the body's check began with it, or
-// a callee named it first and took it over as that (NoteCalleeEnvReads);
-// what the body then does to it follows from that.
+// was written in, a global initializer's (no ownerspec) among them. Named
+// first, vd is as the body's check began with it, or a callee named it
+// first and took it over as that (NoteCalleeEnvReads); what the body then
+// does to it follows from that.
 inline void TypeCheck::NoteEnvRead(VarDef *vd) {
     auto spec = CurRealFrame().spec;
-    if (!spec || vd->isglobal || !vd->ownerspec || vd->ownerspec == spec) return;
+    if (!spec || vd->isglobal || vd->ownerspec == spec) return;
     for (auto &r : spec->envreads) if (r.var == vd) return;
     spec->envreads.push_back(EnvReadOf(vd));
 }
