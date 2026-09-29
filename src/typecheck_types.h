@@ -749,7 +749,12 @@ inline Roots TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, bo
         }
     };
     if (!globalsonly) VisibleVars([&](VarDef *v) { if (!v->isglobal) consider(v, d); });
-    for (auto g : ast.globals) for (auto gd : g->defs) consider(gd, 0);
+    auto unchecked = false;
+    for (auto g : ast.globals)
+        for (auto gd : g->defs) {
+            consider(gd, 0);
+            unchecked = unchecked || (!gd->type && !(g->type && IsRefOrSlice(g->type)));
+        }
     // A writable reference or slice is never given static data but a null or an
     // empty slice (§9.5: literals only go into const slots), which point at no
     // storage, so static data does not stand beside a real candidate for one.
@@ -759,6 +764,12 @@ inline Roots TypeCheck::RootCandidates(TypeExpr *of, int d, bool globalsonly, bo
                    out.alts.end());
     if (writable && !out.None()) hasstatic = false;
     if (hasstatic) out.Add({ nullptr, true });
+    // A function's body checked for a global initializer's call runs before
+    // the later globals exist, but its check serves the calls after them
+    // too, when any of them may hold one: a global whose declaration is not
+    // checked yet has no type to ask, so the globals are a bound there (as a
+    // global holder's contents are).
+    if (unchecked && CurRealFrame().spec) out.Add({ nullptr, false });
     return out;
 }
 
@@ -855,11 +866,15 @@ inline string TypeCheck::ReadBackWhy(const Roots &r) {
     if (!from) return {};
     auto n = r.alts.size();
     if (n == 0) return cat("it was read out of ", from->name, ", whose contents this function cannot trace");
-    string s = cat("it was read out of ", from->name, " and may point into ");
+    auto global = BoundAnywhere(from);
+    string s = global ? cat(from->name, " is a global var, which any function may bind, and may "
+                                        "point into ")
+                      : cat("it was read out of ", from->name, " and may point into ");
     for (size_t i = 0; i < n; i++) {
         auto &a = r.alts[i];
         if (i) s += i + 1 == n ? " or " : ", ";
-        if (!a.root) { s += "static data"; continue; }
+        if (!a.root) { s += a.exact ? "static data" : "any global"; continue; }
+        if (global && a.root == from) { s += "any global"; continue; }
         if (!a.exact && !a.root->type && !a.root->isglobal) s += "the caller's storage behind ";
         s += a.root->name;
     }

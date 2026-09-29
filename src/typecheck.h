@@ -933,8 +933,11 @@ struct TypeCheck {
     // store outlives (conservative).
     VarDef *RefRootOf(VarDef *vd) { return vd->refrootknown ? vd->ref.Root() : temproot; }
     // Every root the reference a variable holds may have (§9.2): none yet
-    // where it is unbound in a discovery pass of a loop (RefProvOf).
+    // where it is unbound in a discovery pass of a loop (RefProvOf), and
+    // for a global `var` in a function's body all it can be given
+    // (GlobalVarRead).
     Roots RefRootsOf(VarDef *vd) {
+        if (BoundAnywhere(vd) && CurRealFrame().spec) return GlobalVarRead(vd);
         if (vd->refrootknown) return vd->ref;
         Roots r;
         if (UnboundIsBottom()) r.SetUnknown();
@@ -963,6 +966,8 @@ struct TypeCheck {
     Prov SlotView(const Prov &p, TypeExpr *slice);
     void BindProv(VarDef *vd, const Prov &p);
     void BindRefProvenance(VarDef *vd, const Val &v);
+    bool BoundAnywhere(VarDef *vd);
+    Prov GlobalVarRead(VarDef *vd);
     Prov RefProvOf(VarDef *vd);
     VarDef *ResetLocal(VarDef *previous);
     VarDef *NewVar(string_view name, TypeExpr *type, Line l, bool isvar,

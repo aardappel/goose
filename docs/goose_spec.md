@@ -2324,7 +2324,10 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   child; }`) has, at a use earlier in the body than the rebind, the root
   the rebind gives it, exactly where the root's storage is its own. A
   variable the loop never binds is null throughout it, and a use of it is
-  that null (§9.5).
+  that null (§9.5). A global `var` may be rebound by any function, one
+  compiled after a function using it as well as before, so a use of it in
+  a function's body has every root it can be given, the read-back rule's
+  answer for a global (§9.5), rather than the ones bound so far.
 * Inside recursive cycles the stricter §7.8 cycle store rule applies.
 * A **temporary** — an array, struct or variant literal, a call's result,
   `copy(x)`, `default<T>()`, or the value of an `if`, `match`, `block`,
@@ -2482,16 +2485,32 @@ root lies:
    initializers, the one the result's contents are rooted at, or the one
    the copied value's are, exact when that is one variable exactly.
 
+The globals a candidate may be are all of the program's. A function that a
+global initializer calls is compiled before the globals declared after
+that initializer, but the compilation serves the calls made once they
+exist too, so in it the global scope stands for those as well, inexact.
+
+A global `var` of reference or slice type is a slot any function may bind
+(§9.2), and the compilation of a function using it serves every call,
+those after a function compiled later has bound it included. So a use of
+one in a function's body is a read out of a global (case 1): each global
+whose storage can hold its pointee, exact where there is one, but never a
+grow-shrink array's elements, where no binding of a global points (§5.2).
+One naming a pool (§3.9) points into that pool, and a global `let` keeps
+its binding. A global initializer runs once, when the bindings made so far
+are all there are, and a use there has their roots.
+
 An optional variable bound only to `null` so far (`let none: Node? =
 null;`, or `var best: Node? = null;` before anything binds it) holds null.
 Where every binding that can come before a use of it has been checked — in
 the body of the function declaring it, a loop's later bindings included
-(§9.2), and anywhere for a global `let`, which only its initializer binds —
-the use is a null, which has no root (§3.9). A global `var` may have been
-bound by any function: a use of it takes the answer the read-back rule
-gives a local container, the innermost candidate for its pointee type at
-its own depth or outside, exact when there is exactly one, and so does a
-use of a local one in a nested function's or a function value's body.
+(§9.2), in the global initializers for a global, and anywhere for a global
+`let`, which only its initializer binds — the use is a null, which has no
+root (§3.9). A global `var` used in a function's body is read as above, and
+a use of a local one in a nested function's or a function value's body
+takes the answer the read-back rule gives a local container, the innermost
+candidate for its pointee type at its own depth or outside, exact when there
+is exactly one.
 
 A relative reference `T&<w>` read out of `C` points within `C`'s own root
 array by construction (§3.9), so it takes `C`'s root and `C`'s exactness
@@ -2502,8 +2521,9 @@ be ambiguous.
 
 A diagnostic that turns on an inexact read-back names the container it came
 out of and the candidates it could not choose between ("`n` was read out of
-`slots` and may point into `pool` or `spare`"), or, where the candidates are
-the caller's to know, the parameter whose pointee bounds it.
+`slots` and may point into `pool` or `spare`", "`g` is a global var, which
+any function may bind, and may point into `pool` or `spare`"), or, where the
+candidates are the caller's to know, the parameter whose pointee bounds it.
 
 Writability checks depend on the callee's operations. A function that mutates
 its slice argument can compile for a writable argument and fail for a

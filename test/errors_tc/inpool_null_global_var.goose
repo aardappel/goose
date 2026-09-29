@@ -1,5 +1,5 @@
 // error: a relative reference in cells must point into cells
-// error: this reference's root is not known exactly, only that it outlives cells
+// error: last is a global var, which any function may bind, and may point into cells or spare
 // Any function may bind a global `var`, and a body checked once serves every
 // later call: link's check has to hold after rebind has bound `last` into
 // spare, so a read of it is the read-back rule's answer for a global (§9.5),

@@ -618,7 +618,7 @@ a branch of an `if` would not be.
 |---|---|---|
 | a variable `x` (`Ident::Check`) | `x` | yes |
 | `&lvalue` (`CheckRefOf`) | the lvalue's owner | as the path |
-| a reference or slice variable (`RefProvOf`) | its committed binding (§3.7) | its binding's, weakened by rebinds |
+| a reference or slice variable (`RefProvOf`) | its committed binding (§3.7); for a global `var` used in a function's body, the read-back rule (`GlobalVarRead`) | its binding's, weakened by rebinds; the read-back's |
 | a reference read out of a field or element (`ContainerRead`) | the read-back rule (§3.6) | only with one candidate |
 | a slice loaded through a reference to one (`SlotView`) | the reference's, where it bound a slice by reference; for an explicit `&` of a slice variable, that variable's binding; out of a container, or behind a parameter's class of an explicit `&s`, the read-back rule or the class as a bound | as that |
 | `a.push(v)`, `a.alloc_ref(v)`, `&a[i]` | `a`'s root | `a`'s exactness |
@@ -864,7 +864,12 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   reference's storage holding its own type, which is what a slice of them
   points at), plus static data when the pointee is `u8` and the reference or
   slice read back is `const`, or nothing else can hold the pointee (a writable
-  one is given static data only as a null or an empty slice);
+  one is given static data only as a null or an empty slice). A function's
+  body checked for an earlier global's initializer, before some global's
+  declaration is, cannot ask that global's type, and its check serves the
+  calls after the global exists too: every read-back there, of a local
+  container as well, gets the inexact null root as a bound for the globals
+  (`RootCandidates`), as a global holder's contents are;
 * a container that is an exactly rooted local of the function being checked:
   the candidates are the visible locals declared at the container's depth or
   outside it that can hold the pointee, the pointees of reference and slice
@@ -902,13 +907,33 @@ A reference or slice variable is bound at its first non-null binding
 (`BindRefProvenance`); before that it reads as `temproot` (`RefRootOf`). A
 null-only optional reads as null, with no roots, where every binding that
 can come before the read has been checked: in the frame declaring it
-(`ownerspec` is `CurRealFrame().spec`), and for a global `let`. A global
-`var`, and a local one read in a nested function's or a function value's
-body, answer the read-back rule for their own depth instead (`RefProvOf`).
-`CheckRefRebindRoot` implements §9.2's
+(`ownerspec` is `CurRealFrame().spec`, null for a global and the
+initializers), and for a global `let`. A local one read in a nested
+function's or a function value's body answers the read-back rule for its
+own depth instead (`RefProvOf`). `CheckRefRebindRoot` implements §9.2's
 rebinding rule: the same roots keep everything (an inexact new value only
 weakens exactness); another root at the same depth joins the variable's
 alternatives; any other depth is an error.
+
+**Global `var`s** (`BoundAnywhere`). A function checked after a body reading
+a global `var` of reference or slice type may bind it, and the body's check
+serves every call (`NoteEnvRead` keys a body by the locals it reads outside
+its activation, not by globals), so in a function's body
+(`CurRealFrame().spec` set) its reads, `RefProvOf` and `RefRootsOf` alike,
+are not its binding but `GlobalVarRead`: `ReadBackRoot` of the global as a
+container of itself -- the globals that can own the pointee, exact where
+there is one, the pool for an `in pool` one -- less the grow-shrink arrays
+`IntoGrowShrink` finds for the pointee, which the store rule keeps every
+binding of a global out of (§3.5, rule 3), each alternative a slot read with
+`from` the global, which `ReadBackWhy` words as a global any function may
+bind. Its `writable` is the binding's, which the global's type decides
+(§3.8), and so is its `reusable`, which says how the variable is represented
+(`PrefVar`). Its `byteview` is the bindings' so far: a `const u8` one always
+has static data among its candidates, so no identity rule takes it exactly,
+and the shrink of a global array a later byte view binding makes it view is
+judged against the recorded bindings (`NoteGlobalBinding`,
+`CheckGlobalShrinks`). A self-relative one only ever holds null and keeps
+the variable rules.
 
 **Loops** (`CheckLoopPasses`). A loop body is checked as many times as it
 takes for what it feeds back to the loop's head to settle: the roots its

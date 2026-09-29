@@ -332,20 +332,50 @@ inline void TypeCheck::BindRefProvenance(VarDef *vd, const Val &v) {
     BindProv(vd, v);
 }
 
+// A global `var` of reference or slice type, but for a self-relative one,
+// which holds only null (§3.9): any function may bind it.
+inline bool TypeCheck::BoundAnywhere(VarDef *vd) {
+    auto t = vd->type;
+    return vd->isglobal && vd->isvar && t && IsRefOrSlice(t) &&
+           !(t->kind == TY_REF && t->ref->lenstorage >= 0 && !t->ref->pool);
+}
+
+// Where such a global points, as a read of it in a function's body sees it.
+// A function checked after the body may bind it, and the body's check serves
+// every later call, so that is not the bindings checked so far but all it
+// can be given: the read-back rule's answer for a global container (§9.5),
+// since only globals and static data outlive a global. That is each global
+// whose storage can hold the pointee, exact where there is one, or the pool
+// a relative one names, but for one the store rule keeps every binding of a
+// global from (§5.2, FitsAt and CheckBindingRoot): a grow-shrink array that
+// can hold the pointee. Like a slot's contents, it is a slot read.
+inline Prov TypeCheck::GlobalVarRead(VarDef *vd) {
+    auto t = vd->type;
+    Prov p = vd->ref;
+    Roots self;
+    self.Set(vd, true);
+    p.TakeAlts(ReadBackRoot(t, self, p.byteview));
+    std::erase_if(p.alts, [&](const RootAlt &a) { return IntoGrowShrink(p, a.root, t, false); });
+    for (auto &a : p.alts) a.slotread = SlotReadable(t);
+    return p;
+}
+
 // Where a reference variable's value points, as a read of it sees it: the
-// roots it is committed to, and its provenance bits. Before any binding it
-// points nowhere yet in a discovery pass of a loop, which a later pass
-// revisits with the binding a rebind further down the body gives it
-// (CheckLoopPasses). Otherwise an optional bound only to null so far holds
-// null where every binding that can come before the read has been checked:
-// in the body declaring it, and for a global `let`, which only its
-// initializer binds. It has no roots there, as the literal has none (§9.5).
-// A global `var`, which any function may bind, may have been bound since:
-// its read is the read-back rule's answer, whatever can hold the pointee
-// type at its own depth or outside, and so is a local one's read in a
-// nested function's or a function value's body. Anything else is the temp
-// sentinel.
+// roots it is committed to, and its provenance bits, but for a global `var`
+// read in a function's body (GlobalVarRead). A global initializer runs once,
+// where the bindings checked so far are all that can have been made. Before
+// any binding a variable points nowhere yet in a discovery pass of a loop,
+// which a later pass revisits with the binding a rebind further down the
+// body gives it (CheckLoopPasses). Otherwise an optional bound only to null
+// so far holds null where every binding that can come before the read has
+// been checked: in the body declaring it (a global's is the initializers),
+// and for a global `let`, which only its initializer binds. It has no roots
+// there, as the literal has none (§9.5). A local one's read in a nested
+// function's or a function value's body is the read-back rule's answer,
+// whatever can hold the pointee type at its own depth or outside. Anything
+// else is the temp sentinel.
 inline Prov TypeCheck::RefProvOf(VarDef *vd) {
+    if (BoundAnywhere(vd) && CurRealFrame().spec) return GlobalVarRead(vd);
     Prov p = vd->ref;
     if (!vd->refrootknown) {
         if (UnboundIsBottom()) {
@@ -353,7 +383,7 @@ inline Prov TypeCheck::RefProvOf(VarDef *vd) {
             return p;
         }
         auto optional = vd->type && vd->type->kind == TY_REF && vd->type->ref->optional;
-        auto seen = vd->isglobal ? !vd->isvar : vd->ownerspec == CurRealFrame().spec;
+        auto seen = (vd->isglobal && !vd->isvar) || vd->ownerspec == CurRealFrame().spec;
         if (optional && seen) return p;
         p.Set(temproot, false);
     }
