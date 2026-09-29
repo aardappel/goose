@@ -920,18 +920,22 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd,
             if (!HoldsPlainRef(t)) return;
             Line where;
             size_t hit = 0;
-            if (!HolderMayPointInto(v, vd, arrtype, LiveEventBase(v), &where, &hit) ||
+            TypeExpr *via = nullptr;
+            if (!HolderMayPointInto(v, vd, arrtype, LiveEventBase(v), &where, &hit, &via) ||
                 !UsedAfter(v))
                 return;
+            auto stored = !via ? "a reference into it"
+                          : via->kind == TY_SLICE
+                              ? "a reference to a slice that may point into it"
+                              : "a reference to what may hold a reference or slice into it";
             // A store later in the loop body than the shrink, which the
             // next iteration reaches (a pass before this one recorded it).
             if (CarriedEvent(hit))
-                Error(c, cat("cannot ", op, " ", what, " while ", v->name,
-                             " is in scope: a reference into it is stored there at ",
-                             Where(where), ", which the next iteration reaches (§5.1)"));
-            Error(c, cat("cannot ", op, " ", what, " while ", v->name,
-                         " is still used: a reference into it was stored there at ",
-                         Where(where), " (§5.1)"));
+                Error(c, cat("cannot ", op, " ", what, " while ", v->name, " is in scope: ",
+                             stored, " is stored there at ", Where(where),
+                             ", which the next iteration reaches (§5.1)"));
+            Error(c, cat("cannot ", op, " ", what, " while ", v->name, " is still used: ",
+                         stored, " was stored there at ", Where(where), " (§5.1)"));
         }
         Error(c, cat("cannot ", op, " ", what, " while ", v->name,
                      " is still used: it may hold a reference or slice into it (§5.1)"));
@@ -1465,20 +1469,30 @@ inline bool TypeCheck::GlobalReach::Covered(VarDef *src, VarDef *root, bool exac
 
 // Whether a store into `holder`, from event `from` on, may have put a
 // reference into `arr` there: one rooted at it exactly, or one bounded by
-// a root the array outlives whose pointee the array's elements can hold.
-// `arrtype` is the type of the array whose elements are in question, null
-// where it is not known (a parameter class), which lets any pointee in.
+// a root the array outlives whose pointee the array's elements can hold,
+// or one to a slot whose own references may point into it
+// (StoredSlotMayPointInto). `arrtype` is the type of the array whose
+// elements are in question, null where it is not known (a parameter class),
+// which lets any pointee in.
 inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype,
-                                          size_t from, Line *where, size_t *hit) {
+                                          size_t from, Line *where, size_t *hit,
+                                          TypeExpr **via) {
     set<VarDef *> seen;
-    return HolderMayPointInto(holder, arr, arrtype, from, where, seen, hit);
+    return HolderMayPointInto(holder, arr, arrtype, from, where, seen, hit, via);
 }
 
 inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype,
                                           size_t from, Line *where, set<VarDef *> &seen,
-                                          size_t *hitat) {
+                                          size_t *hitat, TypeExpr **via) {
     if (!seen.insert(holder).second) return false;
     auto contains = [&](TypeExpr *pt) { return !arrtype || CanContain(arrtype, pt); };
+    auto found = [&](size_t i, TypeExpr *through) {
+        auto &e = storeevents[i];
+        if (!e.src || through) *where = e.at;
+        if (hitat) *hitat = i;
+        if (via && through) *via = through;
+        return true;
+    };
     for (auto i = from; i < storeevents.size(); i++) {
         auto &e = storeevents[i];
         if (e.container != holder) continue;
@@ -1500,19 +1514,64 @@ inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr 
         } else if (e.src) {
             // A copy of another container's contents: whatever that one
             // holds, from its own first event on.
-            hit = HolderMayPointInto(e.src, arr, arrtype, 0, where, seen, nullptr);
+            hit = HolderMayPointInto(e.src, arr, arrtype, 0, where, seen, nullptr, via);
         } else if (e.exact) {
             hit = e.root == arr;
         } else if (e.root) {
             hit = Depth(arr) <= Depth(e.root) && (!e.pointee || contains(e.pointee));
         }
-        if (hit) {
-            if (!e.src) *where = e.at;
-            if (hitat) *hitat = i;
-            return true;
-        }
+        if (hit) return found(i, nullptr);
+    }
+    // What was stored may also be a reference to a slot holding references,
+    // a slice's or a holder's, rooted where the event says or bounded by the
+    // class it was read out of; a copy of another container's contents was
+    // followed above, and a global's leads only to globals.
+    for (auto i = from; i < storeevents.size(); i++) {
+        auto &e = storeevents[i];
+        if (e.container != holder || (e.src && (e.src->type || e.src->isglobal))) continue;
+        auto through = e.src ? StoredSlotMayPointInto(holder, e.pointee, e.src, false, arr,
+                                                      arrtype, where, seen)
+                             : StoredSlotMayPointInto(holder, e.pointee, e.root, e.exact, arr,
+                                                      arrtype, where, seen);
+        if (through) return found(i, through);
     }
     return false;
+}
+
+// Whether a reference stored into `holder`, rooted at r (exactly, or only
+// bounded by it), to a slot of type `pointee` -- null where the record keeps
+// none, as for a holder's copied contents, which may be any the holder's
+// type refers to -- leads into `arr` through what that slot holds: a
+// slice's slot, or a holder (§5.1). Returns the slot's type where it may. A
+// holder named exactly holds what its own stores put there. Any other slot
+// -- a slice variable, a parameter's class standing for the caller's slot,
+// whatever view of its slice the class has (VarDef::heldslice) -- is taken
+// to hold anything that outlives it, an array at its depth or outside it. A
+// global can hold a view of a global array only, and a shrink of one judges
+// every global (CheckGlobalShrinks).
+inline TypeExpr *TypeCheck::StoredSlotMayPointInto(VarDef *holder, TypeExpr *pointee, VarDef *r,
+                                                   bool exact, VarDef *arr, TypeExpr *arrtype,
+                                                   Line *where, set<VarDef *> &seen) {
+    if (!r || r->isglobal) return nullptr;
+    vector<TypeExpr *> slots;
+    if (pointee) slots.push_back(pointee);
+    else if (holder->type) RefPointees(holder->type, slots);
+    auto byteview = r->contentbyteview || (r->type && IsRefOrSlice(r->type) && r->ref.byteview);
+    TypeExpr *via = nullptr;
+    for (auto st : slots) {
+        if (via || !HoldsPlainRef(st)) continue;
+        vector<TypeExpr *> ps;
+        ReachedThroughRefs(st, ps);
+        for (auto pt : ps)
+            if (!arrtype || CanContain(arrtype, pt) ||
+                (byteview && IsU8(pt) && Viewable(arrtype)))
+                via = st;
+    }
+    if (!via) return nullptr;
+    auto holds = exact && r->type && !IsRefOrSlice(r->type)
+                     ? HolderMayPointInto(r, arr, arrtype, 0, where, seen, nullptr)
+                     : Depth(arr) <= Depth(r);
+    return holds ? via : nullptr;
 }
 
 // The pointee types of the plain references and slices a value of type t

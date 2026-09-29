@@ -280,8 +280,11 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
         auto slot = slotof(a.root);
         return (a.root && a.root->contentbyteview) || (slot && slot->ref.byteview);
     });
+    // A grow-only array's views may be stored anywhere, so they may lie as
+    // many references further on as the pointee's type leads.
     vector<TypeExpr *> pointees;
-    RefPointees(t->ref->sub, pointees);
+    if (growonly) ReachedThroughRefs(t->ref->sub, pointees);
+    else RefPointees(t->ref->sub, pointees);
     auto freed = false;
     for (auto pt : pointees)
         freed = freed || ShrinkMayFree(root, bound, growonly, pt, byteview && IsU8(pt));

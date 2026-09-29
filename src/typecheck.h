@@ -1797,11 +1797,17 @@ struct TypeCheck {
                      VarDef *src = nullptr, TypeExpr *reached = nullptr, bool bound = false,
                      bool slot = false);
     // Whether a holder may hold a reference into arr: `hit` takes the index
-    // of the event that says so.
+    // of the event that says so, and `via` the type of the slot a reference
+    // stored there refers to where it leads into arr only through what that
+    // slot holds.
     bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
-                            Line *where, size_t *hit = nullptr);
+                            Line *where, size_t *hit = nullptr, TypeExpr **via = nullptr);
     bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
-                            Line *where, set<VarDef *> &seen, size_t *hit);
+                            Line *where, set<VarDef *> &seen, size_t *hit,
+                            TypeExpr **via = nullptr);
+    TypeExpr *StoredSlotMayPointInto(VarDef *holder, TypeExpr *pointee, VarDef *r, bool exact,
+                                     VarDef *arr, TypeExpr *arrtype, Line *where,
+                                     set<VarDef *> &seen);
     void ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Node *at);
     void NoteHolderBinding(VarDef *d, const Val &v, Node *at);
 
