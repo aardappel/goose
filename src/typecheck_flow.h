@@ -370,12 +370,12 @@ inline Prov TypeCheck::GlobalVarRead(VarDef *vd) {
 // which a later pass revisits with the binding a rebind further down the
 // body gives it (CheckLoopPasses). Otherwise an optional bound only to null
 // so far holds null where every binding that can come before the read has
-// been checked: in the body declaring it (a global's is the initializers),
-// and for a global `let`, which only its initializer binds. It has no roots
-// there, as the literal has none (§9.5). A local one's read in a nested
-// function's or a function value's body is the read-back rule's answer,
-// whatever can hold the pointee type at its own depth or outside. Anything
-// else is the temp sentinel.
+// been checked: a local's anywhere, since a nested function's or a function
+// value's body is checked again for a call that finds the variable otherwise
+// (FnSpec::envreads) and feeds its own bindings to the loops and cycle
+// rounds around it (NoteFact); a global's in the initializers; and a global
+// `let`'s, which only its initializer binds. It has no roots there, as the
+// literal has none (§9.5). Anything else is the temp sentinel.
 inline Prov TypeCheck::RefProvOf(VarDef *vd) {
     if (BoundAnywhere(vd) && CurRealFrame().spec) return GlobalVarRead(vd);
     Prov p = vd->ref;
@@ -385,7 +385,7 @@ inline Prov TypeCheck::RefProvOf(VarDef *vd) {
             return p;
         }
         auto optional = vd->type && vd->type->kind == TY_REF && vd->type->ref->optional;
-        auto seen = (vd->isglobal && !vd->isvar) || vd->ownerspec == CurRealFrame().spec;
+        auto seen = !vd->isglobal || !vd->isvar || vd->ownerspec == CurRealFrame().spec;
         if (optional && seen) return p;
         p.Set(temproot, false);
     }

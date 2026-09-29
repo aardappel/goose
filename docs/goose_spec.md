@@ -2524,15 +2524,16 @@ are all there are, and a use there has their roots.
 
 An optional variable bound only to `null` so far (`let none: Node? =
 null;`, or `var best: Node? = null;` before anything binds it) holds null.
-Where every binding that can come before a use of it has been checked — in
-the body of the function declaring it, a loop's later bindings included
-(§9.2), in the global initializers for a global, and anywhere for a global
-`let`, which only its initializer binds — the use is a null, which has no
-root (§3.9). A global `var` used in a function's body is read as above, and
-a use of a local one in a nested function's or a function value's body
-takes the answer the read-back rule gives a local container, the innermost
-candidate for its pointee type at its own depth or outside, exact when there
-is exactly one.
+Where every binding that can come before a use of it has been checked, the
+use is a null, which has no root (§3.9). For a local that is wherever it is
+used: in the body of the function declaring it, a loop's later bindings
+included (§9.2), and in a nested function's or a function value's body,
+which is checked for how a call finds the variable (§7.5), so that a call
+after a binding has a check of its own, and whose own bindings reach a loop
+or a recursion around the call as the declaring body's do. For a global it
+is in the global initializers, and anywhere for a global `let`, which only
+its initializer binds. A global `var` used in a function's body is read as
+above.
 
 A relative reference `T&<w>` read out of `C` points within `C`'s own root
 array by construction (§3.9), so it takes `C`'s root and `C`'s exactness

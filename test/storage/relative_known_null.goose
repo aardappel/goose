@@ -2,9 +2,10 @@
 // slot is (§3.9), even where a reference of its type could point into either
 // of two global pools. The literal is one; so is a variable bound to nothing
 // but null so far, read where every earlier binding has been checked (§9.5),
-// a parameter given null, a call returning only null, default<T>(), and a
-// global `let` of null. In a merged value null names no array (§9.2), so it
-// leaves the other branch to say where the link points.
+// in a nested function or a block as well, a parameter given null, a call
+// returning only null, default<T>(), and a global `let` of null. In a merged
+// value null names no array (§9.2), so it leaves the other branch to say
+// where the link points.
 
 struct Cell { key: i64, next: Cell&<u16 in cells>? }
 var cells: Cell[>..] = [];
@@ -24,6 +25,8 @@ fn none_local() -> Cell&? {
 }
 
 fn slot_of(p: Cell&?, n: i64) -> Slot { return Slot { at: p, n: n }; }
+
+fn apply<F>() { F(); }
 
 fn show_cell(c: Cell&) {
     let nx = c.next;
@@ -75,6 +78,14 @@ fn main() {
     slots.push(Slot { at: tail, n: 40 });
     tail .= &spare[0];
     if tail { print("tail ", tail.key); }
+    // Null where a nested function or a block reads it; a call after the
+    // rebind into cells is checked for that (§7.5).
+    var parked: Cell&? = null;
+    fn park(n: i64) { slots.push(Slot { at: parked, n: n }); }
+    park(50);
+    apply() { slots.push(Slot { at: parked, n: 51 }); };
+    parked .= &cells[1];
+    park(52);
     for i in slots.len { show_slot(slots[i]); }
 
     var links: Link[>..] = [];

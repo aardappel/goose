@@ -16,6 +16,9 @@ slot 12: null
 slot 20: 6
 slot 30: null
 slot 40: null
+slot 50: null
+slot 51: null
+slot 52: 1
 link 0 -> 1
 link 1 -> null
 byte 0: null

@@ -906,14 +906,18 @@ behind" its parameter. A byte view read back takes the container's
 A reference or slice variable is bound at its first non-null binding
 (`BindRefProvenance`); before that it reads as `temproot` (`RefRootOf`). A
 null-only optional reads as null, with no roots, where every binding that
-can come before the read has been checked: in the frame declaring it
-(`ownerspec` is `CurRealFrame().spec`, null for a global and the
-initializers), and for a global `let`. A local one read in a nested
-function's or a function value's body answers the read-back rule for its
-own depth instead (`RefProvOf`). `CheckRefRebindRoot` implements §9.2's
-rebinding rule: the same roots keep everything (an inexact new value only
-weakens exactness); another root at the same depth joins the variable's
-alternatives; any other depth is an error.
+can come before the read has been checked: anywhere for a local, in the
+initializers for a global (`ownerspec` and `CurRealFrame().spec` both null
+there), and for a global `let`. A nested function's or a function value's
+body reading a local of a frame around it is checked again for a call that
+finds the variable otherwise (`envreads`, §3.1), a binding it makes reaches
+the loops and cycle rounds around the call (`NoteFact`), and a call reusing
+a check made for an earlier pass's or round's incarnation of the variable
+binds it as the check did (`ReplayEnvExits`). A global `var` read in a
+function's body is `GlobalVarRead` instead (below). `CheckRefRebindRoot`
+implements §9.2's rebinding rule: the same roots keep everything (an
+inexact new value only weakens exactness); another root at the same depth
+joins the variable's alternatives; any other depth is an error.
 
 **Global `var`s** (`BoundAnywhere`). A function checked after a body reading
 a global `var` of reference or slice type may bind it, and the body's check
