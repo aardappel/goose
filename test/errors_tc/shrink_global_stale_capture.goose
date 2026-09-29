@@ -1,8 +1,7 @@
-// error: cannot clear bs: global G may hold a reference into it
-// error: the roots on record may not say all a value points at, since s
-// put's body is checked once, at its first call, when s is still a literal;
-// the second call stores the view s holds by then, which the store record
-// does not show: every global that can hold a view into bs counts.
+// error: cannot clear bs: global G may hold a reference into it, stored at
+// put's first call stores s while it is still a literal; the second finds s
+// viewing an element of bs, so it is checked again, and the store record
+// shows that view stored into G (§5.1, §7.5).
 struct B { name: u8[..8] }
 struct H { s: const u8[:] }
 var bs: B[>..] = [];

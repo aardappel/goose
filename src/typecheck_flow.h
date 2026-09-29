@@ -314,23 +314,6 @@ inline void TypeCheck::BindProv(VarDef *vd, const Prov &p) {
     vd->ref.reached = nullptr;
     vd->refrootknown = true;
     NoteFact(vd);
-    NoteCapturedBinding(vd);
-}
-
-// A binding of vd, which a nested function's or a function value's body may
-// have read before (staleroots).
-inline void TypeCheck::NoteCapturedBinding(VarDef *vd) {
-    auto it = capturedroots.find(vd);
-    if (it == capturedroots.end()) return;
-    auto &seen = it->second;
-    auto grew = vd->ref.Any([&](const RootAlt &a) {
-        return seen.unknown || !seen.Any([&](const RootAlt &s) {
-            return s.root == a.root && (!s.exact || a.exact);
-        });
-    });
-    if (grew)
-        NoteStaleRoots(cat(vd->name, " (bound at ", Where(vd->line),
-                           ") gains a root after a nested function or a function value read it"));
 }
 
 // The first non-null binding of a reference variable fixes its provenance.
@@ -357,18 +340,12 @@ inline void TypeCheck::BindRefProvenance(VarDef *vd, const Val &v) {
 // null where every binding that can come before the read has been checked:
 // in the body declaring it, and for a global `let`, which only its
 // initializer binds. It has no roots there, as the literal has none (§9.5).
-// A global `var`, which any function may bind, or a local one read in a
-// nested function's or a function value's body, which later calls reuse,
-// may have been bound since: its read is the read-back rule's answer,
-// whatever can hold the pointee type at its own depth or outside. Anything
-// else is the temp sentinel. `target`: the variable is only named as what an
-// assignment or a rebind binds.
-inline Prov TypeCheck::RefProvOf(VarDef *vd, bool target) {
-    // A body checked in another frame than the variable's own reads it once
-    // for all the calls that reuse it (staleroots).
-    if (!target && !vd->isglobal && vd->refrootknown && vd->ownerspec &&
-        vd->ownerspec != CurRealFrame().spec)
-        capturedroots[vd].Add(vd->ref);
+// A global `var`, which any function may bind, may have been bound since:
+// its read is the read-back rule's answer, whatever can hold the pointee
+// type at its own depth or outside, and so is a local one's read in a
+// nested function's or a function value's body. Anything else is the temp
+// sentinel.
+inline Prov TypeCheck::RefProvOf(VarDef *vd) {
     Prov p = vd->ref;
     if (!vd->refrootknown) {
         if (UnboundIsBottom()) {
@@ -419,7 +396,8 @@ inline VarDef *TypeCheck::NewVar(string_view name, TypeExpr *type, Line l, bool 
 // outside them (free variables of nested fns / function values, §7.5), then
 // globals, in the namespace order of docs/design/namespaces.md. A nested
 // function called after the scope declaring one of those ended cannot name
-// it, which `use`, the node naming it, reports.
+// it, which `use`, the node naming it, reports; what the body finds of it
+// there is part of the body's key (NoteEnvRead).
 inline VarDef *TypeCheck::LookupVar(string_view name, string_view ns, Node *use) {
     auto top = (int)frames.size() - 1;
     for (auto i = (int)vars.size() - 1; i >= frames[top].varbase; i--)
@@ -436,7 +414,10 @@ inline VarDef *TypeCheck::LookupVar(string_view name, string_view ns, Node *use)
         found = v;
         return true;
     });
-    if (found) return found;
+    if (found) {
+        if (use) NoteEnvRead(found);
+        return found;
+    }
     if (use) DefaultScopeName(name, use, false);
     auto g = ast.LookupGlobal(name, ns);
     return g && !g->defs.empty() ? g->defs[0] : nullptr;
@@ -2290,8 +2271,8 @@ inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
         Error(at, cat("re-binding ", vd->name, " with a reference rooted at a different "
                       "scope depth is not supported; declare a new variable"));
     // Nor does a variable that points into no grow-shrink array start to:
-    // what read it before -- earlier in a loop, through a reference to it, in
-    // a nested function checked once -- may have stored it (§5.2).
+    // what read it before -- earlier in a loop, through a reference to it --
+    // may have stored it (§5.2).
     auto was = GrowShrinkTaint(vd->ref, vd->type);
     if (!was) {
         if (auto gs = GrowShrinkTaint(rv, vd->type))
@@ -2302,10 +2283,7 @@ inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
     // A rebind to other storage keeps the lifetime bound but means the
     // variable no longer names one array: a read inside a loop this rebind
     // is in sees both on the next pass (CheckLoopPasses).
-    if (vd->ref.Add(rv)) {
-        NoteFact(vd);
-        NoteCapturedBinding(vd);
-    }
+    if (vd->ref.Add(rv)) NoteFact(vd);
 }
 
 // A `let` binding or field is not assigned as a whole (§4.4).

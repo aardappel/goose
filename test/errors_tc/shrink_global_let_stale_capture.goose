@@ -1,9 +1,8 @@
-// error: cannot clear bs: global P may hold a reference into it
-// error: the roots on record may not say all a value points at, since s
-// keep's body is checked once, at its first call, when s still views arr;
-// its second call copies the view of bs's element s holds by then into out,
-// and pick returns that. P, bound for good to pick's result, views bs,
-// whatever the roots its initializer was given say (§5.1, §7.5).
+// error: cannot clear bs: global P may hold a reference into it, stored at
+// keep's first call finds s viewing arr; the second finds it viewing an
+// element of bs as well, so it is checked again, and the view it copies into
+// out may be of bs's element. pick returns out, and P, bound for good to
+// pick's result, may view bs (§5.1, §7.5).
 struct B { name: u8[..8] }
 var arr: u8[4] = [1, 2, 3, 4];
 var bs: B[>..] = [B { name: "a" }];

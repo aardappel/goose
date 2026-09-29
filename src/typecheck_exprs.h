@@ -46,7 +46,7 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         if (IsRefOrSlice(lv.type)) {
             Val v;
             v.type = LoadType(lv.type);
-            v.SetProv(RefProvOf(vd, true));
+            v.SetProv(RefProvOf(vd));
             RecordVal(n, v);
         } else {
             record(lv);

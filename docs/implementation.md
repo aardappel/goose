@@ -212,6 +212,7 @@ function and no existing specialization matches. `GetOrCreateSpec`
 | `litparams` | which parameters are literal parameters (§7.7) |
 | `fnvals` | the identity of each bound function value (the block node or named function, plus the environment it captures) |
 | `narrowedenv` | which optionals of the lexical environment were narrowed at the call (a nested function or block sees them narrowed) |
+| `envreads` | the state of each variable outside the body's activation that it names, or that a callee checked or reused for it named, as the body's check began with it: assigned or not, where it points (`ref`, `refrootknown`), what it holds (`contents`). A nested function's free variables are hidden parameters (§7.5): a later call finding one otherwise gets a body of its own. Filled by `NoteEnvRead` (`LookupVar`) and `NoteCalleeEnvReads` (after each call), shared among a cycle's members (`ShareCycleEnvReads`), compared by `EnvUnchanged` |
 | `needs` | the concrete specializations of every `return ... from` target enclosing the call must be the same on this path |
 
 `RootArg::exact` and `RootArg::concrete` are excluded from the key: they are
@@ -776,8 +777,7 @@ reference into a grow-shrink array, then,
 which is what lets the §5.2 shrink scan look at variables only (§3.10). Nor
 may a variable that points into none be rebound to a value that may
 (`CheckRefRebindRoot`): a store or return checked before the rebind -- later
-in a loop, through a reference taken to it, in a nested function whose
-checked body a later call reuses -- has already let it through.
+in a loop, through a reference taken to it -- has already let it through.
 
 An assignment through a reference (`PointeeAssign`) stores where the
 reference points, which for a reference read out of a field is where the
@@ -901,8 +901,8 @@ null-only optional reads as null, with no roots, where every binding that
 can come before the read has been checked: in the frame declaring it
 (`ownerspec` is `CurRealFrame().spec`), and for a global `let`. A global
 `var`, and a local one read in a nested function's or a function value's
-body, which later calls reuse, answer the read-back rule for their own
-depth instead (`RefProvOf`). `CheckRefRebindRoot` implements §9.2's
+body, answer the read-back rule for their own depth instead (`RefProvOf`).
+`CheckRefRebindRoot` implements §9.2's
 rebinding rule: the same roots keep everything (an inexact new value only
 weakens exactness); another root at the same depth joins the variable's
 alternatives; any other depth is an error.
@@ -1546,8 +1546,12 @@ body sees outside its own scopes. The frame `CheckSpecBody` pushes for a
 specialization keeps the site as `decl`, and `LookupVar` and
 `LookupLocalFnEnv` look there past the body's own scopes (`ForOuterVars`,
 `ForOuterFns`) instead of in the declaring frame as the call finds it, so a
-scope around the call that shadows or adds a name changes nothing and one
-specialization per `lexparent` serves every call. `GetOrCreateSpec` rejects
+scope around the call that shadows or adds a name changes nothing, and a
+specialization per `lexparent` serves every call that finds the variables
+the body names as its check found them (`envreads`, §3.1): a call where one
+of them points or holds references elsewhere, or is assigned where it was
+not or the other way round, gets a specialization of its own.
+`GetOrCreateSpec` rejects
 a call that reaches a nested function before its declaration is checked (a
 nested function declared earlier calling it), since the variables its site
 lists do not exist yet. Rechecking a declaration, loop or match binding
@@ -3012,10 +3016,8 @@ specification allows, and the shapes the C backend refuses outright:
   into it where the store record says it may (§3.10) -- but where the
   program writes a slice through a reference, which the record puts where
   the slice pointed rather than on the slot, leaving a slice variable's
-  binding as it was, or gives a variable a new root after a nested
-  function's or a function value's body, checked once for all its calls,
-  read it (`staleroots`), every other global whose type can hold one
-  counts: roots derived since may miss where a value points. The record
+  binding as it was (`staleroots`), every other global whose type can hold
+  one counts: roots derived since may miss where a value points. The record
   itself is coarse in two places: static data a call returns is an inexact
   root (`RetAltVal`), which may be any array its pointee fits, so a global
   given such a result counts wherever it could; and a global holder passed

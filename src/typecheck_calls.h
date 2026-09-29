@@ -1041,6 +1041,9 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     for (auto spec : sf->specs) {
         if (spec->lexparent != mi.env || spec->escaped != escaped) continue;
         if (!spec->inprogress && spec->narrowedenv != narrowedenv) continue;
+        // A cycle's member due for its next round is checked again below
+        // with what it reads then.
+        if (!spec->inprogress && !spec->stale && !EnvUnchanged(spec)) continue;
         if (!TypeArgsEq(spec->argtypes, mi.paramtypes)) continue;
         // A type argument no parameter type mentions (`size<u8>()`) shows
         // only in the bindings.
@@ -1110,6 +1113,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
             spec->stale = false;
             CheckSpecBodyOnce(spec, &argvals, callnode->line);
         }
+        NoteCalleeEnvReads(spec);
         return spec;
     }
     // The specializations in progress are the ones this call path is
@@ -1136,6 +1140,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
     sf->specs.push_back(spec);
     NoteLitArgs(spec, argvals, callnode);
     CheckSpecBody(spec, &argvals, callnode->line);
+    NoteCalleeEnvReads(spec);
     return spec;
 }
 
@@ -1166,6 +1171,81 @@ inline vector<VarDef *> TypeCheck::ExternalOptionals(
     addenv(env);
     if (fnvals) for (auto &fv : *fnvals) addenv(fv.second.env);
     return out;
+}
+
+inline EnvRead TypeCheck::EnvReadOf(VarDef *vd) {
+    return { vd, vd->assigned, vd->refrootknown, vd->ref, vd->contents, vd->contentbyteview };
+}
+
+// A body names vd outside its activation: a nested function one of its
+// lexical parents' variables, a function value's body one of the frame it
+// was written in. Named first, vd is as the body's check began with it, or
+// a callee named it first and took it over as that (NoteCalleeEnvReads);
+// what the body then does to it follows from that.
+inline void TypeCheck::NoteEnvRead(VarDef *vd) {
+    auto spec = CurRealFrame().spec;
+    if (!spec || vd->isglobal || !vd->ownerspec || vd->ownerspec == spec) return;
+    for (auto &r : spec->envreads) if (r.var == vd) return;
+    spec->envreads.push_back(EnvReadOf(vd));
+}
+
+// The caller's check stands on what the callee's did outside its activation,
+// where that lies outside the caller's activation too. The callee finds such
+// a variable as the caller's check began with it, unless the caller named it
+// before, which it then has on record.
+inline void TypeCheck::NoteCalleeEnvReads(FnSpec *callee) {
+    auto spec = CurRealFrame().spec;
+    if (!spec || spec == callee) return;
+    for (auto &r : callee->envreads) {
+        if (r.var->ownerspec == spec) continue;
+        auto known = false;
+        for (auto &s : spec->envreads) known = known || s.var == r.var;
+        if (!known) spec->envreads.push_back(r);
+    }
+}
+
+// Whether each variable the body read outside its activation is as it was
+// then, so its check stands for a call now: the same roots, the same
+// contents, assigned or not as it was.
+inline bool TypeCheck::EnvUnchanged(const FnSpec *spec) {
+    auto sameroots = [](const Roots &a, const Roots &b) {
+        if (a.alts.size() != b.alts.size() || a.unknown != b.unknown) return false;
+        for (auto &x : a.alts) {
+            auto found = false;
+            for (auto &y : b.alts)
+                found = found || (x.root == y.root && x.exact == y.exact && x.from == y.from &&
+                                  x.slotread == y.slotread);
+            if (!found) return false;
+        }
+        return true;
+    };
+    for (auto &r : spec->envreads) {
+        auto v = r.var;
+        if (v->assigned != r.assigned || v->refrootknown != r.refrootknown ||
+            !sameroots(v->ref, r.ref) || v->ref.writable != r.ref.writable ||
+            v->ref.reusable != r.ref.reusable || v->ref.byteview != r.ref.byteview ||
+            v->ref.reached != r.ref.reached || !sameroots(v->contents, r.contents) ||
+            v->contentbyteview != r.contentbyteview)
+            return false;
+    }
+    return true;
+}
+
+// A cycle's members read each other's records at their back edges, so each
+// member's check stands on what any of them read outside the cycle.
+inline void TypeCheck::ShareCycleEnvReads(FnSpec *head) {
+    auto &members = head->cyclemembers;
+    vector<EnvRead> all;
+    auto add = [](vector<EnvRead> &to, const EnvRead &r) {
+        for (auto &s : to) if (s.var == r.var) return;
+        to.push_back(r);
+    };
+    for (auto m : members)
+        for (auto &r : m->envreads)
+            if (find(members.begin(), members.end(), r.var->ownerspec) == members.end())
+                add(all, r);
+    for (auto m : members)
+        for (auto &r : all) add(m->envreads, r);
 }
 
 inline void TypeCheck::ApplyCalleeRebinds(FnSpec *spec) {
@@ -1643,6 +1723,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
         for (auto m : members) m->prev = nullptr;
         if (settled) break;
     }
+    if (spec->incycle && CycleHead(spec) == spec) ShareCycleEnvReads(spec);
 }
 
 // What a body records for its callers, cleared before a round checks it
@@ -1735,6 +1816,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     if (sf->isextern) { CheckExternSpec(spec); return; }
     spec->inprogress = true;
     spec->eventstart = storeevents.size();
+    spec->envreads.clear();
     // A cycle's rounds keep the parameters' identity, as they keep the
     // class roots: the records name them.
     auto oldparams = std::move(spec->params);

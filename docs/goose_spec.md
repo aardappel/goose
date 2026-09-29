@@ -1093,8 +1093,8 @@ again against the pairs the cycle records once the whole cycle is.
   the array is not stored either, nor a function's result where one of its
   returns may, nor a reference to a slice variable whose slice may. A
   variable that points into no grow-shrink array may not be rebound to a
-  value that may: what read it earlier — through a reference to it, or in
-  a nested function, whose bodies are checked once — may have stored it.
+  value that may: what read it earlier through a reference to it may have
+  stored it.
   The rule is about references that can point *into* the array:
   one merely rooted at a value that holds one, whose pointee type the
   array's elements cannot contain — a slice key read back out of a
@@ -1720,6 +1720,10 @@ Implementation model: free variables become hidden reference parameters of
 the nested function. A nested function's value never outlives the function
 declaring it (function values do not escape, §7.6), and a call where a
 variable it names is out of scope is rejected, so every call can pass them.
+As by its parameters, a nested function is specialized by how a call finds
+its free variables (§10.2): where each points, what it holds and whether it
+is assigned. So is a function calling it, and one calling a function value
+that names such a variable.
 When a nested function is passed as a static function value and inlined into
 its HOF — the expected, common case — the hidden parameters disappear
 entirely; un-inlined builds (debug) keep them as real arguments.
@@ -2444,11 +2448,10 @@ Where every binding that can come before a use of it has been checked — in
 the body of the function declaring it, a loop's later bindings included
 (§9.2), and anywhere for a global `let`, which only its initializer binds —
 the use is a null, which has no root (§3.9). A global `var` may have been
-bound by any function, and a local one after a nested function's or a
-function value's body read it, since that check serves the later calls
-too: a use there takes the answer the read-back rule gives a local
-container, the innermost candidate for its pointee type at its own depth or
-outside, exact when there is exactly one.
+bound by any function: a use of it takes the answer the read-back rule
+gives a local container, the innermost candidate for its pointee type at
+its own depth or outside, exact when there is exactly one, and so does a
+use of a local one in a nested function's or a function value's body.
 
 A relative reference `T&<w>` read out of `C` points within `C`'s own root
 array by construction (§3.9), so it takes `C`'s root and `C`'s exactness
@@ -2484,7 +2487,8 @@ values are always concrete. Recursion is the annotated exception (§7.8).
 
 Each function is compiled per unique (argument types, reference roots,
 writability provenances, destination/target stacks and request kinds,
-static fn values). Roots and stacks are compile-time constants inside each
+static fn values), a nested function's free variables counting as
+arguments (§7.5). Roots and stacks are compile-time constants inside each
 specialization — pushes through references compile to direct bumps of a
 known global — except where the compiler chooses a hidden stack argument to
 share one body across contexts (§4.3, §7.4).

@@ -935,7 +935,7 @@ struct TypeCheck {
     Prov SlotView(const Prov &p, TypeExpr *slice);
     void BindProv(VarDef *vd, const Prov &p);
     void BindRefProvenance(VarDef *vd, const Val &v);
-    Prov RefProvOf(VarDef *vd, bool target = false);
+    Prov RefProvOf(VarDef *vd);
     VarDef *ResetLocal(VarDef *previous);
     VarDef *NewVar(string_view name, TypeExpr *type, Line l, bool isvar,
                    VarDef *previous = nullptr);
@@ -1023,6 +1023,14 @@ struct TypeCheck {
     vector<VarDef *> ExternalOptionals(FnSpec *env,
                                        const vector<pair<string_view, FnValBind>> *fnvals = nullptr);
     void ApplyCalleeRebinds(FnSpec *spec);
+    // What a body reads of the variables outside its activation
+    // (FnSpec::envreads): noted where the body first names one, and where a
+    // callee it calls read one, and compared at every later call.
+    static EnvRead EnvReadOf(VarDef *vd);
+    void NoteEnvRead(VarDef *vd);
+    void NoteCalleeEnvReads(FnSpec *callee);
+    bool EnvUnchanged(const FnSpec *spec);
+    void ShareCycleEnvReads(FnSpec *head);
 
     // A loop body is checked as many times as it takes for what it feeds
     // back to its head to settle (CheckLoopPasses): the roots its rebinds
@@ -1526,17 +1534,13 @@ struct TypeCheck {
     // Where the roots on record may say less than where a value points: once
     // a slice slot is written through a reference, which puts the store on
     // record where the slice pointed rather than on the slot and leaves a
-    // slice variable's binding as it was, and once a variable gains a root
-    // after a nested function's or a function value's body -- checked once
-    // for every later call -- read it. The judgement of what the globals
+    // slice variable's binding as it was. The judgement of what the globals
     // hold (CheckGlobalShrinks) cannot rest on those roots then; `staleroots`
     // says where it first happened, empty where it never did.
     string staleroots;
-    map<VarDef *, Roots> capturedroots;   // What those bodies read of a variable.
     void NoteStaleRoots(const string &why) {
         if (staleroots.empty()) staleroots = why;
     }
-    void NoteCapturedBinding(VarDef *vd);
 
     // Every store of a reference, slice or holder value into a container
     // (ast.h StoreEvent), program-wide: a function value's body stores into

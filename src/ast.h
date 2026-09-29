@@ -1487,6 +1487,18 @@ struct LitFlow {
     int toparam = 0;
 };
 
+// What a body found of a variable outside its activation that it names (a
+// nested function's free variable, one a function value it calls names):
+// the variable's checking state (VarDef) as the body's check began with it.
+struct EnvRead {
+    VarDef *var = nullptr;
+    bool assigned = false;
+    bool refrootknown = false;
+    Prov ref;
+    Roots contents;
+    bool contentbyteview = false;
+};
+
 // One monomorphic specialization of a function: the unit of typechecking and
 // of later codegen. Owns nothing; body is a clone with annotations filled.
 struct FnSpec {
@@ -1510,6 +1522,12 @@ struct FnSpec {
     bool escaped = false;
     // Optional facts in the lexical environment at specialization entry.
     vector<VarDef *> narrowedenv;
+    // What the body read of the variables outside its activation that it, or
+    // a callee checked or reused for it, names: part of the key, since a
+    // body checked while one of them was unassigned, or pointed or held
+    // references elsewhere, says nothing of a call where it is otherwise
+    // (TypeCheck::EnvUnchanged). Filled while the body is checked.
+    vector<EnvRead> envreads;
     // External optional bindings this body (or a callee) may rebind.
     set<VarDef *> reboundoptionals;
     vector<int> litparams;         // Parameters that are literals (§7.7): part of the key.
