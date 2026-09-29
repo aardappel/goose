@@ -2333,9 +2333,10 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
 }
 
 // One root a result may have, as this call sees it: a parameter's class root
-// maps back to the argument's root -- at a back edge, which reuses the body
-// whatever it passes (§7.8), to every argument the class's parameters get,
-// merged; anything else is itself.
+// maps back to the argument's roots, as bounds where the class only bounds
+// the result (Bounds) -- at a back edge, which reuses the body whatever it
+// passes (§7.8), to every argument the class's parameters get, merged;
+// anything else is itself.
 inline Val TypeCheck::RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &argvals,
                                 TypeExpr *t, Node *at) {
     Val m;
@@ -2350,8 +2351,8 @@ inline Val TypeCheck::RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &a
         if (spec->params[p]->ref.Root() != alt.root) continue;
         auto &a = argvals[p];
         auto x = m;
-        x.TakeAlts(ClassArgRoots(spec->argtypes[p], a));
-        if (!alt.exact) x.Weaken();
+        auto ar = ClassArgRoots(spec->argtypes[p], a);
+        x.TakeAlts(alt.exact ? ar : Bounds(ar));
         for (auto &xa : x.alts) xa.slotread = alt.slotread && xa.slotread;
         // The argument itself, or a view of it, where the result is no load
         // out of a slot.

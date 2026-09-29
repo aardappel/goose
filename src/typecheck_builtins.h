@@ -129,9 +129,8 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             // Keep the copy node and its own storage root through every
             // argument check. Its contents still borrow from the source.
             if (!v.holderset && HoldsPlainRef(v.type)) {
-                v.contents = v;
-                v.contents.Weaken();
-                v.holderfrom = IsTemp(v.Root()) ? nullptr : v.Root();
+                v.contents = Bounds(v);
+                v.holderfrom = HolderSource(v);
                 v.holderset = true;
             }
             v.Set(TempRoot(), true);
@@ -523,11 +522,10 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             if (HoldsPlainRef(v.type)) {
                 // The element leaves as a temporary, holding what it held in
                 // the receiver, as an element read would (ContainerRead).
-                v.contents = rv;
-                v.contents.Weaken();
+                v.contents = Bounds(rv);
                 for (auto &a : v.contents.alts) a.slotread = true;
                 v.holderset = true;
-                v.holderfrom = rv.Root();
+                v.holderfrom = HolderSource(rv);
             }
             // What an adapting receiver (the element's ADT, say) constructs from.
             c->rettypes.push_back(v.type);
@@ -1013,13 +1011,12 @@ inline void TypeCheck::RecordStore(VarDef *container, const Roots &roots, bool b
         e.root = a.root;
         // A temporary was filled by whatever made it, not by stores on
         // record, so it is never the source: the value's own root bounds
-        // what it holds.
-        e.src = IsTemp(src) ? nullptr : src;
+        // what it holds (StoreSource).
+        e.src = StoreSource(src);
         // A reference read back out of a container inexactly (§9.5) points
         // at whatever was stored into that container: its stores are the
         // precise answer, where a bound would implicate every sibling.
-        if (!e.src && !a.exact && a.from && a.from != container && !IsTemp(a.from))
-            e.src = a.from;
+        if (!e.src && !a.exact && a.from != container) e.src = StoreSource(a.from);
         e.exact = a.exact;
         e.pointee = byteview ? nullptr : pointee;
         e.byteview = byteview;
@@ -1081,7 +1078,8 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
             container->contents.Add({ a.root, a.exact, a.from, a.slotread });
         AddStoreEvent(e);
     };
-    // A class root of the callee, as seen from here: the argument's roots.
+    // A class root of the callee, as seen from here: the argument's roots,
+    // each only a bound where the callee's was (Bounds).
     auto mapped = [&](VarDef *cr, bool exact) -> Roots {
         auto q = paramof(cr);
         Roots r;
@@ -1090,8 +1088,18 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
             return r;
         }
         r = argroots((size_t)q);
-        if (!exact) r.Weaken();
-        return r;
+        return exact ? r : Bounds(r);
+    };
+    // A class as the container a stored value was copied or read out of, as
+    // seen from here: the one container the argument names exactly, if it
+    // does (StoreSource). Anywhere else the value's mapped roots bound it: an
+    // argument that may point at any of several places, or only within one,
+    // or at a slice variable's slot, whose binding says what it holds.
+    auto source = [&](VarDef *src) {
+        auto q = paramof(src);
+        if (q < 0) return src;
+        auto r = argroots((size_t)q);
+        return r.Exact() ? StoreSource(r.alts[0].root) : nullptr;
     };
     NoteClassUses(spec, argvals);
     // The record read: none in a cycle's first round (RecordOf), whose back
@@ -1105,7 +1113,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
     for (auto i = rec->eventstart; i < end; i++) {
         auto e = storeevents[i];
         auto r = mapped(e.root, e.exact);
-        auto src = mapped(e.src, true).Root();
+        auto src = source(e.src);
         for (size_t k = 0; k < r.alts.size(); k++) {
             auto &a = r.alts[k];
             e.root = a.root;
@@ -1151,7 +1159,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         if (e.src == e.container) continue;
         auto p = paramof(e.container);
         auto r = mapped(e.root, e.exact);
-        auto src = mapped(e.src, true).Root();
+        auto src = source(e.src);
         if (p < 0) {
             // Not the callee's class but a lexical parent's, which a nested
             // function or a function value's body stored into: the storage
@@ -1235,7 +1243,7 @@ inline void TypeCheck::NoteGlobalBinding(VarDef *gd, const Roots &roots, bool by
         e.container = gd;
         e.root = a.root;
         e.exact = a.exact;
-        if (!a.exact && a.from && a.from != gd && !IsTemp(a.from)) e.src = a.from;
+        if (!a.exact && a.from != gd) e.src = StoreSource(a.from);
         e.pointee = byteview ? nullptr : pointee;
         e.byteview = byteview;
         e.at = at;

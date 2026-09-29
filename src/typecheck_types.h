@@ -830,6 +830,9 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
     auto of = PointeeOf(rt);
     for (auto &c : container.alts) {
         auto croot = c.root;
+        // The container the value is read out of, whose stores say what it
+        // holds: a root that only bounds the container is none.
+        auto from = c.exact ? croot : nullptr;
         // A holder whose contents point nowhere yet (Roots::unknown).
         if (croot && !croot->isglobal && croot->contents.Unknown()) {
             out.unknown = true;
@@ -838,10 +841,10 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
         if (byteview) {
             // A byte view can point at any typed storage: the container's
             // contents where they are known, else the container as a bound.
-            if (croot && !croot->isglobal && !croot->contents.None()) {
-                for (auto &a : croot->contents.alts) out.Add({ a.root, false, croot });
+            if (from && !croot->isglobal && !croot->contents.None()) {
+                for (auto &a : croot->contents.alts) out.Add({ a.root, false, from });
             } else {
-                out.Add({ croot, false, croot });
+                out.Add({ croot, false, from });
             }
             continue;
         }
@@ -857,10 +860,10 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
         }
         // Case 3: the container came from a caller, or its own root is only a
         // bound -- storage this function cannot enumerate may be behind it.
-        // Read out of it; its stores say what it holds.
+        // Read out of a caller's container, its stores say what it holds.
         auto global = croot->isglobal;
         if (!global && (!c.exact || croot->ownerspec != CurRealFrame().spec)) {
-            out.Add({ croot, false, croot });
+            out.Add({ croot, false, from });
             continue;
         }
         // Only globals outlive globals (§11.1), so a global container's
@@ -881,10 +884,10 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
             });
         if (cands.None()) {
             // Nothing can own the pointee: the container itself bounds it.
-            out.Add({ croot, false, croot });
+            out.Add({ croot, false, from });
             continue;
         }
-        for (auto &a : cands.alts) out.Add({ a.root, a.exact, croot });
+        for (auto &a : cands.alts) out.Add({ a.root, a.exact, from });
     }
     return out;
 }

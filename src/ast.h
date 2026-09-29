@@ -412,7 +412,8 @@ struct RootAlt {
     // its lifetime consult this (§9.2).
     bool exact = false;
     // For an inexact read-back: the container it came out of, whose stores
-    // say what it holds, and which a diagnostic names.
+    // say what it holds, and which a diagnostic names. Only a container
+    // named exactly: one a root only bounds is none.
     VarDef *from = nullptr;
     // Loaded out of a field, an element or a global, or points into what
     // such a slice points at (a location: lies there); of a holder's
@@ -617,7 +618,8 @@ struct Val : Prov {
     Roots contents;
     bool holderset = false;
     // The variable or container the holder value was read out of, whose
-    // store events describe its contents exactly.
+    // store events describe its contents exactly; none where it may lie in
+    // any of several, or anywhere a root only bounds (TypeCheck::HolderSource).
     VarDef *holderfrom = nullptr;
     FnValBind fnv;               // When type is TY_FN.
 };
@@ -1474,7 +1476,9 @@ struct StoreEvent {
     VarDef *container = nullptr;
     // What was stored: a reference to something rooted at `root`, or (a
     // copy of) the contents of container `src` -- a holder value read out
-    // of it, whose own events say what it points at.
+    // of it, whose own events say what it points at. Never a local reference
+    // or slice variable, which holds what its binding says, nor any but the
+    // one container the value came out of (TypeCheck::StoreSource).
     VarDef *root = nullptr;      // Null: static data.
     VarDef *src = nullptr;
     bool exact = false;

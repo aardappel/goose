@@ -318,14 +318,16 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
 // parameter's class does, a temporary's behind its root, and an inexact root
 // the slot. A slice variable's binding says whether its slice is a slot read
 // (RootAlt::slotread), and one a container holds is, lying in a field or an
-// element; what the reference was says nothing.
+// element; what the reference was says nothing. Nor is the container a
+// reference was read out of where its slice lies: only a slot the reference
+// names exactly is the container the slice is read out of (RootAlt::from).
 inline Prov TypeCheck::SlotView(const Prov &p, TypeExpr *slice) {
     Prov out = p;
     out.alts.clear();
     for (auto &a : p.alts) {
         auto r = a.root;
         if (!r || !a.exact) {
-            out.Add({ r, a.exact, a.from, false });
+            out.Add({ r, a.exact, nullptr, false });
             continue;
         }
         if (r->type && IsRefOrSlice(r->type)) {
@@ -989,10 +991,8 @@ inline Val TypeCheck::TempCopy(Val v) {
     if (!v.holderset && HoldsPlainRef(v.type)) {
         // What the source holds is bounded by its storage, as a container
         // read's is (ContainerRead).
-        auto src = v.Root();
-        v.contents = v;
-        v.contents.Weaken();
-        v.holderfrom = IsTemp(src) ? nullptr : src;
+        v.contents = Bounds(v);
+        v.holderfrom = HolderSource(v);
         v.holderset = true;
     }
     v.Set(TempRoot(), false);

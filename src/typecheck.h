@@ -1254,8 +1254,42 @@ struct TypeCheck {
     Val ContainerRead(LVal lv);
     void ResolveMemberLValue(LVal &lv, Dot *d);
     // Where a holder value's references point: what was derived for it, else
-    // the value's own roots (a temporary's outlive nothing).
-    static const Roots &ContentsOf(const Val &v) { return v.holderset ? v.contents : v; }
+    // for a reference or slice its own roots, and for a by-value holder what
+    // they bound (a temporary's outlive nothing).
+    static Roots ContentsOf(const Val &v) {
+        if (v.holderset) return v.contents;
+        return !v.type || IsRefOrSlice(v.type) ? v.AsRoots() : Bounds(v);
+    }
+    // Where something that `at`'s roots only bound points: what a holder
+    // lying there holds, everything stored there outliving the storage, or
+    // what a callee read out of storage its argument only bounds. How that
+    // storage was reached says nothing of where this came from, so no
+    // alternative keeps a container it was read out of (RootAlt::from).
+    static Roots Bounds(const Roots &at) {
+        Roots r = at;
+        for (auto &a : r.alts) {
+            a.exact = false;
+            a.from = nullptr;
+        }
+        return r;
+    }
+    // The container whose stores say what a holder lying where `at` points
+    // holds (Val::holderfrom): the one it lies in exactly, and none where it
+    // may lie in any of several, or anywhere a root only bounds.
+    static VarDef *HolderSource(const Roots &at) {
+        return at.Exact() && !IsTemp(at.alts[0].root) ? at.alts[0].root : nullptr;
+    }
+    // A container a store record may name as the source of what it stores
+    // (StoreEvent::src), one whose stores say what it holds. A temporary was
+    // filled by whatever made it, and a local reference or slice variable
+    // holds what its binding says, which no store records: for those the
+    // stored value's own roots bound it. A global one's bindings are on
+    // record (NoteGlobalBinding), and the judgements take those or its type.
+    static VarDef *StoreSource(VarDef *src) {
+        if (!src || IsTemp(src)) return nullptr;
+        if (src->type && IsRefOrSlice(src->type) && !src->isglobal) return nullptr;
+        return src;
+    }
     bool ShrinkMayFree(VarDef *root, TypeExpr *bound, bool growonly, TypeExpr *of,
                        bool byteview);
     void CheckHeldShrinks(Node *at, const string &op, VarDef *root,

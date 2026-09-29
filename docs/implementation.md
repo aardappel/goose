@@ -889,13 +889,24 @@ container, the stored alternative's root and exactness, the pointee type,
 the byte-view flag, the source container for a holder copy (a copy holds
 what its source holds; an inexact read-back's is the container it came out
 of, and one out of a parameter's class is bounded by the class), and the
-line. `RecordStore` also maintains the container's `contents`: the union of
-every root stored into it so far.
+line. A source is the one container the value came out of, whose stores
+say what it holds (`StoreSource`): a value that may lie in any of several
+places, or anywhere a root only bounds, names none (`HolderSource`, and
+`ReadBackRoot` and `SlotView` keep `RootAlt::from` only for a container
+named exactly), and neither does one out of a reference or slice variable,
+which holds what its binding says, not what a store put there. The stored
+alternative's own root bounds such a value. `RecordStore` also maintains
+the container's `contents`: the union of every root stored into it so far.
 A store into a caller's storage -- through a parameter's class root -- is
 kept on the specialization as a `classevent`, and `ApplyCalleeStores`
 replays it at every call site with the class mapped back to the root it
 stands for there (§3.4), what a holder's references point into for a holder
-parameter. A nested function's store through a parameter of the function
+parameter, and only as bounds, with no source of their own, where the class
+only bounded the value (`Bounds`). A class the callee named as a source
+maps to the one container the argument names exactly, if there is one: for
+a reference to a slice, the struct or array whose field or element is the
+slot, but not a slice variable, whose slot the callee's record bounds
+instead. A nested function's store through a parameter of the function
 it is declared in, or a function value's through one of the function it is
 written in, is into a class of that function's, not the callee's: the call
 keeps it on the caller's own record, its value's roots mapped, until it
@@ -926,6 +937,9 @@ case the variable itself is the bound; a container read's are the
 container's roots, inexact, slot reads (§3.10) out of a field or an element,
 as a `for` or `match` binder's copy's, a popped element's and what `append`
 copies out of a slice are, and out of a temporary the temporary's own; a
+holder loaded through a reference (`DecayRef`) is a container read of where
+the reference points, no slot read; a container read's source is the
+container only where the holder lies in exactly one (`Val::holderfrom`); a
 copy's (`TempCopy`) are its source's; a holder parameter is keyed by its
 contents' class like a reference, by whether that class is exactly the
 one array they point into, and by whether they are slot reads (§3.4), and
@@ -966,7 +980,8 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   into holds the same. The class root only bounds it (`RootCandidates`
   lists it in `bounds`);
 * a container reached through a caller's storage, or itself inexact: the
-  container's root, inexact;
+  container's root, inexact, read out of that container (`RootAlt::from`)
+  only where the root is the container itself;
 * a container that is a temporary (a literal, a call result or a copy,
   reached without crossing a reference, `LVal::intemp`): nothing in the
   temporary can own what it holds, which came from the literal's
@@ -3305,9 +3320,11 @@ specification allows, and the shapes the C backend refuses outright:
   with `fn take(p: u8[:]&, n: i64) -> u8[:]`) cannot be returned past the
   function owning `cur`, and a callee shrinking an array at the slot's depth
   or outside while such a slice is still used is an error in the callee,
-  whatever its call sites pass. A class of its own for the slice a slot
+  whatever its call sites pass. Where the slot is a slice variable's own,
+  what the callee stores of that slice is bounded by the variable too, not
+  traced to its binding (§3.5). A class of its own for the slice a slot
   holds, mapped at a call to that slice's roots and to what the callee
-  stores through the reference, would lift both.
+  stores through the reference, would lift all three.
 * A parameter is a slot read (§3.10) only where its argument has a root, or
   a holder's contents one, that holds a grow-shrink array (§3.4): the key
   records the bit only there, so that a function given no such argument is
@@ -3319,8 +3336,8 @@ specification allows, and the shapes the C backend refuses outright:
   parameter's class only where the argument for it has the bit too
   (`RetAltVal`), so a holder read out of a parameter's array and returned,
   `fn f(rs: Row[>..<]&) -> Row { rs[0] }`, is no slot read at the call.
-* A holder loaded whole through a reference (`DecayRef`) has the
-  reference's roots for its contents, which may name the grow-shrink array
+* A holder loaded whole through a reference (`DecayRef`) has its contents
+  bounded by the reference's roots, which may name the grow-shrink array
   whose element the reference points at: stored, it fails the store rule as
   a reference into that array would, though what it holds lies in the
   element's fields. A field of it read through the reference, or a match

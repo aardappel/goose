@@ -232,12 +232,11 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
         if (lv.intemp) {
             v.contents = lv.contents.roots;
         } else {
-            v.contents = lv;
-            v.contents.Weaken();
+            v.contents = Bounds(lv);
             for (auto &a : v.contents.alts) a.slotread = lv.isslot;
         }
         v.holderset = true;
-        v.holderfrom = lv.intemp ? lv.contents.from : lv.Root();
+        v.holderfrom = lv.intemp ? lv.contents.from : HolderSource(lv);
     }
     v.lvalue = v.type->kind != TY_REF;
     return v;
@@ -609,7 +608,9 @@ inline Val TypeCheck::DecayRef(Val v) {
     r.type = LoadType(v.type->ref->sub);
     // A slice is the one its slot holds; a compound pointee value keeps the
     // container info, harmless, though crossing the reference drops what a
-    // slot read says (RootAlt::slotread).
+    // slot read says (RootAlt::slotread). A holder holds what was stored
+    // where the reference points, as one read out of a container does
+    // (ContainerRead).
     if (r.type->kind == TY_SLICE) {
         auto sv = SlotView(v, r.type);
         r.TakeAlts(sv);
@@ -619,6 +620,11 @@ inline Val TypeCheck::DecayRef(Val v) {
         r.TakeAlts(v);
         r.ClearSlotRead();
         r.byteview = v.byteview && HoldsPlainRef(r.type);
+        if (HoldsPlainRef(r.type)) {
+            r.contents = Bounds(r);
+            r.holderset = true;
+            r.holderfrom = HolderSource(r);
+        }
     }
     return r;
 }
