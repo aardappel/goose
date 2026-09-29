@@ -724,7 +724,7 @@ inline string CodeGen::GenRefVal(Node *child, Line ln) {
     }
     auto lv = GenLoc(child);
     if (lv.t->kind == TY_REF) {
-        if (lv.t->ref->lenstorage >= 0) return LoadLoc(lv, nullptr, ln);
+        if (lv.t->ref->lenstorage >= 0) return LoadLoc(lv, lv.t, ln);
         return lv.s;
     }
     if (IsResz(lv.t)) {
