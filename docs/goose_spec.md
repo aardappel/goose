@@ -2485,16 +2485,16 @@ with no annotation needed:
 
 * Read-only: a string literal (`const u8[:]`, §3.7); `&x` and `x[..]` of a
   `const` value, of a field of one, or of a by-value `for`/`match` binding
-  (§6.5) — these are `const T&` and `const T[:]`; a view into a temporary
-  (§9.2), which a write would change and nothing else; a `bytes_of` view
-  (§12); and whatever is read out of a slot declared `const`. A slice
-  loaded through a reference to a slice is the one in the slot the
-  reference names, writable only where both are, so a reference to a slice
-  variable holding a read-only slice is read-only too, however it is made
-  (`&s`, or `s` bound by reference, §4.1). A `let` binding *of* a
-  reference or slice names the reference: it does not rebind, and writes
-  through it follow the value's own constness (`let r .= xs[i]; r = 0;`
-  writes an element of a `var` array, §3.8).
+  (§6.5), and such an `x` bound by reference (§4.1) — these are `const T&`
+  and `const T[:]`; a view into a temporary (§9.2), which a write would
+  change and nothing else; a `bytes_of` view (§12); and whatever is read out
+  of a slot declared `const`. A slice loaded through a reference to a slice
+  is the one in the slot the reference names, writable only where both are,
+  so a reference to a slice variable holding a read-only slice is read-only
+  too, however it is made (`&s`, or `s` bound by reference, §4.1). A `let`
+  binding *of* a reference or slice names the reference: it does not
+  rebind, and writes through it follow the value's own constness
+  (`let r .= xs[i]; r = 0;` writes an element of a `var` array, §3.8).
 * Writable: everything else — `&x` and `x[..]` of a `var` or of a plain
   `let`, and whatever is read out of a slot that is not `const`.
 * **Parameters and results are generic over constness.** A parameter

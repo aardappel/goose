@@ -578,7 +578,8 @@ struct Val : Prov {
     bool lvalue = false;         // Denotes storage (a variable, field or element), not a temporary.
     // A slice lvalue: where its slot lies -- the variable, or the storage
     // the field or element is in -- which a reference to it is rooted at
-    // (TypeCheck::AutoRef), as `&` of the slot is (§3.8).
+    // (TypeCheck::AutoRef), as `&` of the slot is (§3.8), and as writable
+    // as that is: as the path to the slot and a variable's binding allow.
     Prov slot;
     bool hasslot = false;
     // A reference to a slice passed to a `T[:]&` parameter: the slice its

@@ -91,6 +91,8 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
             v.lvalue = t->kind == TY_SLICE;   // A slice variable is storage; a reference is the pointee's path.
             if (v.lvalue) {
                 v.slot.Set(vd, true);
+                // As writable as `&` of the variable is (CheckLValue, CheckRefOf).
+                v.slot.writable = v.writable && !vd->copybind && !(vd->type && vd->type->cq);
                 v.hasslot = true;
             }
         } else if (vd->unsized) {

@@ -1153,7 +1153,14 @@ say, so a writable reference is only ever made to a slot whose slice is
 writable or of a `const` type: `&x` of a slice variable is no more writable
 than its binding (`CheckRefOf`), as binding the variable by reference is
 (`AutoRef`), and a field's or an element's slice is writable unless the
-slot's type says `const`.
+slot's type says `const`. What a store through the reference writes is the
+slot, so the reference is no more writable than `&` of the slot either: a
+slice lvalue bound by reference (`SlotRoots`, for `AutoRef`, `FitsAt` and
+`RefSliceArgs`) is the reference `&x` of it makes (`Val::slot`), read-only
+through a by-value binder, a `const` value, a `const T&` or a call's result,
+and a variable's no more writable than its binding. A slice of a `const`
+type stays read-only through a writable reference, so one of those may
+re-point a field of that type.
 
 ### 3.9 Flow state: definite assignment and narrowing
 
@@ -3486,10 +3493,15 @@ specification allows, and the shapes the C backend refuses outright:
   slice the slot holds (§3.8), so one to a slice variable holding a read-only
   slice cannot re-point the variable either: `skip(&cur)` advancing a cursor
   `var cur = text` over a parameter given a literal is rejected, as
-  `skip(cur)` is. A view keys its slice's writability apart already (§3.4):
-  a writable reference beside a read-only view, with a store through the
-  reference allowed to put a read-only slice where the view is read-only,
-  would lift that where the parameter has one.
+  `skip(cur)` is. Nor can one to a slot that is not written -- a by-value
+  binder, a field of a `const` value or of one reached through a `const T&`
+  -- write the elements of the slice there, which a copy of the slice can:
+  `poke(c.f)` writing `p[0]` is rejected, as `poke(&c.f)` is, and
+  `let t = c.f; t[0] = 65;` is not. A view keys its slice's writability
+  apart already (§3.4): a writable reference beside a read-only view, with a
+  store through the reference allowed to put a read-only slice where the
+  view is read-only, would lift the first where the parameter has one, and a
+  view as writable as the slice, whatever the reference, the second.
 * The growth-during-construction rule (§3.10) takes a parameter class to be
   possibly any global or captured local a callee grows, two classes of one
   activation to be one array unless every call site keeps both concrete and

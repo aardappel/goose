@@ -660,12 +660,17 @@ inline Node *TypeCheck::AutoRef(Node *n, Val &v, bool writes) {
 
 // A slice lvalue bound by reference: the reference names the slot, so it is
 // rooted where the slot lies, as `&` of it is (§3.8), not where the slice
-// points (Val::slot).
+// points (Val::slot), and is as writable as `&` of it: a callee re-points no
+// slot of a by-value binder, of a `const` value or of one reached through a
+// `const T&` (§9.5). A field's or an element's slice is writable unless its
+// type says `const`, which a load through the reference sees (SlotView), so
+// there the path alone says.
 inline void TypeCheck::SlotRoots(Val &v) {
     if (!v.hasslot || v.type->kind != TY_SLICE) return;
     v.held = v;
     v.hasheld = true;
     v.TakeAlts(v.slot);
+    v.writable = v.slot.writable;
     v.hasslot = false;
     for (auto &a : v.alts)
         if (auto sv = SliceVarOf(a.root)) sv->slotref = true;
