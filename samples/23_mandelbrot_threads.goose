@@ -38,8 +38,8 @@ fn render_row(y: i64) -> u8[>..] {
     let ramp = " .:-=+*#%@";
     var cells: u8[>..] = [];
     for x in W {
-        let cx = -2.2 + 3.0 * x as f64 / W as f64;
-        let cy = -1.2 + 2.4 * y as f64 / H as f64;
+        let cx = -2.2 + 3.0 * x as f64 / W;
+        let cy = -1.2 + 2.4 * y as f64 / H;
         let n = iterate(cx, cy);
         cells.push(if n == MAXITER { '@' } else { ramp[(n * 3) % (ramp.len - 1)] });
     }

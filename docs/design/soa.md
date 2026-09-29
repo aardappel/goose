@@ -17,7 +17,7 @@ fn spawn(ps: Particle[||..]&, n: i64) {
     for i in n {
         let x = i as f32;
         ps.push(Particle { pos: float3 { x, 1.0, 0.0 },
-                           vel: float3 { 0.0, (i % 4) as f32, 1.0 }, age: 0 });
+                           vel: float3 { 0.0, i % 4, 1.0 }, age: 0 });
     }
 }
 

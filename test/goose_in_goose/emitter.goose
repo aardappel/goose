@@ -90,8 +90,8 @@ fn c_literal(ctx: Compiler&, s: const u8[:]) -> const u8[:] {
     result.push('"');
     for c in s {
         // Three octal digits cannot consume following hexadecimal digits.
-        result.push('\\'); result.push(('0' + (c >> 6)) as u8);
-        result.push(('0' + ((c >> 3) & 7)) as u8); result.push(('0' + (c & 7)) as u8);
+        result.push('\\'); result.push('0' + (c >> 6));
+        result.push('0' + ((c >> 3) & 7)); result.push('0' + (c & 7));
     }
     result.push('"'); return save_text(ctx, result);
 }

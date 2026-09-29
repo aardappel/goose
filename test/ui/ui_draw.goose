@@ -144,13 +144,13 @@ fn main() {
         var in_range = true;
         var textures: u8[>..] = [];
         for d in draws {
-            total += d.elem_count as i64;
+            total += d.elem_count;
             let t = if d.texture == null_tex { str("null") } else { str(d.texture) };
             if textures.len == 0 || !textures.ends_with(t) {
                 textures.append(str(if textures.len > 0 { " " } else { "" }, t));
             }
         }
-        for n in idx { if n as i64 >= verts.len { in_range = false; } }
+        for n in idx { if n >= verts.len { in_range = false; } }
         // The first vertex is the window background's, which global alpha
         // fades (images and multi-color rectangles it leaves as they are).
         print(names[i], ": result ", result, ", ", verts.len, " vertices, ", idx.len,

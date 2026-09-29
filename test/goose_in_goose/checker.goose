@@ -179,7 +179,7 @@ fn integer_fits(ctx: Compiler&, bits: u64, ty: i64) -> bool {
     }
     let signed = bits as! i64;
     if t.bytes == 8 { return true; }
-    let bound = (1 as i64) << (t.bytes * 8 - 1);
+    let bound = 1 << (t.bytes * 8 - 1);
     return signed >= -bound && signed < bound;
 }
 fn fits(ctx: Compiler&, v: Value, target: i64) -> bool {

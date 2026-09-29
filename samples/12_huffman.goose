@@ -72,7 +72,7 @@ fn main() {
         line.push('\'');
         if c == ' ' { line.append("space"); } else { line.push(c); }
         format(line, "' x", freq[c], ": ");
-        format_uint(line, codes[c].bits as u64, 2, codes[c].len, '0');
+        format_uint(line, codes[c].bits, 2, codes[c].len, '0');
         print(line);
     }
 

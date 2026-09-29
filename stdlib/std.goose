@@ -101,9 +101,9 @@ fn hash(x: i8) -> u64 { hash_mix(x as! u64) }
 fn hash(x: i16) -> u64 { hash_mix(x as! u64) }
 fn hash(x: i32) -> u64 { hash_mix(x as! u64) }
 fn hash(x: i64) -> u64 { hash_mix(x as! u64) }
-fn hash(x: u8) -> u64 { hash_mix(x as u64) }
-fn hash(x: u16) -> u64 { hash_mix(x as u64) }
-fn hash(x: u32) -> u64 { hash_mix(x as u64) }
+fn hash(x: u8) -> u64 { hash_mix(x) }
+fn hash(x: u16) -> u64 { hash_mix(x) }
+fn hash(x: u32) -> u64 { hash_mix(x) }
 fn hash(x: u64) -> u64 { hash_mix(x) }
 fn hash(x: bool) -> u64 { if x { return hash_mix(1); } return hash_mix(2); }
 fn hash(x: f32) -> u64 { hash_mix((x * 65536.0) as! u64) }
@@ -111,7 +111,7 @@ fn hash(x: f64) -> u64 { hash_mix((x * 65536.0) as! u64) }
 
 fn hash(s: u8[:]) -> u64 {
     var h: u64 = 14695981039346656037;
-    for b in s { h = (h ^ (b as u64)) * 1099511628211; }
+    for b in s { h = (h ^ b) * 1099511628211; }
     return h;
 }
 
@@ -709,7 +709,7 @@ fn parse_flt(s: u8[:]) -> f64, bool {
     var exp10 = 0;
     var digits = 0;
     while i < s.len && s[i] >= '0' && s[i] <= '9' {
-        if mdigits < 19 { mant = mant * 10 + (s[i] - '0') as u64; mdigits += 1; }
+        if mdigits < 19 { mant = mant * 10 + (s[i] - '0'); mdigits += 1; }
         else { exp10 += 1; }
         digits += 1;
         i += 1;
@@ -717,7 +717,7 @@ fn parse_flt(s: u8[:]) -> f64, bool {
     if i < s.len && s[i] == '.' {
         i += 1;
         while i < s.len && s[i] >= '0' && s[i] <= '9' {
-            if mdigits < 19 { mant = mant * 10 + (s[i] - '0') as u64; mdigits += 1; exp10 -= 1; }
+            if mdigits < 19 { mant = mant * 10 + (s[i] - '0'); mdigits += 1; exp10 -= 1; }
             digits += 1;
             i += 1;
         }
@@ -733,7 +733,7 @@ fn parse_flt(s: u8[:]) -> f64, bool {
         var e = 0;
         var edigits = 0;
         while i < s.len && s[i] >= '0' && s[i] <= '9' {
-            if e < 100000 { e = e * 10 + ((s[i] - '0') as i64); }
+            if e < 100000 { e = e * 10 + (s[i] - '0'); }
             edigits += 1;
             i += 1;
         }

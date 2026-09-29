@@ -42,7 +42,7 @@ fn main() {
     var t = Text { font: 3, size: [1, 2], chars: [] };
     t.chars = letters(t.font);
     print(t.chars);
-    t.chars = letters(t.size[1] as i64);
+    t.chars = letters(t.size[1]);
     print(t.chars);
     var b = Bag { tag: 5, items: [1] };
     refill(b);

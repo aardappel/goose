@@ -128,7 +128,7 @@ fn main() {
         gfx::begin_pass(slice_target, gfx::Texture { 0 }, float4 { 0.0, 0.0, 0.0, 0.0 });
         gfx::bind(slicer);
         gfx::bind_texture(gfx::FRAGMENT, 0, volume, nearest);
-        gfx::uniforms(gfx::FRAGMENT, 0, Slice { w: (z as f32 + 0.5) / 2.0 });
+        gfx::uniforms(gfx::FRAGMENT, 0, Slice { w: (z + 0.5) / 2.0 });
         gfx::draw(3);
         gfx::end_pass();
         print("3d: slice ", z, " sampled as written ",

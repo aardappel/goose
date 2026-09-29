@@ -1916,16 +1916,16 @@ fn render(c: Context, target: gfx::Texture, config: ConvertConfig) {
     var first = 0;
     for d in draws {
         // Scissors in whole pixels, inside the target.
-        let x0 = clamp(floor(d.clip_rect.x) as! i64, 0, info.width as i64);
-        let y0 = clamp(floor(d.clip_rect.y) as! i64, 0, info.height as i64);
-        let x1 = clamp(ceil(d.clip_rect.x + d.clip_rect.w) as! i64, 0, info.width as i64);
-        let y1 = clamp(ceil(d.clip_rect.y + d.clip_rect.h) as! i64, 0, info.height as i64);
+        let x0 = clamp(floor(d.clip_rect.x) as! i64, 0, info.width);
+        let y0 = clamp(floor(d.clip_rect.y) as! i64, 0, info.height);
+        let x1 = clamp(ceil(d.clip_rect.x + d.clip_rect.w) as! i64, 0, info.width);
+        let y1 = clamp(ceil(d.clip_rect.y + d.clip_rect.h) as! i64, 0, info.height);
         if x1 > x0 && y1 > y0 {
             gfx::scissor(x0, y0, x1 - x0, y1 - y0);
             gfx::bind_texture(gfx::FRAGMENT, 0, gfx::Texture { d.texture }, renderer.sampler);
-            gfx::draw_indexed(d.elem_count as i64, 1, first, 0, 0);
+            gfx::draw_indexed(d.elem_count, 1, first, 0, 0);
         }
-        first += d.elem_count as i64;
+        first += d.elem_count;
     }
     gfx::end_pass();
 }

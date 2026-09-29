@@ -37,7 +37,7 @@ recursive fn sum_tail(s: const i64[:], n: i64) -> i64 {
 recursive fn letters(s: const u8[:], n: i64) -> i64 {
     if n == 0 { return 0; }
     let k = churn();
-    s.len * 10 + s[0] as i64 - 't' as i64 + k + letters(label(n), n - 1)
+    s.len * 10 + s[0] - 't' + k + letters(label(n), n - 1)
 }
 
 var seen: i64[>..] = [];

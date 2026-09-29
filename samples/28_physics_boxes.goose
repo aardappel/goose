@@ -93,8 +93,8 @@ fn flt(r: rng&, lo: f32, hi: f32) -> f32 { lo + (hi - lo) * r.rand_flt() as f32 
 fn raindrop(n: i64, r: rng&) -> float3 {
     let c = n * 263 % (CELLS * CELLS);
     let middle = (CELLS - 1) as f32 * 0.5;
-    float3 { ((c % CELLS) as f32 - middle) * CELL + flt(r, -0.15, 0.15), flt(r, 24.0, 25.0),
-             ((c / CELLS) as f32 - middle) * CELL + flt(r, -0.15, 0.15) }
+    float3 { (c % CELLS - middle) * CELL + flt(r, -0.15, 0.15), flt(r, 24.0, 25.0),
+             (c / CELLS - middle) * CELL + flt(r, -0.15, 0.15) }
 }
 
 // --- shaders -----------------------------------------------------------------
@@ -254,8 +254,8 @@ fn main() {
         let rows = 8;
         for row in rows {
             for k in rows - row {
-                let at = center + float3 { (k as f32 - (rows - row - 1) as f32 * 0.5) * 1.02,
-                                           0.5 + row as f32 * 1.0, 0.0 };
+                let at = center + float3 { (k - (rows - row - 1) * 0.5) * 1.02,
+                                           0.5 + row * 1.0, 0.0 };
                 let b = physics::create_body(world, physics::BodyDef { body_type: physics::DYNAMIC,
                                                                        position: at });
                 physics::create_box_shape(b, physics::ShapeDef {}, f3(0.5));
@@ -342,7 +342,7 @@ fn main() {
                                                 flt(r, 0.0, 3.14));
             let velocity = float3 { flt(r, -0.3, 0.3), flt(r, -5.0, -3.0), flt(r, -0.3, 0.3) };
             let spin = float3 { flt(r, -3.0, 3.0), flt(r, -3.0, 3.0), flt(r, -3.0, 3.0) };
-            let h = dropped as f32 * 0.0007 + flt(r, 0.0, 0.05);
+            let h = dropped * 0.0007 + flt(r, 0.0, 0.05);
             let look = Look { half: float3 { flt(r, 0.18, 0.45), flt(r, 0.18, 0.45),
                                              flt(r, 0.18, 0.45) },
                               color: hue(h - floor(h)) };
@@ -395,7 +395,7 @@ fn main() {
         gfx::update_buffer(inst_vb, bytes_of(instances));
 
         let size = gfx::screen_size();
-        let aspect = size.x as f32 / size.y as f32;
+        let aspect = size.x as f32 / size.y;
         let eye = float3 { distance * cos(pitch) * cos(yaw), distance * sin(pitch),
                            distance * cos(pitch) * sin(yaw) };
         let scene = Scene {

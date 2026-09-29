@@ -120,7 +120,7 @@ fn main() {
           drawn(ctx, ui::COMMAND_LINE, bar), " line segments");
     var level: u8[>..] = [];
     for c in ui::commands(ctx) {
-        if c.kind == ui::COMMAND_LINE && c.points[0].y as f32 >= flat_at.y {
+        if c.kind == ui::COMMAND_LINE && c.points[0].y >= flat_at.y {
             level.append(str(" ", c.points[0].y == c.points[1].y));
         }
     }

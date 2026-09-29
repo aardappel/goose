@@ -32,7 +32,7 @@ fn describe(e: gfx::Event) -> u8[>..] {
         if (e.mods & gfx::MOD_CTRL) != 0 { mods.append(" ctrl"); }
         if (e.mods & gfx::MOD_ALT) != 0 { mods.append(" alt"); }
         if (e.mods & gfx::MOD_GUI) != 0 { mods.append(" gui"); }
-        return str("key ", name_of(e.scancode as i64), if e.down { " down" } else { " up" },
+        return str("key ", name_of(e.scancode), if e.down { " down" } else { " up" },
                    ", keycode ", e.keycode, if mods.len > 0 { str(", with", mods) } else { str("") },
                    if e.repeat { ", repeated" } else { "" });
     }

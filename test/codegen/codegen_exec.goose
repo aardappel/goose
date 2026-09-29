@@ -456,7 +456,7 @@ fn casts() {
     print((0 - 1) as! u64 >> 60);        // 15
     print((0 - 2) as! u64 / 3);          // 6148914691236517204
     print((0 - 1) as! u64 % 10);         // 5
-    print(1 as u64 < (0 - 1) as! u64);   // true
+    print(1 < (0 - 1) as! u64);   // true
     print(hardware_threads() >= 1);      // true
 }
 

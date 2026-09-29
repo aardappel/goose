@@ -281,7 +281,7 @@ fn main() {
     var selected = false;
     var click_at = int2 { 60, 17 };
     for frame in 5 {
-        input(ctx, click_at.x as i64, click_at.y as i64, frame == 1 || frame == 3);
+        input(ctx, click_at.x, click_at.y, frame == 1 || frame == 3);
         ui::begin(ctx, "Trees", ui::rect(0, 0, 300, 500), ui::WINDOW_NO_SCROLLBAR);
         let tab_open = ui::tree_push(ctx, ui::TREE_TAB, "Tab", ui::MAXIMIZED);
         if tab_open {

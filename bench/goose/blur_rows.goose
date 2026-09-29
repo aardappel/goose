@@ -20,9 +20,9 @@ fn blur(src: u8[>..]&, dst: u8[>..]&) {
         let d = dst[lo + W..lo + 2 * W];
         assert(a.len == W && b.len == W && c.len == W && d.len == W);
         for x in 1..W - 1 {
-            let s = a[x - 1] as u16 + a[x] as u16 * 2 + a[x + 1] as u16
+            let s = a[x - 1] + a[x] as u16 * 2 + a[x + 1]
                   + b[x - 1] as u16 * 2 + b[x] as u16 * 4 + b[x + 1] as u16 * 2
-                  + c[x - 1] as u16 + c[x] as u16 * 2 + c[x + 1] as u16;
+                  + c[x - 1] + c[x] as u16 * 2 + c[x + 1];
             d[x] = (s >> 4) as! u8;
         }
     }

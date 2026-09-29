@@ -83,7 +83,7 @@ fn spin(s: Shape) -> i64 {
 }
 fn sum(xs: u8[:]) -> i64 {
     var n = 0;
-    for x in xs { n += x as i64; }
+    for x in xs { n += x; }
     return n;
 }
 

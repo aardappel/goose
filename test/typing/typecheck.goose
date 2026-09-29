@@ -188,7 +188,7 @@ fn growonly() {
     let s = g[0..1];
     g.append([2.0, 3.0]);
     g.append([0.0; 3]);                  // Growth preserves the live views.
-    print(first + r + s[0] + g.len as f64);
+    print(first + r + s[0] + g.len);
 }
 
 fn push_through(v: f64[>..]&) { v.push(4.0); }
@@ -371,7 +371,7 @@ recursive fn pfactor(pool: PNode..[>..]&) -> PNode..& {
         if ppos < ptext.len && ptext[ppos] == ')' { ppos++; }
         return inner;
     }
-    return pool.push(PNode.PLit { v: (c - '0') as i64 });
+    return pool.push(PNode.PLit { v: c - '0' });
 }
 
 recursive fn psum(n: PNode.PLit&) -> i64 { n.v }

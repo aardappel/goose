@@ -52,9 +52,9 @@ recursive fn build(depth: i64, seed: u64) -> SNode& {
     let r = xs_next(seed);
     let nd: SNode& = pool.push(SNode {
         id: pool.len as i32,
-        local: Xf { m: rotation(r), t: float3 { xs_mod(r >> 16, 9) as f32,
-                                               xs_mod(r >> 24, 9) as f32,
-                                               xs_mod(r >> 32, 9) as f32 } },
+        local: Xf { m: rotation(r), t: float3 { xs_mod(r >> 16, 9),
+                                               xs_mod(r >> 24, 9),
+                                               xs_mod(r >> 32, 9) } },
         world: IDENT,
         kids: [] });
     if depth == 0 { return nd; }

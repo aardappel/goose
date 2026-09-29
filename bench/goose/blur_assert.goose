@@ -17,9 +17,9 @@ fn blur(src: u8[>..]&, dst: u8[>..]&) {
     for y in 1..W - 1 {
         for x in 1..W - 1 {
             let i = y * W + x;
-            let s = src[i - W - 1] as u16 + src[i - W] as u16 * 2 + src[i - W + 1] as u16
+            let s = src[i - W - 1] + src[i - W] as u16 * 2 + src[i - W + 1]
                   + src[i - 1] as u16 * 2 + src[i] as u16 * 4 + src[i + 1] as u16 * 2
-                  + src[i + W - 1] as u16 + src[i + W] as u16 * 2 + src[i + W + 1] as u16;
+                  + src[i + W - 1] + src[i + W] as u16 * 2 + src[i + W + 1];
             dst[i] = (s >> 4) as! u8;
         }
     }

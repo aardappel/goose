@@ -57,7 +57,7 @@ recursive fn solve(b: Board&) -> bool {
     var bestn = 10;
     for i in 81 {
         guard b.cells[i] == 0 else { continue; }
-        let n = popcount(candidates(b, i) as u64);
+        let n = popcount(candidates(b, i));
         if n < bestn { best = i; bestn = n; }
     }
     if best < 0 { return true; }         // no empty cell left: solved

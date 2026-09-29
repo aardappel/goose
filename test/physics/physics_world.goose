@@ -29,8 +29,8 @@ fn pile(world: physics::World, boxes: physics::Body[>..]&) {
     for i in 10 {
         let b = physics::create_body(world, physics::BodyDef {
             body_type: physics::DYNAMIC,
-            position: float3 { 0.1 * i as f32, 0.5 + 1.05 * i as f32, 0.07 * i as f32 },
-            rotation: physics::quat_axis_angle(float3 { 0.0, 1.0, 0.0 }, 0.2 * i as f32) });
+            position: float3 { 0.1 * i, 0.5 + 1.05 * i, 0.07 * i },
+            rotation: physics::quat_axis_angle(float3 { 0.0, 1.0, 0.0 }, 0.2 * i) });
         physics::create_box_shape(b, physics::ShapeDef {}, float3 { 0.5, 0.5, 0.5 });
         boxes.push(b);
     }

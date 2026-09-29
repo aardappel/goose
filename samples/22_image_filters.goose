@@ -24,10 +24,10 @@ fn generate(img: u8[>..]&) {
             let dx = (x - W / 2) as f64;
             let dy = (y - H / 2) as f64;
             let d = sqrt(dx * dx + dy * dy);
-            var v = 96.0 + 64.0 * sin(d / 12.0) + (x as f64) / W as f64 * 60.0;
+            var v = 96.0 + 64.0 * sin(d / 12.0) + (x as f64) / W * 60.0;
             if d < 60.0 { v = 230.0; }
             if (x / 64 + y / 64) % 2 == 0 && y > H * 3 / 4 { v = 40.0; }
-            v += (r.rand_int(21) - 10) as f64;
+            v += r.rand_int(21) - 10;
             img.push(clamp(v, 0.0, 255.0) as u8);
         }
     }
@@ -48,9 +48,9 @@ fn blur(src: u8[:], dst: u8[:]) {
         d[0] = b[0];
         d[W - 1] = b[W - 1];
         for x in 1..W - 1 {
-            let s = a[x - 1] as u16 + a[x] as u16 + a[x + 1] as u16
-                  + b[x - 1] as u16 + b[x] as u16 + b[x + 1] as u16
-                  + c[x - 1] as u16 + c[x] as u16 + c[x + 1] as u16;
+            let s = a[x - 1] as u16 + a[x] + a[x + 1]
+                  + b[x - 1] + b[x] + b[x + 1]
+                  + c[x - 1] + c[x] + c[x + 1];
             d[x] = (s / 9) as! u8;
         }
     }
@@ -70,10 +70,10 @@ fn sobel(src: u8[:], dst: u8[:]) {
         d[0] = 0;
         d[W - 1] = 0;
         for x in 1..W - 1 {
-            let gx = (a[x + 1] as i32 - a[x - 1] as i32) + 2 * (b[x + 1] as i32 - b[x - 1] as i32)
-                   + (c[x + 1] as i32 - c[x - 1] as i32);
-            let gy = (c[x - 1] as i32 - a[x - 1] as i32) + 2 * (c[x] as i32 - a[x] as i32)
-                   + (c[x + 1] as i32 - a[x + 1] as i32);
+            let gx = (a[x + 1] as i32 - a[x - 1]) + 2 * (b[x + 1] as i32 - b[x - 1])
+                   + (c[x + 1] as i32 - c[x - 1]);
+            let gy = (c[x - 1] as i32 - a[x - 1]) + 2 * (c[x] as i32 - a[x])
+                   + (c[x + 1] as i32 - a[x + 1]);
             let g = abs(gx) + abs(gy);
             d[x] = if g > 255 { 255 } else { g as! u8 };
         }

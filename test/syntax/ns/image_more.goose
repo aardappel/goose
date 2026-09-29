@@ -5,7 +5,7 @@ namespace image;
 import .image;
 
 fn invert(p: Pixel) -> Pixel {
-    Pixel { (255 - p.r) as u8, (255 - p.g) as u8, (255 - p.b) as u8 }
+    Pixel { 255 - p.r, 255 - p.g, 255 - p.b }
 }
 
 // A declaration placed in the global namespace from a namespaced file. The

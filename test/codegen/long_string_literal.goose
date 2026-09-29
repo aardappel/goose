@@ -249,7 +249,7 @@ fn main() {
     var sum = 0;
     for c in text {
         if c == '\n' { lines++; }
-        sum += c as i64;
+        sum += c;
     }
     print(text.len, " bytes, ", lines, " lines, byte sum ", sum);
     print(text[..16], " ... ", text[text.len - 16..]);

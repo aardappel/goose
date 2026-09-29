@@ -17,7 +17,7 @@ fn emit_int(out: u8[>..]&, v: i64) {
     var tmp: u8[..24] = [];
     while d > 0 { tmp.push(('0' + d % 10) as! u8); d /= 10; }
     var i = tmp.len;
-    while i > 0 { i--; out.push(tmp[i] as u8); }
+    while i > 0 { i--; out.push(tmp[i]); }
 }
 
 fn emit_name(out: u8[>..]&, seed: u64) {

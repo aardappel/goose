@@ -99,8 +99,8 @@ fn main() {
     for y in H {
         for x in W {
             // A pixel's direction: the view plane at z = 1.
-            let px = (x as f32 + 0.5) / W as f32 * 2.0 - 1.0;
-            let py = 1.0 - (y as f32 + 0.5) / H as f32 * 2.0;
+            let px = (x as f32 + 0.5) / W * 2.0 - 1.0;
+            let py = 1.0 - (y as f32 + 0.5) / H * 2.0;
             let dir = normalize(float3 { px * 1.6, py, 1.0 });
             let c = shade(eye, dir, 3);
             img.push(to_byte(c.x));
@@ -127,7 +127,7 @@ fn main() {
             let x = cx * W / 80;
             let y = cy * H / 25;
             let i = header + (y * W + x) * 3;
-            let lum = (img[i] as i64 * 3 + img[i + 1] as i64 * 6 + img[i + 2] as i64) / 10;
+            let lum = (img[i] as i64 * 3 + img[i + 1] as i64 * 6 + img[i + 2]) / 10;
             line.push(ramp[lum * ramp.len / 256]);
         }
         print(line);

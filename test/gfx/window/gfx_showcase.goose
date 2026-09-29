@@ -449,8 +449,8 @@ fn sky_face(face: i64, size: i64) -> u8[>..] {
     var px: u8[>..] = [];
     for row in size {
         for col in size {
-            let s = (col as f32 + 0.5) / size as f32 * 2.0 - 1.0;
-            let t = (row as f32 + 0.5) / size as f32 * 2.0 - 1.0;
+            let s = (col as f32 + 0.5) / size * 2.0 - 1.0;
+            let t = (row as f32 + 0.5) / size * 2.0 - 1.0;
             let len = sqrt(1.0 + s * s + t * t);
             let y = if face == 2 { 1.0 / len } else { if face == 3 { -1.0 / len } else { -t / len } };
             px.append(sky_color(y));
@@ -473,7 +473,7 @@ fn icon(kind: i64) -> u8[>..] {
             let inside = match kind {
                 0 => r < 13.0,
                 1 => r < 14.0 && r > 9.0,
-                2 => y > 4 && abs(dx) < (y as f32 - 4.0) * 0.55,
+                2 => y > 4 && abs(dx) < (y - 4.0) * 0.55,
                 _ => abs(dx) < 4.0 || abs(dy) < 4.0,
             };
             px.append(if inside { colors[kind] } else { clear });
@@ -497,7 +497,7 @@ fn expect(name: const u8[:], ok: bool, detail: const u8[:]) {
     }
 }
 
-fn luminance(px: u8[:], i: i64) -> i64 { (px[i] as i64 * 3 + px[i + 1] as i64 * 6 + px[i + 2] as i64) / 10 }
+fn luminance(px: u8[:], i: i64) -> i64 { (px[i] as i64 * 3 + px[i + 1] as i64 * 6 + px[i + 2]) / 10 }
 
 // --- the program --------------------------------------------------------------------
 
@@ -557,8 +557,8 @@ fn main() {
                       float4 { 0.0, 0.38268, 0.0, 0.92388 }]);
     instances.append([float4 { 3.0, 1.0, 2.5, 0.0 }, float4 { 1.2, 1.2, 1.2, 0.0 },
                       float4 { 0.2, 0.3, 0.1, 0.927 }]);
-    let glass_instance: f32 = (CUBES + 1) as f32;
-    let wire_instance: f32 = (CUBES + 2) as f32;
+    let glass_instance: f32 = CUBES + 1;
+    let wire_instance: f32 = CUBES + 2;
     let inst_buf = gfx::buffer(gfx::BUFFER_STORAGE | gfx::BUFFER_COMPUTE_WRITE,
                                bytes_of(instances));
 
@@ -706,7 +706,7 @@ fn main() {
             toggles++;
         }
         if frame >= 40 && frame < 50 {
-            gfx::inject_mouse(300.0 + (frame - 40) as f32 * 8.0, 200.0, gfx::MOUSE_LEFT, true);
+            gfx::inject_mouse(300.0 + (frame - 40) * 8.0, 200.0, gfx::MOUSE_LEFT, true);
         }
         if frame == 50 { gfx::inject_mouse(380.0, 200.0, gfx::MOUSE_LEFT, false); }
         // Turning by where the pointer has moved since the button went
@@ -731,7 +731,7 @@ fn main() {
 
         let eye = float3 { cos(yaw) * 9.0, 4.5, sin(yaw) * 9.0 };
         let target = float3 { 0.0, 0.8, 0.0 };
-        let aspect = w as f32 / h as f32;
+        let aspect = w as f32 / h;
         let fov: f32 = 1.0;
         let view = gfx::look_at(eye, target, float3 { 0.0, 1.0, 0.0 });
         let forward = normalize(target - eye);
@@ -770,9 +770,9 @@ fn main() {
         // The trail: a spiral rising around the fountain, rewritten whole.
         var trail: LineVertex[>..] = [];
         for i in TRAIL {
-            let a = t * 2.0 + i as f32 * 0.2;
+            let a = t * 2.0 + i * 0.2;
             let fade = (255 - i * 3) as u8;
-            trail.push(LineVertex { pos: float3 { cos(a) * 1.2, i as f32 * 0.05, sin(a) * 1.2 },
+            trail.push(LineVertex { pos: float3 { cos(a) * 1.2, i * 0.05, sin(a) * 1.2 },
                                     color: [fade, 200, 255, 255] });
         }
         gfx::update_buffer(trail_vb, bytes_of(trail));
@@ -867,12 +867,12 @@ fn main() {
         gfx::uniforms(gfx::FRAGMENT, 0, Post { exposure: 1.2, vignette: 0.8 });
         gfx::draw(3);
         let pip = h / 4;
-        gfx::viewport((w - pip - 10) as f32, 10.0, pip as f32, pip as f32);
+        gfx::viewport((w - pip - 10) as f32, 10.0, pip as f32, pip);
         gfx::scissor(w - pip - 10, 10, pip, pip);
         gfx::bind(depth_view);
         gfx::bind_texture(gfx::FRAGMENT, 0, shadow_map, linear);
         gfx::draw(3);
-        gfx::viewport(0.0, 0.0, w as f32, h as f32);
+        gfx::viewport(0.0, 0.0, w as f32, h);
         gfx::scissor(0, 0, 0, 0);
         gfx::scissor(0, 0, w, h);
         gfx::bind(icon_pipe);
@@ -926,8 +926,8 @@ fn main() {
         var sky_b = 0;
         for x in w / 4..w * 3 / 4 {
             let i = (8 * w + x) * 4;
-            sky_r += px[i] as i64;
-            sky_b += px[i + 2] as i64;
+            sky_r += px[i];
+            sky_b += px[i + 2];
         }
         expect("sky along the top", sky_b > sky_r, str("red ", sky_r, ", blue ", sky_b));
         var lo = 255;
@@ -946,8 +946,8 @@ fn main() {
                 let i = (y * w + x) * 4;
                 if px[i] == px[i + 1] && px[i + 1] == px[i + 2] {
                     grays++;
-                    gray_lo = min(gray_lo, px[i] as i64);
-                    gray_hi = max(gray_hi, px[i] as i64);
+                    gray_lo = min(gray_lo, px[i]);
+                    gray_hi = max(gray_hi, px[i]);
                 }
             }
         }
@@ -966,7 +966,7 @@ fn main() {
             step++;
             if step % 7 != 0 { continue; }
             colors.push((px[i * 4] as u32 << 16) | (px[i * 4 + 1] as u32 << 8) |
-                        px[i * 4 + 2] as u32);
+                        px[i * 4 + 2]);
         }
         sort(colors);
         var distinct = 0;

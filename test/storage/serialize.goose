@@ -119,8 +119,8 @@ enum Shape { Circle { r: f32 }, Rect { w: f32, h: f32 }, Dot }
 
 fn area(s: Shape&) -> f64 {
     match s {
-        Circle c => 3.0 * c.r as f64 * c.r as f64,
-        Rect r => r.w as f64 * r.h as f64,
+        Circle c => 3.0 * c.r as f64 * c.r,
+        Rect r => r.w as f64 * r.h,
         Dot => 0.0,
     }
 }
@@ -175,12 +175,12 @@ fn sdigest(a: Sexp..[>..]&) -> i64 {
     var acc = 0;
     for s in a {
         match s {
-            Sym &y => { for &c in y.name { acc = acc * 31 + c as i64; } },
+            Sym &y => { for &c in y.name { acc = acc * 31 + c; } },
             Pair &p => {
                 acc = acc * 31 + p.head.stag();
                 let t = p.tail;
                 if t { acc = acc * 31 + t.stag(); }
-                for &x in p.extra { acc = acc * 31 + x as i64; }
+                for &x in p.extra { acc = acc * 31 + x; }
             }
         }
     }
@@ -266,9 +266,9 @@ struct Pad { a: u8, pad, b: u32, l: Pad&<u16>? }
 fn recsum(a: Rec[>..]&) -> i64 {
     var n = 0;
     for r in a {
-        n = n * 7 + r.id as i64 + r.tags.len + r.slots.len;
+        n = n * 7 + r.id + r.tags.len + r.slots.len;
         let l = r.link;
-        if l { n += l.id as i64; }
+        if l { n += l.id; }
     }
     return n;
 }
@@ -409,12 +409,12 @@ fn checked_tsum(a: Tree[>..]&) -> i64 {
 fn checked_cells(a: Cell[>..]&) -> i64 {
     var acc = 0;
     for &c in a {
-        acc = acc * 7 + c.k as i64;
+        acc = acc * 7 + c.k;
         for i in c.kids.len {
             let k: Cell& = c.kids[i];
             let j = a.index_of(k);
             assert(j >= 0 && j < a.len);
-            acc += k.k as i64;
+            acc += k.k;
         }
     }
     return acc;

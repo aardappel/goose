@@ -19,7 +19,7 @@ var log: i64[>..] = [];
 fn tick() -> i64 { ticks += 1; ticks }
 
 // Literals, and a float literal for an f32.
-fn weigh(a: i32, b: i32 = 0, c: f32 = 1.0) -> f32 { (a + b) as f32 * c }
+fn weigh(a: i32, b: i32 = 0, c: f32 = 1.0) -> f32 { (a + b) * c }
 
 // A struct literal, one with field defaults of its own, a string literal
 // for a read-only slice, a whole array for one, a negative constant, a

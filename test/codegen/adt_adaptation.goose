@@ -14,7 +14,7 @@ fn area(c: Shape.Circle) -> i64 { c.r * 3 }
 fn area(s: Shape.Square) -> i64 { s.s * s.s }
 fn area(d: Shape.Dot) -> i64 { 0 }
 fn describe(p: Msg.Ping) -> i64 { 0 }
-fn describe(t: Msg.Text) -> i64 { t.body.len * 1000 + t.body[0] as i64 }
+fn describe(t: Msg.Text) -> i64 { t.body.len * 1000 + t.body[0] }
 fn tag(v: Value..&) -> i64 { match v { A => -1, B b => b.n } }
 fn get(o: Opt<i64>.Some) -> i64 { o.v }
 fn get(o: Opt<i64>.None) -> i64 { -1 }

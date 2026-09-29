@@ -207,7 +207,7 @@ fn main() {
     // --- height fields -------------------------------------------------------
     var heights: f32[>..] = [];
     for z in 5 {
-        for x in 5 { heights.push(0.25 * ((x + z) % 3) as f32); }
+        for x in 5 { heights.push(0.25 * ((x + z) % 3)); }
     }
     var cells: u8[>..] = [];
     for i in 16 {
@@ -294,7 +294,7 @@ fn main() {
     let with_mesh = physics::byte_count();
     physics::destroy(floor);
     print("the shape gone, the mesh's data freed: ",
-          with_mesh - physics::byte_count() >= mesh_bytes as i64);
+          with_mesh - physics::byte_count() >= mesh_bytes);
     physics::destroy(terrain);
     physics::destroy(hill);
     physics::destroy(baked);

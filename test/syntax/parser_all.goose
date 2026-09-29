@@ -99,7 +99,7 @@ struct Slot2 { v: i64 = 0 }
 
 fn no_args() { }
 fn one(a: i64) -> i64 { a }
-fn defaults_and_var(var a: i64, b: f64) -> f64 { a++; a as f64 + b }
+fn defaults_and_var(var a: i64, b: f64) -> f64 { a++; a + b }
 fn untyped_generic(a, b) { print(a); print(b); }
 fn typed_generic<T>(a: T, b: T) -> T { if a == b { a } else { b } }
 fn bounded<F: fn(i64)>(n: i64) { F(n); }

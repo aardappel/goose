@@ -34,7 +34,7 @@ fn main() {
     for i in 6 {
         let b = physics::create_body(world, physics::BodyDef {
             body_type: physics::DYNAMIC,
-            position: float3 { 0.3 * i as f32, 0.5 + 1.1 * i as f32, 0.0 } });
+            position: float3 { 0.3 * i, 0.5 + 1.1 * i, 0.0 } });
         physics::create_box_shape(b, physics::ShapeDef {}, float3 { 0.5, 0.5, 0.5 });
         boxes.push(b);
     }

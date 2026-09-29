@@ -124,7 +124,7 @@ fn main() {
 
         // The screen follows the window's size, and the projection its shape.
         let size = gfx::screen_size();
-        let aspect = size.x as f32 / size.y as f32;
+        let aspect = size.x as f32 / size.y;
         let model = gfx::mul(gfx::rotate(float3 { 1.0, 0.0, 0.0 }, pitch),
                              gfx::rotate(float3 { 0.0, 1.0, 0.0 }, yaw));
         let view = gfx::look_at(float3 { 0.0, 0.4, 3.0 }, float3_0, float3 { 0.0, 1.0, 0.0 });
@@ -147,7 +147,7 @@ fn main() {
     let saved = gfx::screenshot("gfx_cube.png");
     let px = gfx::read_pixels(gfx::screen());
     let size = gfx::screen_size();
-    let mid = ((size.y as i64 / 2) * size.x as i64 + size.x as i64 / 2) * 4;
+    let mid = ((size.y as i64 / 2) * size.x + size.x as i64 / 2) * 4;
     let background: u8[3] = [26, 31, 41];
     var cube_there = false;
     for i in 3 { cube_there = cube_there || abs(px[mid + i] as i64 - background[i]) > 8; }

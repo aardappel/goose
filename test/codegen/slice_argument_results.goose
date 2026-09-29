@@ -71,19 +71,19 @@ fn pick_grown(a: u8[>..]&) -> u8[>..]& { a }
 fn sum(data: const u8[:]) -> i64 {
     let s = scratch();
     var t = 0;
-    for x in data { t += x as i64; }
+    for x in data { t += x; }
     t * 100 + data.len
 }
 fn sum_ints(data: const i32[:]) -> i64 {
     let s = scratch();
     var t = 0;
-    for x in data { t += x as i64; }
+    for x in data { t += x; }
     t * 100 + data.len
 }
 fn sum_points(ps: const Pt[:]) -> i64 {
     let s = scratch();
     var t = 0;
-    for p in ps { t += (p.x * 10 + p.y) as i64; }
+    for p in ps { t += p.x * 10 + p.y; }
     t * 100 + ps.len
 }
 fn letters(ws: const u8[][:]) -> i64 {

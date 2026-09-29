@@ -47,7 +47,7 @@ fn main_const_var_assign() {
     var sum = 0;
     var t = "hello";
     while t.len > 0 {
-        sum += t[0] as i64;
+        sum += t[0];
         t = t[1..];
     }
     print(later, " ", sum, " ", t.len);

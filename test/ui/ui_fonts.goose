@@ -75,7 +75,7 @@ fn main() {
     let size = ui::atlas_size(atlas);
     let px = ui::atlas_pixels(atlas);
     print("baked ", ui::is_baked(atlas), ": ", size.x, " wide, ", size.y > 0, " high, ", px.len,
-          " bytes = w x h x 4 ", px.len == size.x as i64 * size.y as i64 * 4);
+          " bytes = w x h x 4 ", px.len == size.x as i64 * size.y * 4);
     // Glyphs are white with coverage in alpha.
     var opaque = 0;
     var white = true;
@@ -119,8 +119,8 @@ fn main() {
         print("baked at ", num(s), ": ", num(info.height), " high, ascent ", num(info.ascent),
               ", 'Goose' ", num(ui::text_width(f, "Goose")), " wide; 'A' ", found, " ",
               num(glyph.w), " x ", num(glyph.h), " from ",
-              num((glyph.u1 - glyph.u0) * image.x as f32), " x ",
-              num((glyph.v1 - glyph.v0) * image.y as f32), " texels");
+              num((glyph.u1 - glyph.u0) * image.x), " x ",
+              num((glyph.v1 - glyph.v0) * image.y), " texels");
         ui::destroy(a);
     }
 

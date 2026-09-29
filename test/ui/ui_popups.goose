@@ -33,7 +33,7 @@ fn text_at(ctx: ui::Context, label: const u8[:]) -> float2 {
     for c in ui::commands(ctx) {
         if c.kind == ui::COMMAND_TEXT &&
            text[(c.first as i64)..((c.first + c.count) as i64)] == label {
-            at = float2 { c.x as f32 + 4.0, c.y as f32 + c.h as f32 / 2.0 };
+            at = float2 { c.x + 4.0, c.y + c.h / 2.0 };
         }
     }
     return at;

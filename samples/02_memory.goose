@@ -22,7 +22,7 @@ fn main() {
     //    a vector<T> or Vec<T> cannot promise: they reallocate.
     var items: Item[>..] = [];
     let first: Item& = items.push(Item { 1, 0.5 });
-    for i in 2..100001 { items.push(Item { i as i32, i as f32 * 0.5 }); }
+    for i in 2..100001 { items.push(Item { i as i32, i * 0.5 }); }
     first.weight = 99.5;                 // through the reference, 100000 pushes later
     print(items.len, " items, first weight ", items[0].weight);
 

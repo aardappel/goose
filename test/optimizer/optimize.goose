@@ -126,7 +126,7 @@ fn casts_op() {
     let h2 = 1.5 as f32;                             // Exact in f32: folds.
     let big = 10000000000000000000.5 as! i64;        // Out of range: left alone.
     print(s.b + s.w + i + g3 + big);
-    print(f2 + (h2 as f64) + (s.f as f64));
+    print(f2 + h2 + s.f);
 }
 
 // --- control-flow folding ----------------------------------------------------

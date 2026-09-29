@@ -41,7 +41,7 @@ fn main() {
     var boxes: physics::Shape[>..] = [];
     for i in 3 {
         let b = physics::create_body(world, physics::BodyDef {
-            position: float3 { -4.0 + 4.0 * i as f32, 1.0, 0.0 } });
+            position: float3 { -4.0 + 4.0 * i, 1.0, 0.0 } });
         let category: u64 = if i == 2 { 2 } else { 1 };
         boxes.push(physics::create_box_shape(b, physics::ShapeDef {
             filter: physics::Filter { category_bits: category } }, float3 { 0.5, 0.5, 0.5 }));

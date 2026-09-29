@@ -29,7 +29,7 @@ fn from_int(v: u64) -> u32[>..] {
 fn mul_add_small(n: u32[>..]&, m: u32, a: u32) {
     var carry = a as u64;
     for &limb in n {
-        let t = limb as u64 * m as u64 + carry;   // a 64-bit multiply; u32 * u32 would wrap at 32
+        let t = limb as u64 * m + carry;   // a 64-bit multiply; u32 * u32 would wrap at 32
         limb = t as! u32;                // the low half stays, the rest carries
         carry = t >> 32;
     }
@@ -57,7 +57,7 @@ fn mul(a: u32[:], b: u32[:]) -> u32[>..] {
     for i in a.len {
         var carry: u64 = 0;
         for j in b.len {
-            let t = r[i + j] as u64 + a[i] as u64 * b[j] as u64 + carry;
+            let t = r[i + j] + a[i] as u64 * b[j] + carry;
             r[i + j] = t as! u32;
             carry = t >> 32;
         }
@@ -75,9 +75,9 @@ fn div_small(n: u32[>..]&, d: u32) -> u32 {
     var i = n.len;
     while i > 0 {
         i--;
-        let cur = rem << 32 | n[i] as u64;
-        n[i] = (cur / d as u64) as! u32;
-        rem = cur % d as u64;
+        let cur = rem << 32 | n[i];
+        n[i] = (cur / d) as! u32;
+        rem = cur % d;
     }
     while n.len > 0 && n[n.len - 1] == 0 { n.pop(); }
     return rem as! u32;

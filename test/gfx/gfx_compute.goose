@@ -34,7 +34,7 @@ fn main() {
         }
         """);
     var xs: f32[>..] = [];
-    for i in 200 { xs.push(i as f32 * 0.5); }
+    for i in 200 { xs.push(i * 0.5); }
     let input = gfx::buffer(gfx::BUFFER_COMPUTE_READ, bytes_of(xs));
     let output = gfx::buffer(gfx::BUFFER_COMPUTE_WRITE, 256 * 4, "");
     let rw: gfx::Buffer[1] = [output];
@@ -48,7 +48,7 @@ fn main() {
     gfx::read_buffer(output, ys, 256);
     var right = 0;
     for i in 200 {
-        if ys[i] == xs[i] * 4.0 + i as f32 { right++; }
+        if ys[i] == xs[i] * 4.0 + i { right++; }
     }
     print("scale: ", right, " of 200 right, last ", ys[199], ", past the count ", ys[200], " ",
           ys[255], ", buffer of ", gfx::buffer_size(output), " bytes");
