@@ -1424,11 +1424,15 @@ record: it applies no effects, and its result points nowhere yet
 holder's contents read out of one, a variable bound to one, and a call given
 one, whose specialization is keyed `RootArg::unknown`. A round that changed
 no member's record (`SameRecord`: return roots, shrinks and their balances,
-growths, stores through classes, pairs, rebinds) and broke no threaded class
-was checked against the settled facts, so its errors stood and it was the
-last; records only grow and balances only worsen, so the rounds are bounded
-(an internal limit of 8 holds a cycle that does not settle). A back edge's
-result is the union of the roots the cycle's returns give, mapped through
+growths, stores through classes, pairs, rebinds), broke no threaded class
+and noted no fact about a variable declared outside the cycle's activations
+(`CycleRound`, marked by `NoteFact`: one variable at every level of a nested
+function's recursion, which a round may have read for the next level before
+it rebound it) was checked against the settled facts, so its errors stood
+and it was the last; records and facts only grow and balances only worsen,
+so the rounds are bounded (an internal limit of 8 holds a cycle that does
+not settle). A back edge's result is the union of the roots the cycle's
+returns give, mapped through
 the back edge's own arguments (`RetAltVal`: a parameter class maps through
 every argument the back edge gives the class's parameters, united, where an
 ordinary call, whose classes group the arguments as the key's, takes the

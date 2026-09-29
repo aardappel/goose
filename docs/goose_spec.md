@@ -2015,7 +2015,10 @@ it passes, so it maps a parameter's root through the arguments it gives the
 parameters the entry call gave that root — it may give two of them two
 arrays where the entry call gave one — and merges the lot as a call merges
 its callee's returns, §9.2), read-only where any return is — and the round
-after the last that changed anything is the one whose errors stand. A cycle
+after the last that changed anything is the one whose errors stand. That
+includes a variable outside the cycle, which is one variable at every level
+of a nested function's recursion (§7.5): a round that rebinds it, or stores
+into it, has read it for the next level as it was before. A cycle
 function may therefore `return` the result of a back-edge call, and a
 parenthesised subexpression in a recursive-descent parser needs no wrapper
 node (`bench/goose/calc_noparen.goose`); one that returns either of two

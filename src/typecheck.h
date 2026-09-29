@@ -1096,13 +1096,26 @@ struct TypeCheck {
     // to its head: the loops of the bodies this one was called from as much
     // as its own, since a nested function or a function value changes the
     // variables of the frames around it where its caller's loop reaches it.
+    // A recursive cycle's round feeds it back to the next round the same
+    // way, where vd lies outside the cycle's activations (CycleRound).
     void NoteFact(const VarDef *vd) {
         auto mark = [&](BodyState &b) {
             for (auto &lp : b.looppasses) if (Depth(vd) <= lp.scopeidx) lp.changed = true;
         };
         mark(cur);
         for (auto b : outerbodies) mark(*b);
+        for (auto &r : cyclerounds) if (Depth(vd) <= r.scopebase) r.changed = true;
     }
+    // A body being checked (CheckSpecBody), innermost last: the scopes
+    // outside its activation, and whether a fact about a variable declared
+    // in them changed during its latest round. Such a variable is the same
+    // one at every level of a recursion, so a round that gave it a root may
+    // have read it at the next level without that root.
+    struct CycleRound {
+        int scopebase = 0;
+        bool changed = false;
+    };
+    vector<CycleRound> cyclerounds;
     // The store events a holder still carries: all of them, but for one
     // declared inside a loop only its current pass's, an earlier pass's
     // being a previous iteration's, whose value died with it (a copy made

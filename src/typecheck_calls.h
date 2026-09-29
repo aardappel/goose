@@ -1764,16 +1764,22 @@ inline int TypeCheck::EnvReach(const MatchInfo &mi) {
 // A specialization's body, checked once -- or, for the head of a recursive
 // cycle, as many times as it takes for what the cycle's members record (the
 // roots their returns give, their shrinks, growths, stores and rebinds, and
-// the threaded classes that broke) to settle. Each round reads the round
-// before's records at its back edges (RecordOf), and the first reads none:
-// a back edge then has no effects and a result that points nowhere yet,
-// which every rule passes by. Every member is checked again in each round
-// (FnSpec::stale, GetOrCreateSpec) with the class roots its first round
-// made, so a store it made before a call joined it to the cycle is checked
-// as inside it, and one relying on a class a later call broke finds it
-// broken. A member whose calls a round no longer reaches is left as it is:
-// nothing checked afterwards names it.
+// the threaded classes that broke) to settle, and the facts about the
+// variables outside the cycle's activations (CycleRound). Each round reads
+// the round before's records at its back edges (RecordOf), and the first
+// reads none: a back edge then has no effects and a result that points
+// nowhere yet, which every rule passes by. Every member is checked again in
+// each round (FnSpec::stale, GetOrCreateSpec) with the class roots its first
+// round made, so a store it made before a call joined it to the cycle is
+// checked as inside it, and one relying on a class a later call broke finds
+// it broken. A member whose calls a round no longer reaches is left as it
+// is: nothing checked afterwards names it.
 inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline) {
+    struct RoundScope {
+        TypeCheck &tc;
+        RoundScope(TypeCheck &t) : tc(t) { tc.cyclerounds.push_back({ tc.CurDepth(), false }); }
+        ~RoundScope() { tc.cyclerounds.pop_back(); }
+    } roundscope(*this);
     CheckSpecBodyOnce(spec, argvals, callline);
     while (spec->incycle && CycleHead(spec) == spec) {
         // What a round records only grows (a balance only worsens), so the
@@ -1793,9 +1799,14 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
             ResetRecord(m);
             m->stale = m != spec;
         }
+        cyclerounds.back().changed = false;
         CheckSpecBodyOnce(spec, argvals, callline);
         for (auto &[cls, tc] : threadedclasses) broken -= tc.broken;
-        auto settled = broken == 0;
+        auto outer = cyclerounds.back().changed;
+        if (outer && getenv("GOOSE_ROUNDS"))
+            fprintf(stderr, "round %d of %.*s: a variable outside it changed\n", spec->rounds,
+                    (int)spec->sf->name.size(), spec->sf->name.data());
+        auto settled = broken == 0 && !outer;
         for (auto m : members) {
             if (m->stale) {
                 m->stale = false;
