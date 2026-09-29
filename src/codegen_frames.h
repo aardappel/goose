@@ -94,8 +94,9 @@ inline void CodeGen::CollectSpecs() {
             if (!n) return;
             if (auto id = Is<Ident>(n)) {
                 auto v = id->vdef;
-                if (v && v->ownerspec && v->ownerspec != sp && !v->isglobal &&
-                    seen.insert(v).second)
+                // A global initializer's locals have no ownerspec: every spec
+                // naming one captures it, up to gs_init_globals, which declares it.
+                if (v && v->ownerspec != sp && !v->isglobal && seen.insert(v).second)
                     si.freevars.push_back(v);
                 if (v && v->isglobal && v->type &&
                     (IsBytesT(v->type) || HoldsFatRef(v->type)))

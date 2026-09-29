@@ -176,7 +176,8 @@ inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &a
 // A free variable of the callee, from the caller's frame (or passed on).
 inline void CodeGen::EmitFvArg(const VarDef *fv, vector<string> &args) {
     auto name = VName(fv);
-    auto ours = curspec && fv->ownerspec == curspec;
+    // gs_init_globals has no curspec, and its locals no ownerspec.
+    auto ours = fv->ownerspec == curspec;
     if (fv->reusable) {
         // A pool local of ours: assemble; a passed-through one: forward.
         if (ours) {

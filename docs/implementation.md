@@ -2419,7 +2419,9 @@ payload a match arm copies by value, a variable-mode scrutinee a dispatch
 copies for its by-value arms, a variable-mode value (a reference result's
 pointee included) adapted to a fixed-mode ADT, anything rendered
 structurally into a limited array. `EmitSpec` rejects a body that allocates
-a stack without `gs_sp` as an internal error.
+a stack without `gs_sp` as an internal error. A global initializer's locals
+belong to no specialization: they are free variables of every function
+naming them, which `gs_init_globals` passes as a function passes its own.
 
 ### 6.5 Destinations and in-place construction
 
