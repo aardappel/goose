@@ -325,6 +325,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             v.writable = false;
             v.reusable = false;
             v.byteview = true;
+            v.freshview = true;
             c->rettypes.push_back(v.type);
             return v;
         }
@@ -956,8 +957,9 @@ inline void TypeCheck::NoteLitElem(LitDeep &deep, Node *at, const Val &v, TypeEx
     if (!isrs && !HoldsPlainRef(t)) return;
     if (v.isnull) return;
     const Roots &roots = isrs ? v.AsRoots() : ContentsOf(v);
-    if (auto gs = StoredIntoGrowShrink(v, roots, t, !isrs))
-        Error(at, NeverStoredError(gs, MayPointWording(roots, gs)));
+    auto reach = false;
+    if (auto gs = StoredIntoGrowShrink(v, roots, t, !isrs, &reach))
+        Error(at, NeverStoredError(gs, MayPointWording(roots, gs), reach));
     deep.roots.Add(roots);
     deep.byteview = deep.byteview || v.byteview;
 }
@@ -1802,7 +1804,20 @@ template<typename F> void TypeCheck::EachHolderRoot(VarDef *holder, size_t from,
 inline int TypeCheck::NoteLiveShrink(LiveShrink ls, FnSpec *current) {
     auto s = ls.shrunk, l = ls.live;
     if (!s || !l || IsTemp(s) || IsTemp(l)) return 0;
-    if (!ShrinkMayFree(s, ls.bound, ls.growonly, ls.pointee, ls.byteview)) return 0;
+    auto mayfree = ShrinkMayFree(s, ls.bound, ls.growonly, ls.pointee, ls.byteview);
+    // A callee's shrink of a class, mapped onto an argument whose root only
+    // bounds it: the array may be any of the shrink's kind in what that root
+    // leads to (BoundReach).
+    if (!mayfree && !ls.shrunkexact && !ls.bound) {
+        vector<TypeExpr *> reach;
+        BoundReach(s, reach);
+        for (auto t : reach) {
+            auto arr = ResizableArrayIn(t);
+            mayfree = mayfree || (arr && GrowOnlyTail(arr) == ls.growonly &&
+                                  ShrinkMayFree(s, arr, ls.growonly, ls.pointee, ls.byteview));
+        }
+    }
+    if (!mayfree) return 0;
     // A view into storage that cannot hold an array of the bound's type is
     // not in the array freed.
     if (ls.bound && l->type && ls.liveexact && !CanContain(LoadType(l->type), ls.bound))

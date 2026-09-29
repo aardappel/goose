@@ -715,6 +715,18 @@ inline bool TypeCheck::ReachesThroughRefs(TypeExpr *t, TypeExpr *of) {
     return false;
 }
 
+// The types of the storage an inexact root r stands for beside its own: a
+// bound names a scope, and what it bounds may lie anywhere r's references
+// lead (a read-back out of a container, the contents a holder copied out
+// of one, a result a callee read out of its parameter). A parameter's class
+// has no type of its own; what its parameters' types lead to is recorded
+// on it (VarDef::classreach).
+inline void TypeCheck::BoundReach(VarDef *r, vector<TypeExpr *> &out) {
+    if (!r) return;
+    if (r->type) ReachedThroughRefs(r->type, out);
+    else out.insert(out.end(), r->classreach.begin(), r->classreach.end());
+}
+
 // The candidates for a pointee of type `of`, each an alternative of where it
 // may point (§9.5): every global whose own storage can hold one, exactly;
 // static data where a literal could supply one; and, unless `globalsonly`,

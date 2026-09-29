@@ -526,6 +526,11 @@ struct Prov : Roots {
     // and §5.2 otherwise dismiss a slice whose pointee the root's elements
     // cannot contain -- true of every other slice, and exactly wrong here.
     bool byteview = false;
+    // A byte view no field, element or global has held: the store rule (§5.2)
+    // lets one into those only where it covers no grow-shrink array, so a
+    // byte view loaded out of one never does. One not stored may cover any
+    // that its roots lead to (TypeCheck::GrowShrinkTaint).
+    bool freshview = false;
     // Where the path to the pointee crossed a reference or slice: the type of
     // the last one's pointee, which the fields and elements stepped into
     // after it lie in by value, as storage the root owns or bounds. Whatever
@@ -1233,6 +1238,12 @@ struct VarDef {
     // refers to views -- so classfrom's type says nothing about it.
     bool growshrink = false;
     bool gsvia = false;
+    // Synthetic class roots only: the types of the caller's storage the
+    // class's parameters lead to through their references, at any remove
+    // (TypeCheck::ReachedThroughRefs of each parameter's type), which an
+    // inexact root at the class stands for beside the class's own storage
+    // (TypeCheck::BoundReach).
+    vector<TypeExpr *> classreach;
     // For variables of reference/slice type: where the value they hold
     // points, fixed at first binding (see typecheck.h header note). A
     // null-initialized optional has no commitment yet (refrootknown false),
@@ -1361,12 +1372,12 @@ struct RootArg {
     bool growshrink = false;
     bool gsvia = false;
     // Where `growshrink` is set by a root of the argument, or of a holder's
-    // contents: every place it may point was loaded out of a field, an
-    // element or a global, which no reference into a grow-shrink array's
-    // elements is stored in (RootAlt::slotread). Part of the key: the
-    // parameter is then a slot read in the body, where it may be stored,
-    // while what the body reaches through it still meets its class's
-    // grow-shrink array.
+    // contents, or by a grow-shrink array the argument's pointee holds:
+    // every place it may point was loaded out of a field, an element or a
+    // global, which no reference into a grow-shrink array's elements is
+    // stored in (RootAlt::slotread). Part of the key: the parameter is then
+    // a slot read in the body, where it may be stored, while what the body
+    // reaches through it still meets its class's grow-shrink array.
     bool slotread = false;
     // The argument points nowhere yet: a reference variable read in a pass of
     // a loop before the pass that binds it (TypeCheck::RefProvOf). The
@@ -1502,6 +1513,7 @@ struct RetRoot {
     Roots alts;                // Every root the checked returns give.
     bool writable = true;      // Writable only where every return is (§9.5).
     bool byteview = false;
+    bool freshview = false;    // Prov::freshview.
     bool set = false;          // A non-null return has recorded its root.
 };
 

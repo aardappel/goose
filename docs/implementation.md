@@ -656,17 +656,21 @@ class 0, and an argument that is not exact -- one of several alternatives,
 or an inexact one -- always gets a class of its own, at the depth of its
 innermost alternative -- sharing a class asserts "the same array", which
 such an argument does not establish. A class whose grow-shrink array is not
-its own root's (`RootArg::gsvia`: another alternative's, or one a slice the
-argument refers to views) is taken to hold anything a grow-shrink array
-could (`GrowShrinkCanHold`). Where every place an argument with such a root
-may point, or for a holder every place its references may, is a slot read
-(§3.10), it points into no grow-shrink array's elements all the same: the
-key records that (`RootArg::slotread`), and in the body the parameter, or
-the holder's contents, is a slot read, which may be stored, while what the
-body reaches through it still meets the class's grow-shrink array.
+its own root's (`RootArg::gsvia`: another alternative's, one a slice the
+argument refers to views, or one in what an inexact alternative's root
+leads to that the argument may point into or that its pointee holds, a
+whole grow-shrink array read back out of a parameter's storage among them)
+is taken to hold anything a grow-shrink array could (`GrowShrinkCanHold`).
+Where every place an argument with such a root, or with a pointee holding
+one, may point, or for a holder every place its references may, is a slot
+read (§3.10), it points into no grow-shrink array's elements all the same:
+the key records that (`RootArg::slotread`), and in the body the parameter,
+or the holder's contents, is a slot read, which may be stored, while what
+the body reaches through it still meets the class's grow-shrink array.
 `CheckSpecBody` then creates one synthetic `VarDef` per class,
 carrying the call-site root's depth (`classfrom` remembers the root it came
-from), and every parameter of the class is bound to it, exactly, within
+from) and the types its parameters' references lead to (`classreach`), and
+every parameter of the class is bound to it, exactly, within
 the body: inside the body a class names one array, whatever the call site.
 A holder parameter's class only bounds what it holds, by the deepest root
 its references point into, so its contents (`contentexact`, and the store
@@ -768,7 +772,10 @@ references or slices, `HoldsPlainRef`) meets a destination with a root:
    bound to a variable but never stored (§5.2, `StoredIntoGrowShrink`: by
    any of its roots but a slot read's (`GrowShrinkTaint`, §3.10), for a
    holder by any root of its contents but a slot read's,
-   `GrowShrinkCanHold` with the byte-view exception `MayBeViewed`, or for a
+   `GrowShrinkCanHold` with the byte-view exception `MayBeViewed`, and for
+   a reference's inexact root, which only bounds it, by a grow-shrink array
+   in what that root's storage leads to through references (`BoundReach`),
+   or for a
    reference to a slice by what the slice may point into); a global
    reference or slice variable is storage, so binding one is a store here;
 4. inside a recursive cycle, only a reference into a global, a pool-class
@@ -794,6 +801,27 @@ what a holder read out of a field or an element holds count as slot reads. Nor
 may a variable that points into none be rebound to a value that may
 (`CheckRefRebindRoot`): a store or return checked before the rebind -- later
 in a loop, through a reference taken to it -- has already let it through.
+
+An inexact root names a scope, not the storage that owns the pointee: a
+read-back through a parameter (`t.a[0]` for `t: Top&` with `a:
+Cell[>..<]&`, rooted at `t`'s class), the contents of a holder copied out of
+a container, a result a callee read out of its parameter. What it bounds
+may lie in its own storage or in any storage its references lead to, at
+any remove, and so may a grow-shrink array the value points into: `BoundReach`
+gives those types, `ReachedThroughRefs` of a variable's type or, for a
+parameter's class, of its parameters' types (`VarDef::classreach`). Rule 3
+counts every grow-shrink array among them whose elements can hold the
+pointee (`BoundReachesGrowShrink`), and the diagnostic says the array is
+reached through the root. A holder's own references were each checked where
+they were stored, so the rule looks no further for a holder. A byte view
+counts every grow-shrink array a byte view can cover, but only where no
+field, element or global has held it (`Prov::freshview`): rule 3 lets a byte
+view into those only where it covers none, so one loaded out of storage
+never does, whatever the per-value `byteview` a recursive call's u8 views
+or a holder's contents give it. `bytes_of` makes one, and variables,
+branches, rebinds, references to slice variables (`SlotView`), returns and
+calls keep it -- a result that is its argument, the argument's -- while a
+back edge's u8 result is one whatever its record says.
 
 An assignment through a reference (`PointeeAssign`) stores where the
 reference points, which for a reference read out of a field is where the
@@ -1286,7 +1314,9 @@ caller does, and a pair still open for the caller -- one of its roots is the
 caller's class -- is kept on the caller's record in turn, under that
 parameter's name. A callee in a recursive cycle still being checked has the
 pairs its cycle's previous round recorded, which the call maps (§3.11), and
-none in the first round.
+none in the first round. A class the callee shrank, mapped onto an argument
+whose root only bounds it, may be any array of the shrink's kind in what
+that root leads to (`BoundReach`), as well as the root's own.
 
 **Balanced calls** (§5.2). Each summary entry carries a `ShrinkBalance`,
 the worst of the shrinks `NoteShrink` recorded against it: balanced or
@@ -3255,6 +3285,16 @@ specification allows, and the shapes the C backend refuses outright:
   a reference into that array would, though what it holds lies in the
   element's fields. A field of it read through the reference, or a match
   binder's copy of its payload, is a slot read.
+* An argument whose root only bounds it, and which may point into or holds
+  a grow-shrink array in what that root leads to, gives its class a
+  grow-shrink array that is not its root's own (`RootArg::gsvia`), taken to
+  hold anything: a whole grow-shrink array that a call returned
+  (`keep(arr_of(t))`) may not be stored by the callee as a reference to the
+  whole array, though the caller may store it, and one loaded out of a slot
+  (`keep(t.a)`) may. A value that merges a byte view no slot held with a
+  root that only bounds it counts every grow-shrink array a byte view can
+  cover in what that root leads to (§3.5), `Prov::freshview` being the
+  value's, not each root's.
 * A shrink of an array in what an inexactly rooted reference points at
   (`c.s.arr.pop()`, with `c.s` read out of `c`) counts as a shrink of every
   array of that array's type the root bounds, not only of those in storage

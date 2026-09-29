@@ -203,6 +203,7 @@ inline void TypeCheck::ReadBackLVal(LVal &lv) {
                            slotread);
     lv.TakeAlts(rb);
     for (auto &a : lv.alts) a.slotread = slotread;
+    lv.freshview = false;
     lv.reached = nullptr;
     lv.intemp = false;
     if (lv.type->cq) lv.writable = false;   // A `const` slot's contents (§9.5).
@@ -612,12 +613,15 @@ inline Val TypeCheck::DecayRef(Val v) {
     // container info, harmless, though crossing the reference drops what a
     // slot read says (RootAlt::slotread).
     if (r.type->kind == TY_SLICE) {
-        r.TakeAlts(SlotView(v, r.type));
+        auto sv = SlotView(v, r.type);
+        r.TakeAlts(sv);
+        r.byteview = sv.byteview;
+        r.freshview = sv.freshview;
     } else {
         r.TakeAlts(v);
         r.ClearSlotRead();
+        r.byteview = v.byteview && HoldsPlainRef(r.type);
     }
-    r.byteview = v.byteview && HoldsPlainRef(r.type);
     return r;
 }
 
@@ -960,8 +964,9 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
         // Binding a global reference or slice variable stores into a global
         // (§5.2).
         if (!curdst.varbind || curdst.roots.None() || curdst.roots.Root()->isglobal) {
-            if (auto gs = StoredIntoGrowShrink(v, roots, t, holder)) {
-                fitfail = NeverStoredError(gs, MayPointWording(roots, gs));
+            auto reach = false;
+            if (auto gs = StoredIntoGrowShrink(v, roots, t, holder, &reach)) {
+                fitfail = NeverStoredError(gs, MayPointWording(roots, gs), reach);
                 return false;
             }
         }

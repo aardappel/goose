@@ -1029,13 +1029,18 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         ra.exact = ar.Exact();
         ra.heldexact = holder && ra.exact && !sf->isrec;
         // Any root the argument may have that holds a grow-shrink array, or
-        // for a reference to a slice one that slice may point into.
+        // for a reference to a slice one that slice may point into. A root
+        // that only bounds a reference or slice argument stands for what it
+        // leads to as well: a grow-shrink array there the argument may point
+        // into (GrowShrinkTaint), or one its pointee holds, which the body
+        // reaches through the parameter.
         auto gsroot = ar.Any([&](const RootAlt &a) { return IsGrowShrinkRoot(a.root); });
-        ra.growshrink = gsroot ||
-                        (isrs && pt->kind == TY_REF && pt->ref->sub->kind == TY_SLICE &&
-                         GrowShrinkTaint(SlotView(argvals[i], pt->ref->sub), pt->ref->sub));
+        auto gspointee = isrs && ar.Any([&](const RootAlt &a) {
+            return !a.exact && ContainsGrowShrink(PointeeOf(pt));
+        });
+        ra.growshrink = gsroot || gspointee || (isrs && GrowShrinkTaint(argvals[i], pt));
         ra.gsvia = ra.growshrink && !(ar.Exact() && IsGrowShrinkRoot(r));
-        ra.slotread = gsroot && ar.AllSlotRead();
+        ra.slotread = (gsroot || gspointee) && ar.AllSlotRead();
         // A reference to a slice names the slot holding it: the class is a
         // byte view where a slice variable it names holds one.
         ra.byteview = argvals[i].byteview ||
@@ -1327,7 +1332,8 @@ inline bool TypeCheck::EnvIs(const VarDef *vd, const EnvRead &r) {
     return vd->assigned == r.assigned && vd->refrootknown == r.refrootknown &&
            sameroots(vd->ref, r.ref) && vd->ref.writable == r.ref.writable &&
            vd->ref.reusable == r.ref.reusable && vd->ref.byteview == r.ref.byteview &&
-           vd->ref.reached == r.ref.reached && sameroots(vd->contents, r.contents) &&
+           vd->ref.freshview == r.ref.freshview && vd->ref.reached == r.ref.reached &&
+           sameroots(vd->contents, r.contents) &&
            vd->contentbyteview == r.contentbyteview;
 }
 
@@ -1959,7 +1965,7 @@ inline bool TypeCheck::SameRecord(const FnSpec *a, const FnSpec *b) {
     for (size_t i = 0; i < a->retroots.size(); i++) {
         auto &p = a->retroots[i], &q = b->retroots[i];
         if (!sameroots(p.alts, q.alts) || p.writable != q.writable || p.byteview != q.byteview ||
-            p.set != q.set)
+            p.freshview != q.freshview || p.set != q.set)
             return why("return roots");
     }
     if (a->shrinkexternals != b->shrinkexternals || a->shrinkparams != b->shrinkparams)
@@ -2093,6 +2099,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
                     rv->gsvia = ra.gsvia;
                     classroots[ra.cls] = rv;
                 }
+                ReachedThroughRefs(pt, classroots[ra.cls]->classreach);
                 // Members of one class share a root, so they agree on the
                 // pool; a member that names none settles it for all.
                 if (!ra.pool) classroots[ra.cls]->classpool = nullptr;
@@ -2140,6 +2147,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
                     classroots[ra.cls] = rv;
                 }
                 classroots[ra.cls]->poolclass = false;
+                ReachedThroughRefs(pt, classroots[ra.cls]->classreach);
                 exactrefs[ra.cls] = false;
                 cr = classroots[ra.cls];
             }
@@ -2305,6 +2313,7 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         rr.alts.Add(roots);
         rr.writable = rr.writable && vals[i].writable;
         rr.byteview = rr.byteview || vals[i].byteview;
+        rr.freshview = rr.freshview || (isrs && vals[i].freshview);
         rr.set = true;
     }
 }
@@ -2330,6 +2339,9 @@ inline Val TypeCheck::RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &a
         x.TakeAlts(ClassArgRoots(spec->argtypes[p], a));
         if (!alt.exact) x.Weaken();
         for (auto &xa : x.alts) xa.slotread = alt.slotread && xa.slotread;
+        // The argument itself, or a view of it, where the result is no load
+        // out of a slot.
+        x.freshview = IsRefOrSlice(spec->argtypes[p]) && a.freshview && !alt.slotread;
         x.writable = a.writable;
         v = first ? x : MergeVals(v, true, x, true, at, true);
         first = false;
@@ -2404,6 +2416,8 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
                 for (auto pt : ps) u8view |= pt && IsU8(pt);
             }
             v.byteview = v.byteview || ri.byteview || u8view;
+            // A byte view a holder holds was stored there (Prov::freshview).
+            v.freshview = !holder && (v.freshview || ri.freshview || u8view);
             // A slot read where every return is one, as MergeVals keeps it,
             // and a holder's contents where every return's are; a back
             // edge's returns are not all checked yet.

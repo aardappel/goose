@@ -1105,7 +1105,13 @@ again against the pairs the cycle records once the whole cycle is.
   its root says: a value that may be any of several (§9.2) is stored only
   where each of them could be, and a parameter given one that may point into
   the array is not stored either, nor a function's result where one of its
-  returns may, nor a reference to a slice variable whose slice may. A
+  returns may, nor a reference to a slice variable whose slice may. Where
+  what a value's root says only bounds where it points (§9.5) — it was read
+  out of the storage behind a parameter, or of a value holding references,
+  or a callee returned such a read — it may point into any grow-shrink array
+  that storage leads to through references: with `t: Top&` and a field
+  `a: Cell[>..<]&` of `Top`, `t` and `t.a` may be stored, but not `t.a[0]`,
+  nor the bytes of `t.a`. A
   reference or slice read out of a field, an element or a global never may,
   having been stored there, whatever storage bounds it (§9.5), nor may a
   slice such a slot holds, loaded through a reference to the slot. Nor does

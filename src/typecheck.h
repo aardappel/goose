@@ -967,10 +967,13 @@ struct TypeCheck {
     TypeExpr *ResizableArrayIn(TypeExpr *t);
     bool IsGrowShrinkRoot(VarDef *r);
     bool GrowShrinkCanHold(VarDef *r, TypeExpr *of);
+    bool BoundReachesGrowShrink(VarDef *r, TypeExpr *of, bool byteview);
     bool IntoGrowShrink(const Prov &v, VarDef *root, TypeExpr *t, bool holder);
-    VarDef *GrowShrinkTaint(const Prov &p, TypeExpr *t);
-    VarDef *StoredIntoGrowShrink(const Val &v, const Roots &roots, TypeExpr *t, bool holder);
-    string NeverStoredError(VarDef *root, bool may = false);
+    VarDef *GrowShrinkTaint(const Prov &p, TypeExpr *t, bool *reach = nullptr);
+    VarDef *StoredIntoGrowShrink(const Val &v, const Roots &roots, TypeExpr *t, bool holder,
+                                 bool *reach);
+    string NeverStoredError(VarDef *root, bool may, bool reach);
+    string ReachedThroughStr(VarDef *root);
     bool CycleStorable(VarDef *r);
     bool CycleStorable(const Roots &r);
     bool MayBeViewed(VarDef *r);
@@ -1219,6 +1222,7 @@ struct TypeCheck {
     bool CanContain(TypeExpr *t, TypeExpr *of);
     void ReachedThroughRefs(TypeExpr *t, vector<TypeExpr *> &out);
     bool ReachesThroughRefs(TypeExpr *t, TypeExpr *of);
+    void BoundReach(VarDef *r, vector<TypeExpr *> &out);
     TypeExpr *PointeeOf(TypeExpr *t);
     void VisibleVars(const function<void(VarDef *)> &f);
     void ShrinkScanVars(const function<void(VarDef *)> &f);

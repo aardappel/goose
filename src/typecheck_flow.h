@@ -100,6 +100,19 @@ inline bool TypeCheck::GrowShrinkCanHold(VarDef *r, TypeExpr *of) {
     return GrowShrinkContains(v->type, of);
 }
 
+// Whether a reference to `of`, or a byte view, that the inexact root r only
+// bounds may point into a grow-shrink array in what r's references lead to
+// (BoundReach): one whose elements can contain an `of`, or one a byte view
+// can cover.
+inline bool TypeCheck::BoundReachesGrowShrink(VarDef *r, TypeExpr *of, bool byteview) {
+    vector<TypeExpr *> reach;
+    BoundReach(r, reach);
+    for (auto t : reach)
+        if ((of && GrowShrinkContains(t, of)) || (byteview && ContainsGrowShrink(t) && Viewable(t)))
+            return true;
+    return false;
+}
+
 // Whether the reference or slice v of type t rooted at root, or for a holder
 // any reference it holds, may point into a grow-shrink array by what the
 // root holds: what §5.2 keeps out of every field, element and global.
@@ -113,24 +126,33 @@ inline bool TypeCheck::IntoGrowShrink(const Prov &v, VarDef *root, TypeExpr *t, 
 
 // A grow-shrink array a reference or slice of type t with provenance p may
 // point into, or null: one held by any root the value may have -- a
-// branch's, a rebind's, a call's -- where it was not loaded out of a slot,
-// since what was never points into one (RootAlt::slotread), or, for a
-// reference to a slice, one that slice may point into.
-inline VarDef *TypeCheck::GrowShrinkTaint(const Prov &p, TypeExpr *t) {
+// branch's, a rebind's, a call's -- or, where the root only bounds the
+// value, one it leads to (`reach` says so), where it was not loaded out of a
+// slot, since what was never points into one (RootAlt::slotread), or, for a
+// reference to a slice, one that slice may point into. A byte view counts
+// the arrays a bound leads to only where no slot held it (Prov::freshview).
+inline VarDef *TypeCheck::GrowShrinkTaint(const Prov &p, TypeExpr *t, bool *reach) {
     if (!t || !IsRefOrSlice(t)) return nullptr;
-    for (auto &a : p.alts)
-        if (!a.slotread && IntoGrowShrink(p, a.root, t, false)) return a.root;
+    for (auto &a : p.alts) {
+        if (a.slotread) continue;
+        if (IntoGrowShrink(p, a.root, t, false)) return a.root;
+        if (!a.exact && BoundReachesGrowShrink(a.root, PointeeOf(t), p.freshview)) {
+            if (reach) *reach = true;
+            return a.root;
+        }
+    }
     if (t->kind == TY_REF && t->ref->sub->kind == TY_SLICE)
-        return GrowShrinkTaint(SlotView(p, t->ref->sub), t->ref->sub);
+        return GrowShrinkTaint(SlotView(p, t->ref->sub), t->ref->sub, reach);
     return nullptr;
 }
 
 // What the store rule (§5.2) checks v, pointing at `roots`, against: a
 // grow-shrink array it may point into, or for a holder one a reference it
 // holds may. A holder's references were each checked where they were stored,
-// and those of one read out of a field or an element lie there still.
+// so what a root that only bounds them leads to says nothing more, and those
+// of one read out of a field or an element lie there still.
 inline VarDef *TypeCheck::StoredIntoGrowShrink(const Val &v, const Roots &roots, TypeExpr *t,
-                                               bool holder) {
+                                               bool holder, bool *reach) {
     if (holder) {
         for (auto &a : roots.alts)
             if (!a.slotread && IntoGrowShrink(v, a.root, t, true)) return a.root;
@@ -138,7 +160,7 @@ inline VarDef *TypeCheck::StoredIntoGrowShrink(const Val &v, const Roots &roots,
     }
     auto p = Prov(v);
     p.TakeAlts(roots);
-    return GrowShrinkTaint(p, t);
+    return GrowShrinkTaint(p, t, reach);
 }
 
 // Why a reference rooted at root, or a holder of one, is never stored: it
@@ -146,17 +168,29 @@ inline VarDef *TypeCheck::StoredIntoGrowShrink(const Val &v, const Roots &roots,
 // which may point anywhere, as may a parameter whose class stands for one.
 // `may`: root is not the reference's own but what it may point into as well
 // (Prov::intogs), a parameter's class or the parameter where the argument
-// may.
-inline string TypeCheck::NeverStoredError(VarDef *root, bool may) {
+// may. `reach`: root only bounds the reference, and the array is one root
+// leads to (GrowShrinkTaint).
+inline string TypeCheck::NeverStoredError(VarDef *root, bool may, bool reach) {
     auto from = root;
     while (from && !from->type && from->classfrom) from = from->classfrom;
     auto stored = ": such a reference lives in a variable, is passed down or returned, and "
                   "is never stored (§5.2)";
+    if (reach)
+        return cat("storing a reference that may point into a grow-shrink array ",
+                   ReachedThroughStr(root), stored);
     if (may && (!root->type || IsRefOrSlice(root->type)))
         return cat("storing a reference that may point into a grow-shrink array, as ",
                    root->name, " may", stored);
     return cat("storing a reference ", may ? "that may point " : "", "into ", root->name,
                ", which holds a grow-shrink array", stored);
+}
+
+// "reached through p's references": where the grow-shrink array a root that
+// only bounds a reference leads to is, as a diagnostic names it; for a
+// parameter's class, the caller's storage behind the parameter.
+inline string TypeCheck::ReachedThroughStr(VarDef *root) {
+    return root->type ? cat("reached through ", root->name, "'s references")
+                      : cat("reached through the caller's storage behind ", root->name);
 }
 
 // Whether a byte view could ever cover this root's storage: bytes_of views
@@ -289,11 +323,14 @@ inline Prov TypeCheck::SlotView(const Prov &p, TypeExpr *slice) {
             auto v = RefProvOf(r);
             out.Add(v);
             out.writable = out.writable && v.writable;
+            out.byteview = out.byteview || v.byteview;
+            out.freshview = out.freshview || v.freshview;
             continue;
         }
         if (!r->type) {
             out.Add({ r, false, r, false });
             out.byteview = out.byteview || r->contentbyteview;
+            out.freshview = out.freshview || r->contentbyteview;
             continue;
         }
         LVal lv;
@@ -839,6 +876,7 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     v.writable = a.writable && b.writable;
     v.reusable = a.reusable & b.reusable;
     v.byteview = a.byteview || b.byteview;
+    v.freshview = a.freshview || b.freshview;
     return v;
 }
 
@@ -2104,8 +2142,9 @@ inline void TypeCheck::CheckBindingRoot(VarDef *d, const Val &v, Node *at) {
     // A global is storage, which no reference into a grow-shrink array is
     // stored in (§5.2), as FitsAt says of an annotated one.
     if (d->isglobal) {
-        if (auto gs = StoredIntoGrowShrink(v, roots, t, !isrs))
-            Error(at, NeverStoredError(gs, MayPointWording(roots, gs)));
+        auto reach = false;
+        if (auto gs = StoredIntoGrowShrink(v, roots, t, !isrs, &reach))
+            Error(at, NeverStoredError(gs, MayPointWording(roots, gs), reach));
     }
     for (auto &a : roots.alts) {
         auto root = a.root;
@@ -2357,6 +2396,10 @@ inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
         vd->ref.byteview = true;
         NoteFact(vd);
     }
+    if (rv.freshview && !vd->ref.freshview) {
+        vd->ref.freshview = true;
+        NoteFact(vd);
+    }
     // The variable may point wherever it did and wherever the new value may:
     // a later read sees either. A root it did not have joins only at the
     // depth of its binding.
@@ -2370,10 +2413,12 @@ inline void TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv) {
     // may have stored it (§5.2).
     auto was = GrowShrinkTaint(vd->ref, vd->type);
     if (!was) {
-        if (auto gs = GrowShrinkTaint(rv, vd->type))
+        auto reach = false;
+        if (auto gs = GrowShrinkTaint(rv, vd->type, &reach))
             Error(at, cat("re-binding ", vd->name, " to a reference that may point into a "
-                          "grow-shrink array (", gs->name, "), where it pointed into none, is "
-                          "not supported; declare a new variable (§5.2)"));
+                          "grow-shrink array (", reach ? ReachedThroughStr(gs) : string(gs->name),
+                          "), where it pointed into none, is not supported; declare a new "
+                          "variable (§5.2)"));
     }
     // A pool reference is one for its whole life, carrying the freelist of
     // the pool it points at (codegen's gs_pref): a rebind gives it a pool of
