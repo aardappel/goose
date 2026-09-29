@@ -89,6 +89,10 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
         if (IsRefOrSlice(t)) {
             v.SetProv(tc.RefProvOf(vd));
             v.lvalue = t->kind == TY_SLICE;   // A slice variable is storage; a reference is the pointee's path.
+            if (v.lvalue) {
+                v.slot.Set(vd, true);
+                v.hasslot = true;
+            }
         } else if (vd->unsized) {
             // A literal parameter (§7.7): a constant of unknown value, no
             // storage, adapting where it is used.

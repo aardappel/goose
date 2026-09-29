@@ -1266,6 +1266,7 @@ struct TypeCheck {
     Val DecayRef(Val v);
     bool KeepsRef(const Val &v, TypeExpr *dt);
     Node *AutoRef(Node *n, Val &v, bool writes = true);
+    void SlotRoots(Val &v);
     void NoteWritableRef(VarDef *d, Node *at);
     VarDef *RelyOnNonneg(const Val &v, Node *at);
     bool BindsRef(const Val &v, TypeExpr *dt);
@@ -1575,6 +1576,7 @@ struct TypeCheck {
     static constexpr int MAXNESTEDSPECS = 16;
     FnSpec *GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, Node *callnode);
     void LoadSliceArgs(vector<Val> &argvals, const vector<TypeExpr *> &ptypes);
+    void RefSliceArgs(vector<Val> &argvals, const vector<TypeExpr *> &ptypes, Line at);
     void ValidateCycle(FnSpec *spec, Node *callnode);
     static FnSpec *CycleHead(FnSpec *s);
     void JoinCycle(FnSpec *spec, Node *callnode);

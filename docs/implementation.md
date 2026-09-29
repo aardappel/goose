@@ -619,10 +619,10 @@ a branch of an `if` would not be.
 | Expression | Root | Exact |
 |---|---|---|
 | a variable `x` (`Ident::Check`) | `x` | yes |
-| `&lvalue` (`CheckRefOf`) | the lvalue's owner | as the path |
+| `&lvalue` (`CheckRefOf`), or an lvalue bound by reference (`AutoRef`, a slice's slot being `Val::slot`) | the lvalue's owner | as the path |
 | a reference or slice variable (`RefProvOf`) | its committed binding (§3.7); for a global `var` used in a function's body, the read-back rule (`GlobalVarRead`) | its binding's, weakened by rebinds; the read-back's |
 | a reference read out of a field or element (`ContainerRead`) | the read-back rule (§3.6) | only with one candidate |
-| a slice loaded through a reference to one (`SlotView`) | the reference's, where it bound a slice by reference; for an explicit `&` of a slice variable, that variable's binding; out of a container, or behind a parameter's class of an explicit `&s`, the read-back rule or the class as a bound | as that |
+| a slice loaded through a reference to one (`SlotView`) | for a reference to a slice variable, that variable's binding; out of a field or element, the read-back rule; behind a parameter's class or a temporary, the root as a bound | as that |
 | `a.push(v)`, `a.alloc_ref(v)`, `&a[i]` | `a`'s root | `a`'s exactness |
 | `a.alloc_slice(n)`, `a.realloc_slice(s, n)` | `a`'s root | `a`'s exactness |
 | `a[lo..hi]` (`SliceExpr::Check`) | `a`'s root | `a`'s exactness |
@@ -674,10 +674,11 @@ event that stands for them) are that array exactly only where the argument's
 references all point into one (`RootArg::heldexact`, part of the key), and
 never in a `recursive fn`, whose back edges reuse the body whatever they
 pass.
-A reference to a slice bound by reference is rooted where the slice points,
-but one written as an explicit `&s` of a slice variable is rooted at `s`
-itself, so its class stands for the caller's variable and only bounds the
-slice loaded through it (`RootArg::viewslot`, part of the key); a slice
+A reference to a slice is rooted at the slot holding the slice, whether it
+binds a slice lvalue by reference (`RefSliceArgs` gives the argument the
+slot's roots, as `AutoRef` gives the phase-2 check) or is written `&s`, so its
+class stands for a slot of the caller's -- a variable, a field or an element
+-- and only bounds the slice loaded through it (`SlotView`); a slice
 parameter given a reference to a slice takes that slice's root
 (`LoadSliceArgs`).
 A temporary of the calling statement outlives the call, so its class takes
@@ -1095,8 +1096,8 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    holder copies through their source containers and judging a global source
    by its type) and used afterwards; a reference to a holder whose store
    record says the same, or to a slice that may point into it
-   (`HeldRefsMayPointInto`: a slice variable named by an explicit `&` by its
-   own binding, otherwise by the reference's root, as a bound, since stores
+   (`HeldRefsMayPointInto`: a slice variable the reference names by its own
+   binding, otherwise by the reference's root, as a bound, since stores
    through references to the slot may have replaced the slice), and used
    afterwards. The variables are the body's and its lexical parents', and in
    a function value's body those of the function running it too
@@ -1171,10 +1172,8 @@ running it included (`ShrinkScanVars`): references into such an array can
 never be stored (§3.5 rule 3), so checking those variables and temporaries
 is sufficient.
 That includes a reference to a slice variable, whose slice may view the
-array: where the reference bound the slice by reference, the slice is at its
-root, or, the variable having been rebound, at an array of that root's depth;
-a slice variable named by an explicit `&` says so by its own binding, and a
-parameter's class of one only bounds it.
+array: the variable's own binding says where, and a parameter's class, which
+stands for a slot of the caller's, only bounds it.
 
 **Slot reads** (`RootAlt::slotread`). For the same reason, a plain reference
 or slice loaded out of a field or an element (`ReadBackLVal`, where
@@ -1192,9 +1191,9 @@ builtin member through a reference, a whole array meeting a slice
 destination through one), since what a reference read
 out of a field leads to may be a whole grow-shrink array, or a variable
 holding a view into one. A slice loaded through a reference to a slice
-variable named by an explicit `&` has what the variable's binding has
-(`SlotView`), and one a container holds, loaded through a reference to its
-field or element, is a slot read of its own. A relative reference never has
+variable has what the variable's binding has (`SlotView`), and one a
+container holds, loaded through a reference to its field or element, is a
+slot read of its own. A relative reference never has
 it: it points within the array that holds it. A holder has it on its
 contents where it was read out of a field or an element (`ContainerRead`),
 copied out of one by a `for` or `match` binder, popped, or copied out of a
@@ -3192,6 +3191,16 @@ specification allows, and the shapes the C backend refuses outright:
   that, at the cost of one specialization per distinct global passed.
 * Bounds-check elimination tracks no array contents and no `u64` variables
   (§5.12).
+* A slice loaded through a reference-to-slice parameter is only bounded by
+  the caller's slot the parameter names (`SlotView`), not rooted where the
+  slice in that slot points: what the callee returns of it may point into
+  anything the slot outlives, so a cursor helper's token (`take(cur, 5)`
+  with `fn take(p: u8[:]&, n: i64) -> u8[:]`) cannot be returned past the
+  function owning `cur`, and a callee shrinking an array at the slot's depth
+  or outside while such a slice is still used is an error in the callee,
+  whatever its call sites pass. A class of its own for the slice a slot
+  holds, mapped at a call to that slice's roots and to what the callee
+  stores through the reference, would lift both.
 * A parameter is a slot read (§3.10) only where its argument has a root, or
   a holder's contents one, that holds a grow-shrink array (§3.4): the key
   records the bit only there, so that a function given no such argument is

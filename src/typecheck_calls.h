@@ -312,6 +312,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         AddParamDefaults(c, best, argnodes, argvals, prenode != nullptr, denv);
     }
     LoadSliceArgs(argvals, best.paramtypes);
+    RefSliceArgs(argvals, best.paramtypes, c->line);
     BindBranchesByRef(argnodes, argvals, best.paramtypes, best.sf, -1, best.nwritten);
     auto spec = GetOrCreateSpec(best, argvals, c);
     ApplyCalleeShrinks(c, spec, argvals, name);
@@ -880,6 +881,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
     // agree across the set.
     c->dispatcharg = found;
     LoadSliceArgs(argvals, matches[0].paramtypes);
+    RefSliceArgs(argvals, matches[0].paramtypes, c->line);
     vector<Val> armvals = argvals;
     auto en = enumtype->enu->en;
     FnSpec *first = nullptr;
@@ -962,6 +964,22 @@ inline void TypeCheck::LoadSliceArgs(vector<Val> &argvals, const vector<TypeExpr
     }
 }
 
+// A slice lvalue passed to a reference-to-slice parameter binds by reference
+// (§4.1): the specialization and the callee's effects are keyed on the
+// reference phase 2's AutoRef makes of it, rooted at the slot.
+inline void TypeCheck::RefSliceArgs(vector<Val> &argvals, const vector<TypeExpr *> &ptypes,
+                                    Line at) {
+    for (size_t i = 0; i < argvals.size() && i < ptypes.size(); i++) {
+        auto &av = argvals[i];
+        auto pt = ptypes[i];
+        if (!IsPlainRef(pt) || pt->ref->sub->kind != TY_SLICE || !BindsRef(av, pt)) continue;
+        SlotRoots(av);
+        av.type = ast.RefTo(ast.PlainOf(av.type), at);
+        av.type->cq = !av.writable;
+        av.lvalue = false;
+    }
+}
+
 // ------------------------------------------------------------------
 // Specialization: find or create the FnSpec for a resolved call and
 // check its body (once) in call-graph order.
@@ -1018,13 +1036,13 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
                          GrowShrinkTaint(SlotView(argvals[i], pt->ref->sub), pt->ref->sub));
         ra.gsvia = ra.growshrink && !(ar.Exact() && IsGrowShrinkRoot(r));
         ra.slotread = gsroot && ar.AllSlotRead();
-        auto slotvar = [](const RootAlt &a) {
-            return a.root && a.root->type && IsRefOrSlice(a.root->type);
-        };
-        ra.viewslot = pt->kind == TY_REF && pt->ref->sub->kind == TY_SLICE && ar.Any(slotvar);
+        // A reference to a slice names the slot holding it: the class is a
+        // byte view where a slice variable it names holds one.
         ra.byteview = argvals[i].byteview ||
-                      (ra.viewslot && ar.Any([&](const RootAlt &a) {
-                           return slotvar(a) && a.root->ref.byteview;
+                      (pt->kind == TY_REF && pt->ref->sub->kind == TY_SLICE &&
+                       ar.Any([](const RootAlt &a) {
+                           return a.root && a.root->type && IsRefOrSlice(a.root->type) &&
+                                  a.root->ref.byteview;
                        }));
         if (ra.exact) ra.pool = PoolOf(r);
         if (!r) {
@@ -2092,7 +2110,6 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
                 // different question, and only ra.exact answers it.
                 vd->ref.Set(classroots[ra.cls], true, nullptr, ra.slotread);
                 classroots[ra.cls]->contentbyteview |= ra.byteview;
-                classroots[ra.cls]->viewslot |= ra.viewslot;
             }
             vd->refrootknown = true;
             vd->ref.writable = ra.writable;
@@ -2582,6 +2599,7 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
         }
         if (!params[i].type || params[i].type->kind != TY_SLICE) NoArrayJoin(argvals[i]);
     }
+    RefSliceArgs(argvals, ptypes, c->line);
     {
         DestScope ds(*this, Dest {});
         for (size_t i = 0; i < ptypes.size(); i++) {

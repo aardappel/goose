@@ -570,6 +570,11 @@ struct Val : Prov {
     bool litint = false;
     int64_t litlo = 0, lithi = 0;
     bool lvalue = false;         // Denotes storage (a variable, field or element), not a temporary.
+    // A slice lvalue: where its slot lies -- the variable, or the storage
+    // the field or element is in -- which a reference to it is rooted at
+    // (TypeCheck::AutoRef), as `&` of the slot is (§3.8).
+    Prov slot;
+    bool hasslot = false;
     // A control construct's value, whose branches a destination with no type
     // of its own copies (TypeCheck::CheckBranchCopy): whether every branch is
     // non-fixed storage, or a reference to it, which a reference parameter
@@ -1228,10 +1233,6 @@ struct VarDef {
     // refers to views -- so classfrom's type says nothing about it.
     bool growshrink = false;
     bool gsvia = false;
-    // Synthetic class roots only: the call-site root is a slice variable
-    // named by an explicit `&` (RootArg::viewslot), which only bounds where
-    // the slice it holds points.
-    bool viewslot = false;
     // For variables of reference/slice type: where the value they hold
     // points, fixed at first binding (see typecheck.h header note). A
     // null-initialized optional has no commitment yet (refrootknown false),
@@ -1377,11 +1378,6 @@ struct RootArg {
     // the same reason growshrink is: the shrink scans dismiss a slice whose
     // pointee the root cannot hold, and this is the one that survives that.
     bool byteview = false;
-    // A reference to a slice taken with an explicit `&` of a slice variable,
-    // which is rooted at the variable itself (§3.8) rather than where its
-    // slice points, as binding the variable by reference is. Part of the key:
-    // a slice loaded through such a class is only bounded by it.
-    bool viewslot = false;
     // Val::rootexact of the argument, ANDed over every call site that reaches
     // the specialization. Deliberately not part of the key: within the callee
     // a class always names one array (typecheck.h keeps an inexactly rooted
@@ -1432,8 +1428,7 @@ struct RootArg {
     bool operator==(const RootArg &o) const {
         return cls == o.cls && writable == o.writable && reusable == o.reusable &&
                growshrink == o.growshrink && slotread == o.slotread && byteview == o.byteview &&
-               pool == o.pool && heldexact == o.heldexact && viewslot == o.viewslot &&
-               unknown == o.unknown;
+               pool == o.pool && heldexact == o.heldexact && unknown == o.unknown;
     }
 };
 

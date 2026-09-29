@@ -233,9 +233,16 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         auto rt = rv.type;
         if (IsPlainRef(rt)) {
             rt = rt->ref->sub;
-            // As DerefLValue.
-            rv.ClearSlotRead();
-            rv.reached = LoadType(rt);
+            if (rt->kind == TY_SLICE) {
+                // A slice is the one its slot holds, as DecayRef loads it.
+                auto sv = SlotView(rv, rt);
+                sv.reached = nullptr;
+                rv.SetProv(sv);
+            } else {
+                // As DerefLValue.
+                rv.ClearSlotRead();
+                rv.reached = LoadType(rt);
+            }
         }
         if (rt->kind == TY_ARRAY) {
             ak = rt->arr->akind;

@@ -216,12 +216,12 @@ inline bool TypeCheck::SlotReadable(TypeExpr *t) {
 //
 // A reference to a holder is rooted at the holder, whose store record says
 // what it holds, as it does for the holder itself. One to a slice is rooted
-// where the slice points, or, taken with an explicit `&`, at the slice
-// variable, whose own binding says where (SlotView). The slot may since have
-// been rebound, a slice variable at its root's depth, and a slice into a
-// grow-only array stored into it through a reference, with anything at that
-// depth or outside it; there, as behind a `var` reference, an inexact one or
-// a parameter's class of an explicit `&s`, the root only bounds the array.
+// at the slot holding the slice, a slice variable's own binding saying where
+// that points (SlotView). The slot may since have been rebound, a slice
+// variable at its root's depth, and a slice into a grow-only array stored
+// into it through a reference, with anything at that depth or outside it;
+// there, as behind a `var` reference, an inexact one or a parameter's class,
+// which stands for a slot of the caller's, the root only bounds the array.
 inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *t,
                                             VarDef *root, TypeExpr *bound, bool growonly) {
     auto slotof = [](VarDef *r) { return r && r->type && IsRefOrSlice(r->type) ? r : nullptr; };
@@ -247,7 +247,7 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
             if (HolderMayPointInto(r, root, arrtype, LiveEventBase(r), &where)) return true;
             continue;
         }
-        if (growonly || !a.exact || (r && !r->type && r->viewslot)) {
+        if (growonly || !a.exact || (r && !r->type && t->ref->sub->kind == TY_SLICE)) {
             if (Depth(r) >= Depth(root)) return true;
             continue;
         }
@@ -267,15 +267,15 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
     return false;
 }
 
-// The slice a load through a reference to one sees. Bound by reference
-// (§4.1), the reference is rooted where that slice points already. Taken
-// with an explicit `&` (§3.8), it is rooted where the slice variable, field
-// or element lives: a variable's own binding says where its slice points,
-// and the stores into a container only bound it, as the caller's variable
-// behind a parameter's class of an explicit `&s` does, and as an inexact
-// root bounds the slot. A slice variable's binding says whether its slice is
-// a slot read (RootAlt::slotread), and one a container holds is, lying in a
-// field or an element; what the reference was says nothing.
+// The slice a load through a reference to one sees. The reference is rooted
+// where the slice variable, field or element holding it lives, whether it
+// bound that slot by reference (§4.1) or was taken with an explicit `&`
+// (§3.8): a variable's own binding says where its slice points, and the
+// stores into a container only bound it, as the caller's slot behind a
+// parameter's class does, a temporary's behind its root, and an inexact root
+// the slot. A slice variable's binding says whether its slice is a slot read
+// (RootAlt::slotread), and one a container holds is, lying in a field or an
+// element; what the reference was says nothing.
 inline Prov TypeCheck::SlotView(const Prov &p, TypeExpr *slice) {
     Prov out = p;
     out.alts.clear();
@@ -291,13 +291,9 @@ inline Prov TypeCheck::SlotView(const Prov &p, TypeExpr *slice) {
             out.writable = out.writable && v.writable;
             continue;
         }
-        if (!r->type && r->viewslot) {
+        if (!r->type) {
             out.Add({ r, false, r, false });
             out.byteview = out.byteview || r->contentbyteview;
-            continue;
-        }
-        if (!r->type || !CanContain(r->type, slice)) {
-            out.Add({ r, true, nullptr, false });
             continue;
         }
         LVal lv;

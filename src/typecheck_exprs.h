@@ -213,8 +213,12 @@ inline void TypeCheck::ReadBackLVal(LVal &lv) {
 // as the slot's type says: only a writable value can have been stored in
 // a slot that is not `const` (§9.5).
 inline Val TypeCheck::ContainerRead(LVal lv) {
-    ReadBackLVal(lv);
     Val v;
+    if (lv.type->kind == TY_SLICE) {
+        v.slot = lv;
+        v.hasslot = true;
+    }
+    ReadBackLVal(lv);
     v.type = LoadType(lv.type);
     v.SetProv(lv);
     if (IsRefOrSlice(v.type)) v.writable = !lv.type->cq;
@@ -637,11 +641,21 @@ inline Node *TypeCheck::AutoRef(Node *n, Val &v, bool writes) {
         NoteWritableRef(id->vdef, n);
     auto u = ast.New<Unary>(n->line, T_BITAND, n);
     u->synth = true;
+    SlotRoots(v);
     v.type = ast.RefTo(ast.PlainOf(v.type), n->line);
     v.type->cq = !v.writable;   // The reference carries a const value's qualifier.
     v.lvalue = false;
     u->exprtype = v.type;
     return u;
+}
+
+// A slice lvalue bound by reference: the reference names the slot, so it is
+// rooted where the slot lies, as `&` of it is (§3.8), not where the slice
+// points (Val::slot).
+inline void TypeCheck::SlotRoots(Val &v) {
+    if (!v.hasslot || v.type->kind != TY_SLICE) return;
+    v.TakeAlts(v.slot);
+    v.hasslot = false;
 }
 
 inline bool TypeCheck::BindsRef(const Val &v, TypeExpr *dt) {
@@ -877,6 +891,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
     // An lvalue at a reference destination is the reference to it (§4.1),
     // a `const T&` where the lvalue is read-only (§9.5).
     if (BindsRef(v, dt)) {
+        SlotRoots(v);
         t = v.type = ast.RefTo(ast.PlainOf(t), dt->line);
         v.type->cq = !v.writable;
         v.lvalue = false;
