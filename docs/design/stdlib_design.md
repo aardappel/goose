@@ -473,7 +473,10 @@ struct dictionary<K, V> { count: i64 = 0, slots: dictionary_slot<K, V>[>..<] = [
   transient second table costs one data stack index during the call, never
   an allocation. In-place doubling (`append` then re-place) is possible
   with this layout and can replace it later without changing the API.
-* Fresh slots are filled with `default<K>()`/`default<V>()` (§8.2).
+* Fresh slots are filled with `default<K>()`/`default<V>()` (§8.2), so a
+  reference value is an optional one (`Cell?`, or `in pool`). An update
+  stores a whole slot, since `=` into a reference `V` would write its
+  pointee (spec §3.8).
 * A hash is not cached in the slot in v1 (17 bytes for an `i64 → i64` table);
   caching it (`h: u32`) speeds rehash and slice-keyed probes and is a
   measured decision for later.

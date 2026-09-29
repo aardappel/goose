@@ -276,6 +276,26 @@ require it (§9.5). A dictionary holding writable slices can use
 `dictionary<u8[:], V>`, whether the underlying buffer is bound with `let`
 or `var`.
 
+A value can be a reference if it is optional, `Cell?` or a link into a
+pool, `Cell&<u32 in cells>?`: the unused slots hold `default<V>()`, which a
+non-optional reference does not have. `insert` over an existing key stores
+the new reference rather than writing through the old one. `get` and
+`get_or_insert` return the stored reference itself, and `update`'s and
+`each`'s blocks receive it (`V?` and `V&` of a reference are that
+reference, §3.8), loaded if relative: writing through it writes the
+pointee, and replacing it takes an `insert`. `get` returns null for a null
+value as for an absent key; `contains` tells them apart. Such a reference
+points at its pointee rather than into the slot array, so it may stay live
+across the next mutation:
+
+```goose
+var owner = dictionary<i64, Cell?> {};
+owner.insert(7, cells[3]);
+let c = owner.get(7);
+owner.insert(7, cells[4]);       // cells[3] is unchanged, and c still refers to it
+if c { c.v += 1; }
+```
+
 ## vec
 
 ```goose

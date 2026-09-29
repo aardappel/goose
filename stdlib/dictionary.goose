@@ -3,7 +3,9 @@
 // hash(key) & mask, backward-shift deletion (no tombstones). Keys and
 // values are fixed-size; strings are keyed as u8[:] slices into text the
 // caller owns, or as inline u8[..k]. A user key type provides
-// `fn hash(k: key) -> u64` (and `==`).
+// `fn hash(k: key) -> u64` (and `==`). A reference value is an optional
+// one, plain or `in pool`: unused slots hold default<V>(), which a
+// non-optional reference has none of.
 //
 // The slot array is grow-shrink so that growth can replace it whole
 // through a reference (spec §5.2); as a consequence a reference obtained
@@ -58,7 +60,9 @@ fn insert<K, V>(d: dictionary<K, V>&, key: K, val: V) -> bool {
     var i = (hash(key) & (mask as u64)) as i64;
     while d.slots[i].used {
         if d.slots[i].key == key {
-            d.slots[i].val = val;
+            // The whole slot, since `=` into a reference V would write its
+            // pointee (§3.8); the stored key stays.
+            d.slots[i] = dictionary_slot<K, V> { d.slots[i].key, val, true };
             return false;
         }
         i = (i + 1) & mask;
