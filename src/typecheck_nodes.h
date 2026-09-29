@@ -388,8 +388,10 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
         // it un-narrows is un-narrowed after the condition, and the left test
         // cannot narrow it for the region the condition guards.
         rightkills.clear();
-        for (size_t i = 0; i < mid.st.size() && i < tc.vars.size(); i++)
-            if (mid.st[i].second && !tc.vars[i]->narrowed) rightkills.push_back(tc.vars[i]);
+        for (size_t k = 0; k < mid.st.size() && mid.idx[k] < (int)tc.vars.size(); k++) {
+            auto v = tc.vars[mid.idx[k]];
+            if (mid.st[k].second && !v->narrowed) rightkills.push_back(v);
+        }
         for (auto [gv, gn] : mid.globals)
             if (gn && !gv->narrowed) rightkills.push_back(gv);
         tc.RestoreFlow(snap);
