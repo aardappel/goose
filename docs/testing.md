@@ -130,7 +130,9 @@ temporary result stacks that output-only comparisons would miss,
 `cycle_scratch_locals.goose` to show that a recursion's scratch locals take
 the same few stacks at every level, and `discarded_resizable_results.goose`
 shrinks each stack's reservation (`GS_STACK_RESERVE`) so that its loops
-overflow one unless every discarded result is released;
+overflow one unless every discarded result is released, as
+`guard_flat_storage.goose` does for what a guard's condition, its else and
+the rest of its block take, the rest emitted without braces of its own;
 `data_stacks_exhausted.goose` runs out of stacks on purpose. A fixture
 expecting a debug-only abort sets `GS_DEBUG=1` the same way, which makes
 every run of it a debug build: `cast_abort_location.goose` and
@@ -154,6 +156,7 @@ The runner checks more than exit status and runtime output:
 | Every fixture with `// bce:elide` or `// bce:keep` | Run `-O1 --check --bce-test`, including expected-abort regressions. Native/JIT O0 and O2 runs independently check behavior. |
 | `gfx_err_shader_syntax.goose`, `gfx_err_shader_part.goose` | Besides their markers, the error is reported at the program's line holding the offending GLSL. |
 | Generated `call_chain.goose`, `call_chain_too_deep.goose` (`build/gen/<profile>/`) | A compile-time call path through 2000 distinct functions checks at `-O0`, and runs through TinyCC; at `-O2`, where the inliner may fold its single-use functions into one body only 64 C blocks deep at a time, it builds with the native C compiler and runs (`docs/implementation.md` §4). One through 6000, each calling the next from 32 blocks deep, is rejected as too deep for the compiler's stack instead of overflowing it (§3.1). |
+| Generated `guard_runs.goose` (`build/gen/<profile>/`) | 300 guards in a row, in a function's body and in a loop's, build with the native C compiler and run at `-O0` and `-O2`: the rest of the block after a guard whose else leaves opens no C block (`docs/implementation.md` §6.2), where MSVC stops at 128 levels and clang at 256. A chain of 200 single-use functions, each calling the next behind four guards, folds at `-O2` into bodies 64 blocks deep, which would nest past both limits if the inliner's count left out blocks codegen opens (§4). |
 | `optimize.goose` at O0/O1/O2 | Inspect named tail-recursion bodies in `--specs`: supported integer accumulator/plain recursion becomes loops; modulo, floating-point reassociation, nonlocal-return frames and returns inside nested loops retain self calls. Mixed operators retain the ineligible call. Leading locals prevent base-case inlining from consuming these cases first. |
 
 The fixture audit retained the small lifetime, optional-narrowing, alias-cycle,

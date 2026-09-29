@@ -1166,6 +1166,12 @@ inline Val TypeCheck::CheckIf(IfExpr *x, TypeExpr *expected, bool wantvalue) {
     // so its type is settled here too, void where it never produces.
     if (x->elseb) x->elseb->exprtype = ev.type ? ev.type : ast.voidtype;
     auto bflow = SaveFlow();
+    Node *last = nullptr;
+    if (!blockpos.empty()) {
+        auto b = blockpos.back().block;
+        last = b->tail ? b->tail : b->stmts.empty() ? nullptr : b->stmts.back();
+    }
+    x->flat = last == x && x->elseb && entry.reachable && !bflow.reachable;
     RestoreFlow(entry);
     MergeFlow(aflow, bflow);
     if (!wantvalue) return VoidVal();

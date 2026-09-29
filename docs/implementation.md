@@ -1173,7 +1173,10 @@ began (`FnSpec::outerexits`), which a call reusing it takes again
 its end did: the code after the call never runs. A branch that diverges has
 the null "bottom" type, which unifies with anything (`UnifyBranch`,
 `MergeVals`), and reads as `void` once the construct's node is left
-(`VoidIfBottom`).
+(`VoidIfBottom`). An `if` that ends its block, as the one a guard parses
+to does, and whose `else` diverges is marked `IfExpr::flat` (`CheckIf`,
+by `blockpos`): codegen puts its then-block after the `else` in the C
+block the `if` is in (§6.2), and the inliner counts no block for it (§4).
 
 A `let` declared without an initializer is assigned, or bound with `.=`,
 only where it is not maybe assigned (`NoLetReassign`, §4.4), which is
@@ -2200,7 +2203,8 @@ blocks around it plus those the callee's body nests stay within `MAXNEST`.
 Such a chain then folds into one body per 64 levels, each calling the next,
 and takes 2 s and 240 MB (0.7 s and 170 MB at `-O0`). Both counts are of
 what codegen opens a C block for: every `Block` (a function or inlined body,
-an arm, a loop body), one around an `else` that is not a `Block`, the right
+an arm, a loop body; not a flat `if`'s then-block, §6.2, which `Around`
+takes back), one around an `else` that is not a `Block`, the right
 operand of `&&` and `||`, a `while` condition (tested inside the loop), the
 arguments of a function-value call (bound inside its block) and an array's
 fill value (conservatively counted with its repetition loop), and two
@@ -2583,6 +2587,14 @@ a local's allocation skips the statement scopes inside its block
 (`AllocStk(forlocal)`), and no further: its index is free again once the
 block ends, for the locals and calls that follow (what lets a recursive
 cycle's functions own scratch, §7.8).
+
+One scope has no braces: the then-block of a flat `if` (§3.9). Its `else`
+cannot complete normally, so what follows `if (!c) { else }` runs exactly
+where `c` holds, and the then-block's contents are emitted there, in the C
+block the `if` is in, its restores still closing its scope. A run of
+guards so nests no C blocks, however long (MSVC stops at 128 levels, clang
+at 256). C names are unique within a function (`T`, `Unique2`), so what
+the then-block declares clashes with nothing there.
 
 Because a `uint8_t *` store may alias a stack's `top` in C, the tops of the
 stacks a function owns are cached in locals where the function grows them

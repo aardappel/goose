@@ -97,6 +97,31 @@ def call_chain(depth, nest=0):
     return "".join(fns)
 
 
+def guard_runs(guards, links):
+    """A program of `guards` guards in a row, in a function's body and in a
+    loop's, and of a chain of `links` single-use functions, each calling the
+    next behind four guards. It prints `guards - 1`, -1, 5 and 3."""
+    lines = ["fn many(x: i64) -> i64 {"]
+    lines += [f"    guard x != {i} else {{ return {i}; }}" for i in range(guards)]
+    lines += ["    -1", "}",
+              "fn skips(n: i64) -> i64 {", "    var hits = 0;", "    for x in n {"]
+    lines += [f"        guard x != {i} else {{ continue; }}" for i in range(guards)]
+    lines += ["        hits++;", "    }", "    hits", "}"]
+    for i in range(links):
+        lines += [f"fn link{i}(x: i64, n: i64) -> i64 {{",
+                  "    guard n != 0 else { return 0; }",
+                  "    guard x != -1 else { return -1; }",
+                  "    guard x != -2 else { return -2; }",
+                  "    guard x != -3 else { return -3; }",
+                  "    let a: i64[1] = [x];",
+                  f"    link{i + 1}(a[0], n - 1) + 1",
+                  "}"]
+    lines.append(f"fn link{links}(x: i64, n: i64) -> i64 {{ n }}")
+    lines.append(f'fn main() {{ print(many({guards - 1}), " ", many(-1), " ", '
+                 f'skips({guards + 5}), " ", link0(1, 3)); }}')
+    return "\n".join(lines) + "\n"
+
+
 class Runner:
     def __init__(self, exe):
         self.exe = exe
@@ -782,6 +807,34 @@ def main():
     code, out, err = r.goose("-O0", "--check", f)
     if r.check_error(f, "expected-tc-error", code, out, err):
         r.ok(f"tc-error {f.name}")
+
+    # A guard is an if over the rest of its block (§6.4), whose rest codegen
+    # emits after the else rather than in a C block of its own where the else
+    # leaves, so 300 guards in a row build with MSVC, which stops at 128
+    # levels of blocks, and with clang, at 256. The inliner counts no block
+    # for such a rest either: a chain of calls, each behind four guards,
+    # folds into bodies MAXNEST (64) levels deep, which blocks opened by
+    # codegen but not counted by the inliner would make over 300 deep.
+    f = deepdir / "guard_runs.goose"
+    tc.write_text(f, guard_runs(300, 200))
+    for ol in (("0", "2") if args.profile == "baseline" else ("2",)) if cc else ():
+        cfile = deepdir / f"guard_runs-O{ol}.c"
+        efile = deepdir / f"guard_runs-O{ol}{tc.EXE_SUFFIX}"
+        code, out, err = r.goose(f"-O{ol}", "-o", cfile, f)
+        if code != 0:
+            r.fail(f"cgen -O{ol} {f.name}", out + err)
+            continue
+        ok, log = cc.compile(cfile, efile, opt=int(ol) if args.profile == "baseline" else 1,
+                             extra=extra, strict_decls=True,
+                             log=deepdir / f"guard_runs-O{ol}.cc.log")
+        if not ok:
+            r.fail(f"cc -O{ol} {f.name}", "\n".join(log.splitlines()[:8]))
+            continue
+        code, out, err = tc.run_capture([efile])
+        if code != 0 or joined(out) != "299 -1 5 3":
+            r.fail(f"run -O{ol} {f.name} (exit {code})", out + err)
+        else:
+            r.ok(f"cgen+run -O{ol} {f.name}")
 
     # The samples: compiled, built, run and compared with their expected output
     # (or only typechecked without a C compiler), by their own runner.

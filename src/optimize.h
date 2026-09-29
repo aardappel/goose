@@ -209,15 +209,20 @@ struct Optimizer {
     Node *TryInline(Call *c);   // Defined after Inliner below.
 
     // C nesting. Codegen opens a C block for every Block -- a function or
-    // inlined body, an arm, a loop body -- and around a child of some other
-    // nodes, which Around counts: an `else` that is not a Block, a match arm
+    // inlined body, an arm, a loop body -- but the then-block of a flat if
+    // (IfExpr::flat), whose contents go in the block the if is in, which
+    // Around takes back. It opens one around a child of some other nodes
+    // too, which Around counts: an `else` that is not a Block, a match arm
     // (two: a switch and its case), the right operand of && and ||, a while
     // condition (tested inside the loop), the arguments of a function-value
     // call (bound inside its block) and an array's fill value (built in a
     // loop). Scan and the Opt walk count both to keep inlining within
     // MAXNEST.
     static int Around(Node *n, Node *ch) {
-        if (auto fi = Is<IfExpr>(n)) return ch == fi->elseb && !Is<Block>(ch) ? 1 : 0;
+        if (auto fi = Is<IfExpr>(n)) {
+            if (ch == fi->thenb) return fi->flat ? -1 : 0;
+            return ch == fi->elseb && !Is<Block>(ch) ? 1 : 0;
+        }
         if (auto m = Is<MatchExpr>(n)) return ch != m->scrutinee ? 2 : 0;
         if (auto b = Is<Binary>(n))
             return ch == b->right && (b->op == T_ANDAND || b->op == T_OROR) ? 1 : 0;
@@ -720,8 +725,10 @@ inline Node *Block::Cp1(Inliner &inl) const {
 }
 
 inline Node *IfExpr::Cp1(Inliner &inl) const {
-    return inl.ast.New<IfExpr>(line, inl.Cp(cond), inl.CpBlock(thenb),
-                               elseb ? inl.Cp(elseb) : nullptr);
+    auto c = inl.ast.New<IfExpr>(line, inl.Cp(cond), inl.CpBlock(thenb),
+                                 elseb ? inl.Cp(elseb) : nullptr);
+    c->flat = flat;
+    return c;
 }
 
 inline Node *MatchExpr::Cp1(Inliner &inl) const {
@@ -1100,7 +1107,10 @@ inline Node *IfExpr::Opt(Optimizer &o) {
             return o.Opt(taken);
         }
     }
+    auto k = Optimizer::Around(this, thenb);
+    o.depth += k;
     o.OptBlock(thenb);
+    o.depth -= k;
     if (elseb) elseb = o.OptIn(this, elseb);
     return this;
 }

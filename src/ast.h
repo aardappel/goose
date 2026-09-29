@@ -925,6 +925,14 @@ NODE(IfExpr)
     Node *cond;
     Block *thenb;
     Node *elseb;                // Block, IfExpr, or null (any expr after optimization).
+    // Filled by typecheck: the if ends its block (is its tail, or its last
+    // statement where it has none) and its else cannot complete normally,
+    // the shape a guard parses to (§6.4). What follows the else then runs
+    // exactly where cond holds, so codegen puts the then-block's contents
+    // after `if (!cond) { else }`, in the C block the if is in rather than
+    // in one of their own (IfExpr::CgAny), and the optimizer counts no C
+    // block for the then-block (Optimizer::Around).
+    bool flat = false;
     IfExpr(Line l, Node *_cond, Block *_thenb, Node *_elseb)
         : Node(l), cond(_cond), thenb(_thenb), elseb(_elseb) {}
 NODE_END

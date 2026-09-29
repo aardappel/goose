@@ -816,8 +816,9 @@ struct CodeGen {
     // ------------------------------------------------------------------
     // Statements and control flow. GenAny routes a node's value to a Dst;
     // control constructs recurse so every branch reaches the same
-    // destination (§4.3). Scopes mirror C braces, so watermark base
-    // variables are always in C scope exactly where exits may restore them.
+    // destination (§4.3). Scopes mirror C braces -- all but a flat if's
+    // then-block (IfExpr::flat), which shares the C block the if is in -- so
+    // watermark base variables are in C scope wherever exits may restore them.
 
     bool termjump = false;   // The last emitted statement left via goto/return.
 

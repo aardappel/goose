@@ -397,6 +397,25 @@ inline void Block::CgAny(CodeGen &cg, const Dst &d) {
 
 inline void IfExpr::CgAny(CodeGen &cg, const Dst &d) {
     auto c = cg.GenTruth(cond);
+    if (flat) {
+        // The else cannot complete normally, so the then-block's contents
+        // follow it in this C block, a scope without braces of its own: a
+        // run of guards nests no C blocks, however long.
+        cg.L("if (!(", c, ")) {");
+        cg.ind++;
+        cg.PushSc(CodeGen::SC_PLAIN);
+        if (auto b = Is<Block>(elseb)) cg.GenBlockInner(b, d);
+        else cg.GenAny(elseb, d);
+        cg.cscopes.back().saves.clear();   // Its end is never reached.
+        cg.PopSc();
+        cg.ind--;
+        cg.L("}");
+        cg.PushSc(CodeGen::SC_PLAIN);
+        cg.GenBlockInner(thenb, d);
+        cg.PopSc();
+        cg.termjump = false;
+        return;
+    }
     cg.L("if (", c, ") {");
     cg.ind++;
     cg.PushSc(CodeGen::SC_PLAIN);
