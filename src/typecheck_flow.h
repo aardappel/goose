@@ -1735,7 +1735,8 @@ inline void TypeCheck::CheckGuard(Guard *g) {
 
 inline void TypeCheck::ImplicitEmptyReturn(Node *at) {
     if (frames.back().isdefault) Error(at, "guard shorthand cannot exit a default");
-    auto &f = CurRealFrame();
+    auto fi = RealFrameIndex();
+    auto &f = frames[fi];
     if (!f.sf) Error(at, "guard shorthand cannot exit the top level");
     auto spec = f.spec;
     if (spec->retsknown) {
@@ -1746,12 +1747,13 @@ inline void TypeCheck::ImplicitEmptyReturn(Node *at) {
         spec->rets.clear();
         spec->retsknown = true;
     }
+    NoteExit(fi);
 }
 
-inline TypeCheck::Frame &TypeCheck::CurRealFrame() {
+inline int TypeCheck::RealFrameIndex() {
     for (auto i = (int)frames.size() - 1; i >= 0; i--)
-        if (!frames[i].isfunval) return frames[i];
-    return frames[0];
+        if (!frames[i].isfunval) return i;
+    return 0;
 }
 
 inline int TypeCheck::FindBreakScope(bool forcontinue) {

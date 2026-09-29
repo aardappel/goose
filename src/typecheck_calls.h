@@ -1196,6 +1196,7 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
             spec->stale = false;
             CheckSpecBodyOnce(spec, &argvals, callnode->line);
         } else if (!spec->inprogress) {
+            ReplayOuterExits(spec);
             ReplayEnvExits(spec);
         }
         NoteCalleeEnvReads(spec);
@@ -1345,6 +1346,53 @@ inline void TypeCheck::ReplayEnvExits(FnSpec *spec) {
         v->contents = x.contents;
         v->contentbyteview = x.contentbyteview;
         NoteFact(v);
+    }
+}
+
+// An exit of the body that frame tf checks, reached here: its caller finds a
+// variable outside it assigned where every exit does (§4.4). `added`: those
+// a reused callee's activation had assigned when it took the exit, where they
+// were unassigned when it began (FnSpec::outerexits). The exit leaves the
+// bodies checked in the frames above tf too, each of which records what it
+// had assigned by then for a call reusing it.
+inline void TypeCheck::NoteExit(int tf, const set<VarDef *> *added) {
+    auto e = frames[tf].exits;
+    if (!reachable || !e) return;
+    auto isassigned = [&](VarDef *v) { return v->assigned || (added && added->count(v)); };
+    for (size_t i = 0; i < e->vars.size(); i++)
+        e->assigned[i] = (!e->reached || e->assigned[i]) && isassigned(e->vars[i]);
+    e->reached = true;
+    auto target = frames[tf].spec;
+    for (auto k = tf + 1; k < (int)frames.size(); k++) {
+        auto mine = frames[k].exits;
+        if (!mine) continue;
+        set<VarDef *> assigned;
+        for (auto v : e->vars)
+            if (isassigned(v) && find(mine->vars.begin(), mine->vars.end(), v) != mine->vars.end())
+                assigned.insert(v);
+        auto &outer = frames[k].spec->outerexits;
+        auto known = false;
+        for (auto &[t, a] : outer) {
+            if (t != target) continue;
+            // What every exit of the target it takes has assigned.
+            std::erase_if(a, [&](VarDef *v) { return !assigned.count(v); });
+            known = true;
+        }
+        if (!known) outer.push_back({ target, std::move(assigned) });
+    }
+}
+
+// A call reusing a body takes the exits of the bodies outside it that its
+// check took, having assigned what the check had by each. Their targets are
+// on the call path, the body being reused only under the specializations its
+// long-distance returns were checked against (FnSpec::needs).
+inline void TypeCheck::ReplayOuterExits(FnSpec *spec) {
+    for (auto &[target, added] : spec->outerexits) {
+        for (auto i = (int)frames.size() - 1; i >= 0; i--) {
+            if (frames[i].isfunval || frames[i].spec != target) continue;
+            NoteExit(i, &added);
+            break;
+        }
     }
 }
 
@@ -1949,13 +1997,19 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     // class roots: the records name them.
     auto oldparams = std::move(spec->params);
     spec->params.clear();
-    // A caller learns nothing about optionals from where this body ends: its
-    // early returns never get there, and a cached body is not checked again.
-    // What it rebinds reaches callers through ApplyCalleeRebinds. The body
-    // can only name the variables of the frames it is nested in.
+    // The caller goes on from the body's exits, not from where its text ends:
+    // it finds a variable outside the body assigned where every exit does
+    // (NoteExit), and narrowed as it was, since a cached body is not checked
+    // again; what the body rebinds reaches callers through
+    // ApplyCalleeRebinds. The body can only name the variables of the frames
+    // it is nested in, and only assign those of them unassigned here.
     vector<pair<VarDef *, TypeExpr *>> outernarrowed;
-    EachNamedVar(spec->lexparent ? LexFrame(spec->lexparent) : -1, spec,
-                 [&](int i) { outernarrowed.push_back({ vars[i], vars[i]->narrowed }); });
+    BodyExits exits;
+    EachNamedVar(spec->lexparent ? LexFrame(spec->lexparent) : -1, spec, [&](int i) {
+        outernarrowed.push_back({ vars[i], vars[i]->narrowed });
+        if (!vars[i]->assigned) exits.vars.push_back(vars[i]);
+    });
+    exits.assigned.resize(exits.vars.size());
     for (auto g : ast.globals) for (auto v : g->defs) outernarrowed.push_back({ v, v->narrowed });
     Frame f;
     f.sf = sf;
@@ -1968,7 +2022,9 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     f.scopebase = (int)scopes.size();
     f.varbase = (int)vars.size();
     f.callline = callline;
+    f.exits = &exits;
     frames.push_back(f);
+    auto fi = (int)frames.size() - 1;
     // The caller's body state is its own (BodyState): this body's loops run
     // their own passes and its warnings stand as soon as they are given,
     // and the call site replays this body's shrinks and growths against
@@ -2139,12 +2195,14 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
                 } else {
                     vector<Val> vals = { tv };
                     RecordReturn(spec, vals, tail);
+                    NoteExit(fi);
                     reachable = false;
                 }
             }
         }
     }
     if (reachable) {
+        NoteExit(fi);
         if (spec->retsknown && !spec->rets.empty())
             Error(sf->body, cat("function ", sf->name,
                                 " can fall off the end without returning value(s)"));
@@ -2154,6 +2212,10 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     PopScope();
     frames.pop_back();
     for (auto [v, n] : outernarrowed) v->narrowed = n;
+    // A body whose exits all leave callers further out, or none at all, is
+    // never returned from, and leaves them as its end did.
+    if (exits.reached)
+        for (size_t i = 0; i < exits.vars.size(); i++) exits.vars[i]->assigned = exits.assigned[i];
     reachable = savereach;
     RecordEnvExits(spec);
     spec->inprogress = false;
@@ -2441,6 +2503,7 @@ inline void TypeCheck::CheckReturn(Return *r) {
         }
         RecordReturn(tspec, vals, r);
     }
+    NoteExit(tf);
     reachable = false;
 }
 

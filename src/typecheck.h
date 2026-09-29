@@ -176,6 +176,16 @@ struct TypeCheck {
         int serial = 0;
     };
 
+    // A function body's exits as its caller's flow sees them (§4.4): the
+    // variables outside it that it can name and were unassigned when its
+    // check began -- the ones it may assign -- and whether each is assigned
+    // at every exit reached so far (NoteExit).
+    struct BodyExits {
+        vector<VarDef *> vars;
+        vector<bool> assigned;
+        bool reached = false;
+    };
+
     // One level of the compile-time call path.
     struct Frame {
         SFunction *sf = nullptr;     // Null for the global-initializer frame.
@@ -200,6 +210,8 @@ struct TypeCheck {
         // where it made the latest (JoinCycle).
         int cyclecalls = 0;
         Line cyclecall;
+        // A specialization's body being checked (CheckSpecBodyOnce): its exits.
+        BodyExits *exits = nullptr;
     };
 
     enum ScopeKind { SK_PLAIN, SK_FN, SK_LOOP, SK_BLOCK };
@@ -1069,6 +1081,13 @@ struct TypeCheck {
     void ShareCycleEnvReads(FnSpec *head);
     void RecordEnvExits(FnSpec *spec);
     void ReplayEnvExits(FnSpec *spec);
+    // A body's caller finds the variables outside it assigned as all of the
+    // body's exits agree (BodyExits): its returns, the tail, a reachable end,
+    // and an exit of it that a callee takes -- a function value's `return`,
+    // a `return from`. A callee records such an exit (FnSpec::outerexits),
+    // which a call reusing it takes again.
+    void NoteExit(int tf, const set<VarDef *> *added = nullptr);
+    void ReplayOuterExits(FnSpec *spec);
 
     // A loop body is checked as many times as it takes for what it feeds
     // back to its head to settle (CheckLoopPasses): the roots its rebinds
@@ -1467,7 +1486,8 @@ struct TypeCheck {
     void CheckFor(ForLoop *x);
     void CheckGuard(Guard *g);
     void ImplicitEmptyReturn(Node *at);
-    Frame &CurRealFrame();
+    int RealFrameIndex();
+    Frame &CurRealFrame() { return frames[RealFrameIndex()]; }
     int FindBreakScope(bool forcontinue);
     void CheckBreak(Break *b);
     void CheckContinue(Node *n);

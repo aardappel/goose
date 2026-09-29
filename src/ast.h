@@ -1558,6 +1558,12 @@ struct FnSpec {
     // The same variables as the check left them, which a call reusing it
     // leaves them as too (TypeCheck::ReplayEnvExits).
     vector<EnvRead> envexits;
+    // Exits of the bodies outside this one's activation that its check took
+    // -- a function value's `return`, a `return from` -- each target with
+    // the variables outside it that the activation had assigned at all of
+    // them, where they were unassigned when it began: a call reusing it
+    // takes them again (TypeCheck::ReplayOuterExits).
+    vector<pair<FnSpec *, set<VarDef *>>> outerexits;
     // External optional bindings this body (or a callee) may rebind.
     set<VarDef *> reboundoptionals;
     vector<int> litparams;         // Parameters that are literals (§7.7): part of the key.

@@ -230,7 +230,9 @@ clones the body, checks its statements, and treats a value-producing tail as
 `return tail`. Per-body state is saved on entry and restored on exit: pending shrinks,
 held temporaries, reachability, the construction
 destination, the slot and return flags (§3.8), and narrowings of outer
-variables. Only the specialization's effect summaries reach the caller.
+variables; the outer variables it assigns are left assigned where all of
+its exits agree (§3.9). Only the specialization's effect summaries reach
+the caller.
 
 **Depth.** Since a body is checked inside the call that first reaches it,
 the native stack holds a `CheckSpecBody` activation for every call on the
@@ -1024,11 +1026,18 @@ narrowed to). `SaveFlow`/`RestoreFlow`/`MergeFlow` snapshot and join them at
 every branch, for the variables the code between can name -- those of the
 current frame, of the frames it is lexically nested in, and of the frames
 the function values it can call were written in (`NamedFrames`), and the
-globals -- since no other frame's can change meanwhile (a callee restores
-the ones it can name, `CheckSpecBodyOnce`): a fact holds after a
+globals -- since no other frame's can change meanwhile: a fact holds after a
 join iff it holds in every reachable branch, with `reachable` tracking
 divergence (`return`, `break`, `continue`, `abort`, `exit`, a `guard`
-else). A branch that diverges has the null
+else). A callee's check leaves the ones it can name narrowed as it found
+them, and assigned where all of its exits agree (`CheckSpecBodyOnce`,
+`BodyExits`, `NoteExit`), not as the end of its text does: each `return`,
+the one a bare `guard` makes, the tail and a reachable end. A function
+value's `return`, or a `return from` in a callee, exits the body it names
+(`Frame::exits`), and every body checked in the frames between records what
+its activation had assigned by then (`FnSpec::outerexits`), which a call
+reusing it takes again (`ReplayOuterExits`). A body with no exit its caller
+reaches leaves them as its end did: the code after the call never runs. A branch that diverges has the null
 "bottom" type, which unifies with anything (`UnifyBranch`, `MergeVals`), and
 reads as `void` once the construct's node is left (`VoidIfBottom`).
 
@@ -1629,10 +1638,11 @@ name the binding codegen declares. A loop's next pass, or a cycle's next
 round, finds such a variable as the first found its own, so a
 specialization checked then serves it; a call reusing one sets the
 variables it read to where its check left them (`envexits`,
-`ReplayEnvExits`), as the check itself did the first time, and notes a
-changed fact for the loops and rounds around it (`NoteFact`). The same
-holds where the flow of another branch dropped an assignment the check
-made. `VisibleVars`, which the shrink rules and the read-back candidates
+`ReplayEnvExits`; assigned where its exits agree, §3.9), as the check
+itself did the first time, and notes a changed fact for the loops and
+rounds around it (`NoteFact`). The same holds where the flow of another
+branch dropped an assignment the check made. Before that it takes the
+exits of the bodies outside it that its check took (`ReplayOuterExits`). `VisibleVars`, which the shrink rules and the read-back candidates
 enumerate (§3.6, §3.10), keeps the lexical parents' frames as the call
 finds them: a reference handed to the body, a later nested function's
 result or one a function value written at the call returns, can point into
