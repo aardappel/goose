@@ -2191,6 +2191,10 @@ owned storage (the root variable), static data, or opaque (a stored
 reference read on the way, an inexact root). `UltOf` follows reference and
 slice provenance to the owning variable; a synthetic parameter class is
 opaque as storage but two references in distinct classes are known distinct.
+A slice's length is held in the slot the slice lies in -- a variable, a field,
+an element -- so a place reached through a reference to a slice is owned by
+the slot the reference is rooted at (§3.4): `UltOf`'s slot mode stops at a
+slice variable rather than following it on to the array it views.
 Storage is **reachable** to a callee or an unknown reference only if its
 owner is a global, is captured, or has its address taken (`Reach`): creating
 any reference into a variable requires one of those. `AffectedByWrite`
@@ -2204,14 +2208,24 @@ What invalidates a fact: a grow or shrink builtin (the receiver takes the
 exact delta, every place it may alias the directional bump); a whole-value
 write to a variable or through a chain (`StorageWriteKill`: everything under
 that owner, or everything reachable when the target is unknown); a rebind of
-a reference or slice variable (`RebindKill`); a pointee write through a
-reference (`PointeeWriteKill`); a repeated declaration inside a loop; and a
-call. A call with no summary kills everything reachable plus every reachable
-integer variable (`KillByCall`); a call with a summary kills exactly what the
-summary names (§5.8). Integer writes shift facts in place when the pre-state
-provably cannot wrap (`ShiftCore`: `i++` moves every fact about `i` by one)
-and kill the variable otherwise; a set `v = e` re-pins `v` and records
-`v == e` when `e` has a term that cannot have wrapped.
+a reference variable (`RebindKill`); a slice stored into a slot, by assigning
+a slice variable or through a reference to a slice (`SlotWriteKill`: every
+slice place that slot may be -- the variable, each reference to it, any
+reachable slot when the slot is unknown -- while the arrays the slices view
+keep their lengths); any other pointee write through a reference
+(`PointeeWriteKill`); a store of a value holding a length (`HoldsLen`) into
+or inside an array element, or a grow or shrink of an array inside one
+(`ElementLvalKill`: no place lies in an element, but a reference to or into
+one measures what it holds, so every such place over the storage the
+elements lie in -- never a resizable array's, which no element is -- or
+anything reachable where a reference the element holds leads out of it); a
+repeated declaration inside a loop; and a call. A call with no summary kills
+everything reachable plus every reachable integer variable (`KillByCall`); a
+call with a summary kills exactly what the summary names (§5.8). Integer
+writes shift facts in place when the pre-state provably cannot wrap
+(`ShiftCore`: `i++` moves every fact about `i` by one) and kill the variable
+otherwise; a set `v = e` re-pins `v` and records `v == e` when `e` has a term
+that cannot have wrapped.
 
 ### 5.6 Facts from control flow
 
@@ -2266,7 +2280,12 @@ locals -- and the integers it may write; a write the walk cannot attribute
 makes the summary opaque. An `extern fn` may resize or write whatever it is
 handed by reference and nothing else. `CallKills` then kills exactly the
 places those effects name at the arguments bound to them, so a length fact
-survives a call to a kernel that only reads and writes elements.
+survives a call to a kernel that only reads and writes elements. No callee
+resizes a slice argument or a reference to one (`KillSliceArg`): through the
+reference it may store another slice into the slot, which is that slot's kill
+(§5.5), and through either it may write the elements the slice views, where
+only a reference into an element measures a length, and only where the
+element type holds one (`HoldsLen`, `ElementWriteKill`).
 
 **Entry facts.** Every call site (`RecordSite`) records what it proves about
 the arguments: each integer argument's term as sampled right after it was

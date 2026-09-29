@@ -207,6 +207,8 @@ struct BCE {
         int ultkind = UK_OPAQUE;
         bool refcrossed = false;
         bool lenmut = false;    // A grow/shrink operation can target it.
+        bool slice = false;     // Its length is a slice's, held in a slot.
+        bool inelem = false;    // Of a type an array element can have.
     };
     vector<Place> places;
     map<pair<VarDef *, vector<int>>, int> placeids;
@@ -215,17 +217,24 @@ struct BCE {
     // A synthetic parameter root class (typeless VarDef) is opaque, but two
     // references in distinct classes are known-distinct roots (§10.2). An
     // inexact root names a scope the pointee outlives rather than its owner
-    // (§9.5), so it says nothing about which storage this is.
-    pair<int, VarDef *> UltOf(VarDef *v) {
+    // (§9.5), so it says nothing about which storage this is. With `slot`,
+    // what is sought is the slot a slice's length lives in, which a
+    // reference to a slice is rooted at (§9.2): the chain stops at a slice
+    // variable rather than following it on to the array it views.
+    pair<int, VarDef *> UltOf(VarDef *v, bool slot = false) {
         for (auto guard = 0; guard < 16; guard++) {
             if (!v) return { UK_STATIC, nullptr };
             auto t = v->type;
             if (!t) return { UK_OPAQUE, v };
-            if (!IsRefOrSlice(t)) return { UK_OWNED, v };
+            if (!IsRefOrSlice(t) || (slot && t->kind == TY_SLICE)) return { UK_OWNED, v };
             if (!v->refrootknown || !v->ref.Exact()) return { UK_OPAQUE, nullptr };
             v = v->ref.Root();
         }
         return { UK_OPAQUE, nullptr };
+    }
+
+    static bool IsSliceRef(TypeExpr *t) {
+        return t && t->kind == TY_REF && t->ref->sub->kind == TY_SLICE;
     }
 
     // Whether the field or element `cur` reads holds a reference or a slice,
@@ -283,11 +292,14 @@ struct BCE {
         } else if (midcross) {
             P.ultkind = UK_OPAQUE;   // Reads a stored reference: target root unknown here.
         } else {
-            auto [k, u] = UltOf(root);
+            // A slice's length is in the slot a reference to it names.
+            auto [k, u] = UltOf(root, slice);
             P.ultkind = k;
             P.ultv = u;
         }
         P.lenmut = arr && t->arr->akind != A_VAR;
+        P.slice = slice;
+        P.inelem = slice || (arr && t->arr->akind != A_GROW && t->arr->akind != A_GROWSHRINK);
         auto id = (int)places.size();
         places.push_back(P);
         placeids[key] = id;
@@ -879,11 +891,14 @@ struct BCE {
         if (recv) NoteStorage(ExprTarget(recv));
         auto failidx = false, crossed = false;
         auto pid = recv ? PlaceOf(recv, &failidx, &crossed) : -1;
-        // A receiver reached through an element (a[i].f.push(...)) can only
-        // be an element-interior array, which no tracked place names --
-        // unless a reference read on the way led out of the element, to
-        // whatever reachable array it points at.
-        if (pid < 0 && failidx && !crossed) return -1;
+        // A receiver reached through an element (a[i].f.push(...)) is an
+        // element-interior array, which only references into the element
+        // measure -- unless a reference read on the way led out of the
+        // element, to whatever reachable array it points at.
+        if (pid < 0 && failidx && !crossed) {
+            ElementLvalKill(recv);
+            return -1;
+        }
         for (size_t i = 0; i < places.size(); i++) {
             if (!places[i].lenmut) continue;
             if (!AffectedByWrite((int)i, pid, UK_OPAQUE, nullptr, nullptr)) continue;
@@ -897,6 +912,19 @@ struct BCE {
         NoteStorage(UltTarget(tk, tu));
         for (size_t i = 0; i < places.size(); i++)
             if (AffectedByWrite((int)i, -1, tk, tu, chainroot)) BumpPlace((int)i, 0);
+    }
+
+    // A slice stored into a slot: a slice variable, a field or element in
+    // storage tu owns (tk == UK_OWNED), or a slot unknown here. Whatever
+    // names the slot measures the new slice -- the variable, and every
+    // reference to it -- while the arrays the slices view keep their
+    // lengths.
+    void SlotWriteKill(int tk, VarDef *tu) {
+        if (tk == UK_STATIC) return;   // Static data is never writable.
+        NoteStorage(UltTarget(tk, tu));
+        for (size_t i = 0; i < places.size(); i++)
+            if (places[i].slice && AffectedByWrite((int)i, -1, tk, tu, nullptr))
+                BumpPlace((int)i, 0);
     }
 
     void RebindKill(VarDef *root) {
@@ -955,27 +983,28 @@ struct BCE {
 
     // A receiver or lvalue chain, followed down through fields and elements
     // to its root variable -- unless a stored reference is read on the way
-    // (a reference-typed field or element), whose pointee is unknown. The
-    // chain's head counts as read too, except for `slot`: the location
-    // itself, which a rebind writes, rather than what it points at.
-    Target ExprTarget(Node *n, bool slot = false) {
+    // (a reference-typed field or element), whose pointee is unknown -- and
+    // classified as UltOf does. The chain's head counts as read too, except
+    // for `slot`: the location itself, which a rebind or a slice stored into
+    // it writes, rather than what it points at.
+    pair<int, VarDef *> ChainUlt(Node *n, bool slot = false) {
         for (auto cur = n;;) {
             if (auto id = Is<Ident>(cur)) {
-                auto v = id->vdef;
-                if (!v) return { TG_OPAQUE };
-                if (v->type && IsRefOrSlice(v->type)) {
-                    auto [k, u] = UltOf(v);
-                    return UltTarget(k, u);
-                }
-                return OwnerTarget(v);
+                if (!id->vdef) return { UK_OPAQUE, nullptr };
+                return UltOf(id->vdef, slot && cur == n);
             }
             Node *obj = nullptr;
             if (auto d = Is<Dot>(cur)) obj = d->obj;
             else if (auto ix = Is<Index>(cur)) obj = ix->obj;
-            else return { TG_OPAQUE };
-            if ((cur != n || !slot) && ReadsStoredRef(cur)) return { TG_OPAQUE };
+            else return { UK_OPAQUE, nullptr };
+            if ((cur != n || !slot) && ReadsStoredRef(cur)) return { UK_OPAQUE, nullptr };
             cur = obj;
         }
+    }
+
+    Target ExprTarget(Node *n, bool slot = false) {
+        auto [k, u] = ChainUlt(n, slot);
+        return UltTarget(k, u);
     }
 
     // The storage an argument hands a callee: the lvalue behind `&`, the
@@ -1046,19 +1075,104 @@ struct BCE {
         for (auto v : intvars) if (Reach(v)) BumpVar(v);
     }
 
+    // A write into the elements of storage tu owns (tk == UK_OWNED), or of
+    // storage unknown here. No place lies in an element, but a reference to
+    // one, or into one, measures the slice or array it holds -- which is
+    // never a resizable array (§3.4).
+    void ElementWriteKill(int tk, VarDef *tu) {
+        if (tk == UK_STATIC) return;   // Static data is never writable.
+        NoteStorage(UltTarget(tk, tu));
+        for (size_t i = 0; i < places.size(); i++) {
+            auto &P = places[i];
+            if (P.refcrossed && P.inelem && AffectedByWrite((int)i, -1, tk, tu, nullptr))
+                BumpPlace((int)i, 0);
+        }
+    }
+
+    // A store or a resize at an lvalue inside an element: of the array the
+    // chain indexes, or wherever a stored reference read after the element
+    // leads, which may be any reachable storage.
+    void ElementLvalKill(Node *lval) {
+        auto [k, u] = ChainUlt(lval, true);
+        if (k == UK_OPAQUE && !u) StorageWriteKill(UK_OPAQUE, nullptr, nullptr);
+        else ElementWriteKill(k, u);
+    }
+
+    // Whether a value of type t holds a length by value: a slice, an array
+    // other than a fixed one, or a fixed array, struct or enum holding one.
+    // A nominal type whose instance is not at hand counts as one.
+    static bool HoldsLen(TypeExpr *t, int depth = 0) {
+        if (!t || depth > 32) return true;
+        auto any = [&](const vector<TypeExpr *> &fts) {
+            for (auto ft : fts) if (ft && HoldsLen(ft, depth + 1)) return true;
+            return false;
+        };
+        switch (t->kind) {
+            case TY_SLICE:
+                return true;
+            case TY_ARRAY:
+                return t->arr->akind != A_FIXED || HoldsLen(t->arr->sub, depth + 1);
+            case TY_STRUCT:
+                return !t->struc->inst || any(t->struc->inst->ftypes);
+            case TY_ENUM: case TY_VARIANT: {
+                auto inst = t->kind == TY_ENUM ? t->enu->inst : t->var->adt->enu->inst;
+                if (!inst) return true;
+                for (auto &fts : inst->vftypes) if (any(fts)) return true;
+                return false;
+            }
+            case TY_GENERIC:
+                return true;
+            default:
+                return false;   // Scalars, references, functions.
+        }
+    }
+
+    // The slot a reference to a slice passed as `a` names: the slice lvalue
+    // behind `&`, or where a reference variable points. One read out of a
+    // field or an element, or returned by a call, points somewhere unknown.
+    pair<int, VarDef *> ArgSlot(Node *a, Node *lv) {
+        if (auto id = Is<Ident>(lv)) {
+            if (id->vdef) return UltOf(id->vdef, true);
+        } else if (lv != a && lv->exprtype && lv->exprtype->kind == TY_SLICE) {
+            return ChainUlt(lv, true);
+        }
+        return { UK_OPAQUE, nullptr };
+    }
+
+    // A slice argument, or a reference to one, other than a slice
+    // expression. The callee resizes neither: it may store another slice
+    // into the slot a reference names, and write the elements the slice
+    // views, where only references to elements measure a length.
+    bool KillSliceArg(Node *a, Node *lv) {
+        auto t = a->exprtype;
+        auto st = IsSliceRef(t) ? t->ref->sub : t;
+        if (!st || st->kind != TY_SLICE) return false;
+        if (Is<ArrayLit>(lv) || Is<StrLit>(lv)) return true;   // A temporary.
+        if (st != t) {
+            auto [k, u] = ArgSlot(a, lv);
+            SlotWriteKill(k, u);
+        }
+        if (HoldsLen(st->sub)) {
+            auto [k, u] = ChainUlt(lv);
+            ElementWriteKill(k, u);
+        }
+        return true;
+    }
+
     // A callee's resize or overwrite of the storage behind one of its
     // reference parameters, at the argument bound to it.
     void KillArgStorage(Node *a) {
-        auto t = ArgTarget(a);
-        NoteStorage(t);
         auto lv = a;
         if (auto u = Is<Unary>(a); u && u->op == T_BITAND) lv = u->child;
+        if (!Is<SliceExpr>(lv) && KillSliceArg(a, lv)) return;
+        auto t = ArgTarget(a);
+        NoteStorage(t);
         switch (t.kind) {
             case TG_NONE:
                 return;
             case TG_OWN: case TG_VAR: {
                 // The argument's own place is the precise target; a struct
-                // or a slice argument has none, so all of the variable goes.
+                // or a slice expression has none, so all of the variable goes.
                 auto pid = Is<SliceExpr>(lv) ? -1 : PlaceOf(lv);
                 if (pid >= 0) KillPlaceWrite(pid);
                 else StorageWriteKill(UK_OWNED, t.v, t.v);
@@ -1427,14 +1541,21 @@ struct BCE {
     }
 
     void PointeeWriteKill(Node *lval, TypeExpr *pt) {
+        // A slice stored through a reference to one replaces the slice its
+        // slot holds; what that slice viewed is not written.
+        auto slice = pt && pt->kind == TY_SLICE;
         int tk = UK_OPAQUE;
         VarDef *tu = nullptr;
         if (auto id = Is<Ident>(lval); id && id->vdef) {
-            auto [k, u] = UltOf(id->vdef);
+            auto [k, u] = UltOf(id->vdef, slice);
             tk = k;
             tu = u;
         }
         if (tk == UK_STATIC) return;   // Static data is never writable.
+        if (slice) {
+            SlotWriteKill(tk, tu);
+            return;
+        }
         auto scalar = pt && (pt->kind == TY_INT || pt->kind == TY_FLT || pt->kind == TY_BOOL);
         if (!scalar) StorageWriteKill(tk, tu, nullptr);
         if (pt && pt->kind == TY_INT) {
@@ -2730,7 +2851,8 @@ inline bool Assign::BceWalk(BCE &b) {
                          ? b.FreshLenOf(rhs) : BCE::Term {};
         if (b.mode != BCE::M_KILLS && t && t->kind == TY_SLICE && op == T_ASSIGN)
             fresh = Is<SliceExpr>(rhs) ? b.slicelen : b.BoundLenOf(rhs);
-        if (t && t->kind == TY_SLICE) b.RebindKill(v);
+        // A slice variable is the slot that references to it measure too.
+        if (t && t->kind == TY_SLICE) b.SlotWriteKill(BCE::UK_OWNED, v);
         else if (t && t->kind != TY_FLT && t->kind != TY_BOOL && t->kind != TY_INT)
             b.StorageWriteKill(BCE::UK_OWNED, v, v);
         if (fresh.ok) {
@@ -2739,12 +2861,18 @@ inline bool Assign::BceWalk(BCE &b) {
         }
         return true;
     }
-    if (Is<Index>(lval)) return true;   // Element writes cannot change any tracked length.
     auto lt = lval->exprtype;
+    // A value stored in or into an element changes a length only if it holds
+    // one, which only a reference into the element measures.
+    auto elemwrite = [&] {
+        if (BCE::HoldsLen(lt)) b.ElementLvalKill(lval);
+        return true;
+    };
+    if (Is<Index>(lval)) return elemwrite();
     if (lt && (lt->kind == TY_INT || lt->kind == TY_FLT || lt->kind == TY_BOOL))
         return true;                    // A scalar field write cannot change a length.
     auto ch = b.ChainOf(lval);
-    if (ch.kind == BCE::CH_INDEX) return true;
+    if (ch.kind == BCE::CH_INDEX) return elemwrite();
     if (ch.kind == BCE::CH_FAIL || !ch.root) {
         b.StorageWriteKill(BCE::UK_OPAQUE, nullptr, nullptr);
         return true;
