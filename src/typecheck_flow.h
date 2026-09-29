@@ -342,9 +342,17 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
 // says nothing. Nor is the container a reference was read out of where its
 // slice lies: only a slot the reference names exactly is the container the
 // slice is read out of (RootAlt::from).
+//
+// The slice is as writable as the reference, a slice variable's binding or
+// a view's, and the slice's own type allow (§9.5). Where no variable says --
+// behind a parameter's class without a view, an inexact root, a read-back --
+// the reference says it all: a writable one is only ever made to a slot
+// whose slice is writable or typed `const` (CheckRefOf, AutoRef), and a
+// slice a field or an element holds is as writable as the slot's type says.
 inline Prov TypeCheck::SlotView(const Prov &p, TypeExpr *slice) {
     Prov out = p;
     out.alts.clear();
+    if (slice->cq) out.writable = false;
     for (auto &a : p.alts) {
         auto r = a.root;
         if (!r || !a.exact) {

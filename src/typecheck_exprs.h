@@ -1261,6 +1261,12 @@ inline Val TypeCheck::CheckRefOf(Unary *x) {
     v.type = ast.RefTo(ast.PlainOf(lv.type), x->line);
     v.SetProv(lv);
     v.writable = lv.writable && !lv.isvarint;
+    // Where the variable is out of sight -- behind a parameter's class, or
+    // read back -- a load through the reference has only its writability to
+    // go by (SlotView): a slice variable's is no more than its binding's, as
+    // when it is bound by reference (AutoRef), whatever its type says.
+    if (lv.var && lv.type->kind == TY_SLICE)
+        v.writable = v.writable && RefProvOf(lv.var).writable;
     v.type->cq = !v.writable;   // `&x` of a const value is a `const T&` (§9.5).
     if (lv.var && v.writable) NoteWritableRef(lv.var, x);
     if (auto sv = SliceVarOf(lv.var)) sv->slotref = true;

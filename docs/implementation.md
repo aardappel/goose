@@ -1142,6 +1142,19 @@ rules alone (`WholeWritable`), so a `var s: const u8[:]` re-slices itself.
 writable, and `null` and `default<T>()` count as writable so they fit any
 slot.
 
+A reference to a slice names the slot holding it, and what is loaded
+through it -- a path crossing it, a builtin's receiver, a `for` over it, a
+slice argument -- is that slot's slice (`SlotView`), as writable as the
+reference, the binding of a slice variable or of the one standing for a
+view's slice (`VarDef::heldslice`, keyed with the view, §3.4) and the
+slice's type allow. Behind a parameter's class without a view, an inexact
+root or a read-back only the reference is left to say, so a writable
+reference is only ever made to a slot whose slice is writable or of a
+`const` type: `&x` of a slice variable is no more writable than its binding
+(`CheckRefOf`), as binding the variable by reference is (`AutoRef`), and a
+field's or an element's slice is writable unless the slot's type says
+`const`.
+
 ### 3.9 Flow state: definite assignment and narrowing
 
 Each `VarDef` carries `assigned`, `maybeassigned` and `narrowed` (the `T&`
@@ -3464,6 +3477,14 @@ specification allows, and the shapes the C backend refuses outright:
   elements hold no references (§3.5): a slice read out of a slice of slices
   behind a parameter binds the variable to anything the argument outlives,
   which may then break the depth rule.
+* A reference to a slice has one writability for the slot it names and the
+  slice the slot holds (§3.8), so one to a slice variable holding a read-only
+  slice cannot re-point the variable either: `skip(&cur)` advancing a cursor
+  `var cur = text` over a parameter given a literal is rejected, as
+  `skip(cur)` is. A view keys its slice's writability apart already (§3.4):
+  a writable reference beside a read-only view, with a store through the
+  reference allowed to put a read-only slice where the view is read-only,
+  would lift that where the parameter has one.
 * The growth-during-construction rule (§3.10) takes a parameter class to be
   possibly any global or captured local a callee grows, two classes of one
   activation to be one array unless every call site keeps both concrete and
