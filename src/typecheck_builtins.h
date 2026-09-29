@@ -518,6 +518,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                 // the receiver, as an element read would (ContainerRead).
                 v.contents = rv;
                 v.contents.Weaken();
+                for (auto &a : v.contents.alts) a.slotread = true;
                 v.holderset = true;
                 v.holderfrom = rv.Root();
             }
@@ -1017,7 +1018,8 @@ inline void TypeCheck::RecordStore(VarDef *container, const Roots &roots, bool b
         e.bound = bound;
         if (fitnode) e.at = fitnode->line;
         AddStoreEvent(e);
-        if (holds && container->contents.Add({ a.root, a.exact, a.from })) NoteFact(container);
+        if (holds && container->contents.Add({ a.root, a.exact, a.from, a.slotread }))
+            NoteFact(container);
     }
 }
 
@@ -1063,7 +1065,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         e.bound = bound;
         container->contentbyteview |= byteview;
         if (container->type && !IsRefOrSlice(container->type))
-            container->contents.Add({ a.root, a.exact, a.from });
+            container->contents.Add({ a.root, a.exact, a.from, a.slotread });
         AddStoreEvent(e);
     };
     // A class root of the callee, as seen from here: the argument's roots.
@@ -1660,6 +1662,7 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
     struct View {
         Prov p;
         TypeExpr *pointee;
+        bool reached = false;   // What the value leads to, not the value.
     };
     // What a reference or slice of type t with provenance p may point into:
     // its pointee, unless it is the path to a whole resizable value, and,
@@ -1670,7 +1673,7 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
     auto views = [&](const Prov &p, TypeExpr *t, bool location) {
         vector<View> out;
         if (t->kind != TY_REF || ClassOf(t->ref->sub) != SC_RESIZABLE)
-            out.push_back({ p, PointeeOf(t) });
+            out.push_back({ p, PointeeOf(t), false });
         if (location || t->kind != TY_REF) return out;
         auto sub = t->ref->sub;
         auto r = p.Root();
@@ -1685,7 +1688,7 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
             } else {
                 sv = SlotView(p, sub);
             }
-            out.push_back({ sv, sub->sub });
+            out.push_back({ sv, sub->sub, true });
         } else if (growonly && HoldsPlainRef(sub)) {
             auto hv = p;
             hv.Weaken();
@@ -1694,14 +1697,20 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
             });
             vector<TypeExpr *> pointees;
             RefPointees(sub, pointees);
-            for (auto pt : pointees) out.push_back({ hv, pt });
+            for (auto pt : pointees) out.push_back({ hv, pt, true });
         }
         return out;
+    };
+    // Whether the callers judge where a view may point by alternative a: a
+    // slot read points into no grow-shrink array (§5.2), as the scans say,
+    // though what a reference to a slice leads to may.
+    auto judges = [&](const View &w, const RootAlt &a) {
+        return CallersJudge(a.root, root) && (growonly || w.reached || !a.slotread);
     };
     // Every place a view may point that the callers judge, as a pair each.
     auto note = [&](const View &w, const string &name) {
         for (auto &a : w.p.alts) {
-            if (!CallersJudge(a.root, root)) continue;
+            if (!judges(w, a)) continue;
             LiveShrink ls { .shrunk = root, .shrunkexact = !bound, .bound = bound,
                             .live = a.root, .liveexact = a.exact, .pointee = w.pointee,
                             .byteview = w.p.byteview, .growonly = growonly, .name = name };
@@ -1713,9 +1722,8 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
     auto judged = [&](vector<View> &vs) {
         vs.erase(std::remove_if(vs.begin(), vs.end(),
                                 [&](const View &w) {
-                                    return !w.p.Any([&](const RootAlt &a) {
-                                        return CallersJudge(a.root, root);
-                                    });
+                                    return !w.p.Any(
+                                        [&](const RootAlt &a) { return judges(w, a); });
                                 }),
                  vs.end());
         return !vs.empty();
@@ -2036,6 +2044,7 @@ inline void TypeCheck::AppendedCopies(Node *an, const Val &av, TypeExpr *elem, c
         lv.SetProv(av);
         lv.type = elem;
         lv.fromstorage = true;
+        lv.isslot = true;
         ev = ContainerRead(lv);
     }
     DestScope ds(*this, Dest(rv, false, rv.reached));

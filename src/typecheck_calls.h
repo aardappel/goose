@@ -1012,10 +1012,12 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         ra.heldexact = holder && ra.exact && !sf->isrec;
         // Any root the argument may have that holds a grow-shrink array, or
         // for a reference to a slice one that slice may point into.
-        ra.growshrink = ar.Any([&](const RootAlt &a) { return IsGrowShrinkRoot(a.root); }) ||
+        auto gsroot = ar.Any([&](const RootAlt &a) { return IsGrowShrinkRoot(a.root); });
+        ra.growshrink = gsroot ||
                         (isrs && pt->kind == TY_REF && pt->ref->sub->kind == TY_SLICE &&
                          GrowShrinkTaint(SlotView(argvals[i], pt->ref->sub), pt->ref->sub));
         ra.gsvia = ra.growshrink && !(ar.Exact() && IsGrowShrinkRoot(r));
+        ra.slotread = gsroot && ar.AllSlotRead();
         auto slotvar = [](const RootAlt &a) {
             return a.root && a.root->type && IsRefOrSlice(a.root->type);
         };
@@ -2088,7 +2090,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
                 // GetOrCreateSpec), so within this body the class names that
                 // array. Whether it is the array some *other* class names is a
                 // different question, and only ra.exact answers it.
-                vd->ref.Set(classroots[ra.cls], true);
+                vd->ref.Set(classroots[ra.cls], true, nullptr, ra.slotread);
                 classroots[ra.cls]->contentbyteview |= ra.byteview;
                 classroots[ra.cls]->viewslot |= ra.viewslot;
             }
@@ -2134,7 +2136,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
             // Its contents are whatever the call site's value pointed at:
             // bounded by the class root, as an event of its own.
             Roots held;
-            held.Set(cr, ra.heldexact);
+            held.Set(cr, ra.heldexact, nullptr, ra.slotread);
             RecordStore(vd, held, ra.byteview, nullptr);
         }
         spec->params.push_back(vd);
@@ -2266,10 +2268,7 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         // What a caller gets is the value, not the container of this
         // activation it was read out of, which a cycle's next round would
         // take for its own (RecordStore).
-        for (auto &a : roots.alts) {
-            a.from = nullptr;
-            if (!isrs) a.slotread = false;
-        }
+        for (auto &a : roots.alts) a.from = nullptr;
         auto &rr = tspec->retroots[i];
         for (auto &a : roots.alts) {
             auto root = a.root;
@@ -2389,9 +2388,10 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
                 for (auto pt : ps) u8view |= pt && IsU8(pt);
             }
             v.byteview = v.byteview || ri.byteview || u8view;
-            // A slot read where every return is one, as MergeVals keeps it;
-            // a back edge's returns are not all checked yet.
-            if (holder || backedge) v.ClearSlotRead();
+            // A slot read where every return is one, as MergeVals keeps it,
+            // and a holder's contents where every return's are; a back
+            // edge's returns are not all checked yet.
+            if (backedge) v.ClearSlotRead();
             if (holder) {
                 // The bound travels as the holder root; the value itself is
                 // a temporary.

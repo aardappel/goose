@@ -127,12 +127,13 @@ inline VarDef *TypeCheck::GrowShrinkTaint(const Prov &p, TypeExpr *t) {
 
 // What the store rule (§5.2) checks v, pointing at `roots`, against: a
 // grow-shrink array it may point into, or for a holder one a reference it
-// holds may. A holder's references were each checked where they were stored.
+// holds may. A holder's references were each checked where they were stored,
+// and those of one read out of a field or an element lie there still.
 inline VarDef *TypeCheck::StoredIntoGrowShrink(const Val &v, const Roots &roots, TypeExpr *t,
                                                bool holder) {
     if (holder) {
         for (auto &a : roots.alts)
-            if (IntoGrowShrink(v, a.root, t, true)) return a.root;
+            if (!a.slotread && IntoGrowShrink(v, a.root, t, true)) return a.root;
         return nullptr;
     }
     auto p = Prov(v);
@@ -1267,11 +1268,15 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                     binder->copybind = true;
                     if (HoldsPlainRef(vt)) {
                         // A copied payload holding references: its contents
-                        // are the scrutinee's.
+                        // are the scrutinee's, as a field's read out of it
+                        // are (ContainerRead).
                         ReadBack contents;
                         auto intemp = TempContents(sv, contents);
                         Roots held = intemp ? contents.roots : sv.AsRoots();
-                        if (!intemp) held.Weaken();
+                        if (!intemp) {
+                            held.Weaken();
+                            for (auto &a : held.alts) a.slotread = true;
+                        }
                         RecordStore(binder, held, sv.byteview, nullptr,
                                     intemp ? contents.from : sv.Root());
                     }
@@ -1687,9 +1692,13 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         vd->assigned = true;
         vd->copybind = (x->iterkind == IK_ARRAY || x->iterkind == IK_SLICE) && !byref;
         if (!IsRefOrSlice(bindtype) && HoldsPlainRef(bindtype)) {
-            // A holder element copied out: its contents are the array's.
+            // A holder element copied out: its contents are the array's, as
+            // one read out of an element's are (ContainerRead).
             Roots held = intemp ? contents.roots : iterprov.AsRoots();
-            if (!intemp) held.Weaken();
+            if (!intemp) {
+                held.Weaken();
+                for (auto &a : held.alts) a.slotread = true;
+            }
             RecordStore(vd, held, iterprov.byteview, nullptr,
                         intemp ? contents.from : iterprov.Root());
         }

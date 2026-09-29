@@ -658,7 +658,13 @@ innermost alternative -- sharing a class asserts "the same array", which
 such an argument does not establish. A class whose grow-shrink array is not
 its own root's (`RootArg::gsvia`: another alternative's, or one a slice the
 argument refers to views) is taken to hold anything a grow-shrink array
-could (`GrowShrinkCanHold`). `CheckSpecBody` then creates one synthetic `VarDef` per class,
+could (`GrowShrinkCanHold`). Where every place an argument with such a root
+may point, or for a holder every place its references may, is a slot read
+(§3.10), it points into no grow-shrink array's elements all the same: the
+key records that (`RootArg::slotread`), and in the body the parameter, or
+the holder's contents, is a slot read, which may be stored, while what the
+body reaches through it still meets the class's grow-shrink array.
+`CheckSpecBody` then creates one synthetic `VarDef` per class,
 carrying the call-site root's depth (`classfrom` remembers the root it came
 from), and every parameter of the class is bound to it, exactly, within
 the body: inside the body a class names one array, whatever the call site.
@@ -758,7 +764,8 @@ references or slices, `HoldsPlainRef`) meets a destination with a root:
    argument list, which can hold an `Input`'s text but no `Input[>..]`;
 3. a reference that may point into a grow-shrink array's elements may be
    bound to a variable but never stored (§5.2, `StoredIntoGrowShrink`: by
-   any of its roots but a slot read's (`GrowShrinkTaint`, §3.10),
+   any of its roots but a slot read's (`GrowShrinkTaint`, §3.10), for a
+   holder by any root of its contents but a slot read's,
    `GrowShrinkCanHold` with the byte-view exception `MayBeViewed`, or for a
    reference to a slice by what the slice may point into); a global
    reference or slice variable is storage, so binding one is a store here;
@@ -776,10 +783,12 @@ Rule 3 does not wait for a destination: a literal's field or element is
 storage wherever the literal lands, so `NoteLitElem` applies it to each one
 (`StoredIntoGrowShrink`), in an argument or a result too. A parameter
 class created from a root that holds one may point into a grow-shrink array
-too (`IsGrowShrinkRoot`), and so may the holder result a back edge gets for
+too (`IsGrowShrinkRoot`), unless every argument it stands for is a slot read
+(§3.4), and so may the holder result a back edge gets for
 a parameter the entry call gave static data (§3.11). No holder ever holds a
 reference into a grow-shrink array, then,
-which is what lets the §5.2 shrink scan look at variables only (§3.10). Nor
+which is what lets the §5.2 shrink scan look at variables only (§3.10), and
+what a holder read out of a field or an element holds count as slot reads. Nor
 may a variable that points into none be rebound to a value that may
 (`CheckRefRebindRoot`): a store or return checked before the rebind -- later
 in a loop, through a reference taken to it -- has already let it through.
@@ -846,11 +855,14 @@ Holder values carry their contents' roots as `Val::contents` (§9.2's
 reference initializers (`NoteLitElem`, `HolderFromLit`); a variable's are
 its `contents`, unless a loop around the read writes the variable, in which
 case the variable itself is the bound; a container read's are the
-container's roots, inexact, and out of a temporary the temporary's own; a
+container's roots, inexact, slot reads (§3.10) out of a field or an element,
+as a `for` or `match` binder's copy's, a popped element's and what `append`
+copies out of a slice are, and out of a temporary the temporary's own; a
 copy's (`TempCopy`) are its source's; a holder parameter is keyed by its
-contents' class like a reference, and by whether that class is exactly the
-one array they point into (§3.4), and the class (its `ref`) bounds what is
-read back out of it or out of a copy of it (§3.6).
+contents' class like a reference, by whether that class is exactly the
+one array they point into, and by whether they are slot reads (§3.4), and
+the class (its `ref`) bounds what is read back out of it or out of a copy
+of it (§3.6).
 
 ### 3.6 Read-back roots
 
@@ -1183,9 +1195,20 @@ holding a view into one. A slice loaded through a reference to a slice
 variable named by an explicit `&` has what the variable's binding has
 (`SlotView`), and one a container holds, loaded through a reference to its
 field or element, is a slot read of its own. A relative reference never has
-it: it points within the array that holds it. The store rule passes over it
-(`GrowShrinkTaint`, §3.5 rule 3), so a variable bound to it points into no
-grow-shrink array and may not be rebound into one. The §5.2 scans pass over
+it: it points within the array that holds it. A holder has it on its
+contents where it was read out of a field or an element (`ContainerRead`),
+copied out of one by a `for` or `match` binder, popped, or copied out of a
+slice by `append` (`AppendedCopies`): every reference it holds was stored
+there, while the container still bounds them. A variable bound to it, a
+literal or a merge holding it (`RecordStore`, `NoteLitElem`, `MergeVals`),
+and a call's result where every return's contents have it (`RecordReturn`,
+`CallResult`, never at a back edge) keep it, and a parameter keeps it
+through the key (§3.4); a holder loaded through a reference (`DecayRef`)
+does not have it. The store rule passes over it (`GrowShrinkTaint`, and for
+a holder's contents `StoredIntoGrowShrink`, §3.5 rule 3), so a variable
+bound to it points into no grow-shrink array and may not be rebound into
+one, and a holder having it is stored wherever its contents' roots outlive
+the destination. The §5.2 scans pass over
 a held temporary that has it, and over a variable that has it unless a
 binding its record does not show could
 put a view of the array there (`SlotReadMayRetarget`): one not bound yet, a
@@ -1240,7 +1263,9 @@ pairs are its own record's), an operand still held
 (`EachHolderRoot`), and what a reference to a slice or, for a grow-only
 array, to a holder reaches -- for a view only the callers can tell apart
 from the array (`CallersJudge`): its root is a
-parameter's class, or the array is. `NoteLiveShrink` keeps such a pair (a
+parameter's class, or the array is. For a grow-shrink array a slot read is
+none, the scans passing over it (**Slot reads** above), though what a
+reference to a slice leads to may be. `NoteLiveShrink` keeps such a pair (a
 `LiveShrink`) on the specialization when `MayAliasRoots` does not rule it out
 and both roots are classes or storage outside the activation (globals, a
 lexical parent's variables and classes), with the array's type where the
@@ -1469,10 +1494,12 @@ returns give, mapped through
 the back edge's own arguments (`RetAltVal`: a parameter class maps through
 every argument the back edge gives the class's parameters, united, where an
 ordinary call, whose classes group the arguments as the key's, takes the
-first), read-only where any return is, and a byte view where any u8 view
-may be. A parameter the key gave static data (class 0) has no class root for
-a record to name, so a back edge that passes it storage of its own gets a
-holder result rooted at the activation itself, which may only be passed down
+first), read-only where any return is, a byte view where any u8 view
+may be, and no slot read (§3.10), a holder's contents included, since not
+every return is checked yet. A parameter the key gave static data (class 0)
+has no class root for a record to name, so a back edge that passes it
+storage of its own gets a holder result rooted at the activation itself,
+which may only be passed down
 (`CallResult`); a reference result is mapped as recorded, which parsers
 passing a literal key at the entry call rely on (`samples/18_json.goose`).
 What a return records drops the container it was read out of
@@ -3165,12 +3192,23 @@ specification allows, and the shapes the C backend refuses outright:
   that, at the cost of one specialization per distinct global passed.
 * Bounds-check elimination tracks no array contents and no `u64` variables
   (§5.12).
-* A parameter is never a slot read (§3.10), whatever its argument: the
-  specialization key does not record the bit. An argument read out of a
-  slot names no grow-shrink array that could not own it (§3.6), but where
-  what bounds it holds one -- a view read out of a parameter's container,
-  passed on -- its class may point into that array: the callee may not
-  store it, and a grow-shrink shrink there still counts it.
+* A parameter is a slot read (§3.10) only where its argument has a root, or
+  a holder's contents one, that holds a grow-shrink array (§3.4): the key
+  records the bit only there, so that a function given no such argument is
+  never specialized twice for it. Elsewhere the class holds no such array
+  for the store rule to find, but a holder parameter's contents only bound
+  what it holds, and a grow-shrink shrink in the body still counts a holder
+  parameter passed on in the same statement where that bound is as deep as
+  the array. A call's result takes the bit from a return through a
+  parameter's class only where the argument for it has the bit too
+  (`RetAltVal`), so a holder read out of a parameter's array and returned,
+  `fn f(rs: Row[>..<]&) -> Row { rs[0] }`, is no slot read at the call.
+* A holder loaded whole through a reference (`DecayRef`) has the
+  reference's roots for its contents, which may name the grow-shrink array
+  whose element the reference points at: stored, it fails the store rule as
+  a reference into that array would, though what it holds lies in the
+  element's fields. A field of it read through the reference, or a match
+  binder's copy of its payload, is a slot read.
 * A shrink of an array in what an inexactly rooted reference points at
   (`c.s.arr.pop()`, with `c.s` read out of `c`) counts as a shrink of every
   array of that array's type the root bounds, not only of those in storage

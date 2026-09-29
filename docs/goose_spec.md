@@ -1108,7 +1108,11 @@ again against the pairs the cycle records once the whole cycle is.
   returns may, nor a reference to a slice variable whose slice may. A
   reference or slice read out of a field, an element or a global never may,
   having been stored there, whatever storage bounds it (§9.5), nor may a
-  slice such a slot holds, loaded through a reference to the slot. A
+  slice such a slot holds, loaded through a reference to the slot. Nor does
+  a value holding references that is read out of a field or an element,
+  popped, or copied out of one by a `for` or a `match`, hold one that may:
+  what it holds lies in that slot, and it is stored wherever what holds it
+  outlives the destination. A
   variable that points into no grow-shrink array — one bound to such a read,
   say — may not be rebound to a value that may: what read it earlier through
   a reference to it may have stored it.
@@ -1127,7 +1131,8 @@ again against the pairs the cycle records once the whole cycle is.
   global never refers into a grow-shrink array, since none is ever stored
   there: the shrink does not consider it, nor a slice of such a slice or a
   reference into what it views, whatever storage the read-back rule (§9.5)
-  bounds it by. That stops at a reference, since what
+  bounds it by, nor what a value read out of such a slot holds. That stops
+  at a reference, since what
   one read out of a field leads to may be a whole grow-shrink array, or a
   variable holding a view into one; and a `var` bound to such reads still
   counts where a rebind could retarget it into the array: a same-depth one

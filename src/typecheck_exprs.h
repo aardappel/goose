@@ -221,12 +221,15 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
     else if (HoldsPlainRef(v.type)) {
         // What a holder read out of a container points at is bounded by
         // the container: everything stored into it had to outlive it. Out
-        // of a temporary, it points where the temporary's contents do.
+        // of a temporary, it points where the temporary's contents do. Out
+        // of a field or an element, every reference it holds was stored
+        // there, so none points into a grow-shrink array (RootAlt::slotread).
         if (lv.intemp) {
             v.contents = lv.contents.roots;
         } else {
             v.contents = lv;
             v.contents.Weaken();
+            for (auto &a : v.contents.alts) a.slotread = lv.isslot;
         }
         v.holderset = true;
         v.holderfrom = lv.intemp ? lv.contents.from : lv.Root();

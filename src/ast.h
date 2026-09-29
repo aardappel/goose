@@ -415,11 +415,12 @@ struct RootAlt {
     // say what it holds, and which a diagnostic names.
     VarDef *from = nullptr;
     // Loaded out of a field, an element or a global, or points into what
-    // such a slice points at (a location: lies there). No reference into a
-    // grow-shrink array's elements is ever stored in those (§5.2), so this
-    // does not point into one. A reference there may still lead to a whole
-    // grow-shrink array, or to a variable holding a view into one: nothing
-    // reached through a reference keeps it.
+    // such a slice points at (a location: lies there); of a holder's
+    // contents, the holder was read out of one, so the references it holds
+    // lie there. No reference into a grow-shrink array's elements is ever
+    // stored in those (§5.2), so this does not point into one. A reference
+    // there may still lead to a whole grow-shrink array, or to a variable
+    // holding a view into one: nothing reached through a reference keeps it.
     bool slotread = false;
 };
 
@@ -1358,6 +1359,14 @@ struct RootArg {
     // the key, ORed over the call sites that reach the specialization.
     bool growshrink = false;
     bool gsvia = false;
+    // Where `growshrink` is set by a root of the argument, or of a holder's
+    // contents: every place it may point was loaded out of a field, an
+    // element or a global, which no reference into a grow-shrink array's
+    // elements is stored in (RootAlt::slotread). Part of the key: the
+    // parameter is then a slot read in the body, where it may be stored,
+    // while what the body reaches through it still meets its class's
+    // grow-shrink array.
+    bool slotread = false;
     // The argument points nowhere yet: a reference variable read in a pass of
     // a loop before the pass that binds it (TypeCheck::RefProvOf). The
     // parameter then has no roots in the body, which no rule reads, so the
@@ -1422,8 +1431,9 @@ struct RootArg {
     int depthkey = 0;
     bool operator==(const RootArg &o) const {
         return cls == o.cls && writable == o.writable && reusable == o.reusable &&
-               growshrink == o.growshrink && byteview == o.byteview && pool == o.pool &&
-               heldexact == o.heldexact && viewslot == o.viewslot && unknown == o.unknown;
+               growshrink == o.growshrink && slotread == o.slotread && byteview == o.byteview &&
+               pool == o.pool && heldexact == o.heldexact && viewslot == o.viewslot &&
+               unknown == o.unknown;
     }
 };
 
