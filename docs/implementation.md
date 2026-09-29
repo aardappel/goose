@@ -1143,17 +1143,17 @@ writable, and `null` and `default<T>()` count as writable so they fit any
 slot.
 
 A reference to a slice names the slot holding it, and what is loaded
-through it -- a path crossing it, a builtin's receiver, a `for` over it, a
-slice argument -- is that slot's slice (`SlotView`), as writable as the
-reference, the binding of a slice variable or of the one standing for a
-view's slice (`VarDef::heldslice`, keyed with the view, §3.4) and the
-slice's type allow. Behind a parameter's class without a view, an inexact
-root or a read-back only the reference is left to say, so a writable
-reference is only ever made to a slot whose slice is writable or of a
-`const` type: `&x` of a slice variable is no more writable than its binding
-(`CheckRefOf`), as binding the variable by reference is (`AutoRef`), and a
-field's or an element's slice is writable unless the slot's type says
-`const`.
+through it -- its pointee (`DecayRef`), a path crossing it, a builtin's
+receiver, a `for` over it, a slice argument -- is that slot's slice
+(`SlotView`), as writable as the reference, the binding of a slice variable
+or of the one standing for a view's slice (`VarDef::heldslice`, keyed with
+the view, §3.4) and the slice's type allow. Behind a parameter's class
+without a view, an inexact root or a read-back only the reference is left to
+say, so a writable reference is only ever made to a slot whose slice is
+writable or of a `const` type: `&x` of a slice variable is no more writable
+than its binding (`CheckRefOf`), as binding the variable by reference is
+(`AutoRef`), and a field's or an element's slice is writable unless the
+slot's type says `const`.
 
 ### 3.9 Flow state: definite assignment and narrowing
 

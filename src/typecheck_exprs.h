@@ -606,14 +606,15 @@ inline Val TypeCheck::DecayRef(Val v) {
     if (!IsPlainRef(v.type)) return v;
     Val r;
     r.type = LoadType(v.type->ref->sub);
-    // A slice is the one its slot holds; a compound pointee value keeps the
-    // container info, harmless, though crossing the reference drops what a
-    // slot read says (RootAlt::slotread). A holder holds what was stored
-    // where the reference points, as one read out of a container does
-    // (ContainerRead).
+    // A slice is the one its slot holds, as writable as that is; a compound
+    // pointee value keeps the container info, harmless, though crossing the
+    // reference drops what a slot read says (RootAlt::slotread). A holder
+    // holds what was stored where the reference points, as one read out of
+    // a container does (ContainerRead).
     if (r.type->kind == TY_SLICE) {
         auto sv = SlotView(v, r.type);
         r.TakeAlts(sv);
+        r.writable = sv.writable;
         r.byteview = sv.byteview;
         r.freshview = sv.freshview;
     } else {
