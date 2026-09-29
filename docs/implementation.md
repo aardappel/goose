@@ -1043,7 +1043,14 @@ the function values it can call were written in (`NamedFrames`), and the
 globals -- since no other frame's can change meanwhile: a fact holds after a
 join iff it holds in every reachable branch, with `reachable` tracking
 divergence (`return`, `break`, `continue`, `abort`, `exit`, a `guard`
-else). A callee's check leaves the ones it can name narrowed as it found
+else). A loop or `block` is left in the join of the states at its exits:
+each reachable `break` out of it, a bare `guard`'s with the guard's
+condition false, joins its state into the construct's scope (`NoteBreak`,
+`Scope::breakflow`), and `JoinBreakFlow` joins that with the construct's
+own exit -- the end of a block's body, a `while`'s condition found false, a
+`for`'s head once its iterations run out -- or, for a `loop`, which has
+none, takes it alone.
+A callee's check leaves the ones it can name narrowed as it found
 them, and assigned where all of its exits agree (`CheckSpecBodyOnce`,
 `BodyExits`, `NoteExit`), not as the end of its text does: each `return`,
 the one a bare `guard` makes, the tail and a reachable end. A function

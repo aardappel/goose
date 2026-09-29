@@ -242,6 +242,12 @@ struct TypeCheck {
         bool inreturn = false;      // The construct's value is returned, as are its breaks' values.
         bool hasbreak = false;
         bool valuelessbreak = false;
+        // For SK_LOOP/SK_BLOCK: the join of the states at the breaks out of
+        // it reached so far, a bare guard's among them, which the construct
+        // exits in besides its own exit, if it has one (NoteBreak,
+        // JoinBreakFlow).
+        FlowState breakflow;
+        bool breakflows = false;
         // For SK_LOOP: the join of the states at its back edges so far (the
         // end of the body, every continue), which the next iteration starts
         // in (CheckLoopPasses).
@@ -1491,6 +1497,10 @@ struct TypeCheck {
     Frame &CurRealFrame() { return frames[RealFrameIndex()]; }
     int FindBreakScope(bool forcontinue);
     void CheckBreak(Break *b);
+    // A loop or block exits in the join of the states at its breaks
+    // (NoteBreak) and at its own exit, where it has one (JoinBreakFlow).
+    void NoteBreak(int si);
+    void JoinBreakFlow(const Scope &sc, bool ownexit);
     void CheckContinue(Node *n);
 
     // ------------------------------------------------------------------

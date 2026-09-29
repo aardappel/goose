@@ -1489,7 +1489,11 @@ continue
 
 `block { }` exists to promote early-out style anywhere, not just at function
 top level. `break` binds to the innermost `loop`/`while`/`for`/`block`;
-labels are not in v1. All `break E` of one construct must agree on E's
+labels are not in v1. For definite assignment (§4.4) and narrowing (§3.8),
+what holds after one of these is what holds at every way out of it: each
+`break` (a bare `guard`'s among them), and the end of a `block`'s body, a
+`while`'s condition found false or a `for`'s last iteration; a `loop` has
+only its breaks. All `break E` of one construct must agree on E's
 type: a later break's value constructs into the type an earlier one gave
 the construct.
 

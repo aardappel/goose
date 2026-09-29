@@ -1445,6 +1445,7 @@ inline Val TypeCheck::CheckEarlyBlock(EarlyBlock *x, TypeExpr *expected, bool wa
     auto sc = scopes.back();
     PopScope();
     x->body->exprtype = v.type ? v.type : ast.voidtype;
+    JoinBreakFlow(sc, true);
     reachable = reachable || sc.hasbreak;  // Exits via the tail or any break.
     if (!wantvalue) return VoidVal();
     CheckBranchRoot(v, CurDepth(), x->body->tail, "block");
@@ -1473,8 +1474,9 @@ inline void TypeCheck::CheckLoopBody(Block *body) {
 // stood and it was the last; one that read such a variable is followed by
 // a settled pass, which reads it as outside a loop would. The loop's
 // scope, with its breaks, is the caller's to read off; the flow is left at
-// the head, which is the state a loop exits in unless the caller knows
-// better (a while's condition).
+// the head, where a for exits once its iterations run out, and the caller
+// leaves the loop in the join of the states it exits in, its breaks'
+// among them (JoinBreakFlow).
 inline TypeCheck::Scope TypeCheck::CheckLoopPasses(Node *x, FlowState &head,
                                                    const function<void()> &pass) {
     auto entry = head;
@@ -1527,6 +1529,7 @@ inline Val TypeCheck::CheckLoop(LoopExpr *x, TypeExpr *expected, bool wantvalue)
         }
         CheckLoopBody(x->body);
     });
+    JoinBreakFlow(sc, false);
     reachable = sc.hasbreak;  // A loop only exits via break.
     if (!wantvalue || !sc.breaktype) return VoidVal();
     CheckBranchRoot(sc.breakvalue, CurDepth(), x, "loop");
@@ -1537,7 +1540,7 @@ inline void TypeCheck::CheckWhile(While *x) {
     // The condition runs before every iteration: what it narrows holds in
     // the body each time, a rebind inside the body un-narrows from that
     // point on, and the loop exits in the state the condition's last run
-    // leaves, it being false.
+    // leaves, it being false, or at a break.
     auto head = SaveFlow();
     FlowState exit;
     auto sc = CheckLoopPasses(x, head, [&] {
@@ -1547,6 +1550,7 @@ inline void TypeCheck::CheckWhile(While *x) {
         CheckLoopBody(x->body);
     });
     RestoreFlow(exit);
+    JoinBreakFlow(sc, true);
     if (sc.breaktype)
         Error(x, "break with a value exits loop/block only, not while");
 }
@@ -1721,6 +1725,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         }
         CheckLoopBody(x->body);
     });
+    JoinBreakFlow(sc, true);
     if (sc.breaktype)
         Error(x, "break with a value exits loop/block only, not for");
 }
@@ -1740,7 +1745,10 @@ inline void TypeCheck::CheckGuard(Guard *g) {
             if (sc.breaktype)
                 Error(g, "bare guard exits a construct that requires a break value");
             sc.valuelessbreak = true;
-            sc.hasbreak = true;
+            // The implicit break is taken where c is false, as `guard c else
+            // { break }` takes its.
+            NarrowCond(g->cond, false);
+            NoteBreak(si);
             g->implicitexit = 1;
         } else {
             ImplicitEmptyReturn(g);
@@ -1847,7 +1855,6 @@ inline void TypeCheck::CheckBreak(Break *b) {
         sc.breakvalue = JoinBranches(sc.breakvalue, sc.breaktype != nullptr, exit, true, b, true,
                                      sc.onjoinpath);
         if (!sc.breaktype) sc.breaktype = v.type;
-        sc.hasbreak = true;
         if (auto e = Is<EarlyBlock>(sc.node)) e->breaks.push_back(b);
         else if (auto l = Is<LoopExpr>(sc.node)) l->breaks.push_back(b);
     } else {
@@ -1855,9 +1862,30 @@ inline void TypeCheck::CheckBreak(Break *b) {
         if (sc.breaktype)
             Error(b, "this construct mixes valueless and valued breaks");
         sc.valuelessbreak = true;
-        sc.hasbreak = true;
     }
+    NoteBreak(si);
     reachable = false;
+}
+
+// A break out of the loop or block of scope si, a bare guard's among them:
+// where it can be reached, the construct exits in what holds here too.
+inline void TypeCheck::NoteBreak(int si) {
+    auto &sc = scopes[si];
+    sc.hasbreak = true;
+    if (!reachable) return;
+    sc.breakflow = sc.breakflows ? JoinFlow(sc.breakflow, SaveFlow()) : SaveFlow();
+    sc.breakflows = true;
+}
+
+// Leaves the flow after a loop or block as the join of every exit of it
+// that can be taken (§4.4, §3.8): its breaks, and its own exit where
+// `ownexit` says it has one, which is what holds now -- the end of a
+// block's text, a while's condition found false, a for's head. A `loop`
+// has none.
+inline void TypeCheck::JoinBreakFlow(const Scope &sc, bool ownexit) {
+    if (!sc.breakflows) return;
+    if (ownexit) MergeFlow(SaveFlow(), sc.breakflow);
+    else RestoreFlow(sc.breakflow);
 }
 
 // A continue is a back edge of its loop: what holds here joins what the
