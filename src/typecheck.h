@@ -1093,9 +1093,15 @@ struct TypeCheck {
         return true;
     }
     // A fact about vd that every loop it is declared outside of feeds back
-    // to its head.
+    // to its head: the loops of the bodies this one was called from as much
+    // as its own, since a nested function or a function value changes the
+    // variables of the frames around it where its caller's loop reaches it.
     void NoteFact(const VarDef *vd) {
-        for (auto &lp : cur.looppasses) if (Depth(vd) <= lp.scopeidx) lp.changed = true;
+        auto mark = [&](BodyState &b) {
+            for (auto &lp : b.looppasses) if (Depth(vd) <= lp.scopeidx) lp.changed = true;
+        };
+        mark(cur);
+        for (auto b : outerbodies) mark(*b);
     }
     // The store events a holder still carries: all of them, but for one
     // declared inside a loop only its current pass's, an earlier pass's
@@ -1827,13 +1833,22 @@ struct TypeCheck {
         vector<GrowEvent> growlog;
     };
     BodyState cur;
+    // The states of the bodies being checked around this one, outermost
+    // first: the callers' on the compile-time call path.
+    vector<BodyState *> outerbodies;
     // A fresh body state for the extent of a scope; the enclosing one
     // returns when it ends.
     struct BodyScope {
         TypeCheck &tc;
         BodyState saved;
-        BodyScope(TypeCheck &t) : tc(t) { std::swap(tc.cur, saved); }
-        ~BodyScope() { std::swap(tc.cur, saved); }
+        BodyScope(TypeCheck &t) : tc(t) {
+            std::swap(tc.cur, saved);
+            tc.outerbodies.push_back(&saved);
+        }
+        ~BodyScope() {
+            tc.outerbodies.pop_back();
+            std::swap(tc.cur, saved);
+        }
     };
     void NoteGrow(Node *at, const Roots &roots, const string &what);
     void NoteShrinkEvent(Node *at, VarDef *root, TypeExpr *bound, const string &what);

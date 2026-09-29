@@ -963,7 +963,10 @@ is reported as reaching the shrink on the next iteration (`CarriedEvent`).
 A pass's warnings are kept back until the loop's last pass, as a
 construct's first check of its branches keeps its own (`WarningsHeld`,
 §3.4). A callee body checked from inside a pass runs its own loops' passes
-(`CheckSpecBody` clears `looppasses`).
+(`CheckSpecBody` clears `looppasses`), and a fact it notes about a variable
+outside it feeds the loops of the bodies it was called from as well
+(`outerbodies`): a nested function or a function value rebinds, and stores
+into, the variables of the frames around it.
 
 ### 3.8 Writability
 

@@ -2333,9 +2333,10 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   different root leaves the variable inexact, since it no longer names one
   array, and a merged value (above), since it may still hold its earlier
   binding. A loop body is checked in the state its earlier iterations leave
-  it in: a read earlier in the body than such a rebind sees both roots, so
-  it may not need the root exactly (a relative link's identity, §3.9), and
-  a variable declared before a loop and bound only inside it (`var last:
+  it in, a rebind in a nested function or a function value it calls
+  included: a read earlier in the body than such a rebind sees both roots,
+  so it may not need the root exactly (a relative link's identity, §3.9),
+  and a variable declared before a loop and bound only inside it (`var last:
   Node? = null;` before `loop { if last { last.next .= child; } … last .=
   child; }`) has, at a use earlier in the body than the rebind, the root
   the rebind gives it, exactly where the root's storage is its own. A
