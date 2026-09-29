@@ -1715,6 +1715,45 @@ binder to a copy of the counter each iteration (`ForLoop::CgStmt`), which
 cannot overflow at the end. A typed index binder (`idxtype`) must hold every
 index the sequence can have, and is likewise a copy of the i64 index.
 
+**Redundant casts** (§6.3) are judged as the checker goes, check by check.
+`AsCast::Check` follows a cast (`NoteCast`) where its operand converts to
+its type implicitly (`Converts`: `FitsAt`'s rules for numbers, recording
+nothing), outside generic code (`InGenericCode`: a function with type or
+untyped parameters, a function value's body, and what is declared in either
+or is a default of one): `castalts` maps the node to a `CastAlt`, the value
+it would have without the cast. Each consumer of a followed value judges it.
+A typed destination (`CheckValue`, a pushed element: `JudgeCastAt`) wants
+the value converting to its type as the cast's does (`SameReach`: a float of
+literals, or a construct of constants or of branches the destination types,
+computed at the type it is now, and an integer rounding to the cast's float
+type only where that is the destination's); a destination with no type (an
+inferred `let`, a rendered argument) the same value, so only an identity
+cast. An operator (`JudgeBinaryCasts`, `JudgeUnaryCast`) computes its value
+without the cast with `NumericBinary` or `NumericUnary`, the arithmetic of
+`Binary::Check` and `Unary::Check` factored out with a trial mode that
+changes no node and reports no error (`unifytrial` in `UnifyNumeric`). A
+call (`JudgeCallCasts`) resolves again without the cast (`MatchCandidates`):
+the same function, parameter types, bindings and literal parameters, nothing
+ranking alike, and then the argument meets its parameter as a typed
+destination; the builtin a call takes for want of a matching function judges
+nothing (`builtinfallback`). A cast around the node judges it too
+(`NoteCast`), a verdict that holds only while that cast stays. Where an
+operator's value without the cast differs from its own in nothing but what
+its consumer can still tell -- a float of literals yet to settle
+(`CastAlt::settle`, which must be the type the value now computes at) or a
+constant -- the operator's node is followed in turn (`FollowCast`). A value
+that decides a type before it meets it, a pending array's first element or a
+generic struct literal's field, is judged as having no destination type.
+`casttyped` marks the nodes whose value a followed cast's deletion changes:
+where both of an operator's operands are such, each deletion is judged with
+the other's as well (both may go where the value survives all three ways,
+else the right one), as two arguments of a call whose overloads or generics
+resolve them together are (more are not judged). A verdict waits as a
+warning does (`WarningsHeld`), and once the whole program is checked
+`ReportRedundantCasts` warns about each cast as written (`AsCast::origin`)
+every check of which found it redundant, and which was not judged at a cast
+that warns itself.
+
 Builtins are one X-macro table (`builtins.h`) driving arity, receiver kinds,
 provenance requirements and simple signatures; `CheckBuiltin` handles the
 custom ones. `print`/`str`/`format` check renderability per type

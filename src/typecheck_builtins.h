@@ -262,6 +262,8 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         if (IsPlainRef(rt)) rt = rt->ref->sub;
         if (d.kind == B_PUSH || d.kind == B_ALLOC_INDEX || d.kind == B_ALLOC_REF) {
             auto av = DecayRef(CheckV(args[1], nullptr));
+            // The element's own type is what completes the array (JudgeCastAt).
+            JudgeCastAt(args[1], nullptr, av);
             CompletePending(rt, PendingElemFrom(av, args[1]), c->line);
         } else if (d.kind == B_APPEND) {
             auto av = DecayRef(CheckV(args[1], nullptr));
@@ -2294,7 +2296,11 @@ inline bool TypeCheck::NamedOutside(FnSpec *spec, vector<VarDef *> &out) {
 // in the element must derive from the same root, §3.9).
 inline void TypeCheck::ElemArg(Node *&n, TypeExpr *elem, Val &rv) {
     SlotScope ss(*this, true);
-    CheckValueAt(n, elem, Dest(rv, false, rv.reached), true);
+    auto orig = n;
+    auto v = CheckValueAt(n, elem, Dest(rv, false, rv.reached), true);
+    // The element meets the array's element type as a value meets any
+    // destination.
+    JudgeCastAt(orig, elem, v);
 }
 
 }  // namespace goose

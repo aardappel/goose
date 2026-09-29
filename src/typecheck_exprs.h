@@ -787,7 +787,10 @@ inline Node *TypeCheck::WholeSlice(Node *n) {
 // at most the type an earlier break gave the construct.
 inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bool branchcopy,
                                  bool inferred) {
+    auto orig = n;
     auto v = CheckV(n, expected);
+    // An argument's casts are its call's to judge (JudgeCallCasts).
+    if (!callsite) JudgeCastAt(orig, expected && expected->kind != TY_VOID ? expected : nullptr, v);
     // A nominal default is an ordinary construction at this destination,
     // including relative fields; do not turn it into a copied call result.
     if (auto c = Is<Call>(n); c && c->builtin == B_DEFAULT &&
@@ -1272,9 +1275,14 @@ inline void TypeCheck::FoldInt(TType op, Val &l, Val &r, Val &out, Node *at) {
 // The operand/result type of a binary numeric operator: equal types
 // stand; a constant adapts to the other operand's type; otherwise the
 // operand that implicitly widens into the other picks the wider type
-// (§6.1). Returns null for non-numeric or int/float-mixed pairs.
+// (§6.1). Returns null for non-numeric pairs, and where a trial finds no
+// common type (unifytrial).
 inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, TypeExpr *lt,
                                          TypeExpr *rt, bool cmp) {
+    auto fail = [&](const string &msg) -> TypeExpr * {
+        if (!unifytrial) Error(at, msg);
+        return nullptr;
+    };
     if (IsIntT(lt) && IsIntT(rt)) {
         if (TypeEq(lt, rt)) return lt;
         // A construct of integer constants (Val::litint) adapts as the
@@ -1294,8 +1302,8 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
             if (lv.uns || rv.uns) {
                 if ((!lv.uns && lv.ival < 0) || (!rv.uns && rv.ival < 0) ||
                     (lv.litint && lv.litlo < 0) || (rv.litint && rv.litlo < 0))
-                    Error(at, "constant operands have no common type (one is above "
-                              "i64.max, the other negative)");
+                    return fail("constant operands have no common type (one is above "
+                                "i64.max, the other negative)");
                 return ast.inttypes[IS_U64];
             }
             return ast.inttypes[IS_I64];
@@ -1304,14 +1312,8 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
             return c.litint ? ConstsFit(c, t->intstorage)
                             : FitsIntStorage(c.ival, c.uns, t->intstorage);
         };
-        if (lconst) {
-            if (!fits(lv, rt)) Error(at, ConstsNoFit(lv, rt));
-            return rt;
-        }
-        if (rconst) {
-            if (!fits(rv, lt)) Error(at, ConstsNoFit(rv, lt));
-            return lt;
-        }
+        if (lconst) return fits(lv, rt) ? rt : fail(ConstsNoFit(lv, rt));
+        if (rconst) return fits(rv, lt) ? lt : fail(ConstsNoFit(rv, lt));
         if (ImplicitInt(lt->intstorage, rt->intstorage)) return rt;
         if (ImplicitInt(rt->intstorage, lt->intstorage)) return lt;
         // §6.1: a comparison produces bool, so it has no result type to
@@ -1328,6 +1330,13 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
                 auto st = isu64(lt) ? rt : lt;
                 if (!IsUnsigned(st->intstorage)) {
                     if (sv.nonneg) {
+                        // A trial relies on nothing: where a writable reference may
+                        // make the signed side negative, it finds no common type.
+                        if (unifytrial) {
+                            for (auto d = sv.nonnegfrom; d; d = d->nonnegfrom)
+                                if (d->refwrite) return nullptr;
+                            return ast.inttypes[IS_U64];
+                        }
                         if (auto w = RelyOnNonneg(sv, at)) {
                             auto d = sv.nonnegfrom;
                             Error(at, cat("comparing ", TypeStr(lt), " with ", TypeStr(rt),
@@ -1339,15 +1348,15 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
                         }
                         return ast.inttypes[IS_U64];
                     }
-                    Error(at, cat("comparing ", TypeStr(lt), " with ", TypeStr(rt),
-                                  " needs the signed side to be known non-negative "
-                                  "(a literal, .len/.cap, or a `let` bound to one); "
-                                  "convert it with `as` otherwise"));
+                    return fail(cat("comparing ", TypeStr(lt), " with ", TypeStr(rt),
+                                    " needs the signed side to be known non-negative "
+                                    "(a literal, .len/.cap, or a `let` bound to one); "
+                                    "convert it with `as` otherwise"));
                 }
             }
         }
-        Error(at, cat("operands of ", TName(op), " have no common type: ", TypeStr(lt),
-                      " and ", TypeStr(rt), " (convert one with `as`)"));
+        return fail(cat("operands of ", TName(op), " have no common type: ", TypeStr(lt),
+                        " and ", TypeStr(rt), " (convert one with `as`)"));
     }
     if (lt->kind == TY_FLT && rt->kind == TY_FLT) {
         if (TypeEq(lt, rt)) return lt;
@@ -1376,16 +1385,185 @@ inline void TypeCheck::RetypeOperands(Node *&left, Node *&right, Val &lv, Val &r
     auto retype = [&](Node *&n, Val &v) {
         if (auto t = LoadType(v.type); ct->kind == TY_FLT && IsIntT(t)) {
             ToFloat(n, t, ct);
-            IntToFloat(v, ct);
-            return;
+        } else {
+            if (v.litfloat && !TypeEq(v.type, ct)) RetypeFlex(n, ct);
+            else if (v.litint && !TypeEq(v.type, ct)) RetypeBranches(n, ct);
+            n->exprtype = ct;
         }
-        if (v.litfloat && !TypeEq(v.type, ct)) RetypeFlex(n, ct);
-        else if (v.litint && !TypeEq(v.type, ct)) RetypeBranches(n, ct);
-        v.type = ct;
-        n->exprtype = ct;
+        RetypeVal(v, ct);
     };
     retype(left, lv);
     retype(right, rv);
+}
+
+// An operand's value as the unified type ct gives it (RetypeOperands).
+inline void TypeCheck::RetypeVal(Val &v, TypeExpr *ct) {
+    if (ct->kind == TY_FLT && IsIntT(LoadType(v.type))) IntToFloat(v, ct);
+    else v.type = ct;
+}
+
+// The value of the numeric operation b, `lv op rv` (§6.1, §6.2): the
+// operands' common type `ct`, which their nodes take, and the result's type
+// and constant. A `trial` changes no node and reports no error: it gives a
+// value of no type where b would be one.
+inline Val TypeCheck::NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bool trial) {
+    auto op = b->op;
+    auto lt = LoadType(lv.type), rt = LoadType(rv.type);
+    FlagScope ut(unifytrial, unifytrial || trial);
+    FlagScope lr(litrecord, litrecord && !trial);
+    ct = nullptr;
+    auto fail = [&](const string &msg) {
+        if (!trial) Error(b, msg);
+        return Val {};
+    };
+    auto retype = [&]() {
+        if (trial) {
+            RetypeVal(lv, ct);
+            RetypeVal(rv, ct);
+        } else {
+            RetypeOperands(b->left, b->right, lv, rv, ct);
+        }
+    };
+    // A constant division by zero is FoldInt's error.
+    auto fold = [&](Val &v) {
+        if (trial && lv.ck == CK_INT && rv.ck == CK_INT && (op == T_DIV || op == T_MOD) &&
+            !rv.ival)
+            return false;
+        FoldInt(op, lv, rv, v, b);
+        return true;
+    };
+    Val v;
+    switch (op) {
+        case T_LT: case T_GT: case T_LTEQ: case T_GTEQ:
+            ct = UnifyNumeric(b, op, lv, rv, lt, rt, true);
+            if (!ct)
+                return fail(cat("ordering comparison requires numeric operands, got ",
+                                TypeStr(lt), " and ", TypeStr(rt)));
+            retype();
+            v.type = ast.booltype;
+            return v;
+        case T_EQ: case T_NEQ:
+            ct = UnifyNumeric(b, op, lv, rv, lt, rt, true);
+            if (!ct) return Val {};
+            retype();
+            v.type = ast.booltype;
+            return v;
+        case T_SHL: case T_SHR:
+            // Shifts: the left operand's type is the result type; the count
+            // may be any integer type and is masked to the width (§6.2).
+            if (!IsIntT(lt) || !IsIntT(rt))
+                return fail(cat("shift requires integer operands, got ", TypeStr(lt), " and ",
+                                TypeStr(rt)));
+            ct = v.type = lv.ck == CK_INT ? ast.inttypes[lv.uns ? IS_U64 : IS_I64] : lt;
+            if (!trial) b->left->exprtype = v.type;
+            lv.type = v.type;
+            if (!fold(v)) return Val {};
+            return v;
+        case T_BITAND: case T_BITOR: case T_XOR:
+            if (!IsIntT(lt) || !IsIntT(rt))
+                return fail(cat("bitwise operator requires integer operands, got ", TypeStr(lt),
+                                " and ", TypeStr(rt)));
+            ct = UnifyNumeric(b, op, lv, rv, lt, rt);
+            if (!ct) return Val {};
+            retype();
+            v.type = ct;
+            if (!fold(v)) return Val {};
+            return v;
+        case T_PLUS: case T_MINUS: case T_MUL: case T_DIV: case T_MOD: {
+            ct = UnifyNumeric(b, op, lv, rv, lt, rt);
+            if (!ct) return Val {};
+            // Where no operand has a float type of its own, the result
+            // takes the type its destination or other operand has, as a
+            // float literal does (Val::litfloat).
+            auto literal = [&](const Val &x, TypeExpr *t) { return IsIntT(t) || LitFloat(x); };
+            auto flex = ct->kind == TY_FLT && literal(lv, lt) && literal(rv, rt);
+            retype();
+            v.type = ct;
+            if (ct->kind == TY_INT) {
+                if (!fold(v)) return Val {};
+            } else if (lv.ck == CK_FLT && rv.ck == CK_FLT && op != T_MOD) {
+                // % (fmod) is left to the runtime.
+                auto x = lv.fval, y = rv.fval;
+                if (IsF32(ct)) { x = (float)x; y = (float)y; }
+                v.ck = CK_FLT;
+                switch (op) {
+                    case T_PLUS:  v.fval = x + y; break;
+                    case T_MINUS: v.fval = x - y; break;
+                    case T_MUL:   v.fval = x * y; break;
+                    default:      v.fval = y != 0 ? x / y : 0; break;
+                }
+                if (IsF32(ct)) v.fval = (double)(float)v.fval;
+            }
+            v.litfloat = flex && v.ck != CK_FLT;
+            if (!trial) b->litfloat = v.litfloat;
+            return v;
+        }
+        default:
+            assert(false);
+            return Val {};
+    }
+}
+
+// The value of the unary operation u, `-v` or `~v` (§6.2), as NumericBinary's
+// is of a binary one: a trial changes no node, reports no error, and gives a
+// value of no type where u would be one.
+inline Val TypeCheck::NumericUnary(Unary *u, const Val &v, bool trial) {
+    auto t = LoadType(v.type);
+    auto fail = [&](const string &msg) {
+        if (!trial) Error(u, msg);
+        return Val {};
+    };
+    Val r;
+    switch (u->op) {
+        case T_MINUS:
+            if (IsIntT(t)) {
+                // -(i64.min) leaves i64, so like a signed op that overflows
+                // (FoldIntOp) it is no constant: a debug build aborts on it
+                // at run time.
+                if (v.ck == CK_INT && (v.uns || v.ival != INT64_MIN)) {
+                    // -(2^63) is exactly i64.min; any other u64-range value
+                    // cannot be negated.
+                    if (v.uns && v.ival != INT64_MIN)
+                        return fail("negated constant too large for i64");
+                    r.type = ast.inttypes[IS_I64];
+                    r.ck = CK_INT;
+                    r.ival = v.uns ? INT64_MIN : -v.ival;
+                    if (!trial) u->child->exprtype = r.type;
+                    return r;
+                }
+                if (IsUnsigned(t->intstorage))
+                    return fail(cat("cannot negate a value of unsigned type ", TypeStr(t),
+                                    " (convert with `as`)"));
+                r.type = t;
+            } else if (t->kind == TY_FLT) {
+                r.type = t;
+                if (v.ck == CK_FLT) {
+                    r.ck = CK_FLT;
+                    r.fval = -v.fval;
+                } else {
+                    r.litfloat = LitFloat(v);
+                }
+                if (!trial) u->litfloat = r.litfloat;
+            } else {
+                return fail(cat("cannot negate a value of type ", TypeStr(t)));
+            }
+            return r;
+        case T_BITNOT:
+            if (!IsIntT(t)) return fail(cat("~ requires an integer, got ", TypeStr(t)));
+            if (v.ck == CK_INT) {
+                r.type = ast.inttypes[v.uns ? IS_U64 : IS_I64];
+                r.ck = CK_INT;
+                r.ival = ~v.ival;
+                r.uns = v.uns && r.ival < 0;
+                if (!trial) u->child->exprtype = r.type;
+                return r;
+            }
+            r.type = t;
+            return r;
+        default:
+            assert(false);
+            return Val {};
+    }
 }
 
 // An integer value converted to the float type ft (§6.3): a constant stays
@@ -1441,6 +1619,318 @@ inline void TypeCheck::RetypeFlex(Node *&n, TypeExpr *t) {
     } else {
         RetypeBranches(n, t);
     }
+}
+
+// ------------------------------------------------------------------
+// Redundant casts (§6.3). Where an explicit cast's operand converts to its
+// type implicitly (Converts), the checker follows the value the node would
+// have without the cast (CastAlt::alt) up the expression, and each consumer
+// judges it: a typed destination, an operator, a call's resolution, a cast
+// around it; or, where the difference is one its own consumer can still
+// tell, follows its own value on. Code whose types differ between
+// specializations (InGenericCode) is not judged.
+
+// Whether the code being checked is generic -- in a function with type
+// parameters or untyped ones, in a function value's body, or in a function
+// or default declared in one -- so that the types around a cast may differ
+// from one specialization to the next (§7.7).
+inline bool TypeCheck::InGenericCode() {
+    auto generic = [](const SFunction *sf) {
+        if (!sf) return false;
+        if (!sf->generics.empty()) return true;
+        for (auto &p : sf->params) if (!p.type) return true;
+        return false;
+    };
+    for (auto i = (int)frames.size() - 1; i >= 0;) {
+        auto &fr = frames[i];
+        if (fr.isfunval && !fr.isdefault) return true;
+        if (generic(fr.sf) || generic(fr.defaultfn)) return true;
+        for (auto sp = fr.lexspec; sp; sp = sp->lexparent)
+            if (!sp->bindings.empty() || generic(sp->sf)) return true;
+        // A default names only what its declaration's top level does.
+        if (fr.isdefault || fr.lexframe < 0 || fr.lexframe >= i) return false;
+        i = fr.lexframe;
+    }
+    return false;
+}
+
+// Whether the numeric value v converts to the numeric type t implicitly
+// (§6.3): FitsAt's rules for numbers, recording nothing. A literal parameter
+// only widens: whether its literal fits a narrower type is each call site's
+// question, which the cast answers at run time.
+inline bool TypeCheck::Converts(const Val &v, TypeExpr *t) {
+    auto vt = LoadType(v.type);
+    if (t->kind == TY_INT) {
+        if (vt->kind != TY_INT) return false;
+        if (vt->intstorage == t->intstorage) return true;
+        if (v.ck == CK_INT || (v.litint && t->intstorage != IS_VARINT))
+            return v.litint ? ConstsFit(v, t->intstorage)
+                            : FitsIntStorage(v.ival, v.uns, t->intstorage);
+        if (t->intstorage == IS_VARINT) return vt->intstorage != IS_U64;
+        return ImplicitInt(vt->intstorage, t->intstorage);
+    }
+    if (t->kind != TY_FLT) return false;
+    if (vt->kind == TY_INT) return true;
+    if (vt->kind != TY_FLT) return false;
+    return vt->fltstorage == t->fltstorage || (IsF32(t) ? LitFloat(v) : IsF32(vt));
+}
+
+// Whether two numeric values are the same to whatever consumes them: of one
+// type, the same constant or none, and adapting alike (§6.3).
+inline bool TypeCheck::SameNumVal(const Val &a, const Val &b) {
+    if (!a.type || !b.type || !SameNum(LoadType(a.type), LoadType(b.type))) return false;
+    if (a.ck != b.ck || a.litfloat != b.litfloat || a.litint != b.litint ||
+        a.unsized != b.unsized)
+        return false;
+    if (a.ck == CK_INT && (a.ival != b.ival || a.uns != b.uns)) return false;
+    if (a.ck == CK_FLT && a.fval != b.fval) return false;
+    return !a.litint || (a.litlo == b.litlo && a.lithi == b.lithi);
+}
+
+// Whether the operand of the cast a follows, without the cast, reaches type
+// `at` as it now does through it: computed alike -- a float of literals or a
+// construct of constants at the type the cast gives it, and a construct that
+// a destination gives its type (`typed`) at the one it has -- and converted
+// to the same value, an integer rounding to the cast's float type only where
+// that is `at`.
+inline bool TypeCheck::SameReach(const CastAlt &a, TypeExpr *at, bool typed) {
+    auto &cv = a.operand;
+    auto st = LoadType(cv.type), tt = a.cast->totype;
+    if ((cv.litfloat && cv.ck == CK_NONE) || cv.litint) return SameNum(st, tt) && SameNum(tt, at);
+    if (typed && IsBranchConstruct(a.cast->child) && !SameNum(st, at)) return false;
+    auto rounds = IsIntT(st) ? tt->kind == TY_FLT : !SameNum(st, tt);
+    return !rounds || SameNum(tt, at);
+}
+
+// Whether a followed value reaches type `at` as the cast's value does: the
+// cast's own operand as SameReach says, a float of literals the deletion
+// leaves where it settles.
+inline bool TypeCheck::Reaches(const CastAlt &a, TypeExpr *at, bool typed) {
+    return a.pending ? !a.settle || SameNum(at, a.settle) : SameReach(a, at, typed);
+}
+
+// The explicit cast x of cv, whose value is v (AsCast::Check). A cast the
+// checker followed to the operand is judged by what x makes of it: where x
+// may go as well, that verdict holds only while x stays. x is followed where
+// its operand converts to its type implicitly, outside generic code.
+inline void TypeCheck::NoteCast(AsCast *x, const Val &raw, const Val &cv, const Val &v) {
+    auto removable = !InGenericCode() && Converts(cv, x->totype);
+    if (auto it = castalts.find(x->child); it != castalts.end()) {
+        auto a = it->second;
+        // x's value is of its type whatever it converts. Its operand is
+        // checked with no type, so a float of literals it leaves computes at
+        // f64.
+        auto same = a.pending ? !a.settle || !IsF32(a.settle) : SameReach(a, x->totype, false);
+        CastVerdict(a, same ? CastReason(a, a.reach ? a.reach : x->totype, !a.pending) : "",
+                    removable ? x->Origin() : nullptr);
+    }
+    if (!removable) return;
+    CastAlt a;
+    a.cast = x;
+    a.operand = a.alt = cv;
+    a.raw = raw;
+    castalts[x] = a;
+    if (!SameNumVal(cv, v)) casttyped.insert(x);
+}
+
+// n's value without a followed cast is tv where it is v, and n computed the
+// operand at `at`. The same value makes the cast redundant. A float of
+// literals where v is a plain float computes at the type it settles at: n's
+// consumer judges that, as it judges a value that differs from v in no more
+// than how it adapts (a constant). Anything else keeps the cast.
+inline void TypeCheck::FollowCast(Node *n, const CastAlt &a, const Val &tv, const Val &v,
+                                  TypeExpr *at) {
+    if (!tv.type) return CastVerdict(a, "");
+    auto next = a;
+    next.alt = tv;
+    next.pending = true;
+    if (tv.litfloat && !v.litfloat && v.type->kind == TY_FLT) {
+        // It has to settle at the type v computes at: the cast's, or that of
+        // the float of literals its own operand is.
+        auto &cv = a.operand;
+        auto settle = a.pending                        ? a.settle
+                      : cv.litfloat && cv.ck == CK_NONE ? LoadType(cv.type)
+                                                        : a.cast->totype;
+        if (!settle || !SameNum(settle, LoadType(v.type)) || !Reaches(a, settle, false))
+            return CastVerdict(a, "");
+        next.settle = settle;
+        next.reach = a.reach ? a.reach : settle;
+    } else {
+        if (!Reaches(a, at, false)) return CastVerdict(a, "");
+        if (SameNumVal(tv, v)) return CastVerdict(a, CastReason(a, a.reach ? a.reach : at));
+        if (!SameNum(LoadType(tv.type), LoadType(v.type)) || tv.litfloat || v.litfloat ||
+            tv.litint || v.litint)
+            return CastVerdict(a, "");
+        next.settle = nullptr;
+        next.reach = a.reach ? a.reach : at;
+    }
+    castalts[n] = next;
+    casttyped.insert(n);
+}
+
+// b's operands' followed casts, judged by b's value without each: the value
+// of NumericBinary's trial (FollowCast), or for a comparison the type it
+// compares at. Where both operands' values would differ without their
+// casts (casttyped), each deletion is judged with the other's as well: both
+// may go where b's value stays the same all three ways; where it does not
+// survive both, one may go, the right one where it can, the left operand
+// keeping the type as the reader meets it first.
+inline void TypeCheck::JudgeBinaryCasts(Binary *b, Node *l, Node *r, const Val &lv,
+                                        const Val &rv, const Val &v, TypeExpr *ct) {
+    auto cmp = v.type->kind == TY_BOOL;
+    auto same = [&](const Val &tv, TypeExpr *tct) {
+        return tv.type && (cmp ? SameNum(tct, ct) : SameNumVal(tv, v));
+    };
+    CastAlt alts[2];
+    Val tvs[2];
+    TypeExpr *tcts[2] = { nullptr, nullptr };
+    bool has[2], alone[2] = { false, false };
+    for (auto s = 0; s < 2; s++) {
+        auto it = castalts.find(s ? r : l);
+        has[s] = it != castalts.end();
+        if (!has[s]) continue;
+        alts[s] = it->second;
+        tvs[s] = NumericBinary(b, s ? lv : alts[s].alt, s ? alts[s].alt : rv, tcts[s], true);
+        alone[s] = same(tvs[s], tcts[s]) && Reaches(alts[s], tcts[s], false);
+    }
+    auto both = casttyped.count(l) && casttyped.count(r);
+    auto together = false;
+    if (both) {
+        TypeExpr *tct = nullptr;
+        auto tv = NumericBinary(b, alts[0].alt, alts[1].alt, tct, true);
+        together = same(tv, tct) && Reaches(alts[0], tct, false) && Reaches(alts[1], tct, false);
+    }
+    for (auto s = 0; s < 2; s++) {
+        if (!has[s]) continue;
+        auto &a = alts[s];
+        if (!cmp && !both) {
+            FollowCast(b, a, tvs[s], v, tcts[s]);
+            continue;
+        }
+        auto redundant = alone[s] && (!both || together || (s ? true : !alone[1]));
+        CastVerdict(a, redundant ? CastReason(a, a.reach ? a.reach : tcts[s]) : "");
+    }
+}
+
+// u's operand's followed cast, judged by u's value without it, as an
+// operator's are (JudgeBinaryCasts).
+inline void TypeCheck::JudgeUnaryCast(Unary *u, Node *c, const Val &r) {
+    auto it = castalts.find(c);
+    if (it == castalts.end()) return;
+    auto a = it->second;
+    auto tr = NumericUnary(u, a.alt, true);
+    FollowCast(u, a, tr, r, tr.type ? LoadType(tr.type) : nullptr);
+}
+
+// The value of n meets its destination: of type dt, or of none, where n's
+// own type is what it binds (an inferred `let`, a branch of a construct with
+// no type, a rendered argument); v is n's value as checked. A followed cast
+// is redundant where the value without it converts to dt as n's does, or
+// with no type is the same. An argument of a builtin its call takes for
+// want of a function of its name is not judged: a function might take it
+// without the cast.
+inline void TypeCheck::JudgeCastAt(Node *n, TypeExpr *dt, const Val &v) {
+    auto it = castalts.find(n);
+    if (it == castalts.end()) return;
+    auto a = it->second;
+    auto &tv = a.alt;
+    auto same = false;
+    if (builtinfallback.count(n)) {
+        same = false;
+    } else if (!dt) {
+        dt = LoadType(v.type);
+        same = SameNumVal(tv, v);
+    } else {
+        same = (dt->kind == TY_INT || dt->kind == TY_FLT) && Converts(tv, dt) &&
+               Reaches(a, dt, true);
+    }
+    CastVerdict(a, same ? CastReason(a, a.reach ? a.reach : dt) : "");
+}
+
+// Why deleting the cast a follows would leave the program the same, where
+// its operand reaches type `reach` without it; `bycast`: through a cast
+// around it.
+inline string TypeCheck::CastReason(const CastAlt &a, TypeExpr *reach, bool bycast) {
+    auto &cv = a.operand;
+    auto st = LoadType(cv.type), tt = a.cast->totype;
+    auto what = ExprStr(a.cast->child);
+    auto an = [&](TypeExpr *t) {
+        auto s = TypeStr(t);
+        return cat(s[0] == 'i' || s[0] == 'f' ? "an " : "a ", s);
+    };
+    auto literal = cv.ck != CK_NONE || cv.litint || cv.litfloat;
+    if (!literal && SameNum(st, tt)) return cat(what, " is already ", TypeStr(tt));
+    if (bycast) return cat("the cast to ", TypeStr(reach), " around it converts ", what, " as well");
+    if (!literal && SameNum(st, reach)) return cat(what, " is already ", TypeStr(reach), " here");
+    if (cv.ck == CK_INT && IsIntT(reach))
+        return cat(ConstStr(cv), " fits ", TypeStr(reach), " here");
+    if (cv.ck != CK_NONE || cv.litfloat) return cat(what, " is ", an(reach), " here");
+    if (cv.litint)
+        return cat("its constants ", cv.litlo, " to ", cv.lithi, " fit ", TypeStr(reach), " here");
+    return cat(an(st), " converts to ", TypeStr(reach), " implicitly here");
+}
+
+// A check's verdict on the cast a follows (its clone in this
+// specialization): redundant for `reason`, or with none not. A verdict
+// reached at the cast `dependson` holds only while that one stays. It waits
+// as a warning does while the check may be repeated (Warn), and
+// ReportRedundantCasts weighs every check's.
+inline void TypeCheck::CastVerdict(const CastAlt &a, const string &reason,
+                                   const AsCast *dependson) {
+    if (quiet) return;
+    Warning w;
+    w.cast = a.cast->Origin();
+    w.redundant = !reason.empty();
+    if (w.redundant) {
+        w.text = cat("redundant `as", a.cast->unchecked ? "! " : " ", TypeStr(a.cast->totype),
+                     "`: ", reason);
+        w.dependson = dependson;
+    }
+    if (WarningsHeld()) cur.pendingwarnings.push_back(std::move(w));
+    else castverdicts.push_back(std::move(w));
+}
+
+// Once the whole program is checked, a cast warns, in source order, where
+// every verdict on it found it redundant and no cast a verdict was reached at
+// warns itself.
+inline void TypeCheck::ReportRedundantCasts() {
+    FlushWarnings();
+    struct Tally {
+        size_t first = SIZE_MAX;
+        bool needed = false;
+        vector<const AsCast *> deps;
+    };
+    unordered_map<const AsCast *, Tally> tally;
+    for (size_t i = 0; i < castverdicts.size(); i++) {
+        auto &w = castverdicts[i];
+        auto &t = tally[w.cast];
+        if (!w.redundant) {
+            t.needed = true;
+            continue;
+        }
+        if (w.dependson) t.deps.push_back(w.dependson);
+        if (t.first == SIZE_MAX) t.first = i;
+    }
+    unordered_map<const AsCast *, bool> warns;
+    function<bool(const AsCast *)> warn = [&](const AsCast *x) {
+        if (auto it = warns.find(x); it != warns.end()) return it->second;
+        auto it = tally.find(x);
+        auto w = it != tally.end() && !it->second.needed && it->second.first != SIZE_MAX;
+        if (w)
+            for (auto d : it->second.deps) w = w && !warn(d);
+        return warns[x] = w;
+    };
+    vector<size_t> out;
+    for (auto &[x, t] : tally) if (warn(x)) out.push_back(t.first);
+    auto key = [&](size_t i) {
+        auto l = castverdicts[i].cast->line;
+        return tuple(l.fileidx, l.line, i);
+    };
+    sort(out.begin(), out.end(), [&](size_t i, size_t j) { return key(i) < key(j); });
+    for (auto i : out)
+        fputs(cat(Where(castverdicts[i].cast->line), ": warning: ", castverdicts[i].text, "\n")
+                  .c_str(),
+              stderr);
 }
 
 // Array extents and fill counts obey the same integer types as expressions

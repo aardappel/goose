@@ -1423,6 +1423,23 @@ mantissa rounds as every float result does.
   yields 0. The common in-range case is one compare and a hardware
   conversion; only the out-of-range tail pays for the defined wrap.
 
+**Redundant casts.** An `as` or `as!` that changes nothing is a warning: one
+whose operand has its type already, or converts to it implicitly where the
+cast stands, so that deleting the cast leaves every type, operation, value
+and call of the program as it is. `n as i32` of an `i32 n` warns, as do
+`17 as u32` passed to a `u32` parameter, `b as i64` of a `u8 b` stored in an
+`i64`, and `w as f32` in `(w as f32) * 0.5` passed to an `f32` parameter,
+where `w * 0.5` is an `f32` multiply too. A cast that decides anything stays
+silent: a type nothing else gives (`let k = 5 as u32;`, `print(b as u8)`),
+an operation's width or signedness (`(a as i64) * b` with `i32` operands), a
+float's rounding (`(n as f32) * 0.1` stored in an `f64`), a call's overload
+or a generic's instantiation. Of two casts that cannot both go, as in
+`(a as f32) * (b as f32)` of two integers, the right one warns, and of a
+cast directly inside another where both could, the outer one. A generic
+function's body, a function value's, and what is declared in either are not
+judged: another instantiation may need the cast. The warning comes once per
+cast as written, where every check of it agrees.
+
 ### 6.4 Control expressions
 
 ```goose

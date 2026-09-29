@@ -208,6 +208,12 @@ branches are all literals adapts as a literal does, and a literal branch
 takes the other branches' type: `if big { x } else { 0.5 }` is an `f32` for
 an `x: f32`.
 
+A cast that changes nothing is a warning, so the compiler points out the
+ones these rules make unnecessary: with `b: u8`, `let w: i64 = b as i64;`
+says ``redundant `as i64`: a u8 converts to i64 implicitly here``. A cast
+that picks a type or an operation's width, as in `let id = b as i32;` or
+`(a as i64) * b`, is no such cast.
+
 **`%` is Euclidean.** The result is in `[0, |b|)` and never negative, at
 every integer type. So `x % n` is a valid index into a length-`n` array for
 *any* `x`, and the compiler can drop the bounds check instead of demanding a

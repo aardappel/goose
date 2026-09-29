@@ -157,7 +157,7 @@ fn operators(a: i64, b: i64) -> i64 {
     let cmp = a < b || a <= b || a > b || a >= b || a == b || a != b;
     let logic = !cmp && a + 1 < b || false;
     let neg = - -a;
-    let casts = (a as u8) as! i16 as f64;
+    let casts = (a as i16) as! u8 as f64;
     print(casts + 0.5);
     if logic { arith + bits + neg } else { arith - bits }
 }

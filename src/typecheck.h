@@ -443,7 +443,7 @@ struct TypeCheck {
     // An error at code checked earlier, with the instantiation chain taken
     // there: how a check made once the whole program has been reports one.
     [[noreturn]] void ErrorIn(Line l, const string &msg, const string &chain) {
-        for (auto &w : cur.pendingwarnings) fputs(w.c_str(), stderr);
+        for (auto &w : cur.pendingwarnings) if (!w.cast) fputs(w.text.c_str(), stderr);
         cur.pendingwarnings.clear();
         auto s = cat(Where(l), ": error: ", msg);
         // Show the offending source line with a caret-less underline context.
@@ -542,6 +542,15 @@ struct TypeCheck {
 
     [[noreturn]] void Error(const Node *n, const string &msg) { Error(n->line, msg); }
 
+    // A warning's text; or, where `cast` is set, a check's verdict on that
+    // explicit cast as the source has it (CastVerdict): redundant, `text`
+    // saying why, with the cast it was judged at, which has to stay; or not.
+    struct Warning {
+        string text;
+        const AsCast *cast = nullptr;
+        bool redundant = false;
+        const AsCast *dependson = nullptr;
+    };
     // A check that phase 2 of a call repeats leaves its warnings to that
     // repetition (BindBranchesByRef).
     bool quiet = false;
@@ -549,17 +558,22 @@ struct TypeCheck {
         if (quiet) return;
         auto text = cat(Where(n->line), ": warning: ", msg, "\n");
         if (WarningsHeld()) {
-            cur.pendingwarnings.push_back(text);
+            cur.pendingwarnings.push_back({ text });
             return;
         }
         fputs(text.c_str(), stderr);
     }
     // Warnings wait while a check may yet be repeated: a loop's pass
     // (CheckLoopPasses), or a construct's first check of its branches
-    // (CheckJoin). The repetition's warnings are the ones that stand.
+    // (CheckJoin). The repetition's warnings are the ones that stand. A
+    // verdict on a cast waits for all of that cast's checks
+    // (ReportRedundantCasts).
     bool WarningsHeld() { return !cur.looppasses.empty() || cur.joinprobes > 0; }
     void FlushWarnings() {
-        for (auto &w : cur.pendingwarnings) fputs(w.c_str(), stderr);
+        for (auto &w : cur.pendingwarnings) {
+            if (w.cast) castverdicts.push_back(std::move(w));
+            else fputs(w.text.c_str(), stderr);
+        }
         cur.pendingwarnings.clear();
     }
 
@@ -1291,7 +1305,11 @@ struct TypeCheck {
     void FoldInt(TType op, Val &l, Val &r, Val &out, Node *at);
     TypeExpr *UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, TypeExpr *lt, TypeExpr *rt,
                            bool cmp = false);
+    bool unifytrial = false;   // UnifyNumeric gives no type rather than an error (NumericBinary).
     void RetypeOperands(Node *&left, Node *&right, Val &lv, Val &rv, TypeExpr *ct);
+    void RetypeVal(Val &v, TypeExpr *ct);
+    Val NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bool trial);
+    Val NumericUnary(Unary *u, const Val &v, bool trial);
     // A float whose type comes from float literals alone (§6.3): a constant,
     // a literal parameter (§7.7), or a Val::litfloat.
     static bool LitFloat(const Val &v) {
@@ -1319,6 +1337,60 @@ struct TypeCheck {
     void RetypeFlex(Node *&n, TypeExpr *t);
     void RetypeBranch(Node *&n, TypeExpr *t);
     void RetypeBranches(Node *x, TypeExpr *t);
+
+    // Redundant casts (§6.3): an explicit `as` whose deletion would leave
+    // the program meaning the same is a warning. The checker follows each
+    // cast up the expression while the value without it (CastAlt::alt) could
+    // still come to the same, and each check of the cast gives a verdict
+    // where its consumer tells (CastVerdict).
+    struct CastAlt {
+        AsCast *cast = nullptr;
+        Val operand;          // The cast's operand, a value (DecayRef).
+        Val raw;              // The operand as checked, which an argument passes.
+        Val alt;              // The value of the node followed, without the cast.
+        // Followed past the cast's consumer (FollowCast): the node is one
+        // that consumed the operand's value, directly or not.
+        bool pending = false;
+        // A float of literals and integers the deletion leaves (litfloat)
+        // where the node's value is a plain float computes at whatever type
+        // it settles at: the type that has to be, the one the cast gave.
+        TypeExpr *settle = nullptr;
+        TypeExpr *reach = nullptr;   // The type the operand reaches, for the warning.
+    };
+    unordered_map<Node *, CastAlt> castalts;
+    // Nodes whose value a cast the checker follows would change: the cast
+    // itself, unless its operand's value is the same, and every node a
+    // deletion's difference was followed through. A cast's verdict never
+    // rests on another such value beside it, which that one's deletion
+    // could change as well.
+    unordered_set<Node *> casttyped;
+    // The direct arguments of a builtin call no function of its name
+    // matched: without a cast, one might (CheckNamedCall).
+    unordered_set<Node *> builtinfallback;
+    vector<Warning> castverdicts;   // The verdicts of checks that stand.
+    void ForgetCastAlt(Node *n) {
+        castalts.erase(n);
+        casttyped.erase(n);
+    }
+    bool InGenericCode();
+    bool Converts(const Val &v, TypeExpr *t);
+    static bool SameNum(TypeExpr *a, TypeExpr *b) {
+        if (!a || !b || a->kind != b->kind) return false;
+        if (a->kind == TY_INT) return a->intstorage == b->intstorage;
+        return a->kind == TY_FLT && a->fltstorage == b->fltstorage;
+    }
+    bool SameNumVal(const Val &a, const Val &b);
+    bool SameReach(const CastAlt &a, TypeExpr *at, bool typed);
+    bool Reaches(const CastAlt &a, TypeExpr *at, bool typed);
+    void NoteCast(AsCast *x, const Val &raw, const Val &cv, const Val &v);
+    void FollowCast(Node *n, const CastAlt &a, const Val &tv, const Val &v, TypeExpr *at);
+    void JudgeBinaryCasts(Binary *b, Node *l, Node *r, const Val &lv, const Val &rv, const Val &v,
+                          TypeExpr *ct);
+    void JudgeUnaryCast(Unary *u, Node *c, const Val &r);
+    void JudgeCastAt(Node *n, TypeExpr *dt, const Val &v);
+    string CastReason(const CastAlt &a, TypeExpr *reach, bool bycast = false);
+    void CastVerdict(const CastAlt &a, const string &reason, const AsCast *dependson = nullptr);
+    void ReportRedundantCasts();
     bool ElementwiseOK(TypeExpr *t);
     Val CheckVariantConst(Dot *d, SEnum *en);
     Val MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at, bool wantvalue);
@@ -1405,6 +1477,11 @@ struct TypeCheck {
     Val CheckUfcsCall(Call *c, Dot *d);
     Val ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *env, string_view name, Val *preval,
                     Node *&prenode, bool *nomatch = nullptr);
+    void MatchCandidates(Call *c, vector<SFunction *> &cands, FnSpec *env, vector<Val> &argvals,
+                         vector<MatchInfo> &tied, vector<MatchInfo> &converting, string *failures,
+                         string_view name);
+    void JudgeCallCasts(Call *c, vector<SFunction *> &cands, FnSpec *env, vector<Node *> &argnodes,
+                        vector<Val> &argvals, MatchInfo &best, string_view name, bool builtin);
     // `defaults`: the call may leave out parameters that have a default
     // (§7.1), which ResolveCall then passes. Tag dispatch and rendering
     // hooks give every argument.
@@ -1737,7 +1814,7 @@ struct TypeCheck {
         // A pass's warnings are kept back until the loop's last pass, whose
         // warnings are the ones that stand (CheckLoopPasses), and so are
         // those of a construct's first check of its branches (CheckJoin).
-        vector<string> pendingwarnings;
+        vector<Warning> pendingwarnings;
         int joinprobes = 0;
         // Every growth and shrink so far (GrowEvent): a value built in place
         // is checked against those logged while its expression ran
@@ -1881,6 +1958,7 @@ struct TypeCheck {
         SettleParamRootExactness();
         ResolveGrowConflicts();
         VerifyLiterals();
+        ReportRedundantCasts();
     }
 
     // Two parameter classes of one activation are one array where some

@@ -293,6 +293,8 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
                 if (Is<SelfRef>(fi.val)) continue;
                 auto av = tc.CheckV(fi.val, nullptr);
                 fi.val->exprtype = av.type;
+                // The value's own type is what binds the arguments.
+                tc.JudgeCastAt(fi.val, nullptr, av);
                 auto nt = tc.NaturalType(av);
                 // The shape-changing coercion generics see through, as a
                 // call's do: an array, or a reference to one, meeting a
@@ -327,66 +329,26 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
 
 inline Val Unary::Check(TypeCheck &tc, TypeExpr *) {
     litfloat = false;
+    tc.ForgetCastAlt(this);
     if (op == T_BITAND) return tc.CheckRefOf(this);
     auto v = tc.Operand(child);
-    auto t = tc.LoadType(v.type);
-    Val r;
-    switch (op) {
-        case T_MINUS:
-            if (IsIntT(t)) {
-                // -(i64.min) leaves i64, so like a signed op that overflows
-                // (FoldIntOp) it is no constant: a debug build aborts on it
-                // at run time.
-                if (v.ck == CK_INT && (v.uns || v.ival != INT64_MIN)) {
-                    // -(2^63) is exactly i64.min; any other u64-range value
-                    // cannot be negated.
-                    if (v.uns && v.ival != INT64_MIN)
-                        tc.Error(this, "negated constant too large for i64");
-                    r.type = tc.ast.inttypes[IS_I64];
-                    r.ck = CK_INT;
-                    r.ival = v.uns ? INT64_MIN : -v.ival;
-                    child->exprtype = r.type;
-                    return r;
-                }
-                if (IsUnsigned(t->intstorage))
-                    tc.Error(this, cat("cannot negate a value of unsigned type ",
-                                       tc.TypeStr(t), " (convert with `as`)"));
-                r.type = t;
-            } else if (t->kind == TY_FLT) {
-                r.type = t;
-                if (v.ck == CK_FLT) { r.ck = CK_FLT; r.fval = -v.fval; }
-                else r.litfloat = litfloat = TypeCheck::LitFloat(v);
-            } else {
-                tc.Error(this, cat("cannot negate a value of type ", tc.TypeStr(t)));
-            }
-            return r;
-        case T_NOT:
-            // Optionals are testable like conditions (§3.8 truthiness).
-            if (t->kind != TY_BOOL && !IsOptional(t))
-                tc.Error(this, cat("! requires bool, got ", tc.TypeStr(t)));
-            r.type = tc.ast.booltype;
-            return r;
-        case T_BITNOT:
-            if (!IsIntT(t))
-                tc.Error(this, cat("~ requires an integer, got ", tc.TypeStr(t)));
-            if (v.ck == CK_INT) {
-                r.type = tc.ast.inttypes[v.uns ? IS_U64 : IS_I64];
-                r.ck = CK_INT;
-                r.ival = ~v.ival;
-                r.uns = v.uns && r.ival < 0;
-                child->exprtype = r.type;
-                return r;
-            }
-            r.type = t;
-            return r;
-        default:
-            assert(false);
-            return tc.VoidVal();
+    if (op == T_NOT) {
+        // Optionals are testable like conditions (§3.8 truthiness).
+        auto t = tc.LoadType(v.type);
+        if (t->kind != TY_BOOL && !IsOptional(t))
+            tc.Error(this, cat("! requires bool, got ", tc.TypeStr(t)));
+        Val r;
+        r.type = tc.ast.booltype;
+        return r;
     }
+    auto r = tc.NumericUnary(this, v, false);
+    tc.JudgeUnaryCast(this, child, r);
+    return r;
 }
 
 inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
     litfloat = false;
+    tc.ForgetCastAlt(this);
     if (op == T_DOTEQ || op == T_DOTNEQ) {
         // Reference identity (§4.5): the addresses, never the pointees. Each
         // side is a reference (plain or optional) or null, or storage taken
@@ -435,36 +397,23 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
     auto lv = tc.Operand(left);
     auto rv = tc.Operand(right);
     auto lt = tc.LoadType(lv.type), rt = tc.LoadType(rv.type);
-    Val v;
-    switch (op) {
-        case T_LT: case T_GT: case T_LTEQ: case T_GTEQ: {
-            auto ct = tc.UnifyNumeric(this, op, lv, rv, lt, rt, true);
-            if (!ct)
-                tc.Error(this, cat("ordering comparison requires numeric operands, got ",
-                                   tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
-            tc.RetypeOperands(left, right, lv, rv, ct);
-            v.type = tc.ast.booltype;
+    auto numeric = [](TypeExpr *t) { return IsIntT(t) || t->kind == TY_FLT; };
+    if (op == T_EQ || op == T_NEQ) {
+        Val v;
+        v.type = tc.ast.booltype;
+        // null tests: the other side must be an optional (an already
+        // narrowed optional variable still counts).
+        if (lv.isnull || rv.isnull) {
+            auto othernode = lv.isnull ? right : left;
+            auto &other = lv.isnull ? rt : lt;
+            auto oid = Is<Ident>(othernode);
+            auto narrowedopt = oid && oid->vdef && IsOptional(oid->vdef->type);
+            if (!IsOptional(other) && !narrowedopt && !(lv.isnull && rv.isnull))
+                tc.Error(this, cat("only optionals compare against null, not ",
+                                   tc.TypeStr(other)));
             return v;
         }
-        case T_EQ: case T_NEQ: {
-            // null tests: the other side must be an optional (an already
-            // narrowed optional variable still counts).
-            if (lv.isnull || rv.isnull) {
-                auto othernode = lv.isnull ? right : left;
-                auto &other = lv.isnull ? rt : lt;
-                auto oid = Is<Ident>(othernode);
-                auto narrowedopt = oid && oid->vdef && IsOptional(oid->vdef->type);
-                if (!IsOptional(other) && !narrowedopt && !(lv.isnull && rv.isnull))
-                    tc.Error(this, cat("only optionals compare against null, not ",
-                                       tc.TypeStr(other)));
-                v.type = tc.ast.booltype;
-                return v;
-            }
-            if (auto ct = tc.UnifyNumeric(this, op, lv, rv, lt, rt, true)) {
-                tc.RetypeOperands(left, right, lv, rv, ct);
-                v.type = tc.ast.booltype;
-                return v;
-            }
+        if (!numeric(lt) || !numeric(rt)) {
             if (lt->kind == TY_FN || lt->kind == TY_VOID)
                 tc.Error(this, "these values cannot be compared");
             // Two arrays or slices of one element type compare as slices,
@@ -491,78 +440,27 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
             if (!tc.TopConstEq(lt, rt))
                 tc.Error(this, cat("== requires operands of the same type, got ",
                                    tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
-            v.type = tc.ast.booltype;
             return v;
         }
-        case T_SHL: case T_SHR: {
-            // Shifts: the left operand's type is the result type; the count
-            // may be any integer type and is masked to the width (§6.2).
-            if (!IsIntT(lt) || !IsIntT(rt))
-                tc.Error(this, cat("shift requires integer operands, got ",
-                                   tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
-            if (lv.ck == CK_INT)
-                v.type = tc.ast.inttypes[lv.uns ? IS_U64 : IS_I64];
-            else
-                v.type = lt;
-            left->exprtype = v.type;
-            lv.type = v.type;
-            tc.FoldInt(op, lv, rv, v, this);
-            return v;
-        }
-        case T_BITAND: case T_BITOR: case T_XOR: {
-            if (!IsIntT(lt) || !IsIntT(rt))
-                tc.Error(this, cat("bitwise operator requires integer operands, got ",
-                                   tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
-            auto ct = tc.UnifyNumeric(this, op, lv, rv, lt, rt);
-            tc.RetypeOperands(left, right, lv, rv, ct);
-            v.type = ct;
-            tc.FoldInt(op, lv, rv, v, this);
-            return v;
-        }
-        case T_PLUS: case T_MINUS: case T_MUL: case T_DIV: case T_MOD: {
-            auto numeric = [](TypeExpr *t) { return IsIntT(t) || t->kind == TY_FLT; };
-            if (numeric(lt) && numeric(rt)) {
-                auto ct = tc.UnifyNumeric(this, op, lv, rv, lt, rt);
-                // Where no operand has a float type of its own, the result
-                // takes the type its destination or other operand has, as a
-                // float literal does (Val::litfloat).
-                auto literal = [&](const Val &x, TypeExpr *t) {
-                    return IsIntT(t) || TypeCheck::LitFloat(x);
-                };
-                auto flex = ct->kind == TY_FLT && literal(lv, lt) && literal(rv, rt);
-                tc.RetypeOperands(left, right, lv, rv, ct);
-                v.type = ct;
-                if (ct->kind == TY_INT) {
-                    tc.FoldInt(op, lv, rv, v, this);
-                } else if (lv.ck == CK_FLT && rv.ck == CK_FLT && op != T_MOD) {
-                    // % (fmod) is left to the runtime.
-                    auto a = lv.fval, b = rv.fval;
-                    if (IsF32(ct)) { a = (float)a; b = (float)b; }
-                    v.ck = CK_FLT;
-                    switch (op) {
-                        case T_PLUS:  v.fval = a + b; break;
-                        case T_MINUS: v.fval = a - b; break;
-                        case T_MUL:   v.fval = a * b; break;
-                        default:      v.fval = b != 0 ? a / b : 0; break;
-                    }
-                    if (IsF32(ct)) v.fval = (double)(float)v.fval;
-                }
-                v.litfloat = litfloat = flex && v.ck != CK_FLT;
-                return v;
-            }
-            // Elementwise math on identical struct / fixed array types whose
-            // scalar leaves are uniformly int or float (§6.1).
-            if (tc.TypeEq(lt, rt) && tc.ElementwiseOK(lt)) {
-                v.type = lt;
-                return v;
-            }
-            tc.Error(this, cat("operator ", TName(op), " cannot be applied to ",
-                               tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
-        }
-        default:
-            assert(false);
-            return tc.VoidVal();
     }
+    if ((op == T_PLUS || op == T_MINUS || op == T_MUL || op == T_DIV || op == T_MOD) &&
+        (!numeric(lt) || !numeric(rt))) {
+        // Elementwise math on identical struct / fixed array types whose
+        // scalar leaves are uniformly int or float (§6.1).
+        if (tc.TypeEq(lt, rt) && tc.ElementwiseOK(lt)) {
+            Val v;
+            v.type = lt;
+            return v;
+        }
+        tc.Error(this, cat("operator ", TName(op), " cannot be applied to ",
+                           tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
+    }
+    // The operands' nodes as checked, before retyping may wrap them.
+    auto l = left, r = right;
+    TypeExpr *ct = nullptr;
+    auto v = tc.NumericBinary(this, lv, rv, ct, false);
+    tc.JudgeBinaryCasts(this, l, r, lv, rv, v, ct);
+    return v;
 }
 
 inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
@@ -643,23 +541,24 @@ inline Val AsCast::Check(TypeCheck &tc, TypeExpr *) {
     // converts, which its destination or operator converts again
     // (TypeCheck::ToFloat).
     if (implicit) return tc.Operand(child);
-    auto cv = tc.Operand(child);
+    tc.ForgetCastAlt(this);
+    // The operand as checked, which is also what an argument without the
+    // cast would pass (TypeCheck::JudgeCallCasts).
+    auto raw = tc.CheckV(child, nullptr);
+    auto cv = tc.DecayRef(raw);
+    child->exprtype = cv.type;
     auto st = tc.LoadType(cv.type);
     if (!IsIntT(st) && st->kind != TY_FLT)
         tc.Error(this, cat("as requires a numeric source, got ", tc.TypeStr(st)));
     auto tt = tc.Subst(type);
+    if (tt->kind == TY_INT && tt->intstorage == IS_VARINT)
+        tc.Error(this, "cannot cast to varint (varints are written at construction only)");
+    if (tt->kind != TY_INT && tt->kind != TY_FLT)
+        tc.Error(this, cat("as can only convert between numeric types, not to ", tc.TypeStr(tt)));
     Val v;
-    if (tt->kind == TY_INT) {
-        if (tt->intstorage == IS_VARINT)
-            tc.Error(this, "cannot cast to varint (varints are written at construction only)");
-        totype = v.type = tt;
-        return v;
-    }
-    if (tt->kind == TY_FLT) {
-        totype = v.type = tt;
-        return v;
-    }
-    tc.Error(this, cat("as can only convert between numeric types, not to ", tc.TypeStr(tt)));
+    totype = v.type = tt;
+    tc.NoteCast(this, raw, cv, v);
+    return v;
 }
 
 inline Val RangeExpr::Check(TypeCheck &tc, TypeExpr *) {

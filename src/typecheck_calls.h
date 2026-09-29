@@ -63,7 +63,12 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id) {
         auto nomatch = false;
         auto v = ResolveCall(c, cands, env, id->name, nullptr, nopre, bd ? &nomatch : nullptr);
         if (!nomatch) return v;
-        return CheckBuiltin(c, *bd, c->args, nullptr);
+        // Without a cast, an argument might have matched a function (JudgeCastAt).
+        auto args = c->args;
+        for (auto a : args) builtinfallback.insert(a);
+        v = CheckBuiltin(c, *bd, c->args, nullptr);
+        for (auto a : args) builtinfallback.erase(a);
+        return v;
     }
     if (!bd) Error(c, cat("unknown function: ", id->name));
     if (bd->flags & BF_PROPERTY)
@@ -265,24 +270,8 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     MatchInfo best;
     vector<MatchInfo> tied, converting;
     string failures;
-    for (auto sf : cands) {
-        MatchInfo mi;
-        mi.sf = sf;
-        mi.env = env;
-        string why;
-        if (!TryMatch(sf, c, argvals, mi, why, true)) {
-            Append(failures, "\n  candidate ", name, " at ", Where(sf->line), ": ", why);
-            continue;
-        }
-        if (mi.tier == MatchInfo::INTTOFLOAT) {
-            converting.push_back(mi);
-        } else if (tied.empty() || mi.tier < best.tier) {
-            best = mi;
-            tied = { mi };
-        } else if (mi.tier == best.tier) {
-            tied.push_back(mi);
-        }
-    }
+    MatchCandidates(c, cands, env, argvals, tied, converting, &failures, name);
+    if (!tied.empty()) best = tied[0];
     auto ambiguous = [&](const vector<MatchInfo> &set) {
         // A default is no argument, and ranks as none (§7.1): `f(a, b = 0)`
         // beside `f(a)` makes every `f(x)` ambiguous, which says so.
@@ -297,6 +286,8 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
                      which));
     };
     if (tied.size() > 1) ambiguous(tied);
+    if (tied.size() == 1)
+        JudgeCallCasts(c, cands, env, argnodes, argvals, best, name, nomatch != nullptr);
     if (tied.empty()) {
         // Tag dispatch (§8.2): the match-as-overload-set form.
         auto v = TryDispatch(c, cands, argnodes, argvals, name);
@@ -393,6 +384,97 @@ inline void TypeCheck::BindBranchByRef(Node *&n, Val &v, TypeExpr *pt, TypeExpr 
     SlotScope ss(*this, false);
     FlagScope q(quiet, true);
     v = CheckValue(n, pt, true);
+}
+
+// Tries each candidate on the arguments as ResolveCall ranks them: the best
+// of those that convert no integer argument to a float, in `tied` (more than
+// one where they rank alike), and those that do, in `converting`; why each
+// other one fails is appended to `failures`, where given.
+inline void TypeCheck::MatchCandidates(Call *c, vector<SFunction *> &cands, FnSpec *env,
+                                       vector<Val> &argvals, vector<MatchInfo> &tied,
+                                       vector<MatchInfo> &converting, string *failures,
+                                       string_view name) {
+    for (auto sf : cands) {
+        MatchInfo mi;
+        mi.sf = sf;
+        mi.env = env;
+        string why;
+        if (!TryMatch(sf, c, argvals, mi, why, true)) {
+            if (failures)
+                Append(*failures, "\n  candidate ", name, " at ", Where(sf->line), ": ", why);
+            continue;
+        }
+        if (mi.tier == MatchInfo::INTTOFLOAT) {
+            converting.push_back(mi);
+        } else if (tied.empty() || mi.tier < tied[0].tier) {
+            tied = { mi };
+        } else if (mi.tier == tied[0].tier) {
+            tied.push_back(mi);
+        }
+    }
+}
+
+// The followed casts (§6.3) among a call's written arguments, each judged by
+// resolving the call without it (§7.1): to the same function, with the same
+// parameter types, bindings (a generic one's inference, §7.7) and literal
+// parameters, as the one match that ranks best; or as the one match that
+// converts an integer to a float, where neither tag dispatch nor a builtin
+// of the name (`builtin`) comes first. The argument then meets its parameter
+// as a value meets a typed destination (JudgeCastAt). Where overloads or
+// generic parameters resolve the arguments together, the arguments whose
+// values would differ without their casts (casttyped) are resolved without
+// all of them as well: two may both go where the call resolves alike all
+// three ways, and where it does not without both, one may, the later one
+// where it can; more are not judged.
+inline void TypeCheck::JudgeCallCasts(Call *c, vector<SFunction *> &cands, FnSpec *env,
+                                      vector<Node *> &argnodes, vector<Val> &argvals,
+                                      MatchInfo &best, string_view name, bool builtin) {
+    auto same = [&](MatchInfo &mi) {
+        if (mi.sf != best.sf || mi.nwritten != best.nwritten || mi.litparams != best.litparams ||
+            mi.paramtypes.size() != best.paramtypes.size() || !BindingsEq(mi.bindings, best.bindings))
+            return false;
+        for (size_t k = 0; k < mi.paramtypes.size(); k++)
+            if (!TypeEq(mi.paramtypes[k], best.paramtypes[k])) return false;
+        return true;
+    };
+    // Tag dispatch needs an ADT argument (TryDispatch).
+    auto dispatchable = [&](const vector<Val> &vals) {
+        for (auto &av : vals) {
+            auto t = IsPlainRef(av.type) ? av.type->ref->sub : av.type;
+            if (t && t->kind == TY_ENUM) return true;
+        }
+        return false;
+    };
+    auto resolves = [&](const vector<size_t> &without) {
+        auto trial = argvals;
+        for (auto i : without) {
+            auto &a = castalts[argnodes[i]];
+            trial[i] = a.pending ? a.alt : a.raw;
+        }
+        vector<MatchInfo> tied, converting;
+        MatchCandidates(c, cands, env, trial, tied, converting, nullptr, name);
+        return tied.size() == 1 ? same(tied[0])
+               : tied.empty() && converting.size() == 1 && !builtin && !dispatchable(trial) &&
+                     same(converting[0]);
+    };
+    auto joint = cands.size() > 1 || !best.bindings.empty();
+    for (auto &p : best.sf->params) joint = joint || !p.type || HasGenerics(p.type);
+    vector<size_t> differing;
+    for (size_t i = 0; i < best.nwritten && i < argnodes.size(); i++)
+        if (casttyped.count(argnodes[i])) differing.push_back(i);
+    auto together = !joint || differing.size() < 2 || (differing.size() == 2 && resolves(differing));
+    auto pair = !together && differing.size() == 2;
+    auto later = pair && resolves({ differing[1] });
+    for (size_t i = 0; i < best.nwritten && i < argnodes.size(); i++) {
+        auto it = castalts.find(argnodes[i]);
+        if (it == castalts.end()) continue;
+        auto a = it->second;
+        auto ok = resolves({ i });
+        if (ok && casttyped.count(argnodes[i]) && !together)
+            ok = pair && (i == differing[1] || !later);
+        if (ok) JudgeCastAt(argnodes[i], best.paramtypes[i], DecayRef(argvals[i]));
+        else CastVerdict(a, "");
+    }
 }
 
 inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, MatchInfo &mi,

@@ -84,6 +84,7 @@ inline Node *SliceExpr::Clone(Ast &ast) const {
 inline Node *AsCast::Clone(Ast &ast) const {
     auto c = ast.New<AsCast>(line, child->Clone(ast), type, unchecked);
     c->implicit = implicit;
+    c->origin = Origin();
     return c;
 }
 
