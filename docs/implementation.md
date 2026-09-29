@@ -2285,7 +2285,10 @@ resizes a slice argument or a reference to one (`KillSliceArg`): through the
 reference it may store another slice into the slot, which is that slot's kill
 (§5.5), and through either it may write the elements the slice views, where
 only a reference into an element measures a length, and only where the
-element type holds one (`HoldsLen`, `ElementWriteKill`).
+element type holds one (`HoldsLen`, `ElementWriteKill`). A class of this
+body's own parameters names none of its variables (`KillClassWrite`), but
+the class an inlined body's parameter kept stands for this body's arguments
+to it, so storage named through that may be anything reachable.
 
 **Entry facts.** Every call site (`RecordSite`) records what it proves about
 the arguments: each integer argument's term as sampled right after it was

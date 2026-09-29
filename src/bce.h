@@ -421,6 +421,7 @@ struct BCE {
     Effects *effsum = nullptr;   // Where the current walk records effects, while summarizing.
     set<VarDef *> ownvars;       // Variables this body declares, parameters included.
     map<VarDef *, vector<int>> classparams;   // Parameter root class -> member indices.
+    set<VarDef *> ownclasses;    // The root classes of this body's own parameters.
 
     // The call graph over live specializations: callees per caller, the
     // number of ordinary call sites per callee, and the callees also reached
@@ -1057,16 +1058,20 @@ struct BCE {
             if (AffectedByWrite((int)i, recvpid, UK_OPAQUE, nullptr, nullptr)) BumpPlace((int)i, 0);
     }
 
-    // A write into storage one of this body's parameter root classes names.
-    // No class names one of this body's own variables (the arguments were
+    // A write into storage a parameter root class names. None of this
+    // body's own classes names one of its own variables (the arguments were
     // formed before it ran), so storage an own local owns survives, and
     // anything reached through a reference or owned by a global or an outer
-    // local may be hit.
-    void KillClassWrite() {
+    // local may be hit. Any other class -- the one an inlined body's
+    // parameter kept, which stands for this body's arguments to it -- may
+    // name whatever is reachable.
+    void KillClassWrite(VarDef *cls) {
+        auto own = ownclasses.count(cls) != 0;
         for (size_t i = 0; i < places.size(); i++) {
             auto &P = places[i];
-            auto hit = P.ultkind == UK_OPAQUE ||
-                       (P.ultkind == UK_OWNED && OwnerTarget(P.ultv).kind == TG_VAR);
+            auto hit = own ? P.ultkind == UK_OPAQUE ||
+                                 (P.ultkind == UK_OWNED && OwnerTarget(P.ultv).kind == TG_VAR)
+                           : AffectedByWrite((int)i, -1, UK_OPAQUE, nullptr, nullptr);
             if (hit) BumpPlace((int)i, 0);
         }
     }
@@ -1179,7 +1184,7 @@ struct BCE {
                 return;
             }
             case TG_CLASS:
-                KillClassWrite();
+                KillClassWrite(t.v);
                 return;
             default:
                 StorageWriteKill(UK_OPAQUE, nullptr, nullptr);
@@ -1878,6 +1883,7 @@ struct BCE {
         mono.clear();
         ownvars.clear();
         classparams.clear();
+        ownclasses.clear();
     }
 
     void NoteOwn(VarDef *v) { if (v) ownvars.insert(v); }
@@ -1892,6 +1898,7 @@ struct BCE {
             if (p->type && IsRefOrSlice(p->type) && p->ref.Root())
                 classparams[p->ref.Root()].push_back((int)j);
         }
+        for (auto cr : sp->classroots) if (cr) ownclasses.insert(cr);
         Mark(sp->body);
     }
 
