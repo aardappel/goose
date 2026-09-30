@@ -1796,7 +1796,7 @@ struct TypeCheck {
     // contents updated (§9.2).
     void RecordStore(VarDef *container, const Roots &roots, bool byteview, TypeExpr *pointee,
                      VarDef *src = nullptr, TypeExpr *reached = nullptr, bool bound = false,
-                     bool slot = false);
+                     bool slot = false, bool sliceref = false);
     // Whether a holder may hold a reference into arr: `hit` takes the index
     // of the event that says so, and `via` the type of the slot a reference
     // stored there refers to where it leads into arr only through what that
@@ -1806,8 +1806,8 @@ struct TypeCheck {
     bool HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr *arrtype, size_t from,
                             Line *where, set<VarDef *> &seen, size_t *hit,
                             TypeExpr **via = nullptr);
-    TypeExpr *StoredSlotMayPointInto(VarDef *holder, TypeExpr *pointee, VarDef *r, bool exact,
-                                     VarDef *arr, TypeExpr *arrtype, Line *where,
+    TypeExpr *StoredSlotMayPointInto(VarDef *holder, TypeExpr *pointee, bool sliceref, VarDef *r,
+                                     bool exact, VarDef *arr, TypeExpr *arrtype, Line *where,
                                      set<VarDef *> &seen);
     void ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Node *at);
     void NoteHolderBinding(VarDef *d, const Val &v, Node *at);
@@ -1863,6 +1863,7 @@ struct TypeCheck {
     bool GrowOnlyTail(TypeExpr *t);
     bool IsGrowOnlyRootVar(VarDef *r);
     void RefPointees(TypeExpr *t, vector<TypeExpr *> &out);
+    void RefSlots(TypeExpr *t, vector<pair<TypeExpr *, bool>> &out);
     VarDef *HolderRootOf(const Val &v);
     Roots ClassArgRoots(TypeExpr *pt, const Val &v);
 
@@ -1924,8 +1925,8 @@ struct TypeCheck {
     using TempHolds = vector<pair<VarDef *, Roots>>;
     void RecordedViews(VarDef *h, size_t from, TypeExpr *ht, vector<LiveView> &out,
                        set<VarDef *> &seen);
-    void StoredViews(VarDef *r, bool exact, TypeExpr *pointee, bool byteview, TypeExpr *ht,
-                     vector<LiveView> &out, set<VarDef *> &seen);
+    void StoredViews(VarDef *r, bool exact, TypeExpr *pointee, bool sliceref, bool byteview,
+                     TypeExpr *ht, vector<LiveView> &out, set<VarDef *> &seen);
     void HeldViews(const Prov &p, TypeExpr *held, bool isvar, vector<LiveView> &out,
                    const TempHolds *temps = nullptr);
     template<typename F> void EachHolderRoot(VarDef *holder, size_t from, F f);

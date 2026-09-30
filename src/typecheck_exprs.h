@@ -1041,7 +1041,8 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
                                     d.bound);
                 } else {
                     RecordStore(d.root, roots, v.byteview, PointeeOf(t), nullptr, reached,
-                                d.bound, curdst.slot);
+                                d.bound, curdst.slot,
+                                t->kind == TY_REF && PointeeOf(t)->kind == TY_SLICE);
                     if (curdst.slot)
                         StoreIntoSlot(fitnode, d.root, d.bound, dt, v,
                                       curdst.roots.Exact()

@@ -1028,7 +1028,7 @@ inline void TypeCheck::AddStoreEvent(const StoreEvent &e) {
     for (auto &o : spec->classevents)
         if (o.container == e.container && o.root == e.root && o.src == e.src &&
             o.exact == e.exact && o.byteview == e.byteview && o.bound == e.bound &&
-            o.slot == e.slot && !o.pointee == !e.pointee &&
+            o.slot == e.slot && o.sliceref == e.sliceref && !o.pointee == !e.pointee &&
             (!o.pointee || TypeEq(o.pointee, e.pointee)) &&
             !o.reached == !e.reached && (!o.reached || TypeEq(o.reached, e.reached)))
             return;
@@ -1079,7 +1079,7 @@ inline void TypeCheck::NoteSlotStore(const StoreEvent &e) {
 // contents are the caller's to know.
 inline void TypeCheck::RecordStore(VarDef *container, const Roots &roots, bool byteview,
                                     TypeExpr *pointee, VarDef *src, TypeExpr *reached,
-                                    bool bound, bool slot) {
+                                    bool bound, bool slot, bool sliceref) {
     if (!container) return;
     // Putting a container's own read-back contents back into it adds no
     // incoming lifetime. Keep this distinction before discarding src.
@@ -1106,6 +1106,7 @@ inline void TypeCheck::RecordStore(VarDef *container, const Roots &roots, bool b
         e.reached = reached;
         e.bound = bound;
         e.slot = slot;
+        e.sliceref = sliceref;
         if (fitnode) e.at = fitnode->line;
         AddStoreEvent(e);
         if (holds && container->contents.Add({ a.root, a.exact, a.from, a.slotread }))
@@ -1158,7 +1159,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         return -1;
     };
     auto push = [&](VarDef *container, const RootAlt &a, TypeExpr *pointee, VarDef *src,
-                    bool byteview, TypeExpr *reached, bool bound, bool slot) {
+                    bool byteview, TypeExpr *reached, bool bound, bool slot, bool sliceref) {
         if (!container || src == container) return;
         StoreEvent e;
         e.container = container;
@@ -1171,6 +1172,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         e.reached = reached;
         e.bound = bound;
         e.slot = slot;
+        e.sliceref = sliceref;
         container->contentbyteview |= byteview;
         if (container->type && !IsRefOrSlice(container->type))
             container->contents.Add({ a.root, a.exact, a.from, a.slotread });
@@ -1262,7 +1264,8 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
             // function or a function value's body stored into: the storage
             // the parent's callers passed, whose record carries it to them.
             for (auto &a : r.alts)
-                push(e.container, a, e.pointee, src, e.byteview, e.reached, e.bound, e.slot);
+                push(e.container, a, e.pointee, src, e.byteview, e.reached, e.bound, e.slot,
+                     e.sliceref);
             continue;
         }
         // Where the argument's root only bounds the storage, or the store
@@ -1283,7 +1286,8 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
                                                 ", whose argument may point into "),
                                   TargetStr(t), ", which ", rname, " does not outlive (§9.2)"));
                 }
-                push(t.root, a, e.pointee, src, e.byteview, e.reached, t.bound, e.slot);
+                push(t.root, a, e.pointee, src, e.byteview, e.reached, t.bound, e.slot,
+                     e.sliceref);
             }
             if (e.slot)
                 slotstores.push_back({ t.root, t.bound, e,
@@ -1570,10 +1574,10 @@ inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr 
     for (auto i = from; i < storeevents.size(); i++) {
         auto &e = storeevents[i];
         if (e.container != holder || (e.src && (e.src->type || e.src->isglobal))) continue;
-        auto through = e.src ? StoredSlotMayPointInto(holder, e.pointee, e.src, false, arr,
-                                                      arrtype, where, seen)
-                             : StoredSlotMayPointInto(holder, e.pointee, e.root, e.exact, arr,
-                                                      arrtype, where, seen);
+        auto through = e.src ? StoredSlotMayPointInto(holder, e.pointee, e.sliceref, e.src,
+                                                      false, arr, arrtype, where, seen)
+                             : StoredSlotMayPointInto(holder, e.pointee, e.sliceref, e.root,
+                                                      e.exact, arr, arrtype, where, seen);
         if (through) return found(i, through);
     }
     return false;
@@ -1582,37 +1586,59 @@ inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr 
 // Whether a reference stored into `holder`, rooted at r (exactly, or only
 // bounded by it), to a slot of type `pointee` -- null where the record keeps
 // none, as for a holder's copied contents, which may be any the holder's
-// type refers to -- leads into `arr` through what that slot holds: a
-// slice's slot, or a holder (§5.1). Returns the slot's type where it may. A
-// holder named exactly holds what its own stores put there. Any other slot
-// -- a slice variable, a parameter's class standing for the caller's slot,
-// whatever view of its slice the class has (VarDef::heldslice) -- is taken
-// to hold anything that outlives it, an array at its depth or outside it. A
-// global can hold a view of a global array only, and a shrink of one judges
-// every global (CheckGlobalShrinks).
-inline TypeExpr *TypeCheck::StoredSlotMayPointInto(VarDef *holder, TypeExpr *pointee, VarDef *r,
-                                                   bool exact, VarDef *arr, TypeExpr *arrtype,
-                                                   Line *where, set<VarDef *> &seen) {
+// type refers to (RefSlots) -- leads into `arr` through what that slot
+// holds: a slice's slot, or a holder (§5.1). `sliceref`: the stored
+// reference is one to a slice. Returns the slot's type where it may. A
+// holder named exactly holds what its own stores put there. So does a
+// parameter's class named so, of what the activation stored there, where
+// the slot is its contents -- the caller's holder, or an element of the
+// caller's array: what the callers put there, each call judges by its
+// record of the storage its argument names (the pair NoteLiveViews keeps,
+// LiveShrink::contents). A slice's slot the class names may be a slice
+// variable, whose binding no store record describes. That and any other
+// slot -- a slice variable, a parameter's class standing for the caller's
+// slice slot, whatever view of its slice the class has (VarDef::heldslice)
+// -- is taken to hold anything that outlives it, an array at its depth or
+// outside it. A global can hold a view of a global array only, and a shrink
+// of one judges every global (CheckGlobalShrinks).
+inline TypeExpr *TypeCheck::StoredSlotMayPointInto(VarDef *holder, TypeExpr *pointee,
+                                                   bool sliceref, VarDef *r, bool exact,
+                                                   VarDef *arr, TypeExpr *arrtype, Line *where,
+                                                   set<VarDef *> &seen) {
     if (!r || r->isglobal) return nullptr;
-    vector<TypeExpr *> slots;
-    if (pointee) slots.push_back(pointee);
-    else if (holder->type) RefPointees(holder->type, slots);
+    vector<pair<TypeExpr *, bool>> slots;
+    if (pointee) slots.push_back({ pointee, sliceref });
+    else if (holder->type) RefSlots(holder->type, slots);
     auto byteview = r->contentbyteview || (r->type && IsRefOrSlice(r->type) && r->ref.byteview);
-    TypeExpr *via = nullptr;
-    for (auto st : slots) {
-        if (via || !HoldsPlainRef(st)) continue;
+    auto reaches = [&](TypeExpr *st) {
+        if (!HoldsPlainRef(st)) return false;
         vector<TypeExpr *> ps;
         ReachedThroughRefs(st, ps);
         for (auto pt : ps)
             if (!arrtype || CanContain(arrtype, pt) ||
                 (byteview && IsU8(pt) && Viewable(arrtype)))
-                via = st;
+                return true;
+        return false;
+    };
+    // The first slot whose references may lead into arr, and the first of
+    // each kind: a slice's slot, or contents.
+    TypeExpr *via = nullptr, *slicevia = nullptr, *contentsvia = nullptr;
+    for (auto [st, slice] : slots) {
+        auto &kind = slice ? slicevia : contentsvia;
+        if (kind || !reaches(st)) continue;
+        kind = st;
+        if (!via) via = st;
     }
     if (!via) return nullptr;
-    auto holds = exact && r->type && !IsRefOrSlice(r->type)
-                     ? HolderMayPointInto(r, arr, arrtype, 0, where, seen, nullptr)
-                     : Depth(arr) <= Depth(r);
-    return holds ? via : nullptr;
+    if (exact && r->type && !IsRefOrSlice(r->type))
+        return HolderMayPointInto(r, arr, arrtype, 0, where, seen, nullptr) ? via : nullptr;
+    if (exact && IsClassRoot(r)) {
+        if (slicevia && Depth(arr) <= Depth(r)) return slicevia;
+        if (contentsvia && HolderMayPointInto(r, arr, arrtype, 0, where, seen, nullptr))
+            return contentsvia;
+        return nullptr;
+    }
+    return Depth(arr) <= Depth(r) ? via : nullptr;
 }
 
 // The pointee types of the plain references and slices a value of type t
@@ -1626,6 +1652,24 @@ inline void TypeCheck::RefPointees(TypeExpr *t, vector<TypeExpr *> &out) {
         case TY_SLICE: out.push_back(t->sub); return;
         case TY_ARRAY: RefPointees(t->arr->sub, out); return;
         default: EachField(t, [&](TypeExpr *ft) { RefPointees(ft, out); }); return;
+    }
+}
+
+// RefPointees, each with whether the reference is one to a slice: its root
+// names the storage the slice's slot lies in, which may be a slice variable,
+// whose binding says what the slot holds, rather than storage whose store
+// record says it (StoredSlotMayPointInto).
+inline void TypeCheck::RefSlots(TypeExpr *t, vector<pair<TypeExpr *, bool>> &out) {
+    switch (t->kind) {
+        case TY_REF:
+            if (t->ref->lenstorage < 0) {
+                auto st = LoadType(t->ref->sub);
+                out.push_back({ st, st->kind == TY_SLICE });
+            }
+            return;
+        case TY_SLICE: out.push_back({ t->sub, false }); return;
+        case TY_ARRAY: RefSlots(t->arr->sub, out); return;
+        default: EachField(t, [&](TypeExpr *ft) { RefSlots(ft, out); }); return;
     }
 }
 
@@ -1979,7 +2023,7 @@ inline void TypeCheck::RecordedViews(VarDef *h, size_t from, TypeExpr *ht,
                                      vector<LiveView> &out, set<VarDef *> &seen) {
     if (!seen.insert(h).second) return;
     EachHolderRoot(h, from, [&](const StoreEvent &e) {
-        StoredViews(e.root, e.exact, e.pointee, e.byteview, ht, out, seen);
+        StoredViews(e.root, e.exact, e.pointee, e.sliceref, e.byteview, ht, out, seen);
     });
 }
 
@@ -1987,24 +2031,36 @@ inline void TypeCheck::RecordedViews(VarDef *h, size_t from, TypeExpr *ht,
 // bounded by it), as views (§5.1): where it points, and, where it refers to
 // a slot holding references -- a holder, an array's elements a slice views,
 // a slice variable -- what that slot leads to, as the scan follows it
-// (StoredSlotMayPointInto): a holder named exactly by its own record,
-// anything else but a global by its root, as a bound. A stored value keeps
-// no pointee where it is a copy of a holder's contents, which may refer to
-// any slot ht can.
-inline void TypeCheck::StoredViews(VarDef *r, bool exact, TypeExpr *pointee, bool byteview,
-                                   TypeExpr *ht, vector<LiveView> &out, set<VarDef *> &seen) {
+// (StoredSlotMayPointInto): a holder named exactly by its own record, a
+// parameter's class named so, where the slot is its contents rather than a
+// slice's slot, by the activation's own stores into it and, for what the
+// callers put there, by the class's contents as a view of their own, which
+// each call judges (LiveShrink::contents), anything else but a global by its
+// root, as a bound. A stored value keeps no pointee where it is a copy of a
+// holder's contents, which may refer to any slot ht can.
+inline void TypeCheck::StoredViews(VarDef *r, bool exact, TypeExpr *pointee, bool sliceref,
+                                   bool byteview, TypeExpr *ht, vector<LiveView> &out,
+                                   set<VarDef *> &seen) {
     Prov ep;
     ep.Set(r, exact);
     ep.byteview = byteview;
     out.push_back({ ep, pointee, true });
     if (!r || r->isglobal) return;
-    vector<TypeExpr *> slots;
-    if (pointee) slots.push_back(pointee);
-    else if (ht) RefPointees(ht, slots);
-    for (auto st : slots) {
+    vector<pair<TypeExpr *, bool>> slots;
+    if (pointee) slots.push_back({ pointee, sliceref });
+    else if (ht) RefSlots(ht, slots);
+    for (auto [st, slice] : slots) {
         if (!HoldsPlainRef(st)) continue;
         if (exact && r->type && !IsRefOrSlice(r->type))
             return RecordedViews(r, 0, r->type, out, seen);
+        if (exact && IsClassRoot(r) && !slice) {
+            RecordedViews(r, 0, st, out, seen);
+            Prov cv;
+            cv.Set(r, true);
+            cv.byteview = byteview || r->contentbyteview;
+            out.push_back({ cv, st, true, true });
+            continue;
+        }
         Prov bv;
         bv.Set(r, false);
         bv.byteview = r->contentbyteview || (r->type && IsRefOrSlice(r->type) && r->ref.byteview);
@@ -2053,7 +2109,8 @@ inline void TypeCheck::HeldViews(const Prov &p, TypeExpr *held, bool isvar,
                 if (t == r) made = &c;
         if (made) {
             for (auto &c : made->alts)
-                if (c.root) StoredViews(c.root, c.exact, nullptr, p.byteview, held, out, seen);
+                if (c.root)
+                    StoredViews(c.root, c.exact, nullptr, false, p.byteview, held, out, seen);
             continue;
         }
         Prov hv;

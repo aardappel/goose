@@ -1525,6 +1525,11 @@ struct StoreEvent {
     // Stored into the slot a reference to a slice names, which assigns the
     // slice variable that slot may be (TypeCheck::StoreIntoSlot).
     bool slot = false;
+    // What was stored is a reference to a slice: `root` is the storage its
+    // slot lies in, which may be a slice variable, whose binding rather than
+    // a store record says what the slot holds
+    // (TypeCheck::StoredSlotMayPointInto).
+    bool sliceref = false;
 };
 
 // A shrink, and a reference, slice or holder still used after it that only

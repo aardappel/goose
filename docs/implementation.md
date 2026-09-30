@@ -1271,9 +1271,15 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    reference or slice variable, one that is no `var`), an array's elements
    a slice views among them; a parameter's class named so -- the caller's
    holder a reference parameter names, the caller's array a slice
-   parameter views the elements of -- holds what the activation's own
-   stores into it put there, the rest being its callers' to judge
-   (**Parameters' views** below); and behind a reference variable a
+   parameter views the elements of, whether a variable or a holder's
+   stored reference or slice names it, a by-value holder parameter's
+   contents among them where they are that one array (`RootArg::heldexact`,
+   §3.4) -- holds what the activation's own stores into it put there, the
+   rest being its callers' to judge (**Parameters' views** below); a class
+   a holder's stored reference to a slice names is a slot that may be a
+   slice variable, whose binding no store record describes
+   (`StoreEvent::sliceref`, `RefSlots`), so it holds whatever is at its
+   depth or outside it, as below; and behind a reference variable a
    parameter's class with a class of its own for the slice its slot holds
    what the binding of the variable standing for that slice says (§3.4),
    and, as for a slice of such values, what that slice's elements hold;
@@ -1445,13 +1451,16 @@ body, one of the function running it too, `ShrinkScanVars`, whose parameters'
 pairs are its own record's), an operand still held
 (`HeldOperands`), a grow-only holder by its store record
 (`EachHolderRoot`), followed, as the scan follows it, through a stored
-reference to a slot holding references to what that slot holds, and what
-a reference to a slice or, for a grow-only array, to a holder, or a slice
-of holders or of slices, reaches (`HeldViews`): for a holder named exactly
-by a value that is no `var`, what its store record says, as for the holder
-itself, for a parameter's class named so, what the activation's own stores
-into it say and what its callers put there, for any other but a global
-one, whatever its root bounds -- for a view only the callers can tell apart
+reference to a slot holding references to what that slot holds
+(`StoredViews`), and what a reference to a slice or, for a grow-only
+array, to a holder, or a slice of holders or of slices, reaches
+(`HeldViews`): for a holder named exactly by a value that is no `var`,
+what its store record says, as for the holder itself, for a parameter's
+class named so, what the activation's own stores into it say and what its
+callers put there (a view of its own, `LiveShrink::contents`), for any
+other but a global one, a class a holder's stored reference to a slice
+names included, whatever its root bounds -- for a view only the callers
+can tell apart
 from the array (`CallersJudge`): its root is a parameter's class, or the
 array is. For a grow-shrink array a slot read is none, the scans passing
 over it (**Slot reads** above), though what a reference to a slice leads
@@ -3500,16 +3509,21 @@ specification allows, and the shapes the C backend refuses outright:
 * A shrink of a grow-only array leaves what the caller's array a slice
   parameter views the elements of holds, and what the holder a reference
   parameter names holds, to each call, which judges it by its record of
-  the argument's storage (§3.10, **Parameters' views**): every store on
-  record there counts, one the callee makes after its shrink or into
-  another element too, and a slice of a call's result, whose elements
-  nothing records, holds anything. A view read out of that storage before
-  the shrink is still taken to point anywhere at the parameter's class
-  depth or outside it, as are what a `var` parameter's elements hold, what
-  a by-value holder parameter's class holds (a struct holding such a
-  slice, §3.4) and what a slot without a class of its own for its slice
-  holds: `fn emit(out: u8[>..]&, words: (const u8[:])[:])` running `for w
-  in words { out.clear(); out.append(w); }` is an error in the callee
+  the argument's storage (§3.10, **Parameters' views**), whether the
+  callee reads it through the parameter, a holder it stored the parameter
+  into or, where its contents are one array, a by-value holder parameter:
+  every store on record there counts, one the callee makes after its
+  shrink or into another element too, and a slice of a call's result,
+  whose elements nothing records, holds anything. A view read out of that
+  storage before the shrink is still taken to point anywhere at the
+  parameter's class depth or outside it, as are what a `var` parameter's
+  elements hold, what a by-value holder parameter's class holds where its
+  contents are not one array exactly (`RootArg::heldexact`, never set in a
+  `recursive fn`; `emit(buf, P { words: ["x", "y"] })` views a literal, a
+  temporary no argument names exactly), and what a slot without a class of
+  its own for its slice holds:
+  `fn emit(out: u8[>..]&, words: (const u8[:])[:])` running `for w in
+  words { out.clear(); out.append(w); }` is an error in the callee
   wherever a call site passes `words` from `out`'s scope or a deeper one.
   The container a read-back names (`RootAlt::from`) survives a merge with
   a bound at the same root, so it cannot say that a view came out of that
