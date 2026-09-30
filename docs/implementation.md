@@ -1632,7 +1632,8 @@ keep it nor write it, as nothing may refer into the payload itself (§3.5).
 Codegen renders a payload holding self-relative references in place, a
 copy's offsets being measured from where the payload was (§3.9), so a
 variant whose parts' checks specialized an overload (`Call::fmtspecs`
-grew) is rejected when its payload holds one.
+grew) is rejected when its payload holds one. So is an overload taking
+such a value by value (`UserFormatIn`), which `EmitUserFormat` would copy.
 
 **Growth during construction** (§1.3(4), §4.2). A value built in place at an
 array's top or slot is under construction while its expression is checked,

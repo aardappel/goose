@@ -591,14 +591,15 @@ array/pool* as the location storing it.
   be re-stored with `.=`/`=`.
 * Copying a *value that contains* self-relative references (assignment from
   an lvalue, a by-value argument, a by-value match binder, an element copy,
-  an `append` of anything but an array literal, a fixed-mode ADT's payload
-  rendered around a `format` overload for a part of it (§3.7), a `resize`
-  fill value, which is copied into every slot it adds even when it is a
-  literal)
+  an `append` of anything but an array literal, the value a `format`
+  overload takes by value and a fixed-mode ADT's payload rendered around one
+  for a part of it (§3.7), a `resize` fill value, which is copied into every
+  slot it adds even when it is a literal)
   is a compile error: the copied offsets would still be measured from the
   source location. Construct such values in place (literals), and bind their
-  match payloads by reference. (TODO 16: track the region a relative
-  reference ranges over, so provably whole-region copies can be allowed.)
+  match payloads, and have `format` overloads take them, by reference.
+  (TODO 16: track the region a relative reference ranges over, so provably
+  whole-region copies can be allowed.)
 * Because they are position-independent, structures linked by self-relative
   references are trivially serializable / mappable: `to_bytes(a)` writes an
   array's image out, `bytes_of(a)` views it without copying, and

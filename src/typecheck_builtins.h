@@ -717,6 +717,12 @@ inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns,
         if (!TryMatch(sf, c, argvals, mi, why)) continue;
         if (sf->isextern && IsRefOrSlice(pt1) && !pt1->cq && !argvals[1].writable)
             Error(c, "extern format hook needs a writable value or a const parameter");
+        // The hook's copy would still measure its self-relative references
+        // from where the value lies (§3.9).
+        if (!IsRefOrSlice(pt1) && HasRelRefT(pt1))
+            Error(c, cat("copying a value of type ", TypeStr(t), ", which contains "
+                         "self-relative references, into the format overload taking it by "
+                         "value is not supported; take it by reference"));
         auto sp = GetOrCreateSpec(mi, argvals, c);
         ApplyCalleeShrinks(c, sp, argvals, "format");
         ApplyCalleeRebinds(sp);
