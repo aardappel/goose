@@ -631,12 +631,17 @@ inline Val TypeCheck::DecayRef(Val v) {
     Val r;
     r.type = LoadType(v.type->ref->sub);
     // A slice is the one its slot holds, as writable as that is, and the
-    // slot is where the reference points (Val::slot); a compound pointee
-    // value keeps the container info, harmless, though crossing the
-    // reference drops where the reference was read out of (RootAlt::
-    // slotread, classread). A holder
-    // holds what was stored where the reference points, as one read out of
-    // a container does (ContainerRead).
+    // slot is where the reference points (Val::slot). Any other pointee
+    // lies where the reference points, as writable as the reference, as a
+    // path crossing it is (DerefLValue, §9.5): a format hook taking it by
+    // reference is handed it there (§3.7), and a slice a construct joins an
+    // array into views it there (§6.4). But a varint, written only at
+    // construction (§3.6), loads as the i64 it decodes to, which no hook
+    // may write. A compound pointee value keeps the container info,
+    // harmless, though crossing the reference drops where the reference was
+    // read out of (RootAlt::slotread, classread). A holder holds what was
+    // stored where the reference points, as one read out of a container
+    // does (ContainerRead).
     if (r.type->kind == TY_SLICE) {
         auto sv = SlotView(v, r.type);
         r.TakeAlts(sv);
@@ -648,6 +653,7 @@ inline Val TypeCheck::DecayRef(Val v) {
     } else {
         r.TakeAlts(v);
         r.ClearReads();
+        r.writable = v.writable && !IsVarintT(v.type->ref->sub);
         r.byteview = v.byteview && HoldsPlainRef(r.type);
         if (HoldsPlainRef(r.type)) {
             r.contents = Bounds(r);

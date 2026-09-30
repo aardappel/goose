@@ -23,6 +23,10 @@ fn total(xs: i64[:]) -> i64 {
     t
 }
 fn bump(xs: i64[:]) { xs[0] += 1; }
+fn zero_first(r: i64[3]&, rest: i64[>..]&, c: bool) {
+    let s = if c { r } else { rest[..] };
+    s[0] = 0;
+}
 fn first<T>(xs: T[:]) -> T { xs[0] }
 fn with_pick<F>(c: bool, a: i64[2]&, b: i64[>..]&) { F(if c { a } else { b }) }
 fn with_same<F>(c: bool, a: i64[2]&, b: i64[2]&) { F(if c { a } else { b }) }
@@ -80,6 +84,12 @@ fn main() {
         s[0] = 88;
     }
     print(nums[0], " ", cs, " ", cs1, " ", cs2);                 // 100 XBCD Xbc Xef
+    // An array behind a writable reference, where the reference points.
+    var ra: i64[3] = [1, 2, 3];
+    var rb: i64[>..] = [4, 5];
+    zero_first(ra, rb, true);
+    zero_first(ra, rb, false);
+    print(ra, " ", rb);                                          // [0, 2, 3] [0, 5]
 
     // Read-only where a branch is.
     const t1 = if c { table } else { "abc" };

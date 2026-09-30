@@ -1215,6 +1215,14 @@ and a variable's no more writable than its binding. A slice of a `const`
 type stays read-only through a writable reference, so one of those may
 re-point a field of that type.
 
+Any other pointee loaded through a reference (`DecayRef`) lies where the
+reference points and is as writable as the reference, as a path crossing
+it is (`DerefLValue`): a `format` overload taking it by reference is
+handed it there (**Format overloads**), and a slice a construct joins an
+array behind the reference into views it there (`JoinBranches`, spec
+§6.4). A varint's is read-only, since it loads as the `i64` it decodes to,
+which an overload taking an `i64&` would otherwise write (spec §3.6).
+
 ### 3.9 Flow state: definite assignment and narrowing
 
 Each `VarDef` carries `assigned`, `maybeassigned` and `narrowed` (the `T&`
@@ -1647,6 +1655,11 @@ both, so a function rendering its parameter around an overload, or after
 one, keeps the pair for its callers (**Parameters' views** above). A callee
 body checked meanwhile starts with an empty path (`CheckSpecBody`): the
 call site applies its summary against the caller's statement. An overload
+taking a value by reference is given where it lies, as writable as the
+path to it: a reference argument's pointee lies where the reference
+points, its fields and elements with it, as writable as the reference
+(`DecayRef`, §3.8), and what the overload stores there is judged against
+that storage. An overload
 taking a slice by reference is given the slice's slot, which codegen passes
 (`EmitUserFormat`), bound as `RefSliceArgs` binds a slice lvalue
 (`SlotRoots`, `NoteHeld`). Every slice rendered has one (`Val::slot`): the
