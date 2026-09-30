@@ -1238,7 +1238,8 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         if (!spec->inprogress && spec->narrowedenv != narrowedenv) continue;
         // A cycle's member due for its next round is checked again below
         // with what it reads then.
-        if (!spec->inprogress && !spec->stale && !EnvUnchanged(spec)) continue;
+        if (!spec->inprogress && !spec->stale && (spec->storesout || !EnvUnchanged(spec)))
+            continue;
         if (!TypeArgsEq(spec->argtypes, mi.paramtypes)) continue;
         // A type argument no parameter type mentions (`size<u8>()`) shows
         // only in the bindings.

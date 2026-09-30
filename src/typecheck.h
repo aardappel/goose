@@ -1188,13 +1188,32 @@ struct TypeCheck {
     // variables of the frames around it where its caller's loop reaches it.
     // A recursive cycle's round feeds it back to the next round the same
     // way, where vd lies outside the cycle's activations (CycleRound).
-    void NoteFact(const VarDef *vd) {
+    // `floor`: only the loops and rounds from that scope on, those of the
+    // activation a class root names (ActivationFloor).
+    void NoteFact(const VarDef *vd, int floor = 0) {
         auto mark = [&](BodyState &b) {
-            for (auto &lp : b.looppasses) if (Depth(vd) <= lp.scopeidx) lp.changed = true;
+            for (auto &lp : b.looppasses)
+                if (Depth(vd) <= lp.scopeidx && lp.scopeidx >= floor) lp.changed = true;
         };
         mark(cur);
         for (auto b : outerbodies) mark(*b);
-        for (auto &r : cyclerounds) if (Depth(vd) <= r.scopebase) r.changed = true;
+        for (auto &r : cyclerounds)
+            if (Depth(vd) <= r.scopebase && r.scopebase >= floor) r.changed = true;
+    }
+    // Where the activation whose parameter's class `root` is begins: a store
+    // of a value rooted there, into a variable outside that activation, is a
+    // fact for its own loops and rounds; its callers learn it at the call,
+    // which maps the class onto the arguments (ApplyCalleeStores). 0 for any
+    // other root.
+    int ActivationFloor(VarDef *root) {
+        if (!IsClassRoot(root)) return 0;
+        for (auto fi = (int)frames.size() - 1; fi >= 0; fi--) {
+            auto &f = frames[fi];
+            if (f.isfunval || !f.spec) continue;
+            auto &crs = f.spec->classroots;
+            if (find(crs.begin(), crs.end(), root) != crs.end()) return f.scopebase;
+        }
+        return 0;
     }
     // A body being checked (CheckSpecBody), innermost last: the scopes
     // outside its activation, and whether a fact about a variable declared

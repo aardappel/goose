@@ -1270,7 +1270,7 @@ inline void TypeCheck::RecordStore(VarDef *container, const Roots &roots, bool b
         if (fitnode) e.at = fitnode->line;
         AddStoreEvent(e);
         if (holds && container->contents.Add({ a.root, a.exact, a.from, a.slotread }))
-            NoteFact(container);
+            NoteFact(container, ActivationFloor(a.root));
     }
 }
 
@@ -1369,12 +1369,28 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
     auto rec = RecordOf(spec);
     if (!rec) return;
     // A function value's body, checked inside the callee, stores values
-    // rooted at the callee's parameters into its own lexical containers:
-    // those roots are this call's arguments, one event per place.
+    // rooted at the callee's parameters into its own lexical containers, as
+    // a nested function's body does into its parents' variables: those roots
+    // are this call's arguments, one event per place. Such a variable holds
+    // them (VarDef::contents) instead of the callee's classes, which mean
+    // nothing once its activation has ended, and a loop around the call feeds
+    // that back; the check then stands for this call alone (FnSpec::storesout).
+    // A global is left to the judgement of the globals, which follows its
+    // stores through the calls that passed each class (CheckGlobalShrinks).
     auto end = min(rec->eventend, storeevents.size());
     for (auto i = rec->eventstart; i < end; i++) {
         auto e = storeevents[i];
         auto r = mapped(e.root, e.exact);
+        Roots own;
+        auto x = e.container;
+        if (!spec->inprogress && classat(e.root, own) >= 0 && x && x->type &&
+            !IsRefOrSlice(x->type) && !x->isglobal && !IsTemp(x) && Depth(x) <= CurDepth()) {
+            spec->storesout = true;
+            std::erase_if(x->contents.alts, [&](const RootAlt &c) { return c.root == e.root; });
+            for (auto &a : r.alts)
+                if (x->contents.Add({ a.root, a.exact, a.from, a.slotread }))
+                    NoteFact(x, ActivationFloor(a.root));
+        }
         auto src = source(e.src);
         e.classread = e.classread && IsClassRoot(src);
         for (size_t k = 0; k < r.alts.size(); k++) {

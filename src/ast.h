@@ -1784,6 +1784,11 @@ struct FnSpec {
     vector<StoreEvent> classevents;
     size_t eventstart = 0;         // storeevents.size() when the body's check began.
     size_t eventend = 0;           // And when it ended.
+    // The body stored a value rooted at one of its parameters' classes into
+    // a variable outside its activation, which its call mapped onto that
+    // call's arguments in place (TypeCheck::ApplyCalleeStores): no other
+    // call reuses the check.
+    bool storesout = false;
     int id = 0;                    // Unique, for diagnostics/codegen naming.
     // Filled by the optimizer (optimize.h):
     int uses = 0;                  // Call sites in live code (tag-dispatch entries included).
