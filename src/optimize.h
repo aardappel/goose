@@ -278,24 +278,52 @@ struct Optimizer {
     // the construct to the branch taken can reduce it to the storage it was
     // copied from, which the rest of the statement may write or shrink
     // under the view: such a path goes back into a block, which codegen
-    // evaluates into a temporary as the construct would have.
-    Node *OptViewed(Node *n) {
+    // evaluates into a temporary as the construct would have -- one to an
+    // aggregate a view sees into (NamesStorage), or with `anytype` one of
+    // any type (OptRendered).
+    Node *OptViewed(Node *n, bool anytype = false) {
         auto outer = viewed;
         viewed = n;
         auto r = Opt(n);
         viewed = outer;
-        if (r == n || !NamesStorage(r)) return r;
+        if (r == n || !(anytype ? IsPath(r) : NamesStorage(r))) return r;
         auto b = ast.New<Block>(r->line);
         b->tail = r;
         b->exprtype = r->exprtype;
         return b;
     }
 
-    // A path to a value in storage that a view can see into: a variable, or
-    // a field or element of one, directly or through a reference or slice.
-    static bool NamesStorage(Node *n) {
+    // Opt for an argument print, str or format renders while user format
+    // overloads run (§3.7): it is read where it stands around them, and one
+    // taking it, or a part of it, by reference is handed where it lies. They
+    // may write that storage, and the checker takes the value of a call,
+    // bare block, `if` or `match` for a temporary there too (CheckPrintable),
+    // a copy they cannot reach, so a path it is reduced to goes back into a
+    // block as a viewed one does, a slice's or a scalar's as well.
+    Node *OptRendered(Node *n) { return OptViewed(n, true); }
+
+    // Whether argument k of c, in ArgNodes' numbering, is one print, str or
+    // format renders with user format overloads among what it runs.
+    static bool Hooked(Call *c, size_t k) {
+        size_t first = c->builtin == B_FORMAT;   // format's destination is not rendered.
+        return k >= first && k - first < c->fmtcontexts.size() &&
+               !c->fmtcontexts[k - first]->fmtspecs.empty();
+    }
+
+    // What codegen addresses where it lies (GenLoc): a variable, a field or
+    // element of one, directly or through a reference or slice, or `&` of
+    // such a path.
+    static bool IsPath(Node *n) {
+        if (auto u = Is<Unary>(n); u && u->op == T_BITAND && u->child->exprtype &&
+                                   u->child->exprtype->kind != TY_REF)
+            n = u->child;
         auto d = Is<Dot>(n);
-        if (!Is<Ident>(n) && !(d && !d->variantconst) && !Is<Index>(n)) return false;
+        return Is<Ident>(n) || (d && !d->variantconst) || Is<Index>(n);
+    }
+
+    // A path to a value in storage that a view can see into.
+    static bool NamesStorage(Node *n) {
+        if (!IsPath(n)) return false;
         auto t = n->exprtype;
         return t && (t->kind == TY_ARRAY || t->kind == TY_STRUCT || t->kind == TY_ENUM ||
                      t->kind == TY_VARIANT);
@@ -994,12 +1022,17 @@ inline Node *Dot::Opt(Optimizer &o) {
 
 inline Node *Call::Opt(Optimizer &o) {
     // A member builtin works on its receiver where it stands (bytes_of
-    // returns a view of it).
+    // returns a view of it), and print, str and format render an argument
+    // where it stands around the user format overloads they run.
     auto recv = builtin >= 0 && (builtindefs[builtin].flags & BF_MEMBER);
     auto d = Is<Dot>(callee);
-    if (d) d->obj = recv ? o.OptViewed(d->obj) : o.Opt(d->obj);
+    if (d) d->obj = Optimizer::Hooked(this, 0) ? o.OptRendered(d->obj)
+                    : recv                     ? o.OptViewed(d->obj)
+                                               : o.Opt(d->obj);
     for (size_t i = 0; i < args.size(); i++)
-        args[i] = recv && !d && !i ? o.OptViewed(args[i]) : o.OptIn(this, args[i]);
+        args[i] = Optimizer::Hooked(this, i + (d ? 1 : 0)) ? o.OptRendered(args[i])
+                  : recv && !d && !i                       ? o.OptViewed(args[i])
+                                                           : o.OptIn(this, args[i]);
     if (fvbody) o.OptBlock(fvbody);
     if (defaultinit) defaultinit = o.Opt(defaultinit);
     if (builtin == B_ASSERT) {

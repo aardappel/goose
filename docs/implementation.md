@@ -1549,12 +1549,16 @@ taking a slice by reference is given the slice's slot, which codegen passes
 variable, field or element it was read from, where a reference argument
 points (`DecayRef`), the part a nested one lies in (a field's struct, an
 element's array or slice, a reference's pointee), as writable as that is,
-and for a value that is no storage a temporary (`CheckPrintable`). What the
-overload stores there rebinds the caller's variable or is recorded in its
-container (`ApplyCalleeStores`), and it re-points no slot `&` could not
-write. The temporary is read-only (§9.5), since the optimizer may pass
-storage in its place: an inlined call returning a variable's slice, or a
-folded branch choosing one, passes that variable.
+and for a value that is no storage a temporary (`CheckPrintable`): a call's
+result, and the value of a control construct or of a function value's call,
+a copy of what its branch gives even where that names a variable (§4.1),
+though its `Val` keeps that branch's slot (`TempCopy`) for a reference
+parameter, which binds the branch itself. What the overload stores there
+rebinds the caller's variable or is recorded in its container
+(`ApplyCalleeStores`), and it re-points no slot `&` could not write. The
+temporary is read-only (§9.5), and codegen passes one wherever the
+optimizer reduces the argument to the storage it was copied from
+(`OptRendered`, **Views of copies**).
 
 **Growth during construction** (§1.3(4), §4.2). A value built in place at an
 array's top or slot is under construction while its expression is checked,
@@ -2261,10 +2265,17 @@ the index runs code (the element is read after it; `CodeFree`), a `for`'s
 iterable, the operand of `&` (explicit, or a reference parameter binding
 it), a member builtin's receiver (`bytes_of` returns a view of it), and the
 base of a field or element that is itself viewed or is an array a slice
-destination takes whole. There such a path goes back into a block, which
-codegen evaluates into a temporary as the construct would have:
+destination takes whole. There such a path, or `&` of one (which codegen
+addresses as the path, `GenLoc`), goes back into a block, which codegen
+evaluates into a temporary as the construct would have:
 `f(get()[..], a.pop())` for `fn get() -> i64[3] { a[0] }` would otherwise
-hand `f` a view of the slot the pop frees.
+hand `f` a view of the slot the pop frees. An argument print, str or format
+renders while user `format` overloads run is one more (`OptRendered`): it
+is read where it stands around them, and handed where it lies to one taking
+it, or a part of it, by reference, and they may write the storage a path
+names or re-point it. There a path of any type goes back into a block, a
+slice's or a scalar's as well, so that an overload is given the temporary
+the checker took the argument for (**Format overloads**).
 
 **The nesting limit** (`MAXNEST`, 64). Every inlined body is a C block of
 its own, and C compilers limit how deep blocks nest in one function: MSVC
@@ -3575,7 +3586,8 @@ specification allows, and the shapes the C backend refuses outright:
   `let t = c.f; t[0] = 65;` is not. A `format` overload taking a slice by
   reference is given a read-only temporary for one that is no storage
   (**Format overloads**), so it cannot write the elements of `g[1..]`
-  either, which it can of a variable holding that slice. A view keys its
+  either, nor of `if c { s } else { return; }`, which it can of a variable
+  holding that slice, `s` itself included. A view keys its
   slice's writability apart already (§3.4): a writable reference beside a
   read-only view, with a store through the reference allowed to put a
   read-only slice where the view is read-only, would lift the first where

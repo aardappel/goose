@@ -564,12 +564,17 @@ inline void TypeCheck::CheckPrintable(Call *c, const char *what, vector<Node *> 
                                       const Val *out) {
     auto &a = args[i];
     auto av = CheckValue(a, nullptr);
-    // A slice that is no storage is rendered from a temporary, which is the
-    // slot a format hook taking it by reference is given (UserFormatIn), and
-    // read-only, as a view into a temporary is (§9.5): once the optimizer
-    // has inlined a call returning a variable's slice, or folded a branch
-    // choosing one, what is passed is that variable.
-    if (av.type->kind == TY_SLICE && !av.hasslot) {
+    // A slice that is no storage is rendered from a temporary, one the
+    // optimizer keeps where it reduces the argument to storage (OptRendered),
+    // which is the slot a format hook taking it by reference is given
+    // (UserFormatIn), and read-only, as a view into a temporary is (§9.5). So
+    // is the value of a control construct or of a function value's call, a
+    // copy of what its branch gives even where that names a variable (§4.1),
+    // though its Val keeps that branch's slot (TempCopy), which a reference
+    // parameter binds instead.
+    auto call = Is<Call>(a);
+    if (av.type->kind == TY_SLICE &&
+        (!av.hasslot || IsBranchConstruct(a) || (call && call->fvbody))) {
         av.slot = Prov {};
         av.slot.Set(TempRoot(), true);
         av.hasslot = true;

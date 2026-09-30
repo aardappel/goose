@@ -1,3 +1,5 @@
+// warning: the construct's value is a copy of g either way
+// warning: the construct's value is a copy of g either way
 // A call's by-value result, and a bare block's, if's or match's value, is a
 // temporary copy wherever it is viewed rather than copied out (§9.2): sliced,
 // indexed while the index runs, iterated, bound to a slice or reference
@@ -102,6 +104,16 @@ fn main() {
     reset();
     t = 0;
     for x in ({ g }) {
+        t = t * 10 + x;
+        poke();
+    }
+    print(t);
+    reset();
+    // A branch's `&` is redundant there: the value is a copy of g either way.
+    print(head((if true { &g } else { h })[..], poke()));
+    reset();
+    t = 0;
+    for x in (if true { &g } else { h }) {
         t = t * 10 + x;
         poke();
     }
