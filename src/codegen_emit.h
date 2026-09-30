@@ -552,7 +552,7 @@ inline void CodeGen::EmitGlobalInit() {
                     EmitRelStoreAt(cat("(uint8_t *)&", gnames[d]), d->type, GenX(g->inits[i]),
                                    g->inits[i]->line, true);
                 } else {
-                    GenAny(g->inits[i], Dst { DK_LVALUE, gnames[d] });
+                    GenAny(g->inits[i], Dst { DK_LVALUE, gnames[d], d->type });
                 }
             }
         }

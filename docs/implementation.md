@@ -2394,7 +2394,13 @@ passed where a slice is expected keeps that slice as its checked type while
 the body returns the array; codegen builds the array where the call would
 have put its result, a temporary of the caller's scope, and slices it whole
 (`InlineBlock::CgAny`), since the body's own scopes release their storage
-when it exits.
+when it exits. Where the body's `return` delivers another type than the call
+was checked as -- the reference itself where the call site decayed it to its
+pointee, a slice where a limited array is wanted -- the destination loads or
+adapts the value as its type asks (`GenXD`, `CallVal0`): every lvalue
+destination an inlined body can reach names that type (`Dst::t`), the
+temporary a function value's call's value lands in and the global an
+initializer sets among them.
 The thresholds per call site of callee K: inline if K is used once, or its
 post-optimization node count is below NC, or count times uses is below NCU
 (`-O1`: 8/48, `-O2`: 16/96). Never inlined (`Scan`): a `recursive` function

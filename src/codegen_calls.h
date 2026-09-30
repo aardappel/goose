@@ -457,7 +457,7 @@ inline vector<string> CodeGen::EmitFvCall(Call *c, Dst d0) {
     if (wantsval && !IsBytesT(et) && d0.k != DK_LVALUE) {
         rv = T();
         L(CT(et), " ", rv, ";");
-        d = Dst { DK_LVALUE, rv };
+        d = Dst { DK_LVALUE, rv, et };
     } else if (wantsval && IsResz(et) && d0.k != DK_STACK) {
         string stk;
         rv = RzTemp(et, stk);
