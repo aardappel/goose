@@ -2477,8 +2477,11 @@ assignment, compound assignment, `++`, or growing/shrinking operation
 through it compiles. Assigning a `const` value as a whole is the binding's
 business (`let`, §4.4), and a copy of one is a fresh, writable value: a
 cursor `var s: const u8[:] = text;` advances with `s = s[1..]` and never
-writes a byte of `text`. `const` is shallow: a reference read out of a
-field of a `const Box&` is as writable as the field's own type says. Every
+writes a byte of `text`. `const` is shallow: a reference or slice read out
+of a field of a `const Box&` is as writable as the field's own type says,
+and so is a path through it (`b.r.n = 7`, `b.s[0] = 7`). The exception is a
+self-relative reference (§3.9), which points within the value or array
+holding it, and so is no more writable than the path that reaches it. Every
 value of reference or slice type is either read-only or writable, and
 where that comes from is *inferred*, per instantiation, exactly like roots,
 with no annotation needed:
@@ -2487,16 +2490,17 @@ with no annotation needed:
   `const` value, of a field of one, or of a by-value `for`/`match` binding
   (§6.5), and such an `x` bound by reference (§4.1) — these are `const T&`
   and `const T[:]`; a view into a temporary (§9.2), which a write would
-  change and nothing else; a `bytes_of` view (§12); and whatever is read out
-  of a slot declared `const`. A slice loaded through a reference to a slice
-  is the one in the slot the reference names, writable only where both are,
-  so a reference to a slice variable holding a read-only slice is read-only
-  too, however it is made (`&s`, or `s` bound by reference, §4.1). A `let`
+  change and nothing else; a `bytes_of` view (§12); whatever is read out of
+  a slot declared `const`; and a self-relative reference read along a
+  read-only path. A slice loaded through a reference to a slice is the one
+  in the slot the reference names, writable only where both are, so a
+  reference to a slice variable holding a read-only slice is read-only too,
+  however it is made (`&s`, or `s` bound by reference, §4.1). A `let`
   binding *of* a reference or slice names the reference: it does not
   rebind, and writes through it follow the value's own constness
   (`let r .= xs[i]; r = 0;` writes an element of a `var` array, §3.8).
 * Writable: everything else — `&x` and `x[..]` of a `var` or of a plain
-  `let`, and whatever is read out of a slot that is not `const`.
+  `let`, and whatever else is read out of a slot that is not `const`.
 * **Parameters and results are generic over constness.** A parameter
   declared `u8[:]` or `T&` takes a read-only or a writable argument, and the
   specialization is checked with the argument's constness (a write through
@@ -2513,9 +2517,10 @@ with no annotation needed:
   or slice is stored in a slot only if the slot's type is `const`: `struct
   Named { name: const u8[:] }` holds a literal, `struct Buf { bytes: u8[:] }`
   does not, and `views: const u8[:][>..]` takes either kind of view. So
-  what is read out of a slot is exactly as writable as the slot's type says,
-  and nothing is laundered through storage: a `u8[:]` field that could be
-  written through can only ever have been given a writable slice.
+  what is read out of a slot is exactly as writable as the slot's type says
+  (a self-relative reference at most, above), and nothing is laundered
+  through storage: a `u8[:]` field that could be written through can only
+  ever have been given a writable slice.
 * An `extern fn` (§7.10) is a C function and its parameters are what they
   say: a read-only argument needs the parameter declared `const`.
 

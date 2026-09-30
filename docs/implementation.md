@@ -479,13 +479,13 @@ a header of its own (`fotail`, `FieldsInFrame`), whether it is a
 points (`intemp`, §3.6). Crossing a reference on the way (`DerefLValue`)
 replaces the provenance by the reference's: a reference *variable*'s
 committed binding (§3.7), or, for a reference read out of storage, the
-read-back root (`ReadBackLVal`, §3.6); and the rest of the path lies in the
-reference's pointee, whose type it notes (`Prov::reached`, §3.5), as a
-slice crossed notes its element type (`SliceProvenance`). `ContainerRead` is
-the load of a field or element: the load type (`LoadType`: `varint` decodes
-to `i64`, a relative reference loads as a plain one, a `const` value loads
-as a plain copy), the read-back provenance, and, for a reference or slice,
-exactly the writability the slot's type says.
+read-back root and the writability its slot gives (`ReadBackLVal`, §3.6,
+§3.8); and the rest of the path lies in the reference's pointee, whose type
+it notes (`Prov::reached`, §3.5), as a slice crossed notes its element type
+(`SliceProvenance`). `ContainerRead` is the load of a field or element: the
+load type (`LoadType`: `varint` decodes to `i64`, a relative reference loads
+as a plain one, a `const` value loads as a plain copy), the read-back
+provenance, and, for a reference or slice, the writability its slot gives.
 
 **The statement's operands.** Values evaluated earlier in a statement stay
 live until the operation consuming them ends, and what runs later in the
@@ -1125,6 +1125,18 @@ What is read out of a slot is therefore as writable as the slot's type says
 `RootArg::writable` is part of the specialization key, so a function given
 a literal and the same function given a buffer are two specializations, and
 a write through the parameter is an error only in the first.
+
+`const` is shallow, so that holds whatever the path to the slot: the load, a
+path crossing the reference there (`DerefLValue`) or stepping into the
+slice (`SliceProvenance`), a `for` binding of the element and a field being
+rendered (`CheckRenderable`) all take `SlotLoadWritable`'s answer rather
+than the path's writability, so `h.r.n = 7` and `inc(h.r.n)` agree for a
+`const h` whose `r` is an `S&`. The slot itself stays as writable as the
+path: `h.r .= y` is rejected, and `&` of a slice field of `h` is a `const`
+reference. A self-relative reference is the exception: it points within the
+value or array holding its slot (spec §3.9), so it is no more writable than
+the path to the slot, or `inc(c.link.v)` would write a `const c` built with
+`link: self`.
 
 `let` prevents whole-binding assignment (`NoLetAssign`, via
 `LVal::letbound`) but does not restrict writes to contents. By-value `for`

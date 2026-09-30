@@ -136,9 +136,10 @@ inline void TypeCheck::DerefLValue(LVal &lv, Node *at) {
         lv.SetProv(RefProvOf(lv.var));
     } else if (lv.fromstorage) {
         // Crossing a reference the path read out of a container: it is a
-        // read-back, so where it points is re-derived (§9.5). A relative
-        // one loads as an ordinary reference into the same pool, so it
-        // keeps the container's root.
+        // read-back, so where it points is re-derived, and it is as writable
+        // as its slot says rather than the path to the slot (§9.5). A
+        // relative one loads as an ordinary reference into the same pool,
+        // so it keeps the container's root.
         ReadBackLVal(lv);
     }
     lv.type = lv.type->ref->sub;
@@ -183,7 +184,9 @@ inline void TypeCheck::SliceProvenance(LVal &lv, Node *at) {
 }
 
 // A location whose own type is a reference or slice: the value loaded out
-// of it is a read-back, so its root is re-derived (§9.5).
+// of it is a read-back, so its root is re-derived (§9.5). Out of a field or
+// an element it is as writable as the slot says (SlotLoadWritable); a slice
+// loaded through a reference is no more writable than the reference.
 inline void TypeCheck::ReadBackLVal(LVal &lv) {
     if (!IsRefOrSlice(lv.type)) return;
     // A byte view can point at any typed storage. Its owner cannot be
@@ -206,13 +209,23 @@ inline void TypeCheck::ReadBackLVal(LVal &lv) {
     lv.freshview = false;
     lv.reached = nullptr;
     lv.intemp = false;
-    if (lv.type->cq) lv.writable = false;   // A `const` slot's contents (§9.5).
+    lv.writable = lv.isslot ? SlotLoadWritable(lv.type, lv.writable)
+                            : lv.writable && !lv.type->cq;
 }
 
-// The value a field or element location yields: the load, re-rooted by
-// the read-back rule, and, where it is a reference or slice, as writable
-// as the slot's type says: only a writable value can have been stored in
-// a slot that is not `const` (§9.5).
+// How writable a reference or slice loaded out of a field or an element of
+// type t is, the path to the slot being as writable as `path` (§9.5): as the
+// slot's type says, whatever the path, since a read-only one is stored only
+// in a `const` slot, and `const` is shallow. But a self-relative reference
+// points within the value or array its slot lies in (§3.9), which is no more
+// writable through it than along the path.
+inline bool TypeCheck::SlotLoadWritable(TypeExpr *t, bool path) {
+    auto selfrel = t->kind == TY_REF && t->ref->lenstorage >= 0 && !t->ref->pool;
+    return !t->cq && (path || !selfrel);
+}
+
+// The value a field or element location yields: the load, which for a
+// reference or slice is a read-back (ReadBackLVal).
 inline Val TypeCheck::ContainerRead(LVal lv) {
     Val v;
     if (lv.type->kind == TY_SLICE) {
@@ -222,8 +235,7 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
     ReadBackLVal(lv);
     v.type = LoadType(lv.type);
     v.SetProv(lv);
-    if (IsRefOrSlice(v.type)) v.writable = !lv.type->cq;
-    else if (HoldsPlainRef(v.type)) {
+    if (!IsRefOrSlice(v.type) && HoldsPlainRef(v.type)) {
         // What a holder read out of a container points at is bounded by
         // the container: everything stored into it had to outlive it. Out
         // of a temporary, it points where the temporary's contents do. Out

@@ -609,6 +609,7 @@ inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, N
             ReadBack contents;
             auto hascontents = TempContents(value, contents);
             v.TakeAlts(ReadBackRoot(ft, value, value.byteview, hascontents ? &contents : nullptr));
+            v.writable = SlotLoadWritable(ft, value.writable);
         }
         CheckRenderable(c, what, ft, at, seen, v, out);
     };

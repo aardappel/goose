@@ -1779,18 +1779,20 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     if (idxtype && x->iterkind != IK_ARRAY && x->iterkind != IK_SLICE)
         Error(x, "the index of a range or count counts its iterations as an i64; a type on "
                  "the loop's binder gives the values their type");
-    // A slice element bound by value, or a relative-reference one however it
-    // is bound, was read out of the array, so where it points follows the
-    // read-back rule (§9.5), not the array's own root.
-    if (IsRefOrSlice(bindtype) && elemtype && (!byref || elemtype->kind == TY_REF) &&
-        ((elemtype->kind == TY_REF && elemtype->ref->lenstorage >= 0) ||
-         elemtype->kind == TY_SLICE)) {
-        auto slotread = SlotReadable(elemtype);
-        auto rb = ReadBackRoot(elemtype, iterprov, iterprov.byteview,
-                               intemp ? &contents : nullptr, slotread);
-        iterprov.TakeAlts(rb);
-        for (auto &a : iterprov.alts) a.slotread = slotread;
-        if (elemtype->cq) iterprov.writable = false;
+    // A slice element bound by value, or a reference one however it is
+    // bound, was read out of the array: it is as writable as its slot says
+    // (§9.5), and where a slice or a relative reference points follows the
+    // read-back rule, not the array's own root.
+    if (IsRefOrSlice(bindtype) && elemtype && (!byref || elemtype->kind == TY_REF)) {
+        if ((elemtype->kind == TY_REF && elemtype->ref->lenstorage >= 0) ||
+            elemtype->kind == TY_SLICE) {
+            auto slotread = SlotReadable(elemtype);
+            auto rb = ReadBackRoot(elemtype, iterprov, iterprov.byteview,
+                                   intemp ? &contents : nullptr, slotread);
+            iterprov.TakeAlts(rb);
+            for (auto &a : iterprov.alts) a.slotread = slotread;
+        }
+        iterprov.writable = SlotLoadWritable(elemtype, iterprov.writable);
     }
     auto head = SaveFlow();
     auto sc = CheckLoopPasses(x, head, [&] {

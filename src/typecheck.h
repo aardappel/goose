@@ -1261,6 +1261,7 @@ struct TypeCheck {
     void RequireAssigned(VarDef *vd, Node *at);
     void SliceProvenance(LVal &lv, Node *at);
     void ReadBackLVal(LVal &lv);
+    bool SlotLoadWritable(TypeExpr *t, bool path);
     Val ContainerRead(LVal lv);
     void ResolveMemberLValue(LVal &lv, Dot *d);
     // Where a holder value's references point: what was derived for it, else
