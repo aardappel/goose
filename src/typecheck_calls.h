@@ -24,6 +24,16 @@ inline Val TypeCheck::CheckCall(Call *c) {
     c->args.erase(c->args.begin() + c->firstdefault,
                   c->args.begin() + c->firstdefault + c->ndefaults);
     c->firstdefault = c->ndefaults = 0;
+    // The types written here name what they name here: the type arguments,
+    // unless the checker made the call, and a trailing block's parameter
+    // types, whose sizes may name none of its parameters either.
+    if (!c->implicit)
+        for (auto t : c->tyargs) ConstNamesIn(t);
+    if (auto fv = c->trailing) {
+        for (auto &p : fv->params)
+            if (p.type) ConstNamesIn(p.type);
+        SignatureNames(fv->params, {});
+    }
     // Arguments construct into parameter slots, not whatever destination
     // encloses this call, and a parameter's constness is its instantiation's
     // (§9.5); member ops re-set both for element pushes.

@@ -263,6 +263,16 @@ data...]`, inline, packed (exact layouts in Appendix C).
 | `T[>..]` | resizable (grow-only) | length | element region tops a data stack; grow = bump |
 | `T[>..<]` | resizable (grow-shrink) | length | as above, may also shrink |
 
+A size or capacity `k` is fixed at compile time, as is the count `n` of a
+fill literal `[v; n]` (§4.2): a name in one is a named constant, a `let` or
+`const` global (§11.1), and resolves as any name does, lexically first. A
+local of that name — a parameter, a local variable, or one around a nested
+function or block — hides the global there and is no constant, so a size
+naming it is an error, as a match pattern naming it is (§8.1); a qualified
+name (`::K`, `ns::K`) reaches the global past it. So is, in a function's or
+a block's parameter and result types, the name of one of its parameters. A
+type alias's sizes name what they name where the alias is declared.
+
 Indexing is bounds-checked — against `k` for fixed arrays (checks statically
 elided where provable), against the current length for all others.
 
@@ -857,7 +867,7 @@ Literal forms usable in any construction context:
   `push`, `append`, `format` or whole assignment into it — a string literal
   pushed into one makes it a `u8[][>..]` — and must be fixed before the local
   is otherwise used or its scope ends; `[v; n]` fill form with a non-negative
-  compile-time element count. `v` is evaluated once, including when `n` is
+  compile-time element count (a constant expression, as a size is: §3.3). `v` is evaluated once, including when `n` is
   zero, and its value is repeated. Relative links retain their target at
   every destination; `self` in a literal refers to each constructed element.
   A literal whose destination names no array type is a `T[k]`, or a `T[]`
@@ -2874,7 +2884,7 @@ the caller's own facts about `src` intact.
   assigned as a whole, §4.4) of flat fixed type with compile-time-evaluable
   initializers live in static data; the initializer of any `let` or
   `const` global is a named constant a compile-time size may use
-  (`i64[N]`). A size, a fill count (`[v; N]`) or a match pattern (§8.1)
+  (`i64[N]`) wherever no local of its name hides it (§3.3). A size, a fill count (`[v; N]`) or a match pattern (§8.1)
   takes a named constant at its initializer's value, so a `let` it names,
   directly or through another named constant's initializer, may not also
   be bound to a writable reference anywhere, through which its value could

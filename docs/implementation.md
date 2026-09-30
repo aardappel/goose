@@ -2285,7 +2285,19 @@ other globals' initializers too, as relied on (`RelyOnConstant`,
 `constuse`), which `NoteWritableRef` checks as it does `nonneguse`:
 whichever of the two marks comes second is an error (§11.1). An array
 size is evaluated once per type and cached (`ArraySize`), which the
-flow-free marks do not mind.
+flow-free marks do not mind. `ConstIntValue` takes a name as the global of
+the name, since a size is evaluated wherever its type is compared (`TypeEq`
+of a callee's parameter type while a caller is checked, say). Where a size,
+fill count or pattern is written, in its own scope, `ConstName` makes a
+local of the name an error (§3.3): at a declaration's annotation
+(`CheckVarDecl`), a call's type arguments and trailing block's parameters
+(`CheckCall`), a literal's type (`StructLit::Check`), a fill count
+(`FillCount`), a nested function's declaration (`DeclareLocalFn`) and a
+pattern (`PatternValue`); and `SignatureNames` makes the sizes in every
+signature name none of its own parameters. A type the checker writes into
+a default it makes (`DefaultCall`, `DefaultValue`: `implicit` calls and
+literals) and an alias's use (`TypeExpr::aliasuse`) were written, and
+checked, elsewhere.
 
 Integers become floats (§6.3) in a node of their own: `ToFloat` wraps the
 integer expression in an implicit `AsCast` wherever a destination

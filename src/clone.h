@@ -47,6 +47,7 @@ inline Node *ArrayLit::Clone1(Ast &ast) const {
 inline Node *StructLit::Clone1(Ast &ast) const {
     auto sl = ast.New<StructLit>(line, type);
     sl->defaultall = defaultall;
+    sl->implicit = implicit;
     sl->inits.reserve(inits.size());
     for (auto &fi : inits) sl->inits.push_back({ fi.name, fi.val->Clone(ast), fi.fromdefault });
     return sl;
@@ -67,6 +68,7 @@ inline Node *Dot::Clone1(Ast &ast) const {
 inline Node *Call::Clone1(Ast &ast) const {
     auto c = ast.New<Call>(line, callee->Clone(ast));
     c->tyargs = tyargs;
+    c->implicit = implicit;
     for (size_t i = 0; i < args.size(); i++)
         if (!IsDefaultArg(i)) c->args.push_back(args[i]->Clone(ast));
     c->trailing = (FunVal *)CloneOrNull(ast, (Node *)trailing);

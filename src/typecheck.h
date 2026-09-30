@@ -691,6 +691,47 @@ struct TypeCheck {
         return a->size;
     }
 
+    // The names in sizes, capacities, fill counts and match patterns, which
+    // ConstIntValue takes as globals, checked where they are written.
+    void ConstName(Ident *id, const char *what);
+    void ConstNames(Node *n, const char *what);
+    void ConstNamesIn(TypeExpr *t);
+    void SignatureNames(const vector<Param> &params, const vector<TypeExpr *> &rets);
+    int64_t FillCount(Node *n);
+
+    // Calls f(id, what) for each name constant expression n takes, where
+    // ConstIntValue would look it up: as an operand of the arithmetic it folds.
+    template<typename F> void ConstExprNames(Node *n, const char *what, F f) {
+        if (auto id = Is<Ident>(n)) {
+            f(id, what);
+        } else if (auto u = Is<Unary>(n)) {
+            ConstExprNames(u->child, what, f);
+        } else if (auto b = Is<Binary>(n)) {
+            ConstExprNames(b->left, what, f);
+            ConstExprNames(b->right, what, f);
+        }
+    }
+
+    // The same for the sizes and capacities written in type t. An alias's
+    // use stands for the alias's type, written where the alias is declared.
+    template<typename F> void SizeNames(TypeExpr *t, F f) {
+        if (t->aliasuse) return;
+        switch (t->kind) {
+            case TY_ARRAY:
+                if (t->arr->sizeexpr)
+                    ConstExprNames(t->arr->sizeexpr,
+                                   t->arr->akind == A_LIMITED ? "array capacity" : "array size", f);
+                SizeNames(t->arr->sub, f);
+                return;
+            case TY_SLICE: SizeNames(t->sub, f); return;
+            case TY_REF: SizeNames(t->ref->sub, f); return;
+            case TY_STRUCT: for (auto a : t->struc->args) SizeNames(a, f); return;
+            case TY_ENUM: for (auto a : t->enu->args) SizeNames(a, f); return;
+            case TY_VARIANT: SizeNames(t->var->adt, f); return;
+            default: return;
+        }
+    }
+
     // ------------------------------------------------------------------
     // Type equality on concrete (post-substitution) types.
 
@@ -2243,6 +2284,8 @@ struct TypeCheck {
             if (st->generics.empty()) GetStructInst(ast.StructOf(st, {}, st->line));
         for (auto en : ast.enums)
             if (en->generics.empty()) GetEnumInst(ast.EnumOf(en, {}, true, en->line));
+        // And the sizes in every function's signature, for its parameters' names.
+        for (auto sf : ast.functions) SignatureNames(sf->params, sf->rets);
         for (auto g : ast.globals) {
             CheckVarDecl(g, true);
             for (auto d : g->defs) d->assigned = d->maybeassigned = true;

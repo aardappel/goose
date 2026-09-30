@@ -83,7 +83,8 @@ inline void ResolveTypeNames(Ast &ast) {
 
     // Substitute alias uses: the use-site node becomes a copy of the target
     // type (sharing its detail), keeping its own source line for diagnostics.
-    // A `..` on the use gets a fresh detail with the flag set instead.
+    // A `..` on the use gets a fresh detail with the flag set instead. Either
+    // way the node is marked as an alias use (TypeExpr::aliasuse).
     for (auto t : ast.alltypes) {
         if (t->kind != TY_UNRESOLVED) continue;
         auto use = t->named;
@@ -127,6 +128,7 @@ inline void ResolveTypeNames(Ast &ast) {
             t->line = line;
             t->cq = t->cq || cq;   // `const Alias` keeps its qualifier.
         }
+        t->aliasuse = true;
     }
 
     // Variant lookup runs last, when every ADT name is resolved.

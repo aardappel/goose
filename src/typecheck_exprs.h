@@ -2090,12 +2090,64 @@ inline void TypeCheck::ReportRedundantCasts() {
               stderr);
 }
 
+// A name in a compile-time size, capacity or fill count, or in an integer
+// match pattern, checked in the scope it is written in. It resolves as any
+// name does (§11.1): a local of the name -- a parameter, or a variable around
+// a nested function or a block -- hides the global of the name and is no
+// constant (§3.3, §8.1). ConstIntValue cannot tell, and takes the global: a
+// size is evaluated wherever its type is compared, in another scope as often
+// as not. In a parameter default, which names what a top-level declaration
+// would, a name its scope makes something else is an error as well
+// (DefaultScopeName).
+inline void TypeCheck::ConstName(Ident *id, const char *what) {
+    if (auto vd = LookupVar(id->name, id->ns); vd && !vd->isglobal)
+        Error(id, cat(what, " ", id->name, " names a local variable, not a constant"));
+    DefaultScopeName(id->name, id, false);
+}
+
+inline void TypeCheck::ConstNames(Node *n, const char *what) {
+    ConstExprNames(n, what, [&](Ident *id, const char *w) { ConstName(id, w); });
+}
+
+// The sizes and capacities of a type written in the scope being checked: an
+// annotation, a type argument, a literal's type, or a nested function's or
+// a trailing block's signature. A type that comes from elsewhere -- a
+// field's, one a type parameter is bound to, an alias's -- was checked where
+// it is written.
+inline void TypeCheck::ConstNamesIn(TypeExpr *t) {
+    SizeNames(t, [&](Ident *id, const char *w) { ConstName(id, w); });
+}
+
+// A size in the parameter or result types of a function or a block names
+// none of its parameters: there the name means the parameter, which holds
+// an argument, no constant, and hides the global of the name (§3.3, §11.1).
+inline void TypeCheck::SignatureNames(const vector<Param> &params,
+                                      const vector<TypeExpr *> &rets) {
+    auto check = [&](TypeExpr *t) {
+        SizeNames(t, [&](Ident *id, const char *what) {
+            for (auto &p : params)
+                if (p.name == id->name)
+                    Error(id, cat(what, " ", id->name, " names a parameter, not a constant"));
+        });
+    };
+    for (auto &p : params)
+        if (p.type) check(p.type);
+    for (auto t : rets) check(t);
+}
+
+inline int64_t TypeCheck::FillCount(Node *n) {
+    ConstNames(n, "array fill count");
+    return ConstIntOrError(n, "array fill count");
+}
+
 // Array extents and fill counts obey the same integer types as expressions
 // (§3.3, §6.1–6.2). Keep known values separate from literal adaptability:
 // a named u8 constant is known here, but N + 1 still computes at u8 width.
 // This runs even while type declarations are validated, before globals have
 // been checked, so resolve their initializers without evaluating runtime code
-// or attaching caller-local bindings to the shared expression nodes.
+// or attaching caller-local bindings to the shared expression nodes. A name
+// is the global of the name; where the expression is written, a local of
+// the name is an error (ConstName).
 inline bool TypeCheck::ConstIntValue(Node *n, Val &v, bool &literal,
                                      set<VarDecl *> &visiting, ConstUse *use) {
     if (auto i = Is<IntLit>(n)) {

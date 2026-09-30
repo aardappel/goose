@@ -195,6 +195,7 @@ inline Val TypeCheck::CheckDefaultInit(Node *&n, TypeExpr *ft, TypeExpr *owner,
 inline Call *TypeCheck::DefaultCall(TypeExpr *t, Line line) {
     auto c = ast.New<Call>(line, ast.New<Ident>(line, "::default"));
     c->tyargs.push_back(t);
+    c->implicit = true;
     return c;
 }
 
@@ -214,6 +215,7 @@ inline Node *TypeCheck::DefaultValue(TypeExpr *t, Line line) {
                           ? ast.VariantTypeOf(t, &t->enu->en->variants[0], line) : t;
             auto sl = ast.New<StructLit>(line, lt);
             sl->defaultall = true;
+            sl->implicit = true;
             return sl;
         }
     }

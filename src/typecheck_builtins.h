@@ -196,6 +196,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                     auto st = t->kind == TY_ENUM ? ast.VariantTypeOf(t, &t->enu->en->variants[0], c->line) : t;
                     auto sl = ast.New<StructLit>(c->line, st);
                     sl->defaultall = true;
+                    sl->implicit = true;
                     c->defaultinit = sl;
                 } else if (t->kind == TY_ARRAY && t->arr->akind == A_FIXED && ArraySize(t->arr))
                     c->defaultinit = DefaultCall(t->arr->sub, c->line);
@@ -2705,8 +2706,7 @@ inline bool TypeCheck::BuiltInPlace(TypeExpr *elem) {
 inline TypeExpr *TypeCheck::AppendedRun(TypeExpr *elem, ArrayLit *al) {
     if (ClassOf(elem) != SC_FIXED) return ast.ArrayOf(elem, A_VAR, al->line);
     // A negative fill count is the literal's own error to report.
-    auto n = al->fillval ? ConstIntOrError(al->fillcount, "array fill count")
-                         : (int64_t)al->elems.size();
+    auto n = al->fillval ? FillCount(al->fillcount) : (int64_t)al->elems.size();
     return ast.ArrayOf(elem, A_FIXED, al->line, std::max<int64_t>(n, 0));
 }
 

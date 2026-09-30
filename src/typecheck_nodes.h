@@ -192,7 +192,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         elem = expected->sub;
     }
     if (fillval) {
-        auto cnt = tc.ConstIntOrError(fillcount, "array fill count");
+        auto cnt = tc.FillCount(fillcount);
         if (cnt < 0) tc.Error(this, "array fill count cannot be negative");
         tc.CheckArrayCount(this, expected, cnt);
         // Later passes consume the evaluated count, not its unchecked source
@@ -255,6 +255,7 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
     sinst = nullptr;
     einst = nullptr;
     variant = nullptr;
+    if (!implicit) tc.ConstNamesIn(type);
     auto t = tc.Subst(type);
     if (t->kind == TY_VARIANT) {
         if (t->var->adt->kind != TY_ENUM)

@@ -279,6 +279,10 @@ struct TypeExpr {
     // reference or slice, one whose pointee or elements are. Part of the
     // type's identity (TypeEq); a C type does not carry it.
     bool cq = false;
+    // A use of a type alias (resolve.h): a copy of the alias's type, whose
+    // sizes name what they name where the alias is declared, at top level,
+    // whatever scope the use is in (TypeCheck::ConstNamesIn).
+    bool aliasuse = false;
     union {                          // Active member selected by kind:
         IntStorage intstorage;       //   TY_INT
         FltStorage fltstorage;       //   TY_FLT
@@ -796,6 +800,10 @@ NODE(StructLit)
     vector<FieldInit> inits;
     bool defaultall = false;    // A trailing `..`, or synthesized by default<T>(): a field
                                 // not given takes its declared default, else its type's.
+    // Made by the checker for a default value (TypeCheck::DefaultValue,
+    // default<T>()), of a type written elsewhere, whose sizes were checked
+    // there (TypeCheck::ConstNamesIn).
+    bool implicit = false;
     // Filled by typecheck:
     StructInst *sinst = nullptr;    // Struct literals.
     EnumInst *einst = nullptr;      // Variant literals.
@@ -859,6 +867,10 @@ NODE(Call)
     vector<TypeExpr *> tyargs;  // Explicit <T> list, normally empty (inferred).
     vector<Node *> args;
     FunVal *trailing = nullptr; // Trailing-block function value, if any.
+    // A default<T>() the checker made (TypeCheck::DefaultCall), for a type
+    // written elsewhere, whose sizes were checked there
+    // (TypeCheck::ConstNamesIn).
+    bool implicit = false;
     // Filled by typecheck: exactly one resolution among these.
     FnSpec *spec = nullptr;             // A direct call to one specialization.
     vector<FnSpec *> dispatch;          // Case-function tag dispatch, per variant.

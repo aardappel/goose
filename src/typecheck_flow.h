@@ -646,10 +646,14 @@ inline bool TypeCheck::ScopeEnded(const DeclSite &d) {
 
 // A nested function: visible from here to the end of the scope, checked when
 // called and specialized per caller (§7.5). Its body names what is in scope
-// here, whatever the call, and may call every function declared in the blocks
-// around it, so that nested functions call each other in either order (the
-// latest declared at or before this point wins, then the first after it).
+// here, whatever the call, as do the sizes in its signature, checked here, and
+// may call every function declared in the blocks around it, so that nested
+// functions call each other in either order (the latest declared at or before
+// this point wins, then the first after it).
 inline void TypeCheck::DeclareLocalFn(FnDecl *fd) {
+    for (auto &p : fd->sf->params)
+        if (p.type) ConstNamesIn(p.type);
+    for (auto t : fd->sf->rets) ConstNamesIn(t);
     auto top = (int)frames.size() - 1;
     auto &fr = frames[top];
     auto &site = declsites.emplace_back();
@@ -1455,9 +1459,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
         auto PatternValue = [&](Node *n, bool &uns) {
             auto u = Is<Unary>(n);
             if (auto id = Is<Ident>(u ? u->child : n)) {
-                if (auto vd = LookupVar(id->name, id->ns); vd && !vd->isglobal)
-                    Error(n, cat("match pattern ", id->name, " names a local variable, "
-                                 "not a constant"));
+                ConstName(id, "match pattern");
                 auto g = ast.LookupGlobal(id->name, id->ns);
                 if (!g) Error(n, cat("unknown constant ", id->name, " in an integer match"));
                 if (g->isvar)
@@ -2034,6 +2036,7 @@ inline void TypeCheck::CheckStmtExpr(Node *n) {
 inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
     TypeExpr *ann = nullptr;
     if (vd->type) {
+        ConstNamesIn(vd->type);
         ann = Subst(vd->type);
         ValidateType(ann, vd->line, global ? VT_GLOBAL : VT_LOCAL);
         if (vd->isconst) ann = ast.ConstOf(ann);   // `const x: T` is `let x: const T`.
