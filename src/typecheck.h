@@ -1910,6 +1910,24 @@ struct TypeCheck {
     bool CallersJudge(VarDef *r, VarDef *root);
     void NoteLiveViews(Node *at, const string &prefix, VarDef *root, const string &what,
                        bool growonly, TypeExpr *bound);
+    // A view still used after a shrink (NoteLiveViews), or one a callee's
+    // pair leads to at a call (MapLiveShrinks): where it may point, and at
+    // what.
+    struct LiveView {
+        Prov p;
+        TypeExpr *pointee = nullptr;
+        bool reached = false;    // What the value leads to, not the value.
+        bool contents = false;   // What p's storage holds (LiveShrink::contents).
+    };
+    // The temporaries a call is handed, with where what each holds points
+    // (TempContents).
+    using TempHolds = vector<pair<VarDef *, Roots>>;
+    void RecordedViews(VarDef *h, size_t from, TypeExpr *ht, vector<LiveView> &out,
+                       set<VarDef *> &seen);
+    void StoredViews(VarDef *r, bool exact, TypeExpr *pointee, bool byteview, TypeExpr *ht,
+                     vector<LiveView> &out, set<VarDef *> &seen);
+    void HeldViews(const Prov &p, TypeExpr *held, bool isvar, vector<LiveView> &out,
+                   const TempHolds *temps = nullptr);
     template<typename F> void EachHolderRoot(VarDef *holder, size_t from, F f);
     int NoteLiveShrink(LiveShrink ls, FnSpec *current);
     void ApplyCalleeLiveShrinks(Node *at, FnSpec *spec, vector<Val> &argvals, string_view name);
@@ -1922,6 +1940,7 @@ struct TypeCheck {
         vector<Roots> args;   // What each parameter's class stands for here.
         string name;
         vector<Roots> views;  // And each parameter's view, the slice its slot held.
+        TempHolds temps;      // What the temporaries among the arguments hold.
     };
     bool MapLiveShrinks(const CallSite &site);
     // A growth of the array rooted at root -- a push, an append, a pool

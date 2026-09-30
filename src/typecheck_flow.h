@@ -261,16 +261,18 @@ inline bool TypeCheck::SlotReadable(TypeExpr *t) {
 //
 // A reference to a holder is rooted at the holder, whose store record says
 // what it holds, as it does for the holder itself, and a slice at the array
-// whose elements it views; a global holder is judged with the globals. One
-// to a slice is rooted at the slot holding the slice, a slice variable's own
+// whose elements it views; a global holder is judged with the globals, and
+// a parameter's class, the caller's holder or array, by what the activation
+// stored there, the callers judging the rest (NoteLiveViews). One to a
+// slice is rooted at the slot holding the slice, a slice variable's own
 // binding saying where that points (SlotView), as the variable a parameter's
 // class with a view has for the caller's slot does, which every store into
-// it joins (VarDef::heldslice). A slice variable may since have been rebound
-// at its root's depth, and a slice into a grow-only array stored into it
-// through a reference, with anything at that depth or outside it; there, as
-// behind a `var` reference or slice, an inexact one or any other parameter's
-// class, which stands for a slot or an array of the caller's, the root only
-// bounds the array.
+// it joins (VarDef::heldslice), and says for a slice of holders which
+// elements it views. A slice variable may since have been rebound at its
+// root's depth, and a slice into a grow-only array stored into it through a
+// reference, with anything at that depth or outside it; there, as behind a
+// `var` reference or slice, an inexact one or any other parameter's class,
+// which stands for a slot of the caller's, the root only bounds the array.
 inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *t,
                                             VarDef *root, TypeExpr *bound, bool growonly) {
     auto slice = t->kind == TY_SLICE;
@@ -307,7 +309,12 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
             // and a shrink of a global judges what every global holds
             // (CheckGlobalShrinks).
             if (!r || r->isglobal) continue;
-            if (a.exact && r->type && !slot && !(v && v->isvar)) {
+            // A holder named exactly holds what its record says, and so
+            // does a parameter's class -- the caller's holder, or the
+            // caller's array whose elements a slice views -- of what the
+            // activation stored there: what the callers did they judge,
+            // from the pair NoteLiveViews keeps (LiveShrink::contents).
+            if (a.exact && (r->type || IsClassRoot(r)) && !slot && !(v && v->isvar)) {
                 auto arrtype = bound ? bound : root->type ? LoadType(root->type) : nullptr;
                 Line where;
                 if (HolderMayPointInto(r, root, arrtype, LiveEventBase(r), &where)) return true;
@@ -316,9 +323,13 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
         }
         // Every store into the slot of a parameter's class with a view joins
         // the variable standing for its slice, a grow-only array's views
-        // included, so that says where it points.
+        // included, so that says where it points, and, where its elements
+        // hold references, where those may.
         if (r && !r->type && a.exact && slot) {
             if (RefMayPointInto(slot, root) || (v && v->isvar && Depth(r) >= Depth(root)))
+                return true;
+            if (growonly && HoldsPlainRef(sub->sub) &&
+                HeldRefsMayPointInto(slot, slot->ref, slot->type, root, bound, growonly))
                 return true;
             continue;
         }

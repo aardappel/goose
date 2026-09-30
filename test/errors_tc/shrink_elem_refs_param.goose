@@ -1,6 +1,6 @@
-// error: cannot clear a while v is still used: the slices it views may point into it
-// v's elements lie in the caller's storage, which may hold a view of the
-// array a names, at its depth: f cannot tell (§5.1).
+// error: cannot call f: it shrinks a while v is still used, and v may refer into a
+// v's elements lie in the caller's storage, which f leaves its callers to
+// judge: here ss, whose element views the array a names (§5.1).
 fn f(a: u8[>..]&, v: (u8[:])[:]) {
     a.clear();
     a.append("ZZZZZZZZ");

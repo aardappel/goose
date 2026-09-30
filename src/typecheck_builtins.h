@@ -1853,86 +1853,22 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
     // array the activation owns, and every array a local of it only bounds
     // is a shrink target of its own (ShrinkTargets).
     if (!current || (root->type && !root->isglobal && root->ownerspec == current)) return;
-    struct View {
-        Prov p;
-        TypeExpr *pointee;
-        bool reached = false;   // What the value leads to, not the value.
-    };
-    // What the stores into holder h from event `from` on put there, as views
-    // (§5.1): where each stored reference points, and, where it refers to a
-    // slot holding references -- a holder, an array's elements a slice
-    // views, a slice variable -- what that slot leads to, as the scan
-    // follows it (StoredSlotMayPointInto): a holder named exactly by its own
-    // record, anything else but a global by its root, as a bound. A stored
-    // value keeps no pointee where it is a copy of a holder's contents, which
-    // may refer to any slot h's type can.
-    auto recorded = [&](VarDef *h, size_t from, vector<View> &out) {
-        set<VarDef *> seen;
-        function<void(VarDef *, size_t)> walk = [&](VarDef *hh, size_t start) {
-            if (!seen.insert(hh).second) return;
-            EachHolderRoot(hh, start, [&](const StoreEvent &e) {
-                Prov ep;
-                ep.Set(e.root, e.exact);
-                ep.byteview = e.byteview;
-                out.push_back({ ep, e.pointee, true });
-                auto r = e.root;
-                if (r->isglobal) return;
-                vector<TypeExpr *> slots;
-                if (e.pointee) slots.push_back(e.pointee);
-                else RefPointees(hh->type, slots);
-                for (auto st : slots) {
-                    if (!HoldsPlainRef(st)) continue;
-                    if (e.exact && r->type && !IsRefOrSlice(r->type)) return walk(r, 0);
-                    Prov bv;
-                    bv.Set(r, false);
-                    bv.byteview = r->contentbyteview ||
-                                  (r->type && IsRefOrSlice(r->type) && r->ref.byteview);
-                    vector<TypeExpr *> ps;
-                    ReachedThroughRefs(st, ps);
-                    for (auto pt : ps) out.push_back({ bv, pt, true });
-                }
-            });
-        };
-        walk(h, from);
-    };
-    // Where the references in the holders a reference points at or a slice
-    // views, of type `held`, may point (§5.1): for a holder of this function
-    // or a parent's that the value names exactly, where its store record
-    // says, as for the holder itself; otherwise anywhere its root bounds, as
-    // for a `var`, which a binding the record does not show yet may have
-    // moved to another holder at that depth (HeldRefsMayPointInto). A global
-    // holder is judged with the globals.
-    auto holders = [&](const Prov &p, TypeExpr *held, bool isvar, vector<View> &out) {
-        vector<TypeExpr *> pointees;
-        ReachedThroughRefs(held, pointees);
-        for (auto &a : p.alts) {
-            auto r = a.root;
-            if (!r || r->isglobal) continue;
-            if (a.exact && r->type && !IsRefOrSlice(r->type) && !isvar) {
-                recorded(r, LiveEventBase(r), out);
-                continue;
-            }
-            Prov hv;
-            hv.Set(r, false);
-            hv.byteview = p.byteview || r->contentbyteview;
-            for (auto pt : pointees) out.push_back({ hv, pt, true });
-        }
-    };
     // What a reference or slice of type t with provenance p may point into:
     // its pointee, unless it is the path to a whole resizable value, and,
     // for a reference to a slice or (§5.1) to anything else holding
     // references, or a slice of those, what those point into: where the
     // slice points (SlotView, without noting a slice variable's root as
-    // read), or where the holders' references may. An assignment's location
-    // is overwritten before it is read, and a slot a for loop reads again
-    // holds its sequence, which is held itself: only the slot counts.
+    // read), and for a slice of holders what those hold, or where the
+    // holders' references may (HeldViews). An assignment's location is
+    // overwritten before it is read, and a slot a for loop reads again holds
+    // its sequence, which is held itself: only the slot counts.
     auto views = [&](const Prov &p, TypeExpr *t, bool slotonly, bool isvar) {
-        vector<View> out;
+        vector<LiveView> out;
         if (t->kind != TY_REF || ClassOf(t->ref->sub) != SC_RESIZABLE)
             out.push_back({ p, PointeeOf(t), false });
         if (slotonly) return out;
         if (t->kind == TY_SLICE) {
-            if (growonly && HoldsPlainRef(t->sub)) holders(p, t->sub, isvar, out);
+            if (growonly && HoldsPlainRef(t->sub)) HeldViews(p, t->sub, isvar, out);
             return out;
         }
         if (t->kind != TY_REF) return out;
@@ -1950,32 +1886,34 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
                 sv = SlotView(p, sub);
             }
             out.push_back({ sv, sub->sub, true });
+            if (growonly && HoldsPlainRef(sub->sub)) HeldViews(sv, sub->sub, isvar, out);
         } else if (growonly && HoldsPlainRef(sub)) {
-            holders(p, sub, isvar, out);
+            HeldViews(p, sub, isvar, out);
         }
         return out;
     };
     // Whether the callers judge where a view may point by alternative a: a
     // slot read points into no grow-shrink array (§5.2), as the scans say,
     // though what a reference to a slice leads to may.
-    auto judges = [&](const View &w, const RootAlt &a) {
+    auto judges = [&](const LiveView &w, const RootAlt &a) {
         return CallersJudge(a.root, root) && (growonly || w.reached || !a.slotread);
     };
     // Every place a view may point that the callers judge, as a pair each.
-    auto note = [&](const View &w, const string &name) {
+    auto note = [&](const LiveView &w, const string &name) {
         for (auto &a : w.p.alts) {
             if (!judges(w, a)) continue;
             LiveShrink ls { .shrunk = root, .shrunkexact = !bound, .bound = bound,
                             .live = a.root, .liveexact = a.exact, .pointee = w.pointee,
-                            .byteview = w.p.byteview, .growonly = growonly, .name = name };
+                            .byteview = w.p.byteview, .growonly = growonly, .name = name,
+                            .contents = w.contents };
             if (NoteLiveShrink(ls, current) < 0)
                 Error(at, cat(prefix, " while ", name, " is still used: it may refer into ", what,
                               growonly ? " (§5.1)" : " (§5.2)"));
         }
     };
-    auto judged = [&](vector<View> &vs) {
+    auto judged = [&](vector<LiveView> &vs) {
         vs.erase(std::remove_if(vs.begin(), vs.end(),
-                                [&](const View &w) {
+                                [&](const LiveView &w) {
                                     return !w.p.Any(
                                         [&](const RootAlt &a) { return judges(w, a); });
                                 }),
@@ -1993,18 +1931,110 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
     ShrinkScanVars([&](VarDef *v) {
         if (v == root || !v->type) return;
         auto t = v->type;
-        vector<View> vs;
+        vector<LiveView> vs;
         if (IsRefOrSlice(t)) {
             if (!v->refrootknown) return;
             vs = views(v->ref, t, false, v->isvar);
         } else if (growonly && HoldsPlainRef(t)) {
             // A grow-only array's views may be stored (§5.1): the holder's
             // store record says where its references lead.
-            recorded(v, LiveEventBase(v), vs);
+            set<VarDef *> seen;
+            RecordedViews(v, LiveEventBase(v), t, vs, seen);
         }
         if (!judged(vs) || !UsedAfter(v)) return;
         for (auto &w : vs) note(w, string(v->name));
     });
+}
+
+// What the stores into holder h, of type ht, from event `from` on put there,
+// as views (§5.1): each stored reference as StoredViews takes it. `seen`
+// holds the holders followed so far.
+inline void TypeCheck::RecordedViews(VarDef *h, size_t from, TypeExpr *ht,
+                                     vector<LiveView> &out, set<VarDef *> &seen) {
+    if (!seen.insert(h).second) return;
+    EachHolderRoot(h, from, [&](const StoreEvent &e) {
+        StoredViews(e.root, e.exact, e.pointee, e.byteview, ht, out, seen);
+    });
+}
+
+// A reference stored into a holder of type ht, rooted at r (exactly, or only
+// bounded by it), as views (§5.1): where it points, and, where it refers to
+// a slot holding references -- a holder, an array's elements a slice views,
+// a slice variable -- what that slot leads to, as the scan follows it
+// (StoredSlotMayPointInto): a holder named exactly by its own record,
+// anything else but a global by its root, as a bound. A stored value keeps
+// no pointee where it is a copy of a holder's contents, which may refer to
+// any slot ht can.
+inline void TypeCheck::StoredViews(VarDef *r, bool exact, TypeExpr *pointee, bool byteview,
+                                   TypeExpr *ht, vector<LiveView> &out, set<VarDef *> &seen) {
+    Prov ep;
+    ep.Set(r, exact);
+    ep.byteview = byteview;
+    out.push_back({ ep, pointee, true });
+    if (!r || r->isglobal) return;
+    vector<TypeExpr *> slots;
+    if (pointee) slots.push_back(pointee);
+    else if (ht) RefPointees(ht, slots);
+    for (auto st : slots) {
+        if (!HoldsPlainRef(st)) continue;
+        if (exact && r->type && !IsRefOrSlice(r->type))
+            return RecordedViews(r, 0, r->type, out, seen);
+        Prov bv;
+        bv.Set(r, false);
+        bv.byteview = r->contentbyteview || (r->type && IsRefOrSlice(r->type) && r->ref.byteview);
+        vector<TypeExpr *> ps;
+        ReachedThroughRefs(st, ps);
+        for (auto pt : ps) out.push_back({ bv, pt, true });
+    }
+}
+
+// Where the references in the holders of type `held` that p points at or
+// views may point (§5.1): for a holder of this function or a parent's that
+// the value names exactly, where its store record says, as for the holder
+// itself. A parameter's class named exactly stands for storage of the
+// caller's -- the holder a reference parameter names, the elements a slice
+// parameter views: the activation's own stores into it are on record, and
+// what the callers put there is a view of its contents, which each call
+// judges by its record of the storage its argument names (LiveShrink::
+// contents). There, a temporary the call is handed holds what `temps` says,
+// which the callee cannot write. Anything else points anywhere its root
+// bounds, as a `var` does, which a binding the record does not show yet may
+// have moved to another holder at that depth (HeldRefsMayPointInto). A
+// global holder is judged with the globals.
+inline void TypeCheck::HeldViews(const Prov &p, TypeExpr *held, bool isvar,
+                                 vector<LiveView> &out, const TempHolds *temps) {
+    vector<TypeExpr *> pointees;
+    ReachedThroughRefs(held, pointees);
+    for (auto &a : p.alts) {
+        auto r = a.root;
+        if (!r || r->isglobal) continue;
+        set<VarDef *> seen;
+        if (a.exact && r->type && !IsRefOrSlice(r->type) && !isvar) {
+            RecordedViews(r, LiveEventBase(r), r->type, out, seen);
+            continue;
+        }
+        if (a.exact && IsClassRoot(r) && !isvar) {
+            RecordedViews(r, LiveEventBase(r), held, out, seen);
+            Prov cv;
+            cv.Set(r, true);
+            cv.byteview = p.byteview || r->contentbyteview;
+            out.push_back({ cv, held, true, true });
+            continue;
+        }
+        const Roots *made = nullptr;
+        if (temps && IsTemp(r))
+            for (auto &[t, c] : *temps)
+                if (t == r) made = &c;
+        if (made) {
+            for (auto &c : made->alts)
+                if (c.root) StoredViews(c.root, c.exact, nullptr, p.byteview, held, out, seen);
+            continue;
+        }
+        Prov hv;
+        hv.Set(r, false);
+        hv.byteview = p.byteview || r->contentbyteview;
+        for (auto pt : pointees) out.push_back({ hv, pt, true });
+    }
 }
 
 // What the stores into holder from event `from` on put there, following
@@ -2039,38 +2069,52 @@ template<typename F> void TypeCheck::EachHolderRoot(VarDef *holder, size_t from,
 // A shrink of ls.shrunk while what ls.live roots is still used, both as the
 // activation of `current` names them. Where they may be one array as only
 // its callers can tell -- one is a parameter's class, and neither is storage
-// the activation owns -- the pair is kept on its record for them. Returns -1
-// where nothing can tell the two apart, 1 where the record grew, else 0.
+// the activation owns -- the pair is kept on its record for them, as is one
+// about what a class's storage holds (LiveShrink::contents) wherever the
+// array is not the activation's own. Returns -1 where nothing can tell the
+// two apart, 1 where the record grew, else 0.
 inline int TypeCheck::NoteLiveShrink(LiveShrink ls, FnSpec *current) {
     auto s = ls.shrunk, l = ls.live;
     if (!s || !l || IsTemp(s) || IsTemp(l)) return 0;
-    auto mayfree = ShrinkMayFree(s, ls.bound, ls.growonly, ls.pointee, ls.byteview);
-    // A callee's shrink of a class, mapped onto an argument whose root only
-    // bounds it: the array may be any of the shrink's kind in what that root
-    // leads to (BoundReach).
-    if (!mayfree && !ls.shrunkexact && !ls.bound) {
-        vector<TypeExpr *> reach;
-        BoundReach(s, reach);
-        for (auto t : reach) {
-            auto arr = ResizableArrayIn(t);
-            mayfree = mayfree || (arr && GrowOnlyTail(arr) == ls.growonly &&
-                                  ShrinkMayFree(s, arr, ls.growonly, ls.pointee, ls.byteview));
-        }
-    }
-    if (!mayfree) return 0;
-    // A view into storage that cannot hold an array of the bound's type is
-    // not in the array freed.
-    if (ls.bound && l->type && ls.liveexact && !CanContain(LoadType(l->type), ls.bound))
-        return 0;
-    if (MayAliasRoots(l, ls.liveexact, s, ls.shrunkexact, current) == AL_NO) return 0;
     auto outside = [&](VarDef *v) {
         return IsClassRoot(v) || (v->type && (v->isglobal || v->ownerspec != current));
     };
-    if (!current || s == l || (!IsClassRoot(s) && !IsClassRoot(l)) || !outside(s) || !outside(l))
-        return -1;
+    if (ls.contents) {
+        // What the callers put in a class's storage outlives that storage,
+        // so it points into nothing the activation owns; the activation's
+        // own stores into it are judged where the array shrinks
+        // (HeldRefsMayPointInto).
+        if (!current) return -1;
+        if (!outside(s)) return 0;
+    } else {
+        auto mayfree = ShrinkMayFree(s, ls.bound, ls.growonly, ls.pointee, ls.byteview);
+        // A callee's shrink of a class, mapped onto an argument whose root
+        // only bounds it: the array may be any of the shrink's kind in what
+        // that root leads to (BoundReach).
+        if (!mayfree && !ls.shrunkexact && !ls.bound) {
+            vector<TypeExpr *> reach;
+            BoundReach(s, reach);
+            for (auto t : reach) {
+                auto arr = ResizableArrayIn(t);
+                mayfree = mayfree || (arr && GrowOnlyTail(arr) == ls.growonly &&
+                                      ShrinkMayFree(s, arr, ls.growonly, ls.pointee, ls.byteview));
+            }
+        }
+        if (!mayfree) return 0;
+        // A view into storage that cannot hold an array of the bound's type
+        // is not in the array freed.
+        if (ls.bound && l->type && ls.liveexact && !CanContain(LoadType(l->type), ls.bound))
+            return 0;
+        if (MayAliasRoots(l, ls.liveexact, s, ls.shrunkexact, current) == AL_NO) return 0;
+        if (!current || s == l || (!IsClassRoot(s) && !IsClassRoot(l)) || !outside(s) ||
+            !outside(l))
+            return -1;
+    }
     for (auto &e : current->liveshrinks) {
-        if (e.shrunk != s || e.live != l || !e.bound != !ls.bound) continue;
+        if (e.shrunk != s || e.live != l || !e.bound != !ls.bound || e.contents != ls.contents)
+            continue;
         if (e.bound && !TypeEq(e.bound, ls.bound)) continue;
+        if (e.contents && !TypeEq(e.pointee, ls.pointee)) continue;
         auto was = e;
         e.shrunkexact = e.shrunkexact && ls.shrunkexact;
         e.liveexact = e.liveexact && ls.liveexact;
@@ -2093,11 +2137,13 @@ inline int TypeCheck::NoteLiveShrink(LiveShrink ls, FnSpec *current) {
 // the cycle's first round.
 inline void TypeCheck::ApplyCalleeLiveShrinks(Node *at, FnSpec *spec, vector<Val> &argvals,
                                               string_view name) {
-    CallSite site { at, CurRealFrame().spec, RecordOf(spec), {}, string(name), {} };
+    CallSite site { at, CurRealFrame().spec, RecordOf(spec), {}, string(name), {}, {} };
     if (!site.callee) return;   // A cycle's first round: no record yet.
     for (size_t q = 0; q < spec->argtypes.size() && q < argvals.size(); q++) {
         site.args.push_back(ClassArgRoots(spec->argtypes[q], argvals[q]));
         site.views.push_back(ViewClassOf(spec, q) ? argvals[q].held.AsRoots() : Roots {});
+        ReadBack held;
+        if (TempContents(argvals[q], held)) site.temps.push_back({ argvals[q].Root(), held.roots });
     }
     MapLiveShrinks(site);
 }
@@ -2138,34 +2184,70 @@ inline bool TypeCheck::MapLiveShrinks(const CallSite &site) {
                 // Passed on from the caller's parameter: that is what its
                 // callers see used.
                 if (ls.live != orig.live && IsClassRoot(ls.live)) ls.name = string(ls.live->name);
-                auto r = NoteLiveShrink(ls, site.caller);
-                if (r < 0) {
+                // What the storage the argument names holds, where the pair
+                // is about that: each view it leads to as the caller sees
+                // it, by its record of the storage (HeldViews), a class of
+                // the caller's passing the question on. A temporary nothing
+                // recorded the contents of may hold anything outliving it.
+                vector<LiveShrink> each;
+                if (!orig.contents) {
+                    each.push_back(ls);
+                } else if (IsTemp(la.root) &&
+                           std::none_of(site.temps.begin(), site.temps.end(),
+                                        [&](auto &t) { return t.first == la.root; })) {
+                    auto x = ls;
+                    x.contents = false;
+                    x.live = ls.shrunk;
+                    x.liveexact = false;
+                    x.pointee = nullptr;
+                    each.push_back(x);
+                } else {
+                    Prov lp;
+                    lp.Set(la.root, la.exact);
+                    lp.byteview = orig.byteview;
+                    vector<LiveView> vs;
+                    HeldViews(lp, orig.pointee, false, vs, &site.temps);
+                    for (auto &w : vs) {
+                        for (auto &b : w.p.alts) {
+                            auto x = ls;
+                            x.live = b.root;
+                            x.liveexact = b.exact;
+                            x.pointee = w.pointee;
+                            x.byteview = w.p.byteview;
+                            x.contents = w.contents;
+                            if (x.live) each.push_back(x);
+                        }
+                    }
+                }
+                for (auto &x : each) {
+                    auto r = NoteLiveShrink(x, site.caller);
+                    grew = grew || r > 0;
+                    if (r >= 0) continue;
                     // The array as the caller names it: the shrunk argument's
                     // root, or where that only bounds the array, the view's
                     // own, or else the first array it bounds that the view
                     // may point into.
-                    auto arr = ls.shrunkexact || !ls.liveexact ? ls.shrunk : ls.live;
-                    if (!ls.shrunkexact && !ls.liveexact && !ls.bound && ls.shrunk->type &&
+                    auto arr = x.shrunkexact || !x.liveexact ? x.shrunk : x.live;
+                    if (!x.shrunkexact && !x.liveexact && !x.bound && x.shrunk->type &&
                         site.caller == CurRealFrame().spec) {
                         Roots one;
-                        one.Set(ls.shrunk, false);
-                        for (auto &t : ShrinkTargets(one, LoadType(ls.shrunk->type))) {
+                        one.Set(x.shrunk, false);
+                        for (auto &t : ShrinkTargets(one, LoadType(x.shrunk->type))) {
                             if (t.bound ||
-                                MayAliasRoots(ls.live, false, t.root, true, site.caller) == AL_NO)
+                                MayAliasRoots(x.live, false, t.root, true, site.caller) == AL_NO)
                                 continue;
                             arr = t.root;
                             break;
                         }
                     }
-                    auto what = ls.bound ? cat("an array ", ls.shrunk->name, " leads to")
-                                         : string(arr->name);
+                    auto what = x.bound ? cat("an array ", x.shrunk->name, " leads to")
+                                        : string(arr->name);
                     Error(site.at, cat("cannot call ", site.name, ": it ",
-                                       ls.bound || !shrunk.Exact() ? "may shrink " : "shrinks ",
+                                       x.bound || !shrunk.Exact() ? "may shrink " : "shrinks ",
                                        what, " while ", name, " is still used, and ", name,
-                                       " may refer into ", ls.bound ? "it" : what,
-                                       ls.growonly ? " (§5.1)" : " (§5.2)"));
+                                       " may refer into ", x.bound ? "it" : what,
+                                       x.growonly ? " (§5.1)" : " (§5.2)"));
                 }
-                grew = grew || r > 0;
             }
         }
     }

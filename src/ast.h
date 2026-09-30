@@ -1540,6 +1540,12 @@ struct LiveShrink {
     bool byteview = false;
     bool growonly = false;       // The shrink is §5.1's, else §5.2's.
     string name;                 // What is still used, as the error names it.
+    // What is still used reaches what `live`'s storage holds rather than
+    // that storage: the holder a reference parameter names, or the elements
+    // a slice parameter views, of type `pointee` (§5.1). `live` is a
+    // parameter's class; a call judges where what its argument holds may
+    // point by its record of it (TypeCheck::HeldViews).
+    bool contents = false;
 };
 
 // One return value's reference roots, or for a holder the roots of what it
