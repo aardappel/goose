@@ -281,10 +281,39 @@ inline void CodeGen::EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln) {
     MarkReload();   // The callee grew the builder's stack.
 }
 
+// Where a rendered argument lies: where GenLoc addresses it, but a call's
+// reference result, which the argument decayed to its pointee, is held as
+// the reference and read where it points, as a reference variable is. A
+// format overload taking the value, or a part of it, by reference is given
+// what the reference names, which is where the checker binds it (§3.7,
+// DecayRef's slot), not a copy of it. A varint pointee is rendered as the
+// i64 it decodes to, a value no storage holds.
+inline CodeGen::Loc CodeGen::RenderedLoc(Node *a) {
+    auto c = Is<Call>(a);
+    auto ib = Is<InlineBlock>(a);
+    TypeExpr *rt = nullptr;
+    if (c && !c->rettypes.empty()) rt = c->rettypes[0];
+    else if (ib && ib->spec && ib->spec->rets.size() == 1) rt = ib->spec->rets[0];
+    if (!rt || !IsPlainRef(rt) || IsVarintT(rt->ref->sub)) return GenLoc(a);
+    Loc lv;
+    lv.t = rt;
+    lv.val = true;
+    lv.s = T();
+    if (c) {
+        auto rets = EmitCall(c, Dst {});
+        assert(!rets.empty());
+        L(CT(rt), " ", lv.s, " = ", rets[0], ";");
+    } else {
+        L(CT(rt), " ", lv.s, ";");
+        GenAny(ib, Dst { DK_LVALUE, lv.s, rt });
+    }
+    return lv;
+}
+
 // A value rendered into a builder of its own: the print and str paths.
 inline CodeGen::Loc CodeGen::RenderToTemp(Node *a, Call *c) {
     auto b = TempBuilder();
-    auto lv = GenLoc(a);
+    auto lv = RenderedLoc(a);
     RenderLoc(b, lv, a->exprtype, false, c, a->line);
     return b;
 }
@@ -336,7 +365,7 @@ inline void CodeGen::EmitFormatInto(Loc lv, Node *a, Line ln, Call *c) {
         Loc out = lv;
         out.lenlv = v.lenlv;
         if (out.hdr.empty()) Fail(ln, "internal: format destination without a header");
-        RenderLoc(out, GenLoc(a), t, false, c, ln);
+        RenderLoc(out, RenderedLoc(a), t, false, c, ln);
         return;
     }
     auto bytes = t->kind == TY_ARRAY || t->kind == TY_SLICE;

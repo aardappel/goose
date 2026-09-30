@@ -1611,10 +1611,12 @@ taking a slice by reference is given the slice's slot, which codegen passes
 (`EmitUserFormat`), bound as `RefSliceArgs` binds a slice lvalue
 (`SlotRoots`, `NoteHeld`). Every slice rendered has one (`Val::slot`): the
 variable, field or element it was read from, where a reference argument
-points (`DecayRef`), the part a nested one lies in (a field's struct, an
-element's array or slice, a reference's pointee), as writable as that is,
-and for a value that is no storage a temporary (`CheckPrintable`): a call's
-result, and the value of a control construct or of a function value's call,
+points (`DecayRef`), a reference a call returns included, which codegen
+holds and renders the pointee of (`RenderedLoc`), the part a nested one
+lies in (a field's struct, an element's array or slice, a reference's
+pointee), as writable as that is, and for a value that is no storage a
+temporary (`CheckPrintable`): the value a call returns, and the value of a
+control construct or of a function value's call,
 a copy of what its branch gives even where that names a variable (§4.1),
 which keeps none of that branch's slot (`TempCopy`); a reference parameter
 binds the branch itself instead (§3.12). What the overload stores there

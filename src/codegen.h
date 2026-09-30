@@ -934,6 +934,7 @@ struct CodeGen {
     void RenderN(Loc &out, const string &nexpr);
     void RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call *c, Line ln);
     void EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln);
+    Loc RenderedLoc(Node *a);
     Loc RenderToTemp(Node *a, Call *c);
     void EmitOutArg(Node *a, Call *c);
     string FmtCall(Node *a, const string &dst);
