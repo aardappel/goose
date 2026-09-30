@@ -202,7 +202,10 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         fillcount->exprtype = tc.ast.inttypes[IS_I64];
         TypeCheck::SlotScope ss(tc, true);
         auto ev = tc.CheckValue(fillval, elem);
-        if (!elem) elem = ev.type;
+        if (!elem) {
+            tc.NoUntypedEmptyArray(ev, fillval, "the array literal around it");
+            elem = ev.type;
+        }
         if (cnt) tc.NoteLitElem(deep, fillval, ev, elem);
         if (wantcount >= 0 && cnt != wantcount)
             tc.Error(this, cat("fill count ", cnt, " does not match array size ", wantcount));
@@ -226,7 +229,10 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     for (auto &e : elems) {
         TypeCheck::SlotScope ss(tc, true);   // An element is a slot (§9.5).
         auto ev = tc.CheckValue(e, elem);
-        if (!elem) elem = ev.type;
+        if (!elem) {
+            tc.NoUntypedEmptyArray(ev, e, "the array literal around it");
+            elem = ev.type;
+        }
         tc.NoteLitElem(deep, e, ev, elem);
     }
     if (elem->kind == TY_VOID) tc.Error(this, "cannot infer array element type");
@@ -409,6 +415,8 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
     }
     auto lv = tc.Operand(left);
     auto rv = tc.Operand(right);
+    tc.NoUntypedEmptyArray(lv, left, TName(op));
+    tc.NoUntypedEmptyArray(rv, right, TName(op));
     auto lt = tc.LoadType(lv.type), rt = tc.LoadType(rv.type);
     auto numeric = [](TypeExpr *t) { return IsIntT(t) || t->kind == TY_FLT; };
     if (op == T_EQ || op == T_NEQ) {
@@ -484,6 +492,7 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
                 return tc.CheckVariantConst(this, en);
     }
     auto ov = tc.CheckV(obj, nullptr);
+    tc.NoUntypedEmptyArray(ov, obj, cat(".", name));
     obj->exprtype = ov.type;
     auto t = ov.type;
     if (t->kind == TY_REF) {

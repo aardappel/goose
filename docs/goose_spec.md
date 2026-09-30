@@ -877,14 +877,19 @@ ones, so its right-hand side may not use the array at all (§4.4).
 Literal forms usable in any construction context:
 
 * array literals `[1, 2, 3]`; `[]` where the element type is known from
-  context, or as the whole initializer of a `var` local (`var out = [];`),
-  which makes the local a grow-only `T[>..]` whose `T` is fixed by the first
-  `push`, `append`, `format` or whole assignment into it — a string literal
-  pushed into one makes it a `u8[][>..]` — and must be fixed before the local
-  is otherwise used or its scope ends; `[v; n]` fill form with a non-negative
-  compile-time element count (a constant expression, as a size is: §3.3). `v` is evaluated once, including when `n` is
-  zero, and its value is repeated. Relative links retain their target at
-  every destination; `self` in a literal refers to each constructed element.
+  context — the array type of the variable, parameter, field, element or
+  result it constructs, and never that of an operand, branch or element
+  beside it: `x == []`, `if c { [] } else { x }` with no destination type,
+  and `[[], [1]]` are errors — or as the whole initializer of a `var` local
+  (`var out = [];`), which makes the local a grow-only `T[>..]` whose `T` is
+  fixed by the first `push`, `append`, `format` or whole assignment into it
+  — a string literal pushed into one makes it a `u8[][>..]` — and must be
+  fixed before the local is otherwise used or its scope ends; `[v; n]` fill
+  form with a non-negative compile-time element count (a constant
+  expression, as a size is: §3.3). `v` is evaluated once, including when
+  `n` is zero, and its value is repeated. Relative links retain their
+  target at every destination; `self` in a literal refers to each
+  constructed element.
   A literal whose destination names no array type is a `T[k]`, or a `T[]`
   when its elements are not fixed-size (§3.3). A fixed one may also be a
   temporary for a slice destination, a `for`, `[..]` or `bytes_of` to view;
@@ -1604,16 +1609,20 @@ x } else { 0 }` has `x`'s type, a `u8` for an `x: u8`), and a float literal,
 or a float of literals and integers (§6.3), to an `f32` (`if c { x } else
 { 0.62 }` is an `f32` for an `x: f32`). An integer branch beside a float
 one converts to the float's type (§6.3): `if c { n } else { 0.5 }` is an
-`f64` for an integer `n`. A construct whose branches are all literals is
-itself literal-like, wherever it meets a type, as at a typed destination:
-integer constants adapt to any integer type every one of them fits (`g(if c
-{ 1 } else { 2 })` passes an `i32` to `fn g(x: i32)`, and `(if c { 200 }
-else { 100 }) + b` is a `u8` add for a `b: u8`), and are an `i64` where
-nothing gives them a type; float literals, and floats of literals and the
-integers among them, adapt to either float width (`k(if c { 0.5 } else {
-0.25 })` passes an `f32` to `fn k(x: f32)`), and are an `f64` where nothing
-gives them a type. A break with such a value settles no type for the later
-ones: `loop { if c { break 1; } break 2.5; }` is an `f64`.
+`f64` for an integer `n`. A `[]` branch adapts to no other branch: it takes
+an element type only from a destination (§4.2). A construct whose branches
+are all literals is itself literal-like, wherever it meets a type, as at a
+typed destination: integer constants adapt to any integer type every one of
+them fits (`g(if c { 1 } else { 2 })` passes an `i32` to `fn g(x: i32)`,
+and `(if c { 200 } else { 100 }) + b` is a `u8` add for a `b: u8`), and are
+an `i64` where nothing gives them a type; float literals, and floats of
+literals and the integers among them, adapt to either float width (`k(if c
+{ 0.5 } else { 0.25 })` passes an `f32` to `fn k(x: f32)`), and are an
+`f64` where nothing gives them a type; branches that are all `[]` take the
+array type they meet (`h(if c { [] } else { [] })` passes an `i64[]` to
+`fn h(x: i64[])`), and are an error where nothing gives them one. A break
+with such a number settles no type for the later ones: `loop { if c {
+break 1; } break 2.5; }` is an `f64`.
 A bare `{ … }` in expression position — a match arm of several statements,
 say — is only a scope: `break` inside it still leaves the enclosing loop.
 

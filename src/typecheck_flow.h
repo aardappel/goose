@@ -935,6 +935,13 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
         }
         return ConstsFit(c, o.type->intstorage);
     };
+    // A [] does not adapt to another branch's type as a constant does: only
+    // a destination gives it an element type, and the branches were checked
+    // at that type where there is one.
+    if (a.type && b.type && IsUntypedEmptyArray(a.type) != IsUntypedEmptyArray(b.type) &&
+        wantvalue)
+        Error(at, "cannot infer the element type of []: a [] branch takes none from the other "
+                  "branches (§6.4)");
     int64_t alo, ahi, blo, bhi;
     if (IntConsts(a, alo, ahi) && IntConsts(b, blo, bhi)) {
         v.type = TypeEq(a.type, b.type) ? a.type : ast.inttypes[IS_I64];
@@ -960,6 +967,8 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
         v.contents.Add(ContentsOf(b));
     }
     v.isnull = a.isnull && b.isnull;   // Both null: still a null, which names no root.
+    // Both []: still a [], which takes the array type it meets (§6.4).
+    v.emptyarr = a.emptyarr && b.emptyarr;
     v.storagebranches = a.storagebranches && b.storagebranches;
     v.isvarint = a.isvarint && b.isvarint;
     v.implicitcopy = a.implicitcopy ? a.implicitcopy : b.implicitcopy;
@@ -1759,6 +1768,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         }
     } else {
         auto iv = CheckV(x->iter, nullptr);
+        NoUntypedEmptyArray(iv, x->iter, "a for loop");
         NoTemporaryLiteral(x->iter, iv.type);
         x->iter->exprtype = iv.type;
         auto t = iv.type;
@@ -2030,7 +2040,7 @@ inline void TypeCheck::CheckStmtExpr(Node *n) {
     if (auto x = Is<MatchExpr>(n)) { CheckMatch(x, nullptr, false); n->exprtype = ast.voidtype; return; }
     if (auto x = Is<EarlyBlock>(n)) { CheckEarlyBlock(x, nullptr, false); n->exprtype = ast.voidtype; return; }
     if (auto x = Is<LoopExpr>(n)) { CheckLoop(x, nullptr, false); n->exprtype = ast.voidtype; return; }
-    CheckValue(n, nullptr);
+    NoUntypedEmptyArray(CheckValue(n, nullptr), n, "a statement");
 }
 
 inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
@@ -2173,9 +2183,13 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
                 if (!ann && IsNonFixedLValue(v)) vd->inits[i] = AutoRef(vd->inits[i], v);
             }
         }
-        if (v.emptyarr && !ann) {
+        if (IsUntypedEmptyArray(v.type) && !ann) {
             // `var out = [];` -- a grow-only array whose element type the
             // first push, append or assignment into it supplies (§4.2).
+            if (!Is<ArrayLit>(vd->inits[i]))
+                Error(vd->inits[i], cat("cannot infer the element type of []: only a var whose "
+                                        "whole initializer is [] takes it from what goes into it "
+                                        "first (§4.2); annotate the type of ", vd->names[i]));
             if (!vd->isvar)
                 Error(vd->inits[i], "a let bound to [] can never receive elements; "
                                     "annotate its type, or make it a var");

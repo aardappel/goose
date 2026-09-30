@@ -443,10 +443,17 @@ inline bool TypeCheck::IsPendingArray(TypeExpr *t) {
 }
 
 // An empty array literal's `void[0]`: a [] that nothing gave an element type,
-// or a construct whose branches are all such literals, which keeps the type
-// without Val::emptyarr.
-inline bool TypeCheck::IsUntypedEmptyArray(TypeExpr *t) {
+// or a construct whose branches are all such literals.
+inline bool TypeCheck::IsUntypedEmptyArray(const TypeExpr *t) {
     return t && t->kind == TY_ARRAY && t->arr->akind == A_FIXED && t->arr->sub->kind == TY_VOID;
+}
+
+// A [] that nothing gave an element type, taken by `use`, which gives it none
+// either: only a destination's array type does, or the first push into a
+// `var` it initializes (§4.2).
+inline void TypeCheck::NoUntypedEmptyArray(const Val &v, Node *at, string_view use) {
+    if (IsUntypedEmptyArray(v.type))
+        Error(at, cat("cannot infer the element type of []: ", use, " gives it none (§4.2)"));
 }
 
 // The element type an argument value supplies to a pending array: a

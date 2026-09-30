@@ -74,6 +74,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         }
         case B_QPUT: {
             auto av = CheckValue(args[0], nullptr);
+            NoUntypedEmptyArray(av, args[0], d.name);
             if (av.type->kind == TY_VOID || av.type->kind == TY_FN || !IsFlat(av.type))
                 Error(c, cat("queue elements must be flat (§11.2), not ", TypeStr(av.type)));
             return VoidVal();
@@ -232,6 +233,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             rv = CheckV(args[0], nullptr);
             args[0]->exprtype = rv.type;
         }
+        NoUntypedEmptyArray(rv, args[0], d.name);
         auto rt = rv.type;
         if (IsPlainRef(rt)) {
             rt = rt->ref->sub;
@@ -569,6 +571,7 @@ inline void TypeCheck::CheckPrintable(Call *c, const char *what, vector<Node *> 
                                       const Val *out) {
     auto &a = args[i];
     auto av = CheckValue(a, nullptr);
+    NoUntypedEmptyArray(av, a, what);
     // A value that is no storage -- neither a variable, field or element nor
     // what a reference names -- is rendered from a temporary codegen puts it
     // in (GenLoc), which a format hook taking it by reference is handed,

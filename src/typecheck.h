@@ -634,6 +634,9 @@ struct TypeCheck {
     }
 
     string TypeStr(const TypeExpr *t) {
+        // No program names the type of a [] nothing gave an element type; it
+        // shows as the literal.
+        if (IsUntypedEmptyArray(t)) return "[]";
         string s;
         t->Dump(s);
         return s;
@@ -1031,7 +1034,8 @@ struct TypeCheck {
 
     TypeExpr *PendingArray(Line l);
     bool IsPendingArray(TypeExpr *t);
-    bool IsUntypedEmptyArray(TypeExpr *t);
+    static bool IsUntypedEmptyArray(const TypeExpr *t);
+    void NoUntypedEmptyArray(const Val &v, Node *at, string_view use);
     TypeExpr *PendingElemFrom(const Val &av, Node *at);
     TypeExpr *PendingElemFromSeq(const Val &av, Node *at);
     void CompletePending(TypeExpr *arrt, TypeExpr *elem, Line l);

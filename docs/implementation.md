@@ -407,12 +407,20 @@ already checked and in the literal, since all of them share the one type
 object. A pending array that reaches a scope exit uncompleted is an error.
 Anywhere else a `[]` checked without an array type to take is the
 fixed-size placeholder `void[0]` (`Val::emptyarr`), which a consumer with a
-type checks again at that type. The value of a function value's body
-(`CheckFunValCall`) and a value an omitted result type is taken from
-(`CheckInferredResult`) have no destination to give one, and codegen could
-not build the placeholder, so both reject it, as they do a construct whose
-branches are all such literals, which keeps the type without the flag
-(`IsUntypedEmptyArray`).
+type checks again at that type: an argument at the parameter type overload
+resolution finds for it (`UnifyArg`). A construct whose branches are all
+such literals is one as well (`MergeVals` keeps the flag, as it keeps a
+null's), so it takes a parameter's type too; a `[]` beside a branch of
+another type is an error, since unlike a constant it adapts to none. Codegen
+could not build the placeholder, so every consumer with no type to give
+rejects it (`IsUntypedEmptyArray`, `NoUntypedEmptyArray`): the value of a
+function value's body (`CheckFunValCall`), a value an omitted result type is
+taken from (`CheckInferredResult`), a statement, a binary operator's
+operand, a member, index or slice of it, a `for`'s sequence, a rendered
+value, a member builtin's receiver, `qput`'s element, an element or fill of
+an array literal no destination types, and a variable's initializer other
+than a `var`'s whole `[]`. The others reject it by its type, which a
+diagnostic shows as the literal (`TypeStr`).
 
 **Defaults.** An omitted optional field is null even without an explicit
 default. Other omitted fields need a declared default, unless the literal

@@ -101,6 +101,7 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
 inline TypeCheck::LVal TypeCheck::LValueBase(Node *n, bool cmpview) {
     if (Is<Ident>(n) || Is<Dot>(n) || Is<Index>(n)) return CheckLValue(n);
     auto v = CheckV(n, nullptr);
+    NoUntypedEmptyArray(v, n, "an index, slice or field of it");
     if (!cmpview) NoTemporaryLiteral(n, v.type);
     n->exprtype = v.type;
     LVal lv;
