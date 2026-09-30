@@ -955,6 +955,17 @@ struct TypeCheck {
     void RequireComplete(TypeExpr *t, Line l);
     void ValidateType(TypeExpr *t, Line l, int pos);
 
+    // A reference or slice only refers to its pointee, so building a struct
+    // or enum instance leaves its fields' pointees until the outermost
+    // instance being built is done: an instance still being built is then
+    // always one the type at hand contains by value (§3.4), never one a
+    // reference leads back to, as `enum L { Nil, Cons { next: L? } }` does.
+    int typesbuilding = 0;
+    vector<pair<TypeExpr *, Line>> laterpointees;
+    void BeginTypeBuild() { typesbuilding++; }
+    void EndTypeBuild();
+    void ValidatePointee(TypeExpr *t, Line l);
+
     // ------------------------------------------------------------------
     // Scopes, variables, and flow state (definite assignment + optional
     // narrowing, merged at control-flow joins).

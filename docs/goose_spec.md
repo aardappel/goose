@@ -321,6 +321,14 @@ functions: `a.push(v)` is `push(a, v)`.
 At most one resizable per struct (the tail). (Future extension: two
 resizables with memmove-on-insert semantics, opt-in.)
 
+No type contains itself by value, directly or through what it contains --
+fields, payloads in either ADT mode, variant types, array elements: it
+would be part of itself. It may refer to itself, since a reference or a
+slice is fixed-size whatever it points at: an ADT's payload may link to
+its own ADT or one of its variants, and a type behind a reference may
+contain the type holding the reference (`enum List { Nil, Cons { v: i64,
+next: List? } }`, or `struct A { b: B? }` with `struct B { a: A }`).
+
 ### 3.5 Algebraic data types
 
 ```goose

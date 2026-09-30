@@ -50,6 +50,7 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
     // Placement (§3.4): a resizable field only as the tail, making the
     // struct itself resizable; any variable part makes it variable.
     auto lastreal = LastRealField(st->fields);
+    BeginTypeBuild();
     for (auto i = 0; i < (int)st->fields.size(); i++) {
         if (st->fields[i].ispad) continue;
         auto ft = inst->ftypes[i];
@@ -79,6 +80,7 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
         inst->frameobj = fo;
     }
     inst->validated = true;
+    EndTypeBuild();
     return inst;
 }
 
@@ -101,6 +103,7 @@ inline EnumInst *TypeCheck::GetEnumInst(TypeExpr *t) {
                 inst->vftypes.back().push_back(f.ispad ? nullptr : Subst(f.type));
         }
     });
+    BeginTypeBuild();
     for (size_t vi = 0; vi < en->variants.size(); vi++) {
         auto &v = en->variants[vi];
         auto lastreal = LastRealField(v.fields);
@@ -120,7 +123,22 @@ inline EnumInst *TypeCheck::GetEnumInst(TypeExpr *t) {
         }
     }
     inst->validated = true;
+    EndTypeBuild();
     return inst;
+}
+
+// The outermost instance validates the pointees its build left, and those
+// the instances they build leave in turn, which join the end of the list:
+// it still counts as building, so they wait too.
+inline void TypeCheck::EndTypeBuild() {
+    if (typesbuilding == 1) {
+        for (size_t i = 0; i < laterpointees.size(); i++) {
+            auto [t, l] = laterpointees[i];
+            ValidatePointee(t, l);
+        }
+        laterpointees.clear();
+    }
+    typesbuilding--;
 }
 
 inline TypeCheck::DefaultScope::DefaultScope(TypeCheck &t, FnSpec *env, Line callline) : tc(t) {
@@ -474,16 +492,23 @@ inline void TypeCheck::ValidateType(TypeExpr *t, Line l, int pos) {
             }
             return;
         }
-        case TY_SLICE: ValidateType(t->sub, l, VT_ELEM); return;
-        case TY_REF:
-            // A pool's own type is only known once the globals are
-            // checked; the driver revisits every concrete in-pool type
-            // then, and this catches the ones substitution makes later.
-            if (t->ref->pool && t->ref->pool->type && !HasGenerics(t->ref->sub))
-                ValidatePool(t);
-            ValidateType(t->ref->sub, l, VT_POINTEE);
+        case TY_SLICE: case TY_REF:
+            if (typesbuilding) laterpointees.push_back({ t, l });
+            else ValidatePointee(t, l);
             return;
     }
+}
+
+inline void TypeCheck::ValidatePointee(TypeExpr *t, Line l) {
+    if (t->kind == TY_SLICE) {
+        ValidateType(t->sub, l, VT_ELEM);
+        return;
+    }
+    // A pool's own type is only known once the globals are checked; the
+    // driver revisits every concrete in-pool type then, and this catches the
+    // ones substitution makes later.
+    if (t->ref->pool && t->ref->pool->type && !HasGenerics(t->ref->sub)) ValidatePool(t);
+    ValidateType(t->ref->sub, l, VT_POINTEE);
 }
 
 // ------------------------------------------------------------------
