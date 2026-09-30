@@ -276,17 +276,13 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         EmitVarintStore(stk, GenXD(n, ast.inttypes[IS_I64]));
         return;
     }
-    // A variable array landing in a slot of another length storage takes
-    // the slot's layout: the prefix written here is the destination's,
-    // whatever the expression's own type says.
-    if (want && et && want->kind == TY_ARRAY && want->arr->akind == A_VAR &&
-        et->kind == TY_ARRAY && et->arr->akind == A_VAR &&
-        LenStore(want->arr) != LenStore(et->arr) && TEq(want->arr->sub, et->arr->sub))
-        et = want;
-    // A resizable value landing in a variable-array slot (an element, a
-    // field) takes the slot's layout: its elements behind a length prefix.
-    if (want && et && lenlv.empty() && want->kind == TY_ARRAY && want->arr->akind == A_VAR &&
-        et->kind == TY_ARRAY && IsResz(et) && TEq(want->arr->sub, et->arr->sub))
+    // An array that is not fixed-size landing in a slot of another such array
+    // type (an inlined callee's result reaching the caller's destination,
+    // typed as the callee's, say) takes the slot's layout (§4.2): the
+    // length prefix, capacity or receiving count written here is the
+    // destination's, whatever the expression's own type says.
+    if (want && et && want->kind == TY_ARRAY && IsBytesT(want) && et->kind == TY_ARRAY &&
+        IsBytesT(et) && !TEq(want, et) && TEq(want->arr->sub, et->arr->sub))
         et = want;
     // Any array or slice of the element type landing in a static-capacity
     // limited slot is copied into the slot's C value (§4.2).
@@ -310,6 +306,19 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         auto lv = GenLoc(c->FirstArg());
         if (IsBytesT(target)) ConstructFromLoc(lv, target, stk, lenlv, n->line);
         else EmitValStore(stk, target, LoadLoc(lv, target, n->line));
+        return;
+    }
+    // A fixed-size array or slice landing in a slot of an array type that is
+    // not -- an inlined callee's result again -- is taken as its own type
+    // first, a C value, which checks a limited array's capacity as the
+    // callee's return would, and constructed as the slot's from there.
+    if (want && et && IsFix(et) && (et->kind == TY_ARRAY || et->kind == TY_SLICE) &&
+        want->kind == TY_ARRAY && IsBytesT(want)) {
+        Loc lv;
+        lv.t = et;
+        lv.val = true;
+        lv.s = Snapshot(et, GenXD(n, et));
+        ConstructFromLoc(lv, want, stk, lenlv, n->line);
         return;
     }
     if (auto c = Is<Call>(n)) {
@@ -380,7 +389,14 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         }
         return;
     }
-    if (auto al = Is<ArrayLit>(n)) { GenArrayLit(al, stk, lenlv); return; }
+    if (auto al = Is<ArrayLit>(n)) {
+        // A `[..cap]` literal taking another array type is empty there: built
+        // as its own, which checks the capacity's range, and copied below.
+        if (!al->capexpr || TEq(et, al->exprtype)) {
+            GenArrayLit(al, stk, lenlv, et);
+            return;
+        }
+    }
     if (auto sl = Is<StructLit>(n)) { GenStructLit(sl, stk, lenlv); return; }
     if (auto d = Is<Dot>(n); d && d->variantconst) {
         // A payload-less variant constant in variable mode: just the tag.
@@ -453,15 +469,34 @@ inline void CodeGen::ConstructFromLoc(Loc lv, TypeExpr *et, const string &stk,
     Fail(ln, cat("unsupported construction adaptation to ", Mangle(et)));
 }
 
+// Whether call c, handed a stack slot of type et that counts into lenlv
+// where that is set, builds its bytes-class result of type rt there: in its
+// own layout, which is the slot's where the two are one type, or as the
+// call's convention retargets it -- a resizable's or a variable array's
+// elements as a run counted into lenlv, a variable array behind the slot's
+// length prefix (EmitReprefix), a resizable function result behind a header
+// of its own for the caller to copy, a builtin's behind a variable array's
+// prefix (OpenRzDest, EmitStr). Any other array result (a runtime-capacity
+// limited one, say, or a variable one for such a slot) has a layout the
+// slot does not share.
+inline bool CodeGen::CallBuildsAt(Call *c, TypeExpr *rt, TypeExpr *et, const string &lenlv) {
+    if (rt->kind != TY_ARRAY || et->kind != TY_ARRAY || TEq(rt, et)) return true;
+    auto var = [](TypeExpr *t) { return t->arr->akind == A_VAR; };
+    if (!lenlv.empty()) return IsResz(rt) || var(rt);
+    if (IsResz(rt)) return c->builtin < 0 || var(et);
+    return var(rt) && var(et);
+}
+
 // A call's first result constructed as et at stk's top (see GenConstruct).
 inline void CodeGen::ConstructCall(Call *c, TypeExpr *et, const string &stk, TypeExpr *want,
                                    const string &lenlv) {
     auto rt0 = c->rettypes.empty() ? nullptr : c->rettypes[0];
     // A bytes-class result feeding a fixed-class slot (an array
-    // constructing a static-capacity limited one, §4.2) is built on a
+    // constructing a static-capacity limited one, §4.2), or a slot of an
+    // array kind it cannot be built in (CallBuildsAt), is built on a
     // temporary of its own and copied into the slot below, so the call
     // is not handed the slot's stack to build on.
-    auto own = rt0 && IsBytesT(rt0) && !IsBytesT(et);
+    auto own = rt0 && IsBytesT(rt0) && (!IsBytesT(et) || !CallBuildsAt(c, rt0, et, lenlv));
     auto rets = EmitCall(c, own ? Dst {} : Dst { DK_STACK, stk, want, lenlv });
     if (rets.empty() || IsVoidT(et)) return;
     // A returned reference landing in a relative-reference slot stores the
@@ -482,10 +517,13 @@ inline void CodeGen::ConstructCall(Call *c, TypeExpr *et, const string &stk, Typ
         GenArrayFromLoc(lv, et, stk, c->line, lenlv);
         return;
     }
-    // A reference-returning call decayed to a value here: the callee
-    // did not construct at the destination, so the pointee is constructed
-    // as the slot's type from where it lies.
-    if (rt0 && IsPlainRef(rt0) && IsBytesT(et)) {
+    // A reference-returning call decayed to a value here, or an array or
+    // slice result of another kind than the slot's -- a fixed-size one, which
+    // arrives as a C value, or one built on its own temporary above: the
+    // callee did not construct at the destination, so the value is
+    // constructed as the slot's type from where it lies (§4.2).
+    auto fixarr = rt0 && IsFix(rt0) && (rt0->kind == TY_ARRAY || rt0->kind == TY_SLICE);
+    if (rt0 && IsBytesT(et) && (IsPlainRef(rt0) || fixarr || own)) {
         ConstructFromLoc(CallResLoc(c, rets[0]), et, stk, lenlv, c->line);
         return;
     }
@@ -1027,8 +1065,11 @@ inline void CodeGen::EmitValStoreTag(const string &stk, IntStorage ts, const str
     Bump(stk, cat(IntSize(ts)));
 }
 
-inline void CodeGen::GenArrayLit(ArrayLit *al, const string &stk, const string &lenlv) {
-    auto et = al->exprtype;
+// The literal built as `as` where that is given (GenConstruct's retarget),
+// as its own type otherwise.
+inline void CodeGen::GenArrayLit(ArrayLit *al, const string &stk, const string &lenlv,
+                                TypeExpr *as) {
+    auto et = as ? as : al->exprtype;
     assert(et->kind == TY_ARRAY);
     auto elem = et->arr->sub;
     if (al->capexpr) {

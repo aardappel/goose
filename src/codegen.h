@@ -787,6 +787,7 @@ struct CodeGen {
     void GenConstruct(Node *n, const string &stk, TypeExpr *want = nullptr,
                       const string &lenlv = "");
     void ConstructFromLoc(Loc lv, TypeExpr *et, const string &stk, const string &lenlv, Line ln);
+    bool CallBuildsAt(Call *c, TypeExpr *rt, TypeExpr *et, const string &lenlv);
     void ConstructCall(Call *c, TypeExpr *et, const string &stk, TypeExpr *want,
                        const string &lenlv);
     TypeExpr *AdtFrom(Node *n);
@@ -808,7 +809,8 @@ struct CodeGen {
     void FixedArrayLitAt(ArrayLit *al, const string &base, bool inroot);
     void StructLitAt(StructLit *sl, const string &base, bool inroot);
     void EmitValStoreTag(const string &stk, IntStorage ts, const string &x);
-    void GenArrayLit(ArrayLit *al, const string &stk, const string &lenlv = "");
+    void GenArrayLit(ArrayLit *al, const string &stk, const string &lenlv = "",
+                     TypeExpr *as = nullptr);
     static bool HasSelfInit(StructLit *sl);
     void GenStructLit(StructLit *sl, const string &stk, const string &lenlv = "");
     void GenFrameObjLit(StructLit *sl, StructInst *si, const string &stk, const string &obj);

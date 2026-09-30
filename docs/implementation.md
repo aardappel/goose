@@ -3077,6 +3077,28 @@ or an array of another kind is built as one on a temporary first
 (`ConstructFromLoc`), so the source is read in full before the destination
 changes, even a view into the destination itself.
 
+**Adaptation into variable-size arrays.** Any array or slice of the element
+type constructs a variable, resizable or runtime-capacity limited array too
+(§4.2). A call's fixed-size array or slice result, a C value, is constructed
+from where it lies as the slot's type (`ConstructCall`, `ConstructFromLoc`),
+as a returned reference's pointee is. A variable-size result is handed the
+slot only where the call's convention delivers it in the slot's layout
+(`CallBuildsAt`): its own for the same type, a variable array's elements as
+a run or behind the slot's length prefix (`EmitReprefix`), a resizable
+function result copied from behind a header of its own, and a builtin's
+resizable result behind a variable array's prefix (`EmitStr`,
+`OpenRzDest`). Any other -- a runtime-capacity limited array, a variable array
+for one, `str()` for one -- is built on a temporary of its own and
+constructed from there. An inlined callee's `return` builds its value in the
+caller's slot, typed as the callee's result, and the inliner replaces a call
+whose body only returns a value by that value. `GenConstruct` builds an
+array that is not fixed-size there as the slot's type, an array literal
+included (`GenArrayLit`), and takes a fixed-size array or slice as its own
+type first, a C value, so that a limited array's capacity is checked as the
+callee's return checks it, then constructs the slot's type from that. A `[..cap]`
+literal taking another type is empty: it is built as its own on a temporary,
+which checks the capacity's range, and copied.
+
 **Adaptation into an ADT.** `FitsAt` also lets a variant construct its ADT,
 and an ADT construct itself in its other mode (§3.5); the node then carries
 the ADT's type, and codegen finds the type the value arrives as where it is
