@@ -652,7 +652,9 @@ print(book[0]);                 // error: arrays of variable-size elements
 That is a real restriction, and it is why the array family has both kinds.
 Use variable elements for things you walk (records, parsed nodes, log lines);
 use fixed elements, with a `u8[..k]` for the string part, for things you
-index and sort.
+index and sort. When you need both, keep an index beside the compact array: a
+second array of references to its elements can be indexed and sorted while
+the elements stay packed where they are. Section 10 ends with one.
 
 ---
 
@@ -684,8 +686,8 @@ shapes[2] = Shape.Rect { w: 1.0, h: 1.0 };      // a different variant, in place
 **Variable mode** (`Shape..` — note the trailing dots) gives each value
 exactly its own variant's size: a `Dot` is 1 byte, a `Circle` 9, a `Rect` 17.
 The price is that the elements are packed against each other, so the array is
-sequential and a value can never change variant. In exchange you may take
-references *into* a payload:
+sequential (short of an index you keep beside it, section 10) and a value can
+never change variant. In exchange you may take references *into* a payload:
 
 ```goose
 var packed: Shape..[>..] = [];
@@ -884,6 +886,68 @@ fn is_end(n: Node&) -> bool { n .== pool[head] }
 A node is 8 + 4 + 4 = 16 bytes, against a `std::list` node plus a map node in
 the C++ version of the same thing — which is most of why the `lru` benchmark
 uses 3.2x less memory.
+
+### An index for variable-size elements
+
+Section 8 said an array of variable-size elements can be walked but not
+indexed: where an element starts depends on every element before it. Since
+other arrays can hold links into a pool, you can keep the index yourself — a
+second array with one 4-byte link per element, pushed alongside it:
+
+```goose
+enum Mark {
+    Circle { r: f64 },
+    Rect { w: f64, h: f64 },
+    Label { text: u8[varint] },
+    Dot,
+}
+
+var marks: Mark..[>..] = [];
+var mark_at: (Mark..&<u32 in marks>)[>..] = [];
+
+fn main() {
+    mark_at.push(marks.push(Mark.Label { text: "hello, goose" }));
+    mark_at.push(marks.push(Mark.Circle { r: 1.5 }));
+    mark_at.push(marks.push(Mark.Dot));
+    mark_at.push(marks.push(Mark.Rect { w: 2.0, h: 3.0 }));
+    mark_at.push(marks.push(Mark.Label { text: "x" }));
+    for i in [3, 0, 4, 1, 2] {
+        match mark_at[i] {
+            Circle c => print(i, ": circle ", c.r),
+            Rect r => print(i, ": rect ", r.w, " by ", r.h),
+            Label l => print(i, ": label \"", l.text, "\""),
+            Dot => print(i, ": dot"),
+        }
+    }
+}
+```
+
+```
+3: rect 2 by 3
+0: label "hello, goose"
+4: label "x"
+1: circle 1.5
+2: dot
+```
+
+`push` builds each mark in place at the end of `marks` and returns a reference
+to it; stored in `mark_at`, that reference becomes the mark's offset from the
+base of `marks`. `mark_at[i]` is then a load and an add, in any order.
+
+Look at what `marks` holds. A `Label` is its tag, a one-byte length and its
+text, all inside the element: `hello, goose` makes it 14 bytes, and the next
+mark starts where the text ends. The five marks, strings included, are 44
+bytes in one block, with no pointer and no allocation anywhere. An enum in
+Rust or C++ has one fixed size, so a string variant holds a fixed-size string
+object that keeps whatever text does not fit in it somewhere else, and every
+element is as large as the largest variant. Here each value is exactly as long
+as its contents, and the index still reaches any of them for 4 bytes an
+element.
+
+The array an `in` offset is measured from has to be a global. An array local
+to a function is indexed the same way with plain references,
+`(Mark..&)[>..]`, at 8 bytes an entry.
+[`05_shapes`](../samples/05_shapes.goose) ends with this example.
 
 ---
 
@@ -1412,7 +1476,8 @@ You will meet all of these.
   or a struct of references to them, which is arguably nicer, but it is a
   change.
 * **Arrays of variable-size elements cannot be indexed.** You pick, per
-  container, between "compact and walkable" and "indexable".
+  container, between "compact and walkable" and "indexable", or pay for an
+  index of references beside a compact one (section 10).
 * **A fixed-mode enum cannot be pointed into; a variable-mode one cannot be
   overwritten.** You pick, per use site.
 * **No closures that escape, no function pointers, no dynamic dispatch beyond

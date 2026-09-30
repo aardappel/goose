@@ -160,7 +160,8 @@ That order is **29 bytes and 0 allocations**. As C++ `std::string` +
 `std::vector<Item>` it is 160 bytes and 1 allocation, and as Rust `String` +
 `Vec<Item>` 153 bytes and 4. A whole order book is one array that streams
 through the cache. The price is that an array of variable-size elements is
-sequential: you can iterate it but not index it.
+sequential: you can iterate it but not index it (unless you keep a second
+array of references into it as an index).
 
 ### Enums in two sizes
 
@@ -376,9 +377,9 @@ The [summary](bench/summary.md) explains the gains and losses;
   when it is not, it is a `reusable` pool.
 * Recursive functions cannot keep growable data across a recursive call;
   scratch ends before the call, and what outlives it is passed in as a pool.
-* Arrays of variable-size elements iterate but do not index, a fixed-mode enum
-  cannot be pointed into, and a variable-mode one cannot be overwritten. You
-  choose per container.
+* Arrays of variable-size elements iterate but do not index (short of an index
+  of references kept beside them), a fixed-mode enum cannot be pointed into,
+  and a variable-mode one cannot be overwritten. You choose per container.
 * No escaping closures, no function pointers, no dynamic dispatch beyond ADT
   tags, and whole-program compilation only.
 * A slot handed back to a `reusable` pool and still named reads whatever its

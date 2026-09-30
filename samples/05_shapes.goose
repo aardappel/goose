@@ -2,9 +2,10 @@
 // inheritance, no vtables. The classic shapes example, with the two things
 // that make Goose's version different -- an enum value can be stored
 // *fixed* (every value the size of the largest variant, indexable and
-// overwritable) or *variable* (each value exactly its variant's size,
-// walked sequentially) -- and case functions, which are `match` written as
-// an overload set: the virtual-call idiom.
+// overwritable) or *variable* (each value exactly its variant's size, text
+// included, walked sequentially or reached through an index kept beside the
+// array) -- and case functions, which are `match` written as an overload
+// set: the virtual-call idiom.
 //
 // Build and run (from this directory):
 //   goose -o shapes.c 05_shapes.goose && cl shapes.c && shapes
@@ -55,6 +56,28 @@ fn scaled(s: Shape, k: f64) -> Shape {
     }
 }
 
+// A drawing's marks: shapes, and labels with text. A Label holds its text
+// itself, a varint length and then the bytes, right after the tag, so the
+// marks in a variable-mode array are one flat run of bytes, strings
+// included, with no pointer anywhere. (An enum in Rust or C++ has one fixed
+// size: its string variant would be a fixed-size string object, and every
+// element would be as big as the largest variant.) The text makes Mark a
+// variable-size type, so it is only ever stored in variable mode.
+enum Mark {
+    Circle { r: f64 },
+    Rect { w: f64, h: f64 },
+    Label { text: u8[varint] },
+    Dot,
+}
+
+// Packed marks have no fixed stride, so `marks` cannot be indexed, but an
+// index beside it can be: each entry is one mark's offset from the base of
+// `marks` (`in marks`, 4 bytes), and loading one is an add. The array such
+// offsets are measured from is a global; a local array can be indexed the
+// same way with plain 8-byte references, `(Mark..&)[>..]`.
+var marks: Mark..[>..] = [];
+var mark_at: (Mark..&<u32 in marks>)[>..] = [];
+
 fn main() {
     // --- fixed mode: an ordinary array of enum values ----------------------
     // Each element is 1 tag byte + the largest payload (three f64s): 25 bytes,
@@ -79,9 +102,10 @@ fn main() {
 
     // --- variable mode: each element as big as its own variant -------------
     // A Dot is 1 byte, a Circle 9, a Rect 17: half the memory of the fixed
-    // array for this mix. The price is sequential access: no indexing, and
-    // an element can never change variant, since its neighbors are packed
-    // right behind it. In exchange, references into a payload are allowed.
+    // array for this mix. The price is sequential access: no indexing (short
+    // of keeping an index, below), and an element can never change variant,
+    // since its neighbors are packed right behind it. In exchange, references
+    // into a payload are allowed.
     var packed: Shape..[>..] = [];
     packed.push(Shape.Circle { r: 1.0 });
     packed.push(Shape.Dot);
@@ -100,4 +124,23 @@ fn main() {
     }
     print(dots, " dots, widest rect now ", widest);
     print(packed);
+
+    // --- variable mode with an index: random access ------------------------
+    // push builds each mark in place at the end of `marks` and returns a
+    // reference to it, which the index keeps as that mark's offset.
+    mark_at.push(marks.push(Mark.Label { text: "hello, goose" }));
+    mark_at.push(marks.push(Mark.Circle { r: 1.5 }));
+    mark_at.push(marks.push(Mark.Dot));
+    mark_at.push(marks.push(Mark.Rect { w: 2.0, h: 3.0 }));
+    mark_at.push(marks.push(Mark.Label { text: "x" }));
+    for i in [3, 0, 4, 1, 2] {           // any order; each lookup is one add
+        match mark_at[i] {
+            Circle c => print(i, ": circle ", c.r),
+            Rect r => print(i, ": rect ", r.w, " by ", r.h),
+            Label l => print(i, ": label \"", l.text, "\""),
+            Dot => print(i, ": dot"),
+        }
+    }
+    // A Label is its tag, a 1-byte length and its text: 14 + 9 + 1 + 17 + 3.
+    print(marks.len, " marks in ", bytes_of(marks).len, " bytes");
 }

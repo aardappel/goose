@@ -32,7 +32,7 @@ calls it, so they are compiled and run as part of the test suite.
 | [02_memory](02_memory.goose) | The memory model, made visible: references that survive growth, scope exit as the only free, scratch buffers cleared through a helper, flat nested containers, `copy`, grow-shrink stacks, limited arrays, `reusable` pools. |
 | [03_strings](03_strings.goose) | Strings as `u8` arrays: builders, `str`/`format`, slices as safe views, split/trim/join/find, parsing, sorting slices, UTF-8, inline small strings, a `format` overload. |
 | [04_errors](04_errors.goose) | The three error idioms: a trailing `bool`, an optional narrowed by `if`/`guard`, and `return ... from` for deep failures; `assert`, `abort`, `exit`. |
-| [05_shapes](05_shapes.goose) | Algebraic data types in fixed and variable mode, `match` by value and by reference, case functions as the virtual-call idiom. |
+| [05_shapes](05_shapes.goose) | Algebraic data types in fixed and variable mode, `match` by value and by reference, case functions as the virtual-call idiom; variable-mode values with their text inline, one flat array, reached in any order through an index of 4-byte `in pool` links. |
 | [06_functions](06_functions.goose) | Generics without declaring them, overloading, UFCS, blocks that compile to loops, `return` through a HOF, nested functions with free variables. |
 
 ## Classic algorithms

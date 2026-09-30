@@ -273,7 +273,10 @@ Element restrictions:
 * An array with variable-size elements is *sequential*: it cannot be indexed
   randomly, only iterated / advanced element-by-element (offsets are data-
   dependent). It also has no `pop`-like operations (the start of the last
-  element is not findable).
+  element is not findable). Random access takes an index the program keeps
+  itself: a second array of references to the elements, stored as they are
+  pushed (`T&<u32 in pool>`, 4 bytes each, where the array is a global pool,
+  §3.9).
 
 Growth operations (`push`, `append`, …) exist only on resizable arrays and on
 limited arrays (`[..k]`, `[..]`) up to capacity (exceeding capacity aborts).
