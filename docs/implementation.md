@@ -980,7 +980,9 @@ a merge keeps only where every value it joins names it), and neither does
 one out of a reference or slice variable, which holds what its binding
 says, not what a store put there. The stored alternative's own root bounds
 such a value. `RecordStore` also maintains
-the container's `contents`: the union of every root stored into it so far.
+the container's `contents`: the union of every root stored into it so far,
+one at a parameter's class marked where every store of it there put views
+that class's storage holds (`AddContents`, §3.10 **Class reads**).
 A store into a caller's storage -- through a parameter's class root -- is
 kept on the specialization as a `classevent`, and `ApplyCalleeStores`
 replays it at every call site with the class mapped back to the root it
@@ -1011,10 +1013,12 @@ function's own, or that of the function a function value is handed to),
 the call maps the event onto its arguments in place (`ApplyCalleeStores`),
 and the variable's `contents` with it: the class means nothing once the
 activation has ended, and a merge or a copy of the variable holds what the
-call passed. What the mapping adds reaches the loops around the call
-(`NoteFact`), while the class, as the body recorded it, reaches only the
-loops and rounds of that activation (`ActivationFloor`): a loop calling the
-body checks it again in each pass, whose class is new each time. The events
+call passed, marked where that is one of the views the storage of a class
+of the caller's holds (`AddContents`); no class of the callee's is left
+there, marked or not. What the mapping adds reaches the loops around the
+call (`NoteFact`), while the class, as the body recorded it, reaches only
+the loops and rounds of that activation (`ActivationFloor`): a loop calling
+the body checks it again in each pass, whose class is new each time. The events
 are mapped for one call, so no other call reuses such a check
 (`FnSpec::storesout`). A global's `contents` are left as they are, and so
 is the reuse of a check storing into globals alone: their stores are judged
@@ -1039,8 +1043,10 @@ edge) it replays the record its cycle's previous round made (`RecordOf`,
 Holder values carry their contents' roots as `Val::contents` (§9.2's
 "implicitly generic over the fields' roots"): a literal's are those of its
 reference initializers (`NoteLitElem`, `HolderFromLit`); a variable's are
-its `contents`, unless a loop around the read writes the variable, in which
-case the variable itself is the bound; a container read's are the
+its `contents`, marks included (§3.10 **Class reads**), which hold a loop's
+later stores in its next pass (§3.7), or the variable itself as the bound
+where nothing was stored there yet, and a global's are rooted at the
+globals (the null root, inexact); a container read's are the
 container's roots, inexact, slot reads (§3.10) out of a field or an element,
 as a `for` or `match` binder's copy's, a popped element's and what `append`
 copies out of a slice are, and out of a temporary the temporary's own; a
@@ -1087,18 +1093,17 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   caller's, which the body cannot enumerate: a holder parameter is a local,
   but what it holds its argument filled, and whatever the body copies it
   into holds the same. The class root only bounds it (`RootCandidates`
-  lists it in `bounds`). A holder whose every store on record came out of
-  the storage parameters' classes stand for alone, or put static data
-  there beside one that did, holds views of that storage, and a value read
-  out of it where it is checked (`ReadBackLVal`) is one of them, as one
-  read out of the storage is (`ClassCopyReadBack`, §3.10 **Class
-  reads**) -- where no loop open around the read has the holder declared
-  outside it, since a store later in the body reaches the read on the next
-  iteration, and the loop checks the read again only where that store adds
-  to the holder's `contents` (§3.7), which do not say what came out of the
-  storage, unless it is a by-value binder, which nothing but its binding
-  stores into (`VarDef::copybind`), and not where a `for` loop binds views
-  read out of the holder, whose one read-back stands for every iteration's;
+  lists it in `bounds`). A holder whose `contents` are all views the
+  storage of parameters' classes holds (their mark, §3.10 **Class reads**),
+  or static data beside such views, holds views of that storage, and a
+  value read out of it where it is checked (`ReadBackLVal`) is one of them,
+  as one read out of the storage is (`ClassCopyReadBack`). A store later in
+  a loop body reaches the read on the next iteration, and one of anything
+  else there adds a root to the holder's `contents` or takes the mark off
+  one, which the loop feeds back (§3.7): its next pass checks the read with
+  that store on record. Not where a `for` loop binds views read out of the
+  holder, whose one read-back, made before the body is checked, stands for
+  every iteration's;
 * a container reached through a caller's storage, or itself inexact: the
   container's root, inexact, read out of that container (`RootAlt::from`)
   only where the root is the container itself. Where that container is a
@@ -1187,8 +1192,9 @@ rebind sees, on the second pass, every root the rebind gives the variable,
 and a shrink earlier in the body than a store sees the store on record
 (**Grow-only arrays** below). A fact fed back is noted as it is recorded
 (`NoteFact`: `BindProv`, `CheckRefRebindRoot`, and wherever a store adds to
-a container's `contents`, `RecordStore` and a call's replay of what its
-callee stored, `ApplyCalleeStores`), against
+a container's `contents` or takes a class's mark off them, `AddContents`
+in `RecordStore` and in a call's replay of what its callee stored,
+`ApplyCalleeStores`), against
 every enclosing loop the variable is declared outside of (`LoopPass`); a
 pass that changed none and read no variable before its binding was checked
 against the settled facts, so its errors stood and it was the last. Every
@@ -1591,12 +1597,15 @@ Each keeps the mark at a class only where every value it joins there has it
 (`Roots::Add`, `RecordReturn`): beside a reference into the storage itself
 (`Q { h: ns[1], at: ns[0] }`), or a node loaded through a view read out of
 it, what it holds there is judged by depth as before. A variable's contents
-drop the mark (`RecordStore` leaves it to the event), so a literal
-holding a variable that holds a copy, or a merge of one, is judged by
-depth, but a value read out of a holder of the activation's before
-the shrink, where the holder's record holds such stores alone (`let n =
-ns[1]; let nx = n.next;`), is one of the views the storage holds (§3.6,
-`ClassCopyReadBack`).
+keep the mark at a class where every store of it there put such views
+(`AddContents`: a copy, a `for` or `match` binder's included, a view read
+out of the storage, a value holding either, and a callee's such store as
+its call maps it), so a merge or a literal holding the variable, a copy of
+it, and a value read out of it (`let n = ns[1]; let nx = n.next;`, §3.6,
+`ClassCopyReadBack`) hold views of the storage too. A store of anything
+else there takes the mark away (`Roots::Add`), which a loop around it
+feeds back as it does a new root (§3.7): a read earlier in the body is
+checked again with the store on record.
 
 **Inexact receivers.** Both scans run once per array the shrink may free
 (`ShrinkThrough` over `ShrinkTargets`), one per alternative of the receiver's
@@ -3863,8 +3872,9 @@ specification allows, and the shapes the C backend refuses outright:
   into or, where its contents are one array, a by-value holder parameter,
   and so are a view read out of that storage before the shrink, a holder
   of the activation's keeping one or copied out of that storage, a merge of
-  such copies, a literal holding one, a call's result that is one, and a
-  view read out of such a holder before the shrink (**Class reads**):
+  such copies, a literal holding one, a call's result that is one, each
+  also where a variable holds it, and a view read out of such a holder
+  before the shrink, in a loop too (**Class reads**):
   every store on record there counts, one the callee makes after its
   shrink or into another element too, and a slice of a call's result,
   whose elements nothing records, holds anything. Such a view is still
@@ -3877,14 +3887,11 @@ specification allows, and the shapes the C backend refuses outright:
   if c { a } else { b }`), in a view read out of the storage (`for h in
   hss[0]`) or in what a by-value holder parameter views (`p.hs[0]`), and a
   merge, a literal or a call's result joining such a copy with anything
-  else rooted at the class (`Q { h: ns[1], at: ns[0] }`), or holding a
-  variable that holds one (`Q { h: h }` for `let h = hs[0];`); and a view
-  read out of such a holder where anything else was stored there, where a
-  loop open around the read has the holder declared outside it, a by-value
-  binder aside, since a store later in its body reaches the read on the
-  next iteration, and where a `for` loop binds it (`for w in ws`, `ws`
-  filled with views out of the storage); and so are what a `var`
-  parameter's elements hold while the parameter is still used, what
+  else rooted at the class (`Q { h: ns[1], at: ns[0] }`); and a view read
+  out of such a holder where anything else was stored there, and where a
+  `for` loop binds it (`for w in ws`, `ws` filled with views out of the
+  storage); and so are what a `var` parameter's elements hold while the
+  parameter is still used, what
   a by-value holder parameter's class holds where its contents are not one
   array exactly (`RootArg::heldexact`, never set in a `recursive fn`;
   `emit(buf, P { words: ["x", "y"] })` views a literal, a temporary no

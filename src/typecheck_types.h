@@ -935,9 +935,9 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
             out.Add({ croot, false, from, false, classread });
             continue;
         }
-        // A holder of the activation's whose store record says it holds
-        // only what the storage of parameters' classes holds: one of the
-        // views that storage holds, as a read out of it would be.
+        // A holder of the activation's that holds only what the storage of
+        // parameters' classes holds: one of the views that storage holds, as
+        // a read out of it would be.
         if (!global && inplace && ClassCopyReadBack(croot, out)) continue;
         // Only globals outlive globals (§11.1), so a global container's
         // pointee is owned by a global or by static data, whatever local scope
@@ -966,31 +966,24 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
 }
 
 // Where a reference or slice read out of h, a holder of the activation's
-// named exactly, points by h's store record (§5.1): where every store into
-// h since it was made (LiveEventBase) came out of the storage of a
-// parameter's class alone (StoreEvent::classread), or put static data
-// there beside one that did, h holds views those storages hold, and what
-// is read out of it is one of them, as a read out of the storage itself is
-// (RootAlt::classread), though read out of h (RootAlt::from).
-// No loop open here may have h declared outside it: a store later in its
-// body reaches the read on the next iteration, and the loop checks the read
-// again only where that store adds to h's contents, which do not say what
-// came out of that storage (NoteFact). A by-value binder is stored into by
-// its binding alone (VarDef::copybind). Else false, and the read takes
+// named exactly, points by what h holds (VarDef::contents): where every root
+// stored there since h was made is a class whose storage's views they are
+// (RootAlt::classread, AddContents), or static data beside one, what is
+// read out of h is one of those views, as a read out of the storage itself
+// is, though read out of h (RootAlt::from). A store later in a loop body
+// reaches the read on the next iteration, and a store of anything else
+// there adds a root to h's contents or takes the mark off one, which the
+// loop feeds back: it checks the read again. Else false, and the read takes
 // every candidate.
 inline bool TypeCheck::ClassCopyReadBack(VarDef *h, Roots &out) {
     if (!h->type || IsRefOrSlice(h->type)) return false;
-    for (auto &lp : cur.looppasses)
-        if (!h->copybind && Depth(h) <= lp.scopeidx) return false;
     Roots r;
     auto classes = false;
-    for (auto i = LiveEventBase(h); i < storeevents.size(); i++) {
-        auto &e = storeevents[i];
-        if (e.container != h) continue;
-        if (e.classread) r.Add({ e.src, false, h, false, true });
-        else if (!e.root && !e.src) r.Add({ nullptr, e.exact });
+    for (auto &a : h->contents.alts) {
+        if (a.classread) r.Add({ a.root, false, h, false, true });
+        else if (!a.root) r.Add({ nullptr, a.exact });
         else return false;
-        classes = classes || e.classread;
+        classes = classes || a.classread;
     }
     if (!classes) return false;
     out.Add(r);

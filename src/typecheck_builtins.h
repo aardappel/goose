@@ -1270,8 +1270,7 @@ inline void TypeCheck::RecordStore(VarDef *container, const Roots &roots, bool b
         e.sliceref = sliceref;
         if (fitnode) e.at = fitnode->line;
         AddStoreEvent(e);
-        if (holds && container->contents.Add({ a.root, a.exact, a.from, a.slotread }))
-            NoteFact(container, ActivationFloor(a.root));
+        if (holds) AddContents(container, a, e.classread, e.src);
     }
 }
 
@@ -1337,9 +1336,8 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         e.slot = slot;
         e.sliceref = sliceref;
         container->contentbyteview |= byteview;
-        if (container->type && !IsRefOrSlice(container->type) &&
-            container->contents.Add({ a.root, a.exact, a.from, a.slotread }))
-            NoteFact(container, ActivationFloor(a.root));
+        if (container->type && !IsRefOrSlice(container->type))
+            AddContents(container, a, classread, src);
         AddStoreEvent(e);
     };
     // A class root of the callee, as seen from here (classat), each root
@@ -1383,18 +1381,16 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
     for (auto i = rec->eventstart; i < end; i++) {
         auto e = storeevents[i];
         auto r = mapped(e.root, e.exact);
+        auto src = source(e.src);
+        e.classread = e.classread && IsClassRoot(src);
         Roots own;
         auto x = e.container;
         if (!spec->inprogress && classat(e.root, own) >= 0 && x && x->type &&
             !IsRefOrSlice(x->type) && !x->isglobal && !IsTemp(x) && Depth(x) <= CurDepth()) {
             spec->storesout = true;
             std::erase_if(x->contents.alts, [&](const RootAlt &c) { return c.root == e.root; });
-            for (auto &a : r.alts)
-                if (x->contents.Add({ a.root, a.exact, a.from, a.slotread }))
-                    NoteFact(x, ActivationFloor(a.root));
+            for (auto &a : r.alts) AddContents(x, a, e.classread, src);
         }
-        auto src = source(e.src);
-        e.classread = e.classread && IsClassRoot(src);
         for (size_t k = 0; k < r.alts.size(); k++) {
             auto &a = r.alts[k];
             e.root = a.root;

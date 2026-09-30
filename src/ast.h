@@ -434,13 +434,14 @@ struct RootAlt {
     // value views: one of the views that storage holds, never a reference
     // into it, which `root` only bounds; of a holder's contents, the holder
     // lay in that storage alone, so the references it holds are such views
-    // (TypeCheck::MarkClassCopy). That storage holds what the activation
-    // stored there and what its callers did, which each call judges by its
-    // record of the argument's storage (§5.1). Where a value may also be
-    // anything else rooted at the class -- the storage's own, or whatever
-    // the class bounds -- it is none: a merge keeps it only where every
-    // value has it, and a bound, a reference crossed and a back edge's
-    // result drop it.
+    // (TypeCheck::MarkClassCopy), and of a variable's, every store there at
+    // the class put such views (TypeCheck::AddContents). That storage holds
+    // what the activation stored there and what its callers did, which each
+    // call judges by its record of the argument's storage (§5.1). Where a
+    // value may also be anything else rooted at the class -- the storage's
+    // own, or whatever the class bounds -- it is none: a merge keeps it only
+    // where every value has it, and a bound, a reference crossed and a back
+    // edge's result drop it.
     bool classread = false;
 };
 
@@ -1341,6 +1342,8 @@ struct VarDef {
     // (a struct with a slice field, an array of such): where the references
     // stored into it so far may point, which bounds what a copy of the value
     // may point at (§9.2). Every store into it adds to it; empty until one.
+    // One at a parameter's class is marked where every store of it put views
+    // that class's storage holds (RootAlt::classread).
     Roots contents;
     bool contentbyteview = false; // A stored reference may view raw typed storage.
     // A literal parameter (§7.7): reads as a constant of unknown value.

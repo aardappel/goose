@@ -1391,9 +1391,9 @@ struct TypeCheck {
                          bool slots = false);
 
     bool TempContents(const Val &v, ReadBack &contents);
-    // `inplace`: the read is made where it is checked, so the store record of
-    // a holder of the activation's says what it holds there, loops aside
-    // (ClassCopyReadBack).
+    // `inplace`: the read is made where it is checked, which a loop's passes
+    // check again, so what a holder of the activation's holds so far is what
+    // it holds there (ClassCopyReadBack).
     Roots ReadBackRoot(TypeExpr *rt, const Roots &container, bool byteview = false,
                        const ReadBack *contents = nullptr, bool slotread = false,
                        bool inplace = false);
@@ -1450,6 +1450,21 @@ struct TypeCheck {
         if (!IsClassRoot(v.holderfrom)) return;
         for (auto &a : v.contents.alts)
             if (a.root == v.holderfrom) a.classread = true;
+    }
+    // A store of alternative a into holder x, which the store record says
+    // came out of the storage of parameter class src alone or not
+    // (StoreEvent::classread): x's contents grow by it, which a loop around
+    // the store feeds back (NoteFact), a class of an activation's to that
+    // activation's own loops and rounds (ActivationFloor). They keep the
+    // mark where what x got at the class is one of the views its storage
+    // holds (RootAlt::classread): a view read out of there, a holder holding
+    // such views, or a copy of a holder that lay there alone. A later store
+    // of anything else at the class takes the mark away, which the loop
+    // feeds back as it does a new root (Roots::Add).
+    void AddContents(VarDef *x, const RootAlt &a, bool classread, const VarDef *src) {
+        auto held = a.classread || (classread && src == a.root);
+        if (x->contents.Add({ a.root, a.exact, a.from, a.slotread, held }))
+            NoteFact(x, ActivationFloor(a.root));
     }
     // A container a store record may name as the source of what it stores
     // (StoreEvent::src), one whose stores say what it holds. A temporary was
