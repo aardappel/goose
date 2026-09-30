@@ -1154,6 +1154,12 @@ other way round: a bare name's `LVal::writable` is its *contents'*
 writability, which `&x` and the paths into it inherit, while a write of the
 variable itself (`=`, a compound assignment, `++`/`--`) is left to those two
 rules alone (`WholeWritable`), so a `var s: const u8[:]` re-slices itself.
+A field's or an element's `LVal::writable` is the writability of the path
+to it, which assigning the slot as a whole takes; the contents of one of a
+`const` type other than a slice are read-only however they are reached --
+a step into them (`ResolveMemberLValue`, `CheckLValue`'s index), `&x`
+(`CheckRefOf`), `x[..]`, or its value bound by reference, passed or grown
+(`ContainerRead`) -- as a variable's are.
 `&x` of a `const` value is a `const T&`, a slice of read-only storage is a
 `const T[:]`, a string literal is `const u8[:]`, a `bytes_of` view is never
 writable, and `null` and `default<T>()` count as writable so they fit any

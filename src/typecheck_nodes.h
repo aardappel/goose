@@ -544,6 +544,7 @@ inline Val SliceExpr::Check(TypeCheck &tc, TypeExpr *) {
     v.type = tc.ast.SliceOf(elem, line);
     v.SetProv(lv);
     v.reusable = false;   // A view of a pool is not the pool.
+    if (lv.type->cq) v.writable = false;   // A const field's or element's, as a variable's.
     v.type->cq = !v.writable;   // A slice of read-only storage is a `const T[:]` (§9.5).
     return v;
 }

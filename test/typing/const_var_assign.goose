@@ -2,8 +2,11 @@
 // variable (§9.5): a `var` of a const type is assigned as a whole,
 // compound-assigned and incremented as its binding allows (§4.4), while its
 // elements stay read-only through it. A `const u8[:]` cursor re-slices
-// itself over a string literal.
+// itself over a string literal. A field or an element of a const type is
+// assigned as a whole along its path, and read through `&` of it, a slice
+// of it and by reference (errors_tc/const_field_* write through those).
 struct Named { name: const u8[:] }
+struct Tally { counts: const i64[3] }
 
 var cursor: const u8[:] = "global";
 var level: const i64 = 1;
@@ -85,6 +88,17 @@ fn main_const_var_assign() {
     var r: const i64& = x;
     r .= y;
     print(named.name, " ", views, " ", r);
+    var t = Tally { counts: [1, 2, 3] };
+    t.counts = [4, 5, 6];
+    var rows: (const i64[3])[2] = [[1, 2, 3], [4, 5, 6]];
+    rows[1] = [7, 8, 9];
+    let tr = &t.counts;
+    var total = 0;
+    for &c in t.counts { total += c; }
+    print(tr[2], " ", t.counts[1..], " ", total, " ", first(t.counts), " ", rows[1], " ",
+          &rows[1] .== &rows[1]);
 }
+
+fn first(c: i64[3]&) -> i64 { return c[0]; }
 
 fn main() { main_const_var_assign(); }

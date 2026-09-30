@@ -250,6 +250,10 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
         v.holderset = true;
         v.holderfrom = lv.intemp ? lv.contents.from : HolderSource(lv);
     }
+    // The contents of a slot of a const type are read-only, as a variable's
+    // are (§9.5), where its value is bound by reference, taken as a slice or
+    // grown; the slot itself is assigned as a whole along its path (§4.4).
+    if (!IsRefOrSlice(lv.type) && lv.type->cq) v.writable = false;
     v.lvalue = v.type->kind != TY_REF;
     // A varint is written only at construction (§3.6): a reference to one,
     // which binds as a varint& (StorageType), is read-only, as `&` makes it.
@@ -1300,7 +1304,10 @@ inline Val TypeCheck::CheckRefOf(Unary *x) {
     Val v;
     v.type = ast.RefTo(ast.PlainOf(lv.type), x->line);
     v.SetProv(lv);
-    v.writable = lv.writable && !lv.isvarint;
+    // A field or an element of a const type is as read-only through a
+    // reference as a variable of one (§9.5); a slice's qualifier is about
+    // its elements, not the slot the reference names.
+    v.writable = lv.writable && !lv.isvarint && (lv.type->kind == TY_SLICE || !lv.type->cq);
     // Where the variable is out of sight -- behind a parameter's class, or
     // read back -- a load through the reference has only its writability to
     // go by (SlotView): a slice variable's is no more than its binding's, as
