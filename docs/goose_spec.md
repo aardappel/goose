@@ -388,7 +388,9 @@ decode to `i64`; construction stores accept any integer type except `u64`
 References to `varint` fields are always read-only (§3.8). Such a field is
 still storage of type `varint`, which a `varint&` destination binds without
 `&`, as a reference destination binds any lvalue of its pointee type
-(§4.1); an `i64&` does not bind it, though it reads as an `i64`.
+(§4.1); an `i64&` does not bind it, though it reads as an `i64`. That
+`i64` is no storage, so a format overload taking an `i64` by reference is
+given it in a read-only temporary (§3.7).
 
 ### 3.7 Strings
 

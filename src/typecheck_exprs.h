@@ -655,6 +655,7 @@ inline Val TypeCheck::DecayRef(Val v) {
             r.holderfrom = HolderSource(r);
         }
     }
+    r.isvarint = IsVarintT(v.type->ref->sub);
     return r;
 }
 

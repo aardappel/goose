@@ -4,11 +4,11 @@
 // one whose type argument is a reference, a result, an annotated binding,
 // a reference field, an array literal's element, a push, a `.=` binding
 // and rebind, an identity comparison, and each branch of a construct at
-// such a destination; the field reached through a reference, a nested
-// struct and a variant's payload. Such a reference is read-only. What the
-// field loads is the i64 it decodes to: an un-annotated binding or an
-// untyped parameter takes a copy of that, which is its own variable, and
-// `&` keeps the reference there instead.
+// such a destination, a reference to such a field too; the field reached
+// through a reference, a nested struct and a variant's payload. Such a
+// reference is read-only. What the field loads is the i64 it decodes to:
+// an un-annotated binding or an untyped parameter takes a copy of that,
+// which is its own variable, and `&` keeps the reference there instead.
 struct V { n: varint, w: i64 }
 struct Outer { tag: u8, v: V }
 struct Holder { r: const varint& }
@@ -50,6 +50,8 @@ fn main() {
     print(q, " ", q .== u.n, " ", q .!= v.n, " ", h.r .== q);    // -7000 true true true
     let pick: const varint& = if v.w > u.w { v.n } else { u.n };
     print(pick, " ", pick .== u.n);                              // -7000 true
+    print(byconst(if v.w > u.w { a } else { h.r }), " ",
+          byconst(if v.w < u.w { a } else { h.r }));              // -14000 600
 
     var sh: Shape.. = Shape.Pts { q: 12, k: 3 };
     print(payload(sh));                                          // 15

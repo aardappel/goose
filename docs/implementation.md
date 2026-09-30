@@ -492,6 +492,12 @@ provenance, and, for a reference or slice, the writability its slot gives.
 The load of a `varint` is marked (`Val::isvarint`) and read-only: bound by
 reference it is the `varint&` its storage type makes (`StorageType`, which
 `BindsRef`, `AutoRef`, `FitsAt` and `UnifyArgRaw` bind by), never an `i64&`.
+What a reference to one loads is marked too (`DecayRef`), so a construct
+whose branches are such references binds as `varint&` at a reference
+parameter. Neither is `i64` storage: a format overload taking an `i64` by
+reference is rooted at a read-only temporary (`CheckPrintable`), which
+codegen fills with the decoded value (`EmitUserFormat`). A varint part of
+a printed value keeps its own type, which no `i64` overload takes.
 
 **The statement's operands.** Values evaluated earlier in a statement stay
 live until the operation consuming them ends, and what runs later in the

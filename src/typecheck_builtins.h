@@ -576,6 +576,16 @@ inline void TypeCheck::CheckPrintable(Call *c, const char *what, vector<Node *> 
         av.slot.Set(TempRoot(), true);
         av.hasslot = true;
     }
+    // An i64 read out of varint storage lies in no i64 storage (§3.6): it is
+    // rendered from a temporary holding the i64 the varint decodes to, which
+    // is what a format hook taking an i64 by reference is given
+    // (EmitUserFormat), read-only.
+    if (av.isvarint) {
+        Val tv;
+        tv.type = av.type;
+        tv.Set(TempRoot(), true);
+        av = tv;
+    }
     // Rendered now (HeldOperands).
     auto saverender = tuple(cur.renderarg, cur.renderwhere, cur.rendering);
     cur.renderarg = a;
