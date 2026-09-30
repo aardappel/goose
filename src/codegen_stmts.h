@@ -332,79 +332,99 @@ inline void CodeGen::GenRebind(Assign *a, Loc lv) {
 // Returns: normal, forwarding a multi-value call, exiting an inlined
 // body, and long-distance (§7.9).
 
+// A multi-value call whose results a return forwards (§7.1) into channels of
+// the returned types `rets`: chans[i] is where result i goes -- the stack a
+// bytes-class value is built on (a resizable one's count into its lenlv), or
+// the lvalue a fixed one lands in, a temporary where it names none. A result
+// the checker adapted to its return type (CheckReturn: an integer to a wider
+// type or a float, a variant to its ADT, a reference to its pointee) arrives
+// in the callee's type first and converts into its channel; a variant that
+// is not fixed-size builds its variable-mode ADT in place instead, behind
+// the tag (GenAdtAdapted). Returns each fixed result's C expression, which
+// the caller stores.
+inline vector<string> CodeGen::GenForward(Call *c, const vector<TypeExpr *> &rets,
+                                          const vector<Dst> &chans) {
+    vector<Dst> dsts;
+    vector<Loc> arrived(rets.size());
+    // A tag written ahead of the call sits in front of whatever an exit
+    // taken in the call's arguments builds on its stack (ExitStart).
+    deque<OpenAt> open;
+    for (size_t i = 0; i < rets.size(); i++) {
+        auto ct = c->rettypes[i];
+        if (TEq(ct, rets[i])) {
+            auto d = chans[i];
+            if (d.k == DK_DISCARD) {
+                d = Dst { DK_LVALUE, T() };
+                L(CT(rets[i]), " ", d.s, ";");
+            }
+            dsts.push_back(d);
+            continue;
+        }
+        if (ct->kind == TY_VARIANT && IsBytesT(ct)) {
+            open.emplace_back(*this, chans[i].s);
+            dsts.push_back(VariantBehindTag(ct, rets[i], chans[i]));
+            continue;
+        }
+        auto &lv = arrived[i];
+        string stk;
+        if (IsResz(ct)) {
+            auto h = RzTemp(ct, stk);
+            lv = RzTempLoc(ct, h, stk);
+            dsts.push_back(Dst { DK_STACK, stk, ct, RzLenLv(ct, h) });
+        } else if (IsBytesT(ct)) {
+            lv.t = ct;
+            lv.s = BytesTemp(stk);
+            lv.stk = stk;
+            dsts.push_back(Dst { DK_STACK, stk, ct });
+        } else {
+            lv.t = ct;
+            lv.val = true;
+            lv.s = T();
+            L(CT(ct), " ", lv.s, ";");
+            dsts.push_back(Dst { DK_LVALUE, lv.s, ct });
+        }
+    }
+    auto res = EmitCall(c, dsts[0], &dsts);
+    open.clear();
+    vector<string> vals(rets.size());
+    for (size_t i = 0; i < rets.size(); i++) {
+        auto rt = rets[i];
+        auto r = i < res.size() ? res[i] : string();
+        if (auto lv = arrived[i]; lv.t) {
+            // Where the call left the value (its C result, say).
+            if (!IsResz(lv.t) && !r.empty()) lv.s = r;
+            if (IsBytesT(rt)) ConstructFromLoc(lv, rt, chans[i].s, chans[i].lenlv, c->line);
+            else vals[i] = LoadLoc(lv, rt, c->line);
+        } else if (!IsBytesT(rt)) {
+            vals[i] = !r.empty() ? r : dsts[i].s;
+        }
+    }
+    return vals;
+}
+
 inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
     auto sp = curspec;
     assert(sp);
     auto &si = *curinfo;
     string retv;
-    // A single call forwards all its return values (§7.1). One the checker
-    // adapted to our return type (a variant to its ADT, say) arrives in the
-    // callee's type first and converts into our channel.
+    // A single call forwards all its return values (§7.1).
     if (vals.size() == 1 && sp->rets.size() > 1) {
         if (auto c = Is<Call>(vals[0]); c && c->rettypes.size() == sp->rets.size()) {
-            vector<Dst> dsts;
-            vector<string> tmps(sp->rets.size());
-            vector<Loc> arrived(sp->rets.size());
-            for (size_t i = 0; i < sp->rets.size(); i++) {
-                auto ct = c->rettypes[i];
-                if (!TEq(ct, sp->rets[i])) {
-                    auto &lv = arrived[i];
-                    string stk;
-                    if (IsResz(ct)) {
-                        auto h = RzTemp(ct, stk);
-                        lv = RzTempLoc(ct, h, stk);
-                        dsts.push_back(Dst { DK_STACK, stk, ct, RzLenLv(ct, h) });
-                    } else if (IsBytesT(ct)) {
-                        lv.t = ct;
-                        lv.s = BytesTemp(stk);
-                        lv.stk = stk;
-                        dsts.push_back(Dst { DK_STACK, stk, ct });
-                    } else {
-                        lv.t = ct;
-                        lv.val = true;
-                        lv.s = T();
-                        L(CT(ct), " ", lv.s, ";");
-                        dsts.push_back(Dst { DK_LVALUE, lv.s, ct });
-                    }
-                    continue;
-                }
-                if (IsResz(sp->rets[i])) {
-                    dsts.push_back(Dst { DK_STACK, cat("gs_dst", i), sp->rets[i],
-                                         cat("(*gs_rl", i, ")") });
-                } else if (IsBytesT(sp->rets[i])) {
-                    dsts.push_back(Dst { DK_STACK, cat("gs_dst", i) });
-                } else {
-                    tmps[i] = T();
-                    L(CT(sp->rets[i]), " ", tmps[i], ";");
-                    dsts.push_back(Dst { DK_LVALUE, tmps[i] });
-                }
-            }
+            vector<Dst> chans(sp->rets.size());
             vector<string> starts(sp->rets.size());
-            for (size_t i = 0; i < sp->rets.size(); i++)
-                if (IsBytesT(sp->rets[i]))
-                    starts[i] = ExitStart(c, cat("gs_dst", i), "", 0);
-            auto rets = EmitCall(c, dsts[0], &dsts);
             for (size_t i = 0; i < sp->rets.size(); i++) {
                 auto rt = sp->rets[i];
-                if (auto lv = arrived[i]; lv.t) {
-                    // Where the call left the value (its C result, say).
-                    if (!IsResz(lv.t) && i < rets.size() && !rets[i].empty()) lv.s = rets[i];
-                    auto dst = cat("gs_dst", i);
-                    if (IsResz(rt)) {
-                        ConstructFromLoc(lv, rt, dst, cat("(*gs_rl", i, ")"), c->line);
-                    } else if (IsBytesT(rt)) {
-                        ConstructFromLoc(lv, rt, dst, "", c->line);
-                    } else {
-                        auto x = LoadLoc(lv, rt, c->line);
-                        if ((int)i == si.cret) retv = x;
-                        else L("*gs_r", i, " = ", x, ";");
-                    }
-                    continue;
-                }
-                if (IsBytesT(rt)) continue;
-                auto v = i < rets.size() && !rets[i].empty() ? rets[i] : tmps[i];
-                if ((int)i == si.cret) retv = v;
-                else L("*gs_r", i, " = ", v, ";");
+                auto dst = cat("gs_dst", i);
+                if (IsResz(rt)) chans[i] = Dst { DK_STACK, dst, rt, cat("(*gs_rl", i, ")") };
+                else if (IsBytesT(rt)) chans[i] = Dst { DK_STACK, dst };
+                else continue;
+                starts[i] = ExitStart(c, dst, "", 0);
+            }
+            auto fixed = GenForward(c, sp->rets, chans);
+            for (size_t i = 0; i < sp->rets.size(); i++) {
+                if (IsBytesT(sp->rets[i])) continue;
+                if ((int)i == si.cret) retv = fixed[i];
+                else L("*gs_r", i, " = ", fixed[i], ";");
             }
             for (size_t i = 0; i < sp->rets.size(); i++)
                 if (!starts[i].empty())
@@ -551,18 +571,16 @@ inline void CodeGen::GenFromReturn(Return *r) {
         }
     } else {
         // Forward one call's values into the channels.
-        auto c = Is<Call>(r->vals[0]);
-        vector<Dst> dsts;
+        vector<Dst> chans;
         for (size_t i = 0; i < rets.size(); i++) {
-            if (IsResz(rets[i]))
-                dsts.push_back(Dst { DK_STACK, cat("gs_fdst_", tid, "_", i), rets[i],
-                                     cat("gs_lret_", tid, "_", i) });
-            else if (IsBytesT(rets[i]))
-                dsts.push_back(Dst { DK_STACK, cat("gs_fdst_", tid, "_", i) });
-            else
-                dsts.push_back(Dst { DK_LVALUE, cat("gs_lret_", tid, "_", i), rets[i] });
+            auto stk = cat("gs_fdst_", tid, "_", i), lret = cat("gs_lret_", tid, "_", i);
+            if (IsResz(rets[i])) chans.push_back(Dst { DK_STACK, stk, rets[i], lret });
+            else if (IsBytesT(rets[i])) chans.push_back(Dst { DK_STACK, stk });
+            else chans.push_back(Dst { DK_LVALUE, lret });
         }
-        EmitCallInto(c, dsts);
+        auto fixed = GenForward(Is<Call>(r->vals[0]), rets, chans);
+        for (size_t i = 0; i < rets.size(); i++)
+            if (!fixed[i].empty() && fixed[i] != chans[i].s) L(chans[i].s, " = ", fixed[i], ";");
     }
     assert(curinfo && curinfo->hasrf);
     PropagateReturn(cat(tid));

@@ -524,14 +524,7 @@ inline void CodeGen::GenAdtAdapted(TypeExpr *from, TypeExpr *to, const Dst &d, L
     if (to->enu->varmode) {
         assert(d.k == DK_STACK);
         if (from->kind == TY_VARIANT) {
-            auto ei = EIOf(to);
-            EmitValStoreTag(d.s, TagStore(ei->en),
-                            TagConst(ei, ei->en->VariantIndex(from->var->variant)));
-            // A resizable-class ADT's tail count is the variant's own, or
-            // zero when the variant has no tail.
-            auto rz = IsResz(from);
-            if (!d.lenlv.empty() && !rz) L(d.lenlv, " = 0;");
-            gen(Dst { DK_STACK, d.s, from, rz ? d.lenlv : "" });
+            gen(VariantBehindTag(from, to, d));
             return;
         }
         // The fixed-mode ADT, whose variants are all fixed-size.
@@ -563,6 +556,19 @@ inline void CodeGen::GenAdtAdapted(TypeExpr *from, TypeExpr *to, const Dst &d, L
     auto x = AdaptToFixed(lv, to, ln);
     if (d.k == DK_LVALUE) L(d.s, " = ", x, ";");
     else EmitValStore(d.s, to, x);
+}
+
+// The variant `from` building the variable-mode ADT `to` at d, a stack: the
+// ADT's tag goes in first, and the variant builds behind it where the
+// returned destination says. A resizable-class ADT's tail count is the
+// variant's own, or zero when the variant has no tail.
+inline Dst CodeGen::VariantBehindTag(TypeExpr *from, TypeExpr *to, const Dst &d) {
+    assert(d.k == DK_STACK);
+    auto ei = EIOf(to);
+    EmitValStoreTag(d.s, TagStore(ei->en), TagConst(ei, ei->en->VariantIndex(from->var->variant)));
+    auto rz = IsResz(from);
+    if (!d.lenlv.empty() && !rz) L(d.lenlv, " = 0;");
+    return Dst { DK_STACK, d.s, from, rz ? d.lenlv : "" };
 }
 
 // A call's first result, of the type t it arrives as, into d.

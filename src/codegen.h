@@ -791,6 +791,7 @@ struct CodeGen {
     TypeExpr *AdtFrom(Node *n);
     void GenAdtAdapted(TypeExpr *from, TypeExpr *to, const Dst &d, Line ln,
                        const function<void(const Dst &)> &gen);
+    Dst VariantBehindTag(TypeExpr *from, TypeExpr *to, const Dst &d);
     void GenCallAs(Call *c, TypeExpr *t, const Dst &d);
     void GenArrayFromLoc(Loc lv, TypeExpr *et, const string &stk, Line ln,
                          const string &lenlv = "");
@@ -864,6 +865,7 @@ struct CodeGen {
     // Returns: normal, forwarding a multi-value call, exiting an inlined
     // body, and long-distance (§7.9).
 
+    vector<string> GenForward(Call *c, const vector<TypeExpr *> &rets, const vector<Dst> &chans);
     void GenNormalReturn(const vector<Node *> &vals);
 
     // The bytes a length prefix of this storage reserves ahead of the

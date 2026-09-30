@@ -2659,11 +2659,12 @@ destination `gs_stack *` and, for a resizable, the count out-parameter or
 frame object out-parameter); and `gs_sp` when the function touches stacks.
 The C return value is the first fixed result, even when it is not result
 zero; with none it is `void`.
-A multi-value binding, and a long-distance return forwarding a call, takes
-each fixed result straight into its variable or the target's channel
+A multi-value binding takes each fixed result straight into its variable
 (`EmitCallInto`), except a reference result the checker decayed to a copy of
 its fixed-size pointee (§4.1): that one arrives in a temporary and is loaded
-through it, as the destination's type (`Dst::t`) asks.
+through it, as the destination's type (`Dst::t`) asks. A return forwarding a
+call's results, to the function's caller or to a `return from` target's
+channels, converts each one the checker adapted (`GenForward`, §6.5).
 `CollectSpecs` computes per specialization, to a fixpoint over the call
 graph, the free variables it or its callees need, the stack-owning globals
 it can reach, and whether it needs `gs_sp` at all. A body without it counts
@@ -2779,10 +2780,12 @@ included, and an inlined body arrive as the callee's own type (`AdtFrom`):
 behind its tag, and anything else into a temporary it then converts. The
 inliner keeps the `InlineBlock` of a trivial body whose ADT result changes
 mode for this, as it does for a decayed reference. A multi-value call
-forwarded by `return`, whose values the checker fits to the function's return
-types one by one, delivers each value of another type into a temporary of the
-callee's type, converted from there into the return channel
-(`GenNormalReturn`).
+forwarded by `return` or `return from`, whose values the checker fits to the
+function's return types one by one, delivers each value of another type into
+a temporary of the callee's type, converted from there into the return
+channel (`GenForward`), except a variable-size or resizable variant, which
+builds in the channel behind its variable-mode ADT's tag, as `GenAdtAdapted`
+builds one (`VariantBehindTag`).
 
 **Named results** (`DetectNrvo`, `OpenIbNrvo`): when every `return` of a
 nonfixed result hands back the same top-level local (`NamedResult`), that
