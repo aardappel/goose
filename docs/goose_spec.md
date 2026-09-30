@@ -230,7 +230,16 @@ struct X { a: i8[3], b: i32, c: i64 = 0 }
   constructor's locals or sibling fields. A used default executes at each
   construction, in field order among explicit initializers; it is not a
   cached value. Its effects obey the same rules as an explicit
-  initializer's.
+  initializer's. A default may not lead to a construction that takes it
+  again, of whatever instantiation of its type: one in its own expression
+  (`S { .. }` in `struct S { a: i64 = 1, d: i64 = S { .. }.a }`, a
+  `default<T>()`, a slice pool's allocation, §5.4), or one reached through
+  the defaults those take, the parameter defaults of the calls it makes
+  (§7.1), and the blocks and functions written in it. That would run
+  without end; it is an error even where a condition would end it at run
+  time, since every construction checks the defaults it takes. A
+  construction taking the default again in the body of a function declared
+  outside it, which it calls, makes that function recursive instead (§7.8).
 * Layout is declaration order; variable/resizable fields obey §3.4.
 
 Struct and enum declarations introduce **nominal** types. `type Name = T;`
@@ -1724,7 +1733,9 @@ fn scaled(a: i32, b: i32 = 0, c: f32 = 1.0) -> f32 { ... }   // scaled(2) is sca
   back<T>(x: T, by: T = -1)` takes no `u8`. It decides no type variable
   itself: `fn f<T>(a: i64, b: T = 0)` is called `f<i32>(1)` to leave `b`
   out. Each call leaving a default out checks it there, as the argument
-  written in its place. A
+  written in its place, so a default may not lead to a call that takes it
+  again, as a field default may not lead to a construction that does
+  (§3.2): `fn f(a: i64 = g())` beside `fn g(b: i64 = f())` is an error. A
   named function passed as a static function value keeps its defaults
   (§7.6); a block literal's parameters, a `thread_fn`'s (§11.2) and a
   tag-dispatched call (§8.2) have none.

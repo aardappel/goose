@@ -180,10 +180,11 @@ inline FnSpec *TypeCheck::ParamDefaultEnv(const MatchInfo &mi) {
 // mi resolved c to, in the default's own frame (DefaultScope).
 template<typename F>
 void TypeCheck::InParamDefault(Call *c, const MatchInfo &mi, FnSpec *env, size_t param, F f) {
-    for (auto &fr : frames)
+    EachDefaultInPlace([&](Frame &fr) {
         if (fr.defaultfn == mi.sf && fr.defaultparam == (int)param)
             Error(c, cat("the default of parameter ", mi.sf->params[param].name, " of ",
                          mi.sf->qname, " leads to this call, which takes it again (§7.1)"));
+    });
     DefaultScope ds(*this, env, c->line);
     auto &fr = frames.back();
     fr.defaultfn = mi.sf;

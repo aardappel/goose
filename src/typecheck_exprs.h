@@ -2304,7 +2304,9 @@ inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fi
         if (Is<SelfRef>(fi.val)) CheckSelfInit(fi.val, ft, selft);
         else {
             SlotScope ss(*this, true);
-            auto fv = fi.fromdefault ? CheckDefaultInit(fi.val, ft, selft) : CheckValue(fi.val, ft);
+            auto fv = fi.fromdefault
+                          ? CheckDefaultInit(fi.val, ft, selft, sl, fields[sl->fieldindices[k]])
+                          : CheckValue(fi.val, ft);
             NoteLitElem(deep, fi.val, fv, ft);
         }
     }

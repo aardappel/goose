@@ -206,6 +206,11 @@ struct TypeCheck {
         SFunction *defaultfn = nullptr;
         int defaultparam = -1;
         DeclSite *defaultsite = nullptr;
+        // A field default's (§3.2): the declaration's field, and the literal
+        // taking it, which builds a `defaultowner` (LitTypeStr).
+        const Field *defaultfield = nullptr;
+        const StructLit *defaultlit = nullptr;
+        TypeExpr *defaultowner = nullptr;
         // Calls into a recursive cycle this frame has been inside so far, and
         // where it made the latest (JoinCycle).
         int cyclecalls = 0;
@@ -502,6 +507,12 @@ struct TypeCheck {
                        ", for the call at ", Where(f.callline));
                 continue;
             }
+            if (f.defaultfield) {
+                Append(s, "\n  in the default of field ", f.defaultfield->name, " of ",
+                       LitTypeStr(f.defaultlit, f.defaultowner), ", for the construction at ",
+                       Where(f.defaultlit->line));
+                continue;
+            }
             if (!f.sf || f.isfunval) continue;
             nth++;
             if (chain > MAXCHAIN && nth > MAXCHAIN / 2 && nth <= chain - MAXCHAIN / 2) {
@@ -625,6 +636,14 @@ struct TypeCheck {
     string TypeStr(const TypeExpr *t) {
         string s;
         t->Dump(s);
+        return s;
+    }
+
+    // The type struct or variant literal sl builds, whose value is a `selft`
+    // (an enum for a variant in fixed mode), as a diagnostic names it.
+    string LitTypeStr(const StructLit *sl, const TypeExpr *selft) {
+        auto s = TypeStr(selft);
+        if (selft->kind == TY_ENUM) Append(s, ".", sl->variant->name);
         return s;
     }
 
@@ -920,7 +939,28 @@ struct TypeCheck {
         DefaultScope(TypeCheck &t, FnSpec *env, Line callline);
         ~DefaultScope() { tc.frames.pop_back(); }
     };
-    Val CheckDefaultInit(Node *&n, TypeExpr *ft, TypeExpr *owner);
+    // The frames of the defaults the code checked now runs in, innermost
+    // first: each default's, then that of the construction or call it runs
+    // for; from the body of a function value or nested function, the frame
+    // it was written in; up to the body of a top-level function. Each check
+    // of a default checks anew the defaults of the constructions and calls
+    // in it, and the functions and blocks written in it, so taking a default
+    // of this chain again would be checked without end, as it would run
+    // (§3.2, §7.1). Through a top-level function's body it is a recursion,
+    // which the cache of specializations and their bound (MAXNESTEDSPECS)
+    // keep finite (§7.8).
+    template<typename F> void EachDefaultInPlace(F f) {
+        for (auto i = (int)frames.size() - 1; i > 0;) {
+            auto &fr = frames[i];
+            if (fr.isdefault) {
+                f(fr);
+                i--;
+            } else if (fr.lexframe >= 0) i = min(fr.lexframe, i - 1);
+            else break;
+        }
+    }
+    Val CheckDefaultInit(Node *&n, TypeExpr *ft, TypeExpr *owner, const StructLit *sl,
+                         const Field &field);
     Call *DefaultCall(TypeExpr *t, Line line);
     Node *DefaultValue(TypeExpr *t, Line line);
     SizeClass ClassOf(TypeExpr *t);

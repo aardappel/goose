@@ -165,8 +165,17 @@ inline TypeCheck::DefaultScope::DefaultScope(TypeCheck &t, FnSpec *env, Line cal
 }
 
 // Defaults are checked at their execution sites, after the surrounding
-// globals have initialized, with the actual destination and live values.
-inline Val TypeCheck::CheckDefaultInit(Node *&n, TypeExpr *ft, TypeExpr *owner) {
+// globals have initialized, with the actual destination and live values:
+// that of `field`, for literal sl building an `owner`.
+inline Val TypeCheck::CheckDefaultInit(Node *&n, TypeExpr *ft, TypeExpr *owner,
+                                       const StructLit *sl, const Field &field) {
+    EachDefaultInPlace([&](Frame &fr) {
+        if (fr.defaultfield == &field)
+            Error(sl, cat("the default of field ", field.name, " of ",
+                          LitTypeStr(fr.defaultlit, fr.defaultowner),
+                          " leads to this construction of ", LitTypeStr(sl, owner),
+                          ", which takes it again (§3.2)"));
+    });
     auto t = owner->kind == TY_VARIANT ? owner->var->adt : owner;
     auto env = ast.NewFunValEnv();
     if (t->kind == TY_STRUCT)
@@ -176,6 +185,10 @@ inline Val TypeCheck::CheckDefaultInit(Node *&n, TypeExpr *ft, TypeExpr *owner) 
         BindGenerics(t->enu->en->generics, t->enu->args, "enum", t->enu->en->name,
                      n->line, env->bindings);
     DefaultScope ds(*this, env, Line {});
+    auto &fr = frames.back();
+    fr.defaultfield = &field;
+    fr.defaultlit = sl;
+    fr.defaultowner = owner;
     return CheckValue(n, ft);
 }
 

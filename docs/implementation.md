@@ -428,6 +428,24 @@ when a construction first uses them, not merely on type instantiation.
 A parameter's default is checked in the same kind of frame
 (`DefaultScope`), at each call leaving it out (§3.12).
 
+Each check of a default checks anew what it constructs and calls, with
+their defaults, and the blocks and functions written in it, so a default
+reaching a use of itself there would be checked without end.
+`EachDefaultInPlace` walks the frames of the defaults the current code runs
+in: from a default's frame to the frame of its construction or call, from
+a function value's or nested function's body to the frame it was written
+in (`lexframe`), and no further than a top-level function's body.
+`CheckDefaultInit` rejects a field default (`Frame::defaultfield`, the
+declaration's `Field`, so any instantiation) found there, and
+`InParamDefault` a parameter's (`defaultfn`, `defaultparam`), both naming
+the chain: `InstantiationChain` lists field defaults' frames with the
+literal and the type it builds (`LitTypeStr`), as it lists parameter
+defaults'. Through a top-level function's body a default leading back to
+itself is a recursion (§3.11), which the cache of specializations keeps
+finite, or MAXNESTEDSPECS where every round makes a new one; flagging it
+there would depend on whether the function's body was first checked
+inside the default or before it.
+
 ### 3.3 Values, lvalues, and reference transparency
 
 Every `Check` returns a `Val` (`ast.h`): the type, the constant value where
@@ -2090,8 +2108,9 @@ calling code, and its effects and the values live around it are the
 caller's, as a written argument's are. `DefaultScopeName` rejects a name the
 declaration's own scope would give a parameter, a type parameter bound to a
 function value, or, for a nested function, a variable or function of its
-`DeclSite`; a default leading to a call that takes it again is an error
-rather than an endless check. `CheckCall` erases the inserted defaults
+`DeclSite`; a default leading to a call that takes it again before a
+top-level function's body is an error rather than an endless check
+(`EachDefaultInPlace`, §3.2). `CheckCall` erases the inserted defaults
 before it checks a call again, so every check (an argument's two phases, a
 loop's passes, a cycle's rounds) resolves the call as written; `Call::Clone1`
 drops them, and a diagnostic prints the call without them (`dumpwritten`).
