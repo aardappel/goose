@@ -414,7 +414,11 @@ its pointee and a null optional as `null`; a `u8` array nested inside an
 aggregate is quoted and escaped. A user overload `fn format(out: u8[>..]&,
 v: T)` (taking `T` by value or by reference) renders a `T` through itself
 instead, wherever a `T` occurs in an argument, so a type can choose its own
-text once for all three builtins. The overload is looked up in the
+text once for all three builtins. Taking it by reference, the overload is
+given the storage the `T` lies in, as a reference parameter is (§4.1): the
+variable, field or element holding it, or what a reference argument names,
+as writable as that is (§9.5); a `T` that is no storage lies in a
+temporary, read-only. The overload is looked up in the
 namespace `T` is declared in, then globally (§11.1): rendering follows the
 type, not the namespace of the code printing it. The three builtins
 evaluate and render their arguments in order, each just before its text,

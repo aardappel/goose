@@ -564,6 +564,16 @@ inline void TypeCheck::CheckPrintable(Call *c, const char *what, vector<Node *> 
                                       const Val *out) {
     auto &a = args[i];
     auto av = CheckValue(a, nullptr);
+    // A slice that is no storage is rendered from a temporary, which is the
+    // slot a format hook taking it by reference is given (UserFormatIn), and
+    // read-only, as a view into a temporary is (§9.5): once the optimizer
+    // has inlined a call returning a variable's slice, or folded a branch
+    // choosing one, what is passed is that variable.
+    if (av.type->kind == TY_SLICE && !av.hasslot) {
+        av.slot = Prov {};
+        av.slot.Set(TempRoot(), true);
+        av.hasslot = true;
+    }
     // Rendered now (HeldOperands).
     auto saverender = tuple(cur.renderarg, cur.renderwhere, cur.rendering);
     cur.renderarg = a;
@@ -603,8 +613,12 @@ inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, N
     if (seen.size() == 1 && (t->kind == TY_STRUCT || t->kind == TY_ENUM ||
                              t->kind == TY_VARIANT || t->kind == TY_ARRAY))
         cur.renderwhere = at;
+    // A part lies in the value's storage, or where the value points: a slice
+    // part's slot is the value, as writable as that is (UserFormatIn).
     auto child = [&](TypeExpr *ft, bool throughref) {
         auto v = value;
+        v.hasslot = ft->kind == TY_SLICE;
+        if (v.hasslot) v.slot = value;
         if (throughref) {
             ReadBack contents;
             auto hascontents = TempContents(value, contents);
@@ -659,6 +673,13 @@ inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns,
         argvals[0] = out;
         argvals[0].type = pt0;
         argvals[1] = value;
+        // A reference to a slice takes the slot the slice lies in, which
+        // codegen passes (EmitUserFormat), as a reference parameter takes a
+        // slice lvalue (RefSliceArgs): rooted there, as writable as that is.
+        if (IsPlainRef(pt1) && t->kind == TY_SLICE) {
+            SlotRoots(argvals[1]);
+            NoteHeld(argvals[1], t);
+        }
         argvals[1].type = pt1;
         if (!IsRefOrSlice(pt1)) argvals[1].writable = true; // The hook's own value copy.
         MatchInfo mi;

@@ -1542,7 +1542,19 @@ its pointee, which lies where the reference points). `NoteLiveViews` sees
 both, so a function rendering its parameter around an overload, or after
 one, keeps the pair for its callers (**Parameters' views** above). A callee
 body checked meanwhile starts with an empty path (`CheckSpecBody`): the
-call site applies its summary against the caller's statement.
+call site applies its summary against the caller's statement. An overload
+taking a slice by reference is given the slice's slot, which codegen passes
+(`EmitUserFormat`), bound as `RefSliceArgs` binds a slice lvalue
+(`SlotRoots`, `NoteHeld`). Every slice rendered has one (`Val::slot`): the
+variable, field or element it was read from, where a reference argument
+points (`DecayRef`), the part a nested one lies in (a field's struct, an
+element's array or slice, a reference's pointee), as writable as that is,
+and for a value that is no storage a temporary (`CheckPrintable`). What the
+overload stores there rebinds the caller's variable or is recorded in its
+container (`ApplyCalleeStores`), and it re-points no slot `&` could not
+write. The temporary is read-only (§9.5), since the optimizer may pass
+storage in its place: an inlined call returning a variable's slice, or a
+folded branch choosing one, passes that variable.
 
 **Growth during construction** (§1.3(4), §4.2). A value built in place at an
 array's top or slot is under construction while its expression is checked,
@@ -3447,7 +3459,8 @@ specification allows, and the shapes the C backend refuses outright:
   (§5.12).
 * A slice loaded through a reference-to-slice parameter is a class of its
   own only where the body reaches the argument's slot through references
-  alone (§3.4). Behind a parameter given a field or an element, a slice
+  alone (§3.4). Behind a parameter given a field or an element (a `format`
+  overload's, given a part of what print, str or format renders), a slice
   variable the callee can name -- a global's, or one a nested function or a
   function value handed to it sees -- or a caller's parameter class without
   such a class, and in a `recursive fn`, it is only bounded by the caller's
@@ -3559,11 +3572,15 @@ specification allows, and the shapes the C backend refuses outright:
   binder, a field of a `const` value or of one reached through a `const T&`
   -- write the elements of the slice there, which a copy of the slice can:
   `poke(c.f)` writing `p[0]` is rejected, as `poke(&c.f)` is, and
-  `let t = c.f; t[0] = 65;` is not. A view keys its slice's writability
-  apart already (§3.4): a writable reference beside a read-only view, with a
-  store through the reference allowed to put a read-only slice where the
-  view is read-only, would lift the first where the parameter has one, and a
-  view as writable as the slice, whatever the reference, the second.
+  `let t = c.f; t[0] = 65;` is not. A `format` overload taking a slice by
+  reference is given a read-only temporary for one that is no storage
+  (**Format overloads**), so it cannot write the elements of `g[1..]`
+  either, which it can of a variable holding that slice. A view keys its
+  slice's writability apart already (§3.4): a writable reference beside a
+  read-only view, with a store through the reference allowed to put a
+  read-only slice where the view is read-only, would lift the first where
+  the parameter has one, and a view as writable as the slice, whatever the
+  reference, the second.
 * The growth-during-construction rule (§3.10) takes a parameter class to be
   possibly any global or captured local a callee grows, two classes of one
   activation to be one array unless every call site keeps both concrete and

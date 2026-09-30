@@ -580,6 +580,10 @@ struct Val : Prov {
     // the field or element is in -- which a reference to it is rooted at
     // (TypeCheck::AutoRef), as `&` of the slot is (§3.8), and as writable
     // as that is: as the path to the slot and a variable's binding allow.
+    // A slice loaded through a reference has one too, where the reference
+    // points (TypeCheck::DecayRef), and so does every slice print, str and
+    // format render (CheckPrintable, CheckRenderable); only a format hook
+    // taking it by reference binds those (UserFormatIn).
     Prov slot;
     bool hasslot = false;
     // A reference to a slice passed to a `T[:]&` parameter: the slice its
