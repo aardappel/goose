@@ -246,6 +246,21 @@ Struct and enum declarations introduce **nominal** types. `type Name = T;`
 declares an alias. Generic structs: `struct Pair<T> { a: T, b: T }`,
 monomorphized like functions.
 
+A generic type's instantiations must be finite, as a function's
+specializations must (§7.7). Each instantiation checks its fields' types (a
+variant's payload included), instantiating the types they name, so fields
+that name the declaration again — directly or through other declarations —
+with a larger type argument each round would instantiate without end:
+`struct P<T> { v: T, next: P<T[]>? }` needs a `P<T[]>`, which needs a
+`P<T[][]>`, and so on, whether or not a program ever follows `next`. As for
+polymorphic recursion (§7.8), the compiler rejects an instantiation that
+would make a chain of more than 16 instantiations of one declaration, each
+needed by the one before, naming the first few. Fields naming the
+declaration with the same arguments (`struct L<T> { v: T, next: L<T>? }`),
+or with ones that stop changing, reach an instantiation already made
+instead, so only a type nesting one declaration more than 16 deep in its
+own arguments meets the bound.
+
 ### 3.3 The array family
 
 All array types share element type `T` and differ in how their size behaves
@@ -1958,7 +1973,7 @@ instantiation **with the compile-time call chain** — the whole-program,
 call-graph-order compiler can always show which call path produced the
 failing instantiation. Every instantiation the program reaches is checked, so
 there must be finitely many: a recursive call may not keep making new ones
-(§7.8).
+(§7.8), nor may a generic type's fields (§3.2).
 
 Type variables are never checked abstractly. A generic body is checked only
 at an instantiation where every type is concrete — including the result of

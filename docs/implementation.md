@@ -353,6 +353,15 @@ validate them, and compute the derived properties every later pass reads:
 * concrete field types; defaults are checked at each construction site
   (`CheckDefaultInit`), with declaration-scope bindings and caller effects.
 
+A declaration whose fields name it with a larger type argument each round
+(spec §3.2) would instantiate without end: by value through recursion,
+through a reference through `laterpointees`, which never empties. So the
+chain of instantiations that led to an instance is kept: `typechain` holds
+the types being built, and a waiting pointee the chain it was met on.
+`LimitNestedInsts` refuses an instance whose chain already holds
+`MAXNESTEDSPECS` (16) of its declaration, as `GetOrCreateSpec` does for a
+function (§3.11), naming the first three.
+
 `ValidateType` enforces the placement rules of §3.3/§3.4 per position
 (`ValidPos`): `varint` only in fields, elements and pointees; fixed, limited
 and grow-shrink arrays need fixed-size elements; variable and grow-only

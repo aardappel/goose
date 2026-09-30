@@ -962,6 +962,7 @@ struct TypeCheck {
     StructInst *GetStructInst(TypeExpr *t);
     EnumInst *GetEnumInst(TypeExpr *t);
     void BuildVariant(EnumInst *inst, size_t vi);
+    void LimitNestedInsts(TypeExpr *t);
     // The field runs of a nominal type (ast.h FieldRun), instantiating it
     // as needed; empty for every other kind.
     vector<FieldRun> FieldRuns(TypeExpr *t);
@@ -1043,7 +1044,12 @@ struct TypeCheck {
     // always one the type at hand contains by value (§3.4), never one a
     // reference leads back to, as `enum L { Nil, Cons { next: L? } }` does.
     int typesbuilding = 0;
-    vector<pair<TypeExpr *, Line>> laterpointees;
+    // The types whose instances led to the one being built, outermost
+    // first: those being built, and for a pointee that waited, the ones that
+    // were when it was met (LimitNestedInsts).
+    vector<TypeExpr *> typechain;
+    struct LaterPointee { TypeExpr *t; Line l; vector<TypeExpr *> chain; };
+    vector<LaterPointee> laterpointees;
     void BeginTypeBuild() { typesbuilding++; }
     void EndTypeBuild();
     void ValidatePointee(TypeExpr *t, Line l);
@@ -1817,7 +1823,8 @@ struct TypeCheck {
     // check its body (once) in call-graph order.
 
     // How many specializations of one function may be in progress on one
-    // compile-time call path (§7.8), the way C++ bounds template
+    // compile-time call path (§7.8), and instantiations of one type on one
+    // chain of instantiations (§3.2), the way C++ bounds template
     // instantiation depth: a recursion whose types never repeat would
     // otherwise instantiate without end.
     static constexpr int MAXNESTEDSPECS = 16;

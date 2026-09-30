@@ -31,11 +31,37 @@ inline void TypeCheck::BindGenerics(vector<GenericParam> &generics, vector<TypeE
         out.push_back({ generics[i].name, args[i] });
 }
 
+// A generic type must reach finitely many instantiations (§3.2), but fields
+// naming its declaration again with a larger type argument each round would
+// instantiate it without end, each instance needed by the one before. As for
+// polymorphic recursion (§7.8), t's instance is refused where the chain of
+// instantiations that led to it holds MAXNESTEDSPECS of its declaration.
+inline void TypeCheck::LimitNestedInsts(TypeExpr *t) {
+    auto decl = [](TypeExpr *x) -> const void * {
+        return x->kind == TY_STRUCT ? (const void *)x->struc->st : x->enu->en;
+    };
+    vector<TypeExpr *> nested;
+    for (auto c : typechain) if (decl(c) == decl(t)) nested.push_back(c);
+    if ((int)nested.size() < MAXNESTEDSPECS) return;
+    string s = "instantiating ";
+    DumpShort(s, t);
+    Append(s, " would chain more than ", MAXNESTEDSPECS, " instantiations of ",
+           t->kind == TY_STRUCT ? t->struc->st->qname : t->enu->en->qname,
+           ", each needed by the one before (");
+    for (auto j = 0; j < 3; j++) {
+        DumpShort(s, nested[j]);
+        s += ", ";
+    }
+    s += "...): a generic type must reach a finite set of instantiations (§3.2)";
+    Error(t->line, s);
+}
+
 inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
     auto st = t->struc->st;
     if (t->struc->inst) return t->struc->inst;
     for (auto inst : st->insts)
         if (TypeArgsEq(inst->args, t->struc->args)) return t->struc->inst = inst;
+    LimitNestedInsts(t);
     auto inst = ast.NewStructInst();
     inst->st = st;
     inst->args = t->struc->args;
@@ -50,6 +76,7 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
     // Placement (§3.4): a resizable field only as the tail, making the
     // struct itself resizable; any variable part makes it variable.
     auto lastreal = LastRealField(st->fields);
+    typechain.push_back(t);
     BeginTypeBuild();
     for (auto i = 0; i < (int)st->fields.size(); i++) {
         if (st->fields[i].ispad) continue;
@@ -80,6 +107,7 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
         inst->frameobj = fo;
     }
     inst->validated = true;
+    typechain.pop_back();
     EndTypeBuild();
     return inst;
 }
@@ -89,6 +117,7 @@ inline EnumInst *TypeCheck::GetEnumInst(TypeExpr *t) {
     if (t->enu->inst) return t->enu->inst;
     for (auto inst : en->insts)
         if (TypeArgsEq(inst->args, t->enu->args)) return t->enu->inst = inst;
+    LimitNestedInsts(t);
     auto inst = ast.NewEnumInst();
     inst->en = en;
     inst->args = t->enu->args;
@@ -104,9 +133,11 @@ inline EnumInst *TypeCheck::GetEnumInst(TypeExpr *t) {
         }
     });
     inst->vbuilt.assign(en->variants.size(), 0);
+    typechain.push_back(t);
     BeginTypeBuild();
     for (size_t vi = 0; vi < en->variants.size(); vi++) BuildVariant(inst, vi);
     inst->validated = true;
+    typechain.pop_back();
     EndTypeBuild();
     return inst;
 }
@@ -144,8 +175,10 @@ inline void TypeCheck::BuildVariant(EnumInst *inst, size_t vi) {
 inline void TypeCheck::EndTypeBuild() {
     if (typesbuilding == 1) {
         for (size_t i = 0; i < laterpointees.size(); i++) {
-            auto [t, l] = laterpointees[i];
+            auto [t, l, chain] = laterpointees[i];
+            swap(typechain, chain);
             ValidatePointee(t, l);
+            swap(typechain, chain);
         }
         laterpointees.clear();
     }
@@ -527,7 +560,7 @@ inline void TypeCheck::ValidateType(TypeExpr *t, Line l, int pos) {
             return;
         }
         case TY_SLICE: case TY_REF:
-            if (typesbuilding) laterpointees.push_back({ t, l });
+            if (typesbuilding) laterpointees.push_back({ t, l, typechain });
             else ValidatePointee(t, l);
             return;
     }
