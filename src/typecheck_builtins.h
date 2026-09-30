@@ -400,7 +400,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             Error(c, cat(".index_of needs fixed-size elements: ", TypeStr(rv.type),
                          " is sequential (§3.3)"));
         auto av = CheckV(args[1], nullptr);
-        if (av.lvalue && av.type->kind != TY_REF && TypeEq(av.type, elem))
+        if (av.lvalue && av.type->kind != TY_REF && TypeEq(StorageType(av), elem))
             args[1] = AutoRef(args[1], av, false);
         else if (UserRefOf(args[1]))
             Warn(args[1], cat("redundant &: ", ExprStr(Is<Unary>(args[1])->child),
@@ -408,7 +408,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         args[1]->exprtype = av.type;
         if (!IsPlainRef(av.type) || !TypeEq(av.type->ref->sub, elem))
             Error(c, cat(".index_of takes a reference to an element of ", TypeStr(rv.type),
-                         ", got ", TypeStr(av.type)));
+                         ", got ", TypeStr(StorageType(av))));
         CheckRootedAtReceiver(c, d.name, rv, av, "a reference", "§3.3");
     }
     // A slice pool's operations (§5.4). A slice handed back must be one of

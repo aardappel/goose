@@ -382,7 +382,10 @@ its containing value; changing it means reconstructing the container. Reads
 decode to `i64`; construction stores accept any integer type except `u64`
 (a varint holds exactly the `i64` value range). A struct containing
 `varint` fields is variable-class.
-References to `varint` fields are always read-only (§3.8).
+References to `varint` fields are always read-only (§3.8). Such a field is
+still storage of type `varint`, which a `varint&` destination binds without
+`&`, as a reference destination binds any lvalue of its pointee type
+(§4.1); an `i64&` does not bind it, though it reads as an `i64`.
 
 ### 3.7 Strings
 

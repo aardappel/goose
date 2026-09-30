@@ -251,6 +251,12 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
         v.holderfrom = lv.intemp ? lv.contents.from : HolderSource(lv);
     }
     v.lvalue = v.type->kind != TY_REF;
+    // A varint is written only at construction (§3.6): a reference to one,
+    // which binds as a varint& (StorageType), is read-only, as `&` makes it.
+    if (IsVarintT(lv.type)) {
+        v.isvarint = true;
+        v.writable = false;
+    }
     return v;
 }
 
@@ -666,7 +672,7 @@ inline Node *TypeCheck::AutoRef(Node *n, Val &v, bool writes) {
     auto u = ast.New<Unary>(n->line, T_BITAND, n);
     u->synth = true;
     SlotRoots(v);
-    v.type = ast.RefTo(ast.PlainOf(v.type), n->line);
+    v.type = ast.RefTo(ast.PlainOf(StorageType(v)), n->line);
     v.type->cq = !v.writable;   // The reference carries a const value's qualifier.
     v.lvalue = false;
     u->exprtype = v.type;
@@ -691,9 +697,16 @@ inline void TypeCheck::SlotRoots(Val &v) {
         if (auto sv = SliceVarOf(a.root)) sv->slotref = true;
 }
 
+// The type of the storage lvalue v denotes, which a reference to it points
+// at: its value's, but for varint storage, whose value is the i64 it
+// decodes to (§3.6).
+inline TypeExpr *TypeCheck::StorageType(const Val &v) {
+    return v.lvalue && v.isvarint ? ast.inttypes[IS_VARINT] : v.type;
+}
+
 inline bool TypeCheck::BindsRef(const Val &v, TypeExpr *dt) {
     return dt->kind == TY_REF && v.lvalue && v.type->kind != TY_REF && !v.isnull &&
-           TypeEq(v.type, dt->ref->sub);
+           TypeEq(StorageType(v), dt->ref->sub);
 }
 
 inline bool TypeCheck::IsNonFixedLValue(const Val &v) {
@@ -904,7 +917,8 @@ inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt) {
     fitnode = n;
     if (!FitsAt(v, dt)) {
         if (!fitfail.empty()) Error(n, fitfail);
-        Error(n, cat("expected a value of type ", TypeStr(dt), ", got ", TypeStr(v.type),
+        auto got = dt->kind == TY_REF ? StorageType(v) : v.type;
+        Error(n, cat("expected a value of type ", TypeStr(dt), ", got ", TypeStr(got),
                      v.type->kind == TY_INT && dt->kind == TY_INT
                          ? " (narrowing and sign changes require an explicit `as`)"
                      : v.type->kind == TY_FLT && dt->kind == TY_INT
@@ -925,7 +939,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
     // a `const T&` where the lvalue is read-only (§9.5).
     if (BindsRef(v, dt)) {
         SlotRoots(v);
-        t = v.type = ast.RefTo(ast.PlainOf(t), dt->line);
+        t = v.type = ast.RefTo(ast.PlainOf(StorageType(v)), dt->line);
         v.type->cq = !v.writable;
         v.lvalue = false;
     }

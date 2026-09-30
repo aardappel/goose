@@ -576,6 +576,9 @@ struct Val : Prov {
     bool litint = false;
     int64_t litlo = 0, lithi = 0;
     bool lvalue = false;         // Denotes storage (a variable, field or element), not a temporary.
+    // An lvalue of varint storage (§3.6): its value is the i64 the varint
+    // decodes to, while a reference to it is a read-only varint& (§3.8).
+    bool isvarint = false;
     // A slice lvalue: where its slot lies -- the variable, or the storage
     // the field or element is in -- which a reference to it is rooted at
     // (TypeCheck::AutoRef), as `&` of the slot is (§3.8), and as writable

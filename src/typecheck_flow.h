@@ -2107,7 +2107,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
                 // other un-annotated initializer decays to the pointee.
                 v = CheckV(vd->inits[i], nullptr);
                 vd->inits[i]->exprtype = v.type;
-                if (IsPlainRef(v.type) && ClassOf(v.type->ref->sub) != SC_FIXED)
+                if (IsNonFixedRef(v))
                     Warn(vd->inits[i], cat("redundant &: ", ExprStr(refinit->child),
                                            " binds by reference without it (§4.1)"));
             } else {

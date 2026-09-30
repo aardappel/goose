@@ -1328,6 +1328,7 @@ struct TypeCheck {
     void SlotRoots(Val &v);
     void NoteWritableRef(VarDef *d, Node *at);
     VarDef *RelyOnNonneg(const Val &v, Node *at);
+    TypeExpr *StorageType(const Val &v);
     bool BindsRef(const Val &v, TypeExpr *dt);
     bool IsNonFixedLValue(const Val &v);
     bool IsNonFixedRef(const Val &v);

@@ -158,7 +158,7 @@ inline void TypeCheck::RefArg(Node *&a, Val &v) {
     // A resizable without a header of its own (C.2) stays a value, which a
     // slice parameter still takes whole.
     if (IsNonFixedLValue(v) && !v.storagebranches && Referenceable(a, v)) a = AutoRef(a, v);
-    else if (UserRefOf(a) && IsPlainRef(v.type) && ClassOf(v.type->ref->sub) != SC_FIXED)
+    else if (UserRefOf(a) && IsNonFixedRef(v))
         Warn(a, cat("redundant &: ", ExprStr(Is<Unary>(a)->child),
                     " is passed by reference without it (§4.1)"));
 }
@@ -324,11 +324,13 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         for (size_t i = 0; i < best.paramtypes.size(); i++) {
             UnrefForValueParam(argnodes[i], best.paramtypes[i]);
             // A `&` at a parameter declared as a reference is redundant
-            // (§4.1) -- unless it picked this overload.
+            // (§4.1) -- unless it picked this overload. RefArg has warned
+            // of one to a value that is not fixed-size; a varint's is the
+            // i64 it decodes to (§3.6).
             auto &p = best.sf->params[i];
             if (i < best.nwritten && UserRefOf(argnodes[i]) && cands.size() == 1 && p.type &&
                 !HasGenerics(p.type) && p.type->kind == TY_REF &&
-                ClassOf(p.type->ref->sub) == SC_FIXED)
+                ClassOf(LoadType(p.type->ref->sub)) == SC_FIXED)
                 Warn(argnodes[i], cat("redundant &: ", ExprStr(Is<Unary>(argnodes[i])->child),
                                       " is passed by reference without it (§4.1)"));
             if (i < best.nwritten) CheckArg(argnodes[i], best.paramtypes[i]);
@@ -576,8 +578,10 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
             }
             auto ct = UnifyArg(p.type, av, mi.bindings, mi.tier);
             if (!ct) {
-                why = cat("argument ", (int64_t)i + 1, ": cannot pass ", TypeStr(av.type),
-                          " as ", TypeStr(p.type));
+                auto st = SubstOwn(p.type, mi.bindings);
+                auto at = st && st->kind == TY_REF ? StorageType(av) : av.type;
+                why = cat("argument ", (int64_t)i + 1, ": cannot pass ", TypeStr(at), " as ",
+                          TypeStr(p.type));
                 return false;
             }
             mi.paramtypes[i] = ct;
@@ -686,7 +690,7 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
     if ((av.lvalue || av.storagebranches) && pt->kind == TY_REF && pt->ref->lenstorage < 0 &&
         av.type->kind != TY_REF) {
         Val rv = av;
-        rv.type = ast.RefTo(av.type, pt->line);
+        rv.type = ast.RefTo(StorageType(av), pt->line);
         rv.lvalue = false;
         return UnifyArgRaw(pt, rv, b, tier);
     }

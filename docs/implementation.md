@@ -486,6 +486,9 @@ it notes (`Prov::reached`, §3.5), as a slice crossed notes its element type
 load type (`LoadType`: `varint` decodes to `i64`, a relative reference loads
 as a plain one, a `const` value loads as a plain copy), the read-back
 provenance, and, for a reference or slice, the writability its slot gives.
+The load of a `varint` is marked (`Val::isvarint`) and read-only: bound by
+reference it is the `varint&` its storage type makes (`StorageType`, which
+`BindsRef`, `AutoRef`, `FitsAt` and `UnifyArgRaw` bind by), never an `i64&`.
 
 **The statement's operands.** Values evaluated earlier in a statement stay
 live until the operation consuming them ends, and what runs later in the
