@@ -1,7 +1,7 @@
 // error: type parameter N is bound to the type i64, not a value
 // A typed for loop's end is probed for a literal one past its binder's
-// largest value (§6.5) only where no type parameter hides the global N,
-// whose -N a u8 could not compute (§11.1).
+// largest value (§6.5) only where it names nothing, so never as the global
+// N a type parameter hides, whose -N a u8 could not compute (§11.1).
 let N: u8 = 3;
 
 fn f<N>(x: N) -> i64 {

@@ -2394,12 +2394,13 @@ bounds values of it (`CheckValue`) and a count a value fitted to it
 counts at, which is the binder's but for an end one past the type's
 largest value, a literal (`pastend`): that loop counts at i64 and binds the
 binder to a copy of the counter each iteration (`ForLoop::CgStmt`), which
-cannot overflow at the end. `pastend` does not evaluate an end naming a
-local, a type parameter or a nested function (`ConstExprNames`,
-`LookupVar`, `ScopeNameKind`): `ConstIntValue` would take the global the
-name hides, and could fail on its value. A typed index binder (`idxtype`)
-must hold every index the sequence can have, and is likewise a copy of the
-i64 index.
+cannot overflow at the end. `pastend` does not evaluate an end naming
+anything (`ConstExprNames`), a name being no literal: `ConstIntValue` would
+fold the global of each name, which a local, a type parameter or a nested
+function of the name may hide, and fail on a signed overflow or a division
+by zero that the end's own check, as any expression's, leaves to run time
+(§6.2). A typed index binder (`idxtype`) must hold every index the sequence
+can have, and is likewise a copy of the i64 index.
 
 **Redundant casts** (§6.3) are judged as the checker goes, check by check.
 `AsCast::Check` follows a cast (`NoteCast`) where its operand converts to

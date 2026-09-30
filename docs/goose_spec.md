@@ -1688,6 +1688,9 @@ Built-in iteration only (no iterator protocol):
   `n: i64`, `for i: i32 in 0..n` is an error asking for `n as i32`. The end
   may be one past `T`'s largest value, where `T` is narrower than 64 bits:
   `for i: u8 in 0..256` visits every `u8`, its counter never overflowing.
+  Such an end is written with literals alone (`256`, `255 + 1`): an end
+  naming a constant is a value of `T` as any bound is, computed at run
+  time as the same expression is anywhere (§6.2).
 * `for i in n` — sugar for `0..n`; `i` has `n`'s type. `for i: T in n` is
   `for i: T in 0..n`.
 * `for x in arr` — element copies for fixed-size elements, at the element's
