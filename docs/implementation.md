@@ -309,7 +309,9 @@ ten and counts the rest.
 `const` qualifier of §9.5 and is part of type identity (`TypeEq`), except
 where a parameter or result is compared (`TopConstEq`: constness of the
 type itself is inferred per instantiation, constness nested deeper is part
-of the type). `Subst` substitutes generic names through the lexical binding
+of the type) and where a value other than a reference or slice is stored
+whole (`FitsAt`: the slot's type says whether its contents are read-only).
+`Subst` substitutes generic names through the lexical binding
 chain (`LookupBinding`: the current specialization, then its lexical
 parents), collapsing a reference built on a type argument that is itself
 one: `T?` makes it optional and `T&` is it, loaded where relative (no

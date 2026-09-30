@@ -1069,7 +1069,11 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
                               fitnode ? fitnode->line : Line {});
         }
     }
-    if (TypeEq(t, dt)) { v.type = dt; return true; }
+    // A value other than a reference or slice is stored whole, so whether
+    // its contents are read-only is for the slot's type to say (§9.5):
+    // `const` is added implicitly, and a copy of a const value is a fresh
+    // one. A reference's or slice's own qualifier is about its pointee.
+    if (IsRefOrSlice(dt) ? TypeEq(t, dt) : TopConstEq(t, dt)) { v.type = dt; return true; }
     switch (dt->kind) {
         case TY_INT:
             if (t->kind != TY_INT) return false;

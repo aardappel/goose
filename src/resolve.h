@@ -17,7 +17,9 @@ inline void ResolveTypeNames(Ast &ast) {
         };
     };
 
-    // Classify every parsed name that is not an alias use.
+    // Classify every parsed name that is not an alias use. A name's detail
+    // may be shared with a `const` copy of its node (Ast::ConstOf), which is
+    // classified on its own, so the arguments are copied out of it.
     for (auto t : ast.alltypes) {
         if (t->kind != TY_UNRESOLVED) continue;
         auto nm = t->named;
@@ -26,13 +28,13 @@ inline void ResolveTypeNames(Ast &ast) {
                 ErrorAt(t, cat("struct ", nm->name, " has no variable mode (.. applies to enums)"));
             auto d = ast.NewDetail<TypeStruct>();
             d->st = s;
-            d->args = std::move(nm->args);
+            d->args = nm->args;
             t->kind = TY_STRUCT;
             t->struc = d;
         } else if (auto e = ast.LookupEnum(nm->name, nm->ns)) {
             auto d = ast.NewDetail<TypeEnum>();
             d->en = e;
-            d->args = std::move(nm->args);
+            d->args = nm->args;
             d->varmode = nm->varmode;
             t->kind = TY_ENUM;
             t->enu = d;
