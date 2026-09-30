@@ -1346,10 +1346,14 @@ struct VarDef {
     // makes the other an error (TypeCheck::RelyOnNonneg, NoteWritableRef).
     // The first balanced resize back to it as a mark (§5.2) relies on it
     // too, but a resize after the reference is merely unbalanced
-    // (TypeCheck::ResizesToMark). Like `captured`, they outlast a re-check
-    // of the variable's scope.
+    // (TypeCheck::ResizesToMark). So does the first compile-time size, fill
+    // count or match pattern taking a global at its initializer's value, as
+    // a named constant (§11.1, TypeCheck::RelyOnConstant); `constwhat` says
+    // which. Like `captured`, they outlast a re-check of the variable's scope.
     Node *nonneguse = nullptr;
     Node *markuse = nullptr;
+    Node *constuse = nullptr;
+    const char *constwhat = nullptr;
     Node *refwrite = nullptr;
     // A slice variable a reference to whose slot has been made (§3.8), so
     // that a reference read out of storage, or a parameter's class, may name

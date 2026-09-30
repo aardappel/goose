@@ -2208,7 +2208,15 @@ checker folds constants at the operands' type (`FoldInt`, over the shared
 a signed result that leaves the type is left unfolded for the runtime to
 abort on or wrap; a constant zero divisor is an error here rather than an
 abort); `ConstIntValue` evaluates the constant expressions of array sizes,
-fill counts and match arms through `let` globals and arithmetic.
+fill counts and match arms through `let` globals and arithmetic. Given the
+use it evaluates for (`ConstUse`: `ConstIntOrError` and a match's
+`PatternValue` pass one, a `for` range's probe for a literal end does
+not), it marks every global it takes at its initializer's value, through
+other globals' initializers too, as relied on (`RelyOnConstant`,
+`constuse`), which `NoteWritableRef` checks as it does `nonneguse`:
+whichever of the two marks comes second is an error (§11.1). An array
+size is evaluated once per type and cached (`ArraySize`), which the
+flow-free marks do not mind.
 
 Integers become floats (§6.3) in a node of their own: `ToFloat` wraps the
 integer expression in an implicit `AsCast` wherever a destination

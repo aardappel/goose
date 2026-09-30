@@ -632,20 +632,33 @@ struct TypeCheck {
     // Constant expression evaluation: array sizes, match arm bounds, literal
     // fit. Understands literals, arithmetic, and `let` globals.
 
-    bool ConstIntValue(Node *n, Val &v, bool &literal, set<VarDecl *> &visiting);
+    // A size, fill count or match pattern `at` (a `what`), which takes the
+    // named constants its expression names at their initializers' values
+    // (RelyOnConstant). `named`: the one the expression itself names whose
+    // initializer is being evaluated.
+    struct ConstUse {
+        Node *at;
+        const char *what;
+        VarDef *named = nullptr;
+    };
 
-    bool ConstInt(Node *n, int64_t &v) {
+    bool ConstIntValue(Node *n, Val &v, bool &literal, set<VarDecl *> &visiting,
+                       ConstUse *use = nullptr);
+
+    bool ConstInt(Node *n, int64_t &v, ConstUse *use = nullptr) {
         Val value;
         bool literal;
         set<VarDecl *> visiting;
-        if (!ConstIntValue(n, value, literal, visiting)) return false;
+        if (!ConstIntValue(n, value, literal, visiting, use)) return false;
         v = value.ival;   // Keep all 64 bits: u64 match patterns also use this path.
         return true;
     }
 
     int64_t ConstIntOrError(Node *n, const char *context) {
         int64_t v;
-        if (!ConstInt(n, v)) Error(n, cat("constant integer expression expected for ", context));
+        ConstUse use { n, context };
+        if (!ConstInt(n, v, &use))
+            Error(n, cat("constant integer expression expected for ", context));
         return v;
     }
 
@@ -1364,6 +1377,7 @@ struct TypeCheck {
     void SlotRoots(Val &v);
     void NoteWritableRef(VarDef *d, Node *at);
     VarDef *RelyOnNonneg(const Val &v, Node *at);
+    void RelyOnConstant(ConstUse &use, VarDef *d);
     TypeExpr *StorageType(const Val &v);
     bool BindsRef(const Val &v, TypeExpr *dt);
     bool IsNonFixedLValue(const Val &v);

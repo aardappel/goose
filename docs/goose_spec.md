@@ -2252,12 +2252,12 @@ match dir { North, South => "vertical", East, West => "horizontal" }
   pattern value must fit the scrutinee's type. The first arm that matches
   is taken. A constant or a range bound is an integer literal or a named
   constant — a `let` or `const` global whose initializer is a constant
-  expression, as an array size may name (§11.1) — either one optionally
-  negated: `GROUND`, `world::GATE`, `::GATE`, `LO..HI`, `-LIMIT..0`. The
-  name resolves as any other does (§11.1): a local of that name hides the
-  global and is no constant, and neither is a `var` global. A bare name is
-  a variant when the scrutinee is an ADT and a constant when it is an
-  integer, where it binds nothing.
+  expression, taken at that value, as an array size may name (§11.1) —
+  either one optionally negated: `GROUND`, `world::GATE`, `::GATE`,
+  `LO..HI`, `-LIMIT..0`. The name resolves as any other does (§11.1): a
+  local of that name hides the global and is no constant, and neither is a
+  `var` global. A bare name is a variant when the scrutinee is an ADT and a
+  constant when it is an integer, where it binds nothing.
 * Every pattern must be able to select its arm: `_` is the last arm, and a
   value or range that earlier arms match whole is an error (`1..5 => a,
   3 => b`). Overlap that leaves a pattern something to match is fine:
@@ -2845,7 +2845,14 @@ the caller's own facts about `src` intact.
   assigned as a whole, §4.4) of flat fixed type with compile-time-evaluable
   initializers live in static data; the initializer of any `let` or
   `const` global is a named constant a compile-time size may use
-  (`i64[N]`).
+  (`i64[N]`). A size, a fill count (`[v; N]`) or a match pattern (§8.1)
+  takes a named constant at its initializer's value, so a `let` it names,
+  directly or through another named constant's initializer, may not also
+  be bound to a writable reference anywhere, through which its value could
+  change (§4.4): by `&`, `.=`, or a reference parameter, field or binding
+  that is not `const`. As for a comparison relying on a `let` being
+  non-negative (§6.1), either order is an error; declare it `const`, or
+  bind the reference to a copy.
 * Entry point: `fn main() { }`, in the global namespace. Only the *root*
   file's `main` is the entry; a `fn main` in an imported file is ignored
   entirely (not an entry, not callable, no collision). A runnable file can

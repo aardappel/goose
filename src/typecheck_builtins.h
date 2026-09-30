@@ -788,7 +788,10 @@ inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns,
 // The literal a compile-time string argument stands for: a string literal,
 // or a let or const global initialized with one, named directly or through
 // other such globals -- a named constant, as an array size may use (§11.1).
-// Null for anything else, a local of the name included.
+// Null for anything else, a local of the name included. Unlike an integer
+// one (RelyOnConstant), such a global keeps its initializer's value without
+// a mark: the slice in its slot is a literal's, read-only, so a reference to
+// the slot is read-only too (§9.5).
 inline StrLit *TypeCheck::ConstStrLit(Node *n) {
     if (auto s = Is<StrLit>(n)) return s;
     auto id = Is<Ident>(n);

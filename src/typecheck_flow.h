@@ -1467,7 +1467,8 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
             Val v;
             bool literal;
             set<VarDecl *> visiting;
-            if (!ConstIntValue(n, v, literal, visiting))
+            ConstUse use { n, "match pattern" };
+            if (!ConstIntValue(n, v, literal, visiting, &use))
                 Error(n, "constant integer expression expected for match pattern");
             uns = v.uns;
             return v.ival;

@@ -1354,11 +1354,11 @@ inline Val TypeCheck::CheckRefOf(Unary *x) {
 
 // A writable reference to d is made at `at` (§4.1: `&d`, or d bound by
 // reference). A `let` is written through one as a `var` is (§4.4), before
-// or after anything that relies on its value: the marks this, RelyOnNonneg
-// and ResizesToMark leave do not follow the flow, so neither a loop's later
-// pass, a cycle's later round nor a nested function checked only once can
-// get past them, and whichever comes second is an error (but for a resize,
-// which is merely unbalanced after the reference).
+// or after anything that relies on its value: the marks this, RelyOnNonneg,
+// ResizesToMark and RelyOnConstant leave do not follow the flow, so neither
+// a loop's later pass, a cycle's later round nor a nested function checked
+// only once can get past them, and whichever comes second is an error (but
+// for a resize, which is merely unbalanced after the reference).
 inline void TypeCheck::NoteWritableRef(VarDef *d, Node *at) {
     if (!d->refwrite) d->refwrite = at;
     if (d->nonneguse)
@@ -1371,6 +1371,12 @@ inline void TypeCheck::NoteWritableRef(VarDef *d, Node *at) {
                       "change, while the resize at ", Where(d->markuse->line), " relies on it "
                       "still holding the length it was bound to (§4.4, §5.2); bind the "
                       "reference to a copy of it, or make ", d->name, " a var"));
+    if (d->constuse)
+        Error(at, cat(d->name, " is bound to a writable reference here, through which it may "
+                      "change, while the ", d->constwhat, " at ", Where(d->constuse->line),
+                      " relies on it keeping its initializer's value, as a named constant "
+                      "(§4.4, §11.1); bind the reference to a copy of it, or declare ",
+                      d->name, " const"));
 }
 
 // A comparison with a u64 at `at` relies on v being non-negative (§6.1),
@@ -1383,6 +1389,25 @@ inline VarDef *TypeCheck::RelyOnNonneg(const Val &v, Node *at) {
         if (!d->nonneguse) d->nonneguse = at;
     }
     return nullptr;
+}
+
+// A compile-time size, fill count or match pattern takes the named constant
+// d at its initializer's value (§11.1), directly or through the initializer
+// of the one it names, so relies on d keeping that value, which a writable
+// reference to d could change (§4.4). As with a comparison relying on a
+// `let` (RelyOnNonneg), whichever comes second is an error.
+inline void TypeCheck::RelyOnConstant(ConstUse &use, VarDef *d) {
+    if (d->refwrite)
+        Error(use.at, cat("the ", use.what, " relies on ", use.named->name,
+                          " keeping its initializer's value",
+                          d != use.named ? cat(", which rests on ", d->name, "'s") : string(),
+                          ", but a writable reference bound to ", d->name, " at ",
+                          Where(d->refwrite->line), " may change it (§4.4, §11.1); bind that "
+                          "reference to a copy of it, or declare ", d->name, " const"));
+    if (!d->constuse) {
+        d->constuse = use.at;
+        d->constwhat = use.what;
+    }
 }
 
 // Folds a constant binary op at the width and signedness of out.type
@@ -2069,7 +2094,7 @@ inline void TypeCheck::ReportRedundantCasts() {
 // been checked, so resolve their initializers without evaluating runtime code
 // or attaching caller-local bindings to the shared expression nodes.
 inline bool TypeCheck::ConstIntValue(Node *n, Val &v, bool &literal,
-                                     set<VarDecl *> &visiting) {
+                                     set<VarDecl *> &visiting, ConstUse *use) {
     if (auto i = Is<IntLit>(n)) {
         v.type = ast.inttypes[i->uns ? IS_U64 : IS_I64];
         v.ck = CK_INT;
@@ -2083,7 +2108,12 @@ inline bool TypeCheck::ConstIntValue(Node *n, Val &v, bool &literal,
         if (!g || g->isvar || g->inits.size() != 1) return false;
         if (!visiting.insert(g).second)
             Error(n, cat("cycle in constant initializer: ", id->name));
-        auto ok = ConstIntValue(g->inits[0], v, literal, visiting);
+        if (use) {
+            // The first global on the way is one the use names itself.
+            if (visiting.size() == 1) use->named = g->defs[0];
+            RelyOnConstant(*use, g->defs[0]);
+        }
+        auto ok = ConstIntValue(g->inits[0], v, literal, visiting, use);
         visiting.erase(g);
         if (!ok) return false;
         if (g->type) {
@@ -2099,7 +2129,7 @@ inline bool TypeCheck::ConstIntValue(Node *n, Val &v, bool &literal,
     }
     if (auto u = Is<Unary>(n)) {
         if (u->op != T_MINUS && u->op != T_BITNOT) return false;
-        if (!ConstIntValue(u->child, v, literal, visiting)) return false;
+        if (!ConstIntValue(u->child, v, literal, visiting, use)) return false;
         auto s = v.type->intstorage;
         if (u->op == T_MINUS) {
             if (v.uns && (!literal || v.ival != INT64_MIN))
@@ -2130,8 +2160,8 @@ inline bool TypeCheck::ConstIntValue(Node *n, Val &v, bool &literal,
         }
         Val l, r;
         bool llit, rlit;
-        if (!ConstIntValue(b->left, l, llit, visiting) ||
-            !ConstIntValue(b->right, r, rlit, visiting)) return false;
+        if (!ConstIntValue(b->left, l, llit, visiting, use) ||
+            !ConstIntValue(b->right, r, rlit, visiting, use)) return false;
         if (b->op == T_SHL || b->op == T_SHR) {
             v.type = l.type;
         } else {
