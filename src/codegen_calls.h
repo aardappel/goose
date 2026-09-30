@@ -452,18 +452,28 @@ inline void CodeGen::EmitRfCheck(FnSpec *callee) {
 inline vector<string> CodeGen::EmitFvCall(Call *c, Dst d0) {
     auto et = c->fvbody->exprtype;
     auto wantsval = !IsVoidT(et);
-    string rv;
+    // The call was checked against its destination and the body's value
+    // without one, so the two can be different array or slice types
+    // (FitsAt): an array where a slice is expected (§3.10), any array or
+    // slice constructing an array of another kind (§4.2). The body then
+    // builds its value as its own type in a temporary, which is sliced whole
+    // or copied as the type the destination names, the call's where it names
+    // none: the call's value is a copy (§4.1), so a slice of it never points
+    // into a variable the body names. A bytes-class value is wanted only on
+    // a stack; anywhere else it goes unused.
+    auto want = d0.t ? d0.t : c->exprtype;
+    auto adapt = wantsval && (want->kind == TY_ARRAY || want->kind == TY_SLICE) &&
+                 !TEq(want, et) && (IsFix(want) || d0.k == DK_STACK);
+    string rv, stk;
     Dst d = d0;
-    if (wantsval && !IsBytesT(et) && d0.k != DK_LVALUE) {
+    if (wantsval && !IsBytesT(et) && (adapt || d0.k != DK_LVALUE)) {
         rv = T();
         L(CT(et), " ", rv, ";");
         d = Dst { DK_LVALUE, rv, et };
-    } else if (wantsval && IsResz(et) && d0.k != DK_STACK) {
-        string stk;
+    } else if (wantsval && IsResz(et) && (adapt || d0.k != DK_STACK)) {
         rv = RzTemp(et, stk);
         d = Dst { DK_STACK, stk, et, RzLenLv(et, rv) };
-    } else if (wantsval && IsBytesT(et) && d0.k != DK_STACK) {
-        string stk;
+    } else if (wantsval && IsBytesT(et) && (adapt || d0.k != DK_STACK)) {
         rv = BytesTemp(stk);
         d = Dst { DK_STACK, stk, et };
     } else if (wantsval && d0.k == DK_LVALUE) {
@@ -484,6 +494,34 @@ inline vector<string> CodeGen::EmitFvCall(Call *c, Dst d0) {
     L("}");
     termjump = false;
     if (!wantsval) return {};
+    if (adapt) {
+        Loc lv;
+        if (IsResz(et)) {
+            lv = RzTempLoc(et, rv, stk);
+        } else if (IsBytesT(et)) {
+            lv = BytesLoc(rv, et, Loc {});
+        } else {
+            lv.t = et;
+            lv.val = true;
+            lv.s = rv;
+        }
+        if (d0.k == DK_STACK) {
+            if (IsFix(want)) EmitValStore(d0.s, want, LoadLoc(lv, want, c->line));
+            else ConstructFromLoc(lv, want, d0.s, d0.lenlv, c->line);
+            return {};
+        }
+        rv = LoadLoc(lv, want, c->line);
+        if (d0.k == DK_LVALUE) {
+            L(d0.s, " = ", rv, ";");
+            rv = d0.s;
+        }
+    }
+    // A value built on the stack destination is complete there, as the type
+    // the destination names: nothing is left for the construction around the
+    // call to store (ConstructCall), whose type can be another where an
+    // inlined callee's `return` hands the call, checked as the callee's
+    // result type, the caller's destination.
+    if (rv.empty()) return {};
     return { rv };
 }
 

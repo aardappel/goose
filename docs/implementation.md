@@ -3084,7 +3084,14 @@ prefix for a run receiver, or re-prefixed once after the switch for a slot of
 another length storage. A function value is spliced inline
 (`EmitFvCall`): its parameters and locals are ordinary locals of the
 enclosing function, which what is declared in its body takes as free
-variables like any other. An `extern fn` is a direct C call with prototypes emitted for
+variables like any other. The call is checked against its destination and
+the body's value without one, so the two can be different array or slice
+types: an array where a slice is expected (spec §3.10), any array or slice
+constructing an array of another kind (spec §4.2). The body then builds its
+value as its own type in a temporary, which is sliced whole or copied as the
+type the destination names, the call's where it names none; the call's value
+is a copy (spec §4.1), so such a slice never points into a variable the body
+names. An `extern fn` is a direct C call with prototypes emitted for
 symbols the runtime does not define.
 
 **The foreign boundary.** `CheckExternSpec` admits scalars and flat
