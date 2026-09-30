@@ -1234,14 +1234,15 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
 2. not a `reusable` pool;
 3. no operand evaluated earlier in this statement and still held may refer
    into it (`CheckHeldShrinks` over `HeldOperands`, §3.3), nor, where it is
-   a reference to a slice or to a holder, may what it holds; an assignment's
-   location counts as the slot alone, since the assignment overwrites what
-   the slot holds. The shrink may be anywhere in its statement: the node
-   path holds whatever the enclosing expressions evaluated before it, inside
-   the value of an `if`, `match`, block or loop as well, and a function
-   value's body is checked on the path of the statement calling it
-   (`CheckFunValCall`), whose own caller applies the shrink against its
-   statement from the summary;
+   a reference to a slice or to a holder, or a slice of slices or of
+   holders, may what it holds; an assignment's location counts as the slot
+   alone, since the assignment overwrites what the slot holds, and so does a
+   slot a `for` loop reads again, whose sequence is held itself. The shrink
+   may be anywhere in its statement: the node path holds whatever the
+   enclosing expressions evaluated before it, inside the value of an `if`,
+   `match`, block or loop as well, and a function value's body is checked
+   on the path of the statement calling it (`CheckFunValCall`), whose own
+   caller applies the shrink against its statement from the summary;
 4. no variable in scope may refer into it: a reference or slice variable
    whose pointee the array's elements can contain (or a byte
    view), rooted at it -- or a `var` at the same depth, or an inexact root
@@ -1252,19 +1253,22 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    by its type), or a store of a reference to a slot that may hold one
    (`StoredSlotMayPointInto`), and used afterwards; a reference to a holder
    whose store record says the same, or to a slice slot that may hold a
-   slice into it (`HeldRefsMayPointInto`), and used afterwards. Of such a
-   slot, a local holder named exactly holds what its record says (behind a
-   reference variable, one that is no `var`), and behind a reference
-   variable a parameter's class with a class of its own for the slice its
-   slot holds what the binding of the variable standing for that slice says
-   (§3.4); any other slot holds whatever is at its depth or outside it, but
-   a global one a holder refers to, which item 5 judges. A slot's references
-   may lead into the array at any remove, so both count every type they
-   reach (`ReachedThroughRefs`). The variables are the body's and its
-   lexical parents', and in a function value's body those of the function
-   running it too (`ShrinkScanVars`); every caller's are judged at its call
-   instead, the first caller's too (**Calls** below), where the rest of its
-   statement is in view;
+   slice into it, and a slice whose elements, slices or holders, may hold
+   one (`HeldRefsMayPointInto`), and used afterwards. Of such a slot, a
+   local holder named exactly holds what its record says (behind a
+   reference or slice variable, one that is no `var`), an array's elements
+   a slice views among them, and behind a reference variable a parameter's
+   class with a class of its own for the slice its slot holds what the
+   binding of the variable standing for that slice says (§3.4); any other
+   slot holds whatever is at its depth or outside it -- the caller's array
+   whose elements a slice parameter views too -- but a global one a holder
+   refers to, or a global holder a reference or slice leads to, which item
+   5 judges. A slot's references may lead into the array at any remove, so
+   both count every type they reach (`ReachedThroughRefs`). The variables
+   are the body's and its lexical parents', and in a function value's body
+   those of the function running it too (`ShrinkScanVars`); every caller's
+   are judged at its call instead, the first caller's too (**Calls**
+   below), where the rest of its statement is in view;
 5. for a global receiver, the other globals are judged once every function
    has been checked (`NoteGlobalShrink` keeps the first shrink of each
    array, with its instantiation chain, for `CheckGlobalShrinks`): a global
@@ -1298,9 +1302,11 @@ scan below, meet its sequence and the references and slices on the path to
 it as held operands, whatever statement of the body the shrink is in, and
 name the loop (`Held::loop`); a callee's shrinks meet them at the call
 through its summary, a function value's at the call that runs it, and the
-pairs `NoteLiveViews` keeps carry them to the callers. A resizable array
-iterated itself is not held: the loop reads its length again on every
-iteration, and its elements never move.
+pairs `NoteLiveViews` keeps carry them to the callers. A sequence whose
+elements hold references leads to what those point into, whatever the
+loop's binding copies out of it. A resizable array iterated itself is not
+held: the loop reads its length again on every iteration, and its elements
+never move.
 
 **Liveness** (`UsedAfter`) is syntactic: the variable's name occurs in a
 later statement of an open block at or inside its scope, in that block's
@@ -1421,18 +1427,22 @@ counts the rest of the statement, `LaterOperands`; inside a function value's
 body, one of the function running it too, `ShrinkScanVars`, whose parameters'
 pairs are its own record's), an operand still held
 (`HeldOperands`), a grow-only holder by its store record
-(`EachHolderRoot`), and what a reference to a slice or, for a grow-only
-array, to a holder reaches -- for a view only the callers can tell apart
-from the array (`CallersJudge`): its root is a
-parameter's class, or the array is. For a grow-shrink array a slot read is
-none, the scans passing over it (**Slot reads** above), though what a
-reference to a slice leads to may be. `NoteLiveShrink` keeps such a pair (a
-`LiveShrink`) on the specialization when `MayAliasRoots` does not rule it out
-and both roots are classes or storage outside the activation (globals, a
-lexical parent's variables and classes), with the array's type where the
-shrunk root only bounds it (`LiveShrink::bound`); a store a loop body's later
-iteration brings to the shrink is on record when the body is checked again
-(§3.7). At a call, `ApplyCalleeLiveShrinks` maps each
+(`EachHolderRoot`), followed, as the scan follows it, through a stored
+reference to a slot holding references to what that slot holds, and what
+a reference to a slice or, for a grow-only array, to a holder, or a slice
+of holders or of slices, reaches: for a holder named exactly by a value
+that is no `var`, what its store record says, as for the holder itself,
+for any other but a global one, whatever its root bounds -- for a view
+only the callers can tell apart from the array (`CallersJudge`): its root
+is a parameter's class, or the array is. For a grow-shrink array a slot
+read is none, the scans passing over it (**Slot reads** above), though
+what a reference to a slice leads to may be. `NoteLiveShrink` keeps such a
+pair (a `LiveShrink`) on the specialization when `MayAliasRoots` does not
+rule it out and both roots are classes or storage outside the activation
+(globals, a lexical parent's variables and classes), with the array's type
+where the shrunk root only bounds it (`LiveShrink::bound`); a store a loop
+body's later iteration brings to the shrink is on record when the body is
+checked again (§3.7). At a call, `ApplyCalleeLiveShrinks` maps each
 pair's classes onto the roots of the arguments passed for them
 (`ClassArgRoot`): two roots the caller can tell apart pass, one root or two
 it cannot tell apart are an error at the call, which names the array as the
@@ -3430,6 +3440,17 @@ specification allows, and the shapes the C backend refuses outright:
   rebinds too (§3.5), as the §5.2 scan does, and a holder's class with a
   class for its slice as a reference variable's, with the pairs its
   callers judge (`NoteLiveViews`), would narrow it.
+* A shrink of a grow-only array takes the caller's array a slice parameter
+  views the elements of, or the holder a reference parameter names, to hold
+  views of every array at the parameter's class depth or outside it
+  (§3.10, item 4), as it takes those of a `var` slice or reference, or one
+  rooted inexactly, at its root's depth: `fn emit(out: u8[>..]&, words:
+  (const u8[:])[:])` clearing `out` and then reading `words` is an error in
+  the callee wherever a call site passes `words` from `out`'s scope or a
+  deeper one, a literal included, whatever the elements hold there. A key
+  recording where the argument's elements point, as a holder parameter's
+  contents class does (§3.4), or pairs its callers judge by the argument's
+  store record, would narrow it.
 * A parameter is a slot read (§3.10) only where its argument has a root, or
   a holder's contents one, that holds a grow-shrink array (§3.4): the key
   records the bit only there, so that a function given no such argument is

@@ -822,13 +822,20 @@ inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root
                         return a.root == root || (!a.exact && Depth(a.root) >= Depth(root));
                     });
         // A reference to a slice also reaches where the slice points, and,
-        // for a grow-only array, one to anything holding references what
-        // those point at: only a variable holds a slice into a grow-shrink
-        // array. An assignment's location is overwritten before it is read
-        // again.
-        if (!held && !location && v.type->kind == TY_REF &&
-            (growonly ? HoldsPlainRef(v.type->ref->sub) : v.type->ref->sub->kind == TY_SLICE))
+        // for a grow-only array, one to anything holding references, or a
+        // slice of such values, what those point at: only a variable holds a
+        // slice into a grow-shrink array. An assignment's location is
+        // overwritten before it is read again, and a slot a for loop reads
+        // again holds the sequence it walks, which is held itself.
+        auto reaches = v.type->kind == TY_REF
+                           ? growonly ? HoldsPlainRef(v.type->ref->sub)
+                                      : v.type->ref->sub->kind == TY_SLICE
+                           : growonly && v.type->kind == TY_SLICE && HoldsPlainRef(v.type->sub);
+        auto elemsrefer = false;
+        if (!held && !location && !reread && reaches) {
             held = HeldRefsMayPointInto(nullptr, v, v.type, root, bound, growonly);
+            elemsrefer = held && v.type->kind == TY_SLICE;
+        }
         if (!held) return;
         auto sec = growonly ? " (§5.1)" : " (§5.2)";
         // A §5.1 scan's op names no array.
@@ -845,6 +852,7 @@ inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root
                               : "its sequence";
             Error(at, cat(shrink, "the for loop at ", Where(loop->line),
                           reread ? cat(" reads ", expr, " again on every iteration, which may lie in ")
+                          : elemsrefer ? cat(" iterates ", expr, ", whose elements may refer into ")
                           : IsRefOrSlice(node->exprtype)
                               ? cat(" iterates ", expr, ", which may refer into ")
                               : cat(" iterates ", expr, " in place, which may lie in "),
@@ -857,8 +865,8 @@ inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root
             Error(at, cat(shrink, expr, ", which the assignment writes after it, may be in ",
                           what, sec));
         if (elems)
-            Error(at, cat(shrink, "the elements of ", expr,
-                          ", which the statement reads after it, may be in ", what, sec));
+            Error(at, cat(shrink, "the elements of ", expr, ", which the statement reads after it, ",
+                          elemsrefer ? "may refer into " : "may be in ", what, sec));
         Error(at, cat(shrink, expr, ", evaluated earlier in the statement, may still refer into ",
                       what, sec));
     });
@@ -901,13 +909,19 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd,
             auto into = !path && ShrinkMayFree(vd, bound, true, PointeeOf(t), v->ref.byteview) &&
                         RefMayPointInto(v, vd);
             // A reference to a slice or to a value holding references, the
-            // path to an array included, also reaches what those point at.
-            auto via = !into && t->kind == TY_REF && HoldsPlainRef(t->ref->sub) &&
+            // path to an array included, also reaches what those point at,
+            // and so does a slice of such values.
+            auto held = t->kind == TY_REF ? t->ref->sub : t->sub;
+            auto via = !into && HoldsPlainRef(held) &&
                        HeldRefsMayPointInto(v, v->ref, t, vd, bound, true);
             if ((!into && !via) || !UsedAfter(v)) return;
             if (via)
                 Error(c, cat("cannot ", op, " ", what, " while ", v->name, " is still used: ",
-                             t->ref->sub->kind == TY_SLICE
+                             t->kind == TY_SLICE
+                                 ? held->kind == TY_SLICE
+                                       ? "the slices it views may point into it"
+                                       : "what it views may hold a reference or slice into it"
+                             : held->kind == TY_SLICE
                                  ? "the slice it refers to may point into it"
                                  : "what it refers to may hold a reference or slice into it",
                              " (§5.1)"));
@@ -1843,17 +1857,84 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
         TypeExpr *pointee;
         bool reached = false;   // What the value leads to, not the value.
     };
+    // What the stores into holder h from event `from` on put there, as views
+    // (§5.1): where each stored reference points, and, where it refers to a
+    // slot holding references -- a holder, an array's elements a slice
+    // views, a slice variable -- what that slot leads to, as the scan
+    // follows it (StoredSlotMayPointInto): a holder named exactly by its own
+    // record, anything else but a global by its root, as a bound. A stored
+    // value keeps no pointee where it is a copy of a holder's contents, which
+    // may refer to any slot h's type can.
+    auto recorded = [&](VarDef *h, size_t from, vector<View> &out) {
+        set<VarDef *> seen;
+        function<void(VarDef *, size_t)> walk = [&](VarDef *hh, size_t start) {
+            if (!seen.insert(hh).second) return;
+            EachHolderRoot(hh, start, [&](const StoreEvent &e) {
+                Prov ep;
+                ep.Set(e.root, e.exact);
+                ep.byteview = e.byteview;
+                out.push_back({ ep, e.pointee, true });
+                auto r = e.root;
+                if (r->isglobal) return;
+                vector<TypeExpr *> slots;
+                if (e.pointee) slots.push_back(e.pointee);
+                else RefPointees(hh->type, slots);
+                for (auto st : slots) {
+                    if (!HoldsPlainRef(st)) continue;
+                    if (e.exact && r->type && !IsRefOrSlice(r->type)) return walk(r, 0);
+                    Prov bv;
+                    bv.Set(r, false);
+                    bv.byteview = r->contentbyteview ||
+                                  (r->type && IsRefOrSlice(r->type) && r->ref.byteview);
+                    vector<TypeExpr *> ps;
+                    ReachedThroughRefs(st, ps);
+                    for (auto pt : ps) out.push_back({ bv, pt, true });
+                }
+            });
+        };
+        walk(h, from);
+    };
+    // Where the references in the holders a reference points at or a slice
+    // views, of type `held`, may point (§5.1): for a holder of this function
+    // or a parent's that the value names exactly, where its store record
+    // says, as for the holder itself; otherwise anywhere its root bounds, as
+    // for a `var`, which a binding the record does not show yet may have
+    // moved to another holder at that depth (HeldRefsMayPointInto). A global
+    // holder is judged with the globals.
+    auto holders = [&](const Prov &p, TypeExpr *held, bool isvar, vector<View> &out) {
+        vector<TypeExpr *> pointees;
+        ReachedThroughRefs(held, pointees);
+        for (auto &a : p.alts) {
+            auto r = a.root;
+            if (!r || r->isglobal) continue;
+            if (a.exact && r->type && !IsRefOrSlice(r->type) && !isvar) {
+                recorded(r, LiveEventBase(r), out);
+                continue;
+            }
+            Prov hv;
+            hv.Set(r, false);
+            hv.byteview = p.byteview || r->contentbyteview;
+            for (auto pt : pointees) out.push_back({ hv, pt, true });
+        }
+    };
     // What a reference or slice of type t with provenance p may point into:
     // its pointee, unless it is the path to a whole resizable value, and,
     // for a reference to a slice or (§5.1) to anything else holding
-    // references, what those point into: where the slice points (SlotView,
-    // without noting a slice variable's root as read), or what the holder's
-    // root bounds. An assignment's location is overwritten before it is read.
-    auto views = [&](const Prov &p, TypeExpr *t, bool location) {
+    // references, or a slice of those, what those point into: where the
+    // slice points (SlotView, without noting a slice variable's root as
+    // read), or where the holders' references may. An assignment's location
+    // is overwritten before it is read, and a slot a for loop reads again
+    // holds its sequence, which is held itself: only the slot counts.
+    auto views = [&](const Prov &p, TypeExpr *t, bool slotonly, bool isvar) {
         vector<View> out;
         if (t->kind != TY_REF || ClassOf(t->ref->sub) != SC_RESIZABLE)
             out.push_back({ p, PointeeOf(t), false });
-        if (location || t->kind != TY_REF) return out;
+        if (slotonly) return out;
+        if (t->kind == TY_SLICE) {
+            if (growonly && HoldsPlainRef(t->sub)) holders(p, t->sub, isvar, out);
+            return out;
+        }
+        if (t->kind != TY_REF) return out;
         auto sub = t->ref->sub;
         auto r = p.Root();
         if (sub->kind == TY_SLICE) {
@@ -1869,14 +1950,7 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
             }
             out.push_back({ sv, sub->sub, true });
         } else if (growonly && HoldsPlainRef(sub)) {
-            auto hv = p;
-            hv.Weaken();
-            hv.byteview = hv.byteview || p.Any([](const RootAlt &a) {
-                return a.root && a.root->contentbyteview;
-            });
-            vector<TypeExpr *> pointees;
-            RefPointees(sub, pointees);
-            for (auto pt : pointees) out.push_back({ hv, pt, true });
+            holders(p, sub, isvar, out);
         }
         return out;
     };
@@ -1908,7 +1982,7 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
         return !vs.empty();
     };
     HeldOperands([&](const Held &h) {
-        auto vs = views(h.v, h.v.type, h.location);
+        auto vs = views(h.v, h.v.type, h.location || h.reread, false);
         if (!judged(vs)) return;
         auto name = ExprStr(h.node);
         if (name.find('\n') != string::npos)
@@ -1921,16 +1995,11 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
         vector<View> vs;
         if (IsRefOrSlice(t)) {
             if (!v->refrootknown) return;
-            vs = views(v->ref, t, false);
+            vs = views(v->ref, t, false, v->isvar);
         } else if (growonly && HoldsPlainRef(t)) {
             // A grow-only array's views may be stored (§5.1): the holder's
             // store record says where its references lead.
-            EachHolderRoot(v, LiveEventBase(v), [&](const StoreEvent &e) {
-                Prov p;
-                p.Set(e.root, e.exact);
-                p.byteview = e.byteview;
-                vs.push_back({ p, e.pointee });
-            });
+            recorded(v, LiveEventBase(v), vs);
         }
         if (!judged(vs) || !UsedAfter(v)) return;
         for (auto &w : vs) note(w, string(v->name));
