@@ -958,7 +958,9 @@ kept on the specialization as a `classevent`, and `ApplyCalleeStores`
 replays it at every call site with the class mapped back to the root it
 stands for there (§3.4), what a holder's references point into for a holder
 parameter, and only as bounds, with no source of their own, where the class
-only bounded the value (`Bounds`). A class the callee named as a source
+only bounded the value (`Bounds`). Each adds to the container's `contents`
+as a store of the caller's own does, which a loop around the call feeds
+back the same way (`NoteFact`, §3.7). A class the callee named as a source
 maps to the one container the argument names exactly, if there is one: for
 a reference to a slice, the struct or array whose field or element is the
 slot, but not a slice variable, whose slot the callee's record bounds
@@ -1003,9 +1005,8 @@ bound one, the call widens the store to every storage the argument's root
 may stand for (`ShrinkTargets` over that type), checks the stored value's
 mapped root against each, and records it on each, a class of its own
 caller's marked `bound` again. For a callee still being checked (a back
-edge) it conservatively records every reference argument as stored into
-every storage a reference argument whose pointee can hold references may be,
-the pointee's type being what a store through it reaches.
+edge) it replays the record its cycle's previous round made (`RecordOf`,
+§3.11), and none in the first round.
 
 Holder values carry their contents' roots as `Val::contents` (§9.2's
 "implicitly generic over the fields' roots"): a literal's are those of its
@@ -1065,10 +1066,11 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   read out of the storage is (`ClassCopyReadBack`, §3.10 **Class
   reads**) -- where no loop open around the read has the holder declared
   outside it, since a store later in the body reaches the read on the next
-  iteration before any pass records it, unless it is a by-value binder,
-  which nothing but its binding stores into (`VarDef::copybind`), and not
-  where a `for` loop binds views read out of the holder, whose one
-  read-back stands for every iteration's;
+  iteration, and the loop checks the read again only where that store adds
+  to the holder's `contents` (§3.7), which do not say what came out of the
+  storage, unless it is a by-value binder, which nothing but its binding
+  stores into (`VarDef::copybind`), and not where a `for` loop binds views
+  read out of the holder, whose one read-back stands for every iteration's;
 * a container reached through a caller's storage, or itself inexact: the
   container's root, inexact, read out of that container (`RootAlt::from`)
   only where the root is the container itself. Where that container is a
@@ -1156,7 +1158,9 @@ iteration but the first starts in -- so a read earlier in the body than a
 rebind sees, on the second pass, every root the rebind gives the variable,
 and a shrink earlier in the body than a store sees the store on record
 (**Grow-only arrays** below). A fact fed back is noted as it is recorded
-(`NoteFact`: `BindProv`, `CheckRefRebindRoot`, `RecordStore`), against
+(`NoteFact`: `BindProv`, `CheckRefRebindRoot`, and wherever a store adds to
+a container's `contents`, `RecordStore` and a call's replay of what its
+callee stored, `ApplyCalleeStores`), against
 every enclosing loop the variable is declared outside of (`LoopPass`); a
 pass that changed none and read no variable before its binding was checked
 against the settled facts, so its errors stood and it was the last. Every
@@ -1409,9 +1413,10 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    for the values under construction around it (`NoteShrinkEvent`,
    **Growth during construction** below).
 
-Inside a loop, a store later in the body than the shrink is on record when
-the body is checked again (`CheckLoopPasses`, §3.7), so item 4 finds it, and
-names it as reaching the shrink on the next iteration (`CarriedEvent`).
+Inside a loop, a store later in the body than the shrink, a callee's
+included, is on record when the body is checked again (`CheckLoopPasses`,
+§3.7), so item 4 finds it, and names it as reaching the shrink on the next
+iteration (`CarriedEvent`).
 
 **`for` loops** (§6.5). A `for` around the shrink holds what it walks while
 its body is checked (`HoldForSequence`, §3.3): item 4, and the grow-shrink
@@ -1558,11 +1563,9 @@ Each keeps the mark at a class only where every value it joins there has it
 (`Roots::Add`, `RecordReturn`): beside a reference into the storage itself
 (`Q { h: ns[1], at: ns[0] }`), or a node loaded through a view read out of
 it, what it holds there is judged by depth as before. A variable's contents
-drop the mark (`RecordStore` leaves it to the event): a callee's store into
-the variable changes no fact a loop pass feeds back (`ApplyCalleeStores`),
-so a mark kept there could be stale on the next iteration. A literal
+drop the mark (`RecordStore` leaves it to the event), so a literal
 holding a variable that holds a copy, or a merge of one, is judged by
-depth, then, but a value read out of a holder of the activation's before
+depth, but a value read out of a holder of the activation's before
 the shrink, where the holder's record holds such stores alone (`let n =
 ns[1]; let nx = n.next;`), is one of the views the storage holds (§3.6,
 `ClassCopyReadBack`).

@@ -1295,8 +1295,8 @@ inline Roots TypeCheck::ClassArgRoots(TypeExpr *pt, const Val &v) {
 // (StoreEvent::reached, ShrinkTargets), which the value must outlive (§9.2):
 // the body saw only the bound. A store into the slot a reference to a slice
 // names assigns the slice variable each such storage may be (StoreIntoSlot).
-// A callee still being checked (a back edge) may have stored any reference
-// argument into any container argument.
+// A store into a holder grows its contents as the caller's own would, which
+// a loop around the call feeds back (NoteFact).
 inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Node *at) {
     // What class root cr of the callee stands for here: the argument's roots,
     // or for a view the slice its slot held (Val::held).
@@ -1336,8 +1336,9 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         e.slot = slot;
         e.sliceref = sliceref;
         container->contentbyteview |= byteview;
-        if (container->type && !IsRefOrSlice(container->type))
-            container->contents.Add({ a.root, a.exact, a.from, a.slotread });
+        if (container->type && !IsRefOrSlice(container->type) &&
+            container->contents.Add({ a.root, a.exact, a.from, a.slotread }))
+            NoteFact(container, ActivationFloor(a.root));
         AddStoreEvent(e);
     };
     // A class root of the callee, as seen from here (classat), each root

@@ -914,9 +914,11 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
 // is read out of it is one of them, as a read out of the storage itself is
 // (RootAlt::classread), though read out of h (RootAlt::from).
 // No loop open here may have h declared outside it: a store later in its
-// body reaches the read on the next iteration, and no pass records it
-// before the read. A by-value binder is stored into by its binding alone
-// (VarDef::copybind). Else false, and the read takes every candidate.
+// body reaches the read on the next iteration, and the loop checks the read
+// again only where that store adds to h's contents, which do not say what
+// came out of that storage (NoteFact). A by-value binder is stored into by
+// its binding alone (VarDef::copybind). Else false, and the read takes
+// every candidate.
 inline bool TypeCheck::ClassCopyReadBack(VarDef *h, Roots &out) {
     if (!h->type || IsRefOrSlice(h->type)) return false;
     for (auto &lp : cur.looppasses)
