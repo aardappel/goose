@@ -76,7 +76,8 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
         }
         if (ClassOf(elem) != SC_FIXED)
             Error(n, cat(lv.type->kind == TY_SLICE ? "slices" : "arrays",
-                         " of variable-size elements cannot be indexed, only iterated"));
+                         " of variable-size elements cannot be indexed, only iterated; for "
+                         "random access, keep your own array of references to them (§3.3)"));
         CheckIntAny(ix->idx);
         if (lv.type->cq) lv.writable = false;   // An element of a const value.
         lv.letbound = false;
