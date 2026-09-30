@@ -1344,11 +1344,18 @@ struct TypeCheck {
         if (ImplicitCopy(v, n, dt)) ImplicitCopyError(n);
     }
     void CheckBranchCopy(const Val &v, Node *n, TypeExpr *dt, Val &out);
+    void RefCopyWarning(Node *n);
+    // The redundant `&x` branches an argument's copy noted (Val::refcopies),
+    // where its parameter takes the copy rather than binding them.
+    void RefCopyWarnings(const Val &v) {
+        for (auto n : v.refcopies) RefCopyWarning(n);
+    }
     // The value path of a call's argument checked before its parameter's
     // type is known: the argument, then each branch a control construct on
     // it checks next. A reference parameter binds such a construct's
-    // branches by reference, so the copy CheckBranchCopy would report is
-    // left to the argument's check against its parameter.
+    // branches by reference, so the copy CheckBranchCopy would report, and
+    // the redundant `&` of a branch the copy loads, are left to the
+    // argument's check against its parameter.
     Node *argpath = nullptr;
     struct PathScope {
         TypeCheck &tc;

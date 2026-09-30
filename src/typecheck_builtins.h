@@ -570,11 +570,8 @@ inline void TypeCheck::CheckPrintable(Call *c, const char *what, vector<Node *> 
     // (UserFormatIn), and read-only, as a view into a temporary is (§9.5). So
     // is the value of a control construct or of a function value's call, a
     // copy of what its branch gives even where that names a variable (§4.1),
-    // though its Val keeps that branch's slot (TempCopy), which a reference
-    // parameter binds instead.
-    auto call = Is<Call>(a);
-    if (av.type->kind == TY_SLICE &&
-        (!av.hasslot || IsBranchConstruct(a) || (call && call->fvbody))) {
+    // which keeps none of that branch's slot (TempCopy).
+    if (av.type->kind == TY_SLICE && !av.hasslot) {
         av.slot = Prov {};
         av.slot.Set(TempRoot(), true);
         av.hasslot = true;

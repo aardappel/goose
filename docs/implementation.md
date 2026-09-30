@@ -590,7 +590,12 @@ construct's value, a function value's call's (`CheckFunValCall`) and an
 array default there, and `CheckBuiltin` a copy, keeping what it holds
 pointing where the source's contents do; it is read-only and no `lvalue`,
 as a call's result is, so nothing binds it by reference or writes it in
-place. Where the optimizer folds a construct to the branch taken,
+place. A slice value keeps its roots and writability, pointing where the
+branch's does, but not the branch's slot (`Val::slot`): the slot holding
+it is the temporary, which a `format` overload taking it by reference is
+given (`CheckPrintable`). A reference parameter binds a construct's
+branches themselves instead (`BindBranchesByRef`, §3.12). Where the
+optimizer folds a construct to the branch taken,
 `OptViewed` keeps a viewed value a copy (section 4, "Views of copies"),
 which is what lets the shrink rules take a view of it for a view of the
 temporary alone.
@@ -1611,8 +1616,8 @@ element's array or slice, a reference's pointee), as writable as that is,
 and for a value that is no storage a temporary (`CheckPrintable`): a call's
 result, and the value of a control construct or of a function value's call,
 a copy of what its branch gives even where that names a variable (§4.1),
-though its `Val` keeps that branch's slot (`TempCopy`) for a reference
-parameter, which binds the branch itself. What the overload stores there
+which keeps none of that branch's slot (`TempCopy`); a reference parameter
+binds the branch itself instead (§3.12). What the overload stores there
 rebinds the caller's variable or is recorded in its container
 (`ApplyCalleeStores`), and it re-points no slot `&` could not write. The
 temporary is read-only (§9.5), and codegen passes one wherever the
@@ -1817,13 +1822,17 @@ path -- the argument itself, a UFCS receiver included, and each branch a
 construct on it checks next, a nested construct, a block's tail or a
 break's value (`argpath`, `PathScope`, `Scope::onargpath`) --
 `CheckBranchCopy` notes that copy on the value (`Val::implicitcopy`)
-instead of reporting it, and whether every branch is non-fixed storage or
-a reference to it (`Val::storagebranches`, merged by `MergeVals`). Such a
-value is not rewritten to a reference, but matches a reference parameter
-as an lvalue does (`UnifyArgRaw`), and `BindBranchesByRef` checks it
-against that parameter before the specialization and the callee's effects
-are keyed on it: each branch binds by reference (`AutoRef`), and the
-argument takes the branches' merged root and writability. A slice
+instead of reporting it, as it does the `&x` branches of a fixed-size `x`
+whose `&` the copy makes redundant (`Val::refcopies`), and whether every
+branch is storage -- a variable, field or element of any size class, a
+slice's slot included -- or a reference (`Val::storagebranches`, merged by
+`MergeVals`). The value itself is no lvalue, a slice's no more than any
+other (`TempCopy`), so nothing binding an lvalue by reference takes the
+copy for storage. It matches a reference parameter as an lvalue does
+(`UnifyArgRaw`) all the same, and `BindBranchesByRef` checks it against
+that parameter before the specialization and the callee's effects are
+keyed on it: each branch binds by reference (`AutoRef`), and the argument
+takes the branches' merged root and writability. A slice
 parameter views a construct's array branches where they lie (spec §6.4),
 so `BindBranchesByRef` checks the argument against it in the same way
 where phase 1 left an array, a copy of the branch taken, or arrays of two
@@ -1835,12 +1844,14 @@ and a builtin's UFCS receiver (which a member takes as checked) included.
 (`AddParamDefaults`, before `UnifyArg` judges it), and a function value's
 call (`CheckFunValCall`) the same for its block's parameters. At any other
 parameter phase 2 reports the copy, an untyped one included, which takes the
-construct's value type. Tag dispatch binds such a construct at the dispatch
-position by reference as well, and reports a copy noted on one it
-dispatches by value, which phase 2 does not check again; a member builtin
-reports one noted on its receiver, which it takes as checked; a function
-value's declared reference parameter takes its provenance from the
-argument's check against it.
+construct's value type, and `BindBranchByRef` the redundant `&`s as the
+copy's (`RefCopyWarnings`); at a reference parameter phase 2 warns of them
+as binding by reference without it. Tag dispatch binds such a construct at
+the dispatch position by reference as well, and reports a copy, and the
+redundant `&`s, noted on one it dispatches by value, which phase 2 does not
+check again; a member builtin reports those noted on its receiver, which it
+takes as checked; a function value's declared reference parameter takes its
+provenance from the argument's check against it.
 
 The tier is the worst match of any argument, not a sum of conversion
 costs. Concrete exact matches beat generic exact matches, which beat any

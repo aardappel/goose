@@ -757,9 +757,14 @@ so the `&`s are redundant and warn. A branch naming non-fixed storage, or a
 reference to it, is an error there, as at a value-typed destination:
 `let x = if c { copy(a) } else { copy(b) };` spells the copy. At a
 reference-typed destination — an annotated `let`/`var`, a reference
-parameter — each branch binds by reference instead:
-`let r: i64& = if c { a } else { b };` binds `a` or `b` itself, and
-`f(if c { a } else { b })` hands `a` or `b` itself to `fn f(xs: i64[>..]&)`.
+parameter — each branch binds by reference instead, whatever its size
+class: `let r: i64& = if c { a } else { b };` binds `a` or `b` itself,
+`f(if c { a } else { b })` hands `a` or `b` itself to `fn f(xs: i64[>..]&)`
+as `g(if c { i } else { j })` hands the `i64` `i` or `j` to
+`fn g(x: i64&)`, and `fn h(p: u8[:]&)` given `if c { s } else { t }`
+re-points the slice variable the branch taken names. A function value's
+call is a call, not such a construct: its value is a temporary even where
+its body's value names a variable (§9.2).
 
 There is no ownership transfer beyond the return move, no destructors, no
 `Drop`, no reference counting. Deallocation is exclusively scope exit
@@ -2428,8 +2433,8 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   bound inside `for x in f() { … }`; it is never returned. A function it
   is passed to may keep it in its own locals, which die first. What a
   temporary *holds* is not rooted at the temporary (§9.5). A temporary is
-  no storage for `.=` or a reference parameter to bind (§4.1), and a view
-  of one is read-only (§9.5).
+  no storage for `.=` or a reference parameter to bind (§4.1), which binds
+  a construct's branches instead, and a view of one is read-only (§9.5).
 
 Violations are compile errors. There is no escape hatch in v1.
 

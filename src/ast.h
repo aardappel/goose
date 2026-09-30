@@ -602,8 +602,9 @@ struct Val : Prov {
     bool litint = false;
     int64_t litlo = 0, lithi = 0;
     bool lvalue = false;         // Denotes storage (a variable, field or element), not a temporary.
-    // An lvalue of varint storage (§3.6): its value is the i64 the varint
-    // decodes to, while a reference to it is a read-only varint& (§3.8).
+    // An lvalue of varint storage (§3.6), or a construct whose branches all
+    // are: its value is the i64 the varint decodes to, while a reference to
+    // it is a read-only varint& (§3.8).
     bool isvarint = false;
     // A slice lvalue: where its slot lies -- the variable, or the storage
     // the field or element is in -- which a reference to it is rooted at
@@ -623,12 +624,14 @@ struct Val : Prov {
     bool hasheld = false;
     // A control construct's value, whose branches a destination with no type
     // of its own copies (TypeCheck::CheckBranchCopy): whether every branch is
-    // non-fixed storage, or a reference to it, which a reference parameter
-    // binds by reference instead (§4.1), and the first branch such a copy
-    // would take implicitly, where the check was left to the argument's
-    // check against its parameter (TypeCheck::argpath).
+    // storage (a variable, field or element) or a reference, which a
+    // reference parameter binds by reference instead (§4.1); and, where the
+    // check was left to the argument's check against its parameter
+    // (TypeCheck::argpath), the first branch such a copy would take
+    // implicitly, and the `&x` branches whose `&` the copy makes redundant.
     bool storagebranches = false;
     Node *implicitcopy = nullptr;
+    vector<Node *> refcopies;
     // A control construct's branches checked with no destination type that
     // are arrays and slices of one element type (TypeCheck::JoinBranches):
     // the construct's value is a slice of that element, of this Val's type,

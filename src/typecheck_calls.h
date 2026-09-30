@@ -118,6 +118,7 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d) {
         // A member works on the receiver's value, which for a control
         // construct is a copy of the branch taken.
         if (ov.implicitcopy) ImplicitCopyError(ov.implicitcopy);
+        RefCopyWarnings(ov);
         auto argnodes = c->ArgNodes();
         d->member = bd->kind;
         auto v = CheckBuiltin(c, *bd, argnodes, &ov);
@@ -141,6 +142,7 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d) {
     // A member builtin taking any receiver (bytes_of) takes it as checked.
     NoArrayJoin(ov);
     if (bd && !(bd->flags & BF_PROPERTY)) {
+        RefCopyWarnings(ov);
         auto argnodes = c->ArgNodes();
         auto v = CheckBuiltin(c, *bd, argnodes, &ov);
         c->SetArgNodes(argnodes);
@@ -360,9 +362,9 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
     return CallResult(c, spec, argvals);
 }
 
-// A control construct whose branches are all non-fixed storage binds each
-// by reference at a reference parameter (§4.1), and one whose branches are
-// arrays views each whole at a slice parameter (§6.4): the argument is
+// A control construct whose branches are all storage, or references, binds
+// each by reference at a reference parameter (§4.1), and one whose branches
+// are arrays views each whole at a slice parameter (§6.4): the argument is
 // checked as that reference or slice, rooted where its branches are, before
 // the specialization and the callee's effects are keyed on it; phase 2
 // checks it so again, in order with the other arguments. `skip` is a
@@ -378,10 +380,12 @@ inline void TypeCheck::BindBranchesByRef(vector<Node *> &argnodes, vector<Val> &
 
 // One argument of those, for a parameter of type pt, `declared` as written
 // (null where it is untyped): arrays of different types join as a slice only
-// at a parameter declared a slice.
+// at a parameter declared a slice. One that does not bind the branches takes
+// the construct's copy, which makes their `&` redundant.
 inline void TypeCheck::BindBranchByRef(Node *&n, Val &v, TypeExpr *pt, TypeExpr *declared) {
     if (!declared || declared->kind != TY_SLICE) NoArrayJoin(v);
     auto byref = v.storagebranches && pt->kind == TY_REF && pt->ref->lenstorage < 0;
+    if (!byref) RefCopyWarnings(v);
     if (!byref && !ViewedBranches(n, v, pt)) return;
     DestScope ds(*this, Dest {});
     SlotScope ss(*this, false);
@@ -685,8 +689,8 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
     }
     // An lvalue meeting a reference parameter binds by reference (§4.1),
     // so a generic pointee unifies with the argument's own type. So does
-    // a control construct whose branches are all non-fixed storage, each
-    // branch binding by reference (BindBranchesByRef).
+    // a control construct whose branches are all storage, or references,
+    // each branch binding by reference (BindBranchesByRef).
     if ((av.lvalue || av.storagebranches) && pt->kind == TY_REF && pt->ref->lenstorage < 0 &&
         av.type->kind != TY_REF) {
         Val rv = av;
@@ -880,6 +884,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
         argvals[found] = CheckValue(argnodes[found], ast.RefTo(enumtype, c->line), true);
     }
     if (argvals[found].implicitcopy) ImplicitCopyError(argvals[found].implicitcopy);
+    RefCopyWarnings(argvals[found]);
     BindBranchesByRef(argnodes, argvals, matches[0].paramtypes, matches[0].sf, found);
     // Specialize every arm; return types and the other parameters must
     // agree across the set.
@@ -2817,13 +2822,14 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
     {
         DestScope ds(*this, Dest {});
         for (size_t i = 0; i < ptypes.size(); i++) {
+            auto byref = argvals[i].storagebranches && ptypes[i]->kind == TY_REF;
+            if (!byref) RefCopyWarnings(argvals[i]);
             auto viewed = ViewedBranches(c->args[i], argvals[i], ptypes[i]);
             auto v = CheckArg(c->args[i], ptypes[i]);
             // A control construct whose branches this bound by reference, or
             // viewed whole, is that reference or slice, rooted where its
             // branches are.
-            if ((argvals[i].storagebranches && ptypes[i]->kind == TY_REF) || viewed)
-                argvals[i] = v;
+            if (byref || viewed) argvals[i] = v;
         }
     }
     // Check the body inline, with lookups chaining to the definer. The body
@@ -2872,7 +2878,8 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
     PopScope();
     frames.pop_back();
     // The call's value is a copy of the body's, a temporary of the calling
-    // statement as any call's result is (§9.2).
+    // statement as any call's result is (§9.2): no storage to bind by
+    // reference, even where the body's value names a variable.
     return TempCopy(v);
 }
 

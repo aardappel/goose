@@ -703,11 +703,12 @@ inline void TypeCheck::SlotRoots(Val &v) {
         if (auto sv = SliceVarOf(a.root)) sv->slotref = true;
 }
 
-// The type of the storage lvalue v denotes, which a reference to it points
-// at: its value's, but for varint storage, whose value is the i64 it
-// decodes to (§3.6).
+// The type of the storage lvalue v denotes, or each branch of a construct v
+// does (Val::storagebranches), which a reference to it points at: its
+// value's, but for varint storage, whose value is the i64 it decodes to
+// (§3.6).
 inline TypeExpr *TypeCheck::StorageType(const Val &v) {
-    return v.lvalue && v.isvarint ? ast.inttypes[IS_VARINT] : v.type;
+    return (v.lvalue || v.storagebranches) && v.isvarint ? ast.inttypes[IS_VARINT] : v.type;
 }
 
 inline bool TypeCheck::BindsRef(const Val &v, TypeExpr *dt) {
@@ -783,17 +784,26 @@ inline void TypeCheck::ImplicitCopyError(Node *n) {
                  what, ") for a copy, or bind it by reference"));
 }
 
+// A branch `&x` of a fixed-size x whose construct copies it (§4.1).
+inline void TypeCheck::RefCopyWarning(Node *n) {
+    auto what = ExprStr(Is<Unary>(n)->child);
+    Warn(n, cat("redundant &: the construct's value is a copy of ", what, " either way (§4.1); "
+                "a reference-typed binding binds ", what, " without it"));
+}
+
 // A branch's value v whose construct has no destination type: the
 // construct's value is a copy of it, of type dt, which non-fixed storage, or
 // a reference to it, reaches only through copy(x), as at a value destination
 // (§4.1). On an argument's path (argpath) a reference parameter may yet bind
-// the branch by reference instead, and on a construct's first check of its
-// branches (joinpath) they may yet join as a slice; `out`, the value the
-// branch gives its construct, notes both for that argument or construct.
+// the branch by reference instead, where it is storage of any size class or
+// a reference, and on a construct's first check of its branches (joinpath)
+// they may yet join as a slice; `out`, the value the branch gives its
+// construct, notes both for that argument or construct.
 inline void TypeCheck::CheckBranchCopy(const Val &v, Node *n, TypeExpr *dt, Val &out) {
-    out.storagebranches = v.storagebranches || (IsNonFixedLValue(v) && Referenceable(n, v)) ||
-                          IsNonFixedRef(v);
+    out.storagebranches = v.storagebranches || (v.lvalue && Referenceable(n, v)) ||
+                          IsPlainRef(v.type);
     out.implicitcopy = v.implicitcopy;
+    out.refcopies = v.refcopies;
     if (!ImplicitCopy(v, n, dt)) return;
     if (argpath != n && joinpath != n) ImplicitCopyError(n);
     if (!out.implicitcopy) out.implicitcopy = n;
@@ -867,12 +877,12 @@ inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bo
         v.type->kind != TY_ARRAY && Is<StructLit>(c->defaultinit))
         n = c->defaultinit;
     auto dt = expected && expected->kind != TY_VOID ? expected : DecayRef(v).type;
-    if (branchcopy && UserRefOf(n) && IsPlainRef(v.type) && !KeepsRef(v, dt) &&
-        ClassOf(dt) == SC_FIXED) {
-        auto what = ExprStr(Is<Unary>(n)->child);
-        Warn(n, cat("redundant &: the construct's value is a copy of ", what, " either way "
-                    "(§4.1); a reference-typed binding binds ", what, " without it"));
-    }
+    // An argument's parameter may bind the branch by reference instead, which
+    // makes the & redundant another way: the argument's check against it
+    // says which (argpath, RefCopyWarnings).
+    auto refcopy = branchcopy && UserRefOf(n) && IsPlainRef(v.type) && !KeepsRef(v, dt) &&
+                   ClassOf(dt) == SC_FIXED;
+    if (refcopy && argpath != n) RefCopyWarning(n);
     Val copied;
     if (!expected || expected->kind == TY_VOID) {
         if (branchcopy) CheckBranchCopy(v, n, dt, copied);
@@ -894,8 +904,10 @@ inline Val TypeCheck::CheckValue(Node *&n, TypeExpr *expected, bool callsite, bo
             else if (litfloat && !TypeEq(from, expected)) RetypeFlex(n, expected);
         }
     }
+    if (refcopy && argpath == n) copied.refcopies.push_back(n);
     v.storagebranches = copied.storagebranches;
     v.implicitcopy = copied.implicitcopy;
+    v.refcopies = std::move(copied.refcopies);
     n->exprtype = v.type;
     RecordVal(n, v);
     return v;

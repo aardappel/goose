@@ -957,7 +957,10 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     }
     v.isnull = a.isnull && b.isnull;   // Both null: still a null, which names no root.
     v.storagebranches = a.storagebranches && b.storagebranches;
+    v.isvarint = a.isvarint && b.isvarint;
     v.implicitcopy = a.implicitcopy ? a.implicitcopy : b.implicitcopy;
+    v.refcopies = a.refcopies;
+    v.refcopies.insert(v.refcopies.end(), b.refcopies.begin(), b.refcopies.end());
     // Wherever either branch's value may point, the merged one may (§9.2).
     v.TakeAlts(a);
     v.Add(b);
@@ -1075,12 +1078,21 @@ inline void TypeCheck::CheckBranchRoot(const Val &v, int depth, Node *at, const 
 // storage it was copied from (a variable, or a temporary of a scope the
 // construct has left), it names no storage to bind by reference, and it is
 // read-only: a write would change the copy and nothing else. What it holds
-// still points where the source's contents do. A reference or slice is the
-// reference itself.
+// still points where the source's contents do. A reference is the reference
+// itself, and so is a slice, pointing where the source does, as writable;
+// but the slot holding the slice is the temporary, no storage to bind
+// either (Val::slot). A reference parameter binds the storage a construct's
+// branches name instead (CheckBranchCopy), never the construct itself.
 inline Val TypeCheck::TempCopy(Val v) {
-    if (!v.type || v.isnull || IsRefOrSlice(v.type) || v.type->kind == TY_VOID ||
+    if (!v.type || v.isnull || v.type->kind == TY_REF || v.type->kind == TY_VOID ||
         v.type->kind == TY_FN)
         return v;
+    if (v.type->kind == TY_SLICE) {
+        v.lvalue = false;
+        v.slot = Prov {};
+        v.hasslot = false;
+        return v;
+    }
     if (!v.holderset && HoldsPlainRef(v.type)) {
         // What the source holds is bounded by its storage, as a container
         // read's is (ContainerRead).
@@ -1924,7 +1936,9 @@ inline void TypeCheck::CheckBreak(Break *b) {
         exit.holderset = v.holderset;
         exit.holderfrom = v.holderfrom;
         exit.storagebranches = v.storagebranches;
+        exit.isvarint = v.isvarint;
         exit.implicitcopy = v.implicitcopy;
+        exit.refcopies = v.refcopies;
         exit.joinslice = v.joinslice;
         exit.joinhasslice = v.joinhasslice;
         exit.joinat = v.joinat;
