@@ -188,25 +188,9 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
             RenderLit(out, " }");
             return;
         }
-        case TY_VARIANT: {
-            auto ei = EIVar(t);
-            auto vi = ei->en->VariantIndex(t->var->variant);
-            auto &v = ei->en->variants[vi];
-            if (v.fields.empty()) {
-                RenderLit(out, cat(ei->en->name, ".", v.name));
-                return;
-            }
-            RenderLit(out, cat(v.name, " { "));
-            auto first = true;
-            for (auto i = 0; i < (int)v.fields.size(); i++) {
-                if (v.fields[i].ispad) continue;
-                if (!first) RenderLit(out, ", ");
-                first = false;
-                RenderLoc(out, FieldLocAt(lv, i), ei->vftypes[vi][i], true, c, ln);
-            }
-            RenderLit(out, " }");
+        case TY_VARIANT:
+            RenderVariant(out, lv, t, c, ln);
             return;
-        }
         case TY_ENUM: {
             auto ei = EIOf(t);
             auto varmode = t->enu->varmode;
@@ -232,11 +216,28 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
                         pl = BytesLoc(cat("((uint8_t *)&((", CT(t), " *)(", lv.s, "))->u.v_",
                                           Sanitize(ei->en->variants[vi].name), ")"), vt, lv);
                     }
+                    // An overload rendering one part of a fixed-mode value
+                    // may overwrite it with another variant, and nothing may
+                    // refer into its payload meanwhile (§3.5): the parts are
+                    // rendered from a copy, where the checker has them lie
+                    // (CheckRenderable). A payload with self-relative
+                    // references, which a copy would not keep (§3.9), stays
+                    // in place: the checker lets no overload run among its
+                    // parts.
+                    if (!varmode && c && !c->fmtspecs.empty() && !HasRelRef(vt, false)) {
+                        auto cp = T();
+                        L(CT(vt), " ", cp, " = ", pl.s, ";");
+                        pl.s = cp;
+                        pl.viaref = false;
+                    }
                 } else {
                     pl = lv;
                     pl.t = vt;
                 }
-                RenderLoc(out, pl, vt, nested, c, ln);
+                // As the variant's literal, whatever overload the argument
+                // has for the variant type, which the checker only looks
+                // for where a value has that type.
+                RenderVariant(out, pl, vt, c, ln);
                 L("break;");
                 ind--;
                 L("}");
@@ -248,6 +249,26 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
         default:
             Fail(ln, cat("cannot render a value of type ", Mangle(t)));
     }
+}
+
+// A variant's positional literal, its payload's parts rendered from lv.
+inline void CodeGen::RenderVariant(Loc &out, Loc lv, TypeExpr *t, Call *c, Line ln) {
+    auto ei = EIVar(t);
+    auto vi = ei->en->VariantIndex(t->var->variant);
+    auto &v = ei->en->variants[vi];
+    if (v.fields.empty()) {
+        RenderLit(out, cat(ei->en->name, ".", v.name));
+        return;
+    }
+    RenderLit(out, cat(v.name, " { "));
+    auto first = true;
+    for (auto i = 0; i < (int)v.fields.size(); i++) {
+        if (v.fields[i].ispad) continue;
+        if (!first) RenderLit(out, ", ");
+        first = false;
+        RenderLoc(out, FieldLocAt(lv, i), ei->vftypes[vi][i], true, c, ln);
+    }
+    RenderLit(out, " }");
 }
 
 // A user `format(out, v)` overload applied to the value at lv.

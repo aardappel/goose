@@ -1,0 +1,23 @@
+Circle { A5, [1, 2] }
+Rect { 4096, 1000000 }
+Circle { A5, [1, 2] } Rect { 4096, 1000000 }
+Circle { A6, [1, 2] }
+Circle { A7, [1, 2] }; Rect { 4096, 1000000 }
+Circle { A8, [1, 2] }
+Shape.Dot
+Two { B5, 6 }
+Wide { 4096, 77 }
+Box { 1, Round { C1, [1, 2] }, 3 }
+Box { 1, Flat { 4096, 1000000 }, 3 }
+[Round { C1, [1, 2] }, Flat { 4096, 1000000 }]
+[Round { C3, [1, 2] }]
+[Round { C4, [1, 2] }, Flat { 4096, 1000000 }]
+Round { C6, [1, 2] }
+Round { C7, [1, 2] }
+Round { C9, [1, 2] }
+Wrap { Round { C8, [1, 2] }, 9 }
+Outer.Empty
+Called { Pin { D1, [1, 2] }, "nm" }
+Called { Bar { 4096, 1000000 }, "nm" }
+Mix { Hi { 1 }, hi2 }
+Blob { L1, [T { 1 }, T { 2 }, T { 3 }], To { T { 2 }, 4 } }

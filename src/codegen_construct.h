@@ -167,15 +167,16 @@ inline bool CodeGen::HasUninitSlots(TypeExpr *t) {
 
 // Does a fixed type contain relative references at any depth? Literals of
 // such types must construct in their final location, not via a temp.
-inline bool CodeGen::HasRelRef(TypeExpr *t) {
+// `inpool`: `in pool` references count too, not only self-relative ones.
+inline bool CodeGen::HasRelRef(TypeExpr *t, bool inpool) {
     switch (t->kind) {
-        case TY_REF: return t->ref->lenstorage >= 0;
+        case TY_REF: return t->ref->lenstorage >= 0 && (inpool || !t->ref->pool);
         case TY_STRUCT: case TY_ENUM: case TY_VARIANT:
             if (t->kind == TY_ENUM && t->enu->varmode) return false;
-            return AnyField(t, [&](TypeExpr *ft) { return HasRelRef(ft); });
+            return AnyField(t, [&](TypeExpr *ft) { return HasRelRef(ft, inpool); });
         case TY_ARRAY:
             return (t->arr->akind == A_FIXED || t->arr->akind == A_LIMITED) &&
-                   HasRelRef(t->arr->sub);
+                   HasRelRef(t->arr->sub, inpool);
         default: return false;
     }
 }

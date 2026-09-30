@@ -436,7 +436,15 @@ that argument may refer into what the overload shrinks (§5.1). A slice's
 elements are rendered from the view their rendering began with, and a
 value behind a reference from where the reference pointed then: an overload
 that re-points the slice or rebinds the reference meanwhile does not change
-the rest (§2).
+the rest (§2). A fixed-mode ADT's payload is rendered from a copy taken
+once its tag is read, since an overload may overwrite the ADT with another
+variant and nothing may refer into its payload (§3.5): the rest of the
+payload is still the variant the rendering began with, and an overload
+taking a part of it by reference is given the copy's, read-only. A payload
+holding self-relative references, which a copy does not keep (§3.9),
+cannot be rendered around an overload for a part of it. The payload
+renders as its variant's literal even where there is an overload for the
+variant type, which renders values of that type.
 
 ### 3.8 References
 
@@ -583,8 +591,10 @@ array/pool* as the location storing it.
   be re-stored with `.=`/`=`.
 * Copying a *value that contains* self-relative references (assignment from
   an lvalue, a by-value argument, a by-value match binder, an element copy,
-  an `append` of anything but an array literal, a `resize` fill value, which
-  is copied into every slot it adds even when it is a literal)
+  an `append` of anything but an array literal, a fixed-mode ADT's payload
+  rendered around a `format` overload for a part of it (§3.7), a `resize`
+  fill value, which is copied into every slot it adds even when it is a
+  literal)
   is a compile error: the copied offsets would still be measured from the
   source location. Construct such values in place (literals), and bind their
   match payloads by reference. (TODO 16: track the region a relative

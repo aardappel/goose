@@ -761,7 +761,7 @@ struct CodeGen {
     void EmitRelSelfAt(const string &fa, TypeExpr *rt, int64_t fieldoff, Line ln,
                        bool inroot = true);
     void EmitRelSelfStore(const string &stk, TypeExpr *rt, int64_t fieldoff, Line ln);
-    bool HasRelRef(TypeExpr *t);
+    bool HasRelRef(TypeExpr *t, bool inpool = true);
     bool HasUninitSlots(TypeExpr *t);
 
     // Byte span of the largest fixed value that can be a relative
@@ -933,6 +933,7 @@ struct CodeGen {
     void RenderLit(Loc &out, const string &text);
     void RenderN(Loc &out, const string &nexpr);
     void RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call *c, Line ln);
+    void RenderVariant(Loc &out, Loc lv, TypeExpr *t, Call *c, Line ln);
     void EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln);
     Loc RenderedLoc(Node *a);
     Loc RenderToTemp(Node *a, Call *c);

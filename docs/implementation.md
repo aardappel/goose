@@ -1624,7 +1624,15 @@ rebinds the caller's variable or is recorded in its container
 (`ApplyCalleeStores`), and it re-points no slot `&` could not write. The
 temporary is read-only (§9.5), and codegen passes one wherever the
 optimizer reduces the argument to the storage it was copied from
-(`OptRendered`, **Views of copies**).
+(`OptRendered`, **Views of copies**). The parts of a fixed-mode ADT's
+payload lie in a temporary too, the copy codegen renders them from
+(§3.15): `CheckRenderable` takes them out of a `TempCopy` of the ADT, whose
+contents are the ADT's, so an overload given one by reference can neither
+keep it nor write it, as nothing may refer into the payload itself (§3.5).
+Codegen renders a payload holding self-relative references in place, a
+copy's offsets being measured from where the payload was (§3.9), so a
+variant whose parts' checks specialized an overload (`Call::fmtspecs`
+grew) is rejected when its payload holds one.
 
 **Growth during construction** (§1.3(4), §4.2). A value built in place at an
 array's top or slot is under construction while its expression is checked,
@@ -2255,6 +2263,13 @@ presence of aliases (`Snapshot`, `IndexLoc`, `GenSlice`, `Assign::CgStmt`,
   first part (`RenderLoc`, `PinLoc`). An overload that re-points the slice
   or rebinds the reference leaves the rest rendered from what the
   rendering began with, which the checker holds meanwhile (`renderarg`).
+  A fixed-mode ADT's payload, which an overload may overwrite with another
+  variant (§3.5), is copied into a C local of its variant's type once the
+  tag is read, wherever the argument has overloads, and its parts are
+  rendered from there, as the variant's literal (`RenderVariant`), never
+  through an overload for the variant type, which the checker only
+  specializes for values of that type. One holding self-relative
+  references stays in place, where the checker lets no overload run.
 * A by-value result that is immediately viewed still has its own temporary
   storage through the containing statement. Inlining or selecting a
   constant branch must preserve that copy when replacing it with the
