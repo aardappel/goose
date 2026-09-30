@@ -12,6 +12,12 @@ namespace goose {
 // The annotation fields typecheck fills are freshly defaulted by the leaf
 // constructors below, so cloning an already-checked tree yields a clean one.
 
+inline Node *Node::Clone(Ast &ast) const {
+    auto c = Clone1(ast);
+    c->origin = Origin();
+    return c;
+}
+
 template<typename T> T *CloneOrNull(Ast &ast, T *n) {
     return n ? (T *)n->Clone(ast) : nullptr;
 }
@@ -21,15 +27,15 @@ inline void CloneNodes(Ast &ast, const vector<Node *> &src, vector<Node *> &dst)
     for (auto n : src) dst.push_back(n->Clone(ast));
 }
 
-inline Node *IntLit::Clone(Ast &ast) const { return ast.New<IntLit>(line, val, text, uns); }
-inline Node *FltLit::Clone(Ast &ast) const { return ast.New<FltLit>(line, val, text); }
-inline Node *BoolLit::Clone(Ast &ast) const { return ast.New<BoolLit>(line, val); }
-inline Node *NullLit::Clone(Ast &ast) const { return ast.New<NullLit>(line); }
-inline Node *SelfRef::Clone(Ast &ast) const { return ast.New<SelfRef>(line); }
-inline Node *StrLit::Clone(Ast &ast) const { return ast.New<StrLit>(line, val, multiline); }
-inline Node *Ident::Clone(Ast &ast) const { return ast.New<Ident>(line, name, ns); }
+inline Node *IntLit::Clone1(Ast &ast) const { return ast.New<IntLit>(line, val, text, uns); }
+inline Node *FltLit::Clone1(Ast &ast) const { return ast.New<FltLit>(line, val, text); }
+inline Node *BoolLit::Clone1(Ast &ast) const { return ast.New<BoolLit>(line, val); }
+inline Node *NullLit::Clone1(Ast &ast) const { return ast.New<NullLit>(line); }
+inline Node *SelfRef::Clone1(Ast &ast) const { return ast.New<SelfRef>(line); }
+inline Node *StrLit::Clone1(Ast &ast) const { return ast.New<StrLit>(line, val, multiline); }
+inline Node *Ident::Clone1(Ast &ast) const { return ast.New<Ident>(line, name, ns); }
 
-inline Node *ArrayLit::Clone(Ast &ast) const {
+inline Node *ArrayLit::Clone1(Ast &ast) const {
     auto a = ast.New<ArrayLit>(line);
     CloneNodes(ast, elems, a->elems);
     a->fillval = CloneOrNull(ast, fillval);
@@ -38,7 +44,7 @@ inline Node *ArrayLit::Clone(Ast &ast) const {
     return a;
 }
 
-inline Node *StructLit::Clone(Ast &ast) const {
+inline Node *StructLit::Clone1(Ast &ast) const {
     auto sl = ast.New<StructLit>(line, type);
     sl->defaultall = defaultall;
     sl->inits.reserve(inits.size());
@@ -46,19 +52,19 @@ inline Node *StructLit::Clone(Ast &ast) const {
     return sl;
 }
 
-inline Node *Unary::Clone(Ast &ast) const {
+inline Node *Unary::Clone1(Ast &ast) const {
     return ast.New<Unary>(line, op, child->Clone(ast));
 }
 
-inline Node *Binary::Clone(Ast &ast) const {
+inline Node *Binary::Clone1(Ast &ast) const {
     return ast.New<Binary>(line, op, left->Clone(ast), right->Clone(ast));
 }
 
-inline Node *Dot::Clone(Ast &ast) const {
+inline Node *Dot::Clone1(Ast &ast) const {
     return ast.New<Dot>(line, obj->Clone(ast), name, ns);
 }
 
-inline Node *Call::Clone(Ast &ast) const {
+inline Node *Call::Clone1(Ast &ast) const {
     auto c = ast.New<Call>(line, callee->Clone(ast));
     c->tyargs = tyargs;
     for (size_t i = 0; i < args.size(); i++)
@@ -67,11 +73,11 @@ inline Node *Call::Clone(Ast &ast) const {
     return c;
 }
 
-inline Node *Index::Clone(Ast &ast) const {
+inline Node *Index::Clone1(Ast &ast) const {
     return ast.New<Index>(line, obj->Clone(ast), idx->Clone(ast));
 }
 
-inline Node *SliceExpr::Clone(Ast &ast) const {
+inline Node *SliceExpr::Clone1(Ast &ast) const {
     auto sl = ast.New<SliceExpr>(line, obj->Clone(ast));
     sl->lo = CloneOrNull(ast, lo);
     sl->hi = CloneOrNull(ast, hi);
@@ -81,30 +87,29 @@ inline Node *SliceExpr::Clone(Ast &ast) const {
     return sl;
 }
 
-inline Node *AsCast::Clone(Ast &ast) const {
+inline Node *AsCast::Clone1(Ast &ast) const {
     auto c = ast.New<AsCast>(line, child->Clone(ast), type, unchecked);
     c->implicit = implicit;
-    c->origin = Origin();
     return c;
 }
 
-inline Node *RangeExpr::Clone(Ast &ast) const {
+inline Node *RangeExpr::Clone1(Ast &ast) const {
     return ast.New<RangeExpr>(line, lo->Clone(ast), hi->Clone(ast));
 }
 
-inline Node *Block::Clone(Ast &ast) const {
+inline Node *Block::Clone1(Ast &ast) const {
     auto b = ast.New<Block>(line);
     CloneNodes(ast, stmts, b->stmts);
     b->tail = CloneOrNull(ast, tail);
     return b;
 }
 
-inline Node *IfExpr::Clone(Ast &ast) const {
+inline Node *IfExpr::Clone1(Ast &ast) const {
     return ast.New<IfExpr>(line, cond->Clone(ast), (Block *)thenb->Clone(ast),
                            CloneOrNull(ast, elseb));
 }
 
-inline Node *MatchExpr::Clone(Ast &ast) const {
+inline Node *MatchExpr::Clone1(Ast &ast) const {
     auto m = ast.New<MatchExpr>(line, scrutinee->Clone(ast));
     m->arms.reserve(arms.size());
     for (auto &arm : arms) {
@@ -120,19 +125,19 @@ inline Node *MatchExpr::Clone(Ast &ast) const {
     return m;
 }
 
-inline Node *EarlyBlock::Clone(Ast &ast) const {
+inline Node *EarlyBlock::Clone1(Ast &ast) const {
     return ast.New<EarlyBlock>(line, (Block *)body->Clone(ast));
 }
 
-inline Node *While::Clone(Ast &ast) const {
+inline Node *While::Clone1(Ast &ast) const {
     return ast.New<While>(line, cond->Clone(ast), (Block *)body->Clone(ast));
 }
 
-inline Node *LoopExpr::Clone(Ast &ast) const {
+inline Node *LoopExpr::Clone1(Ast &ast) const {
     return ast.New<LoopExpr>(line, (Block *)body->Clone(ast));
 }
 
-inline Node *ForLoop::Clone(Ast &ast) const {
+inline Node *ForLoop::Clone1(Ast &ast) const {
     auto f = ast.New<ForLoop>(line, byref, var, idxvar, iter->Clone(ast),
                               (Block *)body->Clone(ast));
     f->vartype = vartype;
@@ -140,7 +145,7 @@ inline Node *ForLoop::Clone(Ast &ast) const {
     return f;
 }
 
-inline Node *Return::Clone(Ast &ast) const {
+inline Node *Return::Clone1(Ast &ast) const {
     auto r = ast.New<Return>(line);
     CloneNodes(ast, vals, r->vals);
     r->from = from;
@@ -148,20 +153,20 @@ inline Node *Return::Clone(Ast &ast) const {
     return r;
 }
 
-inline Node *Break::Clone(Ast &ast) const {
+inline Node *Break::Clone1(Ast &ast) const {
     return ast.New<Break>(line, CloneOrNull(ast, val));
 }
 
-inline Node *Continue::Clone(Ast &ast) const { return ast.New<Continue>(line); }
+inline Node *Continue::Clone1(Ast &ast) const { return ast.New<Continue>(line); }
 
 // InlineBlocks exist only after typecheck; the annotation-stripping Clone has
 // no meaning for them (the optimizer's copier in optimize.h preserves them).
-inline Node *InlineBlock::Clone(Ast &ast) const {
+inline Node *InlineBlock::Clone1(Ast &ast) const {
     assert(false);
     return ast.New<InlineBlock>(line, sf, spec, (Block *)body->Clone(ast));
 }
 
-inline Node *FunVal::Clone(Ast &ast) const {
+inline Node *FunVal::Clone1(Ast &ast) const {
     auto fv = ast.New<FunVal>(line, (Block *)body->Clone(ast));
     fv->params = params;
     fv->explicit_params = explicit_params;
@@ -169,7 +174,7 @@ inline Node *FunVal::Clone(Ast &ast) const {
     return fv;
 }
 
-inline Node *VarDecl::Clone(Ast &ast) const {
+inline Node *VarDecl::Clone1(Ast &ast) const {
     auto vd = ast.New<VarDecl>(line, isvar);
     vd->isconst = isconst;
     vd->reusable = reusable;
@@ -181,20 +186,20 @@ inline Node *VarDecl::Clone(Ast &ast) const {
     return vd;
 }
 
-inline Node *Assign::Clone(Ast &ast) const {
+inline Node *Assign::Clone1(Ast &ast) const {
     return ast.New<Assign>(line, op, lval->Clone(ast), rhs->Clone(ast));
 }
 
-inline Node *IncDec::Clone(Ast &ast) const {
+inline Node *IncDec::Clone1(Ast &ast) const {
     return ast.New<IncDec>(line, op, lval->Clone(ast));
 }
 
 // Declarations share their symbol; a nested FnDecl's body is cloned lazily
 // per specialization when the function is called, not here.
-inline Node *FnDecl::Clone(Ast &ast) const { return ast.New<FnDecl>(line, sf); }
-inline Node *StructDecl::Clone(Ast &ast) const { return ast.New<StructDecl>(line, st); }
-inline Node *EnumDecl::Clone(Ast &ast) const { return ast.New<EnumDecl>(line, en); }
-inline Node *AliasDecl::Clone(Ast &ast) const { return ast.New<AliasDecl>(line, al); }
+inline Node *FnDecl::Clone1(Ast &ast) const { return ast.New<FnDecl>(line, sf); }
+inline Node *StructDecl::Clone1(Ast &ast) const { return ast.New<StructDecl>(line, st); }
+inline Node *EnumDecl::Clone1(Ast &ast) const { return ast.New<EnumDecl>(line, en); }
+inline Node *AliasDecl::Clone1(Ast &ast) const { return ast.New<AliasDecl>(line, al); }
 
 // ---------------------------------------------------------------------------
 // Children: every direct child once, nulls skipped. A nested FnDecl's body is

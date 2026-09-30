@@ -52,7 +52,7 @@ single translation unit, included in the order the driver lists them.
 | Codegen | `codegen*.h` (`CodeGen`) | live specializations, globals | one C file, with `src/runtime/` prepended |
 | JIT | `jit.h` | the C text | the program run in-process through libtcc, when no `-o` was given |
 
-The passes are virtual methods on `Node` (`ast.h`): `Dump`, `Clone`,
+The passes are virtual methods on `Node` (`ast.h`): `Dump`, `Clone1`,
 `Children`, `Check`, `Cp1`/`Opt`, `BceWalk`/`BceMark`, `CgX`/`CgAny`/`CgStmt`.
 The per-node bodies of each pass live together in one file (`dump.h`,
 `clone.h`, `typecheck_nodes.h`, the tail of `optimize.h`, the tail of
@@ -65,9 +65,10 @@ split across the `typecheck_*.h` and `codegen_*.h` files by topic.
 merely point at each other and nothing has a destructor. Type expressions are
 shared templates: a function body is *cloned* per specialization
 (`Node::Clone`) and the clone carries that instantiation's annotations
-(`exprtype`, resolved symbols, `VarDef`s). The optimizer's inliner copies with
-`Cp1`, which preserves annotations and remaps the callee's `VarDef`s to fresh
-ones.
+(`exprtype`, resolved symbols, `VarDef`s), and each of its nodes names the
+node it copies as the source has it (`Node::origin`). The optimizer's
+inliner copies with `Cp1`, which preserves annotations and remaps the
+callee's `VarDef`s to fresh ones.
 
 **The compile thread.** `Main` runs the phases up to the finished C on a
 thread of its own with a 64 MB stack (`RunOnCompilerStack`, `COMPILERSTACK`
@@ -1897,6 +1898,19 @@ check again; a member builtin reports those noted on its receiver, which it
 takes as checked; a function value's declared reference parameter takes its
 provenance from the argument's check against it.
 
+Phase 2 checks each argument again, and so resolves each call nested in
+it again, its own two phases included. A builtin rendering a UFCS receiver
+the call checked (`CheckPrintable`), tag dispatch binding the argument it
+dispatches on by reference and a builtin a failed resolution falls back to
+check theirs again as well, as a cycle's next round (§3.11) checks its
+body again. Unlike a loop's earlier passes and a construct's first check of
+its branches (`WarningsHeld`, §3.4, §3.7), none of these checks is
+withdrawn: each one's warnings stand, the same ones every time. A default,
+and a function value's body, are cloned anew at each check of their call,
+as a function's body is per specialization, but every clone of a node
+names it (`Node::origin`), and a warning prints once for the node as the
+source has it, where a check first gives it (`PrintWarning`).
+
 The tier is the worst match of any argument, not a sum of conversion
 costs. Concrete exact matches beat generic exact matches, which beat any
 candidate requiring adaptation; two candidates at the same best tier are
@@ -1962,7 +1976,7 @@ function value, or, for a nested function, a variable or function of its
 `DeclSite`; a default leading to a call that takes it again is an error
 rather than an endless check. `CheckCall` erases the inserted defaults
 before it checks a call again, so every check (an argument's two phases, a
-loop's passes, a cycle's rounds) resolves the call as written; `Call::Clone`
+loop's passes, a cycle's rounds) resolves the call as written; `Call::Clone1`
 drops them, and a diagnostic prints the call without them (`dumpwritten`).
 Tag dispatch and rendering hooks give every argument (`TryMatch`'s
 `defaults` off). Later passes see ordinary arguments.
@@ -2199,7 +2213,7 @@ the other's as well (both may go where the value survives all three ways,
 else the right one), as two arguments of a call whose overloads or generics
 resolve them together are (more are not judged). A verdict waits as a
 warning does (`WarningsHeld`), and once the whole program is checked
-`ReportRedundantCasts` warns about each cast as written (`AsCast::origin`)
+`ReportRedundantCasts` warns about each cast as written (`Node::origin`)
 every check of which found it redundant, and which was not judged at a cast
 that warns itself.
 

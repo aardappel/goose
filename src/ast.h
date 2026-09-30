@@ -677,12 +677,19 @@ struct Val : Prov {
 struct Node {
     Line line;
     TypeExpr *exprtype = nullptr;   // Filled by typecheck (the value's type; TY_VOID for none).
+    // The node as the source has it, which every clone of it shares; null in
+    // that one itself.
+    const Node *origin = nullptr;
     Node(Line _line) : line(_line) {}
     virtual ~Node() {}
     virtual void Dump(string &s, int ind) const = 0;
     // Deep copy of the tree (typecheck clones function bodies per specialization
     // so annotations are per-instantiation). TypeExprs are shared, not cloned.
-    virtual Node *Clone(Ast &ast) const = 0;
+    // Clone1 copies one node, cloning its children, and Clone gives the copy
+    // its origin (implementations in clone.h).
+    Node *Clone(Ast &ast) const;
+    virtual Node *Clone1(Ast &ast) const = 0;
+    const Node *Origin() const { return origin ? origin : this; }
     // Calls f on every direct child; generic tree walks build on this
     // (implementations in clone.h alongside Clone).
     virtual void Children(const function<void(Node *)> &f) const = 0;
@@ -719,7 +726,7 @@ struct Node {
 
 #define NODE(name) struct name : Node { \
     void Dump(string &s, int ind) const override; \
-    Node *Clone(Ast &ast) const override; \
+    Node *Clone1(Ast &ast) const override; \
     void Children(const function<void(Node *)> &f) const override; \
     Val Check(TypeCheck &tc, TypeExpr *expected) override; \
     Node *Cp1(Inliner &inl) const override; \
@@ -926,17 +933,16 @@ NODE(AsCast)
     // An integer's conversion to a float the checker inserted (§6.3), not
     // written by the user: TypeCheck::ToFloat.
     bool implicit = false;
-    // The cast as the source has it, which the checker's clones of it (one
-    // per specialization) share; null in that one itself. A redundant cast
-    // warns once for all of them (TypeCheck::CastVerdict).
-    const AsCast *origin = nullptr;
     // Filled by typecheck: the concrete type the cast converts to. exprtype
     // can be wider: it is the slot the result lands in (an i8 cast stored
     // into an i64), and the cast still wraps and checks at its own type.
     TypeExpr *totype = nullptr;
     AsCast(Line l, Node *_child, TypeExpr *_type, bool _unchecked)
         : Node(l), child(_child), type(_type), unchecked(_unchecked) {}
-    const AsCast *Origin() const { return origin ? origin : this; }
+    // The cast as the source has it, which the checker's clones of it (one
+    // per specialization) share. A redundant cast warns once for all of them
+    // (TypeCheck::CastVerdict).
+    const AsCast *Origin() const { return static_cast<const AsCast *>(Node::Origin()); }
 NODE_END
 
 NODE(NullLit)                   // The null optional; adapts to any T? (§3.8).

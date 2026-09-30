@@ -469,7 +469,7 @@ struct TypeCheck {
     // An error at code checked earlier, with the instantiation chain taken
     // there: how a check made once the whole program has been reports one.
     [[noreturn]] void ErrorIn(Line l, const string &msg, const string &chain) {
-        for (auto &w : cur.pendingwarnings) if (!w.cast) fputs(w.text.c_str(), stderr);
+        for (auto &w : cur.pendingwarnings) if (!w.cast) PrintWarning(w);
         cur.pendingwarnings.clear();
         auto s = cat(Where(l), ": error: ", msg);
         // Show the offending source line with a caret-less underline context.
@@ -568,11 +568,13 @@ struct TypeCheck {
 
     [[noreturn]] void Error(const Node *n, const string &msg) { Error(n->line, msg); }
 
-    // A warning's text; or, where `cast` is set, a check's verdict on that
-    // explicit cast as the source has it (CastVerdict): redundant, `text`
-    // saying why, with the cast it was judged at, which has to stay; or not.
+    // A warning's text, about node `at` as the source has it; or, where
+    // `cast` is set, a check's verdict on that explicit cast as the source
+    // has it (CastVerdict): redundant, `text` saying why, with the cast it
+    // was judged at, which has to stay; or not.
     struct Warning {
         string text;
+        const Node *at = nullptr;
         const AsCast *cast = nullptr;
         bool redundant = false;
         const AsCast *dependson = nullptr;
@@ -582,12 +584,12 @@ struct TypeCheck {
     bool quiet = false;
     void Warn(const Node *n, const string &msg) {
         if (quiet) return;
-        auto text = cat(Where(n->line), ": warning: ", msg, "\n");
+        Warning w { cat(Where(n->line), ": warning: ", msg, "\n"), n->Origin() };
         if (WarningsHeld()) {
-            cur.pendingwarnings.push_back({ text });
+            cur.pendingwarnings.push_back(std::move(w));
             return;
         }
-        fputs(text.c_str(), stderr);
+        PrintWarning(w);
     }
     // Warnings wait while a check may yet be repeated: a loop's pass
     // (CheckLoopPasses), or a construct's first check of its branches
@@ -598,9 +600,22 @@ struct TypeCheck {
     void FlushWarnings() {
         for (auto &w : cur.pendingwarnings) {
             if (w.cast) castverdicts.push_back(std::move(w));
-            else fputs(w.text.c_str(), stderr);
+            else PrintWarning(w);
         }
         cur.pendingwarnings.clear();
+    }
+    // Other checks are repeated with every check's warnings standing, which
+    // gives the same ones again: a call's argument, checked for its overload
+    // and again against its parameter (ResolveCall), with every call nested
+    // in it; a receiver, checked for its call and again by the builtin taking
+    // it (CheckPrintable); a cycle's body, in every round (CheckSpecBody).
+    // Clones of one node give its warnings as well: a specialization's body,
+    // and a default or a function value's body at each check of a call. A
+    // warning prints once for the node as the source has it, where a check
+    // first gives it.
+    set<pair<const Node *, string>> warned;
+    void PrintWarning(const Warning &w) {
+        if (warned.insert({ w.at, w.text }).second) fputs(w.text.c_str(), stderr);
     }
 
     string TypeStr(const TypeExpr *t) {
