@@ -841,6 +841,10 @@ NODE(Dot)
     EnumInst *einst = nullptr;
     Dot(Line l, Node *_obj, string_view _name, string_view _ns = {})
         : Node(l), obj(_obj), name(_name), ns(_ns) {}
+    // A field, which lies in its object's storage: a path, as codegen
+    // addresses it (CodeGen::GenLoc). A property or a variant constant is a
+    // value computed on the spot (Dot::CgX).
+    bool IsField() const { return !variantconst && member < 0; }
 NODE_END
 
 NODE(Call)

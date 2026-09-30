@@ -476,9 +476,9 @@ inline CodeGen::Loc CodeGen::GenLoc(Node *n) {
         assert(id->vdef);
         return VarLoc(id->vdef);
     }
-    // A payload-less variant constant is a value, not a path: it is built on
-    // a temporary below like the other rvalues.
-    if (auto d = Is<Dot>(n); d && !d->variantconst) {
+    // A payload-less variant constant or a property (.len, .cap) is a value,
+    // not a path: it is built on a temporary below like the other rvalues.
+    if (auto d = Is<Dot>(n); d && d->IsField()) {
         auto lv = GenLoc(d->obj);
         if (lv.t->kind == TY_REF) DerefLoc(lv);
         return MemberLoc(lv, d);
@@ -902,7 +902,7 @@ inline string CodeGen::GenPtr(Node *n, string *stkout) {
     // a value, not a path: it constructs below like the other rvalues.
     Node *path = nullptr;
     if (Is<Ident>(n) || Is<Index>(n)) path = n;
-    else if (auto dot = Is<Dot>(n); dot && !dot->variantconst) path = n;
+    else if (auto dot = Is<Dot>(n); dot && dot->IsField()) path = n;
     else if (auto u = Is<Unary>(n); u && u->op == T_BITAND) path = u->child;
     if (path) {
         auto lv = GenLoc(path);

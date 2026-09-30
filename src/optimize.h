@@ -318,7 +318,7 @@ struct Optimizer {
                                    u->child->exprtype->kind != TY_REF)
             n = u->child;
         auto d = Is<Dot>(n);
-        return Is<Ident>(n) || (d && !d->variantconst) || Is<Index>(n);
+        return Is<Ident>(n) || (d && d->IsField()) || Is<Index>(n);
     }
 
     // A path to a value in storage that a view can see into.
@@ -1002,7 +1002,7 @@ inline Node *Binary::Opt(Optimizer &o) {
 }
 
 inline Node *Dot::Opt(Optimizer &o) {
-    obj = o.Viewed(this) ? o.OptViewed(obj) : o.Opt(obj);
+    obj = IsField() && o.Viewed(this) ? o.OptViewed(obj) : o.Opt(obj);
     if ((member == B_LEN || member == B_CAP) && Is<Ident>(obj)) {
         // .len of a fixed array / .cap of a static-capacity limited array are
         // compile-time constants; a plain variable receiver guarantees no
