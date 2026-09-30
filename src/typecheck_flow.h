@@ -225,12 +225,32 @@ inline bool TypeCheck::Viewable(TypeExpr *t) {
 // `root`, which a shrink of that array is checked against (§5.1, §5.2): it
 // is bound there; or a root of its only bounds the pointee's lifetime, at
 // or below that depth; or a binding its record does not show may have put
-// it there (RefMayRetarget).
-inline bool TypeCheck::RefMayPointInto(VarDef *v, VarDef *root) {
-    if (v->refrootknown)
-        for (auto &a : v->ref.alts)
+// it there (RefMayRetarget). For a grow-only array (`growonly`, of type
+// `bound` where root only bounds it), a view the storage of a parameter's
+// class held leads where that storage's views do (ClassReadMayPointInto),
+// but for a `var`, as HeldRefsMayPointInto takes one.
+inline bool TypeCheck::RefMayPointInto(VarDef *v, VarDef *root, bool growonly, TypeExpr *bound) {
+    if (v->refrootknown) {
+        for (auto &a : v->ref.alts) {
+            if (growonly && a.classread && !v->isvar) {
+                if (ClassReadMayPointInto(a.root, root, bound)) return true;
+                continue;
+            }
             if (a.root == root || (!a.exact && Depth(a.root) >= Depth(root))) return true;
+        }
+    }
     return RefMayRetarget(v, root);
+}
+
+// Whether a view the storage of parameter class cls held (RootAlt::
+// classread) may point into, or lead to, what a shrink of the grow-only
+// array at root frees, of type `bound` where root only bounds it: where the
+// activation's own stores into that storage say (HolderMayPointInto), the
+// stores its callers made there being theirs to judge (NoteLiveViews).
+inline bool TypeCheck::ClassReadMayPointInto(VarDef *cls, VarDef *root, TypeExpr *bound) {
+    auto arrtype = bound ? bound : root->type ? LoadType(root->type) : nullptr;
+    Line where;
+    return HolderMayPointInto(cls, root, arrtype, LiveEventBase(cls), &where);
 }
 
 // Whether a binding of v that its record does not show may point into the
@@ -303,6 +323,12 @@ inline bool TypeCheck::HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *
     for (auto &a : p.alts) {
         auto r = a.root;
         auto slot = slotof(r);
+        // What a view the storage of a parameter's class held leads to is
+        // where that storage's views lead (RootAlt::classread).
+        if (growonly && a.classread && !(v && v->isvar)) {
+            if (ClassReadMayPointInto(r, root, bound)) return true;
+            continue;
+        }
         if (r == root) return true;
         if (growonly && (slice || sub->kind != TY_SLICE)) {
             // A global holder, or static data, holds views of globals only,
@@ -1720,7 +1746,7 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         intemp = TempContents(iv, contents);
         if (t->kind == TY_REF && !t->ref->optional) {
             t = t->ref->sub;  // Iterate through refs.
-            iterprov.ClearSlotRead();   // As DerefLValue.
+            iterprov.ClearReads();   // As DerefLValue.
             if (t->kind == TY_SLICE) iterprov = SlotView(iv, t);
         }
         t = LoadType(t);

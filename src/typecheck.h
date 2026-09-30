@@ -988,7 +988,9 @@ struct TypeCheck {
     bool Viewable(TypeExpr *t);
     void GrowShrinkElems(TypeExpr *t, vector<TypeExpr *> &out);
     bool GrowShrinkContains(TypeExpr *t, TypeExpr *of);
-    bool RefMayPointInto(VarDef *v, VarDef *root);
+    bool RefMayPointInto(VarDef *v, VarDef *root, bool growonly = false,
+                         TypeExpr *bound = nullptr);
+    bool ClassReadMayPointInto(VarDef *cls, VarDef *root, TypeExpr *bound);
     bool RefMayRetarget(VarDef *v, VarDef *root);
     bool SlotReadable(TypeExpr *t);
     bool HeldRefsMayPointInto(VarDef *v, const Prov &p, TypeExpr *t, VarDef *root,
@@ -1275,13 +1277,12 @@ struct TypeCheck {
     // lying there holds, everything stored there outliving the storage, or
     // what a callee read out of storage its argument only bounds. How that
     // storage was reached says nothing of where this came from, so no
-    // alternative keeps a container it was read out of (RootAlt::from).
+    // alternative keeps a container it was read out of (RootAlt::from,
+    // classread).
     static Roots Bounds(const Roots &at) {
         Roots r = at;
-        for (auto &a : r.alts) {
-            a.exact = false;
-            a.from = nullptr;
-        }
+        r.Weaken();
+        for (auto &a : r.alts) a.from = nullptr;
         return r;
     }
     // The container whose stores say what a holder lying where `at` points

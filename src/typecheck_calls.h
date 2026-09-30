@@ -1414,7 +1414,7 @@ inline bool TypeCheck::EnvIs(const VarDef *vd, const EnvRead &r) {
             auto found = false;
             for (auto &y : b.alts)
                 found = found || (x.root == y.root && x.exact == y.exact && x.from == y.from &&
-                                  x.slotread == y.slotread);
+                                  x.slotread == y.slotread && x.classread == y.classread);
             if (!found) return false;
         }
         return true;
@@ -2058,7 +2058,9 @@ inline bool TypeCheck::SameRecord(const FnSpec *a, const FnSpec *b) {
         if (x.alts.size() != y.alts.size() || x.unknown != y.unknown) return false;
         for (size_t i = 0; i < x.alts.size(); i++) {
             auto &p = x.alts[i], &q = y.alts[i];
-            if (p.root != q.root || p.exact != q.exact || p.slotread != q.slotread) return false;
+            if (p.root != q.root || p.exact != q.exact || p.slotread != q.slotread ||
+                p.classread != q.classread)
+                return false;
         }
         return true;
     };
@@ -2508,13 +2510,16 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
 // slot held (Val::held), as bounds where the class only bounds the result
 // (Bounds) -- at a back edge, which reuses the body whatever it
 // passes (§7.8), to every argument the class's parameters get, merged;
-// anything else is itself.
+// anything else is itself. A view the storage of the parameter's class held
+// is one the storage an argument names exactly holds, which for a class of
+// the caller's is a view that class's storage held (RootAlt::classread).
 inline Val TypeCheck::RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &argvals,
                                 TypeExpr *t, Node *at) {
     Val m;
     m.type = t;
     m.Set(alt.root, alt.exact && alt.root != nullptr, alt.from,   // Static data is no array to name.
           alt.slotread);
+    m.alts[0].classread = alt.classread;
     m.writable = true;
     if (!alt.root || alt.root->isglobal || alt.root->ownerspec) return m;
     auto v = m;
@@ -2527,6 +2532,9 @@ inline Val TypeCheck::RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &a
         auto ar = view ? a.held.AsRoots() : ClassArgRoots(spec->argtypes[p], a);
         x.TakeAlts(alt.exact ? ar : Bounds(ar));
         for (auto &xa : x.alts) xa.slotread = alt.slotread && xa.slotread;
+        if (alt.classread)
+            for (size_t k = 0; k < x.alts.size(); k++)
+                x.alts[k].classread = ar.alts[k].exact && IsClassRoot(ar.alts[k].root);
         // The argument itself, or a view of it, where the result is no load
         // out of a slot.
         x.freshview = (view ? a.held.freshview : IsRefOrSlice(spec->argtypes[p]) && a.freshview) &&
@@ -2607,10 +2615,11 @@ inline Val TypeCheck::CallResult(Call *c, FnSpec *spec, vector<Val> &argvals) {
             v.byteview = v.byteview || ri.byteview || u8view;
             // A byte view a holder holds was stored there (Prov::freshview).
             v.freshview = !holder && (v.freshview || ri.freshview || u8view);
-            // A slot read where every return is one, as MergeVals keeps it,
-            // and a holder's contents where every return's are; a back
-            // edge's returns are not all checked yet.
-            if (backedge) v.ClearSlotRead();
+            // A slot read, or a view a class's storage held, where every
+            // return is one, as MergeVals keeps them, and a holder's contents
+            // where every return's are; a back edge's returns are not all
+            // checked yet.
+            if (backedge) v.ClearReads();
             if (holder) {
                 // The bound travels as the holder root; the value itself is
                 // a temporary.

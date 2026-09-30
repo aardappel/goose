@@ -831,8 +831,11 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
     for (auto &c : container.alts) {
         auto croot = c.root;
         // The container the value is read out of, whose stores say what it
-        // holds: a root that only bounds the container is none.
+        // holds: a root that only bounds the container is none. Out of the
+        // storage a parameter's class stands for, the value is one of the
+        // views that storage holds (RootAlt::classread).
         auto from = c.exact ? croot : nullptr;
+        auto classread = from && IsClassRoot(croot);
         // A holder whose contents point nowhere yet (Roots::unknown).
         if (croot && !croot->isglobal && croot->contents.Unknown()) {
             out.unknown = true;
@@ -844,7 +847,7 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
             if (from && !croot->isglobal && !croot->contents.None()) {
                 for (auto &a : croot->contents.alts) out.Add({ a.root, false, from });
             } else {
-                out.Add({ croot, false, from });
+                out.Add({ croot, false, from, false, classread });
             }
             continue;
         }
@@ -863,7 +866,7 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
         // Read out of a caller's container, its stores say what it holds.
         auto global = croot->isglobal;
         if (!global && (!c.exact || croot->ownerspec != CurRealFrame().spec)) {
-            out.Add({ croot, false, from });
+            out.Add({ croot, false, from, false, classread });
             continue;
         }
         // Only globals outlive globals (§11.1), so a global container's

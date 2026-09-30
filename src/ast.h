@@ -423,6 +423,18 @@ struct RootAlt {
     // there may still lead to a whole grow-shrink array, or to a variable
     // holding a view into one: nothing reached through a reference keeps it.
     bool slotread = false;
+    // Read out of the storage a parameter's class root stands for -- the
+    // caller's holder a reference parameter names, the elements of the
+    // caller's array a slice parameter views -- or points into what such a
+    // value views: one of the views that storage holds, never a reference
+    // into it, which `root` only bounds. That storage holds what the
+    // activation stored there and what its callers did, which each call
+    // judges by its record of the argument's storage (§5.1). Where a value
+    // may also be anything else rooted at the class -- the storage's own, or
+    // whatever the class bounds -- it is none: a merge keeps it only where
+    // every value has it, and a bound, a reference crossed and a back edge's
+    // result drop it.
+    bool classread = false;
 };
 
 // Every place a value may point, one alternative per root. A value that may
@@ -468,9 +480,10 @@ struct Roots {
         for (auto &b : alts) {
             if (b.root != a.root) continue;
             auto changed = (b.exact && !a.exact) || (b.slotread && !a.slotread) ||
-                           (!b.from && a.from);
+                           (b.classread && !a.classread) || (!b.from && a.from);
             b.exact = b.exact && a.exact;
             b.slotread = b.slotread && a.slotread;
+            b.classread = b.classread && a.classread;
             if (!b.from) b.from = a.from;
             return changed;
         }
@@ -484,9 +497,22 @@ struct Roots {
         return changed;
     }
     // Every alternative made a bound: the pointee is bounded by each root
-    // rather than known to be held in it.
-    void Weaken() { for (auto &a : alts) a.exact = false; }
-    void ClearSlotRead() { for (auto &a : alts) a.slotread = false; }
+    // rather than known to be held in it, or to be a view its storage held.
+    void Weaken() {
+        for (auto &a : alts) {
+            a.exact = false;
+            a.classread = false;
+        }
+    }
+    // Where a value was read out of (slotread, classread): nothing a
+    // reference leads to keeps it, nor does a back edge's result, whose
+    // returns are not all checked yet.
+    void ClearReads() {
+        for (auto &a : alts) {
+            a.slotread = false;
+            a.classread = false;
+        }
+    }
     // One alternative, and it holds the pointee: the value names one array.
     bool Exact() const { return alts.size() == 1 && alts[0].exact; }
     // The one root of an exact value, else the innermost of the alternatives'

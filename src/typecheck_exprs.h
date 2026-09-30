@@ -148,9 +148,10 @@ inline void TypeCheck::DerefLValue(LVal &lv, Node *at) {
     lv.letbound = false;
     lv.throughref = true;
     // The pointee may be a whole grow-shrink array, or a variable holding a
-    // view into one (RootAlt::slotread).
+    // view into one (RootAlt::slotread), and is none of the views a class's
+    // storage holds (RootAlt::classread).
     lv.isslot = false;
-    lv.ClearSlotRead();
+    lv.ClearReads();
     if (lv.type->kind == TY_INT && lv.type->intstorage == IS_VARINT) lv.isvarint = true;
 }
 
@@ -631,7 +632,8 @@ inline Val TypeCheck::DecayRef(Val v) {
     // A slice is the one its slot holds, as writable as that is, and the
     // slot is where the reference points (Val::slot); a compound pointee
     // value keeps the container info, harmless, though crossing the
-    // reference drops what a slot read says (RootAlt::slotread). A holder
+    // reference drops where the reference was read out of (RootAlt::
+    // slotread, classread). A holder
     // holds what was stored where the reference points, as one read out of
     // a container does (ContainerRead).
     if (r.type->kind == TY_SLICE) {
@@ -644,7 +646,7 @@ inline Val TypeCheck::DecayRef(Val v) {
         r.hasslot = true;
     } else {
         r.TakeAlts(v);
-        r.ClearSlotRead();
+        r.ClearReads();
         r.byteview = v.byteview && HoldsPlainRef(r.type);
         if (HoldsPlainRef(r.type)) {
             r.contents = Bounds(r);
@@ -960,7 +962,7 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
     if (dt->kind == TY_SLICE) {
         auto at = IsPlainRef(t) && t->ref->sub->kind == TY_ARRAY ? t->ref->sub : t;
         if (at->kind == TY_ARRAY && TypeEq(at->arr->sub, dt->sub)) {
-            if (at != t) v.ClearSlotRead();   // As DerefLValue.
+            if (at != t) v.ClearReads();   // As DerefLValue.
             t = v.type = ast.SliceOf(at->arr->sub, dt->line);
             t->cq = !v.writable;
             v.lvalue = false;

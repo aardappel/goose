@@ -238,7 +238,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                 rv.SetProv(sv);
             } else {
                 // As DerefLValue.
-                rv.ClearSlotRead();
+                rv.ClearReads();
                 rv.reached = LoadType(rt);
             }
         }
@@ -533,7 +533,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         case 'r':
             v.type = ast.RefTo(elem, c->line);
             v.TakeAlts(rv);
-            v.ClearSlotRead();
+            v.ClearReads();
             v.writable = rv.writable;
             // What a receiver that decays the reference loads through.
             c->rettypes.push_back(v.type);
@@ -541,7 +541,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         case 's':
             v.type = ast.SliceOf(elem, c->line);
             v.TakeAlts(rv);
-            v.ClearSlotRead();
+            v.ClearReads();
             v.writable = rv.writable;
             // What an adapting receiver (a limited array) constructs from.
             c->rettypes.push_back(v.type);
@@ -842,10 +842,14 @@ inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root
         auto held = !path && ShrinkMayFree(root, bound, growonly, PointeeOf(v.type), v.byteview) &&
                     v.Any([&](const RootAlt &a) {
                         // A slot read never points into a grow-shrink array
-                        // (§5.2), though it may into a grow-only one. An
-                        // inexact root bounds the lifetime: it may name any
-                        // outer owner, not just another at that depth.
+                        // (§5.2), though it may into a grow-only one, where
+                        // a view the storage of a parameter's class held
+                        // points where that storage's views do. An inexact
+                        // root bounds the lifetime: it may name any outer
+                        // owner, not just another at that depth.
                         if (!growonly && a.slotread) return false;
+                        if (growonly && a.classread)
+                            return ClassReadMayPointInto(a.root, root, bound);
                         return a.root == root || (!a.exact && Depth(a.root) >= Depth(root));
                     });
         // A reference to a slice also reaches where the slice points, and,
@@ -934,7 +938,7 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd,
             // survives this filter however unrelated its pointee looks.
             auto path = t->kind == TY_REF && ClassOf(t->ref->sub) == SC_RESIZABLE;
             auto into = !path && ShrinkMayFree(vd, bound, true, PointeeOf(t), v->ref.byteview) &&
-                        RefMayPointInto(v, vd);
+                        RefMayPointInto(v, vd, true, bound);
             // A reference to a slice or to a value holding references, the
             // path to an array included, also reaches what those point at,
             // and so does a slice of such values.
@@ -1929,13 +1933,24 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
     // references, or a slice of those, what those point into: where the
     // slice points (SlotView, without noting a slice variable's root as
     // read), and for a slice of holders what those hold, or where the
-    // holders' references may (HeldViews). An assignment's location is
-    // overwritten before it is read, and a slot a for loop reads again holds
-    // its sequence, which is held itself: only the slot counts.
+    // holders' references may (HeldViews). A view the storage of a
+    // parameter's class held, but in a `var`, is one of what that storage
+    // holds (RootAlt::classread): the class's contents, as HeldViews takes
+    // them. An assignment's location is overwritten before it is read, and a
+    // slot a for loop reads again holds its sequence, which is held itself:
+    // only the slot counts.
     auto views = [&](const Prov &p, TypeExpr *t, bool slotonly, bool isvar) {
         vector<LiveView> out;
-        if (t->kind != TY_REF || ClassOf(t->ref->sub) != SC_RESIZABLE)
-            out.push_back({ p, PointeeOf(t), false });
+        if (t->kind != TY_REF || ClassOf(t->ref->sub) != SC_RESIZABLE) {
+            auto own = p;
+            if (growonly && !isvar) {
+                Prov held = p;
+                std::erase_if(held.alts, [](const RootAlt &a) { return !a.classread; });
+                std::erase_if(own.alts, [](const RootAlt &a) { return a.classread; });
+                HeldViews(held, t, false, out);
+            }
+            out.push_back({ own, PointeeOf(t), false });
+        }
         if (slotonly) return out;
         if (t->kind == TY_SLICE) {
             if (growonly && HoldsPlainRef(t->sub)) HeldViews(p, t->sub, isvar, out);
@@ -1964,9 +1979,12 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
     };
     // Whether the callers judge where a view may point by alternative a: a
     // slot read points into no grow-shrink array (§5.2), as the scans say,
-    // though what a reference to a slice leads to may.
+    // though what a reference to a slice leads to may. What a class's
+    // storage holds is theirs to judge whatever array shrinks, the class's
+    // own included.
     auto judges = [&](const LiveView &w, const RootAlt &a) {
-        return CallersJudge(a.root, root) && (growonly || w.reached || !a.slotread);
+        return (w.contents || CallersJudge(a.root, root)) &&
+               (growonly || w.reached || !a.slotread);
     };
     // Every place a view may point that the callers judge, as a pair each.
     auto note = [&](const LiveView &w, const string &name) {
@@ -2078,11 +2096,12 @@ inline void TypeCheck::StoredViews(VarDef *r, bool exact, TypeExpr *pointee, boo
 // parameter views: the activation's own stores into it are on record, and
 // what the callers put there is a view of its contents, which each call
 // judges by its record of the storage its argument names (LiveShrink::
-// contents). There, a temporary the call is handed holds what `temps` says,
-// which the callee cannot write. Anything else points anywhere its root
-// bounds, as a `var` does, which a binding the record does not show yet may
-// have moved to another holder at that depth (HeldRefsMayPointInto). A
-// global holder is judged with the globals.
+// contents); so do a view that storage held and what it leads to
+// (RootAlt::classread). There, a temporary the call is handed holds what
+// `temps` says, which the callee cannot write. Anything else points
+// anywhere its root bounds, as a `var` does, which a binding the record does
+// not show yet may have moved to another holder at that depth
+// (HeldRefsMayPointInto). A global holder is judged with the globals.
 inline void TypeCheck::HeldViews(const Prov &p, TypeExpr *held, bool isvar,
                                  vector<LiveView> &out, const TempHolds *temps) {
     vector<TypeExpr *> pointees;
@@ -2095,7 +2114,7 @@ inline void TypeCheck::HeldViews(const Prov &p, TypeExpr *held, bool isvar,
             RecordedViews(r, LiveEventBase(r), r->type, out, seen);
             continue;
         }
-        if (a.exact && IsClassRoot(r) && !isvar) {
+        if ((a.exact || a.classread) && IsClassRoot(r) && !isvar) {
             RecordedViews(r, LiveEventBase(r), held, out, seen);
             Prov cv;
             cv.Set(r, true);
@@ -2270,10 +2289,21 @@ inline bool TypeCheck::MapLiveShrinks(const CallSite &site) {
                 // What the storage the argument names holds, where the pair
                 // is about that: each view it leads to as the caller sees
                 // it, by its record of the storage (HeldViews), a class of
-                // the caller's passing the question on. A temporary nothing
+                // the caller's passing the question on. A view of the
+                // callee's into what an argument views, where the argument
+                // is a view the storage of one of the caller's classes held
+                // (RootAlt::classread), points where that storage's views
+                // do: it is judged as what that storage holds, of a type
+                // leading to what the view points at. A temporary nothing
                 // recorded the contents of may hold anything outliving it.
+                auto contents = orig.contents;
+                auto held = orig.pointee;
+                if (!contents && orig.growonly && orig.pointee && la.classread) {
+                    contents = true;
+                    held = ast.SliceOf(orig.pointee, site.at->line);
+                }
                 vector<LiveShrink> each;
-                if (!orig.contents) {
+                if (!contents) {
                     each.push_back(ls);
                 } else if (IsTemp(la.root) &&
                            std::none_of(site.temps.begin(), site.temps.end(),
@@ -2286,10 +2316,10 @@ inline bool TypeCheck::MapLiveShrinks(const CallSite &site) {
                     each.push_back(x);
                 } else {
                     Prov lp;
-                    lp.Set(la.root, la.exact);
+                    lp.alts = { la };
                     lp.byteview = orig.byteview;
                     vector<LiveView> vs;
-                    HeldViews(lp, orig.pointee, false, vs, &site.temps);
+                    HeldViews(lp, held, false, vs, &site.temps);
                     for (auto &w : vs) {
                         for (auto &b : w.p.alts) {
                             auto x = ls;

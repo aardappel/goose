@@ -490,7 +490,7 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
             tc.Error(this, "optional value must be narrowed (if/guard/assert) before use");
         t = t->ref->sub;  // Auto-deref; ov's roots are already the pointee's owner.
         // As DerefLValue.
-        ov.ClearSlotRead();
+        ov.ClearReads();
         ov.reached = tc.LoadType(t);
     }
     // Builtin properties (.len/.cap) from the table.
