@@ -375,7 +375,10 @@ it over `path`. A crash or a failure at any point leaves `path` with either
 its old contents or all of the new ones. On a failure the new file is
 removed; after a crash it can remain, its name ending in `.tmp`.
 `rename_file` is the same one-step replacement for a file the program wrote
-itself, within one volume.
+itself, within one volume. On Windows no file can be replaced while another
+program has it open, and virus scanners open files just written for a
+moment, so both wait up to about a second for such a file before returning
+`false`.
 
 `list_dir` leaves out `.` and `..` and sorts the names bytewise, so a
 listing does not depend on the file system. A name that cannot be one line

@@ -76,6 +76,24 @@ static int gs_os_append_wide(gs_rref out, const wchar_t *w, int n) {
     free(s);
     return ok;
 }
+
+/* Moves `from` to `to`, replacing `to` if there is one, in one step.
+   Another process, such as a virus scanner reading a file just written, can
+   hold either open for a moment: while `to` is open anywhere it cannot be
+   replaced (ERROR_ACCESS_DENIED), nor `from` moved while it is open without
+   delete sharing (ERROR_SHARING_VIOLATION). Those failures are tried again
+   for about a second, unless `to` is a directory or read-only, which no
+   wait changes. */
+static int gs_os_replace(const wchar_t *from, const wchar_t *to) {
+    for (DWORD wait = 0;; wait = wait ? wait * 2 : 1) {
+        if (MoveFileExW(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return 1;
+        DWORD e = GetLastError(), a = GetFileAttributesW(to);
+        if ((e != ERROR_ACCESS_DENIED && e != ERROR_SHARING_VIOLATION) || wait > 512 ||
+            (a != INVALID_FILE_ATTRIBUTES && (a & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY))))
+            return 0;
+        Sleep(wait);
+    }
+}
 #else
 /* An fsync that reaches the disk: on macOS a plain one stops at the drive's
    cache. */
@@ -172,7 +190,7 @@ static uint8_t gs_os_rename_file(sl_u8 from, sl_u8 to) {
     gs_os_char f[GS_OS_PATH_MAX], t[GS_OS_PATH_MAX];
     if (gs_os_native(from, f) < 0 || gs_os_native(to, t) < 0) return 0;
 #ifdef _WIN32
-    return MoveFileExW(f, t, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    return gs_os_replace(f, t);
 #else
     if (rename(f, t) != 0) return 0;
     gs_os_sync_dir(t);
@@ -220,7 +238,7 @@ static uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data) {
         }
         ok = ok && FlushFileBuffers(h);
         if (!CloseHandle(h)) ok = 0;
-        ok = ok && MoveFileExW(t, p, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+        ok = ok && gs_os_replace(t, p);
         if (!ok) DeleteFileW(t);
 #else
         int fd = open(t, O_WRONLY | O_CREAT | O_EXCL, 0666);
