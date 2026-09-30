@@ -612,6 +612,9 @@ struct Val : Prov {
     // the i64 the varint decodes to, which no i64 storage holds, while a
     // reference to the storage is a read-only varint& (§3.8).
     bool isvarint = false;
+    // What a plain reference points at, loaded (TypeCheck::DecayRef): storage
+    // as an lvalue is, wherever the reference points, whatever roots it has.
+    bool pointee = false;
     // A slice lvalue: where its slot lies -- the variable, or the storage
     // the field or element is in -- which a reference to it is rooted at
     // (TypeCheck::AutoRef), as `&` of the slot is (§3.8), and as writable

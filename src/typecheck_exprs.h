@@ -631,6 +631,7 @@ inline Val TypeCheck::DecayRef(Val v) {
     if (!IsPlainRef(v.type)) return v;
     Val r;
     r.type = LoadType(v.type->ref->sub);
+    r.pointee = true;
     // A slice is the one its slot holds, as writable as that is, and the
     // slot is where the reference points (Val::slot). Any other pointee
     // lies where the reference points, as writable as the reference, as a

@@ -565,6 +565,22 @@ inline void TypeCheck::CheckPrintable(Call *c, const char *what, vector<Node *> 
                                       const Val *out) {
     auto &a = args[i];
     auto av = CheckValue(a, nullptr);
+    // A value that is no storage -- neither a variable, field or element nor
+    // what a reference names -- is rendered from a temporary codegen puts it
+    // in (GenLoc), which a format hook taking it by reference is handed,
+    // read-only (§3.7). A call's result, a struct or array literal and a
+    // control construct's value are rooted at one already; any other, such
+    // as an operator's result, a literal, a cast, a variant constant or a
+    // literal parameter, has no roots, which every rule would take for
+    // static data, and is rooted at one here, still holding what it held. A
+    // reference or slice keeps where it points (a slice's slot is below).
+    if (!av.lvalue && !av.pointee && av.None() && !IsRefOrSlice(av.type)) {
+        if (HoldsPlainRef(av.type)) {
+            av.contents = ContentsOf(av);
+            av.holderset = true;
+        }
+        av.Set(TempRoot(), true);
+    }
     // A slice that is no storage is rendered from a temporary, one the
     // optimizer keeps where it reduces the argument to storage (OptRendered),
     // which is the slot a format hook taking it by reference is given

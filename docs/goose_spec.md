@@ -426,9 +426,10 @@ text once for all three builtins. Taking it by reference, the overload is
 given the storage the `T` lies in, as a reference parameter is (§4.1): the
 variable, field or element holding it, or what a reference argument names,
 as writable as that is (§9.5); a `T` that is no storage lies in a
-temporary, read-only: a call's result, a `.len` or `.cap`, or the value of
-an `if`, `match` or block, a copy of what the branch taken gives even where
-that names a variable (§4.1). The overload is looked up in the
+temporary, read-only: a call's, an operator's or a cast's result, a
+literal, a `.len` or `.cap`, or the value of an `if`, `match` or block, a
+copy of what the branch taken gives even where that names a variable
+(§4.1). The overload is looked up in the
 namespace `T` is declared in, then globally (§11.1): rendering follows the
 type, not the namespace of the code printing it. The three builtins
 evaluate and render their arguments in order, each just before its text,

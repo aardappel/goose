@@ -1690,7 +1690,15 @@ taking a value by reference is given where it lies, as writable as the
 path to it: a reference argument's pointee lies where the reference
 points, its fields and elements with it, as writable as the reference
 (`DecayRef`, §3.8), and what the overload stores there is judged against
-that storage. An overload
+that storage. That pointee is storage whatever roots the reference has
+(`Val::pointee`). An argument that is no storage lies in the temporary
+codegen renders it from (`GenLoc`), and so do its parts: a call's result,
+a struct or array literal and a control construct's value are rooted at
+one already; any other has no roots (an operator's result, a scalar
+literal, a cast, a variant constant, a `.len`, a literal parameter), which
+every rule would take for static data outliving whatever an overload
+stores a reference into, and is rooted at a fresh one (`CheckPrintable`).
+An overload
 taking a slice by reference is given the slice's slot, which codegen passes
 (`EmitUserFormat`), bound as `RefSliceArgs` binds a slice lvalue
 (`SlotRoots`, `NoteHeld`). Every slice rendered has one (`Val::slot`): the
