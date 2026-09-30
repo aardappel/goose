@@ -23,7 +23,11 @@ inline TypeCheck::LVal TypeCheck::CheckLValue(Node *n) {
     };
     if (auto id = Is<Ident>(n)) {
         auto vd = LookupVar(id->name, id->ns, n);
-        if (!vd) Error(n, cat("unknown variable: ", id->name));
+        if (!vd) {
+            if (auto kind = ScopeNameKind(id->name))
+                Error(n, cat(id->name, " names a ", kind, ", not a variable"));
+            Error(n, cat("unknown variable: ", id->name));
+        }
         // A local's first assignment may construct it, but a global is
         // constructed only by its own initializer (§11.1): before that has
         // run, no path may start at it, whether it reads or writes.
@@ -2094,15 +2098,17 @@ inline void TypeCheck::ReportRedundantCasts() {
 // A name in a compile-time size, capacity or fill count, or in an integer
 // match pattern, checked in the scope it is written in. It resolves as any
 // name does (§11.1): a local of the name -- a parameter, or a variable around
-// a nested function or a block -- hides the global of the name and is no
-// constant (§3.3, §8.1). ConstIntValue cannot tell, and takes the global: a
-// size is evaluated wherever its type is compared, in another scope as often
-// as not. In a parameter default, which names what a top-level declaration
-// would, a name its scope makes something else is an error as well
-// (DefaultScopeName).
+// a nested function or a block --, a type parameter or a nested function
+// hides the global of the name and is no constant (§3.3, §8.1).
+// ConstIntValue cannot tell, and takes the global: a size is evaluated
+// wherever its type is compared, in another scope as often as not. In a
+// parameter default, which names what a top-level declaration would, a name
+// its scope makes something else is an error as well (DefaultScopeName).
 inline void TypeCheck::ConstName(Ident *id, const char *what) {
     if (auto vd = LookupVar(id->name, id->ns); vd && !vd->isglobal)
         Error(id, cat(what, " ", id->name, " names a local variable, not a constant"));
+    if (auto kind = ScopeNameKind(id->name))
+        Error(id, cat(what, " ", id->name, " names a ", kind, ", not a constant"));
     DefaultScopeName(id->name, id, false);
 }
 
@@ -2120,20 +2126,33 @@ inline void TypeCheck::ConstNamesIn(TypeExpr *t) {
 }
 
 // A size in the parameter or result types of a function or a block names
-// none of its parameters: there the name means the parameter, which holds
-// an argument, no constant, and hides the global of the name (§3.3, §11.1).
+// none of its parameters or type parameters: there the name means the
+// parameter, which holds an argument, or the type parameter, which stands
+// for a type, no constant, and hides the global of the name (§3.3, §11.1).
 inline void TypeCheck::SignatureNames(const vector<Param> &params,
-                                      const vector<TypeExpr *> &rets) {
+                                      const vector<TypeExpr *> &rets,
+                                      const vector<GenericParam> &generics) {
     auto check = [&](TypeExpr *t) {
         SizeNames(t, [&](Ident *id, const char *what) {
             for (auto &p : params)
                 if (p.name == id->name)
                     Error(id, cat(what, " ", id->name, " names a parameter, not a constant"));
         });
+        TypeParamSizes(t, generics);
     };
     for (auto &p : params)
         if (p.type) check(p.type);
     for (auto t : rets) check(t);
+}
+
+// A size in t naming one of the type parameters in `generics`: a function's
+// in its signature, a generic struct's or enum's in its fields' types.
+inline void TypeCheck::TypeParamSizes(TypeExpr *t, const vector<GenericParam> &generics) {
+    SizeNames(t, [&](Ident *id, const char *what) {
+        for (auto &g : generics)
+            if (g.name == id->name)
+                Error(id, cat(what, " ", id->name, " names a type parameter, not a constant"));
+    });
 }
 
 inline int64_t TypeCheck::FillCount(Node *n) {

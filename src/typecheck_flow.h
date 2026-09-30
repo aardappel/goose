@@ -573,7 +573,8 @@ inline VarDef *TypeCheck::NewVar(string_view name, TypeExpr *type, Line l, bool 
 
 // Name lookup: current frame's scopes innermost-out, then what the body sees
 // outside them (free variables of nested fns / function values, §7.5), then
-// globals, in the namespace order of docs/design/namespaces.md. A nested
+// globals, in the namespace order of docs/design/namespaces.md, unless a type
+// parameter or nested function of the name hides them (§11.1). A nested
 // function called after the scope declaring one of those ended cannot name
 // it, which `use`, the node naming it, reports; what the body finds of it
 // there is part of the body's key (NoteEnvRead).
@@ -598,17 +599,29 @@ inline VarDef *TypeCheck::LookupVar(string_view name, string_view ns, Node *use)
         return found;
     }
     if (use) DefaultScopeName(name, use, false);
+    if (ScopeNameKind(name)) return nullptr;
     auto g = ast.LookupGlobal(name, ns);
     return g && !g->defs.empty() ? g->defs[0] : nullptr;
+}
+
+// What the scopes around a use make a name that no variable in scope has
+// (§11.1): a type parameter, whatever it is bound to, or a nested function,
+// either of which hides the globals and functions of the name. Null for
+// neither: the name resolves in the namespace, then globally.
+inline const char *TypeCheck::ScopeNameKind(string_view name) {
+    const FnValBind *fn;
+    if (LookupTypeParam(name, fn) || fn) return "type parameter";
+    if (LookupLocalFn(name)) return "nested function";
+    return nullptr;
 }
 
 // A parameter default names what a top-level declaration would (§7.1). The
 // scope it is written in makes some names something else: a parameter of
 // its function, a type parameter bound to a function value, and for a
-// nested function a variable or nested function around the declaration.
-// Such a name in a default is an error, not the global or function of that
-// name. `fnonly`: a function is looked up (a member call), which no
-// variable of the name would be.
+// nested function a variable or nested function around the declaration, or
+// such a type parameter of a function around it. Such a name in a default
+// is an error, not the global or function of that name. `fnonly`: a function
+// is looked up (a member call), which no variable of the name would be.
 inline void TypeCheck::DefaultScopeName(string_view name, Node *at, bool fnonly) {
     if (name.find("::") != string_view::npos) return;
     auto fi = (int)frames.size() - 1;
@@ -621,21 +634,31 @@ inline void TypeCheck::DefaultScopeName(string_view name, Node *at, bool fnonly)
                       sf->qname, " names ", what, ", which a default cannot: it names what a "
                       "top-level declaration can (§7.1)"));
     };
-    if (!fnonly) {
+    if (!fnonly)
         for (auto &p : sf->params)
             if (p.name == name) error(cat("parameter ", name));
-        for (auto &g : sf->generics) {
-            auto istype = false;
-            for (auto &[n, t] : fr.lexspec->bindings) istype = istype || n == g.name;
-            if (g.name == name && !istype) error(cat("function value ", name));
+    // Whether a type parameter of f has the name, which hides what is around
+    // f's declaration: the default sees it where it is bound to a type
+    // (ParamDefaultEnv).
+    auto typeparam = [&](SFunction *f) {
+        for (auto &g : f->generics) {
+            if (g.name != name) continue;
+            for (auto &[n, t] : fr.lexspec->bindings)
+                if (n == name) return true;
+            error(cat("function value ", name));
         }
+        return false;
+    };
+    if (typeparam(sf)) return;
+    if (fr.defaultsite) {
+        if (!fnonly)
+            for (auto [v, i] : fr.defaultsite->vars)
+                if (v->name == name) error(cat(name, ", a local where ", sf->name, " is declared"));
+        for (auto [f, env] : fr.defaultsite->fns)
+            if (f->name == name) error(cat(name, ", a nested function"));
     }
-    if (!fr.defaultsite) return;
-    if (!fnonly)
-        for (auto [v, i] : fr.defaultsite->vars)
-            if (v->name == name) error(cat(name, ", a local where ", sf->name, " is declared"));
-    for (auto [f, env] : fr.defaultsite->fns)
-        if (f->name == name) error(cat(name, ", a nested function"));
+    for (auto o = sf->outer; o; o = o->outer)
+        if (typeparam(o)) return;
 }
 
 // Whether the scope a nested function is declared in has ended: its value
@@ -659,9 +682,16 @@ inline void TypeCheck::DeclareLocalFn(FnDecl *fd) {
     auto &site = declsites.emplace_back();
     site.scope = (int)scopes.size() - 1;
     site.serial = scopes.back().serial;
-    for (auto i = (int)vars.size() - 1; i >= fr.varbase; i--) site.vars.push_back({ vars[i], i });
+    // Its type parameters hide the variables of their names (§11.1).
+    auto visible = [&](VarDef *v) {
+        for (auto &g : fd->sf->generics)
+            if (g.name == v->name) return false;
+        return true;
+    };
+    for (auto i = (int)vars.size() - 1; i >= fr.varbase; i--)
+        if (visible(vars[i])) site.vars.push_back({ vars[i], i });
     ForOuterVars(top, [&](VarDef *v, int i, int) {
-        site.vars.push_back({ v, i });
+        if (visible(v)) site.vars.push_back({ v, i });
         return false;
     });
     for (auto bp = blockpos.rbegin(); bp != blockpos.rend() && bp->scopeidx >= fr.scopebase; ++bp) {
@@ -1736,19 +1766,21 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     // The end of a range, or a count, that is one past the binder's largest
     // value: a literal one, whose loop visits every value of a type narrower
     // than 64 bits with a counter of i64 (`for i: u8 in 0..256`). An end
-    // naming a local is none, and is not evaluated: ConstIntValue would take
-    // the name as the global it hides, and could fail on that global's value
-    // (`-K` of a u8 global K, where the local K is an i8).
+    // naming a local, a type parameter or a nested function is none, and is
+    // not evaluated: ConstIntValue would take the name as the global it
+    // hides, and could fail on that global's value (`-K` of a u8 global K,
+    // where the local K is an i8).
     auto pastend = [&](Node *end) {
         if (IntBits(vartype->intstorage) >= 64) return false;
-        auto local = false;
+        auto hidden = false;
         ConstExprNames(end, nullptr, [&](Ident *id, const char *) {
-            if (auto vd = LookupVar(id->name, id->ns); vd && !vd->isglobal) local = true;
+            auto vd = LookupVar(id->name, id->ns);
+            if ((vd && !vd->isglobal) || ScopeNameKind(id->name)) hidden = true;
         });
         Val c;
         bool literal;
         set<VarDecl *> visiting;
-        return !local && ConstIntValue(end, c, literal, visiting) && literal && !c.uns &&
+        return !hidden && ConstIntValue(end, c, literal, visiting) && literal && !c.uns &&
                c.ival == IntRange(vartype->intstorage).second + 1;
     };
     if (auto r = Is<RangeExpr>(x->iter)) {

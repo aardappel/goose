@@ -32,7 +32,7 @@ inline Val TypeCheck::CheckCall(Call *c) {
     if (auto fv = c->trailing) {
         for (auto &p : fv->params)
             if (p.type) ConstNamesIn(p.type);
-        SignatureNames(fv->params, {});
+        SignatureNames(fv->params, {}, {});
     }
     // Arguments construct into parameter slots, not whatever destination
     // encloses this call, and a parameter's constness is its instantiation's
@@ -47,7 +47,11 @@ inline Val TypeCheck::CheckCall(Call *c) {
 inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id) {
     if (LookupVar(id->name, id->ns))
         Error(c, cat(id->name, " is a variable, not a function"));
-    if (auto fb = LookupFnVal(id->name)) {
+    const FnValBind *fb;
+    if (auto t = LookupTypeParam(id->name, fb))
+        Error(c, cat("type parameter ", id->name, " is bound to the type ", TypeStr(t),
+                     ", not a function"));
+    if (fb) {
         id->vdef = nullptr;
         return CheckFunValCall(c, *fb);
     }
@@ -140,6 +144,16 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d) {
             if (!f.ispad && f.name == d->name)
                 Error(c, cat("field ", d->name, " is not callable"));
     }
+    // Past the variables, which a member call passes over, the name resolves
+    // as a call's does (§11.1): a type parameter of the name hides the
+    // functions of the name.
+    const FnValBind *fb;
+    if (auto t = LookupTypeParam(d->name, fb))
+        Error(c, cat("type parameter ", d->name, " is bound to the type ", TypeStr(t),
+                     ", not a function"));
+    if (fb)
+        Error(c, cat("type parameter ", d->name, " is bound to a function value, which is "
+                     "called as ", d->name, "(...), not as a member"));
     FnSpec *env = nullptr;
     vector<SFunction *> cands;
     if (auto nf = LookupLocalFnEnv(d->name, env)) {
@@ -176,13 +190,21 @@ inline void TypeCheck::RefArg(Node *&a, Val &v) {
 }
 
 // The type bindings a parameter default sees (§7.1): the function's own, and
-// those of the functions a nested one is declared in, but no function value
-// bound to a generic parameter, which a default does not call.
+// those of the functions a nested one is declared in that no type parameter
+// of a function inside hides (§11.1), but no function value bound to a
+// generic parameter, which a default does not call.
 inline FnSpec *TypeCheck::ParamDefaultEnv(const MatchInfo &mi) {
     auto env = ast.NewFunValEnv();
     env->bindings = mi.bindings;
-    for (auto sp = mi.env; sp; sp = sp->lexparent)
-        for (auto &b : sp->bindings) env->bindings.push_back(b);
+    vector<string_view> hidden;
+    for (auto &g : mi.sf->generics) hidden.push_back(g.name);
+    for (auto sp = mi.env; sp; sp = sp->lexparent) {
+        for (auto &b : sp->bindings)
+            if (find(hidden.begin(), hidden.end(), b.first) == hidden.end())
+                env->bindings.push_back(b);
+        for (auto &b : sp->bindings) hidden.push_back(b.first);
+        for (auto &[n, fb] : sp->fnvals) hidden.push_back(n);
+    }
     return env;
 }
 

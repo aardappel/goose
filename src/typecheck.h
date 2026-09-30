@@ -699,7 +699,9 @@ struct TypeCheck {
     void ConstName(Ident *id, const char *what);
     void ConstNames(Node *n, const char *what);
     void ConstNamesIn(TypeExpr *t);
-    void SignatureNames(const vector<Param> &params, const vector<TypeExpr *> &rets);
+    void SignatureNames(const vector<Param> &params, const vector<TypeExpr *> &rets,
+                        const vector<GenericParam> &generics);
+    void TypeParamSizes(TypeExpr *t, const vector<GenericParam> &generics);
     int64_t FillCount(Node *n);
 
     // Calls f(id, what) for each name constant expression n takes, where
@@ -825,9 +827,15 @@ struct TypeCheck {
         return nullptr;
     }
 
-    const FnValBind *LookupFnVal(string_view name) {
-        for (auto sp = frames.back().lexspec; sp; sp = sp->lexparent)
-            for (auto &[n, fv] : sp->fnvals) if (n == name) return &fv;
+    // The innermost type parameter of the name in scope, as an expression
+    // names it (§11.1): one bound to a type returns the type, one bound to a
+    // function value sets `fn`.
+    TypeExpr *LookupTypeParam(string_view name, const FnValBind *&fn) {
+        fn = nullptr;
+        for (auto sp = frames.back().lexspec; sp; sp = sp->lexparent) {
+            for (auto &[n, fv] : sp->fnvals) if (n == name) { fn = &fv; return nullptr; }
+            for (auto &[n, t] : sp->bindings) if (n == name) return t;
+        }
         return nullptr;
     }
 
@@ -1141,6 +1149,7 @@ struct TypeCheck {
     VarDef *NewVar(string_view name, TypeExpr *type, Line l, bool isvar,
                    VarDef *previous = nullptr);
     VarDef *LookupVar(string_view name, string_view ns, Node *use = nullptr);
+    const char *ScopeNameKind(string_view name);
 
     // The variables the body frame fi checks can name outside its own
     // scopes, innermost first: a nested function's are those in scope where
@@ -2312,8 +2321,16 @@ struct TypeCheck {
             if (st->generics.empty()) GetStructInst(ast.StructOf(st, {}, st->line));
         for (auto en : ast.enums)
             if (en->generics.empty()) GetEnumInst(ast.EnumOf(en, {}, true, en->line));
-        // And the sizes in every function's signature, for its parameters' names.
-        for (auto sf : ast.functions) SignatureNames(sf->params, sf->rets);
+        // And the sizes in every function's signature, for its parameters' and
+        // type parameters' names, and in every generic type's fields.
+        for (auto sf : ast.functions) SignatureNames(sf->params, sf->rets, sf->generics);
+        for (auto st : ast.structs)
+            for (auto &fld : st->fields)
+                if (fld.type) TypeParamSizes(fld.type, st->generics);
+        for (auto en : ast.enums)
+            for (auto &v : en->variants)
+                for (auto &fld : v.fields)
+                    if (fld.type) TypeParamSizes(fld.type, en->generics);
         for (auto g : ast.globals) {
             CheckVarDecl(g, true);
             for (auto d : g->defs) d->assigned = d->maybeassigned = true;

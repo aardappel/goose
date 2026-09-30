@@ -282,11 +282,15 @@ A size or capacity `k` is fixed at compile time, as is the count `n` of a
 fill literal `[v; n]` (§4.2): a name in one is a named constant, a `let` or
 `const` global (§11.1), and resolves as any name does, lexically first. A
 local of that name — a parameter, a local variable, or one around a nested
-function or block — hides the global there and is no constant, so a size
-naming it is an error, as a match pattern naming it is (§8.1); a qualified
-name (`::K`, `ns::K`) reaches the global past it. So is, in a function's or
-a block's parameter and result types, the name of one of its parameters. A
-type alias's sizes name what they name where the alias is declared.
+function or block —, a type parameter or a nested function hides the global
+there and is no constant, so a size naming it is an error, as a match
+pattern naming it is (§8.1); a qualified name (`::K`, `ns::K`) reaches the
+global past it. So is, in a function's or a block's parameter and result
+types, the name of one of its parameters or type parameters, and in a
+generic struct's or enum's field types the name of one of its type
+parameters: a type parameter stands for a type, and there are no size
+parameters (`fn f<N>(a: i64[N])` is an error). A type alias's sizes name
+what they name where the alias is declared.
 
 Indexing is bounds-checked — against `k` for fixed arrays (checks statically
 elided where provable), against the current length for all others.
@@ -1785,13 +1789,15 @@ fn scaled(a: i32, b: i32 = 0, c: f32 = 1.0) -> f32 { ... }   // scaled(2) is sca
   tag-dispatched call (§8.2) have none.
 * A default names what a top-level declaration would, in the declaration's
   namespace: globals, constants, top-level functions and types, and the
-  function's type parameters as the call binds them. It never sees a local
-  of the code calling the function, whatever its name. A name the
+  type parameters the call binds to types, the function's and, for a
+  nested function, those of the functions around it (§11.1). It never sees
+  a local of the code calling the function, whatever its name. A name the
   declaration's own scope makes something else is an error in a default
   rather than the global of that name: a parameter of the function (`::x`
   names the global `x`), a type parameter bound to a function value (§7.6),
   and for a nested function (§7.5) a variable or nested function around its
-  declaration.
+  declaration, or a type parameter bound to a function value of a function
+  around it.
 * Overloading by parameter types is allowed; resolution is static: the
   unique concrete exact match wins, then a generic exact match, then a
   match requiring coercion (array→slice §3.10, literal fit §3.1, implicit
@@ -1919,9 +1925,10 @@ the value's parameters and the body's locals.
 Names in a nested function resolve where it is declared, whatever surrounds
 a call of it: a free variable is the one in scope at the declaration, not
 one of the same name that a scope around the call declares, or that is
-declared further on. The functions it calls are those in scope there and
-every function declared in the blocks around its declaration, before or
-after it, so nested functions may call each other in either order, as a
+declared further on, and none that one of the function's own type
+parameters hides (§11.1). The functions it calls are those in scope there
+and every function declared in the blocks around its declaration, before
+or after it, so nested functions may call each other in either order, as a
 recursive descent parser's do; calling one of them before the enclosing
 code has reached its declaration is an error. That code names a nested
 function from its declaration to the end of its scope. It may pass the
@@ -1954,9 +1961,12 @@ Function values are compile-time entities passed as generic parameters, not
 runtime data. The `: fn(...)` bound is optional documentation: a bare `<F>`
 works identically — the call `F(a)` typechecks per instantiation like
 everything else (passing a non-function just produces the error at that call,
-reported with the instantiation chain). A block's value is checked without
-the destination its call's value meets, so it cannot be a `[]` (nor a
-construct whose branches all are one), which would have no element type
+reported with the instantiation chain). `F` is the function value wherever
+it is in scope, hiding a variable around a nested function's declaration and
+a global or function of its name (§11.1), and is called as `F(a)`: a member
+call `a.F()` names it too, and is an error. A block's value is checked
+without the destination its call's value meets, so it cannot be a `[]` (nor
+a construct whose branches all are one), which would have no element type
 (§4.2).
 
 A function argument must be a function name (including a bound generic
@@ -2332,9 +2342,10 @@ match dir { North, South => "vertical", East, West => "horizontal" }
   expression, taken at that value, as an array size may name (§11.1) —
   either one optionally negated: `GROUND`, `world::GATE`, `::GATE`,
   `LO..HI`, `-LIMIT..0`. The name resolves as any other does (§11.1): a
-  local of that name hides the global and is no constant, and neither is a
-  `var` global. A bare name is a variant when the scrutinee is an ADT and a
-  constant when it is an integer, where it binds nothing.
+  local, type parameter or nested function of that name hides the global
+  and is no constant, and neither is a `var` global. A bare name is a
+  variant when the scrutinee is an ADT and a constant when it is an
+  integer, where it binds nothing.
 * Every pattern must be able to select its arm: `_` is the last arm, and a
   value or range that earlier arms match whole is an error (`1..5 => a,
   3 => b`). Overlap that leaves a pattern something to match is fine:
@@ -2894,17 +2905,25 @@ the caller's own facts about `src` intact.
   declaration may spell its namespace itself (`fn image::brightness(…)`,
   `fn ::main()` inside a namespaced file); the qualifier decides the
   declaration's namespace entirely, names inside it included. An
-  unqualified name resolves lexically first (locals, parameters, type
-  parameters, nested functions), then in the current declaration's
-  namespace, then in the global namespace and the builtins. A function
-  name's overload set is that of the first namespace in this order that
-  declares the name at all; sets never merge across namespaces (a
-  namespaced `hash` overload reaches the global integer ones as
-  `::hash(x)`). UFCS follows the same rule for the calling code's
-  namespace, a generic body resolves names where it is defined, and the
-  `format` hook is the one type-directed exception (§3.7). Namespaces
-  affect only name resolution, type identity and generated C names
-  (§7.10): no runtime representation, no privacy, no re-exports.
+  unqualified name resolves lexically first, to what the scopes around its
+  use declare: to a variable or a type parameter, the innermost of the name
+  — a function's parameters and locals, then its type parameters, then
+  what is around its declaration (§7.5) —, else to a nested function in
+  scope. Only a name no scope declares resolves in the current
+  declaration's namespace, then in the global namespace and the builtins:
+  a type parameter or a nested function hides a global and a function of
+  its name as a local does. A type parameter bound to a type is no value
+  (in `fn f<N>(x: N)`, `N` as an expression is an error, and `::N` names a
+  global `N`), and no type parameter or nested function is a constant a
+  size or a match pattern may name (§3.3, §8.1). A function name's
+  overload set is that of the first namespace in this order that declares
+  the name at all; sets never merge across namespaces (a namespaced `hash`
+  overload reaches the global integer ones as `::hash(x)`). UFCS follows
+  the same rule for the calling code's namespace, a generic body resolves
+  names where it is defined, and the `format` hook is the one
+  type-directed exception (§3.7). Namespaces affect only name resolution,
+  type identity and generated C names (§7.10): no runtime representation,
+  no privacy, no re-exports.
 * Globals are declared like locals (`let`/`var`, any type including
   resizable). Semantically the whole program runs inside an implicit
   outermost scope owning them: they participate in the depth check (§9.2) as

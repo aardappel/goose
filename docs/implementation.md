@@ -275,9 +275,14 @@ scopes innermost-out, then what the body sees outside them (`ForOuterVars`):
 a nested function's body the variables in scope at its declaration
 (§3.12), a function value's body those of the frame it is written in as
 they are at the call, and so on outward, marking the variable `captured`;
-then the globals by the namespace rules. `localfns` holds nested function
-declarations with the scope they were declared in; `Scope::serial` tells a
-scope from a later one at the same index. `blockpos` keeps the statement
+then, unless a type parameter or a nested function of the name hides them
+(`ScopeNameKind`, §11.1), the globals by the namespace rules. A name that
+is no variable is then a type parameter (`LookupTypeParam`: the lexical
+binding chain, innermost first, bound to a type or a function value), a
+nested function or a function, which `Ident::Check` and `CheckNamedCall`
+try in that order. `localfns` holds nested function declarations with the
+scope they were declared in; `Scope::serial` tells a scope from a later
+one at the same index. `blockpos` keeps the statement
 index of every open block, which the shrink rules' liveness scan (§3.10)
 reads.
 
@@ -2148,20 +2153,22 @@ checks it as a written argument is checked -- in the discovery phase for the
 specialization's key, where `UnifyArg` must accept it at its parameter's
 type, and against its parameter in phase 2 -- but in a frame of its own
 (`InParamDefault`, the `DefaultScope` a field default gets): its type
-bindings are the function's own and the enclosing functions', with no
-function values (`ParamDefaultEnv`), its lookups hide every local of the
-calling code, and its effects and the values live around it are the
-caller's, as a written argument's are. `DefaultScopeName` rejects a name the
-declaration's own scope would give a parameter, a type parameter bound to a
-function value, or, for a nested function, a variable or function of its
-`DeclSite`; a default leading to a call that takes it again before a
-top-level function's body is an error rather than an endless check
-(`EachDefaultInPlace`, §3.2). `CheckCall` erases the inserted defaults
-before it checks a call again, so every check (an argument's two phases, a
-loop's passes, a cycle's rounds) resolves the call as written; `Call::Clone1`
-drops them, and a diagnostic prints the call without them (`dumpwritten`).
-Tag dispatch and rendering hooks give every argument (`TryMatch`'s
-`defaults` off). Later passes see ordinary arguments.
+bindings are the function's own and the enclosing functions' that no inner
+type parameter hides, with no function values (`ParamDefaultEnv`), its
+lookups hide every local of the calling code, and its effects and the
+values live around it are the caller's, as a written argument's are.
+`DefaultScopeName` rejects a name the declaration's own scope would give a
+parameter, a type parameter bound to a function value, or, for a nested
+function, a variable or function of its `DeclSite` or such a type
+parameter of a function around it; a default leading to a call that takes
+it again before a top-level function's body is an error rather than an
+endless check (`EachDefaultInPlace`, §3.2). `CheckCall` erases the
+inserted defaults before it checks a call again, so every check (an
+argument's two phases, a loop's passes, a cycle's rounds) resolves the call
+as written; `Call::Clone1` drops them, and a diagnostic prints the call
+without them (`dumpwritten`). Tag dispatch and rendering hooks give every
+argument (`TryMatch`'s `defaults` off). Later passes see ordinary
+arguments.
 
 **Tag dispatch** (`TryDispatch`, §8.2): for each argument position holding an
 enum (or a reference to one), every variant type is tried against the
@@ -2179,10 +2186,11 @@ their defaults is an error.
 **Nested functions** (`DeclareLocalFn`, §7.5): checking a declaration
 records a `DeclSite` for the function, under the environment declaring it
 (`declsiteof`): the variables in scope there, innermost first, with the
-index each holds in `vars`; and the functions it may call, every one
-declared in the blocks around the declaration (`blockpos`), the latest at or
-before it first and then those after it, followed by those the declaring
-body sees outside its own scopes. The frame `CheckSpecBody` pushes for a
+index each holds in `vars`, but those the function's own type parameters
+hide (§11.1); and the functions it may call, every one declared in the
+blocks around the declaration (`blockpos`), the latest at or before it
+first and then those after it, followed by those the declaring body sees
+outside its own scopes. The frame `CheckSpecBody` pushes for a
 specialization keeps the site as `decl`, and `LookupVar` and
 `LookupLocalFnEnv` look there past the body's own scopes (`ForOuterVars`,
 `ForOuterFns`) instead of in the declaring frame as the call finds it, so a
@@ -2338,12 +2346,14 @@ flow-free marks do not mind. `ConstIntValue` takes a name as the global of
 the name, since a size is evaluated wherever its type is compared (`TypeEq`
 of a callee's parameter type while a caller is checked, say). Where a size,
 fill count or pattern is written, in its own scope, `ConstName` makes a
-local of the name an error (§3.3): at a declaration's annotation
-(`CheckVarDecl`), a call's type arguments and trailing block's parameters
-(`CheckCall`), a literal's type (`StructLit::Check`), a fill count
-(`FillCount`), a nested function's declaration (`DeclareLocalFn`) and a
-pattern (`PatternValue`); and `SignatureNames` makes the sizes in every
-signature name none of its own parameters. A type the checker writes into
+local, type parameter or nested function of the name an error (§3.3): at
+a declaration's annotation (`CheckVarDecl`), a call's type arguments and
+trailing block's parameters (`CheckCall`), a literal's type
+(`StructLit::Check`), a fill count (`FillCount`), a nested function's
+declaration (`DeclareLocalFn`) and a pattern (`PatternValue`); and
+`SignatureNames` makes the sizes in every signature name none of its own
+parameters or type parameters, and `TypeParamSizes` those in a generic
+type's fields none of its type parameters. A type the checker writes into
 a default it makes (`DefaultCall`, `DefaultValue`: `implicit` calls and
 literals) and an alias's use (`TypeExpr::aliasuse`) were written, and
 checked, elsewhere.
@@ -2385,10 +2395,11 @@ counts at, which is the binder's but for an end one past the type's
 largest value, a literal (`pastend`): that loop counts at i64 and binds the
 binder to a copy of the counter each iteration (`ForLoop::CgStmt`), which
 cannot overflow at the end. `pastend` does not evaluate an end naming a
-local (`ConstExprNames`, `LookupVar`): `ConstIntValue` would take the
-global the name hides, and could fail on its value. A typed index binder
-(`idxtype`) must hold every index the sequence can have, and is likewise a
-copy of the i64 index.
+local, a type parameter or a nested function (`ConstExprNames`,
+`LookupVar`, `ScopeNameKind`): `ConstIntValue` would take the global the
+name hides, and could fail on its value. A typed index binder (`idxtype`)
+must hold every index the sequence can have, and is likewise a copy of the
+i64 index.
 
 **Redundant casts** (§6.3) are judged as the checker goes, check by check.
 `AsCast::Check` follows a cast (`NoteCast`) where its operand converts to

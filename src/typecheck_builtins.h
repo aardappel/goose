@@ -52,7 +52,8 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         case B_THREAD_SPAWN: {
             auto wid = Is<Ident>(args[0]);
             SFunction *wsf = nullptr;
-            if (wid)
+            // A variable, type parameter or nested function of the name hides it (§11.1).
+            if (wid && !LookupVar(wid->name, wid->ns) && !ScopeNameKind(wid->name))
                 for (auto sf : ast.LookupFunctions(wid->name, wid->ns))
                     if (sf->isthread) wsf = sf;
             if (!wsf) Error(c, "thread_spawn's first argument names a thread_fn");
@@ -815,15 +816,16 @@ inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns,
 // The literal a compile-time string argument stands for: a string literal,
 // or a let or const global initialized with one, named directly or through
 // other such globals -- a named constant, as an array size may use (§11.1).
-// Null for anything else, a local of the name included. Unlike an integer
-// one (RelyOnConstant), such a global keeps its initializer's value without
-// a mark: the slice in its slot is a literal's, read-only, so a reference to
+// Null for anything else, a local, type parameter or nested function of the
+// name included, which hides the global. Unlike an integer one
+// (RelyOnConstant), such a global keeps its initializer's value without a
+// mark: the slice in its slot is a literal's, read-only, so a reference to
 // the slot is read-only too (§9.5).
 inline StrLit *TypeCheck::ConstStrLit(Node *n) {
     if (auto s = Is<StrLit>(n)) return s;
     auto id = Is<Ident>(n);
     if (!id) return nullptr;
-    if (auto vd = LookupVar(id->name, id->ns); vd && !vd->isglobal) return nullptr;
+    if (auto vd = LookupVar(id->name, id->ns); !vd || !vd->isglobal) return nullptr;
     set<VarDecl *> visiting;
     for (;;) {
         auto g = ast.LookupGlobal(id->name, id->ns);

@@ -127,9 +127,13 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
         }
         return v;
     }
-    // A generic parameter bound to a function value, or a named function: a
-    // compile-time function value (§7.6).
-    if (auto fb = tc.LookupFnVal(name)) {
+    // A type parameter bound to a function value, or a named function: a
+    // compile-time function value (§7.6). One bound to a type is no value.
+    const FnValBind *fb;
+    if (auto t = tc.LookupTypeParam(name, fb))
+        tc.Error(this, cat("type parameter ", name, " is bound to the type ", tc.TypeStr(t),
+                           ", not a value"));
+    if (fb) {
         Val v;
         v.type = tc.fntype;
         v.fnv = *fb;
@@ -487,7 +491,8 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
 inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     // EnumName.Variant: a payload-less variant constant (§3.5).
     if (auto id = Is<Ident>(obj)) {
-        if (!tc.LookupVar(id->name, id->ns) && !tc.LookupFnVal(id->name))
+        const FnValBind *fb;
+        if (!tc.LookupVar(id->name, id->ns) && !tc.LookupTypeParam(id->name, fb) && !fb)
             if (auto en = tc.ast.LookupEnum(id->name, id->ns))
                 return tc.CheckVariantConst(this, en);
     }

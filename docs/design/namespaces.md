@@ -39,8 +39,9 @@ fn main() {
   rather than in the file's namespace. This lets `--dump` preserve namespaces
   when it combines declarations from multiple files. Nested
   functions are lexical and cannot be qualified.
-* Unqualified resolution follows lexical locals/parameters/type parameters,
-  then the current declaration's namespace, then the global declarations and
+* Unqualified resolution follows lexical locals/parameters/type parameters
+  and nested functions, any of which hides the declarations of its name, then
+  the current declaration's namespace, then the global declarations and
   builtins. For functions, the first scope that contains the name supplies
   the whole overload set; sets do not merge across namespaces, so a
   namespaced `hash` overload calls the global integer ones as `::hash(k.a)`.
