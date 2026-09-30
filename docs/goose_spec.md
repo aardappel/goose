@@ -2012,10 +2012,14 @@ literal then adapts (`max(n, 0)` with `n: u32` is the `u32` instantiation),
 so an `i64` literal never fixes the type by coming first; among literals, a
 float one binds before an integer one, which converts to it (§6.3):
 `max(1, 0.5)` is the `f64` instantiation. A float of literals and integers
-(`n * 0.5`) binds as a float literal does. An
-explicit list `f<i64>(x)` is allowed; it is *needed* when no argument
-mentions the parameter (e.g. `qget<i64>()`, or `zero<f64>()` for
-`fn zero<T>() -> T`); it binds the leading type parameters in order, and
+(`n * 0.5`) binds as a float literal does. A `[]` or `null` binds nothing:
+it takes the type the other arguments, literals included, give its
+parameter, wherever it stands among them (`both([], xs)` for `fn both<T>(x:
+T[], y: T[])` is the instantiation `both(xs, [])` is). An explicit list
+`f<i64>(x)` is allowed; it is *needed* when no argument mentions the
+parameter (e.g. `qget<i64>()`, or `zero<f64>()` for `fn zero<T>() -> T`)
+or only a `[]` or `null` does (`g<i64>([])` for `fn g<T>(xs: T[])`); it
+binds the leading type parameters in order, and
 the rest are inferred. Syntactically, `f<` commits to
 a type argument list only when the `<…>` is immediately followed by `(`,
 by `{` for a struct literal (`Pair<i64> { … }`), or by `.ident {` for a

@@ -2025,8 +2025,9 @@ the callee's shrinks, growths and rebinds, and maps the result roots
 (`CallResult`). Generic
 inference is structural (`BindTypes`, through the one coercion generics see:
 whole array to slice), untyped parameters bind the argument's natural type
-(a reference stays a reference), literal arguments unify last so a typed
-argument fixes the type variable, and leftover generics bind function values
+(a reference stays a reference), literal arguments unify after the typed
+ones so a typed argument fixes the type variable, a `[]` or `null`, which
+fixes none, after all of them, and leftover generics bind function values
 in order.
 
 A control construct as an argument has no destination type in phase 1,
@@ -2103,7 +2104,13 @@ only where the variant has no other match, so that every call resolving
 before integers converted to floats resolves as it did. Literal arguments
 unify in two groups, the float ones (`LitFloat`: constants, literal
 parameters and `Val::litfloat` values) before the integer ones, which then
-convert to the float type the first bound.
+convert to the float type the first bound. A `[]` or `null` (`Val::emptyarr`,
+`Val::isnull`, a construct of either included) unifies after both groups: it
+binds no type variable and only substitutes the ones the others bound
+(`SubstOwn`), so it matches wherever it stands among them. A generic
+candidate it matches ranks as a coercion, as a concrete one does: `f([], n)`
+beside `fn f(xs: i64[], x: i64)` and `fn f<T>(xs: T[], x: T)` is ambiguous,
+like `f(n, [])` for the same overloads with the parameters swapped.
 
 **Multiple results.** Results are not tuples. An ordinary value use of a
 call takes its first result and discards the others; a call statement

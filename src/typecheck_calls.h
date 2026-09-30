@@ -550,15 +550,18 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
     litrecord = false;
     auto paramsok = [&]() {
         // A literal argument adapts to whatever type the other arguments
-        // give a type parameter (§3.1), so they unify last: a float one
-        // first, whose type an integer one converts to (§6.3). A float of
-        // literals and integers adapts as a float literal does, and a
-        // construct of integer constants as they do (§6.4).
+        // give a type parameter (§3.1), so they unify after the typed ones:
+        // a float one first, whose type an integer one converts to (§6.3).
+        // A float of literals and integers adapts as a float literal does,
+        // and a construct of integer constants as they do (§6.4). A [] or
+        // null binds nothing: it takes the type all the others give its
+        // parameter, after them (§7.7).
         auto late = [&](const Val &av) {
+            if (av.emptyarr || av.isnull) return 3;
             return LitFloat(av) ? 1 : isliteral(av) || av.litint ? 2 : 0;
         };
         vector<size_t> order;
-        for (auto k = 0; k < 3; k++)
+        for (auto k = 0; k < 4; k++)
             for (size_t i = 0; i < K; i++) if (late(argvals[i]) == k) order.push_back(i);
         for (auto i : order) {
             auto &p = sf->params[i];
