@@ -1,0 +1,17 @@
+Cons { 1, Cons { 2, L.Nil } } 3
+[Cons { 2, L.Nil }]
+Cons { 1, Cons { 2, L.Nil } }|L.Nil
+Cons { 1, Cons { 2, Cons { 3, null } } } 6
+Cons { 1, L.Nil } 1
+Link { 2, Link { 1, N.End } }
+Cons { "a", Cons { "b", V.Nil } }
+Cons { 5, Cons { 4, null } }
+Cons { 7, Cons { 6, null } }
+Cons { 2, Cons { 1, S.Nil } }
+[S.Nil, Cons { 1, S.Nil }, Cons { 2, Cons { 1, S.Nil } }]
+Cons { 2, Cons { 1, P.Nil } }
+Node { [Node { [Leaf { 1 }, Leaf { 2 }] }] }
+Cons { 2.5, G.Nil }
+A { 2, B { A { 1, E2.Y } } }
+SA { 2, SB { SA { 1, null } } }
+A { 2, WS<i64> { B { "s" }, 1 } }
