@@ -655,9 +655,13 @@ reference variable's bindings before and after a rebind to another root at
 its depth (`CheckRefRebindRoot`), the roots a call's callee returns
 (`CallResult`) -- has the union of their alternatives (`Roots::Add`): two
 alternatives never share a root, and one added for a root already present
-keeps the weaker exactness. A literal's references (`NoteLitElem`) and a
-container's contents (`VarDef::contents`) are united the same way. The
-rules that ask what storage a root *is* -- the grow-shrink store rule
+keeps the weaker exactness, and names a container it was read out of
+(`RootAlt::from`, §3.6) only where both came out of that one: a reference
+into a parameter's storage merged with one read out of it may be either,
+and no store record says what the first is. A literal's references
+(`NoteLitElem`) and a container's contents (`VarDef::contents`) are united
+the same way. The rules that ask what storage a root *is* -- the
+grow-shrink store rule
 (§3.5 rule 3, `GrowShrinkTaint`), the cycle store rule (rule 4,
 `CycleStorable`) -- ask every alternative, so nothing a merge kept has to
 be carried beside it. What a
@@ -923,11 +927,13 @@ what its source holds; an inexact read-back's is the container it came out
 of, and one out of a parameter's class is bounded by the class), and the
 line. A source is the one container the value came out of, whose stores
 say what it holds (`StoreSource`): a value that may lie in any of several
-places, or anywhere a root only bounds, names none (`HolderSource`, and
-`ReadBackRoot` and `SlotView` keep `RootAlt::from` only for a container
-named exactly), and neither does one out of a reference or slice variable,
-which holds what its binding says, not what a store put there. The stored
-alternative's own root bounds such a value. `RecordStore` also maintains
+places, or anywhere a root only bounds, names none (`HolderSource`, which
+a `for` or `match` binder's copy takes too, and `ReadBackRoot` and
+`SlotView` keep `RootAlt::from` only for a container named exactly, which
+a merge keeps only where every value it joins names it), and neither does
+one out of a reference or slice variable, which holds what its binding
+says, not what a store put there. The stored alternative's own root bounds
+such a value. `RecordStore` also maintains
 the container's `contents`: the union of every root stored into it so far.
 A store into a caller's storage -- through a parameter's class root -- is
 kept on the specialization as a `classevent`, and `ApplyCalleeStores`
@@ -1444,8 +1450,8 @@ what it views, keep the mark; `MergeVals`, a rebind and a call's result keep
 it only where every value does (`Roots::Add`), so a value that may also be
 the storage's own element -- a reference to one of its elements merged with
 a reference read out of one, which is one alternative for the class, as
-inexact as the read and read out of it (`RootAlt::from`) -- is judged by
-depth as before; a bound (`Weaken`, `Bounds`), crossing a reference and a
+inexact as the read and read out of neither (`RootAlt::from`) -- is judged
+by depth as before; a bound (`Weaken`, `Bounds`), crossing a reference and a
 back edge's result (`ClearReads`) drop it. A call's result has it where the
 callee read the view out of its parameter's storage and the argument names a
 class of the caller exactly (`RetAltVal`). For a grow-only array, the scans

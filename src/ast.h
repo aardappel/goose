@@ -413,7 +413,8 @@ struct RootAlt {
     bool exact = false;
     // For an inexact read-back: the container it came out of, whose stores
     // say what it holds, and which a diagnostic names. Only a container
-    // named exactly: one a root only bounds is none.
+    // named exactly: one a root only bounds is none, and so is one a merge
+    // joins with a value that did not come out of it (Roots::Add).
     VarDef *from = nullptr;
     // Loaded out of a field, an element or a global, or points into what
     // such a slice points at (a location: lies there); of a holder's
@@ -475,16 +476,18 @@ struct Roots {
         alts = o.alts;
         unknown = o.unknown;
     }
-    // Whether the set changed: a new place, or one it had made weaker.
+    // Whether the set changed: a new place, or one it had made weaker. An
+    // alternative was read out of a container only where every value joined
+    // at its root was read out of that one (RootAlt::from).
     bool Add(const RootAlt &a) {
         for (auto &b : alts) {
             if (b.root != a.root) continue;
             auto changed = (b.exact && !a.exact) || (b.slotread && !a.slotread) ||
-                           (b.classread && !a.classread) || (!b.from && a.from);
+                           (b.classread && !a.classread) || (b.from && b.from != a.from);
             b.exact = b.exact && a.exact;
             b.slotread = b.slotread && a.slotread;
             b.classread = b.classread && a.classread;
-            if (!b.from) b.from = a.from;
+            if (b.from != a.from) b.from = nullptr;
             return changed;
         }
         alts.push_back(a);

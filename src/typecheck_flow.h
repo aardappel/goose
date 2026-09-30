@@ -1419,8 +1419,10 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                     binder->copybind = true;
                     if (HoldsPlainRef(vt)) {
                         // A copied payload holding references: its contents
-                        // are the scrutinee's, as a field's read out of it
-                        // are (ContainerRead).
+                        // are the scrutinee's, and its source the one
+                        // container the scrutinee lies in, as a field's read
+                        // out of it are (ContainerRead); the copy is a store
+                        // the match makes.
                         ReadBack contents;
                         auto intemp = TempContents(sv, contents);
                         Roots held = intemp ? contents.roots : sv.AsRoots();
@@ -1428,8 +1430,11 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                             held.Weaken();
                             for (auto &a : held.alts) a.slotread = true;
                         }
+                        auto saved = fitnode;
+                        fitnode = m;
                         RecordStore(binder, held, sv.byteview, nullptr,
-                                    intemp ? contents.from : sv.Root());
+                                    intemp ? contents.from : HolderSource(sv));
+                        fitnode = saved;
                     }
                 }
                 arm.binder = binder;
@@ -1849,15 +1854,20 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
         vd->assigned = vd->maybeassigned = true;
         vd->copybind = (x->iterkind == IK_ARRAY || x->iterkind == IK_SLICE) && !byref;
         if (!IsRefOrSlice(bindtype) && HoldsPlainRef(bindtype)) {
-            // A holder element copied out: its contents are the array's, as
-            // one read out of an element's are (ContainerRead).
+            // A holder element copied out: its contents are the array's, and
+            // its source the one container it lies in, as a holder read out
+            // of an element's are (ContainerRead); the copy is a store the
+            // loop makes.
             Roots held = intemp ? contents.roots : iterprov.AsRoots();
             if (!intemp) {
                 held.Weaken();
                 for (auto &a : held.alts) a.slotread = true;
             }
+            auto saved = fitnode;
+            fitnode = x;
             RecordStore(vd, held, iterprov.byteview, nullptr,
-                        intemp ? contents.from : iterprov.Root());
+                        intemp ? contents.from : HolderSource(iterprov));
+            fitnode = saved;
         }
         if (IsRefOrSlice(bindtype)) BindProv(vd, iterprov);
         x->vdef = vd;
