@@ -1416,7 +1416,11 @@ struct EnumInst {
     SEnum *en = nullptr;
     vector<TypeExpr *> args;
     vector<vector<TypeExpr *>> vftypes;   // Per variant, per field.
-    bool allfixed = true;                 // Fixed-mode use is legal.
+    bool allfixed = true;                 // Every payload is fixed-size.
+    // A payload holds self-relative references, which only a binding by
+    // reference reads: a copy does not keep them (§3.9), and fixed mode
+    // binds its payloads by value alone (§3.5).
+    bool selfrel = false;
     SizeClass varclass = SC_VARIABLE;     // Class when used in variable mode.
     bool flat = true;
     bool validated = false;

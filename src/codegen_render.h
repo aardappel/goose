@@ -238,11 +238,10 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
                     // may overwrite it with another variant, and nothing may
                     // refer into its payload meanwhile (§3.5): the parts are
                     // rendered from a copy, where the checker has them lie
-                    // (CheckRenderable). A payload with self-relative
-                    // references, which a copy would not keep (§3.9), stays
-                    // in place: the checker lets no overload run among its
-                    // parts.
-                    if (!varmode && c && !c->fmtspecs.empty() && !HasRelRef(vt, false)) {
+                    // (CheckRenderable). No fixed-mode payload holds
+                    // self-relative references, which a copy would not keep
+                    // (§3.9).
+                    if (!varmode && c && !c->fmtspecs.empty()) {
                         auto cp = T();
                         L(CT(vt), " ", cp, " = ", pl.s, ";");
                         pl.s = cp;

@@ -20,4 +20,4 @@ Outer.Empty
 Called { Pin { D1, [1, 2] }, "nm" }
 Called { Bar { 4096, 1000000 }, "nm" }
 Mix { Hi { 1 }, hi2 }
-Blob { L1, [T { 1 }, T { 2 }, T { 3 }], To { T { 2 }, 4 } }
+Blob { L1, To { T { 2 }, 4 } }

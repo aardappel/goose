@@ -366,7 +366,11 @@ function (§3.11), naming the first three.
 (`ValidPos`): `varint` only in fields, elements and pointees; fixed, limited
 and grow-shrink arrays need fixed-size elements; variable and grow-only
 arrays may not hold resizables; an enum with non-fixed payloads is only
-usable in variable mode.
+usable in variable mode, and so is one whose payloads hold self-relative
+references (`EnumInst::selfrel`, from `HasRelRefT` over each payload field
+in `BuildVariant`): fixed mode binds its payloads by value only, and a copy
+does not keep them (§3.5, §3.9). A payload-less variant constant of such an
+enum is variable-mode (`CheckVariantConst`).
 
 An array literal uses its destination's type when one is available.
 Otherwise it is a `T[k]` for fixed-size elements or a `T[]` for non-fixed
@@ -1816,11 +1820,9 @@ payload lie in a temporary too, the copy codegen renders them from
 (§3.15): `CheckRenderable` takes them out of a `TempCopy` of the ADT, whose
 contents are the ADT's, so an overload given one by reference can neither
 keep it nor write it, as nothing may refer into the payload itself (§3.5).
-Codegen renders a payload holding self-relative references in place, a
-copy's offsets being measured from where the payload was (§3.9), so a
-variant whose parts' checks specialized an overload (`Call::fmtspecs`
-grew) is rejected when its payload holds one. So is an overload taking
-such a value by value (`UserFormatIn`), which `EmitUserFormat` would copy.
+No fixed-mode payload holds self-relative references (`ValidateType`), so
+the copy keeps every link. An overload taking a value holding them by value
+(`UserFormatIn`), which `EmitUserFormat` would copy, is rejected.
 A type that reaches itself through references renders every level below
 the first by a function of its own that runs no overload (§6.9), so
 `CheckRenderable` stops at a type already on its path, noting it, and once
@@ -2148,10 +2150,13 @@ enum (or a reference to one), every variant type is tried against the
 overload set and exactly one candidate must match per variant; one such
 position is allowed; each arm is specialized, return counts and types and
 the non-dispatch parameter types must agree; a fixed-mode scrutinee
-dispatches by value even through a reference; the result's provenance is the
-merge of the arms' (deeper root, exact only when the same, writable only if
-all are). The cases get every argument written: a call that would dispatch
-only by leaving parameters to their defaults is an error.
+dispatches by value even through a reference, and each case takes the
+payload as a match binder would (§8.1): a case taking a fixed-mode payload
+by reference, or one holding self-relative references by value, is an
+error; the result's provenance is the merge of the arms' (deeper root,
+exact only when the same, writable only if all are). The cases get every
+argument written: a call that would dispatch only by leaving parameters to
+their defaults is an error.
 
 **Nested functions** (`DeclareLocalFn`, §7.5): checking a declaration
 records a `DeclSite` for the function, under the environment declaring it
@@ -2502,8 +2507,7 @@ presence of aliases (`Snapshot`, `IndexLoc`, `GenSlice`, `Assign::CgStmt`,
   tag is read, wherever the argument has overloads, and its parts are
   rendered from there, as the variant's literal (`RenderVariant`), never
   through an overload for the variant type, which the checker only
-  specializes for values of that type. One holding self-relative
-  references stays in place, where the checker lets no overload run.
+  specializes for values of that type.
   A variable-mode ADT's payload is rendered in place, by the tag read once:
   the checker holds it, and an array's elements, while the overloads of
   their parts run (`renderwalks`).

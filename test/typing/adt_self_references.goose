@@ -12,10 +12,8 @@ enum V { Nil, Cons { name: u8[], next: V..? } }
 enum M { Nil, Cons { v: i64, next: M? } }
 // Fixed mode linking to its variable mode.
 enum F { Nil, Cons { v: i64, next: F..? } }
-// Self-relative links, in fixed and in variable mode, and links into a
-// pool. A fixed-mode payload holding self-relative links is bound neither
-// by value nor by reference (§3.5, §3.9), so S's are only stored here.
-enum S { Nil, Cons { v: i64, next: S&<u32>? } }
+// Self-relative links, which only variable mode's payloads hold (§3.5),
+// and links into a pool.
 enum SV { Nil, Cons { v: i64, next: SV..&<u32>? } }
 enum P { Nil, Cons { v: i64, next: P&<u16 in pool>? } }
 var pool: P[>..] = [];
@@ -160,11 +158,6 @@ fn main() {
         Nil => {},
     }
 
-    var ss: S[>..] = [];
-    ss.push(S.Nil);
-    ss.push(S.Cons { v: 1, next: ss[0] });
-    ss.push(S.Cons { v: 2, next: ss[1] });
-    print(ss.len);
     var svs: SV..[>..] = [];
     let s0 .= svs.push(SV.Nil);
     let s1 .= svs.push(SV.Cons { v: 10, next: s0 });

@@ -1425,7 +1425,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                 } else {
                     if (HasRelRefT(vt))
                         Error(arm.body, cat("payload of ", found->name, " contains "
-                                            "relative references; bind it by reference "
+                                            "self-relative references; bind it by reference "
                                             "(&", arm.pat.binder, ")"));
                     binder->type = vt;  // Payload copy, any mode (§8.1).
                     binder->isvar = false;

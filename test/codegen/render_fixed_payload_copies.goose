@@ -88,15 +88,16 @@ enum Tone {
 struct Mix { t: Tone, h: Tone.Hi }
 fn format(out: u8[>..]&, h: Tone.Hi) { format(out, "hi", h.f); }
 
-// A payload with self-relative references, which a copy would not keep, is
-// rendered in place where no overload runs among its parts.
+// A payload with `in pool` references, which a copy keeps (§3.9), is
+// rendered from the copy like any other.
 struct T { x: i64 }
 struct L { v: i64 }
+var tpool: T[>..] = [];
 enum Link {
-    To { t: T&<u8>, k: i64 },
+    To { t: T&<u16 in tpool>, k: i64 },
     Nowhere,
 }
-struct Blob { l: L, ts: T[3], link: Link }
+struct Blob { l: L, link: Link }
 var blobs: Blob[>..] = [];
 fn format(out: u8[>..]&, l: L) { format(out, "L", l.v); }
 
@@ -157,7 +158,9 @@ fn main() {
     let m = Mix { t: Tone.Hi { f: 1 }, h: Tone.Hi { f: 2 } };
     print(m);                                   // Mix { Hi { 1 }, hi2 }
 
-    blobs.push(Blob { l: L { v: 1 }, ts: [T { x: 1 }, T { x: 2 }, T { x: 3 }], link: Link.Nowhere });
-    blobs[0].link = Link.To { t: blobs[0].ts[1], k: 4 };
-    print(blobs[0]);                            // Blob { L1, [T { 1 }, T { 2 }, T { 3 }], To { T { 2 }, 4 } }
+    tpool.push(T { x: 1 });
+    tpool.push(T { x: 2 });
+    blobs.push(Blob { l: L { v: 1 }, link: Link.Nowhere });
+    blobs[0].link = Link.To { t: tpool[1], k: 4 };
+    print(blobs[0]);                            // Blob { L1, To { T { 2 }, 4 } }
 }

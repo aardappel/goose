@@ -886,6 +886,23 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
         Error(c, "dispatching a resizable ADT payload is not supported by the C backend "
                  "yet; match its tag without a payload binder, or use a standalone "
                  "resizable struct");
+    // The cases take the payload as match binders do (§8.1): a fixed-mode one
+    // by value only, and one holding self-relative references by reference.
+    auto en = enumtype->enu->en;
+    for (size_t vi = 0; vi < en->variants.size(); vi++) {
+        auto vt = ast.VariantTypeOf(enumtype, &en->variants[vi], c->line);
+        if (matches[vi].paramtypes[found]->kind == TY_REF) {
+            if (!enumtype->enu->varmode)
+                Error(c, cat("cannot pass the payload of fixed-mode ", en->name,
+                             " by reference to a case of ", name, " (§3.5); take it by "
+                             "value: ", TypeStr(vt)));
+        } else if (HasRelRefT(vt)) {
+            Error(c, cat("cannot copy the payload of ", en->variants[vi].name, ", which "
+                         "contains self-relative references, into a case of ", name,
+                         " taking it by value (§3.9); take it by reference: ", TypeStr(vt),
+                         "&"));
+        }
+    }
     // Phase 2 does not check the dispatch argument again: a construct
     // dispatched by reference binds its branches so here, and the copy a
     // construct dispatched by value would take of a branch is reported here.
@@ -903,7 +920,6 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
     LoadSliceArgs(argvals, matches[0].paramtypes);
     RefSliceArgs(argvals, matches[0].paramtypes, c->line);
     vector<Val> armvals = argvals;
-    auto en = enumtype->enu->en;
     FnSpec *first = nullptr;
     for (size_t vi = 0; vi < en->variants.size(); vi++) {
         auto &mi = matches[vi];

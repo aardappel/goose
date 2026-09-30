@@ -2279,7 +2279,7 @@ inline Val TypeCheck::CheckVariantConst(Dot *d, SEnum *en) {
                      " has a payload; construct it with ", en->name, ".", d->name, " { ... }"));
     d->variantconst = found;
     d->einst = inst;
-    if (!inst->allfixed) t->enu->varmode = true;
+    if (!inst->allfixed || inst->selfrel) t->enu->varmode = true;
     Val v;
     v.type = t;
     return v;

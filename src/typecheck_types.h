@@ -164,6 +164,7 @@ inline void TypeCheck::BuildVariant(EnumInst *inst, size_t vi) {
             inst->varclass = SC_RESIZABLE;
         }
         if (c != SC_FIXED) inst->allfixed = false;
+        if (HasRelRefT(ft)) inst->selfrel = true;
         inst->flat = inst->flat && IsFlat(ft);
     }
     inst->vbuilt[vi] = 2;
@@ -521,6 +522,12 @@ inline void TypeCheck::ValidateType(TypeExpr *t, Line l, int pos) {
                 Error(l, cat("enum ", t->enu->en->name, " has non-fixed-size payloads and "
                              "can only be used in variable mode (",
                              t->enu->en->name, "..)"));
+            if (inst->validated && !t->enu->varmode && inst->selfrel)
+                Error(l, cat("enum ", t->enu->en->name, " has payloads holding self-relative "
+                             "references, which a copy does not keep (§3.9), and a fixed-mode ",
+                             t->enu->en->name, " binds its payloads only by value (§3.5): use "
+                             "it in variable mode (", t->enu->en->name, "..), whose payloads "
+                             "bind by reference, or make the references `in pool`"));
             return;
         }
         case TY_VARIANT: {

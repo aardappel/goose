@@ -727,32 +727,12 @@ inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, N
         case TY_SLICE: child(t->sub, IsRefOrSlice(t->sub)); return;
         case TY_REF: child(t->ref->sub, false); return;
         case TY_STRUCT: case TY_ENUM: case TY_VARIANT:
-            if (t->kind == TY_ENUM && !t->enu->varmode) {
-                // An overload rendering one part of a fixed-mode value may
-                // overwrite it with another variant, and nothing may refer
-                // into its payload meanwhile (§3.5): the parts lie in a copy
-                // codegen takes once the tag is read (RenderLoc), a read-only
-                // temporary, as a construct's value is. A payload with
-                // self-relative references, which a copy would not keep
-                // (§3.9), is rendered in place, where no overload may run
-                // among its parts.
-                value = TempCopy(value);
-                auto runs = FieldRuns(t);
-                for (size_t vi = 0; vi < runs.size(); vi++) {
-                    auto hooks = c->fmtspecs.size();
-                    for (auto ft : *runs[vi].ftypes) if (ft) child(ft, IsRefOrSlice(ft));
-                    if (c->fmtspecs.size() == hooks ||
-                        !AnyFieldOf({ runs[vi] }, [&](TypeExpr *ft) { return HasRelRefT(ft); }))
-                        continue;
-                    Error(at, cat(what, " cannot render the ", t->enu->en->variants[vi].name,
-                                  " payload of fixed-mode ", TypeStr(t), " around a format "
-                                  "overload for a part of it: the overload may replace the "
-                                  "variant, so the parts are rendered from a copy (§3.5), and "
-                                  "the payload contains self-relative references, which a "
-                                  "copy does not keep (§3.9)"));
-                }
-                return;
-            }
+            // An overload rendering one part of a fixed-mode value may
+            // overwrite it with another variant, and nothing may refer into
+            // its payload meanwhile (§3.5): the parts lie in a copy codegen
+            // takes once the tag is read (RenderLoc), a read-only temporary,
+            // as a construct's value is.
+            if (t->kind == TY_ENUM && !t->enu->varmode) value = TempCopy(value);
             EachField(t, [&](TypeExpr *ft) { child(ft, IsRefOrSlice(ft)); });
             return;
         default:

@@ -3,8 +3,7 @@
 // one to the other, through plain, optional, self-relative and pool links
 // and slices, generic too, and through types holding the ADT that it
 // refers to: every level is rendered, a fixed-mode value overwritten in
-// place by another variant as what it is then. A fixed-mode payload's
-// self-relative links are read by nothing else (§3.5, §3.9).
+// place by another variant as what it is then.
 
 enum L { Nil, Cons { v: i64, next: L&? } }
 enum N { End, Link { v: i64, next: N& } }
@@ -13,8 +12,9 @@ enum V { Nil, Cons { name: u8[], next: V..? } }
 enum M { Nil, Cons { v: i64, next: M? } }
 // Fixed mode linking to its variable mode.
 enum F { Nil, Cons { v: i64, next: F..? } }
-// Self-relative links, and links into a pool.
-enum S { Nil, Cons { v: i64, next: S&<u32>? } }
+// Self-relative links, which only variable mode's payloads hold (§3.5),
+// and links into a pool.
+enum S { Nil, Cons { v: i64, next: S..&<u32>? } }
 enum P { Nil, Cons { v: i64, next: P&<u16 in pool>? } }
 var pool: P[>..] = [];
 enum T { Leaf { v: i64 }, Node { kids: T[:] } }
@@ -70,11 +70,11 @@ fn main() {
     let ff: F = F.Cons { v: 7, next: fv };
     print(ff);
 
-    var ss: S[>..] = [];
-    ss.push(S.Nil);
-    ss.push(S.Cons { v: 1, next: ss[0] });
-    ss.push(S.Cons { v: 2, next: ss[1] });
-    print(ss[2]);
+    var ss: S..[>..] = [];
+    let s0 .= ss.push(S.Nil);
+    let s1 .= ss.push(S.Cons { v: 1, next: s0 });
+    let s2 .= ss.push(S.Cons { v: 2, next: s1 });
+    print(s2);
     print(ss);
     pool.push(P.Nil);
     pool.push(P.Cons { v: 1, next: pool[0] });

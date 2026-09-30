@@ -380,11 +380,13 @@ fits the variant count, default `u8`) followed by the payload.
 Every ADT *type* can be used in two modes, chosen at the use site by the
 containing declaration:
 
-* **fixed mode** (`x: Shape`) — usable only if all payloads are fixed-size.
-  Size = tag + max payload size, padded to the largest variant (padding
-  never read, ignored by `==`). A fixed-mode value may be **overwritten in
-  place by a different variant**, but interior references into its payload
-  may never be created.
+* **fixed mode** (`x: Shape`) — usable only if all payloads are fixed-size
+  and hold no self-relative references (§3.9). Size = tag + max payload
+  size, padded to the largest variant (padding never read, ignored by
+  `==`). A fixed-mode value may be **overwritten in place by a different
+  variant**, but interior references into its payload may never be
+  created, so its payloads bind only by value (§8.1, §8.2), and a copy
+  does not keep self-relative references; `in pool` ones copy fine.
 * **variable mode** (`x: Shape..`) — size = tag + the actual variant's
   payload. Class is variable (or resizable, if the stored variant's payload
   contains a resizable tail). May have interior references into the payload,
@@ -497,9 +499,7 @@ the rest (§2). A fixed-mode ADT's payload is rendered from a copy taken
 once its tag is read, since an overload may overwrite the ADT with another
 variant and nothing may refer into its payload (§3.5): the rest of the
 payload is still the variant the rendering began with, and an overload
-taking a part of it by reference is given the copy's, read-only. A payload
-holding self-relative references, which a copy does not keep (§3.9),
-cannot be rendered around an overload for a part of it. The payload
+taking a part of it by reference is given the copy's, read-only. The payload
 renders as its variant's literal even where there is an overload for the
 variant type, which renders values of that type.
 
@@ -647,14 +647,16 @@ array/pool* as the location storing it.
   varint fields (re-encoding could change the byte length); fixed widths may
   be re-stored with `.=`/`=`.
 * Copying a *value that contains* self-relative references (assignment from
-  an lvalue, a by-value argument, a by-value match binder, an element copy,
-  an `append` of anything but an array literal, the value a `format`
-  overload takes by value and a fixed-mode ADT's payload rendered around one
-  for a part of it (§3.7), a `resize` fill value, which is copied into every
-  slot it adds even when it is a literal)
+  an lvalue, a by-value argument, a by-value match binder or case function
+  parameter (§8.1, §8.2), an element copy, an `append` of anything but an
+  array literal, the value a `format` overload takes by value (§3.7), a
+  `resize` fill value, which is copied into every slot it adds even when it
+  is a literal)
   is a compile error: the copied offsets would still be measured from the
   source location. Construct such values in place (literals), and bind their
-  match payloads, and have `format` overloads take them, by reference.
+  match payloads, take their variants in case functions and have `format`
+  overloads take them by reference: an ADT whose payloads hold them is used
+  in variable mode, whose payloads bind by reference (§3.5).
   (TODO 16: track the region a relative reference ranges over, so provably
   whole-region copies can be allowed.)
 * Because they are position-independent, structures linked by self-relative
@@ -719,7 +721,7 @@ point at. `self`, written as the entire initializer of such a field in a
 struct or variant literal, denotes the value that literal is constructing:
 `Node { key: -1, prev: self, next: self }`. It is legal only there, and only
 when the field's type is a non-optional relative reference whose pointee is
-the type of the value the literal constructs (for a variant literal in fixed
+the type of the value the literal constructs (for a variant literal in either
 enum mode, §3.5, that is the enum, tag included); `self` in a nested literal
 names the literal it is written in, never an enclosing one. That type must
 not be resizable: an offset alone cannot reach a resizable value's header,
@@ -2338,7 +2340,9 @@ match dir { North, South => "vertical", East, West => "horizontal" }
   overwritten with another variant — inside the arm included — so a
   reference into its payload is exactly what §3.5 forbids, and matching a
   fixed-mode ADT (even through a reference) offers by-value binding only.
-  The variant can never be reassigned through a `&`-binder.
+  The variant can never be reassigned through a `&`-binder. A payload
+  holding self-relative references binds by reference only (§3.9), which
+  is why an ADT with such payloads is used in variable mode (§3.5).
 * `T?` narrows via `if r { … }` / `guard` / `assert(r)` (flow typing, §3.8).
 
 ### 8.2 Case functions (match as an overload set)
@@ -2361,9 +2365,10 @@ let a = area(s);     // s: Shape — dispatches on the tag, like a match
   every variant must have exactly one applicable overload; return types must
   agree. All arms construct any nonfixed result to the same destination
   (§4.3). The overloads' parameter types choose copy vs reference like match
-  binders do (`Shape.Circle` vs `Shape.Circle&`), with the same §3.5 rule: a
+  binders do (`Shape.Circle` vs `Shape.Circle&`), with the same rules: a
   fixed-mode scrutinee — even behind a reference — dispatches to by-value
-  variant parameters only.
+  variant parameters only (§3.5), and a payload holding self-relative
+  references to by-reference ones (§3.9).
 * Dispatch is on one parameter position (v1 rule: multi-position dispatch is
   an error). Other parameters pass through unchanged.
 * A dispatched call writes every argument: it evaluates them once, before
