@@ -213,6 +213,9 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             v.type = vt;
             v.Set(nullptr, true);   // A null optional or an empty slice: static.
             v.writable = true;      // And nothing to write, so it fits any slot (§9.5).
+            // Any other value -- a scalar's, an empty limited array's -- is
+            // built in a temporary, as a literal is (§9.2).
+            if (!IsRefOrSlice(vt)) v = TempCopy(v);
             return v;
         }
         default: break;

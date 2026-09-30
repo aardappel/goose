@@ -589,12 +589,13 @@ holds (`RecordStore`): nothing on record describes a temporary's contents,
 so the stored value's own root bounds them.
 
 The by-value result of an `if`, `match`, block, loop or bare `{ }`, of a
-function value's call, and of `copy(x)` and an array's `default<T>()`, is
-such a temporary too: codegen builds it in storage of its own (`CtlValX`,
+function value's call, and of `copy(x)` and `default<T>()` (but a null
+reference's or an empty slice's, which are static data), is such a
+temporary too: codegen builds it in storage of its own (`CtlValX`,
 or `GenLoc` for any other value it addresses), copying a branch's value
 there even where the branch names a variable. `TempCopy` roots a
-construct's value, a function value's call's (`CheckFunValCall`) and an
-array default there, and `CheckBuiltin` a copy, keeping what it holds
+construct's value, a function value's call's (`CheckFunValCall`) and a
+default there, and `CheckBuiltin` a copy, keeping what it holds
 pointing where the source's contents do; it is read-only and no `lvalue`,
 as a call's result is, so nothing binds it by reference or writes it in
 place. A slice value keeps its roots and writability, pointing where the
@@ -653,7 +654,7 @@ a branch of an `if` would not be.
 | a call result (`CallResult`) | every root the callee's returns give (`RetRoot::alts`), mapped (`RetAltVal`: a parameter's class back to the argument's roots at this site -- at a back edge, every argument the class's parameters get -- a global or captured local as itself, null as static data) and united as branches are (`MergeVals`) | only where they all map to one root exactly |
 | an `if`, `match`, `block` or `loop` value of reference or slice type (`MergeVals`), array branches joined as a slice included (`CheckJoin`) | every one of its branches' roots, an array's where it is stored | only where they all name one root exactly |
 | an array, struct or variant literal, and a call's value result | a temporary (`TempRoot`): whatever views it rather than being built from it views a temporary | no |
-| any other `if`, `match`, `block`, `loop` or bare `{ }` value, a function value's call, and an array's `default<T>()` (`TempCopy`); `copy(x)` | a temporary (`TempRoot`), holding what the value it copied held | no; a copy's yes |
+| any other `if`, `match`, `block`, `loop` or bare `{ }` value, a function value's call, and a `default<T>()` but a null reference's or an empty slice's (`TempCopy`); `copy(x)` | a temporary (`TempRoot`), holding what the value it copied held | no; a copy's yes |
 | a string literal | static data (null) | yes |
 | `null` | none (adapts to any optional) | -- |
 
@@ -1204,8 +1205,8 @@ a step into them (`ResolveMemberLValue`, `CheckLValue`'s index), `&x`
 (`ContainerRead`) -- as a variable's are.
 `&x` of a `const` value is a `const T&`, a slice of read-only storage is a
 `const T[:]`, a string literal is `const u8[:]`, a `bytes_of` view is never
-writable, and `null` and `default<T>()` count as writable so they fit any
-slot.
+writable, and `null` and the `default<T>()` of a reference or slice count
+as writable so they fit any slot.
 
 A reference to a slice names the slot holding it, and what is loaded
 through it -- its pointee (`DecayRef`), a path crossing it, a builtin's
