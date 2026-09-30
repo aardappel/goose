@@ -1,3 +1,5 @@
+// warning: redundant &: cur is passed by reference without it
+// warning: redundant &: entries[0].text is passed by reference without it
 // A reference to a slice names the slot holding it -- a slice variable, a
 // field, an element -- whether it binds the slot by reference or is taken
 // with an explicit `&` (§3.8, §4.1): a load through it sees what the slot

@@ -146,12 +146,30 @@ Use the specific rejection reason and relevant types/roots; omit source paths,
 line numbers and specification section numbers. These inline assertions replace
 the old compiler-error `.stderr` files.
 
+A fixture declares the warnings its `--check` prints the same way, with one
+`// warning: <message substring>` line per warning; a positive fixture that
+declares none must print none. Markers and warning lines pair up one to one,
+each marker part of the message of a line of its own, so a warning printed
+twice fails the fixture as a missing or an undeclared one does (a warning
+prints once for its node as the source has it, `docs/implementation.md`
+§3.12). Two `&`s on one line that warn alike print two identical lines and
+take two markers, as `r6` in `branch_reference_copies.goose` does. The
+markers' order does not matter: without line numbers it could not say where
+a warning is, and warnings print in the order checking reaches their nodes
+-- a callee's body at its first call, a loop's and a construct's once their
+checks settle, redundant casts by line after the whole program -- which a
+change to the checker may rearrange without changing what a program is told.
+A rejection test answers for its warnings only if it declares some: checking
+stops at its error, so which warnings print first depends on how far it got.
+`cycle_local_store.goose`, for one, warns about its recursive call's
+`&local` before the error that call reveals, at the store on the line above.
+
 The runner checks more than exit status and runtime output:
 
 | Check | Contract |
 |---|---|
 | `lexer_tokens.goose` | Exact token stream, including keyword classification, decoded literals and longest-match punctuation. |
-| Every positive Goose fixture | Successful parse, successful initial dump, identical dump/reparse/dump, and typechecking unless its first line contains `parse-only`. Parsing also resolves type names; dumping alone does not. |
+| Every positive Goose fixture | Successful parse, successful initial dump, identical dump/reparse/dump, and typechecking with exactly the warnings it declares, unless its first line contains `parse-only`. Parsing also resolves type names; dumping alone does not. |
 | First-line `dump-runtime` | Compile and execute the dumped source against the original output. `control_expression_dump.goose` uses this to check grouping semantics, which a stable dump alone cannot establish. |
 | Every fixture with `// bce:elide` or `// bce:keep` | Run `-O1 --check --bce-test`, including expected-abort regressions. Native/JIT O0 and O2 runs independently check behavior. |
 | `gfx_err_shader_syntax.goose`, `gfx_err_shader_part.goose` | Besides their markers, the error is reported at the program's line holding the offending GLSL. |

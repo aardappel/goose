@@ -5,6 +5,7 @@
 // warning: the construct's value is a copy of a either way
 // warning: the construct's value is a copy of b either way
 // warning: the construct's value is a copy of a either way
+// warning: the construct's value is a copy of a either way
 // warning: the construct's value is a copy of k either way
 // warning: the construct's value is a copy of a either way
 // warning: the construct's value is a copy of a either way
@@ -23,9 +24,10 @@
 // the branch's (§4.1), and a reference a branch gives, `&x` included, is
 // copied as its pointee (§3.8): each branch loads it, and neither a later
 // write to the pointee nor a write to the copy reaches the other. The `&`
-// is redundant there, and warns; at a typed destination it loads without a
-// warning, as `&x` does wherever a reference meets a value, and a whole
-// array's `&x` at a slice parameter views the array.
+// is redundant there, and each one warns, both of r6's; at a typed
+// destination it loads without a warning, as `&x` does wherever a reference
+// meets a value, and a whole array's `&x` at a slice parameter views the
+// array.
 struct P { x: i64, y: i64 }
 enum Shape { Circle { r: i64 }, Square { s: i64 } }
 struct Rec { name: u8[], v: varint, w: varint }

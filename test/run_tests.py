@@ -9,7 +9,9 @@ abort (nonzero exit) after printing their expected stdout. Each nonblank line
 in expected/<name>.stderr must occur in stderr, so an unrelated crash cannot
 satisfy an expected abort. Compiler error fixtures require `// error:`
 diagnostic substrings in their source and the compiler's normal error exit.
-A first-line `runtime-debug` marker adds a targeted
+`// warning:` substrings declare the warnings a fixture's typecheck prints,
+one warning line each, in any order; a positive fixture without them must
+print none. A first-line `runtime-debug` marker adds a targeted
 GS_DEBUG=1 run, alongside the existing codegen_exec debug coverage.
 A first-line `dump-runtime` marker also executes the parser's dump, checking
 that stable roundtripping preserved the original program's behavior.
@@ -77,6 +79,36 @@ def first_line(path):
 
 def error_markers(path):
     return re.findall(r"^// error: (.+)$", path.read_text(encoding="utf-8"), re.MULTILINE)
+
+
+def warning_markers(path):
+    return re.findall(r"^// warning: (.+)$", path.read_text(encoding="utf-8"), re.MULTILINE)
+
+
+def unmatched_warnings(markers, warnings):
+    """Pairs each marker with a warning line of its own whose message contains
+    it, as many as can be paired, and returns the markers and the lines left
+    over. `warnings` holds (line, message) pairs. A marker can be part of
+    several messages, so taking the first line that fits could leave another
+    marker without the only line it fits: this is a maximum bipartite
+    matching (augmenting paths). A line repeating an earlier one is offered
+    last, so that it is the one left over when a warning prints twice."""
+    lines = [line for line, _ in warnings]
+    order = sorted(range(len(lines)), key=lambda w: lines[w] in lines[:w])
+    owner = [None] * len(lines)
+
+    def place(m, tried):
+        for w in order:
+            if w not in tried and markers[m] in warnings[w][1]:
+                tried.add(w)
+                if owner[w] is None or place(owner[w], tried):
+                    owner[w] = m
+                    return True
+        return False
+
+    missing = [marker for m, marker in enumerate(markers) if not place(m, set())]
+    extra = [line for w, line in enumerate(lines) if owner[w] is None]
+    return missing, extra
 
 
 def call_chain(depth, nest=0):
@@ -216,6 +248,26 @@ class Runner:
         if not markers or missing:
             self.fail(f"expected-diagnostic {path.name}",
                       f"missing: {missing or ['// error: marker']}\n{err}")
+            return False
+        # Checking stops at the error, so which warnings print before it
+        # depends on how far it got: a rejection test answers for them only
+        # if it declares them.
+        return not warning_markers(path) or self.check_warnings(path, out, err)
+
+    def check_warnings(self, path, out, err):
+        """The warnings a check printed are the ones the fixture's `// warning:`
+        lines declare: one warning line per marker, the marker part of its
+        message, in any order. A fixture without markers prints none."""
+        # A diagnostic's echoed source is indented, and a warning at no known
+        # place is located at "?".
+        warnings = [(match[0], match[1]) for match in
+                    (re.match(r"\S.*?: warning: (.*)$", line)
+                     for line in out.splitlines() + err.splitlines()) if match]
+        missing, extra = unmatched_warnings(warning_markers(path), warnings)
+        if missing or extra:
+            self.fail(f"expected-warnings {path.name}",
+                      "".join(f"no warning for marker: {m}\n" for m in missing) +
+                      "".join(f"no marker for warning: {w}\n" for w in extra) + out + err)
             return False
         return True
 
@@ -516,7 +568,7 @@ def main():
             code, out, err = r.goose("--check", f)
             if code != 0:
                 r.fail(f"typecheck {f.name}", out + err)
-            else:
+            elif r.check_warnings(f, out, err):
                 r.ok(f"typecheck {f.name}")
 
     # The optimizer runs at -O1 in every typecheck above; also exercise the

@@ -1,3 +1,4 @@
+// warning: redundant &: view is passed by reference without it
 // A call that leaves a grow-shrink array no shorter than it found it at any
 // point is balanced (§5.2): every shrink of the array in it resizes it back
 // to a `let` of its length taken in the same activation, or is a balanced
