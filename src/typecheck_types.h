@@ -139,6 +139,29 @@ inline EnumInst *TypeCheck::GetEnumInst(TypeExpr *t) {
     inst->validated = true;
     typechain.pop_back();
     EndTypeBuild();
+    // A whole assignment may replace a resizable ADT's variant (§4.4), so its
+    // payloads bind by value only (§8.1), and a copy does not keep
+    // self-relative references (§3.9): nothing could read those of a payload
+    // that binds. A resizable payload, which does not bind at all yet
+    // (CheckMatch), is left alone.
+    if (inst->selfrel && inst->varclass == SC_RESIZABLE) {
+        auto resizable = [&](size_t vi) {
+            return AnyFieldOf({ RunOf(inst, (int)vi) },
+                              [&](TypeExpr *ft) { return ClassOf(ft) == SC_RESIZABLE; });
+        };
+        size_t tail = 0;
+        while (!resizable(tail)) tail++;
+        for (size_t vi = 0; vi < en->variants.size(); vi++)
+            if (!resizable(vi) &&
+                AnyFieldOf({ RunOf(inst, (int)vi) }, [&](TypeExpr *ft) { return HasRelRefT(ft); }))
+                Error(en->line, cat("enum ", TypeStr(ast.EnumOf(en, inst->args, false, en->line)),
+                                    " is resizable (its variant ", en->variants[tail].name,
+                                    "'s payload is), so a whole assignment may replace its "
+                                    "variant (§4.4) and its payloads bind only by value (§8.1); "
+                                    "the payload of its variant ", en->variants[vi].name,
+                                    " holds self-relative references, which a copy does not "
+                                    "keep (§3.9): make them plain or `in pool` references"));
+    }
     return inst;
 }
 

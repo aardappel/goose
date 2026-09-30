@@ -370,7 +370,12 @@ usable in variable mode, and so is one whose payloads hold self-relative
 references (`EnumInst::selfrel`, from `HasRelRefT` over each payload field
 in `BuildVariant`): fixed mode binds its payloads by value only, and a copy
 does not keep them (§3.5, §3.9). A payload-less variant constant of such an
-enum is variable-mode (`CheckVariantConst`).
+enum is variable-mode (`CheckVariantConst`). A resizable enum binds its
+payloads by value only as well, a whole assignment replacing its variant
+(§4.4, `CheckMatch`), so `GetEnumInst` rejects an instance whose `varclass`
+is resizable where a payload that is not itself resizable holds them, at
+the enum's declaration once all variants are built. A resizable payload,
+which the C backend does not bind at all yet, is left alone.
 
 An array literal uses its destination's type when one is available.
 Otherwise it is a `T[k]` for fixed-size elements or a `T[]` for non-fixed

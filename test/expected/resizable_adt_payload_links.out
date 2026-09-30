@@ -1,0 +1,8 @@
+A 1 7 10
+copy 1 7 10
+B
+A 2 6 21
+H { 6, A { 2, 6, 21 } }
+nodes
+Nodes { [N { 1, null }, N { 2, null }] }
+Tree.Empty

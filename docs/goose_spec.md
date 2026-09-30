@@ -390,7 +390,12 @@ containing declaration:
 * **variable mode** (`x: Shape..`) — size = tag + the actual variant's
   payload. Class is variable (or resizable, if the stored variant's payload
   contains a resizable tail). May have interior references into the payload,
-  but the variant may **never be replaced in place**.
+  but the variant may **never be replaced in place** — except by a whole
+  assignment of a resizable one (§4.4), which therefore binds its payloads
+  only by value, as fixed mode does (§8.1, §8.2). A payload of a resizable
+  ADT that is not itself resizable thus holds no self-relative references,
+  which a copy does not keep (§3.9); plain or `in pool` references copy
+  fine.
 
 Allowing either variant replacement or interior references, but not both,
 preserves the soundness of existential types (Grossman, "Existential Types for Imperative
@@ -656,7 +661,8 @@ array/pool* as the location storing it.
   source location. Construct such values in place (literals), and bind their
   match payloads, take their variants in case functions and have `format`
   overloads take them by reference: an ADT whose payloads hold them is used
-  in variable mode, whose payloads bind by reference (§3.5).
+  in variable mode, whose payloads bind by reference where the ADT is not
+  resizable (§3.5).
   (TODO 16: track the region a relative reference ranges over, so provably
   whole-region copies can be allowed.)
 * Because they are position-independent, structures linked by self-relative
@@ -2340,9 +2346,12 @@ match dir { North, South => "vertical", East, West => "horizontal" }
   overwritten with another variant — inside the arm included — so a
   reference into its payload is exactly what §3.5 forbids, and matching a
   fixed-mode ADT (even through a reference) offers by-value binding only.
-  The variant can never be reassigned through a `&`-binder. A payload
-  holding self-relative references binds by reference only (§3.9), which
-  is why an ADT with such payloads is used in variable mode (§3.5).
+  So does matching a resizable ADT, which a whole assignment gives another
+  variant the same way (§4.4). The variant can never be reassigned
+  through a `&`-binder. A payload holding self-relative references binds
+  by reference only (§3.9), which is why an ADT with such payloads is used
+  in variable mode, and a resizable ADT holds them only in its resizable
+  payloads (§3.5).
 * `T?` narrows via `if r { … }` / `guard` / `assert(r)` (flow typing, §3.8).
 
 ### 8.2 Case functions (match as an overload set)
@@ -2366,9 +2375,9 @@ let a = area(s);     // s: Shape — dispatches on the tag, like a match
   agree. All arms construct any nonfixed result to the same destination
   (§4.3). The overloads' parameter types choose copy vs reference like match
   binders do (`Shape.Circle` vs `Shape.Circle&`), with the same rules: a
-  fixed-mode scrutinee — even behind a reference — dispatches to by-value
-  variant parameters only (§3.5), and a payload holding self-relative
-  references to by-reference ones (§3.9).
+  fixed-mode or resizable scrutinee — even behind a reference —
+  dispatches to by-value variant parameters only (§3.5), and a payload
+  holding self-relative references to by-reference ones (§3.9).
 * Dispatch is on one parameter position (v1 rule: multi-position dispatch is
   an error). Other parameters pass through unchanged.
 * A dispatched call writes every argument: it evaluates them once, before
