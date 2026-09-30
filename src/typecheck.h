@@ -357,6 +357,10 @@ struct TypeCheck {
         // slice `node` is out of storage again on every iteration.
         ForLoop *loop = nullptr;
         bool reread = false;
+        // `v` is a reference to what the rendering walks in place
+        // (BodyState::renderwalks): not the path to a resizable, which a
+        // shrink leaves in place, but its parts as the walk read them.
+        bool inplace = false;
     };
     template<typename F> void HoldAs(Node *n, const Val &v, HoldKind kind, Node *parent,
                                      const char *render, F f);
@@ -1334,6 +1338,7 @@ struct TypeCheck {
     }
     bool ShrinkMayFree(VarDef *root, TypeExpr *bound, bool growonly, TypeExpr *of,
                        bool byteview);
+    bool ShrinkMayMove(VarDef *root, TypeExpr *bound, TypeExpr *t);
     void CheckHeldShrinks(Node *at, const string &op, VarDef *root,
                           const string &what, bool growonly, TypeExpr *bound = nullptr);
 
@@ -1958,6 +1963,7 @@ struct TypeCheck {
         TypeExpr *pointee = nullptr;
         bool reached = false;    // What the value leads to, not the value.
         bool contents = false;   // What p's storage holds (LiveShrink::contents).
+        bool inplace = false;    // A walk's (LiveShrink::inplace).
     };
     // The temporaries a call is handed, with where what each holds points
     // (TempContents).
@@ -2014,6 +2020,15 @@ struct TypeCheck {
         Node *renderarg = nullptr;
         Node *renderwhere = nullptr;
         const char *rendering = nullptr;
+        // The parts of it the rendering is walking in place, outermost
+        // first, each as where it lies: a variable-mode ADT, whose tag it
+        // reads once, and an array of a size not fixed, whose count it reads
+        // once (RenderLoc), before rendering the parts they cover. A shrink
+        // of the storage one lies in may free the elements, or, as a whole
+        // assignment rebuilds every variable-size part of a resizable value,
+        // replace the variant or the count, so each stays held until its
+        // walk ends.
+        vector<Val> renderwalks;
         // The passes of the loops open around the point being checked,
         // outermost first (LoopPass).
         vector<LoopPass> looppasses;

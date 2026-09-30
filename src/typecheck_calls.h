@@ -2106,7 +2106,7 @@ inline bool TypeCheck::SameRecord(const FnSpec *a, const FnSpec *b) {
         auto &p = a->liveshrinks[i], &q = b->liveshrinks[i];
         if (p.shrunk != q.shrunk || p.shrunkexact != q.shrunkexact || p.live != q.live ||
             p.liveexact != q.liveexact || p.byteview != q.byteview || p.growonly != q.growonly ||
-            p.contents != q.contents || !sametype(p.bound, q.bound) ||
+            p.contents != q.contents || p.inplace != q.inplace || !sametype(p.bound, q.bound) ||
             !sametype(p.pointee, q.pointee))
             return why("live shrinks");
     }

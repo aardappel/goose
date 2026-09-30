@@ -513,8 +513,9 @@ template<typename F> void TypeCheck::HoldForSequence(ForLoop *fl, const Val &v, 
 // the point itself, applying its callee's effects, has consumed its own
 // operands: what the callee does to them its parameters' pairs judge
 // (§5.1, NoteLiveViews). The exception is the argument print, str or format
-// is rendering (`cur.renderarg`): its views, and where a struct, enum or array
-// argument lies (`cur.renderwhere`), which an overload of a part runs in the
+// is rendering (`cur.renderarg`): its views, where a struct, enum or array
+// argument lies (`cur.renderwhere`), and the parts the rendering is walking
+// in place (`cur.renderwalks`), which an overload of a part runs in the
 // middle of rendering.
 template<typename F> void TypeCheck::HeldOperands(F f) {
     for (auto &e : cur.nodepath) {
@@ -531,6 +532,12 @@ template<typename F> void TypeCheck::HeldOperands(F f) {
                     auto where = it->second;
                     where.type = ast.RefTo(where.type, ch->line);
                     f(Held { ch, std::move(where), false, cur.rendering });
+                }
+                for (auto &w : cur.renderwalks) {
+                    auto walked = w;
+                    walked.type = ast.RefTo(w.type, ch->line);
+                    f(Held { .node = ch, .v = std::move(walked), .render = cur.rendering,
+                             .inplace = true });
                 }
                 return;
             }

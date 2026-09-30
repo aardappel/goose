@@ -435,7 +435,13 @@ type, not the namespace of the code printing it. The three builtins
 evaluate and render their arguments in order, each just before its text,
 and call the overload in the middle of rendering the argument holding the
 `T`: neither the variables the arguments after that one name nor the rest of
-that argument may refer into what the overload shrinks (§5.1). A slice's
+that argument may refer into what the overload shrinks (§5.1). An array's
+elements, and a variable-mode ADT's payload (§3.5), are rendered where they
+lie, by the count and the variant read as their rendering begins: an
+overload called for one of their parts may not shrink the storage they lie
+in, which frees the elements, or, as a whole assignment does (§4.4),
+rebuilds every variable-size part of the value holding them, a reference to
+a whole resizable value being no exception. A slice's
 elements are rendered from the view their rendering began with, and a
 value behind a reference from where the reference pointed then: an overload
 that re-points the slice or rebinds the reference meanwhile does not change

@@ -1616,6 +1616,11 @@ struct LiveShrink {
     // parameter's class; a call judges where what its argument holds may
     // point by its record of it (TypeCheck::HeldViews).
     bool contents = false;
+    // What is still used is a print, str or format walking a `pointee` in
+    // place (TypeCheck::BodyState::renderwalks), which a shrink of storage
+    // it lies in may relay out, whatever kind the shrink is
+    // (TypeCheck::ShrinkMayMove).
+    bool inplace = false;
 };
 
 // One return value's reference roots, or for a holder the roots of what it

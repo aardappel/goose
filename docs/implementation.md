@@ -1681,9 +1681,18 @@ optional reference or a slice, a non-fixed array's elements, a holder's
 references), and, for a struct, enum or array argument no overload takes
 whole (`renderwhere`), a reference to where it lies, which may be an element
 of the array an overload clears (a plain reference argument has decayed to
-its pointee, which lies where the reference points). `NoteLiveViews` sees
-both, so a function rendering its parameter around an overload, or after
-one, keeps the pair for its callers (**Parameters' views** above). A callee
+its pointee, which lies where the reference points). So are the parts
+`CheckRenderable` is walking in place where it meets the overload
+(`renderwalks`): a variable-mode ADT, whose tag codegen reads once, and an
+array of a size not fixed, whose count it does, each as a reference to
+where it lies (`Held::inplace`). Such a reference is not the path to a
+resizable a reference to one otherwise is: a shrink of the storage it lies
+in, of either kind, may free its elements or rebuild it, as a whole
+assignment rebuilds every variable-size part of the value it assigns
+(`ShrinkMayMove`), and a slot may hold the path it was reached through.
+`NoteLiveViews` sees them all, so a function rendering its parameter
+around an overload, or after one, keeps the pair for its callers
+(**Parameters' views** above; `LiveShrink::inplace`). A callee
 body checked meanwhile starts with an empty path (`CheckSpecBody`): the
 call site applies its summary against the caller's statement. An overload
 taking a value by reference is given where it lies, as writable as the
@@ -2376,6 +2385,9 @@ presence of aliases (`Snapshot`, `IndexLoc`, `GenSlice`, `Assign::CgStmt`,
   through an overload for the variant type, which the checker only
   specializes for values of that type. One holding self-relative
   references stays in place, where the checker lets no overload run.
+  A variable-mode ADT's payload is rendered in place, by the tag read once:
+  the checker holds it, and an array's elements, while the overloads of
+  their parts run (`renderwalks`).
 * A by-value result that is immediately viewed still has its own temporary
   storage through the containing statement. Inlining or selecting a
   constant branch must preserve that copy when replacing it with the

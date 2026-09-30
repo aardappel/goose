@@ -604,19 +604,22 @@ inline void TypeCheck::CheckPrintable(Call *c, const char *what, vector<Node *> 
         av = tv;
     }
     // Rendered now (HeldOperands).
-    auto saverender = tuple(cur.renderarg, cur.renderwhere, cur.rendering);
+    auto saverender = tuple(cur.renderarg, cur.renderwhere, cur.rendering,
+                            std::move(cur.renderwalks));
     cur.renderarg = a;
     cur.renderwhere = nullptr;
     cur.rendering = what;
+    cur.renderwalks.clear();
     struct Restore {
         TypeCheck &tc;
-        tuple<Node *, Node *, const char *> saved;
+        tuple<Node *, Node *, const char *, vector<Val>> saved;
         ~Restore() {
             tc.cur.renderarg = get<0>(saved);
             tc.cur.renderwhere = get<1>(saved);
             tc.cur.rendering = get<2>(saved);
+            tc.cur.renderwalks = std::move(get<3>(saved));
         }
-    } restore { *this, saverender };
+    } restore { *this, std::move(saverender) };
     Val builder;
     builder.Set(TempRoot(), true);
     builder.writable = true;
@@ -642,6 +645,18 @@ inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, N
     if (seen.size() == 1 && (t->kind == TY_STRUCT || t->kind == TY_ENUM ||
                              t->kind == TY_VARIANT || t->kind == TY_ARRAY))
         cur.renderwhere = at;
+    // A variable-mode ADT's tag, or the count of an array of a size not
+    // fixed, is read once, and the parts it covers are rendered where they
+    // lie after it (RenderLoc): where it lies stays held while their
+    // overloads run (HeldOperands).
+    auto walk =(t->kind == TY_ENUM && t->enu->varmode) ||
+                (t->kind == TY_ARRAY && ClassOf(t) != SC_FIXED);
+    if (walk) cur.renderwalks.push_back(value);
+    struct PopWalk {
+        TypeCheck &tc;
+        bool walk;
+        ~PopWalk() { if (walk) tc.cur.renderwalks.pop_back(); }
+    } popwalk { *this, walk };
     // A part lies in the value's storage, or where the value points: a slice
     // part's slot is the value, as writable as that is (UserFormatIn).
     auto child = [&](TypeExpr *ft, bool throughref) {
@@ -887,24 +902,40 @@ inline bool TypeCheck::ShrinkMayFree(VarDef *root, TypeExpr *bound, bool growonl
     return GrowShrinkCanHold(root, of);
 }
 
+// Whether a shrink at root, of storage of type `bound` where root only bounds
+// it, may relay out or free a `t` a rendering walks in place (renderwalks):
+// the storage holds a t, which a whole assignment rebuilds, or the t holds
+// the array shrunk.
+inline bool TypeCheck::ShrinkMayMove(VarDef *root, TypeExpr *bound, TypeExpr *t) {
+    if (!t) return true;
+    if (bound) return CanContain(bound, t) || CanContain(t, bound);
+    return !root->type || CanContain(LoadType(root->type), t);
+}
+
 // Unnamed locations and views retained by an enclosing operation are live
 // just like named references: the values the statement evaluated before the
 // shrink and uses after it (HeldOperands).
 inline void TypeCheck::CheckHeldShrinks(Node *at, const string &op, VarDef *root,
                                         const string &what, bool growonly, TypeExpr *bound) {
     HeldOperands([&](const Held &h) {
-        auto &[node, v, location, render, elems, loop, reread] = h;
-        auto path = v.type->kind == TY_REF && ClassOf(v.type->ref->sub) == SC_RESIZABLE;
-        auto held = !path && ShrinkMayFree(root, bound, growonly, PointeeOf(v.type), v.byteview) &&
+        auto &[node, v, location, render, elems, loop, reread, inplace] = h;
+        auto path = !inplace && v.type->kind == TY_REF &&
+                    ClassOf(v.type->ref->sub) == SC_RESIZABLE;
+        auto mayfree = inplace
+                           ? ShrinkMayMove(root, bound, v.type->ref->sub)
+                           : ShrinkMayFree(root, bound, growonly, PointeeOf(v.type), v.byteview);
+        auto held = !path && mayfree &&
                     v.Any([&](const RootAlt &a) {
                         // A slot read never points into a grow-shrink array
                         // (§5.2), though it may into a grow-only one, where
                         // a view the storage of a parameter's class held
-                        // points where that storage's views do. An inexact
-                        // root bounds the lifetime: it may name any outer
-                        // owner, not just another at that depth.
-                        if (!growonly && a.slotread) return false;
-                        if (growonly && a.classread)
+                        // points where that storage's views do; a walk's may
+                        // have been reached through a slot's reference to a
+                        // whole resizable of either kind. An inexact root
+                        // bounds the lifetime: it may name any outer owner,
+                        // not just another at that depth.
+                        if (!growonly && !inplace && a.slotread) return false;
+                        if ((growonly || inplace) && a.classread)
                             return ClassReadMayPointInto(a.root, root, bound);
                         return a.root == root || (!a.exact && Depth(a.root) >= Depth(root));
                     });
@@ -2022,20 +2053,24 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
     // holds (RootAlt::classread): the class's contents, as HeldViews takes
     // them. An assignment's location is overwritten before it is read, and a
     // slot a for loop reads again holds its sequence, which is held itself:
-    // only the slot counts.
-    auto views = [&](const Prov &p, TypeExpr *t, bool slotonly, bool isvar) {
+    // only the slot counts. What a rendering walks in place (`inplace`) is
+    // its own pointee, a path to a resizable or not, which a slot may have
+    // held whatever kind of array shrinks.
+    auto views = [&](const Prov &p, TypeExpr *t, bool slotonly, bool isvar, bool inplace) {
         vector<LiveView> out;
-        if (t->kind != TY_REF || ClassOf(t->ref->sub) != SC_RESIZABLE) {
+        if (inplace || t->kind != TY_REF || ClassOf(t->ref->sub) != SC_RESIZABLE) {
             auto own = p;
-            if (growonly && !isvar) {
+            if ((growonly || inplace) && !isvar) {
                 Prov held = p;
                 std::erase_if(held.alts, [](const RootAlt &a) { return !a.classread; });
                 std::erase_if(own.alts, [](const RootAlt &a) { return a.classread; });
+                auto first = out.size();
                 HeldViews(held, t, false, out);
+                for (auto i = first; i < out.size(); i++) out[i].inplace = inplace;
             }
-            out.push_back({ own, PointeeOf(t), false });
+            out.push_back({ own, PointeeOf(t), false, false, inplace });
         }
-        if (slotonly) return out;
+        if (slotonly || inplace) return out;
         if (t->kind == TY_SLICE) {
             if (growonly && HoldsPlainRef(t->sub)) HeldViews(p, t->sub, isvar, out);
             return out;
@@ -2063,12 +2098,12 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
     };
     // Whether the callers judge where a view may point by alternative a: a
     // slot read points into no grow-shrink array (§5.2), as the scans say,
-    // though what a reference to a slice leads to may. What a class's
-    // storage holds is theirs to judge whatever array shrinks, the class's
-    // own included.
+    // though what a reference to a slice leads to may, and so may a walk's
+    // path. What a class's storage holds is theirs to judge whatever array
+    // shrinks, the class's own included.
     auto judges = [&](const LiveView &w, const RootAlt &a) {
         return (w.contents || CallersJudge(a.root, root)) &&
-               (growonly || w.reached || !a.slotread);
+               (growonly || w.reached || w.inplace || !a.slotread);
     };
     // Every place a view may point that the callers judge, as a pair each.
     auto note = [&](const LiveView &w, const string &name) {
@@ -2077,7 +2112,7 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
             LiveShrink ls { .shrunk = root, .shrunkexact = !bound, .bound = bound,
                             .live = a.root, .liveexact = a.exact, .pointee = w.pointee,
                             .byteview = w.p.byteview, .growonly = growonly, .name = name,
-                            .contents = w.contents };
+                            .contents = w.contents, .inplace = w.inplace };
             if (NoteLiveShrink(ls, current) < 0)
                 Error(at, cat(prefix, " while ", name, " is still used: it may refer into ", what,
                               growonly ? " (§5.1)" : " (§5.2)"));
@@ -2093,7 +2128,7 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
         return !vs.empty();
     };
     HeldOperands([&](const Held &h) {
-        auto vs = views(h.v, h.v.type, h.location || h.reread, false);
+        auto vs = views(h.v, h.v.type, h.location || h.reread, false, h.inplace);
         if (!judged(vs)) return;
         auto name = ExprStr(h.node);
         if (name.find('\n') != string::npos)
@@ -2106,7 +2141,7 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
         vector<LiveView> vs;
         if (IsRefOrSlice(t)) {
             if (!v->refrootknown) return;
-            vs = views(v->ref, t, false, v->isvar);
+            vs = views(v->ref, t, false, v->isvar, false);
         } else if (growonly && HoldsPlainRef(t)) {
             // A grow-only array's views may be stored (§5.1): the holder's
             // store record says where its references lead.
@@ -2292,7 +2327,12 @@ inline int TypeCheck::NoteLiveShrink(LiveShrink ls, FnSpec *current) {
         if (!current) return -1;
         if (!outside(s)) return 0;
     } else {
-        auto mayfree = ShrinkMayFree(s, ls.bound, ls.growonly, ls.pointee, ls.byteview);
+        // What a rendering walks in place goes with the storage it lies in,
+        // a shrink of either kind relaying it out; its fixed-size parts, and
+        // what they refer to, are judged as any view is.
+        auto moves = ls.inplace && (!ls.pointee || ClassOf(ls.pointee) != SC_FIXED);
+        auto mayfree = moves ? ShrinkMayMove(s, ls.bound, ls.pointee)
+                             : ShrinkMayFree(s, ls.bound, ls.growonly, ls.pointee, ls.byteview);
         // A callee's shrink of a class, mapped onto an argument whose root
         // only bounds it: the array may be any of the shrink's kind in what
         // that root leads to (BoundReach).
@@ -2301,8 +2341,11 @@ inline int TypeCheck::NoteLiveShrink(LiveShrink ls, FnSpec *current) {
             BoundReach(s, reach);
             for (auto t : reach) {
                 auto arr = ResizableArrayIn(t);
-                mayfree = mayfree || (arr && GrowOnlyTail(arr) == ls.growonly &&
-                                      ShrinkMayFree(s, arr, ls.growonly, ls.pointee, ls.byteview));
+                if (!arr) continue;
+                mayfree = mayfree ||
+                          (moves ? ShrinkMayMove(s, t, ls.pointee)
+                                 : GrowOnlyTail(arr) == ls.growonly &&
+                                       ShrinkMayFree(s, arr, ls.growonly, ls.pointee, ls.byteview));
             }
         }
         if (!mayfree) return 0;
@@ -2316,7 +2359,8 @@ inline int TypeCheck::NoteLiveShrink(LiveShrink ls, FnSpec *current) {
             return -1;
     }
     for (auto &e : current->liveshrinks) {
-        if (e.shrunk != s || e.live != l || !e.bound != !ls.bound || e.contents != ls.contents)
+        if (e.shrunk != s || e.live != l || !e.bound != !ls.bound || e.contents != ls.contents ||
+            e.inplace != ls.inplace)
             continue;
         if (e.bound && !TypeEq(e.bound, ls.bound)) continue;
         if (e.contents && !TypeEq(e.pointee, ls.pointee)) continue;
@@ -2397,11 +2441,13 @@ inline bool TypeCheck::MapLiveShrinks(const CallSite &site) {
                 // is a view the storage of one of the caller's classes held
                 // (RootAlt::classread), points where that storage's views
                 // do: it is judged as what that storage holds, of a type
-                // leading to what the view points at. A temporary nothing
-                // recorded the contents of may hold anything outliving it.
+                // leading to what the view points at, and so is a walk's
+                // path, which such storage may hold into an array of either
+                // kind. A temporary nothing recorded the contents of may hold
+                // anything outliving it.
                 auto contents = orig.contents;
                 auto held = orig.pointee;
-                if (!contents && orig.growonly && orig.pointee && la.classread) {
+                if (!contents && (orig.growonly || orig.inplace) && orig.pointee && la.classread) {
                     contents = true;
                     held = ast.SliceOf(orig.pointee, site.at->line);
                 }
