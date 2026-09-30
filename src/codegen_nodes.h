@@ -961,6 +961,11 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         v.len = nv;
         v.elems = bv;
     }
+    // A body that re-points a slice on the path, or rebinds a reference on it,
+    // moves the walk to the elements the path leads to now, as the length read
+    // again does: the next iteration takes the element at its index there. An
+    // array's elements, and a resizable's, stay where they are otherwise.
+    auto moves = !fixedlen && (lv.t->kind == TY_SLICE || lv.viaref);
     // An index binder of a type of its own is a copy of the i64 counter.
     auto typedix = idxdef && idxdef->type->intstorage != IS_I64;
     auto gi = ix.empty() || typedix ? cg.T() : ix;
@@ -977,7 +982,26 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         // increment clause so `continue` behaves.
         auto p = cg.T();
         cg.L("uint8_t *", p, " = (uint8_t *)(", v.elems, ");");
+        // Where the elements moved, the cursor walks from their start again.
+        string at;
+        if (moves) {
+            at = cg.T();
+            cg.L("uint8_t *", at, " = ", p, ";");
+        }
         cg.GenLoopBody([&]() {
+            if (moves) {
+                auto e = cg.T();
+                cg.L("uint8_t *", e, " = (uint8_t *)(", cg.ArrayView(lv).elems, ");");
+                cg.L("if (", e, " != ", at, ") {");
+                cg.ind++;
+                cg.L(at, " = ", e, ";");
+                cg.L(p, " = ", e, ";");
+                auto k = cg.T();
+                cg.L("for (int64_t ", k, " = 0; ", k, " < ", gi, "; ", k, "++) ", p, " += ",
+                     cg.SizeX(v.elem, p), ";");
+                cg.ind--;
+                cg.L("}");
+            }
             bindix();
             if (held) {
                 CodeGen::Loc el;
@@ -995,9 +1019,12 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
     auto esz = cg.FixedSize(v.elem);
     cg.GenLoopBody([&]() {
         bindix();
+        // The start of the elements behind a varint length prefix is a
+        // statement's (RawArrayView), which runs again where they can move.
+        auto elems = moves ? cg.ArrayView(lv).elems : v.elems;
         string elem = v.typedelems
-                          ? cat(v.elems, "[", gi, "]")
-                          : cat("(*(", cg.CT(v.elem), " *)((", v.elems, ") + ", gi, " * ",
+                          ? cat(elems, "[", gi, "]")
+                          : cat("(*(", cg.CT(v.elem), " *)((", elems, ") + ", gi, " * ",
                                 esz, "))");
         if (!vdef->copybind && !held) {
             cg.L(cg.CT(et), " ", iv, " = &", elem, ";");

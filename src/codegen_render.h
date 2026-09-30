@@ -68,6 +68,12 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
     // optional, a plain reference in value position): the pointee.
     if (lv.t->kind == TY_REF && t->kind != TY_REF) DerefLoc(lv);
     if (auto sp = FmtSpecFor(c, t)) { EmitUserFormat(out, lv, sp, ln); return; }
+    // An overload rendering one part of a value may rebind a reference on the
+    // way to it: the other parts are read from where the value lay when its
+    // rendering began, which the checker holds meanwhile (HeldOperands).
+    if (lv.viaref && c && !c->fmtspecs.empty() &&
+        (t->kind == TY_STRUCT || t->kind == TY_VARIANT || t->kind == TY_ENUM))
+        PinLoc(lv);
     switch (t->kind) {
         case TY_INT: {
             auto vt = t->intstorage == IS_VARINT ? ast.inttypes[IS_I64] : t;
@@ -132,11 +138,14 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
             auto i = T();
             auto cnt = T();
             L("int64_t ", cnt, " = ", v.len, ";");
-            string cur;
-            if (!v.typedelems && !IsFix(elem)) {
-                cur = T();
-                L("const uint8_t *", cur, " = (const uint8_t *)(", v.elems, ");");
-            }
+            // The elements are read once, as the count is: an overload
+            // rendering one may re-point the slice holding them, or rebind a
+            // reference on the way to them, and the rest are still the ones
+            // the rendering began with, which the checker holds meanwhile.
+            // Variable-size elements are walked with this as the cursor.
+            auto p = T();
+            if (v.typedelems) L(CT(elem), " *", p, " = ", v.elems, ";");
+            else L("const uint8_t *", p, " = (const uint8_t *)(", v.elems, ");");
             L("for (int64_t ", i, " = 0; ", i, " < ", cnt, "; ", i, "++) {");
             ind++;
             L("if (", i, ") {");
@@ -148,16 +157,17 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
             if (v.typedelems) {
                 el.t = elem;
                 el.val = true;
-                el.s = cat(v.elems, "[", i, "]");
+                el.s = cat(p, "[", i, "]");
                 el.stk = lv.stk;
             } else if (IsFix(elem)) {
-                el = BytesLoc(cat("((const uint8_t *)(", v.elems, ") + ", i, " * ",
-                                  FixedSize(elem), ")"), elem, lv);
+                el = BytesLoc(cat("(", p, " + ", i, " * ", FixedSize(elem), ")"), elem, lv);
             } else {
-                el = BytesLoc(cur, elem, lv);
+                el = BytesLoc(p, elem, lv);
             }
+            // Only a reference an element holds can still be rebound.
+            el.viaref = elem->kind == TY_REF;
             RenderLoc(out, el, elem, true, c, ln);
-            if (!cur.empty()) L(cur, " += ", SizeX(elem, cur), ";");
+            if (!v.typedelems && !IsFix(elem)) L(p, " += ", SizeX(elem, p), ";");
             ind--;
             L("}");
             RenderLit(out, "]");

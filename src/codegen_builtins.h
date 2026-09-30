@@ -36,27 +36,7 @@ inline CodeGen::Loc CodeGen::RecvLoc(Node *n) {
         return lv;
     }
     if (!lv.viaref || (!lv.stk.empty() && CacheableStk(lv.stk))) return lv;
-    if (lv.val) {
-        auto p = T();
-        L(CT(lv.t), " *", p, " = &(", lv.s, ");");
-        lv.s = cat("(*", p, ")");
-    } else if (!IsResz(lv.t)) {
-        auto p = T();
-        L("uint8_t *", p, " = ", lv.s, ";");
-        lv.s = p;
-    } else {
-        assert(!lv.hdr.empty());
-        auto h = T();
-        L("gs_rhdr *", h, " = &(", lv.hdr, ");");
-        lv.hdr = cat("(*", h, ")");
-        lv.s = cat(h, "->base");
-        lv.lenlv = cat(h, "->len");
-    }
-    if (!lv.stk.empty()) {
-        auto s = T();
-        L("gs_stack *", s, " = ", lv.stk, ";");
-        lv.stk = s;
-    }
+    PinLoc(lv);
     return lv;
 }
 

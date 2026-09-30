@@ -429,7 +429,11 @@ type, not the namespace of the code printing it. The three builtins
 evaluate and render their arguments in order, each just before its text,
 and call the overload in the middle of rendering the argument holding the
 `T`: neither the variables the arguments after that one name nor the rest of
-that argument may refer into what the overload shrinks (§5.1).
+that argument may refer into what the overload shrinks (§5.1). A slice's
+elements are rendered from the view their rendering began with, and a
+value behind a reference from where the reference pointed then: an overload
+that re-points the slice or rebinds the reference meanwhile does not change
+the rest (§2).
 
 ### 3.8 References
 

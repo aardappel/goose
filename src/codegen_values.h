@@ -154,6 +154,36 @@ inline void CodeGen::DerefLoc(Loc &lv) {
     lv = nl;
 }
 
+// Resolves a location reached through a reference that can be rebound
+// (Loc::viaref) to the addresses it names now, for code that runs before its
+// later uses and may rebind that reference. A resizable is its header's
+// address; a stack whose top this body caches keeps its name, being named by
+// a binding nothing rebinds.
+inline void CodeGen::PinLoc(Loc &lv) {
+    if (lv.val) {
+        auto p = T();
+        L(CT(lv.t), " *", p, " = &(", lv.s, ");");
+        lv.s = cat("(*", p, ")");
+    } else if (!IsResz(lv.t)) {
+        auto p = T();
+        L("uint8_t *", p, " = ", lv.s, ";");
+        lv.s = p;
+    } else {
+        assert(!lv.hdr.empty());
+        auto h = T();
+        L("gs_rhdr *", h, " = &(", lv.hdr, ");");
+        lv.hdr = cat("(*", h, ")");
+        lv.s = cat(h, "->base");
+        lv.lenlv = cat(h, "->len");
+    }
+    if (!lv.stk.empty() && !CacheableStk(lv.stk)) {
+        auto s = T();
+        L("gs_stack *", s, " = ", lv.stk, ";");
+        lv.stk = s;
+    }
+    lv.viaref = false;
+}
+
 inline CodeGen::Loc CodeGen::VarLoc(VarDef *vd) {
     Loc l;
     l.t = vd->type;

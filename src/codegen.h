@@ -602,6 +602,7 @@ struct CodeGen {
     string RelOrigin(TypeExpr *rt, const string &faddr);
     string PointeeLv(const string &p, TypeExpr *t);
     void DerefLoc(Loc &lv);
+    void PinLoc(Loc &lv);
     Loc VarLoc(VarDef *vd);
     string HdrLv(VarDef *vd);
     string VarCT(const VarDef *vd);

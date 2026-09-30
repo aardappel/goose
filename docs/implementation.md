@@ -2229,7 +2229,19 @@ presence of aliases (`Snapshot`, `IndexLoc`, `GenSlice`, `Assign::CgStmt`,
   increasing indices and tests the current array length at each iteration,
   so permitted appends can extend the traversal. A slice's length is its
   own view length, not its owner's current length. A sequential cursor
-  advances past the current element even on `continue`.
+  advances past the current element even on `continue`. A body that
+  re-points a slice or rebinds a reference on the path moves the traversal
+  to the elements the path leads to now, at the next index, as the length
+  read again does (`ForLoop::CgStmt`): a sequential cursor walks there from
+  their start, and the start of elements behind a varint length prefix is
+  computed again.
+* print, str and format render a value where it lies, around its format
+  overloads (§3.7): an array's count and elements are read once, as its
+  rendering begins, and a struct, variant or enum reached through a
+  reference that can be rebound is resolved to its address before its
+  first part (`RenderLoc`, `PinLoc`). An overload that re-points the slice
+  or rebinds the reference leaves the rest rendered from what the
+  rendering began with, which the checker holds meanwhile (`renderarg`).
 * A by-value result that is immediately viewed still has its own temporary
   storage through the containing statement. Inlining or selecting a
   constant branch must preserve that copy when replacing it with the
