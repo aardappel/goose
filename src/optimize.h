@@ -199,6 +199,13 @@ struct Optimizer {
         } else if (auto u = Is<Unary>(n)) {
             if (u->op == T_BITAND)
                 if (auto id = Is<Ident>(u->child)) if (id->vdef) facts[id->vdef].addrof++;
+        } else if (auto c = Is<Call>(n)) {
+            // A format overload taking by reference a variable print, str or
+            // format renders is handed the variable (§3.7), as `&x` would be.
+            auto an = c->ArgNodes();
+            for (size_t k = 0; k < an.size(); k++)
+                if (auto id = Is<Ident>(an[k]); id && id->vdef && HookedByRef(c, k))
+                    facts[id->vdef].addrof++;
         }
         RunChildren(n, [&](Node *ch) { Analyze(ch); });
     }
@@ -308,6 +315,14 @@ struct Optimizer {
         size_t first = c->builtin == B_FORMAT;   // format's destination is not rendered.
         return k >= first && k - first < c->fmtcontexts.size() &&
                !c->fmtcontexts[k - first]->fmtspecs.empty();
+    }
+
+    // Whether one of those overloads takes what it renders by reference.
+    static bool HookedByRef(Call *c, size_t k) {
+        if (!Hooked(c, k)) return false;
+        for (auto &fs : c->fmtcontexts[k - (c->builtin == B_FORMAT)]->fmtspecs)
+            if (fs.second->argtypes[1]->kind == TY_REF) return true;
+        return false;
     }
 
     // What codegen addresses where it lies (GenLoc): a variable, a field or

@@ -2416,7 +2416,10 @@ of a scalar with a literal initializer, never written and never
 address-taken, is entered in `consts`; every later use in the same walk
 becomes the literal and the declaration is dropped unless captured. Constant
 `let` globals propagate into every body. A parameter bound to a literal
-argument is substituted at inlining time (`Inliner::BindArg`).
+argument is substituted at inlining time (`Inliner::BindArg`). A variable
+print, str or format renders is address-taken where a `format` overload
+takes it by reference (`HookedByRef`): the overload is handed the variable
+itself (**Format overloads**), and may keep a reference to it or write it.
 
 **Folding** (`Opt` per node): integer operators at the operands' checked
 width (`FoldIntOp`, `ast.h`, which the checker folds with too: unsigned and
