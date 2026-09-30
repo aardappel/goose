@@ -1735,13 +1735,21 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
     auto idxtype = written(x->idxtype, "index binder");
     // The end of a range, or a count, that is one past the binder's largest
     // value: a literal one, whose loop visits every value of a type narrower
-    // than 64 bits with a counter of i64 (`for i: u8 in 0..256`).
+    // than 64 bits with a counter of i64 (`for i: u8 in 0..256`). An end
+    // naming a local is none, and is not evaluated: ConstIntValue would take
+    // the name as the global it hides, and could fail on that global's value
+    // (`-K` of a u8 global K, where the local K is an i8).
     auto pastend = [&](Node *end) {
+        if (IntBits(vartype->intstorage) >= 64) return false;
+        auto local = false;
+        ConstExprNames(end, nullptr, [&](Ident *id, const char *) {
+            if (auto vd = LookupVar(id->name, id->ns); vd && !vd->isglobal) local = true;
+        });
         Val c;
         bool literal;
         set<VarDecl *> visiting;
-        return IntBits(vartype->intstorage) < 64 && ConstIntValue(end, c, literal, visiting) &&
-               literal && !c.uns && c.ival == IntRange(vartype->intstorage).second + 1;
+        return !local && ConstIntValue(end, c, literal, visiting) && literal && !c.uns &&
+               c.ival == IntRange(vartype->intstorage).second + 1;
     };
     if (auto r = Is<RangeExpr>(x->iter)) {
         x->iterkind = IK_RANGE;
