@@ -1565,6 +1565,16 @@ struct StoreEvent {
     // a store record says what the slot holds
     // (TypeCheck::StoredSlotMayPointInto).
     bool sliceref = false;
+    // What was stored came out of the storage parameter class `src` stands
+    // for and nothing else: one of the views that storage holds
+    // (RootAlt::classread), or a copy of a holder lying there alone
+    // (Val::holderfrom). It holds what that storage holds -- what the
+    // activation stored there, and what its callers did, which each call
+    // judges -- rather than whatever the class bounds. A class `src` without
+    // it only bounds what was stored: a value that may also be anything else
+    // rooted at the class still names it as the container it was read out
+    // of (RootAlt::from).
+    bool classread = false;
 };
 
 // A shrink, and a reference, slice or holder still used after it that only

@@ -2113,8 +2113,8 @@ inline bool TypeCheck::SameRecord(const FnSpec *a, const FnSpec *b) {
     auto sameevents = [&](const StoreEvent &p, const StoreEvent &q) {
         return p.container == q.container && p.root == q.root && p.src == q.src &&
                p.exact == q.exact && p.byteview == q.byteview && p.bound == q.bound &&
-               p.slot == q.slot && sametype(p.pointee, q.pointee) &&
-               sametype(p.reached, q.reached);
+               p.slot == q.slot && p.sliceref == q.sliceref && p.classread == q.classread &&
+               sametype(p.pointee, q.pointee) && sametype(p.reached, q.reached);
     };
     if (a->classevents.size() != b->classevents.size()) return why("class stores");
     for (size_t i = 0; i < a->classevents.size(); i++)

@@ -924,8 +924,10 @@ value, program-wide) is what the grow-only shrink rule of §5.1 consults: the
 container, the stored alternative's root and exactness, the pointee type,
 the byte-view flag, the source container for a holder copy (a copy holds
 what its source holds; an inexact read-back's is the container it came out
-of, and one out of a parameter's class is bounded by the class), and the
-line. A source is the one container the value came out of, whose stores
+of, and one out of a parameter's class is bounded by the class, but for
+what came out of the storage the class stands for alone, which holds what
+that storage holds: `StoreEvent::classread`, §3.10 **Class reads**), and
+the line. A source is the one container the value came out of, whose stores
 say what it holds (`StoreSource`): a value that may lie in any of several
 places, or anywhere a root only bounds, names none (`HolderSource`, which
 a `for` or `match` binder's copy takes too, and `ReadBackRoot` and
@@ -945,9 +947,14 @@ maps to the one container the argument names exactly, if there is one: for
 a reference to a slice, the struct or array whose field or element is the
 slot, but not a slice variable, whose slot the callee's record bounds
 instead; for the class of the slice a slot holds (§3.4), the one container
-that slice names exactly. A nested function's store through a parameter of
-the function it is declared in, or a function value's through one of the
-function it is written in, is into a class of that function's, not the
+that slice names exactly. What came out of a class's storage alone still
+did where that container is a class of the caller's; the specialization's
+one entry for events alike but for that keeps the mark only where each of
+them has it (`AddStoreEvent`), and a cycle's rounds compare it
+(`SameRecord`). A nested function's store through a
+parameter of the function it is declared in, or a function value's through
+one of the function it is written in, is into a class of that function's,
+not the
 callee's: the call keeps it on the caller's own record, its value's roots
 mapped, until it reaches the record of the function whose class it is, whose
 callers map it. Semantically this includes stores through slices: writing a
@@ -1305,9 +1312,11 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    rest being its callers' to judge (**Parameters' views** below), and a
    view read out of that storage, in an operand still held (item 3) or a
    variable that is no `var`, points where the storage's views do, judged
-   the same way (**Class reads** below); a class a holder's stored
-   reference to a slice names is a slot that may be a slice variable, whose
-   binding no store record describes (`StoreEvent::sliceref`, `RefSlots`),
+   the same way, as does a holder of the activation's keeping one or
+   copied out of that storage alone (**Class reads** below); a class a
+   holder's stored reference to a slice names is a slot that may be a slice
+   variable, whose binding no store record describes
+   (`StoreEvent::sliceref`, `RefSlots`),
    so it holds whatever is at its depth or outside it, as below; and behind
    a reference variable a parameter's class with a class of its own for the
    slice its slot holds what the binding of the variable standing for that
@@ -1468,6 +1477,22 @@ becomes a pair about what that storage holds, of a type leading to what the
 view points at (`MapLiveShrinks`). The §5.2 scans do not use it: such a view
 is a slot read, which they pass over.
 
+A store of such a view into a holder (`H { s: words[0] }`, `h.s = r.s`), and
+a holder copied out of that storage alone -- a `for` or `match` binder's
+copy, `hs[0]`, `pop`, `append` or `copy` of one, the holder a reference
+parameter names loaded by value, wherever the source is the class exactly
+(`HolderSource`) -- is marked on the store record (`StoreEvent::classread`,
+in `RecordStore`): what the holder got there, the storage holds. A call
+keeps the mark where the class the event names maps onto a class of the
+caller's exactly (`ApplyCalleeStores`). For a grow-only array, the scans
+judge such an event by the activation's stores into the storage
+(`HolderMayPointInto` on the class, as for a copy of a variable's contents),
+and a slice's slot what came out of there refers to by the class's depth, as
+for a slot the class names itself (`StoredSlotMayPointInto`); `NoteLiveViews`
+keeps the pair about what the storage holds for the callers, of the holder's
+type, whose references lead where what came out of there does
+(`EachHolderRoot`, `RecordedViews`).
+
 **Inexact receivers.** Both scans run once per array the shrink may free
 (`ShrinkThrough` over `ShrinkTargets`), one per alternative of the receiver's
 roots. An exact alternative is the array. An inexact one -- a container
@@ -1509,8 +1534,10 @@ counts the rest of the statement, `LaterOperands`; inside a function value's
 body, one of the function running it too, `ShrinkScanVars`, whose parameters'
 pairs are its own record's), an operand still held
 (`HeldOperands`), a grow-only holder by its store record
-(`EachHolderRoot`), followed, as the scan follows it, through a stored
-reference to a slot holding references to what that slot holds
+(`EachHolderRoot`; what came out of a class's storage alone as what that
+storage holds, **Class reads** above), followed, as the scan follows it,
+through a stored reference to a slot holding references to what that
+slot holds
 (`StoredViews`), and what a reference to a slice or, for a grow-only
 array, to a holder, or a slice of holders or of slices, reaches
 (`HeldViews`): for a holder named exactly by a value that is no `var`,
@@ -3609,25 +3636,31 @@ specification allows, and the shapes the C backend refuses outright:
   the argument's storage (§3.10, **Parameters' views**), whether the
   callee reads it through the parameter, a holder it stored the parameter
   into or, where its contents are one array, a by-value holder parameter,
-  and so is a view read out of that storage before the shrink (**Class
-  reads**): every store on record there counts, one the callee makes after
-  its shrink or into another element too, and a slice of a call's result,
-  whose elements nothing records, holds anything. Such a view is still
-  taken to point anywhere at the parameter's class depth or outside it
-  where a `var` holds it, where a merge or a rebind joins it with anything
-  else rooted at the class, where it was read out of a view itself read out
-  of the storage (`wss[0][0]`), where a holder of the activation's keeps it
-  or was copied out of the storage, and where a call returns one it read
-  out of what an argument views that is no class of the caller's; and so
-  are what a `var` parameter's elements hold, what a by-value holder
-  parameter's class holds where its contents are not one array exactly
-  (`RootArg::heldexact`, never set in a `recursive fn`; `emit(buf, P {
-  words: ["x", "y"] })` views a literal, a temporary no argument names
-  exactly), and what a slot without a class of its own for its slice
-  holds: `fn emit(out: u8[>..]&, hs: H[:])` running `for h in hs {
-  out.clear(); out.append(h.s); }` is an error in the callee wherever a
-  call site passes `hs` from `out`'s scope or a deeper one, where the same
-  loop over the views `words: (const u8[:])[:]` holds is judged at each
+  and so are a view read out of that storage before the shrink and a
+  holder of the activation's keeping one or copied out of that storage
+  (**Class reads**): every store on record there counts, one the callee
+  makes after its shrink or into another element too, and a slice of a
+  call's result, whose elements nothing records, holds anything. Such a
+  view is still taken to point anywhere at the parameter's class depth or
+  outside it where a `var` holds it, where a merge or a rebind joins it
+  with anything else rooted at the class, where it was read out of a view
+  itself read out of the storage (`wss[0][0]`), and where a call returns
+  one it read out of what an argument views that is no class of the
+  caller's; so is a holder copied out of the storage where it may be a copy
+  of something else too (`if c { hs[0] } else { hs[1] }`), where it lies in
+  a view read out of the storage (`for h in hss[0]`) or in what a by-value
+  holder parameter views (`p.hs[0]`), where a literal holds it (`Q { h:
+  hs[0] }`) or a call returns it, and a view read out of such a copy before
+  the shrink (`let nx = n.next;` for `let n = ns[1];`); and so are what a
+  `var` parameter's elements hold while the parameter is still used, what
+  a by-value holder parameter's class holds where its contents are not one
+  array exactly (`RootArg::heldexact`, never set in a `recursive fn`;
+  `emit(buf, P { words: ["x", "y"] })` views a literal, a temporary no
+  argument names exactly), and what a slot without a class of its own for
+  its slice holds: `fn emit(out: u8[>..]&, hss: (H[:])[:])` running `for
+  h in hss[0] { out.clear(); out.append(h.s); }` is an error in the callee
+  wherever a call site passes `hss` from `out`'s scope or a deeper one,
+  where the same loop over the holders `hs: H[:]` views is judged at each
   call.
 * A parameter is a slot read (§3.10) only where its argument has a root, or
   a holder's contents one, that holds a grow-shrink array (§3.4): the key

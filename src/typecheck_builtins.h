@@ -1057,14 +1057,18 @@ inline void TypeCheck::AddStoreEvent(const StoreEvent &e) {
     auto spec = CurRealFrame().spec;
     if (!spec) return;
     // A cycle's rounds map a back edge's record onto the same class roots
-    // again: one entry per fact.
-    for (auto &o : spec->classevents)
+    // again: one entry per fact, out of a class's storage alone only where
+    // every store of it is.
+    for (auto &o : spec->classevents) {
         if (o.container == e.container && o.root == e.root && o.src == e.src &&
             o.exact == e.exact && o.byteview == e.byteview && o.bound == e.bound &&
             o.slot == e.slot && o.sliceref == e.sliceref && !o.pointee == !e.pointee &&
             (!o.pointee || TypeEq(o.pointee, e.pointee)) &&
-            !o.reached == !e.reached && (!o.reached || TypeEq(o.reached, e.reached)))
+            !o.reached == !e.reached && (!o.reached || TypeEq(o.reached, e.reached))) {
+            o.classread = o.classread && e.classread;
             return;
+        }
+    }
     spec->classevents.push_back(e);
 }
 
@@ -1121,18 +1125,27 @@ inline void TypeCheck::RecordStore(VarDef *container, const Roots &roots, bool b
     container->contentbyteview |= byteview;
     if (holds && roots.Unknown()) container->contents.unknown = true;
     for (auto &a : roots.alts) {
-        if (!a.exact && a.from == container) continue;
+        // A view the storage of a parameter's class held was read out of
+        // that storage (RootAlt::classread).
+        auto from = a.classread ? a.root : a.from;
+        if (!a.exact && from == container) continue;
         StoreEvent e;
         e.container = container;
         e.root = a.root;
         // A temporary was filled by whatever made it, not by stores on
         // record, so it is never the source: the value's own root bounds
         // what it holds (StoreSource).
-        e.src = StoreSource(src);
+        auto copied = StoreSource(src);
+        e.src = copied;
         // A reference read back out of a container inexactly (§9.5) points
         // at whatever was stored into that container: its stores are the
         // precise answer, where a bound would implicate every sibling.
-        if (!e.src && !a.exact && a.from != container) e.src = StoreSource(a.from);
+        if (!e.src && !a.exact && from != container) e.src = StoreSource(from);
+        // Out of a parameter's class, what was stored holds what its storage
+        // holds only where it came out of that storage alone: a holder that
+        // lies there alone (Val::holderfrom), or a view the read says it
+        // held.
+        e.classread = IsClassRoot(e.src) && (copied || a.classread);
         e.exact = a.exact;
         e.pointee = byteview ? nullptr : pointee;
         e.byteview = byteview;
@@ -1192,12 +1205,14 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         return -1;
     };
     auto push = [&](VarDef *container, const RootAlt &a, TypeExpr *pointee, VarDef *src,
-                    bool byteview, TypeExpr *reached, bool bound, bool slot, bool sliceref) {
+                    bool classread, bool byteview, TypeExpr *reached, bool bound, bool slot,
+                    bool sliceref) {
         if (!container || src == container) return;
         StoreEvent e;
         e.container = container;
         e.root = a.root;
         e.src = src;
+        e.classread = classread;
         e.exact = a.exact;
         e.pointee = byteview ? nullptr : pointee;
         e.byteview = byteview;
@@ -1226,7 +1241,9 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
     // slot held, names exactly, if it does (StoreSource). Anywhere else the
     // value's mapped roots bound it: an argument that may point at any of
     // several places, or only within one, or at a slice variable's slot,
-    // whose binding says what it holds.
+    // whose binding says what it holds. What came out of a class's storage
+    // alone (StoreEvent::classread) still did where that container is one
+    // of the caller's classes.
     auto source = [&](VarDef *src) {
         Roots r;
         if (classat(src, r) < 0) return src;
@@ -1245,6 +1262,7 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         auto e = storeevents[i];
         auto r = mapped(e.root, e.exact);
         auto src = source(e.src);
+        e.classread = e.classread && IsClassRoot(src);
         for (size_t k = 0; k < r.alts.size(); k++) {
             auto &a = r.alts[k];
             e.root = a.root;
@@ -1292,13 +1310,14 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
         auto p = classat(e.container, cr);
         auto r = mapped(e.root, e.exact);
         auto src = source(e.src);
+        auto classread = e.classread && IsClassRoot(src);
         if (p < 0) {
             // Not the callee's class but a lexical parent's, which a nested
             // function or a function value's body stored into: the storage
             // the parent's callers passed, whose record carries it to them.
             for (auto &a : r.alts)
-                push(e.container, a, e.pointee, src, e.byteview, e.reached, e.bound, e.slot,
-                     e.sliceref);
+                push(e.container, a, e.pointee, src, classread, e.byteview, e.reached, e.bound,
+                     e.slot, e.sliceref);
             continue;
         }
         // Where the argument's root only bounds the storage, or the store
@@ -1319,8 +1338,8 @@ inline void TypeCheck::ApplyCalleeStores(FnSpec *spec, vector<Val> &argvals, Nod
                                                 ", whose argument may point into "),
                                   TargetStr(t), ", which ", rname, " does not outlive (§9.2)"));
                 }
-                push(t.root, a, e.pointee, src, e.byteview, e.reached, t.bound, e.slot,
-                     e.sliceref);
+                push(t.root, a, e.pointee, src, classread, e.byteview, e.reached, t.bound,
+                     e.slot, e.sliceref);
             }
             if (e.slot)
                 slotstores.push_back({ t.root, t.bound, e,
@@ -1583,6 +1602,11 @@ inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr 
             if (e.src->type) RefPointees(e.src->type, ps);
             for (auto pt : ps)
                 hit |= (IsU8(pt) && (!arrtype || Viewable(arrtype))) || contains(pt);
+        } else if (e.src && !e.src->type && e.classread) {
+            // Out of the storage of a parameter's class alone: what the
+            // activation stored there, from its first event on, the stores
+            // its callers made there being theirs to judge (NoteLiveViews).
+            hit = HolderMayPointInto(e.src, arr, arrtype, 0, where, seen, nullptr, via);
         } else if (e.src && !e.src->type) {
             // Read out of a parameter's class: storage of the caller's,
             // whose stores this function cannot see, so the class bounds
@@ -1603,12 +1627,16 @@ inline bool TypeCheck::HolderMayPointInto(VarDef *holder, VarDef *arr, TypeExpr 
     // What was stored may also be a reference to a slot holding references,
     // a slice's or a holder's, rooted where the event says or bounded by the
     // class it was read out of; a copy of another container's contents was
-    // followed above, and a global's leads only to globals.
+    // followed above, and a global's leads only to globals. What came out of
+    // a class's storage alone leads where that storage's references do, as
+    // one to the storage itself would: its own stores, followed above, and
+    // for a slice's slot, which may be a slice variable, anything the class
+    // outlives.
     for (auto i = from; i < storeevents.size(); i++) {
         auto &e = storeevents[i];
         if (e.container != holder || (e.src && (e.src->type || e.src->isglobal))) continue;
         auto through = e.src ? StoredSlotMayPointInto(holder, e.pointee, e.sliceref, e.src,
-                                                      false, arr, arrtype, where, seen)
+                                                      e.classread, arr, arrtype, where, seen)
                              : StoredSlotMayPointInto(holder, e.pointee, e.sliceref, e.root,
                                                       e.exact, arr, arrtype, where, seen);
         if (through) return found(i, through);
@@ -2064,12 +2092,23 @@ inline void TypeCheck::NoteLiveViews(Node *at, const string &prefix, VarDef *roo
 }
 
 // What the stores into holder h, of type ht, from event `from` on put there,
-// as views (§5.1): each stored reference as StoredViews takes it. `seen`
-// holds the holders followed so far.
+// as views (§5.1): each stored reference as StoredViews takes it, and what
+// came out of the storage of a parameter's class alone (StoreEvent::
+// classread) as what that storage holds, which is the callers' to judge as
+// well: a view of the class's contents (LiveShrink::contents) of h's type,
+// whose references lead wherever what came out of there does. `seen` holds
+// the holders followed so far.
 inline void TypeCheck::RecordedViews(VarDef *h, size_t from, TypeExpr *ht,
                                      vector<LiveView> &out, set<VarDef *> &seen) {
     if (!seen.insert(h).second) return;
     EachHolderRoot(h, from, [&](const StoreEvent &e) {
+        if (e.classread) {
+            Prov cv;
+            cv.Set(e.src, true);
+            cv.byteview = e.byteview || e.src->contentbyteview;
+            out.push_back({ cv, ht, true, true });
+            return;
+        }
         StoredViews(e.root, e.exact, e.pointee, e.sliceref, e.byteview, ht, out, seen);
     });
 }
@@ -2172,6 +2211,9 @@ inline void TypeCheck::HeldViews(const Prov &p, TypeExpr *held, bool isvar,
 // copies of other containers' contents to those containers' own stores.
 // A copy of a global's contents counts as a reference bounded by the
 // global: stores into a global may come from functions not checked yet.
+// What came out of the storage of a parameter's class alone (StoreEvent::
+// classread) holds what the activation stored there, followed as a copy's
+// source is, and what the callers did, which f takes the event for.
 template<typename F> void TypeCheck::EachHolderRoot(VarDef *holder, size_t from, F f) {
     set<VarDef *> seen;
     function<void(VarDef *, size_t)> walk = [&](VarDef *h, size_t start) {
@@ -2181,6 +2223,11 @@ template<typename F> void TypeCheck::EachHolderRoot(VarDef *holder, size_t from,
             if (e.container != h) continue;
             if (e.src && !e.src->isglobal && e.src->type) {
                 walk(e.src, 0);
+                continue;
+            }
+            if (e.classread) {
+                walk(e.src, 0);
+                f(e);
                 continue;
             }
             // A copy out of a global or a parameter's class is bounded by
