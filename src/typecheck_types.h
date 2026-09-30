@@ -365,6 +365,13 @@ inline bool TypeCheck::IsPendingArray(TypeExpr *t) {
     return t && t->kind == TY_ARRAY && t->arr->akind == A_GROW && t->arr->sub->kind == TY_VOID;
 }
 
+// An empty array literal's `void[0]`: a [] that nothing gave an element type,
+// or a construct whose branches are all such literals, which keeps the type
+// without Val::emptyarr.
+inline bool TypeCheck::IsUntypedEmptyArray(TypeExpr *t) {
+    return t && t->kind == TY_ARRAY && t->arr->akind == A_FIXED && t->arr->sub->kind == TY_VOID;
+}
+
 // The element type an argument value supplies to a pending array: a
 // string literal makes it an array of owned strings (u8[]), the natural
 // element to be pushing literals into; [] and null say nothing.

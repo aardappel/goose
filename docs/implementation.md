@@ -386,6 +386,14 @@ element is a private void type (`PendingArray`); the first `push`, `append`,
 (`CompletePending`), which completes it in the `VarDef`, in every `Ident`
 already checked and in the literal, since all of them share the one type
 object. A pending array that reaches a scope exit uncompleted is an error.
+Anywhere else a `[]` checked without an array type to take is the
+fixed-size placeholder `void[0]` (`Val::emptyarr`), which a consumer with a
+type checks again at that type. The value of a function value's body
+(`CheckFunValCall`) and a value an omitted result type is taken from
+(`CheckInferredResult`) have no destination to give one, and codegen could
+not build the placeholder, so both reject it, as they do a construct whose
+branches are all such literals, which keeps the type without the flag
+(`IsUntypedEmptyArray`).
 
 **Defaults.** An omitted optional field is null even without an explicit
 default. Other omitted fields need a declared default, unless the literal
@@ -2115,7 +2123,9 @@ function the scope declaring it, whatever function names it
 (`LookupLocalFnEnv`, as for a call); a block is cloned into
 `Call::fvbody` and checked inline in a frame marked `isfunval` whose lexical
 lookups chain to the definer, with parameters as locals bound to the
-arguments (reference provenance and literal-ness carried through). The body
+arguments (reference provenance and literal-ness carried through). The
+body's value is checked without a destination, so a `[]` there has no
+element type (Pending arrays, §3.2). The body
 as that check sees it is a lexical environment of its own, the frame's
 `lexspec`: an `FnSpec` marked `isfunval` (`NewFunValEnv`, outside
 `ast.fnspecs`), whose `lexparent` is where the value was written. A nested

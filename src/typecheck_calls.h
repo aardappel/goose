@@ -2874,6 +2874,12 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
         if (IsValuelessTail(tail)) CheckStmtExpr(tail);
         else v = CheckValue(c->fvbody->tail, nullptr);
     }
+    // The body's value is checked without a destination and the call's value
+    // is built as the body's, so a [] there never gets an element type.
+    if (IsUntypedEmptyArray(v.type))
+        Error(c->fvbody->tail, "cannot infer the element type of []: a block's value is checked "
+                               "without its call's destination (§7.6); end the block with an "
+                               "annotated local instead, as in `let e: T[] = []; e`");
     c->fvbody->exprtype = v.type;
     PopScope();
     frames.pop_back();

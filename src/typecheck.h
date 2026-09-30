@@ -948,6 +948,7 @@ struct TypeCheck {
 
     TypeExpr *PendingArray(Line l);
     bool IsPendingArray(TypeExpr *t);
+    bool IsUntypedEmptyArray(TypeExpr *t);
     TypeExpr *PendingElemFrom(const Val &av, Node *at);
     TypeExpr *PendingElemFromSeq(const Val &av, Node *at);
     void CompletePending(TypeExpr *arrt, TypeExpr *elem, Line l);

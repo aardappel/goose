@@ -1695,7 +1695,8 @@ fn scaled(a: i32, b: i32 = 0, c: f32 = 1.0) -> f32 { ... }   // scaled(2) is sca
   the field refers to, just as `c.args` would be, and `copy(args(c))` copies
   it; a reference to a fixed-size value is returned as its pointee. A part of
   the function's own local, or of a temporary, dies with it, so it is
-  returned by neither: `return copy(x)`.
+  returned by neither: `return copy(x)`. An omitted result type cannot be
+  taken from a `[]`, which has no element type of its own (§4.2).
 * A trailing parameter may declare a **default value**, `c: f32 = 1.0`: the
   parameters after one with a default have one too, and one with a default
   has a type (an untyped parameter's is its argument's). A call may leave
@@ -1884,7 +1885,10 @@ Function values are compile-time entities passed as generic parameters, not
 runtime data. The `: fn(...)` bound is optional documentation: a bare `<F>`
 works identically — the call `F(a)` typechecks per instantiation like
 everything else (passing a non-function just produces the error at that call,
-reported with the instantiation chain).
+reported with the instantiation chain). A block's value is checked without
+the destination its call's value meets, so it cannot be a `[]` (nor a
+construct whose branches all are one), which would have no element type
+(§4.2).
 
 A function argument must be a function name (including a bound generic
 function parameter) or a block literal. Runtime expressions producing a

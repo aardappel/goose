@@ -850,6 +850,9 @@ inline Val TypeCheck::CheckInferredResult(Node *&n, FnSpec *tspec) {
         return v;
     }
     auto v = CheckValue(n, nullptr, false, false, true);
+    if (IsUntypedEmptyArray(v.type))
+        Error(n, "cannot infer the element type of []: an omitted result type is taken from "
+                 "the value returned (§7.1); declare the function's result type");
     if (IsNonFixedLValue(v) && !IsOwnLocal(n)) n = AutoRef(n, v);
     // All of a multi-value call's results are forwarded, as they are.
     if (auto c = Is<Call>(n); c && c->rettypes.size() > 1) return v;
