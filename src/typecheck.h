@@ -1807,8 +1807,9 @@ struct TypeCheck {
                         const Val *out = nullptr);
     void CheckRenderable(Call *c, const char *what, TypeExpr *t, Node *at,
                          vector<TypeExpr *> &seen, Val value, const Val &out);
-    FnSpec *UserFormat(Call *c, TypeExpr *t, const Val &value, const Val &out);
-    FnSpec *UserFormatIn(Call *c, TypeExpr *t, string_view ns, const Val &value, const Val &out);
+    FnSpec *UserFormat(Call *c, TypeExpr *t, const Val &value, const Val &out, Node *arg);
+    FnSpec *UserFormatIn(Call *c, TypeExpr *t, string_view ns, const Val &value, const Val &out,
+                         Node *arg);
     StrLit *ConstStrLit(Node *n);
     const string *EmbedShader(Call *c, vector<Node *> &args);
     void CheckGrowShrink(Node *at, const char *op, Node *recv, const Val &rv);

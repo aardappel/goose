@@ -1669,7 +1669,8 @@ order (`CheckPrintable`): each one's value, then its rendering
 type it meets with that part's roots and permissions, and the builder --
 the format call's receiver where the text lands in it, else a temporary --
 and applies it as a call there (`UserFormatIn`: `ApplyCalleeShrinks`,
-`ApplyCalleeRebinds`, `ApplyCalleeGrows`). Codegen evaluates each argument
+`ApplyCalleeRebinds`, `ApplyCalleeGrows`, and `NoteWritableRef` for a
+variable taken whole by a writable reference). Codegen evaluates each argument
 just before rendering it (`EmitFormatInto`, `EmitStr`), so while argument i
 is checked the ones after it are later operands (`LaterOperands`): a shrink
 in its evaluation (a call) or its rendering (an overload) finds a variable
@@ -2193,7 +2194,9 @@ reference can still change a `let` (§4.4), the comparison marks each `let`
 along the `nonnegfrom` chain as relied on (`RelyOnNonneg`, `nonneguse`),
 `CheckRefOf` and `AutoRef` mark a variable bound to a writable reference
 (`NoteWritableRef`, `refwrite`; not for an identity comparison, `index_of`
-or a `const T&` destination), and whichever mark comes second is an error.
+or a `const T&` destination), as `UserFormatIn` marks one print, str or
+format hands whole to a `format` overload taking it by a writable
+reference (§3.7), and whichever mark comes second is an error.
 The marks do not follow the flow, and `ResetLocal` keeps them, as it keeps
 a balanced resize's `markuse` (§3.10), so neither a loop's later pass, a
 cycle's later round nor a nested function checked once gets past them. An

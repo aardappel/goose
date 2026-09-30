@@ -638,7 +638,7 @@ inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, N
     struct PopSeen { vector<TypeExpr *> &types; ~PopSeen() { types.pop_back(); } } pop { seen };
     value.type = t;
     value.writable &= !t->cq;
-    if (UserFormat(c, t, value, out)) return;
+    if (UserFormat(c, t, value, out, seen.size() == 1 ? at : nullptr)) return;
     // The argument itself, unless an overload takes it whole, is read where
     // it lies, around the overloads its parts run, so that storage stays in
     // use meanwhile (HeldOperands, the argument being rendered).
@@ -715,15 +715,17 @@ inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, N
 // such an overload takes), once per print call. The overloads tried are
 // those of the type's own namespace, then the global ones: rendering
 // follows the type, not the namespace of whoever prints it
-// (docs/design/namespaces.md).
-inline FnSpec *TypeCheck::UserFormat(Call *c, TypeExpr *t, const Val &value, const Val &out) {
+// (docs/design/namespaces.md). `arg` is the argument where the value is all
+// of it, else null.
+inline FnSpec *TypeCheck::UserFormat(Call *c, TypeExpr *t, const Val &value, const Val &out,
+                                     Node *arg) {
     auto tns = NominalNs(t);
-    if (auto sp = UserFormatIn(c, t, tns, value, out)) return sp;
-    return tns.empty() ? nullptr : UserFormatIn(c, t, {}, value, out);
+    if (auto sp = UserFormatIn(c, t, tns, value, out, arg)) return sp;
+    return tns.empty() ? nullptr : UserFormatIn(c, t, {}, value, out, arg);
 }
 
 inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns,
-                                      const Val &value, const Val &out) {
+                                      const Val &value, const Val &out, Node *arg) {
     auto n = ast.FindNS(ns);
     if (!n) return nullptr;
     auto fit = n->functionmap.find("format");
@@ -759,6 +761,11 @@ inline FnSpec *TypeCheck::UserFormatIn(Call *c, TypeExpr *t, string_view ns,
         if (!TryMatch(sf, c, argvals, mi, why)) continue;
         if (sf->isextern && IsRefOrSlice(pt1) && !pt1->cq && !argvals[1].writable)
             Error(c, "extern format hook needs a writable value or a const parameter");
+        // Given a variable argument by a writable reference, the overload may
+        // write it as a reference parameter may, a `let` included (§4.4).
+        if (auto id = Is<Ident>(arg); id && id->vdef && value.lvalue && IsPlainRef(pt1) &&
+                                      !pt1->cq && argvals[1].writable)
+            NoteWritableRef(id->vdef, arg);
         // The hook's copy would still measure its self-relative references
         // from where the value lies (§3.9).
         if (!IsRefOrSlice(pt1) && HasRelRefT(pt1))
