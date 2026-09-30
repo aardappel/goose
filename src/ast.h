@@ -428,12 +428,14 @@ struct RootAlt {
     // caller's holder a reference parameter names, the elements of the
     // caller's array a slice parameter views -- or points into what such a
     // value views: one of the views that storage holds, never a reference
-    // into it, which `root` only bounds. That storage holds what the
-    // activation stored there and what its callers did, which each call
-    // judges by its record of the argument's storage (§5.1). Where a value
-    // may also be anything else rooted at the class -- the storage's own, or
-    // whatever the class bounds -- it is none: a merge keeps it only where
-    // every value has it, and a bound, a reference crossed and a back edge's
+    // into it, which `root` only bounds; of a holder's contents, the holder
+    // lay in that storage alone, so the references it holds are such views
+    // (TypeCheck::MarkClassCopy). That storage holds what the activation
+    // stored there and what its callers did, which each call judges by its
+    // record of the argument's storage (§5.1). Where a value may also be
+    // anything else rooted at the class -- the storage's own, or whatever
+    // the class bounds -- it is none: a merge keeps it only where every
+    // value has it, and a bound, a reference crossed and a back edge's
     // result drop it.
     bool classread = false;
 };

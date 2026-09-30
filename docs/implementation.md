@@ -992,12 +992,14 @@ as a `for` or `match` binder's copy's, a popped element's and what `append`
 copies out of a slice are, and out of a temporary the temporary's own; a
 holder loaded through a reference (`DecayRef`) is a container read of where
 the reference points, no slot read; a container read's source is the
-container only where the holder lies in exactly one (`Val::holderfrom`); a
-copy's (`TempCopy`) are its source's; a holder parameter is keyed by its
-contents' class like a reference, by whether that class is exactly the
-one array they point into, and by whether they are slot reads (§3.4), and
-the class (its `ref`) bounds what is read back out of it or out of a copy
-of it (§3.6).
+container only where the holder lies in exactly one (`Val::holderfrom`),
+and where that is the storage a parameter's class stands for, its contents
+there are views that storage holds (`RootAlt::classread`, `MarkClassCopy`,
+§3.10 **Class reads**); a copy's (`TempCopy`) are its source's; a holder
+parameter is keyed by its contents' class like a reference, by whether
+that class is exactly the one array they point into, and by whether they
+are slot reads (§3.4), and the class (its `ref`) bounds what is read back
+out of it or out of a copy of it (§3.6).
 
 ### 3.6 Read-back roots
 
@@ -1031,7 +1033,17 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   caller's, which the body cannot enumerate: a holder parameter is a local,
   but what it holds its argument filled, and whatever the body copies it
   into holds the same. The class root only bounds it (`RootCandidates`
-  lists it in `bounds`);
+  lists it in `bounds`). A holder whose every store on record came out of
+  the storage parameters' classes stand for alone, or put static data
+  there beside one that did, holds views of that storage, and a value read
+  out of it where it is checked (`ReadBackLVal`) is one of them, as one
+  read out of the storage is (`ClassCopyReadBack`, §3.10 **Class
+  reads**) -- where no loop open around the read has the holder declared
+  outside it, since a store later in the body reaches the read on the next
+  iteration before any pass records it, unless it is a by-value binder,
+  which nothing but its binding stores into (`VarDef::copybind`), and not
+  where a `for` loop binds views read out of the holder, whose one
+  read-back stands for every iteration's;
 * a container reached through a caller's storage, or itself inexact: the
   container's root, inexact, read out of that container (`RootAlt::from`)
   only where the root is the container itself. Where that container is a
@@ -1507,6 +1519,25 @@ for a slot the class names itself (`StoredSlotMayPointInto`); `NoteLiveViews`
 keeps the pair about what the storage holds for the callers, of the holder's
 type, whose references lead where what came out of there does
 (`EachHolderRoot`, `RecordedViews`).
+
+A copy's contents carry the mark where it lies in that storage alone
+(`MarkClassCopy`: `hs[0]`, `pop`, the holder a reference parameter names
+loaded by value), so a merge of copies (`if c { hs[0] } else { hs[1] }`), a
+literal holding one (`Q { h: hs[0] }`) and a call's result that is one
+(`first(hs)` for `fn first(hs: H[:]) -> H { return hs[0]; }`, `RetAltVal`)
+hold views of the storage too, and storing any of them is marked as above.
+Each keeps the mark at a class only where every value it joins there has it
+(`Roots::Add`, `RecordReturn`): beside a reference into the storage itself
+(`Q { h: ns[1], at: ns[0] }`), or a node loaded through a view read out of
+it, what it holds there is judged by depth as before. A variable's contents
+drop the mark (`RecordStore` leaves it to the event): a callee's store into
+the variable changes no fact a loop pass feeds back (`ApplyCalleeStores`),
+so a mark kept there could be stale on the next iteration. A literal
+holding a variable that holds a copy, or a merge of one, is judged by
+depth, then, but a value read out of a holder of the activation's before
+the shrink, where the holder's record holds such stores alone (`let n =
+ns[1]; let nx = n.next;`), is one of the views the storage holds (§3.6,
+`ClassCopyReadBack`).
 
 **Inexact receivers.** Both scans run once per array the shrink may free
 (`ShrinkThrough` over `ShrinkTargets`), one per alternative of the receiver's
@@ -3675,23 +3706,30 @@ specification allows, and the shapes the C backend refuses outright:
   the argument's storage (§3.10, **Parameters' views**), whether the
   callee reads it through the parameter, a holder it stored the parameter
   into or, where its contents are one array, a by-value holder parameter,
-  and so are a view read out of that storage before the shrink and a
-  holder of the activation's keeping one or copied out of that storage
-  (**Class reads**): every store on record there counts, one the callee
-  makes after its shrink or into another element too, and a slice of a
-  call's result, whose elements nothing records, holds anything. Such a
-  view is still taken to point anywhere at the parameter's class depth or
-  outside it where a `var` holds it, where a merge or a rebind joins it
-  with anything else rooted at the class, where it was read out of a view
-  itself read out of the storage (`wss[0][0]`), and where a call returns
-  one it read out of what an argument views that is no class of the
-  caller's; so is a holder copied out of the storage where it may be a copy
-  of something else too (`if c { hs[0] } else { hs[1] }`), where it lies in
-  a view read out of the storage (`for h in hss[0]`) or in what a by-value
-  holder parameter views (`p.hs[0]`), where a literal holds it (`Q { h:
-  hs[0] }`) or a call returns it, and a view read out of such a copy before
-  the shrink (`let nx = n.next;` for `let n = ns[1];`); and so are what a
-  `var` parameter's elements hold while the parameter is still used, what
+  and so are a view read out of that storage before the shrink, a holder
+  of the activation's keeping one or copied out of that storage, a merge of
+  such copies, a literal holding one, a call's result that is one, and a
+  view read out of such a holder before the shrink (**Class reads**):
+  every store on record there counts, one the callee makes after its
+  shrink or into another element too, and a slice of a call's result,
+  whose elements nothing records, holds anything. Such a view is still
+  taken to point anywhere at the parameter's class depth or outside it
+  where a `var` holds it, where a merge or a rebind joins it with anything
+  else rooted at the class, where it was read out of a view itself read out
+  of the storage (`wss[0][0]`), and where a call returns one it read out of
+  what an argument views that is no class of the caller's; so is a holder
+  copied out of the storage where it may lie in several storages (`for h in
+  if c { a } else { b }`), in a view read out of the storage (`for h in
+  hss[0]`) or in what a by-value holder parameter views (`p.hs[0]`), and a
+  merge, a literal or a call's result joining such a copy with anything
+  else rooted at the class (`Q { h: ns[1], at: ns[0] }`), or holding a
+  variable that holds one (`Q { h: h }` for `let h = hs[0];`); and a view
+  read out of such a holder where anything else was stored there, where a
+  loop open around the read has the holder declared outside it, a by-value
+  binder aside, since a store later in its body reaches the read on the
+  next iteration, and where a `for` loop binds it (`for w in ws`, `ws`
+  filled with views out of the storage); and so are what a `var`
+  parameter's elements hold while the parameter is still used, what
   a by-value holder parameter's class holds where its contents are not one
   array exactly (`RootArg::heldexact`, never set in a `recursive fn`;
   `emit(buf, P { words: ["x", "y"] })` views a literal, a temporary no

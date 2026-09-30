@@ -205,7 +205,7 @@ inline void TypeCheck::ReadBackLVal(LVal &lv) {
     // provenance; the container's says nothing about it.
     auto slotread = lv.isslot && SlotReadable(lv.type);
     auto rb = ReadBackRoot(lv.type, lv, lv.byteview, lv.intemp ? &lv.contents : nullptr,
-                           slotread);
+                           slotread, true);
     lv.TakeAlts(rb);
     for (auto &a : lv.alts) a.slotread = slotread;
     lv.freshview = false;
@@ -251,6 +251,7 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
         }
         v.holderset = true;
         v.holderfrom = lv.intemp ? lv.contents.from : HolderSource(lv);
+        MarkClassCopy(v);
     }
     // The contents of a slot of a const type are read-only, as a variable's
     // are (§9.5), where its value is bound by reference, taken as a slice or
@@ -659,6 +660,7 @@ inline Val TypeCheck::DecayRef(Val v) {
             r.contents = Bounds(r);
             r.holderset = true;
             r.holderfrom = HolderSource(r);
+            MarkClassCopy(r);
         }
     }
     r.isvarint = IsVarintT(v.type->ref->sub);

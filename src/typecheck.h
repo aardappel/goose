@@ -1261,8 +1261,13 @@ struct TypeCheck {
                          bool slots = false);
 
     bool TempContents(const Val &v, ReadBack &contents);
+    // `inplace`: the read is made where it is checked, so the store record of
+    // a holder of the activation's says what it holds there, loops aside
+    // (ClassCopyReadBack).
     Roots ReadBackRoot(TypeExpr *rt, const Roots &container, bool byteview = false,
-                       const ReadBack *contents = nullptr, bool slotread = false);
+                       const ReadBack *contents = nullptr, bool slotread = false,
+                       bool inplace = false);
+    bool ClassCopyReadBack(VarDef *h, Roots &out);
     string ReadBackWhy(const Roots &r);
     bool RootedAtReceiver(const Val &rv, const Val &av);
     void CheckRootedAtReceiver(Call *c, const char *op, const Val &rv, const Val &av,
@@ -1305,6 +1310,16 @@ struct TypeCheck {
     // may lie in any of several, or anywhere a root only bounds.
     static VarDef *HolderSource(const Roots &at) {
         return at.Exact() && !IsTemp(at.alts[0].root) ? at.alts[0].root : nullptr;
+    }
+    // A holder that lies in the storage a parameter's class stands for alone
+    // (Val::holderfrom) holds views that storage holds: its contents there
+    // are marked so (RootAlt::classread), which a merge, a literal and a
+    // call's result keep where every value they join at that class has it
+    // (Roots::Add, RetAltVal).
+    void MarkClassCopy(Val &v) {
+        if (!IsClassRoot(v.holderfrom)) return;
+        for (auto &a : v.contents.alts)
+            if (a.root == v.holderfrom) a.classread = true;
     }
     // A container a store record may name as the source of what it stores
     // (StoreEvent::src), one whose stores say what it holds. A temporary was

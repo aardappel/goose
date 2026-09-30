@@ -526,6 +526,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
                 for (auto &a : v.contents.alts) a.slotread = true;
                 v.holderset = true;
                 v.holderfrom = HolderSource(rv);
+                MarkClassCopy(v);
             }
             // What an adapting receiver (the element's ADT, say) constructs from.
             c->rettypes.push_back(v.type);

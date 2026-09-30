@@ -810,7 +810,7 @@ inline bool TypeCheck::TempContents(const Val &v, ReadBack &contents) {
 // `slotread`: it was loaded out of a field, an element or a global
 // (RootAlt::slotread).
 inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool byteview,
-                                     const ReadBack *contents, bool slotread) {
+                                     const ReadBack *contents, bool slotread, bool inplace) {
     Roots out;
     // A container that points nowhere yet (Roots::unknown): neither do its
     // contents.
@@ -869,6 +869,10 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
             out.Add({ croot, false, from, false, classread });
             continue;
         }
+        // A holder of the activation's whose store record says it holds
+        // only what the storage of parameters' classes holds: one of the
+        // views that storage holds, as a read out of it would be.
+        if (!global && inplace && ClassCopyReadBack(croot, out)) continue;
         // Only globals outlive globals (§11.1), so a global container's
         // pointee is owned by a global or by static data, whatever local scope
         // is open here. A local container's was reachable from this frame and
@@ -893,6 +897,36 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
         for (auto &a : cands.alts) out.Add({ a.root, a.exact, from });
     }
     return out;
+}
+
+// Where a reference or slice read out of h, a holder of the activation's
+// named exactly, points by h's store record (§5.1): where every store into
+// h since it was made (LiveEventBase) came out of the storage of a
+// parameter's class alone (StoreEvent::classread), or put static data
+// there beside one that did, h holds views those storages hold, and what
+// is read out of it is one of them, as a read out of the storage itself is
+// (RootAlt::classread), though read out of h (RootAlt::from).
+// No loop open here may have h declared outside it: a store later in its
+// body reaches the read on the next iteration, and no pass records it
+// before the read. A by-value binder is stored into by its binding alone
+// (VarDef::copybind). Else false, and the read takes every candidate.
+inline bool TypeCheck::ClassCopyReadBack(VarDef *h, Roots &out) {
+    if (!h->type || IsRefOrSlice(h->type)) return false;
+    for (auto &lp : cur.looppasses)
+        if (!h->copybind && Depth(h) <= lp.scopeidx) return false;
+    Roots r;
+    auto classes = false;
+    for (auto i = LiveEventBase(h); i < storeevents.size(); i++) {
+        auto &e = storeevents[i];
+        if (e.container != h) continue;
+        if (e.classread) r.Add({ e.src, false, h, false, true });
+        else if (!e.root && !e.src) r.Add({ nullptr, e.exact });
+        else return false;
+        classes = classes || e.classread;
+    }
+    if (!classes) return false;
+    out.Add(r);
+    return true;
 }
 
 // "was read out of `slots` and may point into `pool` or `spare`": the
