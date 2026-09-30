@@ -886,9 +886,10 @@ Literal forms usable in any construction context:
 
 * array literals `[1, 2, 3]`; `[]` where the element type is known from
   context — the array type of the variable, parameter, field, element or
-  result it constructs, and never that of an operand, branch or element
-  beside it: `x == []`, `if c { [] } else { x }` with no destination type,
-  and `[[], [1]]` are errors — or as the whole initializer of a `var` local
+  result it constructs, or the slice type of one it is a temporary for
+  (below), and never that of an operand, branch or element beside it:
+  `x == []`, `if c { [] } else { x }` with no destination type, and
+  `[[], [1]]` are errors — or as the whole initializer of a `var` local
   (`var out = [];`), which makes the local a grow-only `T[>..]` whose `T` is
   fixed by the first `push`, `append`, `format` or whole assignment into it
   — a string literal pushed into one makes it a `u8[][>..]` — and must be
@@ -900,7 +901,8 @@ Literal forms usable in any construction context:
   constructed element.
   A literal whose destination names no array type is a `T[k]`, or a `T[]`
   when its elements are not fixed-size (§3.3). A fixed one may also be a
-  temporary for a slice destination, a `for`, `[..]` or `bytes_of` to view;
+  temporary for a slice destination, a `for`, `[..]` or `bytes_of` to view
+  (`f([])` views an empty `i64[0]` for `fn f(xs: const i64[:])`);
   a `T[]` one is a variable value and exists only in a construction context,
   so viewing it takes a variable bound to it first. `==` and `!=` compare
   either one with any array or slice of its element type (§4.5), since

@@ -2053,6 +2053,12 @@ types joined as a slice with no slice among them, which `CheckJoin` leaves
 to the call on `argpath` (§3.4): those join only at a parameter declared a
 slice, and `NoArrayJoin` reports them anywhere else, a failed resolution
 and a builtin's UFCS receiver (which a member takes as checked) included.
+A `[]` phase 1 left as the root-less placeholder (Pending arrays) is
+checked against a slice parameter so as well (`ViewedWhole`), which makes
+it the temporary array of the parameter's elements that the slice views
+(spec §4.2): keyed on the placeholder, the parameter would point nowhere
+yet, where no rule reads it, and the callee could keep a view of the
+temporary.
 `BindBranchByRef` does this per argument, for a parameter default as well
 (`AddParamDefaults`, before `UnifyArg` judges it), and a function value's
 call (`CheckFunValCall`) the same for its block's parameters. At any other

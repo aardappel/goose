@@ -1722,10 +1722,12 @@ struct TypeCheck {
     }
     // An argument a slice parameter views whole rather than taking as its
     // first check left it: a control construct's array value, a copy of its
-    // branch, or its branches' arrays of different types (§6.4).
-    static bool ViewedBranches(Node *arg, const Val &v, TypeExpr *pt) {
-        return pt->kind == TY_SLICE && (v.type->kind == TY_ARRAY || v.joinslice) &&
-               IsBranchConstruct(arg);
+    // branch, or its branches' arrays of different types (§6.4), and a []
+    // nothing typed, which the parameter makes a temporary array (§4.2).
+    static bool ViewedWhole(Node *arg, const Val &v, TypeExpr *pt) {
+        return pt->kind == TY_SLICE &&
+               (v.emptyarr ||
+                ((v.type->kind == TY_ARRAY || v.joinslice) && IsBranchConstruct(arg)));
     }
     void CheckBranchRoot(const Val &v, int depth, Node *at, const char *construct);
     Val TempCopy(Val v);

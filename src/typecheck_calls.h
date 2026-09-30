@@ -375,12 +375,14 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
 
 // A control construct whose branches are all storage, or references, binds
 // each by reference at a reference parameter (§4.1), and one whose branches
-// are arrays views each whole at a slice parameter (§6.4): the argument is
-// checked as that reference or slice, rooted where its branches are, before
-// the specialization and the callee's effects are keyed on it; phase 2
-// checks it so again, in order with the other arguments. `skip` is a
-// dispatch position, whose value the cases take as it is; the arguments from
-// `end` on are defaults, which AddParamDefaults binds as it checks them.
+// are arrays views each whole at a slice parameter (§6.4), as a slice
+// parameter views the temporary array a [] is there (§4.2): the argument is
+// checked as that reference or slice, rooted where its branches are or at
+// that temporary, before the specialization and the callee's effects are
+// keyed on it; phase 2 checks it so again, in order with the other
+// arguments. `skip` is a dispatch position, whose value the cases take as it
+// is; the arguments from `end` on are defaults, which AddParamDefaults binds
+// as it checks them.
 inline void TypeCheck::BindBranchesByRef(vector<Node *> &argnodes, vector<Val> &argvals,
                                          const vector<TypeExpr *> &paramtypes, SFunction *sf,
                                          int skip, size_t end) {
@@ -397,7 +399,7 @@ inline void TypeCheck::BindBranchByRef(Node *&n, Val &v, TypeExpr *pt, TypeExpr 
     if (!declared || declared->kind != TY_SLICE) NoArrayJoin(v);
     auto byref = v.storagebranches && pt->kind == TY_REF && pt->ref->lenstorage < 0;
     if (!byref) RefCopyWarnings(v);
-    if (!byref && !ViewedBranches(n, v, pt)) return;
+    if (!byref && !ViewedWhole(n, v, pt)) return;
     DestScope ds(*this, Dest {});
     SlotScope ss(*this, false);
     FlagScope q(quiet, true);
@@ -692,9 +694,12 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
         tier = std::max(tier, 2);
         return ct;
     }
+    // A [] takes an array parameter's type, and at a slice parameter is a
+    // temporary array of its elements, viewed whole (§4.2).
     if (av.emptyarr) {
         auto ct = SubstOwn(pt, b);
-        if (!ct || HasGenerics(ct) || ct->kind != TY_ARRAY) return nullptr;
+        if (!ct || HasGenerics(ct) || (ct->kind != TY_ARRAY && ct->kind != TY_SLICE))
+            return nullptr;
         tier = std::max(tier, 2);
         return ct;
     }
@@ -2852,11 +2857,11 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
         for (size_t i = 0; i < ptypes.size(); i++) {
             auto byref = argvals[i].storagebranches && ptypes[i]->kind == TY_REF;
             if (!byref) RefCopyWarnings(argvals[i]);
-            auto viewed = ViewedBranches(c->args[i], argvals[i], ptypes[i]);
+            auto viewed = ViewedWhole(c->args[i], argvals[i], ptypes[i]);
             auto v = CheckArg(c->args[i], ptypes[i]);
             // A control construct whose branches this bound by reference, or
             // viewed whole, is that reference or slice, rooted where its
-            // branches are.
+            // branches are, and a [] a view of its temporary.
             if (byref || viewed) argvals[i] = v;
         }
     }
