@@ -1820,8 +1820,15 @@ struct TypeCheck {
     Val CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> &args, Val *precv);
     void CheckPrintable(Call *c, const char *what, vector<Node *> &args, size_t i,
                         const Val *out = nullptr);
-    void CheckRenderable(Call *c, const char *what, TypeExpr *t, Node *at,
-                         vector<TypeExpr *> &seen, Val value, const Val &out);
+    // The types on the path from an argument to the part being checked
+    // (CheckRenderable), and the ones met again on it: types that reach
+    // themselves through references.
+    struct RenderSeen {
+        vector<TypeExpr *> path, recurring;
+    };
+    TypeExpr *OverloadedPart(Call *c, TypeExpr *t, vector<TypeExpr *> &seen);
+    void CheckRenderable(Call *c, const char *what, TypeExpr *t, Node *at, RenderSeen &seen,
+                         Val value, const Val &out);
     FnSpec *UserFormat(Call *c, TypeExpr *t, const Val &value, const Val &out, Node *arg);
     FnSpec *UserFormatIn(Call *c, TypeExpr *t, string_view ns, const Val &value, const Val &out,
                          Node *arg);

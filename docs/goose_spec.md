@@ -419,7 +419,10 @@ an array or slice of other elements as `[1, 2, 3]`, a struct or ADT variant
 as its positional literal with the type name (`vec3<f32> { 1, 2, 3 }`,
 `Circle { 1.5 }`, a payload-less variant as `Shape.Dot`), a reference as
 its pointee and a null optional as `null`; a `u8` array nested inside an
-aggregate is quoted and escaped. A user overload `fn format(out: u8[>..]&,
+aggregate is quoted and escaped. References are followed as deep as they
+go, into values of the very type holding them too, so a value whose
+references lead back into it never finishes rendering: its thread runs out
+of native stack, a safe abort (§9.3). A user overload `fn format(out: u8[>..]&,
 v: T)` (taking `T` by value or by reference) renders a `T` through itself
 instead, wherever a `T` occurs in an argument, so a type can choose its own
 text once for all three builtins. Taking it by reference, the overload is
@@ -431,7 +434,10 @@ literal, a `.len` or `.cap`, or the value of an `if`, `match` or block, a
 copy of what the branch taken gives even where that names a variable
 (§4.1). The overload is looked up in the
 namespace `T` is declared in, then globally (§11.1): rendering follows the
-type, not the namespace of the code printing it. The three builtins
+type, not the namespace of the code printing it. A type that reaches itself
+through references renders structurally only where no overload renders a
+part of it, at any depth: otherwise it needs an overload of its own, which
+may render its parts through theirs. The three builtins
 evaluate and render their arguments in order, each just before its text,
 and call the overload in the middle of rendering the argument holding the
 `T`: neither the variables the arguments after that one name nor the rest of

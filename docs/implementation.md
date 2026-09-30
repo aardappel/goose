@@ -1745,6 +1745,14 @@ copy's offsets being measured from where the payload was (§3.9), so a
 variant whose parts' checks specialized an overload (`Call::fmtspecs`
 grew) is rejected when its payload holds one. So is an overload taking
 such a value by value (`UserFormatIn`), which `EmitUserFormat` would copy.
+A type that reaches itself through references renders every level below
+the first by a function of its own that runs no overload (§6.9), so
+`CheckRenderable` stops at a type already on its path, noting it, and once
+the argument's overloads are known `CheckPrintable` rejects it if one of
+them renders a part of such a type at any depth (`OverloadedPart`),
+telling the program to give the type an overload of its own. Every level
+is then read as the first is, and a payload's parts lead to no overload
+through one, which leaves the payload rule above complete.
 
 **Growth during construction** (§1.3(4), §4.2). A value built in place at an
 array's top or slot is under construction while its expression is checked,
@@ -3248,7 +3256,15 @@ scalars through `gs_fmt_*`, copies `u8` bytes, and renders everything else
 structurally into a `u8[>..]` builder or through the user `format`
 specialization recorded on the call; `print` renders the whole line into a
 temporary builder before writing it, so lines from different threads never
-interleave.
+interleave. A struct, variant or ADT met again inside its own rendering --
+a type that reaches itself through references or slices -- is rendered from
+there by `gs_render_<T>`, one per type (`RenderFn`), which takes the
+builder and a reference to the value as an overload taking it by
+reference does, and calls itself, or the functions of the other types of a
+mutual recursion, for each level below; no overload renders a part of such
+a type (§3.7), so none of it depends on the call. A resizable tail with no
+header of its own is rendered in place one level more, up to the reference
+to the next.
 
 **Serialization contract.** The following is the observable part of
 `docs/design/serialization.md`, independent of how a verifier is organized:
@@ -3301,10 +3317,12 @@ top-level, non-generic two-parameter `format` functions with a
 `u8[>..]&` destination and an exact value or plain-reference parameter for
 the rendered type. This is narrower than ordinary generic overload
 resolution. Reference rendering follows pointees and has no cycle
-detection. Finite float formatting currently tries 15 significant decimal
-digits, then 17 if needed to recover the promoted `f64`, with redundant
-exponent zeroes removed to at least two digits (`gs_fmt_f64`). That is a
-round-trip format, not a general shortest-decimal algorithm; see section 11.
+detection: a cyclic value recurses through its render functions until the
+native stack runs out (§7, **Native stacks**). Finite float formatting
+currently tries 15 significant decimal digits, then 17 if needed to recover
+the promoted `f64`, with redundant exponent zeroes removed to at least two
+digits (`gs_fmt_f64`). That is a round-trip format, not a general
+shortest-decimal algorithm; see section 11.
 
 ### 6.10 Loop-invariant views and stack-top caching
 

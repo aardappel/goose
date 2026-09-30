@@ -68,12 +68,30 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
     // optional, a plain reference in value position): the pointee.
     if (lv.t->kind == TY_REF && t->kind != TY_REF) DerefLoc(lv);
     if (auto sp = FmtSpecFor(c, t)) { EmitUserFormat(out, lv, sp, ln); return; }
+    // A value of a type this rendering is already inside of is the next
+    // level of a type that reaches itself through references: its render
+    // function takes it from here, level by level (RenderFn). A resizable
+    // tail of a struct with a variable-size prefix has no header of its own
+    // to refer to, and is rendered here, one more level, as far as the
+    // reference to the next.
+    auto nominal = t->kind == TY_STRUCT || t->kind == TY_VARIANT || t->kind == TY_ENUM;
+    if (nominal && (!IsResz(t) || (!lv.hdr.empty() && !lv.stk.empty()))) {
+        for (auto r : rendering) {
+            if (!TEq(r, t)) continue;
+            EmitRenderCall(out, lv, t, ln);
+            return;
+        }
+    }
+    struct Inside {
+        vector<TypeExpr *> &types;
+        bool in;
+        ~Inside() { if (in) types.pop_back(); }
+    } inside { rendering, nominal };
+    if (nominal) rendering.push_back(t);
     // An overload rendering one part of a value may rebind a reference on the
     // way to it: the other parts are read from where the value lay when its
     // rendering began, which the checker holds meanwhile (HeldOperands).
-    if (lv.viaref && c && !c->fmtspecs.empty() &&
-        (t->kind == TY_STRUCT || t->kind == TY_VARIANT || t->kind == TY_ENUM))
-        PinLoc(lv);
+    if (lv.viaref && c && !c->fmtspecs.empty() && nominal) PinLoc(lv);
     switch (t->kind) {
         case TY_INT: {
             auto vt = t->intstorage == IS_VARINT ? ast.inttypes[IS_I64] : t;
@@ -271,6 +289,28 @@ inline void CodeGen::RenderVariant(Loc &out, Loc lv, TypeExpr *t, Call *c, Line 
     RenderLit(out, " }");
 }
 
+// A reference to the value at lv, of type sub, for a function taking one: a
+// resizable's header and stack, a bytes value's address, a fixed value's
+// typed address.
+inline string CodeGen::RefArg(const Loc &lv, TypeExpr *sub, Line ln) {
+    if (IsResz(sub)) {
+        if (lv.hdr.empty() || lv.stk.empty())
+            Fail(ln, "a format overload by reference needs a resizable with its own header");
+        auto rr = T();
+        L("gs_rref ", rr, " = { (gs_rhdr *)&", lv.hdr, ", ", lv.stk, " };");
+        return rr;
+    }
+    if (IsBytesT(sub)) return lv.val ? cat("(uint8_t *)&", lv.s) : lv.s;
+    if (IsVarintT(lv.t)) {
+        // An i64 read out of varint storage, which holds no i64: the
+        // overload is given a temporary holding the value (CheckPrintable).
+        auto x = T();
+        L(CT(sub), " ", x, " = ", LoadLoc(lv, sub, ln), ";");
+        return cat("&", x);
+    }
+    return lv.val ? cat("&", lv.s) : cat("(", CT(sub), " *)(", lv.s, ")");
+}
+
 // A user `format(out, v)` overload applied to the value at lv.
 inline void CodeGen::EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln) {
     assert(!out.hdr.empty() && !out.stk.empty());
@@ -278,34 +318,67 @@ inline void CodeGen::EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln) {
     auto r = T();
     L("gs_rref ", r, " = { (gs_rhdr *)&", out.hdr, ", ", out.stk, " };");
     auto pt = sp->argtypes[1];
-    string arg;
-    if (pt->kind == TY_REF) {
-        auto sub = pt->ref->sub;
-        if (IsResz(sub)) {
-            if (lv.hdr.empty() || lv.stk.empty())
-                Fail(ln, "a format overload by reference needs a resizable with its own header");
-            auto rr = T();
-            L("gs_rref ", rr, " = { (gs_rhdr *)&", lv.hdr, ", ", lv.stk, " };");
-            arg = rr;
-        } else if (IsBytesT(sub)) {
-            arg = lv.val ? cat("(uint8_t *)&", lv.s) : lv.s;
-        } else if (IsVarintT(lv.t)) {
-            // An i64 read out of varint storage, which holds no i64: the
-            // overload is given a temporary holding the value (CheckPrintable).
-            auto x = T();
-            L(CT(sub), " ", x, " = ", LoadLoc(lv, sub, ln), ";");
-            arg = cat("&", x);
-        } else {
-            arg = lv.val ? cat("&", lv.s) : cat("(", CT(sub), " *)(", lv.s, ")");
-        }
-    } else {
-        arg = LoadLoc(lv, pt, ln);
-    }
+    auto arg = pt->kind == TY_REF ? RefArg(lv, pt->ref->sub, ln) : LoadLoc(lv, pt, ln);
     auto &ki = sinfo[sp];
     // The callee's stacks start above everything live here, the builder's
     // and the value's included, like any other call's (SpTop).
     L(ki.cname, "(", r, ", ", arg, ki.needssp ? cat(", ", SpTop()) : "", ");");
     MarkReload();   // The callee grew the builder's stack.
+}
+
+// The function rendering the levels of a value of type t below the first,
+// one per type. It is handed the builder and a reference to the value, as
+// an overload taking it by reference is, and its body is emitted after the
+// specializations' (EmitRenderFn).
+inline string CodeGen::RenderFn(TypeExpr *t, Line ln) {
+    auto m = Mangle(t);
+    if (auto it = renderfns.find(m); it != renderfns.end()) return it->second;
+    auto name = Unique(cat("gs_render_", m));
+    renderfns[m] = name;
+    auto vt = IsResz(t) ? string("gs_rref") : IsBytesT(t) ? string("uint8_t *") : cat(CT(t), " *");
+    auto sig = cat("static void ", name, "(gs_rref gs_out, ", vt, " gs_v)");
+    Append(protos, sig, ";\n");
+    renderqueue.push_back({ t, ln, sig });
+    return name;
+}
+
+inline void CodeGen::EmitRenderCall(Loc &out, const Loc &lv, TypeExpr *t, Line ln) {
+    assert(!out.hdr.empty() && !out.stk.empty());
+    auto fn = RenderFn(t, ln);
+    MarkFlush();
+    auto r = T();
+    L("gs_rref ", r, " = { (gs_rhdr *)&", out.hdr, ", ", out.stk, " };");
+    auto arg = RefArg(lv, t, ln);
+    L(fn, "(", r, ", ", arg, ");");
+    MarkReload();
+}
+
+// A render function's body (RenderFn): the value gs_v refers to, rendered
+// into the builder gs_out as the level RenderLoc was inside of when it
+// reached it.
+inline void CodeGen::EmitRenderFn(RenderFnReq r) {
+    curspec = nullptr;
+    curinfo = nullptr;
+    ResetFnState();
+    spexpr = "0";
+    PushSc(SC_FN);
+    auto out = FatRefLoc("gs_out", GrowU8());
+    Loc v;
+    if (IsResz(r.t)) {
+        v = FatRefLoc("gs_v", r.t);
+    } else {
+        v.t = r.t;
+        v.val = !IsBytesT(r.t);
+        v.s = v.val ? PointeeLv("gs_v", r.t) : string("gs_v");
+    }
+    RenderLoc(out, v, r.t, true, nullptr, r.ln);
+    cscopes.clear();
+    assert(stkmax == 0);
+    auto decls = HoistAggregateDecls(body);
+    Append(code, r.sig, " {\n");
+    code += decls;
+    code += body;
+    code += "}\n\n";
 }
 
 // Where a rendered argument lies: where GenLoc addresses it, but a call's

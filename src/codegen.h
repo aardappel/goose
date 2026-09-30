@@ -934,7 +934,25 @@ struct CodeGen {
     void RenderN(Loc &out, const string &nexpr);
     void RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call *c, Line ln);
     void RenderVariant(Loc &out, Loc lv, TypeExpr *t, Call *c, Line ln);
+    string RefArg(const Loc &lv, TypeExpr *sub, Line ln);
     void EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln);
+
+    // A type that reaches itself through references renders the levels of a
+    // value below the first through a C function of its own, which calls
+    // itself for the level below: the value is as deep as its references go
+    // (RenderFn). No format overload renders a part of such a type (the
+    // checker's CheckPrintable), so one function serves every rendering.
+    struct RenderFnReq {
+        TypeExpr *t = nullptr;
+        Line ln;
+        string sig;
+    };
+    unordered_map<string, string> renderfns;   // Type mangle -> function name.
+    vector<RenderFnReq> renderqueue;
+    vector<TypeExpr *> rendering;   // The nominal types RenderLoc is inside of here.
+    string RenderFn(TypeExpr *t, Line ln);
+    void EmitRenderCall(Loc &out, const Loc &lv, TypeExpr *t, Line ln);
+    void EmitRenderFn(RenderFnReq r);
     Loc RenderedLoc(Node *a);
     Loc RenderToTemp(Node *a, Call *c);
     void EmitOutArg(Node *a, Call *c);
@@ -1036,6 +1054,8 @@ struct CodeGen {
         // Element-run twins requested by call sites, the globals'
         // initializers included (may request more).
         for (size_t i = 0; i < erqueue.size(); i++) EmitSpec(erqueue[i], true);
+        // The render functions any of those asked for (may ask for more).
+        for (size_t i = 0; i < renderqueue.size(); i++) EmitRenderFn(renderqueue[i]);
         EmitMain();
         if (usesthreads) predefs = "#define GS_NEED_THREADS 1\n";
         // The instance block: with workers each thread reaches its own

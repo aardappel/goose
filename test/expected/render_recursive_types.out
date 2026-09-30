@@ -1,0 +1,19 @@
+N { 1, N { 2, null } }
+N { 1, N { 2, N { 3, null } } }
+N { 1, N { 2, N { 3, null } } }
+N { 2, N { 3, null } } null
+[N { 1, N { 2, N { 3, null } } }]
+N { 1, N { 2, N { 3, null } } }|N { 3, null }
+N { 2, N { 3, null } }
+A { 2, B { 1, A { 0, null } } }
+B { 1, A { 0, null } }
+L<i64> { 1, L<i64> { 2, null } }
+Cons { 1, Box { Cons { 2, Box { Lst.Nil } } } }
+Node { VBox { Node { VBox { Leaf { "x" } }, VBox { Leaf { "y" } } } }, null }
+T { 1, [T { 2, [T { 3, [] }, T { 4, [] }] }] }
+PN { 3, PN { 2, PN { 1, null } } }
+[PN { 1, null }, PN { 2, PN { 1, null } }, PN { 3, PN { 2, PN { 1, null } } }]
+[SN { 1, null }, SN { 2, SN { 1, null } }]
+R { 1, R { 2, null, "bee" }, "ay" }
+W { V { "zero", W { null, [7] } }, [1, 2] }
+V { "two", W { V { "zero", W { null, [7] } }, [] } }

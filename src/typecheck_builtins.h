@@ -628,25 +628,68 @@ inline void TypeCheck::CheckPrintable(Call *c, const char *what, vector<Node *> 
     builder.writable = true;
     if (out && ClassOf(DecayRef(*out).type) == SC_RESIZABLE) builder = *out;
     auto context = ast.New<Call>(c->line, c->callee);
-    vector<TypeExpr *> seen;
+    RenderSeen seen;
     CheckRenderable(context, what, av.type, a, seen, av, builder);
+    // A type that reaches itself through references is rendered below its
+    // first level by a function of its own, which runs no format overload
+    // (RenderFn): an overload for a part of it needs one for the type.
+    for (auto t : seen.recurring) {
+        vector<TypeExpr *> walked;
+        if (auto part = OverloadedPart(context, t, walked))
+            Error(a, cat(what, " cannot render ", TypeStr(t), ", which reaches itself through "
+                         "references, around the format overload for ", TypeStr(part),
+                         ": give ", TypeStr(t), " a format overload of its own (§3.7)"));
+    }
     c->fmtcontexts.push_back(context);
     c->fmtspecs.insert(c->fmtspecs.end(), context->fmtspecs.begin(), context->fmtspecs.end());
 }
 
-inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, Node *at,
-                                       vector<TypeExpr *> &seen, Val value, const Val &out) {
-    for (auto s : seen) if (TypeEq(s, t)) return;   // Recursion through references.
+// The first type rendering a value of type t meets that one of context c's
+// format overloads renders: t itself, or a part at any depth its references
+// reach. An ADT's payload is rendered as its variant's literal, whatever
+// overload a value of the variant type has (RenderLoc). `seen` holds the
+// types walked.
+inline TypeExpr *TypeCheck::OverloadedPart(Call *c, TypeExpr *t, vector<TypeExpr *> &seen) {
+    for (auto s : seen) if (TypeEq(s, t)) return nullptr;
     seen.push_back(t);
-    struct PopSeen { vector<TypeExpr *> &types; ~PopSeen() { types.pop_back(); } } pop { seen };
+    for (auto &fs : c->fmtspecs) if (TypeEq(fs.first, t)) return t;
+    switch (t->kind) {
+        case TY_ARRAY: return OverloadedPart(c, t->arr->sub, seen);
+        case TY_SLICE: return OverloadedPart(c, t->sub, seen);
+        case TY_REF: return OverloadedPart(c, t->ref->sub, seen);
+        case TY_STRUCT: case TY_ENUM: case TY_VARIANT: {
+            TypeExpr *part = nullptr;
+            EachField(t, [&](TypeExpr *ft) { if (!part) part = OverloadedPart(c, ft, seen); });
+            return part;
+        }
+        default: return nullptr;
+    }
+}
+
+inline void TypeCheck::CheckRenderable(Call *c, const char *what, TypeExpr *t, Node *at,
+                                       RenderSeen &seen, Val value, const Val &out) {
+    // A type met again on the path reaches itself through references. The
+    // levels below render as this one does, from the struct, variant or ADT
+    // a reference or slice leads to on by a function that runs no format
+    // overload (RenderFn), which CheckPrintable holds that type to.
+    for (auto s : seen.path) {
+        if (!TypeEq(s, t)) continue;
+        while (t->kind == TY_REF || t->kind == TY_SLICE || t->kind == TY_ARRAY)
+            t = t->kind == TY_REF ? t->ref->sub : t->kind == TY_SLICE ? t->sub : t->arr->sub;
+        for (auto r : seen.recurring) if (TypeEq(r, t)) return;
+        seen.recurring.push_back(t);
+        return;
+    }
+    seen.path.push_back(t);
+    struct PopSeen { vector<TypeExpr *> &types; ~PopSeen() { types.pop_back(); } } pop { seen.path };
     value.type = t;
     value.writable &= !t->cq;
-    if (UserFormat(c, t, value, out, seen.size() == 1 ? at : nullptr)) return;
+    if (UserFormat(c, t, value, out, seen.path.size() == 1 ? at : nullptr)) return;
     // The argument itself, unless an overload takes it whole, is read where
     // it lies, around the overloads its parts run, so that storage stays in
     // use meanwhile (HeldOperands, the argument being rendered).
-    if (seen.size() == 1 && (t->kind == TY_STRUCT || t->kind == TY_ENUM ||
-                             t->kind == TY_VARIANT || t->kind == TY_ARRAY))
+    if (seen.path.size() == 1 && (t->kind == TY_STRUCT || t->kind == TY_ENUM ||
+                                  t->kind == TY_VARIANT || t->kind == TY_ARRAY))
         cur.renderwhere = at;
     // A variable-mode ADT's tag, or the count of an array of a size not
     // fixed, is read once, and the parts it covers are rendered where they
