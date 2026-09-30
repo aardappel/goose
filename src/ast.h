@@ -1405,6 +1405,9 @@ struct EnumInst {
     SizeClass varclass = SC_VARIABLE;     // Class when used in variable mode.
     bool flat = true;
     bool validated = false;
+    // Per variant while the instance is being built: 1 while its payload's
+    // fields are being validated, 2 once they are.
+    vector<uint8_t> vbuilt;
 };
 
 // One run of fields with their instantiated types, aligned (a pad's type is

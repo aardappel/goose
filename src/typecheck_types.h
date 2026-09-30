@@ -103,28 +103,39 @@ inline EnumInst *TypeCheck::GetEnumInst(TypeExpr *t) {
                 inst->vftypes.back().push_back(f.ispad ? nullptr : Subst(f.type));
         }
     });
+    inst->vbuilt.assign(en->variants.size(), 0);
     BeginTypeBuild();
-    for (size_t vi = 0; vi < en->variants.size(); vi++) {
-        auto &v = en->variants[vi];
-        auto lastreal = LastRealField(v.fields);
-        for (auto i = 0; i < (int)v.fields.size(); i++) {
-            if (v.fields[i].ispad) continue;
-            auto ft = inst->vftypes[vi][i];
-            ValidateType(ft, en->line, VT_FIELD);
-            auto c = ClassOf(ft);
-            if (c == SC_RESIZABLE) {
-                if (i != lastreal)
-                    Error(en->line, cat("resizable field ", v.fields[i].name, " of variant ",
-                                        en->name, ".", v.name, " must be the final field"));
-                inst->varclass = SC_RESIZABLE;
-            }
-            if (c != SC_FIXED) inst->allfixed = false;
-            inst->flat = inst->flat && IsFlat(ft);
-        }
-    }
+    for (size_t vi = 0; vi < en->variants.size(); vi++) BuildVariant(inst, vi);
     inst->validated = true;
     EndTypeBuild();
     return inst;
+}
+
+// A variant's payload is validated where the enum's build reaches the
+// variant, or earlier where a payload of the same enum holds the variant
+// type by value (ValidateType): one met again while its own payload is
+// being validated holds itself.
+inline void TypeCheck::BuildVariant(EnumInst *inst, size_t vi) {
+    if (inst->vbuilt[vi]) return;
+    inst->vbuilt[vi] = 1;
+    auto en = inst->en;
+    auto &v = en->variants[vi];
+    auto lastreal = LastRealField(v.fields);
+    for (auto i = 0; i < (int)v.fields.size(); i++) {
+        if (v.fields[i].ispad) continue;
+        auto ft = inst->vftypes[vi][i];
+        ValidateType(ft, en->line, VT_FIELD);
+        auto c = ClassOf(ft);
+        if (c == SC_RESIZABLE) {
+            if (i != lastreal)
+                Error(en->line, cat("resizable field ", v.fields[i].name, " of variant ",
+                                    en->name, ".", v.name, " must be the final field"));
+            inst->varclass = SC_RESIZABLE;
+        }
+        if (c != SC_FIXED) inst->allfixed = false;
+        inst->flat = inst->flat && IsFlat(ft);
+    }
+    inst->vbuilt[vi] = 2;
 }
 
 // The outermost instance validates the pointees its build left, and those
@@ -457,11 +468,19 @@ inline void TypeCheck::ValidateType(TypeExpr *t, Line l, int pos) {
                              t->enu->en->name, "..)"));
             return;
         }
-        case TY_VARIANT:
+        case TY_VARIANT: {
             if (t->var->adt->kind != TY_ENUM)
                 Error(l, cat("variant type of non-ADT type ", TypeStr(t->var->adt)));
-            GetEnumInst(t->var->adt);
+            auto inst = GetEnumInst(t->var->adt);
+            if (!inst->validated) {
+                auto vi = (size_t)inst->en->VariantIndex(t->var->variant);
+                if (inst->vbuilt[vi] == 1)
+                    Error(l, cat("variant ", inst->en->name, ".", t->var->name,
+                                 " contains itself by value"));
+                BuildVariant(inst, vi);
+            }
             return;
+        }
         case TY_ARRAY: {
             RequireComplete(t, l);
             ValidateType(t->arr->sub, l, VT_ELEM);

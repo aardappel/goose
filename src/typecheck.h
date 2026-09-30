@@ -901,6 +901,7 @@ struct TypeCheck {
 
     StructInst *GetStructInst(TypeExpr *t);
     EnumInst *GetEnumInst(TypeExpr *t);
+    void BuildVariant(EnumInst *inst, size_t vi);
     // The field runs of a nominal type (ast.h FieldRun), instantiating it
     // as needed; empty for every other kind.
     vector<FieldRun> FieldRuns(TypeExpr *t);

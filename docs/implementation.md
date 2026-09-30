@@ -339,13 +339,17 @@ validate them, and compute the derived properties every later pass reads:
   itself a frame object -- the shape codegen keeps in the frame as a C
   struct with the tail's header last;
 * `validated`, which is false while the instantiation is being built and so
-  detects a struct or enum that contains itself by value. A reference's or
-  slice's pointee waits (`laterpointees`) until the outermost instantiation
-  being built is done, so an instantiation still being built is always one
-  the type at hand contains by value, never one a reference leads back to
-  (§3.4): `enum L { Nil, Cons { next: L? } }` checks the pointee `L` once
-  `L` is built, fixed-size payloads and all, and `struct A { b: B? }`
-  declared before `struct B { a: A }` builds `B` after `A`;
+  detects a struct or enum that contains itself by value, and per variant
+  `vbuilt`, which does the same for a variant type held by value in a
+  payload of its own enum (`BuildVariant` validates a variant's payload
+  where the enum's build reaches it, or earlier where such a payload holds
+  it). A reference's or slice's pointee waits (`laterpointees`) until the
+  outermost instantiation being built is done, so an instantiation still
+  being built is always one the type at hand contains by value, never one
+  a reference leads back to (§3.4): `enum L { Nil, Cons { next: L? } }`
+  checks the pointee `L` once `L` is built, fixed-size payloads and all,
+  and `struct A { b: B? }` declared before `struct B { a: A }` builds `B`
+  after `A`;
 * concrete field types; defaults are checked at each construction site
   (`CheckDefaultInit`), with declaration-scope bindings and caller effects.
 
