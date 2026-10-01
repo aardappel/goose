@@ -233,11 +233,17 @@ struct TypeCheck {
         TypeExpr *narrowed = nullptr;
         bool operator==(const VarFlow &) const = default;
     };
+    struct FlowEntry {
+        int index;                            // Into vars, ascending.
+        VarDef *var;                          // The variable occupying that index.
+        VarFlow state;
+        bool operator==(const FlowEntry &) const = default;
+    };
     struct FlowState {
-        vector<int> idx;                      // Into vars, ascending.
-        vector<VarFlow> st;                   // Aligned with idx.
+        vector<FlowEntry> locals;
         vector<pair<VarDef *, TypeExpr *>> globals;
         bool reachable = true;
+        bool operator==(const FlowState &) const = default;
     };
     struct Scope {
         int kind = SK_PLAIN;
@@ -1243,7 +1249,8 @@ struct TypeCheck {
     void NarrowCond(Node *cond, bool sense);
 
     void KillNarrow(VarDef *vd) { vd->narrowed = nullptr; }
-    // The join of two states, as MergeFlow leaves it: a fact holds iff it
+    // The join of two states over the variables in scope, without changing
+    // the live checker state: a fact holds iff it
     // holds in every reachable one, and a variable may be assigned iff it
     // may be in any.
     FlowState JoinFlow(const FlowState &a, const FlowState &b);

@@ -404,9 +404,10 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
         // assigns may be assigned after the condition.
         rightkills.clear();
         vector<VarDef *> mayassign;
-        for (size_t k = 0; k < mid.st.size() && mid.idx[k] < (int)tc.vars.size(); k++) {
-            auto v = tc.vars[mid.idx[k]];
-            if (mid.st[k].narrowed && !v->narrowed) rightkills.push_back(v);
+        for (auto &e : mid.locals) {
+            if (!tc.InScope(e.var, e.index)) continue;
+            auto v = e.var;
+            if (e.state.narrowed && !v->narrowed) rightkills.push_back(v);
             if (v->maybeassigned) mayassign.push_back(v);
         }
         for (auto [gv, gn] : mid.globals)

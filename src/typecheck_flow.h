@@ -805,8 +805,8 @@ inline vector<int> TypeCheck::NamedFrames(int fi, FnSpec *spec) {
 inline TypeCheck::FlowState TypeCheck::SaveFlow() {
     FlowState f;
     EachNamedVar((int)frames.size() - 1, CurRealFrame().spec, [&](int i) {
-        f.idx.push_back(i);
-        f.st.push_back({ vars[i]->assigned, vars[i]->maybeassigned, vars[i]->narrowed });
+        auto v = vars[i];
+        f.locals.push_back({ i, v, { v->assigned, v->maybeassigned, v->narrowed } });
     });
     // Globals' narrowing participates too (assignment in branches).
     for (auto g : ast.globals)
@@ -816,68 +816,53 @@ inline TypeCheck::FlowState TypeCheck::SaveFlow() {
 }
 
 inline void TypeCheck::RestoreFlow(const FlowState &f) {
-    for (size_t k = 0; k < f.idx.size(); k++) {
-        if (f.idx[k] >= (int)vars.size()) break;
-        auto v = vars[f.idx[k]];
-        v->assigned = f.st[k].assigned;
-        v->maybeassigned = f.st[k].maybeassigned;
-        v->narrowed = f.st[k].narrowed;
+    for (auto &e : f.locals) {
+        if (!InScope(e.var, e.index)) continue;
+        e.var->assigned = e.state.assigned;
+        e.var->maybeassigned = e.state.maybeassigned;
+        e.var->narrowed = e.state.narrowed;
     }
     for (auto [v, narrowed] : f.globals) v->narrowed = narrowed;
     reachable = f.reachable;
 }
 
 inline TypeCheck::FlowState TypeCheck::JoinFlow(const FlowState &a, const FlowState &b) {
-    auto now = SaveFlow();
-    MergeFlow(a, b);
+    auto narrow = [&](TypeExpr *an, TypeExpr *bn) {
+        return !a.reachable ? bn : !b.reachable ? an : an && bn ? an : nullptr;
+    };
+    // Project both snapshots onto the variables this region can still name.
+    // A branch-local entry can outlive its scope in a break/arm snapshot;
+    // even if its index is reused, its facts do not belong to the new local.
+    auto at = [](const FlowState &f, size_t &p, const FlowEntry &e) -> VarFlow {
+        while (p < f.locals.size() && f.locals[p].index < e.index) p++;
+        if (p < f.locals.size() && f.locals[p].index == e.index && f.locals[p].var == e.var)
+            return f.locals[p].state;
+        return {};
+    };
     auto joined = SaveFlow();
-    RestoreFlow(now);
+    size_t p = 0, q = 0;
+    for (auto &e : joined.locals) {
+        auto aa = at(a, p, e), bb = at(b, q, e);
+        e.state = { (!a.reachable || aa.assigned) && (!b.reachable || bb.assigned),
+                    (a.reachable && aa.maybeassigned) || (b.reachable && bb.maybeassigned),
+                    narrow(aa.narrowed, bb.narrowed) };
+    }
+    assert(a.globals.size() == b.globals.size() && a.globals.size() == joined.globals.size());
+    for (size_t i = 0; i < a.globals.size(); i++) {
+        assert(a.globals[i].first == b.globals[i].first &&
+               a.globals[i].first == joined.globals[i].first);
+        joined.globals[i].second = narrow(a.globals[i].second, b.globals[i].second);
+    }
+    joined.reachable = a.reachable || b.reachable;
     return joined;
 }
 
 inline bool TypeCheck::SameFlow(const FlowState &a, const FlowState &b) {
-    if (a.reachable != b.reachable || a.idx != b.idx || a.st != b.st) return false;
-    for (size_t i = 0; i < a.globals.size(); i++)
-        if (a.globals[i].second != b.globals[i].second) return false;
-    return true;
+    return a == b;
 }
 
-// Joins two branch end states into the current state: a fact holds after
-// the join iff it holds in every reachable branch, and a variable may be
-// assigned iff it may be in any. A variable neither state has -- declared
-// in a branch and still in scope -- holds nothing.
 inline void TypeCheck::MergeFlow(const FlowState &a, const FlowState &b) {
-    auto join = [&](VarDef *v, const VarFlow &aa, const VarFlow &bb) {
-        v->assigned = (a.reachable ? aa.assigned : true) && (b.reachable ? bb.assigned : true);
-        v->maybeassigned = (a.reachable && aa.maybeassigned) || (b.reachable && bb.maybeassigned);
-        TypeExpr *n = nullptr;
-        if (!a.reachable) n = bb.narrowed;
-        else if (!b.reachable) n = aa.narrowed;
-        else if (aa.narrowed && bb.narrowed) n = aa.narrowed;
-        v->narrowed = n;
-    };
-    const VarFlow none;
-    size_t p = 0, q = 0;
-    auto last = -1;
-    while (p < a.idx.size() || q < b.idx.size()) {
-        auto ia = p < a.idx.size() ? a.idx[p] : INT32_MAX;
-        auto ib = q < b.idx.size() ? b.idx[q] : INT32_MAX;
-        auto i = min(ia, ib);
-        auto aa = ia == i ? a.st[p++] : none;
-        auto bb = ib == i ? b.st[q++] : none;
-        if (i >= (int)vars.size()) break;
-        join(vars[i], aa, bb);
-        last = i;
-    }
-    for (auto i = max(last + 1, frames.back().varbase); i < (int)vars.size(); i++)
-        join(vars[i], none, none);
-    for (size_t i = 0; i < a.globals.size(); i++) {
-        auto [v, an] = a.globals[i];
-        auto bn = b.globals[i].second;
-        v->narrowed = !a.reachable ? bn : !b.reachable ? an
-                      : an && bn ? an : nullptr;
-    }
-    reachable = a.reachable || b.reachable;
+    RestoreFlow(JoinFlow(a, b));
 }
 
 // Optional narrowing (§3.8): a bare optional variable as a condition, and
@@ -1373,10 +1358,7 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
             result = JoinBranches(result, resultreach, av, aflow.reachable, m, wantvalue, onjoin);
             resultreach = resultreach || aflow.reachable;
             // Accumulate the join of all arms' flow.
-            auto save = SaveFlow();
-            MergeFlow(acc, aflow);
-            acc = SaveFlow();
-            RestoreFlow(save);
+            acc = JoinFlow(acc, aflow);
         }
     };
     for (size_t i = 0; i + 1 < m->arms.size(); i++)

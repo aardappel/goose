@@ -1343,7 +1343,12 @@ in, and of the frames the function values it can call were written in
 meanwhile: a fact holds after a join iff it holds in every reachable branch,
 and a variable is maybe assigned iff it is in some reachable one, with
 `reachable` tracking divergence (`return`, `break`, `continue`, `abort`,
-`exit`). A loop or `block` is left in the join of the states at its exits:
+`exit`). A local snapshot entry keeps its index, variable identity and facts
+together; restoring or joining it never transfers a departed local's facts
+to a later variable at the same index. `JoinFlow` computes a snapshot over
+the currently nameable variables without mutating their live state;
+`MergeFlow` installs that result. A loop or `block` is left in the join of
+the states at its exits:
 each reachable `break` out of it joins its state into the construct's scope
 (`NoteBreak`, `Scope::breakflow`), and `JoinBreakFlow` joins that with the
 construct's own exit -- the end of a block's body, a `while`'s condition
