@@ -226,7 +226,12 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             }
             auto tv = T();
             L(CT(t), " ", tv, ";");
-            if (poll) {
+            if (!FixedSize(t)) {
+                // A value of no bytes (§3.4): the node holds none to fill the
+                // object C gives it.
+                L("memset(&", tv, ", 0, sizeof(", tv, "));");
+                L("free(", nn, ");");
+            } else if (poll) {
                 L("memset(&", tv, ", 0, sizeof(", tv, "));");
                 L("if (", nn, ") { memcpy(&", tv, ", ", nn, " + 1, sizeof(", tv,
                   ")); free(", nn, "); }");
@@ -869,6 +874,11 @@ inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
             Append(b, "    uint8_t *a", i, " = p;\n");
             // Advance past the value; a size fn may be emitted on demand.
             Append(b, "    p += ", SizeX(pt, cat("a", i)).c_str(), ";\n");
+            args.push_back(cat("a", i));
+        } else if (!FixedSize(pt)) {
+            // A value of no bytes (§3.4): the image holds none to fill the
+            // object C gives it.
+            Append(b, "    ", CT(pt), " a", i, " = {0};\n");
             args.push_back(cat("a", i));
         } else {
             Append(b, "    ", CT(pt), " a", i, " = *(", CT(pt), " *)p; p += ",

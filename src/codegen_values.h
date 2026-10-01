@@ -706,7 +706,7 @@ inline string CodeGen::AdaptToFixed(Loc lv, TypeExpr *et, Line ln) {
         auto tv = T();
         L(CT(et), " ", tv, HasUninitSlots(et) ? " = {0};" : ";");
         L(tv, ".tag = ", TagConst(ei, vi), ";");
-        if (!ei->en->variants[vi].fields.empty())
+        if (!EmptyLayout(ei->en->variants[vi].fields))
             L(tv, ".u.v_", Sanitize(ei->en->variants[vi].name), " = ", lv.s, ";");
         return tv;
     }

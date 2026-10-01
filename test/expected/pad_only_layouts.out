@@ -1,0 +1,13 @@
+9151314442816847873 9079256848778919938 false true
+[Pads {  }, Pads {  }] true Bare {  }
+9151314442816847875 4 5 B {  } Tags.A
+false true false
+Hole {  } 1 Hole {  }
+Zero {  } 2 Zero {  }
+Wide {  } 3 Wide {  }
+Fill { #9 } 9 9
+Hole {  }
+Zero {  }
+Wide {  }
+9
+false true true 4

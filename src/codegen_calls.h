@@ -659,7 +659,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
             // The whole by-value enum was already copied before later
             // arguments ran. Its payload is the callee's private value.
             varg = payload;
-        } else if (ei->en->variants[vi].fields.empty()) {
+        } else if (EmptyLayout(ei->en->variants[vi].fields)) {
             auto tv = T();
             L(CT(vt), " ", tv, " = {0};");
             varg = tv;

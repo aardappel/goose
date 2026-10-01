@@ -223,7 +223,7 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
                 ind++;
                 auto vt = VariantType(t, (int)vi);
                 Loc pl;
-                if (!ei->en->variants[vi].fields.empty()) {
+                if (!EmptyLayout(ei->en->variants[vi].fields)) {
                     if (lv.val) {
                         pl = lv;
                         pl.t = vt;

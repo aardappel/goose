@@ -694,12 +694,21 @@ struct TypeCheck {
         return a->size;
     }
 
-    // A fixed array, or a limited one of static capacity, with no element
-    // slots: never a field or an element (§3.4).
-    bool ZeroLength(TypeExpr *t) {
-        return t->kind == TY_ARRAY &&
-               (t->arr->akind == A_FIXED || t->arr->akind == A_LIMITED) &&
-               ArraySize(t->arr) == 0;
+    // What a type is that takes no bytes of a layout, though C has no empty
+    // arrays or structs and gives it some (C.2): a fixed array, or a limited
+    // one of static capacity, with no element slots, or a variant type with
+    // no fields. Null for any other type. Never a field or an element (§3.4).
+    const char *ZeroSizeKind(TypeExpr *t) {
+        if (t->kind == TY_VARIANT && EmptyLayout(t->var->variant->fields))
+            return "a variant type with no fields";
+        if (t->kind == TY_ARRAY && (t->arr->akind == A_FIXED || t->arr->akind == A_LIMITED) &&
+            ArraySize(t->arr) == 0)
+            return "a zero-length array";
+        return nullptr;
+    }
+    void NoZeroSizeElement(TypeExpr *t, Line l) {
+        if (auto zs = ZeroSizeKind(t))
+            Error(l, cat("an element cannot be ", zs, ": ", TypeStr(t), " (§3.4)"));
     }
 
     // The names in sizes, capacities, fill counts and match patterns, which

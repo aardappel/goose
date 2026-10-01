@@ -1,0 +1,9 @@
+Mode.Off Mode.Off Mode.Off Mode.Idle true true true
+Mode.Off 0
+Level { 7 } 7
+Mode.Idle 1
+Mode.Idle Mode.Off
+off
+9
+true
+3 true false

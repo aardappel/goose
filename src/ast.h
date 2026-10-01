@@ -1217,6 +1217,17 @@ inline int LastRealField(const vector<Field> &fields) {
     return -1;
 }
 
+// Whether fields lay out no bytes: no field, and no pad with a size (a bare
+// pad aligns only a field after it, §3.2). C has no empty structs and gives
+// such a struct or variant type one byte (gs_empty). A struct takes it in
+// its layout too, but a variant's payload takes no bytes behind its ADT's
+// tag: its type is never a field or an element (§3.4), and a fixed-mode
+// ADT's union has no member for it.
+inline bool EmptyLayout(const vector<Field> &fields) {
+    for (auto &f : fields) if (!f.ispad || f.padsize > 0) return false;
+    return true;
+}
+
 // Not a type: a name referring to a type. Uses are substituted away during
 // resolution; the symbol remains for the declaration itself and lookups.
 struct SAlias {

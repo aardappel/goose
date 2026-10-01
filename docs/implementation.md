@@ -2987,7 +2987,11 @@ Layout details needed for byte/C compatibility (`FixedSize`, `LayoutFields`,
   aligns the next real field to its scalar storage width (8 for plain
   references and slices; 1 for composite fields). It adds nothing in a
   variable layout or without a following field. There is no implicit
-  aggregate tail padding. An empty struct occupies one byte.
+  aggregate tail padding. A struct with no bytes of its own (no fields, and
+  no `pad n`: `EmptyLayout`) occupies one, the `gs_empty` byte C gives it.
+  A variant with none occupies none behind its ADT's tag and has no member
+  in a fixed-mode ADT's union, though its own C struct has that byte, which
+  is why spec §3.4 keeps its type out of fields and elements.
 * Padding, inactive ADT payload bytes and unused limited-array slots are
   not value-bearing. Structural equality ignores them. Raw byte images
   can include them, so equal values need not serialize byte-for-byte
@@ -3384,6 +3388,8 @@ hoisted to the function's opening brace (`HoistAggregateDecls`) -- both
 workarounds for MSVC miscompilations described in Appendix E. A zero-length
 array's literal is zero-initialized too (`HasUninitSlots`): nothing writes the
 one slot its C struct has, and copying a C object nothing wrote is undefined.
+For the same reason a struct or variant literal without fields zeroes its C
+object (`StructLitAt`), its `gs_empty` byte or its pads.
 
 ### 6.8 Threads and queues
 
@@ -3394,7 +3400,9 @@ freelist), and hands the packet to the runtime; the generated thunk
 (`EnsureThreadThunk`) unpacks the arguments onto fresh stacks, allocates the
 worker's `gs_globals_t`, fills it from the image, runs the body, and frees
 it. Queues are one `gs_queue` per element type, carrying one contiguous image
-per value; a missed `qpoll` yields the all-zero image (`ZeroSize`).
+per value; a missed `qpoll` yields the all-zero image (`ZeroSize`). A value
+of no bytes (spec §3.4) crosses a queue or a thread's arguments as none, and
+the receiver zeroes the object C gives it rather than reading past the image.
 
 ### 6.9 Generated walkers
 

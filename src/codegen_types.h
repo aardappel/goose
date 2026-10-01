@@ -498,10 +498,8 @@ inline string CodeGen::CT(TypeExpr *t) {
         case TY_STRUCT: {
             auto si = SI(t);
             Append(d, "struct ", name, " {\n");
-            auto any = false;
-            for (auto &f : si->st->fields) any |= !f.ispad;
-            if (any) EmitCFields(d, si->st->fields, si->ftypes);
-            else Append(d, "    uint8_t gs_empty;\n");
+            if (EmptyLayout(si->st->fields)) Append(d, "    uint8_t gs_empty;\n");
+            else EmitCFields(d, si->st->fields, si->ftypes);
             Append(d, "};\n");
             break;
         }
@@ -510,7 +508,7 @@ inline string CodeGen::CT(TypeExpr *t) {
             auto vi = ei->en->VariantIndex(t->var->variant);
             auto &v = ei->en->variants[vi];
             Append(d, "struct ", name, " {\n");
-            if (v.fields.empty()) Append(d, "    uint8_t gs_empty;\n");
+            if (EmptyLayout(v.fields)) Append(d, "    uint8_t gs_empty;\n");
             else EmitCFields(d, v.fields, ei->vftypes[vi]);
             Append(d, "};\n");
             break;
@@ -522,7 +520,7 @@ inline string CodeGen::CT(TypeExpr *t) {
             Append(d, "struct ", name, " {\n    ", IntCT(TagStore(ei->en)), " tag;\n");
             string members;
             for (size_t vi = 0; vi < ei->en->variants.size(); vi++) {
-                if (ei->en->variants[vi].fields.empty()) continue;
+                if (EmptyLayout(ei->en->variants[vi].fields)) continue;
                 auto vt = VariantType(t, (int)vi);
                 Append(members, "        ", CT(vt), " v_",
                        Sanitize(ei->en->variants[vi].name), ";\n");
@@ -1246,7 +1244,7 @@ inline void CodeGen::EmitEqFixed(string &bo, TypeExpr *t) {
             auto ei = EIOf(t);
             Append(bo, "    if (a->tag != b->tag) return 0;\n    switch (a->tag) {\n");
             for (size_t vi = 0; vi < ei->en->variants.size(); vi++) {
-                if (ei->en->variants[vi].fields.empty()) continue;
+                if (EmptyLayout(ei->en->variants[vi].fields)) continue;
                 auto un = cat("u.v_", Sanitize(ei->en->variants[vi].name));
                 Append(bo, "    case ", TagConst(ei, (int)vi), ": return ",
                        EqX(VariantType(t, (int)vi), cat("a->", un), cat("b->", un)),

@@ -181,6 +181,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     // variable and grow-only arrays hold those (§3.3).
     auto natural = [&](int64_t count) {
         if (elem == tc.fntype) tc.Error(this, "function values cannot be stored in arrays (§7.6)");
+        tc.NoZeroSizeElement(elem, line);
         if (tc.ClassOf(elem) == SC_FIXED) return tc.ast.ArrayOf(elem, A_FIXED, line, count);
         auto t = tc.ast.ArrayOf(elem, A_VAR, line);
         tc.ValidateType(t, line, VT_LOCAL);

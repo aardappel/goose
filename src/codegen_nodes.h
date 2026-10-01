@@ -537,7 +537,7 @@ inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
                 cg.L("int64_t ", sz, " = ", cg.SizeX(vt, payload), ";");
                 cg.L("memcpy(", cg.Top(stk), ", ", payload, ", (size_t)", sz, ");");
                 cg.Bump(stk, sz);
-            } else if (variant->fields.empty()) {
+            } else if (EmptyLayout(variant->fields)) {
                 cg.L(cg.CT(vt), " ", bn, " = {0};");
             } else if (!payload.empty()) {
                 cg.L(cg.CT(vt), " ", bn, " = *(", cg.CT(vt), " *)(", payload, ");");
