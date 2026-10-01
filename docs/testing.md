@@ -194,6 +194,17 @@ rejection in `clear_live_slice.goose`. Dedicated tests retain recursive relative
 structures, dispatch, nonlocal returns and dictionary execution previously
 suggested by those unused sketches.
 
+Two overlapping positive fixtures are now covered by their broader suites:
+
+| Removed fixture (and its `.out`) | Retained coverage |
+|---|---|
+| `lifetimes/borrowed_context_store.goose` | `lifetimes/store_reached_types.goose` saves a slice through a borrowed context, keeps it in a local binding, stores it in the context's input table, and reads both the argument and the stored text. The same suite exercises the other destination forms. |
+| `codegen/resizable_adt_tag.goose` | `codegen/adt_adaptation.goose` matches both variants of a resizable ADT through a reference parameter and directly. The resizable payload has no binder; the fixed payload is bound and read. |
+
+The small `return_from_cycle.goose` remains beside `return_from_cached_call.goose`:
+the former checks replay through a recursion back edge without an additional
+cached-call path, which could otherwise mask a missing propagation step.
+
 CI uses four jobs to cover these configurations without testing every
 combination of platform, sanitizer, optimization level, and runtime mode.
 Benchmarks run separately from CI.

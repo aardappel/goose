@@ -27,7 +27,8 @@ fn save(c: Context&, s: const u8[:]) -> const u8[:] {
 
 fn process(c: Context&, names: const (const u8[:])[:], log: Log&, extra: const Input[:]) {
     // An element built in a table, and one copied into it.
-    c.inputs.push(Input { text: save(c, names[0]) });
+    let name = save(c, names[0]);
+    c.inputs.push(Input { text: name });
     let local = Input { text: save(c, "local") };
     c.inputs.push(local);
     // A run appended as a literal, and one copied out of what extra views.
@@ -45,6 +46,7 @@ fn process(c: Context&, names: const (const u8[:])[:], log: Log&, extra: const I
     c.items[0].name = save(c, "item");
     // An array in what a reference read out of the context points at.
     c.tables.inputs.push(Input { text: save(c, "tables") });
+    print(names[0]);
     print(log.first.text);
 }
 

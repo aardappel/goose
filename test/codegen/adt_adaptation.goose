@@ -134,6 +134,9 @@ fn main() {
     var r2: Value.. = valb(10);
     var r3: Value.. = vala();
     print(tag(r1), " ", tag(r2), " ", tag(r3));                        // 9 10 -1
+    // Match both tags directly too, without binding the resizable payload.
+    match r3 { A => print("A"), B b => print(b.n) }
+    match r1 { A => print("A"), B b => print(b.n) }
 
     // Forwarded multi-value returns.
     let a1, b1 = fwd(3);
