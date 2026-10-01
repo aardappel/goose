@@ -694,6 +694,14 @@ struct TypeCheck {
         return a->size;
     }
 
+    // A fixed array, or a limited one of static capacity, with no element
+    // slots: never a field or an element (§3.4).
+    bool ZeroLength(TypeExpr *t) {
+        return t->kind == TY_ARRAY &&
+               (t->arr->akind == A_FIXED || t->arr->akind == A_LIMITED) &&
+               ArraySize(t->arr) == 0;
+    }
+
     // The names in sizes, capacities, fill counts and match patterns, which
     // ConstIntValue takes as globals, checked where they are written.
     void ConstName(Ident *id, const char *what);

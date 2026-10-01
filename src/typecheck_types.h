@@ -82,6 +82,9 @@ inline StructInst *TypeCheck::GetStructInst(TypeExpr *t) {
         if (st->fields[i].ispad) continue;
         auto ft = inst->ftypes[i];
         ValidateType(ft, st->line, VT_FIELD);
+        if (ZeroLength(ft))
+            Error(st->line, cat("field ", st->fields[i].name, " of struct ", st->name,
+                                " cannot be a zero-length array: ", TypeStr(ft), " (§3.4)"));
         auto c = ClassOf(ft);
         if (c == SC_RESIZABLE) {
             if (i != lastreal)
@@ -179,6 +182,9 @@ inline void TypeCheck::BuildVariant(EnumInst *inst, size_t vi) {
         if (v.fields[i].ispad) continue;
         auto ft = inst->vftypes[vi][i];
         ValidateType(ft, en->line, VT_FIELD);
+        if (ZeroLength(ft))
+            Error(en->line, cat("field ", v.fields[i].name, " of variant ", en->name, ".", v.name,
+                                " cannot be a zero-length array: ", TypeStr(ft), " (§3.4)"));
         auto c = ClassOf(ft);
         if (c == SC_RESIZABLE) {
             if (i != lastreal)
@@ -594,6 +600,8 @@ inline void TypeCheck::ValidateType(TypeExpr *t, Line l, int pos) {
                                      TypeStr(t->arr->sub)));
                     break;
             }
+            if (pos == VT_ELEM && ZeroLength(t))
+                Error(l, cat("an element cannot be a zero-length array: ", TypeStr(t), " (§3.4)"));
             return;
         }
         case TY_SLICE: case TY_REF:

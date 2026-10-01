@@ -2995,7 +2995,10 @@ Layout details needed for byte/C compatibility (`FixedSize`, `LayoutFields`,
 
 * **Fixed-size types** are packed C types (`#pragma pack(1)`): scalars,
   packed structs, fixed and static-capacity limited arrays wrapped in structs
-  (`{ T e[k]; }`, `{ len; T e[k]; }`), fixed-mode ADTs as `{ tag; union }`,
+  (`{ T e[k]; }`, `{ len; T e[k]; }`, with one slot where `k` is 0, since C
+  has no empty arrays: that slot would take bytes the layout does not count,
+  which is why spec §3.4 keeps such arrays out of fields and elements),
+  fixed-mode ADTs as `{ tag; union }`,
   plain references as pointers, slices as `{ data, len }`, relative
   references as their stored integer. An empty slice's `data` is null where
   the slice was zero-filled (`default<T>()`, a default element), and C leaves
@@ -3378,7 +3381,9 @@ its final address, never in a C temporary that is then copied (`FixedLitAt`,
 `FixedLitAtStk`, the `alloc_ref` slot path); a literal with unused limited
 array slots is zero-initialized first, and every aggregate-typed C local is
 hoisted to the function's opening brace (`HoistAggregateDecls`) -- both
-workarounds for MSVC miscompilations described in Appendix E.
+workarounds for MSVC miscompilations described in Appendix E. A zero-length
+array's literal is zero-initialized too (`HasUninitSlots`): nothing writes the
+one slot its C struct has, and copying a C object nothing wrote is undefined.
 
 ### 6.8 Threads and queues
 

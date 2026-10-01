@@ -355,6 +355,12 @@ functions: `a.push(v)` is `push(a, v)`.
   is itself resizable and may only appear where resizables may. Also as the
   payload of a variable ADT (making that ADT resizable, same tail rules).
   Never an array element.
+* **zero-length** arrays (`T[0]`, and `T[..0]` of capacity 0), though fixed:
+  only as values of their own — locals/globals, params, returns, and behind
+  references — never a struct field, a payload field, or the element type of
+  an array or slice. C has no empty arrays, so the C backend gives each an
+  element slot (Appendix C.2), which inside another value would take bytes
+  its layout does not count.
 
 At most one resizable per struct (the tail). (Future extension: two
 resizables with memmove-on-insert semantics, opt-in.)
@@ -3348,7 +3354,9 @@ state exists.
 
 * Scalars: natural little-endian storage of their declared width; `bool` is
   1 byte, 0 or 1. All loads/stores may be unaligned.
-* Fixed structs/arrays: packed concatenation in declaration order.
+* Fixed structs/arrays: packed concatenation in declaration order. A
+  zero-length array (`T[0]`, or `T[..0]` after its length field) has one
+  element slot holding no element, since C has no empty arrays (§3.4).
 * `T[]` family: length field (of the declared storage type) then elements.
 * `T[..k]`: length field (smallest unsigned type fitting `k`), then `k`
   element slots (uninitialized until first written).

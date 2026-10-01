@@ -149,10 +149,12 @@ inline void CodeGen::EmitRelSelfStore(const string &stk, TypeExpr *rt, int64_t f
 }
 
 // Whether a fixed value of type t can hold bytes nothing ever wrote: the
-// unused slots of a limited array (§5.3), at any depth. A C temporary of
-// such a type is zero-initialized before a literal fills it, since copying
-// a struct with indeterminate bytes is what MSVC 19.51 exploits to
-// miscompile the reads of the bytes that were written.
+// unused slots of a limited array (§5.3), at any depth, or the one element
+// C gives a zero-length array. A C temporary of such a type is
+// zero-initialized before a literal fills it, since copying a struct with
+// indeterminate bytes is what MSVC 19.51 exploits to miscompile the reads of
+// the bytes that were written, and copying one nothing wrote at all is
+// undefined.
 inline bool CodeGen::HasUninitSlots(TypeExpr *t) {
     switch (t->kind) {
         case TY_STRUCT: case TY_ENUM: case TY_VARIANT:
@@ -160,7 +162,8 @@ inline bool CodeGen::HasUninitSlots(TypeExpr *t) {
             return AnyField(t, [&](TypeExpr *ft) { return HasUninitSlots(ft); });
         case TY_ARRAY:
             if (t->arr->akind == A_LIMITED) return true;
-            return t->arr->akind == A_FIXED && HasUninitSlots(t->arr->sub);
+            return t->arr->akind == A_FIXED &&
+                   (ArrSize(t->arr) == 0 || HasUninitSlots(t->arr->sub));
         default: return false;
     }
 }
