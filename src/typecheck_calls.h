@@ -1471,24 +1471,10 @@ inline void TypeCheck::NoteCalleeEnvReads(FnSpec *callee) {
 // (StoreIntoSlot), and for a `let`, which is assigned only where it cannot
 // be already (§4.4), maybe assigned or not as it was.
 inline bool TypeCheck::EnvIs(const VarDef *vd, const EnvRead &r) {
-    auto sameroots = [](const Roots &a, const Roots &b) {
-        if (a.alts.size() != b.alts.size() || a.unknown != b.unknown) return false;
-        for (auto &x : a.alts) {
-            auto found = false;
-            for (auto &y : b.alts)
-                found = found || (x.root == y.root && x.exact == y.exact && x.from == y.from &&
-                                  x.slotread == y.slotread && x.classread == y.classread);
-            if (!found) return false;
-        }
-        return true;
-    };
     return vd->assigned == r.assigned &&
            (vd->isvar || vd->maybeassigned == r.maybeassigned) &&
            vd->refrootknown == r.refrootknown &&
-           sameroots(vd->ref, r.ref) && vd->ref.writable == r.ref.writable &&
-           vd->ref.reusable == r.ref.reusable && vd->ref.byteview == r.ref.byteview &&
-           vd->ref.freshview == r.ref.freshview && vd->ref.reached == r.ref.reached &&
-           sameroots(vd->contents, r.contents) &&
+           vd->ref == r.ref && vd->contents == r.contents &&
            vd->contentbyteview == r.contentbyteview && vd->slotref == r.slotref;
 }
 
@@ -2101,14 +2087,7 @@ inline bool TypeCheck::SameRecord(const FnRecord &a, const FnRecord &b, const Fn
     // A root's `from` names a container of the round's own body, which
     // the next round makes anew.
     auto sameroots = [&](const Roots &x, const Roots &y) {
-        if (x.alts.size() != y.alts.size() || x.unknown != y.unknown) return false;
-        for (size_t i = 0; i < x.alts.size(); i++) {
-            auto &p = x.alts[i], &q = y.alts[i];
-            if (p.root != q.root || p.exact != q.exact || p.slotread != q.slotread ||
-                p.classread != q.classread)
-                return false;
-        }
-        return true;
+        return x.Same(y, Roots::Compare::Cycle);
     };
     // GOOSE_ROUNDS in the environment traces what keeps a cycle's rounds
     // going.

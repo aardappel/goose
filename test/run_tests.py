@@ -689,6 +689,22 @@ def main():
             if out is not None and r.check_stdout(name, f"debug {f.name}", out):
                 r.ok(f"cgen-debug {f.name}")
 
+        # Algebraic properties of the compiler's root domain are easier to
+        # exhaust over small abstract states than to express in Goose.
+        name = "compiler_roots"
+        out_exe = gendir / f"{name}{tc.EXE_SUFFIX}"
+        ok, log = cc.compile(HERE / f"{name}.cpp", out_exe, cpp=True,
+                             opt=2 if args.profile == "baseline" else 1,
+                             extra=extra, log=gendir / f"{name}.cc.log")
+        if not ok:
+            r.fail(f"compiler-cc {name}", log)
+        else:
+            code, out, err = tc.run_capture([out_exe])
+            if code != 0 or tc.sanitizer_failure(err):
+                r.fail(f"compiler {name}", out + err)
+            else:
+                r.ok(f"compiler {name}")
+
         # Direct runtime lifecycle checks use small region limits and allocator
         # instrumentation that cannot be expressed by a Goose program. Keep
         # this one focused native test in both profiles.

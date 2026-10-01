@@ -443,6 +443,7 @@ struct RootAlt {
     // where every value has it, and a bound, a reference crossed and a back
     // edge's result drop it.
     bool classread = false;
+    bool operator==(const RootAlt &) const = default;
 };
 
 // Every place a value may point, one alternative per root. A value that may
@@ -462,6 +463,28 @@ struct Roots {
     // this says; a holder's contents are only where this says so, an empty
     // set of contents being one that holds nothing.
     bool unknown = false;
+
+    // All consumers compare sets, never discovery order. A cycle ignores
+    // the source containers its next round recreates; global reachability
+    // reads owners/bounds and source containers, not the slot-read proofs
+    // or the discovery-only unknown bit. Keep those projections explicit.
+    enum class Compare { All, Cycle, GlobalReach };
+    bool Same(const Roots &o, Compare how = Compare::All) const {
+        if (alts.size() != o.alts.size() || (how != Compare::GlobalReach && unknown != o.unknown))
+            return false;
+        auto key = [how](RootAlt a) {
+            if (how == Compare::Cycle) a.from = nullptr;
+            if (how == Compare::GlobalReach) a.slotread = a.classread = false;
+            return a;
+        };
+        for (auto &a : alts)
+            if (none_of(o.alts.begin(), o.alts.end(), [&](const RootAlt &b) {
+                    return key(a) == key(b);
+                }))
+                return false;
+        return true;
+    }
+    bool operator==(const Roots &o) const { return Same(o); }
 
     bool None() const { return alts.empty(); }
     bool Unknown() const { return alts.empty() && unknown; }
@@ -489,19 +512,18 @@ struct Roots {
     bool Add(const RootAlt &a) {
         for (auto &b : alts) {
             if (b.root != a.root) continue;
-            auto changed = (b.exact && !a.exact) || (b.slotread && !a.slotread) ||
-                           (b.classread && !a.classread) || (b.from && b.from != a.from);
+            auto before = b;
             b.exact = b.exact && a.exact;
             b.slotread = b.slotread && a.slotread;
             b.classread = b.classread && a.classread;
             if (b.from != a.from) b.from = nullptr;
-            return changed;
+            return b != before;
         }
         alts.push_back(a);
         return true;
     }
     bool Add(const Roots &o) {
-        auto changed = false;
+        auto changed = !unknown && o.unknown;
         unknown = unknown || o.unknown;
         for (auto &a : o.alts) changed = Add(a) || changed;
         return changed;
@@ -576,6 +598,7 @@ struct Prov : Roots {
     // crossed none, and where the root was derived anew since: a read-back
     // (§9.5), or a variable's binding, which a read of it crosses again.
     TypeExpr *reached = nullptr;
+    bool operator==(const Prov &) const = default;
     void SetProv(const Prov &p) { *this = p; }
     const Roots &AsRoots() const { return *this; }
 };

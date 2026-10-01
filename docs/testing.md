@@ -23,6 +23,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `errors/`, `errors_tc/` | Expected parser/resolver and semantic rejections. |
 | `expected/` | Shared output and runtime-diagnostic expectations. |
 | `run_tests.py` | The Python test runner. |
+| `compiler_roots.cpp` | Root-set join laws, feedback on weakening, order-independent equality and the deliberate comparison projections; compiled and run in both native profiles. |
 | `api_check.py` | Checks `stdlib/gfx.goose`, `stdlib/physics.goose` and `stdlib/ui.goose` against their C layers' headers; run by `run_tests.py`. |
 
 Positive fixtures are discovered one level below `test/`; nested import helpers

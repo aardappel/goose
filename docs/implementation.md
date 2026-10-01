@@ -637,6 +637,18 @@ scope every alternative outlives, which diagnostics name and a single
 bound stands for. Empty roots are a value with no provenance (a null, or no
 reference at all), which every rule lets pass as static data would.
 
+`Roots::Same` compares alternatives as a set, independent of the order
+branches or recursive rounds discover them. Ordinary equality compares all
+provenance, including `unknown`; `Prov` adds its permissions and view flags
+through defaulted equality. Two explicit projections cover the other uses:
+cycle convergence ignores `from`, whose local containers are recreated,
+while global reachability compares only roots, exactness and source
+containers, which are the fields that analysis reads. A merge of alternatives
+reports change by comparing the complete result with its previous value, so
+weakening any provenance fact feeds back into the surrounding analysis.
+Joining a previously unknown discovery state also reports a change, even
+before that state has any alternatives; joining it again is idempotent.
+
 **Depth.** Every `VarDef` has a `depth`: 0 for globals, else the scope count
 at its creation along the current compile-time call path. Because scopes
 accumulate along the path, a callee's locals are always deeper than

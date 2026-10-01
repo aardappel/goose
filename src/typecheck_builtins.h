@@ -1496,15 +1496,8 @@ inline void TypeCheck::NoteClassUses(FnSpec *spec, const vector<Val> &argvals) {
 
 inline void TypeCheck::NoteClassUse(VarDef *cr, const ClassUse &u) {
     auto same = [&](const ClassUse &o) {
-        if (o.src != u.src || o.byteview != u.byteview ||
-            o.roots.alts.size() != u.roots.alts.size())
-            return false;
-        for (size_t i = 0; i < o.roots.alts.size(); i++) {
-            auto &x = o.roots.alts[i];
-            auto &y = u.roots.alts[i];
-            if (x.root != y.root || x.exact != y.exact || x.from != y.from) return false;
-        }
-        return true;
+        return o.src == u.src && o.byteview == u.byteview &&
+               o.roots.Same(u.roots, Roots::Compare::GlobalReach);
     };
     auto &uses = classuses[cr];
     if (none_of(uses.begin(), uses.end(), same)) uses.push_back(u);
