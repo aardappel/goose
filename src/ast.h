@@ -1707,8 +1707,46 @@ struct OuterExit {
     set<VarDef *> assigned, maybeassigned;
 };
 
+// The analysis a checked body exposes to its callers. A recursive round
+// moves this record aside and starts a fresh one; specialization identity,
+// parameters, lexical environment and annotated code are never snapshotted.
+// The event range locates this round's stores in TypeCheck::storeevents; it
+// is replay metadata, not a fact compared for convergence.
+struct FnRecord {
+    vector<RetRoot> retroots;      // Per ret: the checked returns' roots and the prediction.
+    // External optional bindings this body (or a callee) may rebind.
+    set<VarDef *> reboundoptionals;
+    // Arrays the body may shrink, itself or through its callees (§5.1,
+    // §5.2): global/captured roots, and indices of parameters whose pointee
+    // shrinks, each with how every shrink of it leaves it.
+    map<VarDef *, ShrinkBalance> shrinkexternals;
+    map<int, ShrinkBalance> shrinkparams;
+    // Shrinks of an array of the given type that such a root's storage only
+    // leads to, through the references it holds: the call counts each as a
+    // shrink of any array of that type the root, or the argument's root,
+    // bounds (TypeCheck::ShrinkTargets).
+    vector<BoundShrink<VarDef *>> shrinkexternalbounds;
+    vector<BoundShrink<int>> shrinkparambounds;
+    // The body's shrinks, itself or through its callees, while something it
+    // still uses may point into the shrunk array as only the call sites can
+    // tell: each a parameter's class against another class, or against an
+    // array or view outside the activation.
+    vector<LiveShrink> liveshrinks;
+    // Arrays the body may grow -- push, append, a pool allocation, format,
+    // resize, a whole assignment -- itself or through its callees
+    // (§1.3(4)), in the same form.
+    set<VarDef *> growexternals;
+    set<int> growparams;
+    // Stores into the caller's storage, through reference parameters'
+    // class roots (§5.1): the call sites map them onto their arguments.
+    vector<StoreEvent> classevents;
+    size_t eventstart = 0;         // storeevents.size() when the body's check began.
+    size_t eventend = 0;           // And when it ended.
+};
+
 // One monomorphic specialization of a function: the unit of typechecking and
-// of later codegen. Owns nothing; body is a clone with annotations filled.
+// of later codegen. The body is an Ast-owned clone with annotations filled;
+// only a recursive round's previous analysis record is owned here.
 struct FnSpec {
     SFunction *sf = nullptr;
     FnSpec *lexparent = nullptr;   // Defining specialization (or body), for nested fns.
@@ -1753,8 +1791,6 @@ struct FnSpec {
     // assigned at any of them, where none could be when it began: a call
     // reusing it takes them again (TypeCheck::ReplayOuterExits).
     vector<OuterExit> outerexits;
-    // External optional bindings this body (or a callee) may rebind.
-    set<VarDef *> reboundoptionals;
     vector<int> litparams;         // Parameters that are literals (§7.7): part of the key.
     vector<LitAdapt> litadapts;    // The types those parameters adapted to in the body.
     vector<LitFlow> litflows;      // Where they were passed on as literals.
@@ -1763,7 +1799,6 @@ struct FnSpec {
     Block *body = nullptr;         // Cloned, annotated copy of sf->body.
     vector<VarDef *> params;
     vector<TypeExpr *> rets;       // TY_VOID-free: empty = no return values.
-    vector<RetRoot> retroots;      // Per ret: the checked returns' roots and the prediction.
     bool retsknown = false;
     bool inprogress = false;
     bool incycle = false;          // Part of a recursive cycle (§7.8).
@@ -1780,7 +1815,8 @@ struct FnSpec {
     // next round has yet to check again. The class roots its parameters
     // stand at are made once and kept across rounds (TypeCheck::ThreadedClass).
     vector<FnSpec *> cyclemembers;
-    shared_ptr<FnSpec> prev;
+    FnRecord record;
+    unique_ptr<FnRecord> prev;
     int rounds = 0;
     bool stale = false;
     vector<VarDef *> classroots;
@@ -1791,32 +1827,6 @@ struct FnSpec {
     // the spec needs no entry, since its path starts every path a target
     // reaches the spec by.
     vector<pair<Node *, vector<pair<SFunction *, FnSpec *>>>> neededges;
-    // Arrays the body may shrink, itself or through its callees (§5.1,
-    // §5.2): global/captured roots, and indices of parameters whose pointee
-    // shrinks, each with how every shrink of it leaves it.
-    map<VarDef *, ShrinkBalance> shrinkexternals;
-    map<int, ShrinkBalance> shrinkparams;
-    // Shrinks of an array of the given type that such a root's storage only
-    // leads to, through the references it holds: the call counts each as a
-    // shrink of any array of that type the root, or the argument's root,
-    // bounds (TypeCheck::ShrinkTargets).
-    vector<BoundShrink<VarDef *>> shrinkexternalbounds;
-    vector<BoundShrink<int>> shrinkparambounds;
-    // The body's shrinks, itself or through its callees, while something it
-    // still uses may point into the shrunk array as only the call sites can
-    // tell: each a parameter's class against another class, or against an
-    // array or view outside the activation.
-    vector<LiveShrink> liveshrinks;
-    // Arrays the body may grow -- push, append, a pool allocation, format,
-    // resize, a whole assignment -- itself or through its callees
-    // (§1.3(4)), in the same form.
-    set<VarDef *> growexternals;
-    set<int> growparams;
-    // Stores into the caller's storage, through reference parameters'
-    // class roots (§5.1): the call sites map them onto their arguments.
-    vector<StoreEvent> classevents;
-    size_t eventstart = 0;         // storeevents.size() when the body's check began.
-    size_t eventend = 0;           // And when it ended.
     // The body stored a value rooted at one of its parameters' classes into
     // a variable outside its activation, which its call mapped onto that
     // call's arguments in place (TypeCheck::ApplyCalleeStores): no other

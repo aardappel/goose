@@ -1159,7 +1159,7 @@ inline void TypeCheck::AddStoreEvent(const StoreEvent &e) {
     // A cycle's rounds map a back edge's record onto the same class roots
     // again: one entry per fact, out of a class's storage alone only where
     // every store of it is.
-    for (auto &o : spec->classevents) {
+    for (auto &o : spec->record.classevents) {
         if (o.container == e.container && o.root == e.root && o.src == e.src &&
             o.exact == e.exact && o.byteview == e.byteview && o.bound == e.bound &&
             o.slot == e.slot && o.sliceref == e.sliceref && !o.pointee == !e.pointee &&
@@ -1169,7 +1169,7 @@ inline void TypeCheck::AddStoreEvent(const StoreEvent &e) {
             return;
         }
     }
-    spec->classevents.push_back(e);
+    spec->record.classevents.push_back(e);
 }
 
 // A store that may write the slot a parameter's view stands for joins what
@@ -1946,12 +1946,12 @@ inline void TypeCheck::NoteShrink(VarDef *root, TypeExpr *bound, ShrinkBalance b
     };
     NoteRootEvent(root,
                   [&](FnSpec *s, int i) {
-                      if (bound) note(s->shrinkparambounds, i);
-                      else mark(s->shrinkparams, i);
+                      if (bound) note(s->record.shrinkparambounds, i);
+                      else mark(s->record.shrinkparams, i);
                   },
                   [&](FnSpec *s, VarDef *r) {
-                      if (bound) note(s->shrinkexternalbounds, r);
-                      else mark(s->shrinkexternals, r);
+                      if (bound) note(s->record.shrinkexternalbounds, r);
+                      else mark(s->record.shrinkexternals, r);
                   });
 }
 
@@ -2413,7 +2413,7 @@ inline int TypeCheck::NoteLiveShrink(LiveShrink ls, FnSpec *current) {
             !outside(l))
             return -1;
     }
-    for (auto &e : current->liveshrinks) {
+    for (auto &e : current->record.liveshrinks) {
         if (e.shrunk != s || e.live != l || !e.bound != !ls.bound || e.contents != ls.contents ||
             e.inplace != ls.inplace)
             continue;
@@ -2427,12 +2427,12 @@ inline int TypeCheck::NoteLiveShrink(LiveShrink ls, FnSpec *current) {
         return e.shrunkexact != was.shrunkexact || e.liveexact != was.liveexact ||
                e.pointee != was.pointee || e.byteview != was.byteview;
     }
-    current->liveshrinks.push_back(ls);
+    current->record.liveshrinks.push_back(ls);
     return 1;
 }
 
 // The callee's shrinks of arrays something it still uses may point into
-// (FnSpec::liveshrinks), mapped onto this call's arguments: a parameter's
+// (FnRecord::liveshrinks), mapped onto this call's arguments: a parameter's
 // class becomes the root of the argument passed for it (ClassArgRoot), a
 // view's the slice its argument's slot held (Val::held). Two arrays the
 // caller cannot tell apart are an error here; two it can only as its own
@@ -2441,8 +2441,8 @@ inline int TypeCheck::NoteLiveShrink(LiveShrink ls, FnSpec *current) {
 // the cycle's first round.
 inline void TypeCheck::ApplyCalleeLiveShrinks(Node *at, FnSpec *spec, vector<Val> &argvals,
                                               string_view name) {
-    CallSite site { at, CurRealFrame().spec, RecordOf(spec), {}, string(name), {}, {} };
-    if (!site.callee) return;   // A cycle's first round: no record yet.
+    CallSite site { at, CurRealFrame().spec, spec, RecordOf(spec), {}, string(name), {}, {} };
+    if (!site.record) return;   // A cycle's first round: no record yet.
     for (size_t q = 0; q < spec->argtypes.size() && q < argvals.size(); q++) {
         site.args.push_back(ClassArgRoots(spec->argtypes[q], argvals[q]));
         site.views.push_back(ViewClassOf(spec, q) ? argvals[q].held.AsRoots() : Roots {});
@@ -2472,8 +2472,8 @@ inline bool TypeCheck::MapLiveShrinks(const CallSite &site) {
     };
     auto grew = false;
     // The caller may be the callee, whose record then grows underneath.
-    for (size_t k = 0; k < spec->liveshrinks.size(); k++) {
-        auto orig = spec->liveshrinks[k];
+    for (size_t k = 0; k < site.record->liveshrinks.size(); k++) {
+        auto orig = site.record->liveshrinks[k];
         auto name = orig.name;
         auto shrunk = mapped(orig.shrunk, orig.shrunkexact);
         auto live = mapped(orig.live, orig.liveexact);
@@ -2749,8 +2749,8 @@ inline void TypeCheck::NoteGrow(Node *at, const Roots &roots, const string &what
         auto root = a.root;
         if (!root || IsTemp(root)) continue;
         cur.growlog.push_back({ at, root, a.exact, what });
-        NoteRootEvent(root, [](FnSpec *s, int i) { s->growparams.insert(i); },
-                      [](FnSpec *s, VarDef *r) { s->growexternals.insert(r); });
+        NoteRootEvent(root, [](FnSpec *s, int i) { s->record.growparams.insert(i); },
+                      [](FnSpec *s, VarDef *r) { s->record.growexternals.insert(r); });
     }
 }
 
@@ -2965,7 +2965,9 @@ inline bool TypeCheck::NamedOutside(FnSpec *spec, vector<VarDef *> &out) {
             pending = true;
             return;
         }
-        EachUse(rec->body, [&](Ident *id, Node *) { named.push_back(id->vdef); },
+        // Rounds reuse the same annotated body; the record only tells us
+        // whether a completed round exists to justify reading it.
+        EachUse(sp->body, [&](Ident *id, Node *) { named.push_back(id->vdef); },
                 [&](Call *, FnSpec *callee) { visit(callee); });
     };
     visit(spec);

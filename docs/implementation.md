@@ -1673,7 +1673,7 @@ checked, the record read is the one its cycle's previous round made
 (`RecordOf`, §3.11), and none in the first round: a back edge then shrinks
 nothing, and the round after applies what the first recorded.
 
-**Parameters' views** (`FnSpec::liveshrinks`). The scans see the
+**Parameters' views** (`FnRecord::liveshrinks`). The scans see the
 activation's variables only, and take a parameter's class for an array of
 its own: never a global or captured array a caller passed a view of, nor
 what another class names, which the arguments for the two may make one array
@@ -1972,13 +1972,16 @@ have made, and the chain shows the ones before it.
 shrinks, growths, stores and rebinds are not recorded yet, so a cycle is
 checked in rounds until what its members record settles. The head -- the
 outermost member on the call path that found the cycle -- runs them: each
-round keeps every member's record from the round before (`FnSpec::prev`,
-read by `RecordOf` wherever a call applies its callee's record while the
+round moves every member's `FnRecord` into `FnSpec::prev`, leaving a fresh
+record in its place. This snapshots only the return roots and call effects,
+plus the event range used to replay stores; the specialization's identity,
+parameters, lexical environment and annotated body stay in `FnSpec`. The
+previous record is read by `RecordOf` wherever a call applies its callee's record while the
 callee is in progress: `CallResult`, `ApplyCalleeShrinks`,
 `ApplyCalleeStores`, `ApplyCalleeGrows`, `ApplyCalleeLiveShrinks`,
-`ApplyCalleeRebinds`, `NamedOutside`), clears the members' records
-(`ResetRecord`), marks them `stale`, and checks the head's body again on the
-same clone; a stale member is checked again when a call reaches it
+`ApplyCalleeRebinds`, `NamedOutside`. The round marks members `stale` and
+checks the head's body again on the same clone; a stale member is checked
+again when a call reaches it
 (`GetOrCreateSpec`), with the parameters and class roots its first round
 made (`FnSpec::classroots`), so the records and the threaded classes name
 the same objects across rounds. The variables outside the cycle's

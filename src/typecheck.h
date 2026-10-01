@@ -1921,10 +1921,11 @@ struct TypeCheck {
     // The record of a callee a call reads: the callee's own once it is
     // checked, the round before's while it is in progress (a back edge), and
     // none in a cycle's first round.
-    static FnSpec *RecordOf(FnSpec *spec) { return spec->inprogress ? spec->prev.get() : spec; }
+    static const FnRecord *RecordOf(const FnSpec *spec) {
+        return spec->inprogress ? spec->prev.get() : &spec->record;
+    }
     void CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Line callline);
-    void ResetRecord(FnSpec *spec);
-    bool SameRecord(const FnSpec *a, const FnSpec *b);
+    bool SameRecord(const FnRecord &a, const FnRecord &b, const FnSpec *spec);
     bool ExternValueOk(TypeExpr *t, string &why);
     bool ExternParamOk(TypeExpr *t, string &why);
     void CheckExternSpec(FnSpec *spec);
@@ -2144,7 +2145,7 @@ struct TypeCheck {
     // parameter's class for an array of its own: whether an argument was a
     // view of the shrunk array, or the shrunk array one the activation's
     // views point into, is its callers' to judge, from the pairs a
-    // specialization records (FnSpec::liveshrinks).
+    // specialization records (FnRecord::liveshrinks).
     bool IsClassRoot(VarDef *v) {
         return v && !v->type && !v->isglobal && !IsTemp(v);
     }
@@ -2178,7 +2179,8 @@ struct TypeCheck {
     struct CallSite {
         Node *at = nullptr;
         FnSpec *caller = nullptr;
-        FnSpec *callee = nullptr;   // The record read (RecordOf).
+        FnSpec *callee = nullptr;   // Stable parameter/class mapping.
+        const FnRecord *record = nullptr;   // This call's round (RecordOf).
         vector<Roots> args;   // What each parameter's class stands for here.
         string name;
         vector<Roots> views;  // And each parameter's view, the slice its slot held.

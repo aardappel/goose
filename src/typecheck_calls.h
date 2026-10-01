@@ -1009,7 +1009,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
         reached.resize(lastcallrets.size());
         for (size_t r = 0; r < lastcallrets.size(); r++) {
             auto reaches = spec->inprogress ||
-                           (r < spec->retroots.size() && spec->retroots[r].set);
+                           (r < spec->record.retroots.size() && spec->record.retroots[r].set);
             results[r] = MergeVals(results[r], reached[r], lastcallrets[r], reaches, c, true);
             reached[r] = reached[r] || reaches;
         }
@@ -1619,7 +1619,7 @@ inline void TypeCheck::ApplyCalleeRebinds(FnSpec *spec) {
     auto caller = CurRealFrame().spec;
     for (auto v : rec->reboundoptionals) {
         v->narrowed = nullptr;
-        if (caller && v->ownerspec != caller) caller->reboundoptionals.insert(v);
+        if (caller && v->ownerspec != caller) caller->record.reboundoptionals.insert(v);
     }
 }
 
@@ -2073,9 +2073,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
             fprintf(stderr, "round %d of %.*s begins (%d members)\n", spec->rounds + 1,
                     (int)spec->sf->name.size(), spec->sf->name.data(), (int)members.size());
         for (auto m : members) {
-            m->prev = make_shared<FnSpec>(*m);
-            m->prev->prev = nullptr;
-            ResetRecord(m);
+            m->prev = make_unique<FnRecord>(std::exchange(m->record, FnRecord {}));
             m->stale = m != spec;
         }
         cyclerounds.back().changed = false;
@@ -2091,7 +2089,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
                 m->stale = false;
                 continue;
             }
-            settled = settled && SameRecord(m, m->prev.get());
+            settled = settled && SameRecord(m->record, *m->prev, m);
         }
         for (auto m : members) m->prev = nullptr;
         if (settled) break;
@@ -2099,22 +2097,7 @@ inline void TypeCheck::CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line ca
     if (spec->incycle && CycleHead(spec) == spec) ShareCycleEnvReads(spec);
 }
 
-// What a body records for its callers, cleared before a round checks it
-// again (CheckSpecBody).
-inline void TypeCheck::ResetRecord(FnSpec *spec) {
-    spec->retroots.clear();
-    spec->shrinkexternals.clear();
-    spec->shrinkparams.clear();
-    spec->shrinkexternalbounds.clear();
-    spec->shrinkparambounds.clear();
-    spec->liveshrinks.clear();
-    spec->growexternals.clear();
-    spec->growparams.clear();
-    spec->classevents.clear();
-    spec->reboundoptionals.clear();
-}
-
-inline bool TypeCheck::SameRecord(const FnSpec *a, const FnSpec *b) {
+inline bool TypeCheck::SameRecord(const FnRecord &a, const FnRecord &b, const FnSpec *spec) {
     // A root's `from` names a container of the round's own body, which
     // the next round makes anew.
     auto sameroots = [&](const Roots &x, const Roots &y) {
@@ -2131,23 +2114,23 @@ inline bool TypeCheck::SameRecord(const FnSpec *a, const FnSpec *b) {
     // going.
     auto why = [&](const char *what) {
         if (getenv("GOOSE_ROUNDS"))
-            fprintf(stderr, "round %d of %.*s: %s changed\n", a->rounds, (int)a->sf->name.size(),
-                    a->sf->name.data(), what);
+            fprintf(stderr, "round %d of %.*s: %s changed\n", spec->rounds, (int)spec->sf->name.size(),
+                    spec->sf->name.data(), what);
         return false;
     };
     auto sametype = [&](TypeExpr *x, TypeExpr *y) { return !x == !y && (!x || TypeEq(x, y)); };
-    if (a->retroots.size() != b->retroots.size()) return why("returns");
-    for (size_t i = 0; i < a->retroots.size(); i++) {
-        auto &p = a->retroots[i], &q = b->retroots[i];
+    if (a.retroots.size() != b.retroots.size()) return why("returns");
+    for (size_t i = 0; i < a.retroots.size(); i++) {
+        auto &p = a.retroots[i], &q = b.retroots[i];
         if (!sameroots(p.alts, q.alts) || p.writable != q.writable || p.byteview != q.byteview ||
             p.freshview != q.freshview || p.set != q.set)
             return why("return roots");
     }
-    if (a->shrinkexternals != b->shrinkexternals || a->shrinkparams != b->shrinkparams)
+    if (a.shrinkexternals != b.shrinkexternals || a.shrinkparams != b.shrinkparams)
         return why("shrinks");
-    if (a->growexternals != b->growexternals || a->growparams != b->growparams)
+    if (a.growexternals != b.growexternals || a.growparams != b.growparams)
         return why("growths");
-    if (a->reboundoptionals != b->reboundoptionals) return why("rebinds");
+    if (a.reboundoptionals != b.reboundoptionals) return why("rebinds");
     auto samebounds = [&](const auto &x, const auto &y) {
         if (x.size() != y.size()) return false;
         for (size_t i = 0; i < x.size(); i++)
@@ -2156,12 +2139,12 @@ inline bool TypeCheck::SameRecord(const FnSpec *a, const FnSpec *b) {
                 return false;
         return true;
     };
-    if (!samebounds(a->shrinkexternalbounds, b->shrinkexternalbounds) ||
-        !samebounds(a->shrinkparambounds, b->shrinkparambounds))
+    if (!samebounds(a.shrinkexternalbounds, b.shrinkexternalbounds) ||
+        !samebounds(a.shrinkparambounds, b.shrinkparambounds))
         return why("shrink bounds");
-    if (a->liveshrinks.size() != b->liveshrinks.size()) return why("live shrinks");
-    for (size_t i = 0; i < a->liveshrinks.size(); i++) {
-        auto &p = a->liveshrinks[i], &q = b->liveshrinks[i];
+    if (a.liveshrinks.size() != b.liveshrinks.size()) return why("live shrinks");
+    for (size_t i = 0; i < a.liveshrinks.size(); i++) {
+        auto &p = a.liveshrinks[i], &q = b.liveshrinks[i];
         if (p.shrunk != q.shrunk || p.shrunkexact != q.shrunkexact || p.live != q.live ||
             p.liveexact != q.liveexact || p.byteview != q.byteview || p.growonly != q.growonly ||
             p.contents != q.contents || p.inplace != q.inplace || !sametype(p.bound, q.bound) ||
@@ -2174,9 +2157,9 @@ inline bool TypeCheck::SameRecord(const FnSpec *a, const FnSpec *b) {
                p.slot == q.slot && p.sliceref == q.sliceref && p.classread == q.classread &&
                sametype(p.pointee, q.pointee) && sametype(p.reached, q.reached);
     };
-    if (a->classevents.size() != b->classevents.size()) return why("class stores");
-    for (size_t i = 0; i < a->classevents.size(); i++)
-        if (!sameevents(a->classevents[i], b->classevents[i])) return why("class stores");
+    if (a.classevents.size() != b.classevents.size()) return why("class stores");
+    for (size_t i = 0; i < a.classevents.size(); i++)
+        if (!sameevents(a.classevents[i], b.classevents[i])) return why("class stores");
     return true;
 }
 
@@ -2192,7 +2175,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     auto sf = spec->sf;
     if (sf->isextern) { CheckExternSpec(spec); return; }
     spec->inprogress = true;
-    spec->eventstart = storeevents.size();
+    spec->record.eventstart = storeevents.size();
     spec->envreads.clear();
     // A cycle's rounds keep the parameters' identity, as they keep the
     // class roots: the records name them.
@@ -2495,7 +2478,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     reachable = savereach;
     RecordEnvExits(spec);
     spec->inprogress = false;
-    spec->eventend = storeevents.size();
+    spec->record.eventend = storeevents.size();
     spec->rounds++;
 }
 
@@ -2526,7 +2509,8 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
                           tspec->sf ? tspec->sf->name : string_view("?"), " has ",
                           (int64_t)tspec->rets.size()));
     }
-    if (tspec->retroots.size() < tspec->rets.size()) tspec->retroots.resize(tspec->rets.size());
+    if (tspec->record.retroots.size() < tspec->rets.size())
+        tspec->record.retroots.resize(tspec->rets.size());
     for (size_t i = 0; i < vals.size(); i++) {
         auto rt = tspec->rets[i];
         auto isrs = IsRefOrSlice(rt);
@@ -2543,7 +2527,7 @@ inline void TypeCheck::RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at) 
         // activation it was read out of, which a cycle's next round would
         // take for its own (RecordStore).
         for (auto &a : roots.alts) a.from = nullptr;
-        auto &rr = tspec->retroots[i];
+        auto &rr = tspec->record.retroots[i];
         for (auto &a : roots.alts) {
             auto root = a.root;
             // Anything whose storage the callee's frame owns dies on return;

@@ -2459,7 +2459,7 @@ inline void TypeCheck::CheckRebind(Assign *a, LVal &lv) {
         if (target->ref->optional) {
             auto spec = CurRealFrame().spec;
             if (spec && lv.var->ownerspec != spec)
-                spec->reboundoptionals.insert(lv.var);
+                spec->record.reboundoptionals.insert(lv.var);
             if (!v.isnull && wasplain) {
                 lv.var->narrowed = NarrowedRef(target, a->line);
             } else {
