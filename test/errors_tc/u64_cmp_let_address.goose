@@ -1,9 +1,10 @@
 // error: comparing u64 with i64 relies on G being non-negative, but a writable reference bound to G at
-// error: u64_cmp_let_address.goose:9 may make it negative
+// error: u64_cmp_let_address.goose:10 may make it negative
 // §6.1, §4.4: spoil writes the global `let` G through &G, so no comparison
-// may rely on G being non-negative, in whichever function it is.
+// may rely on G being non-negative, in whichever function it is. Its type is
+// written, so it is no named constant (§3.1), which would adapt to u64.
 
-let G = 5;
+let G: i64 = 5;
 fn fresh() -> bool { let u: u64 = 3; u < G }
 fn spoil() {
     let r = &G;

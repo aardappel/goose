@@ -198,7 +198,19 @@ A grammar sketch and precedence table are in Appendix D.
 Integer literals are *constants without a committed type*: they adapt to any
 integer type whose range holds their value (`let x: u8 = 255;` is fine,
 `= 256` is a compile error), and where nothing constrains them they are
-`i64` (`u64` for values above `i64.max`). All other conversions follow one
+`i64` (`u64` for values above `i64.max`). A **named constant** — a `let`
+or `const` global with no written type whose initializer is an integer
+constant expression (`let SZ = 15;`, `let B = SZ * 2;`, `let NEG = -3;`) —
+is such a constant as well: each use of it adapts as its value written
+there would, at a destination (`D { len: SZ }` with `len: u8`) and as an
+operand alike (`b + SZ` with `b: u8` is an 8-bit add), and it is an `i64`
+where nothing constrains it. A global with a written type (`let SZ: i64 =
+15;`), a local `let` and a `var` are values of their type. A use adapting a
+named constant relies on its keeping its initializer's value, which a
+writable reference to it could change, so as for a compile-time size
+(§11.1) such a reference is an error in either order; and a division by a
+named constant that is zero is left to run time rather than rejected as a
+constant one (§6.2). All other conversions follow one
 rule — **implicit when provably value-preserving, an explicit cast
 otherwise** — with one exception: an integer becomes a float implicitly,
 rounding as float arithmetic does (§6.3).
@@ -2959,8 +2971,11 @@ the caller's own facts about `src` intact.
   assigned as a whole, §4.4) of flat fixed type with compile-time-evaluable
   initializers live in static data; the initializer of any `let` or
   `const` global is a named constant a compile-time size may use
-  (`i64[N]`) wherever no local of its name hides it (§3.3). A size, a fill count (`[v; N]`) or a match pattern (§8.1)
-  takes a named constant at its initializer's value, so a `let` it names,
+  (`i64[N]`) wherever no local of its name hides it (§3.3); an untyped
+  integer one also adapts wherever it is used, as a literal does (§3.1). A
+  size, a fill count (`[v; N]`), a match pattern (§8.1) or a use adapting
+  an untyped one to another type takes a named constant at its
+  initializer's value, so a `let` it names,
   directly or through another named constant's initializer, may not also
   be bound to a writable reference anywhere, through which its value could
   change (§4.4): by `&`, `.=`, or a reference parameter, field or binding

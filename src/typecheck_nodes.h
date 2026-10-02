@@ -107,6 +107,12 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
             v.reusable = vd->reusable;
             v.nonneg = vd->nonneg;
             if (vd->nonneg) v.nonnegfrom = vd;
+            if (vd->constlit) {
+                v.ck = CK_INT;
+                v.ival = vd->constval;
+                v.uns = vd->constuns;
+                v.constfrom = vd;
+            }
             v.lvalue = true;
             if (tc.HoldsPlainRef(v.type)) {
                 // What the references inside point at: a global's contents

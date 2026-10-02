@@ -959,7 +959,10 @@ inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt) {
     if (!reachable) return;  // A diverging operand fits anything.
     fitfail.clear();
     fitnode = n;
-    if (!FitsAt(v, dt)) {
+    auto from = LoadType(v.type);
+    if (FitsAt(v, dt)) {
+        if (IsIntT(dt) && !TypeEq(from, dt)) RelyOnNamed(v, n);
+    } else {
         if (!fitfail.empty()) Error(n, fitfail);
         auto got = dt->kind == TY_REF ? StorageType(v) : v.type;
         Error(n, cat("expected a value of type ", TypeStr(dt), ", got ", TypeStr(got),
@@ -1418,20 +1421,38 @@ inline void TypeCheck::RelyOnConstant(ConstUse &use, VarDef *d) {
     }
 }
 
+// A constant read from a named constant (Val::constfrom) adapts at `at` to
+// a type other than its own, as a literal would (§3.1): that relies on the
+// named constants it was computed from keeping their initializers' values.
+// A trial relies on nothing.
+inline void TypeCheck::RelyOnNamed(const Val &v, Node *at) {
+    if (unifytrial || !v.constfrom) return;
+    ConstUse use { at, "use as a literal", v.constfrom };
+    for (auto d = v.constfrom; d; d = d->constfrom) RelyOnConstant(use, d);
+}
+
 // Folds a constant binary op at the width and signedness of out.type
 // (FoldIntOp, ast.h, which the optimizer folds with too). Operand values fit
 // out.type (the unify rules ensured it). A zero divisor aborts at run time,
-// which a constant expression need not wait for.
+// which a constant expression need not wait for; one a named constant gives
+// is left to run time, as a division naming it is in a `for` count (§6.5).
 inline void TypeCheck::FoldInt(TType op, Val &l, Val &r, Val &out, Node *at) {
     if (l.ck != CK_INT || r.ck != CK_INT) return;
     auto s = out.type->intstorage;
     if (s == IS_VARINT) return;
-    if ((op == T_DIV || op == T_MOD) && !r.ival) Error(at, "constant division by zero");
+    if ((op == T_DIV || op == T_MOD) && !r.ival) {
+        if (r.constfrom) return;
+        Error(at, "constant division by zero");
+    }
     int64_t res;
     if (!FoldIntOp(op, l.ival, r.ival, s, res)) return;
     out.ck = CK_INT;
     out.ival = res;
     out.uns = s == IS_U64 && res < 0;
+    // One chain carries on; the other operand's named constants are relied
+    // on here.
+    if (l.constfrom && r.constfrom) RelyOnNamed(r, at);
+    out.constfrom = l.constfrom ? l.constfrom : r.constfrom;
 }
 
 // The operand/result type of a binary numeric operator: equal types
@@ -1474,8 +1495,16 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
             return c.litint ? ConstsFit(c, t->intstorage)
                             : FitsIntStorage(c.ival, c.uns, t->intstorage);
         };
-        if (lconst) return fits(lv, rt) ? rt : fail(ConstsNoFit(lv, rt));
-        if (rconst) return fits(rv, lt) ? lt : fail(ConstsNoFit(rv, lt));
+        if (lconst) {
+            if (!fits(lv, rt)) return fail(ConstsNoFit(lv, rt));
+            RelyOnNamed(lv, at);
+            return rt;
+        }
+        if (rconst) {
+            if (!fits(rv, lt)) return fail(ConstsNoFit(rv, lt));
+            RelyOnNamed(rv, at);
+            return lt;
+        }
         if (ImplicitInt(lt->intstorage, rt->intstorage)) return rt;
         if (ImplicitInt(rt->intstorage, lt->intstorage)) return lt;
         // §6.1: a comparison produces bool, so it has no result type to
@@ -1589,7 +1618,7 @@ inline Val TypeCheck::NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bo
     // A constant division by zero is FoldInt's error.
     auto fold = [&](Val &v) {
         if (trial && lv.ck == CK_INT && rv.ck == CK_INT && (op == T_DIV || op == T_MOD) &&
-            !rv.ival)
+            !rv.ival && !rv.constfrom)
             return false;
         FoldInt(op, lv, rv, v, b);
         return true;
@@ -1690,6 +1719,7 @@ inline Val TypeCheck::NumericUnary(Unary *u, const Val &v, bool trial) {
                     r.type = ast.inttypes[IS_I64];
                     r.ck = CK_INT;
                     r.ival = v.uns ? INT64_MIN : -v.ival;
+                    r.constfrom = v.constfrom;
                     if (!trial) u->child->exprtype = r.type;
                     return r;
                 }
@@ -1717,6 +1747,7 @@ inline Val TypeCheck::NumericUnary(Unary *u, const Val &v, bool trial) {
                 r.ck = CK_INT;
                 r.ival = ~v.ival;
                 r.uns = v.uns && r.ival < 0;
+                r.constfrom = v.constfrom;
                 if (!trial) u->child->exprtype = r.type;
                 return r;
             }
@@ -2025,7 +2056,8 @@ inline string TypeCheck::CastReason(const CastAlt &a, TypeExpr *reach, bool byca
     if (bycast) return cat("the cast to ", TypeStr(reach), " around it converts ", what, " as well");
     if (!literal && SameNum(st, reach)) return cat(what, " is already ", TypeStr(reach), " here");
     if (cv.ck == CK_INT && IsIntT(reach))
-        return cat(ConstStr(cv), " fits ", TypeStr(reach), " here");
+        return cat(cv.constfrom ? cat(what, " is ", ConstStr(cv), ", which") : ConstStr(cv),
+                   " fits ", TypeStr(reach), " here");
     if (cv.ck != CK_NONE || cv.litfloat) return cat(what, " is ", an(reach), " here");
     if (cv.litint)
         return cat("its constants ", cv.litlo, " to ", cv.lithi, " fit ", TypeStr(reach), " here");

@@ -756,14 +756,14 @@ fn main() {
         let inst_rw: gfx::Buffer[1] = [inst_buf];
         gfx::begin_compute(inst_rw);
         gfx::bind(spin);
-        gfx::uniforms(gfx::COMPUTE, 0, Spin { time: t, count: (CUBES + 1) as u32 });
+        gfx::uniforms(gfx::COMPUTE, 0, Spin { time: t, count: CUBES + 1 });
         gfx::dispatch(1, 1, 1);
         gfx::end_compute();
         let spark_rw: gfx::Buffer[1] = [spark_buf];
         gfx::begin_compute(spark_rw);
         gfx::bind(simulate);
         gfx::uniforms(gfx::COMPUTE, 0, Sim { dt: if paused { 0.0 } else { STEP }, time: t,
-                                             count: SPARKS as u32 });
+                                             count: SPARKS });
         gfx::dispatch(SPARKS / 64, 1, 1);
         gfx::end_compute();
 

@@ -166,8 +166,8 @@ fn main() {
 
     // Multisampling: a triangle into a 4x target, resolved. Pixels along its
     // diagonal are partly covered, which only multisampling can show.
-    let msaa = gfx::texture(gfx::TextureDesc { usage: gfx::COLOR_TARGET, width: W as i32,
-                                               height: W as i32, samples: 4 });
+    let msaa = gfx::texture(gfx::TextureDesc { usage: gfx::COLOR_TARGET, width: W,
+                                               height: W, samples: 4 });
     let resolved = gfx::render_target(W, W, gfx::RGBA8);
     var pass = gfx::PassDesc {};
     pass.color[0] = msaa;

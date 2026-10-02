@@ -691,6 +691,11 @@ struct Val : Prov {
     // could still change (TypeCheck::RelyOnNonneg); that `let`'s own
     // nonnegfrom continues the chain.
     VarDef *nonnegfrom = nullptr;
+    // A constant read from a named constant (VarDef::constlit), or computed
+    // from one: the one whose value it is, which a writable reference could
+    // still change (TypeCheck::RelyOnNamed); its own constfrom continues the
+    // chain.
+    VarDef *constfrom = nullptr;
     // For a value whose type holds plain references or slices (§9.2's
     // holder values): where those references may point. `holderset` says it
     // was derived at all; an underived one's contents are bounded by the
@@ -1323,6 +1328,14 @@ struct VarDef {
     int reusable = 0;           // A reusable pool (§5.4): RU_SLOTS or RU_SLICES.
     bool nonneg = false;        // A `let` whose initializer was non-negative (§6.1).
     VarDef *nonnegfrom = nullptr;   // The initializer's Val::nonnegfrom.
+    // A named constant: a `let` global with no annotated type whose
+    // initializer is an integer constant (§3.1). It reads as that constant,
+    // and a use adapting it as a literal relies on its keeping that value
+    // (TypeCheck::RelyOnNamed).
+    bool constlit = false;
+    bool constuns = false;      // constval's bits are a u64 above i64.max (Val::uns).
+    int64_t constval = 0;
+    VarDef *constfrom = nullptr;    // The initializer's Val::constfrom.
     // A `let` initialized to exactly `X.len` (§5.2): the path X, as checked
     // there. Resizing the same X back to it is a balanced shrink.
     Node *markof = nullptr;

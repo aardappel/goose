@@ -948,7 +948,9 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
             RecordLitAdapt(c, o.type, at->line);
             return true;
         }
-        return ConstsFit(c, o.type->intstorage);
+        if (!ConstsFit(c, o.type->intstorage)) return false;
+        RelyOnNamed(c, at);
+        return true;
     };
     // A [] does not adapt to another branch's type as a constant does: only
     // a destination gives it an element type, and the branches were checked
@@ -959,6 +961,9 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
                   "branches (§6.4)");
     int64_t alo, ahi, blo, bhi;
     if (IntConsts(a, alo, ahi) && IntConsts(b, blo, bhi)) {
+        // The construct no longer says which named constants it holds.
+        RelyOnNamed(a, at);
+        RelyOnNamed(b, at);
         v.type = TypeEq(a.type, b.type) ? a.type : ast.inttypes[IS_I64];
         v.litint = true;
         v.litlo = std::min(alo, blo);
@@ -2231,6 +2236,10 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         // RelyOnNonneg). A `var` can be assigned anything later.
         d->nonneg = !vd->isvar && v.nonneg;
         d->nonnegfrom = d->nonneg ? v.nonnegfrom : nullptr;
+        d->constlit = global && !vd->isvar && !ann && v.ck == CK_INT;
+        d->constval = v.ival;
+        d->constuns = v.uns;
+        d->constfrom = d->constlit ? v.constfrom : nullptr;
         Finish(d, ann ? ann : v.type, &v, vd->inits[i]);
         auto len = Is<Dot>(vd->inits[i]);
         if (!vd->isvar && !global && len && len->member == B_LEN &&

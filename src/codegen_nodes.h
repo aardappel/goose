@@ -55,8 +55,9 @@ inline string Ident::CgX(CodeGen &cg) {
     auto x = cg.LoadLoc(cg.VarLoc(vdef), exprtype, line);
     // A literal parameter (§7.7) is passed at its nominal type and read at
     // the type each use adapted it to; the call-site check made the
-    // conversion exact.
-    if (vdef->unsized && exprtype && vdef->type) {
+    // conversion exact. A named constant is read likewise at the type its
+    // use adapted its value to.
+    if ((vdef->unsized || vdef->constlit) && exprtype && vdef->type) {
         auto narrower = (exprtype->kind == TY_INT && vdef->type->kind == TY_INT &&
                          exprtype->intstorage != IS_VARINT &&
                          exprtype->intstorage != vdef->type->intstorage) ||

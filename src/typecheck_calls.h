@@ -1632,6 +1632,7 @@ inline void TypeCheck::NoteLitArgs(FnSpec *spec, vector<Val> &argvals, Node *at)
         if (li >= (int)argvals.size()) continue;
         auto &av = argvals[li];
         if (av.ck != CK_NONE) {
+            RelyOnNamed(av, at);
             litchecks.push_back(LitCheck { spec, li, av, at });
         } else if (av.unsized && av.unsizedparam && av.unsizedparam->ownerspec) {
             auto from = av.unsizedparam->ownerspec;

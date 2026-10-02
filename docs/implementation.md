@@ -2360,7 +2360,19 @@ use it evaluates for (`ConstUse`: `ConstIntOrError` and a match's
 not), it marks every global it takes at its initializer's value, through
 other globals' initializers too, as relied on (`RelyOnConstant`,
 `constuse`), which `NoteWritableRef` checks as it does `nonneguse`:
-whichever of the two marks comes second is an error (§11.1). An array
+whichever of the two marks comes second is an error (§11.1). A named
+constant (§3.1: an untyped `let` or `const` global whose initializer's
+value is a constant; `CheckVarDecl` sets `VarDef::constlit` and keeps the
+value) reads as that constant (`Ident::Check`), carrying the global as
+`Val::constfrom` through folds and `-`/`~`, and through the initializer of
+one named constant naming another (`VarDef::constfrom`); every place it
+adapts to another type (`MustFit`, `UnifyNumeric`, `MergeVals`, a literal
+argument, `NoteLitArgs`) marks that chain as relied on (`RelyOnNamed` →
+`RelyOnConstant`), as does a fold of two named constants for the one whose
+chain it drops. `FoldInt` leaves a zero divisor from a named constant to
+run time. An adapted read is emitted at its use's type (`Ident::CgX`), as a
+literal parameter's is, where the optimizer did not already propagate the
+value. An array
 size is evaluated once per type and cached (`ArraySize`), which the
 flow-free marks do not mind. `ConstIntValue` takes a name as the global of
 the name, since a size is evaluated wherever its type is compared (`TypeEq`
