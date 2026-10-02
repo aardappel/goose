@@ -69,8 +69,8 @@ void gs_ui_destroy_font_atlas(gs_ui_font_atlas h) {
     ui_atlas *a = ui_atlas_get(h, "ui::destroy");
     if (!a) return;
     if (ui_atlas_in_use(a)) {
-        ui_misuse("ui::destroy: a context still uses a font of this atlas; destroy the context "
-                  "first");
+        ui_misuse("ui::destroy: a context still uses a font of this atlas; destroy the context, "
+                  "or ui::style_set_font it another atlas's, first");
         return;
     }
     ui_free_atlas(a);
@@ -90,18 +90,23 @@ int64_t gs_ui_released_textures(gs_ui_u32_slice out) {
     return n;
 }
 
-void ui_free_atlas(ui_atlas *a) {
-    if (a->texture) {
-        if (ui_nreleased == ui_released_cap) {
-            int64_t cap = ui_released_cap ? ui_released_cap * 2 : 8;
-            uint32_t *more = (uint32_t *)realloc(ui_released, sizeof(uint32_t) * (size_t)cap);
-            if (more) {
-                ui_released = more;
-                ui_released_cap = cap;
-            }
+/* Lists the atlas's texture for its renderer to release. */
+static void ui_release_texture(ui_atlas *a) {
+    if (!a->texture) return;
+    if (ui_nreleased == ui_released_cap) {
+        int64_t cap = ui_released_cap ? ui_released_cap * 2 : 8;
+        uint32_t *more = (uint32_t *)realloc(ui_released, sizeof(uint32_t) * (size_t)cap);
+        if (more) {
+            ui_released = more;
+            ui_released_cap = cap;
         }
-        if (ui_nreleased < ui_released_cap) ui_released[ui_nreleased++] = a->texture;
     }
+    if (ui_nreleased < ui_released_cap) ui_released[ui_nreleased++] = a->texture;
+    a->texture = 0;
+}
+
+void ui_free_atlas(ui_atlas *a) {
+    ui_release_texture(a);
     for (int i = 0; i < a->nfonts; i++) {
         free(ui_table_find(&ui_fonts, a->fonts[i]));
         ui_table_remove(&ui_fonts, a->fonts[i]);
@@ -112,6 +117,7 @@ void ui_free_atlas(ui_atlas *a) {
     free(a->ranges);
     free(a->fonts);
     free(a->pixels);
+    free(a->sizes);
     free(a);
 }
 
@@ -348,37 +354,77 @@ static void ui_stamp_texture(ui_atlas *a, uint32_t texture) {
     a->texture = texture;
 }
 
-uint8_t gs_ui_bake_font_atlas(gs_ui_font_atlas h, float scale) {
-    ui_atlas *a = ui_atlas_get(h, "ui::bake");
-    if (!a) return 0;
-    if (a->baked) return ui_misuse("ui::bake: the atlas is baked already");
-    if (!a->nfonts)
-        return ui_misuse("ui::bake: the atlas has no fonts (ui::add_default_font adds one)");
-    if (!ui_scale_ok(scale, "ui::bake")) return 0;
-    /* The glyphs at `scale` times their fonts' size, merged ones too, each
-       font measuring at its own size after (below): sharp text for a ui
-       drawn that many times bigger. */
+/* Sets every font size of the atlas's configs, merged ones included, to
+   its size before scaling times `scale`. */
+static void ui_scale_font_sizes(ui_atlas *a, float scale) {
+    int k = 0;
     for (struct nk_font_config *c = a->atlas.config; c; c = c->next) {
         struct nk_font_config *it = c;
         do {
-            it->size *= scale;
+            it->size = a->sizes[k++] * scale;
             it = it->n;
         } while (it != c);
     }
+}
+
+uint8_t gs_ui_bake_font_atlas(gs_ui_font_atlas h, float scale) {
+    ui_atlas *a = ui_atlas_get(h, "ui::bake");
+    if (!a) return 0;
+    if (!a->nfonts)
+        return ui_misuse("ui::bake: the atlas has no fonts (ui::add_default_font adds one)");
+    if (!ui_scale_ok(scale, "ui::bake")) return 0;
+    if (a->baked && scale == a->scale) return 1;
+    if (!a->sizes) {
+        for (struct nk_font_config *c = a->atlas.config; c; c = c->next) {
+            struct nk_font_config *it = c;
+            do {
+                a->nsizes++;
+                it = it->n;
+            } while (it != c);
+        }
+        a->sizes = (float *)malloc(sizeof(float) * (size_t)a->nsizes);
+        if (!a->sizes) {
+            a->nsizes = 0;
+            return ui_fail("out of memory for a font atlas");
+        }
+        int k = 0;
+        for (struct nk_font_config *c = a->atlas.config; c; c = c->next) {
+            struct nk_font_config *it = c;
+            do {
+                a->sizes[k++] = it->size;
+                it = it->n;
+            } while (it != c);
+        }
+    }
+    /* The glyphs at `scale` times their fonts' size, merged ones too, each
+       font measuring at its own size after (below): sharp text for a ui
+       drawn that many times bigger. Baked again, the fonts stay where they
+       are, which contexts point to; their glyphs are replaced only once
+       the new ones are baked. */
+    ui_scale_font_sizes(a, scale);
+    struct nk_font_glyph *old_glyphs = a->atlas.glyphs;
+    a->atlas.glyphs = NULL;
     int w = 0, hgt = 0;
     const void *image = nk_font_atlas_bake(&a->atlas, &w, &hgt, NK_FONT_ATLAS_RGBA32);
-    if (!image) return ui_fail("the font atlas could not be baked: a font is damaged, or its "
-                               "glyphs do not fit");
+    if (!image) {
+        a->atlas.glyphs = old_glyphs;
+        ui_scale_font_sizes(a, a->scale);
+        return ui_fail("the font atlas could not be baked: a font is damaged, or its "
+                       "glyphs do not fit");
+    }
+    if (old_glyphs) a->atlas.permanent.free(a->atlas.permanent.userdata, old_glyphs);
     size_t size = (size_t)w * (size_t)hgt * 4;
+    free(a->pixels);
     a->pixels = (unsigned char *)malloc(size);
     memcpy(a->pixels, image, size);
     a->width = w;
     a->height = hgt;
+    ui_release_texture(a);
     /* Nuklear's end of baking frees its copy of the image and finds the white
-       texel; the texture comes later, from whoever uploads the pixels. */
+       texel; the texture comes later, from whoever uploads the pixels. The
+       fonts' TrueType data stays in the atlas, to bake again from. */
     struct nk_draw_null_texture null_tex;
     nk_font_atlas_end(&a->atlas, nk_handle_id(0), &null_tex);
-    nk_font_atlas_cleanup(&a->atlas);
     /* Nuklear scales a glyph by the font's height over the height it was
        baked at. */
     for (int i = 0; i < a->nfonts; i++) {

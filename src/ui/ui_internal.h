@@ -95,6 +95,10 @@ typedef struct {
     uint32_t texture;           /* what a renderer said holds the pixels; 0: none yet */
     struct nk_vec2 null_uv;     /* a white texel, for drawing shapes */
     float scale;                /* its glyphs, baked this many times their fonts' size */
+    /* Each font's size before scaling, merged ones included, in the order
+       of Nuklear's config list: what baking again scales. */
+    float *sizes;
+    int nsizes;
     uint32_t *fonts;            /* the handles of its fonts, in the order added */
     int nfonts;
     /* Custom glyph ranges, which Nuklear reads until the atlas is gone. */
@@ -168,13 +172,10 @@ typedef struct {
 typedef struct {
     struct nk_context nk;
     uint32_t id;
-    uint32_t atlas;             /* of the font it was made with: its white texel draws shapes */
+    /* Its white texel draws shapes: the atlas it owns, or else that of the
+       font it was made with or last given by style_set_font. */
+    uint32_t atlas;
     bool owns_atlas;            /* made for it, and destroyed with it */
-    float font_height;          /* of its own atlas's font */
-    /* That font's TrueType data, kept to bake it again; NULL for
-       Nuklear's built-in font. */
-    uint8_t *ttf;
-    int64_t ttf_len;
     /* Pixels per unit of the ui's own layout: what convert() multiplies
        positions by, and input divides them by. */
     float scale;

@@ -687,7 +687,8 @@ fn check() {
 // fonts: made, fonts added, baked, and then usable by any context. render()
 // uploads a baked atlas's image to the GPU when it first draws with it.
 extern "gs_ui_create_font_atlas" fn create_font_atlas() -> FontAtlas;
-// Destroys the atlas and its fonts; not while a context uses them.
+// Destroys the atlas and its fonts; not while a context uses them, or
+// draws its shapes with the atlas (create_context, style_set_font).
 extern "gs_ui_destroy_font_atlas" fn destroy(a: FontAtlas);
 extern "gs_ui_font_atlas_is_valid" fn is_valid(a: FontAtlas) -> bool;
 // Nuklear's own FontConfig defaults, which the field defaults repeat.
@@ -731,7 +732,8 @@ fn add_font_from_file(a: FontAtlas, path: const u8[:], height: f32) -> Font {
 // Rasterizes the fonts added into the atlas's image; no fonts are added
 // after. At a `scale`, the glyphs are that many times the fonts' size
 // while the fonts measure at their own: sharp text for a ui drawn with
-// set_scale at the same scale.
+// set_scale at the same scale. Baked again at another scale, the fonts
+// keep their handles, and contexts drawing with them draw at the new one.
 extern "gs_ui_bake_font_atlas" fn bake(a: FontAtlas, scale: f32) -> bool;
 fn bake(a: FontAtlas) -> bool { bake(a, 1.0) }
 extern "gs_ui_font_atlas_is_baked" fn is_baked(a: FontAtlas) -> bool;
@@ -817,15 +819,16 @@ fn create(font_height: f32, scale: f32) -> Context {
     set_scale(c, scale);
     c
 }
-// The same with a TrueType or OpenType font, from a file or from its bytes:
-// kept to be baked again at each scale, where Nuklear's built-in font, a
+// The same with a TrueType or OpenType font, from a file or from its bytes,
+// baked again at each scale like any, where Nuklear's built-in font, a
 // bitmap one, only scales well by whole numbers.
 extern "gs_ui_create_context_from_file" fn create_from_file(path: const u8[:],
                                                             font_height: f32) -> Context;
 extern "gs_ui_create_context_from_memory" fn create_from_memory(ttf: const u8[:],
                                                                 font_height: f32) -> Context;
-// The atlas of the font the context was made with, whose white texel
-// draws its shapes.
+// The atlas whose white texel draws the context's shapes: the one it was
+// made with, or that of the font style_set_font last gave a context made
+// on a font of the program's.
 extern "gs_ui_context_atlas" fn context_atlas(c: Context) -> FontAtlas;
 extern "gs_ui_destroy_context" fn destroy_raw(c: Context);
 fn destroy(c: Context) {
@@ -863,9 +866,8 @@ extern "gs_ui_null_texture" fn null_texture(c: Context) -> u32;
 // ui's own (window rectangles, rows, the font's size), and drawn with that
 // many pixels to each, which convert() and render() produce and input
 // comes in. A context made by create() or create_from_* has its font baked
-// again at the scale, which gives it a new font handle; another's text is
-// as sharp as its atlas was baked (bake(atlas, scale)). Not during a frame;
-// 1 at first.
+// again at the scale; another's text is as sharp as its atlas was baked
+// (bake(atlas, scale)). Not during a frame; 1 at first.
 extern "gs_ui_set_scale" fn set_scale(c: Context, scale: f32) -> bool;
 extern "gs_ui_scale" fn scale(c: Context) -> f32;
 
@@ -1631,6 +1633,9 @@ fn style_get_color_by_name(color: i64) -> u8[>..] {
     style_get_color_by_name_into(color, out);
     return out;
 }
+// The font text is drawn with from now on, dropping the pushed ones; a
+// context made on a font of the program's draws its shapes with this
+// font's atlas too, and no longer holds on to the one before.
 extern "gs_ui_style_set_font" fn style_set_font(c: Context, font: Font);
 extern "gs_ui_style_push_font" fn style_push_font(c: Context, font: Font) -> bool;
 extern "gs_ui_style_pop_font" fn style_pop_font(c: Context) -> bool;

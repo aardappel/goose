@@ -2,9 +2,10 @@
 // font configuration defaults against the Goose ones, the built-in font at
 // two sizes and a TrueType one from a file and from memory in one atlas,
 // glyph ranges of every kind, baking and what it leaves (the image, the
-// fonts' metrics, glyphs, text widths), baking at a scale, the texture
-// bookkeeping a renderer uses, contexts made on a font, by default and on
-// a TrueType font of their own, and what each keeps.
+// fonts' metrics, glyphs, text widths), baking at a scale and again at
+// another, the texture bookkeeping a renderer uses, contexts made on a
+// font, by default and on a TrueType font of their own, and what each
+// keeps; a context moved to another atlas's font, freeing the first.
 import std;
 import vec;
 import math;
@@ -24,6 +25,16 @@ fn num(x: f32) -> u8[>..] {
 // Nuklear's own copy of ProggyTiny, from the submodule the layer is built from:
 // the suite runs from the repository's top.
 let FONT_FILE = "third_party/nuklear/extra_font/ProggyTiny.ttf";
+
+fn scaled(what: const u8[:], f: ui::Font) {
+    let info = ui::info(f);
+    let image = ui::atlas_size(ui::atlas(f));
+    let glyph, found = ui::find_glyph(f, 'A');
+    print(what, ": ", num(info.height), " high, ascent ", num(info.ascent), ", 'Goose' ",
+          num(ui::text_width(f, "Goose")), " wide; 'A' ", found, " ", num(glyph.w), " x ",
+          num(glyph.h), " from ", num((glyph.u1 - glyph.u0) * image.x), " x ",
+          num((glyph.v1 - glyph.v0) * image.y), " texels");
+}
 
 fn main() {
     print("available ", ui::available(), "; misuses ", ui::misuse_count(), "; error '",
@@ -113,14 +124,7 @@ fn main() {
         let a = ui::create_font_atlas();
         let f = ui::add_default_font(a, 13.0);
         guard ui::bake(a, s) else { abort(str("bake: ", ui::error())); }
-        let info = ui::info(f);
-        let image = ui::atlas_size(a);
-        let glyph, found = ui::find_glyph(f, 'A');
-        print("baked at ", num(s), ": ", num(info.height), " high, ascent ", num(info.ascent),
-              ", 'Goose' ", num(ui::text_width(f, "Goose")), " wide; 'A' ", found, " ",
-              num(glyph.w), " x ", num(glyph.h), " from ",
-              num((glyph.u1 - glyph.u0) * image.x), " x ",
-              num((glyph.v1 - glyph.v0) * image.y), " texels");
+        scaled(str("baked at ", num(s)), f);
         ui::destroy(a);
     }
 
@@ -133,6 +137,31 @@ fn main() {
     print("forgotten: texture ", ui::texture(atlas), "; waiting ",
           ui::atlas_without_texture() == atlas);
     ui::set_texture(atlas, 78);
+
+    // Baked again at another scale, an atlas keeps its fonts, which then
+    // measure and draw as if first baked there, for the contexts using them
+    // too; its texture is released for the image to be uploaded again. At
+    // the scale it has, baking changes nothing.
+    let again = ui::create_font_atlas();
+    let af = ui::add_default_font(again, 13.0);
+    ui::bake(again);
+    ui::set_texture(again, 55);
+    let again_ctx = ui::create_context(af);
+    guard ui::bake(again, 2.0) else { abort(str("bake: ", ui::error())); }
+    scaled("baked again at 2.00", af);
+    let gone = ui::released_textures();
+    print("  the same font ", ui::font(again_ctx) == af, "; texture ", ui::texture(again),
+          ", waiting ", ui::atlas_without_texture() == again, ", released ", gone.len, " ",
+          gone[0]);
+    ui::set_texture(again, 56);
+    print("  at 2 again: ", ui::bake(again, 2.0), ", texture ", ui::texture(again),
+          ", released ", ui::released_textures().len);
+    guard ui::bake(again, 1.0) else { abort(str("bake: ", ui::error())); }
+    scaled("and at 1.00", af);
+    ui::released_textures();
+    ui::destroy(again_ctx);
+    ui::destroy(again);
+    print("  misuses ", ui::misuse_count());
 
     // A context on one of the fonts, and one of its own.
     let ctx = ui::create_context(big);
@@ -156,16 +185,20 @@ fn main() {
     print("destroyed: context ", ui::is_valid(own_ctx), ", its atlas ", ui::is_valid(own_atlas));
 
     // Contexts of a TrueType font of their own, from a file or from its
-    // bytes, which set_scale bakes again: a new font, the same size.
+    // bytes, which set_scale bakes again: the same font and size, with
+    // twice the texels to each glyph at 2.
     let file_ctx = ui::create_from_file(FONT_FILE, 12.0);
     let from_file = ui::font(file_ctx);
     print("from a file: valid ", ui::is_valid(file_ctx), ", ", num(ui::info(from_file).height),
-          " high, 'Goose' ", num(ui::text_width(from_file, "Goose")), " wide");
+          " high, 'Goose' ", num(ui::text_width(from_file, "Goose")), " wide, image ",
+          ui::atlas_size(ui::context_atlas(file_ctx)).y > 0);
+    let small_image = ui::atlas_size(ui::context_atlas(file_ctx));
     ui::set_scale(file_ctx, 2.0);
     let rebaked = ui::font(file_ctx);
-    print("at 2: a new font ", rebaked != from_file, ", the old one gone ",
-          !ui::is_valid(from_file), ", ", num(ui::info(rebaked).height), " high, 'Goose' ",
-          num(ui::text_width(rebaked, "Goose")), " wide");
+    let big_image = ui::atlas_size(ui::context_atlas(file_ctx));
+    print("at 2: the same font ", rebaked == from_file, ", ", num(ui::info(rebaked).height),
+          " high, 'Goose' ", num(ui::text_width(rebaked, "Goose")), " wide, a bigger image ",
+          big_image.x * big_image.y > small_image.x * small_image.y);
     let memory_ctx = ui::create_from_memory(ttf, 12.0);
     print("from memory: valid ", ui::is_valid(memory_ctx), ", ",
           num(ui::info(ui::font(memory_ctx)).height), " high");
@@ -188,6 +221,36 @@ fn main() {
     let released = ui::released_textures();
     print("released textures: ", released.len, ", ", released[0], "; then ",
           ui::released_textures().len);
+
+    // A context on a font of the program's, given one of another atlas
+    // baked at a new scale, draws its shapes with that atlas too, and the
+    // first can go.
+    let first = ui::create_font_atlas();
+    let first_font = ui::add_default_font(first, 13.0);
+    ui::bake(first);
+    let moved = ui::create_context(first_font);
+    let second = ui::create_font_atlas();
+    let second_font = ui::add_default_font(second, 13.0);
+    ui::bake(second, 2.0);
+    ui::style_set_font(moved, second_font);
+    ui::set_scale(moved, 2.0);
+    ui::destroy(first);
+    print("moved to another atlas: its atlas ", ui::context_atlas(moved) == second, ", font ",
+          ui::font(moved) == second_font, "; the first destroyed ", !ui::is_valid(first),
+          " ", !ui::is_valid(first_font), "; misuses ", ui::misuse_count());
+    ui::destroy(moved);
+    ui::destroy(second);
+
+    // The merged atlas baked again keeps every font and its merged glyphs.
+    guard ui::bake(atlas, 2.0) else { abort(str("bake: ", ui::error())); }
+    for f in [small, big, digits, tiny_mem] {
+        print("font at 2: ", num(ui::info(f).height), " high, ", ui::info(f).glyph_count,
+              " glyphs");
+    }
+    let five, five_own = ui::find_glyph(small, '5');
+    let seven, seven_own = ui::find_glyph(digits, '7');
+    print("'5' in the first font ", five_own, " ", five.codepoint, ", '7' in the digits font ",
+          seven_own, " ", seven.codepoint, "; the context's font ", ui::font(ctx) == big);
 
     ui::destroy(ctx);
     ui::destroy(atlas);

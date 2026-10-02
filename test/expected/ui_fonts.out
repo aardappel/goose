@@ -25,16 +25,27 @@ baked at 2.00: 13.00 high, ascent 9.50, 'Goose' 35.00 wide; 'A' true 6.25 x 8.00
 texture 0; waiting true
 texture 77; waiting 0
 forgotten: texture 0; waiting true
+baked again at 2.00: 13.00 high, ascent 9.50, 'Goose' 35.00 wide; 'A' true 6.25 x 8.00 from 12.00 x 16.00 texels
+  the same font true; texture 0, waiting true, released 1 55
+  at 2 again: true, texture 56, released 0
+and at 1.00: 13.00 high, ascent 9.50, 'Goose' 35.00 wide; 'A' true 6.50 x 8.00 from 6.00 x 8.00 texels
+  misuses 0
 context valid true; font true; atlas true; null texture 78
 delta time 0.00
 delta time 0.25
 copied '' false
 default context: valid true, atlas true baked true with 1 font of 16.00
 destroyed: context false, its atlas false
-from a file: valid true, 12.00 high, 'Goose' 36.00 wide
-at 2: a new font true, the old one gone true, 12.00 high, 'Goose' 36.00 wide
+from a file: valid true, 12.00 high, 'Goose' 36.00 wide, image true
+at 2: the same font true, 12.00 high, 'Goose' 36.00 wide, a bigger image true
 from memory: valid true, 12.00 high
 from a missing file: handle 0, error 'cannot open font file no_such_font.ttf'
 destroyed: the file context's atlas false
 released textures: 1, 91; then 0
+moved to another atlas: its atlas true, font true; the first destroyed true true; misuses 0
+font at 2: 13.00 high, 235 glyphs
+font at 2: 26.00 high, 224 glyphs
+font at 2: 20.00 high, 11 glyphs
+font at 2: 10.00 high, 224 glyphs
+'5' in the first font true 53, '7' in the digits font true 55; the context's font true
 all destroyed: false false false; misuses 0

@@ -1140,7 +1140,7 @@ A context made by `create` or `create_from_*` has its font baked again at
 the scale, so its text stays sharp -- Nuklear's built-in font imitates a
 bitmap one and scales well only by whole numbers, a TrueType one by any;
 one made on a font of the program's keeps that atlas's, which `bake(atlas,
-scale)` makes sharp at a scale. It changes between
+scale)` makes sharp at a scale, again at each new one. It changes between
 frames, not during one.
 
 Input goes between `input_begin` and `input_end`, before any window, one
@@ -1197,7 +1197,8 @@ fn add_font_from_file(a, path: const u8[:], height: f32) -> Font
 fn add_font_from_memory(a, ttf: const u8[:], height: f32) -> Font
     // each also (..., config: FontConfig) and (..., config, ranges: const u32[:])
 fn bake(a) -> bool                   // then the fonts can be used
-fn bake(a, scale: f32) -> bool       // glyphs scale times the size, for a ui at that scale
+fn bake(a, scale: f32) -> bool       // glyphs scale times the size, for a ui at that scale;
+                                     // again at another, fonts kept
 fn atlas_size(a) -> int2             fn atlas_pixels(a) -> u8[>..]     // RGBA
 fn set_texture(a, texture: u32)      fn texture(a) -> u32
 fn fonts(a) -> Font[>..]             fn atlas(f: Font) -> FontAtlas
@@ -1212,8 +1213,12 @@ and uses the atlas's white texel for its shapes. `FontConfig` has
 Nuklear's defaults: oversampling, pixel snapping, spacing, the characters
 to bake (`ranges`, a `RANGE_*` set, or pairs of first and last character
 given as an array), the fallback glyph, and `merge_mode`, which adds the
-glyphs to the atlas's first font. Destroying an atlas a context still uses
-is an error.
+glyphs to the atlas's first font. Fonts are added before the atlas is
+first baked; it keeps their data, and baking it again at another scale
+replaces their glyphs and image in place, so contexts drawing with its
+fonts keep them and draw sharp at the new scale. A context draws its
+shapes with the atlas of the font it was made with or last given by
+`style_set_font`; destroying an atlas a context still uses is an error.
 
 ### Windows and layout
 

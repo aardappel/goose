@@ -220,9 +220,11 @@ fn main() {
     // --- the whole ui at a scale ---
     let big = ui::create(13.0);
     let first_font = ui::font(big);
+    let first_image = ui::atlas_size(ui::context_atlas(big));
     print("scale ", ui::scale(big), "; set to 2 ", ui::set_scale(big, 2.0), ": ", ui::scale(big),
-          "; its font baked again ", ui::font(big) != first_font, ", ",
-          ui::info(ui::font(big)).height, " high");
+          "; its font baked again ",
+          ui::atlas_size(ui::context_atlas(big)).y > first_image.y && ui::font(big) == first_font,
+          ", ", ui::info(ui::font(big)).height, " high");
     var pressed = false;
     var button = ui::rect(0, 0, 0, 0);
     for step in 3 {

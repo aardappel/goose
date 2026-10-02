@@ -340,7 +340,6 @@ static void ui_free_context(ui_ctx *u) {
     free(u->paste);
     free(u->copy);
     free(u->styles);
-    free(u->ttf);
     free(u);
 }
 
@@ -354,65 +353,36 @@ void gs_ui_destroy_context(gs_ui_context c) {
     if (a && !ui_atlas_in_use(a)) ui_free_atlas(a);
 }
 
-/* A context's own font, from TrueType data or Nuklear's built-in font
-   (`ttf` NULL), in an atlas of its own baked at `scale`. */
-static gs_ui_font ui_own_font(uint8_t *ttf, int64_t len, float height, float scale,
-                              const char *fn) {
-    gs_ui_font none = { 0 };
+/* A context of its own font -- Nuklear's built-in one, or TrueType data
+   from memory or a file (`data`, as ui_add_font takes them) -- in an atlas
+   made for it, which set_scale bakes again. */
+static gs_ui_context ui_own_context(int source, gs_ui_bytes data, float height, const char *fn) {
+    gs_ui_context none = { 0 };
     gs_ui_font_atlas a = gs_ui_create_font_atlas();
     if (!a.id) return none;
-    gs_ui_bytes data = { ttf, len };
     gs_ui_u32_slice ranges = { NULL, 0 };
-    gs_ui_font f = ui_add_font(a, ttf ? UI_FONT_MEMORY : UI_FONT_DEFAULT, data, height,
-                               gs_ui_default_font_config(), ranges, fn);
-    if (!f.id || !gs_ui_bake_font_atlas(a, scale)) {
+    gs_ui_font f = ui_add_font(a, source, data, height, gs_ui_default_font_config(), ranges, fn);
+    gs_ui_context c = f.id && gs_ui_bake_font_atlas(a, 1) ? gs_ui_create_context(f) : none;
+    ui_ctx *u = (ui_ctx *)ui_table_find(&ui_contexts, c.id);
+    if (!u) {
         gs_ui_destroy_font_atlas(a);
         return none;
     }
-    return f;
-}
-
-/* A context of its own font, which it keeps `ttf` (malloc'd, or NULL for
-   Nuklear's) to bake again. */
-static gs_ui_context ui_own_context(uint8_t *ttf, int64_t len, float height, const char *fn) {
-    gs_ui_context none = { 0 };
-    gs_ui_font f = ui_own_font(ttf, len, height, 1, fn);
-    gs_ui_context c = f.id ? gs_ui_create_context(f) : none;
-    ui_ctx *u = (ui_ctx *)ui_table_find(&ui_contexts, c.id);
-    if (!u) {
-        if (f.id) gs_ui_destroy_font_atlas(gs_ui_font_atlas_of(f));
-        free(ttf);
-        return none;
-    }
     u->owns_atlas = true;
-    u->font_height = height;
-    u->ttf = ttf;
-    u->ttf_len = len;
     return c;
 }
 
 gs_ui_context gs_ui_create_default_context(float font_height) {
-    return ui_own_context(NULL, 0, font_height, "ui::create");
+    gs_ui_bytes none = { NULL, 0 };
+    return ui_own_context(UI_FONT_DEFAULT, none, font_height, "ui::create");
 }
 
 gs_ui_context gs_ui_create_context_from_file(gs_ui_bytes path, float font_height) {
-    gs_ui_context none = { 0 };
-    int64_t len = 0;
-    uint8_t *ttf = ui_read_font_file(ui_cstr(path, 0), &len);
-    return ttf ? ui_own_context(ttf, len, font_height, "ui::create_from_file") : none;
+    return ui_own_context(UI_FONT_FILE, path, font_height, "ui::create_from_file");
 }
 
 gs_ui_context gs_ui_create_context_from_memory(gs_ui_bytes ttf, float font_height) {
-    gs_ui_context none = { 0 };
-    int len = ui_len(ttf, "ui::create_from_memory");
-    /* At least a byte, as NULL stands for Nuklear's font. */
-    uint8_t *copy = (uint8_t *)malloc((size_t)len + 1);
-    if (!copy) {
-        ui_fail("out of memory for a font");
-        return none;
-    }
-    if (len > 0) memcpy(copy, ttf.data, (size_t)len);
-    return ui_own_context(copy, len, font_height, "ui::create_from_memory");
+    return ui_own_context(UI_FONT_MEMORY, ttf, font_height, "ui::create_from_memory");
 }
 
 bool ui_scale_ok(float scale, const char *fn) {
@@ -423,19 +393,10 @@ bool ui_scale_ok(float scale, const char *fn) {
 uint8_t gs_ui_set_scale(gs_ui_context c, float scale) {
     UI_CTX(c, "ui::set_scale", 0);
     if (!ui_outside(u, "ui::set_scale") || !ui_scale_ok(scale, "ui::set_scale")) return 0;
-    if (u->owns_atlas && scale != u->scale) {
+    if (u->owns_atlas) {
         /* Its own font, baked again at the scale for sharp text. */
-        if (ctx->stacks.fonts.head > 0)
-            return ui_misuse("ui::set_scale with fonts pushed: its own font is baked again, so "
-                             "ui::style_pop_font them first");
-        ui_atlas *old = (ui_atlas *)ui_table_find(&ui_atlases, u->atlas);
-        ui_font *oldf = (ui_font *)ui_table_find(&ui_fonts, old->fonts[0]);
-        gs_ui_font nf = ui_own_font(u->ttf, u->ttf_len, u->font_height, scale, "ui::set_scale");
-        if (!nf.id) return 0;
-        ui_font *f = (ui_font *)ui_table_find(&ui_fonts, nf.id);
-        if (ctx->style.font == &oldf->font->handle) nk_style_set_font(ctx, &f->font->handle);
-        u->atlas = f->atlas;
-        if (!ui_atlas_in_use(old)) ui_free_atlas(old);
+        gs_ui_font_atlas a = { u->atlas };
+        if (!gs_ui_bake_font_atlas(a, scale)) return 0;
     }
     u->scale = scale;
     return 1;

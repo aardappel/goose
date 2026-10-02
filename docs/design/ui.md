@@ -116,12 +116,17 @@ physics. The constants have Nuklear's values, a static assert in
   were baked at the scale: baking an atlas at a scale multiplies each
   font's size before Nuklear rasterizes it and sets the font's height back
   after, and Nuklear, which scales a glyph by that height over the baked
-  one, then measures at the size and draws from the bigger glyphs. A
-  context `create` or `create_from_*` made owns its font -- Nuklear's
-  built-in one, or TrueType data it keeps a copy of -- and bakes it again
-  when its scale changes.
-  A destroyed atlas's texture is listed for the renderer that made it
-  (`released_textures`), which `render` releases.
+  one, then measures at the size and draws from the bigger glyphs. An
+  atlas keeps its fonts' TrueType data (Nuklear's `nk_font_atlas_cleanup`
+  is never called) and the sizes they were added at, so it can be baked
+  again at another scale: Nuklear's `nk_font`s stay where they are, which
+  contexts and font handles point to, and only their glyphs and the image
+  change. A context `create` or `create_from_*` made owns its atlas --
+  Nuklear's built-in font, or a TrueType one -- and bakes it again when
+  its scale changes.
+  A destroyed or rebaked atlas's texture is listed for the renderer that
+  made it (`released_textures`), which `render` releases, uploading the
+  new image.
 * **Whose input it is**, for a program with keys and clicks of its own:
   Nuklear's `nk_item_is_any_active` is true whenever the mouse is over a
   window, whatever has the keyboard. `wants_keyboard` reads the windows'
@@ -221,7 +226,7 @@ X1 and X2 mouse buttons.
   where typed text lands. The tests call 365 of the layer's 365 functions.
   `ui_misuse` checks a widget outside any window aborts the program at the
   next frame with the reason, `ui_misuse_messages` shows what the layer
-  says about 59 misuses, each skipped without harm, and `ui_err_thread`
+  says about 58 misuses, each skipped without harm, and `ui_err_thread`
   that a `thread_fn` reaching ui is a compile error.
 * **`samples/29_ui_todo.goose`**, a to-do list and a color mixer, runs
   headless in the samples runner for 30 frames, JIT and AOT.

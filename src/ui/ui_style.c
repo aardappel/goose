@@ -396,7 +396,11 @@ static const struct nk_user_font *ui_style_font(gs_ui_font h, const char *fn) {
 void gs_ui_style_set_font(gs_ui_context c, gs_ui_font font) {
     UI_CTX(c, "ui::style_set_font", );
     const struct nk_user_font *f = ui_style_font(font, "ui::style_set_font");
-    if (f) nk_style_set_font(ctx, f);
+    if (!f) return;
+    nk_style_set_font(ctx, f);
+    /* The font's atlas draws the shapes too, so the one it had can go;
+       a context's own atlas stays its own. */
+    if (!u->owns_atlas) u->atlas = ui_font_get(font, "ui::style_set_font")->atlas;
 }
 
 uint8_t gs_ui_style_push_font(gs_ui_context c, gs_ui_font font) {

@@ -49,8 +49,6 @@ fn main() {
     ui::create_context(font);
     said("a context before baking");
     ui::bake(atlas);
-    ui::bake(atlas);
-    said("baking twice");
     ui::add_default_font(atlas, 20.0);
     said("a font after baking");
     let ctx = ui::create_context(font);
