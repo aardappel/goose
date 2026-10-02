@@ -1094,10 +1094,18 @@ inline void TypeCheck::CheckBranchRoot(const Val &v, int depth, Node *at, const 
             continue;
         auto what = !isrs ? "holds references" : t->kind == TY_SLICE ? "is a slice"
                                                                        : "is a reference";
+        // The construct's own value is a temporary of its statement, so an
+        // array every branch makes lives on where a view of it is taken
+        // after the join.
         if (IsTemp(root))
             Error(at, cat("the ", construct, "'s value ", what, " rooted at a temporary, which "
                           "does not outlive it (§9.2): a temporary lasts until the end of its "
-                          "statement, or of the block whose final expression made it"));
+                          "statement, or of the block whose final expression made it; make the "
+                          "value in a variable before the statement",
+                          t->kind == TY_SLICE
+                              ? ", or, where every branch makes a new array of one type, slice "
+                                "the whole construct: `(if c { a } else { b })[..]`"
+                              : ""));
         Error(at, cat("the ", construct, "'s value ", what, " rooted at ", root->name,
                       ", which does not outlive it (§9.2)"));
     }

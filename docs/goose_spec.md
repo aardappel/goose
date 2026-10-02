@@ -2582,7 +2582,11 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   `let t = f(); let s = t[..];` is not, and neither is a view into `x`
   bound inside `for x in f() { … }`; it is never returned. A function it
   is passed to may keep it in its own locals, which die first. What a
-  temporary *holds* is not rooted at the temporary (§9.5). A temporary is
+  temporary *holds* is not rooted at the temporary (§9.5). So at a slice
+  parameter `take(if c { str("a", n) } else { str("b") })` is an error, as
+  each branch's string ends with its branch, while `take((if c { str("a",
+  n) } else { str("b") })[..])` views the `if`'s own value, an array that
+  lasts for the rest of the statement. A temporary is
   no storage for `.=` or a reference parameter to bind (§4.1), which binds
   a construct's branches instead, and a view of one is read-only (§9.5).
 
