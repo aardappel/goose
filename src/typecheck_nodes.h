@@ -107,7 +107,14 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
             v.reusable = vd->reusable;
             v.nonneg = vd->nonneg;
             if (vd->nonneg) v.nonnegfrom = vd;
-            if (vd->constlit) {
+            if (vd->constlit && vd->type->kind == TY_FLT) {
+                v.litfloat = true;
+                if (vd->constflt) {
+                    v.ck = CK_FLT;
+                    v.fval = vd->constfval;
+                }
+                v.constfrom = vd;
+            } else if (vd->constlit) {
                 v.ck = CK_INT;
                 v.ival = vd->constval;
                 v.uns = vd->constuns;

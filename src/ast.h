@@ -1343,12 +1343,15 @@ struct VarDef {
     bool nonneg = false;        // A `let` whose initializer was non-negative (§6.1).
     VarDef *nonnegfrom = nullptr;   // The initializer's Val::nonnegfrom.
     // A named constant: a `let` global with no annotated type whose
-    // initializer is an integer constant (§3.1). It reads as that constant,
-    // and a use adapting it as a literal relies on its keeping that value
-    // (TypeCheck::RelyOnNamed).
+    // initializer is an integer constant (§3.1), or a `let` with no annotated
+    // type whose initializer is a float of literals and integers (§6.3). It
+    // reads as that constant, or as such a float, and a use adapting it as a
+    // literal relies on its keeping that value (TypeCheck::RelyOnNamed).
     bool constlit = false;
     bool constuns = false;      // constval's bits are a u64 above i64.max (Val::uns).
     int64_t constval = 0;
+    bool constflt = false;      // A float constant, of value constfval.
+    double constfval = 0;
     VarDef *constfrom = nullptr;    // The initializer's Val::constfrom.
     // A `let` initialized to exactly `X.len` (§5.2): the path X, as checked
     // there. Resizing the same X back to it is a balanced shrink.

@@ -2411,6 +2411,15 @@ the same name: typed at the literals' `f64`, it is retyped by `RetypeFlex`
 wherever it meets an `f32` destination or operand -- each flagged node, the
 implicit casts of its integers and its literals take the new type, while a
 constant part keeps its nodes, which fold at full precision and round once.
+An untyped `let`, local or global, bound to such a float (or a float
+constant) is marked `VarDef::constlit` as an integer named constant is
+(`CheckVarDecl`); `Ident::Check` reads it as `Val::litfloat` (with
+`constflt`'s value as a constant) and `Val::constfrom`, which binary and
+unary float operations and float branch joins carry on. Where it meets an
+`f32` (`MustFit`, `UnifyNumeric`, `MergeVals`) `RelyOnNamed` marks it, and
+`RetypeFlex` gives the identifier the `f32` type, at which `Ident::CgX`
+reads the `f64` variable rounded. `ResetLocal` keeps `constuse` across a
+loop's passes, so a writable reference after a relying use errs in each.
 An integer computed from constants with a shift by a count that is no
 constant among its operations (§6.1: `1 << k`, `(1 << k) - 1`, `~(1 << k)`)
 carries `Val::flexint`, the range of those constants in `litlo`/`lithi`,

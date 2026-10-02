@@ -964,6 +964,8 @@ inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt) {
         if (IsIntT(dt) && !TypeEq(from, dt)) {
             RelyOnNamed(v, n);
             if (v.flexint && dt->intstorage != IS_VARINT) RetypeFlexInt(n, dt);
+        } else if (IsF32(dt) && from->kind == TY_FLT && !IsF32(from)) {
+            RelyOnNamed(v, n);
         }
     } else {
         if (!fitfail.empty()) Error(n, fitfail);
@@ -1572,6 +1574,7 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
         auto narrow = IsF32(lt) ? lt : rt;
         if (LitFloat(wide)) {
             RecordLitAdapt(wide, narrow, at->line);
+            RelyOnNamed(wide, at);
             return narrow;
         }
         return ast.flttypes[FS_F64];
@@ -1723,6 +1726,11 @@ inline Val TypeCheck::NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bo
             }
             v.litfloat = flex && v.ck != CK_FLT;
             if (!trial) b->litfloat = v.litfloat;
+            if (flex) {
+                // One chain carries on, as FoldInt's does.
+                if (lv.constfrom && rv.constfrom) RelyOnNamed(rv, b);
+                v.constfrom = lv.constfrom ? lv.constfrom : rv.constfrom;
+            }
             return v;
         }
         default:
@@ -1771,6 +1779,7 @@ inline Val TypeCheck::NumericUnary(Unary *u, const Val &v, bool trial) {
                 } else {
                     r.litfloat = LitFloat(v);
                 }
+                r.constfrom = v.constfrom;
                 if (!trial) u->litfloat = r.litfloat;
             } else {
                 return fail(cat("cannot negate a value of type ", TypeStr(t)));

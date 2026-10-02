@@ -191,7 +191,8 @@ A grammar sketch and precedence table are in Appendix D.
   is expected `2` works as well as `2.0`. Float literals adapt to either
   type, and so does an expression whose float-ness comes only from float
   literals and integers: `n * 0.5` computes in 32 bits where an `f32` is
-  expected and is an `f64` where nothing asks for a type (§6.3).
+  expected and is an `f64` where nothing asks for a type, as is an untyped
+  `let` bound to one (§6.3).
 * `bool` — 1-byte storage, values `true`/`false`. Produced by comparisons;
   required by `if`/`while` conditions (no int-to-bool coercion).
 
@@ -205,7 +206,8 @@ is such a constant as well: each use of it adapts as its value written
 there would, at a destination (`D { len: SZ }` with `len: u8`) and as an
 operand alike (`b + SZ` with `b: u8` is an 8-bit add), and it is an `i64`
 where nothing constrains it. A global with a written type (`let SZ: i64 =
-15;`), a local `let` and a `var` are values of their type. A use adapting a
+15;`), a local `let` and a `var` are values of their type. (An untyped float
+`let`, local or global, adapts too, §6.3.) A use adapting a
 named constant relies on its keeping its initializer's value, which a
 writable reference to it could change, so as for a compile-time size
 (§11.1) such a reference is an error in either order; and a division by a
@@ -1584,11 +1586,30 @@ mantissa rounds as every float result does.
   construct whose branches are all such (§6.4). Such
   an expression is computed at the type it adapts to, throughout — an `f32`
   argument, field or operand gets `(n as f32) * 0.5` in 32 bits — and is an
-  `f64` in an unannotated `let` (`let h = n * 0.5;`), which commits `h` to
-  `f64` from then on, as a variable, parameter, call result or explicit
-  `as` commits a type. A constant part of it is folded at full precision and
-  rounds once to the type the whole adapts to, as a constant does anywhere:
-  beyond `f32`'s range (about ±3.4e38) to an infinity, as `as f32` rounds.
+  `f64` where nothing gives it a type. A variable, parameter, call result or
+  explicit `as` commits a type. A constant part of it is folded at full
+  precision and rounds once to the type the whole adapts to, as a constant
+  does anywhere: beyond `f32`'s range (about ±3.4e38) to an infinity, as
+  `as f32` rounds.
+* **Float literal `let`s.** A `let` (or `const`) with no written type,
+  local or global, whose initializer is such a float (`let a0 = i *
+  6.2831853 / n;`, `let K = 0.25;`, std's `PI`) is literal-like as well:
+  it holds its value as an `f64`, computed once, and each use adapts as a
+  float literal there would — at an `f32` destination, beside an `f32`
+  operand (`a0 * r` with `r: f32` is an `f32` multiply), in a construct's
+  branches and as a generic argument beside an `f32` — taking that `f64`
+  rounded once to `f32`; where nothing gives it a type it is the `f64`. So
+  `let h = n * 0.1;` stored in an `f32` is `n * 0.1` computed in 64 bits
+  and then rounded, which can differ in the last bit from the same
+  expression written at the `f32` destination, computed in 32 bits
+  throughout. A use adapting it relies on its keeping its value, which a
+  writable reference to it could change to any `f64`, so, as for an integer
+  named constant (§3.1), such a reference is an error in either order; a
+  reference to it is an `f64&`. A `var`, and a `let` with a written type,
+  are values of their type. Unlike an integer named constant this holds for
+  local `let`s too: adapting a float changes only how it rounds, as writing
+  the literal there would, where adapting an integer local would change
+  the width at which its arithmetic wraps.
 * **Never implicit**: narrowing; same-width signedness changes (`i32 ↔ u32`);
   anything signed into any unsigned type (a negative value can hide in any
   signed operand — so `u32→i64` is silent but `i32→u64` is not); `u64` into
@@ -2997,7 +3018,8 @@ the caller's own facts about `src` intact.
   initializers live in static data; the initializer of any `let` or
   `const` global is a named constant a compile-time size may use
   (`i64[N]`) wherever no local of its name hides it (§3.3); an untyped
-  integer one also adapts wherever it is used, as a literal does (§3.1). A
+  integer or float one also adapts wherever it is used, as a literal does
+  (§3.1, §6.3). A
   size, a fill count (`[v; N]`), a match pattern (§8.1) or a use adapting
   an untyped one to another type takes a named constant at its
   initializer's value, so a `let` it names,

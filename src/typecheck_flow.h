@@ -549,12 +549,16 @@ inline VarDef *TypeCheck::ResetLocal(VarDef *previous) {
     auto nonneguse = previous->nonneguse, markuse = previous->markuse;
     auto refwrite = previous->refwrite;
     auto slotref = previous->slotref;
+    auto constuse = previous->constuse;
+    auto constwhat = previous->constwhat;
     *previous = VarDef {};
     previous->captured = captured;
     previous->nonneguse = nonneguse;
     previous->markuse = markuse;
     previous->refwrite = refwrite;
     previous->slotref = slotref;
+    previous->constuse = constuse;
+    previous->constwhat = constwhat;
     return previous;
 }
 
@@ -940,7 +944,11 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     auto fltlit = [&](const Val &x) { return LitFloat(x) || isint(x); };
     auto adapt = [&](const Val &c, const Val &o) {
         if (!o.type || !c.type || TypeEq(c.type, o.type)) return false;
-        if (o.type->kind == TY_FLT) return LitFloat(c) && !LitFloat(o);
+        if (o.type->kind == TY_FLT) {
+            if (!LitFloat(c) || LitFloat(o)) return false;
+            if (IsF32(o.type)) RelyOnNamed(c, at);
+            return true;
+        }
         if (o.type->kind != TY_INT || !isint(c) || intlit(o)) return false;
         if (c.unsized) {
             // A literal parameter adapts to the other branch like a
@@ -973,6 +981,8 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
         v.type = !LitFloat(a) ? b.type : !LitFloat(b) ? a.type
                                         : UnifyBranch(a.type, b.type, at, wantvalue);
         v.litfloat = true;
+        if (a.constfrom && b.constfrom) RelyOnNamed(b, at);
+        v.constfrom = a.constfrom ? a.constfrom : b.constfrom;
     } else if (adapt(a, b)) {
         v.type = b.type;
     } else if (adapt(b, a)) {
@@ -2258,9 +2268,14 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         // RelyOnNonneg). A `var` can be assigned anything later.
         d->nonneg = !vd->isvar && v.nonneg;
         d->nonnegfrom = d->nonneg ? v.nonnegfrom : nullptr;
-        d->constlit = global && !vd->isvar && !ann && v.ck == CK_INT;
+        auto vt = LoadType(v.type);
+        auto fltlit = vt && vt->kind == TY_FLT && !IsF32(vt) && LitFloat(v);
+        d->constlit = !vd->isvar && !ann && !vd->byref &&
+                      ((global && v.ck == CK_INT) || fltlit);
         d->constval = v.ival;
         d->constuns = v.uns;
+        d->constflt = v.ck == CK_FLT;
+        d->constfval = v.fval;
         d->constfrom = d->constlit ? v.constfrom : nullptr;
         Finish(d, ann ? ann : v.type, &v, vd->inits[i]);
         auto len = Is<Dot>(vd->inits[i]);
