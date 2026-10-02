@@ -730,7 +730,7 @@ a branch of an `if` would not be.
 | `a.push(v)`, `a.alloc_ref(v)`, `&a[i]` | `a`'s root | `a`'s exactness |
 | `a.alloc_slice(n)`, `a.realloc_slice(s, n)` | `a`'s root | `a`'s exactness |
 | `a[lo..hi]` (`SliceExpr::Check`) | `a`'s root | `a`'s exactness |
-| a call result (`CallResult`) | every root the callee's returns give (`RetRoot::alts`), mapped (`RetAltVal`: a parameter's class back to the argument's roots at this site -- at a back edge, every argument the class's parameters get -- a global or captured local as itself, null as static data) and united as branches are (`MergeVals`) | only where they all map to one root exactly |
+| a call result (`CallResult`) | every root the callee's returns give (`RetRoot::alts`), mapped (`RetAltVal`: a parameter's class back to the argument's roots at this site -- at a back edge, every argument the class's parameters get -- a global or captured local as itself, null as static data, which at a back edge only bounds the result: the key gave a parameter static data that the back edge may give other storage) and united as branches are (`MergeVals`) | only where they all map to one root exactly |
 | an `if`, `match`, `block` or `loop` value of reference or slice type (`MergeVals`), array branches joined as a slice included (`CheckJoin`) | every one of its branches' roots, an array's where it is stored | only where they all name one root exactly |
 | an array, struct or variant literal, and a call's value result | a temporary (`TempRoot`): whatever views it rather than being built from it views a temporary | no |
 | any other `if`, `match`, `block`, `loop` or bare `{ }` value, a function value's call, and a `default<T>()` but a null reference's or an empty slice's (`TempCopy`); `copy(x)` | a temporary (`TempRoot`), holding what the value it copied held | no; a copy's yes |
@@ -1137,10 +1137,11 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   but what it holds its argument filled, and whatever the body copies it
   into holds the same. The class root only bounds it (`RootCandidates`
   lists it in `bounds`). A holder whose `contents` are all views the
-  storage of parameters' classes holds (their mark, §3.10 **Class reads**),
-  or static data beside such views, holds views of that storage, and a
-  value read out of it where it is checked (`ReadBackLVal`) is one of them,
-  as one read out of the storage is (`ClassCopyReadBack`). A store later in
+  storage of parameters' classes holds (their mark, §3.10 **Class reads**)
+  or static data holds views of that storage or static data, and a value
+  read out of it where it is checked (`ReadBackLVal`) is one of them, as
+  one read out of the storage is (`ClassCopyReadBack`): what `words` or
+  `split` made of a string literal views static data only. A store later in
   a loop body reaches the read on the next iteration, and one of anything
   else there adds a root to the holder's `contents` or takes the mark off
   one, which the loop feeds back (§3.7): its next pass checks the read with
@@ -1484,8 +1485,8 @@ one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
    the calls that passed a parameter's class (`classuses`, which
    `NoteClassUses` fills at every call, back edges included), a class
    standing for every argument its calls gave it. A root that bounds the
-   storage and names no container it was read out of -- static data a call
-   returns included, which `RetAltVal` makes inexact -- may be any array
+   storage and names no container it was read out of -- static data a back
+   edge returns included, which `RetAltVal` makes inexact -- may be any array
    its pointee fits. A store through a reference into a global slice
    variable's slot is both an event on it and its binding (§3.5);
 6. the shrink is recorded for the callers (`NoteShrink`: `shrinkexternals`
@@ -4045,7 +4046,7 @@ specification allows, and the shapes the C backend refuses outright:
   call.
 * A shrink of a global array counts another global as holding a reference
   into it where the store record says it may (§3.10). The record is coarse
-  in two places: static data a call returns is an inexact root
+  in two places: static data a back edge returns is an inexact root
   (`RetAltVal`), which may be any array its pointee fits, so a global given
   such a result counts wherever it could; and a global holder passed to a
   by-value holder parameter gives it class 0, with no call-site facts for

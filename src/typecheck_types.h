@@ -1045,9 +1045,9 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
 // Where a reference or slice read out of h, a holder of the activation's
 // named exactly, points by what h holds (VarDef::contents): where every root
 // stored there since h was made is a class whose storage's views they are
-// (RootAlt::classread, AddContents), or static data beside one, what is
-// read out of h is one of those views, as a read out of the storage itself
-// is, though read out of h (RootAlt::from). A store later in a loop body
+// (RootAlt::classread, AddContents) or static data, what is read out of h
+// is one of those views, as a read out of the storage itself is, though
+// read out of h (RootAlt::from), or static data. A store later in a loop body
 // reaches the read on the next iteration, and a store of anything else
 // there adds a root to h's contents or takes the mark off one, which the
 // loop feeds back: it checks the read again. Else false, and the read takes
@@ -1055,14 +1055,14 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
 inline bool TypeCheck::ClassCopyReadBack(VarDef *h, Roots &out) {
     if (!h->type || IsRefOrSlice(h->type)) return false;
     Roots r;
-    auto classes = false;
+    auto known = false;
     for (auto &a : h->contents.alts) {
         if (a.classread) r.Add({ a.root, false, h, false, true });
         else if (!a.root) r.Add({ nullptr, a.exact });
         else return false;
-        classes = classes || a.classread;
+        known = known || a.classread || a.exact;
     }
-    if (!classes) return false;
+    if (!known) return false;
     out.Add(r);
     return true;
 }

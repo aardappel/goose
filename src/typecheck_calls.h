@@ -2544,8 +2544,10 @@ inline Val TypeCheck::RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &a
                                 TypeExpr *t, Node *at) {
     Val m;
     m.type = t;
-    m.Set(alt.root, alt.exact && alt.root != nullptr, alt.from,   // Static data is no array to name.
-          alt.slotread);
+    // Static data, where every return giving it gave static data: no back
+    // edge's, which may pass a parameter the key gave static data anything
+    // else (CallResult).
+    m.Set(alt.root, alt.exact && (alt.root || !spec->inprogress), alt.from, alt.slotread);
     m.alts[0].classread = alt.classread;
     m.writable = true;
     if (!alt.root || alt.root->isglobal || alt.root->ownerspec) return m;
