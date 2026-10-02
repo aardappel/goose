@@ -3,6 +3,30 @@
 Run `python test/run_tests.py --profile baseline --cc native --require-clang`
 after a normal compiler build. CI runs this on Windows, macOS and Linux.
 
+The runners work on `-j`/`--jobs` things at once (by default one per logical
+processor, up to 32), on threads that mostly wait for the compiler, the C
+compiler and the programs they start. The log comes out in the same order
+whatever the number of jobs: each piece of work prints into a buffer of its
+own, which shows once everything before it has, so two logs diff cleanly.
+`-j1` runs everything in order on one thread. Everything one fixture runs
+happens in one job, one run after another, since a program may write a file
+(`stdlib_os.goose` does) that another run of it would see. The Goose-in-Goose
+chains and the samples' runner (`samples/run_samples.py`, a process of its own
+with as many jobs) start first: the -O0 bootstrap chain is the longest piece
+of work, and the suite takes about as long as it does. `--gpu-jobs N` limits
+how many gfx programs run at once within each runner, should a GPU driver not
+take many headless devices at a time; by default nothing limits them.
+
+The compiler runs per fixture are as few as the checks allow. One run,
+`goose --roundtrip --check`, parses, checks that the dump parses again to
+the same dump, and typechecks (with `--bce-test` where the fixture has
+annotations, `--parse` instead of `--check` for a `parse-only` one, and
+`--dump-file` writing the dump for a `dump-runtime` one). Every run that gets
+past resolution prints `parsed ok`, which tells a parse failure from a
+typecheck failure in one `--check` of an `errors_tc/` fixture. Where a level
+both builds the C and runs the program through TinyCC, one `goose -O<n> --jit
+-o <file>` does both: it writes the C, then runs the program in-process.
+
 Test fixtures are grouped by category; `run_tests.py` stays at the root of `test/`:
 
 | Path under `test/` | Coverage |
@@ -140,7 +164,8 @@ every run of it a debug build: `cast_abort_location.goose` and
 `overflow_abort_location.goose` check the location a failing check reports.
 
 Parser/resolver errors live in `test/errors/`; semantic errors live in
-`test/errors_tc/` and must first pass `--parse`. Each source declares one or
+`test/errors_tc/` and must get past parsing and resolution (`parsed ok`)
+before they fail. Each source declares one or
 more `// error: <diagnostic substring>` lines. The compiler must exit with 1,
 and all markers must occur in diagnostic headers, excluding echoed source.
 Use the specific rejection reason and relevant types/roots; omit source paths,
