@@ -1306,6 +1306,11 @@ other way round: a bare name's `LVal::writable` is its *contents'*
 writability, which `&x` and the paths into it inherit, while a write of the
 variable itself (`=`, a compound assignment, `++`/`--`) is left to those two
 rules alone (`WholeWritable`), so a `var s: const u8[:]` re-slices itself.
+An un-annotated variable takes that type wherever its initializer is a
+read-only reference or slice whose type says nothing (a `u8[:]` result or
+parameter read-only in this specialization): `CheckVarDecl`'s `Finish`
+adds the `const`, so a later assignment of a read-only value fits, and in
+a writable specialization the same declaration stays `u8[:]`.
 A field's or an element's `LVal::writable` is the writability of the path
 to it, which assigning the slot as a whole takes; the contents of one of a
 `const` type other than a slice are read-only however they are reached --

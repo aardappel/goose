@@ -2688,7 +2688,11 @@ with no annotation needed:
   what is read out of a slot is exactly as writable as the slot's type says
   (a self-relative reference at most, above), and nothing is laundered
   through storage: a `u8[:]` field that could be written through can only
-  ever have been given a writable slice.
+  ever have been given a writable slice. An un-annotated variable's type is
+  its initializer's, made `const` where that value is read-only — at this
+  instantiation, say — so `var t = trim(line);` for a read-only `line` is a
+  `const u8[:]` cursor, which `t = trim(t[..n]);` can advance, and stays
+  read-only whatever is assigned to it later, as if it were written so.
 * An `extern fn` (§7.10) is a C function and its parameters are what they
   say: a read-only argument needs the parameter declared `const`.
 

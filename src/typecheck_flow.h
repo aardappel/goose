@@ -2099,7 +2099,10 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
     auto fi = (int)frames.size() - 1;
     auto calls = frames[fi].cyclecalls;
     auto Finish = [&](VarDef *d, TypeExpr *t, const Val *v, Node *init) {
-        if (vd->isconst) t = ast.ConstOf(t);
+        // An inferred reference or slice type is const where the value is
+        // read-only (in this instantiation, say), as an annotation would
+        // have to say for it to fit (§9.5).
+        if (vd->isconst || (!ann && v && IsRefOrSlice(t) && !v->writable)) t = ast.ConstOf(t);
         if (t->kind == TY_VOID) Error(vd, "initializer has no value");
         if (t->kind == TY_FN)
             Error(vd, "function values are compile-time only and cannot be stored (§7.6)");
