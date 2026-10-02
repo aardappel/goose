@@ -3,11 +3,13 @@
 struct Holder { id: i64, lim: i64[..4] }
 struct Bag { tag: i64, items: i64[>..] }
 struct Text { id: i64, buf: u8[>..] }
+// No i64 outside its items, so a reference to one rooted at a Row is an item.
+struct Row { tag: u8, items: i64[>..] }
 fn format(out: u8[>..]&, h: Holder) { format(out, "H", h.id); }
 var fa: i64[4] = [1, 2, 3, 4];
 var fb: i64[4] = [5, 6, 7, 8];
-var ba = Bag { tag: 1, items: [10, 20, 30, 40] };
-var bb = Bag { tag: 2, items: [50] };
+var ba = Row { tag: 1, items: [10, 20, 30, 40] };
+var bb = Row { tag: 2, items: [50] };
 fn main() {
     var a: i64[>..] = [1];
     var b: i64[>..] = [2];

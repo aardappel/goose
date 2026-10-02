@@ -1390,6 +1390,11 @@ struct VarDef {
     // inexact root at the class stands for beside the class's own storage
     // (TypeCheck::BoundReach).
     vector<TypeExpr *> classreach;
+    // Synthetic roots only (classes, a render's buffer): element types the
+    // storage they stand for holds only as the elements of one array, so
+    // that a reference to one rooted there is an element of that array
+    // (TypeCheck::OneArrayOf). Keyed for classes (RootArg::onearray).
+    vector<TypeExpr *> onearray;
     // Synthetic class roots of a `T[:]&` parameter with a view only
     // (FnSpec::views): a variable of the body standing for the slice the
     // caller's slot holds, whose binding a load through the class sees and
@@ -1547,6 +1552,12 @@ struct RootArg {
     bool growshrink = false;
     bool gsvia = false;
     vector<TypeExpr *> gselems;
+    // The element types of arrays the class's parameters lead to that its
+    // root's storage holds only as the elements of one array
+    // (VarDef::onearray): what index_of (§3.3) and a slice pool's checks
+    // (§5.4) take a reference rooted at the class to be an element of. Part
+    // of the key, compared apart from the rest as `gselems` is.
+    vector<TypeExpr *> onearray;
     // Where `growshrink` is set by a root of the argument, or of a holder's
     // contents, or by a grow-shrink array the argument's pointee holds:
     // every place it may point was loaded out of a field, an element or a
@@ -1567,7 +1578,7 @@ struct RootArg {
     bool byteview = false;
     // Val::rootexact of the argument, ANDed over every call site that reaches
     // the specialization. Deliberately not part of the key: within the callee
-    // a class always names one array (typecheck.h keeps an inexactly rooted
+    // a class always names one root's storage (typecheck.h keeps an inexactly rooted
     // argument out of every other argument's class), and the only use of this
     // bit -- codegen's proof that two classes are *different* arrays -- runs
     // after every call site has been seen.

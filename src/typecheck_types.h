@@ -1095,28 +1095,102 @@ inline string TypeCheck::ReadBackWhy(const Roots &r) {
     return s;
 }
 
+// Whether a value of type t holds an `of` by value, at any depth.
+inline bool TypeCheck::HoldsByValue(TypeExpr *t, TypeExpr *of, vector<TypeExpr *> &open) {
+    if (TypeEq(t, of)) return true;
+    for (auto o : open)
+        if (TypeEq(o, t)) return false;
+    open.push_back(t);
+    auto holds = t->kind == TY_ARRAY ? HoldsByValue(t->arr->sub, of, open)
+                                     : AnyField(t, [&](TypeExpr *ft) {
+                                           return HoldsByValue(ft, of, open);
+                                       });
+    open.pop_back();
+    return holds;
+}
+
+// The places storage of type t holds `of`s in by value, counted up to 2: the
+// elements of one array of them are one place; an `of` outside such an
+// array, or inside another `of`, or in each element of an array of
+// something else, makes more.
+inline int TypeCheck::ElemArrayPlaces(TypeExpr *t, TypeExpr *of) {
+    vector<TypeExpr *> open;
+    if (TypeEq(t, of)) return 2;
+    if (t->kind == TY_ARRAY) {
+        if (!TypeEq(t->arr->sub, of)) return HoldsByValue(t->arr->sub, of, open) ? 2 : 0;
+        return AnyField(of, [&](TypeExpr *ft) { return HoldsByValue(ft, of, open); }) ? 2 : 1;
+    }
+    auto n = 0;
+    EachField(t, [&](TypeExpr *ft) { n = min(2, n + ElemArrayPlaces(ft, of)); });
+    return n;
+}
+
+// Whether a reference to an `elem` rooted exactly at r is an element of the
+// one array of them r's storage holds: r's storage holds `elem`s only there.
+// A root has no path, so this is what tells the array a member is called on
+// from a sibling field or element of the same variable (§3.3).
+inline bool TypeCheck::OneArrayOf(VarDef *r, TypeExpr *elem) {
+    if (!r) return false;
+    if (r->type) return ElemArrayPlaces(r->type, elem) == 1;
+    for (auto e : r->onearray)
+        if (TypeEq(e, elem)) return true;
+    return false;
+}
+
+// The element types of the arrays a value of type t holds by value or leads
+// to through its references, relative ones included: what a parameter of
+// that type can reach an array of, where its class's storage may hold one
+// (RootArg::onearray).
+inline void TypeCheck::ArrayElemsReached(TypeExpr *t, vector<TypeExpr *> &out,
+                                         vector<TypeExpr *> &open) {
+    for (auto o : open)
+        if (TypeEq(o, t)) return;
+    open.push_back(t);
+    if (t->kind == TY_REF) {
+        ArrayElemsReached(LoadType(t->ref->sub), out, open);
+    } else if (t->kind == TY_SLICE) {
+        ArrayElemsReached(t->sub, out, open);
+    } else if (t->kind == TY_ARRAY) {
+        auto seen = false;
+        for (auto e : out) seen = seen || TypeEq(e, t->arr->sub);
+        if (!seen) out.push_back(t->arr->sub);
+        ArrayElemsReached(t->arr->sub, out, open);
+    } else {
+        EachField(t, [&](TypeExpr *ft) { ArrayElemsReached(ft, out, open); });
+    }
+}
+
 // Whether a reference or slice handed back to the array member called on is
-// known to point into that very array: rooted at it exactly (§9.2). A
-// parameter in a pool class points into that global pool (§3.9), so it is
+// known to point into that very array: rooted exactly where the receiver is
+// (§9.2), in storage holding the element type only as that array's elements.
+// A parameter in a pool class points into that global pool (§3.9), so it is
 // rooted there as exactly as a local one.
-inline bool TypeCheck::RootedAtReceiver(const Val &rv, const Val &av) {
+inline bool TypeCheck::RootedAtReceiver(const Val &rv, const Val &av, TypeExpr *elem) {
     if (!av.Exact() || !rv.Exact()) return false;
     auto recvroot = rv.Root(), aroot = av.Root();
-    return aroot == recvroot || (recvroot && recvroot->isglobal && PoolOf(aroot) == recvroot);
+    if (aroot != recvroot && !(recvroot && recvroot->isglobal && PoolOf(aroot) == recvroot))
+        return false;
+    return OneArrayOf(recvroot, elem);
 }
 
 // The same, required of what member `op` is handed.
 inline void TypeCheck::CheckRootedAtReceiver(Call *c, const char *op, const Val &rv,
-                                             const Val &av, const char *what,
+                                             const Val &av, TypeExpr *elem, const char *what,
                                              const char *sec) {
-    if (RootedAtReceiver(rv, av)) return;
+    if (RootedAtReceiver(rv, av, elem)) return;
     if (av.None() || rv.None()) return;   // Nowhere yet (RefProvOf).
     auto why = av.Exact() ? string() : ReadBackWhy(av);
     auto root = av.Root() ? av.Root()->name : string_view("static data");
+    // Rooted where the receiver is, but in storage that may hold the element
+    // elsewhere too: a root says which variable, not which part of it.
+    auto shared = av.Exact() && rv.Exact() && av.Root() && av.Root() == rv.Root();
     Error(c, cat(".", op, " needs ", what, " rooted at the array itself (", sec, "); ",
                  !why.empty() ? why
                  : !av.Exact() ? cat("this one's root is not known exactly, only that it "
                                      "outlives ", root)
+                 : shared ? cat("this one is rooted at ", av.Root()->type ? "" : "the caller's "
+                                "storage behind ", root, ", which may hold ", TypeStr(elem),
+                                " values outside that array")
                  : cat("this one is rooted at ", root)));
 }
 

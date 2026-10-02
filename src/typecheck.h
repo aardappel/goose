@@ -1442,8 +1442,12 @@ struct TypeCheck {
                        bool inplace = false);
     bool ContentsReadBack(VarDef *h, Roots &out);
     string ReadBackWhy(const Roots &r);
-    bool RootedAtReceiver(const Val &rv, const Val &av);
-    void CheckRootedAtReceiver(Call *c, const char *op, const Val &rv, const Val &av,
+    bool HoldsByValue(TypeExpr *t, TypeExpr *of, vector<TypeExpr *> &open);
+    int ElemArrayPlaces(TypeExpr *t, TypeExpr *of);
+    bool OneArrayOf(VarDef *r, TypeExpr *elem);
+    void ArrayElemsReached(TypeExpr *t, vector<TypeExpr *> &out, vector<TypeExpr *> &open);
+    bool RootedAtReceiver(const Val &rv, const Val &av, TypeExpr *elem);
+    void CheckRootedAtReceiver(Call *c, const char *op, const Val &rv, const Val &av, TypeExpr *elem,
                                const char *what, const char *sec);
 
     // ------------------------------------------------------------------
@@ -2509,6 +2513,13 @@ struct TypeCheck {
                 ra.writable = true;
                 if (CarriesPool(t) && ClassOf(t->ref->sub->arr->sub) == SC_FIXED)
                     ra.reusable = RU_SLOTS | RU_SLICES;
+                // Its class's storage is a value of the type it refers to.
+                if (t->kind == TY_REF) {
+                    vector<TypeExpr *> elems, open;
+                    ArrayElemsReached(t, elems, open);
+                    for (auto e : elems)
+                        if (ElemArrayPlaces(LoadType(t->ref->sub), e) == 1) ra.onearray.push_back(e);
+                }
             } else if (holder) {
                 // What it holds points into its class's array, as a literal's
                 // references into one global would.

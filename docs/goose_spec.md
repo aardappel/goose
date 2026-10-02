@@ -351,7 +351,11 @@ copied into every slot added, or shrink), `.resize(n)` (shrink only),
 limited and resizable arrays of fixed-size elements): the index of the
 element `r` refers to, `(addr − base) / elemsize`. `r` must be rooted at the
 array *exactly* (§9.2), so the division is exact and the result is in range without a runtime check.
-A reference rooted elsewhere is a compile error. Growth always supplies element values — no
+A root names a variable, not a part of it, so where the array is a field or an
+element of what its root holds, the reference counts as rooted at the array
+only if that storage holds the element type nowhere else: not in another field
+or element, nor inside an element. A parameter's storage is judged at each call
+(§10.2). A reference rooted elsewhere is a compile error. Growth always supplies element values — no
 operation can expose uninitialized slots (§5.3). Per UFCS these are ordinary
 functions: `a.push(v)` is `push(a, v)`.
 

@@ -416,7 +416,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         if (!IsPlainRef(av.type) || !TypeEq(av.type->ref->sub, elem))
             Error(c, cat(".index_of takes a reference to an element of ", TypeStr(rv.type),
                          ", got ", TypeStr(StorageType(av))));
-        CheckRootedAtReceiver(c, d.name, rv, av, "a reference", "§3.3");
+        CheckRootedAtReceiver(c, d.name, rv, av, elem, "a reference", "§3.3");
     }
     // A slice pool's operations (§5.4). A slice handed back must be one of
     // the pool's own, by the same exact root index_of needs, so that the
@@ -429,7 +429,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             if (sv.type->kind != TY_SLICE || !TypeEq(sv.type->sub, elem))
                 Error(c, cat(".", d.name, " takes a slice of ", TypeStr(rv.type), ", got ",
                              TypeStr(sv.type)));
-            if (!RootedAtReceiver(rv, sv)) {
+            if (!RootedAtReceiver(rv, sv, elem)) {
                 // Globals and this function's own variables are separate storage,
                 // so a slice exactly rooted at one is not the pool's when every
                 // pool the receiver may be (a branch's value may choose among
@@ -628,8 +628,11 @@ inline void TypeCheck::CheckPrintable(Call *c, const char *what, vector<Node *> 
             tc.cur.renderwalks = std::move(get<3>(saved));
         }
     } restore { *this, std::move(saverender) };
+    // The buffer print and str render into is a string of its own.
+    auto buffer = TempRoot();
+    buffer->onearray = { ast.inttypes[IS_U8] };
     Val builder;
-    builder.Set(TempRoot(), true);
+    builder.Set(buffer, true);
     builder.writable = true;
     if (out && ClassOf(DecayRef(*out).type) == SC_RESIZABLE) builder = *out;
     auto context = ast.New<Call>(c->line, c->callee);

@@ -1164,11 +1164,13 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         }
         auto idx = -1;
         // Sharing a class says the two arguments point into the same
-        // array, which an inexactly rooted one does not establish: it
+        // storage, which an inexactly rooted one does not establish: it
         // names a scope its pointee outlives, not the storage that
         // owns it (§9.5). Such an argument gets a class to itself, one
         // an exact argument with the same root does not join either, so
-        // a class is always one array whatever the call site.
+        // a class is always one root's storage whatever the call site.
+        // Which arrays in it the arguments lie in, the class does not say
+        // (RootArg::onearray).
         if (ra.exact)
             for (auto [m, mr] : members)
                 if (mr == r && m->exact) idx = m->cls - 1;
@@ -1269,6 +1271,18 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         if (va.exact) va.pool = PoolOf(hr);
         classify(va, hr);
     }
+    // The element types a class's parameters reach arrays of that its storage
+    // holds only as one array's elements (RootArg::onearray); a class passed
+    // on knows that only of what its own key fixed (OneArrayOf).
+    for (size_t i = 0; i < roots.size(); i++) {
+        auto &ra = roots[i];
+        if (ra.cls <= 0 || !ra.exact) continue;
+        vector<TypeExpr *> elems, open;
+        for (size_t j = 0; j < roots.size(); j++)
+            if (roots[j].cls == ra.cls) ArrayElemsReached(mi.paramtypes[j], elems, open);
+        for (auto e : elems)
+            if (OneArrayOf(argroots[i], e)) ra.onearray.push_back(e);
+    }
     // Class numbers alone cannot tell equal depths from a strict order, or a
     // global from a local, and a body that sees a lexical environment
     // compares its classes with that environment's variables too; the
@@ -1358,7 +1372,19 @@ inline FnSpec *TypeCheck::GetOrCreateSpec(MatchInfo &mi, vector<Val> &argvals, N
         auto rootsok = spec->roots == roots && spec->views == views;
         for (size_t i = 0; rootsok && i < roots.size(); i++)
             rootsok = TypeArgsEq(spec->roots[i].gselems, roots[i].gselems) &&
-                      TypeArgsEq(spec->views[i].gselems, views[i].gselems);
+                      TypeArgsEq(spec->views[i].gselems, views[i].gselems) &&
+                      TypeArgsEq(spec->roots[i].onearray, roots[i].onearray);
+        // Even a back edge passes only arrays whose element types its body
+        // may take a reference to be an element of (§3.3), so one whose
+        // classes say that of fewer types is checked as a call of its own.
+        auto onearrayok = true;
+        for (size_t i = 0; i < roots.size() && i < spec->roots.size(); i++)
+            for (auto e : spec->roots[i].onearray) {
+                auto has = false;
+                for (auto f : roots[i].onearray) has = has || TypeEq(e, f);
+                onearrayok = onearrayok && has;
+            }
+        if (!onearrayok) continue;
         auto depthsok = rootsok;
         for (size_t i = 0; depthsok && i < roots.size(); i++)
             depthsok = spec->roots[i].depthkey == roots[i].depthkey &&
@@ -2297,6 +2323,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
                     rv->growshrink = ra.growshrink;
                     rv->gsvia = ra.gsvia;
                     rv->gselems = ra.gselems;
+                    rv->onearray = ra.onearray;
                     classroots[ra.cls] = rv;
                 }
                 ReachedThroughRefs(pt, classroots[ra.cls]->classreach);
@@ -2310,9 +2337,9 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
                     !ra.exact)
                     classroots[ra.cls]->poolclass = false;
                 if (!ra.exact) exactrefs[ra.cls] = false;
-                // Every member of a class points into one array (see
-                // GetOrCreateSpec), so within this body the class names that
-                // array. Whether it is the array some *other* class names is a
+                // Every member of a class points into one root's storage
+                // (see GetOrCreateSpec), so within this body the class names
+                // that storage. Whether it is the array some *other* class names is a
                 // different question, and only ra.exact answers it.
                 vd->ref.Set(classroots[ra.cls], true, nullptr, ra.slotread);
                 classroots[ra.cls]->contentbyteview |= ra.byteview;
@@ -2345,6 +2372,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
                     rv->growshrink = ra.growshrink;
                     rv->gsvia = ra.gsvia;
                     rv->gselems = ra.gselems;
+                    rv->onearray = ra.onearray;
                     classroots[ra.cls] = rv;
                 }
                 classroots[ra.cls]->poolclass = false;
