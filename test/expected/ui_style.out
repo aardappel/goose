@@ -8,9 +8,9 @@ hsv red 255 0 0 255; hsva 0 255 0 128
 hsv_f green 0 255 0 255; hsva_f blue 0 0 255 255
 hsva_colorf cyan 0 1 1 1
 colorf_hsva_f 0.5 1 1 1
-color_cf 1 0.501960813999176 0 1; color_u32 4278223103
+color_cf 1 0.5019608 0 1; color_u32 4278223103
 hex FF8000FF FF8000
-color_hsv_f 0.083660133183002472 1 1; color_hsva_f blue 0.66666662693023682 1 1 0.20000001788139343
+color_hsv_f 0.08366013 1 1; color_hsva_f blue 0.6666666 1 1 0.20000002
 default style: window rounding 0, button rounding 4, text 175 175 175 255, header buttons right, tooltip delay 0.5
 button background kind 0, 50 50 50 255
 drawn in the default button color: true

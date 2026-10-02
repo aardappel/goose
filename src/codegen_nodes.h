@@ -310,10 +310,12 @@ inline string AsCast::CgX(CodeGen &cg) {
         auto named = [&] { return cat("\"", IntStorageName(is), "\", ", cg.LocArgs(line)); };
         if (st->kind == TY_FLT) {
             if (unchecked) return cat("(", tct, ")gs_f2iwrap(", x, ")");
-            if (is == IS_U64) return cat("(uint64_t)GS_F2U(", x, ", ", cg.LocArgs(line), ")");
+            auto f32 = IsF32(st) ? "1" : "0";
+            if (is == IS_U64)
+                return cat("(uint64_t)GS_F2U(", x, ", ", f32, ", ", cg.LocArgs(line), ")");
             auto [lo, hi] = IntRange(is);
-            return cat("(", tct, ")GS_F2I(", x, ", ", cg.IntStr(lo), ", ", cg.IntStr(hi), ", ",
-                       named(), ")");
+            return cat("(", tct, ")GS_F2I(", x, ", ", f32, ", ", cg.IntStr(lo), ", ",
+                       cg.IntStr(hi), ", ", named(), ")");
         }
         if (unchecked || cg.TEq(st, tt)) return cat("(", tct, ")(", x, ")");
         if (su64) {

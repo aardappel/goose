@@ -104,7 +104,8 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
         }
         case TY_FLT: {
             auto x = LoadLoc(lv, t, ln);
-            RenderN(out, cat("gs_fmt_f64(", Top(out.stk), ", (double)(", x, "))"));
+            if (IsF32(t)) RenderN(out, cat("gs_fmt_f32(", Top(out.stk), ", ", x, ")"));
+            else RenderN(out, cat("gs_fmt_f64(", Top(out.stk), ", (double)(", x, "))"));
             return;
         }
         case TY_BOOL: {
@@ -428,6 +429,8 @@ inline void CodeGen::EmitOutArg(Node *a, Call *c) {
     if (t->kind == TY_INT) {
         if (t->intstorage == IS_U64) L("gs_out_uint(", GenX(a), ");");
         else L("gs_out_int((int64_t)(", GenX(a), "));");
+    } else if (IsF32(t)) {
+        L("gs_out_f32(", GenX(a), ");");
     } else if (t->kind == TY_FLT) {
         L("gs_out_flt((double)(", GenX(a), "));");
     } else if (t->kind == TY_BOOL) {
@@ -445,6 +448,7 @@ inline string CodeGen::FmtCall(Node *a, const string &dst) {
         if (t->intstorage == IS_U64) return cat("gs_fmt_u64(", dst, ", ", GenX(a), ")");
         return cat("gs_fmt_i64(", dst, ", (int64_t)(", GenX(a), "))");
     }
+    if (IsF32(t)) return cat("gs_fmt_f32(", dst, ", ", GenX(a), ")");
     if (t->kind == TY_FLT) return cat("gs_fmt_f64(", dst, ", (double)(", GenX(a), "))");
     assert(t->kind == TY_BOOL);
     return cat("gs_fmt_bool(", dst, ", ", GenX(a), ")");

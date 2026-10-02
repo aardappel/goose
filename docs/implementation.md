@@ -3546,9 +3546,12 @@ resolution. Reference rendering follows pointees and has no cycle
 detection: a cyclic value recurses through its render functions until the
 native stack runs out (§7, **Native stacks**). Finite float formatting
 currently tries 15 significant decimal digits, then 17 if needed to recover
-the promoted `f64`, with redundant exponent zeroes removed to at least two
+the `f64`, with redundant exponent zeroes removed to at least two
 digits (`gs_fmt_f64`). That is a round-trip format, not a general
-shortest-decimal algorithm; see section 11. Infinities and NaNs are
+shortest-decimal algorithm; see section 11. An `f32` takes the fewest of 6
+to 9 digits that read back as the same `f32` (`gs_fmt_f32`), through
+`strtod` and a cast on every backend, and is laid out as the text of the
+`f64` nearest those digits, so `f32` and `f64` text share one style. Infinities and NaNs are
 spelled by the runtime (`inf`, `-inf`, `nan`) rather than by the C
 library, which differs between backends: msvcrt, linked by TinyCC on
 Windows, writes `1.#INF` and `-1.#IND`, and others print a NaN's sign.

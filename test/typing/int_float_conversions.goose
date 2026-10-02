@@ -2,9 +2,9 @@
 // expression whose float-ness comes only from float literals and integers
 // adapts to its destination as a literal does: an f32 where an f32 is
 // expected, computed in 32 bits throughout, and an f64 where nothing gives it
-// a type. Nine tenths show the width: 9 * 0.1 is 0.9 at f64,
-// 0.90000003576278687 computed at f32, and 0.89999997615814209 were it
-// computed at f64 and only then rounded to f32.
+// a type. Nine tenths show the width: 9 * 0.1 is 0.9 at f64, and
+// 0.90000004 computed at f32 (were it computed at f64 and only then rounded
+// to f32, it would print as 0.9).
 import std;
 
 struct Ent { x: i32, w: i32 }
@@ -53,16 +53,16 @@ fn main() {
     var fs: f32[>..] = [1, e.w];
     fs.push(e.x);
     fs.push(e.w * 0.1);
-    print(fs);                                      // [1, 9, 3, 0.90000003576278687]
+    print(fs);                                      // [1, 9, 3, 0.90000004]
     f += e.w;
     g -= 1;
     print(f, " ", g);                               // 10.5 2
     f = 1.5;
 
     // Mixed operands: the integer converts to the float's type.
-    print(e.w * tenth);                             // 0.90000003576278687
+    print(e.w * tenth);                             // 0.90000004
     // An integer inside a block or an inlined call still converts.
-    print(({ e.w }) * tenth, " ", next(e.w) * tenth);  // 0.90000003576278687 1
+    print(({ e.w }) * tenth, " ", next(e.w) * tenth);  // 0.90000004 1
     print(n64 + g, " ", n64 * f);                   // 5 4.5
     var big: u64 = 18446744073709551615;
     print(big * 1.0, " ", big > 1e19);              // 1.8446744073709552e+19 true
@@ -73,13 +73,13 @@ fn main() {
     // A float of literals and integers takes its destination's type.
     let h = e.w * 0.1;
     print(h);                                       // 0.9
-    print(id32(e.w * 0.1), " ", id64(e.w * 0.1));   // 0.90000003576278687 0.9
+    print(id32(e.w * 0.1), " ", id64(e.w * 0.1));   // 0.90000004 0.9
     let w = V2 { e.w * 0.1, e.w * 0.5 };
-    print(w.x, " ", w.y);                           // 0.90000003576278687 4.5
-    print(e.w * 0.1 - f);                           // -0.59999996423721313
-    print(-(e.w * 0.1) + f);                        // 0.59999996423721313
-    print(e.w * 0.1 + 1 + f);                       // 3.4000000953674316
-    print(id32({ e.w * 0.1 }), " ", id32(e.w % 1.5));   // 0.90000003576278687 0
+    print(w.x, " ", w.y);                           // 0.90000004 4.5
+    print(e.w * 0.1 - f);                           // -0.59999996
+    print(-(e.w * 0.1) + f);                        // 0.59999996
+    print(e.w * 0.1 + 1 + f);                       // 3.4
+    print(id32({ e.w * 0.1 }), " ", id32(e.w % 1.5));   // 0.90000004 0
     print(g + e.w * 0.1);                           // 2.9
 
     // An integer literal where a float is expected.
@@ -94,7 +94,7 @@ fn main() {
     let prod = f * 1.0e300;
     print(huge == huge * 2, " ", low == low * 2, " ", low < 0, " ", prod == prod * 2);
                                                     // true true true true
-    print(id32(3.4028235e38));                      // 3.4028234663852886e+38
+    print(id32(3.4028235e38));                      // 3.4028235e+38
 
     // Branches joining an integer and a float.
     var c = e.x > 1;

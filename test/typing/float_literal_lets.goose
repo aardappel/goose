@@ -4,9 +4,8 @@
 // f64, and each use adapts to f32 as the literal written there would, at a
 // typed destination, as an operand, in a construct's branches and as a
 // generic argument beside an f32. Where nothing gives it a type it is an
-// f64. Nine tenths show the width: an f64 0.9 prints as 0.9, rounded to f32
-// it prints as 0.89999997615814209, and 9 * 0.1 computed in f32 gives
-// 0.90000003576278687.
+// f64. Nine tenths show the width: an f64 0.9, and that value rounded to
+// f32, print as 0.9, while 9 * 0.1 computed in f32 prints as 0.90000004.
 import std;
 import math;
 

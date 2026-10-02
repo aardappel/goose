@@ -415,6 +415,7 @@ static int64_t gs_f2iwrap(double d) {
 #if GS_DEBUG
 
 static int64_t gs_fmt_f64(uint8_t *dst, double v);
+static int64_t gs_fmt_f32(uint8_t *dst, float v);
 
 /* The message of a failing check, with the source value as text. */
 static GS_NORETURN void gs_asfail(const char *why, const char *num, const char *type,
@@ -435,10 +436,11 @@ static GS_NORETURN void gs_asfail_u(const char *why, uint64_t v, const char *typ
     snprintf(num, sizeof(num), "%llu", (unsigned long long)v);
     gs_asfail(why, num, type, file, line);
 }
-static GS_NORETURN void gs_asfail_f(const char *why, double d, const char *type,
+/* f32: d is an f32's value, and takes that type's text form. */
+static GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const char *type,
                                     const char *file, int line) {
     uint8_t num[32];
-    num[gs_fmt_f64(num, d)] = 0;
+    num[f32 ? gs_fmt_f32(num, (float)d) : gs_fmt_f64(num, d)] = 0;
     gs_asfail(why, (const char *)num, type, file, line);
 }
 
@@ -453,34 +455,34 @@ static uint64_t gs_rangechk_u(uint64_t v, uint64_t hi, const char *type, const c
     return v;
 }
 /* To a signed type or a narrower unsigned one, whose range is lo..hi. */
-static int64_t gs_f2ichk(double d, int64_t lo, int64_t hi, const char *type, const char *file,
-                         int line) {
+static int64_t gs_f2ichk(double d, int f32, int64_t lo, int64_t hi, const char *type,
+                         const char *file, int line) {
     if (!(d >= -9223372036854775808.0 && d < 9223372036854775808.0))
-        gs_asfail_f("out of range", d, type, file, line);
+        gs_asfail_f("out of range", d, f32, type, file, line);
     int64_t v = (int64_t)d;
-    if (v < lo || v > hi) gs_asfail_f("out of range", d, type, file, line);
-    if ((double)v != d) gs_asfail_f("changes the value", d, type, file, line);
+    if (v < lo || v > hi) gs_asfail_f("out of range", d, f32, type, file, line);
+    if ((double)v != d) gs_asfail_f("changes the value", d, f32, type, file, line);
     return v;
 }
-static uint64_t gs_f2uchk(double d, const char *file, int line) {
+static uint64_t gs_f2uchk(double d, int f32, const char *file, int line) {
     if (!(d >= 0 && d < 18446744073709551616.0))
-        gs_asfail_f("out of range", d, "u64", file, line);
+        gs_asfail_f("out of range", d, f32, "u64", file, line);
     uint64_t v = (uint64_t)d;
-    if ((double)v != d) gs_asfail_f("changes the value", d, "u64", file, line);
+    if ((double)v != d) gs_asfail_f("changes the value", d, f32, "u64", file, line);
     return v;
 }
 #define GS_RANGE(v, lo, hi, t, f, l) gs_rangechk((v), (lo), (hi), (t), (f), (l))
 #define GS_RANGE_U(v, hi, t, f, l)   gs_rangechk_u((v), (hi), (t), (f), (l))
-#define GS_F2I(d, lo, hi, t, f, l)   gs_f2ichk((d), (lo), (hi), (t), (f), (l))
-#define GS_F2U(d, f, l)              gs_f2uchk((d), (f), (l))
+#define GS_F2I(d, s, lo, hi, t, f, l) gs_f2ichk((d), (s), (lo), (hi), (t), (f), (l))
+#define GS_F2U(d, s, f, l)            gs_f2uchk((d), (s), (f), (l))
 
 #else
 
 #define GS_RANGE(v, lo, hi, t, f, l) (v)
 #define GS_RANGE_U(v, hi, t, f, l)   (v)
 /* Deterministic truncation in release too. */
-#define GS_F2I(d, lo, hi, t, f, l)   gs_f2iwrap(d)
-#define GS_F2U(d, f, l)              ((uint64_t)gs_f2iwrap(d))
+#define GS_F2I(d, s, lo, hi, t, f, l) gs_f2iwrap(d)
+#define GS_F2U(d, s, f, l)            ((uint64_t)gs_f2iwrap(d))
 
 #endif
 
@@ -1067,6 +1069,27 @@ static int64_t gs_fmt_f64(uint8_t *dst, double v) {
     return gs_fmt_exp((char *)dst, n);
 }
 
+/* The fewest significant digits that read back as the same f32, laid out as
+   the text of the f64 nearest them, so both types share one style. Above
+   the subnormals, %.6g already gives any shorter form that reads back. The
+   test reads through strtod rather than strtof: tcc's strtof on Windows is
+   a rounded strtod, and one test keeps every backend's choice the same. */
+static int64_t gs_fmt_f32(uint8_t *dst, float v) {
+    double d = v;
+    if (d == d && !isinf(d)) {
+        char buf[GS_FMT_MAX];
+        for (int p = (v < 0 ? -v : v) < 1.17549435e-38f ? 1 : 6; p <= 9; p++) {
+            snprintf(buf, sizeof(buf), "%.*g", p, d);
+            double r = strtod(buf, NULL);
+            if ((float)r == v) {
+                d = r;
+                break;
+            }
+        }
+    }
+    return gs_fmt_f64(dst, d);
+}
+
 static int64_t gs_fmt_bool(uint8_t *dst, int64_t v) {
     memcpy(dst, v ? "true" : "false", v ? 4 : 5);
     return v ? 4 : 5;
@@ -1100,6 +1123,10 @@ static void gs_out_uint(uint64_t v) { printf("%llu", (unsigned long long)v); }
 static void gs_out_flt(double v) {
     uint8_t buf[GS_FMT_MAX];
     fwrite(buf, 1, (size_t)gs_fmt_f64(buf, v), stdout);
+}
+static void gs_out_f32(float v) {
+    uint8_t buf[GS_FMT_MAX];
+    fwrite(buf, 1, (size_t)gs_fmt_f32(buf, v), stdout);
 }
 static void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
 static void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
