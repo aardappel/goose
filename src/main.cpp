@@ -116,8 +116,10 @@ vector<string> StdlibDirs(const string &stdlibdir, const string &argv0) {
 
 // Parses a root file and, transitively, everything it imports (each file once).
 // `import a.b;` resolves relative to the root file's directory, then in the
-// standard library; `import .a.b;` relative to the importing file's.
-void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlibdirs) {
+// standard library; `import .a.b;` relative to the importing file's. A
+// `rootsource` is the root file's text, which is then not read from disk.
+void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlibdirs,
+                  const string *rootsource = nullptr) {
     auto rootdir = DirOf(rootpath);
     vector<string> queue = { rootpath };
     set<string> loaded = { rootpath };
@@ -127,7 +129,8 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
         auto path = queue.back();
         queue.pop_back();
         auto contents = make_unique<string>();
-        if (!LoadFile(path, *contents))
+        if (rootsource && path == rootpath) *contents = *rootsource;
+        else if (!LoadFile(path, *contents))
             throw CompileError { cat("cannot open file: ", path) };
         auto fileidx = (int)ast.sources.size();
         ast.sources.emplace_back(path, std::move(contents));
@@ -173,6 +176,36 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
                      [&](VarDecl *a, VarDecl *b) {
                          return rank[a->line.fileidx] < rank[b->line.fileidx];
                      });
+}
+
+// Parses a program's dump as a program of its own and requires that dumping
+// that gives back the same text: what `goose --dump` of the dump written to a
+// file would print. `path` is where the dump's diagnostics say they are.
+void CheckRoundtrip(const string &dumped, const string &path,
+                    const vector<string> &stdlibdirs) {
+    Ast again;
+    try {
+        ParseProgram(again, path, stdlibdirs, &dumped);
+    } catch (CompileError &e) {
+        throw CompileError { cat("the dump does not parse again:\n", e.msg) };
+    }
+    string redumped;
+    again.Dump(redumped);
+    if (redumped == dumped) return;
+    // The first line that differs, which is where the two parses part.
+    size_t pos = 0, line = 1;
+    while (pos < dumped.size() && pos < redumped.size() && dumped[pos] == redumped[pos]) {
+        if (dumped[pos] == '\n') line++;
+        pos++;
+    }
+    auto lineat = [&](const string &s) {
+        auto start = pos ? s.rfind('\n', pos - 1) : string::npos;
+        start = start == string::npos ? 0 : start + 1;
+        auto end = s.find('\n', pos);
+        return s.substr(start, end == string::npos ? string::npos : end - start);
+    };
+    throw CompileError { cat("the dump does not roundtrip: its line ", line, " reads\n    ",
+                             lineat(dumped), "\nand dumps again as\n    ", lineat(redumped)) };
 }
 
 void DumpTokens(const string &path) {
@@ -260,8 +293,9 @@ void GenRuntimeHeader(const char *argv0) {
 int RunOnCompilerStack(const function<int()> &fn);
 
 int Main(int argc, char **argv) {
-    string filename, outfile, stdlibdir, shaderfile, shadersource;
+    string filename, outfile, stdlibdir, shaderfile, shadersource, dumpfile;
     auto dump = false, tokens = false, parseonly = false, specs = false, nocgen = false;
+    auto roundtrip = false;
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
     auto forcejit = false;
     auto optlevel = 1;
@@ -276,6 +310,8 @@ int Main(int argc, char **argv) {
         if (arg == "--dump") dump = true;
         else if (arg == "--tokens") tokens = true;
         else if (arg == "--parse") parseonly = true;
+        else if (arg == "--roundtrip") roundtrip = true;
+        else if (arg == "--dump-file" && i + 1 < argc) dumpfile = argv[++i];
         else if (arg == "--specs") specs = true;
         else if (arg == "--check") nocgen = true;
         else if (arg == "--no-bce") nobce = true;
@@ -329,7 +365,8 @@ int Main(int argc, char **argv) {
         return 0;
     }
     if (filename.empty()) {
-        fprintf(stderr, "usage: goose [--dump] [--parse] [--tokens] [--specs] [--check] "
+        fprintf(stderr, "usage: goose [--dump] [--parse] [--tokens] [--roundtrip] "
+                        "[--dump-file out.goose] [--specs] [--check] "
                         "[--no-bce] [--bce-test] [--bce-lines] [--unsafe-no-rf-check] [-O0|-O1|-O2] "
                         "[-o out.c] [--jit] [-DNAME=VALUE]... [--include header.h]... [--stdlib dir] "
                         "file.goose [-- program args...] | --gen-runtime-header | "
@@ -357,7 +394,8 @@ int Main(int argc, char **argv) {
             return 0;
         }
         Ast ast;
-        ParseProgram(ast, filename, StdlibDirs(stdlibdir, argv[0]));
+        auto stdlibdirs = StdlibDirs(stdlibdir, argv[0]);
+        ParseProgram(ast, filename, stdlibdirs);
         if (dump) {
             // Dump is parse-level output: no name resolution or typecheck,
             // so parse-only test files can roundtrip, and every name shows
@@ -367,12 +405,28 @@ int Main(int argc, char **argv) {
             fputs(s.c_str(), stdout);
             return 0;
         }
-        ResolveTypeNames(ast);
-        if (parseonly) {
-            fprintf(msgs, "parsed ok: %d top-level declarations, %d file(s)\n",
-                    (int)ast.topdecls.size(), (int)ast.sources.size());
-            return 0;
+        // The dump as --dump prints it, taken before resolution.
+        string dumped;
+        if (roundtrip || !dumpfile.empty()) ast.Dump(dumped);
+        if (!dumpfile.empty()) {
+            auto f = fopen(dumpfile.c_str(), "wb");
+            if (!f) throw CompileError { cat("cannot write dump file: ", dumpfile) };
+            fwrite(dumped.data(), 1, dumped.size(), f);
+            fclose(f);
         }
+        ResolveTypeNames(ast);
+        // Printed by every run that gets this far, so that one which goes on
+        // to fail says by itself which side of resolution it failed on.
+        fprintf(msgs, "parsed ok: %d top-level declarations, %d file(s)\n",
+                (int)ast.topdecls.size(), (int)ast.sources.size());
+        // After resolution, so that a program that does not resolve fails as
+        // it would without --roundtrip.
+        if (roundtrip) {
+            CheckRoundtrip(dumped, dumpfile.empty() ? cat(filename, ".dump") : dumpfile,
+                           stdlibdirs);
+            fprintf(msgs, "roundtrip ok: %d bytes of dump\n", (int)dumped.size());
+        }
+        if (parseonly) return 0;
         TypeCheckProgram(ast);
         Optimizer opt(ast, optlevel);
         if (specs) {

@@ -86,6 +86,8 @@ process started with (`ulimit -s`), which nothing in the executable sets.
 | Flag | Effect |
 |---|---|
 | `--tokens`, `--dump`, `--parse` | stop after lexing, after parsing (dump is parse-level: no resolution), after resolution |
+| `--roundtrip` | after resolution, parse the dump as a program of its own and require it to dump to the same text (`CheckRoundtrip`), then go on to whatever else was asked for |
+| `--dump-file f.goose` | also write the dump to a file, and go on |
 | `--check` | stop after typecheck, optimization and BCE; no C is written |
 | `-O0`, `-O1` (default), `-O2` | inlining thresholds (§4); folding and propagation run at every level; base-case inlining and tail-recursion elimination need `-O1` or above |
 | `--specs` | print every live specialization's optimized body |
