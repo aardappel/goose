@@ -2271,8 +2271,9 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
         auto vt = LoadType(v.type);
         auto fltlit = vt && vt->kind == TY_FLT && !IsF32(vt) && LitFloat(v);
         d->constlit = !vd->isvar && !ann && !vd->byref &&
-                      ((global && v.ck == CK_INT) || fltlit);
-        d->constval = v.ival;
+                      ((global && (v.ck == CK_INT || v.notconst)) || fltlit);
+        d->constnot = v.notconst;
+        d->constval = v.notconst ? ~v.litlo : v.ival;
         d->constuns = v.uns;
         d->constflt = v.ck == CK_FLT;
         d->constfval = v.fval;

@@ -2437,7 +2437,12 @@ and the node flag of the same name (`NumericBinary`, `NumericUnary`): typed
 `i64`, it adapts as a constant does where the range fits (`FitsAt`,
 `UnifyNumeric`), and `RetypeFlexInt` retypes it there (`MustFit`,
 `RetypeOperands`, a block's tail in `RetypeBranch`) -- each flagged node, a shift's left operand but not its
-count, and the constants below.
+count, and the constants below. `~c` of a constant `c >= 0` is one too,
+with `Val::notconst` saying it is exactly i64's `~c`: unary `-` takes it as
+that constant, and an untyped `let` global of it is a named constant with
+`VarDef::constnot`, read back as such a value. Its value at a narrower use
+is `~c` wrapped, which `Ident::CgX`'s cast and the optimizer's propagated
+copy (`CloneLit`, `WrapStorage`) give.
 
 A construct's numeric branches join in `MergeVals` (§6.4): branches that are
 all integer constants give a `Val::litint`, the range of the constants,

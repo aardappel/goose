@@ -1690,6 +1690,8 @@ struct TypeCheck {
         return FitsIntStorage(v.litlo, false, s) && FitsIntStorage(v.lithi, false, s);
     }
     string ConstsNoFit(const Val &v, TypeExpr *t) {
+        if (v.notconst)
+            return cat("~", v.litlo, " does not fit ", TypeStr(t), ": ", v.litlo, " does not");
         if (v.flexint && v.litlo == v.lithi)
             return cat("constant ", v.litlo, " does not fit ", TypeStr(t));
         if (v.flexint)

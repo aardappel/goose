@@ -1742,7 +1742,13 @@ inline Val TypeCheck::NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bo
 // The value of the unary operation u, `-v` or `~v` (§6.2), as NumericBinary's
 // is of a binary one: a trial changes no node, reports no error, and gives a
 // value of no type where u would be one.
-inline Val TypeCheck::NumericUnary(Unary *u, const Val &v, bool trial) {
+inline Val TypeCheck::NumericUnary(Unary *u, const Val &cv, bool trial) {
+    auto v = cv;
+    if (v.notconst && u->op == T_MINUS) {
+        v.flexint = v.notconst = false;
+        v.ck = CK_INT;
+        v.ival = ~v.litlo;
+    }
     auto t = LoadType(v.type);
     auto fail = [&](const string &msg) {
         if (!trial) Error(u, msg);
@@ -1787,6 +1793,20 @@ inline Val TypeCheck::NumericUnary(Unary *u, const Val &v, bool trial) {
             return r;
         case T_BITNOT:
             if (!IsIntT(t)) return fail(cat("~ requires an integer, got ", TypeStr(t)));
+            // `~c` of a constant c >= 0 depends on the width it is computed
+            // at (`~4` is 251 as a u8), so it adapts as `~(1 << k)` does
+            // rather than folding to i64's -5.
+            if (v.ck == CK_INT && !v.uns && v.ival >= 0) {
+                r.type = ast.inttypes[IS_I64];
+                r.flexint = r.notconst = true;
+                r.litlo = r.lithi = v.ival;
+                r.constfrom = v.constfrom;
+                if (!trial) {
+                    u->child->exprtype = r.type;
+                    u->flexint = true;
+                }
+                return r;
+            }
             if (v.ck == CK_INT) {
                 r.type = ast.inttypes[v.uns ? IS_U64 : IS_I64];
                 r.ck = CK_INT;
@@ -1941,8 +1961,9 @@ inline bool TypeCheck::Converts(const Val &v, TypeExpr *t) {
 inline bool TypeCheck::SameNumVal(const Val &a, const Val &b) {
     if (!a.type || !b.type || !SameNum(LoadType(a.type), LoadType(b.type))) return false;
     if (a.ck != b.ck || a.litfloat != b.litfloat || a.litint != b.litint ||
-        a.flexint != b.flexint || a.unsized != b.unsized)
+        a.flexint != b.flexint || a.unsized != b.unsized || a.notconst != b.notconst)
         return false;
+    if (a.notconst && a.litlo != b.litlo) return false;
     if (a.ck == CK_INT && (a.ival != b.ival || a.uns != b.uns)) return false;
     if (a.ck == CK_FLT && a.fval != b.fval) return false;
     return !a.litint || (a.litlo == b.litlo && a.lithi == b.lithi);

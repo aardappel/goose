@@ -140,7 +140,14 @@ struct Optimizer {
 
     Node *CloneLit(Node *lit, TypeExpr *usetype) {
         Node *r;
-        if (auto i = Is<IntLit>(lit)) r = ast.New<IntLit>(lit->line, i->val, i->text, i->uns);
+        // A named constant `~c` reads at the width its use adapted it to
+        // (Val::notconst), where its value is i64's ~c wrapped.
+        auto it = usetype && usetype->kind == TY_INT ? usetype->intstorage : IS_I64;
+        if (auto i = Is<IntLit>(lit); i && it != IS_VARINT && !i->uns) {
+            auto v = WrapStorage(i->val, it);
+            r = ast.New<IntLit>(lit->line, v, v == i->val ? i->text : string_view {},
+                                it == IS_U64 && v < 0);
+        } else if (auto i = Is<IntLit>(lit)) r = ast.New<IntLit>(lit->line, i->val, i->text, i->uns);
         else if (auto f = Is<FltLit>(lit)) r = ast.New<FltLit>(lit->line, f->val, f->text);
         else r = ast.New<BoolLit>(lit->line, ((BoolLit *)lit)->val);
         r->exprtype = usetype ? usetype : lit->exprtype;

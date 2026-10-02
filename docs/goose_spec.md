@@ -1495,7 +1495,12 @@ operand has as a constant does, where the constant fits it (`let m: u64 =
 1 << k;`, `m | (1 << k)`, a `u8` field), and is an `i64` where nothing
 gives it one. So does an integer operation over such shifts and constants
 (`(1 << k) - 1`, `~(1 << k)`), computed at that type throughout; a typed
-operand, unary `-` or a cast gives it a type of its own. Unary `-`
+operand, unary `-` or a cast gives it a type of its own. So does `~c`
+of a constant `c >= 0`, whose value depends on the width it is computed
+at: it adapts where `c` fits, so `let a: u8 = ~4;` is 251 and
+`flags & ~F_ROAD` clears a flag in a `u8`, while `~4` is -5 at a signed
+type or where nothing gives it one; `-~c` is the constant `c + 1`, and
+a named constant `~c` (§3.1) adapts as `~c` does. Unary `-`
 requires a signed (or float) operand; `~` any integer, keeping its type.
 
 **Comparisons and `u64`.** A comparison produces `bool`, so it does not need a common numeric result

@@ -646,6 +646,9 @@ struct Val : Prov {
     // from (litlo to lithi) all fit, and is an i64 where nothing gives it
     // one. TypeCheck::RetypeFlexInt retypes the nodes computing it.
     bool flexint = false;
+    // A flexint that is `~c` of a constant c >= 0 (litlo == lithi == c): at
+    // i64 it is the constant ~c, which `-` and named constants take it as.
+    bool notconst = false;
     bool lvalue = false;         // Denotes storage (a variable, field or element), not a temporary.
     // An lvalue of varint storage (§3.6), what a reference to such storage
     // loads, or a construct whose branches all are one of those: its value is
@@ -1350,6 +1353,7 @@ struct VarDef {
     bool constlit = false;
     bool constuns = false;      // constval's bits are a u64 above i64.max (Val::uns).
     int64_t constval = 0;
+    bool constnot = false;      // constval is `~c` of a constant c >= 0 (Val::notconst).
     bool constflt = false;      // A float constant, of value constfval.
     double constfval = 0;
     VarDef *constfrom = nullptr;    // The initializer's Val::constfrom.

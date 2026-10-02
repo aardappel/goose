@@ -114,6 +114,10 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
                     v.fval = vd->constfval;
                 }
                 v.constfrom = vd;
+            } else if (vd->constnot) {
+                v.flexint = v.notconst = true;
+                v.litlo = v.lithi = ~vd->constval;
+                v.constfrom = vd;
             } else if (vd->constlit) {
                 v.ck = CK_INT;
                 v.ival = vd->constval;
