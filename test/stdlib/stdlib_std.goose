@@ -6,7 +6,7 @@ import std;
 fn scalars() {
     print(min(3, 7), " ", max(3, 7), " ", clamp(15, 0, 10), " ", clamp(-2, 0, 10));   // 3 7 10 0
     print(abs(-4), " ", abs(-2.5), " ", abs(1.5));                                     // 4 2.5 1.5
-    print(sign(-9), " ", sign(0), " ", sign(4), " ", sign(-0.5), " ", sign(2.0));        // -1 0 1 -1 1
+    print(sign(-9), " ", sign(0), " ", sign(4), " ", sign(-0.5), " ", sign(2.0));        // -1 0 1 -1.0 1.0
     print(lerp(0.0, 10.0, 0.25));                                                      // 2.5
     print(next_pow2(0), " ", next_pow2(1), " ", next_pow2(5), " ", next_pow2(64));     // 1 1 8 64
     print(popcount(255), " ", popcount(0), " ", clz(1), " ", ctz(8), " ", clz(0));      // 8 0 63 3 64
@@ -86,7 +86,7 @@ fn transforming() {
     print(ys.len, " ", ys[3]);                                                 // 4 16
     let ev = filter(xs) { it % 2 == 0 };
     print(ev.len, " ", ev[0], " ", ev[1]);                                     // 2 2 4
-    print(fold(xs, 100) { a, x => a + x }, " ", sum(xs), " ", sum([1.5, 2.5]));   // 110 10 4
+    print(fold(xs, 100) { a, x => a + x }, " ", sum(xs), " ", sum([1.5, 2.5]));   // 110 10 4.0
     let c = concat(xs, ev);
     print(c.len, " ", c[5]);                                                   // 6 4
     var words: u8[][>..] = ["bb", "a", "ccc"];
@@ -182,7 +182,7 @@ fn strings() {
     let v3, ok3 = parse_int("ff", 16);
     print(v3, " ", ok3);                                                       // 255 true
     let fl, okf = parse_flt("-1.5e2");
-    print(fl, " ", okf);                                                       // -150 true
+    print(fl, " ", okf);                                                       // -150.0 true
     let fl2, okf2 = parse_flt("abc");
     print(okf2);                                                               // false
     // 2^53 + 1 takes 54 bits: the mantissa rounds (to even) as it converts.

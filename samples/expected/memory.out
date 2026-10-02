@@ -6,7 +6,7 @@ line 1 of 3
 line 2 of 3
 line 3 of 3
 5 words, 25 bytes of text, 45 bytes in total (4-byte lengths)
-[1, 2, 3] [1, 2, 3, 4] 1
+[1, 2, 3] [1, 2, 3, 4] 1.0
 [0, 10] popped 90
 row0: [0] (1/8)
 row1: [10, 11] (2/8)

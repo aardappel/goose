@@ -196,7 +196,11 @@ recursive fn render(n: Node&, out: u8[>..]&, indent: i64) {
     match n.val {
         Null => out.append("null"),
         Bool b => out.append(if b.v { "true" } else { "false" }),
-        Num x => format(out, x.v),
+        Num x => {
+            // JSON has one number type; a whole one is written as an integer.
+            let i = x.v as! i64;
+            if i == x.v { format(out, i); } else { format(out, x.v); }
+        },
         Str &s => quote(out, s.s),
         Arr &a => render_children(a.first, false, out, indent, '[', ']'),
         Obj &o => render_children(o.first, true, out, indent, '{', '}'),

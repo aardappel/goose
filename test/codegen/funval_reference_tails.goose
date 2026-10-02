@@ -66,7 +66,7 @@ fn main() {
     // Scalars.
     print(plus() { get_i() }, " ", widened() { get_u() }, " ", doubled() { get_d() },
           " ", which() { get_b() }, " ", plus() { get_n() }, " ", plus() { at(gf, 2) });
-                                                        // 6 201 5 2 301 10
+                                                        // 6 201 5.0 2 301 10
     show() { get_i() };                                 // 5
 
     // Chosen by a construct, or given by another function value.

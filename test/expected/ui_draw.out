@@ -1,4 +1,4 @@
-widget read-only at 14 14 292 x 250
+widget read-only at 14.0 14.0 292.0 x 250.0
 31 commands, 12 polygon points, 11 bytes of text
   filled rect 10 10 300 x 300 rounding 0 color 45 45 45 255
   scissor 14 10 292 x 300
@@ -27,7 +27,7 @@ widget read-only at 14 14 292 x 250
   image 78 100 216 4 x 4 part 0 x 0 at 0,65532 tint 255 255 255 255
   image 78 104 216 52 x 4 part 0 x 0 at 4,65532 tint 255 255 255 255
   image 78 156 216 4 x 4 part 0 x 0 at 65532,65532 tint 255 255 255 255
-  text 'canvas text' 170 190 100 x 20 height 13 on 0 0 0 0 in 255 255 255 255
+  text 'canvas text' 170 190 100 x 20 height 13.0 on 0 0 0 0 in 255 255 255 255
   scissor 0 0 50 x 50
   filled rect 20 20 10 x 10 rounding 0 color 0 255 0 255
   scissor -8192 -8192 16384 x 16384
@@ -36,47 +36,47 @@ default: result 0, 550 vertices, 2010 indices in 6 draws (indices counted true, 
 no anti-aliasing: result 0, 542 vertices, 870 indices in 6 draws (indices counted true, in range true), textures null 77 78 null, background 45 45 45 255
 finer curves: result 0, 1138 vertices, 4530 indices in 6 draws (indices counted true, in range true), textures null 77 78 null, background 45 45 45 255
 half alpha: result 0, 550 vertices, 2010 indices in 6 draws (indices counted true, in range true), textures null 77 78 null, background 45 45 45 127
-first draw clipped to -8192 -8192 16384 x 16384
+first draw clipped to -8192.0 -8192.0 16384.0 x 16384.0
 after clear: 0 commands, 0 vertices
-step 0: mouse 10,10 from 0,0 moved 10,10 scrolled 0; moved true, down false, pressed false, released false
+step 0: mouse 10.0,10.0 from 0.0,0.0 moved 10.0,10.0 scrolled 0.0; moved true, down false, pressed false, released false
   clicks: any false, in target false, away false, in its button false, down in it false, up in it false
   this frame: clicked in target false, down false, any button false, hovered and clicked false
-  hovering: target false, before true, still false; for 0.6s false (0), still false (0), unless clicked false (0)
-step 1: mouse 30,40 from 10,10 moved 0,0 scrolled 0; moved false, down true, pressed true, released false
+  hovering: target false, before true, still false; for 0.6s false (0.0), still false (0.0), unless clicked false (0.0)
+step 1: mouse 30.0,40.0 from 10.0,10.0 moved 0.0,0.0 scrolled 0.0; moved false, down true, pressed true, released false
   clicks: any false, in target true, away false, in its button true, down in it true, up in it false
   this frame: clicked in target false, down true, any button false, hovered and clicked false
   hovering: target true, before true, still true; for 0.6s false (0.25), still false (0.25), unless clicked false (0.25)
-step 2: mouse 30,40 from 30,40 moved 0,0 scrolled 2; moved false, down false, pressed false, released true
+step 2: mouse 30.0,40.0 from 30.0,40.0 moved 0.0,0.0 scrolled 2.0; moved false, down false, pressed false, released true
   clicks: any true, in target true, away false, in its button true, down in it false, up in it true
   this frame: clicked in target true, down false, any button true, hovered and clicked true
   hovering: target true, before false, still true; for 0.6s false (0.5), still false (0.5), unless clicked false (0.5)
-step 3: mouse 30,40 from 30,40 moved 0,0 scrolled 0; moved false, down false, pressed false, released false
+step 3: mouse 30.0,40.0 from 30.0,40.0 moved 0.0,0.0 scrolled 0.0; moved false, down false, pressed false, released false
   clicks: any false, in target true, away false, in its button true, down in it false, up in it true
   this frame: clicked in target false, down false, any button false, hovered and clicked false
   hovering: target true, before false, still true; for 0.6s true (0.75), still true (0.75), unless clicked true (0.75)
-step 4: mouse 30,40 from 30,40 moved 0,0 scrolled 0; moved false, down false, pressed false, released false
+step 4: mouse 30.0,40.0 from 30.0,40.0 moved 0.0,0.0 scrolled 0.0; moved false, down false, pressed false, released false
   clicks: any false, in target true, away false, in its button true, down in it false, up in it true
   this frame: clicked in target false, down false, any button false, hovered and clicked false
-  hovering: target true, before false, still true; for 0.6s true (1), still true (0.75), unless clicked true (0.75)
-step 5: mouse 30,40 from 30,40 moved 0,0 scrolled 0; moved false, down false, pressed false, released false
+  hovering: target true, before false, still true; for 0.6s true (1.0), still true (0.75), unless clicked true (0.75)
+step 5: mouse 30.0,40.0 from 30.0,40.0 moved 0.0,0.0 scrolled 0.0; moved false, down false, pressed false, released false
   clicks: any false, in target true, away false, in its button true, down in it false, up in it true
   this frame: clicked in target false, down false, any button false, hovered and clicked false
   hovering: target true, before false, still true; for 0.6s true (1.25), still true (0.75), unless clicked true (0.75)
-step 6: mouse 30,40 from 30,40 moved 0,0 scrolled 0; moved false, down true, pressed true, released false
+step 6: mouse 30.0,40.0 from 30.0,40.0 moved 0.0,0.0 scrolled 0.0; moved false, down true, pressed true, released false
   clicks: any false, in target true, away false, in its button true, down in it true, up in it false
   this frame: clicked in target false, down true, any button false, hovered and clicked false
   hovering: target true, before false, still true; for 0.6s true (1.5), still true (0.75), unless clicked true (0.75)
-step 7: mouse 30,40 from 30,40 moved 0,0 scrolled 0; moved false, down false, pressed false, released true
+step 7: mouse 30.0,40.0 from 30.0,40.0 moved 0.0,0.0 scrolled 0.0; moved false, down false, pressed false, released true
   clicks: any true, in target true, away false, in its button true, down in it false, up in it true
   this frame: clicked in target true, down false, any button true, hovered and clicked true
   hovering: target true, before false, still true; for 0.6s true (1.75), still true (0.75), unless clicked false (0.75, clicked)
-step 8: mouse 32,41 from 30,40 moved 2,1 scrolled 0; moved true, down false, pressed false, released false
+step 8: mouse 32.0,41.0 from 30.0,40.0 moved 2.0,1.0 scrolled 0.0; moved true, down false, pressed false, released false
   clicks: any false, in target true, away false, in its button true, down in it false, up in it true
   this frame: clicked in target false, down false, any button false, hovered and clicked false
-  hovering: target true, before false, still false; for 0.6s true (2), still true (0.75), unless clicked false (0)
-scale 1; set to 2 true: 2; its font baked again true, 13 high
-the mouse at pixel 110,48 is at 55,24 in the ui
-button at 14,14 in the ui, clicked through pixels true; the window at 10,10 100 x 80 drawn from 19,19 to 220,180, clipped to 28,20 164 x 140
-back to 1 true: 1, 13 high
-made at 1.5: 1.5, 16 high
+  hovering: target true, before false, still false; for 0.6s true (2.0), still true (0.75), unless clicked false (0.0)
+scale 1.0; set to 2 true: 2.0; its font baked again true, 13.0 high
+the mouse at pixel 110,48 is at 55.0,24.0 in the ui
+button at 14.0,14.0 in the ui, clicked through pixels true; the window at 10,10 100 x 80 drawn from 19.0,19.0 to 220.0,180.0, clipped to 28.0,20.0 164.0 x 140.0
+back to 1 true: 1.0, 13.0 high
+made at 1.5: 1.5, 16.0 high
 misuses 0

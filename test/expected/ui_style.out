@@ -6,20 +6,20 @@ rgb_hex 255 128 0 255; rgba_hex 17 34 51 68
 rgb_factor 0.5 of 200 100 50: 100 50 25 255
 hsv red 255 0 0 255; hsva 0 255 0 128
 hsv_f green 0 255 0 255; hsva_f blue 0 0 255 255
-hsva_colorf cyan 0 1 1 1
-colorf_hsva_f 0.5 1 1 1
-color_cf 1 0.5019608 0 1; color_u32 4278223103
+hsva_colorf cyan 0.0 1.0 1.0 1.0
+colorf_hsva_f 0.5 1.0 1.0 1.0
+color_cf 1.0 0.5019608 0.0 1.0; color_u32 4278223103
 hex FF8000FF FF8000
-color_hsv_f 0.08366013 1 1; color_hsva_f blue 0.6666666 1 1 0.20000002
-default style: window rounding 0, button rounding 4, text 175 175 175 255, header buttons right, tooltip delay 0.5
+color_hsv_f 0.08366013 1.0 1.0; color_hsva_f blue 0.6666666 1.0 1.0 0.20000002
+default style: window rounding 0.0, button rounding 4.0, text 175 175 175 255, header buttons right, tooltip delay 0.5
 button background kind 0, 50 50 50 255
 drawn in the default button color: true
-set: window rounding 6, button 200 10 20 255
+set: window rounding 6.0, button 200 10 20 255
 drawn in the set color: true
 pushed true: 1 2 3 255
 drawn in the pushed color: true
 popped true: 200 10 20 255
-default again: window rounding 0, button 50 50 50 255
+default again: window rounding 0.0, button 50 50 50 255
 color table: 32 colors, text 175 175 175 255, window 45 45 45 255, button 50 50 50 255
 names: NK_COLOR_TEXT NK_COLOR_WINDOW NK_COLOR_HEADER NK_COLOR_BORDER
 names: NK_COLOR_BUTTON NK_COLOR_BUTTON_HOVER NK_COLOR_BUTTON_ACTIVE NK_COLOR_TOGGLE
@@ -40,8 +40,8 @@ font: small true
 set: big true
 pushed small true: small true
 popped true: big true
-text 'big' in a font 20 high: big
-text 'small' in a font 10 high: small
+text 'big' in a font 20.0 high: big
+text 'small' in a font 10.0 high: small
 no cursors loaded: none
 all loaded, the arrow: 100 @ 48, 42 16 x 20
 over a text field clicked: 101 @ 48, 42 16 x 20
@@ -52,13 +52,13 @@ shown, another arrow: 200 @ 50, 45 8 x 8
 image 3 subimage false; part of 64 x 32 at 8 0 16 16 subimage true
 nine-slice 4 borders 1 2 3 4 sub false; of a part: 5 6 7 8 sub true
 texture image 42
-rects 1.5 2.5 3 4; 1 4; 5 6 7 8; pos 5 6 size 7 8
-null rect -8192 -8192 16384 16384
+rects 1.5 2.5 3.0 4.0; 1.0 4.0; 5.0 6.0 7.0 8.0; pos 5.0 6.0 size 7.0 8.0
+null rect -8192.0 -8192.0 16384.0 16384.0
 murmur 2649154057 2856506138 0
-triangle up: 5,2 9,18 1,18
-triangle right: 1,2 9,10 1,18
-triangle down: 1,2 9,2 5,18
-triangle left: 1,10 9,2 9,18
+triangle up: 5.0,2.0 9.0,18.0 1.0,18.0
+triangle right: 1.0,2.0 9.0,10.0 1.0,18.0
+triangle down: 1.0,2.0 9.0,2.0 5.0,18.0
+triangle left: 1.0,10.0 9.0,2.0 9.0,18.0
 strfilter hello world world$: true
 strfilter hello world ^hello: true
 strfilter hello world ^world: false

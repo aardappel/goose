@@ -421,9 +421,6 @@ inline string CodeGen::FltStr(double v, bool f32) {
         return v > 0 ? "INFINITY" : "(-INFINITY)";
     string s;
     CatOne(s, v);
-    if (s.find('.') == string::npos && s.find('e') == string::npos &&
-        s.find("inf") == string::npos && s.find("nan") == string::npos)
-        s += ".0";
     if (f32) s += "f";
     return s;
 }

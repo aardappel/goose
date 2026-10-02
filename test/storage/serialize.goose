@@ -134,7 +134,7 @@ fn adt_elements() {
     var back, ok = from_bytes<Shape[>..]>(img);
     var sum = 0.0;
     for &s in back { sum += area(s); }
-    print("shape ", ok, " ", back.len, " ", sum);       // shape true 3 9
+    print("shape ", ok, " ", back.len, " ", sum);       // shape true 3 9.0
 
     img[img.len - 27] = 9;                              // a tag out of range
     var b2, ok2 = from_bytes<Shape[>..]>(img);

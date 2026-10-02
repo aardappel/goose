@@ -58,12 +58,12 @@ integer literal -1 (18446744073709551615)
 float literal 1.5
 float literal 0.25
 float literal 3.14159
-float literal 10000000000
+float literal 10000000000.0
 float literal 0.0025
-float literal 100
-float literal 12
+float literal 100.0
+float literal 12.0
 float literal 0.25
-float literal 20
+float literal 20.0
 integer literal 1 (1)
 ..
 integer literal 2 (2)

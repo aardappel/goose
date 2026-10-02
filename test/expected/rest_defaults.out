@@ -1,12 +1,12 @@
 0.5/1.5
-4/1.5
-3 1 0/1.5 100 anon [0, 0, 0] 0 idle none 2
-4 3 0/1.5 7 bee [0, 0, 0] 0 idle none 4
-5 6 2/1.5 100 anon [0, 0, 0] 0 idle none 5
-0 6 0/1.5 100 anon [0, 0, 0] 0 idle none 7
-80 9 0/1.5 100 anon [0, 0, 0] 0 idle none 10
-3 1 0/1.5 100 anon [0, 8, 0] 1 idle target 2
-9 11 0/1.5 100 pushed [0, 0, 0] 0 idle none 12
-0 13 0/1.5 100 anon [0, 0, 0] 0 idle none 14
-2 0/1.5 7
-3 0 1.5 0 1/2
+4.0/1.5
+3 1 0.0/1.5 100 anon [0, 0, 0] 0 idle none 2
+4 3 0.0/1.5 7 bee [0, 0, 0] 0 idle none 4
+5 6 2.0/1.5 100 anon [0, 0, 0] 0 idle none 5
+0 6 0.0/1.5 100 anon [0, 0, 0] 0 idle none 7
+80 9 0.0/1.5 100 anon [0, 0, 0] 0 idle none 10
+3 1 0.0/1.5 100 anon [0, 8, 0] 1 idle target 2
+9 11 0.0/1.5 100 pushed [0, 0, 0] 0 idle none 12
+0 13 0.0/1.5 100 anon [0, 0, 0] 0 idle none 14
+2.0 0.0/1.5 7
+3 0 1.5 0.0 1.0/2.0

@@ -46,9 +46,9 @@ fn main() {
     print(d);
     let d2: f64 = x as f32;         // 0.10000000149011612
     print(d2);
-    let d3: f64 = big as! f32;      // 16777216
+    let d3: f64 = big as! f32;      // 16777216.0
     print(d3);
-    let d4: f64 = big as f32;       // 16777216
+    let d4: f64 = big as f32;       // 16777216.0
     print(d4);
     var w: i64 = 0;
     w = a as! i8;                   // 44
@@ -85,7 +85,7 @@ fn main() {
     print(k2);
     let k3: f64 = 0.1 as! f32;              // 0.10000000149011612
     print(k3);
-    let k4: f64 = 16777217 as! f32;         // 16777216
+    let k4: f64 = 16777217 as! f32;         // 16777216.0
     print(k4);
     let mc: i8 = -128;
     let k5: i64 = -mc;                      // -128

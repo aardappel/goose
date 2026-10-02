@@ -20,19 +20,19 @@ text among keys: 6 events
   text 33
   key Return up, keycode 13
 the mouse: 7 events
-  motion to 5,6
-  motion to 7,8
-  button 1 down at 7,8, clicks 1
-  motion to 7,8
-  button 1 up at 7,8, clicks 1
-  motion to 9,10
-  button 5 down at 9,10, clicks 1
+  motion to 5.0,6.0
+  motion to 7.0,8.0
+  button 1 down at 7.0,8.0, clicks 1
+  motion to 7.0,8.0
+  button 1 up at 7.0,8.0, clicks 1
+  motion to 9.0,10.0
+  button 5 down at 9.0,10.0, clicks 1
 X2 down true, X1 down false
 released: 2 events
-  motion to 9,10
-  button 5 up at 9,10, clicks 1
+  motion to 9.0,10.0
+  button 5 up at 9.0,10.0, clicks 1
 mouse in the window true
-off the left: in the window false at vec2<f32> { -1, 10 }
+off the left: in the window false at vec2<f32> { -1.0, 10.0 }
 off the bottom: in the window false
 on the last pixel: in the window true
 scancode of A true, named back A

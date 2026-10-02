@@ -25,7 +25,7 @@ fn main() {
 
     // All-literal branches adapt to the parameter they meet.
     print(g(if yes {1} else {2}), " ", u(if no {1} else {250}));   // 1 250
-    print(k(if yes {0.1} else {0.25}), " ", k(if no {1} else {2})); // 0.1 2
+    print(k(if yes {0.1} else {0.25}), " ", k(if no {1} else {2})); // 0.1 2.0
     print(h(if yes {1} else {2}), " ", h(if yes {0.5} else {1}));   // u8 f64
     print(max(if yes {100} else {50}, x8) * 3);     // 44
 

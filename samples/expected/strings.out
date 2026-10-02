@@ -12,7 +12,7 @@ alice | 30 | paris |  | bob | 25
   text ''
   text 'bob'
   number 25
--2500 true
+-2500.0 true
 255 true
 ["alpha", "bravo", "charlie", "delta"]
 -1 1 true

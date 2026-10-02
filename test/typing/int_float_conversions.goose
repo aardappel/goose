@@ -45,29 +45,29 @@ fn main() {
     // Destinations.
     let a: f64 = 2;
     let b: f32 = e.w;
-    print(a, " ", b);                               // 2 9
+    print(a, " ", b);                               // 2.0 9.0
     g = n64;
-    print(g, " ", wider(e.x), " ", dflt());          // 3 3 1
+    print(g, " ", wider(e.x), " ", dflt());          // 3.0 3.0 1.0
     let v = V2 { e.x, 2 };
-    print(v.x, " ", v.y);                           // 3 2
+    print(v.x, " ", v.y);                           // 3.0 2.0
     var fs: f32[>..] = [1, e.w];
     fs.push(e.x);
     fs.push(e.w * 0.1);
-    print(fs);                                      // [1, 9, 3, 0.90000004]
+    print(fs);                                      // [1.0, 9.0, 3.0, 0.90000004]
     f += e.w;
     g -= 1;
-    print(f, " ", g);                               // 10.5 2
+    print(f, " ", g);                               // 10.5 2.0
     f = 1.5;
 
     // Mixed operands: the integer converts to the float's type.
     print(e.w * tenth);                             // 0.90000004
     // An integer inside a block or an inlined call still converts.
-    print(({ e.w }) * tenth, " ", next(e.w) * tenth);  // 0.90000004 1
-    print(n64 + g, " ", n64 * f);                   // 5 4.5
+    print(({ e.w }) * tenth, " ", next(e.w) * tenth);  // 0.90000004 1.0
+    print(n64 + g, " ", n64 * f);                   // 5.0 4.5
     var big: u64 = 18446744073709551615;
     print(big * 1.0, " ", big > 1e19);              // 1.8446744073709552e+19 true
     let packed = Packed { n64 };
-    print(packed.n * 0.5, " ", id32(packed.n));     // 1.5 3
+    print(packed.n * 0.5, " ", id32(packed.n));     // 1.5 3.0
     print(e.w > f, " ", e.x * 0.5 < f, " ", n64 == 3.0);    // true false true
 
     // A float of literals and integers takes its destination's type.
@@ -79,13 +79,13 @@ fn main() {
     print(e.w * 0.1 - f);                           // -0.59999996
     print(-(e.w * 0.1) + f);                        // 0.59999996
     print(e.w * 0.1 + 1 + f);                       // 3.4
-    print(id32({ e.w * 0.1 }), " ", id32(e.w % 1.5));   // 0.90000004 0
+    print(id32({ e.w * 0.1 }), " ", id32(e.w % 1.5));   // 0.90000004 0.0
     print(g + e.w * 0.1);                           // 2.9
 
     // An integer literal where a float is expected.
-    print(f * 2, " ", g / 4, " ", (g + 1.5) / 2);   // 3 0.5 1.75
+    print(f * 2, " ", g / 4, " ", (g + 1.5) / 2);   // 3.0 0.5 1.75
     let odd: f32 = 16777217;
-    print(odd);                                     // 16777216
+    print(odd);                                     // 16777216.0
 
     // A constant beyond f32's range rounds to an infinity at an f32 (only an
     // infinity is its own double here).
@@ -100,16 +100,16 @@ fn main() {
     var c = e.x > 1;
     let j = if c { e.x } else { 0.5 };
     let k = if c { 1 } else { f };
-    print(j, " ", k);                               // 3 1
+    print(j, " ", k);                               // 3.0 1.0
 
     // Generic functions: the typed argument binds, a float literal binds
     // before an integer one.
-    print(min(f, 1), " ", max(1, 0.5), " ", max(e.x * 0.5, f));    // 1 1 1.5
+    print(min(f, 1), " ", max(1, 0.5), " ", max(e.x * 0.5, f));    // 1.0 1.0 1.5
     print(clamp(e.w - 0.5, 0.0, f), " ", abs(-e.x));    // 1.5 3
 
     // Overloads.
-    print(pick(2), " ", wide(e.x), " ", id32(e.x), " ", prec(e.x * 0.5));  // i32 i64 3 f64
+    print(pick(2), " ", wide(e.x), " ", id32(e.x), " ", prec(e.x * 0.5));  // i32 i64 3.0 f64
     print(str(0.5), " ", str(e.x));                 // user str 3
     let sh: Shape = if c { Shape.Circle { 1.0 } } else { Shape.Square { 2.0 } };
-    print(area(sh, 2), " ", scale(sh, 2));          // 6 circle
+    print(area(sh, 2), " ", scale(sh, 2));          // 6.0 circle
 }

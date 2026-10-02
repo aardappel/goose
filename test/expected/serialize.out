@@ -8,7 +8,7 @@ empty 1 true 0 false
 ring true 2 7 8
 slice true 1 8
 knot true 2 1
-shape true 3 9
+shape true 3 9.0
 badtag false 0
 cell true 3 2 1 2
 overlen false

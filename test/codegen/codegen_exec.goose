@@ -290,11 +290,11 @@ fn f32s() {
     var v = F3 { 1.5, 2.5, 3.5 };
     let w = F3 { 0.5, 0.5, 0.5 };
     let s = v + w;                       // Elementwise in f32.
-    print(s.x + s.y + s.z);              // 2+3+4 = 9
+    print(s.x + s.y + s.z);              // 2+3+4 = 9.0
     v.x *= 2.0;
-    print(v.x);                          // 3
+    print(v.x);                          // 3.0
     let arr: f32[2] = [0.25, 0.75];
-    print(arr[0] + arr[1]);              // 1
+    print(arr[0] + arr[1]);              // 1.0
     print(v.y > v.x);                    // false (2.5 > 3 is false)
 }
 
@@ -1256,7 +1256,7 @@ enum DefE { Off { v: i16 = -2 }, On { x: i64 } }
 fn defaults_builtin() {
     let d = default<DefB>();
     print(d.a.n + d.k);                  // 10
-    print(d.a.f);                        // 0
+    print(d.a.f);                        // 0.0
     print(d.a.o == null);                // true
     print(d.a.s.len + d.a.lim.len + d.a.arr.len);   // 0 + 0 + 2 = 2
     print(d.a.arr[1]);                   // 0
@@ -1499,21 +1499,21 @@ struct WalletAg { owner: u8[], cash: MoneyAg }
 fn aggregate_print() {
     print(PtAg { 1, 2.5 });                                   // PtAg { 1, 2.5 }
     let n = NamedAg { name: "bob", p: PtAg { 3, 4.0 }, tags: [7, 8, 9] };
-    print(n);                                                 // NamedAg { "bob", PtAg { 3, 4 }, [7, 8, 9] }
+    print(n);                                                 // NamedAg { "bob", PtAg { 3, 4.0 }, [7, 8, 9] }
     var pts: PtAg[>..] = [PtAg { 1, 1.0 }, PtAg { 2, 2.0 }];
-    print(pts);                                               // [PtAg { 1, 1 }, PtAg { 2, 2 }]
+    print(pts);                                               // [PtAg { 1, 1.0 }, PtAg { 2, 2.0 }]
     var words: u8[][>..] = ["a b", "c"];
     print(words);                                             // ["a b", "c"]
     var o: const PtAg? = null;
     print(o);                                                 // null
     o .= n.p;
-    print(o);                                                 // PtAg { 3, 4 }
+    print(o);                                                 // PtAg { 3, 4.0 }
     var sh: ShapeAg[>..] = [ShapeAg.Dot, ShapeAg.Circle { r: 1.5 }, ShapeAg.Rect { w: 2, h: 3 }];
     print(sh);                                                // [ShapeAg.Dot, Circle { 1.5 }, Rect { 2, 3 }]
     print(MoneyAg { 1234 });                                  // $12.34
     print(WalletAg { owner: "ann", cash: MoneyAg { 250 } });  // WalletAg { "ann", $2.50 }
     let s = str("v=", PtAg { 5, 6.0 });
-    print(s.len, " ", s);                                     // 15 v=PtAg { 5, 6 }
+    print(s.len, " ", s);                                     // 17 v=PtAg { 5, 6.0 }
     var out: u8[>..] = [];
     format(out, "[", MoneyAg { 5 }, "]");
     print(out);                                               // [$0.5]

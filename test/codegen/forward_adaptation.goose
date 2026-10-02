@@ -178,7 +178,7 @@ fn main() {
     let second: Pick = Pick.Second { k: 40 };
     let p1, f1 = picked(first);
     let p2, f2 = picked(second);
-    print(p1, " ", f1, " ", p2, " ", f2);           // 30 -1 -2 40
+    print(p1, " ", f1, " ", p2, " ", f2);           // 30 -1.0 -2 40.0
 
     let ot, on = own_texts();
     let ov, om = own_values();

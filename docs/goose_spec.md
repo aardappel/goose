@@ -481,8 +481,10 @@ UTF-8 is a library-level convention.
 **Text.** Every scalar, `bool`, and `u8` array or slice has a text form:
 integers in decimal, floats in the shortest form that reads back to the same
 value of their own type (so an `f32` 0.1 prints as `0.1`, not as the digits
-of the `f64` it widens to; infinities as `inf` and `-inf`, every NaN as
-`nan`), `true`/`false`, and a `u8` array's bytes as they are. Three builtins
+of the `f64` it widens to), with `.0` after a whole number so it still
+reads as a float (`1.0`, `-0.0`, `2147483600.0`; `1e+20` keeps its
+exponent form), infinities as `inf` and `-inf` and every NaN as `nan`;
+`true`/`false`, and a `u8` array's bytes as they are. Three builtins
 produce it, each taking any number of arguments and inserting nothing
 between them: `print(a, b, …)` writes the forms to standard output followed
 by a newline, as one write, so lines printed by different threads (§11)
@@ -494,7 +496,7 @@ i))` writes straight into the element. A character literal is an integer
 
 Every other value type renders structurally, so `print(v)` shows any value:
 an array or slice of other elements as `[1, 2, 3]`, a struct or ADT variant
-as its positional literal with the type name (`vec3<f32> { 1, 2, 3 }`,
+as its positional literal with the type name (`vec3<f32> { 1.0, 2.0, 3.0 }`,
 `Circle { 1.5 }`, a payload-less variant as `Shape.Dot`), a reference as
 its pointee and a null optional as `null`; a `u8` array nested inside an
 aggregate is quoted and escaped. References are followed as deep as they

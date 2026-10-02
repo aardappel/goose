@@ -1,18 +1,18 @@
-circle Circle { 1 } area 3.1415926535897931 sides 0
-rectangle Rect { 2, 3 } area 6 sides 4
-other Tri { 3, 4, 5 } area 6 sides 3
-other Shape.Dot area 0 sides 0
-square Rect { 2, 2 } area 4 sides 4
+circle Circle { 1.0 } area 3.1415926535897931 sides 0
+rectangle Rect { 2.0, 3.0 } area 6.0 sides 4
+other Tri { 3.0, 4.0, 5.0 } area 6.0 sides 3
+other Shape.Dot area 0.0 sides 0
+square Rect { 2.0, 2.0 } area 4.0 sides 4
 total area 19.141592653589793
-[Circle { 2 }, Rect { 4, 6 }, Tri { 6, 8, 10 }, Circle { 1 }, Rect { 4, 4 }]
+[Circle { 2.0 }, Rect { 4.0, 6.0 }, Tri { 6.0, 8.0, 10.0 }, Circle { 1.0 }, Rect { 4.0, 4.0 }]
 circle 3.1415926535897931
-other 0
-square 9
-other 0
-other 6
-2 dots, widest rect now 3
-[Circle { 1 }, Shape.Dot, Rect { 3, 3 }, Shape.Dot, Tri { 3, 4, 5 }]
-3: rect 2 by 3
+other 0.0
+square 9.0
+other 0.0
+other 6.0
+2 dots, widest rect now 3.0
+[Circle { 1.0 }, Shape.Dot, Rect { 3.0, 3.0 }, Shape.Dot, Tri { 3.0, 4.0, 5.0 }]
+3: rect 2.0 by 3.0
 0: label "hello, goose"
 4: label "x"
 1: circle 1.5

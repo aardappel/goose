@@ -15,15 +15,15 @@ fn main() {
     print(up > 3.4e38, " ", up == up * 2.0);            // true true
     let down = doubles[2] as f32;
     print(down < -3.4e38, " ", down == down * 2.0);     // true true
-    print(doubles[3] as f32);               // 16777216
-    print(ints[0] as f32);                  // 16777216
-    print(ints[1] as f32);                  // 123456790
+    print(doubles[3] as f32);               // 16777216.0
+    print(ints[0] as f32);                  // 16777216.0
+    print(ints[1] as f32);                  // 123456790.0
     print(ints[2] as f32);                  // 9.223372e+18
     // 2^60 + 2^36 + 1 rounds up to 2^60 + 2^37. Through f64 it would first
     // round to the tie 2^60 + 2^36, and from there down to 2^60.
     print(ints[3] as f32);                  // 1.1529216e+18
-    print(halves[0] as f32);                // 2147483600
-    print(words[0] as f32);                 // 4294967300
+    print(halves[0] as f32);                // 2147483600.0
+    print(words[0] as f32);                 // 4294967300.0
     print(wides[0] as f32);                 // 1.8446744e+19
     // Into a wider slot, the value is still the rounded one.
     let d: f64 = doubles[0] as f32;
@@ -34,7 +34,7 @@ fn main() {
     print(0.1 as f32);                      // 0.1
     let cup = 1e300 as f32;
     print(cup > 3.4e38, " ", cup == cup * 2.0);         // true true
-    print(16777217 as f32);                 // 16777216
+    print(16777217 as f32);                 // 16777216.0
     print(9223372036854775807 as f32);      // 9.223372e+18
     print(1152921573326323713 as f32);      // 1.1529216e+18
     print(18446744073709551615 as f32);     // 1.8446744e+19

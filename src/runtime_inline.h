@@ -1083,7 +1083,13 @@ static int64_t gs_fmt_f64(uint8_t *dst, double v) {
     }
     int n = snprintf((char *)dst, GS_FMT_MAX, "%.15g", v);
     if (strtod((char *)dst, NULL) != v) n = snprintf((char *)dst, GS_FMT_MAX, "%.17g", v);
-    return gs_fmt_exp((char *)dst, n);
+    n = gs_fmt_exp((char *)dst, n);
+    /* A whole number still reads as a float: 1.0, not 1. */
+    if (!memchr(dst, '.', (size_t)n) && !memchr(dst, 'e', (size_t)n)) {
+        dst[n++] = '.';
+        dst[n++] = '0';
+    }
+    return n;
 }
 
 /* The fewest significant digits that read back as the same f32, laid out as

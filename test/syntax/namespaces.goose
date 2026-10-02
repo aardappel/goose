@@ -41,7 +41,7 @@ fn main_namespaces() {
             Square sq => print(sq.s),
             Empty => print("empty"),
         }
-    }                                        // 12 2 9 3 0 empty
+    }                                        // 12.0 2.0 9.0 3.0 0.0 empty
     // A pool named across namespaces.
     image::push_node(1);
     image::push_node(2);

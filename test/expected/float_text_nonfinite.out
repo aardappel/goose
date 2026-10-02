@@ -3,7 +3,7 @@ inf -inf nan nan
 inf nan inf nan
 inf,-inf,nan,nan,inf,nan
 -inf nan -inf
-[inf, -inf, nan, 1] [inf, nan]
+[inf, -inf, nan, 1.0] [inf, nan]
 Hit { inf, nan } Hit { nan, -inf }
 Value { inf } Value { nan }
 -inf <nan> [<inf>]

@@ -23,6 +23,7 @@ inline void CatOne(string &s, double v) {
     snprintf(buf, sizeof(buf), "%.15g", v);
     if (strtod(buf, nullptr) != v) snprintf(buf, sizeof(buf), "%.17g", v);
     s += buf;
+    if (!strpbrk(buf, ".e")) s += ".0";
 }
 
 template<typename... Ts> void Append(string &s, const Ts &...args) {

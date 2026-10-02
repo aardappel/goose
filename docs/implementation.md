@@ -3551,7 +3551,9 @@ digits (`gs_fmt_f64`). That is a round-trip format, not a general
 shortest-decimal algorithm; see section 11. An `f32` takes the fewest of 6
 to 9 digits that read back as the same `f32` (`gs_fmt_f32`), through
 `strtod` and a cast on every backend, and is laid out as the text of the
-`f64` nearest those digits, so `f32` and `f64` text share one style. Infinities and NaNs are
+`f64` nearest those digits, so `f32` and `f64` text share one style. A
+whole number gets `.0` (`1.0`, `2147483600.0`), as does the compiler's own
+text of a double (`CatOne`), which C float literals and dumps use. Infinities and NaNs are
 spelled by the runtime (`inf`, `-inf`, `nan`) rather than by the C
 library, which differs between backends: msvcrt, linked by TinyCC on
 Windows, writes `1.#INF` and `-1.#IND`, and others print a NaN's sign.
