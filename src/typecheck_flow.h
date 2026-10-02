@@ -1168,7 +1168,9 @@ inline void TypeCheck::RetypeBranches(Node *x, TypeExpr *t) {
 // One branch's value, of a construct now of type t: an integer converts to a
 // float t in a node of its own (ToFloat); an integer constant, which a type
 // wider than its own receives as it is, takes any other t; and a float of
-// literals takes an f32 t in every node computing it (RetypeFlex).
+// literals takes an f32 t, and an integer computed from constants through a
+// shift (Val::flexint) any integer t, in every node computing it
+// (RetypeFlex, RetypeFlexInt).
 inline void TypeCheck::RetypeBranch(Node *&n, TypeExpr *t) {
     if (!n || !n->exprtype || n->exprtype->kind == TY_VOID) return;   // It diverges.
     if (Is<Block>(n) || Is<EarlyBlock>(n) || Is<IfExpr>(n) || Is<MatchExpr>(n) ||
@@ -1179,7 +1181,10 @@ inline void TypeCheck::RetypeBranch(Node *&n, TypeExpr *t) {
     }
     auto nt = LoadType(n->exprtype);
     if (TypeEq(nt, t)) return;
+    auto b = Is<Binary>(n);
+    auto u = Is<Unary>(n);
     if (IsIntT(nt) && t->kind == TY_FLT) ToFloat(n, nt, t);
+    else if (IsIntT(t) && ((b && b->flexint) || (u && u->flexint))) RetypeFlexInt(n, t);
     else if (IsIntT(nt) && IsIntT(t) && !ImplicitInt(nt->intstorage, t->intstorage))
         n->exprtype = t;
     else if (nt->kind == TY_FLT && IsF32(t)) RetypeFlex(n, t);

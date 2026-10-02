@@ -2405,6 +2405,14 @@ the same name: typed at the literals' `f64`, it is retyped by `RetypeFlex`
 wherever it meets an `f32` destination or operand -- each flagged node, the
 implicit casts of its integers and its literals take the new type, while a
 constant part keeps its nodes, which fold at full precision and round once.
+An integer computed from constants with a shift by a count that is no
+constant among its operations (§6.1: `1 << k`, `(1 << k) - 1`, `~(1 << k)`)
+carries `Val::flexint`, the range of those constants in `litlo`/`lithi`,
+and the node flag of the same name (`NumericBinary`, `NumericUnary`): typed
+`i64`, it adapts as a constant does where the range fits (`FitsAt`,
+`UnifyNumeric`), and `RetypeFlexInt` retypes it there (`MustFit`,
+`RetypeOperands`, a block's tail in `RetypeBranch`) -- each flagged node, a shift's left operand but not its
+count, and the constants below.
 
 A construct's numeric branches join in `MergeVals` (§6.4): branches that are
 all integer constants give a `Val::litint`, the range of the constants,

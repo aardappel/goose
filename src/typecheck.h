@@ -1676,7 +1676,21 @@ struct TypeCheck {
         int64_t lo, hi;
         return IntConsts(v, lo, hi) && FitsIntStorage(lo, false, s) && FitsIntStorage(hi, false, s);
     }
+    // The constants a value is computed from, lo to hi: IntConsts', or a
+    // Val::flexint's.
+    static bool FlexConsts(const Val &v, int64_t &lo, int64_t &hi) {
+        if (v.flexint) { lo = v.litlo; hi = v.lithi; return true; }
+        return IntConsts(v, lo, hi);
+    }
+    static bool FlexFits(const Val &v, IntStorage s) {
+        return FitsIntStorage(v.litlo, false, s) && FitsIntStorage(v.lithi, false, s);
+    }
     string ConstsNoFit(const Val &v, TypeExpr *t) {
+        if (v.flexint && v.litlo == v.lithi)
+            return cat("constant ", v.litlo, " does not fit ", TypeStr(t));
+        if (v.flexint)
+            return cat("the constants ", v.litlo, " to ", v.lithi, " it is computed from do not "
+                       "all fit ", TypeStr(t));
         if (!v.litint) return cat("constant ", ConstStr(v), " does not fit ", TypeStr(t));
         return cat("the branches' constants ", v.litlo, " to ", v.lithi, " do not all fit ",
                    TypeStr(t));
@@ -1684,6 +1698,7 @@ struct TypeCheck {
     static void IntToFloat(Val &v, TypeExpr *ft);
     void ToFloat(Node *&n, TypeExpr *from, TypeExpr *ft);
     void RetypeFlex(Node *&n, TypeExpr *t);
+    void RetypeFlexInt(Node *n, TypeExpr *t);
     void RetypeBranch(Node *&n, TypeExpr *t);
     void RetypeBranches(Node *x, TypeExpr *t);
 

@@ -580,7 +580,7 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
         // parameter, after them (§7.7).
         auto late = [&](const Val &av) {
             if (av.emptyarr || av.isnull) return 3;
-            return LitFloat(av) ? 1 : isliteral(av) || av.litint ? 2 : 0;
+            return LitFloat(av) ? 1 : isliteral(av) || av.litint || av.flexint ? 2 : 0;
         };
         vector<size_t> order;
         for (auto k = 0; k < 4; k++)

@@ -1472,7 +1472,14 @@ is a compile error asking for a cast. Nothing here invents a type absent
 from the expression: `u8 + i64` is an `i64` add, but `u32 + i32` does not
 become 64-bit arithmetic implicitly. Exceptions: shifts take the *left* operand's
 type as the result (the count is any integer type, masked per §6.2), and
-`==`/`!=`/orderings unify the same way but produce `bool`. Unary `-`
+`==`/`!=`/orderings unify the same way but produce `bool`. So a constant
+shifted by a count that is no constant keeps the constant's freedom: `1 <<
+k` is no constant, but takes the integer type its destination or other
+operand has as a constant does, where the constant fits it (`let m: u64 =
+1 << k;`, `m | (1 << k)`, a `u8` field), and is an `i64` where nothing
+gives it one. So does an integer operation over such shifts and constants
+(`(1 << k) - 1`, `~(1 << k)`), computed at that type throughout; a typed
+operand, unary `-` or a cast gives it a type of its own. Unary `-`
 requires a signed (or float) operand; `~` any integer, keeping its type.
 
 **Comparisons and `u64`.** A comparison produces `bool`, so it does not need a common numeric result

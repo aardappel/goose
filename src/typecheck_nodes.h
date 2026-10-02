@@ -353,6 +353,7 @@ inline Val StructLit::Check(TypeCheck &tc, TypeExpr *expected) {
 
 inline Val Unary::Check(TypeCheck &tc, TypeExpr *) {
     litfloat = false;
+    flexint = false;
     tc.ForgetCastAlt(this);
     if (op == T_BITAND) return tc.CheckRefOf(this);
     auto v = tc.Operand(child);
@@ -372,6 +373,7 @@ inline Val Unary::Check(TypeCheck &tc, TypeExpr *) {
 
 inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
     litfloat = false;
+    flexint = false;
     tc.ForgetCastAlt(this);
     if (op == T_DOTEQ || op == T_DOTNEQ) {
         // Reference identity (§4.5): the addresses, never the pointees. Each

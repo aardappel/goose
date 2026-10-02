@@ -634,6 +634,13 @@ struct Val : Prov {
     // integer type they all fit.
     bool litint = false;
     int64_t litlo = 0, lithi = 0;
+    // An integer computed from integer constants with a shift by a count
+    // that is no constant among its operations (`1 << k`, `(1 << k) - 1`,
+    // `~(1 << k)`; §6.1): like a constant it takes the integer type its
+    // destination or other operand has, where the constants it is computed
+    // from (litlo to lithi) all fit, and is an i64 where nothing gives it
+    // one. TypeCheck::RetypeFlexInt retypes the nodes computing it.
+    bool flexint = false;
     bool lvalue = false;         // Denotes storage (a variable, field or element), not a temporary.
     // An lvalue of varint storage (§3.6), what a reference to such storage
     // loads, or a construct whose branches all are one of those: its value is
@@ -856,6 +863,7 @@ NODE(Unary)
     Node *child;
     bool synth = false;         // A `&` the checker inserted (§4.1), not written by the user.
     bool litfloat = false;      // Filled by typecheck: its value is a Val::litfloat.
+    bool flexint = false;       // Filled by typecheck: its value is a Val::flexint.
     Unary(Line l, TType _op, Node *_child) : Node(l), op(_op), child(_child) {}
 NODE_END
 
@@ -866,6 +874,7 @@ NODE(Binary)
     // Filled by typecheck for && and ||: optionals the right operand un-narrows.
     vector<VarDef *> rightkills;
     bool litfloat = false;      // Filled by typecheck: its value is a Val::litfloat.
+    bool flexint = false;       // Filled by typecheck: its value is a Val::flexint.
     Binary(Line l, TType _op, Node *_l, Node *_r) : Node(l), op(_op), left(_l), right(_r) {}
 NODE_END
 

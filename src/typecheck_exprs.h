@@ -961,7 +961,10 @@ inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt) {
     fitnode = n;
     auto from = LoadType(v.type);
     if (FitsAt(v, dt)) {
-        if (IsIntT(dt) && !TypeEq(from, dt)) RelyOnNamed(v, n);
+        if (IsIntT(dt) && !TypeEq(from, dt)) {
+            RelyOnNamed(v, n);
+            if (v.flexint && dt->intstorage != IS_VARINT) RetypeFlexInt(n, dt);
+        }
     } else {
         if (!fitfail.empty()) Error(n, fitfail);
         auto got = dt->kind == TY_REF ? StorageType(v) : v.type;
@@ -1130,6 +1133,14 @@ inline bool TypeCheck::FitsAt(Val &v, TypeExpr *dt) {
                 RecordLitAdapt(v, dt, fitnode ? fitnode->line : Line {});
                 v.type = dt;
                 return true;
+            }
+            if (v.flexint && dt->intstorage != IS_VARINT) {
+                if (FlexFits(v, dt->intstorage)) {
+                    v.type = dt;
+                    return true;
+                }
+                fitfail = ConstsNoFit(v, dt);
+                return false;
             }
             // A constant adapts to any integer type its value fits, and a
             // construct of constants to any type they all fit (§6.4).
@@ -1470,7 +1481,8 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
         if (TypeEq(lt, rt)) return lt;
         // A construct of integer constants (Val::litint) adapts as the
         // constants would.
-        auto lconst = lv.ck == CK_INT || lv.litint, rconst = rv.ck == CK_INT || rv.litint;
+        auto lconst = lv.ck == CK_INT || lv.litint || lv.flexint,
+             rconst = rv.ck == CK_INT || rv.litint || rv.flexint;
         // A literal parameter adapts to a typed operand, as a constant
         // does; meeting a constant, it stays at its own type (§7.7).
         if (lv.unsized && !rv.unsized && !rconst) {
@@ -1483,8 +1495,10 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
         }
         if (lconst && rconst) {
             if (lv.uns || rv.uns) {
-                if ((!lv.uns && lv.ival < 0) || (!rv.uns && rv.ival < 0) ||
-                    (lv.litint && lv.litlo < 0) || (rv.litint && rv.litlo < 0))
+                auto neg = [](const Val &x) {
+                    return (x.litint || x.flexint) ? x.litlo < 0 : !x.uns && x.ival < 0;
+                };
+                if (neg(lv) || neg(rv))
                     return fail("constant operands have no common type (one is above "
                                 "i64.max, the other negative)");
                 return ast.inttypes[IS_U64];
@@ -1492,8 +1506,9 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
             return ast.inttypes[IS_I64];
         }
         auto fits = [&](const Val &c, TypeExpr *t) {
-            return c.litint ? ConstsFit(c, t->intstorage)
-                            : FitsIntStorage(c.ival, c.uns, t->intstorage);
+            return c.flexint ? FlexFits(c, t->intstorage)
+                   : c.litint ? ConstsFit(c, t->intstorage)
+                              : FitsIntStorage(c.ival, c.uns, t->intstorage);
         };
         if (lconst) {
             if (!fits(lv, rt)) return fail(ConstsNoFit(lv, rt));
@@ -1578,6 +1593,7 @@ inline void TypeCheck::RetypeOperands(Node *&left, Node *&right, Val &lv, Val &r
             ToFloat(n, t, ct);
         } else {
             if (v.litfloat && !TypeEq(v.type, ct)) RetypeFlex(n, ct);
+            else if (v.flexint && !TypeEq(v.type, ct)) RetypeFlexInt(n, ct);
             else if (v.litint && !TypeEq(v.type, ct)) RetypeBranches(n, ct);
             n->exprtype = ct;
         }
@@ -1623,6 +1639,23 @@ inline Val TypeCheck::NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bo
         FoldInt(op, lv, rv, v, b);
         return true;
     };
+    // A shift of a constant by a count that is no constant, and integer
+    // operations whose operands are constants and such values, are no
+    // constants that adapt (Val::flexint).
+    auto flexint = [&](Val &v, bool shift) {
+        int64_t llo, lhi, rlo, rhi;
+        if (v.ck == CK_INT || !FlexConsts(lv, llo, lhi)) return;
+        if (shift) {
+            v.flexint = true;
+            v.litlo = llo;
+            v.lithi = lhi;
+        } else if ((lv.flexint || rv.flexint) && FlexConsts(rv, rlo, rhi)) {
+            v.flexint = true;
+            v.litlo = std::min(llo, rlo);
+            v.lithi = std::max(lhi, rhi);
+        }
+        if (!trial) b->flexint = v.flexint;
+    };
     Val v;
     switch (op) {
         case T_LT: case T_GT: case T_LTEQ: case T_GTEQ:
@@ -1649,6 +1682,7 @@ inline Val TypeCheck::NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bo
             if (!trial) b->left->exprtype = v.type;
             lv.type = v.type;
             if (!fold(v)) return Val {};
+            flexint(v, true);
             return v;
         case T_BITAND: case T_BITOR: case T_XOR:
             if (!IsIntT(lt) || !IsIntT(rt))
@@ -1659,6 +1693,7 @@ inline Val TypeCheck::NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bo
             retype();
             v.type = ct;
             if (!fold(v)) return Val {};
+            flexint(v, false);
             return v;
         case T_PLUS: case T_MINUS: case T_MUL: case T_DIV: case T_MOD: {
             ct = UnifyNumeric(b, op, lv, rv, lt, rt);
@@ -1672,6 +1707,7 @@ inline Val TypeCheck::NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bo
             v.type = ct;
             if (ct->kind == TY_INT) {
                 if (!fold(v)) return Val {};
+                flexint(v, false);
             } else if (lv.ck == CK_FLT && rv.ck == CK_FLT && op != T_MOD) {
                 // % (fmod) is left to the runtime.
                 auto x = lv.fval, y = rv.fval;
@@ -1752,6 +1788,12 @@ inline Val TypeCheck::NumericUnary(Unary *u, const Val &v, bool trial) {
                 return r;
             }
             r.type = t;
+            if (v.flexint) {
+                r.flexint = true;
+                r.litlo = v.litlo;
+                r.lithi = v.lithi;
+            }
+            if (!trial) u->flexint = r.flexint;
             return r;
         default:
             assert(false);
@@ -1772,6 +1814,7 @@ inline void TypeCheck::IntToFloat(Val &v, TypeExpr *ft) {
     v.unsized = false;
     v.unsizedparam = nullptr;
     v.litint = false;
+    v.flexint = false;
     v.nonneg = false;
     v.lvalue = false;
     v.type = ft;
@@ -1809,6 +1852,22 @@ inline void TypeCheck::RetypeFlex(Node *&n, TypeExpr *t) {
         RetypeFlex(u->child, t);
     } else if (auto a = Is<AsCast>(n); a && a->implicit) {
         a->type = a->totype = t;
+    } else {
+        RetypeBranches(n, t);
+    }
+}
+
+// An integer computed from constants through a shift (Val::flexint) takes
+// the integer type t its destination or other operand has: each node
+// computing it, a shift's left operand but not its count, down to its
+// constants and constructs of constants.
+inline void TypeCheck::RetypeFlexInt(Node *n, TypeExpr *t) {
+    n->exprtype = t;
+    if (auto b = Is<Binary>(n); b && b->flexint) {
+        RetypeFlexInt(b->left, t);
+        if (b->op != T_SHL && b->op != T_SHR) RetypeFlexInt(b->right, t);
+    } else if (auto u = Is<Unary>(n); u && u->flexint) {
+        RetypeFlexInt(u->child, t);
     } else {
         RetypeBranches(n, t);
     }
@@ -1873,7 +1932,7 @@ inline bool TypeCheck::Converts(const Val &v, TypeExpr *t) {
 inline bool TypeCheck::SameNumVal(const Val &a, const Val &b) {
     if (!a.type || !b.type || !SameNum(LoadType(a.type), LoadType(b.type))) return false;
     if (a.ck != b.ck || a.litfloat != b.litfloat || a.litint != b.litint ||
-        a.unsized != b.unsized)
+        a.flexint != b.flexint || a.unsized != b.unsized)
         return false;
     if (a.ck == CK_INT && (a.ival != b.ival || a.uns != b.uns)) return false;
     if (a.ck == CK_FLT && a.fval != b.fval) return false;
@@ -1952,7 +2011,7 @@ inline void TypeCheck::FollowCast(Node *n, const CastAlt &a, const Val &tv, cons
         if (!Reaches(a, at, false)) return CastVerdict(a, "");
         if (SameNumVal(tv, v)) return CastVerdict(a, CastReason(a, a.reach ? a.reach : at));
         if (!SameNum(LoadType(tv.type), LoadType(v.type)) || tv.litfloat || v.litfloat ||
-            tv.litint || v.litint)
+            tv.litint || v.litint || tv.flexint || v.flexint)
             return CastVerdict(a, "");
         next.settle = nullptr;
         next.reach = a.reach ? a.reach : at;
