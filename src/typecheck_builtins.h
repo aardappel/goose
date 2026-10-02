@@ -1111,8 +1111,10 @@ inline void TypeCheck::GrowOnlyShrinkAt(Node *c, const string &op, VarDef *vd,
             Error(c, cat("cannot ", op, " ", what, " while ", v->name, " is still used: ",
                          stored, " was stored there at ", Where(where), " (§5.1)"));
         }
+        auto why = v->ref.Exact() ? string() : ReadBackWhy(v->ref);
         Error(c, cat("cannot ", op, " ", what, " while ", v->name,
-                     " is still used: it may hold a reference or slice into it (§5.1)"));
+                     " is still used: it may hold a reference or slice into it",
+                     why.empty() ? "" : "; ", why, " (§5.1)"));
     });
     // What the other globals hold may yet be stored by functions not checked
     // so far: they are judged once every one has been.
