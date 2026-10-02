@@ -1274,6 +1274,10 @@ struct Parser {
                 b->stmts.push_back(e);
                 continue;
             }
+            if (lex.tok == T_COMMA)
+                Error("several values exist only in `return a, b;` and in a call's results,"
+                      " so a block or branch cannot end in `a, b`: return from each branch"
+                      " instead (§7.1)");
             Error(cat("\';\' expected after expression, found \'", TokStr(), "\'"));
         }
     }

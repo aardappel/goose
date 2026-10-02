@@ -180,6 +180,10 @@ fn divide(a: i64, b: i64) -> i64, bool {
 let q, ok = divide(7, 2);
 ```
 
+Only `return` and a call's results carry several values, so a branch can't
+end in `a, b`: `return if c { 1, 2 } else { 3, 4 };` is an error, and each
+branch returns on its own, as `divide` does.
+
 Trailing parameters can have defaults, which a call may leave out:
 
 ```goose

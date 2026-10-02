@@ -1853,7 +1853,9 @@ fn scaled(a: i32, b: i32 = 0, c: f32 = 1.0) -> f32 { ... }   // scaled(2) is sca
   return position; each nonfixed result gets its own destination per §7.3
   (possibly distinct stacks).
   An ordinary value context takes only the first result; a call statement
-  discards them all. A multi-name binding requires exactly that many
+  discards them all. Only `return` and calls carry several values: a block
+  or branch cannot end in `a, b`, so `return if c { 1, 2 } else { 3, 4 };`
+  is an error and each branch returns on its own. A multi-name binding requires exactly that many
   results. `return f()` forwards all of a multi-result call's results,
   adapting each to its corresponding declared return type.
 
