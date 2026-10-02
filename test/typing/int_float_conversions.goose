@@ -87,6 +87,15 @@ fn main() {
     let odd: f32 = 16777217;
     print(odd);                                     // 16777216
 
+    // A constant beyond f32's range rounds to an infinity at an f32 (only an
+    // infinity is its own double here).
+    let huge: f32 = 1.0e39;
+    let low = id32(-1.0e300);
+    let prod = f * 1.0e300;
+    print(huge == huge * 2, " ", low == low * 2, " ", low < 0, " ", prod == prod * 2);
+                                                    // true true true true
+    print(id32(3.4028235e38));                      // 3.4028234663852886e+38
+
     // Branches joining an integer and a float.
     var c = e.x > 1;
     let j = if c { e.x } else { 0.5 };

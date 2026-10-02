@@ -1581,7 +1581,8 @@ mantissa rounds as every float result does.
   `f64` in an unannotated `let` (`let h = n * 0.5;`), which commits `h` to
   `f64` from then on, as a variable, parameter, call result or explicit
   `as` commits a type. A constant part of it is folded at full precision and
-  rounds once to the type the whole adapts to, as a constant does anywhere.
+  rounds once to the type the whole adapts to, as a constant does anywhere:
+  beyond `f32`'s range (about ±3.4e38) to an infinity, as `as f32` rounds.
 * **Never implicit**: narrowing; same-width signedness changes (`i32 ↔ u32`);
   anything signed into any unsigned type (a negative value can hide in any
   signed operand — so `u32→i64` is silent but `i32→u64` is not); `u64` into

@@ -415,6 +415,10 @@ inline string CodeGen::FltStr(double v, bool f32) {
     // A folded NaN or infinity has no literal spelling; math.h's macros.
     if (v != v) return "NAN";
     if (std::isinf(v)) return v > 0 ? "INFINITY" : "(-INFINITY)";
+    // An f32 constant from halfway between FLT_MAX and 2^128 up rounds to an
+    // infinity (§6.3), which C compilers reject as a literal or warn about.
+    if (f32 && std::fabs(v) >= std::ldexp(2.0 - std::ldexp(1.0, -24), 127))
+        return v > 0 ? "INFINITY" : "(-INFINITY)";
     string s;
     CatOne(s, v);
     if (s.find('.') == string::npos && s.find('e') == string::npos &&
