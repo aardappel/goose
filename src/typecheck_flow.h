@@ -989,6 +989,12 @@ inline Val TypeCheck::MergeVals(const Val &a, bool areach, const Val &b, bool br
     v.isnull = a.isnull && b.isnull;   // Both null: still a null, which names no root.
     // Both []: still a [], which takes the array type it meets (§6.4).
     v.emptyarr = a.emptyarr && b.emptyarr;
+    // Array literals of adaptable elements, of one type, adapt as one.
+    if (a.litelems && b.litelems && TypeEq(a.type, b.type) && TypeEq(v.type, a.type)) {
+        v.litelems = true;
+        v.litlo = std::min(a.litlo, b.litlo);
+        v.lithi = std::max(a.lithi, b.lithi);
+    }
     v.storagebranches = a.storagebranches && b.storagebranches;
     v.isvarint = a.isvarint && b.isvarint;
     v.implicitcopy = a.implicitcopy ? a.implicitcopy : b.implicitcopy;

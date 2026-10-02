@@ -633,6 +633,11 @@ struct Val : Prov {
     // `uns`, as a u64 constant's are), adapting as a constant does to any
     // integer type they all fit.
     bool litint = false;
+    // An array literal whose elements, at any depth of nesting, are all
+    // integer constants (also from litlo to lithi) or all floats of literals:
+    // as they would, it adapts to an array or slice of its shape with any
+    // integer or float elements they fit (TypeCheck::LitElemsAt).
+    bool litelems = false;
     int64_t litlo = 0, lithi = 0;
     // An integer computed from integer constants with a shift by a count
     // that is no constant among its operations (`1 << k`, `(1 << k) - 1`,

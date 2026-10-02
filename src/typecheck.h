@@ -1867,6 +1867,11 @@ struct TypeCheck {
     TypeExpr *UnifyArg(TypeExpr *pt, Val &av, vector<pair<string_view, TypeExpr *>> &b, int &tier);
     TypeExpr *UnifyArgRaw(TypeExpr *pt, Val &av, vector<pair<string_view, TypeExpr *>> &b,
                           int &tier);
+    static TypeExpr *ArrayLeaf(TypeExpr *t) {
+        while (t->kind == TY_ARRAY) t = t->arr->sub;
+        return t;
+    }
+    TypeExpr *LitElemsAt(const Val &av, TypeExpr *dt, bool &tofloat, string *why = nullptr);
     bool HasGenerics(TypeExpr *t);
     bool BindTypes(TypeExpr *pt, TypeExpr *at, vector<pair<string_view, TypeExpr *>> &b);
     TypeExpr *SubstOwn(TypeExpr *pt, vector<pair<string_view, TypeExpr *>> &b);

@@ -179,6 +179,21 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         v.type = expected;
         return v;
     }
+    // Whether each element adapts as a literal would (Val::litelems).
+    auto litelems = true;
+    int64_t litlo = INT64_MAX, lithi = INT64_MIN;
+    auto noteelem = [&](const Val &ev) {
+        int64_t lo = 0, hi = 0;
+        if (ev.litelems) lo = ev.litlo, hi = ev.lithi;
+        else if (!TypeCheck::IntConsts(ev, lo, hi) && !TypeCheck::LitFloat(ev)) litelems = false;
+        litlo = std::min(litlo, lo);
+        lithi = std::max(lithi, hi);
+    };
+    auto setlitelems = [&]() {
+        v.litelems = litelems;
+        v.litlo = litlo;
+        v.lithi = lithi;
+    };
     TypeExpr *elem = nullptr;
     int64_t wantcount = -1;
     int64_t capacity = -1;   // A limited array's static capacity, which the literal must fit.
@@ -218,6 +233,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
             elem = ev.type;
         }
         if (cnt) tc.NoteLitElem(deep, fillval, ev, elem);
+        noteelem(ev);
         if (wantcount >= 0 && cnt != wantcount)
             tc.Error(this, cat("fill count ", cnt, " does not match array size ", wantcount));
         if (capacity >= 0 && cnt > capacity)
@@ -227,6 +243,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
         if (atslice) tc.NoTemporaryLiteral(this, v.type);
         v.Set(tc.TempRoot(), false);
         tc.HolderFromLit(v, deep);
+        setlitelems();
         return v;
     }
     if (elems.empty() && !elem) {
@@ -245,6 +262,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
             elem = ev.type;
         }
         tc.NoteLitElem(deep, e, ev, elem);
+        noteelem(ev);
     }
     if (elem->kind == TY_VOID) tc.Error(this, "cannot infer array element type");
     if (wantcount >= 0 && (int64_t)elems.size() != wantcount)
@@ -264,6 +282,7 @@ inline Val ArrayLit::Check(TypeCheck &tc, TypeExpr *expected) {
     // holder root says.
     v.Set(tc.TempRoot(), false);
     tc.HolderFromLit(v, deep);
+    setlitelems();
     return v;
 }
 

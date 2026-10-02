@@ -575,11 +575,13 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
         // give a type parameter (§3.1), so they unify after the typed ones:
         // a float one first, whose type an integer one converts to (§6.3).
         // A float of literals and integers adapts as a float literal does,
-        // and a construct of integer constants as they do (§6.4). A [] or
+        // a construct of integer constants as they do (§6.4), and an array
+        // literal of either kind as its elements do (§4.2). A [] or
         // null binds nothing: it takes the type all the others give its
         // parameter, after them (§7.7).
         auto late = [&](const Val &av) {
             if (av.emptyarr || av.isnull) return 3;
+            if (av.litelems) return ArrayLeaf(av.type)->kind == TY_FLT ? 1 : 2;
             return LitFloat(av) ? 1 : isliteral(av) || av.litint || av.flexint ? 2 : 0;
         };
         vector<size_t> order;
@@ -624,6 +626,11 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
                 auto at = st && st->kind == TY_REF ? StorageType(av) : av.type;
                 why = cat("argument ", (int64_t)i + 1, ": cannot pass ", TypeStr(at), " as ",
                           TypeStr(p.type));
+                string litwhy;
+                auto tofloat = false;
+                if (av.litelems && st && !LitElemsAt(av, st, tofloat, &litwhy) &&
+                    !litwhy.empty())
+                    Append(why, ": ", litwhy);
                 return false;
             }
             mi.paramtypes[i] = ct;
@@ -756,9 +763,50 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
         return ct;
     }
     Val tmp = av;
+    auto tofloat = IsIntT(at) && ct->kind == TY_FLT;
+    if (av.litelems)
+        if (auto lt = LitElemsAt(av, ct, tofloat)) tmp.type = lt;
     if (!FitsAt(tmp, ct)) return nullptr;
-    tier = std::max(tier, IsIntT(at) && ct->kind == TY_FLT ? MatchInfo::INTTOFLOAT : 2);
+    tier = std::max(tier, tofloat ? MatchInfo::INTTOFLOAT : 2);
     return ct;
+}
+
+// The array type a literal of adaptable elements (Val::litelems) is at a
+// destination of type dt: its own, with the elements dt has at its depth of
+// nesting where its constants fit them, as each would there (§3.1, §6.3). An
+// integer one converting to a float sets tofloat. Null where dt has no such
+// elements, and then `why` says what does not fit.
+inline TypeExpr *TypeCheck::LitElemsAt(const Val &av, TypeExpr *dt, bool &tofloat, string *why) {
+    auto leaf = ArrayLeaf(av.type);
+    auto d = dt;
+    for (auto t = av.type; t->kind == TY_ARRAY; t = t->arr->sub) {
+        if (t->arr->akind != A_FIXED) return nullptr;
+        if (d->kind == TY_ARRAY) d = d->arr->sub;
+        else if (d->kind == TY_SLICE) d = d->sub;
+        else return nullptr;
+    }
+    if (d->kind == TY_INT) {
+        if (leaf->kind != TY_INT) return nullptr;
+        if (!FitsIntStorage(av.litlo, false, d->intstorage) ||
+            !FitsIntStorage(av.lithi, false, d->intstorage)) {
+            if (why)
+                *why = av.litlo == av.lithi
+                           ? cat("constant ", av.litlo, " does not fit ", TypeStr(d))
+                           : cat("its constants ", av.litlo, " to ", av.lithi, " do not all fit ",
+                                 TypeStr(d));
+            return nullptr;
+        }
+    } else if (d->kind == TY_FLT) {
+        if (leaf->kind != TY_INT && leaf->kind != TY_FLT) return nullptr;
+        tofloat = leaf->kind == TY_INT;
+    } else {
+        return nullptr;
+    }
+    std::function<TypeExpr *(TypeExpr *)> rebuild = [&](TypeExpr *t) {
+        if (t->kind != TY_ARRAY) return d;
+        return ast.ArrayOf(rebuild(t->arr->sub), A_FIXED, t->line, t->arr->size);
+    };
+    return rebuild(av.type);
 }
 
 inline bool TypeCheck::HasGenerics(TypeExpr *t) {

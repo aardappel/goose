@@ -931,7 +931,13 @@ Literal forms usable in any construction context:
   a `T[]` one is a variable value and exists only in a construction context,
   so viewing it takes a variable bound to it first. `==` and `!=` compare
   either one with any array or slice of its element type (§4.5), since
-  their result holds no view of it. An `append`ed literal is the run it adds:
+  their result holds no view of it. A literal whose elements, at any depth
+  of nesting, are all integer constants or all floats of literals meets a
+  parameter as they would (§3.1, §6.3): it is a value of an array or slice
+  parameter of its shape whose elements they fit, `take([0, 0, 0, 7])` for
+  `fn take(c: u8[4])` and `[1, 2, 250]` for a `const u8[:]`, a coercion in
+  overload resolution (§7.1); so is a construct whose branches are all such
+  literals of one type. An `append`ed literal is the run it adds:
   the array's element type `T` makes it a `T[k]`, or a `T[]` when `T` is not
   fixed-size, and its elements are constructed as the array's own
   (`bytes.append([1, 2])` for a `u8[>..]`, `[]` adding nothing, a `str()`
@@ -1832,8 +1838,8 @@ fn scaled(a: i32, b: i32 = 0, c: f32 = 1.0) -> f32 { ... }   // scaled(2) is sca
   around it.
 * Overloading by parameter types is allowed; resolution is static: the
   unique concrete exact match wins, then a generic exact match, then a
-  match requiring coercion (array→slice §3.10, literal fit §3.1, implicit
-  widening §6.3). A candidate's rank is its worst argument rank; ties are
+  match requiring coercion (array→slice §3.10, literal fit §3.1 -- an
+  array literal's constants too, §4.2 -- implicit widening §6.3). A candidate's rank is its worst argument rank; ties are
   errors, without further specificity or declaration-order tiebreaking.
   A default is no argument: a candidate the call leaves parameters of to
   their defaults ranks by the written arguments alone, so `f(a, b = 0)`
@@ -2053,7 +2059,8 @@ must support inference for both `<T>`-style and untyped (implicitly generic)
 parameters. Where
 several arguments mention one type variable, the typed ones bind it and a
 literal then adapts (`max(n, 0)` with `n: u32` is the `u32` instantiation),
-so an `i64` literal never fixes the type by coming first; among literals, a
+so an `i64` literal never fixes the type by coming first, nor does an
+array literal of constants (§4.2); among literals, a
 float one binds before an integer one, which converts to it (§6.3):
 `max(1, 0.5)` is the `f64` instantiation. A float of literals and integers
 (`n * 0.5`) binds as a float literal does. A `[]` or `null` binds nothing:
