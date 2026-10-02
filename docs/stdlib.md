@@ -508,7 +508,7 @@ fn key_released(name: const u8[:]) -> bool
 fn mouse_down(button: i64) -> bool            // MOUSE_LEFT, MOUSE_MIDDLE, MOUSE_RIGHT
 fn mouse_pressed(button: i64) -> bool         fn mouse_released(button: i64) -> bool
 fn mouse_pos() -> float2    fn mouse_delta() -> float2      // in the screen's pixels
-fn mouse_wheel() -> f32
+fn mouse_wheel() -> f32     fn mouse_in_window() -> bool    // over the window, or dragging from it
 fn inject_key(name: const u8[:], down: bool) -> bool           // as if typed, seen at the next frame()
 fn inject_mouse(x: f32, y: f32, button: i64, down: bool)       // to pixel x, y; button 0 only moves
 fn inject_text(text: const u8[:]) -> bool                      // an EVENT_TEXT per character
@@ -525,6 +525,14 @@ with their scancode, the character their key types (`keycode`) and the
 `MOD_*` keys held, typed characters, mouse motion, buttons (`MOUSE_*`, with
 X1 and X2) with their click count, and the wheel. Headless, the clipboard is
 gfx's own rather than the system's.
+
+`mouse_pos` is the mouse's place from the window's opening, before it
+first moves. `mouse_in_window` is true while the mouse is over the window,
+and while it holds a button pressed there, as SDL tells it: from the
+mouse's first move over a window that opened under it, at the latest.
+Once it leaves, `mouse_pos` stays where it left, off the screen: edge
+scrolling asks both. Headless, the mouse is in the window when the last
+position injected is on the screen.
 
 ### Buffers
 

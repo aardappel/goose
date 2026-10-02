@@ -2,8 +2,9 @@
 // input come back from events() in the order they came, keys with their
 // scancode, keycode and the modifiers held; scancodes and key names map
 // both ways, and the names SDL gives keys after a platform's labels work on
-// every platform; the clipboard, gfx's own without a window, holds text; and
-// open_count tells a program gfx was closed and opened again.
+// every platform; the mouse is in the window while injected on the screen;
+// the clipboard, gfx's own without a window, holds text; and open_count
+// tells a program gfx was closed and opened again.
 import std;
 import vec;
 import os;
@@ -59,6 +60,7 @@ fn main() {
     gfx::text_input(true);
     gfx::frame();
     frame_events("nothing");
+    print("mouse in the window ", gfx::mouse_in_window());
 
     gfx::inject_key("Left Shift", true);
     gfx::inject_key("A", true);
@@ -86,6 +88,17 @@ fn main() {
     print("X2 down ", gfx::mouse_down(gfx::MOUSE_X2), ", X1 down ", gfx::mouse_down(gfx::MOUSE_X1));
     gfx::inject_mouse(9.0, 10.0, gfx::MOUSE_X2, false);
     frame_events("released");
+    print("mouse in the window ", gfx::mouse_in_window());
+    // Off the screen's left and bottom edges, then on its last pixel.
+    gfx::inject_mouse(-1.0, 10.0, 0, false);
+    gfx::frame();
+    print("off the left: in the window ", gfx::mouse_in_window(), " at ", gfx::mouse_pos());
+    gfx::inject_mouse(4.0, 24.0, 0, false);
+    gfx::frame();
+    print("off the bottom: in the window ", gfx::mouse_in_window());
+    gfx::inject_mouse(31.5, 23.5, 0, false);
+    gfx::frame();
+    print("on the last pixel: in the window ", gfx::mouse_in_window());
 
     let names: const u8[:][5] = ["A", "Return", "Left Shift", "F1", "Keypad Enter"];
     for n in names {

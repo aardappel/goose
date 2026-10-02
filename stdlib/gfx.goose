@@ -376,6 +376,13 @@ extern "gs_gfx_mouse_released" fn mouse_released(button: i64) -> bool;
 extern "gs_gfx_mouse_pos" fn mouse_pos_into(out: float2&);
 extern "gs_gfx_mouse_delta" fn mouse_delta_into(out: float2&);
 extern "gs_gfx_mouse_wheel" fn mouse_wheel() -> f32;
+// Whether the mouse is over the window, or holds a button pressed in it,
+// as SDL's mouse focus says: for a window opened under the mouse, from its
+// first move at the latest. mouse_pos is the mouse's place from open on,
+// and where it left the window while it is outside. Headless, whether the last
+// position injected is on the screen; an injected move decides it in a
+// window too.
+extern "gs_gfx_mouse_in_window" fn mouse_in_window() -> bool;
 fn mouse_pos() -> float2 {
     var p = float2_0;
     mouse_pos_into(p);

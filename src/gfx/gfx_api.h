@@ -140,6 +140,7 @@ typedef struct {
     X(void, gs_gfx_mouse_pos, (gs_gfx_float2 *out)) \
     X(void, gs_gfx_mouse_delta, (gs_gfx_float2 *out)) \
     X(float, gs_gfx_mouse_wheel, (void)) \
+    X(uint8_t, gs_gfx_mouse_in_window, (void)) \
     X(uint8_t, gs_gfx_inject_key, (gs_gfx_bytes name, uint8_t down)) \
     X(void, gs_gfx_inject_mouse, (float x, float y, int64_t button, uint8_t down)) \
     X(int64_t, gs_gfx_events, (gs_gfx_event_slice out)) \

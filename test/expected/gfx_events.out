@@ -1,5 +1,6 @@
 opened at least once: true
 nothing: 0 events
+mouse in the window false
 keys: 10 events
   key Left Shift down, keycode 1073742049, with shift
   key A down, keycode 97, with shift
@@ -30,6 +31,10 @@ X2 down true, X1 down false
 released: 2 events
   motion to 9,10
   button 5 up at 9,10, clicks 1
+mouse in the window true
+off the left: in the window false at vec2<f32> { -1, 10 }
+off the bottom: in the window false
+on the last pixel: in the window true
 scancode of A true, named back A
 scancode of Return true, named back Return
 scancode of Left Shift true, named back Left Shift

@@ -146,6 +146,7 @@ typedef struct {
     uint8_t keys[SDL_SCANCODE_COUNT], prev_keys[SDL_SCANCODE_COUNT];
     uint32_t buttons, prev_buttons;
     float mouse_x, mouse_y, mouse_dx, mouse_dy, wheel;
+    bool mouse_in;                      /* over the window, as SDL's mouse focus says */
     /* The window's size in its own coordinates, which SDL gives the mouse
        in, and in pixels: a high-density display has more of the second. */
     int window_w, window_h, window_pw, window_ph;

@@ -312,6 +312,24 @@ static float gfx_to_pixels(float v, int pixels, int size) {
     return (float)((double)v * pixels / size);
 }
 
+/* Where the mouse is as the window opens: SDL says only once it moves, or
+   once the window gets the keyboard, which one opened behind another does
+   not. Wayland keeps the mouse's place on the desktop from programs. Over
+   the window or not is left to SDL's mouse focus: the desktop position
+   can be stale (an X server under WSLg knows it only from its own
+   windows). */
+static void gfx_seed_mouse(void) {
+    gfx.mouse_in = SDL_GetMouseFocus() == gfx.window;
+    const char *driver = SDL_GetCurrentVideoDriver();
+    if (driver && !SDL_strcmp(driver, "wayland")) return;
+    float gx = 0, gy = 0;
+    int wx = 0, wy = 0;
+    SDL_GetGlobalMouseState(&gx, &gy);
+    if (!SDL_GetWindowPosition(gfx.window, &wx, &wy)) return;
+    gfx.mouse_x = gfx_to_pixels(gx - (float)wx, gfx.window_pw, gfx.window_w);
+    gfx.mouse_y = gfx_to_pixels(gy - (float)wy, gfx.window_ph, gfx.window_h);
+}
+
 static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t height,
                       int64_t flags) {
     if (gfx.dev) return gfx_misuse("gfx is already open: close() it first");
@@ -384,6 +402,7 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
         }
         SDL_GetWindowSizeInPixels(gfx.window, &pw, &ph);
         gfx_update_input_scale();
+        gfx_seed_mouse();
     }
     if (!gfx_create_screen(pw, ph)) {
         char why[sizeof gfx.error];
@@ -558,6 +577,9 @@ uint8_t gs_gfx_frame(void) {
                 int ph = injected ? 1 : gfx.window_ph, h = injected ? 1 : gfx.window_h;
                 gfx.mouse_x = gfx_to_pixels(e.motion.x, pw, w);
                 gfx.mouse_y = gfx_to_pixels(e.motion.y, ph, h);
+                if (injected)
+                    gfx.mouse_in = gfx.mouse_x >= 0 && gfx.mouse_y >= 0 &&
+                                   gfx.mouse_x < (float)gfx.width && gfx.mouse_y < (float)gfx.height;
                 gfx.mouse_dx += gfx_to_pixels(e.motion.xrel, pw, w);
                 gfx.mouse_dy += gfx_to_pixels(e.motion.yrel, ph, h);
                 gs_gfx_event *ev = gfx_event(GS_GFX_EVENT_MOUSE_MOTION);
@@ -588,6 +610,10 @@ uint8_t gs_gfx_frame(void) {
                 ev->x = e.wheel.x;
                 ev->y = e.wheel.y;
             } break;
+            case SDL_EVENT_WINDOW_MOUSE_ENTER:
+            case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+                gfx.mouse_in = e.type == SDL_EVENT_WINDOW_MOUSE_ENTER;
+                break;
             case SDL_EVENT_WINDOW_RESIZED:
                 gfx_update_input_scale();
                 break;
@@ -712,6 +738,8 @@ void gs_gfx_mouse_delta(gs_gfx_float2 *out) {
 }
 
 float gs_gfx_mouse_wheel(void) { return gfx.wheel; }
+
+uint8_t gs_gfx_mouse_in_window(void) { return gfx.mouse_in; }
 
 /* Queues an input event as if it came from the keyboard or mouse, seen at
    the next frame(): what tests drive input with. */
