@@ -56,11 +56,16 @@ differences in data layout and memory management.
 ## 2. Running something
 
 Goose compiles the whole program to C, which you then build with whatever
-compiler is around:
+compiler is around, linking the runtime (which `--emit-runtime` writes, and
+which needs compiling only once):
 
 ```bash
-goose -o hello.c hello.goose && cc hello.c -o hello -lm -pthread && ./hello
+goose --emit-runtime goose_runtime.c && cc -c goose_runtime.c
+goose -o hello.c hello.goose && cc hello.c goose_runtime.o -o hello -lm -pthread && ./hello
 ```
+
+With `--standalone` the C file holds the runtime itself, and `cc hello.c -o
+hello -lm -pthread` builds it alone.
 
 A compiler built with the bundled TinyCC backend skips both steps — with no
 `-o` it compiles the program into its own process and runs it there, which is

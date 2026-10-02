@@ -14,9 +14,12 @@ and no C toolchain has to be installed.
     goose -o tour.c 01_tour.goose  # the C file, as before
     goose --jit prog.goose         # ask for it explicitly; fails if not built in
 
-Both modes use identical generated C. `-D` writes its define
-into that C rather than passing it to a backend, so a JIT run and a compiled one
-receive identical source text. `--` passes the arguments after it to the
+Both modes use identical generated C for the program. Around it, the JIT run
+compiles the whole runtime in the same unit, as `--standalone` writes it, where
+the file `-o` writes by default declares most of the runtime extern for the
+object `--emit-runtime` makes (`docs/implementation.md` §7). `-D` writes its
+define into that C rather than passing it to a backend, so a JIT run and a
+compiled one receive identical source text. `--` passes the arguments after it to the
 program. The program shares the process: its exit status becomes the compiler's,
 its output goes to the same streams, and the compiler's own progress lines move
 to stderr so stdout belongs to the program alone. It does not share the

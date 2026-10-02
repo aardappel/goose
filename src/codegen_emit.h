@@ -600,8 +600,13 @@ inline void CodeGen::EmitMain() {
     FnSpec *mainspec = nullptr;
     if (auto mainsf = ast.MainFunction(); mainsf && !mainsf->specs.empty())
         mainspec = mainsf->specs[0];
-    Append(code, "int main(int argc, char **argv) {\n    gs_argc = argc;\n    gs_argv = argv;\n"
-                 "    gs_rt_init();\n    gs_gl = &gs_globals_main;\n    gs_init_globals();\n");
+    Append(code, "int main(int argc, char **argv) {\n    gs_rt_init(argc, argv);\n");
+    // The queues, before anything that could use one runs.
+    vector<string> qnames;
+    for (auto &[m, q] : queues) qnames.push_back(q);
+    sort(qnames.begin(), qnames.end());
+    for (auto &q : qnames) Append(code, "    gs_qinit(&", q, ");\n");
+    Append(code, "    gs_gl = &gs_globals_main;\n    gs_init_globals();\n");
     if (mainspec && sinfo.count(mainspec)) {
         auto &mi = sinfo[mainspec];
         Append(code, "    ", mi.cname, "(", mi.needssp ? "0" : "", ");\n");

@@ -46,7 +46,9 @@ add_executable(goose
     src/runtime_inline.h
     src/jit.h
     src/runtime/runtime.h
+    src/runtime/runtime_impl.h
     src/runtime/runtime_threads.h
+    src/runtime/runtime_ext.h
     src/runtime/runtime_os.h
     src/gfx.h
     src/physics.h

@@ -512,7 +512,11 @@ class Harness:
         # would silently benchmark the previous version of the source.
         if base not in self.generated:
             gsrc = self.goose_source(file, n, base)
-            code, out, err = tc.run_capture([self.args.exe, "-O2", "-o", cfile, gsrc])
+            # One translation unit, as the measurements always were: every
+            # runtime function the program calls is the C compiler's to
+            # inline.
+            code, out, err = tc.run_capture([self.args.exe, "-O2", "--standalone", "-o", cfile,
+                                             gsrc])
             tc.write_text(GENDIR / f"{base}.goose.log", out + err)
             if code != 0:
                 return None, f"goose compile failed, see {base}.goose.log"
@@ -578,7 +582,7 @@ def measure_baseline(harness, jit):
     cc = harness.ccs[tcname]
     g = GENDIR / "baseline_goose.goose"
     tc.write_text(g, "fn main() { print(0); }\n")
-    tc.run_capture([harness.args.exe, "-O2", "-o", GENDIR / "baseline_goose.c", g])
+    tc.run_capture([harness.args.exe, "-O2", "--standalone", "-o", GENDIR / "baseline_goose.c", g])
     cc.compile(GENDIR / "baseline_goose.c", GENDIR / ("baseline_goose" + tc.EXE_SUFFIX),
                opt=2, defines=[STACK_RESERVE])
     c = GENDIR / "baseline_cpp.cpp"

@@ -420,33 +420,44 @@ build/goose samples/01_tour.goose
 ```
 
 Or generate C and build it with whatever compiler is around. Programs that use
-threads need this route, since TinyCC cannot place thread-local storage:
+threads need this route, since TinyCC cannot place thread-local storage. The C
+that `-o` writes holds the program and the part of the runtime that inlines
+into it; the rest of the runtime (the OS layer, data stack reservation,
+threads, printing) is one more C file, which `--emit-runtime` writes, to be
+compiled once and linked with every program:
 
 ```bash
-build/goose -o tour.c samples/01_tour.goose && cc tour.c -o tour -lm -pthread && ./tour
+build/goose --emit-runtime goose_runtime.c && cc -O2 -c goose_runtime.c
+build/goose -o tour.c samples/01_tour.goose && cc -O2 tour.c goose_runtime.o -o tour -lm -pthread && ./tour
 ```
 
-On Windows that is `cl tour.c`. Useful flags: `--check` typechecks without
-emitting C, `-O0`/`-O1`/`-O2` set the inlining level, `--bce-lines` reports the
-bounds checks kept per line, and `-DGS_DEBUG=1` turns on the overflow, range
-and tag checks in the generated C, each abort naming its source line (and an
-overflow or a cast the values involved).
+On Windows that is `cl /O2 /c goose_runtime.c` once and `cl /O2 tour.c
+goose_runtime.obj`. Build the runtime with the compiler and flags the programs
+use; it takes no `-D` of its own, and a program from another version of the
+compiler fails to link against it. `--standalone` writes a C file that holds
+the whole runtime instead, and builds on its own (`cc tour.c -o tour -lm
+-pthread`). Useful flags: `--check` typechecks without emitting C,
+`-O0`/`-O1`/`-O2` set the inlining level, `--bce-lines` reports the bounds
+checks kept per line, and `-DGS_DEBUG=1` turns on the overflow, range and tag
+checks in the generated C, each abort naming its source line (and an overflow
+or a cast the values involved).
 
 A program using `gfx` also links the graphics layer and SDL, which the compiler
 names in a response file:
 
 ```bash
 build/goose samples/27_gfx_cube.goose
-build/goose -o cube.c samples/27_gfx_cube.goose && cc cube.c -o cube @$(build/goose --gfx-link cc)
+build/goose -o cube.c samples/27_gfx_cube.goose && cc cube.c goose_runtime.o -o cube @$(build/goose --gfx-link cc)
 ```
 
-With MSVC that is `cl cube.c @<the path goose --gfx-link msvc prints>`. A
+With MSVC that is `cl cube.c goose_runtime.obj @<the path goose --gfx-link msvc
+prints>`. A
 program using `physics` links what `goose --physics-link` names the same way,
 next to the gfx one if it draws too:
 
 ```bash
 build/goose samples/28_physics_boxes.goose
-build/goose -o boxes.c samples/28_physics_boxes.goose && cc boxes.c -o boxes @$(build/goose --gfx-link cc) @$(build/goose --physics-link cc)
+build/goose -o boxes.c samples/28_physics_boxes.goose && cc boxes.c goose_runtime.o -o boxes @$(build/goose --gfx-link cc) @$(build/goose --physics-link cc)
 ```
 
 A program using `ui` links what `goose --ui-link` names, with the gfx one,
@@ -454,7 +465,7 @@ since its windows are drawn through gfx:
 
 ```bash
 build/goose samples/29_ui_todo.goose
-build/goose -o todo.c samples/29_ui_todo.goose && cc todo.c -o todo @$(build/goose --ui-link cc) @$(build/goose --gfx-link cc)
+build/goose -o todo.c samples/29_ui_todo.goose && cc todo.c goose_runtime.o -o todo @$(build/goose --ui-link cc) @$(build/goose --gfx-link cc)
 ```
 
 The test suite and the samples run on Windows, macOS and Linux:

@@ -228,9 +228,45 @@ void DumpTokens(const string &path) {
     fputs(s.c_str(), stdout);
 }
 
-// The runtime C sources embedded into the compiler (runtime_inline.h) and
-// prepended to every generated file, in order.
-static const char *runtimefiles[] = { "runtime.h", "runtime_threads.h" , "runtime_os.h" };
+// The runtime C sources embedded into the compiler (runtime_inline.h), in the
+// order a standalone program holds them (runtime.h has how they divide).
+static const char *runtimefiles[] = { "runtime.h", "runtime_impl.h", "runtime_threads.h",
+                                      "runtime_ext.h", "runtime_os.h" };
+
+static string RuntimeSections(std::initializer_list<const char *> names) {
+    string s;
+    for (auto name : names)
+        for (auto &rf : runtime_files)
+            if (string_view(rf.name) == name)
+                Append(s, "/* ==== ", rf.name, " ==== */\n", rf.text, "\n");
+    return s;
+}
+
+// What a separately built program and its runtime object must agree on: a
+// hash of the runtime's text, which names the runtime's entry point.
+static string RuntimeVersion() {
+    uint64_t h = 14695981039346656037ull;
+    for (auto &rf : runtime_files)
+        for (auto c : string_view(rf.text)) h = (h ^ (uint8_t)c) * 1099511628211ull;
+    char buf[17];
+    snprintf(buf, sizeof(buf), "%012llx", (unsigned long long)(h >> 16));
+    return buf;
+}
+
+// The runtime object's C (goose --emit-runtime): the runtime that programs
+// written with -o declare extern, for any program this compiler writes.
+static string RuntimeObjectSource() {
+    return cat("/* The Goose runtime, written by `goose --emit-runtime`. Do not edit.\n"
+               "   Compile it once, with the C compiler and flags of the programs it is\n"
+               "   for, and link the object with every program `goose -o` writes (all\n"
+               "   but --standalone ones). It needs no -D: a program hands the runtime\n"
+               "   its configuration as it starts. A program from another version of\n"
+               "   the compiler fails to link against it, missing gs_rt_start_<version>. */\n\n"
+               "#define GS_SEPARATE_RUNTIME 1\n#define GS_RUNTIME_OBJECT 1\n"
+               "#define GS_NEED_THREADS 1\n#define GS_RUNTIME_VERSION ", RuntimeVersion(),
+               "\n\n", RuntimeSections({ "runtime.h", "runtime_impl.h", "runtime_threads.h",
+                                          "runtime_ext.h", "runtime_os.h" }));
+}
 
 // Locates the src/runtime/ directory (only needed by --gen-runtime-header):
 // an explicit env override, next to the executable, or relative to it in the
@@ -297,7 +333,7 @@ int Main(int argc, char **argv) {
     auto dump = false, tokens = false, parseonly = false, specs = false, nocgen = false;
     auto roundtrip = false;
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
-    auto forcejit = false;
+    auto forcejit = false, standalone = false;
     auto optlevel = 1;
     vector<string> cdefines, progargs, includes;
     for (int i = 1; i < argc; i++) {
@@ -320,7 +356,21 @@ int Main(int argc, char **argv) {
         // Unsound; a measurement aid only (see CodeGen::norfcheck).
         else if (arg == "--unsafe-no-rf-check") norfcheck = true;
         else if (arg == "--jit") forcejit = true;
+        else if (arg == "--standalone") standalone = true;
         else if (arg == "--gen-runtime-header") { GenRuntimeHeader(argv[0]); return 0; }
+        else if (arg == "--emit-runtime" && i + 1 < argc) {
+            auto path = argv[++i];
+            auto src = RuntimeObjectSource();
+            auto f = fopen(path, "wb");
+            if (!f) {
+                fprintf(stderr, "cannot write output file: %s\n", path);
+                return 1;
+            }
+            fwrite(src.data(), 1, src.size(), f);
+            fclose(f);
+            printf("wrote %s (%d bytes)\n", path, (int)src.size());
+            return 0;
+        }
         // Hidden: what a shader compiles to, without a program around it.
         else if (arg == "--compile-shader" && i + 1 < argc) shaderfile = argv[++i];
         else if (arg == "--shader-source" && i + 1 < argc) shadersource = argv[++i];
@@ -368,11 +418,15 @@ int Main(int argc, char **argv) {
         fprintf(stderr, "usage: goose [--dump] [--parse] [--tokens] [--roundtrip] "
                         "[--dump-file out.goose] [--specs] [--check] "
                         "[--no-bce] [--bce-test] [--bce-lines] [--unsafe-no-rf-check] [-O0|-O1|-O2] "
-                        "[-o out.c] [--jit] [-DNAME=VALUE]... [--include header.h]... [--stdlib dir] "
-                        "file.goose [-- program args...] | --gen-runtime-header | "
+                        "[-o out.c [--standalone]] [--jit] [-DNAME=VALUE]... [--include header.h]... "
+                        "[--stdlib dir] file.goose [-- program args...] | --emit-runtime runtime.c | "
+                        "--gen-runtime-header | "
                         "--gfx-link msvc|cc | --physics-link msvc|cc | --ui-link msvc|cc\n");
         fprintf(stderr, "without -o the program is compiled and run in this process%s.\n",
                 have_jit ? " by TinyCC" : " -- unavailable in this build, so the .c is written");
+        fprintf(stderr, "the .c that -o writes links with the runtime that --emit-runtime "
+                        "writes, compiled once;\n--standalone writes one that holds the "
+                        "runtime itself.\n");
         return 1;
     }
     // With no output file the program is compiled into this process and run,
@@ -472,33 +526,44 @@ int Main(int argc, char **argv) {
             for (auto &inc : includes)
                 if (FileExists(inc)) inc = RelativeTo(inc, DirOf(outfile));
         // The extern-support runtime is written against the generated types,
-        // so codegen splices it in after them rather than up front.
-        string_view runtime_os_text;
+        // so it goes in after them rather than up front.
+        string_view runtime_ext_text;
         for (auto &rf : runtime_files)
-            if (string_view(rf.name) == "runtime_os.h") runtime_os_text = rf.text;
-        CodeGen cg(ast, runtime_os_text, includes, norfcheck);
+            if (string_view(rf.name) == "runtime_ext.h") runtime_ext_text = rf.text;
+        CodeGen cg(ast, runtime_ext_text, includes, norfcheck);
         // Assemble: compiler-set feature defines, the embedded runtime, then
-        // the generated program.
-        string out = cat("/* Generated by the Goose compiler from ", filename,
-                         ". Do not edit.\n"
-                         "   Names from the program carry a _g suffix, which keeps them clear of\n"
-                         "   the C keywords, of the runtime's gs_ names and of whatever this\n"
-                         "   platform's headers declare; a namespaced name ns::x is ns_x_g followed\n"
-                         "   by the namespace's length. An --include header names them that way. */\n\n",
-                         cg.predefs);
-        // -D goes into the source rather than onto a backend's command line,
-        // so both backends compile the same text.
-        for (auto &d : cdefines) {
-            auto eq = d.find('=');
-            Append(out, "#define ", eq == string::npos ? d : d.substr(0, eq), " ",
-                   eq == string::npos ? string("1") : d.substr(eq + 1), "\n");
-        }
-        for (auto &rf : runtime_files) {
-            if (string_view(rf.name) == "runtime_os.h") continue;
-            Append(out, "/* ==== ", rf.name, " ==== */\n", rf.text, "\n");
-        }
-        out += cg.result;
+        // the generated program. A program built with a separate runtime
+        // holds what runtime.h has of it and the extern support's
+        // declarations; a standalone one, as a JIT run builds, all of it.
+        auto assemble = [&](bool separate) {
+            string out = cat("/* Generated by the Goose compiler from ", filename,
+                             ". Do not edit.\n"
+                             "   Names from the program carry a _g suffix, which keeps them clear of\n"
+                             "   the C keywords, of the runtime's gs_ names and of whatever this\n"
+                             "   platform's headers declare; a namespaced name ns::x is ns_x_g followed\n"
+                             "   by the namespace's length. An --include header names them that way.",
+                             separate ? "\n   Link it with the runtime that `goose --emit-runtime` "
+                                        "writes. */\n\n#define GS_SEPARATE_RUNTIME 1\n"
+                                        "#define GS_RUNTIME_VERSION " + RuntimeVersion() + "\n"
+                                      : " */\n\n",
+                             cg.predefs);
+            // -D goes into the source rather than onto a backend's command
+            // line, so both backends compile the same text.
+            for (auto &d : cdefines) {
+                auto eq = d.find('=');
+                Append(out, "#define ", eq == string::npos ? d : d.substr(0, eq), " ",
+                       eq == string::npos ? string("1") : d.substr(eq + 1), "\n");
+            }
+            if (separate)
+                Append(out, RuntimeSections({ "runtime.h" }), cg.head,
+                       RuntimeSections({ "runtime_ext.h" }), cg.result);
+            else
+                Append(out, RuntimeSections({ "runtime.h", "runtime_impl.h", "runtime_threads.h" }),
+                       cg.head, RuntimeSections({ "runtime_ext.h", "runtime_os.h" }), cg.result);
+            return out;
+        };
         if (!outfile.empty()) {
+            auto out = assemble(!standalone);
             auto f = fopen(outfile.c_str(), "wb");
             if (!f) throw CompileError { cat("cannot write output file: ", outfile) };
             fwrite(out.data(), 1, out.size(), f);
@@ -516,7 +581,7 @@ int Main(int argc, char **argv) {
             if (cg.layers.gfx && !have_gfx) throw CompileError { no_gfx_error };
             if (cg.layers.physics && !have_physics) throw CompileError { no_physics_error };
             if (cg.layers.ui && !have_ui) throw CompileError { no_ui_error };
-            program = std::move(out);
+            program = assemble(false);
             layers = cg.layers;
         }
         return 0;

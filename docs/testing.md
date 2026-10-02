@@ -82,6 +82,17 @@ the current C backend deliberately performs unaligned packed accesses. The C++
 compiler retains alignment checking. ASan observes C allocations, but does not
 know logical object boundaries inside Goose's custom virtual-memory arenas.
 
+Generated C is built as `goose -o` writes it, against the separate runtime
+(`docs/implementation.md` §7): `GooseRuntime` (`scripts/toolchain.py`) has
+the compiler under test write the runtime's C (`--emit-runtime`) once per run,
+compiles it once per toolchain configuration -- compiler, optimization level,
+defines and extra flags, so the sanitize profile's runtime is instrumented as
+well -- into `build/gen/runtime/` (the samples' into their own directory), and
+`CC.compile(..., runtime=...)` links that object with each program built that
+way. Stages 2 and 3 of the bootstrap hold their own runtime and link none.
+The single-unit form, which `--standalone` writes, is what every TinyCC run
+compiles; the benchmarks build that form too.
+
 The direct `test/threads/runtime_threads_lifecycle.c` regression checks allocations,
 mappings and Windows handles across worker churn, including unjoined workers,
 concurrent/repeated waits and children outliving their parents. It runs in both

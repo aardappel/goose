@@ -86,6 +86,7 @@ static int counted_munmap(void *base, size_t size) {
 #define GS_STACK_RESERVE (256u << 10)
 #define GS_STACK_GAP (64u << 10)
 #include "../../src/runtime/runtime.h"
+#include "../../src/runtime/runtime_impl.h"
 #include "../../src/runtime/runtime_threads.h"
 
 static gs_mutex test_mutex = GS_MUTEX_INIT;
@@ -154,7 +155,7 @@ static void check_baseline(long allocations, long regions) {
 }
 
 int main(void) {
-    gs_rt_init();
+    gs_rt_init(0, NULL);
     GS_ENSURE(1, __FILE__, __LINE__);
     GS(0)->top[0] = 99;
     long allocations = counter_add(&live_allocations, 0);

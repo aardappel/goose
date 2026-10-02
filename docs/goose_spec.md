@@ -2349,8 +2349,8 @@ optional string is the C symbol (default: the Goose name). It is top-level
 only, fully typed, not generic, and joins overload resolution like any
 function. A call compiles to a direct C call with no calling-convention
 extras, and a prototype is emitted from the declaration unless the runtime
-defines the symbol (the `os` library's `gs_os_*` functions, in
-`src/runtime/runtime_os.h`). User C reaches the program through
+declares the symbol (the `os` library's `gs_os_*` functions, declared in
+`src/runtime/runtime_ext.h` and defined in `src/runtime/runtime_os.h`). User C reaches the program through
 `--include <header>`, emitted after the generated type declarations so a
 header can implement shims against the generated typedefs. Every name that
 comes from the program appears in the C with a `_g` suffix -- a struct `Stats`
@@ -3651,9 +3651,14 @@ compiler's own description, pass by pass and analysis by analysis, is
   program. It runs on the compiler's main thread, whose stack the compiler
   reserves at 64 MB on Windows and macOS, where an executable's main thread
   gets 1 MB and 8 MB by default; on Linux it is the stack limit the process
-  started with (`ulimit -s`), as for an executable. Nothing about the
-  generated C differs between the two, and `-D` is written into that C
-  rather than passed to a backend so that stays true. TinyCC does not
+  started with (`ulimit -s`), as for an executable. The program's own C is
+  the same for both, and `-D` is written into that C rather than passed to a
+  backend so that stays true. What differs is the runtime around it: the
+  in-process build compiles all of it with the program, where the file
+  holds only what has to inline into the program and declares the rest,
+  which `goose --emit-runtime` writes as a C file of its own, built once and
+  linked with every program (`--standalone` writes a file that holds it
+  all, as the in-process build does). TinyCC does not
   optimize and cannot place thread-local storage in an in-memory run, so a
   program using workers (§11.2) is refused there
   (docs/design/jit_backend.md).

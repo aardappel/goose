@@ -1033,11 +1033,16 @@ struct CodeGen {
     // ------------------------------------------------------------------
     // Driver.
 
-    string result;   // Everything after the runtime paste.
+    // The program's C, in two parts: between them the driver splices the
+    // runtime's extern support (runtime_ext.h), which is written against
+    // the types in the first.
+    string head;     // Types and data.
+    string result;   // Includes, prototypes and code.
 
     // Extern-support C and user headers are inputs to this emission, not
     // process state that the driver must install before constructing us.
-    CodeGen(Ast &_ast, string_view runtime_os_text, const vector<string> &headers,
+    // A function the extern support declares gets no prototype here.
+    CodeGen(Ast &_ast, string_view runtime_ext_text, const vector<string> &headers,
             bool _norfcheck = false) : ast(_ast), norfcheck(_norfcheck) {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
@@ -1068,14 +1073,14 @@ struct CodeGen {
                            : "#define GS_GL (&gs_globals_main)\n");
         // Extern fns: the runtime's own C follows the types it is written
         // against, then user headers, then prototypes for whatever neither
-        // defines.
+        // declares.
         string externs;
-        if (!usedexterns.empty() || !runtime_os_text.empty()) {
+        if (!usedexterns.empty() || !runtime_ext_text.empty()) {
             EmitCoreTypes();
             CT(ast.SliceOf(ast.inttypes[IS_U8], Line {}));
         }
         for (auto sp : usedexterns) {
-            if (runtime_os_text.find(cat(" ", sp->sf->cname, "(")) != string_view::npos) continue;
+            if (runtime_ext_text.find(cat(" ", sp->sf->cname, "(")) != string_view::npos) continue;
             externs += ExternProto(sp);
         }
         string includes;
@@ -1086,10 +1091,9 @@ struct CodeGen {
             for (auto &c : inc) if (c == '\\') c = '/';
             Append(includes, "#include \"", inc, "\"\n");
         }
-        Append(result, "\n/* ---- types ---- */\n#pragma pack(push, 1)\n", tdecls, pdata,
-               "#pragma pack(pop)\n\n/* ---- data ---- */\n", data,
-               "\n/* ---- runtime (extern support) ---- */\n", runtime_os_text,
-               "\n/* ---- includes ---- */\n", includes,
+        Append(head, "\n/* ---- types ---- */\n#pragma pack(push, 1)\n", tdecls, pdata,
+               "#pragma pack(pop)\n\n/* ---- data ---- */\n", data);
+        Append(result, "\n/* ---- includes ---- */\n", includes,
                "\n/* ---- extern prototypes ---- */\n", externs,
                "\n/* ---- prototypes ---- */\n", protos, "\n/* ---- code ---- */\n", code);
     }

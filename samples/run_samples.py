@@ -86,6 +86,7 @@ def main():
 
     gendir = tc.REPO_ROOT / "build" / "gen" / args.profile / "samples"
     gendir.mkdir(parents=True, exist_ok=True)
+    runtime = tc.GooseRuntime(exe, gendir / "runtime")
     (HERE / "expected").mkdir(exist_ok=True)
 
     native = {"gfx": tc.gfx_link(exe, cc) if cc else [],
@@ -154,7 +155,7 @@ def main():
             nativeskips.append(f.name)
             return lines, failures, jitskips, nativeskips
         ok, log = cc.compile(cfile, efile, opt=2 if args.profile == "baseline" else 1,
-                             extra=extra, strict_decls=True, libs=libs,
+                             extra=extra, strict_decls=True, libs=libs, runtime=runtime,
                              log=gendir / f"{name}.cc.log")
         if not ok:
             say("\n".join(log.splitlines()[:8]))

@@ -701,8 +701,8 @@ extern fn gl_vertex3(v: float3&);
   the runtime's are.
 * Initial implementation, with room for later extensions: the compiler always
   emits its own prototype from the Goose declaration; the C for the
-  library's externs lives in `src/runtime/runtime_os.h`, prepended like the
-  other runtime files; user externs get their C in via `--include <header>`,
+  library's externs lives in `src/runtime/runtime_os.h`, part of the runtime
+  like the other runtime files; user externs get their C in via `--include <header>`,
   emitted after the generated type declarations so a header can implement
   shims against the `gs_<name>` typedefs. An existing C API whose
   declaration differs from the emitted prototype (alignment, `APIENTRY`,

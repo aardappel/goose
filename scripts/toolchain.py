@@ -11,12 +11,14 @@ intent.
 """
 
 import ctypes
+import hashlib
 import os
 import platform
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
@@ -219,46 +221,59 @@ class CC:
     style: str       # "msvc" or "gcc"
     desc: str
 
-    def compile(self, sources, out, *, opt=None, defines=(), cpp=False,
-                warn="default", strict_decls=False, extra=(), libs=(), log=None):
-        """Compile and link `sources` into the executable `out`. Returns
-        (ok, combined output), and writes that output to `log` when given.
-        `libs` go after the sources, where a GNU linker resolves static
-        archives in order: a gfx program's `@link-*.rsp` (gfx_link)."""
-        if cpp and not self.cxx:
-            return False, f"no C++ compiler alongside {self.cc}\n"
-        if isinstance(sources, (str, Path)):
-            sources = [sources]
-        sources = [str(s) for s in sources]
-        out = Path(out)
-        argv = [self.cxx if cpp else self.cc]
+    def _flags(self, opt, defines, cpp, warn, strict_decls):
         if self.style == "msvc":
-            argv.append("/nologo")
+            argv = ["/nologo"]
             if opt is not None:
                 argv.append({0: "/Od", 1: "/O1", 2: "/O2"}[opt])
             argv.append("/W3" if warn == "default" else "/w")
             if cpp:
                 argv += ["/EHsc", "/std:c++20"]
-            argv += [f"/D{d}" for d in defines]
-            argv += list(extra) + sources + [str(l) for l in libs]
-            # clang-cl counts libraries as inputs, and refuses an object file
-            # name for more than one; a directory it takes.
-            obj = f"{out.parent}{os.sep}" if libs else out.with_suffix(".obj")
+            return argv + [f"/D{d}" for d in defines]
+        argv = []
+        if opt is not None:
+            argv.append(f"-O{opt}")
+        if warn != "default":
+            argv.append("-w")
+        # Calling a function that was never declared is valid pre-C99 and a
+        # link error waiting to happen; MSVC has no equivalent it will fail
+        # on, which is why the second compiler exists in the test runner.
+        if strict_decls:
+            argv.append("-Werror=implicit-function-declaration")
+        if cpp:
+            argv.append("-std=c++20")
+        return argv + [f"-D{d}" for d in defines]
+
+    def compile(self, sources, out, *, opt=None, defines=(), cpp=False,
+                warn="default", strict_decls=False, extra=(), libs=(), runtime=None,
+                log=None):
+        """Compile and link `sources` into the executable `out`. Returns
+        (ok, combined output), and writes that output to `log` when given.
+        `libs` go after the sources, where a GNU linker resolves static
+        archives in order: a gfx program's `@link-*.rsp` (gfx_link).
+        `runtime`, a GooseRuntime, links the runtime object that C `goose -o`
+        writes needs, built with the same opt, defines and extra flags."""
+        if cpp and not self.cxx:
+            return False, f"no C++ compiler alongside {self.cc}\n"
+        if isinstance(sources, (str, Path)):
+            sources = [sources]
+        sources = [str(s) for s in sources]
+        if runtime:
+            ok, obj = runtime.object(self, opt=opt, defines=defines, extra=extra)
+            if not ok:
+                if log:
+                    write_text(log, obj)
+                return False, obj
+            sources.append(str(obj))
+        out = Path(out)
+        argv = [self.cxx if cpp else self.cc] + self._flags(opt, defines, cpp, warn, strict_decls)
+        argv += list(extra) + sources + [str(l) for l in libs]
+        if self.style == "msvc":
+            # clang-cl counts libraries and objects as inputs, and refuses an
+            # object file name for more than one; a directory it takes.
+            obj = f"{out.parent}{os.sep}" if libs or runtime else out.with_suffix(".obj")
             argv += [f"/Fe:{out}", f"/Fo:{obj}"]
         else:
-            if opt is not None:
-                argv.append(f"-O{opt}")
-            if warn != "default":
-                argv.append("-w")
-            # Calling a function that was never declared is valid pre-C99 and a
-            # link error waiting to happen; MSVC has no equivalent it will fail
-            # on, which is why the second compiler exists in the test runner.
-            if strict_decls:
-                argv.append("-Werror=implicit-function-declaration")
-            if cpp:
-                argv.append("-std=c++20")
-            argv += [f"-D{d}" for d in defines]
-            argv += list(extra) + sources + [str(l) for l in libs]
             argv += ["-o", str(out)]
             # The runtime uses threads and libm; on Windows both live in the
             # CRT the driver links anyway, and asking for them by name fails.
@@ -269,6 +284,67 @@ class CC:
         if log:
             write_text(log, output)
         return r.returncode == 0, output
+
+    def compile_object(self, source, out, *, opt=None, defines=(), extra=()):
+        """Compile the C file `source` into the object file `out`, without
+        linking. Returns (ok, combined output)."""
+        argv = [self.cc] + self._flags(opt, defines, False, "default", True) + list(extra)
+        if self.style == "msvc":
+            argv += ["/c", str(source), f"/Fo:{out}"]
+        else:
+            argv += ["-c", str(source), "-o", str(out)]
+        r = subprocess.run(argv, capture_output=True, text=True, errors="replace")
+        return r.returncode == 0, (r.stdout or "") + (r.stderr or "")
+
+
+class GooseRuntime:
+    """The runtime that the C a goose compiler writes with -o links with:
+    `goose --emit-runtime` writes it, once, and it is compiled once for each
+    toolchain configuration that asks for it -- compiler, optimization level,
+    defines and extra flags such as the sanitizers' -- into an object of its
+    own under `workdir`, which every program built that way then links.
+
+    Safe to share between threads: the first caller for a configuration
+    builds its object while later ones for the same configuration wait for
+    it, and different configurations build side by side."""
+
+    def __init__(self, exe, workdir):
+        self.exe = Path(exe)
+        self.workdir = Path(workdir)
+        self._lock = threading.Lock()
+        self._source = None
+        self._objects = {}
+
+    def _emit(self):
+        with self._lock:
+            if self._source is None:
+                self.workdir.mkdir(parents=True, exist_ok=True)
+                path = self.workdir / "goose_runtime.c"
+                code, out, err = run_capture([self.exe, "--emit-runtime", path])
+                self._source = (True, path) if code == 0 else (
+                    False, f"goose --emit-runtime failed (exit {code})\n{out}{err}")
+            return self._source
+
+    def object(self, cc, *, opt=None, defines=(), extra=()):
+        """(True, the object file) for this configuration, or (False, why
+        it could not be built)."""
+        key = (cc.cc, cc.style, opt, tuple(defines), tuple(str(e) for e in extra))
+        with self._lock:
+            entry = self._objects.setdefault(key, [threading.Lock(), None])
+        with entry[0]:
+            if entry[1] is None:
+                ok, src = self._emit()
+                if not ok:
+                    entry[1] = (False, src)
+                else:
+                    tag = hashlib.sha1(repr(key).encode()).hexdigest()[:12]
+                    obj = self.workdir / f"{cc.name}-{tag}" / (
+                        "goose_runtime.obj" if cc.style == "msvc" else "goose_runtime.o")
+                    obj.parent.mkdir(parents=True, exist_ok=True)
+                    ok, log = cc.compile_object(src, obj, opt=opt, defines=defines, extra=extra)
+                    entry[1] = (True, obj) if ok else (
+                        False, f"building the runtime object {obj} failed:\n{log}")
+            return entry[1]
 
 
 def _first_line(argv, stderr_too=False):

@@ -10,12 +10,32 @@ struct RuntimeFile {
 
 inline const RuntimeFile runtime_files[] = {
     { "runtime.h", string_view(
-R"GSRT(/* Goose runtime — prepended verbatim to every compiler-generated C file.
+R"GSRT(/* Goose runtime — the part every compiler-generated C file starts with.
    Plain C99 (+ #pragma pack, unaligned scalar access); compiles with MSVC,
    gcc, clang, and tcc. Kept deliberately small: per-operation behavior (push,
    indexing, field access) is emitted inline by the compiler; only genuinely
-   shared machinery lives here (data stacks, varints, printing, aborts,
-   threads/queues in runtime_threads.h). */
+   shared machinery lives in the runtime (data stacks, varints, printing,
+   aborts, threads/queues).
+
+   This file holds what a program's own translation unit needs: types,
+   macros, the configuration, the helpers that must inline (arithmetic,
+   checks, varints, slice pool spans), the data stack state the emitted code
+   reads, and declarations of the rest. That rest (runtime_impl.h,
+   runtime_threads.h, and runtime_os.h after runtime_ext.h) needs the
+   platform's headers, which no program's unit includes, and is built one
+   of two ways:
+
+   - Standalone (`goose --standalone`, and every JIT run): one translation
+     unit holds it all, and everything the runtime defines is static.
+   - Separate (`goose -o`'s default): the program's unit declares the rest
+     extern (GS_SEPARATE_RUNTIME), and `goose --emit-runtime` writes it out
+     as a C file of its own (GS_RUNTIME_OBJECT), compiled once and linked
+     with every program. That object takes no configuration of its own: the
+     program hands it the data stack sizes as it starts (gs_rt_init), it
+     always supports threads, and it holds the checks of debug and release
+     builds alike, so one object serves every program a compiler emits.
+     GS_RUNTIME_VERSION names gs_rt_start after the runtime's text, so a
+     program linked with another compiler's runtime fails to link. */
 
 /* The OS layer (runtime_os.h) opens files on Windows with _wfopen, which the
    Microsoft CRT deprecates in favour of its own _s variant. */
@@ -53,8 +73,6 @@ R"GSRT(/* Goose runtime — prepended verbatim to every compiler-generated C fil
 #if GS_STACK_RESERVE > (1ull << 48)
 #error "GS_STACK_RESERVE exceeds the 2^48 limit (goose_spec.md 10.4)"
 #endif
-/* Every data stack has the same usable reservation and trailing guard gap. */
-#define GS_REGION_SIZE ((size_t)GS_STACK_RESERVE + (size_t)GS_STACK_GAP)
 
 #ifdef _MSC_VER
 #define GS_NORETURN __declspec(noreturn)
@@ -72,6 +90,19 @@ R"GSRT(/* Goose runtime — prepended verbatim to every compiler-generated C fil
 #endif
 #else
 #define GS_TLS
+#endif
+
+/* The linkage of everything the runtime defines outside this file. */
+#ifdef GS_SEPARATE_RUNTIME
+#define GS_API extern
+#else
+#define GS_API static
+#endif
+
+#define GS_CAT_(a, b) a##b
+#define GS_CAT(a, b) GS_CAT_(a, b)
+#ifdef GS_RUNTIME_VERSION
+#define gs_rt_start GS_CAT(gs_rt_start_, GS_RUNTIME_VERSION)
 #endif
 
 /* ---------------------------------------------------------------------------
@@ -99,60 +130,36 @@ enum {
     GS_E_STACKS,       /* a function needs more data stacks than GS_MAX_STACKS */
 };
 
-static const char *gs_errmsgs[] = {
-    "limited array capacity exceeded",
-    "slice bounds out of range",
-    "relative reference offset overflow",
-    "assert failed",
-    "invalid capacity",
-    "resize growth requires a fill value",
-    "resize to a negative length",
-    "pop on empty array",
-    "thread_wait on an unknown thread id",
-    "thread_wait on the current thread",
-    "corrupt ADT tag",
-    "serialization needs a little-endian host (not supported yet)",
-    "invalid slice length",
-    "slice not from this pool",
-    "non-null relative reference encodes as null",
-    "too many data stacks (deep call nesting?)",
-};
-
-static GS_NORETURN void gs_panic(const char *msg) {
-    fprintf(stderr, "goose runtime error: %s\n", msg);
-    exit(1);
-}
-
-static GS_NORETURN void gs_abort(int err, const char *file, int line) {
-    fprintf(stderr, "goose runtime error: %s (%s:%d)\n", gs_errmsgs[err], file, line);
-    exit(1);
-}
-
+GS_API GS_NORETURN void gs_panic(const char *msg);
+GS_API GS_NORETURN void gs_abort(int err, const char *file, int line);
 /* The program's own abort(msg) (§9.3): the message is Goose bytes, not a C
    string, so it goes out with an explicit length. */
-static GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char *file,
-                                     int line) {
-    fputs("goose runtime error: ", stderr);
-    fwrite(msg, 1, (size_t)len, stderr);
-    fprintf(stderr, " (%s:%d)\n", file, line);
-    exit(1);
-}
-
-static GS_NORETURN void gs_exit(int64_t code) {
-    fflush(stdout);
-    exit((int)code);
-}
-
-static int64_t gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
-    fprintf(stderr, "goose runtime error: index %lld out of bounds (length %lld) "
-            "(%s:%d)\n", (long long)i, (long long)n, file, line);
-    exit(1);
-}
+GS_API GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char *file,
+                                     int line);
+GS_API GS_NORETURN void gs_exit(int64_t code);
+GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line);
+GS_API GS_NORETURN void gs_divfail(const char *file, int line);
+GS_API GS_NORETURN void gs_divovf(const char *file, int line);
+/* The debug build's failing overflow and `as` checks. */
+GS_API GS_NORETURN void gs_ovf(int64_t a, const char *op, int64_t b, const char *type,
+                               const char *file, int line);
+GS_API GS_NORETURN void gs_ovf_neg(int64_t a, const char *type, const char *file, int line);
+GS_API GS_NORETURN void gs_asfail_i(const char *why, int64_t v, const char *type,
+                                    const char *file, int line);
+GS_API GS_NORETURN void gs_asfail_u(const char *why, uint64_t v, const char *type,
+                                    const char *file, int line);
+/* f32: d is an f32's value, and takes that type's text form. */
+GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const char *type,
+                                    const char *file, int line);
 
 /* Bounds check as one unsigned compare; the index operand must be side-effect
-   free (the compiler guarantees this at emission). */
+   free (the compiler guarantees this at emission). The failing arm's int64_t
+   gives the result the type of (i) and an int64_t together, and its call is
+   one the C compiler knows does not return, also where gs_idxfail is in the
+   runtime object. */
 #define GS_IDX(i, n, f, l) \
-    ((uint64_t)(i) < (uint64_t)(n) ? (i) : gs_idxfail((int64_t)(i), (n), (f), (l)))
+    ((uint64_t)(i) < (uint64_t)(n) ? (i) \
+                                   : (gs_idxfail((int64_t)(i), (n), (f), (l)), (int64_t)0))
 
 /* Statically unreachable spots (e.g. an ADT tag no variant matches): checked
    in debug builds, an optimizer hint in release. */
@@ -180,7 +187,8 @@ static int gs_memcmp(const void *a, const void *b, size_t n) {
 /* ---------------------------------------------------------------------------
    Integer semantics (§6.2): every operation runs at its operands' type. The
    operations compute wide (so wrap is defined in C), truncate back, and — when
-   the generated C is compiled with -DGS_DEBUG=1 — abort when the wide result
+)GSRT"
+R"GSRT(   the generated C is compiled with -DGS_DEBUG=1 — abort when the wide result
    does not fit the type. Shifts mask their count to the width; division is
    zero-checked always.
 
@@ -197,28 +205,11 @@ static int gs_memcmp(const void *a, const void *b, size_t n) {
    drop them unevaluated. */
 
 #if GS_DEBUG
-static GS_NORETURN void gs_ovf(int64_t a, const char *op, int64_t b, const char *type,
-                               const char *file, int line) {
-    fprintf(stderr, "goose runtime error: integer overflow (debug): %lld %s %lld at %s "
-            "(%s:%d)\n", (long long)a, op, (long long)b, type, file, line);
-    exit(1);
-}
-static GS_NORETURN void gs_ovf_neg(int64_t a, const char *type, const char *file, int line) {
-    fprintf(stderr, "goose runtime error: integer overflow (debug): -(%lld) at %s (%s:%d)\n",
-            (long long)a, type, file, line);
-    exit(1);
-}
-)GSRT"
-R"GSRT(#define GS_OVFCHK(r, MIN, MAX, a, op, b, type, file, line) \
+#define GS_OVFCHK(r, MIN, MAX, a, op, b, type, file, line) \
     do { if ((r) < (MIN) || (r) > (MAX)) gs_ovf((a), (op), (b), (type), (file), (line)); } while (0)
 #else
 #define GS_OVFCHK(r, MIN, MAX, a, op, b, type, file, line) ((void)0)
 #endif
-
-static GS_NORETURN void gs_divfail(const char *file, int line) {
-    fprintf(stderr, "goose runtime error: division by zero (%s:%d)\n", file, line);
-    exit(1);
-}
 
 /* Division and modulo, both builds: the zero check is not optional, and `%`
    is Euclidean. */
@@ -368,7 +359,8 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 
 #define gs_add_i64(a, b, f, l) ((int64_t)((uint64_t)(a) + (uint64_t)(b)))
 #define gs_sub_i64(a, b, f, l) ((int64_t)((uint64_t)(a) - (uint64_t)(b)))
-#define gs_mul_i64(a, b, f, l) ((int64_t)((uint64_t)(a) * (uint64_t)(b)))
+)GSRT"
+R"GSRT(#define gs_mul_i64(a, b, f, l) ((int64_t)((uint64_t)(a) * (uint64_t)(b)))
 #define gs_neg_i64(a, f, l)    ((int64_t)(0u - (uint64_t)(a)))
 #define gs_shl_i64(a, n) ((int64_t)((uint64_t)(a) << ((n) & 63)))
 #define gs_shr_i64(a, n) ((int64_t)((a) >> ((n) & 63)))
@@ -383,14 +375,9 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 
 /* 64-bit division and modulo. Division overflow (i64.min / -1) would trap in
    hardware and aborts in every build. */
-)GSRT"
-R"GSRT(static int64_t gs_div_i64(int64_t a, int64_t b, const char *file, int line) {
+static int64_t gs_div_i64(int64_t a, int64_t b, const char *file, int line) {
     if (b == 0) gs_divfail(file, line);
-    if (a == INT64_MIN && b == -1) {
-        fprintf(stderr, "goose runtime error: integer overflow in division (%s:%d)\n",
-                file, line);
-        exit(1);
-    }
+    if (a == INT64_MIN && b == -1) gs_divovf(file, line);
     return a / b;
 }
 static int64_t gs_mod_i64(int64_t a, int64_t b, const char *file, int line) {
@@ -427,36 +414,6 @@ static int64_t gs_f2iwrap(double d) {
    three unevaluated. A conversion to a float is a plain C cast in every build
    and has none. */
 #if GS_DEBUG
-
-static int64_t gs_fmt_f64(uint8_t *dst, double v);
-static int64_t gs_fmt_f32(uint8_t *dst, float v);
-
-/* The message of a failing check, with the source value as text. */
-static GS_NORETURN void gs_asfail(const char *why, const char *num, const char *type,
-                                  const char *file, int line) {
-    fprintf(stderr, "goose runtime error: as conversion %s (debug): %s as %s (%s:%d)\n",
-            why, num, type, file, line);
-    exit(1);
-}
-static GS_NORETURN void gs_asfail_i(const char *why, int64_t v, const char *type,
-                                    const char *file, int line) {
-    char num[24];
-    snprintf(num, sizeof(num), "%lld", (long long)v);
-    gs_asfail(why, num, type, file, line);
-}
-static GS_NORETURN void gs_asfail_u(const char *why, uint64_t v, const char *type,
-                                    const char *file, int line) {
-    char num[24];
-    snprintf(num, sizeof(num), "%llu", (unsigned long long)v);
-    gs_asfail(why, num, type, file, line);
-}
-/* f32: d is an f32's value, and takes that type's text form. */
-static GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const char *type,
-                                    const char *file, int line) {
-    uint8_t num[32];
-    num[f32 ? gs_fmt_f32(num, (float)d) : gs_fmt_f64(num, d)] = 0;
-    gs_asfail(why, (const char *)num, type, file, line);
-}
 
 static int64_t gs_rangechk(int64_t v, int64_t lo, int64_t hi, const char *type,
                            const char *file, int line) {
@@ -504,249 +461,55 @@ static uint64_t gs_f2uchk(double d, int f32, const char *file, int line) {
    Data stacks (§1.2, Appendix C.1/C.4): large reserved regions, committed on
    use, bump-pointer allocation, watermark restore on scope exit. Emitted code
    holds them per thread program via gs_stks (index = the hidden gs_sp
-   argument plus a per-function constant); globals own dedicated stacks. */
+   argument plus a per-function constant); globals own dedicated stacks. The
+   regions themselves, and what tells a fault in one from a crash, are the
+   runtime's (runtime_impl.h). */
 
 typedef struct {
     uint8_t *top;
 } gs_stack;
 
-/* The program's arguments, for stdlib/os.goose (runtime_os.h). */
-static int gs_argc;
-static char **gs_argv;
+/* Starts the runtime on main's thread: the program's arguments, the most
+   data stack regions one thread program may hold, and each region's usable
+   reservation and trailing guard gap. */
+GS_API void gs_rt_start(int argc, char **argv, int64_t maxregions, uint64_t reserve,
+                        uint64_t gap);
+/* A fresh region, registered to the calling thread program. */
+GS_API uint8_t *gs_reserve_region(void);
+/* Releases every region of the calling thread program, and what else the
+   runtime keeps for its thread. */
+GS_API void gs_release_regions(void);
 
-/* Every region owned by the current thread program, so the Windows fault
-   handler can tell "commit more" from a genuine crash and guard-gap overruns
-   abort with a message. Goose workers cannot access another thread's storage.
-   Keeping this registry thread-local avoids both races with fault handlers
-   and signal-unsafe locks when a different worker allocates or exits. */
-static GS_TLS uint8_t *gs_regions[GS_MAX_STACKS * 4];
-static GS_TLS volatile long gs_nregions;
+/* ---------------------------------------------------------------------------
+   Threads and typed queues (§11.2), runtime_threads.h. */
 
-#ifdef _WIN32
+GS_API int64_t gs_hardware_threads(void);
+/* Runs run(entry, args) on a new thread, args a copy of argsize bytes, and
+   returns the worker's id. */
+GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
+                               void (*entry)(uint8_t *), const void *args, int64_t argsize);
+GS_API void gs_thread_wait(int64_t id, const char *file, int line);
 
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
+/* One queue per flat element type the program uses (the compiler emits a
+   gs_queue global per type, which main sets up before anything can use it).
+   Values are contiguous byte images: gs_qget and gs_qpoll return a malloc'd
+   node the caller copies from and frees, gs_qpoll NULL when the queue is
+   empty. */
+typedef struct gs_qnode {
+    struct gs_qnode *next;
+    int64_t size;
+    /* Value bytes follow the header. */
+} gs_qnode;
 
-static size_t gs_page_size = 0;
-#define GS_COMMIT_CHUNK (1u << 20)
-/* What each thread program keeps of its native stack for reporting that
-   stack's overflow (gs_native_stack_init). */
-#define GS_STACK_GUARANTEE (64u << 10)
+typedef struct gs_qstate *gs_queue;
+#define GS_QUEUE_INIT NULL
 
-static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
-    DWORD code = ep->ExceptionRecord->ExceptionCode;
-    if (code == EXCEPTION_STACK_OVERFLOW) {
-        /* On the little stack the guarantee kept: WriteFile rather than
-           stdio, which could want more. */
-        static const char msg[] = "goose runtime error: native call stack overflow\n";
-        DWORD written;
-        WriteFile(GetStdHandle(STD_ERROR_HANDLE), msg, sizeof(msg) - 1, &written, NULL);
-        ExitProcess(1);
-    }
-    if (code != STATUS_ACCESS_VIOLATION)
-        return EXCEPTION_CONTINUE_SEARCH;
-    uint8_t *hit = (uint8_t *)ep->ExceptionRecord->ExceptionInformation[1];
-    for (long i = 0; i < gs_nregions; i++) {
-        uint8_t *base = gs_regions[i];
-        if ((uintptr_t)hit - (uintptr_t)base < GS_REGION_SIZE) {
-            /* Within the usable part: commit another chunk (clamped to the
-               region) and resume. Within the gap: a data stack overran. */
-            if (hit < base + GS_STACK_RESERVE) {
-                uint8_t *page = (uint8_t *)((size_t)hit & ~(gs_page_size - 1));
-                size_t n = GS_COMMIT_CHUNK;
-                if (page + n > base + GS_STACK_RESERVE)
-                    n = (size_t)(base + GS_STACK_RESERVE - page);
-                if (VirtualAlloc(page, n, MEM_COMMIT, PAGE_READWRITE))
-                    return EXCEPTION_CONTINUE_EXECUTION;
-            }
-            fputs("goose runtime error: data stack overflow\n", stderr);
-            ExitProcess(1);
-        }
-    }
-    return EXCEPTION_CONTINUE_SEARCH;
-}
+GS_API void gs_qinit(gs_queue *q);
+GS_API void gs_qput(gs_queue *q, const void *data, int64_t size);
+GS_API gs_qnode *gs_qget(gs_queue *q);
+GS_API gs_qnode *gs_qpoll(gs_queue *q);
 
-/* Installed once by main, before any worker can start. */
-)GSRT"
-R"GSRT(static void gs_regions_init(void) {
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    gs_page_size = si.dwPageSize;
-    if (!AddVectoredExceptionHandler(1, gs_fault_filter))
-        gs_panic("cannot install data stack fault handler");
-}
-
-/* Run by each thread program's thread as it starts. TinyCC's kernel32.def
-   does not list SetThreadStackGuarantee, so a program it builds looks it up. */
-static void gs_native_stack_init(void) {
-    ULONG room = GS_STACK_GUARANTEE;
-    #ifdef __TINYC__
-        BOOL (WINAPI *guarantee)(PULONG) = (BOOL (WINAPI *)(PULONG))GetProcAddress(
-            GetModuleHandleA("kernel32.dll"), "SetThreadStackGuarantee");
-        if (guarantee) guarantee(&room);
-    #else
-        SetThreadStackGuarantee(&room);
-    #endif
-}
-
-static void gs_native_stack_free(void) {}
-
-static uint8_t *gs_reserve_region(void) {
-    if (gs_nregions == GS_MAX_STACKS * 4)
-        gs_panic("too many data stack regions");
-    uint8_t *p = (uint8_t *)VirtualAlloc(0, GS_REGION_SIZE, MEM_RESERVE, PAGE_READWRITE);
-    if (!p) gs_panic("cannot reserve data stack address space");
-    long i = gs_nregions;
-    gs_regions[i] = p;
-    gs_nregions = i + 1;  /* Publish only the initialized entry. */
-    return p;
-}
-
-static void gs_release_region(uint8_t *base) {
-    if (!VirtualFree(base, 0, MEM_RELEASE))
-        gs_panic("cannot release data stack address space");
-}
-
-#else  /* posix */
-
-#include <sys/mman.h>
-#include <unistd.h>
-#include <signal.h>
-#include <pthread.h>
-
-/* The calling thread's native stack, from GS_NATIVE_SLOP below its lowest
-   usable address up to its top: a fault in there is that stack overflowing,
-   whether on the guard below it or at a limit the kernel would not grow it
-   past. The slop covers a frame larger than the guard reaching over it.
-   Empty where the platform cannot tell. */
-#define GS_NATIVE_SLOP (64u << 10)
-static GS_TLS uintptr_t gs_native_lo, gs_native_hi;
-/* The alternate signal stack gs_native_stack_init allocated, if it did. */
-static GS_TLS void *gs_sigstack;
-#define GS_SIGSTACK_MIN (64u << 10)
-/* What the fault handler replaced, for the faults that are not its own. */
-static struct sigaction gs_prev_segv, gs_prev_bus;
-
-static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
-    (void)ctx;
-    uint8_t *hit = (uint8_t *)info->si_addr;
-    for (long i = 0; i < gs_nregions; i++) {
-        uint8_t *base = gs_regions[i];
-        if ((uintptr_t)hit - (uintptr_t)base < GS_REGION_SIZE) {
-            static const char msg[] = "goose runtime error: data stack overflow\n";
-            ssize_t w = write(2, msg, sizeof(msg) - 1);
-            (void)w;
-            _exit(1);
-        }
-    }
-    if ((uintptr_t)hit - gs_native_lo < gs_native_hi - gs_native_lo) {
-        static const char msg[] = "goose runtime error: native call stack overflow\n";
-        ssize_t w = write(2, msg, sizeof(msg) - 1);
-        (void)w;
-        _exit(1);
-    }
-    /* Not ours: the access faults again under what handled it before, the
-       default action or a sanitizer's report. */
-    sigaction(sig, sig == SIGSEGV ? &gs_prev_segv : &gs_prev_bus, NULL);
-}
-
-static void gs_regions_init(void) {
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_sigaction = gs_fault_handler;
-    /* A native stack overflow leaves the handler no room on the thread's own. */
-    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
-    if (sigaction(SIGSEGV, &sa, &gs_prev_segv))
-        gs_panic("cannot install data stack fault handler");
-    #ifdef SIGBUS
-        if (sigaction(SIGBUS, &sa, &gs_prev_bus))
-            gs_panic("cannot install data stack fault handler");
-    #endif
-}
-
-#ifdef __linux__
-/* pthread.h declares it only under _GNU_SOURCE, which would have to come
-   before every system header a file includes. */
-int pthread_getattr_np(pthread_t, pthread_attr_t *);
-#endif
-
-static size_t gs_sigstack_size(void) {
-    return SIGSTKSZ > GS_SIGSTACK_MIN ? (size_t)SIGSTKSZ : (size_t)GS_SIGSTACK_MIN;
-}
-
-/* Run by each thread program's thread as it starts: an alternate stack for
-   the fault handler, unless the thread has one (ASan gives every thread its
-   own), and the bounds of the thread's stack. */
-static void gs_native_stack_init(void) {
-    stack_t ss;
-    uintptr_t lo = 0, hi = 0;
-    if (!sigaltstack(NULL, &ss) && (ss.ss_flags & SS_DISABLE)) {
-        ss.ss_size = gs_sigstack_size();
-        ss.ss_sp = malloc(ss.ss_size);
-        ss.ss_flags = 0;
-        if (ss.ss_sp && !sigaltstack(&ss, NULL)) gs_sigstack = ss.ss_sp;
-        else free(ss.ss_sp);
-    }
-    #if defined(__APPLE__)
-        hi = (uintptr_t)pthread_get_stackaddr_np(pthread_self());
-        lo = hi - pthread_get_stacksize_np(pthread_self());
-    #elif defined(__linux__)
-        pthread_attr_t attr;
-        void *base;
-        size_t size;
-        if (!pthread_getattr_np(pthread_self(), &attr)) {
-            if (!pthread_attr_getstack(&attr, &base, &size)) {
-                lo = (uintptr_t)base;
-                hi = lo + size;
-            }
-            pthread_attr_destroy(&attr);
-        }
-    #endif
-    if (lo > GS_NATIVE_SLOP) {
-        gs_native_lo = lo - GS_NATIVE_SLOP;
-        gs_native_hi = hi;
-    }
-}
-
-/* At a worker's end, the alternate stack gs_native_stack_init gave it. */
-static void gs_native_stack_free(void) {
-    stack_t ss;
-    if (!gs_sigstack) return;
-    memset(&ss, 0, sizeof(ss));
-    ss.ss_flags = SS_DISABLE;
-    ss.ss_size = gs_sigstack_size();
-    sigaltstack(&ss, NULL);
-    free(gs_sigstack);
-    gs_sigstack = NULL;
-}
-
-static uint8_t *gs_reserve_region(void) {
-    if (gs_nregions == GS_MAX_STACKS * 4)
-        gs_panic("too many data stack regions");
-    /* Commit-on-touch via overcommit; the gap at the end stays PROT_NONE. */
-    void *p = mmap(NULL, GS_REGION_SIZE, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS
-                   #ifdef MAP_NORESERVE
-                       | MAP_NORESERVE
-                   #endif
-                   , -1, 0);
-    if (p == MAP_FAILED) gs_panic("cannot reserve data stack address space");
-    if (mprotect((uint8_t *)p + GS_STACK_RESERVE, GS_STACK_GAP, PROT_NONE)) {
-        munmap(p, GS_REGION_SIZE);
-        gs_panic("cannot protect data stack guard gap");
-    }
-    long i = gs_nregions;
-    gs_regions[i] = (uint8_t *)p;
-    gs_nregions = i + 1;
-    return (uint8_t *)p;
-}
-
-static void gs_release_region(uint8_t *base) {
-    if (munmap(base, GS_REGION_SIZE)) gs_panic("cannot release data stack address space");
-}
-
-#endif
+#ifndef GS_RUNTIME_OBJECT
 
 /* The current thread program's stack block. gs_sp-relative indices resolve
    through this; stacks materialize lazily as call depth first reaches them. */
@@ -783,37 +546,42 @@ static gs_stack *gs_new_stack_block(void) {
 
 static void gs_stack_init(gs_stack *s) {
     s->top = gs_reserve_region();
-}
-
-/* Workers own all their registered regions (globals belong to main). No
 )GSRT"
-R"GSRT(   Goose reference to these mappings may outlive the worker. Unregister
-   before unmapping, then discard the now-useless bump pointers. The
-   thread's alternate signal stack goes with them. */
-static void gs_free_thread_stacks(void) {
-    while (gs_nregions) {
-        long i = gs_nregions - 1;
-        uint8_t *base = gs_regions[i];
-        gs_nregions = i;
-        gs_regions[i] = NULL;
-        gs_release_region(base);
-    }
-    free(gs_stks);
-    gs_stks = NULL;
-    gs_nstks = 0;
-    gs_native_stack_free();
-}
+R"GSRT(}
 
-static void gs_rt_init(void) {
-    // Unbuffered stdout: output is never lost to an abort or a killed run,
-    // and interleaves correctly with stderr diagnostics. Revisit if print
-    // throughput ever matters.
-    setvbuf(stdout, NULL, _IONBF, 0);
-    gs_regions_init();
-    gs_native_stack_init();
+static void gs_rt_init(int argc, char **argv) {
+    gs_rt_start(argc, argv, GS_MAX_STACKS * 4, GS_STACK_RESERVE, GS_STACK_GAP);
     gs_stks = gs_new_stack_block();
     gs_nstks = 0;
 }
+
+/* Every region the calling thread program owns, with its stack block. No
+   Goose reference to these mappings may outlive it. */
+static void gs_free_thread_stacks(void) {
+    gs_release_regions();
+    free(gs_stks);
+    gs_stks = NULL;
+    gs_nstks = 0;
+}
+
+#if GS_NEED_THREADS
+/* A worker's thread program, on a fresh stack block it lets go of at the end;
+   the runtime releases the regions after it. */
+static void gs_thread_run(void (*entry)(uint8_t *), uint8_t *args) {
+    gs_stks = gs_new_stack_block();
+    gs_nstks = 0;
+    entry(args);
+    free(gs_stks);
+    gs_stks = NULL;
+    gs_nstks = 0;
+}
+
+static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64_t argsize) {
+    return gs_thread_start(gs_thread_run, entry, args, argsize);
+}
+#endif
+
+#endif  /* GS_RUNTIME_OBJECT */
 
 /* ---------------------------------------------------------------------------
    Slice pools (§5.4, `reusable[]`). The freelist is a run of (index, count)
@@ -998,10 +766,10 @@ static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out
         if (q >= end) return 0;
         b = *q++;
         if (shift > 63 || (shift == 63 && (b & 0x7e))) return 0;
-        v |= (uint64_t)(b & 0x7f) << shift;
-        if (!(b & 0x80)) {
 )GSRT"
-R"GSRT(            if (shift && !b) return 0;  /* Redundant high zero group. */
+R"GSRT(        v |= (uint64_t)(b & 0x7f) << shift;
+        if (!(b & 0x80)) {
+            if (shift && !b) return 0;  /* Redundant high zero group. */
             break;
         }
         shift += 7;
@@ -1045,11 +813,427 @@ static int gs_is_le(void) {
 
 #define GS_FMT_MAX 32
 
-static int64_t gs_fmt_i64(uint8_t *dst, int64_t v) {
+GS_API int64_t gs_fmt_i64(uint8_t *dst, int64_t v);
+GS_API int64_t gs_fmt_u64(uint8_t *dst, uint64_t v);
+GS_API int64_t gs_fmt_f64(uint8_t *dst, double v);
+GS_API int64_t gs_fmt_f32(uint8_t *dst, float v);
+GS_API int64_t gs_fmt_bool(uint8_t *dst, int64_t v);
+/* A u8 array inside an aggregate: quoted, with the escapes Goose reads. */
+GS_API int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n);
+
+/* print(...) (§3.7): each argument's text, then a newline. */
+GS_API void gs_out_int(int64_t v);
+GS_API void gs_out_uint(uint64_t v);
+GS_API void gs_out_flt(double v);
+GS_API void gs_out_f32(float v);
+GS_API void gs_out_bool(int64_t v);
+GS_API void gs_out_bytes(const uint8_t *p, int64_t len);
+GS_API void gs_out_nl(void);
+)GSRT"
+    ) },
+    { "runtime_impl.h", string_view(
+R"GSRT(/* Goose runtime — what runtime.h declares and leaves to the runtime: aborts,
+   the data stack regions and the faults that reach them, text forms and
+   printing. Follows runtime.h, in a standalone program's unit or in the
+   runtime object (runtime.h has the two); this, runtime_threads.h and
+   runtime_os.h are the only parts of either that include the platform's
+   headers. */
+
+static const char *gs_errmsgs[] = {
+    "limited array capacity exceeded",
+    "slice bounds out of range",
+    "relative reference offset overflow",
+    "assert failed",
+    "invalid capacity",
+    "resize growth requires a fill value",
+    "resize to a negative length",
+    "pop on empty array",
+    "thread_wait on an unknown thread id",
+    "thread_wait on the current thread",
+    "corrupt ADT tag",
+    "serialization needs a little-endian host (not supported yet)",
+    "invalid slice length",
+    "slice not from this pool",
+    "non-null relative reference encodes as null",
+    "too many data stacks (deep call nesting?)",
+};
+
+GS_API GS_NORETURN void gs_panic(const char *msg) {
+    fprintf(stderr, "goose runtime error: %s\n", msg);
+    exit(1);
+}
+
+GS_API GS_NORETURN void gs_abort(int err, const char *file, int line) {
+    fprintf(stderr, "goose runtime error: %s (%s:%d)\n", gs_errmsgs[err], file, line);
+    exit(1);
+}
+
+GS_API GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char *file,
+                                     int line) {
+    fputs("goose runtime error: ", stderr);
+    fwrite(msg, 1, (size_t)len, stderr);
+    fprintf(stderr, " (%s:%d)\n", file, line);
+    exit(1);
+}
+
+GS_API GS_NORETURN void gs_exit(int64_t code) {
+    fflush(stdout);
+    exit((int)code);
+}
+
+GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
+    fprintf(stderr, "goose runtime error: index %lld out of bounds (length %lld) "
+            "(%s:%d)\n", (long long)i, (long long)n, file, line);
+    exit(1);
+}
+
+GS_API GS_NORETURN void gs_divfail(const char *file, int line) {
+    fprintf(stderr, "goose runtime error: division by zero (%s:%d)\n", file, line);
+    exit(1);
+}
+
+GS_API GS_NORETURN void gs_divovf(const char *file, int line) {
+    fprintf(stderr, "goose runtime error: integer overflow in division (%s:%d)\n", file, line);
+    exit(1);
+}
+
+GS_API GS_NORETURN void gs_ovf(int64_t a, const char *op, int64_t b, const char *type,
+                               const char *file, int line) {
+    fprintf(stderr, "goose runtime error: integer overflow (debug): %lld %s %lld at %s "
+            "(%s:%d)\n", (long long)a, op, (long long)b, type, file, line);
+    exit(1);
+}
+
+GS_API GS_NORETURN void gs_ovf_neg(int64_t a, const char *type, const char *file, int line) {
+    fprintf(stderr, "goose runtime error: integer overflow (debug): -(%lld) at %s (%s:%d)\n",
+            (long long)a, type, file, line);
+    exit(1);
+}
+
+/* The message of a failing `as` check, with the source value as text. */
+static GS_NORETURN void gs_asfail(const char *why, const char *num, const char *type,
+                                  const char *file, int line) {
+    fprintf(stderr, "goose runtime error: as conversion %s (debug): %s as %s (%s:%d)\n",
+            why, num, type, file, line);
+    exit(1);
+}
+
+GS_API GS_NORETURN void gs_asfail_i(const char *why, int64_t v, const char *type,
+                                    const char *file, int line) {
+    char num[24];
+    snprintf(num, sizeof(num), "%lld", (long long)v);
+    gs_asfail(why, num, type, file, line);
+}
+
+GS_API GS_NORETURN void gs_asfail_u(const char *why, uint64_t v, const char *type,
+                                    const char *file, int line) {
+    char num[24];
+    snprintf(num, sizeof(num), "%llu", (unsigned long long)v);
+    gs_asfail(why, num, type, file, line);
+}
+
+GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const char *type,
+                                    const char *file, int line) {
+    uint8_t num[32];
+    num[f32 ? gs_fmt_f32(num, (float)d) : gs_fmt_f64(num, d)] = 0;
+    gs_asfail(why, (const char *)num, type, file, line);
+}
+
+/* ---------------------------------------------------------------------------
+   Data stack regions (runtime.h): the program's configuration, handed over
+   by gs_rt_start, and every region owned by the current thread program, so
+   the fault handler can tell "commit more" from a genuine crash and
+   guard-gap overruns abort with a message. Goose workers cannot access
+   another thread's storage. Keeping this registry thread-local avoids both
+   races with fault handlers and signal-unsafe locks when a different worker
+   allocates or exits. */
+
+/* The program's arguments, for stdlib/os.goose (runtime_os.h). */
+static int gs_argc;
+static char **gs_argv;
+
+static int64_t gs_maxregions;
+static size_t gs_region_usable, gs_region_size;
+
+static GS_TLS uint8_t **gs_regions;
+static GS_TLS volatile long gs_nregions;
+
+/* The calling thread program's registry, empty, as it starts. */
+static void gs_regions_begin(void) {
+    gs_regions = (uint8_t **)calloc((size_t)gs_maxregions, sizeof(uint8_t *));
+    if (!gs_regions) gs_panic("out of memory allocating the data stack registry");
+    gs_nregions = 0;
+}
+
+static void gs_release_region(uint8_t *base);
+static void gs_native_stack_free(void);
+
+/* Unregister before unmapping, then drop the registry. */
+GS_API void gs_release_regions(void) {
+    while (gs_nregions) {
+        long i = gs_nregions - 1;
+        uint8_t *base = gs_regions[i];
+        gs_nregions = i;
+        gs_regions[i] = NULL;
+        gs_release_region(base);
+    }
+    free(gs_regions);
+    gs_regions = NULL;
+    gs_native_stack_free();
+}
+
+#ifdef _WIN32
+
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+
+static size_t gs_page_size = 0;
+#define GS_COMMIT_CHUNK (1u << 20)
+/* What each thread program keeps of its native stack for reporting that
+   stack's overflow (gs_native_stack_init). */
+#define GS_STACK_GUARANTEE (64u << 10)
+
+static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (code == EXCEPTION_STACK_OVERFLOW) {
+        /* On the little stack the guarantee kept: WriteFile rather than
+           stdio, which could want more. */
+        static const char msg[] = "goose runtime error: native call stack overflow\n";
+        DWORD written;
+        WriteFile(GetStdHandle(STD_ERROR_HANDLE), msg, sizeof(msg) - 1, &written, NULL);
+        ExitProcess(1);
+    }
+    if (code != STATUS_ACCESS_VIOLATION)
+        return EXCEPTION_CONTINUE_SEARCH;
+    uint8_t *hit = (uint8_t *)ep->ExceptionRecord->ExceptionInformation[1];
+    for (long i = 0; i < gs_nregions; i++) {
+        uint8_t *base = gs_regions[i];
+        if ((uintptr_t)hit - (uintptr_t)base < gs_region_size) {
+            /* Within the usable part: commit another chunk (clamped to the
+               region) and resume. Within the gap: a data stack overran. */
+            if (hit < base + gs_region_usable) {
+                uint8_t *page = (uint8_t *)((size_t)hit & ~(gs_page_size - 1));
+                size_t n = GS_COMMIT_CHUNK;
+                if (page + n > base + gs_region_usable)
+                    n = (size_t)(base + gs_region_usable - page);
+                if (VirtualAlloc(page, n, MEM_COMMIT, PAGE_READWRITE))
+                    return EXCEPTION_CONTINUE_EXECUTION;
+            }
+            fputs("goose runtime error: data stack overflow\n", stderr);
+            ExitProcess(1);
+        }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* Installed once by main, before any worker can start. */
+static void gs_regions_init(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    gs_page_size = si.dwPageSize;
+    if (!AddVectoredExceptionHandler(1, gs_fault_filter))
+        gs_panic("cannot install data stack fault handler");
+}
+
+/* Run by each thread program's thread as it starts. TinyCC's kernel32.def
+   does not list SetThreadStackGuarantee, so a program it builds looks it up. */
+)GSRT"
+R"GSRT(static void gs_native_stack_init(void) {
+    ULONG room = GS_STACK_GUARANTEE;
+    #ifdef __TINYC__
+        BOOL (WINAPI *guarantee)(PULONG) = (BOOL (WINAPI *)(PULONG))GetProcAddress(
+            GetModuleHandleA("kernel32.dll"), "SetThreadStackGuarantee");
+        if (guarantee) guarantee(&room);
+    #else
+        SetThreadStackGuarantee(&room);
+    #endif
+}
+
+static void gs_native_stack_free(void) {}
+
+GS_API uint8_t *gs_reserve_region(void) {
+    if (gs_nregions == gs_maxregions)
+        gs_panic("too many data stack regions");
+    uint8_t *p = (uint8_t *)VirtualAlloc(0, gs_region_size, MEM_RESERVE, PAGE_READWRITE);
+    if (!p) gs_panic("cannot reserve data stack address space");
+    long i = gs_nregions;
+    gs_regions[i] = p;
+    gs_nregions = i + 1;  /* Publish only the initialized entry. */
+    return p;
+}
+
+static void gs_release_region(uint8_t *base) {
+    if (!VirtualFree(base, 0, MEM_RELEASE))
+        gs_panic("cannot release data stack address space");
+}
+
+#else  /* posix */
+
+#include <sys/mman.h>
+#include <unistd.h>
+#include <signal.h>
+#include <pthread.h>
+
+/* The calling thread's native stack, from GS_NATIVE_SLOP below its lowest
+   usable address up to its top: a fault in there is that stack overflowing,
+   whether on the guard below it or at a limit the kernel would not grow it
+   past. The slop covers a frame larger than the guard reaching over it.
+   Empty where the platform cannot tell. */
+#define GS_NATIVE_SLOP (64u << 10)
+static GS_TLS uintptr_t gs_native_lo, gs_native_hi;
+/* The alternate signal stack gs_native_stack_init allocated, if it did. */
+static GS_TLS void *gs_sigstack;
+#define GS_SIGSTACK_MIN (64u << 10)
+/* What the fault handler replaced, for the faults that are not its own. */
+static struct sigaction gs_prev_segv, gs_prev_bus;
+
+static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
+    (void)ctx;
+    uint8_t *hit = (uint8_t *)info->si_addr;
+    for (long i = 0; i < gs_nregions; i++) {
+        uint8_t *base = gs_regions[i];
+        if ((uintptr_t)hit - (uintptr_t)base < gs_region_size) {
+            static const char msg[] = "goose runtime error: data stack overflow\n";
+            ssize_t w = write(2, msg, sizeof(msg) - 1);
+            (void)w;
+            _exit(1);
+        }
+    }
+    if ((uintptr_t)hit - gs_native_lo < gs_native_hi - gs_native_lo) {
+        static const char msg[] = "goose runtime error: native call stack overflow\n";
+        ssize_t w = write(2, msg, sizeof(msg) - 1);
+        (void)w;
+        _exit(1);
+    }
+    /* Not ours: the access faults again under what handled it before, the
+       default action or a sanitizer's report. */
+    sigaction(sig, sig == SIGSEGV ? &gs_prev_segv : &gs_prev_bus, NULL);
+}
+
+static void gs_regions_init(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = gs_fault_handler;
+    /* A native stack overflow leaves the handler no room on the thread's own. */
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    if (sigaction(SIGSEGV, &sa, &gs_prev_segv))
+        gs_panic("cannot install data stack fault handler");
+    #ifdef SIGBUS
+        if (sigaction(SIGBUS, &sa, &gs_prev_bus))
+            gs_panic("cannot install data stack fault handler");
+    #endif
+}
+
+#ifdef __linux__
+/* pthread.h declares it only under _GNU_SOURCE, which would have to come
+   before every system header a file includes. */
+int pthread_getattr_np(pthread_t, pthread_attr_t *);
+#endif
+
+static size_t gs_sigstack_size(void) {
+    return SIGSTKSZ > GS_SIGSTACK_MIN ? (size_t)SIGSTKSZ : (size_t)GS_SIGSTACK_MIN;
+}
+
+/* Run by each thread program's thread as it starts: an alternate stack for
+   the fault handler, unless the thread has one (ASan gives every thread its
+   own), and the bounds of the thread's stack. */
+static void gs_native_stack_init(void) {
+    stack_t ss;
+    uintptr_t lo = 0, hi = 0;
+    if (!sigaltstack(NULL, &ss) && (ss.ss_flags & SS_DISABLE)) {
+        ss.ss_size = gs_sigstack_size();
+        ss.ss_sp = malloc(ss.ss_size);
+        ss.ss_flags = 0;
+        if (ss.ss_sp && !sigaltstack(&ss, NULL)) gs_sigstack = ss.ss_sp;
+        else free(ss.ss_sp);
+    }
+    #if defined(__APPLE__)
+        hi = (uintptr_t)pthread_get_stackaddr_np(pthread_self());
+        lo = hi - pthread_get_stacksize_np(pthread_self());
+    #elif defined(__linux__)
+        pthread_attr_t attr;
+        void *base;
+        size_t size;
+        if (!pthread_getattr_np(pthread_self(), &attr)) {
+            if (!pthread_attr_getstack(&attr, &base, &size)) {
+                lo = (uintptr_t)base;
+                hi = lo + size;
+            }
+            pthread_attr_destroy(&attr);
+        }
+    #endif
+    if (lo > GS_NATIVE_SLOP) {
+        gs_native_lo = lo - GS_NATIVE_SLOP;
+        gs_native_hi = hi;
+    }
+}
+
+/* At a thread program's end, the alternate stack gs_native_stack_init gave
+   it. */
+static void gs_native_stack_free(void) {
+    stack_t ss;
+    if (!gs_sigstack) return;
+    memset(&ss, 0, sizeof(ss));
+    ss.ss_flags = SS_DISABLE;
+    ss.ss_size = gs_sigstack_size();
+    sigaltstack(&ss, NULL);
+    free(gs_sigstack);
+    gs_sigstack = NULL;
+}
+
+GS_API uint8_t *gs_reserve_region(void) {
+    if (gs_nregions == gs_maxregions)
+        gs_panic("too many data stack regions");
+    /* Commit-on-touch via overcommit; the gap at the end stays PROT_NONE. */
+    void *p = mmap(NULL, gs_region_size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS
+                   #ifdef MAP_NORESERVE
+                       | MAP_NORESERVE
+                   #endif
+                   , -1, 0);
+    if (p == MAP_FAILED) gs_panic("cannot reserve data stack address space");
+    if (mprotect((uint8_t *)p + gs_region_usable, gs_region_size - gs_region_usable,
+                 PROT_NONE)) {
+        munmap(p, gs_region_size);
+        gs_panic("cannot protect data stack guard gap");
+    }
+    long i = gs_nregions;
+    gs_regions[i] = (uint8_t *)p;
+    gs_nregions = i + 1;
+    return (uint8_t *)p;
+}
+
+static void gs_release_region(uint8_t *base) {
+    if (munmap(base, gs_region_size)) gs_panic("cannot release data stack address space");
+}
+
+#endif
+
+GS_API void gs_rt_start(int argc, char **argv, int64_t maxregions, uint64_t reserve,
+                        uint64_t gap) {
+    gs_argc = argc;
+    gs_argv = argv;
+    gs_maxregions = maxregions;
+    gs_region_usable = (size_t)reserve;
+    gs_region_size = (size_t)reserve + (size_t)gap;
+    // Unbuffered stdout: output is never lost to an abort or a killed run,
+    // and interleaves correctly with stderr diagnostics. Revisit if print
+    // throughput ever matters.
+    setvbuf(stdout, NULL, _IONBF, 0);
+    gs_regions_init();
+    gs_regions_begin();
+    gs_native_stack_init();
+}
+
+/* ---------------------------------------------------------------------------
+   Text forms (§3.7). */
+
+GS_API int64_t gs_fmt_i64(uint8_t *dst, int64_t v) {
     return (int64_t)snprintf((char *)dst, GS_FMT_MAX, "%lld", (long long)v);
 }
 
-static int64_t gs_fmt_u64(uint8_t *dst, uint64_t v) {
+GS_API int64_t gs_fmt_u64(uint8_t *dst, uint64_t v) {
     return (int64_t)snprintf((char *)dst, GS_FMT_MAX, "%llu", (unsigned long long)v);
 }
 
@@ -1071,10 +1255,11 @@ static int gs_fmt_exp(char *s, int n) {
     return n;
 }
 
-static int64_t gs_fmt_f64(uint8_t *dst, double v) {
+GS_API int64_t gs_fmt_f64(uint8_t *dst, double v) {
     /* C libraries disagree here (msvcrt, which tcc uses on Windows, writes
        1.#INF and -1.#IND; others give a NaN's sign bit, which depends on
-       the CPU that made it), so these are spelled by the runtime. */
+)GSRT"
+R"GSRT(       the CPU that made it), so these are spelled by the runtime. */
     if (v != v) { memcpy(dst, "nan", 3); return 3; }
     if (isinf(v)) {
         if (v > 0) { memcpy(dst, "inf", 3); return 3; }
@@ -1097,7 +1282,7 @@ static int64_t gs_fmt_f64(uint8_t *dst, double v) {
    the subnormals, %.6g already gives any shorter form that reads back. The
    test reads through strtod rather than strtof: tcc's strtof on Windows is
    a rounded strtod, and one test keeps every backend's choice the same. */
-static int64_t gs_fmt_f32(uint8_t *dst, float v) {
+GS_API int64_t gs_fmt_f32(uint8_t *dst, float v) {
     double d = v;
     if (d == d && !isinf(d)) {
         char buf[GS_FMT_MAX];
@@ -1113,13 +1298,12 @@ static int64_t gs_fmt_f32(uint8_t *dst, float v) {
     return gs_fmt_f64(dst, d);
 }
 
-static int64_t gs_fmt_bool(uint8_t *dst, int64_t v) {
+GS_API int64_t gs_fmt_bool(uint8_t *dst, int64_t v) {
     memcpy(dst, v ? "true" : "false", v ? 4 : 5);
     return v ? 4 : 5;
 }
 
-/* A u8 array inside an aggregate: quoted, with the escapes Goose reads. */
-static int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n) {
+GS_API int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n) {
     uint8_t *d = dst;
     *d++ = '"';
     for (int64_t i = 0; i < n; i++) {
@@ -1137,42 +1321,43 @@ static int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n) {
     return (int64_t)(d - dst);
 }
 
-/* print(...) (§3.7): each argument's text, then a newline. stdout is
-   unbuffered (gs_rt_init), so every piece is its own write; revisit if print
-   throughput ever matters. */
+/* stdout is unbuffered (gs_rt_start), so every piece is its own write;
+   revisit if print throughput ever matters. */
 
-static void gs_out_int(int64_t v) { printf("%lld", (long long)v); }
-static void gs_out_uint(uint64_t v) { printf("%llu", (unsigned long long)v); }
-static void gs_out_flt(double v) {
+GS_API void gs_out_int(int64_t v) { printf("%lld", (long long)v); }
+GS_API void gs_out_uint(uint64_t v) { printf("%llu", (unsigned long long)v); }
+GS_API void gs_out_flt(double v) {
     uint8_t buf[GS_FMT_MAX];
     fwrite(buf, 1, (size_t)gs_fmt_f64(buf, v), stdout);
 }
-static void gs_out_f32(float v) {
+GS_API void gs_out_f32(float v) {
     uint8_t buf[GS_FMT_MAX];
     fwrite(buf, 1, (size_t)gs_fmt_f32(buf, v), stdout);
 }
-static void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
-static void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
-static void gs_out_nl(void) { fputc('\n', stdout); }
+GS_API void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
+GS_API void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
+GS_API void gs_out_nl(void) { fputc('\n', stdout); }
 )GSRT"
     ) },
     { "runtime_threads.h", string_view(
-R"GSRT(/* Goose runtime — threads and typed queues (§11.2). Prepended after
-   runtime.h; everything is compiled out unless the program uses threads or
-   queues (the compiler defines GS_NEED_THREADS 1 before the runtime paste).
-   This is the one part of the runtime allowed to allocate internally. */
+R"GSRT(/* Goose runtime — threads and typed queues (§11.2), as runtime.h declares
+   them. Follows runtime_impl.h. A standalone program's unit compiles only
+   hardware_threads() unless the program uses threads or queues (the compiler
+   defines GS_NEED_THREADS 1 before the runtime paste); the runtime object
+   compiles it all. This is the one part of the runtime allowed to allocate
+   internally. */
 
 /* hardware_threads() sizes worker pools, and a program that spawns none may
    still ask; it needs nothing below. */
 #ifdef _WIN32
-static int64_t gs_hardware_threads(void) {
+GS_API int64_t gs_hardware_threads(void) {
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     return (int64_t)si.dwNumberOfProcessors;
 }
 #else
 #include <unistd.h>
-static int64_t gs_hardware_threads(void) {
+GS_API int64_t gs_hardware_threads(void) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (int64_t)n : 1;
 }
@@ -1186,6 +1371,8 @@ typedef SRWLOCK gs_mutex;
 typedef CONDITION_VARIABLE gs_cond;
 #define GS_MUTEX_INIT SRWLOCK_INIT
 #define GS_COND_INIT  CONDITION_VARIABLE_INIT
+#define gs_mutex_init(m)   InitializeSRWLock(m)
+#define gs_cond_init(c)    InitializeConditionVariable(c)
 #define gs_mutex_lock(m)   AcquireSRWLockExclusive(m)
 #define gs_mutex_unlock(m) ReleaseSRWLockExclusive(m)
 #define gs_cond_wait(c, m) SleepConditionVariableSRW((c), (m), INFINITE, 0)
@@ -1200,6 +1387,8 @@ typedef pthread_mutex_t gs_mutex;
 typedef pthread_cond_t gs_cond;
 #define GS_MUTEX_INIT PTHREAD_MUTEX_INITIALIZER
 #define GS_COND_INIT  PTHREAD_COND_INITIALIZER
+#define gs_mutex_init(m)   pthread_mutex_init((m), NULL)
+#define gs_cond_init(c)    pthread_cond_init((c), NULL)
 #define gs_mutex_lock(m)   pthread_mutex_lock(m)
 #define gs_mutex_unlock(m) pthread_mutex_unlock(m)
 #define gs_cond_wait(c, m) pthread_cond_wait((c), (m))
@@ -1219,6 +1408,7 @@ typedef pthread_cond_t gs_cond;
 typedef struct gs_thread {
     struct gs_thread *next;
     int64_t id;
+    void (*run)(void (*)(uint8_t *), uint8_t *);
     void (*entry)(uint8_t *args);
     uint8_t *args;
 } gs_thread;
@@ -1236,13 +1426,12 @@ static void *gs_thread_main(void *p)
 #endif
 {
     gs_thread *t = (gs_thread *)p;
+    gs_regions_begin();
     gs_native_stack_init();
     gs_current_thread_id = t->id;
-    gs_stks = gs_new_stack_block();
-    gs_nstks = 0;
-    t->entry(t->args);
+    t->run(t->entry, t->args);
     free(t->args);
-    gs_free_thread_stacks();
+    gs_release_regions();
 
     /* Publish completion only after all Goose storage has been released.
        No waiter retains a pointer to this record. The detached native thread
@@ -1261,11 +1450,13 @@ static void *gs_thread_main(void *p)
     #endif
 }
 
-static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64_t argsize) {
+GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
+                               void (*entry)(uint8_t *), const void *args, int64_t argsize) {
     if (argsize < 0 || (uint64_t)argsize > SIZE_MAX)
         gs_panic("invalid thread argument size");
     gs_thread *t = (gs_thread *)malloc(sizeof(gs_thread));
     if (!t) gs_panic("out of memory spawning thread");
+    t->run = run;
     t->entry = entry;
     t->args = (uint8_t *)malloc(argsize ? (size_t)argsize : 1);
     if (!t->args) {
@@ -1308,7 +1499,7 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
     return id;
 }
 
-static void gs_thread_wait(int64_t id, const char *file, int line) {
+GS_API void gs_thread_wait(int64_t id, const char *file, int line) {
     gs_mutex_lock(&gs_threads_mutex);
     if (id < 0 || id >= gs_numthreads) gs_abort(GS_E_THREADID, file, line);
     if (id == gs_current_thread_id) gs_abort(GS_E_THREADSELF, file, line);
@@ -1322,77 +1513,80 @@ static void gs_thread_wait(int64_t id, const char *file, int line) {
 }
 
 /* ---------------------------------------------------------------------------
-   Typed queues: one per flat element type used by the program (the compiler
-   emits a gs_queue global per type). Values are contiguous byte images. */
+   Typed queues (runtime.h). */
 
-typedef struct gs_qnode {
-    struct gs_qnode *next;
-    int64_t size;
-    /* Value bytes follow the header. */
-} gs_qnode;
-
-typedef struct {
+struct gs_qstate {
     gs_qnode *head, *tail;
     gs_mutex mutex;
     gs_cond cond;
-} gs_queue;
+};
 
-#define GS_QUEUE_INIT { NULL, NULL, GS_MUTEX_INIT, GS_COND_INIT }
+GS_API void gs_qinit(gs_queue *q) {
+    struct gs_qstate *s = (struct gs_qstate *)malloc(sizeof(struct gs_qstate));
+    if (!s) gs_panic("out of memory creating a queue");
+    s->head = s->tail = NULL;
+    gs_mutex_init(&s->mutex);
+    gs_cond_init(&s->cond);
+    *q = s;
+}
 
-static void gs_qput(gs_queue *q, const void *data, int64_t size) {
+GS_API void gs_qput(gs_queue *q, const void *data, int64_t size) {
+    struct gs_qstate *s = *q;
     gs_qnode *n = (gs_qnode *)malloc(sizeof(gs_qnode) + (size_t)size);
     if (!n) gs_panic("out of memory in qput");
     n->next = NULL;
     n->size = size;
     memcpy(n + 1, data, (size_t)size);
-    gs_mutex_lock(&q->mutex);
-    if (q->tail) q->tail->next = n; else q->head = n;
-    q->tail = n;
-    gs_mutex_unlock(&q->mutex);
-    gs_cond_signal(&q->cond);
+    gs_mutex_lock(&s->mutex);
+    if (s->tail) s->tail->next = n; else s->head = n;
+    s->tail = n;
+    gs_mutex_unlock(&s->mutex);
+    gs_cond_signal(&s->cond);
 }
 
-/* Both return a malloc'd node the caller copies from and frees; qpoll returns
-   NULL when the queue is empty. */
-static gs_qnode *gs_qget(gs_queue *q) {
-    gs_mutex_lock(&q->mutex);
-    while (!q->head) gs_cond_wait(&q->cond, &q->mutex);
-    gs_qnode *n = q->head;
-    q->head = n->next;
-    if (!q->head) q->tail = NULL;
-    gs_mutex_unlock(&q->mutex);
+GS_API gs_qnode *gs_qget(gs_queue *q) {
+    struct gs_qstate *s = *q;
+    gs_mutex_lock(&s->mutex);
+    while (!s->head) gs_cond_wait(&s->cond, &s->mutex);
+    gs_qnode *n = s->head;
+    s->head = n->next;
+    if (!s->head) s->tail = NULL;
+    gs_mutex_unlock(&s->mutex);
     return n;
 }
 
-static gs_qnode *gs_qpoll(gs_queue *q) {
-    gs_mutex_lock(&q->mutex);
-    gs_qnode *n = q->head;
+GS_API gs_qnode *gs_qpoll(gs_queue *q) {
+    struct gs_qstate *s = *q;
+    gs_mutex_lock(&s->mutex);
+    gs_qnode *n = s->head;
     if (n) {
-        q->head = n->next;
-        if (!q->head) q->tail = NULL;
+        s->head = n->next;
+        if (!s->head) s->tail = NULL;
     }
-    gs_mutex_unlock(&q->mutex);
+    gs_mutex_unlock(&s->mutex);
     return n;
 }
 
 #endif  /* GS_NEED_THREADS */
 )GSRT"
     ) },
-    { "runtime_os.h", string_view(
-R"GSRT(/* Goose runtime: extern-fn support and the OS primitives behind
-   stdlib/os.goose (spec §7.10). Unlike the other runtime files this one is
-   spliced in after the generated type declarations, since its functions
-   are written against them: sl_u8 (a u8 slice: data, len) and gs_rref (a
-   reference to a resizable: its header and its data stack). The generated
-   program calls these directly from `extern "gs_os_..." fn` declarations;
-   no prototype is emitted for a symbol defined here. */
+    { "runtime_ext.h", string_view(
+R"GSRT(/* Goose runtime: extern-fn support, spliced in after the generated type
+   declarations, since it is written against them: sl_u8 (a u8 slice: data,
+   len) and gs_rref (a reference to a resizable: its header and its data
+   stack). The runtime object has no generated types, and lays out the ones
+   it uses here as codegen does (CodeGen::EmitCoreTypes, CT). An --include
+   header follows this and may use what it defines. The generated program
+   calls the OS primitives behind stdlib/os.goose (spec §7.10, defined in
+   runtime_os.h) directly from `extern "gs_os_..." fn` declarations; no
+   prototype is emitted for a function declared here. */
 
-#include <time.h>
-#ifndef _WIN32
-#include <errno.h>
-#include <fcntl.h>
-#include <dirent.h>
-#include <sys/stat.h>
+#ifdef GS_RUNTIME_OBJECT
+#pragma pack(push, 1)
+typedef struct { uint8_t *base; int64_t len; } gs_rhdr;
+typedef struct { gs_rhdr *hdr; gs_stack *stk; } gs_rref;
+typedef struct { uint8_t *data; int64_t len; } sl_u8;
+#pragma pack(pop)
 #endif
 
 /* Appends n bytes to the u8[>..] a builder reference points at: the
@@ -1404,6 +1598,43 @@ static void gs_bld_append(gs_rref b, const void *p, int64_t n) {
     b.stk->top += n;
     b.hdr->len += n;
 }
+
+GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out);
+GS_API uint8_t gs_os_write_file(sl_u8 path, sl_u8 data);
+GS_API uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data);
+GS_API uint8_t gs_os_append_file(sl_u8 path, sl_u8 data);
+GS_API uint8_t gs_os_file_exists(sl_u8 path);
+GS_API uint8_t gs_os_remove_file(sl_u8 path);
+GS_API uint8_t gs_os_rename_file(sl_u8 from, sl_u8 to);
+GS_API uint8_t gs_os_make_dir(sl_u8 path);
+GS_API uint8_t gs_os_is_dir(sl_u8 path);
+GS_API uint8_t gs_os_remove_dir(sl_u8 path);
+GS_API uint8_t gs_os_list_dir(sl_u8 path, gs_rref out);
+GS_API void gs_os_write_stdout(sl_u8 s);
+GS_API void gs_os_write_stderr(sl_u8 s);
+GS_API void gs_os_flush_stdout(void);
+GS_API uint8_t gs_os_read_line(gs_rref out);
+GS_API void gs_os_read_stdin(gs_rref out);
+GS_API int64_t gs_os_arg_count(void);
+GS_API void gs_os_arg(int64_t i, gs_rref out);
+GS_API uint8_t gs_os_getenv(sl_u8 name, gs_rref out);
+GS_API int64_t gs_os_time_ns(void);
+GS_API int64_t gs_os_clock_ns(void);
+GS_API void gs_os_sleep_ms(int64_t ms);
+GS_API uint64_t gs_os_random_u64(void);
+)GSRT"
+    ) },
+    { "runtime_os.h", string_view(
+R"GSRT(/* Goose runtime: the OS primitives behind stdlib/os.goose (spec §7.10), as
+   runtime_ext.h declares them, which this follows. */
+
+#include <time.h>
+#ifndef _WIN32
+#include <errno.h>
+#include <fcntl.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#endif
 
 /* Paths are UTF-8 on every platform, and reach the C APIs NUL-terminated in
    a buffer of GS_OS_PATH_MAX characters. A path that would not fit, that
@@ -1517,7 +1748,7 @@ static int gs_os_kind(const gs_os_char *p) {
 #endif
 }
 
-static uint8_t gs_os_read_file(sl_u8 path, gs_rref out) {
+GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out) {
     gs_os_char p[GS_OS_PATH_MAX];
     if (gs_os_native(path, p) < 0) return 0;
     FILE *f = gs_os_fopen(p, "rb");
@@ -1545,16 +1776,16 @@ static uint8_t gs_os_put_file(sl_u8 path, sl_u8 data, int append) {
     return ok ? 1 : 0;
 }
 
-static uint8_t gs_os_write_file(sl_u8 path, sl_u8 data) { return gs_os_put_file(path, data, 0); }
+GS_API uint8_t gs_os_write_file(sl_u8 path, sl_u8 data) { return gs_os_put_file(path, data, 0); }
 
-static uint8_t gs_os_append_file(sl_u8 path, sl_u8 data) { return gs_os_put_file(path, data, 1); }
+GS_API uint8_t gs_os_append_file(sl_u8 path, sl_u8 data) { return gs_os_put_file(path, data, 1); }
 
-static uint8_t gs_os_file_exists(sl_u8 path) {
+GS_API uint8_t gs_os_file_exists(sl_u8 path) {
     gs_os_char p[GS_OS_PATH_MAX];
     return gs_os_native(path, p) >= 0 && gs_os_kind(p) == 1;
 }
 
-static uint8_t gs_os_remove_file(sl_u8 path) {
+GS_API uint8_t gs_os_remove_file(sl_u8 path) {
     gs_os_char p[GS_OS_PATH_MAX];
     if (gs_os_native(path, p) < 0) return 0;
 #ifdef _WIN32
@@ -1567,7 +1798,7 @@ static uint8_t gs_os_remove_file(sl_u8 path) {
 
 /* Replaces `to` if it exists, in one step: `to` names the old file or the
    moved one, never neither. */
-static uint8_t gs_os_rename_file(sl_u8 from, sl_u8 to) {
+GS_API uint8_t gs_os_rename_file(sl_u8 from, sl_u8 to) {
     gs_os_char f[GS_OS_PATH_MAX], t[GS_OS_PATH_MAX];
     if (gs_os_native(from, f) < 0 || gs_os_native(to, t) < 0) return 0;
 #ifdef _WIN32
@@ -1579,15 +1810,13 @@ static uint8_t gs_os_rename_file(sl_u8 from, sl_u8 to) {
 #endif
 }
 
-static uint64_t gs_os_random_u64(void);
-
 /* Writes data to a new file beside path, flushes it to the disk and renames
    it over path, so that path holds either its old contents or all of the
    new ones whatever happens meanwhile; on a failure the new file is removed.
    Its name is path's with a random tag and ".tmp" added, created only if
    nothing has that name already: one that does belongs to someone else, and
    another tag is drawn. */
-static uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data) {
+GS_API uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data) {
     gs_os_char p[GS_OS_PATH_MAX], t[GS_OS_PATH_MAX + 21];
     int n = gs_os_native(path, p);
     if (n <= 0) return 0;
@@ -1598,8 +1827,7 @@ static uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data) {
         int k = n;
         memcpy(t, p, (size_t)n * sizeof *t);
         t[k++] = '.';
-)GSRT"
-R"GSRT(        for (int s = 60; s >= 0; s -= 4) t[k++] = "0123456789abcdef"[(tag >> s) & 15];
+        for (int s = 60; s >= 0; s -= 4) t[k++] = "0123456789abcdef"[(tag >> s) & 15];
         t[k++] = '.';
         t[k++] = 't';
         t[k++] = 'm';
@@ -1620,7 +1848,8 @@ R"GSRT(        for (int s = 60; s >= 0; s -= 4) t[k++] = "0123456789abcdef"[(tag
         }
         ok = ok && FlushFileBuffers(h);
         if (!CloseHandle(h)) ok = 0;
-        ok = ok && gs_os_replace(t, p);
+)GSRT"
+R"GSRT(        ok = ok && gs_os_replace(t, p);
         if (!ok) DeleteFileW(t);
 #else
         int fd = open(t, O_WRONLY | O_CREAT | O_EXCL, 0666);
@@ -1650,7 +1879,7 @@ R"GSRT(        for (int s = 60; s >= 0; s -= 4) t[k++] = "0123456789abcdef"[(tag
 
 /* True where path is a directory afterwards, one that was there already
    included. */
-static uint8_t gs_os_make_dir(sl_u8 path) {
+GS_API uint8_t gs_os_make_dir(sl_u8 path) {
     gs_os_char p[GS_OS_PATH_MAX];
     if (gs_os_native(path, p) < 0) return 0;
 #ifdef _WIN32
@@ -1661,13 +1890,13 @@ static uint8_t gs_os_make_dir(sl_u8 path) {
     return gs_os_kind(p) == 2;
 }
 
-static uint8_t gs_os_is_dir(sl_u8 path) {
+GS_API uint8_t gs_os_is_dir(sl_u8 path) {
     gs_os_char p[GS_OS_PATH_MAX];
     return gs_os_native(path, p) >= 0 && gs_os_kind(p) == 2;
 }
 
 /* An empty directory. */
-static uint8_t gs_os_remove_dir(sl_u8 path) {
+GS_API uint8_t gs_os_remove_dir(sl_u8 path) {
     gs_os_char p[GS_OS_PATH_MAX];
     if (gs_os_native(path, p) < 0) return 0;
 #ifdef _WIN32
@@ -1726,7 +1955,7 @@ static int gs_os_names_put(gs_os_names *ns, gs_rref out) {
 /* Appends the name of every entry of a directory but "." and "..", sorted
    so that a listing does not depend on the file system; on a failure
    appends nothing. */
-static uint8_t gs_os_list_dir(sl_u8 path, gs_rref out) {
+GS_API uint8_t gs_os_list_dir(sl_u8 path, gs_rref out) {
     gs_os_char p[GS_OS_PATH_MAX + 2];
     int n = gs_os_native(path, p);
     if (n <= 0) return 0;
@@ -1783,18 +2012,18 @@ static uint8_t gs_os_list_dir(sl_u8 path, gs_rref out) {
     return ok ? 1 : 0;
 }
 
-static void gs_os_write_stdout(sl_u8 s) {
+GS_API void gs_os_write_stdout(sl_u8 s) {
     if (s.len > 0) fwrite(s.data, 1, (size_t)s.len, stdout);
 }
 
-static void gs_os_write_stderr(sl_u8 s) {
+GS_API void gs_os_write_stderr(sl_u8 s) {
     if (s.len > 0) fwrite(s.data, 1, (size_t)s.len, stderr);
 }
 
-static void gs_os_flush_stdout(void) { fflush(stdout); }
+GS_API void gs_os_flush_stdout(void) { fflush(stdout); }
 
 /* One line of stdin, without its newline; false at end of input. */
-static uint8_t gs_os_read_line(gs_rref out) {
+GS_API uint8_t gs_os_read_line(gs_rref out) {
     int c = fgetc(stdin);
     if (c == EOF) return 0;
     while (c != EOF && c != '\n') {
@@ -1810,7 +2039,7 @@ static uint8_t gs_os_read_line(gs_rref out) {
 }
 
 /* All of stdin. */
-static void gs_os_read_stdin(gs_rref out) {
+GS_API void gs_os_read_stdin(gs_rref out) {
     uint8_t buf[65536];
     for (;;) {
         size_t n = fread(buf, 1, sizeof buf, stdin);
@@ -1819,9 +2048,9 @@ static void gs_os_read_stdin(gs_rref out) {
     }
 }
 
-static int64_t gs_os_arg_count(void) { return gs_argc; }
+GS_API int64_t gs_os_arg_count(void) { return gs_argc; }
 
-static void gs_os_arg(int64_t i, gs_rref out) {
+GS_API void gs_os_arg(int64_t i, gs_rref out) {
     if (i < 0 || i >= gs_argc) return;
     const char *a = gs_argv[i];
 #ifdef _WIN32
@@ -1838,7 +2067,7 @@ static void gs_os_arg(int64_t i, gs_rref out) {
     gs_bld_append(out, a, (int64_t)strlen(a));
 }
 
-static uint8_t gs_os_getenv(sl_u8 name, gs_rref out) {
+GS_API uint8_t gs_os_getenv(sl_u8 name, gs_rref out) {
     gs_os_char nm[GS_OS_PATH_MAX];
     if (gs_os_native(name, nm) < 0) return 0;
 #ifdef _WIN32
@@ -1851,8 +2080,7 @@ static uint8_t gs_os_getenv(sl_u8 name, gs_rref out) {
         len = GetEnvironmentVariableW(nm, v, cap);
         if (len < cap) break;
         if (v != small) free(v);
-)GSRT"
-R"GSRT(        cap = len;
+        cap = len;
         v = (wchar_t *)malloc(cap * sizeof *v);
         if (!v) return 0;
     }
@@ -1870,12 +2098,13 @@ R"GSRT(        cap = len;
 }
 
 /* Wall-clock time in nanoseconds since the Unix epoch. */
-static int64_t gs_os_time_ns(void) {
+GS_API int64_t gs_os_time_ns(void) {
     /* Neither branch uses C11's timespec_get: the Microsoft C runtime tcc
        links against does not have it, and glibc hides it from a compiler
        announcing C99, which tcc also is. */
 #ifdef _WIN32
-    /* Windows counts 100 ns ticks from 1601; the offset to the Unix epoch is
+)GSRT"
+R"GSRT(    /* Windows counts 100 ns ticks from 1601; the offset to the Unix epoch is
        a constant. */
     FILETIME ft;
     GetSystemTimeAsFileTime(&ft);
@@ -1889,7 +2118,7 @@ static int64_t gs_os_time_ns(void) {
 }
 
 /* A monotonic clock in nanoseconds, for measuring intervals. */
-static int64_t gs_os_clock_ns(void) {
+GS_API int64_t gs_os_clock_ns(void) {
 #ifdef _WIN32
     LARGE_INTEGER f, c;
     QueryPerformanceFrequency(&f);
@@ -1902,7 +2131,7 @@ static int64_t gs_os_clock_ns(void) {
 #endif
 }
 
-static void gs_os_sleep_ms(int64_t ms) {
+GS_API void gs_os_sleep_ms(int64_t ms) {
     if (ms <= 0) return;
 #ifdef _WIN32
     Sleep((DWORD)ms);
@@ -1924,7 +2153,7 @@ static uint64_t gs_os_mix64(uint64_t x) {
     return x ^ (x >> 31);
 }
 
-static uint64_t gs_os_random_u64(void) {
+GS_API uint64_t gs_os_random_u64(void) {
 #ifndef _WIN32
     FILE *f = fopen("/dev/urandom", "rb");
     if (f) {

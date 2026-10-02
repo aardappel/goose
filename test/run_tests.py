@@ -206,6 +206,9 @@ class Runner:
         self.pool = concurrent.futures.ThreadPoolExecutor(jobs) if jobs > 1 else None
         self.slots = []
         self.gpulock = None
+        # What the C that `goose -o` writes links with, built once per
+        # configuration by whichever job first asks for it.
+        self.runtime = tc.GooseRuntime(exe, tc.REPO_ROOT / "build" / "gen" / "runtime")
 
     # --- output -----------------------------------------------------------
 
@@ -530,6 +533,7 @@ class Runner:
                     ok, log = self.cc.compile(cfile, efile,
                                               opt=int(ol) if self.profile == "baseline" else 1,
                                               extra=self.extra, strict_decls=True, libs=libs,
+                                              runtime=self.runtime,
                                               log=self.gendir / f"{name}-O{ol}.cc.log")
                     if not ok:
                         self.fail(f"cc -O{ol} {f.name}", "\n".join(log.splitlines()[:8]))
@@ -593,7 +597,7 @@ class Runner:
             self.fail(f"cgen-dump {dumpfile.name}", out + err)
             return
         ok, log = self.cc.compile(src, out_exe, opt=2 if self.profile == "baseline" else 1,
-                                  extra=self.extra, strict_decls=True,
+                                  extra=self.extra, strict_decls=True, runtime=self.runtime,
                                   log=self.gendir / f"{f.stem}-dump.cc.log")
         if not ok:
             self.fail(f"cc-dump {dumpfile.name}", log)
@@ -614,7 +618,7 @@ class Runner:
             return
         ok, log = self.cc.compile(src, out_exe, opt=2 if self.profile == "baseline" else 1,
                                   defines=["GS_DEBUG=1"], extra=self.extra, strict_decls=True,
-                                  log=self.gendir / f"{name}-debug.cc.log")
+                                  runtime=self.runtime, log=self.gendir / f"{name}-debug.cc.log")
         if not ok:
             self.fail(f"cgen-debug-cc {f.name}", "\n".join(log.splitlines()[:8]))
             return
@@ -749,8 +753,10 @@ class Runner:
                 if not cfile.is_file() or not cfile.stat().st_size:
                     self.fail(f"missing or empty C output {what}")
                     return None
+                # Later stages hold the Goose-written compiler's own runtime.
                 ok, log = cc.compile(cfile, executable, opt=ol if profile == "baseline" else 1,
                                      extra=[*extra, *stack_flags], strict_decls=True,
+                                     runtime=self.runtime if stage == 1 else None,
                                      log=work / f"stage{stage}.cc.log")
                 if not ok:
                     self.fail(f"cc {what}", log)
@@ -991,7 +997,7 @@ def main():
                 r.fail(f"cgen -O2 {f.name}", out + err)
             else:
                 ok, log = cc.compile(cfile, efile, opt=2 if args.profile == "baseline" else 1,
-                                     extra=extra, strict_decls=True,
+                                     extra=extra, strict_decls=True, runtime=r.runtime,
                                      log=deepdir / "call_chain-O2.cc.log")
                 if not ok:
                     r.fail(f"cc -O2 {f.name}", "\n".join(log.splitlines()[:8]))
@@ -1024,7 +1030,7 @@ def main():
             r.fail(f"cgen -O{ol} {f.name}", out + err)
             return
         ok, log = cc.compile(cfile, efile, opt=int(ol) if args.profile == "baseline" else 1,
-                             extra=extra, strict_decls=True,
+                             extra=extra, strict_decls=True, runtime=r.runtime,
                              log=deepdir / f"guard_runs-O{ol}.cc.log")
         if not ok:
             r.fail(f"cc -O{ol} {f.name}", "\n".join(log.splitlines()[:8]))
@@ -1177,7 +1183,7 @@ def main():
                 out_exe = gendir / f"cgclang-{label}{tc.EXE_SUFFIX}"
                 ok, log = clang.compile(src, out_exe, opt=1, warn="off", strict_decls=True,
                                         defines=["GS_DEBUG=1"] if label == "debug" else [],
-                                        log=gendir / f"cgclang-{label}.log")
+                                        runtime=r.runtime, log=gendir / f"cgclang-{label}.log")
                 if not ok:
                     r.fail(f"cgen-clang-{label} codegen_exec.goose",
                            "\n".join(log.splitlines()[:8]))

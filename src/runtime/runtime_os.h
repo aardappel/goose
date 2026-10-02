@@ -1,10 +1,5 @@
-/* Goose runtime: extern-fn support and the OS primitives behind
-   stdlib/os.goose (spec §7.10). Unlike the other runtime files this one is
-   spliced in after the generated type declarations, since its functions
-   are written against them: sl_u8 (a u8 slice: data, len) and gs_rref (a
-   reference to a resizable: its header and its data stack). The generated
-   program calls these directly from `extern "gs_os_..." fn` declarations;
-   no prototype is emitted for a symbol defined here. */
+/* Goose runtime: the OS primitives behind stdlib/os.goose (spec §7.10), as
+   runtime_ext.h declares them, which this follows. */
 
 #include <time.h>
 #ifndef _WIN32
@@ -13,16 +8,6 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #endif
-
-/* Appends n bytes to the u8[>..] a builder reference points at: the
-   resizable's elements top its stack, so the bytes go at the stack top and
-   the header's count grows. */
-static void gs_bld_append(gs_rref b, const void *p, int64_t n) {
-    if (n <= 0) return;
-    memcpy(b.stk->top, p, (size_t)n);
-    b.stk->top += n;
-    b.hdr->len += n;
-}
 
 /* Paths are UTF-8 on every platform, and reach the C APIs NUL-terminated in
    a buffer of GS_OS_PATH_MAX characters. A path that would not fit, that
@@ -136,7 +121,7 @@ static int gs_os_kind(const gs_os_char *p) {
 #endif
 }
 
-static uint8_t gs_os_read_file(sl_u8 path, gs_rref out) {
+GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out) {
     gs_os_char p[GS_OS_PATH_MAX];
     if (gs_os_native(path, p) < 0) return 0;
     FILE *f = gs_os_fopen(p, "rb");
@@ -164,16 +149,16 @@ static uint8_t gs_os_put_file(sl_u8 path, sl_u8 data, int append) {
     return ok ? 1 : 0;
 }
 
-static uint8_t gs_os_write_file(sl_u8 path, sl_u8 data) { return gs_os_put_file(path, data, 0); }
+GS_API uint8_t gs_os_write_file(sl_u8 path, sl_u8 data) { return gs_os_put_file(path, data, 0); }
 
-static uint8_t gs_os_append_file(sl_u8 path, sl_u8 data) { return gs_os_put_file(path, data, 1); }
+GS_API uint8_t gs_os_append_file(sl_u8 path, sl_u8 data) { return gs_os_put_file(path, data, 1); }
 
-static uint8_t gs_os_file_exists(sl_u8 path) {
+GS_API uint8_t gs_os_file_exists(sl_u8 path) {
     gs_os_char p[GS_OS_PATH_MAX];
     return gs_os_native(path, p) >= 0 && gs_os_kind(p) == 1;
 }
 
-static uint8_t gs_os_remove_file(sl_u8 path) {
+GS_API uint8_t gs_os_remove_file(sl_u8 path) {
     gs_os_char p[GS_OS_PATH_MAX];
     if (gs_os_native(path, p) < 0) return 0;
 #ifdef _WIN32
@@ -186,7 +171,7 @@ static uint8_t gs_os_remove_file(sl_u8 path) {
 
 /* Replaces `to` if it exists, in one step: `to` names the old file or the
    moved one, never neither. */
-static uint8_t gs_os_rename_file(sl_u8 from, sl_u8 to) {
+GS_API uint8_t gs_os_rename_file(sl_u8 from, sl_u8 to) {
     gs_os_char f[GS_OS_PATH_MAX], t[GS_OS_PATH_MAX];
     if (gs_os_native(from, f) < 0 || gs_os_native(to, t) < 0) return 0;
 #ifdef _WIN32
@@ -198,15 +183,13 @@ static uint8_t gs_os_rename_file(sl_u8 from, sl_u8 to) {
 #endif
 }
 
-static uint64_t gs_os_random_u64(void);
-
 /* Writes data to a new file beside path, flushes it to the disk and renames
    it over path, so that path holds either its old contents or all of the
    new ones whatever happens meanwhile; on a failure the new file is removed.
    Its name is path's with a random tag and ".tmp" added, created only if
    nothing has that name already: one that does belongs to someone else, and
    another tag is drawn. */
-static uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data) {
+GS_API uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data) {
     gs_os_char p[GS_OS_PATH_MAX], t[GS_OS_PATH_MAX + 21];
     int n = gs_os_native(path, p);
     if (n <= 0) return 0;
@@ -268,7 +251,7 @@ static uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data) {
 
 /* True where path is a directory afterwards, one that was there already
    included. */
-static uint8_t gs_os_make_dir(sl_u8 path) {
+GS_API uint8_t gs_os_make_dir(sl_u8 path) {
     gs_os_char p[GS_OS_PATH_MAX];
     if (gs_os_native(path, p) < 0) return 0;
 #ifdef _WIN32
@@ -279,13 +262,13 @@ static uint8_t gs_os_make_dir(sl_u8 path) {
     return gs_os_kind(p) == 2;
 }
 
-static uint8_t gs_os_is_dir(sl_u8 path) {
+GS_API uint8_t gs_os_is_dir(sl_u8 path) {
     gs_os_char p[GS_OS_PATH_MAX];
     return gs_os_native(path, p) >= 0 && gs_os_kind(p) == 2;
 }
 
 /* An empty directory. */
-static uint8_t gs_os_remove_dir(sl_u8 path) {
+GS_API uint8_t gs_os_remove_dir(sl_u8 path) {
     gs_os_char p[GS_OS_PATH_MAX];
     if (gs_os_native(path, p) < 0) return 0;
 #ifdef _WIN32
@@ -344,7 +327,7 @@ static int gs_os_names_put(gs_os_names *ns, gs_rref out) {
 /* Appends the name of every entry of a directory but "." and "..", sorted
    so that a listing does not depend on the file system; on a failure
    appends nothing. */
-static uint8_t gs_os_list_dir(sl_u8 path, gs_rref out) {
+GS_API uint8_t gs_os_list_dir(sl_u8 path, gs_rref out) {
     gs_os_char p[GS_OS_PATH_MAX + 2];
     int n = gs_os_native(path, p);
     if (n <= 0) return 0;
@@ -401,18 +384,18 @@ static uint8_t gs_os_list_dir(sl_u8 path, gs_rref out) {
     return ok ? 1 : 0;
 }
 
-static void gs_os_write_stdout(sl_u8 s) {
+GS_API void gs_os_write_stdout(sl_u8 s) {
     if (s.len > 0) fwrite(s.data, 1, (size_t)s.len, stdout);
 }
 
-static void gs_os_write_stderr(sl_u8 s) {
+GS_API void gs_os_write_stderr(sl_u8 s) {
     if (s.len > 0) fwrite(s.data, 1, (size_t)s.len, stderr);
 }
 
-static void gs_os_flush_stdout(void) { fflush(stdout); }
+GS_API void gs_os_flush_stdout(void) { fflush(stdout); }
 
 /* One line of stdin, without its newline; false at end of input. */
-static uint8_t gs_os_read_line(gs_rref out) {
+GS_API uint8_t gs_os_read_line(gs_rref out) {
     int c = fgetc(stdin);
     if (c == EOF) return 0;
     while (c != EOF && c != '\n') {
@@ -428,7 +411,7 @@ static uint8_t gs_os_read_line(gs_rref out) {
 }
 
 /* All of stdin. */
-static void gs_os_read_stdin(gs_rref out) {
+GS_API void gs_os_read_stdin(gs_rref out) {
     uint8_t buf[65536];
     for (;;) {
         size_t n = fread(buf, 1, sizeof buf, stdin);
@@ -437,9 +420,9 @@ static void gs_os_read_stdin(gs_rref out) {
     }
 }
 
-static int64_t gs_os_arg_count(void) { return gs_argc; }
+GS_API int64_t gs_os_arg_count(void) { return gs_argc; }
 
-static void gs_os_arg(int64_t i, gs_rref out) {
+GS_API void gs_os_arg(int64_t i, gs_rref out) {
     if (i < 0 || i >= gs_argc) return;
     const char *a = gs_argv[i];
 #ifdef _WIN32
@@ -456,7 +439,7 @@ static void gs_os_arg(int64_t i, gs_rref out) {
     gs_bld_append(out, a, (int64_t)strlen(a));
 }
 
-static uint8_t gs_os_getenv(sl_u8 name, gs_rref out) {
+GS_API uint8_t gs_os_getenv(sl_u8 name, gs_rref out) {
     gs_os_char nm[GS_OS_PATH_MAX];
     if (gs_os_native(name, nm) < 0) return 0;
 #ifdef _WIN32
@@ -487,7 +470,7 @@ static uint8_t gs_os_getenv(sl_u8 name, gs_rref out) {
 }
 
 /* Wall-clock time in nanoseconds since the Unix epoch. */
-static int64_t gs_os_time_ns(void) {
+GS_API int64_t gs_os_time_ns(void) {
     /* Neither branch uses C11's timespec_get: the Microsoft C runtime tcc
        links against does not have it, and glibc hides it from a compiler
        announcing C99, which tcc also is. */
@@ -506,7 +489,7 @@ static int64_t gs_os_time_ns(void) {
 }
 
 /* A monotonic clock in nanoseconds, for measuring intervals. */
-static int64_t gs_os_clock_ns(void) {
+GS_API int64_t gs_os_clock_ns(void) {
 #ifdef _WIN32
     LARGE_INTEGER f, c;
     QueryPerformanceFrequency(&f);
@@ -519,7 +502,7 @@ static int64_t gs_os_clock_ns(void) {
 #endif
 }
 
-static void gs_os_sleep_ms(int64_t ms) {
+GS_API void gs_os_sleep_ms(int64_t ms) {
     if (ms <= 0) return;
 #ifdef _WIN32
     Sleep((DWORD)ms);
@@ -541,7 +524,7 @@ static uint64_t gs_os_mix64(uint64_t x) {
     return x ^ (x >> 31);
 }
 
-static uint64_t gs_os_random_u64(void) {
+GS_API uint64_t gs_os_random_u64(void) {
 #ifndef _WIN32
     FILE *f = fopen("/dev/urandom", "rb");
     if (f) {
