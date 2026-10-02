@@ -15,6 +15,9 @@ inline void CatOne(string &s, bool v)          { s += v ? "true" : "false"; }
 template<typename T> requires (is_integral_v<T> && !is_same_v<T, char> && !is_same_v<T, bool>)
 void CatOne(string &s, T v)                    { s += to_string(v); }
 inline void CatOne(string &s, double v) {
+    // The spellings Goose programs print (§3.7), whatever the C library's.
+    if (v != v) { s += "nan"; return; }
+    if (std::isinf(v)) { s += v > 0 ? "inf" : "-inf"; return; }
     // %.17g roundtrips, but prefer the shortest form that still does.
     char buf[32];
     snprintf(buf, sizeof(buf), "%.15g", v);

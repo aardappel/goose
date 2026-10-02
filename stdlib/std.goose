@@ -644,8 +644,13 @@ fn parse_uleb(s: u8[:]) -> i64, i64 {
     return 0, 0;
 }
 
-// v with a fixed number of decimals, rounded half up.
+// v with a fixed number of decimals, rounded half up; infinities and NaN
+// in their text form (§3.7).
 fn format_flt(out: u8[>..]&, v: f64, decimals: i64) {
+    if v != v || v - v != 0.0 {
+        format(out, v);
+        return;
+    }
     var x = v;
     if x < 0.0 {
         out.push('-');

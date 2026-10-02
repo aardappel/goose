@@ -3548,7 +3548,10 @@ native stack runs out (§7, **Native stacks**). Finite float formatting
 currently tries 15 significant decimal digits, then 17 if needed to recover
 the promoted `f64`, with redundant exponent zeroes removed to at least two
 digits (`gs_fmt_f64`). That is a round-trip format, not a general
-shortest-decimal algorithm; see section 11.
+shortest-decimal algorithm; see section 11. Infinities and NaNs are
+spelled by the runtime (`inf`, `-inf`, `nan`) rather than by the C
+library, which differs between backends: msvcrt, linked by TinyCC on
+Windows, writes `1.#INF` and `-1.#IND`, and others print a NaN's sign.
 
 ### 6.10 Loop-invariant views and stack-top caching
 

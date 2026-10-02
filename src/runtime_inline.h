@@ -452,7 +452,7 @@ static GS_NORETURN void gs_asfail_u(const char *why, uint64_t v, const char *typ
 static GS_NORETURN void gs_asfail_f(const char *why, double d, const char *type,
                                     const char *file, int line) {
     uint8_t num[32];
-    gs_fmt_f64(num, d);
+    num[gs_fmt_f64(num, d)] = 0;
     gs_asfail(why, (const char *)num, type, file, line);
 }
 
@@ -1070,6 +1070,15 @@ static int gs_fmt_exp(char *s, int n) {
 }
 
 static int64_t gs_fmt_f64(uint8_t *dst, double v) {
+    /* C libraries disagree here (msvcrt, which tcc uses on Windows, writes
+       1.#INF and -1.#IND; others give a NaN's sign bit, which depends on
+       the CPU that made it), so these are spelled by the runtime. */
+    if (v != v) { memcpy(dst, "nan", 3); return 3; }
+    if (isinf(v)) {
+        if (v > 0) { memcpy(dst, "inf", 3); return 3; }
+        memcpy(dst, "-inf", 4);
+        return 4;
+    }
     int n = snprintf((char *)dst, GS_FMT_MAX, "%.15g", v);
     if (strtod((char *)dst, NULL) != v) n = snprintf((char *)dst, GS_FMT_MAX, "%.17g", v);
     return gs_fmt_exp((char *)dst, n);

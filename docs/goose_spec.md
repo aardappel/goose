@@ -480,7 +480,7 @@ UTF-8 is a library-level convention.
 
 **Text.** Every scalar, `bool`, and `u8` array or slice has a text form:
 integers in decimal, floats in the shortest form that reads back to the same
-value, `true`/`false`, and a `u8` array's bytes as they are. Three builtins
+value (infinities as `inf` and `-inf`, every NaN as `nan`), `true`/`false`, and a `u8` array's bytes as they are. Three builtins
 produce it, each taking any number of arguments and inserting nothing
 between them: `print(a, b, …)` writes the forms to standard output followed
 by a newline, as one write, so lines printed by different threads (§11)
