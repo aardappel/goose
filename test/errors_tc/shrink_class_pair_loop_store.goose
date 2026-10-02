@@ -1,7 +1,8 @@
 // error: cannot call g: it may shrink ys while k is still used, and k may refer into ys
 // The reference into ys that the body stores into k after the pop meets the
 // pop on the next iteration, and this call passes ys to both of g's
-// parameters (§9.5, §5.1).
+// parameters: h.a, read back out of a copy of an element of hs, may be ys
+// (§9.5, §5.1).
 struct H { a: i64[>..]& }
 struct R { r: i64& }
 fn g(xs: i64[>..]&, ys: i64[>..]&) {
@@ -17,6 +18,7 @@ fn g(xs: i64[>..]&, ys: i64[>..]&) {
 fn main() {
     var ys: i64[>..] = [1, 2, 3];
     var zs: i64[>..] = [4];
-    let h = H { a: ys };
+    let hs = [H { a: ys }];
+    let h = hs[0];
     g(h.a, ys);
 }

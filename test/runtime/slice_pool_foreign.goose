@@ -8,9 +8,10 @@ fn main() {
     var other: i64[>..] = [1, 2, 3];
     give_back(pool, pool.alloc_slice(2));   // the pool's own, and known to be
     print(pool.len);
-    // Read out of h, the run could be other's as far as the checker knows: it
-    // is checked, and it is the pool's.
-    var h = Holder { s: pool.alloc_slice(2) };
+    // Read out of h, a copy of an element of hs, the run could be other's as
+    // far as the checker knows: it is checked, and it is the pool's.
+    var hs = [Holder { s: pool.alloc_slice(2) }];
+    var h = hs[0];
     give_back(pool, h.s);
     print(pool.len, " ", other.len);
     give_back(pool, other[0..2]);           // checked, and not the pool's

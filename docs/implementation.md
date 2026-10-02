@@ -1136,18 +1136,28 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   caller's, which the body cannot enumerate: a holder parameter is a local,
   but what it holds its argument filled, and whatever the body copies it
   into holds the same. The class root only bounds it (`RootCandidates`
-  lists it in `bounds`). A holder whose `contents` are all views the
-  storage of parameters' classes holds (their mark, §3.10 **Class reads**)
-  or static data holds views of that storage or static data, and a value
-  read out of it where it is checked (`ReadBackLVal`) is one of them, as
-  one read out of the storage is (`ClassCopyReadBack`): what `words` or
-  `split` made of a string literal views static data only. A store later in
-  a loop body reaches the read on the next iteration, and one of anything
-  else there adds a root to the holder's `contents` or takes the mark off
-  one, which the loop feeds back (§3.7): its next pass checks the read with
-  that store on record. Not where a `for` loop binds views read out of the
-  holder, whose one read-back, made before the body is checked, stands for
-  every iteration's;
+  lists it in `bounds`). But a holder's `contents` are what every store
+  into it since it was made put there (`AddContents`): a store through a
+  reference to it, at each place an inexact one may name (`ShrinkTargets`),
+  and a callee's, a nested function's or a function value's as its call
+  maps it (`ApplyCalleeStores`) included. Where each of their roots is a
+  variable's own storage exactly, static data, or a view the storage of a
+  parameter's class holds (its mark, §3.10 **Class reads**), a value read
+  out of the holder where it is checked (`ReadBackLVal`) is one of them
+  (`ContentsReadBack`): an exact root stays exact, as it was stored, and
+  a marked one is one of the views, as one read out of the storage is. So
+  what `words` or `split` made of a local buffer views that buffer alone,
+  of a string literal static data alone, and the rules that need identity
+  (`index_of`, relative stores, class grouping, BCE's `UltOf`) take a
+  reference stored exactly as rooted where it was. A store later in a loop
+  body reaches the read on the next iteration, and one of anything else
+  there adds a root to the holder's `contents` or takes the mark off one,
+  which the loop feeds back (§3.7): its next pass checks the read with that
+  store on record. Contents with a root that only bounds what was stored
+  (a holder copied out of a slot, whose contents its container bounds)
+  take the candidates, and so does a `for` loop binding views read out of
+  the holder, whose one read-back, made before the body is checked, stands
+  for every iteration's;
 * a container reached through a caller's storage, or itself inexact: the
   container's root, inexact, read out of that container (`RootAlt::from`)
   only where the root is the container itself. Where that container is a
@@ -1656,7 +1666,7 @@ keep the mark at a class where every store of it there put such views
 out of the storage, a value holding either, and a callee's such store as
 its call maps it), so a merge or a literal holding the variable, a copy of
 it, and a value read out of it (`let n = ns[1]; let nx = n.next;`, §3.6,
-`ClassCopyReadBack`) hold views of the storage too. A store of anything
+`ContentsReadBack`) hold views of the storage too. A store of anything
 else there takes the mark away (`Roots::Add`), which a loop around it
 feeds back as it does a new root (§3.7): a read earlier in the body is
 checked again with the store on record.
@@ -4065,6 +4075,12 @@ specification allows, and the shapes the C backend refuses outright:
   such a result counts wherever it could; and a global holder passed to a
   by-value holder parameter gives it class 0, with no call-site facts for
   the class, so what the callee stores of it counts the same.
+* A local holder's `contents` are one set for the whole holder (§3.6): a
+  view stored in one of its fields or elements is among what a read out of
+  any other may point into, whatever their types. A holder copied out of a
+  field or an element has only that container as a bound on what it holds,
+  so a read out of the copy takes every candidate, though the container's
+  own `contents` may name one array.
 * A store through a reference to a slice that may name several slots -- one
   read out of storage, a merge, a parameter given such an argument, or the
   class of a nested function's parameter beside the variables of the frames

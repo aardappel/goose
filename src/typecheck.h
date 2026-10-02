@@ -1436,11 +1436,11 @@ struct TypeCheck {
     bool TempContents(const Val &v, ReadBack &contents);
     // `inplace`: the read is made where it is checked, which a loop's passes
     // check again, so what a holder of the activation's holds so far is what
-    // it holds there (ClassCopyReadBack).
+    // it holds there (ContentsReadBack).
     Roots ReadBackRoot(TypeExpr *rt, const Roots &container, bool byteview = false,
                        const ReadBack *contents = nullptr, bool slotread = false,
                        bool inplace = false);
-    bool ClassCopyReadBack(VarDef *h, Roots &out);
+    bool ContentsReadBack(VarDef *h, Roots &out);
     string ReadBackWhy(const Roots &r);
     bool RootedAtReceiver(const Val &rv, const Val &av);
     void CheckRootedAtReceiver(Call *c, const char *op, const Val &rv, const Val &av,

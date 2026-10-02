@@ -63,7 +63,8 @@ fn main() {
     walk(ys, zs, 2);
     view(ys, [9, 8][..]);
     view(ys, mk()[..]);
-    let h = H { a: ys };
+    let hs = [H { a: ys }];
+    let h = hs[0];
     let a .= h.a;
     own(a);
     {

@@ -12,6 +12,7 @@ fn g(xs: i64[>..]&, ys: i64[>..]&) {
 fn main() {
     var a: i64[>..] = [1, 2, 3];
     var b: i64[>..] = [4];
-    let h = H { a: b };
+    let hs = [H { a: b }];
+    let h = hs[0];
     g(h.a, a);
 }

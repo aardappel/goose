@@ -2763,7 +2763,16 @@ variable stays its candidate. Then, by where `C`'s own root lies:
    it. The value names one array only when there is exactly one candidate in
    all, and it is not such a parameter's root. The candidates are the
    variables in scope at the read: an array that comes into scope after it
-   cannot be the owner and is no root of it.
+   cannot be the owner and is no root of it. Where `C` is a local holding
+   values rather than a reference or slice, everything stored into it since
+   it was made is on record -- through a reference to it, by a function it
+   was passed to, or later in a loop around the read -- and where each of
+   those was rooted at one variable exactly, at static data, or at the
+   storage a parameter's argument holds, the value's roots are theirs
+   instead: a word of `words(buf)` for a local `buf` points into `buf`,
+   exactly, whatever else in scope could hold a `u8`. A copy of a field or
+   an element has only its container's scope on record, and takes the
+   candidates.
 3. **A reference parameter's pointee, or itself inexact.** The owner may be
    caller storage this function cannot enumerate: the root is `C`'s, inexact.
 4. **A temporary** (§9.2). Everything in it came from the literal's
