@@ -52,4 +52,12 @@ shown again and typed: keyboard true, mouse true
 its window minimized: keyboard false, mouse false
 maximized and typed: keyboard false, mouse true
   name 'goose?+', note 'hi', rename 'new', count 52
+over a window taking no input: keyboard false, mouse false
+its button clicked: keyboard false, mouse false
+  info clicks 0
+pressed on it and held over a window: keyboard false, mouse false
+begun taking input and clicked: keyboard false, mouse true
+  info clicks 1
+taking none again and clicked: keyboard false, mouse false
+  info clicks 1
 misuses 0

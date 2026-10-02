@@ -58,6 +58,8 @@ let WINDOW_TITLE: i32 = 64;
 let WINDOW_SCROLL_AUTO_HIDE: i32 = 128;
 let WINDOW_BACKGROUND: i32 = 256;
 let WINDOW_SCALE_LEFT: i32 = 512;
+// Takes no input: not moved, scaled, scrolled or brought to the front,
+// its widgets take no clicks, and wants_mouse lets the mouse through it.
 let WINDOW_NO_INPUT: i32 = 1024;
 
 // Text alignment: the ALIGN_ parts combine, TEXT_LEFT, _CENTERED and _RIGHT
@@ -1047,7 +1049,7 @@ extern "gs_ui_item_is_any_active" fn item_is_any_active(c: Context) -> bool;
 extern "gs_ui_wants_keyboard" fn wants_keyboard(c: Context) -> bool;
 // The mouse is over a window or a popup, or holds a button that went down
 // over one; a button that went down elsewhere keeps it the program's until
-// released.
+// released. Windows and popups begun with WINDOW_NO_INPUT do not count.
 extern "gs_ui_wants_mouse" fn wants_mouse(c: Context) -> bool;
 extern "gs_ui_window_set_bounds" fn window_set_bounds(c: Context, name: const u8[:], bounds: Rect);
 extern "gs_ui_window_set_position" fn window_set_position(c: Context, name: const u8[:],

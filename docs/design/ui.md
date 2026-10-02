@@ -136,7 +136,8 @@ physics. The constants have Nuklear's values, a static assert in
   and `edit_focus` can point it past the last field. `wants_mouse`, over
   the same windows, gives a held button to where it went down: a drag
   begun on a window stays the ui's off it, and one begun outside stays the
-  program's over one.
+  program's over one. A window or popup begun with `NK_WINDOW_NO_INPUT`
+  lets the mouse through.
 
 Where Nuklear misbehaves on its own, the layer steps around it:
 
@@ -156,6 +157,9 @@ Where Nuklear misbehaves on its own, the layer steps around it:
   clamps the one and refuses or widens the others.
 * A combo box's items string is read by count, past its end when it holds
   fewer; the layer counts them first.
+* `NK_WINDOW_NO_INPUT` leaves a window's widgets taking clicks until
+  another window is put in front of it, which makes it read only for
+  good; the layer begins such a window read only.
 
 Not exposed, because each needs a callback into Goose code, would lend
 Nuklear the program's memory, or has a Goose form already: text filters of

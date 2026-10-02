@@ -1171,7 +1171,7 @@ A program that shares its input with the ui -- a game with keys of its own
 
 ```goose
 fn wants_keyboard(c) -> bool     // a text field or a property being typed into has the keys
-fn wants_mouse(c) -> bool        // over a window or popup, or dragging from one
+fn wants_mouse(c) -> bool        // over a window or popup taking input, or dragging from one
 ```
 
 A text field has the keyboard from the click that focuses it until a click
@@ -1181,7 +1181,10 @@ behind another window, under a popup of its own or hidden, but takes no
 keys until it is in front, the popup closed or the window shown again. The
 mouse is the ui's over a window or a popup, and while it holds a button
 that went down over one; a button that went down elsewhere keeps it the
-program's until released. Nuklear's `item_is_any_active` is true whenever
+program's until released. A window or popup begun with `WINDOW_NO_INPUT`
+-- a message log, a box of hover information -- lets the mouse through to
+the program: it cannot be moved, scaled, scrolled or brought to the front,
+and its widgets take no clicks. Nuklear's `item_is_any_active` is true whenever
 the mouse is over a window, so it cannot say whose the keys are.
 
 ### Fonts

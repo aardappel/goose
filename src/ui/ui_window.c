@@ -60,7 +60,13 @@ static uint8_t ui_begin(gs_ui_context c, gs_ui_bytes name, gs_ui_bytes title, gs
     if (win && win->seq == ctx->seq)
         return ui_misuse("%s: the window \"%s\" was begun already this frame (a window's name "
                          "must be unique in a frame)", fn, n);
-    nk_bool open = nk_begin_titled(ctx, n, ui_cstr(title, 1), ui_nk_rect(bounds), (nk_flags)flags);
+    /* A window taking no input has read-only widgets too, which Nuklear
+       gives it only while another window is in front. Begun again taking
+       input, it is read-only again only if Nuklear finds it behind one. */
+    nk_flags nkflags = (nk_flags)flags;
+    if (flags & NK_WINDOW_NO_INPUT) nkflags |= NK_WINDOW_ROM;
+    else if (win && (win->flags & NK_WINDOW_NO_INPUT)) win->flags &= ~(nk_flags)NK_WINDOW_ROM;
+    nk_bool open = nk_begin_titled(ctx, n, ui_cstr(title, 1), ui_nk_rect(bounds), nkflags);
     /* Ended whether it opened or not. */
     ui_push_scope(u, UI_SCOPE_WINDOW, open != 0, fn);
     u->drawn = true;
@@ -204,7 +210,8 @@ uint8_t gs_ui_item_is_any_active(gs_ui_context c) {
 }
 
 /* Whether `p` is over one of the frame's windows, or over a popup open in
-   one, as nk_window_is_any_hovered asks it of the mouse. */
+   one, as nk_window_is_any_hovered asks it of the mouse; windows and popups
+   begun with NK_WINDOW_NO_INPUT let the mouse through. */
 static bool ui_over_window(const ui_ctx *u, struct nk_vec2 p) {
     const struct nk_context *ctx = &u->nk;
     for (const struct nk_window *w = ctx->begin; w; w = w->next) {
@@ -212,8 +219,9 @@ static bool ui_over_window(const ui_ctx *u, struct nk_vec2 p) {
         struct nk_rect r = w->bounds;
         if (w->flags & NK_WINDOW_MINIMIZED)
             r.h = ctx->style.font->height + 2 * ctx->style.window.header.padding.y;
-        bool in = p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h;
-        if (w->popup.active && w->popup.win) {
+        bool in = !(w->flags & NK_WINDOW_NO_INPUT) && p.x >= r.x && p.x < r.x + r.w &&
+                  p.y >= r.y && p.y < r.y + r.h;
+        if (w->popup.active && w->popup.win && !(w->popup.win->flags & NK_WINDOW_NO_INPUT)) {
             struct nk_rect q = w->popup.win->bounds;
             in = in || (p.x >= q.x && p.x < q.x + q.w && p.y >= q.y && p.y < q.y + q.h);
         }

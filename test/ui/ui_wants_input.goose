@@ -11,7 +11,9 @@
 // item_is_any_active answers true to. ui::wants_mouse is true over a window
 // or a popup, and while a button that went down over one is held off it,
 // but not while one that went down outside is held over one, nor over a
-// window left out of the frame. Typed text is printed where it lands.
+// window left out of the frame. A window begun with WINDOW_NO_INPUT lets
+// the mouse through to the program, and its widgets take no clicks, until
+// it is begun without the flag. Typed text is printed where it lands.
 import std;
 import vec;
 import os;
@@ -34,6 +36,10 @@ var close_rename = false;
 var unfocus = false;
 var focus_nothing = false;
 var show_right = true;
+var show_info = false;
+var info_flags = ui::WINDOW_BORDER | ui::WINDOW_NO_INPUT;
+var info_at = ui::Rect { 0.0, 0.0, 0.0, 0.0 };
+var info_clicks = 0;
 
 // A frame: gfx's input into the context, then the windows.
 fn frame(ctx: ui::Context) {
@@ -85,6 +91,14 @@ fn frame(ctx: ui::Context) {
         }
     }
     ui::end(ctx);
+    if show_info {
+        if ui::begin(ctx, "Info", ui::rect(170, 165, 140, 45), info_flags) {
+            ui::layout_row_dynamic(ctx, 25.0, 1);
+            info_at = ui::widget_bounds(ctx);
+            if ui::button_label(ctx, "Info") { info_clicks++; }
+        }
+        ui::end(ctx);
+    }
 }
 
 fn state(ctx: ui::Context, what: const u8[:]) {
@@ -271,6 +285,27 @@ fn main() {
     type_in(ctx, "=");
     state(ctx, "maximized and typed");
     texts();
+
+    // --- a window taking no input, the frame's last ---
+    show_info = true;
+    frame(ctx);
+    move_to(ctx, centre(info_at));
+    state(ctx, "over a window taking no input");
+    click(ctx, centre(info_at));
+    state(ctx, "its button clicked");
+    print("  info clicks ", info_clicks);
+    press(ctx, centre(info_at), true);
+    move_to(ctx, in_left);
+    state(ctx, "pressed on it and held over a window");
+    press(ctx, in_left, false);
+    info_flags = ui::WINDOW_BORDER;
+    click(ctx, centre(info_at));
+    state(ctx, "begun taking input and clicked");
+    print("  info clicks ", info_clicks);
+    info_flags = ui::WINDOW_BORDER | ui::WINDOW_NO_INPUT;
+    click(ctx, centre(info_at));
+    state(ctx, "taking none again and clicked");
+    print("  info clicks ", info_clicks);
 
     ui::destroy(ctx);
     gfx::close();
