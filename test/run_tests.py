@@ -51,7 +51,14 @@ One compiler run per fixture parses, checks the dump roundtrip (--roundtrip)
 and typechecks; one per level writes the C and also runs the program through
 TinyCC (-o with --jit). -j1 runs everything in order on one thread.
 
-  python test/run_tests.py [--exe path/to/goose] [--nocgen] [--no-jit] [-j N]
+The checking runs go --batch files to one compiler process (goose
+--multi-test), and the C of --batch fixtures builds into one executable that
+runs any of their programs (CC.compile_programs), each run still a process of
+its own; a batch that crashes or does not build leaves its files to runs of
+their own, which report the failure as theirs. --batch 1 runs everything one
+to a process.
+
+  python test/run_tests.py [--exe path/to/goose] [--nocgen] [--no-jit] [-j N] [--batch N]
 """
 
 import argparse
@@ -91,6 +98,52 @@ def joined(text):
 def first_line(path):
     with open(path, encoding="utf-8", errors="replace") as f:
         return f.readline()
+
+
+def debug_fixture(f, line):
+    """Whether a fixture also runs with GS_DEBUG: codegen_exec.goose and
+    those whose first line asks for it."""
+    return f.stem == "codegen_exec" or "runtime-debug" in line
+
+
+def has_bce_annotations(f):
+    return bool(re.search(r"//\s*bce:(?:elide|keep)\b", f.read_text(encoding="utf-8")))
+
+
+def front_args(line, bce):
+    """The flags of a positive fixture's one parse, roundtrip and typecheck
+    run, by its first line and whether it has bce annotations."""
+    # The default -O1 is what the bce annotations describe.
+    return ["--roundtrip"] + (["--parse"] if "parse-only" in line else
+                              ["--check"] + (["--bce-test"] if bce else []))
+
+
+def runtime_defines(source):
+    """The -D a fixture's first line asks every compile of it for."""
+    source = Path(source)
+    if source.suffix != ".goose" or not source.is_file():
+        return []
+    return re.findall(r"^// runtime-define: (\w+=\w+)$", first_line(source))
+
+
+# What `goose --multi-test` ends each file's part of stdout and of stderr
+# with, on a line of its own, followed by the file's exit code and name.
+MULTIMARK = "==== goose --multi-test: exit"
+
+
+def split_multi(text, files):
+    """A `goose --multi-test` stream cut at each file's mark: (exit code,
+    what the file printed) for each file it has the mark of, in order, and
+    what follows the last mark. The line break before a mark is the mark's
+    own."""
+    parts, pos = [], 0
+    for f in files:
+        m = re.compile(rf"\n{re.escape(MULTIMARK)} (-?\d+) {re.escape(str(f))}\n").search(text, pos)
+        if not m:
+            break
+        parts.append((int(m[1]), text[pos:m.start()]))
+        pos = m.end()
+    return parts, text[pos:]
 
 
 def error_markers(path):
@@ -189,6 +242,10 @@ class Fixture:
         self.front, self.bce, self.cgen, self.dump = Out(), Out(), Out(), Out()
         self.debug, self.jit, self.jitdebug = Out(), Out(), Out()
         self.nativeskips, self.jitskips = [], []
+        # What fixture() found and generated, for the rest of the fixture.
+        self.line, self.dumped = "", False
+        # By build_options key, the compiler run that wrote the C and where.
+        self.modules, self.jitlevels, self.gen, self.c = [], (), {}, {}
 
 
 class Runner:
@@ -205,6 +262,11 @@ class Runner:
         self.failures = 0
         self.local = threading.local()
         self.pool = concurrent.futures.ThreadPoolExecutor(jobs) if jobs > 1 else None
+        self.jobs = jobs
+        # Files to a `goose --multi-test` run (goose_each); 0 chooses by the
+        # number of files and jobs.
+        self.batch = 0
+        self.fronts = {}
         self.slots = []
         self.gpulock = None
         # What the C that `goose -o` writes links with, built once per
@@ -328,16 +390,65 @@ class Runner:
         """The compiler under test, as (exit code, stdout, stderr). Both
         streams are captured rather than shown, so a failing step can print
         what happened without having to run the compiler a second time."""
+        return self.screened(args[-1], tc.run_capture(self.goose_argv(args)))
+
+    def goose_argv(self, args):
         # Resource-bound regressions use the same runtime configuration
         # through generated C and TinyCC, at every optimization level.
-        source = Path(args[-1]) if args else None
-        defines = []
-        if source and source.suffix == ".goose" and source.is_file():
-            defines = re.findall(r"^// runtime-define: (\w+=\w+)$", first_line(source))
-        result = tc.run_capture([self.exe] + ["-D" + d for d in defines] + [str(a) for a in args])
+        return [self.exe] + ["-D" + d for d in runtime_defines(args[-1])] + [str(a) for a in args]
+
+    def screened(self, what, result):
+        """A compiler run's result, failing the current piece of work if the
+        compiler's sanitizers reported anything."""
         if tc.sanitizer_failure(result[2]):
-            self.fail(f"compiler sanitizer {args[-1]}", result[2])
+            self.fail(f"compiler sanitizer {what}", result[2])
         return result
+
+    def goose_each(self, args, files):
+        """What goose(*args, f) runs the compiler for, for each of `files`,
+        as callables returning its (exit code, stdout, stderr) unscreened:
+        the runs happen on the pool, up to `batch` files to one `goose
+        --multi-test` (multi_test), and screened() is for whoever uses
+        them. A file with runtime defines runs in a plain run of its own,
+        as every file does with a `batch` of 1."""
+        results = {}
+        alone = [f for f in files if self.batch == 1 or runtime_defines(f)]
+        together = [f for f in files if f not in alone]
+        size = self.batch or max(1, min(32, len(together) // (2 * self.jobs)))
+        for i in range(0, len(together), size):
+            chunk = together[i:i + size]
+            future = self.submit(self.multi_test, args, chunk)
+            for f in chunk:
+                results[f] = lambda f=f, future=future: future.result()[f]
+        for f in alone:
+            results[f] = self.submit(tc.run_capture, self.goose_argv([*args, f])).result
+        return results
+
+    def multi_test(self, args, files):
+        """{f: what `goose *args f` gives} for each of `files`, from one
+        `goose --multi-test *args *files` where it got through them: each
+        file's part of both streams ends in a line of its own with what the
+        file's run would have exited with (MULTIMARK). A run that ends
+        before a file's mark, a crash or an abort, gets through the files
+        before it; the rest run one to a process, which shows the failure
+        as theirs. A batch that exits with an error after every mark, or
+        prints anything after the last one (a leak report), gets through
+        none."""
+        argv = [self.exe, "--multi-test"] + [str(a) for a in args] + [str(f) for f in files]
+        code, out, err = tc.run_capture(argv)
+        outs, outrest = split_multi(out, files)
+        errs, errrest = split_multi(err, files)
+        done = {}
+        for f, (ocode, o), (ecode, e) in zip(files, outs, errs):
+            if ocode != ecode:
+                break
+            done[f] = (ocode, o, e)
+        if len(done) == len(files) and (code != 0 or outrest or errrest):
+            done = {}
+        for f in files:
+            if f not in done:
+                done[f] = tc.run_capture(self.goose_argv([*args, f]))
+        return done
 
     def run_expected(self, argv, name, label):
         """Run a program and validate it. `argv` is the built executable, or
@@ -430,14 +541,17 @@ class Runner:
     # --- one positive fixture ---------------------------------------------
 
     def fixture(self, f):
-        """Everything the suite does with one positive fixture, in one job, so
-        that its runs, which may share files the program writes, happen one
-        after another."""
+        """What the suite does with one positive fixture up to its C: the
+        front end's checks, then the C at each level, and the program's
+        runs through TinyCC, and the C of its dump and debug programs. The
+        rest (fixture_runs) follows in a job of its own once the C is
+        built, so that the fixture's runs, which may share files the
+        program writes, still happen one after another."""
         res = Fixture()
-        line = first_line(f)
-        bce = bool(re.search(r"//\s*bce:(?:elide|keep)\b", f.read_text(encoding="utf-8")))
+        res.line = line = first_line(f)
+        bce = has_bce_annotations(f)
         with self.into(res.front):
-            dumped = self.front(f, line, bce, res)
+            res.dumped = self.front(f, line, bce, res)
         if "parse-only" in line:
             if bce:
                 with self.into(res.bce):
@@ -447,14 +561,35 @@ class Runner:
                     else:
                         self.ok(f"bce-test {f.name}")
             return res
-        self.programs(f, line, res)
-        if self.cc and dumped:
+        self.generate(f, line, res)
+        if self.cc and res.dumped:
             with self.into(res.dump):
-                self.dump_program(f)
-        debug = f.stem == "codegen_exec" or "runtime-debug" in line
+                res.c["dump"] = self.gendir / f"{f.stem}-dump.c"
+                res.gen["dump"] = self.goose("-O2", "-o", res.c["dump"], self.dumpdir / f.name)
+        if self.cc and debug_fixture(f, line):
+            with self.into(res.debug):
+                res.c["debug"] = self.gendir / f"{f.stem}-debug.c"
+                res.gen["debug"] = self.goose("-O2", "-o", res.c["debug"], f)
+        return res
+
+    def fixture_runs(self, f, generated, builds):
+        """The rest of what the suite does with a positive fixture, after
+        fixture() (`generated`, its future): build and run its C, and its
+        dump and debug programs. `builds` has, by build_options key, a
+        future of what build_programs built for a batch of fixtures."""
+        res = generated.result()
+        line = res.line
+        if "parse-only" in line:
+            return res
+        built = {key: b.result().get(f) for key, b in builds.items()}
+        self.programs(f, res, built)
+        if self.cc and res.dumped:
+            with self.into(res.dump):
+                self.dump_program(f, res, built.get("dump"))
+        debug = debug_fixture(f, line)
         if self.cc and debug:
             with self.into(res.debug):
-                self.debug_program(f)
+                self.debug_program(f, res, built.get("debug"))
         if self.jit and debug and "no-jit" not in line and f.name not in res.jitskips:
             with self.into(res.jitdebug):
                 out = self.check_run(f.stem, f"jit-debug {f.name}",
@@ -468,14 +603,13 @@ class Runner:
         the fixture's warnings, in one compiler run that says how far it got.
         Returns whether the dump was written for a `dump-runtime` run."""
         parseonly = "parse-only" in line
-        args = ["--roundtrip"]
-        dumpfile = self.dumpdir / f.name if "dump-runtime" in line else None
-        if dumpfile:
+        if "dump-runtime" in line:
+            dumpfile = self.dumpdir / f.name
             dumpfile.unlink(missing_ok=True)
-            args += ["--dump-file", dumpfile]
-        # The default -O1 is what the bce annotations describe.
-        args += ["--parse"] if parseonly else ["--check"] + (["--bce-test"] if bce else [])
-        code, out, err = self.goose(*args, f)
+            code, out, err = self.goose("--dump-file", dumpfile, *front_args(line, bce), f)
+        else:
+            dumpfile = None
+            code, out, err = self.screened(f, self.fronts[f]())
         text = out + err
         if not re.search(r"^parsed ok:", text, re.M):
             self.fail(f"parse {f.name}", text)
@@ -501,16 +635,15 @@ class Runner:
                     self.ok(f"bce-test {f.name}")
         return bool(dumpfile)
 
-    def programs(self, f, line, res):
-        """Generates C at each level, then builds and runs it, and runs the
-        program through TinyCC. Where both happen, one compiler run writes
-        the C and runs the program in-process: --jit with -o."""
+    def generate(self, f, line, res):
+        """Generates C at each level, and runs the program through TinyCC.
+        Where both happen, one compiler run writes the C and runs the
+        program in-process: --jit with -o."""
         name = f.stem
-        modules = native_modules(f, self.native)
-        libs = [lib for m in modules for lib in self.native[m]]
+        res.modules = modules = native_modules(f, self.native)
         levels = self.levels if self.cc else ()
-        jitlevels = ("0", "2") if self.jit and "no-jit" not in line else ()
-        gen, cfiles = {}, {}
+        res.jitlevels = jitlevels = ("0", "2") if self.jit and "no-jit" not in line else ()
+        gen, cfiles = res.gen, res.c
         with self.into(res.cgen):
             for ol in sorted(set(levels) | set(jitlevels)):
                 args = [f"-O{ol}"]
@@ -523,6 +656,49 @@ class Runner:
                 with self.gpu(modules):
                     gen[ol] = self.goose(*args, f)
 
+    def build_options(self, key):
+        """How a fixture's C is built: at a level ("0", "2"), its dump's
+        ("dump") or its GS_DEBUG build ("debug"). (opt, defines)."""
+        if key in ("dump", "debug"):
+            return 2 if self.profile == "baseline" else 1, ["GS_DEBUG=1"] if key == "debug" else []
+        return int(key) if self.profile == "baseline" else 1, []
+
+    def builds_together(self, res, key):
+        """Whether the C a fixture() result wrote for `key` is there to build
+        with others': not where it links a native layer, or was not written
+        (where a JIT run of it followed, the run has the exit code)."""
+        cfile = res.c.get(key)
+        if cfile is None or res.modules:
+            return False
+        return cfile.is_file() if key in res.jitlevels else res.gen[key][0] == 0
+
+    def build_programs(self, key, generated):
+        """Builds the programs that the fixture() futures in `generated`
+        (fixture: future) wrote the C of for `key` (build_options) into one
+        executable (CC.compile_programs), where there are two or more and
+        they build; {fixture: the argv that runs its program} for those."""
+        fixtures = [f for f, future in generated.items()
+                    if self.builds_together(future.result(), key)]
+        if len(fixtures) < 2:
+            return {}
+        exe = self.gendir / "programs" / f"{fixtures[0].stem}-{key}{tc.EXE_SUFFIX}"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        opt, defines = self.build_options(key)
+        ok, _ = self.cc.compile_programs([generated[f].result().c[key] for f in fixtures], exe,
+                                         opt=opt, defines=defines, extra=self.extra,
+                                         strict_decls=True, runtime=self.runtime,
+                                         log=exe.with_suffix(".cc.log"))
+        return {f: [exe, str(k)] for k, f in enumerate(fixtures)} if ok else {}
+
+    def programs(self, f, res, built):
+        """Builds and runs the C generate() wrote at each level, where
+        `built` has no argv for it from build_programs, on its own, and
+        judges the program's TinyCC runs."""
+        name = f.stem
+        modules = res.modules
+        libs = [lib for m in modules for lib in self.native[m]]
+        levels = self.levels if self.cc else ()
+        jitlevels, gen, cfiles = res.jitlevels, res.gen, res.c
         if levels:
             with self.into(res.cgen):
                 runs, bad = {}, False
@@ -542,17 +718,22 @@ class Runner:
                         res.nativeskips.append(f.name)
                         bad = True
                         continue
-                    ok, log = self.cc.compile(cfile, efile,
-                                              opt=int(ol) if self.profile == "baseline" else 1,
-                                              extra=self.extra, strict_decls=True, libs=libs,
-                                              runtime=self.runtime,
-                                              log=self.gendir / f"{name}-O{ol}.cc.log")
-                    if not ok:
-                        self.fail(f"cc -O{ol} {f.name}", "\n".join(log.splitlines()[:8]))
-                        bad = True
-                        continue
+                    argv = built.get(ol)
+                    if not argv:
+                        # A program that did not build in a batch shows here
+                        # why, built on its own.
+                        argv = [efile]
+                        opt, _ = self.build_options(ol)
+                        ok, log = self.cc.compile(cfile, efile, opt=opt,
+                                                  extra=self.extra, strict_decls=True, libs=libs,
+                                                  runtime=self.runtime,
+                                                  log=self.gendir / f"{name}-O{ol}.cc.log")
+                        if not ok:
+                            self.fail(f"cc -O{ol} {f.name}", "\n".join(log.splitlines()[:8]))
+                            bad = True
+                            continue
                     with self.gpu(modules):
-                        code, out, err = tc.run_capture([efile])
+                        code, out, err = tc.run_capture(argv)
                     if "gfx" in modules and tc.GFX_NO_DEVICE in err:
                         res.nativeskips.append(f.name)
                         bad = True
@@ -598,43 +779,47 @@ class Runner:
             elif self.check_stdout(name, f"jit {f.name}", runs["2"]):
                 self.ok(f"jit {f.name}")
 
-    def dump_program(self, f):
+    def dump_program(self, f, res, argv):
         """A stable dump can still change grouping and therefore semantics:
-        the dumped program runs against the original expectations."""
+        the dumped program runs against the original expectations. Its C is
+        from fixture(); `argv` runs it where build_programs built it."""
         dumpfile = self.dumpdir / f.name
-        src = self.gendir / f"{f.stem}-dump.c"
-        out_exe = self.gendir / f"{f.stem}-dump{tc.EXE_SUFFIX}"
-        code, out, err = self.goose("-O2", "-o", src, dumpfile)
+        code, out, err = res.gen["dump"]
         if code != 0:
             self.fail(f"cgen-dump {dumpfile.name}", out + err)
             return
-        ok, log = self.cc.compile(src, out_exe, opt=2 if self.profile == "baseline" else 1,
-                                  extra=self.extra, strict_decls=True, runtime=self.runtime,
-                                  log=self.gendir / f"{f.stem}-dump.cc.log")
-        if not ok:
-            self.fail(f"cc-dump {dumpfile.name}", log)
-            return
-        out = self.run_expected([out_exe], f.stem, f"dump {dumpfile.name}")
+        if not argv:
+            argv = [self.gendir / f"{f.stem}-dump{tc.EXE_SUFFIX}"]
+            opt, defines = self.build_options("dump")
+            ok, log = self.cc.compile(res.c["dump"], argv[0], opt=opt, defines=defines,
+                                      extra=self.extra, strict_decls=True, runtime=self.runtime,
+                                      log=self.gendir / f"{f.stem}-dump.cc.log")
+            if not ok:
+                self.fail(f"cc-dump {dumpfile.name}", log)
+                return
+        out = self.run_expected(argv, f.stem, f"dump {dumpfile.name}")
         if out is not None and self.check_stdout(f.stem, f"dump {dumpfile.name}", out):
             self.ok(f"dump+run {dumpfile.name}")
 
-    def debug_program(self, f):
+    def debug_program(self, f, res, argv):
         """GS_DEBUG changes language overflow/cast checks, independently of
-        native optimization: its helpers under O2."""
+        native optimization: its helpers under O2. The C is from fixture();
+        `argv` runs it where build_programs built it."""
         name = f.stem
-        src = self.gendir / f"{name}-debug.c"
-        out_exe = self.gendir / f"{name}-debug{tc.EXE_SUFFIX}"
-        code, out, err = self.goose("-O2", "-o", src, f)
+        code, out, err = res.gen["debug"]
         if code != 0:
             self.fail(f"cgen-debug {f.name}", out + err)
             return
-        ok, log = self.cc.compile(src, out_exe, opt=2 if self.profile == "baseline" else 1,
-                                  defines=["GS_DEBUG=1"], extra=self.extra, strict_decls=True,
-                                  runtime=self.runtime, log=self.gendir / f"{name}-debug.cc.log")
-        if not ok:
-            self.fail(f"cgen-debug-cc {f.name}", "\n".join(log.splitlines()[:8]))
-            return
-        out = self.run_expected([out_exe], name, f"debug {f.name}")
+        if not argv:
+            argv = [self.gendir / f"{name}-debug{tc.EXE_SUFFIX}"]
+            opt, defines = self.build_options("debug")
+            ok, log = self.cc.compile(res.c["debug"], argv[0], opt=opt, defines=defines,
+                                      extra=self.extra, strict_decls=True, runtime=self.runtime,
+                                      log=self.gendir / f"{name}-debug.cc.log")
+            if not ok:
+                self.fail(f"cgen-debug-cc {f.name}", "\n".join(log.splitlines()[:8]))
+                return
+        out = self.run_expected(argv, name, f"debug {f.name}")
         if out is not None and self.check_stdout(name, f"debug {f.name}", out):
             self.ok(f"cgen-debug {f.name}")
 
@@ -887,6 +1072,11 @@ def main():
     ap.add_argument("--gpu-jobs", type=int, default=0,
                     help="how many gfx programs run at once (default: no limit "
                          "beyond --jobs)")
+    ap.add_argument("--batch", type=int, default=0,
+                    help="how many files one `goose --multi-test` run checks, and how "
+                         "many programs one executable holds (default: by the number of "
+                         "files and jobs); 1 gives each a process and an executable of "
+                         "its own")
     args = ap.parse_args()
 
     if args.nocgen and (args.cc or args.require_clang or args.profile != "baseline"):
@@ -894,8 +1084,8 @@ def main():
     if args.profile == "sanitize" and (not sys.platform.startswith("linux") or
                                         args.cc not in (None, "clang")):
         ap.error("the sanitize profile requires Linux and Clang")
-    if args.jobs < 1 or args.gpu_jobs < 0:
-        ap.error("--jobs must be at least 1, and --gpu-jobs at least 0")
+    if args.jobs < 1 or args.gpu_jobs < 0 or args.batch < 0:
+        ap.error("--jobs must be at least 1, and --gpu-jobs and --batch at least 0")
 
     tc.setup_console()
     started = time.perf_counter()
@@ -915,6 +1105,7 @@ def main():
     jit = not args.no_jit and args.profile != "sanitize" and tc.have_jit(exe)
     r = Runner(exe, args.jobs)
     r.gpulock = threading.BoundedSemaphore(args.gpu_jobs) if args.gpu_jobs else None
+    r.batch = args.batch
 
     # The bootstrap is the longest chain of work in the suite, so it starts
     # first, and the samples' runner, a process of its own, next.
@@ -1072,10 +1263,35 @@ def main():
     deep = [r.task(call_chain_checks), r.task(call_chain_too_deep)]
     deep += [r.task(guard_runs_level, ol) for ol in (r.levels if cc else ())]
 
+    # The fixtures' parse, roundtrip and typecheck runs, in batches by their
+    # flags, start before the rest of each fixture, which waits for them.
+    fronts = {}
+    for f in tests:
+        line = first_line(f)
+        if "dump-runtime" not in line:
+            fronts.setdefault(tuple(front_args(line, has_bce_annotations(f))), []).append(f)
+    for args_, files in fronts.items():
+        r.fronts.update(r.goose_each(list(args_), files))
     # The fixtures that take longest, those building and running graphics,
     # physics or ui programs, start first.
-    fixtures = {f: r.submit(r.fixture, f) for f in
-                sorted(tests, key=lambda f: not native_modules(f, native))}
+    order = sorted(tests, key=lambda f: not native_modules(f, native))
+    generated = {f: r.submit(r.fixture, f) for f in order}
+    # The C of the other fixtures builds in batches, each kind of build
+    # (build_options) by itself, and the rest of each fixture follows once
+    # its batches are built.
+    builds = {}
+    plain = [f for f in order if not native_modules(f, native)]
+    kinds = {ol: [f for f in plain if "parse-only" not in first_line(f)] for ol in r.levels}
+    kinds["dump"] = [f for f in plain if "dump-runtime" in first_line(f)]
+    kinds["debug"] = [f for f in plain if debug_fixture(f, first_line(f))]
+    for key, together in kinds.items() if cc and r.batch != 1 else ():
+        size = r.batch or max(2, min(32, len(together) // (2 * args.jobs)))
+        for i in range(0, len(together), size):
+            chunk = {f: generated[f] for f in together[i:i + size]}
+            future = r.submit(r.build_programs, key, chunk)
+            for f in chunk:
+                builds.setdefault(f, {})[key] = future
+    fixtures = {f: r.submit(r.fixture_runs, f, generated[f], builds.get(f, {})) for f in order}
 
     # --- what the log shows, in order ---------------------------------------
 
@@ -1247,12 +1463,15 @@ def main():
                       + ", ".join(sorted(set(skipped))))
         r.show_later(jit_skips)
 
+    parse_errors = sorted((HERE / "errors").glob("*.goose"))
+    parse_runs = r.goose_each(["--parse"], parse_errors)
+
     def parse_error(f):
-        code, out, err = r.goose("--parse", f)
+        code, out, err = r.screened(f, parse_runs[f]())
         if r.check_error(f, "expected-error", code, out, err):
             r.ok(f"error {f.name}")
-    for f in sorted((HERE / "errors").glob("*.goose")):
-        r.show_task(parse_error, f)
+    for f in parse_errors:
+        r.show_later(parse_error, f)
 
     def native_skips():
         skipped = [name for f in tests for name in fixtures[f].result().nativeskips]
@@ -1263,14 +1482,17 @@ def main():
 
     # Typecheck error tests: must parse, must fail the typechecker. One
     # compiler run tells the two apart by whether it reported the parse done.
+    tc_errors = sorted((HERE / "errors_tc").glob("*.goose")) + native_errors
+    tc_runs = r.goose_each(["--check"], tc_errors)
+
     def tc_error(f):
-        code, out, err = r.goose("--check", f)
+        code, out, err = r.screened(f, tc_runs[f]())
         if not re.search(r"^parsed ok:", out + err, re.M):
             r.fail(f"tc-error-parses {f.name}", out + err)
         elif r.check_error(f, "expected-tc-error", code, out, err):
             r.ok(f"tc-error {f.name}")
-    for f in sorted((HERE / "errors_tc").glob("*.goose")) + native_errors:
-        r.show_task(tc_error, f)
+    for f in tc_errors:
+        r.show_later(tc_error, f)
 
     for future in deep:
         r.show(future)

@@ -9,7 +9,7 @@ compiler and the programs they start. The log comes out in the same order
 whatever the number of jobs: each piece of work prints into a buffer of its
 own, which shows once everything before it has, so two logs diff cleanly.
 `-j1` runs everything in order on one thread. Everything one fixture runs
-happens in one job, one run after another, since a program may write a file
+happens one run after another, since a program may write a file
 (`stdlib_os.goose` does) that another run of it would see. The Goose-in-Goose
 chains and the samples' runner (`samples/run_samples.py`, a process of its own
 with as many jobs) start first: the -O0 bootstrap chain is the longest piece
@@ -26,6 +26,30 @@ past resolution prints `parsed ok`, which tells a parse failure from a
 typecheck failure in one `--check` of an `errors_tc/` fixture. Where a level
 both builds the C and runs the program through TinyCC, one `goose -O<n> --jit
 -o <file>` does both: it writes the C, then runs the program in-process.
+
+Most of those runs, and those of the `errors/` and `errors_tc/` fixtures,
+share a compiler process with others: `goose --multi-test <flags> a.goose
+b.goose ...` compiles each file in turn as a run on it alone would, and ends
+each file's part of stdout and of stderr with a line `==== goose
+--multi-test: exit <code> <file>`, from which the runner hands every fixture
+exactly the exit code and output a run of its own would have given. A
+compiler process starting costs about as much as checking a small fixture,
+so a batch of 20 checks in a tenth of the time. A batch that crashes or
+aborts gets through the files before the one it was on; that file and the
+rest run one to a process, so a crash is reported as that fixture's. Runs
+writing a dump (`dump-runtime`), with `runtime-define` defines, or running a
+program (TinyCC) stay one to a process. The C of the fixtures not linking a
+native layer builds a batch at a time as well, at each level and for the
+dump and `GS_DEBUG` programs: one C compiler run compiles each program's
+unit with its `main` renamed, beside a `main` that runs the program its
+first argument names, and links them once against the runtime object
+(`CC.compile_programs` in `scripts/toolchain.py`). Every run of a program is
+still a process of its own. Where a batch does not build, each program in it
+builds on its own and shows why. A C compiler run's start and link cost
+most of its time on these programs: a batch of 20 builds in a fifth of the
+time. `--batch N` sets how many files go to one compiler process and how
+many programs to one executable (by default a number that leaves every job
+some batches); `--batch 1` gives each a process and an executable of its own.
 
 Test fixtures are grouped by category; `run_tests.py` stays at the root of `test/`:
 

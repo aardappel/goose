@@ -285,6 +285,39 @@ class CC:
             write_text(log, output)
         return r.returncode == 0, output
 
+    def compile_programs(self, cfiles, out, **kwargs):
+        """Compile and link the C of several programs that `goose -o` wrote
+        into the one executable `out`, whose first argument, k, runs the
+        k-th program as its own executable would, with the arguments past
+        k and this executable's name: a unit of its own per program holds it with its main renamed, beside
+        a dispatching main. A program's C holds nothing else that is not
+        static, and each run is still a process of its own, so the
+        programs share only their runtime object's code. The keyword
+        arguments are compile's. Returns (ok, combined output)."""
+        out = Path(out)
+        units = []
+        for k, cfile in enumerate(cfiles):
+            unit = out.parent / f"{out.stem}-{k}.c"
+            # Quoted includes in the program's C resolve against its own
+            # directory, wherever the unit is.
+            write_text(unit, f'#define main gs_multi_main_{k}\n'
+                             f'#include "{Path(cfile).resolve().as_posix()}"\n')
+            units.append(unit)
+        dispatch = out.parent / f"{out.stem}-main.c"
+        write_text(dispatch,
+                   "#include <stdlib.h>\n" +
+                   "".join(f"int gs_multi_main_{k}(int, char **);\n" for k in range(len(cfiles))) +
+                   "static int (*const gs_multi_mains[])(int, char **) = {\n" +
+                   "".join(f"    gs_multi_main_{k},\n" for k in range(len(cfiles))) +
+                   "};\n\n"
+                   "int main(int argc, char **argv) {\n"
+                   "    int k = argc > 1 ? atoi(argv[1]) : -1;\n"
+                   f"    if (k < 0 || k >= {len(cfiles)}) return 125;\n"
+                   "    argv[1] = argv[0];\n"
+                   "    return gs_multi_mains[k](argc - 1, argv + 1);\n"
+                   "}\n")
+        return self.compile(units + [dispatch], out, **kwargs)
+
     def compile_object(self, source, out, *, opt=None, defines=(), extra=()):
         """Compile the C file `source` into the object file `out`, without
         linking. Returns (ok, combined output)."""
