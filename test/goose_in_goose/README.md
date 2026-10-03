@@ -28,8 +28,10 @@ selected native C compiler and profile:
 2. Stage 1 compiles the same sources into stage 2; native C compilation builds
    that executable.
 3. Stage 2 compiles the sources into stage 3, which is also built and linked.
-4. Stage-2 and stage-3 C must be byte-identical. Stage 3 checks its own sources
-   twice in one process; both compilations must succeed and agree.
+4. Stage-2 and stage-3 C must be byte-identical. Stage 2 checks its own sources
+   twice in one process, while stage 3 is emitted and built; both compilations
+   must succeed and agree. The fixed point makes stage 2 the same compiler as
+   stage 3.
 5. When TinyCC is available, the real compiler also executes the Goose-written
    compiler through its JIT. Its emitted C must match the native bootstrap.
 

@@ -37,8 +37,9 @@ Profiles keep the CI coverage deliberate: baseline compares Goose/native C
 -O0 and -O2 plus the targeted debug-runtime runs; sanitize uses Goose -O2 and
 Clang -O1 with ASan/UBSan on Linux, including the samples and C runtime tests.
 The goose_in_goose/ compiler is one multi-file bootstrap fixture: build three
-native generations, require identical stage-2/stage-3 C, and run the last
-generation's self-check. TinyCC also emits the same C when available.
+native generations, require identical stage-2/stage-3 C, and run a self-check
+of the stage-2 compiler, which stands for both, beside stage 3's build.
+TinyCC also emits the same C when available.
 
 The work runs on --jobs threads, each waiting on the processes it starts, and
 the log comes out in the same order whatever the number of jobs: each piece of
@@ -243,6 +244,17 @@ class Runner:
             yield out
         finally:
             self.local.out = prev
+
+    def absorb(self, out):
+        """Prints what another piece of work printed into `out`, and counts
+        its failures, as part of the current one."""
+        for line in out.text:
+            self.say(line[:-1])
+        cur = getattr(self.local, "out", None)
+        if cur is None:
+            self.failures += out.failures
+        else:
+            cur.failures += out.failures
 
     # --- scheduling -------------------------------------------------------
 
@@ -729,6 +741,16 @@ class Runner:
             elif tc.IS_MACOS:
                 stack_flags = ["-Wl,-stack_size,0x4000000"]
 
+        def self_check(compiler, label, log):
+            """Repeated compilations also exercise context cleanup in the
+            built compiler, without pinning internal counts."""
+            out = run([compiler, "--check-many", source, source], f"self-check {label} stage 2", log)
+            if out is not None:
+                lines = out.splitlines()
+                if (len(lines) != 2 or lines[0] != lines[1] or
+                        not re.fullmatch(r"checked \d+ specializations, \d+ types", lines[0])):
+                    self.fail(f"repeated self-check output {label}", out)
+
         def chain(ol):
             """The native stages at one level; the stage-2 C, when they all
             built."""
@@ -738,6 +760,14 @@ class Runner:
             if not cc:
                 run([self.exe, f"-O{ol}", "--check", source], f"typecheck {label}", work / "host.check.log")
                 return None
+            checks = []
+            try:
+                return stages(ol, label, work, checks)
+            finally:
+                for check in checks:
+                    self.absorb(check.result())
+
+        def stages(ol, label, work, checks):
             compiler = self.exe
             cfiles = []
             for stage in range(1, 4):
@@ -764,20 +794,18 @@ class Runner:
                 self.ok(f"cc {what}")
                 cfiles.append(cfile)
                 compiler = executable
+                # Stage 3 is built from the same C as stage 2 (the fixed
+                # point below), so stage 2 self-checks for both, while stage 3
+                # is emitted and built: the -O0 chain is the suite's critical
+                # path.
+                if stage == 2:
+                    checks.append(self.task(self_check, executable, label,
+                                            work / "stage2.check.log", alone=True))
             native_c = cfiles[1].read_bytes()
             if native_c != cfiles[2].read_bytes():
                 self.fail(f"fixed point {label}", f"C differs: {cfiles[1]} vs {cfiles[2]}")
             else:
                 self.ok(f"fixed point {label} ({len(native_c)} bytes)")
-            # Repeated compilations also exercise context cleanup in
-            # the final executable, without pinning internal counts.
-            out = run([compiler, "--check-many", source, source], f"self-check {label} stage 3",
-                      work / "stage3.check.log")
-            if out is not None:
-                lines = out.splitlines()
-                if (len(lines) != 2 or lines[0] != lines[1] or
-                        not re.fullmatch(r"checked \d+ specializations, \d+ types", lines[0])):
-                    self.fail(f"repeated self-check output {label}", out)
             return native_c
 
         def jit_self_compile(ol):
