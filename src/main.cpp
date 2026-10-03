@@ -328,14 +328,19 @@ void GenRuntimeHeader(const char *argv0) {
 // At the end of this file, past the system headers it needs.
 int RunOnCompilerStack(const function<int()> &fn);
 
+// What --multi-test prints on a line of its own on stdout and on stderr after
+// each file, with the exit code a run on the file alone would have had and
+// the file's name as given.
+constexpr const char *MULTIMARK = "==== goose --multi-test: exit";
+
 int Main(int argc, char **argv) {
-    string filename, outfile, stdlibdir, shaderfile, shadersource, dumpfile;
+    string outname, stdlibdir, shaderfile, shadersource, dumpfile;
     auto dump = false, tokens = false, parseonly = false, specs = false, nocgen = false;
-    auto roundtrip = false;
+    auto roundtrip = false, multitest = false;
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
     auto forcejit = false, standalone = false;
     auto optlevel = 1;
-    vector<string> cdefines, progargs, includes;
+    vector<string> cdefines, progargs, includenames, files;
     for (int i = 1; i < argc; i++) {
         string arg = argv[i];
         // Everything past `--` belongs to the program being run, not here.
@@ -357,6 +362,7 @@ int Main(int argc, char **argv) {
         else if (arg == "--unsafe-no-rf-check") norfcheck = true;
         else if (arg == "--jit") forcejit = true;
         else if (arg == "--standalone") standalone = true;
+        else if (arg == "--multi-test") multitest = true;
         else if (arg == "--gen-runtime-header") { GenRuntimeHeader(argv[0]); return 0; }
         else if (arg == "--emit-runtime" && i + 1 < argc) {
             auto path = argv[++i];
@@ -391,8 +397,8 @@ int Main(int argc, char **argv) {
         else if (arg == "-O0") optlevel = 0;
         else if (arg == "-O1") optlevel = 1;
         else if (arg == "-O2") optlevel = 2;
-        else if (arg == "-o" && i + 1 < argc) outfile = argv[++i];
-        else if (arg == "--include" && i + 1 < argc) includes.push_back(argv[++i]);
+        else if (arg == "-o" && i + 1 < argc) outname = argv[++i];
+        else if (arg == "--include" && i + 1 < argc) includenames.push_back(argv[++i]);
         else if (arg == "--stdlib" && i + 1 < argc) stdlibdir = argv[++i];
         // A -D lands in the generated C itself rather than on some backend's
         // command line, so a JIT run and a compiled one see the same source.
@@ -402,8 +408,11 @@ int Main(int argc, char **argv) {
             fprintf(stderr, "unknown option: %s\n", arg.c_str());
             return 1;
         }
-        else if (filename.empty()) filename = arg;
-        else { fprintf(stderr, "multiple input files given\n"); return 1; }
+        else files.push_back(arg);
+    }
+    if (files.size() > 1 && !multitest) {
+        fprintf(stderr, "multiple input files given\n");
+        return 1;
     }
     if (!shaderfile.empty()) {
         try {
@@ -414,12 +423,13 @@ int Main(int argc, char **argv) {
         }
         return 0;
     }
-    if (filename.empty()) {
+    if (files.empty()) {
         fprintf(stderr, "usage: goose [--dump] [--parse] [--tokens] [--roundtrip] "
                         "[--dump-file out.goose] [--specs] [--check] "
                         "[--no-bce] [--bce-test] [--bce-lines] [--unsafe-no-rf-check] [-O0|-O1|-O2] "
                         "[-o out.c [--standalone]] [--jit] [-DNAME=VALUE]... [--include header.h]... "
-                        "[--stdlib dir] file.goose [-- program args...] | --emit-runtime runtime.c | "
+                        "[--stdlib dir] file.goose [-- program args...] | "
+                        "--multi-test [options] file.goose... | --emit-runtime runtime.c | "
                         "--gen-runtime-header | "
                         "--gfx-link msvc|cc | --physics-link msvc|cc | --ui-link msvc|cc\n");
         fprintf(stderr, "without -o the program is compiled and run in this process%s.\n",
@@ -427,18 +437,30 @@ int Main(int argc, char **argv) {
         fprintf(stderr, "the .c that -o writes links with the runtime that --emit-runtime "
                         "writes, compiled once;\n--standalone writes one that holds the "
                         "runtime itself.\n");
+        fprintf(stderr, "--multi-test compiles each file as a run of its own would, one after "
+                        "another, ending what each\nprinted with a line `%s <exit code> <file>` "
+                        "on stdout and on stderr; an -o names\neach file's C with a %% "
+                        "standing for the file's name without its extension.\n", MULTIMARK);
         return 1;
     }
     // With no output file the program is compiled into this process and run,
     // which is what --jit asks for explicitly. A build without the backend
     // keeps writing the .c next to the source instead.
-    auto jit = forcejit || (outfile.empty() && have_jit);
-    if (outfile.empty() && !jit) {
-        auto dot = filename.find_last_of('.');
-        outfile = cat(dot == string::npos ? filename : filename.substr(0, dot), ".c");
+    auto jit = forcejit || (outname.empty() && have_jit);
+    if (multitest && (tokens || !dumpfile.empty() || !progargs.empty() ||
+                      (!outname.empty() && outname.find('%') == string::npos) ||
+                      (jit && !nocgen && !parseonly && !dump))) {
+        fprintf(stderr, "--multi-test runs no programs and writes no dump files: it takes "
+                        "--check, --parse, --dump or an -o with a %%, and no --tokens, "
+                        "--dump-file, --jit or program arguments\n");
+        return 1;
     }
     // The program shares stdout in JIT mode; progress goes to stderr.
     auto msgs = jit ? stderr : stdout;
+    // The file being compiled, the C file it goes to, if any, and the
+    // --include headers as that C file names them.
+    string filename, outfile;
+    vector<string> includes;
     // What a JIT run compiles and starts, once the compile produced it.
     string program;
     NativeLayers layers;
@@ -586,21 +608,55 @@ int Main(int argc, char **argv) {
         }
         return 0;
     };
-    try {
-        // The compile has a thread of its own. The program a JIT run starts
-        // runs back on this one, the main thread, which a window on macOS
-        // has to be made on, and whose stack the link reserves as large as
-        // the compile thread's where the platform lets it (CMakeLists.txt).
-        auto code = RunOnCompilerStack(compile);
-        if (code || program.empty()) return code;
-        // The program shares this process, so its exit code becomes ours
-        // and whatever it wrote is already on the same streams.
-        fflush(msgs);
-        return RunJit(program, JitLibPath(DirOf(argv[0])), filename, progargs, layers);
-    } catch (CompileError &e) {
-        fprintf(stderr, "%s\n", e.msg.c_str());
-        return 1;
+    auto run = [&](const string &file) -> int {
+        filename = file;
+        outfile = outname;
+        if (multitest && !outfile.empty()) {
+            auto base = file.substr(file.find_last_of("/\\") + 1);
+            auto stem = base.substr(0, base.find_last_of('.'));
+            for (auto pos = outfile.find('%'); pos != string::npos;
+                 pos = outfile.find('%', pos + stem.size()))
+                outfile.replace(pos, 1, stem);
+        }
+        if (outfile.empty() && !jit) {
+            auto dot = filename.find_last_of('.');
+            outfile = cat(dot == string::npos ? filename : filename.substr(0, dot), ".c");
+        }
+        includes = includenames;
+        program.clear();
+        layers = NativeLayers();
+        try {
+            // The compile has a thread of its own. The program a JIT run
+            // starts runs back on this one, the main thread, which a window
+            // on macOS has to be made on, and whose stack the link reserves
+            // as large as the compile thread's where the platform lets it
+            // (CMakeLists.txt).
+            auto code = RunOnCompilerStack(compile);
+            if (code || program.empty()) return code;
+            // The program shares this process, so its exit code becomes ours
+            // and whatever it wrote is already on the same streams.
+            fflush(msgs);
+            return RunJit(program, JitLibPath(DirOf(argv[0])), filename, progargs, layers);
+        } catch (CompileError &e) {
+            fprintf(stderr, "%s\n", e.msg.c_str());
+            return 1;
+        }
+    };
+    if (!multitest) return run(files[0]);
+    // Each file has an Ast and a compile thread of its own, which is all the
+    // state a compile has. The mark goes after a line break of its own, so a
+    // reader drops the one before it and gets what the file printed exactly.
+    // Whatever is not a CompileError ends the process, as it would a run on
+    // the file alone; a reader then has no mark for that file or any after.
+    for (auto &file : files) {
+        auto code = run(file);
+        for (auto f : { stdout, stderr }) {
+            fflush(f);
+            fprintf(f, "\n%s %d %s\n", MULTIMARK, code, file.c_str());
+            fflush(f);
+        }
     }
+    return 0;
 }
 
 }  // namespace goose
