@@ -2384,6 +2384,51 @@ builder. The compiler assumes an extern may write through its arguments
 but does not mutate unrelated Goose globals; C code is responsible for
 honoring those obligations.
 
+### 7.11 Exporting Goose functions to C
+
+```goose
+export fn hello_world() -> const u8[:] {
+    return "Hello, world!"
+}
+
+export "c_sum" fn sum(a: i32, b: i32) -> i32 { a + b }
+```
+
+An `export fn` defines a normal Goose function and emits a C-callable wrapper.
+The optional string names its C symbol; otherwise the function's leaf name is
+used. Exported functions must be top-level, non-generic, have explicit
+parameter types, and have at most one explicitly typed return value. Default
+arguments, `return ... from`, reusable-pool parameters, and string-builder
+parameters are not supported at the C boundary. Parameters otherwise use the
+same fixed-size C shapes as §7.10.
+
+Scalars and flat fixed-size returns are returned by value. A read-only
+`const u8[:]` return is exposed as `const uint8_t *` and an additional
+`int64_t *out_len` parameter; the returned bytes are not NUL-terminated, and
+their storage remains borrowed according to the Goose function's lifetime.
+Other references, slices, and variable-size returns are rejected.
+
+Generated C retains its normal `main` unless the program is compiled with
+`--header out.h`, which builds it for a C host: the generated C has no `main`
+and a source without a Goose `fn main()` is accepted. The header declares
+`goose_init(argc, argv)`, which a C host must call before any exported
+function. It initializes the runtime and the globals and then runs the Goose
+`fn main()`, if there is one, so `main` is where a library keeps its own
+start-up code; exported functions may be called from it. A second call does
+nothing. Initialization is idempotent on the initializing thread; exported
+calls and mutable Goose globals are not thread-safe and must remain on that
+thread. `--header` requires generated C output and at least one export, and
+writes declarations and the required packed C type definitions for the
+exported API.
+
+An exported C symbol is emitted as written, as an `extern` one is, and must be a
+C identifier that is not a C keyword and that the program does not otherwise
+reserve (`main`, `goose_init`, or a name beginning with `gs_`).
+
+The wrapper calls the normal generated Goose specialization, not its hidden
+internal C signature. This keeps Goose's stack argument and other compiler
+implementation details out of the function's public C signature.
+
 ## 8. ADTs in use
 
 ### 8.1 `match`
@@ -3402,10 +3447,11 @@ the end, each with where its resolution lives.
 4. **`[>..<]` interior-reference relaxation** — DONE, see §5.2: the
    liveness test of §5.1, plus per-specialization shrink summaries for
    the shrinks it cannot see directly (through a reference, or of a global).
-11. **FFI** — DONE, see §7.10: `extern fn` binds a Goose signature to a C
-    function, and what crosses is the flat fixed-size types by value,
-    references and slices to them, and `u8[>..]&` builders; everything else
-    is rejected at the declaration.
+11. **FFI** — DONE, see §§7.10–7.11: `extern fn` binds a Goose signature to a C
+    function, and `export fn` exposes a Goose function through a C-callable
+    wrapper. The flat fixed-size types by value, references and slices to
+    them, and `u8[>..]&` builders cross where supported; other shapes are
+    rejected at the declaration.
 12. **Open syntax details** — DONE: both trailing-block parameter forms
     exist (the implicit `it` and `x =>`, §7.6), and `recursive fn` is the
     keyword alone on a cycle's entry function (§7.8).
@@ -3553,7 +3599,7 @@ field       := ("let" | "const")? ident ":" type ("=" expr)? | "pad" intlit?
 typealias   := "type" declname "=" type ";"
 generics    := "<" ident (":" type)? ("," ident (":" type)?)* ">"
 
-fndecl      := ("extern" strlit?)? "recursive"? ("fn" | "thread_fn") declname
+fndecl      := ("export" strlit? | "extern" strlit?)? "recursive"? ("fn" | "thread_fn") declname
                generics? "(" params? ")" ("->" rettypes)? (blockexpr | ";")
                                                  // nested: ident only
 params      := param ("," param)* ","?

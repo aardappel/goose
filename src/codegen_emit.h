@@ -596,22 +596,93 @@ inline void CodeGen::InitGlobalStack(VarDef *d) {
     }
 }
 
-inline void CodeGen::EmitMain() {
-    FnSpec *mainspec = nullptr;
-    if (auto mainsf = ast.MainFunction(); mainsf && !mainsf->specs.empty())
-        mainspec = mainsf->specs[0];
-    Append(code, "int main(int argc, char **argv) {\n    gs_rt_init(argc, argv);\n");
+inline void CodeGen::EmitProgramInit() {
+    Append(data, "static int gs_program_initialized;\n");
+    Append(code, "static void gs_program_init(int argc, char **argv) {\n"
+                 "    if (gs_program_initialized) return;\n"
+                 "    gs_rt_init(argc, argv);\n");
     // The queues, before anything that could use one runs.
     vector<string> qnames;
     for (auto &[m, q] : queues) qnames.push_back(q);
     sort(qnames.begin(), qnames.end());
     for (auto &q : qnames) Append(code, "    gs_qinit(&", q, ");\n");
     Append(code, "    gs_gl = &gs_globals_main;\n    gs_init_globals();\n");
-    if (mainspec && sinfo.count(mainspec)) {
-        auto &mi = sinfo[mainspec];
-        Append(code, "    ", mi.cname, "(", mi.needssp ? "0" : "", ");\n");
+    Append(code, "    gs_program_initialized = 1;\n}\n\n");
+    // A C host starts the program here: its globals, then fn main() if there
+    // is one, which may call the exports and can hold the host's own setup.
+    if (library)
+        Append(code, "void goose_init(int argc, char **argv) {\n"
+                     "    if (gs_program_initialized) return;\n"
+                     "    gs_program_init(argc, argv);\n",
+                     MainCall(), "}\n\n");
+}
+
+// The statement that runs fn main(), or nothing for a library without one.
+inline string CodeGen::MainCall() {
+    auto mainsf = ast.MainFunction();
+    if (!mainsf || mainsf->specs.empty() || !sinfo.count(mainsf->specs[0])) return "";
+    auto &mi = sinfo[mainsf->specs[0]];
+    return cat("    ", mi.cname, "(", mi.needssp ? "0" : "", ");\n");
+}
+
+inline void CodeGen::EmitExports() {
+    for (auto sf : ast.functions) {
+        if (!sf->isexport) continue;
+        if (sf->specs.size() != 1 || !sinfo.count(sf->specs[0]))
+            Fail(sf->line, cat("export fn ", sf->name, " has no emitted specialization"));
+        auto sp = sf->specs[0];
+        auto &si = sinfo[sp];
+        auto returnslice = !sp->rets.empty() && sp->rets[0]->kind == TY_SLICE;
+        string params, args;
+        for (size_t i = 0; i < sp->argtypes.size(); i++) {
+            auto arg = Unique(cat("gs_export_arg", i));
+            Append(params, params.empty() ? "" : ", ", CT(sp->argtypes[i]), " ", arg);
+            Append(args, args.empty() ? "" : ", ", arg);
+        }
+        auto outlen = Unique("gs_export_len");
+        if (returnslice) Append(params, params.empty() ? "" : ", ", "int64_t *", outlen);
+        if (params.empty()) params = "void";
+        if (!args.empty() && si.needssp) args += ", ";
+        if (si.needssp) args += "0";
+        auto ret = sp->rets.empty() ? string("void")
+                   : returnslice ? string("const uint8_t *") : CT(sp->rets[0]);
+        Append(exportprotos, ret, " ", sf->cname, "(", params, ");\n");
+        Append(code, ret, " ", sf->cname, "(", params, ") {\n"
+                     "    if (!gs_program_initialized)\n"
+                     "        gs_panic(\"goose_init must be called before exported functions\");\n");
+        if (returnslice) {
+            auto value = Unique("gs_export_result");
+            Append(code, "    if (!", outlen,
+                   ") gs_panic(\"exported slice length pointer is null\");\n");
+            Append(code, "    ", CT(sp->rets[0]), " ", value, " = ", si.cname, "(", args,
+                   ");\n"
+                   "    *", outlen, " = ", value, ".len;\n"
+                   "    return (const uint8_t *)", value, ".data;\n");
+        } else if (sp->rets.empty()) {
+            Append(code, "    ", si.cname, "(", args, ");\n");
+        } else {
+            Append(code, "    return ", si.cname, "(", args, ");\n");
+        }
+        Append(code, "}\n\n");
     }
-    Append(code, "    return 0;\n}\n");
+}
+
+inline string CodeGen::ExportHeader() {
+    string header = "#pragma once\n#include <stdint.h>\n"
+                    "typedef struct gs_stack gs_stack;\n"
+                    "#pragma pack(push, 1)\n";
+    header += tdecls;
+    header += "#pragma pack(pop)\n\n";
+    header += "#ifdef __cplusplus\nextern \"C\" {\n#endif\n"
+              "void goose_init(int argc, char **argv);\n";
+    header += exportprotos;
+    header += "#ifdef __cplusplus\n}\n#endif\n";
+    return header;
+}
+
+inline void CodeGen::EmitMain() {
+    Append(code, "int main(int argc, char **argv) {\n    gs_program_init(argc, argv);\n",
+           MainCall(), "    return 0;\n}\n");
 }
 
 }  // namespace goose

@@ -122,6 +122,7 @@ inline bool IsBranchConstruct(const Node *n) {
 
 struct TypeCheck {
     Ast &ast;
+    bool library = false;   // Built for a C host (--header): fn main() is optional.
 
     // (Val, the checked value of an expression, lives in ast.h: node Check
     // overrides return it.)
@@ -1956,6 +1957,7 @@ struct TypeCheck {
     bool ExternValueOk(TypeExpr *t, string &why);
     bool ExternParamOk(TypeExpr *t, string &why);
     void CheckExternSpec(FnSpec *spec);
+    void CheckExport(SFunction *sf);
     int ClassDepth(VarDef *r);
     vector<VarDef *> ExternalOptionals(const MatchInfo &mi);
     int EnvReach(const MatchInfo &mi);
@@ -2341,7 +2343,7 @@ struct TypeCheck {
     // ------------------------------------------------------------------
     // The driver: globals in order, then main, then thread entry points.
 
-    TypeCheck(Ast &_ast) : ast(_ast) {
+    TypeCheck(Ast &_ast, bool _library = false) : ast(_ast), library(_library) {
         temproot = ast.NewVarDef();
         temproot->name = "<temporary>";
         temproot->istemp = true;
@@ -2393,14 +2395,17 @@ struct TypeCheck {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool && !HasGenerics(t->ref->sub)) ValidatePool(t);
         auto mainsf = ast.MainFunction();
-        if (!mainsf) throw CompileError { "program needs exactly one global fn main()" };
-        if (!mainsf->params.empty() || mainsf->has_rets || !mainsf->generics.empty() ||
-            mainsf->isthread)
-            Error(mainsf->line, "fn main() takes no parameters and returns nothing");
-        auto mainspec = ast.NewFnSpec();
-        mainspec->sf = mainsf;
-        mainsf->specs.push_back(mainspec);
-        CheckSpecBody(mainspec, nullptr, mainsf->line);
+        if (!mainsf && !library)
+            throw CompileError { "program needs exactly one global fn main()" };
+        if (mainsf) {
+            if (!mainsf->params.empty() || mainsf->has_rets || !mainsf->generics.empty() ||
+                mainsf->isthread)
+                Error(mainsf->line, "fn main() takes no parameters and returns nothing");
+            auto mainspec = ast.NewFnSpec();
+            mainspec->sf = mainsf;
+            mainsf->specs.push_back(mainspec);
+            CheckSpecBody(mainspec, nullptr, mainsf->line);
+        }
         // Thread entry points compile as separate programs (§11.2); check any
         // that no spawn reached.
         for (auto sf : ast.functions)
@@ -2419,6 +2424,14 @@ struct TypeCheck {
         // Errors these produce are real; a lack of errors is weaker than for
         // reached code, since no call-site facts were available.
         for (auto sf : ast.functions) CheckUnreached(sf);
+        auto exportcount = 0;
+        for (auto sf : ast.functions) {
+            if (!sf->isexport) continue;
+            exportcount++;
+            CheckExport(sf);
+        }
+        if (library && !exportcount)
+            throw CompileError { "--header requires at least one export fn" };
         CheckGlobalShrinks();
         SettleParamRootExactness();
         ResolveGrowConflicts();
@@ -2594,6 +2607,6 @@ struct TypeCheck {
 };
 
 // Runs the whole pass; errors throw CompileError.
-inline void TypeCheckProgram(Ast &ast) { TypeCheck tc(ast); }
+inline void TypeCheckProgram(Ast &ast, bool library = false) { TypeCheck tc(ast, library); }
 
 }  // namespace goose

@@ -91,7 +91,9 @@ struct CodeGen {
     // them in heap-address order, which differs from run to run.
     vector<FnSpec *> usedexterns;
     string code;        // Function bodies, size/eq helpers, thunks, main.
+    string exportprotos;
     bool usesthreads = false;
+    bool library = false;
     // Which native layers (stdlib/gfx.goose, physics.goose, ui.goose) the
     // program calls into.
     NativeLayers layers;
@@ -1028,6 +1030,9 @@ struct CodeGen {
     void EmitGlobalInit();
     string GlobalLenLv(VarDef *d);
     void InitGlobalStack(VarDef *d);
+    void EmitProgramInit();
+    void EmitExports();
+    string MainCall();
     void EmitMain();
 
     // ------------------------------------------------------------------
@@ -1038,12 +1043,14 @@ struct CodeGen {
     // the types in the first.
     string head;     // Types and data.
     string result;   // Includes, prototypes and code.
+    string ExportHeader();
 
     // Extern-support C and user headers are inputs to this emission, not
     // process state that the driver must install before constructing us.
     // A function the extern support declares gets no prototype here.
     CodeGen(Ast &_ast, string_view runtime_ext_text, const vector<string> &headers,
-            bool _norfcheck = false) : ast(_ast), norfcheck(_norfcheck) {
+            bool _norfcheck = false, bool _library = false)
+        : ast(_ast), library(_library), norfcheck(_norfcheck) {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
         ComputeRelRootMax();
@@ -1063,7 +1070,9 @@ struct CodeGen {
         for (size_t i = 0; i < erqueue.size(); i++) EmitSpec(erqueue[i], true);
         // The render functions any of those asked for (may ask for more).
         for (size_t i = 0; i < renderqueue.size(); i++) EmitRenderFn(renderqueue[i]);
-        EmitMain();
+        EmitProgramInit();
+        EmitExports();
+        if (!library) EmitMain();
         if (usesthreads) predefs = "#define GS_NEED_THREADS 1\n";
         // The instance block: with workers each thread reaches its own
         // through gs_gl; without them there is only main's.

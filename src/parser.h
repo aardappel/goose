@@ -175,7 +175,7 @@ struct Parser {
                 ast.topdecls.push_back(New<AliasDecl>(line, al));
                 return;
             }
-            case T_RECURSIVE: case T_FN: case T_THREADFN: case T_EXTERN: {
+            case T_RECURSIVE: case T_FN: case T_THREADFN: case T_EXTERN: case T_EXPORT: {
                 auto fd = ParseFnDecl(false);
                 ast.topdecls.push_back(fd);
                 return;
@@ -310,7 +310,17 @@ struct Parser {
         sf->line = line;
         sf->isnested = nested;
         sf->outer = curfn;
+        if (lex.tok == T_EXPORT) {
+            sf->isexport = true;
+            if (nested) Error("export fn must be declared at top level");
+            lex.Next();
+            if (lex.tok == T_STRLIT) {
+                sf->cname = lex.sval;
+                lex.Next();
+            }
+        }
         if (lex.tok == T_EXTERN) {
+            if (sf->isexport) Error("export fn cannot be extern");
             sf->isextern = true;
             if (nested) Error("extern fn must be declared at top level");
             lex.Next();
@@ -376,6 +386,7 @@ struct Parser {
             if (sf->cname.empty()) sf->cname = string(sf->name);
             Expect(T_SEMI, "extern declaration");
         } else {
+            if (sf->isexport && sf->cname.empty()) sf->cname = string(sf->name);
             auto savefn = curfn;
             curfn = sf;
             sf->body = ParseBlockExpr("function body");
@@ -1227,7 +1238,7 @@ struct Parser {
                     b->stmts.push_back(vd);
                     continue;
                 }
-                case T_RECURSIVE: case T_FN: case T_THREADFN: case T_EXTERN:
+                case T_RECURSIVE: case T_FN: case T_THREADFN: case T_EXTERN: case T_EXPORT:
                     b->stmts.push_back(ParseFnDecl(true));
                     continue;
                 case T_GUARD:

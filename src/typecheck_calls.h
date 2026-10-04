@@ -2076,6 +2076,83 @@ inline void TypeCheck::CheckExternSpec(FnSpec *spec) {
     spec->inprogress = false;
 }
 
+inline void TypeCheck::CheckExport(SFunction *sf) {
+    auto fail = [&](const string &why) {
+        Error(sf->line, cat("export fn ", sf->name, ": ", why));
+    };
+    if (sf->isnested || sf->isthread || sf->isextern)
+        fail("must be a top-level Goose function");
+    if (!sf->generics.empty()) fail("cannot be generic");
+    if (sf->cname.empty()) fail("needs a C symbol");
+    if (sf->cname == "main" || sf->cname == "goose_init")
+        fail(cat("C symbol ", sf->cname, " is reserved"));
+    if (sf->cname.rfind("gs_", 0) == 0)
+        fail("C symbols beginning with gs_ are reserved for Goose internals");
+    auto valid_ident = [](string_view n) {
+        if (n.empty() || n[0] == '_' || !isalpha((unsigned char)n[0])) return false;
+        for (auto c : n)
+            if (!(isalnum((unsigned char)c) || c == '_')) return false;
+        return true;
+    };
+    if (!valid_ident(sf->cname)) fail("C symbol must be a C identifier");
+    // The symbol is emitted as written, so a C host can ask for a name; a
+    // keyword is refused here rather than left to a C compiler's error.
+    static const unordered_set<string_view> ckeywords = {
+        "auto", "break", "case", "char", "const", "continue", "default", "do", "double",
+        "else", "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long",
+        "register", "restrict", "return", "short", "signed", "sizeof", "static", "struct",
+        "switch", "typedef", "union", "unsigned", "void", "volatile", "while", "_Alignas",
+        "_Alignof", "_Atomic", "_Bool", "_Complex", "_Generic", "_Imaginary", "_Noreturn",
+        "_Static_assert", "_Thread_local"
+    };
+    if (ckeywords.count(sf->cname)) fail("C symbol cannot be a C keyword");
+    for (auto other : ast.functions)
+        if (other != sf && other->isexport && other->cname == sf->cname)
+            fail(cat("C symbol ", sf->cname, " is exported more than once"));
+    for (auto &p : sf->params) {
+        if (!p.type) fail(cat("parameter ", p.name, " needs a type"));
+        if (p.defaultval) fail(cat("parameter ", p.name, " cannot have a default"));
+    }
+    set<string_view> names = { sf->name };
+    auto foreign = false;
+    if (sf->body) ScanForeignFrom(sf->body, names, foreign);
+    if (foreign) fail("cannot use return ... from across the C boundary");
+    if (sf->specs.size() != 1)
+        fail("could not resolve one concrete function signature");
+    auto spec = sf->specs[0];
+    if (spec->params.size() != sf->params.size())
+        fail("could not resolve one concrete function signature");
+    for (size_t i = 0; i < spec->argtypes.size(); i++) {
+        auto t = spec->argtypes[i];
+        ValidateType(t, sf->line, VT_PARAM);
+        string why;
+        if (!ExternParamOk(t, why))
+            fail(cat("parameter ", sf->params[i].name, " of type ", TypeStr(t),
+                     " cannot cross to C: ", why));
+        if (CarriesPool(t))
+            fail(cat("parameter ", sf->params[i].name,
+                     " uses a reusable pool and has no public C representation"));
+        if (t->kind == TY_REF && t->ref->sub->kind == TY_ARRAY &&
+            t->ref->sub->arr->akind == A_GROW && IsU8(t->ref->sub->arr->sub))
+            fail(cat("parameter ", sf->params[i].name,
+                     " is a Goose string builder and cannot be passed from C"));
+    }
+    if (spec->rets.size() > 1) fail("returns at most one value");
+    if (!sf->has_rets && !spec->rets.empty())
+        fail("a returned value needs an explicit return type");
+    for (auto t : spec->rets) {
+        ValidateType(t, sf->line, VT_LOCAL);
+        if (t->kind == TY_SLICE && IsU8(t->sub)) {
+            if (!t->cq)
+                fail("a returned u8 slice must be read-only (const u8[:])");
+            continue;
+        }
+        string why;
+        if (!ExternValueOk(t, why))
+            fail(cat("cannot return ", TypeStr(t), " to C: ", why));
+    }
+}
+
 // The depth a parameter class takes in the body a call here enters: its
 // call-site root's. A temporary of the calling statement outlives every
 // activation that statement starts, so it takes the body's own outermost

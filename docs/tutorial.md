@@ -1504,7 +1504,64 @@ You will meet all of these.
 
 ---
 
-## 19. Where to go next
+## 19. Calling Goose from C
+
+`extern fn` goes the other way: `export fn` makes a Goose function callable
+from C, so a Goose module can be linked into a C or C++ program as a library.
+
+```goose
+var calls: i32 = 0;
+
+export fn hello_world() -> const u8[:] {
+    calls += 1;
+    return "Hello, world!"
+}
+
+export "c_add" fn add(a: i32, b: i32) -> i32 { a + b }
+
+fn main() {
+    calls = 100;    // runs once, inside goose_init
+}
+```
+
+An `export fn` is an ordinary Goose function; the compiler adds a C wrapper
+for it. The optional string picks the C symbol, and otherwise the Goose name
+is used. Ask for a header and the compiler builds the C for a C host, with no
+`main` of its own:
+
+```sh
+goose --standalone --header hello.h -o hello.c hello.goose
+cc hello.c app.c -o app
+```
+
+```c
+#include "hello.h"
+#include <stdio.h>
+
+int main(int argc, char **argv) {
+    int64_t length;
+    goose_init(argc, argv);
+    const uint8_t *message = hello_world(&length);
+    fwrite(message, 1, (size_t)length, stdout);   // not NUL-terminated
+    putchar('\n');
+    printf("%d\n", c_add(20, 22));
+    return 0;
+}
+```
+
+The host calls `goose_init` once before anything else. It sets up the
+runtime and the globals and then runs your Goose `fn main()`, so `main` is the
+place for a library's own start-up code. A library with nothing to start up
+may leave `main` out. A `const u8[:]` result comes back as a pointer plus an
+extra `int64_t *` parameter that receives its length; scalars and flat
+fixed-size values are returned by value. The generated functions are not
+thread-safe: call them from the thread that called `goose_init`. The
+signatures that may cross are the ones from §16, with a few more limits; see
+[spec §7.11](goose_spec.md).
+
+---
+
+## 20. Where to go next
 
 * **[`samples/`](../samples/README.md)** — twenty-nine complete programs in
   reading order, each one commented for what it demonstrates. Start with
