@@ -68,6 +68,13 @@ test('all builtin calls and namespace declarations highlight', async () => {
     assert.ok(has(line, 'image::worker', 'entity.name.function'));
 });
 
+test('export modifier and exported function declaration highlight', async () => {
+    const [line] = await tokenize('export fn CUSTOM_FUNCTION_0() -> const u8[:] {');
+    assert.ok(has(line, 'export', 'storage.modifier.goose'));
+    assert.ok(has(line, 'fn', 'storage.type.function.goose'));
+    assert.ok(has(line, 'CUSTOM_FUNCTION_0', 'entity.name.function.goose'));
+});
+
 test('""" strings are raw, span lines, and code resumes after them', async () => {
     const lines = await tokenize('let s = """\n    fn fake() { \\n "quoted"\n    """; fn next() {}\n"""one "line" \\t"""; fn after() {}');
     assert.ok(lines[1].every(token => token.scopes.includes('string.quoted.triple.goose')));

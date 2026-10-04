@@ -334,11 +334,11 @@ int RunOnCompilerStack(const function<int()> &fn);
 constexpr const char *MULTIMARK = "==== goose --multi-test: exit";
 
 int Main(int argc, char **argv) {
-    string outname, stdlibdir, shaderfile, shadersource, dumpfile;
+    string outname, headername, stdlibdir, shaderfile, shadersource, dumpfile;
     auto dump = false, tokens = false, parseonly = false, specs = false, nocgen = false;
     auto roundtrip = false, multitest = false;
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
-    auto forcejit = false, standalone = false;
+    auto forcejit = false, standalone = false, library = false;
     auto optlevel = 1;
     vector<string> cdefines, progargs, includenames, files;
     for (int i = 1; i < argc; i++) {
@@ -362,6 +362,7 @@ int Main(int argc, char **argv) {
         else if (arg == "--unsafe-no-rf-check") norfcheck = true;
         else if (arg == "--jit") forcejit = true;
         else if (arg == "--standalone") standalone = true;
+        else if (arg == "--library") library = true;
         else if (arg == "--multi-test") multitest = true;
         else if (arg == "--gen-runtime-header") { GenRuntimeHeader(argv[0]); return 0; }
         else if (arg == "--emit-runtime" && i + 1 < argc) {
@@ -398,6 +399,7 @@ int Main(int argc, char **argv) {
         else if (arg == "-O1") optlevel = 1;
         else if (arg == "-O2") optlevel = 2;
         else if (arg == "-o" && i + 1 < argc) outname = argv[++i];
+        else if (arg == "--header" && i + 1 < argc) headername = argv[++i];
         else if (arg == "--include" && i + 1 < argc) includenames.push_back(argv[++i]);
         else if (arg == "--stdlib" && i + 1 < argc) stdlibdir = argv[++i];
         // A -D lands in the generated C itself rather than on some backend's
@@ -428,6 +430,7 @@ int Main(int argc, char **argv) {
                         "[--dump-file out.goose] [--specs] [--check] "
                         "[--no-bce] [--bce-test] [--bce-lines] [--unsafe-no-rf-check] [-O0|-O1|-O2] "
                         "[-o out.c [--standalone]] [--jit] [-DNAME=VALUE]... [--include header.h]... "
+                        "[--library] [--header out.h] "
                         "[--stdlib dir] file.goose [-- program args...] | "
                         "--multi-test [options] file.goose... | --emit-runtime runtime.c | "
                         "--gen-runtime-header | "
@@ -447,6 +450,14 @@ int Main(int argc, char **argv) {
     // which is what --jit asks for explicitly. A build without the backend
     // keeps writing the .c next to the source instead.
     auto jit = forcejit || (outname.empty() && have_jit);
+    if (library && jit) {
+        fprintf(stderr, "--library writes C for a C host and cannot be used with --jit\n");
+        return 1;
+    }
+    if (!headername.empty() && (jit || multitest)) {
+        fprintf(stderr, "--header requires C output for a single input file\n");
+        return 1;
+    }
     if (multitest && (tokens || !dumpfile.empty() || !progargs.empty() ||
                       (!outname.empty() && outname.find('%') == string::npos) ||
                       (jit && !nocgen && !parseonly && !dump))) {
@@ -503,7 +514,7 @@ int Main(int argc, char **argv) {
             fprintf(msgs, "roundtrip ok: %d bytes of dump\n", (int)dumped.size());
         }
         if (parseonly) return 0;
-        TypeCheckProgram(ast);
+        TypeCheckProgram(ast, library);
         Optimizer opt(ast, optlevel);
         if (specs) {
             string s;
@@ -552,7 +563,7 @@ int Main(int argc, char **argv) {
         string_view runtime_ext_text;
         for (auto &rf : runtime_files)
             if (string_view(rf.name) == "runtime_ext.h") runtime_ext_text = rf.text;
-        CodeGen cg(ast, runtime_ext_text, includes, norfcheck);
+        CodeGen cg(ast, runtime_ext_text, includes, norfcheck, library);
         // Assemble: compiler-set feature defines, the embedded runtime, then
         // the generated program. A program built with a separate runtime
         // holds what runtime.h has of it and the extern support's
@@ -584,6 +595,8 @@ int Main(int argc, char **argv) {
                        cg.head, RuntimeSections({ "runtime_ext.h", "runtime_os.h" }), cg.result);
             return out;
         };
+        if (!headername.empty() && cg.exportprotos.empty())
+            throw CompileError { "--header requires at least one export fn" };
         if (!outfile.empty()) {
             auto out = assemble(!standalone);
             auto f = fopen(outfile.c_str(), "wb");
@@ -591,6 +604,14 @@ int Main(int argc, char **argv) {
             fwrite(out.data(), 1, out.size(), f);
             fclose(f);
             fprintf(msgs, "wrote %s (%d bytes)\n", outfile.c_str(), (int)out.size());
+        }
+        if (!headername.empty()) {
+            auto header = cg.ExportHeader();
+            auto f = fopen(headername.c_str(), "wb");
+            if (!f) throw CompileError { cat("cannot write export header: ", headername) };
+            fwrite(header.data(), 1, header.size(), f);
+            fclose(f);
+            fprintf(msgs, "wrote %s (%d bytes)\n", headername.c_str(), (int)header.size());
         }
         if (jit) {
             // TinyCC's in-memory runner rejects a thread-local section, and

@@ -95,7 +95,7 @@ process started with (`ulimit -s`), which nothing in the executable sets.
 | `--bce-test` | verify `// bce:elide` / `// bce:keep` annotations in the sources |
 | `--bce-lines` | print elided/kept counts per source line |
 | `--unsafe-no-rf-check` | omit the `return from` discriminant checks after calls: a measurement aid, unsound |
-| `-o out.c`, `--jit`, `-D`, `--include`, `--stdlib`, `--` | output file, in-process run, a define written into the generated C, a user header, the stdlib directory, program arguments |
+| `-o out.c`, `--jit`, `--library`, `--header`, `-D`, `--include`, `--stdlib`, `--` | output file, in-process run, omit generated `main` for C exports, generated C API header, a define written into the generated C, a user header, the stdlib directory, program arguments |
 | `--gfx-link msvc\|cc` | print the response file of link inputs a program using `gfx` needs (`gfx.h`, `GfxLinkFile`) |
 | `--physics-link msvc\|cc` | the same for `physics` (`physics.h`, `PhysicsLinkFile`) |
 | `--ui-link msvc\|cc` | the same for `ui` (`ui.h`, `UiLinkFile`) |

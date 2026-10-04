@@ -1212,6 +1212,7 @@ struct SFunction {
     bool isrec = false;         // Declared with `recursive`.
     bool isthread = false;
     bool isextern = false;      // A C function behind a Goose signature (§7.10); no body.
+    bool isexport = false;      // A Goose function exposed through a C ABI wrapper.
     string cname;               // Its C symbol (the Goose name unless spelled out).
     bool isnested = false;
     SFunction *outer = nullptr;     // The function a nested one is declared in.
