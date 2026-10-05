@@ -1921,8 +1921,9 @@ an empty array in the slot, and `r: i64& = counter` binds the global.
 
 ### 7.3 Return values and result placement
 
-Fixed-size returns use registers/native stack as usual. A variable or
-resizable return value is **constructed directly in its destination**
+Fixed-size returns use registers/native stack or a caller-owned data-stack
+slot for large values (C.3). A variable or resizable return value is
+**constructed directly in its destination**
 (§4.3); the callee is compiled knowing the destination stack (statically or
 as a hidden argument), writes element data there, and returns the value's
 metadata (lengths) outside the element run. Where a result is first built
@@ -2928,10 +2929,17 @@ Threads run the same algorithm per thread program (§11.2).
 Implementations may replace per-context specialization with hidden runtime
 stack arguments where profitable; semantics are identical.
 
-Fixed locals go to the native stack / registers. Variable-class locals may
-be placed on the native stack (`alloca`) instead of a data stack when the
-compiler chooses; the reference v1 strategy is: everything nonfixed on data
-stacks, everything fixed native.
+Fixed locals normally go to the native stack / registers. The C backend
+places fixed locals and temporaries larger than 4096 bytes on data stacks,
+using the same scope watermarks and hidden stack indices as nonfixed values.
+This threshold is a backend policy, not a language limit or a change to a
+type's size class, packed layout, value semantics or reference lifetime.
+It prevents large arrays and records, including temporaries introduced by
+inlining, from exhausting a platform's much smaller native call stack.
+Variable-class locals may be placed on the native stack (`alloca`) instead
+of a data stack when the compiler chooses; the current backend places them
+on data stacks. Resizable frame objects (C.2) still keep their fixed prefix
+and tail header in the native frame.
 
 ### 10.4 Runtime environment
 
@@ -3547,8 +3555,19 @@ is that header's `len`, so its tail cannot be referenced either.
 
 ### C.3 Calling convention
 
-* Fixed-size parameters and returns: native C ABI (structs passed as packed
-  C structs by value).
+* Fixed-size parameters and returns up to 4096 bytes: native C values
+  (structs as packed C structs). The first such return uses the C return
+  value; additional fixed returns use out-pointers.
+* Larger fixed-size parameters: the caller makes a private value copy on a
+  scoped data stack and passes its typed pointer. The callee can mutate
+  that copy without affecting the argument's source. Larger fixed returns
+  use typed out-pointers to caller-owned storage; any return temporaries
+  also live on data stacks. Captures and `return from` keep their ordinary
+  lifetime and value rules.
+* `extern fn` retains its declared native C ABI (§7.10), including large
+  packed structs passed and returned by value. C ABI copies can still use
+  the native stack; pass a reference or slice when crossing C with a large
+  value to avoid those copies.
 * Nonfixed by-value parameters: caller allocates/constructs on the
   parameter's assigned stack (§4.3), passes the header (base, len — or
   metadata appropriate to the type) by value; callee owns and may grow it if

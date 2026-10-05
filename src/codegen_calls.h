@@ -181,7 +181,8 @@ inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &a
         args.push_back(t);
         return;
     }
-    args.push_back(Snapshot(pt, GenXD(node, pt)));
+    auto value = Snapshot(pt, GenXD(node, pt));
+    args.push_back(IsLargeFixed(pt) ? cat("&", value) : value);
 }
 
 // A free variable of the callee, from the caller's frame (or passed on).
@@ -313,7 +314,7 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
                 args.push_back(cat("&", dd.s));
             } else {
                 auto tv = T();
-                L(CT(rt), " ", tv, ";");
+                FixedLocal(rt, tv);
                 retex[i] = tv;
                 args.push_back(cat("&", tv));
             }
@@ -468,7 +469,7 @@ inline vector<string> CodeGen::EmitFvCall(Call *c, Dst d0) {
     Dst d = d0;
     if (wantsval && !IsBytesT(et) && (adapt || d0.k != DK_LVALUE)) {
         rv = T();
-        L(CT(et), " ", rv, ";");
+        FixedLocal(et, rv);
         d = Dst { DK_LVALUE, rv, et };
     } else if (wantsval && IsResz(et) && (adapt || d0.k != DK_STACK)) {
         rv = RzTemp(et, stk);
@@ -574,7 +575,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
         } else {
             auto value = GenXD(sn, enumtype);
             sv = T();
-            L(CT(enumtype), " ", sv, " = ", value, ";");
+            FixedLocal(enumtype, sv, value);
             tag = cat(sv, ".tag");
         }
     };
@@ -602,7 +603,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
         } else {
             auto value = GenXD(an[i], pt);
             shared[i] = T();
-            L(CT(pt), " ", shared[i], " = ", value, ";");
+            FixedLocal(pt, shared[i], value);
         }
     }
     // Shared return channels.
@@ -634,7 +635,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
             if (i == 0 && NeedsReprefix(dd, rt)) reprefix = dd;
         } else {
             auto tv = T();
-            L(CT(rt), " ", tv, ";");
+            FixedLocal(rt, tv);
             retex[i] = tv;
         }
     }
@@ -644,6 +645,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
         auto &ki = sinfo[sp];
         L("case ", TagConst(ei, (int)vi), ": {");
         ind++;
+        PushSc(SC_PLAIN);
         auto vt = VariantType(enumtype, (int)vi);
         auto byref = sp->argtypes[pos]->kind == TY_REF;
         string varg;
@@ -661,27 +663,26 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
             varg = payload;
         } else if (EmptyLayout(ei->en->variants[vi].fields)) {
             auto tv = T();
-            L(CT(vt), " ", tv, " = {0};");
+            FixedLocal(vt, tv, "{0}");
             varg = tv;
         } else if (!payload.empty()) {
             auto tv = T();
-            L(CT(vt), " ", tv, " = *(", CT(vt), " *)(", payload, ");");
+            FixedLocal(vt, tv, cat("*(", CT(vt), " *)(", payload, ")"));
             varg = tv;
         } else {
             auto tv = T();
-            L(CT(vt), " ", tv, " = ", sv, ".u.v_", Sanitize(ei->en->variants[vi].name),
-              ";");
+            FixedLocal(vt, tv, cat(sv, ".u.v_", Sanitize(ei->en->variants[vi].name)));
             varg = tv;
         }
         // Assemble the arm's call.
         vector<string> args;
         for (size_t i = 0; i < an.size(); i++) {
             if ((int)i == pos) {
-                args.push_back(varg);
+                args.push_back(IsLargeFixed(sp->argtypes[i]) ? cat("&", varg) : varg);
                 if (IsBytesT(sp->argtypes[i]) && IsResz(sp->argtypes[i]))
                     Fail(c->line, "resizable by-value dispatch payloads are unsupported");
             } else {
-                args.push_back(shared[i]);
+                args.push_back(IsLargeFixed(sp->argtypes[i]) ? cat("&", shared[i]) : shared[i]);
                 if (IsBytesT(sp->argtypes[i]) && IsResz(sp->argtypes[i]))
                     args.push_back(sharedstk[i]);
             }
@@ -703,6 +704,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
         else L(ki.cname, "(", argstr, ");");
         MarkReload(reach);
         if (ki.hasrf) EmitRfCheck(sp);
+        PopSc();
         ind--;
         L("} break;");
     }

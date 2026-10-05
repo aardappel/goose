@@ -167,6 +167,7 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
             else L("const uint8_t *", p, " = (const uint8_t *)(", v.elems, ");");
             L("for (int64_t ", i, " = 0; ", i, " < ", cnt, "; ", i, "++) {");
             ind++;
+            PushSc(SC_PLAIN);
             L("if (", i, ") {");
             ind++;
             RenderLit(out, ", ");
@@ -187,6 +188,7 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
             el.viaref = elem->kind == TY_REF;
             RenderLoc(out, el, elem, true, c, ln);
             if (!v.typedelems && !IsFix(elem)) L(p, " += ", SizeX(elem, p), ";");
+            PopSc();
             ind--;
             L("}");
             RenderLit(out, "]");
@@ -222,6 +224,7 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
             for (size_t vi = 0; vi < ei->en->variants.size(); vi++) {
                 L("case ", TagConst(ei, (int)vi), ": {");
                 ind++;
+                PushSc(SC_PLAIN);
                 auto vt = VariantType(t, (int)vi);
                 Loc pl;
                 if (!EmptyLayout(ei->en->variants[vi].fields)) {
@@ -244,7 +247,7 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
                     // (§3.9).
                     if (!varmode && c && !c->fmtspecs.empty()) {
                         auto cp = T();
-                        L(CT(vt), " ", cp, " = ", pl.s, ";");
+                        FixedLocal(vt, cp, pl.s);
                         pl.s = cp;
                         pl.viaref = false;
                     }
@@ -256,6 +259,7 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
                 // has for the variant type, which the checker only looks
                 // for where a value has that type.
                 RenderVariant(out, pl, vt, c, ln);
+                PopSc();
                 L("break;");
                 ind--;
                 L("}");
@@ -314,16 +318,19 @@ inline string CodeGen::RefArg(const Loc &lv, TypeExpr *sub, Line ln) {
 // A user `format(out, v)` overload applied to the value at lv.
 inline void CodeGen::EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln) {
     assert(!out.hdr.empty() && !out.stk.empty());
-    MarkFlush();
+    PushSc(SC_PLAIN);
     auto r = T();
     L("gs_rref ", r, " = { (gs_rhdr *)&", out.hdr, ", ", out.stk, " };");
     auto pt = sp->argtypes[1];
     auto arg = pt->kind == TY_REF ? RefArg(lv, pt->ref->sub, ln) : LoadLoc(lv, pt, ln);
+    if (IsLargeFixed(pt)) arg = cat("&", Snapshot(pt, arg));
+    MarkFlush();
     auto &ki = sinfo[sp];
     // The callee's stacks start above everything live here, the builder's
     // and the value's included, like any other call's (SpTop).
     L(ki.cname, "(", r, ", ", arg, ki.needssp ? cat(", ", SpTop()) : "", ");");
     MarkReload();   // The callee grew the builder's stack.
+    PopSc();
 }
 
 // The function rendering the levels of a value of type t below the first,
@@ -402,9 +409,9 @@ inline CodeGen::Loc CodeGen::RenderedLoc(Node *a) {
     if (c) {
         auto rets = EmitCall(c, Dst {});
         assert(!rets.empty());
-        L(CT(rt), " ", lv.s, " = ", rets[0], ";");
+        FixedLocal(rt, lv.s, rets[0]);
     } else {
-        L(CT(rt), " ", lv.s, ";");
+        FixedLocal(rt, lv.s);
         GenAny(ib, Dst { DK_LVALUE, lv.s, rt });
     }
     return lv;

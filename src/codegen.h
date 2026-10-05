@@ -5,7 +5,9 @@
 // Representation (Appendix C; §10.3's hidden-stack-argument strategy):
 // * Fixed-size types become packed C types (#pragma pack(1)): scalars, packed
 //   structs, fixed/limited arrays wrapped in structs, fixed-mode ADTs as
-//   tag + union, references as pointers, slices as { data, len }.
+//   tag + union, references as pointers, slices as { data, len }. Large
+//   fixed locals/temporaries keep that layout on scoped data stacks, and
+//   internal calls pass private copies by pointer and return via out-pointers.
 // * Variable values ("bytes" values) are self-describing byte images on a
 //   data stack, held as a uint8_t* to the value start. A resizable value is
 //   a header in the owning frame (gs_rhdr: element base + count, C.2) -- or a
@@ -192,6 +194,14 @@ struct CodeGen {
     bool IsFix(TypeExpr *t)  { return Cls(t) == SC_FIXED; }
     bool IsResz(TypeExpr *t) { return Cls(t) == SC_RESIZABLE; }
     bool IsBytesT(TypeExpr *t) { return Cls(t) != SC_FIXED; }
+    // This is a C backend storage/ABI choice, not a language size class:
+    // packed layout, copying, indexing and lifetime rules stay unchanged.
+    static constexpr int64_t NATIVE_VALUE_LIMIT = 4096;
+    bool IsLargeFixed(TypeExpr *t) { return IsFix(t) && FixedSize(t) > NATIVE_VALUE_LIMIT; }
+    bool NeedsStack(TypeExpr *t) { return IsBytesT(t) || IsLargeFixed(t); }
+    // Declare a value, replacing name with its C lvalue when stored on a
+    // data stack. A binding survives its block; a temporary its statement.
+    void FixedLocal(TypeExpr *t, string &name, const string &init = "", bool forlocal = false);
     // A limited array of static capacity, `T[..k]`: a C value of a length
     // and k slots, which any other array or slice of T constructs by copy
     // (§4.2, AdaptToFixed).

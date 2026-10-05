@@ -10,10 +10,10 @@ namespace goose {
 // Per-specialization call interface. Signature shape (C.3 order):
 //   [declared params (resizable by-value ones add a gs_stack*)]
 //   [free-variable references, §7.5]
-//   [out-pointers for fixed returns after the first]
+//   [out-pointers for large fixed returns and additional small returns]
 //   [destination stacks for nonfixed returns]
 //   [int64_t gs_sp].
-// The C return value is the first fixed return, else void; a `return ...
+// The C return value is the first small fixed return, else void; a `return ...
 // from` discriminant travels in the thread-local gs_rf, not the signature.
 
 inline bool CodeGen::IsPoolParam(FnSpec *sp, size_t i) {
@@ -69,7 +69,8 @@ inline void CodeGen::CollectSpecs() {
         si.cname = Unique(base);
         si.hasrf = !sp->needs.empty();
         for (size_t i = 0; i < sp->rets.size(); i++)
-            if (si.cret < 0 && IsFix(sp->rets[i])) si.cret = (int)i;
+            if (si.cret < 0 && IsFix(sp->rets[i]) && !IsLargeFixed(sp->rets[i]))
+                si.cret = (int)i;
         for (auto t : sp->needs)
             if (!fromids.count(t)) fromids[t] = (int)fromids.size() + 1;
     }
@@ -88,8 +89,8 @@ inline void CodeGen::CollectSpecs() {
         auto &calls = callees[sp];
         set<const VarDef *> seen;
         set<FnSpec *> seencalls;
-        for (auto pt : sp->argtypes) si.needssp |= IsBytesT(pt);
-        for (auto rt : sp->rets) si.needssp |= IsBytesT(rt);
+        for (auto pt : sp->argtypes) si.needssp |= NeedsStack(pt);
+        for (auto rt : sp->rets) si.needssp |= NeedsStack(rt);
         function<void(Node *)> walk = [&](Node *n) {
             if (!n) return;
             if (auto id = Is<Ident>(n)) {
@@ -103,15 +104,23 @@ inline void CodeGen::CollectSpecs() {
                     si.globals.insert(v);
             }
             if (n->exprtype && n->exprtype->kind != TY_VOID && n->exprtype->kind != TY_FN &&
-                n->exprtype->kind != TY_GENERIC && IsBytesT(n->exprtype))
+                n->exprtype->kind != TY_GENERIC && NeedsStack(n->exprtype))
                 si.needssp = true;
+            // A slice literal still constructs a fixed array to point at.
+            if (auto al = Is<ArrayLit>(n); al && al->exprtype->kind == TY_SLICE &&
+                IsFix(al->exprtype->sub)) {
+                auto count = al->fillval ? ((IntLit *)al->fillcount)->val
+                                         : (int64_t)al->elems.size();
+                si.needssp |= count > NATIVE_VALUE_LIMIT /
+                    std::max<int64_t>(FixedSize(al->exprtype->sub), 1);
+            }
             // A payload bound by value is copied onto a stack of its own.
             if (auto m = Is<MatchExpr>(n))
-                for (auto &arm : m->arms) si.needssp |= arm.binder && IsBytesT(arm.binder->type);
+                for (auto &arm : m->arms) si.needssp |= arm.binder && NeedsStack(arm.binder->type);
             // A value adapted to a fixed-mode ADT from a variable-mode one, a
             // reference result's pointee included, is built as that first
             // (GenAdtAdapted).
-            if (auto from = AdtFrom(n)) si.needssp |= IsBytesT(from);
+            if (auto from = AdtFrom(n)) si.needssp |= NeedsStack(from);
             if (auto c = Is<Call>(n)) {
                 auto add = [&](FnSpec *k) {
                     if (k && k != sp && sinfo.count(k) && seencalls.insert(k).second)
@@ -125,7 +134,7 @@ inline void CodeGen::CollectSpecs() {
                 if (c->builtin == B_PRINT || c->builtin == B_THREAD_SPAWN) si.needssp = true;
                 // A result is built as the call's own type (str() passed as
                 // a slice or returned as a u8[..16], say) before it is fitted.
-                for (auto rt : c->rettypes) si.needssp |= IsBytesT(rt);
+                for (auto rt : c->rettypes) si.needssp |= NeedsStack(rt);
                 // A limited receiver takes anything rendered structurally
                 // from a builder of its own (EmitFormatInto).
                 if (c->builtin == B_FORMAT) {
@@ -204,6 +213,11 @@ inline string CodeGen::SigParams(FnSpec *sp, bool decls, bool er) {
             if (decls) vstk[vd] = cat(pn, "_stk");
         } else if (IsBytesT(pt)) {
             add(cat("uint8_t *", pn));
+        } else if (IsLargeFixed(pt)) {
+            // The caller makes an independent value copy on a data stack.
+            // Passing its address avoids the C ABI's native-stack copy.
+            add(cat(CT(pt), " *", pn));
+            if (decls) fvptr.insert(vd);
         } else {
             add(cat(CT(pt), " ", pn));
         }

@@ -388,11 +388,29 @@ inline bool CodeGen::AddView(VarDef *vd) {
     return true;
 }
 
+// Large fixed values keep their ordinary packed C type, but their storage
+// is a data-stack slot. Pointer locals cannot be hoisted into a huge native
+// frame by HoistAggregateDecls or by a C compiler's inliner. Reuse follows
+// the existing scope watermarks, including break/continue/return-from.
+inline void CodeGen::FixedLocal(TypeExpr *t, string &name, const string &init, bool forlocal) {
+    if (!IsLargeFixed(t)) {
+        L(CT(t), " ", name, init.empty() ? ";" : cat(" = ", init, ";"));
+        return;
+    }
+    auto stk = AllocStk(forlocal);
+    L(CT(t), " *", name, " = (", CT(t), " *)", Top(stk), ";");
+    SaveBase(forlocal, stk, cat("(uint8_t *)", name));
+    Bump(stk, cat("sizeof(", CT(t), ")"));
+    name = cat("(*", name, ")");
+    if (init == "{0}") L("memset(&", name, ", 0, sizeof(", name, "));");
+    else if (!init.empty()) L(name, " = ", init, ";");
+}
+
 // Materialize a read now, before a later operand can mutate its storage.
 // A bare C variable is side-effect-free but is not an evaluated value.
 inline string CodeGen::Snapshot(TypeExpr *vt, const string &x) {
     auto t = T();
-    L(CT(vt), " ", t, " = ", x, ";");
+    FixedLocal(vt, t, x);
     return t;
 }
 
@@ -508,7 +526,7 @@ inline CodeGen::Loc CodeGen::GenLoc(Node *n) {
         l.val = false;
     } else {
         auto t = T();
-        L(CT(n->exprtype), " ", t, " = ", GenX(n), ";");
+        FixedLocal(n->exprtype, t, GenX(n));
         l.s = t;
         l.val = true;
     }
@@ -705,7 +723,7 @@ inline string CodeGen::AdaptToFixed(Loc lv, TypeExpr *et, Line ln) {
         auto ei = EIOf(et);
         auto vi = ei->en->VariantIndex(lv.t->var->variant);
         auto tv = T();
-        L(CT(et), " ", tv, HasUninitSlots(et) ? " = {0};" : ";");
+        FixedLocal(et, tv, HasUninitSlots(et) ? "{0}" : "");
         L(tv, ".tag = ", TagConst(ei, vi), ";");
         if (!EmptyLayout(ei->en->variants[vi].fields))
             L(tv, ".u.v_", Sanitize(ei->en->variants[vi].name), " = ", lv.s, ";");
@@ -715,7 +733,7 @@ inline string CodeGen::AdaptToFixed(Loc lv, TypeExpr *et, Line ln) {
         auto ei = EIOf(et);
         auto ts = TagSize(ei->en);
         auto tv = T();
-        L(CT(et), " ", tv, ";");
+        FixedLocal(et, tv);
         L(tv, ".tag = *(", IntCT(TagStore(ei->en)), " *)(", lv.s, ")", ";");
         L("switch (", tv, ".tag) {");
         for (size_t vi = 0; vi < ei->en->variants.size(); vi++) {
@@ -738,7 +756,7 @@ inline string CodeGen::AdaptToFixed(Loc lv, TypeExpr *et, Line ln) {
     L("if (", nn, " > ", ArrSize(et->arr),
       ") gs_abort(GS_E_CAPACITY, ", LocArgs(ln), ");");
     auto tv = T();
-    L(CT(et), " ", tv, ";");
+    FixedLocal(et, tv);
     L(tv, ".len = (", IntCT(LenStore(et->arr)), ")", nn, ";");
     L(CopyFn(v.nullable), "(", tv, ".e, ", v.elems, ", (size_t)(", nn, " * ",
       FixedSize(et->arr->sub), "));");
@@ -834,7 +852,7 @@ inline string CodeGen::CtlValX(Node *n) {
     if (vt->kind == TY_INT && vt->intstorage == IS_VARINT) vt = ast.inttypes[IS_I64];
     if (vt->kind == TY_REF && vt->ref->lenstorage >= 0)
         vt = ast.RefTo(vt->ref->sub, n->line, vt->ref->optional);
-    L(CT(vt), " ", t, ";");
+    FixedLocal(vt, t);
     // The type rides along: a spliced body may deliver a reference where
     // the checked value had already decayed (NeedsDeref).
     GenAny(n, Dst { DK_LVALUE, t, vt });
@@ -883,7 +901,7 @@ inline string CodeGen::GenFixedArrayLit(ArrayLit *al) {
     }
     assert(et->kind == TY_ARRAY);
     auto tv = T();
-    L(CT(et), " ", tv, HasUninitSlots(et) ? " = {0};" : ";");
+    FixedLocal(et, tv, HasUninitSlots(et) ? "{0}" : "");
     FixedArrayLitAt(al, tv, false);
     return tv;
 }
@@ -1147,7 +1165,7 @@ inline void CodeGen::ElemwiseOperands(Binary *b, string &l, string &r) {
     if (HasStmts(b->right)) {
         l = GenVal(b->left);
         auto lt = T();
-        L(CT(b->exprtype), " ", lt, " = ", l, ";");
+        FixedLocal(b->exprtype, lt, l);
         l = lt;
         r = GenVal(b->right);
     } else {
@@ -1158,7 +1176,7 @@ inline void CodeGen::ElemwiseOperands(Binary *b, string &l, string &r) {
 
 inline string CodeGen::GenElemwise(Binary *b, const string &l, const string &r) {
     auto tv = T();
-    L(CT(b->exprtype), " ", tv, ";");
+    FixedLocal(b->exprtype, tv);
     GenElemwiseInto(b, l, r, tv);
     return tv;
 }

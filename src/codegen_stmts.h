@@ -246,6 +246,12 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
         GenConstruct(init, stk, t);
         return;
     }
+    if (IsLargeFixed(t)) {
+        FixedLocal(t, name, "", forlocal);
+        vnames[d] = name;
+        if (init) GenAny(init, Dst { DK_LVALUE, name, t });
+        return;
+    }
     if (!init) {
         L(VarCT(d), " ", name, ";");
         return;
@@ -355,7 +361,7 @@ inline vector<string> CodeGen::GenForward(Call *c, const vector<TypeExpr *> &ret
             auto d = chans[i];
             if (d.k == DK_DISCARD) {
                 d = Dst { DK_LVALUE, T() };
-                L(CT(rets[i]), " ", d.s, ";");
+                FixedLocal(rets[i], d.s);
             }
             dsts.push_back(d);
             continue;
@@ -380,7 +386,7 @@ inline vector<string> CodeGen::GenForward(Call *c, const vector<TypeExpr *> &ret
             lv.t = ct;
             lv.val = true;
             lv.s = T();
-            L(CT(ct), " ", lv.s, ";");
+            FixedLocal(ct, lv.s);
             dsts.push_back(Dst { DK_LVALUE, lv.s, ct });
         }
     }
@@ -472,7 +478,7 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
             GenAny(vals[i], Dst { DK_LVALUE, retv, rt });
         } else {
             auto tv = T();
-            L(CT(rt), " ", tv, ";");
+            FixedLocal(rt, tv);
             GenAny(vals[i], Dst { DK_LVALUE, tv, rt });
             L("*gs_r", i, " = ", tv, ";");
         }
@@ -635,7 +641,7 @@ inline string CodeGen::CallVal0(Call *c, const string &r0, TypeExpr *want) {
         auto lv = CallResLoc(c, r0);
         if (lv.val && st == rt) {
             auto tv = T();
-            L(CT(rt), " ", tv, " = ", r0, ";");
+            FixedLocal(rt, tv, r0);
             lv.s = tv;
         }
         return LoadLoc(lv, et, c->line);

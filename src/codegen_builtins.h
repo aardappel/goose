@@ -97,13 +97,15 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
         case B_DEFAULT: {
             auto t = c->rettypes[0];
             auto tv = T();
-            L(CT(t), " ", tv, ";");
+            FixedLocal(t, tv);
             if (!c->defaultinit) EmitDefaultInto(tv, t);
             else if (t->kind == TY_ARRAY) {
                 auto i = T();
                 L("for (int64_t ", i, " = 0; ", i, " < ", ArrSize(t->arr), "; ", i, "++) {");
                 ind++;
+                PushSc(SC_PLAIN);
                 GenAny(c->defaultinit, Dst { DK_LVALUE, cat(tv, ".e[", i, "]"), t->arr->sub });
+                PopSc();
                 ind--;
                 L("}");
             } else GenAny(c->defaultinit, Dst { DK_LVALUE, tv, t });
@@ -137,7 +139,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
                 L("gs_qput(&", q, ", ", p, ", ", SizeX(t, p), ");");
             } else {
                 auto tv = T();
-                L(CT(t), " ", tv, " = ", GenX(an[0]), ";");
+                FixedLocal(t, tv, GenX(an[0]));
                 L("gs_qput(&", q, ", &", tv, ", ", FixedSize(t), ");");
             }
             return {};
@@ -225,7 +227,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
                 return poll ? vector<string> { base, got } : vector<string> { base };
             }
             auto tv = T();
-            L(CT(t), " ", tv, ";");
+            FixedLocal(t, tv);
             if (!FixedSize(t)) {
                 // A value of no bytes (§3.4): the node holds none to fill the
                 // object C gives it.
@@ -279,7 +281,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             if (elem->kind == TY_REF && elem->ref->lenstorage >= 0)
                 return { LoadLoc(BytesLoc(at, elem, lv), c->rettypes[0], ln) };
             auto tv = T();
-            L(CT(elem), " ", tv, " = *(", CT(elem), " *)", at, ";");
+            FixedLocal(elem, tv, cat("*(", CT(elem), " *)", at));
             return { tv };
         }
         case B_RESIZE: {
@@ -710,7 +712,9 @@ inline void CodeGen::EmitDefaultElems(const ArrView &v, const string &first,
     auto e = T();
     L(CT(v.elem), " *", e, " = (", CT(v.elem), " *)(", ElemAddr(v, cat("(", first, " + ", k, ")")),
       ");");
+    PushSc(SC_PLAIN);
     GenAny(init, Dst { DK_LVALUE, cat("(*", e, ")"), v.elem });
+    PopSc();
     ind--;
     L("}");
 }
@@ -874,6 +878,12 @@ inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
             Append(b, "    uint8_t *a", i, " = p;\n");
             // Advance past the value; a size fn may be emitted on demand.
             Append(b, "    p += ", SizeX(pt, cat("a", i)).c_str(), ";\n");
+            args.push_back(cat("a", i));
+        } else if (IsLargeFixed(pt)) {
+            // The spawn packet belongs exclusively to this worker, so its
+            // fixed argument bytes are already the callee's private copy.
+            Append(b, "    ", CT(pt), " *a", i, " = (", CT(pt), " *)p; p += ",
+                   FixedSize(pt), ";\n");
             args.push_back(cat("a", i));
         } else if (!FixedSize(pt)) {
             // A value of no bytes (§3.4): the image holds none to fill the

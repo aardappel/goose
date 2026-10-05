@@ -43,7 +43,7 @@ inline string StrLit::CgX(CodeGen &cg) {
     // A fixed u8[k] or static-capacity u8[..k] array value.
     assert(et->kind == TY_ARRAY && (et->arr->akind == A_FIXED || et->arr->akind == A_LIMITED));
     auto t = cg.T();
-    cg.L(cg.CT(et), " ", t, et->arr->akind == A_LIMITED ? " = {0};" : ";");
+    cg.FixedLocal(et, t, et->arr->akind == A_LIMITED ? "{0}" : "");
     if (et->arr->akind == A_LIMITED) cg.L(t, ".len = ", val.size(), ";");
     if (!val.empty())
         cg.L("memcpy(", t, ".e, ", cg.StrRaw(val), ", ", val.size(), ");");
@@ -256,7 +256,7 @@ inline string Dot::CgX(CodeGen &cg) {
         auto vi = ei->en->VariantIndex(variantconst);
         if (et->kind == TY_ENUM && !et->enu->varmode) {
             auto t = cg.T();
-            cg.L(cg.CT(et), " ", t, ";");
+            cg.FixedLocal(et, t);
             cg.L(t, ".tag = ", cg.TagConst(ei, vi), ";");
             return t;
         }
@@ -352,7 +352,7 @@ inline string Call::CgX(CodeGen &cg) {
 // not survive the copy.
 inline string StructLit::CgX(CodeGen &cg) {
     auto tv = cg.T();
-    cg.L(cg.CT(exprtype), " ", tv, cg.HasUninitSlots(exprtype) ? " = {0};" : ";");
+    cg.FixedLocal(exprtype, tv, cg.HasUninitSlots(exprtype) ? "{0}" : "");
     cg.StructLitAt(this, tv, false);
     return tv;
 }
@@ -541,12 +541,13 @@ inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
                 cg.L("memcpy(", cg.Top(stk), ", ", payload, ", (size_t)", sz, ");");
                 cg.Bump(stk, sz);
             } else if (EmptyLayout(variant->fields)) {
-                cg.L(cg.CT(vt), " ", bn, " = {0};");
+                cg.FixedLocal(vt, bn, "{0}");
             } else if (!payload.empty()) {
-                cg.L(cg.CT(vt), " ", bn, " = *(", cg.CT(vt), " *)(", payload, ");");
+                cg.FixedLocal(vt, bn, cat("*(", cg.CT(vt), " *)(", payload, ")"), true);
             } else {
-                cg.L(cg.CT(vt), " ", bn, " = ", sv, ".u.v_", cg.Sanitize(variant->name), ";");
+                cg.FixedLocal(vt, bn, cat(sv, ".u.v_", cg.Sanitize(variant->name)), true);
             }
+            cg.vnames[arm.binder] = bn;
         }
         cg.GenAny(arm.body, d);
         cg.PopSc();
@@ -611,7 +612,7 @@ inline void InlineBlock::CgAny(CodeGen &cg, const Dst &d) {
             lv.t = rt;
             lv.val = true;
             lv.s = cg.T();
-            cg.L(cg.CT(rt), " ", lv.s, ";");
+            cg.FixedLocal(rt, lv.s);
             EmitBody(cg, Dst { DK_LVALUE, lv.s, rt });
         }
         auto x = cg.LoadLoc(lv, want, line);
@@ -759,7 +760,8 @@ inline void VarDecl::CgStmt(CodeGen &cg) {
                 cg.vstk[d] = stk;
                 dsts.push_back(Dst { DK_STACK, stk });
             } else {
-                cg.L(cg.CT(d->type), " ", name, ";");
+                cg.FixedLocal(d->type, name, "", true);
+                cg.vnames[d] = name;
                 dsts.push_back(Dst { DK_LVALUE, name, d->type });
             }
         }
@@ -1044,7 +1046,8 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
             else
                 cg.L(cg.CT(et), " ", iv, " = ", target, ";");
         } else {
-            cg.L(cg.CT(et), " ", iv, " = ", elem, ";");
+            cg.FixedLocal(et, iv, elem, true);
+            cg.vnames[vdef] = iv;
         }
     }, body, d,
         cat("for (int64_t ", gi, " = 0; ", gi, " < (", v.len, "); ", gi, "++) {"));

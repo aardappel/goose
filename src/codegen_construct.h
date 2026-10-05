@@ -573,7 +573,7 @@ inline void CodeGen::GenAdtAdapted(TypeExpr *from, TypeExpr *to, const Dst &d, L
         lv.t = from;
         lv.val = true;
         lv.s = T();
-        L(CT(from), " ", lv.s, ";");
+        FixedLocal(from, lv.s);
         gen(Dst { DK_LVALUE, lv.s, from });
         GenVarEnumFromLoc(lv, to, d.s);
         if (!d.lenlv.empty()) L(d.lenlv, " = 0;");
@@ -591,7 +591,7 @@ inline void CodeGen::GenAdtAdapted(TypeExpr *from, TypeExpr *to, const Dst &d, L
     } else {
         lv.val = true;
         lv.s = T();
-        L(CT(from), " ", lv.s, ";");
+        FixedLocal(from, lv.s);
         gen(Dst { DK_LVALUE, lv.s, from });
     }
     auto x = AdaptToFixed(lv, to, ln);
@@ -800,7 +800,7 @@ inline void CodeGen::GenVarEnumFromLoc(Loc lv, TypeExpr *et, const string &stk) 
     }
     assert(lv.t->kind == TY_ENUM && !lv.t->enu->varmode);
     auto sv = T();
-    L(CT(lv.t), " ", sv, " = ", lv.s, ";");
+    FixedLocal(lv.t, sv, lv.s);
     EmitValStoreTag(stk, ts, cat("(int64_t)", sv, ".tag"));
     L("switch (", sv, ".tag) {");
     for (size_t vi = 0; vi < ei->en->variants.size(); vi++) {
@@ -905,7 +905,9 @@ inline void CodeGen::FixedLitAtStk(Node *n, const string &stk) {
             auto iv = T();
             L("for (int64_t ", iv, " = 0; ", iv, " < ", fc->val, "; ", iv, "++) {");
             ind++;
+            PushSc(SC_PLAIN);
             EmitF(al->fillval, elem);
+            PopSc();
             ind--;
             L("}");
         } else {
@@ -1000,8 +1002,10 @@ inline void CodeGen::FixedArrayLitAt(ArrayLit *al, const string &base, bool inro
         L("for (int64_t ", iv, " = 0; ", iv, " < ", fc->val, "; ", iv, "++) {");
         ind++;
         auto path = cat(base, ".e[", iv, "]");
+        PushSc(SC_PLAIN);
         if (perelem) emitelem(al->fillval, path);
         else L(path, " = ", fv, ";");
+        PopSc();
         ind--;
         L("}");
         return;
@@ -1131,7 +1135,9 @@ inline void CodeGen::GenArrayLit(ArrayLit *al, const string &stk, const string &
             auto iv = T();
             L("for (int64_t ", iv, " = 0; ", iv, " < ", count, "; ", iv, "++) {");
             ind++;
+            PushSc(SC_PLAIN);
             GenConstruct(al->fillval, stk, elem);
+            PopSc();
             ind--;
             L("}");
         } else if (elem->kind == TY_REF && elem->ref->lenstorage >= 0) {
