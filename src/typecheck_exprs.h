@@ -2459,10 +2459,24 @@ inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fi
             // front-to-back, so out-of-order names would obfuscate either
             // evaluation order or cost.
             for (auto i = idx + 1; i < (int)fields.size(); i++)
-                if (got[i])
+                if (got[i]) {
+                    // Include every supplied field, not just the prefix
+                    // seen so far. Omitted defaults and padding need not
+                    // be added when the user puts the names in order.
+                    string order;
+                    for (auto &field : fields) {
+                        if (field.ispad) continue;
+                        for (auto &init : sl->inits) {
+                            if (init.name != field.name) continue;
+                            Append(order, order.empty() ? "" : ", ", field.name);
+                            break;
+                        }
+                    }
                     Error(fi.val, cat("field initializers must follow declaration "
-                                      "order: ", fi.name, " comes before ",
-                                      fields[i].name));
+                                      "order: ", fi.name, " comes before ", fields[i].name,
+                                      "; supplied fields in declaration order: ", order,
+                                      "; fields are evaluated and constructed front-to-back"));
+                }
         } else {
             while (pos < (int)fields.size() && fields[pos].ispad) pos++;
             if (pos >= (int)fields.size())

@@ -959,7 +959,10 @@ Literal forms usable in any construction context:
   declaration order; no mixing). Named initializers must also appear in
   declaration order (out-of-order names are a compile error: values construct
   front-to-back, and reordering would obscure either evaluation order or copying
-  cost). Fields with declared defaults (§3.2) may be omitted: trailing ones in
+  cost). The diagnostic lists the supplied fields in declaration order;
+  omitted defaults and padding do not need to be added. If side effects
+  must run in a different order, perform them before constructing the literal.
+  Fields with declared defaults (§3.2) may be omitted: trailing ones in
   the positional form, any of them in the named form. An omitted optional
   field without a declared default is null; other omitted fields are errors,
   unless the literal ends in `..` (`Entity { kind: k, .. }`): each of them
