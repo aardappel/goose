@@ -970,12 +970,22 @@ inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt) {
     } else {
         if (!fitfail.empty()) Error(n, fitfail);
         auto got = dt->kind == TY_REF ? StorageType(v) : v.type;
-        Error(n, cat("expected a value of type ", TypeStr(dt), ", got ", TypeStr(got),
-                     v.type->kind == TY_INT && dt->kind == TY_INT
-                         ? " (narrowing and sign changes require an explicit `as`)"
-                     : v.type->kind == TY_FLT && dt->kind == TY_INT
-                         ? " (a float converts to an integer only with an explicit `as`)"
-                         : ""));
+        string hint;
+        if (v.type->kind == TY_INT && dt->kind == TY_INT)
+            hint = " (narrowing and sign changes require an explicit `as`)";
+        else if (v.type->kind == TY_FLT && dt->kind == TY_INT)
+            hint = " (a float converts to an integer only with an explicit `as`)";
+        else if (v.type->kind == TY_FLT && !IsF32(v.type) && IsF32(dt)) {
+            hint = " (f64 to f32 requires an explicit `as f32` to round the value)";
+            // Call results commit their type, unlike a float of literals.
+            // Do not suggest putting a type argument on this outer call:
+            // a nested call may already have committed an f64 argument.
+            if (auto c = Is<Call>(n); c && c->spec && !c->spec->bindings.empty())
+                Append(hint, "; generic calls infer types from their arguments, not this "
+                             "destination; choose f32 with a typed argument or an explicit "
+                             "type argument before a nested call commits an f64 result");
+        }
+        Error(n, cat("expected a value of type ", TypeStr(dt), ", got ", TypeStr(got), hint));
     }
 }
 

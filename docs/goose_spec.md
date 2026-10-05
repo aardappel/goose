@@ -2112,6 +2112,22 @@ by `{` for a struct literal (`Pair<i64> { … }`), or by `.ident {` for a
 variant literal (`Opt<i64>.Some { … }`); otherwise `<` is the comparison
 operator.
 
+The destination of a call does not participate in this inference, and a
+call result commits its type (§6.3). With integer `width` and `height`,
+`let scale: f32 = max(0.5, min(width / 960.0, height / 600.0));` is an error:
+the inner `min` infers `f64`, which also fixes the outer `max` to `f64`.
+Choose the computation's width at the inner call:
+
+```goose
+let scale: f32 = max(0.5, min<f32>(width / 960.0, height / 600.0));
+```
+
+Alternatively, `max(0.5, min(width / 960.0, height / 600.0)) as f32` computes
+in `f64` and then rounds the result once. These are different choices:
+`min<f32>(n * 0.1, 1.0)` with integer `n = 9` computes `0.90000004`, while
+`min(n * 0.1, 1.0) as f32` computes `0.9`. A typed intermediate is also
+valid, but is not needed just to choose a generic call's type.
+
 **Literal arguments.** Where a literal is the only thing binding a type
 variable — the parameter is untyped, or its type is a bare `T` no typed
 argument mentions — the variable takes the literal's default type (§3.1),
