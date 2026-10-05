@@ -109,3 +109,33 @@ calls it, so they are compiled and run as part of the test suite.
 | Sample | What it shows |
 |---|---|
 | [29_ui_todo](29_ui_todo.goose) | A to-do list and a color mixer with the `ui` module: Nuklear's immediate-mode widgets drawn through `gfx`. Each frame lists the windows and widgets and reads back what the user did to them: a text field committed with Enter, buttons, check boxes, options, a menu bar, a tooltip, a progress bar, a color picker and properties; the check marks recolored through Nuklear's color table, text in Roboto from the Nuklear submodule, and the whole ui scaled up and down, its font baked again at each scale. Saves its last frame as `ui_todo.png`. Needs a compiler built with SDL3 and Nuklear (`third_party/nuklear`); the test runner draws 30 frames off screen. |
+
+## A small game
+
+| Sample | What it shows |
+|---|---|
+| [30_mini_minecraft](30_mini_minecraft.goose) | A playable voxel world using only `gfx`: procedural hills, trees, caves, coal, water, pixel textures, sky and a bitmap font. Exposed-face chunk meshes with corner shading, captured mouse look, fixed-step walking and swimming, a grid ray for mining and placement, inventory, four crafting recipes, lamps, mining fragments, a day/night cycle, and validated atomic saves. Starts directly in an 80 × 40 × 80 world. No asset files or physics/UI dependencies. The test runner checks gameplay and renders 30 frames off screen. |
+
+Run `goose samples/30_mini_minecraft.goose`. WASD walks, Space jumps or swims,
+Shift runs, Ctrl sneaks slowly and stops at ledges, and the mouse or arrow
+keys look around. Jumping or releasing Ctrl lets you step off a ledge; sneaking
+does not change the player's height. Hold the left mouse button to mine;
+right-click or E places a block (hold to build repeatedly).
+Select a slot with 1–8 or the wheel, middle-click to select the aimed-at
+material, and press C to craft. Two wood blocks make eight planks; five planks
+make a wooden pick. Three mined stone and two planks upgrade it to a stone
+pick. One coal and one plank make four lamps. Hold Shift while clicking a
+recipe or pressing its number to craft all affordable batches, up to the
+inventory limit. Tools equip automatically and are only crafted once.
+
+Crafting and pause release the cursor. Losing focus also pauses; click or
+press Escape to resume. A full day lasts ten minutes, with a moving sun,
+moon, stars, and peaceful nights that make lamps useful around a home.
+
+H toggles help, Escape pauses, and F12 saves `mini_minecraft.png`. F5 explicitly
+saves `mini_minecraft.sav` in the working directory; F9 loads it. Starting a
+fresh world never overwrites a save. Saves include the time of day; older
+saves without a clock load in the morning. Close the window to quit. `-- --seed N`
+chooses terrain, `-- --frames N` renders a repeatable screenshot, and
+`-- --test` runs the gameplay checks without opening a window. The finite
+world deliberately omits mobs, hunger, damage, tool wear, and flowing water.
