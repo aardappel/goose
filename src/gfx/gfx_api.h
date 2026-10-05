@@ -141,6 +141,12 @@ typedef struct {
     X(void, gs_gfx_mouse_delta, (gs_gfx_float2 *out)) \
     X(float, gs_gfx_mouse_wheel, (void)) \
     X(uint8_t, gs_gfx_mouse_in_window, (void)) \
+    X(uint8_t, gs_gfx_focused, (void)) \
+    X(uint8_t, gs_gfx_set_mouse_relative, (uint8_t on)) \
+    X(uint8_t, gs_gfx_mouse_relative, (void)) \
+    X(uint8_t, gs_gfx_set_cursor_visible, (uint8_t visible)) \
+    X(uint8_t, gs_gfx_cursor_visible, (void)) \
+    X(uint8_t, gs_gfx_inject_focus, (uint8_t focused)) \
     X(uint8_t, gs_gfx_inject_key, (gs_gfx_bytes name, uint8_t down)) \
     X(void, gs_gfx_inject_mouse, (float x, float y, int64_t button, uint8_t down)) \
     X(int64_t, gs_gfx_events, (gs_gfx_event_slice out)) \
@@ -316,6 +322,8 @@ GS_GFX_API(GS_GFX_PROTO)
     X(i32, EVENT_MOUSE_MOTION, 3) \
     X(i32, EVENT_MOUSE_BUTTON, 4) \
     X(i32, EVENT_MOUSE_WHEEL, 5) \
+    X(i32, EVENT_FOCUS_GAINED, 6) \
+    X(i32, EVENT_FOCUS_LOST, 7) \
     X(i32, MOD_SHIFT, 1) \
     X(i32, MOD_CTRL, 2) \
     X(i32, MOD_ALT, 4) \

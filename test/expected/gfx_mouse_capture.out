@@ -1,0 +1,33 @@
+initial: focused true, relative false, visible true
+hide true
+hidden: focused true, relative false, visible false
+capture true
+prefer visible true
+captured: focused true, relative true, visible false
+release true
+restored: focused true, relative false, visible true
+pending motion discarded true
+unbounded delta vec2<f32> { 100.0, -30.0 }
+same mode preserves delta vec2<f32> { 100.0, -30.0 }
+changed mode clears delta true
+hidden preference: focused true, relative false, visible false
+held before loss true, true
+queue loss true
+still focused before frame true
+lost focus: focused false, relative false, visible true
+held cleared true, true
+release edges true, true
+releases before focus loss true
+focus motion cleared true
+background capture rejected true, reason true
+background hide rejected true
+regained focus: focused true, relative false, visible true
+background input ignored true, true
+regain then text true
+both focus edges true
+brief loss: focused true, relative false, visible true
+explicit resume true
+resumed: focused true, relative true, visible false
+press then focus loss retains both edges true
+release edges clear next frame true
+reopened: focused true, relative false, visible true

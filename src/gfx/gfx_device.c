@@ -404,6 +404,10 @@ static bool gfx_start(bool windowed, gs_gfx_bytes title, int64_t width, int64_t 
         gfx_update_input_scale();
         gfx_seed_mouse();
     }
+    /* Headless programs start focused so their ordinary input loop runs. */
+    gfx.focused = !gfx.window || (SDL_GetWindowFlags(gfx.window) & SDL_WINDOW_INPUT_FOCUS) != 0;
+    gfx.cursor_visible = true;
+    if (gfx.window) SDL_ShowCursor();
     if (!gfx_create_screen(pw, ph)) {
         char why[sizeof gfx.error];
         memcpy(why, gfx.error, sizeof why);
@@ -443,7 +447,11 @@ void gs_gfx_close(void) {
     for (int i = 0; i < gfx.ninjected; i++) SDL_free(gfx.injected[i]);
     free(gfx.injected);
     SDL_free(gfx.clipboard);
-    if (gfx.window) SDL_DestroyWindow(gfx.window);
+    if (gfx.window) {
+        SDL_SetWindowRelativeMouseMode(gfx.window, false);
+        SDL_ShowCursor();
+        SDL_DestroyWindow(gfx.window);
+    }
     if (gfx.video_inited) SDL_QuitSubSystem(SDL_INIT_VIDEO);
     /* What went wrong outlives the device, for gs_gfx_error after a failed
        open. */
@@ -537,6 +545,62 @@ static void gfx_text_events(const char *text) {
         gfx_event(GS_GFX_EVENT_TEXT)->codepoint = cp;
 }
 
+/* Real input and the releases on focus loss take the same path, keeping
+   held state, per-frame edges, and the ordered events in agreement. */
+static void gfx_key_event(SDL_Scancode sc, SDL_Keycode key, bool down, bool repeat) {
+    if (sc > SDL_SCANCODE_UNKNOWN && sc < SDL_SCANCODE_COUNT) {
+        if (down && !gfx.keys[sc]) gfx.pressed_keys[sc] = 1;
+        if (!down && gfx.keys[sc]) gfx.released_keys[sc] = 1;
+        gfx.keys[sc] = down;
+    }
+    gs_gfx_event *ev = gfx_event(GS_GFX_EVENT_KEY);
+    ev->scancode = (int32_t)sc;
+    ev->keycode = (int32_t)key;
+    ev->mods = gfx_mods();
+    ev->down = down;
+    ev->repeat = repeat;
+}
+
+static void gfx_button_event(int button, bool down, int clicks) {
+    if (button > 0 && button < 32) {
+        uint32_t bit = 1u << button;
+        if (down && !(gfx.buttons & bit)) gfx.pressed_buttons |= bit;
+        if (!down && (gfx.buttons & bit)) gfx.released_buttons |= bit;
+        gfx.buttons = down ? gfx.buttons | bit : gfx.buttons & ~bit;
+        if (down) gfx.button_clicks[button] = (uint8_t)clicks;
+    }
+    gs_gfx_event *ev = gfx_event(GS_GFX_EVENT_MOUSE_BUTTON);
+    ev->button = button;
+    ev->clicks = clicks;
+    ev->down = down;
+    ev->x = gfx.mouse_x;
+    ev->y = gfx.mouse_y;
+}
+
+/* Focus is keyboard focus, not whether the mouse happens to be over us.
+   Never recapture on focus gain: the game can wait for a click to resume. */
+static void gfx_focus(bool focused) {
+    if (gfx.focused == focused) return;
+    gfx.focused = focused;
+    if (!focused) {
+        gs_gfx_set_mouse_relative(false);
+        gs_gfx_set_cursor_visible(true);
+        for (int sc = 1; sc < SDL_SCANCODE_COUNT; sc++) {
+            if (gfx.keys[sc])
+                gfx_key_event((SDL_Scancode)sc,
+                              SDL_GetKeyFromScancode((SDL_Scancode)sc, SDL_KMOD_NONE, false),
+                              false, false);
+        }
+        for (int b = 1; b < 32; b++) {
+            if (gfx.buttons & (1u << b)) gfx_button_event(b, false, gfx.button_clicks[b]);
+        }
+        gfx.mouse_dx = gfx.mouse_dy = gfx.wheel = 0;
+    } else if (gfx.window) {
+        gfx_seed_mouse();
+    }
+    gfx_event(focused ? GS_GFX_EVENT_FOCUS_GAINED : GS_GFX_EVENT_FOCUS_LOST);
+}
+
 uint8_t gs_gfx_frame(void) {
     if (!gfx_need_device("frame")) return 0;
     if (gfx.pass || gfx.cpass) {
@@ -561,27 +625,14 @@ uint8_t gs_gfx_frame(void) {
                 break;
             case SDL_EVENT_KEY_DOWN:
             case SDL_EVENT_KEY_UP: {
-                if (e.key.scancode < SDL_SCANCODE_COUNT) {
-                    /* Record transitions while polling, before later events
-                       can undo them. Repeated downs are still ordered events,
-                       but do not count as another press of a held key. */
-                    if (e.key.down && !gfx.keys[e.key.scancode])
-                        gfx.pressed_keys[e.key.scancode] = 1;
-                    if (!e.key.down && gfx.keys[e.key.scancode])
-                        gfx.released_keys[e.key.scancode] = 1;
-                    gfx.keys[e.key.scancode] = e.key.down;
-                }
-                gs_gfx_event *ev = gfx_event(GS_GFX_EVENT_KEY);
-                ev->scancode = (int32_t)e.key.scancode;
-                ev->keycode = (int32_t)e.key.key;
-                ev->mods = gfx_mods();
-                ev->down = e.key.down;
-                ev->repeat = e.key.repeat;
+                if (!gfx.focused) break;
+                gfx_key_event(e.key.scancode, e.key.key, e.key.down, e.key.repeat);
             } break;
             case SDL_EVENT_TEXT_INPUT:
-                gfx_text_events(e.text.text);
+                if (gfx.focused) gfx_text_events(e.text.text);
                 break;
             case SDL_EVENT_MOUSE_MOTION: {
+                if (!gfx.focused) break;
                 bool injected = e.motion.which == GFX_INJECTED_MOUSE;
                 int pw = injected ? 1 : gfx.window_pw, w = injected ? 1 : gfx.window_w;
                 int ph = injected ? 1 : gfx.window_ph, h = injected ? 1 : gfx.window_h;
@@ -598,25 +649,16 @@ uint8_t gs_gfx_frame(void) {
             } break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
             case SDL_EVENT_MOUSE_BUTTON_UP: {
-                if (e.button.button < 32) {
-                    uint32_t bit = 1u << e.button.button;
-                    if (e.button.down && !(gfx.buttons & bit)) gfx.pressed_buttons |= bit;
-                    if (!e.button.down && (gfx.buttons & bit)) gfx.released_buttons |= bit;
-                    gfx.buttons = e.button.down ? gfx.buttons | bit : gfx.buttons & ~bit;
-                }
+                if (!gfx.focused) break;
                 bool injected = e.button.which == GFX_INJECTED_MOUSE;
                 gfx.mouse_x = injected ? e.button.x
                                        : gfx_to_pixels(e.button.x, gfx.window_pw, gfx.window_w);
                 gfx.mouse_y = injected ? e.button.y
                                        : gfx_to_pixels(e.button.y, gfx.window_ph, gfx.window_h);
-                gs_gfx_event *ev = gfx_event(GS_GFX_EVENT_MOUSE_BUTTON);
-                ev->button = e.button.button;
-                ev->clicks = e.button.clicks;
-                ev->down = e.button.down;
-                ev->x = gfx.mouse_x;
-                ev->y = gfx.mouse_y;
+                gfx_button_event(e.button.button, e.button.down, e.button.clicks);
             } break;
             case SDL_EVENT_MOUSE_WHEEL: {
+                if (!gfx.focused) break;
                 gfx.wheel += e.wheel.y;
                 gs_gfx_event *ev = gfx_event(GS_GFX_EVENT_MOUSE_WHEEL);
                 ev->x = e.wheel.x;
@@ -625,6 +667,11 @@ uint8_t gs_gfx_frame(void) {
             case SDL_EVENT_WINDOW_MOUSE_ENTER:
             case SDL_EVENT_WINDOW_MOUSE_LEAVE:
                 gfx.mouse_in = e.type == SDL_EVENT_WINDOW_MOUSE_ENTER;
+                break;
+            case SDL_EVENT_WINDOW_FOCUS_GAINED:
+            case SDL_EVENT_WINDOW_FOCUS_LOST:
+                if (e.window.windowID == (gfx.window ? SDL_GetWindowID(gfx.window) : 0))
+                    gfx_focus(e.type == SDL_EVENT_WINDOW_FOCUS_GAINED);
                 break;
             case SDL_EVENT_WINDOW_RESIZED:
                 gfx_update_input_scale();
@@ -636,7 +683,7 @@ uint8_t gs_gfx_frame(void) {
             default:
                 if (gfx.inject_event && e.type == gfx.inject_event && e.user.code >= 0 &&
                     e.user.code < gfx.ninjected) {
-                    gfx_text_events(gfx.injected[e.user.code]);
+                    if (gfx.focused) gfx_text_events(gfx.injected[e.user.code]);
                     SDL_free(gfx.injected[e.user.code]);
                     gfx.injected[e.user.code] = NULL;
                 }
@@ -750,6 +797,55 @@ void gs_gfx_mouse_delta(gs_gfx_float2 *out) {
 float gs_gfx_mouse_wheel(void) { return gfx.wheel; }
 
 uint8_t gs_gfx_mouse_in_window(void) { return gfx.mouse_in; }
+
+uint8_t gs_gfx_focused(void) { return gfx.focused; }
+
+uint8_t gs_gfx_mouse_relative(void) { return gfx.mouse_relative; }
+
+uint8_t gs_gfx_cursor_visible(void) { return gfx.cursor_visible && !gfx.mouse_relative; }
+
+uint8_t gs_gfx_set_mouse_relative(uint8_t on) {
+    if (!gfx_need_device("set_mouse_relative")) return 0;
+    bool enabled = on != 0;
+    if (enabled && !gfx.focused) return gfx_fail("set_mouse_relative: the window is not focused");
+    if (gfx.mouse_relative == enabled) return 1;
+    if (gfx.window) {
+        if (!SDL_SetWindowRelativeMouseMode(gfx.window, enabled))
+            return gfx_sdl_fail("set_mouse_relative");
+        /* Hide explicitly as well, so SDL's relative-cursor-visible hint
+           cannot make the query disagree with what the window displays. */
+        if (enabled || !gfx.cursor_visible) SDL_HideCursor();
+        else SDL_ShowCursor();
+    }
+    gfx.mouse_relative = enabled;
+    /* A move before the mode change must not turn the camera afterwards.
+       SDL flushes real motion too; explicitly include injected/headless motion. */
+    SDL_FlushEvent(SDL_EVENT_MOUSE_MOTION);
+    gfx.mouse_dx = gfx.mouse_dy = 0;
+    return 1;
+}
+
+uint8_t gs_gfx_set_cursor_visible(uint8_t visible) {
+    if (!gfx_need_device("set_cursor_visible")) return 0;
+    bool show = visible != 0;
+    if (!show && !gfx.focused) return gfx_fail("set_cursor_visible: the window is not focused");
+    if (gfx.window && !gfx.mouse_relative) {
+        if (!(show ? SDL_ShowCursor() : SDL_HideCursor()))
+            return gfx_sdl_fail("set_cursor_visible");
+    }
+    gfx.cursor_visible = show;
+    return 1;
+}
+
+uint8_t gs_gfx_inject_focus(uint8_t focused) {
+    if (!gfx_need_device("inject_focus")) return 0;
+    SDL_Event e;
+    SDL_zero(e);
+    e.type = focused ? SDL_EVENT_WINDOW_FOCUS_GAINED : SDL_EVENT_WINDOW_FOCUS_LOST;
+    e.window.timestamp = SDL_GetTicksNS();
+    e.window.windowID = gfx.window ? SDL_GetWindowID(gfx.window) : 0;
+    return SDL_PushEvent(&e);
+}
 
 /* Queues an input event as if it came from the keyboard or mouse, seen at
    the next frame(): what tests drive input with. */

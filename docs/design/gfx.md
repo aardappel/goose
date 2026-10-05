@@ -130,6 +130,13 @@ fields in the same order, and the same constant values.
   positions and motion are multiplied by the window's size in pixels and
   divided by its size in those coordinates, in double, so a whole pixel
   comes out whole. Injected mouse input is in pixels already.
+* **First-person input** uses SDL's per-window relative mouse mode. Turning
+  it on hides the cursor and gives continuous pixel deltas. Focus changes
+  are ordered events as well as a query. Focus loss clears held input and
+  motion, releases relative mode, and shows the cursor; focus gain never
+  recaptures without a call from the program. The headless implementation
+  keeps the same logical states, with injected focus for deterministic tests,
+  without changing the desktop cursor.
 * **Pipelines are created for their render targets.** A pipeline description
   does not name its targets. The layer creates a pipeline on first use with
   each combination of color formats, depth format, and sample count.
@@ -162,6 +169,14 @@ and `read_pixels(t)` gives a texture's bytes. Column-major `mat4` helpers
 SDL_GPU's clip space. `docs/stdlib.md` is the reference.
 
 ## Testing
+
+`test/gfx/gfx_mouse_capture.goose` checks capture/visibility transitions,
+focus loss and reacquisition, release edges/events, ignored background input,
+and headless close/reopen. `python test/gfx/window/run_input_test.py --exe
+<goose>` complements it on a machine with a display and GPU: a hidden real
+window verifies the SDL mode/visibility setters, unrelated-window focus
+filtering, double-click cleanup, and cursor restoration after close. Physical
+mouse confinement and Alt-Tab still need an interactive check on each platform.
 
 * **`test/gfx/`** in the regular suite: headless programs that render into
   textures and read them back (geometry, depth, instancing, storage-buffer

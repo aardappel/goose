@@ -149,6 +149,10 @@ typedef struct {
     uint32_t buttons, pressed_buttons, released_buttons;
     float mouse_x, mouse_y, mouse_dx, mouse_dy, wheel;
     bool mouse_in;                      /* over the window, as SDL's mouse focus says */
+    bool focused;                       /* keyboard focus; true initially headless */
+    bool mouse_relative;                /* explicitly released on focus loss */
+    bool cursor_visible;                /* preference outside relative mouse mode */
+    uint8_t button_clicks[32];           /* click count to preserve on focus-loss releases */
     /* The window's size in its own coordinates, which SDL gives the mouse
        in, and in pixels: a high-density display has more of the second. */
     int window_w, window_h, window_pw, window_ph;

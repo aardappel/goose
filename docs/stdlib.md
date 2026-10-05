@@ -509,9 +509,13 @@ fn mouse_down(button: i64) -> bool            // MOUSE_LEFT, MOUSE_MIDDLE, MOUSE
 fn mouse_pressed(button: i64) -> bool         fn mouse_released(button: i64) -> bool
 fn mouse_pos() -> float2    fn mouse_delta() -> float2      // in the screen's pixels
 fn mouse_wheel() -> f32     fn mouse_in_window() -> bool    // over the window, or dragging from it
+fn focused() -> bool                                      // keyboard focus at the last frame()
+fn set_mouse_relative(on: bool) -> bool    fn mouse_relative() -> bool
+fn set_cursor_visible(visible: bool) -> bool    fn cursor_visible() -> bool
 fn inject_key(name: const u8[:], down: bool) -> bool           // as if typed, seen at the next frame()
 fn inject_mouse(x: f32, y: f32, button: i64, down: bool)       // to pixel x, y; button 0 only moves
 fn inject_text(text: const u8[:]) -> bool                      // an EVENT_TEXT per character
+fn inject_focus(focused: bool) -> bool                        // simulate focus at the next frame()
 fn events() -> Event[>..]           // the last frame's input, in the order it came
 fn text_input(on: bool)             // typed text as EVENT_TEXT: off by default
 fn scancode(name: const u8[:]) -> i64       fn key_name(scancode: i64) -> u8[>..]
@@ -533,6 +537,36 @@ mouse's first move over a window that opened under it, at the latest.
 Once it leaves, `mouse_pos` stays where it left, off the screen: edge
 scrolling asks both. Headless, the mouse is in the window when the last
 position injected is on the screen.
+
+`set_mouse_relative(true)` confines the mouse to the window and hides its
+cursor. `mouse_delta()` continues to report movement past the window edges,
+in screen pixels: use it for first-person camera turns, rather than
+`mouse_pos()`. Setting a different mode discards queued motion and clears
+the current delta so a previously accumulated move cannot turn the camera.
+Calling it again with the same mode preserves motion. It returns false on
+failure, including a window without keyboard focus; `error()` gives the reason.
+
+`set_cursor_visible(false)` hides the cursor for programs drawing their own.
+Its preference applies outside relative mode: relative mode always hides the
+cursor, and `cursor_visible()` reports that effective state inside the window.
+The preference is restored when relative mode is disabled. Hiding a cursor
+without focus fails; showing one always works while gfx is open.
+
+`focused()` reports keyboard focus, which differs from `mouse_in_window()`.
+`events()` includes `EVENT_FOCUS_GAINED` and `EVENT_FOCUS_LOST` in order with
+other input; these kinds have no payload. Losing focus clears held keys and
+buttons and mouse/wheel deltas, disables relative mode, and resets the cursor
+to visible. Input received while unfocused is ignored. Focus gain leaves
+relative mode disabled so a game can pause on focus loss and wait for a click
+before recapturing. Held keys/buttons also get released edges and synthetic
+up events before `EVENT_FOCUS_LOST`, so event-driven UI cannot retain a held
+key or a drag across an application switch. `close()` also releases the
+mouse and restores the cursor.
+
+Headless gfx starts focused, with a visible cursor and relative mode disabled.
+The setters simulate their state without touching the system mouse.
+`inject_focus` queues the same transitions for testing; it does not change
+operating-system focus. Closing and reopening resets all these states.
 
 ### Buffers
 

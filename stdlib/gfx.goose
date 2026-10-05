@@ -174,6 +174,8 @@ let EVENT_TEXT: i32 = 2;
 let EVENT_MOUSE_MOTION: i32 = 3;
 let EVENT_MOUSE_BUTTON: i32 = 4;
 let EVENT_MOUSE_WHEEL: i32 = 5;
+let EVENT_FOCUS_GAINED: i32 = 6;
+let EVENT_FOCUS_LOST: i32 = 7;
 let MOD_SHIFT: i32 = 1;
 let MOD_CTRL: i32 = 2;
 let MOD_ALT: i32 = 4;
@@ -398,6 +400,32 @@ fn mouse_delta() -> float2 {
     d
 }
 
+// Keyboard focus, updated at frame(). Losing focus clears held keys and
+// buttons and motion/wheel deltas, releases relative mode, and restores a
+// visible cursor. Input while unfocused is ignored. Focus changes are also
+// EVENT_FOCUS_GAINED / EVENT_FOCUS_LOST in events(), with no payload fields.
+// Held keys/buttons get released edges and up events before EVENT_FOCUS_LOST.
+// Headless, focus starts true and inject_focus can change it for tests.
+extern "gs_gfx_focused" fn focused() -> bool;
+
+// First-person mouse look: hide the cursor, confine it to the window, and
+// keep mouse_delta() moving past the window edges. Use deltas, not mouse_pos,
+// for turning. False on failure (including no focus); error() says why.
+// Changing modes discards pending motion and this frame's delta, to avoid
+// a camera jump. Setting the current mode again leaves motion alone.
+// Focus gain does not recapture: call again when the player resumes.
+// Headless, these keep the same state without touching the system mouse.
+extern "gs_gfx_set_mouse_relative" fn set_mouse_relative(on: bool) -> bool;
+extern "gs_gfx_mouse_relative" fn mouse_relative() -> bool;
+
+// Visibility outside relative mode; useful when drawing your own cursor.
+// Relative mode always hides it, then restores this preference when disabled.
+// Focus loss resets the preference to visible. Hiding without focus fails.
+// cursor_visible reports the effective visibility within the gfx window;
+// headless it reports the simulated state. close() restores the system cursor.
+extern "gs_gfx_set_cursor_visible" fn set_cursor_visible(visible: bool) -> bool;
+extern "gs_gfx_cursor_visible" fn cursor_visible() -> bool;
+
 // Input as if from the keyboard or mouse, seen at the next frame(): what a
 // test drives a program with. The mouse goes to pixel x, y; a button of 0
 // only moves it.
@@ -405,6 +433,9 @@ extern "gs_gfx_inject_key" fn inject_key(name: const u8[:], down: bool) -> bool;
 extern "gs_gfx_inject_mouse" fn inject_mouse(x: f32, y: f32, button: i64, down: bool);
 // Text as if typed: an EVENT_TEXT per character at the next frame().
 extern "gs_gfx_inject_text" fn inject_text(text: const u8[:]) -> bool;
+// A focus change at the next frame(), in order with other injected input.
+// Does not move operating-system focus; intended for headless tests.
+extern "gs_gfx_inject_focus" fn inject_focus(focused: bool) -> bool;
 
 // The last frame's input in the order it came, key repeats and typed text
 // included: what text editing needs, where the state above loses what
