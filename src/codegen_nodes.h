@@ -699,7 +699,7 @@ inline void Binary::CgAny(CodeGen &cg, const Dst &d) {
         (exprtype->kind == TY_STRUCT || exprtype->kind == TY_ARRAY)) {
         string l, r;
         cg.ElemwiseOperands(this, l, r);
-        cg.GenElemwiseInto(this, l, r, d.s);
+        cg.GenElemwiseInto(exprtype, op, line, l, r, d.s);
         return;
     }
     cg.LeafAny(this, d);
@@ -799,10 +799,17 @@ inline void Assign::CgStmt(CodeGen &cg) {
         lv.stk = s;
     }
     if (op == T_DOTASSIGN) { cg.GenRebind(this, lv); return; }
-    // Compound operators: full-width int/flt locations only (TC).
+    // Read the old value before the RHS runs, as for scalar compound math.
+    // Aggregates use the ordinary elementwise lowering, with both operands
+    // evaluated before writing any member of the destination.
     if (op != T_ASSIGN) {
         assert(lv.val);
         auto old = cg.Snapshot(lv.t, lv.s);
+        if (lv.t->kind == TY_STRUCT || lv.t->kind == TY_ARRAY) {
+            auto r = cg.GenPureVal(rhs);
+            cg.GenElemwiseInto(lv.t, op, line, old, r, lv.s);
+            return;
+        }
         auto r = cg.GenX(rhs);
         auto sfx = lv.t->kind == TY_INT ? cg.IntSfx(lv.t->intstorage) : "";
         auto ovf = [&] { return cg.OvfLocArgs(lv.t->intstorage, line); };

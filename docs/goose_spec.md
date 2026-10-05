@@ -1532,8 +1532,10 @@ without conversion overhead.
 
 **Elementwise math**: the arithmetic operators apply memberwise to any two
 values of the *same* struct/fixed-array type whose scalar leaves are all
-integers or all floats; the result has that same type. This covers vector
-math without an operator-overloading feature. The standard library supplies
+integers or all floats; the result has that same type. The compound forms
+`+= -= *= /= %=` apply to these same types, resolving the destination once
+and reading its old value before the right-hand side runs (§2). This covers
+vector math without an operator-overloading feature. The standard library supplies
 `float3` and friends; named vector ops (`dot`, `cross`, `normalize`, …) are
 ordinary stdlib overloads per math type, not language builtins.
 

@@ -2712,6 +2712,16 @@ inline void TypeCheck::CompoundAssign(Assign *a, TypeExpr *st, bool writable) {
         CheckValue(a->rhs, st);
     } else if (st->kind == TY_FLT && !isbit && !isshift) {
         CheckValue(a->rhs, st);
+    } else if (!isbit && !isshift && ElementwiseOK(st)) {
+        // As for binary elementwise math, both operands must have the same
+        // aggregate type. A slice or a differently typed array cannot be
+        // adapted here merely because plain assignment could copy it.
+        auto rv = Operand(a->rhs);
+        NoUntypedEmptyArray(rv, a->rhs, TName(a->op));
+        auto rt = LoadType(rv.type);
+        if (!TypeEq(LoadType(st), rt))
+            Error(a, cat("operator ", TName(a->op), " cannot be applied to ",
+                         TypeStr(st), " and ", TypeStr(rt)));
     } else if (st->kind == TY_INT) {
         Error(a, "varint fields are written only at construction (§3.6)");
     } else {

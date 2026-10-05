@@ -1101,33 +1101,37 @@ inline string CodeGen::GenRangeEq(TypeExpr *elem, const string &ae, const string
 // scalarize. Member i of the result depends only on member i of each
 // operand, so writing members straight into `dst` is exact even when it
 // aliases an operand (the p.vel = p.vel + g shape).
-inline void CodeGen::GenElemwiseInto(Binary *b, const string &l, const string &r,
-                                     const string &dst) {
+inline void CodeGen::GenElemwiseInto(TypeExpr *t, TType op, Line line, const string &l,
+                                     const string &r, const string &dst) {
     function<void(TypeExpr *, const string &)> rec = [&](TypeExpr *tt, const string &path) {
         switch (tt->kind) {
             case TY_INT: case TY_FLT: {
                 auto a = cat("(", l, ")", path), c = cat("(", r, ")", path);
                 string x;
                 if (tt->kind == TY_FLT) {
-                    switch (b->op) {
-                        case T_PLUS:  x = cat("(", a, " + ", c, ")"); break;
-                        case T_MINUS: x = cat("(", a, " - ", c, ")"); break;
-                        case T_MUL:   x = cat("(", a, " * ", c, ")"); break;
-                        case T_DIV:   x = cat("(", a, " / ", c, ")"); break;
+                    switch (op) {
+                        case T_PLUS: case T_PLUSEQ:   x = cat("(", a, " + ", c, ")"); break;
+                        case T_MINUS: case T_MINUSEQ: x = cat("(", a, " - ", c, ")"); break;
+                        case T_MUL: case T_MULEQ:     x = cat("(", a, " * ", c, ")"); break;
+                        case T_DIV: case T_DIVEQ:     x = cat("(", a, " / ", c, ")"); break;
                         default:      x = cat((tt->fltstorage == FS_F32 ? "fmodf(" : "fmod("),
                                               a, ", ", c, ")"); break;
                     }
                 } else {
                     auto sfx = IntSfx(tt->intstorage);
-                    auto ovf = OvfLocArgs(tt->intstorage, b->line);
-                    switch (b->op) {
-                        case T_PLUS:  x = cat("gs_add_", sfx, "(", a, ", ", c, ovf, ")"); break;
-                        case T_MINUS: x = cat("gs_sub_", sfx, "(", a, ", ", c, ovf, ")"); break;
-                        case T_MUL:   x = cat("gs_mul_", sfx, "(", a, ", ", c, ovf, ")"); break;
-                        case T_DIV:   x = cat("gs_div_", sfx, "(", a, ", ", c, ", ",
-                                              LocArgs(b->line), ")"); break;
+                    auto ovf = OvfLocArgs(tt->intstorage, line);
+                    switch (op) {
+                        case T_PLUS: case T_PLUSEQ:
+                            x = cat("gs_add_", sfx, "(", a, ", ", c, ovf, ")"); break;
+                        case T_MINUS: case T_MINUSEQ:
+                            x = cat("gs_sub_", sfx, "(", a, ", ", c, ovf, ")"); break;
+                        case T_MUL: case T_MULEQ:
+                            x = cat("gs_mul_", sfx, "(", a, ", ", c, ovf, ")"); break;
+                        case T_DIV: case T_DIVEQ:
+                            x = cat("gs_div_", sfx, "(", a, ", ", c, ", ",
+                                    LocArgs(line), ")"); break;
                         default:      x = cat("gs_mod_", sfx, "(", a, ", ", c, ", ",
-                                              LocArgs(b->line), ")"); break;
+                                              LocArgs(line), ")"); break;
                     }
                 }
                 L(dst, path, " = ", x, ";");
@@ -1156,7 +1160,7 @@ inline void CodeGen::GenElemwiseInto(Binary *b, const string &l, const string &r
     };
     // Struct field paths start at the value; array paths at .e — handled
     // uniformly since the outer type is one of the two.
-    rec(b->exprtype, "");
+    rec(t, "");
 }
 
 // Left-to-right evaluation (§2): when the right operand needs statements,
@@ -1177,7 +1181,7 @@ inline void CodeGen::ElemwiseOperands(Binary *b, string &l, string &r) {
 inline string CodeGen::GenElemwise(Binary *b, const string &l, const string &r) {
     auto tv = T();
     FixedLocal(b->exprtype, tv);
-    GenElemwiseInto(b, l, r, tv);
+    GenElemwiseInto(b->exprtype, b->op, b->line, l, r, tv);
     return tv;
 }
 

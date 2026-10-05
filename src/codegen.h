@@ -750,7 +750,8 @@ struct CodeGen {
     string GenSliceEq(TypeExpr *st, const string &l, const string &r);
     string GenRangeEq(TypeExpr *elem, const string &ae, const string &an, const string &be,
                       const string &bn, bool nullable);
-    void GenElemwiseInto(Binary *b, const string &l, const string &r, const string &dst);
+    void GenElemwiseInto(TypeExpr *t, TType op, Line line, const string &l,
+                         const string &r, const string &dst);
     void ElemwiseOperands(Binary *b, string &l, string &r);
     string GenElemwise(Binary *b, const string &l, const string &r);
     string GenSlice(SliceExpr *se);
