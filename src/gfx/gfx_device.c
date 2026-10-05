@@ -546,8 +546,9 @@ uint8_t gs_gfx_frame(void) {
     /* The first call starts the first frame; every later one ends one. */
     if (gfx.window && gfx.frames > 0) gfx_present();
     gfx_submit();
-    memcpy(gfx.prev_keys, gfx.keys, sizeof gfx.keys);
-    gfx.prev_buttons = gfx.buttons;
+    memset(gfx.pressed_keys, 0, sizeof gfx.pressed_keys);
+    memset(gfx.released_keys, 0, sizeof gfx.released_keys);
+    gfx.pressed_buttons = gfx.released_buttons = 0;
     gfx.mouse_dx = gfx.mouse_dy = gfx.wheel = 0;
     gfx.nevents = 0;
     bool resized = false;
@@ -560,7 +561,16 @@ uint8_t gs_gfx_frame(void) {
                 break;
             case SDL_EVENT_KEY_DOWN:
             case SDL_EVENT_KEY_UP: {
-                if (e.key.scancode < SDL_SCANCODE_COUNT) gfx.keys[e.key.scancode] = e.key.down;
+                if (e.key.scancode < SDL_SCANCODE_COUNT) {
+                    /* Record transitions while polling, before later events
+                       can undo them. Repeated downs are still ordered events,
+                       but do not count as another press of a held key. */
+                    if (e.key.down && !gfx.keys[e.key.scancode])
+                        gfx.pressed_keys[e.key.scancode] = 1;
+                    if (!e.key.down && gfx.keys[e.key.scancode])
+                        gfx.released_keys[e.key.scancode] = 1;
+                    gfx.keys[e.key.scancode] = e.key.down;
+                }
                 gs_gfx_event *ev = gfx_event(GS_GFX_EVENT_KEY);
                 ev->scancode = (int32_t)e.key.scancode;
                 ev->keycode = (int32_t)e.key.key;
@@ -590,6 +600,8 @@ uint8_t gs_gfx_frame(void) {
             case SDL_EVENT_MOUSE_BUTTON_UP: {
                 if (e.button.button < 32) {
                     uint32_t bit = 1u << e.button.button;
+                    if (e.button.down && !(gfx.buttons & bit)) gfx.pressed_buttons |= bit;
+                    if (!e.button.down && (gfx.buttons & bit)) gfx.released_buttons |= bit;
                     gfx.buttons = e.button.down ? gfx.buttons | bit : gfx.buttons & ~bit;
                 }
                 bool injected = e.button.which == GFX_INJECTED_MOUSE;
@@ -699,12 +711,12 @@ uint8_t gs_gfx_key_down(gs_gfx_bytes name) {
 
 uint8_t gs_gfx_key_pressed(gs_gfx_bytes name) {
     SDL_Scancode sc = gfx_scancode(name);
-    return sc != SDL_SCANCODE_UNKNOWN && gfx.keys[sc] && !gfx.prev_keys[sc];
+    return sc != SDL_SCANCODE_UNKNOWN && gfx.pressed_keys[sc];
 }
 
 uint8_t gs_gfx_key_released(gs_gfx_bytes name) {
     SDL_Scancode sc = gfx_scancode(name);
-    return sc != SDL_SCANCODE_UNKNOWN && !gfx.keys[sc] && gfx.prev_keys[sc];
+    return sc != SDL_SCANCODE_UNKNOWN && gfx.released_keys[sc];
 }
 
 static uint32_t gfx_button(int64_t button) {
@@ -718,13 +730,11 @@ static uint32_t gfx_button(int64_t button) {
 uint8_t gs_gfx_mouse_down(int64_t button) { return (gfx.buttons & gfx_button(button)) != 0; }
 
 uint8_t gs_gfx_mouse_pressed(int64_t button) {
-    uint32_t bit = gfx_button(button);
-    return (gfx.buttons & bit) && !(gfx.prev_buttons & bit);
+    return (gfx.pressed_buttons & gfx_button(button)) != 0;
 }
 
 uint8_t gs_gfx_mouse_released(int64_t button) {
-    uint32_t bit = gfx_button(button);
-    return !(gfx.buttons & bit) && (gfx.prev_buttons & bit);
+    return (gfx.released_buttons & gfx_button(button)) != 0;
 }
 
 void gs_gfx_mouse_pos(gs_gfx_float2 *out) {

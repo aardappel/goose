@@ -1,0 +1,22 @@
+initial: key false false false; mouse false false false
+queued, before frame: key false false false; mouse false false false
+tap: key false true true; mouse false true true
+queried again: key false true true; mouse false true true
+key event down true
+mouse event down true
+key event down false
+mouse event down false
+tap cleared: key false false false; mouse false false false
+press: key true true false; mouse true true false
+hold: key true false false; mouse true false false
+repeated down: key true false false; mouse true false false
+release: key false false true; mouse false false true
+release cleared: key false false false; mouse false false false
+repeated up: key false false false; mouse false false false
+release then press: key true true true; mouse true true true
+held after both edges: key true false false; mouse true false false
+several transitions: key false true true; mouse false true true
+several transitions cleared: key false false false; mouse false false false
+other inputs untouched: true
+reopened: key false false false; mouse false false false
+reopened first frame: key false false false; mouse false false false

@@ -365,8 +365,12 @@ extern "gs_gfx_open_count" fn open_count() -> i64;
 // "Left", "Left Shift", "F1". The ones SDL names after a platform's labels
 // go by any of them everywhere: "Left Alt" or "Left Option", "Left GUI",
 // "Left Command" or "Left Windows", "Application". Down now; pressed or
-// released since the last frame(). The mouse is in the screen's pixels,
-// which on a high-density display outnumber the window's own coordinates.
+// released by the events the latest frame() collected. A press and release
+// between frames makes both true, even though down is false. Repeated events
+// that leave the held state unchanged do not count as presses or releases.
+// These queries do not consume input; the next frame() clears the edges.
+// The mouse is in the screen's pixels, which on a high-density display
+// outnumber the window's own coordinates.
 extern "gs_gfx_key_down" fn key_down(name: const u8[:]) -> bool;
 extern "gs_gfx_key_pressed" fn key_pressed(name: const u8[:]) -> bool;
 extern "gs_gfx_key_released" fn key_released(name: const u8[:]) -> bool;

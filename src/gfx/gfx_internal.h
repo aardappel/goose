@@ -141,10 +141,12 @@ typedef struct {
     /* Uniform slots pushed, by stage, in this command buffer. */
     uint32_t uniforms_pushed[GFX_STAGES];
 
-    /* Input: this frame's state and the last frame's, for pressed/released. */
+    /* Input: held state plus every transition seen in this frame. A tap
+       between frames sets both pressed and released, even though it ends released. */
     bool quit;
-    uint8_t keys[SDL_SCANCODE_COUNT], prev_keys[SDL_SCANCODE_COUNT];
-    uint32_t buttons, prev_buttons;
+    uint8_t keys[SDL_SCANCODE_COUNT];
+    uint8_t pressed_keys[SDL_SCANCODE_COUNT], released_keys[SDL_SCANCODE_COUNT];
+    uint32_t buttons, pressed_buttons, released_buttons;
     float mouse_x, mouse_y, mouse_dx, mouse_dy, wheel;
     bool mouse_in;                      /* over the window, as SDL's mouse focus says */
     /* The window's size in its own coordinates, which SDL gives the mouse
