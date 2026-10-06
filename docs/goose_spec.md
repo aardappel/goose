@@ -1619,7 +1619,9 @@ mantissa rounds as every float result does.
   an expression is computed at the type it adapts to, throughout — an `f32`
   argument, field or operand gets `(n as f32) * 0.5` in 32 bits — and is an
   `f64` where nothing gives it a type. A variable, parameter, call result or
-  explicit `as` commits a type. A constant part of it is folded at full
+  explicit `as` commits a type; §7.7 describes the limited case where an
+  `f32` destination chooses a generic call's computation width first.
+  A constant part of it is folded at full
   precision and rounds once to the type the whole adapts to, as a constant
   does anywhere: beyond `f32`'s range (about ±3.4e38) to an infinity, as
   `as f32` rounds.
@@ -1904,7 +1906,9 @@ fn scaled(a: i32, b: i32 = 0, c: f32 = 1.0) -> f32 { ... }   // scaled(2) is sca
   `abs(f64)`. An integer converts to either float type equally well, so two
   such candidates are ambiguous: `sqrt(n)` with integer `n` has to say
   `sqrt(n as f64)`, while `sqrt(n * 0.5)` is `sqrt(f64)`, as `sqrt(0.5)` is.
-  The expected result type neither selects an overload nor binds generics.
+  The expected result type never selects an overload. An `f32` destination
+  may refine an otherwise unconstrained floating generic computation (§7.7),
+  provided resolution still selects that same overload.
 * Multiple return values: `fn f() -> A, B`; received as `let a, b = f();`.
   There is no tuple *type* — multiple returns are a calling convention;
   structs are the way to keep data together. (Function *types* with
@@ -2131,18 +2135,45 @@ by `{` for a struct literal (`Pair<i64> { … }`), or by `.ident {` for a
 variant literal (`Opt<i64>.Some { … }`); otherwise `<` is the comparison
 operator.
 
-The destination of a call does not participate in this inference, and a
-call result commits its type (§6.3). With integer `width` and `height`,
-`let scale: f32 = max(0.5, min(width / 960.0, height / 600.0));` is an error:
-the inner `min` infers `f64`, which also fixes the outer `max` to `f64`.
-Choose the computation's width at the inner call:
+**Floating computation context.** After ordinary argument inference and
+overload resolution, an `f32` destination can refine a call's inferred
+`f64` type parameter to `f32`. This applies when the declaration returns
+that bare type parameter (`-> T`) and every parameter mentioning it is a
+written, bare value parameter (`x: T`). Its arguments must be adaptable
+float literals or expressions (§6.3), adaptable integer constants, or directly
+nested calls satisfying this same rule. Matching those arguments as `f32`
+must select the same overload with all other bindings unchanged; ambiguity
+or a different selected overload prevents the refinement. Normal resolution
+must succeed first: result context never rescues a failed or ambiguous call.
+
+With integer `width` and `height`, the destination below therefore chooses
+`f32` for both calls and their argument arithmetic:
 
 ```goose
-let scale: f32 = max(0.5, min<f32>(width / 960.0, height / 600.0));
+let scale: f32 = max(0.5, min(width / 960.0, height / 600.0));
 ```
 
-Alternatively, `max(0.5, min(width / 960.0, height / 600.0)) as f32` computes
-in `f64` and then rounds the result once. These are different choices:
+An explicit type argument for `T`, an already typed numeric argument, a reference or
+container parameter mentioning `T`, or a default supplying such a parameter
+commits its type. The rule does not infer a type parameter from the result
+alone, change an integer computation into floating arithmetic, or extend
+through an intervening operator or stored call result. Overload selection
+still sees the call's ordinary inferred type. Without an `f32` destination,
+calls continue to default to `f64`; an inferred binding such as
+`let saved = min(width / 960.0, height / 600.0);` stores an `f64` result.
+
+This is not a general change to mixed-argument unification. With
+`var count: i32 = 1;`, `let value: f32 = min(max(0.25, 0.5), count);`
+still errs: `count` is a typed integer argument, so result context does
+not refine that call. Reversing the arguments does not make it valid.
+Write `min<f32>(max<f32>(0.25, 0.5), count)` to choose floating arithmetic
+explicitly for that mixture. In contrast, `count * 0.5` is an adaptable
+floating expression and can participate in the contextual rule above.
+
+An explicit inner `min<f32>(...)` also chooses `f32`. Alternatively,
+`max(0.5, min(width / 960.0, height / 600.0)) as f32` computes in `f64` and
+then rounds the result once: a cast does not pass its target type into its
+operand. These are different choices:
 `min<f32>(n * 0.1, 1.0)` with integer `n = 9` computes `0.90000004`, while
 `min(n * 0.1, 1.0) as f32` computes `0.9`. A typed intermediate is also
 valid, but is not needed just to choose a generic call's type.

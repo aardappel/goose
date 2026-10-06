@@ -1,7 +1,7 @@
 // runtime-debug
 // warning: redundant `as f32`: an i32 converts to f32 implicitly here
-// Generic arguments choose the arithmetic width. A result destination never
-// changes that choice, and a result cast rounds after the computation.
+// Explicit generic arguments choose the arithmetic width. A result cast
+// rounds after the computation; contextual_generic_floats checks f32 context.
 import std;
 
 fn same<T>(value: T) -> T { value }
@@ -14,7 +14,7 @@ fn main() {
     var rows: i32 = 800;
     var n: i32 = 9;
 
-    // The concise repair for a nested generic expression: the innermost
+    // An explicit choice for a nested generic expression: the innermost
     // call gets its type explicitly, and its f32 result types the outer one.
     let scale: f32 = max(0.5, min<f32>(pixels / 960.0, rows / 600.0));
     let rounded_scale: f32 = max(0.5, min(pixels / 960.0, rows / 600.0)) as f32;
@@ -40,7 +40,7 @@ fn main() {
 
     // Both casts together anchor f32 inference. Only the later cast warns;
     // deleting that warning leaves the earlier one to choose f32. Deleting
-    // both would make the call f64 and no longer fit the destination.
+    // both would leave this annotated destination to choose f32 instead.
     let anchored: f32 = min((pixels as f32) / 960.0, (rows as f32) / 600.0);
     let repaired: f32 = min((pixels as f32) / 960.0, rows / 600.0);
     print(anchored, " ", repaired);

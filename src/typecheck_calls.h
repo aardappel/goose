@@ -12,7 +12,7 @@ namespace goose {
 // Calls: builtin members, builtins, UFCS, overload resolution with
 // generic inference (§7.1, §7.7), and case-function tag dispatch (§8.2).
 
-inline Val TypeCheck::CheckCall(Call *c) {
+inline Val TypeCheck::CheckCall(Call *c, TypeExpr *expected) {
     // A node may be re-checked in argument phase 2; reset annotations.
     c->spec = nullptr;
     c->dispatch.clear();
@@ -20,6 +20,7 @@ inline Val TypeCheck::CheckCall(Call *c) {
     c->rettypes.clear();
     c->fmtspecs.clear();
     c->fmtcontexts.clear();
+    contextualfloats.erase(c);
     lastcallrets.clear();
     c->args.erase(c->args.begin() + c->firstdefault,
                   c->args.begin() + c->firstdefault + c->ndefaults);
@@ -39,12 +40,12 @@ inline Val TypeCheck::CheckCall(Call *c) {
     // (§9.5); member ops re-set both for element pushes.
     DestScope ds(*this, Dest {});
     SlotScope ss(*this, false);
-    if (auto d = Is<Dot>(c->callee)) return CheckUfcsCall(c, d);
-    if (auto id = Is<Ident>(c->callee)) return CheckNamedCall(c, id);
+    if (auto d = Is<Dot>(c->callee)) return CheckUfcsCall(c, d, expected);
+    if (auto id = Is<Ident>(c->callee)) return CheckNamedCall(c, id, expected);
     Error(c, "this expression cannot be called");
 }
 
-inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id) {
+inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id, TypeExpr *expected) {
     if (LookupVar(id->name, id->ns))
         Error(c, cat(id->name, " is a variable, not a function"));
     const FnValBind *fb;
@@ -53,7 +54,7 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id) {
                      ", not a function"));
     if (fb) {
         id->vdef = nullptr;
-        return CheckFunValCall(c, *fb);
+        return CheckFunValCall(c, *fb, expected);
     }
     FnSpec *env = nullptr;
     vector<SFunction *> cands;
@@ -75,7 +76,8 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id) {
         // A user function set sharing a builtin's name (a `format`
         // overload, §3.7) takes the calls it matches; the builtin the rest.
         auto nomatch = false;
-        auto v = ResolveCall(c, cands, env, id->name, nullptr, nopre, bd ? &nomatch : nullptr);
+        auto v = ResolveCall(c, cands, env, id->name, nullptr, nopre,
+                             bd ? &nomatch : nullptr, expected);
         if (!nomatch) return v;
         // Without a cast, an argument might have matched a function (JudgeCastAt).
         auto args = c->args;
@@ -111,7 +113,7 @@ inline SFunction *TypeCheck::LookupLocalFnEnv(string_view name, FnSpec *&env) {
     return found;
 }
 
-inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d) {
+inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d, TypeExpr *expected) {
     Val ov;
     {
         PathScope ps(*this, d->obj);
@@ -162,7 +164,7 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d) {
         DefaultScopeName(d->name, c, true);
         cands = ast.LookupFunctions(d->name, d->ns);
     }
-    if (!cands.empty()) return ResolveCall(c, cands, env, d->name, &ov, d->obj);
+    if (!cands.empty()) return ResolveCall(c, cands, env, d->name, &ov, d->obj, nullptr, expected);
     // A member builtin taking any receiver (bytes_of) takes it as checked.
     NoArrayJoin(ov);
     if (bd && !(bd->flags & BF_PROPERTY)) {
@@ -272,7 +274,8 @@ inline void TypeCheck::AddParamDefaults(Call *c, MatchInfo &best, vector<Node *>
 // Phase 1 checks arguments bottom-up for resolution; phase 2 re-checks
 // each against its concrete parameter type (adapting literals etc.).
 inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *env,
-                                  string_view name, Val *preval, Node *&prenode, bool *nomatch) {
+                                  string_view name, Val *preval, Node *&prenode, bool *nomatch,
+                                  TypeExpr *expected) {
     vector<Node *> argnodes;
     vector<Val> argvals;
     if (prenode) {
@@ -341,6 +344,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         if (converting.size() > 1) ambiguous(converting);
         best = converting[0];
     }
+    ContextualFloatCall(c, cands, env, argnodes, argvals, best, expected, name);
     FnSpec *denv = nullptr;
     if (best.nwritten < best.paramtypes.size()) {
         denv = ParamDefaultEnv(best);
@@ -454,6 +458,68 @@ inline void TypeCheck::MatchCandidates(Call *c, vector<SFunction *> &cands, FnSp
             tied.push_back(mi);
         }
     }
+}
+
+// An f32 destination can choose the computation width of an otherwise
+// unconstrained floating generic call (§7.7). Resolve normally first: the
+// context never rescues a failed/ambiguous call or selects another overload.
+// Remember eligibility even without context, so an outer call can pass its
+// eventual f32 parameter type down during phase 2. The value itself remains
+// typed f64 for ordinary overload selection, casts and inferred bindings.
+inline void TypeCheck::ContextualFloatCall(Call *c, vector<SFunction *> &cands, FnSpec *env,
+                                           vector<Node *> &argnodes, vector<Val> &argvals,
+                                           MatchInfo &best, TypeExpr *expected,
+                                           string_view name) {
+    auto sf = best.sf;
+    if (sf->isextern || sf->rets.size() != 1 || sf->rets[0]->kind != TY_GENERIC) return;
+    auto generic = sf->rets[0]->named->name;
+    auto own = false;
+    for (size_t i = 0; i < sf->generics.size(); i++) {
+        if (sf->generics[i].name != generic) continue;
+        if (i < c->tyargs.size()) return;   // An explicit type argument commits it.
+        own = true;
+    }
+    if (!own) return;
+    auto bindings = best.bindings;
+    auto floating = false;
+    auto narrow = ast.flttypes[FS_F32];
+    for (auto &[n, t] : bindings) {
+        if (n != generic) continue;
+        if (t->kind != TY_FLT || IsF32(t)) return;
+        t = narrow;
+        floating = true;
+    }
+    if (!floating) return;   // Context never makes an integer call floating.
+
+    auto trial = argvals;
+    auto seen = false;
+    for (size_t i = 0; i < sf->params.size(); i++) {
+        auto pt = sf->params[i].type;
+        if (!pt || !NamesGeneric(pt, generic)) continue;
+        // References, containers and defaults keep their own types. Only a
+        // bare value parameter can provide this floating computation width.
+        if (pt->kind != TY_GENERIC || i >= best.nwritten) return;
+        auto &av = argvals[i];
+        // Leave typed-argument unification alone, including integer/float
+        // mixtures: context must not make their argument order significant.
+        auto integer = IsIntT(av.type) &&
+                       (av.ck == CK_INT || av.unsized || av.litint || av.flexint);
+        if (!LitFloat(av) && !integer && !contextualfloats.count(argnodes[i])) return;
+        // Use typed f32 values for the trial. Its chosen specialization has
+        // no literal parameters for T, just as an explicit <f32> would.
+        trial[i] = Val {};
+        trial[i].type = narrow;
+        seen = true;
+    }
+    if (!seen) return;
+    vector<MatchInfo> tied, converting;
+    MatchCandidates(c, cands, env, trial, tied, converting, nullptr, name);
+    // A concrete f32 overload, a newly ambiguous set, or another changed
+    // binding is a boundary: narrowing must never redirect this call.
+    if (tied.size() != 1 || tied[0].sf != sf ||
+        !BindingsEq(tied[0].bindings, bindings)) return;
+    contextualfloats.insert(c);
+    if (expected && IsF32(expected)) best = tied[0];
 }
 
 // The followed casts (§6.3) among a call's written arguments, each judged by
@@ -2950,13 +3016,13 @@ inline FnSpec *TypeCheck::EnsureThreadSpec(SFunction *sf, Line l) {
 // Calling a function value F(a): the body is cloned and checked inline
 // in the lexical environment it was written in (§7.6).
 
-inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb) {
+inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb, TypeExpr *expected) {
     if (c->trailing)
         Error(c, "a function value call cannot itself take a trailing block");
     if (fb.named) {
         vector<SFunction *> cands = { fb.named };
         Node *nopre = nullptr;
-        return ResolveCall(c, cands, fb.env, fb.named->name, nullptr, nopre);
+        return ResolveCall(c, cands, fb.env, fb.named->name, nullptr, nopre, nullptr, expected);
     }
     auto fv = fb.fv;
     if (!c->tyargs.empty()) Error(c, "a block takes no type arguments");

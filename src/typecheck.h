@@ -1849,12 +1849,19 @@ struct TypeCheck {
     void NoteLitArgs(FnSpec *spec, vector<Val> &argvals, Node *at);
     void VerifyLiterals();
 
-    Val CheckCall(Call *c);
-    Val CheckNamedCall(Call *c, Ident *id);
+    // Calls whose inferred floating return parameter can still take f32
+    // context from a containing call. This is syntax-local: storing the
+    // result, casting it, or passing it through an overload commits it.
+    unordered_set<Node *> contextualfloats;
+    void ContextualFloatCall(Call *c, vector<SFunction *> &cands, FnSpec *env,
+                             vector<Node *> &argnodes, vector<Val> &argvals,
+                             MatchInfo &best, TypeExpr *expected, string_view name);
+    Val CheckCall(Call *c, TypeExpr *expected);
+    Val CheckNamedCall(Call *c, Ident *id, TypeExpr *expected);
     SFunction *LookupLocalFnEnv(string_view name, FnSpec *&env);
-    Val CheckUfcsCall(Call *c, Dot *d);
+    Val CheckUfcsCall(Call *c, Dot *d, TypeExpr *expected);
     Val ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *env, string_view name, Val *preval,
-                    Node *&prenode, bool *nomatch = nullptr);
+                    Node *&prenode, bool *nomatch = nullptr, TypeExpr *expected = nullptr);
     void MatchCandidates(Call *c, vector<SFunction *> &cands, FnSpec *env, vector<Val> &argvals,
                          vector<MatchInfo> &tied, vector<MatchInfo> &converting, string *failures,
                          string_view name);
@@ -2339,7 +2346,7 @@ struct TypeCheck {
     // Calling a function value F(a): the body is cloned and checked inline
     // in the lexical environment it was written in (§7.6).
 
-    Val CheckFunValCall(Call *c, const FnValBind &fb);
+    Val CheckFunValCall(Call *c, const FnValBind &fb, TypeExpr *expected);
     TypeExpr *SubstEnv(TypeExpr *t, FnSpec *env);
 
     // ------------------------------------------------------------------

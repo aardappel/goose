@@ -2170,6 +2170,23 @@ checked, which a back edge reaches before (§7.8), so a function in a cycle
 may not infer one (`NoInferredRefResult`): `JoinCycle` checks each function
 joining a cycle, `RecordReturn` one already in a cycle inferring its result.
 
+**Floating generic context** (§7.7): `Call::Check` passes the expected type
+through named, UFCS and named-function-value calls to `ResolveCall`.
+After ordinary bottom-up resolution, `ContextualFloatCall` recognizes a
+single declared generic return `T` inferred as `f64` from adaptable numeric
+value arguments. A trial match with typed `f32` arguments must select the
+same function with only that binding changed. Explicit arguments for `T`,
+already typed numeric values, compound parameters mentioning `T`, and defaults for
+those parameters are boundaries. The checker records eligible call nodes
+in `contextualfloats` even without an expected type, so a containing call
+can recognize eligible nested computations. This does not mark their
+values as literal-like: ordinary overload selection and inferred bindings
+still see `f64`. At an `f32` destination, the trial's parameter types and
+bindings replace the chosen match; phase 2 rechecks the arguments at those
+types, recursively refining nested calls. These are ordinary typed `f32`
+specializations, with no literal parameters for the refined type variable.
+No runtime cast of an already computed `f64` result implements the change.
+
 **Literal parameters** (§7.7): an argument that is a literal (or a literal
 parameter passed on) to an untyped parameter, or to a bare type variable no
 typed argument binds, makes the parameter a literal parameter: part of the

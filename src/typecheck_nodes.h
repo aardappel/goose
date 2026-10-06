@@ -582,7 +582,7 @@ inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
     return tc.ContainerRead(lv);
 }
 
-inline Val Call::Check(TypeCheck &tc, TypeExpr *) { return tc.CheckCall(this); }
+inline Val Call::Check(TypeCheck &tc, TypeExpr *expected) { return tc.CheckCall(this, expected); }
 
 inline Val Index::Check(TypeCheck &tc, TypeExpr *) {
     return tc.ContainerRead(tc.CheckLValue(this));

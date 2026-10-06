@@ -977,13 +977,13 @@ inline void TypeCheck::MustFit(Val &v, Node *n, TypeExpr *dt) {
             hint = " (a float converts to an integer only with an explicit `as`)";
         else if (v.type->kind == TY_FLT && !IsF32(v.type) && IsF32(dt)) {
             hint = " (f64 to f32 requires an explicit `as f32` to round the value)";
-            // Call results commit their type, unlike a float of literals.
-            // Do not suggest putting a type argument on this outer call:
-            // a nested call may already have committed an f64 argument.
+            // Context refines only unconstrained floating generic calls.
+            // A typed argument, explicit type argument or overload boundary
+            // may still have committed this result to f64 (§7.7).
             if (auto c = Is<Call>(n); c && c->spec && !c->spec->bindings.empty())
-                Append(hint, "; generic calls infer types from their arguments, not this "
-                             "destination; choose f32 with a typed argument or an explicit "
-                             "type argument before a nested call commits an f64 result");
+                Append(hint, "; this generic call has committed to f64; choose f32 before "
+                             "a typed argument, explicit type argument or overload commits "
+                             "the computation");
         }
         Error(n, cat("expected a value of type ", TypeStr(dt), ", got ", TypeStr(got), hint));
     }
