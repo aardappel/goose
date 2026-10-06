@@ -257,17 +257,18 @@ of the end of the compile thread's 64 MB stack (§1 above), and below it
 reports "compile-time call path too deep for the compiler's stack" with the
 number of calls nested. The headroom holds whatever a body nests below the
 check and the error's unwinding. How many calls fit depends on the frames
-the C++ compiler made: for a chain of functions shaped
-`let a: i64[1] = [x]; next(a[0], n - 1) + 1` it is about 4,600 in an MSVC
-Debug build, 5,700 in a clang Debug or ASan one, 11,600 in an MSVC Release
-one and 18,700 in a clang -O3 one, and each block around the call costs
-another 1.6 to 2 KB per call in a Debug build and 0.7 to 1.3 KB in a Release
-one. Checking a path that deep takes seconds and, at about 175 KB per
-activation on the path (its cloned body, variables and records; a chain of
-3,000 peaks at 530 MB), in a Release build gigabytes, so increasing the
-stack size would have limited benefit. The optimizer's `Reach` and BCE's
-`BuildCallGraph` walk the same call graph recursively, with smaller frames,
-unchecked.
+the C++ compiler made, including local variables from branches that the
+call path never takes: in a Debug build those can still occupy stack slots
+for the whole activation. `Binary::Check` therefore checks ordinary operands
+in a small frame; reference identity, short-circuit flow and result checking
+live in separate helpers, so their temporaries do not accumulate along a
+chain of calls in arithmetic operands. CI checks and runs a chain of 2,000
+functions shaped `let a: i64[1] = [x]; next(a[0], n - 1) + 1`, and requires
+a chain of 6,000, each calling the next from 32 blocks deep, to report the
+depth error. Each activation also retains its cloned body, variables and
+records, so increasing the stack size alone would have limited benefit.
+The optimizer's `Reach` and BCE's `BuildCallGraph` walk the same call graph
+recursively, with smaller frames, unchecked.
 
 **Frames, scopes and variables.** `frames` is the compile-time call path;
 `scopes` is one flat vector for the whole path (a frame records where its

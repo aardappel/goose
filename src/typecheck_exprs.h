@@ -1624,6 +1624,143 @@ inline void TypeCheck::RetypeVal(Val &v, TypeExpr *ct) {
     else v.type = ct;
 }
 
+inline Val TypeCheck::CheckRefIdentity(Binary *b) {
+    // Reference identity (§4.5): the addresses, never the pointees. Each
+    // side is a reference (plain or optional) or null, or storage taken
+    // by reference as a `.=` binding takes it; the pointee types agree.
+    auto lv = CheckV(b->left, nullptr);
+    if (lv.lvalue && !IsRefOrSlice(lv.type)) {
+        b->left = AutoRef(b->left, lv, false);
+        RecordVal(b->left, lv);
+    }
+    auto rv = CheckV(b->right, nullptr);
+    if (rv.lvalue && !IsRefOrSlice(rv.type))
+        b->right = AutoRef(b->right, rv, false);
+    b->left->exprtype = lv.type;
+    b->right->exprtype = rv.type;
+    auto isref = [&](const Val &v) { return v.isnull || v.type->kind == TY_REF; };
+    if (!isref(lv) || !isref(rv))
+        Error(b, cat(TName(b->op), " compares references by address; got ",
+                     TypeStr(lv.type), " and ", TypeStr(rv.type)));
+    if (!lv.isnull && !rv.isnull && !TypeEq(lv.type->ref->sub, rv.type->ref->sub))
+        Error(b, cat(TName(b->op), " needs references to the same type, got ",
+                     TypeStr(lv.type), " and ", TypeStr(rv.type)));
+    Val v;
+    v.type = ast.booltype;
+    return v;
+}
+
+inline Val TypeCheck::CheckLogical(Binary *b) {
+    CheckCond(b->left);
+    auto snap = SaveFlow();
+    NarrowCond(b->left, b->op == T_ANDAND);
+    auto mid = SaveFlow();
+    CheckCond(b->right);
+    // The right operand may not run, and runs after the left test: what
+    // it un-narrows is un-narrowed after the condition, and the left test
+    // cannot narrow it for the region the condition guards; what it
+    // assigns may be assigned after the condition.
+    b->rightkills.clear();
+    vector<VarDef *> mayassign;
+    for (auto &e : mid.locals) {
+        if (!InScope(e.var, e.index)) continue;
+        auto v = e.var;
+        if (e.state.narrowed && !v->narrowed) b->rightkills.push_back(v);
+        if (v->maybeassigned) mayassign.push_back(v);
+    }
+    for (auto [gv, gn] : mid.globals)
+        if (gn && !gv->narrowed) b->rightkills.push_back(gv);
+    RestoreFlow(snap);
+    for (auto kv : b->rightkills) kv->narrowed = nullptr;
+    for (auto v : mayassign) v->maybeassigned = true;
+    Val v;
+    v.type = ast.booltype;
+    return v;
+}
+
+inline Val TypeCheck::CheckBinaryResult(Binary *b, Val &lv, Val &rv) {
+    NoUntypedEmptyArray(lv, b->left, TName(b->op));
+    NoUntypedEmptyArray(rv, b->right, TName(b->op));
+    auto lt = LoadType(lv.type), rt = LoadType(rv.type);
+    auto numeric = [](TypeExpr *t) { return IsIntT(t) || t->kind == TY_FLT; };
+    if (b->op == T_EQ || b->op == T_NEQ) {
+        Val v;
+        v.type = ast.booltype;
+        // null tests: the other side must be an optional (an already
+        // narrowed optional variable still counts).
+        if (lv.isnull || rv.isnull) {
+            auto othernode = lv.isnull ? b->right : b->left;
+            auto &other = lv.isnull ? rt : lt;
+            auto oid = Is<Ident>(othernode);
+            auto narrowedopt = oid && oid->vdef && IsOptional(oid->vdef->type);
+            if (!IsOptional(other) && !narrowedopt && !(lv.isnull && rv.isnull))
+                Error(b, cat("only optionals compare against null, not ",
+                             TypeStr(other)));
+            return v;
+        }
+        if (!numeric(lt) || !numeric(rt)) {
+            if (lt->kind == TY_FN || lt->kind == TY_VOID)
+                Error(b, "these values cannot be compared");
+            // Two arrays or slices of one element type compare as slices,
+            // whatever their kinds (§4.5): `name == "x"`, `a[..] == b`.
+            auto elemof = [](TypeExpr *t) -> TypeExpr * {
+                if (t->kind == TY_SLICE) return t->sub;
+                if (t->kind == TY_ARRAY) return t->arr->sub;
+                return nullptr;
+            };
+            if (!TypeEq(lt, rt) && elemof(lt) && elemof(rt) &&
+                TypeEq(elemof(lt), elemof(rt))) {
+                if (lt->kind != TY_SLICE) {
+                    b->left = WholeSlice(b->left);
+                    lv = Operand(b->left);
+                    lt = LoadType(lv.type);
+                }
+                if (rt->kind != TY_SLICE) b->right = WholeSlice(b->right);
+                // The adaptation can turn a copied fixed-array operand into
+                // a retained view. Recheck the RHS with that view live, as
+                // call arguments are rechecked after parameter adaptation.
+                rv = Operand(b->right);
+                rt = LoadType(rv.type);
+            }
+            if (!TopConstEq(lt, rt))
+                Error(b, cat("== requires operands of the same type, got ",
+                             TypeStr(lt), " and ", TypeStr(rt)));
+            return v;
+        }
+    }
+    if ((b->op == T_PLUS || b->op == T_MINUS || b->op == T_MUL || b->op == T_DIV || b->op == T_MOD) &&
+        (!numeric(lt) || !numeric(rt))) {
+        // Elementwise math on identical struct / fixed array types whose
+        // scalar leaves are uniformly int or float (§6.1).
+        if (TypeEq(lt, rt) && ElementwiseOK(lt)) {
+            Val v;
+            v.type = lt;
+            return v;
+        }
+        if ((b->op == T_MUL || b->op == T_DIV) && numeric(lt) != numeric(rt)) {
+            auto aggregate = numeric(lt) ? rt : lt;
+            if (auto scalar = ElementwiseScalarType(aggregate)) {
+                auto &sn = numeric(lt) ? b->left : b->right;
+                auto &sv = numeric(lt) ? lv : rv;
+                auto fitted = sv;
+                MustFit(fitted, sn, scalar);
+                RetypeOperand(sn, sv, scalar);
+                Val v;
+                v.type = aggregate;
+                return v;
+            }
+        }
+        Error(b, cat("operator ", TName(b->op), " cannot be applied to ",
+                     TypeStr(lt), " and ", TypeStr(rt)));
+    }
+    // The operands' nodes as checked, before retyping may wrap them.
+    auto l = b->left, r = b->right;
+    TypeExpr *ct = nullptr;
+    auto v = NumericBinary(b, lv, rv, ct, false);
+    JudgeBinaryCasts(b, l, r, lv, rv, v, ct);
+    return v;
+}
+
 // The value of the numeric operation b, `lv op rv` (§6.1, §6.2): the
 // operands' common type `ct`, which their nodes take, and the result's type
 // and constant. A `trial` changes no node and reports no error: it gives a

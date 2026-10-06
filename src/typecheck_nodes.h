@@ -401,144 +401,17 @@ inline Val Unary::Check(TypeCheck &tc, TypeExpr *) {
     return r;
 }
 
+// Keep operator-specific temporaries in helpers: this frame stays on the
+// native stack while an operand checks a whole chain of callees.
 inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
     litfloat = false;
     flexint = false;
     tc.ForgetCastAlt(this);
-    if (op == T_DOTEQ || op == T_DOTNEQ) {
-        // Reference identity (§4.5): the addresses, never the pointees. Each
-        // side is a reference (plain or optional) or null, or storage taken
-        // by reference as a `.=` binding takes it; the pointee types agree.
-        auto lv = tc.CheckV(left, nullptr);
-        if (lv.lvalue && !IsRefOrSlice(lv.type)) {
-            left = tc.AutoRef(left, lv, false);
-            tc.RecordVal(left, lv);
-        }
-        auto rv = tc.CheckV(right, nullptr);
-        if (rv.lvalue && !IsRefOrSlice(rv.type))
-            right = tc.AutoRef(right, rv, false);
-        left->exprtype = lv.type;
-        right->exprtype = rv.type;
-        auto isref = [&](const Val &v) { return v.isnull || v.type->kind == TY_REF; };
-        if (!isref(lv) || !isref(rv))
-            tc.Error(this, cat(TName(op), " compares references by address; got ",
-                               tc.TypeStr(lv.type), " and ", tc.TypeStr(rv.type)));
-        if (!lv.isnull && !rv.isnull && !tc.TypeEq(lv.type->ref->sub, rv.type->ref->sub))
-            tc.Error(this, cat(TName(op), " needs references to the same type, got ",
-                               tc.TypeStr(lv.type), " and ", tc.TypeStr(rv.type)));
-        Val v;
-        v.type = tc.ast.booltype;
-        return v;
-    }
-    if (op == T_ANDAND || op == T_OROR) {
-        tc.CheckCond(left);
-        auto snap = tc.SaveFlow();
-        tc.NarrowCond(left, op == T_ANDAND);
-        auto mid = tc.SaveFlow();
-        tc.CheckCond(right);
-        // The right operand may not run, and runs after the left test: what
-        // it un-narrows is un-narrowed after the condition, and the left test
-        // cannot narrow it for the region the condition guards; what it
-        // assigns may be assigned after the condition.
-        rightkills.clear();
-        vector<VarDef *> mayassign;
-        for (auto &e : mid.locals) {
-            if (!tc.InScope(e.var, e.index)) continue;
-            auto v = e.var;
-            if (e.state.narrowed && !v->narrowed) rightkills.push_back(v);
-            if (v->maybeassigned) mayassign.push_back(v);
-        }
-        for (auto [gv, gn] : mid.globals)
-            if (gn && !gv->narrowed) rightkills.push_back(gv);
-        tc.RestoreFlow(snap);
-        for (auto kv : rightkills) kv->narrowed = nullptr;
-        for (auto v : mayassign) v->maybeassigned = true;
-        Val v;
-        v.type = tc.ast.booltype;
-        return v;
-    }
+    if (op == T_DOTEQ || op == T_DOTNEQ) return tc.CheckRefIdentity(this);
+    if (op == T_ANDAND || op == T_OROR) return tc.CheckLogical(this);
     auto lv = tc.Operand(left);
     auto rv = tc.Operand(right);
-    tc.NoUntypedEmptyArray(lv, left, TName(op));
-    tc.NoUntypedEmptyArray(rv, right, TName(op));
-    auto lt = tc.LoadType(lv.type), rt = tc.LoadType(rv.type);
-    auto numeric = [](TypeExpr *t) { return IsIntT(t) || t->kind == TY_FLT; };
-    if (op == T_EQ || op == T_NEQ) {
-        Val v;
-        v.type = tc.ast.booltype;
-        // null tests: the other side must be an optional (an already
-        // narrowed optional variable still counts).
-        if (lv.isnull || rv.isnull) {
-            auto othernode = lv.isnull ? right : left;
-            auto &other = lv.isnull ? rt : lt;
-            auto oid = Is<Ident>(othernode);
-            auto narrowedopt = oid && oid->vdef && IsOptional(oid->vdef->type);
-            if (!IsOptional(other) && !narrowedopt && !(lv.isnull && rv.isnull))
-                tc.Error(this, cat("only optionals compare against null, not ",
-                                   tc.TypeStr(other)));
-            return v;
-        }
-        if (!numeric(lt) || !numeric(rt)) {
-            if (lt->kind == TY_FN || lt->kind == TY_VOID)
-                tc.Error(this, "these values cannot be compared");
-            // Two arrays or slices of one element type compare as slices,
-            // whatever their kinds (§4.5): `name == "x"`, `a[..] == b`.
-            auto elemof = [](TypeExpr *t) -> TypeExpr * {
-                if (t->kind == TY_SLICE) return t->sub;
-                if (t->kind == TY_ARRAY) return t->arr->sub;
-                return nullptr;
-            };
-            if (!tc.TypeEq(lt, rt) && elemof(lt) && elemof(rt) &&
-                tc.TypeEq(elemof(lt), elemof(rt))) {
-                if (lt->kind != TY_SLICE) {
-                    left = tc.WholeSlice(left);
-                    lv = tc.Operand(left);
-                    lt = tc.LoadType(lv.type);
-                }
-                if (rt->kind != TY_SLICE) right = tc.WholeSlice(right);
-                // The adaptation can turn a copied fixed-array operand into
-                // a retained view. Recheck the RHS with that view live, as
-                // call arguments are rechecked after parameter adaptation.
-                rv = tc.Operand(right);
-                rt = tc.LoadType(rv.type);
-            }
-            if (!tc.TopConstEq(lt, rt))
-                tc.Error(this, cat("== requires operands of the same type, got ",
-                                   tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
-            return v;
-        }
-    }
-    if ((op == T_PLUS || op == T_MINUS || op == T_MUL || op == T_DIV || op == T_MOD) &&
-        (!numeric(lt) || !numeric(rt))) {
-        // Elementwise math on identical struct / fixed array types whose
-        // scalar leaves are uniformly int or float (§6.1).
-        if (tc.TypeEq(lt, rt) && tc.ElementwiseOK(lt)) {
-            Val v;
-            v.type = lt;
-            return v;
-        }
-        if ((op == T_MUL || op == T_DIV) && numeric(lt) != numeric(rt)) {
-            auto aggregate = numeric(lt) ? rt : lt;
-            if (auto scalar = tc.ElementwiseScalarType(aggregate)) {
-                auto &sn = numeric(lt) ? left : right;
-                auto &sv = numeric(lt) ? lv : rv;
-                auto fitted = sv;
-                tc.MustFit(fitted, sn, scalar);
-                tc.RetypeOperand(sn, sv, scalar);
-                Val v;
-                v.type = aggregate;
-                return v;
-            }
-        }
-        tc.Error(this, cat("operator ", TName(op), " cannot be applied to ",
-                           tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
-    }
-    // The operands' nodes as checked, before retyping may wrap them.
-    auto l = left, r = right;
-    TypeExpr *ct = nullptr;
-    auto v = tc.NumericBinary(this, lv, rv, ct, false);
-    tc.JudgeBinaryCasts(this, l, r, lv, rv, v, ct);
-    return v;
+    return tc.CheckBinaryResult(this, lv, rv);
 }
 
 inline Val Dot::Check(TypeCheck &tc, TypeExpr *) {
