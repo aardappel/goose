@@ -139,3 +139,38 @@ saves without a clock load in the morning. Close the window to quit. `-- --seed 
 chooses terrain, `-- --frames N` renders a repeatable screenshot, and
 `-- --test` runs the gameplay checks without opening a window. The finite
 world deliberately omits mobs, hunger, damage, tool wear, and flowing water.
+
+## A small Doom-like game
+
+| Sample | What it shows |
+|---|---|
+| [31_mini_doom](31_mini_doom.goose) | A playable Freedoom E1M1 using `gfx` and `audio`: checked little-endian WAD parsing, palette and patch decoding, a texture atlas, BSP-clipped floor polygons, textured walls, billboard sprites, sliding collision, stairs, falling, doors, lifts, pickups, combat, and one update/draw loop. Includes pistol, shotgun, chaingun and fists, four enemy types, imp fireballs, exploding barrels, damaging floors, secrets, the blue key and the exit. Uses the supplied `data/freedoom1-e1m1.wad`. |
+
+Run `goose samples/31_mini_doom.goose` from the repository root, or
+`goose 31_mini_doom.goose` from `samples`. It starts directly in the level.
+WASD walks, Shift runs, mouse or Left/Right turns, E or Space uses doors
+and switches, and left mouse or Ctrl fires. Select fists, pistol, shotgun,
+or chaingun with 1–4 (the latter two must be collected). Tab toggles the map;
+H toggles help. Escape pauses and releases the cursor; click or Escape
+resumes. Losing focus pauses. R restarts after death or completing the level.
+F12 saves `mini_doom.png` in the working directory.
+
+The sample uses medium-difficulty things. Find the blue key and use the exit
+switch. Lifts lower when used or crossed, wait, and carry you back up. Some
+walls are secret doors. The automap shows the whole map and does not pause
+play. Blue lines mark locked doors; yellow lines mark triggers.
+
+`-- --test` runs the checks without a graphics window or sound device,
+including automated walks to the key and exit with enemies removed. The
+sample runner uses `-- --test --frames 30` to also render a repeatable PNG.
+`-- --silent` disables playback; device failure also permits silent play.
+`-- --wad PATH` selects the supplied WAD when running from another directory.
+The checks deliberately target this particular level.
+
+This is an independent, approximate game, not a compatible Doom engine.
+It omits music, saves, multiplayer, jumping, vertical aiming, monster
+pathfinding, directional monster art and the larger weapon set. Unimplemented
+weapon/ammo pickups provide bullets; a chainsaw pickup does the same. The
+WAD's own sprites, font and sounds keep the sample self-contained beyond
+that one asset file. See [implementation and API feedback](mini_doom_notes.md)
+for design choices, validation, and possible improvements to Goose.
