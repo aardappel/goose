@@ -2408,13 +2408,22 @@ Scalars and flat fixed-size returns are returned by value. A read-only
 their storage remains borrowed according to the Goose function's lifetime.
 Other references, slices, and variable-size returns are rejected.
 
-Generated C retains its normal `main` unless compiled with `--library`. Library
-mode omits that `main` and permits a source without a Goose `fn main()`. A C
-host must call `goose_init(argc, argv)` before calling any exported function.
-Initialization is idempotent on the initializing thread; exported calls and
-mutable Goose globals are not thread-safe and must remain on that thread.
-`--header out.h` writes declarations and the required packed C type definitions
-for the exported API; it requires generated C output and at least one export.
+Generated C retains its normal `main` unless the program is compiled with
+`--header out.h`, which builds it for a C host: the generated C has no `main`
+and a source without a Goose `fn main()` is accepted. The header declares
+`goose_init(argc, argv)`, which a C host must call before any exported
+function. It initializes the runtime and the globals and then runs the Goose
+`fn main()`, if there is one, so `main` is where a library keeps its own
+start-up code; exported functions may be called from it. A second call does
+nothing. Initialization is idempotent on the initializing thread; exported
+calls and mutable Goose globals are not thread-safe and must remain on that
+thread. `--header` requires generated C output and at least one export, and
+writes declarations and the required packed C type definitions for the
+exported API.
+
+An exported C symbol is emitted as written, as an `extern` one is, and must be a
+C identifier that is not a C keyword and that the program does not otherwise
+reserve (`main`, `goose_init`, or a name beginning with `gs_`).
 
 The wrapper calls the normal generated Goose specialization, not its hidden
 internal C signature. This keeps Goose's stack argument and other compiler

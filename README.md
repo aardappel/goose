@@ -350,42 +350,6 @@ cross the boundary; unsupported signatures are rejected at the declaration.
 The compiler emits one C file for the whole program. The bundled TinyCC
 backend can compile and run that C inside the Goose compiler's process.
 
-### Export Goose functions to C
-
-```goose
-export fn hello_world() -> const u8[:] {
-    return "Hello, world!"
-}
-```
-
-Build it as a C library and generate a matching API header:
-
-```sh
-goose --library --standalone --header hello.h -o hello.c hello.goose
-cc hello.c app.c -o app
-```
-
-The C host includes the generated header, initializes Goose once, then writes
-the returned bytes using the length (the slice is not NUL-terminated):
-
-```c
-#include "hello.h"
-#include <stdio.h>
-
-int main(int argc, char **argv) {
-    int64_t length;
-    goose_init(argc, argv);
-    const uint8_t *message = hello_world(&length);
-    fwrite(message, 1, (size_t)length, stdout);
-    putchar('\n');
-    return 0;
-}
-```
-
-Exported functions can also return scalars or flat fixed-size values. See
-[spec §7.11](docs/goose_spec.md) for supported signatures and initialization
-constraints.
-
 ### Where the speed comes from
 
 Much of the speed comes from the memory model: no heap allocation or
