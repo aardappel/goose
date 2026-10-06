@@ -1,0 +1,5 @@
+mono copied, completed, silence
+gain, pan, interpolation, live update
+stereo, sample rates, loop boundary, stop
+overlap, clipping, release stops voices, stale handles
+close/open invalidates handles, stop all

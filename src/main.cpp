@@ -10,6 +10,7 @@
 #include "resolve.h"
 #include "builtins.h"
 #include "gfx.h"
+#include "audio.h"
 #include "physics.h"
 #include "ui.h"
 #include "typecheck.h"
@@ -380,11 +381,13 @@ int Main(int argc, char **argv) {
         // Hidden: what a shader compiles to, without a program around it.
         else if (arg == "--compile-shader" && i + 1 < argc) shaderfile = argv[++i];
         else if (arg == "--shader-source" && i + 1 < argc) shadersource = argv[++i];
-        else if ((arg == "--gfx-link" || arg == "--physics-link" || arg == "--ui-link") &&
+        else if ((arg == "--audio-link" || arg == "--gfx-link" ||
+                  arg == "--physics-link" || arg == "--ui-link") &&
                  i + 1 < argc) {
             try {
                 auto style = argv[++i];
-                auto path = arg == "--gfx-link"       ? GfxLinkFile(DirOf(argv[0]), style)
+                auto path = arg == "--audio-link"     ? AudioLinkFile(DirOf(argv[0]), style)
+                            : arg == "--gfx-link"     ? GfxLinkFile(DirOf(argv[0]), style)
                             : arg == "--physics-link" ? PhysicsLinkFile(DirOf(argv[0]), style)
                                                       : UiLinkFile(DirOf(argv[0]), style);
                 printf("%s\n", path.c_str());
@@ -433,7 +436,8 @@ int Main(int argc, char **argv) {
                         "[--stdlib dir] file.goose [-- program args...] | "
                         "--multi-test [options] file.goose... | --emit-runtime runtime.c | "
                         "--gen-runtime-header | "
-                        "--gfx-link msvc|cc | --physics-link msvc|cc | --ui-link msvc|cc\n");
+                        "--audio-link msvc|cc | --gfx-link msvc|cc | "
+                        "--physics-link msvc|cc | --ui-link msvc|cc\n");
         fprintf(stderr, "without -o the program is compiled and run in this process%s.\n",
                 have_jit ? " by TinyCC" : " -- unavailable in this build, so the .c is written");
         fprintf(stderr, "the .c that -o writes links with the runtime that --emit-runtime "
@@ -617,6 +621,7 @@ int Main(int argc, char **argv) {
                                      "place thread-local storage in an in-memory run); "
                                      "compile with -o and a C compiler instead" };
             // The native layers are this compiler's own, handed to the program.
+            if (cg.layers.audio && !have_audio) throw CompileError { no_audio_error };
             if (cg.layers.gfx && !have_gfx) throw CompileError { no_gfx_error };
             if (cg.layers.physics && !have_physics) throw CompileError { no_physics_error };
             if (cg.layers.ui && !have_ui) throw CompileError { no_ui_error };

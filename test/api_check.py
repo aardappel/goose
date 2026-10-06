@@ -1,7 +1,8 @@
 """Checks that each stdlib module with a native layer and that layer's C API
 header describe the same boundary: stdlib/gfx.goose against
 src/gfx/gfx_api.h, stdlib/physics.goose against src/physics/physics_api.h,
-and stdlib/ui.goose against src/ui/ui_api.h. Every `extern "gs_..." fn`
+stdlib/ui.goose against src/ui/ui_api.h, and stdlib/audio.goose against
+src/audio/audio_api.h. Every `extern "gs_..." fn`
 against the header's list of functions, parameter by parameter; every struct
 that crosses, field by field; and every constant. A mismatch there compiles
 on both sides and then passes garbage, which is why it is checked rather
@@ -15,10 +16,10 @@ mixing floats and integers would arrive in different registers.
 The naming convention the check relies on: the Goose struct `TextureDesc` is
 `gs_gfx_texture_desc` in C, a slice `const Buffer[:]` is
 `gs_gfx_buffer_slice`, `u8[:]` is `gs_gfx_bytes`, `T&` is a pointer; the
-same with `gs_phys_` for physics and `gs_ui_` for ui.
+same with `gs_phys_` for physics, `gs_ui_` for ui and `gs_audio_` for audio.
 
 Used by run_tests.py: check(module) returns a list of problems, empty when the
-two agree. Runnable alone: python test/api_check.py [gfx|physics|ui]
+two agree. Runnable alone: python test/api_check.py [audio|gfx|physics|ui]
 """
 
 import re
@@ -37,6 +38,7 @@ VECS = ("int2", "int3", "float2", "float3", "float4")
 # Each module: its header, its Goose file, the prefix of its list macros and
 # of its C names.
 MODULES = {
+    "audio": ("src/audio/audio_api.h", "stdlib/audio.goose", "AUDIO", "gs_audio_"),
     "gfx": ("src/gfx/gfx_api.h", "stdlib/gfx.goose", "GFX", "gs_gfx_"),
     "physics": ("src/physics/physics_api.h", "stdlib/physics.goose", "PHYS", "gs_phys_"),
     "ui": ("src/ui/ui_api.h", "stdlib/ui.goose", "UI", "gs_ui_"),

@@ -442,6 +442,11 @@ checks kept per line, and `-DGS_DEBUG=1` turns on the overflow, range and tag
 checks in the generated C, each abort naming its source line (and an overflow
 or a cast the values involved).
 
+A program using `audio` plays procedural mono/stereo PCM through SDL3 without
+opening a graphics window. The optional `GOOSE_AUDIO` build setting is independent
+of `GOOSE_GFX`; generated-C programs link the response file named by
+`goose --audio-link msvc|cc`. See the [audio reference](docs/stdlib.md#audio).
+
 A program using `gfx` also links the graphics layer and SDL, which the compiler
 names in a response file:
 

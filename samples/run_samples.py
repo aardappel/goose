@@ -9,8 +9,8 @@ stderr, which is not compared.
 
 A sample importing gfx draws off screen here (GOOSE_GFX_HEADLESS), links what
 `goose --gfx-link` names, and is skipped where the compiler has no gfx layer
-or the machine no GPU device. A sample importing physics or ui links what
-`goose --physics-link` or `--ui-link` names, and is skipped where the
+or the machine no GPU device. A sample importing audio, physics or ui links what
+`goose --audio-link`, `--physics-link` or `--ui-link` names, and is skipped where the
 compiler has no such layer.
 
 A compiler built with the TinyCC backend also runs every sample a second way,
@@ -89,7 +89,8 @@ def main():
     runtime = tc.GooseRuntime(exe, gendir / "runtime")
     (HERE / "expected").mkdir(exist_ok=True)
 
-    native = {"gfx": tc.gfx_link(exe, cc) if cc else [],
+    native = {"audio": tc.audio_link(exe, cc) if cc else [],
+              "gfx": tc.gfx_link(exe, cc) if cc else [],
               "physics": tc.physics_link(exe, cc) if cc else [],
               "ui": tc.ui_link(exe, cc) if cc else []}
     gpulock = threading.BoundedSemaphore(args.gpu_jobs) if args.gpu_jobs else None
@@ -206,7 +207,7 @@ def main():
     if jitskips:
         print("skip JIT for sample(s) the backend cannot run yet: " + ", ".join(jitskips))
     if nativeskips:
-        print("skip gfx, physics or ui sample(s) (no layer for them, or no GPU device): " +
+        print("skip audio, gfx, physics or ui sample(s) (no layer for them, or no GPU device): " +
               ", ".join(sorted(set(nativeskips))))
     if failures:
         print(f"{failures} SAMPLE FAILURE(S)")

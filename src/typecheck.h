@@ -2570,7 +2570,8 @@ struct TypeCheck {
                     // SDL's windowing is main-thread only.
                     if (c->spec && c->spec->sf->isextern) {
                         auto &cname = c->spec->sf->cname;
-                        auto module = cname.rfind("gs_gfx_", 0) == 0    ? "gfx"
+                        auto module = cname.rfind("gs_audio_", 0) == 0  ? "audio"
+                                      : cname.rfind("gs_gfx_", 0) == 0  ? "gfx"
                                       : cname.rfind("gs_phys_", 0) == 0 ? "physics"
                                       : cname.rfind("gs_ui_", 0) == 0   ? "ui"
                                                                         : nullptr;

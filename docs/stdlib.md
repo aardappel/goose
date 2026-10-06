@@ -1,16 +1,17 @@
 # The Goose standard library
 
-The standard library has eight modules under `stdlib/`: `std`, `dictionary`,
-`vec`, `math`, `os`, `gfx`, `physics`, and `ui`. Import each module by name,
+The standard library has nine modules under `stdlib/`: `std`, `dictionary`,
+`vec`, `math`, `os`, `audio`, `gfx`, `physics`, and `ui`. Import each module by name,
 for example `import std;`. The compiler locates the library in its source
 tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
 Everything is written in Goose except the C behind `os`
 (`src/runtime/runtime_os.h`), libm behind `math`, the graphics layer behind
 `gfx` (`src/gfx/`), the physics layer behind `physics` (`src/physics/`) and
-the ui layer behind `ui` (`src/ui/`), all reached through `extern fn` (spec
+the ui layer behind `ui` (`src/ui/`), and the PCM mixer behind `audio`
+(`src/audio/`), all reached through `extern fn` (spec
 §7.10). The design and its rationale are in `design/stdlib_design.md` (and
 `design/gfx.md` for `gfx`, `design/physics.md` for `physics`, `design/ui.md`
-for `ui`); this is the reference.
+for `ui`, and `design/audio.md` for `audio`); this is the reference.
 
 The library uses these conventions:
 
@@ -38,8 +39,8 @@ The library uses these conventions:
 * A function taking an element *by value* (`push_n`, `insert_at`, `fill`,
   `heap_push`) cannot take one that contains self-relative references, because
   those values cannot be copied (spec §3.9). Construct them in place.
-* The `std`, `dictionary`, `vec`, `math`, and `os` names are global; `gfx`
-  and `physics` use their own namespaces. A local named `fill` or `count`
+* The `std`, `dictionary`, `vec`, `math`, and `os` names are global; `audio`,
+  `gfx`, `physics`, and `ui` use their own namespaces. A local named `fill` or `count`
   shadows the corresponding global function, causing an error at a call.
 
 ## std
@@ -712,6 +713,74 @@ fn look_at(eye: float3, target: float3, up: float3) -> mat4
 
 Clip space is SDL_GPU's on every backend: y up, depth from 0 to 1, texture
 coordinates with (0, 0) at the top left.
+
+## audio
+
+Procedural PCM sound effects over SDL3, independent of a window or graphics
+device. `import audio;` uses the `audio::` namespace. Built when SDL is present
+and `GOOSE_AUDIO=ON` (the default), including with `GOOSE_GFX=OFF`. Programs
+built from generated C link the response file named by `goose --audio-link
+msvc|cc`. A compiler without the layer can still typecheck and emit the same C;
+JIT use reports that audio was not built in. See `design/audio.md` for the mixer.
+
+| Function | Behavior |
+|---|---|
+| `available() -> bool` | True when the native layer is linked; no device probe. |
+| `open(sample_rate = 48000) -> bool` | Open the default output device, stereo output. |
+| `open_offline(sample_rate = 48000) -> bool` | Open the same mixer without a device or background thread. |
+| `close()` | Stop playback, free every sound, invalidate handles; safe to repeat. |
+| `create_sound(samples: const f32[:], sample_rate = 48000, channels = 1) -> Sound` | Copy mono or interleaved stereo PCM into owned storage. |
+| `release_sound(sound) -> bool` | Stop its voices and free the PCM. Zero is harmless. |
+| `play(sound, volume = 1.0, pan = 0.0, pitch = 1.0, looping = false) -> Voice` | Start an independent voice, allowing overlapping repeats. |
+| `playing(voice) -> bool` | Whether the voice is still mixing. Stale/zero handles return false. |
+| `stop(voice)`, `stop_all()` | Stop one or every voice. Completed/stale/zero voices are harmless. |
+| `set_voice(voice, volume, pan, pitch) -> bool` | Change a live voice without restarting. |
+| `render(out: f32[:]) -> bool` | Offline only: write interleaved stereo output and advance playback. |
+| `error() -> u8[>..]` | Most recent failure; successful calls do not clear it. |
+| `error_into(out: u8[:]) -> i64` | Copy as much error text as fits, returning its full length. |
+
+All calls run on the main thread; calls reachable from `thread_fn` are rejected.
+`Sound { id: u64 }` and `Voice { id: u64 }` are explicit resources. Sound creation
+copies the source immediately: Goose can then mutate or free its array. Releasing
+a sound stops all its voices. Completed voices recycle automatically. A new
+resource never aliases an old handle, even across `close()` and `open()`.
+
+There is one mixer, at most `MAX_SOUNDS = 256` sounds and `MAX_VOICES = 64`
+simultaneous voices. Exhaustion returns zero without stealing a voice. Rates
+are 8000..192000 Hz. PCM must be nonempty, finite, in `[-1, 1]`, with complete
+frames (two samples per stereo frame). Volume is `0..1`; pan is `-1..1`,
+centered at zero, attenuating the opposite channel; pitch is `0.125..8` and
+changes speed and duration together. Mixing uses linear interpolation and clips
+the final sum to `[-1, 1]`. Leave headroom when many effects overlap.
+
+Invalid arguments, stale sounds, unavailable devices and resource exhaustion
+return false or a zero handle and set `error()`. They do not abort. Stopping or
+querying a completed voice is normal; updating it returns false. Offline
+`render` needs an even sample count, allows empty output, and advances exactly
+`out.len / 2` frames. Device mode advances automatically; `playing()` describes
+the mixer, so a little audio already buffered by the device can remain after
+completion or stop. No file decoding, streaming input, recording, or effects.
+
+```goose
+import audio;
+import math;
+import os;
+
+fn main() {
+    if !audio::open() { print(audio::error()); return; }
+    var pcm: f32[>..] = [];
+    for i in 12000 {
+        let t = i as f64 / 48000.0;
+        let envelope = 1.0 - i as f64 / 12000.0;
+        pcm.push((sin(TAU * 440.0 * t) * 0.2 * envelope) as f32);
+    }
+    let tone = audio::create_sound(pcm);
+    let voice = audio::play(tone);
+    while audio::playing(voice) { sleep_ms(5); }
+    sleep_ms(100); // Let the device finish the already mixed tail.
+    audio::close();
+}
+```
 
 ## physics
 

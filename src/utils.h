@@ -75,6 +75,7 @@ inline bool LoadFile(const string &path, string &dest) {
 // The stdlib modules with a native layer a program calls into, which a JIT
 // run hands it from the compiler's own copies of them.
 struct NativeLayers {
+    bool audio = false;
     bool gfx = false;
     bool physics = false;
     bool ui = false;

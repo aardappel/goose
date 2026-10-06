@@ -15,6 +15,9 @@
 #ifdef GOOSE_HAVE_GFX
 #include "gfx/gfx_api.h"
 #endif
+#ifdef GOOSE_HAVE_AUDIO
+#include "audio/audio_api.h"
+#endif
 #ifdef GOOSE_HAVE_PHYSICS
 #include "physics/physics_api.h"
 #endif
@@ -58,9 +61,17 @@ inline void JitDiag(void *opaque, const char *msg) {
     Append(*(string *)opaque, msg, "\n");
 }
 
-// The gfx layer's functions (src/gfx/gfx_api.h), which a program using the
-// gfx module calls: this process's own copy of them, defined for the
-// program before it is relocated.
+// Register each optional native layer's own functions before relocation.
+inline void AddAudioSymbols(TCCState *s) {
+    #ifdef GOOSE_HAVE_AUDIO
+        #define GS_AUDIO_SYMBOL(ret, name, params) tcc_add_symbol(s, #name, (const void *)&name);
+        GS_AUDIO_API(GS_AUDIO_SYMBOL)
+        #undef GS_AUDIO_SYMBOL
+    #else
+        (void)s;
+    #endif
+}
+
 inline void AddGfxSymbols(TCCState *s) {
     #ifdef GOOSE_HAVE_GFX
         #define GS_GFX_SYMBOL(ret, name, params) tcc_add_symbol(s, #name, (const void *)&name);
@@ -112,6 +123,7 @@ inline int RunJit(const string &csrc, const string &libpath, const string &progn
     };
     if (tcc_set_output_type(s, TCC_OUTPUT_MEMORY) < 0) fail("cannot target memory");
     if (tcc_compile_string(s, csrc.c_str()) < 0) fail("compiling the generated C failed");
+    if (layers.audio) AddAudioSymbols(s);
     if (layers.gfx) AddGfxSymbols(s);
     if (layers.physics) AddPhysicsSymbols(s);
     if (layers.ui) AddUiSymbols(s);

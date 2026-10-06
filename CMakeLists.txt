@@ -51,6 +51,7 @@ add_executable(goose
     src/runtime/runtime_ext.h
     src/runtime/runtime_os.h
     src/gfx.h
+    src/audio.h
     src/physics.h
     src/ui.h
 )
@@ -126,6 +127,18 @@ if(GOOSE_HAVE_GFX)
         endforeach()
         target_link_libraries(goose PRIVATE delayimp)
     endif()
+endif()
+
+# Audio uses the same SDL build as gfx, and is available with GOOSE_GFX=OFF
+# or without Linux window-system development headers. Opening it creates no window.
+option(GOOSE_AUDIO "Build the SDL3 PCM audio module when the submodule is present" ON)
+if(GOOSE_AUDIO AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL/CMakeLists.txt")
+    include(cmake/audio.cmake)
+endif()
+if(GOOSE_HAVE_AUDIO)
+    target_link_libraries(goose PRIVATE goose_audio)
+    target_compile_definitions(goose PRIVATE
+        GOOSE_HAVE_AUDIO=1 GOOSE_AUDIO_LINK_PATH="${CMAKE_BINARY_DIR}/audio/$<CONFIG>")
 endif()
 
 # The optional physics module (stdlib/physics.goose): Box3D from the

@@ -22,15 +22,16 @@ inside the compiler process. Those runs are compared with the same blessed
 outputs. A first-line `no-jit` marker leaves a test out of them, and a program
 the backend refuses outright is counted as a skip, not a failure.
 
-The gfx/ tests use the SDL3 graphics module, the physics/ tests the Box3D
+The audio/ tests use the SDL3 PCM mixer without a device, the gfx/ tests
+use the SDL3 graphics module, the physics/ tests the Box3D
 physics module and the ui/ tests the Nuklear ui module. They always parse,
 typecheck and generate C; they build and run where the compiler has the
 native layers they use built in -- their category's, and any other they
 import, as a ui test drawing through gfx does -- linking what `goose
---gfx-link`, `--physics-link` or `--ui-link` names, and a machine without a
+--audio-link`, `--gfx-link`, `--physics-link` or `--ui-link` names, and a machine without a
 GPU device counts as a skip for gfx. A fixture there with `// error:`
 markers is a rejection test, as in errors_tc/. test/api_check.py checks
-stdlib/gfx.goose, stdlib/physics.goose and stdlib/ui.goose against their C
+stdlib/audio.goose, stdlib/gfx.goose, stdlib/physics.goose and stdlib/ui.goose against their C
 layers' own lists of functions, structs and constants.
 
 Profiles keep the CI coverage deliberate: baseline compares Goose/native C
@@ -1147,7 +1148,8 @@ def main():
     # What a gfx, physics or ui test program links, by the category directory
     # it is in and what it imports, empty for a compiler built without that
     # layer: those tests then only generate C.
-    native = {"gfx": tc.gfx_link(exe, cc) if cc else [],
+    native = {"audio": tc.audio_link(exe, cc) if cc else [],
+              "gfx": tc.gfx_link(exe, cc) if cc else [],
               "physics": tc.physics_link(exe, cc) if cc else [],
               "ui": tc.ui_link(exe, cc) if cc else []}
     print(f"profile: {args.profile}; C backend: {cc.desc if cc else 'none'}; "
@@ -1476,7 +1478,7 @@ def main():
     def native_skips():
         skipped = [name for f in tests for name in fixtures[f].result().nativeskips]
         if skipped:
-            r.say(f"skip running {len(set(skipped))} gfx, physics or ui test(s) (no "
+            r.say(f"skip running {len(set(skipped))} audio, gfx, physics or ui test(s) (no "
                   f"layer for them, or no GPU device): " + ", ".join(sorted(set(skipped))))
     r.show_later(native_skips)
 

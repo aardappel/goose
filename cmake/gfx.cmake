@@ -32,19 +32,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
 endif()
 
-# --- SDL ---------------------------------------------------------------------
-# Static only. SDL_DEPS_SHARED stays on: on Linux SDL then links only the C
-# library and loads X11, Wayland, audio and udev at runtime, so goose gains no
-# hard GUI dependencies. SDL_GPU draws through neither the 2D renderer nor
-# OpenGL, and nothing uses the camera, so those are left out.
-set(SDL_SHARED OFF CACHE BOOL "" FORCE)
-set(SDL_STATIC ON CACHE BOOL "" FORCE)
-set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
-set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
-set(SDL_RENDER OFF CACHE BOOL "" FORCE)
-set(SDL_OPENGL OFF CACHE BOOL "" FORCE)
-set(SDL_OPENGLES OFF CACHE BOOL "" FORCE)
-add_subdirectory("${GFX_SDL}" "${CMAKE_BINARY_DIR}/SDL" EXCLUDE_FROM_ALL)
+set(GOOSE_SDL_VIDEO_REQUESTED ON)
+include("${CMAKE_CURRENT_LIST_DIR}/sdl.cmake")
 
 # --- the gfx layer -----------------------------------------------------------
 add_library(goose_gfx STATIC
@@ -68,68 +57,24 @@ else()
 endif()
 
 # --- link inputs for programs built from the generated C ---------------------
-# SDL records what it links in the properties of its SDL3-collector target,
-# which is also what its own pkg-config file is generated from: plain library
-# names, and linker flags such as -Wl,-framework,Cocoa for the macOS
-# frameworks that its target spells as $<LINK_LIBRARY:FRAMEWORK,...>.
-get_property(gfx_dep_ids TARGET SDL3-collector PROPERTY INTERFACE_SDL_DEP_IDS)
-set(gfx_syslibs)
-set(gfx_ldflags)
-foreach(id IN LISTS gfx_dep_ids)
-    get_property(pc_specs TARGET SDL3-collector PROPERTY INTERFACE_SDL_DEP_${id}_PKG_CONFIG_SPECS)
-    get_property(pc_libs TARGET SDL3-collector PROPERTY INTERFACE_SDL_DEP_${id}_PKG_CONFIG_LIBS)
-    get_property(pc_ldflags TARGET SDL3-collector PROPERTY INTERFACE_SDL_DEP_${id}_PKG_CONFIG_LINK_OPTIONS)
-    get_property(libs TARGET SDL3-collector PROPERTY INTERFACE_SDL_DEP_${id}_LIBS)
-    get_property(ldflags TARGET SDL3-collector PROPERTY INTERFACE_SDL_DEP_${id}_LINK_OPTIONS)
-    get_property(cmake_module TARGET SDL3-collector PROPERTY INTERFACE_SDL_DEP_${id}_CMAKE_MODULE)
-    list(APPEND gfx_syslibs ${pc_libs})
-    if(pc_specs OR pc_libs OR pc_ldflags)
-        list(APPEND gfx_ldflags ${pc_ldflags})
-    else()
-        list(APPEND gfx_ldflags ${ldflags})
-        if(NOT cmake_module)
-            list(APPEND gfx_syslibs ${libs})
-        endif()
-    endif()
-endforeach()
-list(REMOVE_DUPLICATES gfx_syslibs)
-list(REMOVE_DUPLICATES gfx_ldflags)
-# The gcc-style spelling (gcc, clang, and clang's gcc-style driver on
-# Windows), plus what the runtime links anyway.
-set(gfx_cc_libs ${gfx_ldflags})
-foreach(lib IN LISTS gfx_syslibs)
-    list(APPEND gfx_cc_libs "-l${lib}")
-endforeach()
-if(NOT WIN32)
-    list(APPEND gfx_cc_libs -lm -pthread)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        list(APPEND gfx_cc_libs -ldl -lrt)
-    endif()
-endif()
-list(REMOVE_DUPLICATES gfx_cc_libs)
-string(JOIN "\n" gfx_cc_libs ${gfx_cc_libs})
+# sdl.cmake collects SDL's system libraries and platform linker flags.
 set(GFX_LINK_DIR "${CMAKE_BINARY_DIR}/gfx/$<CONFIG>")
 # The archives are quoted, since a build directory may contain spaces; both
 # kinds of driver unquote response-file arguments.
 file(GENERATE OUTPUT "${GFX_LINK_DIR}/link-cc.rsp" CONTENT
 "\"$<TARGET_LINKER_FILE:goose_gfx>\"
 \"$<TARGET_LINKER_FILE:SDL3-static>\"
-${gfx_cc_libs}
+${sdl_cc_libs}
 ")
-set(gfx_rsp_line ${gfx_cc_libs})
+set(gfx_rsp_line ${sdl_cc_libs})
 if(WIN32)
     # And the MSVC-style one (cl, clang-cl), which names libraries by file.
-    set(gfx_msvc_libs)
-    foreach(lib IN LISTS gfx_syslibs)
-        list(APPEND gfx_msvc_libs "${lib}.lib")
-    endforeach()
-    string(JOIN "\n" gfx_msvc_libs ${gfx_msvc_libs})
     file(GENERATE OUTPUT "${GFX_LINK_DIR}/link-msvc.rsp" CONTENT
 "\"$<TARGET_LINKER_FILE:goose_gfx>\"
 \"$<TARGET_LINKER_FILE:SDL3-static>\"
-${gfx_msvc_libs}
+${sdl_msvc_libs}
 ")
-    set(gfx_rsp_line ${gfx_msvc_libs})
+    set(gfx_rsp_line ${sdl_msvc_libs})
 endif()
 
 file(STRINGS "${GFX_SDL}/include/SDL3/SDL_version.h" gfx_sdl_version
