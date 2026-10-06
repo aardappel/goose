@@ -2713,12 +2713,21 @@ inline void TypeCheck::CompoundAssign(Assign *a, TypeExpr *st, bool writable) {
     } else if (st->kind == TY_FLT && !isbit && !isshift) {
         CheckValue(a->rhs, st);
     } else if (!isbit && !isshift && ElementwiseOK(st)) {
-        // As for binary elementwise math, both operands must have the same
-        // aggregate type. A slice or a differently typed array cannot be
-        // adapted here merely because plain assignment could copy it.
+        // Aggregate operands keep exactly the destination's type; a scalar
+        // may scale its leaves. Slices and differently typed arrays cannot
+        // adapt here merely because plain assignment could copy them.
         auto rv = Operand(a->rhs);
         NoUntypedEmptyArray(rv, a->rhs, TName(a->op));
         auto rt = LoadType(rv.type);
+        if ((a->op == T_MULEQ || a->op == T_DIVEQ) &&
+            (IsIntT(rt) || rt->kind == TY_FLT)) {
+            if (auto scalar = ElementwiseScalarType(st)) {
+                auto fitted = rv;
+                MustFit(fitted, a->rhs, scalar);
+                RetypeOperand(a->rhs, rv, scalar);
+                return;
+            }
+        }
         if (!TypeEq(LoadType(st), rt))
             Error(a, cat("operator ", TName(a->op), " cannot be applied to ",
                          TypeStr(st), " and ", TypeStr(rt)));

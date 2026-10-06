@@ -1539,6 +1539,20 @@ vector math without an operator-overloading feature. The standard library suppli
 `float3` and friends; named vector ops (`dot`, `cross`, `normalize`, …) are
 ordinary stdlib overloads per math type, not language builtins.
 
+`*` and `/` also accept one scalar operand, in either order, when every
+numeric leaf of the struct/fixed array has exactly the same type. The
+scalar converts implicitly to that leaf type (§6.3): `float3 * 2.0`,
+`2 * float3`, and `float3 / f32` produce a `float3`; `2.0 / float3` divides
+the scalar by each component. The aggregate's type never widens: an `f64`
+variable scaling a `float3` needs `as f32`, and an integer scalar must fit
+or widen into the integer leaves. Nested structs and fixed arrays work the
+same way; aggregates with mixed leaf widths or kinds, or no numeric leaves,
+do not support scalar operands. `+`, `-`, and `%` still require two matching
+aggregates. The compound forms `aggregate *= scalar` and
+`aggregate /= scalar` follow the same rule. Both operands are evaluated
+once, left to right, before any result member is written, including when
+the scalar is a member of the destination.
+
 ### 6.2 Integer semantics
 
 * Every integer operation computes **at its operands' type**: `u8 + u8` is

@@ -517,6 +517,19 @@ inline Val Binary::Check(TypeCheck &tc, TypeExpr *) {
             v.type = lt;
             return v;
         }
+        if ((op == T_MUL || op == T_DIV) && numeric(lt) != numeric(rt)) {
+            auto aggregate = numeric(lt) ? rt : lt;
+            if (auto scalar = tc.ElementwiseScalarType(aggregate)) {
+                auto &sn = numeric(lt) ? left : right;
+                auto &sv = numeric(lt) ? lv : rv;
+                auto fitted = sv;
+                tc.MustFit(fitted, sn, scalar);
+                tc.RetypeOperand(sn, sv, scalar);
+                Val v;
+                v.type = aggregate;
+                return v;
+            }
+        }
         tc.Error(this, cat("operator ", TName(op), " cannot be applied to ",
                            tc.TypeStr(lt), " and ", tc.TypeStr(rt)));
     }

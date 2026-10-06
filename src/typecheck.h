@@ -1660,6 +1660,7 @@ struct TypeCheck {
     TypeExpr *UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, TypeExpr *lt, TypeExpr *rt,
                            bool cmp = false);
     bool unifytrial = false;   // UnifyNumeric gives no type rather than an error (NumericBinary).
+    void RetypeOperand(Node *&n, Val &v, TypeExpr *ct);
     void RetypeOperands(Node *&left, Node *&right, Val &lv, Val &rv, TypeExpr *ct);
     void RetypeVal(Val &v, TypeExpr *ct);
     Val NumericBinary(Binary *b, Val lv, Val rv, TypeExpr *&ct, bool trial);
@@ -1763,6 +1764,7 @@ struct TypeCheck {
     void CastVerdict(const CastAlt &a, const string &reason, const AsCast *dependson = nullptr);
     void ReportRedundantCasts();
     bool ElementwiseOK(TypeExpr *t);
+    TypeExpr *ElementwiseScalarType(TypeExpr *t);
     Val CheckVariantConst(Dot *d, SEnum *en);
     Val MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at, bool wantvalue);
     Val JoinBranches(const Val &a, bool areach, const Val &b, bool breach, Node *at,

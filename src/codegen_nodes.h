@@ -190,6 +190,8 @@ inline string Binary::CgX(CodeGen &cg) {
     // a temp before the right one runs.
     auto l = cg.GenPureVal(left);
     auto r = cg.GenVal(right);
+    if (exprtype && (exprtype->kind == TY_STRUCT || exprtype->kind == TY_ARRAY))
+        return cg.GenElemwise(this, l, r);
     auto isint = lt->kind == TY_INT && lt->intstorage != IS_VARINT;
     auto isflt = lt->kind == TY_FLT;
     auto f32 = exprtype && exprtype->kind == TY_FLT &&
@@ -699,7 +701,9 @@ inline void Binary::CgAny(CodeGen &cg, const Dst &d) {
         (exprtype->kind == TY_STRUCT || exprtype->kind == TY_ARRAY)) {
         string l, r;
         cg.ElemwiseOperands(this, l, r);
-        cg.GenElemwiseInto(exprtype, op, line, l, r, d.s);
+        cg.GenElemwiseInto(exprtype, op, line, l, r, d.s,
+                           cg.OperandT(left->exprtype)->kind != exprtype->kind,
+                           cg.OperandT(right->exprtype)->kind != exprtype->kind);
         return;
     }
     cg.LeafAny(this, d);
@@ -807,7 +811,8 @@ inline void Assign::CgStmt(CodeGen &cg) {
         auto old = cg.Snapshot(lv.t, lv.s);
         if (lv.t->kind == TY_STRUCT || lv.t->kind == TY_ARRAY) {
             auto r = cg.GenPureVal(rhs);
-            cg.GenElemwiseInto(lv.t, op, line, old, r, lv.s);
+            cg.GenElemwiseInto(lv.t, op, line, old, r, lv.s, false,
+                               cg.OperandT(rhs->exprtype)->kind != lv.t->kind);
             return;
         }
         auto r = cg.GenX(rhs);

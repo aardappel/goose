@@ -1100,13 +1100,16 @@ inline string CodeGen::GenRangeEq(TypeExpr *elem, const string &ae, const string
 // loads and stores — no whole-struct temporaries, which backends fail to
 // scalarize. Member i of the result depends only on member i of each
 // operand, so writing members straight into `dst` is exact even when it
-// aliases an operand (the p.vel = p.vel + g shape).
+// aliases an operand (the p.vel = p.vel + g shape). Scalar operands are
+// snapshotted by the caller because they may alias any destination member.
 inline void CodeGen::GenElemwiseInto(TypeExpr *t, TType op, Line line, const string &l,
-                                     const string &r, const string &dst) {
+                                     const string &r, const string &dst,
+                                     bool lscalar, bool rscalar) {
     function<void(TypeExpr *, const string &)> rec = [&](TypeExpr *tt, const string &path) {
         switch (tt->kind) {
             case TY_INT: case TY_FLT: {
-                auto a = cat("(", l, ")", path), c = cat("(", r, ")", path);
+                auto a = cat("(", l, ")", lscalar ? string() : path);
+                auto c = cat("(", r, ")", rscalar ? string() : path);
                 string x;
                 if (tt->kind == TY_FLT) {
                     switch (op) {
@@ -1166,22 +1169,28 @@ inline void CodeGen::GenElemwiseInto(TypeExpr *t, TType op, Line line, const str
 // Left-to-right evaluation (§2): when the right operand needs statements,
 // the left's value must be snapshotted before they run.
 inline void CodeGen::ElemwiseOperands(Binary *b, string &l, string &r) {
-    if (HasStmts(b->right)) {
+    auto scalar = [&](Node *n) {
+        auto t = OperandT(n->exprtype);
+        return t->kind == TY_INT || t->kind == TY_FLT;
+    };
+    // A scalar can alias any destination member, not just the member being
+    // written: v = v * v.x must use the original x for every component.
+    if (scalar(b->left)) l = GenPureVal(b->left);
+    else if (HasStmts(b->right)) {
         l = GenVal(b->left);
         auto lt = T();
-        FixedLocal(b->exprtype, lt, l);
+        FixedLocal(OperandT(b->left->exprtype), lt, l);
         l = lt;
-        r = GenVal(b->right);
-    } else {
-        l = GenVal(b->left);
-        r = GenVal(b->right);
-    }
+    } else l = GenVal(b->left);
+    r = scalar(b->right) ? GenPureVal(b->right) : GenVal(b->right);
 }
 
 inline string CodeGen::GenElemwise(Binary *b, const string &l, const string &r) {
     auto tv = T();
     FixedLocal(b->exprtype, tv);
-    GenElemwiseInto(b->exprtype, b->op, b->line, l, r, tv);
+    GenElemwiseInto(b->exprtype, b->op, b->line, l, r, tv,
+                    OperandT(b->left->exprtype)->kind != b->exprtype->kind,
+                    OperandT(b->right->exprtype)->kind != b->exprtype->kind);
     return tv;
 }
 

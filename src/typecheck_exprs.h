@@ -1595,25 +1595,27 @@ inline TypeExpr *TypeCheck::UnifyNumeric(Node *at, TType op, Val &lv, Val &rv, T
     return nullptr;
 }
 
-// Re-types both operands to the unified type ct: adapted constants and
+// Re-types an operand to its numeric type ct: adapted constants and
 // implicitly widened operands emit at ct downstream, an integer converts to
 // a float ct in a node of its own, and a float of literals and integers is
-// computed at ct throughout.
+// computed at ct throughout. Binary unification and scalar broadcasting use
+// the same conversion.
+inline void TypeCheck::RetypeOperand(Node *&n, Val &v, TypeExpr *ct) {
+    if (auto t = LoadType(v.type); ct->kind == TY_FLT && IsIntT(t)) {
+        ToFloat(n, t, ct);
+    } else {
+        if (v.litfloat && !TypeEq(v.type, ct)) RetypeFlex(n, ct);
+        else if (v.flexint && !TypeEq(v.type, ct)) RetypeFlexInt(n, ct);
+        else if (v.litint && !TypeEq(v.type, ct)) RetypeBranches(n, ct);
+        n->exprtype = ct;
+    }
+    RetypeVal(v, ct);
+}
+
 inline void TypeCheck::RetypeOperands(Node *&left, Node *&right, Val &lv, Val &rv,
                                       TypeExpr *ct) {
-    auto retype = [&](Node *&n, Val &v) {
-        if (auto t = LoadType(v.type); ct->kind == TY_FLT && IsIntT(t)) {
-            ToFloat(n, t, ct);
-        } else {
-            if (v.litfloat && !TypeEq(v.type, ct)) RetypeFlex(n, ct);
-            else if (v.flexint && !TypeEq(v.type, ct)) RetypeFlexInt(n, ct);
-            else if (v.litint && !TypeEq(v.type, ct)) RetypeBranches(n, ct);
-            n->exprtype = ct;
-        }
-        RetypeVal(v, ct);
-    };
-    retype(left, lv);
-    retype(right, rv);
+    RetypeOperand(left, lv, ct);
+    RetypeOperand(right, rv, ct);
 }
 
 // An operand's value as the unified type ct gives it (RetypeOperands).
@@ -2415,6 +2417,25 @@ inline bool TypeCheck::ElementwiseOK(TypeExpr *t) {
         }
     };
     return (t->kind == TY_STRUCT || t->kind == TY_ARRAY) && rec(t);
+}
+
+// Scaling keeps the aggregate's nominal type, so every leaf must accept
+// the same scalar type. Mixed-width aggregates still have their ordinary
+// aggregate/aggregate arithmetic, but no implicit broadcast conversion.
+inline TypeExpr *TypeCheck::ElementwiseScalarType(TypeExpr *t) {
+    if (!ElementwiseOK(t)) return nullptr;
+    TypeExpr *leaf = nullptr;
+    function<bool(TypeExpr *)> rec = [&](TypeExpr *tt) {
+        if (tt->kind == TY_STRUCT) {
+            for (auto ft : GetStructInst(tt)->ftypes)
+                if (ft && !rec(ft)) return false;
+            return true;
+        }
+        if (tt->kind == TY_ARRAY) return rec(tt->arr->sub);
+        if (!leaf) leaf = LoadType(tt);
+        return TopConstEq(leaf, tt);
+    };
+    return rec(t) ? leaf : nullptr;
 }
 
 inline Val TypeCheck::CheckVariantConst(Dot *d, SEnum *en) {
