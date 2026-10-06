@@ -1032,6 +1032,7 @@ struct CodeGen {
     void InitGlobalStack(VarDef *d);
     void EmitProgramInit();
     void EmitExports();
+    string MainCall();
     void EmitMain();
 
     // ------------------------------------------------------------------

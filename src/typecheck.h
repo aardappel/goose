@@ -122,7 +122,7 @@ inline bool IsBranchConstruct(const Node *n) {
 
 struct TypeCheck {
     Ast &ast;
-    bool library = false;
+    bool library = false;   // Built for a C host (--header): fn main() is optional.
 
     // (Val, the checked value of an expression, lives in ast.h: node Check
     // overrides return it.)
@@ -2431,7 +2431,7 @@ struct TypeCheck {
             CheckExport(sf);
         }
         if (library && !exportcount)
-            throw CompileError { "--library requires at least one export fn" };
+            throw CompileError { "--header requires at least one export fn" };
         CheckGlobalShrinks();
         SettleParamRootExactness();
         ResolveGrowConflicts();

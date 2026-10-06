@@ -608,12 +608,21 @@ inline void CodeGen::EmitProgramInit() {
     for (auto &q : qnames) Append(code, "    gs_qinit(&", q, ");\n");
     Append(code, "    gs_gl = &gs_globals_main;\n    gs_init_globals();\n");
     Append(code, "    gs_program_initialized = 1;\n}\n\n");
-    auto hasexports = false;
-    for (auto sf : ast.functions) hasexports |= sf->isexport;
-    if (hasexports)
+    // A C host starts the program here: its globals, then fn main() if there
+    // is one, which may call the exports and can hold the host's own setup.
+    if (library)
         Append(code, "void goose_init(int argc, char **argv) {\n"
-                     "    gs_program_init(argc, argv);\n"
-                     "}\n\n");
+                     "    if (gs_program_initialized) return;\n"
+                     "    gs_program_init(argc, argv);\n",
+                     MainCall(), "}\n\n");
+}
+
+// The statement that runs fn main(), or nothing for a library without one.
+inline string CodeGen::MainCall() {
+    auto mainsf = ast.MainFunction();
+    if (!mainsf || mainsf->specs.empty() || !sinfo.count(mainsf->specs[0])) return "";
+    auto &mi = sinfo[mainsf->specs[0]];
+    return cat("    ", mi.cname, "(", mi.needssp ? "0" : "", ");\n");
 }
 
 inline void CodeGen::EmitExports() {
@@ -672,15 +681,8 @@ inline string CodeGen::ExportHeader() {
 }
 
 inline void CodeGen::EmitMain() {
-    FnSpec *mainspec = nullptr;
-    if (auto mainsf = ast.MainFunction(); mainsf && !mainsf->specs.empty())
-        mainspec = mainsf->specs[0];
-    Append(code, "int main(int argc, char **argv) {\n    gs_program_init(argc, argv);\n");
-    if (mainspec && sinfo.count(mainspec)) {
-        auto &mi = sinfo[mainspec];
-        Append(code, "    ", mi.cname, "(", mi.needssp ? "0" : "", ");\n");
-    }
-    Append(code, "    return 0;\n}\n");
+    Append(code, "int main(int argc, char **argv) {\n    gs_program_init(argc, argv);\n",
+           MainCall(), "    return 0;\n}\n");
 }
 
 }  // namespace goose

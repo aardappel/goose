@@ -2095,6 +2095,8 @@ inline void TypeCheck::CheckExport(SFunction *sf) {
         return true;
     };
     if (!valid_ident(sf->cname)) fail("C symbol must be a C identifier");
+    // The symbol is emitted as written, so a C host can ask for a name; a
+    // keyword is refused here rather than left to a C compiler's error.
     static const unordered_set<string_view> ckeywords = {
         "auto", "break", "case", "char", "const", "continue", "default", "do", "double",
         "else", "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long",
