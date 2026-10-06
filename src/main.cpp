@@ -338,7 +338,7 @@ int Main(int argc, char **argv) {
     auto dump = false, tokens = false, parseonly = false, specs = false, nocgen = false;
     auto roundtrip = false, multitest = false;
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
-    auto forcejit = false, standalone = false, library = false;
+    auto forcejit = false, standalone = false;
     auto optlevel = 1;
     vector<string> cdefines, progargs, includenames, files;
     for (int i = 1; i < argc; i++) {
@@ -362,7 +362,6 @@ int Main(int argc, char **argv) {
         else if (arg == "--unsafe-no-rf-check") norfcheck = true;
         else if (arg == "--jit") forcejit = true;
         else if (arg == "--standalone") standalone = true;
-        else if (arg == "--library") library = true;
         else if (arg == "--multi-test") multitest = true;
         else if (arg == "--gen-runtime-header") { GenRuntimeHeader(argv[0]); return 0; }
         else if (arg == "--emit-runtime" && i + 1 < argc) {
@@ -430,7 +429,7 @@ int Main(int argc, char **argv) {
                         "[--dump-file out.goose] [--specs] [--check] "
                         "[--no-bce] [--bce-test] [--bce-lines] [--unsafe-no-rf-check] [-O0|-O1|-O2] "
                         "[-o out.c [--standalone]] [--jit] [-DNAME=VALUE]... [--include header.h]... "
-                        "[--library] [--header out.h] "
+                        "[--header out.h] "
                         "[--stdlib dir] file.goose [-- program args...] | "
                         "--multi-test [options] file.goose... | --emit-runtime runtime.c | "
                         "--gen-runtime-header | "
@@ -450,14 +449,13 @@ int Main(int argc, char **argv) {
     // which is what --jit asks for explicitly. A build without the backend
     // keeps writing the .c next to the source instead.
     auto jit = forcejit || (outname.empty() && have_jit);
-    if (library && jit) {
-        fprintf(stderr, "--library writes C for a C host and cannot be used with --jit\n");
-        return 1;
-    }
     if (!headername.empty() && (jit || multitest)) {
         fprintf(stderr, "--header requires C output for a single input file\n");
         return 1;
     }
+    // A header is for a C host, which supplies its own main and starts the
+    // program through goose_init.
+    auto library = !headername.empty();
     if (multitest && (tokens || !dumpfile.empty() || !progargs.empty() ||
                       (!outname.empty() && outname.find('%') == string::npos) ||
                       (jit && !nocgen && !parseonly && !dump))) {
@@ -595,8 +593,6 @@ int Main(int argc, char **argv) {
                        cg.head, RuntimeSections({ "runtime_ext.h", "runtime_os.h" }), cg.result);
             return out;
         };
-        if (!headername.empty() && cg.exportprotos.empty())
-            throw CompileError { "--header requires at least one export fn" };
         if (!outfile.empty()) {
             auto out = assemble(!standalone);
             auto f = fopen(outfile.c_str(), "wb");
