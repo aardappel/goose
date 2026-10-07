@@ -497,11 +497,12 @@ code --install-extension vscode/goose-language.vsix
   order, from a tour of the language to a JSON parser, a threaded Mandelbrot, a
   file tree built from two pools, a spinning cube on the GPU, thousands of
   boxes raining into a heap and a to-do list in windows of widgets.
-* [Standard library](docs/stdlib.md): eight modules, all readable Goose under
+* [Standard library](docs/stdlib.md): nine modules, all readable Goose under
   `stdlib/`, including `gfx`, graphics on SDL3's GPU API
   ([how it is built](docs/design/gfx.md)), `physics`, rigid body physics
-  on Box3D ([how it is built](docs/design/physics.md)), and `ui`, windows and
-  widgets on Nuklear, drawn through gfx
+  on Box3D ([how it is built](docs/design/physics.md)), and `ui`, fonts,
+  [text rendering and game HUDs](docs/stdlib.md#text-rendering-and-game-huds),
+  windows and widgets on Nuklear, drawn through gfx
   ([how it is built](docs/design/ui.md)).
 * [Benchmarks](bench/summary.md): the numbers, with the
   [full results](bench/results.md) and the [design](bench/design.md) behind them.

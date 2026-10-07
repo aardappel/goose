@@ -4,6 +4,10 @@
 // src/gfx/ over SDL_GPU, declared here as extern fns against the list in
 // src/gfx/gfx_api.h; the test suite checks the two agree.
 //
+// Text rendering (including game HUDs) is in ui: ui::label for layout,
+// ui::draw_text for positioned text, built-in/TrueType fonts and ui::render
+// to draw over gfx. See docs/stdlib.md's "Text rendering and game HUDs".
+//
 // Shaders are GLSL 450, compiled into the program by the builtin
 // embed_shader when it is compiled, for every backend at once: SPIR-V for
 // Vulkan, MSL for Metal, HLSL for Direct3D 12. A shader is written in the

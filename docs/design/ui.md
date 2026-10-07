@@ -4,6 +4,12 @@ This document describes the optional ui module's implementation, test
 coverage, and remaining work. See `docs/stdlib.md` for the API reference and
 `stdlib/ui.goose` for the module source.
 
+This is also Goose's **text rendering and font module**, including for games
+that otherwise render directly with gfx. See
+[Text rendering and game HUDs](../stdlib.md#text-rendering-and-game-huds) for
+positioned text and a noninteractive overlay; a game need not use interactive
+widgets to use ui's fonts and text renderer.
+
 ## What it is
 
 `import ui;` gives a Goose program Nuklear, the single-header immediate-mode

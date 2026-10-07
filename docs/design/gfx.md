@@ -4,6 +4,13 @@ This document describes the optional graphics module's implementation, test
 coverage, and remaining work. See `docs/stdlib.md` for the API reference and
 `stdlib/gfx.goose` for the module source.
 
+For **text rendering, fonts, labels and game HUDs**, use the existing
+[`ui` module](../stdlib.md#text-rendering-and-game-huds): `ui::label` places
+text through layout, `ui::draw_text` places it on a window's canvas, and
+`ui::render` draws it over a gfx scene. Ordinary game text does not need a
+new font atlas or text renderer built directly on gfx. Custom sprite batching
+and games using their own bitmap artwork are separate concerns.
+
 ## What it is
 
 `import gfx;` gives a Goose program a window, input, GPU buffers and textures,

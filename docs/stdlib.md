@@ -13,6 +13,9 @@ the ui layer behind `ui` (`src/ui/`), and the PCM mixer behind `audio`
 `design/gfx.md` for `gfx`, `design/physics.md` for `physics`, `design/ui.md`
 for `ui`, and `design/audio.md` for `audio`); this is the reference.
 
+For **text rendering, fonts and game HUDs**, start with
+[`ui`](#text-rendering-and-game-huds), which renders over `gfx`.
+
 The library uses these conventions:
 
 * A function that reads or mutates elements in place takes `xs: T[:]`; every
@@ -413,6 +416,11 @@ game @<it>`). A compiler without it still typechecks and generates C for such
 a program; only running it in-process fails. Everything is in namespace `gfx`;
 `samples/27_gfx_cube.goose` is a small complete program, `design/gfx.md` how
 it works.
+
+**Text rendering is provided by [`ui`](#text-rendering-and-game-huds)**,
+including fonts, positioned text and noninteractive game HUDs. Use
+`ui::label` or `ui::draw_text`, then `ui::render` over the gfx scene. Only
+specialized artwork or rendering requirements need a separate text renderer.
 
 ### Shaders
 
@@ -1301,6 +1309,48 @@ program's until released. A window or popup begun with `WINDOW_NO_INPUT`
 the program: it cannot be moved, scaled, scrolled or brought to the front,
 and its widgets take no clicks. Nuklear's `item_is_any_active` is true whenever
 the mouse is over a window, so it cannot say whose the keys are.
+
+### Text rendering and game HUDs
+
+`ui` provides text rendering for gfx applications as well as widgets:
+`ui::label` uses row/space layout, and `ui::draw_text` draws at an explicit
+rectangle on the current window's canvas. `ui::create(13.0)` supplies a
+built-in font without an asset file; `create_from_file` and
+`create_from_memory` supply TrueType fonts. Font measurement and atlas
+access are listed under [Fonts](#fonts).
+
+For a HUD, create a dedicated context once, hide its window background, and
+use `WINDOW_NO_INPUT | WINDOW_NO_SCROLLBAR` with no title or border. The
+window supplies a canvas and clipping; it does not need interactive widgets.
+The following fits inside a gfx program (after opening gfx):
+
+```goose
+let hud = ui::create(13.0);
+if hud.id == 0 { abort(ui::error()); }
+var style = ui::style(hud);
+style.window.fixed_background = ui::style_item_hide();
+ui::set_style(hud, style);
+while gfx::frame() {
+    ui::input_from_gfx(hud);
+    if ui::begin(hud, "HUD", ui::rect(0, 0, 320, 80),
+                 ui::WINDOW_NO_INPUT | ui::WINDOW_NO_SCROLLBAR) {
+        ui::draw_text(hud, ui::rect(12, 12, 280, 24), "Health: 100",
+                      ui::font(hud), ui::Color { 0, 0, 0, 0 },
+                      ui::Color { 255, 255, 255, 255 });
+    }
+    ui::end(hud); // Always paired with begin, even when begin returns false.
+    // Draw the game scene here and end its render pass.
+    ui::render(hud);
+}
+ui::destroy(hud); // Before gfx::close().
+```
+
+Draw the HUD after the game scene. `ui::render` uses gfx internally and
+retains the scene beneath it. For a resizable full-screen overlay, update
+the window's bounds to the viewport; for a custom renderer, ui can also
+export its text and geometry commands or converted triangles. World-space
+sprites, billboard orientation and sprite animation belong to the game's
+sprite renderer; ordinary HUD text can use this existing font path.
 
 ### Fonts
 
