@@ -1121,6 +1121,11 @@ inline void TypeCheck::CheckBranchRoot(const Val &v, int depth, Node *at, const 
                           t->kind == TY_SLICE
                               ? ", or, where every branch makes a new array of one type, slice "
                                 "the whole construct: `(if c { a } else { b })[..]`"
+                              : "",
+                          t->kind == TY_SLICE && IsU8(t->sub)
+                              ? "; for byte-string branches (including mixed literals and "
+                                "builders), declare an explicitly owned result: "
+                                "`let text: u8[>..] = if c { a } else { b };`"
                               : ""));
         Error(at, cat("the ", construct, "'s value ", what, " rooted at ", root->name,
                       ", which does not outlive it (§9.2)"));
