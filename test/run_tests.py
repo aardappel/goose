@@ -1444,6 +1444,16 @@ def main():
         else:
             r.show_task(clang_codegen)
 
+    def resource_paths():
+        from resource_paths import check_resource_paths
+        try:
+            check_resource_paths(exe, cc, gendir, jit=jit, runtime=r.runtime, extra=extra)
+            r.ok("resource paths: JIT/native roots, relocation and unchanged cwd")
+        except RuntimeError as e:
+            r.fail("resource paths", str(e))
+    if cc or jit:
+        r.show_task(resource_paths)
+
     show_goose_in_goose()
 
     # --- JIT: the same programs, compiled and run inside the compiler --------

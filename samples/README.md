@@ -146,8 +146,13 @@ world deliberately omits mobs, hunger, damage, tool wear, and flowing water.
 |---|---|
 | [31_mini_doom](31_mini_doom.goose) | A playable Freedoom E1M1 using `gfx` and `audio`: checked little-endian WAD parsing, palette and patch decoding, a texture atlas, BSP-clipped floor polygons, textured walls, billboard sprites, sliding collision, stairs, falling, doors, lifts, pickups, combat, and one update/draw loop. Includes pistol, shotgun, chaingun and fists, four enemy types, imp fireballs, exploding barrels, damaging floors, secrets, the blue key and the exit. Uses the supplied `data/freedoom1-e1m1.wad`. |
 
-Run `goose samples/31_mini_doom.goose` from the repository root, or
-`goose 31_mini_doom.goose` from `samples`. It starts directly in the level.
+Run `goose samples/31_mini_doom.goose` from the repository root, or pass the
+source's path from any working directory. It starts directly in the level.
+Its default WAD path is `data/freedoom1-e1m1.wad` under `resource_dir()`:
+beside the entry source for JIT, or beside a compiled executable for AOT.
+When distributing the executable, include that `data` directory, or use
+`--wad <path>` to select an external WAD. The sample runner supplies `--wad`
+because it builds executables outside the sample's asset directory.
 WASD walks, Shift runs, mouse or Left/Right turns, E or Space uses doors
 and switches, and left mouse or Ctrl fires. Select fists, pistol, shotgun,
 or chaingun with 1–4 (the latter two must be collected). Tab toggles the map;

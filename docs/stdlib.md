@@ -363,6 +363,8 @@ fn write_stdout(s: const u8[:])   fn write_stderr(s: const u8[:])   fn flush_std
 fn arg_count() -> i64       fn arg(i: i64, out: u8[>..]&)
 fn args() -> u8[:][>..]                              // indexable; argument 0 is the program
 fn env(name: const u8[:], out: u8[>..]&) -> bool
+fn resource_dir() -> u8[>..]                         // absolute directory, trailing separator
+fn resource_dir(out: u8[>..]&) -> bool               // appends; unchanged on failure
 fn time() -> f64                                     // seconds since the epoch
 fn clock() -> f64                                    // monotonic, high resolution
 fn time_ns() -> i64         fn clock_ns() -> i64
@@ -402,6 +404,34 @@ if list_dir("saves", names) {
 }
 if !write_file_atomic("saves/slot1.sav", image) { write_stderr("not saved\n"); }
 ```
+
+### Application resources
+
+Ordinary relative paths resolve against the process working directory, as
+in C/C++. Goose does not change that directory when it starts a program.
+For data distributed with the application, `resource_dir()` returns an
+absolute UTF-8 directory with a trailing separator, ready to concatenate:
+
+```goose
+var wad: u8[>..] = [];
+if !read_file(str(resource_dir(), "data/map.wad"), wad) {
+    abort("cannot read map.wad");
+}
+```
+
+In JIT runs the root is the entry source's directory, regardless of which
+imported module calls the helper. In AOT programs it is the running
+executable's directory, discovered at runtime rather than recorded at
+compilation. In a conventional macOS `.app` bundle it is `Contents/Resources/`.
+Deploy the data relative to that root; moving the executable and its data
+together preserves resource lookup. An AOT program does not depend on its
+original source tree or on the launcher's working directory.
+
+The string-returning form aborts if the directory cannot be discovered;
+the builder overload returns false and appends nothing. Native discovery
+supports Windows, Linux and macOS. This directory is for shipped assets;
+it is not promised writable. User-supplied paths, outputs and saves can
+continue to use ordinary file operations and their chosen locations.
 
 `exit(code)` and `abort(msg)` are builtins, since the checker knows they
 diverge. Subprocesses and networking are not in v1; they arrive as

@@ -118,12 +118,17 @@ not claims of compiler bugs:
    crossings free of effects, runtime checks and nonlocal exits. Evaluation
    and in-place construction still follow field order without staging copies.
 
-5. **Asset path resolution is manual.** The sample probes the repository
-   root and `samples` working directories, with `--wad` as an escape hatch.
+5. **Asset path resolution originally needed manual probing.** The sample
+   probed the repository root and `samples` working directories, with `--wad`
+   as an escape hatch.
    A documented resource-path helper that behaves consistently for JIT,
    generated executables and packaged programs would avoid duplicating this
    in each file-backed sample. A compile-time source path alone would not
-   solve relocatable distribution.
+   solve relocatable distribution. The sample now uses `resource_dir()`:
+   the entry source's directory for JIT, the executable's directory for AOT
+   (the resource directory for a macOS app bundle). Its `data` folder is
+   deployed there; `--wad` still selects an explicit external path. Ordinary
+   file operations remain relative to the process working directory.
 
 6. **An optional sprite/text convenience layer could sit above `gfx`.**
    Atlas allocation, pixel-to-UV rectangles, quad emission, packed vertex

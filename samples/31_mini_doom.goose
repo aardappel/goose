@@ -1696,9 +1696,8 @@ fn main() {
         argument++;
     }
     if path.len == 0 {
-        path.append(if file_exists("samples/data/freedoom1-e1m1.wad") {
-            "samples/data/freedoom1-e1m1.wad"
-        } else { "data/freedoom1-e1m1.wad" });
+        path.append(resource_dir());
+        path.append("data/freedoom1-e1m1.wad");
     }
     load_wad(path);
     load_pictures();

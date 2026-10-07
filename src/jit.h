@@ -11,6 +11,7 @@
 
 #ifdef GOOSE_HAVE_LIBTCC
 #include "libtcc.h"
+#include <filesystem>
 #endif
 #ifdef GOOSE_HAVE_GFX
 #include "gfx/gfx_api.h"
@@ -122,7 +123,25 @@ inline int RunJit(const string &csrc, const string &libpath, const string &progn
         throw CompileError { msg };
     };
     if (tcc_set_output_type(s, TCC_OUTPUT_MEMORY) < 0) fail("cannot target memory");
-    if (tcc_compile_string(s, csrc.c_str()) < 0) fail("compiling the generated C failed");
+    // The in-process program's assets belong to its entry source, not to
+    // the Goose executable. This define is JIT-only: emitted AOT C keeps no
+    // build-machine resource path. Resolve now, without changing cwd.
+    std::error_code patherror;
+    auto root = filesystem::absolute(filesystem::path(progname), patherror).parent_path();
+    if (patherror) fail("cannot locate the entry source directory");
+    auto bytes = root.generic_u8string();
+    string source = "#define GS_JIT_RESOURCE_DIR \"";
+    // Fixed-width octal escapes are unambiguous even for quotes, control
+    // characters, UTF-8 and a hex digit immediately after an escaped byte.
+    for (auto ch : bytes) {
+        char escaped[5];
+        snprintf(escaped, sizeof escaped, "\\%03o", (unsigned)(uint8_t)ch);
+        source += escaped;
+    }
+    if (bytes.empty() || bytes.back() != u8'/') source += '/';
+    source += "\"\n";
+    source += csrc;
+    if (tcc_compile_string(s, source.c_str()) < 0) fail("compiling the generated C failed");
     if (layers.audio) AddAudioSymbols(s);
     if (layers.gfx) AddGfxSymbols(s);
     if (layers.physics) AddPhysicsSymbols(s);

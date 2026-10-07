@@ -1618,6 +1618,7 @@ GS_API void gs_os_read_stdin(gs_rref out);
 GS_API int64_t gs_os_arg_count(void);
 GS_API void gs_os_arg(int64_t i, gs_rref out);
 GS_API uint8_t gs_os_getenv(sl_u8 name, gs_rref out);
+GS_API uint8_t gs_os_resource_dir(gs_rref out);
 GS_API int64_t gs_os_time_ns(void);
 GS_API int64_t gs_os_clock_ns(void);
 GS_API void gs_os_sleep_ms(int64_t ms);
@@ -1634,6 +1635,9 @@ R"GSRT(/* Goose runtime: the OS primitives behind stdlib/os.goose (spec §7.10),
 #include <fcntl.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #endif
 
 /* Paths are UTF-8 on every platform, and reach the C APIs NUL-terminated in
@@ -1846,10 +1850,10 @@ GS_API uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data) {
             d += chunk;
             left -= chunk;
         }
-        ok = ok && FlushFileBuffers(h);
-        if (!CloseHandle(h)) ok = 0;
 )GSRT"
-R"GSRT(        ok = ok && gs_os_replace(t, p);
+R"GSRT(        ok = ok && FlushFileBuffers(h);
+        if (!CloseHandle(h)) ok = 0;
+        ok = ok && gs_os_replace(t, p);
         if (!ok) DeleteFileW(t);
 #else
         int fd = open(t, O_WRONLY | O_CREAT | O_EXCL, 0666);
@@ -2050,6 +2054,58 @@ GS_API void gs_os_read_stdin(gs_rref out) {
 
 GS_API int64_t gs_os_arg_count(void) { return gs_argc; }
 
+/* Application resources, independent of cwd and argv[0]. JIT supplies its
+   entry source directory; AOT discovers the running executable at runtime.
+   Append only on success, including a final path separator. */
+GS_API uint8_t gs_os_resource_dir(gs_rref out) {
+#ifdef GS_JIT_RESOURCE_DIR
+    const char *dir = GS_JIT_RESOURCE_DIR;
+    gs_bld_append(out, dir, (int64_t)strlen(dir));
+    return 1;
+#elif defined(_WIN32)
+    wchar_t path[GS_OS_PATH_MAX];
+    DWORD n = GetModuleFileNameW(NULL, path, GS_OS_PATH_MAX);
+    if (!n || n >= GS_OS_PATH_MAX) return 0;
+    while (n && path[n - 1] != L'\\' && path[n - 1] != L'/') --n;
+    return n && gs_os_append_wide(out, path, (int)n);
+#else
+    char path[GS_OS_PATH_MAX];
+    size_t n;
+    #ifdef __APPLE__
+        uint32_t capacity = sizeof path;
+        if (_NSGetExecutablePath(path, &capacity) != 0) return 0;
+        /* Resolve the loader's possible relative path and symlinks. */
+        char *resolved = realpath(path, NULL);
+        if (!resolved) return 0;
+        n = strlen(resolved);
+        if (n >= sizeof path) { free(resolved); return 0; }
+        memcpy(path, resolved, n + 1);
+        free(resolved);
+    #elif defined(__linux__)
+        ssize_t count = readlink("/proc/self/exe", path, sizeof path);
+        if (count <= 0 || (size_t)count >= sizeof path) return 0;
+        n = (size_t)count;
+    #else
+        return 0;
+    #endif
+    while (n && path[n - 1] != '/') --n;
+    if (!n) return 0;
+    #ifdef __APPLE__
+        const char suffix[] = ".app/Contents/MacOS/";
+        size_t suffixlen = sizeof suffix - 1;
+        if (n >= suffixlen && !memcmp(path + n - suffixlen, suffix, suffixlen)) {
+            n -= sizeof "MacOS/" - 1;
+            if (n + sizeof "Resources/" - 1 >= sizeof path) return 0;
+            memcpy(path + n, "Resources/", sizeof "Resources/" - 1);
+            n += sizeof "Resources/" - 1;
+        }
+)GSRT"
+R"GSRT(    #endif
+    gs_bld_append(out, path, (int64_t)n);
+    return 1;
+#endif
+}
+
 GS_API void gs_os_arg(int64_t i, gs_rref out) {
     if (i < 0 || i >= gs_argc) return;
     const char *a = gs_argv[i];
@@ -2103,8 +2159,7 @@ GS_API int64_t gs_os_time_ns(void) {
        links against does not have it, and glibc hides it from a compiler
        announcing C99, which tcc also is. */
 #ifdef _WIN32
-)GSRT"
-R"GSRT(    /* Windows counts 100 ns ticks from 1601; the offset to the Unix epoch is
+    /* Windows counts 100 ns ticks from 1601; the offset to the Unix epoch is
        a constant. */
     FILETIME ft;
     GetSystemTimeAsFileTime(&ft);
