@@ -1989,6 +1989,8 @@ struct TypeCheck {
         Roots roots;
         bool byteview = false;
     };
+    bool InitOrderStoreSafe(Node *n, TypeExpr *dest);
+    bool InitOrderSafe(Node *n, set<FnSpec *> &visiting, FnSpec *callee = nullptr);
     LitDeep CheckInits(StructLit *sl, vector<Field> &fields, vector<TypeExpr *> &ftypes,
                        string_view what, TypeExpr *selft);
     void CheckSelfInit(Node *n, TypeExpr *ft, TypeExpr *selft);

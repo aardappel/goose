@@ -107,13 +107,16 @@ not claims of compiler bugs:
    an explicitly owned result. The final sample shows that annotation for
    `face` and `ammo`.
 
-4. **Named struct fields still require declaration order.** Test actor
+4. **Named struct fields originally required declaration order.** Test actor
    literals written with `health` before `radius` failed until reordered.
    The diagnostic explains front-to-back construction well. Since these
    particular fields are all scalar and their initializers have no side
    effects, allowing this case would reduce friction without changing the
    lifetime rules for variable-size fields. Alternatively, editor completion
-   that inserts fields in the required order would help.
+   that inserts fields in the required order would help. Named initializers
+   now accept a different written order when the compiler proves the
+   crossings free of effects, runtime checks and nonlocal exits. Evaluation
+   and in-place construction still follow field order without staging copies.
 
 5. **Asset path resolution is manual.** The sample probes the repository
    root and `samples` working directories, with `--wad` as an escape hatch.

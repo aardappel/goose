@@ -440,6 +440,18 @@ an array literal no destination types, and a variable's initializer other
 than a `var`'s whole `[]`. The others reject it by its type, which a
 diagnostic shows as the literal (`TypeStr`).
 
+**Named initializer order.** `CheckInits` resolves names and checks each
+initializer in declaration order, the order codegen evaluates and constructs
+them directly in their destinations. It then checks each source-order inversion
+with `InitOrderSafe`: both expressions, and any omitted defaults between their
+fields, must be free of observable effects, runtime failures and nonlocal exits.
+`InitOrderStoreSafe` also checks destination adaptations, including capacities,
+length prefixes and relative offsets, at field, argument, return and local slots.
+This conservative AST proof follows completed callees with a recursion guard;
+unknown calls, mutation, loops and potentially failing operations are barriers.
+It is independent of optimization and treats debug-only failures as barriers too.
+No source-order staging or extra copies are emitted.
+
 **Defaults.** An omitted optional field is null even without an explicit
 default. Other omitted fields need a declared default, unless the literal
 ends in `..` (`StructLit::defaultall`, which `default<T>()` also sets on

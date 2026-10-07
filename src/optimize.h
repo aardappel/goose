@@ -700,6 +700,7 @@ inline Node *StructLit::Cp1(Inliner &inl) const {
     c->einst = einst;
     c->variant = variant;
     c->fieldindices = fieldindices;
+    c->sourcefieldindices = sourcefieldindices;
     return c;
 }
 

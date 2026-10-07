@@ -11,7 +11,9 @@ struct Options {
     another_default: i64 = 10,
     c: i64,
 }
+var state = 0;
+fn effect() -> i64 { state++; state }
 fn main() {
-    let options = Options { c: 3, b: 2, a: 1 };
+    let options = Options { c: effect(), b: 2, a: 1 };
     print(options.a);
 }

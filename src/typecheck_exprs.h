@@ -2597,6 +2597,122 @@ inline Val TypeCheck::CheckVariantConst(Dot *d, SEnum *en) {
 // Struct and variant literals (§4.2). The per-node entry is
 // StructLit::Check in typecheck_nodes.h.
 
+// Storing a harmless read can still check a destination's capacity, length
+// prefix or relative offset. Be conservative about adaptations; literals'
+// counts have already been checked against their own expression type.
+inline bool TypeCheck::InitOrderStoreSafe(Node *n, TypeExpr *dest) {
+    if (!n || !dest || dest->kind == TY_VOID) return true;
+    if (HasRelRefT(dest, true)) return Is<NullLit>(n) != nullptr;
+    if (auto b = Is<Block>(n)) return InitOrderStoreSafe(b->tail, dest);
+    if (auto i = Is<IfExpr>(n))
+        return InitOrderStoreSafe(i->thenb, dest) && InitOrderStoreSafe(i->elseb, dest);
+    if (auto m = Is<MatchExpr>(n)) {
+        for (auto &arm : m->arms) if (!InitOrderStoreSafe(arm.body, dest)) return false;
+        return true;
+    }
+    if (dest->kind != TY_ARRAY) return true;
+    // exprtype is the receiving slot after MustFit, so recover a read's
+    // storage type or a call's declared result rather than trusting it.
+    TypeExpr *from = nullptr;
+    if (Is<StrLit>(n) || Is<ArrayLit>(n)) from = n->exprtype;
+    else if (auto id = Is<Ident>(n); id && id->vdef) from = id->vdef->type;
+    else if (auto c = Is<Call>(n)) {
+        if (c->defaultinit) return InitOrderStoreSafe(c->defaultinit, dest);
+        if (c->spec && c->spec->rets.size() == 1) from = c->spec->rets[0];
+    } else if (auto u = Is<Unary>(n); u && u->op == T_BITAND)
+        return InitOrderStoreSafe(u->child, dest);
+    if (from) from = LoadType(from->kind == TY_REF ? from->ref->sub : from);
+    return from && TypeEq(from, dest);
+}
+
+// Source-order flexibility must not depend on optimization or debug mode.
+// Prove that an initializer neither changes observable state nor can abort
+// or leave its enclosing function. Unknown forms/calls are conservative.
+// Two such expressions may read shared mutable state: neither can change it.
+inline bool TypeCheck::InitOrderSafe(Node *n, set<FnSpec *> &visiting, FnSpec *callee) {
+    if (!n) return true;
+    auto safe = [&](Node *child) { return InitOrderSafe(child, visiting, callee); };
+    if (Is<IntLit>(n) || Is<FltLit>(n) || Is<BoolLit>(n) || Is<StrLit>(n) ||
+        Is<NullLit>(n) || Is<SelfRef>(n) || Is<Ident>(n)) return true;
+    if (auto d = Is<Dot>(n)) return d->variantconst || safe(d->obj);
+    if (auto u = Is<Unary>(n)) {
+        auto t = LoadType(u->child->exprtype);
+        if (u->op == T_MINUS && !IsIntT(t) && t->kind != TY_FLT) return false;
+        if (u->op == T_MINUS && IsIntT(t) && !IsUnsigned(t->intstorage)) return false;
+        return safe(u->child);
+    }
+    if (auto b = Is<Binary>(n)) {
+        auto t = LoadType(b->left->exprtype);
+        if (b->op == T_ANDAND || b->op == T_OROR || b->op == T_EQ || b->op == T_NEQ ||
+            b->op == T_DOTEQ || b->op == T_DOTNEQ) return safe(b->left) && safe(b->right);
+        if (!IsIntT(t) && t->kind != TY_FLT && t->kind != TY_BOOL) return false;
+        // Signed arithmetic can fail in GS_DEBUG, division in all builds.
+        if (IsIntT(t) && (b->op == T_DIV || b->op == T_MOD ||
+            (!IsUnsigned(t->intstorage) &&
+             (b->op == T_PLUS || b->op == T_MINUS || b->op == T_MUL)))) return false;
+        return safe(b->left) && safe(b->right);
+    }
+    if (auto c = Is<AsCast>(n)) {
+        auto from = LoadType(c->child->exprtype), to = c->totype;
+        bool lossless = from && to && IsIntT(from) && IsIntT(to) &&
+            ((IsUnsigned(from->intstorage) == IsUnsigned(to->intstorage) &&
+              IntBits(to->intstorage) >= IntBits(from->intstorage)) ||
+             (IsUnsigned(from->intstorage) && !IsUnsigned(to->intstorage) &&
+              IntBits(to->intstorage) > IntBits(from->intstorage)));
+        return (c->unchecked || c->implicit || (to && to->kind == TY_FLT) || lossless) &&
+               safe(c->child);
+    }
+    if (auto c = Is<Call>(n)) {
+        if (c->defaultinit) return safe(c->defaultinit);
+        auto sp = c->spec;
+        if (!sp || !sp->body || sp->inprogress || !visiting.insert(sp).second) return false;
+        auto args = c->ArgNodes();
+        bool ok = args.size() == sp->argtypes.size() && sp->rets.size() <= 1;
+        for (size_t i = 0; ok && i < args.size(); i++)
+            ok = InitOrderStoreSafe(args[i], sp->argtypes[i]) && safe(args[i]);
+        if (!sp->rets.empty()) ok = ok && InitOrderStoreSafe(sp->body, sp->rets[0]);
+        ok = ok && InitOrderSafe(sp->body, visiting, sp);
+        visiting.erase(sp);
+        return ok;
+    }
+    if (auto r = Is<Return>(n)) {
+        if (!callee || r->target != callee->sf) return false;
+        if (r->vals.size() != callee->rets.size()) return false;
+        for (size_t i = 0; i < r->vals.size(); i++)
+            if (!InitOrderStoreSafe(r->vals[i], callee->rets[i]) || !safe(r->vals[i])) return false;
+        return true;
+    }
+    if (auto d = Is<VarDecl>(n)) {
+        // A callee may bind local values; assignment, including through an
+        // alias, is deliberately not admitted by this proof.
+        if (!callee) return false;
+        if (d->inits.empty()) return true;
+        if (d->inits.size() != d->defs.size()) return false;
+        for (size_t i = 0; i < d->inits.size(); i++)
+            if (!InitOrderStoreSafe(d->inits[i], d->defs[i]->type) || !safe(d->inits[i]))
+                return false;
+        return true;
+    }
+    if (auto a = Is<ArrayLit>(n)) {
+        // Dynamic capacities/counts need checks and can fail.
+        if (a->capexpr || (a->fillcount && !Is<IntLit>(a->fillcount))) return false;
+        auto elem = a->exprtype->kind == TY_ARRAY ? a->exprtype->arr->sub : a->exprtype->sub;
+        if (!InitOrderStoreSafe(a->fillval, elem)) return false;
+        for (auto e : a->elems) if (!InitOrderStoreSafe(e, elem)) return false;
+    } else if (auto s = Is<StructLit>(n)) {
+        const auto &types = s->sinst ? s->sinst->ftypes
+            : s->einst->vftypes[s->einst->en->VariantIndex(s->variant)];
+        for (size_t i = 0; i < s->inits.size(); i++)
+            if (!InitOrderStoreSafe(s->inits[i].val, types[s->fieldindices[i]])) return false;
+    } else if (!Is<Block>(n) && !Is<IfExpr>(n) && !Is<MatchExpr>(n)) {
+        // Includes indexing/slicing, mutation, loops and nonlocal exits.
+        return false;
+    }
+    bool ok = true;
+    n->Children([&](Node *child) { ok = ok && safe(child); });
+    return ok;
+}
+
 // `selft` is the type of the value this literal constructs (the enum type
 // for a variant literal in fixed enum mode), which is what `self` names.
 inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fields,
@@ -2613,28 +2729,6 @@ inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fi
                 if (!fields[i].ispad && fields[i].name == fi.name) { idx = i; break; }
             if (idx < 0) Error(fi.val, cat(what, " has no field ", fi.name));
             if (got[idx]) Error(fi.val, cat("duplicate initializer for field ", fi.name));
-            // Declaration order is required (§4.2): values construct
-            // front-to-back, so out-of-order names would obfuscate either
-            // evaluation order or cost.
-            for (auto i = idx + 1; i < (int)fields.size(); i++)
-                if (got[i]) {
-                    // Include every supplied field, not just the prefix
-                    // seen so far. Omitted defaults and padding need not
-                    // be added when the user puts the names in order.
-                    string order;
-                    for (auto &field : fields) {
-                        if (field.ispad) continue;
-                        for (auto &init : sl->inits) {
-                            if (init.name != field.name) continue;
-                            Append(order, order.empty() ? "" : ", ", field.name);
-                            break;
-                        }
-                    }
-                    Error(fi.val, cat("field initializers must follow declaration "
-                                      "order: ", fi.name, " comes before ", fields[i].name,
-                                      "; supplied fields in declaration order: ", order,
-                                      "; fields are evaluated and constructed front-to-back"));
-                }
         } else {
             while (pos < (int)fields.size() && fields[pos].ispad) pos++;
             if (pos >= (int)fields.size())
@@ -2644,6 +2738,8 @@ inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fi
         got[idx] = true;
         sl->fieldindices.push_back(idx);
     }
+    if (sl->sourcefieldindices.empty()) sl->sourcefieldindices = sl->fieldindices;
+    const auto &sourceorder = sl->sourcefieldindices;
     vector<FieldInit> ordered(fields.size());
     for (size_t i = 0; i < sl->inits.size(); i++) ordered[sl->fieldindices[i]] = sl->inits[i];
     sl->inits.clear();
@@ -2684,6 +2780,41 @@ inline TypeCheck::LitDeep TypeCheck::CheckInits(StructLit *sl, vector<Field> &fi
                           : CheckValue(fi.val, ft);
             NoteLitElem(deep, fi.val, fv, ft);
         }
+    }
+    // Check every inverted pair, not just expressions whose numeric position
+    // changed: a mutation in the middle can stay put while a read crosses it.
+    if (named) {
+        vector<bool> supplied(fields.size(), false);
+        for (auto idx : sourceorder) supplied[idx] = true;
+        vector<int> reorderable(fields.size(), -1);
+        auto safe = [&](int idx) {
+            if (reorderable[idx] < 0) {
+                set<FnSpec *> visiting;
+                auto init = sl->InitFor(idx);
+                reorderable[idx] = InitOrderStoreSafe(init, ftypes[idx]) &&
+                                   InitOrderSafe(init, visiting);
+            }
+            return reorderable[idx] != 0;
+        };
+        for (size_t a = 0; a < sourceorder.size(); a++)
+            for (size_t b = a + 1; b < sourceorder.size(); b++) {
+                int hi = sourceorder[a], lo = sourceorder[b];
+                if (hi <= lo) continue;
+                bool ok = safe(lo) && safe(hi);
+                // Omitted defaults keep their declaration positions. Do not
+                // move an initializer across an effectful default either.
+                for (int i = lo + 1; i < hi; i++)
+                    if (!supplied[i] && !fields[i].ispad) ok = ok && safe(i);
+                if (ok) continue;
+                string order;
+                for (int i = 0; i < (int)fields.size(); i++)
+                    if (supplied[i]) Append(order, order.empty() ? "" : ", ", fields[i].name);
+                Error(sl->InitFor(lo), cat("field initializers must follow declaration order: ",
+                      fields[lo].name, " comes before ", fields[hi].name,
+                      "; reordering may cross a side effect, runtime check, or nonlocal exit",
+                      "; supplied fields in declaration order: ", order,
+                      "; fields are evaluated and constructed front-to-back"));
+            }
     }
     return deep;
 }

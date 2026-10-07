@@ -1,0 +1,2 @@
+Text { "hello", 0, "world" }
+named fields: declaration-order construction passed

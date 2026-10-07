@@ -853,6 +853,7 @@ NODE(StructLit)
     EnumInst *einst = nullptr;      // Variant literals.
     SVariant *variant = nullptr;    //   "
     vector<int> fieldindices;       // Per init, the target field index.
+    vector<int> sourcefieldindices; // Supplied fields before CheckInits sorts; retained on rechecks.
     StructLit(Line l, TypeExpr *_type) : Node(l), type(_type) {}
     // The initializer of field `fieldidx` once the literal is checked
     // (TypeCheck::CheckInits): the one written, the field's declared

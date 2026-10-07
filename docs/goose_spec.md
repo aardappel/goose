@@ -956,10 +956,19 @@ Literal forms usable in any construction context:
   may point into the array; others are evaluated before the run is added,
   as a pushed fixed-size element is;
 * struct literals `X { a: 1, b: 2 }` (named) or `X { 1, 2 }` (positional, in
-  declaration order; no mixing). Named initializers must also appear in
-  declaration order (out-of-order names are a compile error: values construct
-  front-to-back, and reordering would obscure either evaluation order or copying
-  cost). The diagnostic lists the supplied fields in declaration order;
+  declaration order; no mixing). Named initializers may be written out of
+  declaration order only when every pair reversed by that order is proven
+  free of observable effects, runtime failures and nonlocal exits. A reversed
+  pair may not span an effectful omitted default either. Evaluation and
+  construction always proceed in declaration order, directly into each field;
+  no temporaries or copies are introduced to preserve source order. The
+  conservative check admits reads, nontrapping computations and calls whose
+  checked bodies prove safe; unknown/native calls, recursion, mutation,
+  indexing, loops, checked arithmetic/conversions and potentially checked
+  destination adaptations (capacities, length prefixes, relative offsets)
+  prevent a crossing. It runs before optimization and includes debug checks in
+  every build, so acceptance does not depend on optimization or runtime debug mode.
+  The diagnostic lists the supplied fields in declaration order;
   omitted defaults and padding do not need to be added. If side effects
   must run in a different order, perform them before constructing the literal.
   Fields with declared defaults (§3.2) may be omitted: trailing ones in

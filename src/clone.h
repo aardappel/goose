@@ -48,6 +48,7 @@ inline Node *StructLit::Clone1(Ast &ast) const {
     auto sl = ast.New<StructLit>(line, type);
     sl->defaultall = defaultall;
     sl->implicit = implicit;
+    sl->sourcefieldindices = sourcefieldindices;
     sl->inits.reserve(inits.size());
     for (auto &fi : inits) sl->inits.push_back({ fi.name, fi.val->Clone(ast), fi.fromdefault });
     return sl;
