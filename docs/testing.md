@@ -193,7 +193,11 @@ the same few stacks at every level, and `discarded_resizable_results.goose`
 shrinks each stack's reservation (`GS_STACK_RESERVE`) so that its loops
 overflow one unless every discarded result is released, as
 `guard_flat_storage.goose` does for what a guard's condition, its else and
-the rest of its block take, the rest emitted without braces of its own. A
+the rest of its block take, the rest emitted without braces of its own.
+`cycle_static_stacks.goose` runs the shapes a call into a recursive cycle
+allows (§7.8), the `errors_tc/cycle_temporary_*`, `cycle_construction_*` and
+`cycle_result_*` fixtures being the rejected ones, and codegen fails with an
+internal error should any program hold a data stack across such a call. A
 fixture
 expecting a debug-only abort sets `GS_DEBUG=1` the same way, which makes
 every run of it a debug build: `cast_abort_location.goose` and
