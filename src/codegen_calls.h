@@ -321,7 +321,10 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
             }
         }
     }
-    if (ki.needssp) args.push_back(SpTop());
+    if (ki.needssp) {
+        NoStackAcrossCycleCall(sp, c->line);
+        args.push_back(SpTop());
+    }
     string argstr;
     for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
     auto callee = ername.empty() ? ki.cname : ername;
@@ -696,7 +699,10 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
             } else if (IsBytesT(sp->rets[i])) args.push_back(dststk[i]);
             else if ((int)i != ki.cret) args.push_back(cat("&", retex[i]));
         }
-        if (ki.needssp) args.push_back(SpTop());
+        if (ki.needssp) {
+            NoStackAcrossCycleCall(sp, c->line);
+            args.push_back(SpTop());
+        }
         string argstr;
         for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
         auto reach = SyncReach(sp, args);

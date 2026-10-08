@@ -2244,11 +2244,45 @@ outside it (below). Growable data that must outlive a recursive call is
 owned outside the cycle and passed in (references, slices, reusable pools,
 or one struct of references to several tables, A.6). The compiler checks
 every call into a cycle in call-graph order; recursion depth then only
-consumes native call stack. Unnamed nonfixed *temporaries* (e.g. an
-intermediate call result) are exempt: they cannot be referred to across
-activations, so the soundness argument holds — but an implementation may
-then consume data-stack slots proportional to recursion depth for them
-(aborting past its limit).
+consumes native call stack.
+
+**Temporaries.** The same holds of the unnamed nonfixed values of the
+statement making the call: **at a call into the cycle, no nonfixed value of
+the enclosing statement may be live**, since each lives on a data stack of
+the activation (§10.3) — a temporary until its statement ends (§9.2), a
+value under construction until it is complete — and would otherwise cost a
+stack per activation as a local in scope does. That forbids: (a) a nonfixed
+temporary as an argument of the call — a call's result, a `copy`, a `str`,
+a literal of nonfixed class, or the copy a by-value nonfixed parameter takes
+of its argument (§4.1) — which the callee's view keeps alive across the
+call; (b) the call nested inside a nonfixed value under construction: an
+element or field initializer of an array or struct literal of nonfixed
+class, or an argument of `print` or `str`, whose text is being rendered
+(`format` is no such value: its text goes into the storage it is given);
+(c) a nonfixed temporary evaluated earlier in the same statement, whether or
+not something has consumed it since — a temporary lives to the end of its
+statement, as does one built by the head of a construct the call is inside
+(an `if` condition, a `match` scrutinee, a `while` condition, a `for`
+sequence), which runs in the scope around the construct; (d) the call's own
+nonfixed result anywhere but as the whole value of a `return` of the same
+result type — through the branches of an `if` or `match` and a block's tail,
+or by `return … from` — where it is built in the caller's destination, or
+pushed or appended in place into resizable storage owned outside the cycle,
+where it is built at that storage's top (which §1.3(4) then rejects wherever
+a function of the cycle grows that storage, as every one appending into it
+does); anywhere else — an argument, an operand, a dropped statement value,
+an element of a literal, a value assigned (which §4.4 rejects as well) — it
+needs a destination temporary taken before the call and held across it.
+The compiler reports each case with the call and the value. What to
+do instead: evaluate the value in a statement of its own before the call
+(`let width = str(n).len;`, the binding being fixed-size), pass scratch in
+from outside the cycle (the `mark` / `resize(mark)` pattern below), or take
+an output buffer by reference and build into it in place instead of
+returning a growable value. Fixed-size values and temporaries are never
+affected: a slice of a fixed literal, a struct of fixed fields, a large fixed
+value (§10.3) all cost no data stack at the call. So a program's stack count
+is a compile-time constant, with the number of worker threads (§11.2) the
+only dynamic factor.
 
 Scratch passed down this way can be viewed across the recursive calls. An
 activation that takes `let mark = scratch.len` of a grow-shrink scratch

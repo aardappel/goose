@@ -224,6 +224,7 @@ inline TypeCheck::DefaultScope::DefaultScope(TypeCheck &t, FnSpec *env, Line cal
     f.scopebase = (int)tc.scopes.size();
     f.varbase = (int)tc.vars.size();
     f.callline = callline;
+    f.bodyidx = (int)tc.outerbodies.size();
     tc.frames.push_back(f);
 }
 

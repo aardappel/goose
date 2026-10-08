@@ -467,6 +467,20 @@ struct CodeGen {
 
     string SpIdx(int k) { return cat("GS(", spexpr, " + ", k, ")"); }
     string SpTop() { return cat(spexpr, " + ", stknext); }   // First free index.
+    // A call into the recursive cycle the function being emitted is in
+    // (§7.8) is made with none of its stacks in use: the checker rejects
+    // every shape that would hold one across it (TypeCheck::JoinCycle), so
+    // every activation of the cycle starts its stacks at the same index and
+    // a program's stack count is static. One in use here is a checker gap,
+    // never a program's to work around.
+    void NoStackAcrossCycleCall(FnSpec *callee, Line ln) {
+        if (!curspec || !curspec->incycle || !callee->incycle || !stknext) return;
+        auto cycle = [](FnSpec *s) { while (s->cyclelink) s = s->cyclelink; return s; };
+        if (cycle(callee) != cycle(curspec)) return;
+        Fail(ln, cat("internal: ", curspec->sf->name, " holds ", stknext, " data stack(s) "
+                     "across its call into the recursive cycle through ", callee->sf->name,
+                     " (§7.8)"));
+    }
     // Whether a fixed value above NATIVE_VALUE_LIMIT is held on a data
     // stack here (FixedLocal). Inside a function of a recursive cycle it is
     // a native local instead: the recursion's depth is bounded by the

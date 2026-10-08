@@ -14,7 +14,8 @@ recursive fn walk(n: i64) {
     if n == 2 { mid(n); return; }
     if n == 1 {
         let z: i32 = 7;
-        print("inner g returned ", g(z, 0));
+        let inner = g(z, 0);
+        print("inner g returned ", inner);
         return;
     }
     return 42 from g;

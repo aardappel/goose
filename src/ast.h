@@ -731,6 +731,10 @@ struct Val : Prov {
 struct Node {
     Line line;
     TypeExpr *exprtype = nullptr;   // Filled by typecheck (the value's type; TY_VOID for none).
+    // Filled by typecheck: the value is of non-fixed-size class and no
+    // storage, so it is a temporary of its statement, held on a data stack
+    // of the activation until the statement ends (TypeCheck::NoteTemp, §7.8).
+    bool nftemp = false;
     // The node as the source has it, which every clone of it shares; null in
     // that one itself.
     const Node *origin = nullptr;

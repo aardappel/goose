@@ -112,9 +112,16 @@ recursive fn depth_fixed(n: i64) -> u8[3] {
     r[0] = (sum(depth_fixed(n - 1)) % 251) as u8;
     return r;
 }
-recursive fn depth_grown(n: i64) -> u8[>..] {
-    if n == 0 { return [4, 5]; }
-    return [(sum(depth_grown(n - 1)) % 251) as u8];
+// A resizable result of a self-call would need a temporary of its own,
+// held across the call (§7.8): the levels build in a buffer owned outside
+// the cycle instead, each reducing what the level below left.
+recursive fn depth_grown(out: u8[>..<]&, n: i64) {
+    if n == 0 { out.append([4, 5]); return; }
+    let mark = out.len;
+    depth_grown(out, n - 1);
+    let reduced = (sum(out[mark..]) % 251) as u8;
+    out.resize(mark);
+    out.push(reduced);
 }
 
 fn main() {
@@ -141,7 +148,9 @@ fn main() {
     print(ti);                              // 4606
     print(shapes(4));                       // 1612
     print(sum(depth_fixed(3)));             // 2803
-    print(sum(depth_grown(3)));             // 16501
+    var grown: u8[>..<] = [];
+    depth_grown(grown, 3);
+    print(sum(grown));                      // 16501
 
     print(sum(fixed(10)));                  // 1503
     print(sum(limited(3)));                 // 603

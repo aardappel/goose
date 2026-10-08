@@ -1961,7 +1961,34 @@ its own (§7.8). A by-value non-fixed parameter is always in scope there. A
 local whose own initializer calls into the cycle holds its stack across the
 call too, being built in place: each frame counts the calls into a cycle it
 has been inside, and `CheckCycleInit` compares the count across the
-initializer once the local's type is known. A call reusing a finished
+initializer once the local's type is known. The statement's unnamed
+non-fixed values count the same way (§7.8). `CheckV` marks every node whose
+value is of non-fixed class and no storage (`Node::nftemp`, `NoteTemp`), and
+the phase-2 argument check marks an argument a by-value non-fixed parameter
+copies; at a call into the cycle, `CycleCallTemps` walks each joining
+frame's statement -- the node path of the body state its statements are
+checked in (`Frame::bodyidx`, `StateOf`) -- for a marked node among the
+operands evaluated before the call (`FindTemp`, which stops at the
+constructs whose parts run in scopes of their own, and takes the head an
+`if`, `match`, `while` or `for` evaluated before the branch or body the call
+is in), and reports the frame's call with it. A value under construction is
+caught after the fact: `NoteTemp` compares the frame's count of calls into
+the cycle across the check of an array or struct literal of non-fixed class
+and of `print` and `str`, as `CheckCycleInit` does across an initializer.
+The call's own non-fixed result is checked by position (`CycleCallResult`):
+along each joining frame's path from its call outward, through the
+constructs whose value the call's is, it must reach a `return` (or the
+body's tail) of the same result types, where codegen forwards it to the
+caller's destination, or a `push` or `append`, which builds it at the
+receiver's top (and which §1.3(4) then rejects as a growth the callee
+makes); anywhere else the caller takes a temporary for it before the call.
+Codegen asserts the outcome: `NoStackAcrossCycleCall`, at
+every call emitted with a stack index, fails with an internal error where
+the callee is in the caller's cycle and any of the caller's stack indices
+is in use, so a checker gap cannot silently cost a stack per activation.
+For the same reason a fixed value above `NATIVE_VALUE_LIMIT` is a native
+local inside a cycle function (`LargeFixedOnStack`, §10.3) rather than a
+data-stack slot. A call reusing a finished
 specialization whose cycle's outermost member is still in progress leads
 back into that cycle as well and joins it the same way, so a later call to
 a cycle member, or a function that reaches the cycle only through one, is

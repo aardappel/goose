@@ -193,8 +193,8 @@ the same few stacks at every level, and `discarded_resizable_results.goose`
 shrinks each stack's reservation (`GS_STACK_RESERVE`) so that its loops
 overflow one unless every discarded result is released, as
 `guard_flat_storage.goose` does for what a guard's condition, its else and
-the rest of its block take, the rest emitted without braces of its own;
-`data_stacks_exhausted.goose` runs out of stacks on purpose. A fixture
+the rest of its block take, the rest emitted without braces of its own. A
+fixture
 expecting a debug-only abort sets `GS_DEBUG=1` the same way, which makes
 every run of it a debug build: `cast_abort_location.goose` and
 `overflow_abort_location.goose` check the location a failing check reports.

@@ -256,7 +256,8 @@ recursive fn c_into(ctx: Compiler&, n: i64, dest: CValue) {
         while e >= 0 {
             let init = ctx.edges[e].value; let f = ctx.nodes[init].symbol;
             let field = save_text(ctx, str("(", dest.code, ").f", f));
-            c_into(ctx, ctx.nodes[init].a, CValue { code: field, ty: ctx.fielddefs[f].ty, address: save_text(ctx, str("&(", field, ")")), stack: dest.stack });
+            let address = save_text(ctx, str("&(", field, ")"));
+            c_into(ctx, ctx.nodes[init].a, CValue { code: field, ty: ctx.fielddefs[f].ty, address: address, stack: dest.stack });
             e = ctx.edges[e].next;
         }
         return;
@@ -278,7 +279,7 @@ recursive fn c_into(ctx: Compiler&, n: i64, dest: CValue) {
                 emit(ctx, str("  for (", i, "=0; ", i, "<", ctx.types[x.ty].count, "; ", i, "++) (", dest.code, ").data[", i, "] = ", value.code, ";\n"));
             } else {
                 var e = x.first; var i = 0;
-                while e >= 0 { let field = save_text(ctx, str("(", dest.code, ").data[", i, "]")); c_into(ctx, ctx.edges[e].value, CValue { code: field, ty: elem, address: save_text(ctx, str("&", field)), stack: "" }); i++; e = ctx.edges[e].next; }
+                while e >= 0 { let field = save_text(ctx, str("(", dest.code, ").data[", i, "]")); let address = save_text(ctx, str("&", field)); c_into(ctx, ctx.edges[e].value, CValue { code: field, ty: elem, address: address, stack: "" }); i++; e = ctx.edges[e].next; }
             }
         }
         return;

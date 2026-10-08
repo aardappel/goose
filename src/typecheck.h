@@ -216,6 +216,10 @@ struct TypeCheck {
         // where it made the latest (JoinCycle).
         int cyclecalls = 0;
         Line cyclecall;
+        // The body state its statements are checked in (StateOf): the
+        // index in outerbodies the state is saved at while a body is
+        // checked inside it, or past them for the state being checked now.
+        int bodyidx = 0;
         // A specialization's body being checked (CheckSpecBodyOnce): its exits.
         BodyExits *exits = nullptr;
     };
@@ -1539,10 +1543,12 @@ struct TypeCheck {
     // apply reference transparency.
     Val CheckV(Node *n, TypeExpr *expected) {
         NodeScope ns(*this, n);
+        auto cyclecalls = frames.back().cyclecalls;
         auto v = n->Check(*this, expected);
         if (v.type == fntype && !Is<Ident>(n) && !Is<FunVal>(n))
             Error(n, "a function value must be a function name or block literal (§7.6); "
                      "evaluate runtime expressions separately");
+        NoteTemp(n, v, cyclecalls);
         RecordVal(n, v);
         return v;
     }
@@ -2287,6 +2293,18 @@ struct TypeCheck {
     // The states of the bodies being checked around this one, outermost
     // first: the callers' on the compile-time call path.
     vector<BodyState *> outerbodies;
+    BodyState &StateOf(int fi) {
+        auto b = frames[fi].bodyidx;
+        return b < (int)outerbodies.size() ? *outerbodies[b] : cur;
+    }
+    // A statement's non-fixed-size temporaries, which a call into a
+    // recursive cycle may not be made across (§7.8): NoteTemp marks the
+    // nodes whose values are one, FindTemp finds one in what an operand
+    // evaluated, and JoinCycle asks each frame on the call path.
+    void NoteTemp(Node *n, const Val &v, int cyclecalls);
+    Node *FindTemp(Node *n, bool self = true);
+    void CycleCallTemps(int fi, Node *callnode);
+    void CycleCallResult(FnSpec *spec, Node *callnode);
     // A fresh body state for the extent of a scope; the enclosing one
     // returns when it ends.
     struct BodyScope {
