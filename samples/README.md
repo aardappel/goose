@@ -177,5 +177,4 @@ It omits music, saves, multiplayer, jumping, vertical aiming, monster
 pathfinding, directional monster art and the larger weapon set. Unimplemented
 weapon/ammo pickups provide bullets; a chainsaw pickup does the same. The
 WAD's own sprites, font and sounds keep the sample self-contained beyond
-that one asset file. See [implementation and API feedback](mini_doom_notes.md)
-for design choices, validation, and possible improvements to Goose.
+that one asset file.
