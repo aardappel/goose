@@ -84,7 +84,10 @@ not claims of compiler bugs:
    serves Goose's serialization format, not arbitrary external formats.
    The local `u16le`, `i16le`, `u32le`, `name_at`, and bounds helpers are small,
    but a cursor reader with those operations and useful offsets on failure
-   would make this kind of sample substantially easier to start.
+   would make this kind of sample substantially easier to start. Implemented
+   in `stdlib/binary.goose`: the sample now uses checked offset reads and
+   cursors/subreaders for the WAD header and directory. See the standard
+   library reference for the recoverable failure and borrowing contracts.
 
 2. **Recursive algorithms cannot keep growable scratch across recursive
    calls.** The first BSP implementation returned growable clipped polygons;

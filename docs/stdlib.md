@@ -1,7 +1,7 @@
 # The Goose standard library
 
-The standard library has nine modules under `stdlib/`: `std`, `dictionary`,
-`vec`, `math`, `os`, `audio`, `gfx`, `physics`, and `ui`. Import each module by name,
+The standard library has ten modules under `stdlib/`: `std`, `dictionary`,
+`vec`, `math`, `os`, `binary`, `audio`, `gfx`, `physics`, and `ui`. Import each module by name,
 for example `import std;`. The compiler locates the library in its source
 tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
 Everything is written in Goose except the C behind `os`
@@ -14,7 +14,9 @@ the ui layer behind `ui` (`src/ui/`), and the PCM mixer behind `audio`
 for `ui`, and `design/audio.md` for `audio`); this is the reference.
 
 For **text rendering, fonts and game HUDs**, start with
-[`ui`](#text-rendering-and-game-huds), which renders over `gfx`.
+[`ui`](#text-rendering-and-game-huds), which renders over `gfx`. For external
+binary file formats, use [`binary`](#binary); `from_bytes` reads Goose's own
+serialization format.
 
 The library uses these conventions:
 
@@ -42,7 +44,7 @@ The library uses these conventions:
 * A function taking an element *by value* (`push_n`, `insert_at`, `fill`,
   `heap_push`) cannot take one that contains self-relative references, because
   those values cannot be copied (spec §3.9). Construct them in place.
-* The `std`, `dictionary`, `vec`, `math`, and `os` names are global; `audio`,
+* The `std`, `dictionary`, `vec`, `math`, and `os` names are global; `binary`, `audio`,
   `gfx`, `physics`, and `ui` use their own namespaces. A local named `fill` or `count`
   shadows the corresponding global function, causing an error at a call.
 
@@ -404,6 +406,78 @@ if !write_file_atomic("saves/slot1.sav", image) { write_stderr("not saved\n"); }
 `exit(code)` and `abort(msg)` are builtins, since the checker knows they
 diverge. Subprocesses and networking are not in v1; they arrive as
 `extern fn`s when a program needs them.
+
+## binary
+
+Checked, little-endian reads of external formats, written entirely in Goose.
+`import binary;` puts the API in namespace `binary`. Input is a `const u8[:]`;
+returned byte slices and fixed-width names borrow that input without copying
+or allocating. Their lifetimes and read-only access are checked normally.
+This API does not interpret Goose serialization images (`from_bytes`).
+
+### Reads at offsets
+
+```goose
+fn range_ok(data: const u8[:], at: i64, size: i64) -> bool
+fn read_u16le(data: const u8[:], at: i64) -> u16, bool
+fn read_i16le(data: const u8[:], at: i64) -> i16, bool
+fn read_u32le(data: const u8[:], at: i64) -> u32, bool
+fn read_bytes(data: const u8[:], at: i64, size: i64) -> const u8[:], bool
+fn read_name(data: const u8[:], at: i64, width: i64) -> const u8[:], bool
+```
+
+Offsets and sizes are bytes. Negative values, truncated fields and offsets
+past the end fail with zero or an empty slice and `false`; range checking
+does not overflow on extreme offsets or sizes. An empty range at the end
+is valid. Reads work at unaligned offsets on either host byte order.
+`read_name` validates the entire fixed-width field and returns the bytes
+before its first NUL, or all `width` bytes if there is no NUL. It does not
+validate padding or interpret the bytes as a particular text encoding.
+
+### Cursor and bounded subreaders
+
+```goose
+struct Reader { data: const u8[:], pos: i64 }
+fn reader(data: const u8[:]) -> Reader
+fn read_u16le(r: Reader&) -> u16, bool
+fn read_i16le(r: Reader&) -> i16, bool
+fn read_u32le(r: Reader&) -> u32, bool
+fn read_bytes(r: Reader&, size: i64) -> const u8[:], bool
+fn read_name(r: Reader&, width: i64) -> const u8[:], bool
+fn skip(r: Reader&, size: i64) -> bool
+fn subreader(r: Reader&, size: i64) -> Reader, bool
+```
+
+The cursor holds only its input and byte position. Every read returns its
+own success flag. Success advances `pos` (by the full width for a name);
+failure returns zero/empty and leaves `pos` unchanged, so a shorter read
+can be tried next. Set `pos` to seek; a negative or out-of-range position
+makes reads fail. Callers keep any file offsets or diagnostic context they
+need. There is no sticky error state.
+
+`subreader` consumes a bounded range from its parent and gives it a new
+cursor starting at zero. Failure returns an empty reader and `false`,
+leaving the parent in place. Keep the parent in scope while using its
+child or returned slices; the current reference-result analysis can tie
+their lifetime to the parent.
+
+```goose
+// data owns the file bytes. The first four bytes give a payload length.
+var r = binary::reader(data);
+let size, size_ok = binary::read_u32le(r);
+if !size_ok { abort("missing payload length"); }
+var payload, payload_ok = binary::subreader(r, size);
+if !payload_ok { abort("truncated payload"); }
+let version, version_ok = binary::read_u16le(payload);
+let name, name_ok = binary::read_name(payload, 8);
+if !version_ok || !name_ok { abort("truncated payload header"); }
+// name borrows data. payload cannot read into the next record.
+```
+
+Use offset reads for random access and cursors for sequential records.
+Applications still validate signatures, counts, indices and format-specific
+limits after checking the read. The WAD loader in
+[`31_mini_doom.goose`](../samples/31_mini_doom.goose) shows both styles.
 
 ## gfx
 

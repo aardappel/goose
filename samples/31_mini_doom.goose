@@ -31,6 +31,7 @@ import std;
 import math;
 import vec;
 import os;
+import binary;
 import gfx;
 import audio;
 
@@ -43,27 +44,28 @@ var lumps: Lump[>..] = [];
 fn require(ok: bool, message: const u8[:]) {
     if !ok { abort(str("mini doom: ", message)); }
 }
-fn range_ok(data: const u8[:], at: i64, size: i64) -> bool {
-    at >= 0 && size >= 0 && at <= data.len && size <= data.len - at
-}
+// The library returns recoverable failures. This sample adds WAD context and
+// stops loading; byte order, range checks and name trimming live in binary.
 fn u16le(data: const u8[:], at: i64) -> i64 {
-    require(range_ok(data, at, 2), "truncated 16-bit WAD field");
-    data[at] | (data[at + 1] as i64 << 8)
+    let value, ok = binary::read_u16le(data, at);
+    if !ok { abort(str("mini doom: truncated 16-bit WAD field at byte ", at)); }
+    value
 }
 fn i16le(data: const u8[:], at: i64) -> i64 {
-    let n = u16le(data, at);
-    if n >= 32768 { n - 65536 } else { n }
+    let value, ok = binary::read_i16le(data, at);
+    if !ok { abort(str("mini doom: truncated signed 16-bit WAD field at byte ", at)); }
+    value
 }
 fn u32le(data: const u8[:], at: i64) -> i64 {
-    u16le(data, at) | (u16le(data, at + 2) << 16)
+    let value, ok = binary::read_u32le(data, at);
+    if !ok { abort(str("mini doom: truncated 32-bit WAD field at byte ", at)); }
+    value
 }
 fn name_at(data: const u8[:], at: i64) -> u8[..8] {
-    require(range_ok(data, at, 8), "truncated WAD name");
+    let bytes, ok = binary::read_name(data, at, 8);
+    if !ok { abort(str("mini doom: truncated WAD name at byte ", at)); }
     var name: u8[..8] = [];
-    for i in 8 {
-        if data[at + i] == 0 { break; }
-        name.push(data[at + i]);
-    }
+    name.append(bytes);
     name
 }
 fn find_lump(name: const u8[:]) -> i64 {
@@ -87,17 +89,28 @@ fn lump(name: const u8[:]) -> const u8[:] {
 }
 fn load_wad(path: const u8[:]) {
     require(read_file(path, wad), str("cannot read ", path));
-    require(wad.len >= 12, "truncated WAD header");
-    require(wad[..4] == "IWAD" || wad[..4] == "PWAD", "expected a Doom WAD");
-    let count = u32le(wad, 4);
-    let directory = u32le(wad, 8);
-    require(count <= 100000 && range_ok(wad, directory, count * 16), "bad WAD directory");
+    var header = binary::reader(wad);
+    let signature, signature_ok = binary::read_bytes(header, 4);
+    let count_field, count_ok = binary::read_u32le(header);
+    let directory, directory_ok = binary::read_u32le(header);
+    require(signature_ok && count_ok && directory_ok, "truncated WAD header");
+    let count: i64 = count_field;
+    require(signature == "IWAD" || signature == "PWAD", "expected a Doom WAD");
+    require(count <= 100000 && binary::range_ok(wad, directory, count * 16), "bad WAD directory");
+    var file = binary::reader(wad);
+    binary::skip(file, directory);
+    var entries, entries_ok = binary::subreader(file, count * 16);
+    require(entries_ok, "truncated WAD directory");
     for i in count {
-        let at = directory + i * 16;
-        let start = u32le(wad, at);
-        let size = u32le(wad, at + 4);
-        require(range_ok(wad, start, size), "lump extends past end of WAD");
-        lumps.push(Lump { name_at(wad, at + 8), start, size });
+        var entry, entry_ok = binary::subreader(entries, 16);
+        let start, start_ok = binary::read_u32le(entry);
+        let size, size_ok = binary::read_u32le(entry);
+        let bytes, name_ok = binary::read_name(entry, 8);
+        require(entry_ok && start_ok && size_ok && name_ok, "truncated WAD entry");
+        require(binary::range_ok(wad, start, size), "lump extends past end of WAD");
+        var name: u8[..8] = [];
+        name.append(bytes);
+        lumps.push(Lump { name, start, size });
     }
     require(find_lump("E1M1") >= 0, "this sample needs the supplied E1M1 WAD");
 }
@@ -154,17 +167,17 @@ fn pixel(pic: i64, x: i64, y: i64, color: i64) {
 }
 fn paint_patch(pic: i64, data: const u8[:], origin_x: i64, origin_y: i64) {
     let w = u16le(data, 0);
-    require(range_ok(data, 8, w * 4), "truncated patch columns");
+    require(binary::range_ok(data, 8, w * 4), "truncated patch columns");
     for x in w {
         var at = u32le(data, 8 + x * 4);
         var previous = -1;
         loop {
-            require(range_ok(data, at, 1), "unterminated patch column");
+            require(binary::range_ok(data, at, 1), "unterminated patch column");
             var top = data[at] as i64;
             if top == 255 { break; }
-            require(range_ok(data, at, 4), "truncated patch post");
+            require(binary::range_ok(data, at, 4), "truncated patch post");
             let count = data[at + 1] as i64;
-            require(range_ok(data, at, count + 4), "truncated patch pixels");
+            require(binary::range_ok(data, at, count + 4), "truncated patch pixels");
             // Also accepts the relative posts used by tall Doom patches.
             if top <= previous { top += previous; }
             previous = top;
@@ -210,16 +223,16 @@ fn load_pictures() {
 
     let names = lump("PNAMES");
     let name_count = u32le(names, 0);
-    require(range_ok(names, 4, name_count * 8), "truncated PNAMES");
+    require(binary::range_ok(names, 4, name_count * 8), "truncated PNAMES");
     let textures = lump("TEXTURE1");
     let count = u32le(textures, 0);
-    require(range_ok(textures, 4, count * 4), "truncated texture directory");
+    require(binary::range_ok(textures, 4, count * 4), "truncated texture directory");
     for i in count {
         let at = u32le(textures, 4 + i * 4);
         let name = name_at(textures, at);
         let id = new_picture(name, 1, u16le(textures, at + 12), u16le(textures, at + 14));
         let patches = u16le(textures, at + 20);
-        require(range_ok(textures, at + 22, patches * 10), "truncated texture patches");
+        require(binary::range_ok(textures, at + 22, patches * 10), "truncated texture patches");
         for j in patches {
             let p = at + 22 + j * 10;
             let number = u16le(textures, p + 4);
@@ -500,7 +513,7 @@ fn load_sounds(quiet: bool, offline: bool = false) {
         require(data.len >= 8 && u16le(data, 0) == 3, "expected DMX PCM sound");
         let rate = u16le(data, 2);
         let count = u32le(data, 4);
-        require(rate >= 8000 && rate <= 192000 && count > 32 && range_ok(data, 8, count), "bad DMX sound");
+        require(rate >= 8000 && rate <= 192000 && count > 32 && binary::range_ok(data, 8, count), "bad DMX sound");
         var pcm: f32[>..] = [];
         // DMX adds sixteen padding samples at each end.
         for j in 16..count - 16 { pcm.push((data[8 + j] - 128.0) / 128.0); }
