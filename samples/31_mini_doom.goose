@@ -312,11 +312,9 @@ fn sector_at(p: float2) -> i64 {
 // Original Doom subsectors list only their solid/portal edges, not all BSP
 // cuts. A fan of seg endpoints leaves holes! Clip a bounding polygon down
 // the BSP and then by the leaf's edges to recover each complete convex cell.
-fn clip_polygon(poly: const float2[:], origin: float2, delta: float2) -> float2[..128] {
-    // A bounded polygon also keeps recursive BSP frames fixed in size.
-    require(poly.len < 128, "BSP polygon exceeds the sample's 128-corner limit");
-    var out: float2[..128] = [];
-    if poly.len == 0 { return out; }
+// Append into caller-owned scratch; input slices remain valid as it grows.
+fn clip_polygon(poly: const float2[:], origin: float2, delta: float2, out: float2[>..<]&) {
+    if poly.len == 0 { return; }
     var previous = poly[poly.len - 1];
     var d0 = cross2(delta, previous - origin);
     for current in poly {
@@ -328,22 +326,24 @@ fn clip_polygon(poly: const float2[:], origin: float2, delta: float2) -> float2[
         previous = current;
         d0 = d1;
     }
-    out
 }
-recursive fn build_floors(child: i64, poly: const float2[:], depth: i64) {
+recursive fn build_floors(child: i64, poly: const float2[:], depth: i64, scratch: float2[>..<]&) {
     require(depth <= nodes.len, "cyclic BSP tree");
     if poly.len < 3 { return; }
+    // Every activation keeps only slices/indices. The caller owns the one
+    // growable buffer, and each call restores its length before returning.
+    let mark = scratch.len;
     if child >= 32768 {
         require(child - 32768 < subsectors.len, "bad floor leaf");
         let leaf = subsectors[child - 32768];
-        var clipped: float2[..128] = [];
-        clipped.append(poly);
+        var start = mark;
         for i in leaf.count {
             let edge = segs[leaf.first + i];
-            let next = clip_polygon(clipped, edge.a, edge.b - edge.a);
-            clipped.resize(0);
-            clipped.append(next);
+            let input = if i == 0 { poly } else { scratch[start..] };
+            start = scratch.len;
+            clip_polygon(input, edge.a, edge.b - edge.a, scratch);
         }
+        let clipped = scratch[start..];
         for i in 1..clipped.len - 1 {
             // Discard numerical slivers smaller than a twentieth of a
             // square map unit; their centroids can round across a BSP cut.
@@ -351,14 +351,18 @@ recursive fn build_floors(child: i64, poly: const float2[:], depth: i64) {
                 floor_triangles.push(FloorTriangle { clipped[0], clipped[i], clipped[i + 1], leaf.sector });
             }
         }
-        return;
+    } else {
+        require(child >= 0 && child < nodes.len, "bad floor node");
+        let n = nodes[child];
+        clip_polygon(poly, n.origin, n.delta, scratch);
+        let right = scratch[mark..];
+        build_floors(n.front, right, depth + 1, scratch);
+        let left_start = scratch.len;
+        clip_polygon(poly, n.origin, scale2(n.delta, -1.0), scratch);
+        let left = scratch[left_start..];
+        build_floors(n.back, left, depth + 1, scratch);
     }
-    require(child >= 0 && child < nodes.len, "bad floor node");
-    let n = nodes[child];
-    let right = clip_polygon(poly, n.origin, n.delta);
-    let left = clip_polygon(poly, n.origin, scale2(n.delta, -1.0));
-    build_floors(n.front, right, depth + 1);
-    build_floors(n.back, left, depth + 1);
+    scratch.resize(mark);
 }
 fn records(name: const u8[:], size: i64) -> const u8[:] {
     let data = lump(name);
@@ -429,7 +433,8 @@ fn load_map() {
     }
     let bounds: float2[4] = [float2 { -32768.0, -32768.0 }, float2 { 32768.0, -32768.0 },
         float2 { 32768.0, 32768.0 }, float2 { -32768.0, 32768.0 }];
-    build_floors(nodes.len - 1, bounds, 0);
+    var scratch: float2[>..<] = [];
+    build_floors(nodes.len - 1, bounds, 0, scratch);
 }
 
 // --- things, player and sound ------------------------------------------------
@@ -1199,6 +1204,8 @@ fn sprite_mesh(out: Vertex[>..]&) {
 }
 
 // --- a small HUD, using the WAD's own font and weapon patches -----------------
+// These glyphs are game artwork in the sprite atlas. For ordinary fonts/text,
+// use ui's existing font and text renderer over gfx (see docs/stdlib.md).
 
 let WHITE = float4 { 1.0, 1.0, 1.0, 1.0 };
 fn hud_quad(out: HudVertex[>..]&, x: f32, y: f32, w: f32, h: f32, id: i64, color: float4) {
@@ -1473,11 +1480,52 @@ fn test_route(start: float2, goal: float2, key: bool) {
     require(waypoint == 0, "walking to key/exit got stuck");
 }
 
+fn floor_scratch_tests() {
+    // Exercise polygons larger than the old 128-corner bound, including the
+    // recursive traversal, while preserving data already in the caller's scratch.
+    var polygon: float2[>..] = [];
+    var radius: f32 = 1.0;
+    for v in vertices { radius = max(radius, max(abs(v.x), abs(v.y)) * 2.0); }
+    for i in 256 {
+        let angle: f32 = (i + 0.5) * (6.283185307179586 / 256.0);
+        polygon.push(scale2(float2 { cos(angle), sin(angle) }, radius));
+    }
+    var scratch: float2[>..<] = [];
+    scratch.push(float2 { 7.0, 11.0 });
+    let mark = scratch.len;
+    let delta = float2 { 0.0, -1.0 };
+    clip_polygon(polygon, float2 { radius * 2.0, 0.0 }, delta, scratch);
+    require(scratch.len == mark + 256, "clipping lost a large polygon");
+    scratch.resize(mark);
+    clip_polygon(polygon, float2 { -radius * 2.0, 0.0 }, delta, scratch);
+    clip_polygon(polygon[..0], float2 { 0.0, 0.0 }, delta, scratch);
+    require(scratch.len == mark, "empty clipping added vertices");
+    clip_polygon(polygon, float2 { 0.0, 0.0 }, delta, scratch);
+    require(scratch.len == mark + 130, "large polygon clipping lost intersections");
+    for i in mark..scratch.len {
+        require(scratch[i].x <= 0.001, "clipped vertex escaped its half-plane");
+    }
+    scratch.resize(mark);
+    let prefix = scratch[..];
+    let triangles = floor_triangles.len;
+    build_floors(nodes.len - 1, polygon, 0, scratch);
+    require(scratch.len == mark && prefix[0] == float2 { 7.0, 11.0 },
+            "BSP traversal did not restore caller scratch");
+    require(floor_triangles.len > triangles + 1000, "large BSP polygon did not produce floors");
+    for i in triangles..floor_triangles.len {
+        let t = floor_triangles[i];
+        require(sector_at(scale2(t.a + t.b + t.c, 1.0 / 3.0)) == t.sector,
+                "large floor polygon escaped its BSP cell");
+    }
+    floor_triangles.resize(triangles);
+}
+
 fn gameplay_tests() {
     // These checks use the actual map, plus a few actors placed in its start
     // room. They need no GPU or sound device and leave a fresh game behind.
     require(sectors.len == 182 && lines.len == 1175, "unexpected E1M1 geometry");
     require(total_monsters > 20 && floor_triangles.len > 1000, "map did not load fully");
+    floor_scratch_tests();
     require(can_stand(player.pos, player.z, PLAYER_RADIUS, PLAYER_HEIGHT, -1, false), "player start is blocked");
     let bytes: u8[4] = [255, 255, 0, 128];
     require(i16le(bytes, 0) == -1 && i16le(bytes, 2) == -32768 && u32le(bytes, 0) == 2147549183,
@@ -1525,7 +1573,7 @@ fn gameplay_tests() {
     player.z = wall_z;
     player.yaw = atan2(-normal.y, -normal.x);
     actors.push(Actor { pos: middle - scale2(normal, 32.0), z: wall_z,
-        kind: 3001, radius: 16.0, health: 60, alive: true, solid: true, .. });
+        kind: 3001, health: 60, radius: 16.0, alive: true, solid: true, .. });
     shoot();
     require(actors[0].health == 60, "shot damaged a target behind a wall");
     actors.resize(0);
@@ -1588,7 +1636,7 @@ fn gameplay_tests() {
     reset_game();
     actors.resize(0);
     actors.push(Actor { pos: player.pos + float2 { 72.0, 0.0 }, z: player.z,
-        kind: 3004, picture: find_picture("POSSA1", 0), radius: 16.0, health: 20,
+        kind: 3004, picture: find_picture("POSSA1", 0), health: 20, radius: 16.0,
         alive: true, solid: true, .. });
     for i in 5 { player.cooldown = 0.0; shoot(); }
     require(kills == 1 && player.bullets == 45 && !actors[0].solid, "pistol combat failed");
@@ -1623,7 +1671,7 @@ fn gameplay_tests() {
     actors.resize(0);
     for i in 2 {
         actors.push(Actor { pos: player.pos + float2 { 72.0 + i * 32.0, 0.0 }, z: player.z,
-            kind: 2035, radius: 16.0, health: 20, alive: true, solid: true, .. });
+            kind: 2035, health: 20, radius: 16.0, alive: true, solid: true, .. });
     }
     damage_actor(0, 100);
     for i in 60 { update_actors(); }

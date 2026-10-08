@@ -153,6 +153,8 @@ beside the entry source for JIT, or beside a compiled executable for AOT.
 When distributing the executable, include that `data` directory, or use
 `--wad <path>` to select an external WAD. The sample runner supplies `--wad`
 because it builds executables outside the sample's asset directory.
+The recursive BSP walk uses caller-owned growable scratch, restoring its
+length on return; clipping has no fixed polygon-corner limit.
 WASD walks, Shift runs, mouse or Left/Right turns, E or Space uses doors
 and switches, and left mouse or Ctrl fires. Select fists, pistol, shotgun,
 or chaingun with 1–4 (the latter two must be collected). Tab toggles the map;
@@ -166,10 +168,11 @@ walls are secret doors. The automap shows the whole map and does not pause
 play. Blue lines mark locked doors; yellow lines mark triggers.
 
 `-- --test` runs the checks without a graphics window or sound device,
-including automated walks to the key and exit with enemies removed. The
-sample runner uses `-- --test --frames 30` to also render a repeatable PNG.
+including large-polygon clipping, recursive scratch restoration, and automated
+walks to the key and exit with enemies removed. The sample runner uses
+`-- --test --frames 30` to also render a repeatable PNG.
 `-- --silent` disables playback; device failure also permits silent play.
-`-- --wad PATH` selects the supplied WAD when running from another directory.
+`-- --wad PATH` overrides the default WAD; relative paths use the working directory.
 The checks deliberately target this particular level.
 
 This is an independent, approximate game, not a compatible Doom engine.
