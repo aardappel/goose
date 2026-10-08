@@ -3528,9 +3528,12 @@ there by `gs_render_<T>`, one per type (`RenderFn`), which takes the
 builder and a reference to the value as an overload taking it by
 reference does, and calls itself, or the functions of the other types of a
 mutual recursion, for each level below; no overload renders a part of such
-a type (§3.7), so none of it depends on the call. A resizable tail with no
-header of its own is rendered in place one level more, up to the reference
-to the next.
+a type (§3.7), so none of it depends on the call. It takes no stack index
+either: the builder's stack is the only one it writes, it opens none of
+its own, and as it runs no overload it hands none on, so the overloads a
+rendering runs are all called by the function printing, above its live
+stacks (`EmitUserFormat`). A resizable tail with no header of its own is
+rendered in place one level more, up to the reference to the next.
 
 **Serialization contract.** The following is the observable part of
 `docs/design/serialization.md`, independent of how a verifier is organized:

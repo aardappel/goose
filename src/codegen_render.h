@@ -327,7 +327,10 @@ inline void CodeGen::EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln) {
     MarkFlush();
     auto &ki = sinfo[sp];
     // The callee's stacks start above everything live here, the builder's
-    // and the value's included, like any other call's (SpTop).
+    // and the value's included, like any other call's (SpTop). This is
+    // always inside a function or a global initializer, whose stack
+    // numbering spexpr names: a render function runs no overload
+    // (EmitRenderFn).
     L(ki.cname, "(", r, ", ", arg, ki.needssp ? cat(", ", SpTop()) : "", ");");
     MarkReload();   // The callee grew the builder's stack.
     PopSc();
@@ -362,7 +365,16 @@ inline void CodeGen::EmitRenderCall(Loc &out, const Loc &lv, TypeExpr *t, Line l
 
 // A render function's body (RenderFn): the value gs_v refers to, rendered
 // into the builder gs_out as the level RenderLoc was inside of when it
-// reached it.
+// reached it. The function takes no stack index, and none is needed: the
+// only stack it writes is the builder's, through gs_out, and it opens no
+// stacks of its own (stkmax stays 0). Nor does it hand one on: RenderLoc is
+// run without a call, so it applies no format overload, which is where a
+// rendering calls into user code with a stack index (EmitUserFormat), and
+// the checker sees to it that no overload is lost that way -- no part of a
+// type that reaches itself through references has one (CheckPrintable's
+// OverloadedPart), so the overloads of a print are all run at its first
+// level, by the function printing, above its live stacks. spexpr is "0"
+// only so that nothing below forms a stack expression by accident.
 inline void CodeGen::EmitRenderFn(RenderFnReq r) {
     curspec = nullptr;
     curinfo = nullptr;
