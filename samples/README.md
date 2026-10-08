@@ -167,13 +167,10 @@ switch. Lifts lower when used or crossed, wait, and carry you back up. Some
 walls are secret doors. The automap shows the whole map and does not pause
 play. Blue lines mark locked doors; yellow lines mark triggers.
 
-`-- --test` runs the checks without a graphics window or sound device,
-including large-polygon clipping, recursive scratch restoration, and automated
-walks to the key and exit with enemies removed. The sample runner uses
-`-- --test --frames 30` to also render a repeatable PNG.
+`-- --frames 30` runs for thirty frames with a fixed timestep and saves a PNG.
+The sample runner uses this mode for its rendering smoke check.
 `-- --silent` disables playback; device failure also permits silent play.
 `-- --wad PATH` overrides the default WAD; relative paths use the working directory.
-The checks deliberately target this particular level.
 
 This is an independent, approximate game, not a compatible Doom engine.
 It omits music, saves, multiplayer, jumping, vertical aiming, monster

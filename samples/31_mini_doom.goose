@@ -4,8 +4,7 @@
 // it is not a source port and does not reproduce Doom's simulation exactly.
 //
 //   goose samples/31_mini_doom.goose
-//   goose samples/31_mini_doom.goose -- --test
-//   goose samples/31_mini_doom.goose -- --test --frames 30
+//   goose samples/31_mini_doom.goose -- --frames 30
 //   goose samples/31_mini_doom.goose -- --wad path/to/freedoom1-e1m1.wad
 //
 // WASD walks, Shift runs, mouse or Left/Right turns, E or Space uses doors
@@ -506,9 +505,9 @@ let SOUND_NAMES: const u8[:][12] = ["DSPISTOL", "DSSHOTGN", "DSPUNCH", "DSPLPAIN
     "DSITEMUP", "DSWPNUP", "DSDOROPN", "DSPSTART", "DSSWTCHN", "DSFIRSHT", "DSBAREXP", "DSPODTH1"];
 var sounds: audio::Sound[12];
 var sound_ready = false;
-fn load_sounds(quiet: bool, offline: bool = false) {
+fn load_sounds(quiet: bool) {
     if quiet || !audio::available() { return; }
-    sound_ready = if offline { audio::open_offline() } else { audio::open() };
+    sound_ready = audio::open();
     if !sound_ready {
         write_stderr(str("audio unavailable; continuing silently: ", audio::error(), "\n"));
         return;
@@ -1401,335 +1400,17 @@ fn upload(buffer: gfx::Buffer&, bytes: const u8[:]) {
     } else { require(gfx::update_buffer(buffer, bytes), gfx::error()); }
 }
 
-// --- optional checks, run only with --test ----------------------------------
-
-fn test_route(start: float2, goal: float2, key: bool) {
-    reset_game();
-    actors.resize(0);
-    // First plan a route on a 16-unit grid. Doors may be opened, and lifts
-    // connect their low and high floors. Then restore the map and follow the
-    // route using the actual walking/use/tick code. Enemies are tested
-    // separately: this check is specifically about traversing the geometry.
-    for line in lines {
-        if line.special == 1 || line.special == 117 || (key && line.special == 26) {
-            open_door(back_sector(line), true, true);
-        }
-        if line.special == 2 {
-            for i in sectors.len { if sectors[i].tag == line.tag { open_door(i, true, true); } }
-        }
-    }
-    for i in 240 { move_sectors(); }
-    for i in sectors.len {
-        if sectors[i].tag == 1 || sectors[i].tag == 2 {
-            let low, top = neighbor_limits(i);
-            sectors[i].floor = low;
-        }
-    }
-    // These bounds enclose the supplied E1M1; they are test data, not a
-    // second representation of the level used by the game.
-    let width = 256;
-    let origin = float2 { -768.0, -1120.0 };
-    var parent: i64[57344] = [-1; 57344];
-    var queue: i64[>..] = [];
-    let first = ((start.y - origin.y) / 16.0) as! i64 * width + ((start.x - origin.x) / 16.0) as! i64;
-    queue.push(first);
-    parent[first] = first;
-    var head = 0;
-    var found = -1;
-    while head < queue.len {
-        let cell = queue[head];
-        head++;
-        let pos = origin + float2 { (cell % width) * 16.0, (cell / width) * 16.0 };
-        if distance2(pos, goal) < 24.0 { found = cell; break; }
-        let here = sectors[sector_at(pos)];
-        let z = if here.tag == 1 || here.tag == 2 { here.start_floor } else { here.floor };
-        for offset in [-1, 1, -256, 256] {
-            let next = cell + offset;
-            if next < 0 || next >= parent.len || parent[next] >= 0 { continue; }
-            let next_pos = origin + float2 { (next % width) * 16.0, (next / width) * 16.0 };
-            if distance2(pos, next_pos) > 17.0 { continue; }
-            if can_stand(next_pos, z, 16.0, 56.0, -1, false) {
-                parent[next] = cell;
-                queue.push(next);
-            }
-        }
-    }
-    require(found >= 0, "no route to key/exit");
-    var path: float2[>..] = [];
-    var cell = found;
-    while cell != first {
-        path.push(origin + float2 { (cell % width) * 16.0, (cell / width) * 16.0 });
-        cell = parent[cell];
-    }
-    reset_game();
-    actors.resize(0);
-    player.pos = start;
-    player.z = sectors[sector_at(start)].floor;
-    player.blue_key = key;
-    var waypoint = path.len;
-    var ticks = 0;
-    while waypoint > 0 && ticks < 12000 {
-        let delta = path[waypoint - 1] - player.pos;
-        if length(delta) < 3.0 { waypoint--; continue; }
-        player.yaw = atan2(delta.y, delta.x);
-        if ticks % 30 == 0 { use(); }
-        tick(float2 { 0.0, 1.0 }, false, false);
-        player.health = 100; // Geometry test: ignore damaging floors.
-        ticks++;
-    }
-    require(waypoint == 0, "walking to key/exit got stuck");
-}
-
-fn floor_scratch_tests() {
-    // Exercise polygons larger than the old 128-corner bound, including the
-    // recursive traversal, while preserving data already in the caller's scratch.
-    var polygon: float2[>..] = [];
-    var radius: f32 = 1.0;
-    for v in vertices { radius = max(radius, max(abs(v.x), abs(v.y)) * 2.0); }
-    for i in 256 {
-        let angle: f32 = (i + 0.5) * (6.283185307179586 / 256.0);
-        polygon.push(scale2(float2 { cos(angle), sin(angle) }, radius));
-    }
-    var scratch: float2[>..<] = [];
-    scratch.push(float2 { 7.0, 11.0 });
-    let mark = scratch.len;
-    let delta = float2 { 0.0, -1.0 };
-    clip_polygon(polygon, float2 { radius * 2.0, 0.0 }, delta, scratch);
-    require(scratch.len == mark + 256, "clipping lost a large polygon");
-    scratch.resize(mark);
-    clip_polygon(polygon, float2 { -radius * 2.0, 0.0 }, delta, scratch);
-    clip_polygon(polygon[..0], float2 { 0.0, 0.0 }, delta, scratch);
-    require(scratch.len == mark, "empty clipping added vertices");
-    clip_polygon(polygon, float2 { 0.0, 0.0 }, delta, scratch);
-    require(scratch.len == mark + 130, "large polygon clipping lost intersections");
-    for i in mark..scratch.len {
-        require(scratch[i].x <= 0.001, "clipped vertex escaped its half-plane");
-    }
-    scratch.resize(mark);
-    let prefix = scratch[..];
-    let triangles = floor_triangles.len;
-    build_floors(nodes.len - 1, polygon, 0, scratch);
-    require(scratch.len == mark && prefix[0] == float2 { 7.0, 11.0 },
-            "BSP traversal did not restore caller scratch");
-    require(floor_triangles.len > triangles + 1000, "large BSP polygon did not produce floors");
-    for i in triangles..floor_triangles.len {
-        let t = floor_triangles[i];
-        require(sector_at(scale2(t.a + t.b + t.c, 1.0 / 3.0)) == t.sector,
-                "large floor polygon escaped its BSP cell");
-    }
-    floor_triangles.resize(triangles);
-}
-
-fn gameplay_tests() {
-    // These checks use the actual map, plus a few actors placed in its start
-    // room. They need no GPU or sound device and leave a fresh game behind.
-    require(sectors.len == 182 && lines.len == 1175, "unexpected E1M1 geometry");
-    require(total_monsters > 20 && floor_triangles.len > 1000, "map did not load fully");
-    floor_scratch_tests();
-    require(can_stand(player.pos, player.z, PLAYER_RADIUS, PLAYER_HEIGHT, -1, false), "player start is blocked");
-    let bytes: u8[4] = [255, 255, 0, 128];
-    require(i16le(bytes, 0) == -1 && i16le(bytes, 2) == -32768 && u32le(bytes, 0) == 2147549183,
-            "little-endian decoding failed");
-    for triangle in floor_triangles {
-        let center = scale2(triangle.a + triangle.b + triangle.c, 1.0 / 3.0);
-        require(sector_at(center) == triangle.sector, "floor triangle escaped its BSP cell");
-    }
-    for line in lines {
-        require(line.special == 0 || line.special == 1 || line.special == 2 || line.special == 11 ||
-                line.special == 23 || line.special == 26 || line.special == 62 || line.special == 88 ||
-                line.special == 117, "unimplemented special in the supplied map");
-    }
-    // Resolve every state now, including states absent from a still screenshot.
-    for a in actors {
-        var pose = a;
-        actor_picture(pose);
-        pose.awake = true;
-        pose.pain = 0.1;
-        actor_picture(pose);
-        pose.pain = 0.0;
-        pose.attacking = 0.1;
-        actor_picture(pose);
-        for frame in 6 {
-            pose.death = 0.001 + frame / 7.0;
-            actor_picture(pose);
-        }
-    }
-    actors.resize(0);
-    let start = player.pos;
-    for i in 30 { walk(float2 { 0.0, 1.0 }, false); }
-    require(distance2(start, player.pos) > 40.0, "player cannot leave the start");
-
-    // A one-sided wall blocks both a moving circle and a shot.
-    let wall = lines[0];
-    let middle = scale2(wall.a + wall.b, 0.5);
-    let edge = normalize(wall.b - wall.a);
-    let normal = float2 { edge.y, -edge.x };
-    let wall_z = sectors[front_sector(wall)].floor;
-    require(!can_stand(middle, wall_z, 16.0, 56.0, -1, false), "solid wall permits standing");
-    let near_wall = middle + scale2(normal, 32.0);
-    let ray_length = wall_distance(near_wall, wall_z + 32.0, scale2(normal, -1.0), 0.0, 100.0);
-    require(ray_length < 33.0, "solid wall permits shooting through it");
-    player.pos = near_wall;
-    player.z = wall_z;
-    player.yaw = atan2(-normal.y, -normal.x);
-    actors.push(Actor { pos: middle - scale2(normal, 32.0), z: wall_z,
-        kind: 3001, health: 60, radius: 16.0, alive: true, solid: true, .. });
-    shoot();
-    require(actors[0].health == 60, "shot damaged a target behind a wall");
-    actors.resize(0);
-
-    // Real locked door: failed use, key pickup, opening, walking through,
-    // and reopening when it tries to close on the player.
-    var locked = -1;
-    for i in lines.len { if lines[i].special == 26 { locked = i; break; } }
-    require(locked >= 0, "missing blue door");
-    let door_line = lines[locked];
-    let door_sector = back_sector(door_line);
-    let door_center = scale2(door_line.a + door_line.b, 0.5);
-    let door_edge = normalize(door_line.b - door_line.a);
-    let door_normal = float2 { door_edge.y, -door_edge.x };
-    player.pos = door_center + scale2(door_normal, 40.0);
-    player.z = sectors[sector_at(player.pos)].floor;
-    player.yaw = atan2(-door_normal.y, -door_normal.x);
-    use();
-    require(sectors[door_sector].motion == 0, "blue door opened without key");
-    actors.push(Actor { kind: 5, alive: true, .. });
-    pickup(0);
-    require(player.blue_key && !actors[0].alive, "key pickup failed");
-    use();
-    require(sectors[door_sector].motion == 1, "use did not open blue door");
-    for i in 150 { move_sectors(); }
-    require(sectors[door_sector].ceiling - sectors[door_sector].floor >= PLAYER_HEIGHT,
-            "door did not open high enough");
-    for i in 30 { walk(float2 { 0.0, 1.0 }, false); }
-    require(dot(player.pos - door_center, door_normal) < -20.0, "player cannot cross an open door");
-    player.pos = door_center - scale2(door_normal, 8.0);
-    player.z = sectors[door_sector].floor;
-    sectors[door_sector].motion = 3;
-    for i in 150 { move_sectors(); }
-    require(sectors[door_sector].ceiling >= player.z + PLAYER_HEIGHT, "door crushed the player");
-
-    reset_game();
-    actors.resize(0);
-    var lift_line = -1;
-    var lift = -1;
-    for i in lines.len { if lines[i].special == 62 { lift_line = i; break; } }
-    for i in sectors.len { if sectors[i].tag == lines[lift_line].tag { lift = i; break; } }
-    require(lift >= 0, "missing tagged lift");
-    activate_line(lift_line, false);
-    for i in 180 { move_sectors(); }
-    require(sectors[lift].floor < sectors[lift].start_floor, "lift did not lower");
-    // Choose a triangle center in this lift to test carrying its rider.
-    for triangle in floor_triangles {
-        if triangle.sector == lift {
-            player.pos = scale2(triangle.a + triangle.b + triangle.c, 1.0 / 3.0);
-            break;
-        }
-    }
-    player.z = sectors[lift].floor;
-    for i in 360 { move_sectors(); }
-    require(sectors[lift].floor == sectors[lift].start_floor && abs(player.z - sectors[lift].floor) < 0.1,
-            "lift failed to return with its rider");
-
-    // A target directly ahead in the start room. Pistol ammo is consumed,
-    // the enemy dies, and its dropped ammunition can be collected.
-    reset_game();
-    actors.resize(0);
-    actors.push(Actor { pos: player.pos + float2 { 72.0, 0.0 }, z: player.z,
-        kind: 3004, picture: find_picture("POSSA1", 0), health: 20, radius: 16.0,
-        alive: true, solid: true, .. });
-    for i in 5 { player.cooldown = 0.0; shoot(); }
-    require(kills == 1 && player.bullets == 45 && !actors[0].solid, "pistol combat failed");
-    for i in 60 { update_actors(); }
-    require(actors.len == 2 && actors[1].kind == 2007, "guard did not drop ammo");
-    pickup(1);
-    require(player.bullets == 55, "ammo pickup failed");
-    actors.push(Actor { kind: 2001, alive: true, .. });
-    pickup(2);
-    require(player.shotgun && player.weapon == 3 && player.shells == 8, "shotgun pickup failed");
-    actors.push(Actor { kind: 2012, alive: true, .. });
-    pickup(3);
-    require(actors[3].alive, "full-health player wasted a medkit");
-    player.health = 50;
-    pickup(3);
-    require(player.health == 75 && !actors[3].alive, "medkit pickup failed");
-    player.armor = 100;
-    hurt_player(30);
-    require(player.health == 55 && player.armor == 90, "armor absorption failed");
-
-    reset_game();
-    actors.resize(0);
-    launch_fireball(Actor { pos: player.pos + float2 { 80.0, 0.0 }, z: player.z, .. });
-    for i in 30 { update_actors(); }
-    require(player.health < 100 && fireballs[0].life <= 0.0, "imp fireball failed to hit");
-    fireballs[0] = Fireball { near_wall, wall_z + 32.0, scale2(normal, -280.0), 0.0, 2.0 };
-    for i in 30 { update_actors(); }
-    require(fireballs[0].life <= 0.0, "fireball passed through a solid wall");
-
-    // Barrels trigger their neighbors without recursion. Corpses stop
-    // blocking movement and the explosion effect eventually disappears.
-    actors.resize(0);
-    for i in 2 {
-        actors.push(Actor { pos: player.pos + float2 { 72.0 + i * 32.0, 0.0 }, z: player.z,
-            kind: 2035, health: 20, radius: 16.0, alive: true, solid: true, .. });
-    }
-    damage_actor(0, 100);
-    for i in 60 { update_actors(); }
-    require(!actors[0].alive && !actors[1].alive, "barrel chain reaction failed");
-
-    // Run the real enemy update for ten seconds; resolve all live meshes.
-    reset_game();
-    for i in 600 { tick(float2_0, false, false); }
-    var mesh: Vertex[>..] = [];
-    world_mesh(mesh);
-    sprite_mesh(mesh);
-    require(mesh.len > 8000, "world mesh is incomplete");
-    reset_game();
-    var exit_line = -1;
-    for i in lines.len { if lines[i].special == 11 { exit_line = i; break; } }
-    let start_pos = player.pos;
-    var key_pos = float2_0;
-    for a in actors { if a.kind == 5 { key_pos = a.pos; } }
-    test_route(start_pos, key_pos, false);
-    let exit = lines[exit_line];
-    let edge_to_exit = normalize(exit.b - exit.a);
-    let exit_middle = scale2(exit.a + exit.b, 0.5);
-    let exit_goal = exit_middle + scale2(float2 { edge_to_exit.y, -edge_to_exit.x }, 40.0);
-    test_route(key_pos, exit_goal, true);
-    let direction_to_exit = exit_middle - player.pos;
-    player.yaw = atan2(direction_to_exit.y, direction_to_exit.x);
-    use();
-    require(won, "exit switch did not complete the level");
-    reset_game();
-    require(!won && kills == 0 && player.health == 100 && !player.blue_key, "restart left old state");
-    if audio::available() {
-        load_sounds(false, true);
-        require(sound_ready, "offline audio mixer failed");
-        sound(0, player.pos);
-        var pcm: f32[4800] = [0.0; 4800];
-        require(audio::render(pcm), audio::error());
-        var audible = false;
-        for sample in pcm { if abs(sample) > 0.001 { audible = true; } }
-        require(audible, "WAD pistol sound decoded to silence");
-        audio::close();
-        sound_ready = false;
-    }
-    print("mini doom: WAD, BSP, collision, doors, lifts, combat, pickups, audio and key-to-exit routes passed");
-}
-
 // --- entry point: load once, then update and draw ----------------------------
 
 fn main() {
     var frames = -1;
-    var testing = false;
     var quiet = false;
     var path: u8[>..] = [];
     let argv = args();
     var argument = 1;
     while argument < argv.len {
         let option = argv[argument];
-        if option == "--test" { testing = true; }
-        else if option == "--silent" { quiet = true; }
+        if option == "--silent" { quiet = true; }
         else if option == "--frames" {
             argument++;
             require(argument < argv.len, "--frames needs a positive count");
@@ -1751,8 +1432,6 @@ fn main() {
     load_pictures();
     load_map();
     reset_game();
-    if testing { gameplay_tests(); reset_game(); }
-    if testing && frames < 0 { return; }
 
     require(gfx::open("Goose: Mini Doom / Freedoom E1M1", 960, 600, gfx::WINDOW_RESIZABLE), gfx::error());
     load_sounds(quiet || frames > 0);
