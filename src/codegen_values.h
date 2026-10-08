@@ -389,11 +389,12 @@ inline bool CodeGen::AddView(VarDef *vd) {
 }
 
 // Large fixed values keep their ordinary packed C type, but their storage
-// is a data-stack slot. Pointer locals cannot be hoisted into a huge native
-// frame by HoistAggregateDecls or by a C compiler's inliner. Reuse follows
-// the existing scope watermarks, including break/continue/return-from.
+// is a data-stack slot (LargeFixedOnStack). Pointer locals cannot be hoisted
+// into a huge native frame by HoistAggregateDecls or by a C compiler's
+// inliner. Reuse follows the existing scope watermarks, including
+// break/continue/return-from.
 inline void CodeGen::FixedLocal(TypeExpr *t, string &name, const string &init, bool forlocal) {
-    if (!IsLargeFixed(t)) {
+    if (!LargeFixedOnStack(t)) {
         L(CT(t), " ", name, init.empty() ? ";" : cat(" = ", init, ";"));
         return;
     }

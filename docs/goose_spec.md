@@ -3011,6 +3011,15 @@ This threshold is a backend policy, not a language limit or a change to a
 type's size class, packed layout, value semantics or reference lifetime.
 It prevents large arrays and records, including temporaries introduced by
 inlining, from exhausting a platform's much smaller native call stack.
+Inside a function of a recursive cycle (§7.8) such values stay on the native
+stack instead: a data stack held across a call into the cycle would cost a
+stack per activation, which §7.8 rules out for every value, while the
+recursion's depth is bounded by the native stack already, and a fixed value
+belongs with fixed values. A large fixed parameter copy, local or temporary
+of a cycle function is therefore a native value, which deep recursion over
+large values avoids by taking them by reference; rejecting such parameters
+and locals in cycle functions instead would have made the backend's
+threshold a language rule.
 Variable-class locals may be placed on the native stack (`alloca`) instead
 of a data stack when the compiler chooses; the current backend places them
 on data stacks. Resizable frame objects (C.2) still keep their fixed prefix

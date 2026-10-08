@@ -246,7 +246,7 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
         GenConstruct(init, stk, t);
         return;
     }
-    if (IsLargeFixed(t)) {
+    if (LargeFixedOnStack(t)) {
         FixedLocal(t, name, "", forlocal);
         vnames[d] = name;
         if (init) GenAny(init, Dst { DK_LVALUE, name, t });

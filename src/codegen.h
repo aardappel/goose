@@ -467,6 +467,14 @@ struct CodeGen {
 
     string SpIdx(int k) { return cat("GS(", spexpr, " + ", k, ")"); }
     string SpTop() { return cat(spexpr, " + ", stknext); }   // First free index.
+    // Whether a fixed value above NATIVE_VALUE_LIMIT is held on a data
+    // stack here (FixedLocal). Inside a function of a recursive cycle it is
+    // a native local instead: the recursion's depth is bounded by the
+    // native stack already, and a data stack held across a call into the
+    // cycle would cost a stack per activation (NoStackAcrossCycleCall).
+    bool LargeFixedOnStack(TypeExpr *t) {
+        return IsLargeFixed(t) && !(curspec && curspec->incycle);
+    }
 
     // ------------------------------------------------------------------
     // Data-stack top caching. A bump pointer read and written through
