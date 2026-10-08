@@ -101,7 +101,7 @@ static string RelativeTo(const string &path, const string &dir) {
 
 // Where the standard library lives (§11.1): an explicit --stdlib or
 // GOOSE_STDLIB, else the `stdlib/` directory of the source tree the compiler
-// was built in, found by walking up from the executable.
+// was built in. Look beside the executable first for installed layouts.
 vector<string> StdlibDirs(const string &stdlibdir, const string &argv0) {
     vector<string> dirs;
     if (!stdlibdir.empty()) dirs.push_back(cat(stdlibdir, "/"));
@@ -111,6 +111,11 @@ vector<string> StdlibDirs(const string &stdlibdir, const string &argv0) {
     dirs.push_back(cat(exedir, "../stdlib/"));
     dirs.push_back(cat(exedir, "../../stdlib/"));
     dirs.push_back(cat(exedir, "../../../stdlib/"));
+#ifdef GOOSE_STDLIB_SOURCE_PATH
+    // Support builds outside the checkout, including CMake subprojects.
+    // Executable-relative installation locations retain precedence.
+    dirs.push_back(cat(GOOSE_STDLIB_SOURCE_PATH, "/"));
+#endif
     dirs.push_back("stdlib/");
     return dirs;
 }

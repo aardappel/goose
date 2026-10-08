@@ -68,6 +68,12 @@ jobs:
       - name: Build
         run: cmake --build build --config Debug
 
+      - name: Check source stdlib fallback
+        run: >-
+          python test/check_stdlib_discovery.py
+          --exe "build/${{ runner.os == 'Windows' && 'Debug/goose.exe' || 'goose' }}"
+          --stdlib stdlib --relocate
+
       - name: Test
         run: python test/run_tests.py --profile baseline --cc native --require-clang
 

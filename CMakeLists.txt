@@ -59,6 +59,8 @@ add_executable(goose
 # The compile runs on a thread of its own, with a larger stack (main.cpp).
 find_package(Threads REQUIRED)
 target_link_libraries(goose PRIVATE Threads::Threads)
+target_compile_definitions(goose PRIVATE
+    GOOSE_STDLIB_SOURCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/stdlib")
 
 # A program run in-process runs on the main thread (main.cpp), whose stack the
 # executable sets: 64 MB reserved, as for the compile thread, where Windows
