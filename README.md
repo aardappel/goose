@@ -68,7 +68,7 @@ The [tutorial](docs/tutorial.md) walks through all of this by example, the
 
 This section focuses on what distinguishes Goose. The [tutorial](docs/tutorial.md)
 explains these features in more detail, and the [samples](samples/README.md)
-show them in twenty-nine complete programs.
+show them in thirty-one complete programs.
 
 ### One memory model: stacks, and scope exit is the free
 
@@ -247,7 +247,8 @@ corrupt or hostile file is a `false`, never a wild reference.
 
 ### Built in place, always
 
-The copy-free construction guarantee ([spec §4.3](docs/goose_spec.md)) says a
+The copy-free construction guarantee
+([spec §4.3](docs/goose_spec.md#43-the-in-place-construction-guarantee)) says a
 constructed value is always built in its final home, propagated top-down
 through calls. A function returning a grow-only array by value writes its
 elements straight into the caller's variable, or into a field of the record
@@ -493,7 +494,7 @@ code --install-extension vscode/goose-language.vsix
   this first.
 * [Language specification](docs/goose_spec.md): the exact rules, when you want
   to know why something did not compile.
-* [Samples](samples/README.md): twenty-nine complete programs in reading
+* [Samples](samples/README.md): thirty-one complete programs in reading
   order, from a tour of the language to a JSON parser, a threaded Mandelbrot, a
   file tree built from two pools, a spinning cube on the GPU, thousands of
   boxes raining into a heap and a to-do list in windows of widgets.

@@ -444,7 +444,7 @@ are canonical: the shortest encoding of the unsigned or zigzag-transformed
 value. A verified byte image must preserve that invariant (§12).
 LEB was chosen because this type is optimized for values that are usually very small but
 have occasional outliers, where it outperformed other formats (measurements
-in `varint_bench/results.md`).
+summarized in Appendix B, Resolved, item 1).
 
 There is one `varint` type, with two encodings by position — this is
 user-visible whenever Goose data is serialized directly:
@@ -3522,8 +3522,7 @@ the end, each with where its resolution lives.
     remains: a back edge that passes storage of its own for a parameter the
     entry call gave static data gets a holder result that may only be
     passed down.
-1. **varint format benchmark** — DONE, see `varint_bench/results.md`:
-   ULEB128 adopted (§3.6). Break-even vs the best branchless format sits at
+1. **varint format benchmark** — DONE: ULEB128 adopted (§3.6). Break-even vs the best branchless format sits at
    ~70–75% single-byte values (a cliff, not a slope); above it ULEB wins
    ~3x, below it loses up to ~3x. Revisit only if a per-field format choice
    is ever wanted for unpredictable-length data.

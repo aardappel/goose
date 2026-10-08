@@ -107,7 +107,7 @@ subjects since 2026-09-12 that touch it.
 | 18 | Held temporaries and liveness (support for 6–8) | §5.1 | `heldtemps`, `TempScope`, `shrinkrest`, `RestScope`, `blockpos`, `UsedAfter`, `MentionsName`, `invalue`, `loopassigned` | ~120 | C+ | pushed at ~12 sites |
 | 19 | Bounds-check elimination | §10.5 | `bce.h` | ~2,300 | A- | 8 commits total; the two recent ones fixed operand types |
 | 20 | Optimizer facts: reachability, writes/addr-of, constants, inlining classification, views of copies, base-case and TRE eligibility | §4 (impl. notes) | `Reach`, `Analyze`, `Scan`, `OptViewed`, `NamesStorage`, `CodeFree`, `BaseOK`, `Pure`, `RootStable`, `Rebindable` | ~230 of ~2,000 | B+ | `OptViewed` is a patch for a checker decision the tree does not record |
-| 21 | Codegen: free variables, globals and `gs_sp` need (fixpoint), stack assignment, top caching, NRVO, evaluation snapshots | C.2, C.3, §6.10 | `CollectSpecs`, `CanCacheTops`, `RefTopsOk`, `PlanTopCaches`, `ExpandTopMarkers`, `SyncReach`, `DetectNrvo`, `NamedResult`, `Snapshot`, `AllocStk/SaveBase`, `HoistAggregateDecls` | ~520 of ~9,500 | B (marker expansion C) | 17 commits mention stacks/caching |
+| 21 | Codegen: free variables, globals and `gs_sp` need (fixpoint), stack assignment, top caching, NRVO, evaluation snapshots | C.2, C.3, §6.10 (impl. notes) | `CollectSpecs`, `CanCacheTops`, `RefTopsOk`, `PlanTopCaches`, `ExpandTopMarkers`, `SyncReach`, `DetectNrvo`, `NamedResult`, `Snapshot`, `AllocStk/SaveBase`, `HoistAggregateDecls` | ~520 of ~9,500 | B (marker expansion C) | 17 commits mention stacks/caching |
 
 Supporting weight: `docs/implementation.md` needs 800 lines (§3.4–3.11) to
 describe analyses 2–11; `test/errors_tc` holds 647 fixtures (8,400 lines),
