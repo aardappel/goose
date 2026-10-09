@@ -1,7 +1,7 @@
 /* Goose runtime — what runtime.h declares and leaves to the runtime: aborts,
-   the data stack regions and the faults that reach them, text forms and
-   printing. Follows runtime.h, in a standalone program's unit or in the
-   runtime object (runtime.h has the two); this, runtime_threads.h and
+   the data stack regions and the faults that reach them, byte search, text
+   forms and printing. Follows runtime.h, in a standalone program's unit or
+   in the runtime object (runtime.h has the two); this, runtime_threads.h and
    runtime_os.h are the only parts of either that include the platform's
    headers. */
 
@@ -476,6 +476,255 @@ GS_API uint8_t *gs_reserve_region(void) {
     return p;
 }
 
+/* ---------------------------------------------------------------------------
+   Byte search: std's find_any and find_pair (docs/stdlib.md). A set arrives
+   as std's ByteSet, made by its byte_set, which gs_byteset lays out as the
+   Goose struct is (spec C.2: packed, in declaration order). `members` is
+   the set. `kind` says how a block of bytes is tested for it: by comparing
+   with 1 to 3 of `bytes` (kinds 1-3), or as the range bytes[0] .. bytes[0] +
+   bytes[1] (kind 4), both complemented where `invert` is set; kind 0 is the
+   empty set, or with `invert` every byte. Every set also has nibble tables,
+   bit k of lo[j] standing for the byte k * 16 + j and bit k of hi[j] for the
+   byte 128 + k * 16 + j, which are all that kind 5 has.
+
+   Every x86-64 CPU has SSE2, so the comparisons test blocks of 16 bytes
+   without any dispatch. The tables take SSSE3's pshufb, which the CPU is
+   asked for as the runtime starts, and a search where either set is of kind
+   5 tests both by their tables. Without SSSE3 such a search, and on other
+   targets, under TinyCC (which has no intrinsics), or over fewer than 16
+   positions, every search, tests one byte at a time, a single byte by
+   memchr. No load reaches past the range: its last part is tested as the
+   range's last whole block, with the positions before it, already tested,
+   shifted out of the result. */
+
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t members[256];
+    uint8_t kind, invert, bytes[3], lo[16], hi[16];
+} gs_byteset;
+#pragma pack(pop)
+
+static int64_t gs_scan_any_bytes(const uint8_t *p, int64_t n, const gs_byteset *s) {
+    if (s->kind == 1 && !s->invert) {
+        const uint8_t *q = (const uint8_t *)memchr(p, s->bytes[0], (size_t)n);
+        return q ? (int64_t)(q - p) : -1;
+    }
+    for (int64_t i = 0; i < n; i++)
+        if (s->members[p[i]]) return i;
+    return -1;
+}
+
+/* The first of the np positions i with p[i] in a and p[i + d] in b. */
+static int64_t gs_scan_pair_bytes(const uint8_t *p, int64_t np, const gs_byteset *a, int64_t d,
+                                  const gs_byteset *b) {
+    for (int64_t i = 0; i < np; i++)
+        if (a->members[p[i]] & b->members[p[i + d]]) return i;
+    return -1;
+}
+
+#if !defined(__TINYC__) && (defined(__x86_64__) || defined(_M_X64))
+#define GS_SCAN_SSE2 1
+#include <emmintrin.h>
+#include <tmmintrin.h>
+#ifdef _WIN32
+#include <intrin.h>
+#else
+#include <cpuid.h>
+#endif
+#if defined(__GNUC__) || defined(__clang__)
+#define GS_INLINE __attribute__((always_inline)) inline
+/* clang and gcc compile pshufb only into a function that asks for it. */
+#define GS_SSSE3 __attribute__((target("ssse3")))
+#define gs_ctz32(x) __builtin_ctz(x)
+#else
+#define GS_INLINE __forceinline
+#define GS_SSSE3
+static int gs_ctz32(unsigned x) {
+    unsigned long i;
+    _BitScanForward(&i, x);
+    return (int)i;
+}
+#endif
+
+static int gs_cpu_ssse3;
+
+static void gs_scan_init(void) {
+#ifdef _WIN32
+    int r[4];
+    __cpuid(r, 1);
+    gs_cpu_ssse3 = (r[2] >> 9) & 1;
+#else
+    unsigned a, b, c, d;
+    gs_cpu_ssse3 = __get_cpuid(1, &a, &b, &c, &d) && ((c >> 9) & 1);
+#endif
+}
+
+/* A set's block test, held in registers: the bytes or range it compares
+   with and all ones where the result is complemented, or its tables. */
+typedef struct { __m128i a, b, c, flip; } gs_bsm;
+
+static GS_INLINE void gs_bsm_init(gs_bsm *m, const gs_byteset *s, int tables) {
+    if (tables) {
+        m->a = _mm_loadu_si128((const __m128i *)s->lo);
+        m->b = _mm_loadu_si128((const __m128i *)s->hi);
+        m->c = _mm_setr_epi8(1, 2, 4, 8, 16, 32, 64, -128, 1, 2, 4, 8, 16, 32, 64, -128);
+        m->flip = _mm_setzero_si128();
+    } else {
+        m->a = _mm_set1_epi8((char)s->bytes[0]);
+        m->b = _mm_set1_epi8((char)s->bytes[1]);
+        m->c = _mm_set1_epi8((char)s->bytes[2]);
+        m->flip = s->invert ? _mm_set1_epi8(-1) : _mm_setzero_si128();
+    }
+}
+
+/* The members among the 16 bytes of x, as 0xff bytes, for a set of kind k
+   from 1 to 4, a constant wherever this is inlined. A range holds x where
+   x - lo, wrapping, is at most its width. */
+static GS_INLINE __m128i gs_bsm_test(const gs_bsm *m, int k, __m128i x) {
+    __m128i r, t;
+    if (k == 1) {
+        r = _mm_cmpeq_epi8(x, m->a);
+    } else if (k == 2) {
+        r = _mm_or_si128(_mm_cmpeq_epi8(x, m->a), _mm_cmpeq_epi8(x, m->b));
+    } else if (k == 3) {
+        r = _mm_or_si128(_mm_or_si128(_mm_cmpeq_epi8(x, m->a), _mm_cmpeq_epi8(x, m->b)),
+                         _mm_cmpeq_epi8(x, m->c));
+    } else {
+        t = _mm_sub_epi8(x, m->a);
+        r = _mm_cmpeq_epi8(_mm_min_epu8(t, m->b), t);
+    }
+    return _mm_xor_si128(r, m->flip);
+}
+
+/* The same by the tables: pshufb looks up lo[x & 15] where x < 128 and
+   hi[x & 15] where not (it gives 0 for an index with its top bit set), and
+   the bit for x's bits 4 to 6, which the entry has or not. */
+static GS_SSSE3 GS_INLINE __m128i gs_bsm_tables(const gs_bsm *m, __m128i x) {
+    __m128i lo = _mm_shuffle_epi8(m->a, x);
+    __m128i hi = _mm_shuffle_epi8(m->b, _mm_xor_si128(x, _mm_set1_epi8((char)0x80)));
+    __m128i bit = _mm_shuffle_epi8(m->c, _mm_and_si128(_mm_srli_epi16(x, 4), _mm_set1_epi8(7)));
+    return _mm_cmpeq_epi8(_mm_and_si128(_mm_or_si128(lo, hi), bit), bit);
+}
+
+#define GS_LOAD(q) _mm_loadu_si128((const __m128i *)(q))
+
+/* The block loop of a search over n >= 16 positions for the bytes TEST
+   finds in a block. */
+#define GS_ANY_LOOP(TEST)                                                              \
+    int64_t i = 0;                                                                     \
+    unsigned k;                                                                        \
+    for (; i + 16 <= n; i += 16) {                                                     \
+        k = (unsigned)_mm_movemask_epi8(TEST(GS_LOAD(p + i)));                         \
+        if (k) return i + gs_ctz32(k);                                                 \
+    }                                                                                  \
+    if (i == n) return -1;                                                             \
+    k = (unsigned)_mm_movemask_epi8(TEST(GS_LOAD(p + n - 16))) >> (16 - (n - i));      \
+    return k ? i + gs_ctz32(k) : -1;
+
+/* The same over np >= 16 positions for two sets, d bytes apart. */
+#define GS_PAIR_LOOP(TESTA, TESTB)                                                     \
+    int64_t i = 0;                                                                     \
+    unsigned k;                                                                        \
+    for (; i + 16 <= np; i += 16) {                                                    \
+        k = (unsigned)_mm_movemask_epi8(                                               \
+            _mm_and_si128(TESTA(GS_LOAD(p + i)), TESTB(GS_LOAD(p + i + d))));          \
+        if (k) return i + gs_ctz32(k);                                                 \
+    }                                                                                  \
+    if (i == np) return -1;                                                            \
+    k = (unsigned)_mm_movemask_epi8(_mm_and_si128(TESTA(GS_LOAD(p + np - 16)),         \
+                                                  TESTB(GS_LOAD(p + np - 16 + d))))    \
+        >> (16 - (np - i));                                                            \
+    return k ? i + gs_ctz32(k) : -1;
+
+#define GS_TEST_S(x) gs_bsm_test(&ms, ks, x)
+#define GS_TEST_A(x) gs_bsm_test(&ma, ka, x)
+#define GS_TEST_B(x) gs_bsm_test(&mb, kb, x)
+#define GS_TABLES_S(x) gs_bsm_tables(&ms, x)
+#define GS_TABLES_A(x) gs_bsm_tables(&ma, x)
+#define GS_TABLES_B(x) gs_bsm_tables(&mb, x)
+
+static GS_INLINE int64_t gs_scan_any_k(const uint8_t *p, int64_t n, const gs_byteset *s, int ks) {
+    gs_bsm ms;
+    gs_bsm_init(&ms, s, 0);
+    GS_ANY_LOOP(GS_TEST_S)
+}
+
+static GS_SSSE3 int64_t gs_scan_any_tables(const uint8_t *p, int64_t n, const gs_byteset *s) {
+    gs_bsm ms;
+    gs_bsm_init(&ms, s, 1);
+    GS_ANY_LOOP(GS_TABLES_S)
+}
+
+static GS_INLINE int64_t gs_scan_pair_k(const uint8_t *p, int64_t np, const gs_byteset *a,
+                                        int64_t d, const gs_byteset *b, int ka, int kb) {
+    gs_bsm ma, mb;
+    gs_bsm_init(&ma, a, 0);
+    gs_bsm_init(&mb, b, 0);
+    GS_PAIR_LOOP(GS_TEST_A, GS_TEST_B)
+}
+
+static GS_SSSE3 int64_t gs_scan_pair_tables(const uint8_t *p, int64_t np, const gs_byteset *a,
+                                            int64_t d, const gs_byteset *b) {
+    gs_bsm ma, mb;
+    gs_bsm_init(&ma, a, 1);
+    gs_bsm_init(&mb, b, 1);
+    GS_PAIR_LOOP(GS_TABLES_A, GS_TABLES_B)
+}
+
+/* A loop of its own for each kind, and for each pair of kinds, from 1 to 4. */
+static int64_t gs_scan_any_blocks(const uint8_t *p, int64_t n, const gs_byteset *s) {
+    switch (s->kind) {
+        case 1: return gs_scan_any_k(p, n, s, 1);
+        case 2: return gs_scan_any_k(p, n, s, 2);
+        case 3: return gs_scan_any_k(p, n, s, 3);
+        default: return gs_scan_any_k(p, n, s, 4);
+    }
+}
+
+#define GS_PAIR_CASE(ka, kb) \
+    case (ka) * 4 + (kb): return gs_scan_pair_k(p, np, a, d, b, ka, kb);
+
+static int64_t gs_scan_pair_blocks(const uint8_t *p, int64_t np, const gs_byteset *a, int64_t d,
+                                   const gs_byteset *b) {
+    switch (a->kind * 4 + b->kind) {
+        GS_PAIR_CASE(1, 1) GS_PAIR_CASE(1, 2) GS_PAIR_CASE(1, 3) GS_PAIR_CASE(1, 4)
+        GS_PAIR_CASE(2, 1) GS_PAIR_CASE(2, 2) GS_PAIR_CASE(2, 3) GS_PAIR_CASE(2, 4)
+        GS_PAIR_CASE(3, 1) GS_PAIR_CASE(3, 2) GS_PAIR_CASE(3, 3) GS_PAIR_CASE(3, 4)
+        GS_PAIR_CASE(4, 1) GS_PAIR_CASE(4, 2) GS_PAIR_CASE(4, 3)
+        default: return gs_scan_pair_k(p, np, a, d, b, 4, 4);
+    }
+}
+
+#else
+static void gs_scan_init(void) {}
+#endif
+
+GS_API int64_t gs_scan_any(const uint8_t *p, int64_t n, const void *set) {
+    const gs_byteset *s = (const gs_byteset *)set;
+    if (n <= 0) return -1;
+    if (s->kind == 0) return s->invert ? 0 : -1;
+#ifdef GS_SCAN_SSE2
+    if (n >= 16 && s->kind != 5) return gs_scan_any_blocks(p, n, s);
+    if (n >= 16 && gs_cpu_ssse3) return gs_scan_any_tables(p, n, s);
+#endif
+    return gs_scan_any_bytes(p, n, s);
+}
+
+GS_API int64_t gs_scan_pair(const uint8_t *p, int64_t n, const void *a, int64_t d,
+                            const void *b) {
+    const gs_byteset *sa = (const gs_byteset *)a, *sb = (const gs_byteset *)b;
+    if (d < 0 || d >= n) return -1;
+    int64_t np = n - d;     /* the positions both bytes fit at */
+    /* A set of every byte leaves a search for the other. */
+    if (sa->kind == 0) return sa->invert ? gs_scan_any(p + d, np, sb) : -1;
+    if (sb->kind == 0) return sb->invert ? gs_scan_any(p, np, sa) : -1;
+#ifdef GS_SCAN_SSE2
+    if (np >= 16 && sa->kind != 5 && sb->kind != 5) return gs_scan_pair_blocks(p, np, sa, d, sb);
+    if (np >= 16 && gs_cpu_ssse3) return gs_scan_pair_tables(p, np, sa, d, sb);
+#endif
+    return gs_scan_pair_bytes(p, np, sa, d, sb);
+}
+
 GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
                         uint64_t budget, int64_t mainregions, int64_t workerregions) {
     gs_argc = argc;
@@ -503,6 +752,7 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
     gs_regions_init();
     gs_regions_begin(mainregions);
     gs_native_stack_init();
+    gs_scan_init();
 }
 
 /* ---------------------------------------------------------------------------

@@ -3819,8 +3819,8 @@ instead, and every call syncs everything.
 ## 7. The runtime
 
 The runtime is a small C99 one covering data stacks, integer semantics,
-varints, aborts, text forms, workers and queues, and the C behind
-`stdlib/os.goose`. It comes in two halves. `src/runtime/runtime.h` is what a
+varints, aborts, text forms, workers and queues, byte search, and the C
+behind `stdlib/os.goose`. It comes in two halves. `src/runtime/runtime.h` is what a
 program's own translation unit needs: configuration, macros, the helpers that
 must inline (integer operations, checks, varints, slice pool spans), the data
 stack state the emitted code reads (`gs_stks`, `gs_gl`) with the few
@@ -3973,6 +3973,23 @@ way over Nuklear, in `src/ui/`, its functions `gs_ui_*` and their JIT
 definitions `AddUiSymbols`; `docs/design/ui.md` describes it. Codegen notes
 which of the three a program calls in `NativeLayers` (`utils.h`), by symbol
 prefix, for the JIT run to register.
+
+**Byte search** (std's `find_any` and `find_pair`, `docs/stdlib.md`):
+`gs_scan_any` and `gs_scan_pair` in `runtime_impl.h`, which std's `extern`
+declarations reach through the slice adapters `gs_find_any` and
+`gs_find_pair` in `runtime_ext.h`. A set is std's `ByteSet`, whose layout
+`gs_byteset` repeats; `byte_set` has already worked out how to test it. On
+x86-64 the search tests 16 bytes at a time: SSE2 compares for a set of up to
+three bytes or one range, or the complement of either, with a loop of its
+own for each such kind and each pair of kinds (force-inlined loops taking
+the kinds as constants, since a switch inside the loop compiled to two
+indirect jumps per block), and SSSE3 `pshufb` nibble tables for any other
+set, used when the CPUID check `gs_rt_start` makes finds SSSE3. Everything
+else, TinyCC included, tests a byte at a time, a single byte through
+`memchr`. A range's last part is tested by loading its last whole block
+again and shifting the positions already tested out of the result, so no
+load reads past the range, which may end where a data stack's unmapped gap
+begins.
 
 **Varints**: ULEB128 read/write/size, zigzag for signed positions, the
 one-byte fast path macros `GS_ULEB_READ`/`GS_ULEB_SIZE` for length prefixes

@@ -351,6 +351,85 @@ fn rfind<T>(xs: T[:], sub: T[:]) -> i64 {
 fn starts_with<T>(xs: T[:], p: T[:]) -> bool { p.len <= xs.len && xs[..p.len] == p }
 fn ends_with<T>(xs: T[:], p: T[:]) -> bool { p.len <= xs.len && xs[xs.len - p.len..] == p }
 
+// ---- byte sets ------------------------------------------------------------------
+
+// A set of bytes, prepared by byte_set for find_any and find_pair, which the
+// runtime runs over 16 bytes at a time where it can (gs_scan_any in
+// src/runtime/runtime_impl.h, whose gs_byteset has this layout). `members`
+// is the set. The rest says how a block is tested for it: kind 1 to 3 by
+// comparing with that many of `bytes`, kind 4 as the range bytes[0] ..
+// bytes[0] + bytes[1], kind 0 being the empty set, and with `invert` the set
+// is the complement of what the kind describes. Every set also has tables,
+// bit k of lo[j] standing for the byte k * 16 + j and of hi[j] for 128 + k *
+// 16 + j, which are all a set of kind 5 is tested by.
+struct ByteSet {
+    members: bool[256],
+    kind: u8,
+    invert: bool,
+    bytes: u8[3],
+    lo: u8[16],
+    hi: u8[16],
+}
+
+fn byte_set(members: bool[256]) -> ByteSet {
+    var n = 0;
+    for m in members { if m { n += 1; } }
+    var s = ByteSet { members: members, kind: 5, invert: false, bytes: [0; 3], lo: [0; 16],
+                      hi: [0; 16] };
+    for b in 256 {
+        if members[b] {
+            let bit = (1 << ((b >> 4) & 7)) as u8;
+            if b < 128 { s.lo[b & 15] |= bit; } else { s.hi[b & 15] |= bit; }
+        }
+    }
+    // The bytes a kind describes: the members, or the others where those
+    // are fewer.
+    let invert = n > 128;
+    var k = 0;
+    var first = 0;
+    var last = 0;
+    for b in 256 {
+        if members[b] != invert {
+            if k == 0 { first = b; }
+            if k < 3 { s.bytes[k] = b as u8; }
+            last = b;
+            k += 1;
+        }
+    }
+    if k <= 3 {
+        s.kind = k as u8;
+        s.invert = invert;
+        for j in k..3 { s.bytes[j] = s.bytes[0]; }
+    } else if last - first + 1 == k {
+        s.kind = 4;
+        s.invert = invert;
+        s.bytes[0] = first as u8;
+        s.bytes[1] = (last - first) as u8;
+    }
+    return s;
+}
+
+// The set of the bytes in `bytes`.
+fn byte_set(bytes: u8[:]) -> ByteSet {
+    var members: bool[256] = [false; 256];
+    for b in bytes { members[b] = true; }
+    return byte_set(members);
+}
+
+// The first i with s[i] in the set, -1 if none.
+extern "gs_find_any" fn find_any(s: const u8[:], set: const ByteSet&) -> i64;
+
+// find_pair, but for its check of d.
+extern "gs_find_pair" fn byte_set_pair(s: const u8[:], a: const ByteSet&, d: i64,
+                                       b: const ByteSet&) -> i64;
+
+// The first i with s[i] in a and s[i + d] in b, of those with i + d < s.len;
+// -1 if none. d >= 0.
+fn find_pair(s: u8[:], a: const ByteSet&, d: i64, b: const ByteSet&) -> i64 {
+    assert(d >= 0);
+    return byte_set_pair(s, a, d, b);
+}
+
 // ---- arrays: transforming ------------------------------------------------------
 
 fn map<T, F>(xs: T[:]) {

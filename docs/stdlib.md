@@ -5,7 +5,8 @@ The standard library has ten modules under `stdlib/`: `std`, `dictionary`,
 for example `import std;`. The compiler locates the library in its source
 tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
 Everything is written in Goose except the C behind `os`
-(`src/runtime/runtime_os.h`), libm behind `math`, the graphics layer behind
+(`src/runtime/runtime_os.h`), the byte search behind `std`'s `find_any` and
+`find_pair` (`src/runtime/runtime_impl.h`), libm behind `math`, the graphics layer behind
 `gfx` (`src/gfx/`), the physics layer behind `physics` (`src/physics/`) and
 the ui layer behind `ui` (`src/ui/`), and the PCM mixer behind `audio`
 (`src/audio/`), all reached through `extern fn` (spec
@@ -147,6 +148,42 @@ let big = xs.find() { it > 100 };
 if big { print(big); }
 var row = 0;
 each_chunk(pixels, width) { line, y => row += line.len; };
+```
+
+### Byte sets
+
+```goose
+struct ByteSet { members: bool[256], ... }      // a set of bytes, prepared for searching
+fn byte_set(members: bool[256]) -> ByteSet
+fn byte_set(bytes: u8[:]) -> ByteSet            // the bytes listed: byte_set(",\"\n")
+fn find_any(s: const u8[:], set: const ByteSet&) -> i64
+                                                // first i with s[i] in the set, -1 if none
+fn find_pair(s: u8[:], a: const ByteSet&, d: i64, b: const ByteSet&) -> i64
+                                                // first i with s[i] in a and s[i + d] in b
+                                                // (i + d < s.len), -1 if none; d >= 0
+```
+
+These scan in the runtime, 16 bytes at a time on x86-64 (SSE2, which every
+such CPU has; a set that is neither at most three bytes, nor one range, nor
+the complement of either, is looked up in nibble tables, which takes SSSE3,
+checked as the program starts). Elsewhere, and in a JIT run, they test a byte
+at a time, a single byte through the C library's `memchr`. `byte_set` works
+out how to test a set by going over all 256 bytes, so make the set once, in a
+variable, outside the loop that searches: `members` is the set, and the other
+fields belong to the search. `find_pair` is the test of a prefilter that
+knows two of a match's bytes `d` apart, such as a regex engine's search for
+the rarest two of a pattern's leading bytes.
+
+```goose
+let special = byte_set(",\"\n");
+var pos = 0;
+loop {
+    let k = find_any(text[pos..], special);
+    if k < 0 { break; }
+    pos += k;
+    handle(text[pos]);
+    pos += 1;
+}
 ```
 
 ### Arrays: transforming

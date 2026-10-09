@@ -5,8 +5,8 @@
    it uses here as codegen does (CodeGen::EmitCoreTypes, CT). An --include
    header follows this and may use what it defines. The generated program
    calls the OS primitives behind stdlib/os.goose (spec §7.10, defined in
-   runtime_os.h) directly from `extern "gs_os_..." fn` declarations; no
-   prototype is emitted for a function declared here. */
+   runtime_os.h) and std's byte search directly from `extern "gs_..." fn`
+   declarations; no prototype is emitted for a function declared here. */
 
 #ifdef GS_RUNTIME_OBJECT
 #pragma pack(push, 1)
@@ -44,6 +44,13 @@ static float gs_sqrtf(float x) { return __builtin_elementwise_sqrt(x); }
 static double gs_sqrt(double x) { return sqrt(x); }
 static float gs_sqrtf(float x) { return sqrtf(x); }
 #endif
+
+/* std's find_any and find_pair over a slice (gs_scan_any, gs_scan_pair); a
+   set is a pointer to std's ByteSet. */
+static int64_t gs_find_any(sl_u8 s, const void *set) { return gs_scan_any(s.data, s.len, set); }
+static int64_t gs_find_pair(sl_u8 s, const void *a, int64_t d, const void *b) {
+    return gs_scan_pair(s.data, s.len, a, d, b);
+}
 
 GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out);
 GS_API uint8_t gs_os_write_file(sl_u8 path, sl_u8 data);
