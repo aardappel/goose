@@ -440,6 +440,21 @@ inline void IfExpr::CgAny(CodeGen &cg, const Dst &d) {
         cg.termjump = false;
         return;
     }
+    // Both arms starting with the same bounds check (same array, same index,
+    // nothing before it): one check ahead of the branch, after the
+    // condition, reporting the line of the arm that is taken. The arms'
+    // accesses are then plain addresses, which lets the C compiler merge
+    // their stores into one of a select instead of keeping the branch.
+    auto ta = elseb ? cg.LeadingCheck(thenb) : nullptr;
+    auto ea = ta ? cg.LeadingCheck(elseb) : nullptr;
+    auto hoist = ea && cg.SameCheck(ta, ea);
+    if (hoist) {
+        auto ct = cg.T();
+        cg.L("uint8_t ", ct, " = (uint8_t)(", c, ");");
+        c = ct;
+        cg.EmitHoistedCheck(ta, ea, c);
+        ta->nobc = ea->nobc = true;
+    }
     cg.L("if (", c, ") {");
     cg.ind++;
     cg.PushSc(CodeGen::SC_PLAIN);
@@ -457,6 +472,8 @@ inline void IfExpr::CgAny(CodeGen &cg, const Dst &d) {
     }
     cg.L("}");
     cg.termjump = false;
+    // A body can be emitted more than once (element-run twins).
+    if (hoist) ta->nobc = ea->nobc = false;
 }
 
 inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {

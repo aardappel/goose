@@ -489,6 +489,75 @@ inline CodeGen::Loc CodeGen::IndexLoc(Loc lv, Node *idxnode, Line ln, bool nobc)
                     lv);
 }
 
+// A path whose address takes no check and calls nothing: a variable, or a
+// field of one, through references too.
+static bool CheckFreePath(Node *n) {
+    if (auto id = Is<Ident>(n)) return id->vdef != nullptr;
+    if (auto d = Is<Dot>(n)) return d->IsField() && CheckFreePath(d->obj);
+    return false;
+}
+
+// Two check-free paths, or integer constants, that denote the same thing.
+inline bool CodeGen::SamePath(Node *a, Node *b) {
+    if (auto ia = Is<Ident>(a)) {
+        auto ib = Is<Ident>(b);
+        return ib && ia->vdef && ia->vdef == ib->vdef;
+    }
+    if (auto la = Is<IntLit>(a)) {
+        auto lb = Is<IntLit>(b);
+        return lb && la->val == lb->val;
+    }
+    auto da = Is<Dot>(a), db = Is<Dot>(b);
+    return da && db && da->IsField() && db->IsField() && da->fieldidx == db->fieldidx &&
+           TEq(da->obj->exprtype, db->obj->exprtype) && SamePath(da->obj, db->obj);
+}
+
+// The Index whose bounds check is the first thing `arm` does: its first
+// statement assigns to a path through an element of an array named by a
+// check-free path, at an index held in a variable or a constant. Null
+// otherwise, and where there is no check: elided already, or a constant
+// within a fixed array (IndexLoc).
+inline Index *CodeGen::LeadingCheck(Node *arm) {
+    auto b = Is<Block>(arm);
+    if (!b || b->stmts.empty()) return nullptr;
+    auto a = Is<Assign>(b->stmts[0]);
+    if (!a) return nullptr;
+    auto p = a->lval;
+    while (auto d = Is<Dot>(p)) {
+        if (!d->IsField()) return nullptr;
+        p = d->obj;
+    }
+    auto ix = Is<Index>(p);
+    if (!ix || ix->nobc || fillvalues.count(ix) || !CheckFreePath(ix->obj)) return nullptr;
+    if (auto iv = Is<Ident>(ix->idx)) return iv->vdef ? ix : nullptr;
+    auto il = Is<IntLit>(ix->idx);
+    auto at = ix->obj->exprtype;
+    if (at && at->kind == TY_REF) at = at->ref->sub;
+    if (!il || !at || (at->kind == TY_ARRAY && at->arr->akind == A_FIXED)) return nullptr;
+    return ix;
+}
+
+// Whether two leading checks test the same index against the same array.
+inline bool CodeGen::SameCheck(Index *a, Index *b) {
+    return SamePath(a->obj, b->obj) && SamePath(a->idx, b->idx) &&
+           TEq(a->obj->exprtype, b->obj->exprtype);
+}
+
+// The check both arms of an if start with (LeadingCheck), emitted once
+// ahead of the branch on condition `c`: it fails where either arm's would,
+// and reports the location of the arm `c` selects.
+inline void CodeGen::EmitHoistedCheck(Index *ta, Index *ea, const string &c) {
+    auto lv = GenLoc(ta->obj);
+    while (lv.t->kind == TY_REF) DerefLoc(lv);
+    auto v = ArrayView(lv);
+    auto idx = GenPure(ta->idx);
+    auto tl = ta->line, el = ea->line;
+    auto file = tl.fileidx == el.fileidx
+                    ? FileRef(tl) : cat("(", c, ") ? ", FileRef(tl), " : ", FileRef(el));
+    auto line = tl.line == el.line ? cat(tl.line) : cat("(", c, ") ? ", tl.line, " : ", el.line);
+    L("(void)GS_IDX((int64_t)(", idx, "), ", v.len, ", ", file, ", ", line, ");");
+}
+
 inline CodeGen::Loc CodeGen::GenLoc(Node *n) {
     if (auto it = fillvalues.find(n); it != fillvalues.end()) return it->second;
     if (auto id = Is<Ident>(n)) {

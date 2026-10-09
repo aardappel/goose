@@ -3216,7 +3216,17 @@ marks `a[lo..hi]` when `0 <= lo <= hi <= len`, each bound in the state it was
 evaluated in, and records the slice's length as `hi - lo` when the domain can
 name it (both bounds on one base, or a constant lower bound), which the
 declaration binding the slice then takes (`slicelen`). Codegen separately
-elides a constant index into a fixed array (`IndexLoc`).
+elides a constant index into a fixed array (`IndexLoc`), and merges the
+checks an `if`'s two arms start with when they test the same index (a
+variable or a constant) against the same array (a variable or a field
+path of one) and the arm evaluates nothing before it, as its first
+statement assigning through that element does (`LeadingCheck`,
+`SameCheck`): one check runs after the condition, ahead of the branch,
+and reports the location of the arm the condition selects
+(`EmitHoistedCheck`), so it fails exactly where either arm's check would
+have. The arms' addresses are then unchecked, which lets the C compiler
+turn the two stores into one store of a select (the merge step
+`if a[i] <= b[j] { out[k] = a[i]; ... } else { out[k] = b[j]; ... }`).
 
 ### 5.10 What else the pass decides
 

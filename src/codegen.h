@@ -143,7 +143,7 @@ struct CodeGen {
     // file in the generated code; call sites pass it plus the line number.
     map<int, string> filerefs;
 
-    string LocArgs(Line l) {
+    string FileRef(Line l) {
         auto it = filerefs.find(l.fileidx);
         if (it == filerefs.end()) {
             auto f = l.fileidx >= 0 && l.fileidx < (int)ast.sources.size()
@@ -153,8 +153,9 @@ struct CodeGen {
             Append(data, "static const char ", name, "[] = ", CStr(f), ";\n");
             it = filerefs.emplace(l.fileidx, name).first;
         }
-        return cat(it->second, ", ", l.line);
+        return it->second;
     }
+    string LocArgs(Line l) { return cat(FileRef(l), ", ", l.line); }
 
     // The trailing arguments of a gs_add/sub/mul/neg helper call: a signed
     // type's operation takes its location, for the debug build's overflow
@@ -750,6 +751,10 @@ struct CodeGen {
     static string IntStr(int64_t v);
     static string FltStr(double v, bool f32);
     Loc IndexLoc(Loc lv, Node *idxnode, Line ln, bool nobc);
+    Index *LeadingCheck(Node *arm);
+    bool SamePath(Node *a, Node *b);
+    bool SameCheck(Index *a, Index *b);
+    void EmitHoistedCheck(Index *ta, Index *ea, const string &c);
     Loc GenLoc(Node *n);
     string BytesTemp(string &stk);
     string RzTemp(TypeExpr *t, string &stk);
