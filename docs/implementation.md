@@ -4764,11 +4764,11 @@ clang, chosen at run time. What makes a loop worth it:
   compares and blends;
 * the function runs the loop, rather than being called from inside one.
 
-An arithmetic Base64 codec written so is the example: it encodes and
-decodes a test input in 0.58/0.55 s at SSE2 (a table codec 0.64/0.57),
-0.15/0.20 with AVX2 and 0.10/0.09 with AVX-512. For floats, a loop clang
-may not reassociate has to be vectorizable as written: a dot product's
-running sum is not, while the same sums taken as row updates
+`stdlib/base64.goose` is written to these rules: its arithmetic codec
+encodes and decodes a test input in 0.58/0.55 s at SSE2 (a table codec
+0.64/0.57), 0.15/0.20 with AVX2 and 0.10/0.09 with AVX-512. For floats, a
+loop clang may not reassociate has to be vectorizable as written: a dot
+product's running sum is not, while the same sums taken as row updates
 (`c_row[j] += aik * b_row[j]` for k in order) are, and round identically.
 A matrix multiply written that way goes from 2.67 s to 0.91 at SSE2 and
 0.49 with AVX2; AVX-512 adds nothing there, the kernel being bound by its

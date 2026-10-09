@@ -1549,31 +1549,43 @@ def main():
         # here, at -O2 so the loops vectorize, and has to print what the
         # baseline does. On a CPU without AVX-512 or AVX2 the higher builds
         # run the highest version it has, which is still a version.
-        def clang_simd():
-            name = "simd_versions"
-            src = gendir / "simdclang.c"
-            code, out, err = r.goose("-O2", "-o", src, HERE / "codegen" / f"{name}.goose")
-            if code != 0:
-                r.fail(f"simd-clang {name}.goose", out + err)
-                return
+        # simd_versions.goose covers the language's side; the stdlib fixtures
+        # check the library's simd functions, as clang builds them.
+        def clang_simd_versions(ctext):
             # Every simd function keeps its versions, the single-use ones the
             # optimizer would otherwise inline and the element-run twin too.
             # The generic total has two specializations, numbered.
-            ctext = src.read_text(encoding="utf-8")
             missing = [f for f in ("caesar_g", "checksum_g", "muladd_g", "squares_g", "minmax_g",
                                    "biased_g", "fib_g", "sum3_g", "squares_g_er")
                        if f"{f}_simd1(" not in ctext or f"{f}_simd2(" not in ctext]
             if len(set(re.findall(r"\b(total_g_\d+)_simd[12]\(", ctext))) != 2:
                 missing.append("total_g")
+            return missing
+
+        def clang_simd_named(*names):
+            # A C name may carry a specialization's number after the module's.
+            def missing(ctext):
+                return [f for f in names
+                        if not re.search(rf"\b{f}_g\d+(_\d+)?_simd1\(", ctext)
+                        or not re.search(rf"\b{f}_g\d+(_\d+)?_simd2\(", ctext)]
+            return missing
+
+        def clang_simd(name, path, versions):
+            src = gendir / f"simdclang-{name}.c"
+            code, out, err = r.goose("-O2", "-o", src, path)
+            if code != 0:
+                r.fail(f"simd-clang {name}.goose", out + err)
+                return
+            missing = versions(src.read_text(encoding="utf-8"))
             if missing:
                 r.fail(f"simd-clang {name}.goose", f"no simd versions of {', '.join(missing)}")
                 return
             for level in ("2", "1", "0"):
                 label = f"simd{level}"
-                out_exe = gendir / f"simdclang-{level}{tc.EXE_SUFFIX}"
+                out_exe = gendir / f"simdclang-{name}-{level}{tc.EXE_SUFFIX}"
                 ok, log = clang.compile(src, out_exe, opt=2, warn="off", strict_decls=True,
                                         defines=[f"GS_SIMD={level}"], runtime=r.runtime,
-                                        log=gendir / f"simdclang-{level}.log")
+                                        log=gendir / f"simdclang-{name}-{level}.log")
                 if not ok:
                     r.fail(f"{label}-clang {name}.goose", "\n".join(log.splitlines()[:8]))
                     continue
@@ -1586,7 +1598,10 @@ def main():
             r.show_later(r.say, "skip cgen-clang (no clang found)")
         else:
             r.show_task(clang_codegen)
-            r.show_task(clang_simd)
+            r.show_task(clang_simd, "simd_versions", HERE / "codegen" / "simd_versions.goose",
+                        clang_simd_versions)
+            r.show_task(clang_simd, "stdlib_base64", HERE / "stdlib" / "stdlib_base64.goose",
+                        clang_simd_named("base64_encode", "base64_decode"))
 
     def resource_paths():
         from resource_paths import check_resource_paths

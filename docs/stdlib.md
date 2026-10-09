@@ -1,7 +1,7 @@
 # The Goose standard library
 
-The standard library has ten modules under `stdlib/`: `std`, `dictionary`,
-`vec`, `math`, `os`, `binary`, `audio`, `gfx`, `physics`, and `ui`. Import each module by name,
+The standard library has eleven modules under `stdlib/`: `std`, `dictionary`,
+`vec`, `math`, `os`, `binary`, `base64`, `audio`, `gfx`, `physics`, and `ui`. Import each module by name,
 for example `import std;`. The compiler locates the library in its source
 tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
 Everything is written in Goose except the C behind `os`
@@ -58,8 +58,8 @@ The library uses these conventions:
   `heap_push`) is written `&x`, which makes `T` the reference type. The
   checker does not yet let `stable_sort` sort an array of references or
   slices (`implementation.md` §10).
-* The `std`, `dictionary`, `vec`, `math`, and `os` names are global; `binary`, `audio`,
-  `gfx`, `physics`, and `ui` use their own namespaces. A local named `fill` or `count`
+* The `std`, `dictionary`, `vec`, `math`, and `os` names are global; `binary`, `base64`,
+  `audio`, `gfx`, `physics`, and `ui` use their own namespaces. A local named `fill` or `count`
   shadows the corresponding global function, causing an error at a call; a
   global variable of such a name does not, since a call names the functions
   past it (spec §11.1).
@@ -599,6 +599,36 @@ Use offset reads for random access and cursors for sequential records.
 Applications still validate signatures, counts, indices and format-specific
 limits after checking the read. The WAD loader in
 [`31_mini_doom.goose`](../samples/31_mini_doom.goose) shows both styles.
+
+## base64
+
+Base64 as RFC 4648 §4 defines it: the standard alphabet (`A`-`Z`, `a`-`z`,
+`0`-`9`, `+`, `/`) and `=` padding. `import base64;` puts it in namespace
+`base64`.
+
+```goose
+fn encode(out: u8[>..]&, src: const u8[:])            // appends 4 characters per 3 bytes, padded
+fn decode(out: u8[>..]&, src: const u8[:]) -> bool    // appends the bytes; false if src is invalid
+```
+
+`decode` takes whole groups of four characters, the last of which may end
+in `=` or `==`, and nothing else: no line breaks or white space, no
+unpadded text, and no other alphabet (`-` and `_` of the URL-safe one are
+invalid). It does not insist that the bits padding leaves over are zero, so
+`Zh==` decodes as `Zg==` does, as most decoders allow. On invalid input it
+returns `false` and leaves `out` as it was.
+
+```goose
+var text: u8[>..] = [];
+base64::encode(text, "foobar");              // "Zm9vYmFy"
+var bytes: u8[>..] = [];
+if !base64::decode(bytes, text) { abort("not base64"); }
+```
+
+The codec computes the alphabet rather than looking it up, so the C
+compiler vectorizes both loops, and both are `simd fn`s (spec §7.12): where
+clang builds for x86-64 they run as AVX2 or AVX-512 code on a CPU that has
+it, several times faster than on the baseline's SSE2.
 
 ## gfx
 

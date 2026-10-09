@@ -4,10 +4,10 @@ This document records the original standard library design: its scope,
 conventions, and the builtins and language rules it required (§8). It
 preserves the reasoning at the time. Later changes include `const` types,
 namespaces, generic aliases, serialization, graphics, physics, user
-interfaces, and directories and atomic replacement in `os`; some rules and
-limitations below have therefore been superseded. See
-`../stdlib.md` for the current API and `../goose_spec.md` for current language
-rules. References of the form §N refer to that specification.
+interfaces, directories and atomic replacement in `os`, and the `base64`
+module; some rules and limitations below have therefore been superseded.
+See `../stdlib.md` for the current API and `../goose_spec.md` for current
+language rules. References of the form §N refer to that specification.
 
 ---
 
