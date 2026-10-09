@@ -372,7 +372,11 @@ fn reverse<T>(xs: T[:]) {
     }
 }
 
-// ---- sorting -------------------------------------------------------------------
+// ASCII, in place.
+fn to_lower(s: u8[:]) { for &c in s { if c >= 'A' && c <= 'Z' { c += 32; } } }
+fn to_upper(s: u8[:]) { for &c in s { if c >= 'a' && c <= 'z' { c -= 32; } } }
+
+// ---- arrays: sorting -----------------------------------------------------------
 // The sort_ helpers take the comparator as F, "a goes before b", and are
 // only meant to be called from sort and stable_sort. Every index they use
 // stays in range whatever F returns, so a comparator that is no strict weak
@@ -649,10 +653,6 @@ fn stable_sort<T, F>(xs: T[:]) {
     }
     if !into_tmp { copy_into(xs, tmp); }
 }
-
-// ASCII, in place.
-fn to_lower(s: u8[:]) { for &c in s { if c >= 'A' && c <= 'Z' { c += 32; } } }
-fn to_upper(s: u8[:]) { for &c in s { if c >= 'a' && c <= 'z' { c -= 32; } } }
 
 // ---- arrays: changing the length -------------------------------------------------
 // `xs: A&` binds the whole array, so each instantiates only for array kinds

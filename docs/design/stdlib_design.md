@@ -402,7 +402,14 @@ range carries a budget of 2·log₂(n) rounds, after which heapsort finishes it,
 bounding the worst case at O(n log n); `test/stdlib/stdlib_sort.goose` builds
 an input against the pivot choice with McIlroy's adversary to check that.
 Ten elements or fewer are insertion sorted: below that, the branchy
-insertion sort measured faster than more partitioning.
+insertion sort measured faster than more partitioning. One shape is slower
+than with the Hoare partition `sort` had before: input in order but for a
+few misplaced elements. The branchless partition swaps every element, which
+rotates each side of a sorted range by one, so nothing below the first run
+check sees order to exploit, and such input costs about two thirds of
+random input, where the old quicksort's well-predicted scans took half the
+new time (200k elements: 1.6 ms against 0.8 ms; random input 2.5 ms against
+8.3 ms).
 
 `stable_sort` is a natural merge sort. One pass splits the input into runs
 in order, reversing strictly descending ones and extending those shorter
