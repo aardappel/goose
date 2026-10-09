@@ -508,12 +508,51 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
 /* ---------------------------------------------------------------------------
    Text forms (§3.7). */
 
-GS_API int64_t gs_fmt_i64(uint8_t *dst, int64_t v) {
-    return (int64_t)snprintf((char *)dst, GS_FMT_MAX, "%lld", (long long)v);
+/* Integers are written by a digit loop rather than printf, whose locale
+   handling and format parsing cost several times the conversion itself:
+   the digit count first, then the digits from the right, two per division
+   by 100. */
+static const char gs_digit_pairs[201] =
+    "00010203040506070809101112131415161718192021222324252627282930313233343536373839"
+    "40414243444546474849505152535455565758596061626364656667686970717273747576777879"
+    "8081828384858687888990919293949596979899";
+
+static int gs_fmt_digits(uint64_t v) {
+    int n = 1;
+    for (;;) {
+        if (v < 10) return n;
+        if (v < 100) return n + 1;
+        if (v < 1000) return n + 2;
+        if (v < 10000) return n + 3;
+        v /= 10000;
+        n += 4;
+    }
 }
 
 GS_API int64_t gs_fmt_u64(uint8_t *dst, uint64_t v) {
-    return (int64_t)snprintf((char *)dst, GS_FMT_MAX, "%llu", (unsigned long long)v);
+    int n = gs_fmt_digits(v);
+    uint8_t *p = dst + n;
+    while (v >= 100) {
+        unsigned r = (unsigned)(v % 100);
+        v /= 100;
+        p -= 2;
+        p[0] = (uint8_t)gs_digit_pairs[2 * r];
+        p[1] = (uint8_t)gs_digit_pairs[2 * r + 1];
+    }
+    if (v >= 10) {
+        p[-2] = (uint8_t)gs_digit_pairs[2 * v];
+        p[-1] = (uint8_t)gs_digit_pairs[2 * v + 1];
+    } else {
+        p[-1] = (uint8_t)('0' + v);
+    }
+    return n;
+}
+
+GS_API int64_t gs_fmt_i64(uint8_t *dst, int64_t v) {
+    if (v >= 0) return gs_fmt_u64(dst, (uint64_t)v);
+    /* The magnitude in unsigned arithmetic, so i64.min needs no case. */
+    dst[0] = '-';
+    return 1 + gs_fmt_u64(dst + 1, 0 - (uint64_t)v);
 }
 
 /* A float's text is the fewest significant digits that read back as the
@@ -753,8 +792,14 @@ GS_API int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n) {
 /* stdout is unbuffered (gs_rt_start), so every piece is its own write;
    revisit if print throughput ever matters. */
 
-GS_API void gs_out_int(int64_t v) { printf("%lld", (long long)v); }
-GS_API void gs_out_uint(uint64_t v) { printf("%llu", (unsigned long long)v); }
+GS_API void gs_out_int(int64_t v) {
+    uint8_t buf[GS_FMT_MAX];
+    fwrite(buf, 1, (size_t)gs_fmt_i64(buf, v), stdout);
+}
+GS_API void gs_out_uint(uint64_t v) {
+    uint8_t buf[GS_FMT_MAX];
+    fwrite(buf, 1, (size_t)gs_fmt_u64(buf, v), stdout);
+}
 GS_API void gs_out_flt(double v) {
     uint8_t buf[GS_FMT_MAX];
     fwrite(buf, 1, (size_t)gs_fmt_f64(buf, v), stdout);

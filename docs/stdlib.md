@@ -255,8 +255,10 @@ fn push_utf8(out: u8[>..]&, cp: i64)
 ```
 
 Plain rendering of scalars and strings is the builtin `format`/`str`/
-`print`; these add control and parsing. Strings are `u8` arrays: input is
-`u8[:]`, output a `u8[>..]&` builder, storage `u8[]`/`u8[..k]`.
+`print`; these add control and parsing. In base 10, `format_int` and
+`format_uint` write what `format` does, after any padding, and cost the
+same. Strings are `u8` arrays: input is `u8[:]`, output a `u8[>..]&`
+builder, storage `u8[]`/`u8[..k]`.
 
 ```goose
 var line: u8[>..] = [];

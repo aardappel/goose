@@ -855,26 +855,37 @@ fn make_heap<A, F>(xs: A&) {
 // Plain rendering is the builtin `format`; these add control and parsing.
 
 // Digits of v in the base (2..36), right-aligned in `width` with `pad`.
-// Base ten has its own loop: dividing by the constant is a multiply, where
-// dividing by the `base` parameter is a real division per digit.
+// Base ten is the builtin text of the integer, the runtime's digit loop
+// writing straight into `out`; other bases divide by the `base` parameter,
+// a real division per digit.
 fn format_uint(out: u8[>..]&, v: u64, base: i64, width: i64, padc: u8) {
+    if base == 10 {
+        if width > 1 {
+            var n = 1;
+            var x = v;
+            while x >= 10 {
+                x /= 10;
+                n += 1;
+            }
+            var padn = width - n;
+            while padn > 0 {
+                out.push(padc);
+                padn -= 1;
+            }
+        }
+        format(out, v);
+        return;
+    }
     var digits: u8[..64] = [];
     var x = v;
     if x == 0 { digits.push('0'); }
-    if base == 10 {
-        while x > 0 {
-            digits.push(('0' + (x % 10) as i64) as u8);
-            x = x / 10;
-        }
-    } else {
-        let b = base as u64;
-        while x > 0 {
-            let d = (x % b) as i64;
-            var c: u8 = 0;
-            if d < 10 { c = ('0' + d) as u8; } else { c = ('a' + d - 10) as u8; }
-            digits.push(c);
-            x = x / b;
-        }
+    let b = base as u64;
+    while x > 0 {
+        let d = (x % b) as i64;
+        var c: u8 = 0;
+        if d < 10 { c = ('0' + d) as u8; } else { c = ('a' + d - 10) as u8; }
+        digits.push(c);
+        x = x / b;
     }
     var padn = width - digits.len;
     while padn > 0 {
@@ -884,10 +895,12 @@ fn format_uint(out: u8[>..]&, v: u64, base: i64, width: i64, padc: u8) {
     each_rev(digits) { out.push(it); };
 }
 
+// The sign goes in front of any padding: -0042. The magnitude is taken in
+// unsigned arithmetic, which holds i64.min's.
 fn format_int(out: u8[>..]&, v: i64, base: i64, width: i64, padc: u8) {
     if v < 0 {
         out.push('-');
-        format_uint(out, (0 - v) as u64, base, width - 1, padc);
+        format_uint(out, 0 - v as! u64, base, width - 1, padc);
     } else {
         format_uint(out, v as u64, base, width, padc);
     }

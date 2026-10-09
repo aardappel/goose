@@ -3755,7 +3755,11 @@ top-level, non-generic two-parameter `format` functions with a
 the rendered type. This is narrower than ordinary generic overload
 resolution. Reference rendering follows pointees and has no cycle
 detection: a cyclic value recurses through its render functions until the
-native stack runs out (§7, **Native stacks**). Finite float formatting
+native stack runs out (§7, **Native stacks**). An integer's text is the
+runtime's digit loop (`gs_fmt_i64`, `gs_fmt_u64`, and `gs_out_int` for
+print): the digit count, then the digits from the right, two per division
+by 100, where printf's format parsing and locale handling cost several
+times the conversion. Finite float formatting
 (`gs_fmt_f64`, `gs_fmt_f32`) writes the fewest significant decimal digits
 that read back as the same value of the float's own type and, of those,
 the ones nearest it, a tie going to the even digit: what Python's `repr`
