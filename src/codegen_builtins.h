@@ -523,13 +523,13 @@ inline void CodeGen::EmitAppend(vector<Node *> &an, Line ln) {
         L("int64_t ", ol, " = ", v.len, ";");
         L("if (", ol, " + ", nn, " > ", LimitedCap(lv), ") gs_abort(GS_E_CAPACITY, ",
           LocArgs(ln), ");");
-        L(CopyFn(se.nullable), "(", ElemAddr(v, ol), ", ", se.elems, ", (size_t)(", nn, " * ",
+        L(CopyFn(), "(", ElemAddr(v, ol), ", ", se.elems, ", (size_t)(", nn, " * ",
           FixedSize(elem), "));");
         L(v.lenlv, " = (", LenCast(lv), ")(", ol, " + ", nn, ");");
         return;
     }
     assert(!lv.stk.empty());
-    EmitCopyElems(lv.stk, elem, se.elems, nn, se.nullable);
+    EmitCopyElems(lv.stk, elem, se.elems, nn);
     L(v.lenlv, " += ", nn, ";");
 }
 
@@ -983,8 +983,8 @@ inline void CodeGen::EmitLeCheck(Line ln) {
 
 // The element region of a to_bytes/bytes_of receiver: a byte pointer, and
 // the byte count -- which for variable elements is a walk, since an element
-// count says nothing about the span. `nullable` as ArrView's.
-inline void CodeGen::PayloadOf(Node *n, string &src, string &sz, bool &nullable) {
+// count says nothing about the span.
+inline void CodeGen::PayloadOf(Node *n, string &src, string &sz) {
     auto nt = n->exprtype;
     auto rt = nt->kind == TY_REF ? nt->ref->sub : nt;
     auto elem = rt->kind == TY_SLICE ? rt->sub : rt->arr->sub;
@@ -997,11 +997,9 @@ inline void CodeGen::PayloadOf(Node *n, string &src, string &sz, bool &nullable)
         L("int64_t ", cnt, " = ", v.len, ";");
         se.elems = v.elems;
         se.n = cnt;
-        se.nullable = v.nullable;
     } else {
         se = GenSrcElems(n);
     }
-    nullable = se.nullable;
     src = T();
     L("const uint8_t *", src, " = (const uint8_t *)(", se.elems, ");");
     sz = T();
@@ -1018,19 +1016,18 @@ inline void CodeGen::PayloadOf(Node *n, string &src, string &sz, bool &nullable)
 // `n` bytes at `src` appended to a growable u8 array, in the two shapes
 // format appends text to: a resizable writes at its stack top, a limited
 // array copies under a capacity check.
-inline void CodeGen::AppendBytes(const Loc &lv, const string &src, const string &n, Line ln,
-                                 bool nullable) {
+inline void CodeGen::AppendBytes(const Loc &lv, const string &src, const string &n, Line ln) {
     auto v = ArrayView(lv);
     if (lv.t->arr->akind == A_LIMITED) {
         auto ol = T();
         L("int64_t ", ol, " = ", v.len, ";");
         L("if (", ol, " + ", n, " > ", LimitedCap(lv), ") gs_abort(GS_E_CAPACITY, ",
           LocArgs(ln), ");");
-        L(CopyFn(nullable), "(", ElemAddr(v, ol), ", ", src, ", (size_t)", n, ");");
+        L(CopyFn(), "(", ElemAddr(v, ol), ", ", src, ", (size_t)", n, ");");
         L(v.lenlv, " = (", LenCast(lv), ")(", ol, " + ", n, ");");
         return;
     }
-    L(CopyFn(nullable), "(", Top(lv.stk), ", ", src, ", (size_t)", n, ");");
+    L(CopyFn(), "(", Top(lv.stk), ", ", src, ", (size_t)", n, ");");
     Bump(lv.stk, n);
     L(v.lenlv, " += ", n, ";");
 }
@@ -1081,8 +1078,7 @@ inline void CodeGen::CloseRzDest(RzDest &rd, const string &count) {
 inline vector<string> CodeGen::EmitBytesOf(Call *c, vector<Node *> &an, Line ln) {
     EmitLeCheck(ln);
     string src, sz;
-    bool nullable;
-    PayloadOf(an[0], src, sz, nullable);
+    PayloadOf(an[0], src, sz);
     auto s = T();
     L(CT(c->rettypes[0]), " ", s, " = { (uint8_t *)", src, ", ", sz, " };");
     return { s };
@@ -1095,21 +1091,20 @@ inline vector<string> CodeGen::EmitBytesOf(Call *c, vector<Node *> &an, Line ln)
 inline vector<string> CodeGen::EmitToBytes(vector<Node *> &an, Dst d0, Line ln) {
     EmitLeCheck(ln);
     string src, sz;
-    bool nullable;
-    PayloadOf(an[0], src, sz, nullable);
+    PayloadOf(an[0], src, sz);
     auto pfx = T(), pn = T();
     L("uint8_t ", pfx, "[10];");
     L("int64_t ", pn, " = gs_uleb_write(", pfx, ", (uint64_t)", sz, ");");
     if (an.size() > 1) {
         auto out = RecvLoc(an[1]);
         AppendBytes(out, pfx, pn, ln);
-        AppendBytes(out, src, sz, ln, nullable);
+        AppendBytes(out, src, sz, ln);
         return {};
     }
     auto rd = OpenRzDest(GrowU8(), d0, ln, "to_bytes");
     L("memcpy(", Top(rd.stk), ", ", pfx, ", (size_t)", pn, ");");
     Bump(rd.stk, pn);
-    L(CopyFn(nullable), "(", Top(rd.stk), ", ", src, ", (size_t)", sz, ");");
+    L(CopyFn(), "(", Top(rd.stk), ", ", src, ", (size_t)", sz, ");");
     Bump(rd.stk, sz);
     auto tot = T();
     L("int64_t ", tot, " = ", pn, " + ", sz, ";");

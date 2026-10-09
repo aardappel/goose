@@ -311,7 +311,6 @@ inline CodeGen::ArrView CodeGen::RawArrayView(const Loc &lv) {
         v.elems = cat(lv.s, ".data");
         v.len = cat(lv.s, ".len");
         v.typedelems = !IsBytesT(t->sub);
-        v.nullable = true;
         return v;
     }
     assert(t->kind == TY_ARRAY);
@@ -751,17 +750,70 @@ inline string CodeGen::AdaptToFixed(Loc lv, TypeExpr *et, Line ln) {
         return tv;
     }
     assert(et->kind == TY_ARRAY && et->arr->akind == A_LIMITED);
+    auto tv = T();
+    FixedLocal(et, tv);
+    CopyIntoLimited(lv, et, ln, tv, false);
+    return tv;
+}
+
+// The elements of the array or slice at `lv` copied into the
+// static-capacity limited array (type `et`) at the C lvalue `dst`, under
+// its capacity check (§4.2). The count and the elements are read before
+// anything is written, and with `overlap` they move as memmove moves them,
+// so the source may lie in `dst`'s own slots.
+inline void CodeGen::CopyIntoLimited(Loc lv, TypeExpr *et, Line ln, const string &dst,
+                                     bool overlap) {
     auto v = ArrayView(lv);
     auto nn = T();
     L("int64_t ", nn, " = ", v.len, ";");
     L("if (", nn, " > ", ArrSize(et->arr),
       ") gs_abort(GS_E_CAPACITY, ", LocArgs(ln), ");");
-    auto tv = T();
-    FixedLocal(et, tv);
-    L(tv, ".len = (", IntCT(LenStore(et->arr)), ")", nn, ";");
-    L(CopyFn(v.nullable), "(", tv, ".e, ", v.elems, ", (size_t)(", nn, " * ",
+    L(overlap ? "gs_memmove" : CopyFn(), "(", dst, ".e, ", v.elems, ", (size_t)(", nn, " * ",
       FixedSize(et->arr->sub), "));");
-    return tv;
+    L(dst, ".len = (", IntCT(LenStore(et->arr)), ")", nn, ";");
+}
+
+// Whether `n`, for a static-capacity limited destination `want`, is an
+// array or slice of another representation that is copied in (§4.2).
+inline bool CodeGen::AdaptsToLimited(Node *n, TypeExpr *want) {
+    auto nt = n->exprtype;
+    if (!want || !nt || !IsStaticLimited(want) || fillvalues.count(n)) return false;
+    auto st = IsPlainRef(nt) ? nt->ref->sub : nt;
+    return (st->kind == TY_ARRAY || st->kind == TY_SLICE) && !TEq(st, want);
+}
+
+// `n` stored into `dst`, a static-capacity limited array of type `want`,
+// with an array or slice of another representation copied straight into
+// its slots (CopyIntoLimited) rather than built in a temporary of `want`'s
+// type first. That covers a node whose checked type differs from `want`,
+// and a range or a path the checker typed as `want` whose location is such
+// an array or slice. False, with nothing emitted, for anything else.
+inline bool CodeGen::GenIntoLimited(Node *n, TypeExpr *want, const string &dst, bool overlap) {
+    if (!want || !IsStaticLimited(want) || !n->exprtype || fillvalues.count(n)) return false;
+    Loc lv;
+    auto dot = Is<Dot>(n);
+    if (AdaptsToLimited(n, want)) {
+        lv = GenLoc(n);
+    } else if (!TEq(n->exprtype, want)) {
+        return false;
+    } else if (auto se = Is<SliceExpr>(n)) {
+        lv.val = true;
+        lv.s = GenSlice(se);
+        lv.t = ast.SliceOf(want->arr->sub, n->line);
+    } else if (Is<Ident>(n) || Is<Index>(n) || (dot && !dot->variantconst && dot->member < 0)) {
+        // What their GenX reads: the location, loaded at `want`.
+        lv = GenLoc(n);
+        while (lv.t->kind == TY_REF) DerefLoc(lv);
+        if (lv.t->kind != TY_SLICE && (lv.t->kind != TY_ARRAY || TEq(lv.t, want))) {
+            L(dst, " = ", LoadLoc(lv, want, n->line), ";");
+            return true;
+        }
+    } else {
+        return false;
+    }
+    while (lv.t->kind == TY_REF) DerefLoc(lv);
+    CopyIntoLimited(lv, want, n->line, dst, overlap);
+    return true;
 }
 
 inline string CodeGen::BytesAddrOf(const Loc &lv) {
@@ -805,18 +857,14 @@ inline string CodeGen::GenRefVal(Node *child, Line ln) {
 inline string CodeGen::GenXD(Node *n, TypeExpr *want) {
     if (auto it = fillvalues.find(n); it != fillvalues.end())
         return LoadLoc(it->second, want, n->line);
-    auto nt = n->exprtype;
-    if (want && nt && IsStaticLimited(want)) {
+    if (AdaptsToLimited(n, want)) {
         // Any array or slice of the element type reaching a static-capacity
         // limited destination in a representation of its own (a copy's
         // source, a spliced callee body's result): copied into the C value
         // from wherever it lives (§4.2).
-        auto st = IsPlainRef(nt) ? nt->ref->sub : nt;
-        if ((st->kind == TY_ARRAY || st->kind == TY_SLICE) && !TEq(st, want)) {
-            auto lv = GenLoc(n);
-            if (lv.t->kind == TY_REF) DerefLoc(lv);
-            return AdaptToFixed(lv, want, n->line);
-        }
+        auto lv = GenLoc(n);
+        if (lv.t->kind == TY_REF) DerefLoc(lv);
+        return AdaptToFixed(lv, want, n->line);
     }
     if (NeedsDeref(n->exprtype, want)) {
         auto sub = n->exprtype->ref->sub;
@@ -1005,9 +1053,11 @@ inline void CodeGen::LeafAny(Node *n, const Dst &d) {
         if (d.pool) { L(d.s, " = ", GenPrefVal(n), ";"); return; }
         // A literal holding relative references builds at the destination;
         // assigning it from a temporary would copy the temporary's offsets.
-        if ((Is<StructLit>(n) || Is<ArrayLit>(n)) && HasRelRef(n->exprtype))
+        if ((Is<StructLit>(n) || Is<ArrayLit>(n)) && HasRelRef(n->exprtype)) {
             FixedLitAt(n, d.s);
-        else L(d.s, " = ", GenXD(n, d.t), ";");
+        } else if (!GenIntoLimited(n, d.t, d.s, true)) {   // The source may lie in d.s.
+            L(d.s, " = ", GenXD(n, d.t), ";");
+        }
         return;
     }
     if (IsVoidT(n->exprtype)) { Fail(n->line, "internal: valueless leaf"); }
@@ -1197,20 +1247,20 @@ inline string CodeGen::GenEquality(TypeExpr *lt, const string &l, const string &
 
 inline string CodeGen::GenSliceEq(TypeExpr *st, const string &l, const string &r) {
     return GenRangeEq(st->sub, cat(l, ".data"), cat(l, ".len"), cat(r, ".data"),
-                      cat(r, ".len"), true);
+                      cat(r, ".len"));
 }
 
 // Structural equality of two element ranges (§4.5): length then elements.
-// `nullable` as ArrView's, for either range.
+// Either range's elements may be an empty slice's null pointer, which
+// gs_memeq allows.
 inline string CodeGen::GenRangeEq(TypeExpr *elem, const string &ae, const string &an,
-                                  const string &be, const string &bn, bool nullable) {
+                                  const string &be, const string &bn) {
     auto t = T();
     L("uint8_t ", t, " = ", an, " == ", bn, ";");
     L("if (", t, ") {");
     ind++;
     if (ScalarEq(elem) && BitwiseEq(elem)) {
-        L(t, " = ", nullable ? "gs_memcmp(" : "memcmp(", ae, ", ", be, ", (size_t)((", an,
-          ") * ", FixedSize(elem), ")) == 0;");
+        L(t, " = gs_memeq(", ae, ", ", be, ", (size_t)((", an, ") * ", FixedSize(elem), "));");
     } else if (IsFix(elem)) {
         auto pa = T(), pb = T(), iv = T();
         L("const ", CT(elem), " *", pa, " = (const ", CT(elem), " *)(", ae, ");");

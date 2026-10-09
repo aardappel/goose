@@ -146,7 +146,7 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
                 } else {
                     auto n = T();
                     L("int64_t ", n, " = ", v.len, ";");
-                    L(CopyFn(v.nullable), "(", Top(out.stk), ", (const uint8_t *)(", v.elems,
+                    L(CopyFn(), "(", Top(out.stk), ", (const uint8_t *)(", v.elems,
                       "), (size_t)", n, ");");
                     Bump(out.stk, n);
                     L(out.lenlv, " += ", n, ";");
@@ -495,7 +495,6 @@ inline void CodeGen::EmitFormatInto(Loc lv, Node *a, Line ln, Call *c) {
     auto bytes = t->kind == TY_ARRAY || t->kind == TY_SLICE;
     auto n = T();
     string src;   // Where the bytes to append sit, when not already at the top.
-    auto nullable = false;
     if (!SimpleText(c, t)) {
         // Into a limited array: rendered aside, then copied under the
         // capacity check like any bytes.
@@ -507,7 +506,6 @@ inline void CodeGen::EmitFormatInto(Loc lv, Node *a, Line ln, Call *c) {
         auto se = GenSrcElems(a);
         L("int64_t ", n, " = ", se.n, ";");
         src = cat("(const uint8_t *)(", se.elems, ")");
-        nullable = se.nullable;
     } else if (limited) {
         src = T();
         L("uint8_t ", src, "[GS_FMT_MAX];");
@@ -518,7 +516,7 @@ inline void CodeGen::EmitFormatInto(Loc lv, Node *a, Line ln, Call *c) {
     // Bytes to copy -- a limited array's, under its capacity check, or a
     // rendered or array source into a resizable -- append like any others.
     if (limited || bytes) {
-        AppendBytes(lv, src, n, ln, nullable);
+        AppendBytes(lv, src, n, ln);
         return;
     }
     // A scalar's text is at the resizable's top already: only the count moves.
@@ -563,7 +561,7 @@ inline vector<string> CodeGen::EmitStr(Call *c, vector<Node *> &an, Dst d0, Line
         } else if (t->kind == TY_ARRAY || t->kind == TY_SLICE) {
             auto se = GenSrcElems(a);
             L("int64_t ", n, " = ", se.n, ";");
-            L(CopyFn(se.nullable), "(", Top(stk), ", (const uint8_t *)(", se.elems, "), (size_t)",
+            L(CopyFn(), "(", Top(stk), ", (const uint8_t *)(", se.elems, "), (size_t)",
               n, ");");
         } else {
             L("int64_t ", n, " = ", FmtCall(a, Top(stk)), ";");

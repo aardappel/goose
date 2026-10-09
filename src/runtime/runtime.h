@@ -174,15 +174,44 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 #define GS_UNREACHABLE(f, l) ((void)0)
 #endif
 
-/* memcpy and memcmp for a slice's elements. An empty slice's data pointer is
-   NULL where the slice was zero-filled (default<T>(), a default element),
-   and C leaves both undefined on a null pointer even for zero bytes. */
+/* Unaligned loads of 4 and 8 bytes. The optimizing backends turn the
+   fixed-size memcpy into one move. */
+static uint32_t gs_ld32(const void *p) { uint32_t v; memcpy(&v, p, 4); return v; }
+static uint64_t gs_ld64(const void *p) { uint64_t v; memcpy(&v, p, 8); return v; }
+
+/* The low k bytes of a word set (none for k <= 0, all for k >= 8): which
+   bytes of a little-endian load lie within a length. */
+static uint64_t gs_bytemask(int64_t k) {
+    return k >= 8 ? ~(uint64_t)0 : k <= 0 ? 0 : ((uint64_t)1 << (k * 8)) - 1;
+}
+
+/* memcpy, memmove and memcmp for a slice's elements. An empty slice's data
+   pointer is NULL where the slice was zero-filled (default<T>(), a default
+   element), and C leaves all three undefined on a null pointer even for
+   zero bytes. */
 static void gs_memcpy(void *dst, const void *src, size_t n) {
     if (n) memcpy(dst, src, n);
 }
 
-static int gs_memcmp(const void *a, const void *b, size_t n) {
-    return n ? memcmp(a, b, n) : 0;
+static void gs_memmove(void *dst, const void *src, size_t n) {
+    if (n) memmove(dst, src, n);
+}
+
+/* Whether n bytes at a and b are equal: two overlapping loads per side up
+   to 16 bytes, where keys and names mostly are and a call costs more than
+   the compare, the library's memcmp beyond. TinyCC inlines no memcpy, so
+   its build calls memcmp for every length. */
+static int gs_memeq(const void *a, const void *b, size_t n) {
+#ifndef __TINYC__
+    const uint8_t *p = (const uint8_t *)a, *q = (const uint8_t *)b;
+    if (n >= 8 && n <= 16)
+        return ((gs_ld64(p) ^ gs_ld64(q)) | (gs_ld64(p + n - 8) ^ gs_ld64(q + n - 8))) == 0;
+    if (n >= 4 && n < 8)
+        return ((gs_ld32(p) ^ gs_ld32(q)) | (gs_ld32(p + n - 4) ^ gs_ld32(q + n - 4))) == 0;
+    if (n < 4)
+        return n == 0 || ((p[0] ^ q[0]) | (p[n >> 1] ^ q[n >> 1]) | (p[n - 1] ^ q[n - 1])) == 0;
+#endif
+    return n == 0 || memcmp(a, b, n) == 0;
 }
 
 /* ---------------------------------------------------------------------------

@@ -1276,6 +1276,38 @@ inline void CodeGen::EmitEqFixed(string &bo, TypeExpr *t) {
                 Append(bo, "    for (int64_t i = 0; i < ", ArrSize(t->arr), "; i++)\n",
                        "        if (!", EqX(a.sub, "a->e[i]", "b->e[i]"), ") return 0;\n",
                        "    return 1;\n");
+            } else if (BitwiseEq(a.sub) && ArrSize(t->arr) > 0) {
+                // Limited, static capacity, of elements equal exactly when
+                // their bytes are: the live bytes compared as a run.
+                auto esz = FixedSize(a.sub);
+                auto bytes = ArrSize(t->arr) * esz;
+                auto lw = IntSize(LenStore(t->arr));
+                Append(bo, "    if (a->len != b->len) return 0;\n");
+                if (bytes <= 64 && lw + bytes >= 8) {
+                    // Whole words over the value's own storage, the bytes
+                    // past the length masked off: no branch on the data.
+                    // A last word that would end past the slots ends at the
+                    // value's end instead, starting inside the slots or the
+                    // length before them, both equal on both sides by now.
+                    Append(bo, "    int64_t n = (int64_t)a->len * ", esz, ";\n",
+                           "    const uint8_t *pa = (const uint8_t *)a->e, ",
+                           "*pb = (const uint8_t *)b->e;\n",
+                           "    uint64_t d = 0;\n");
+                    auto word = [&](int64_t w) {
+                        auto at = w < 0 ? cat(" - ", -w) : w ? cat(" + ", w) : string();
+                        Append(bo, "    d |= (gs_ld64(pa", at, ") ^ gs_ld64(pb", at,
+                               ")) & gs_bytemask(n", w < 0 ? cat(" + ", -w) : w ? cat(" - ", w)
+                                                                             : string(),
+                               ");\n");
+                    };
+                    int64_t w = 0;
+                    for (; w + 8 <= bytes; w += 8) word(w);
+                    if (w < bytes) word(bytes - 8);
+                    Append(bo, "    return d == 0;\n");
+                } else {
+                    Append(bo, "    return gs_memeq(a->e, b->e, (size_t)a->len * ", esz,
+                           ");\n");
+                }
             } else {   // Limited, static capacity.
                 Append(bo, "    if (a->len != b->len) return 0;\n",
                        "    for (int64_t i = 0; i < (int64_t)a->len; i++)\n",

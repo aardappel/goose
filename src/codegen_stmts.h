@@ -438,6 +438,12 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
         GenAny(init, Dst { DK_LVALUE, name, t });
         return;
     }
+    if (IsStaticLimited(t)) {
+        L(CT(t), " ", name, ";");
+        if (GenIntoLimited(init, t, name, false)) return;
+        L(name, " = ", GenXD(init, t), ";");
+        return;
+    }
     L(CT(t), " ", name, " = ", GenXD(init, t), ";");
 }
 

@@ -214,10 +214,10 @@ inline void CodeGen::ComputeRelRootMax() {
 // Copies `n` elements of type `elem` from `src` (typed or byte pointer)
 // to the stack top.
 inline void CodeGen::EmitCopyElems(const string &stk, TypeExpr *elem, const string &src,
-                                   const string &n, bool nullable) {
+                                   const string &n) {
     if (IsFix(elem)) {
         auto esz = FixedSize(elem);
-        L(CopyFn(nullable), "(", Top(stk), ", ", src, ", (size_t)((", n, ") * ", esz, "));");
+        L(CopyFn(), "(", Top(stk), ", ", src, ", (size_t)((", n, ") * ", esz, "));");
         Bump(stk, cat("(", n, ") * ", esz));
     } else {
         auto p = T(), iv = T();
@@ -246,7 +246,6 @@ inline CodeGen::SrcElems CodeGen::GenSrcElems(Node *n) {
         auto x = GenPure(n);
         r.elems = cat(x, ".data");
         r.n = cat(x, ".len");
-        r.nullable = true;
         return r;
     }
     // An array, or a reference to an array or slice (an append's source
@@ -257,7 +256,6 @@ inline CodeGen::SrcElems CodeGen::GenSrcElems(Node *n) {
     if (lv.t->kind == TY_SLICE) {
         r.elems = cat(lv.s, ".data");
         r.n = cat(lv.s, ".len");
-        r.nullable = true;
         return r;
     }
     auto v = ArrayView(lv);
@@ -673,7 +671,7 @@ inline void CodeGen::GenArrayFromLoc(Loc lv, TypeExpr *et, const string &stk, Li
             L(lenlv, " = ", nn, ";");
             break;
     }
-    EmitCopyElems(stk, et->arr->sub, v.elems, nn, v.nullable);
+    EmitCopyElems(stk, et->arr->sub, v.elems, nn);
 }
 
 // Copies an existing resizable value (source location) to the stack top:

@@ -3332,8 +3332,13 @@ Layout details needed for byte/C compatibility (`FixedSize`, `LayoutFields`,
   references as their stored integer. An empty slice's `data` is null where
   the slice was zero-filled (`default<T>()`, a default element), and C leaves
   `memcpy` and `memcmp` undefined on a null pointer even for zero bytes, so
-  copies and compares out of a slice go through the runtime's `gs_memcpy` and
-  `gs_memcmp` (`ArrView::nullable`, `CopyFn`). `CT` emits typedefs on first use;
+  element-run copies and compares go through the runtime's `gs_memcpy`,
+  `gs_memmove` and `gs_memeq` (`CopyFn`, `GenRangeEq`). `gs_memeq`
+  compares runs of up to 16 bytes inline, as two overlapping word loads per
+  side, and calls `memcmp` only beyond: keys and names are mostly that
+  short, and a call costs more than the compare. (The same inline form for
+  copies measured slower than the C library's `memcpy` on JSON output, so
+  copies call it at every length.) `CT` emits typedefs on first use;
   struct-like kinds get a forward typedef so a node type can reference
   itself (`NameCT`), and their body at the first use by value or through a
   pointer (`PointeeLv`): a struct the program only reaches through
@@ -3532,7 +3537,13 @@ slice expression in `SliceExpr::CgX`, a call result through `CallVal0`
 (`CallResLoc`: the temporary header of a resizable result, the base pointer
 of a variable one, the pointee of a reference result), a node in another
 representation than its context wants through `GenXD` (a `copy` source, a
-spliced callee body), and a stack slot through `GenArrayFromLoc`. A
+spliced callee body), and a stack slot through `GenArrayFromLoc`. Where
+the limited array is a C lvalue already -- an assignment's target, a
+local's initialization, any fixed destination (`LeafAny`) -- the elements
+go straight into its slots instead of through a temporary of its type
+(`GenIntoLimited`, `CopyIntoLimited`): the source's count and elements are
+read before anything is written, and they move as `memmove` moves them,
+since the source may be a view of the destination's own slots. A
 bytes-class call result feeding a fixed-class slot is built on a temporary of
 its own rather than the slot's stack (`GenConstruct`), since the slot takes
 the adapted C value. A runtime-capacity `T[..]` is a bytes value, and an
@@ -3741,7 +3752,12 @@ the receiver zeroes the object C gives it rather than reading past the image.
 Per type on demand: `gs_size_<T>` (the byte size of a dynamic value),
 `gs_eq_<T>` (structural equality, a `memcmp` for gap-free fixed types and
 canonical-encoding bytes values that hold no floats, a cursor walk
-otherwise), `gs_verify_<T>` (the `from_bytes` verifier of
+otherwise; a static-capacity limited array of such elements compares its
+lengths, then, up to 64 bytes of slots, whole 8-byte words of both values'
+own storage with the bytes past the length masked off, which takes no
+branch on the data -- a last word that would end past the slots ends at
+the value's end instead, reaching back into slots already compared or
+into the length, equal on both sides by then), `gs_verify_<T>` (the `from_bytes` verifier of
 `docs/design/serialization.md`: one framing pass for fixed elements, a
 framing pass setting an element-start bitmap and a link pass for variable
 ones), and the tag enums. Text rendering (`codegen_render.h`) formats
@@ -4333,7 +4349,11 @@ A loop that only updates elements therefore needs no register for a cached top.
   own and assigned as its `copy()`, one copy.
 * An array or slice of another kind meeting a `T[..k]` -- a local, an
   argument, a field, an assignment, a return -- is an O(length) copy into
-  the C value after a capacity check, whatever the source's representation.
+  the C value after a capacity check, whatever the source's representation;
+  into a local or an assignment's target, straight into its slots.
+* `==` on a `u8[..k]` key (any static-capacity limited array of integer,
+  bool or reference elements) up to 64 bytes is a few masked word compares
+  with no loop; slices of up to 16 bytes compare inline as well.
 * `copy(x)` is a real O(size) copy, and so is any assignment of a non-fixed
   lvalue; the checker forces the spelling so the cost is visible.
 * A function returning several values is never inlined. At `-O1` and above,
