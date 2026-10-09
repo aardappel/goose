@@ -427,7 +427,8 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
     // initializer, its value is the plain reference to encode.
     if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
         L(CT(t), " ", name, ";");
-        EmitRelStoreAt(cat("(uint8_t *)&", name), t, GenX(init), init->line, true);
+        EmitRelStoreAt(cat("(uint8_t *)&", name), t, GenX(init), init->line, true,
+                       RelValue(init));
         return;
     }
     // Literals holding relative references construct into the variable
@@ -482,16 +483,23 @@ inline string CodeGen::GenPrefVal(Node *n) {
     Fail(n->line, "cannot form a reusable pool reference from this expression");
 }
 
-inline void CodeGen::GenRelAssign(Loc lv, Node *rhs, Line ln) {
+inline void CodeGen::GenRelAssign(Loc lv, Node *lval, Node *rhs, Line ln) {
     auto rv = GenX(rhs);
     // Varint-width relative references are construction-only (typechecked).
     assert(lv.t->ref->lenstorage != IS_VARINT);
-    EmitRelStoreAt(BytesAddrOf(lv), lv.t, rv, ln, true);
+    auto f = RelValue(rhs);
+    if (auto d = Is<Dot>(lval); d && d->IsField()) {
+        auto ht = d->obj->exprtype;
+        if (ht && ht->kind == TY_REF) ht = ht->ref->sub;
+        if (ht && ht->kind == TY_STRUCT && IsFix(ht))
+            f.apart = RelSlotApart(lv.t, ht, StructLayout(SI(ht)).offs[(size_t)d->fieldidx]);
+    }
+    EmitRelStoreAt(BytesAddrOf(lv), lv.t, rv, ln, true, f);
 }
 
 inline void CodeGen::GenRebind(Assign *a, Loc lv) {
     if (lv.t->kind == TY_REF && lv.t->ref->lenstorage >= 0) {
-        GenRelAssign(lv, a->rhs, a->line);
+        GenRelAssign(lv, a->lval, a->rhs, a->line);
         return;
     }
     assert(lv.val);

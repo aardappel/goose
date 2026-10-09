@@ -3694,7 +3694,16 @@ behind the prefix the fixup moves.
 A relative load is the field's own address (or, `in pool`, the pool's base
 minus one) plus the stored offset, with a null test only for the optional
 spelling (`LoadLoc`, `RelOrigin`); a store subtracts the same origin
-(`EmitRelStoreAt`). Whatever produces the value, the store encodes a plain
+(`EmitRelStoreAt`). Into an optional slot it tests the value for null
+unless the value is a plain `T&` -- a node of that type, a call declared to
+return one, a block or `if` all of whose values are one (`RelValue`) --
+and into a self-relative optional slot it aborts on a non-null target at
+offset zero (§3.9) unless no target can be at the slot's own address: the
+slot is a field of a fixed struct at a nonzero offset and points at no
+reference, where a target starting at the slot would have to be a part of
+the struct starting there, and the only one is the slot (`RelSlotApart`;
+known from the assignment's field path or the literal's own layout).
+Whatever produces the value, the store encodes a plain
 reference: a branch's or an inlined body's value for a relative slot is
 computed into a plain-reference temporary (`CtlValX`), a call's result is
 encoded where it lands (`ConstructCall`), and a frame object literal stores

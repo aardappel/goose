@@ -560,7 +560,7 @@ inline void CodeGen::EmitGlobalInit() {
                     L(gnames[d], " = ", GenPrefVal(g->inits[i]), ";");
                 } else if (d->type->kind == TY_REF && d->type->ref->lenstorage >= 0) {
                     EmitRelStoreAt(cat("(uint8_t *)&", gnames[d]), d->type, GenX(g->inits[i]),
-                                   g->inits[i]->line, true);
+                                   g->inits[i]->line, true, RelValue(g->inits[i]));
                 } else {
                     GenAny(g->inits[i], Dst { DK_LVALUE, gnames[d], d->type });
                 }

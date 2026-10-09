@@ -69,6 +69,18 @@ struct Dst {
     bool pool = false;
 };
 
+// What a relative store knows of the reference it encodes beyond its type:
+// that it is a plain `T&`, never null (CodeGen::RelValue), and that no target
+// can lie at the slot's own address, where a self-relative optional slot's
+// offset would read as null (CodeGen::RelSlotApart). It is declared outside
+// CodeGen because CodeGen's member functions take it as a defaulted argument,
+// and clang and gcc reject a default argument of a nested class with member
+// initializers before the enclosing class is complete.
+struct RelFacts {
+    bool nonnull = false;
+    bool apart = false;
+};
+
 struct CodeGen {
     Ast &ast;
 
@@ -848,9 +860,13 @@ struct CodeGen {
     void EmitLenStore(const string &stk, IntStorage ls, const string &n);
     void EmitVarintStore(const string &stk, const string &x);
     void EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln, bool inroot);
-    string RelOffset(TypeExpr *rt, const string &org, const string &rv, Line ln);
-    void EmitRelStoreAt(const string &fa, TypeExpr *rt, const string &rv, Line ln, bool inroot);
-    void EmitRelStore(const string &stk, TypeExpr *rt, const string &rv, Line ln);
+    RelFacts RelValue(Node *v);
+    bool RelSlotApart(TypeExpr *rt, TypeExpr *holder, int64_t off);
+    string RelOffset(TypeExpr *rt, const string &org, const string &rv, Line ln, RelFacts f);
+    void EmitRelStoreAt(const string &fa, TypeExpr *rt, const string &rv, Line ln, bool inroot,
+                        RelFacts f = {});
+    void EmitRelStore(const string &stk, TypeExpr *rt, const string &rv, Line ln,
+                      RelFacts f = {});
     void EmitRelSelfAt(const string &fa, TypeExpr *rt, int64_t fieldoff, Line ln,
                        bool inroot = true);
     void EmitRelSelfStore(const string &stk, TypeExpr *rt, int64_t fieldoff, Line ln);
@@ -991,7 +1007,7 @@ struct CodeGen {
     void BindLocal(VarDef *d, Node *init, bool forlocal = true);
     string GenPrefVal(Node *n);
     string Unique2(const string &base);
-    void GenRelAssign(Loc lv, Node *rhs, Line ln);
+    void GenRelAssign(Loc lv, Node *lval, Node *rhs, Line ln);
     void GenRebind(Assign *a, Loc lv);
 
     // ------------------------------------------------------------------

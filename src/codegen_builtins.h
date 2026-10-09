@@ -412,7 +412,7 @@ inline vector<string> CodeGen::EmitPush(vector<Node *> &an, Line ln) {
         if (relref) {
             // A relative-reference element stores the offset from its
             // own slot, not the pointer (§3.9).
-            EmitRelStoreAt(cat("(uint8_t *)", e), elem, ev, ln, true);
+            EmitRelStoreAt(cat("(uint8_t *)", e), elem, ev, ln, true, RelValue(an[1]));
         } else if (inplace) {
             GenAny(an[1], Dst { DK_LVALUE, cat("(*", e, ")"), elem });
         } else {
@@ -428,7 +428,7 @@ inline vector<string> CodeGen::EmitPush(vector<Node *> &an, Line ln) {
         } else {
             L(CT(elem), " *", e, " = (", CT(elem), " *)", Top(lv.stk), ";");
         }
-        if (relref) EmitRelStore(lv.stk, elem, ev, ln);
+        if (relref) EmitRelStore(lv.stk, elem, ev, ln, RelValue(an[1]));
         else if (inplace) GenConstruct(an[1], lv.stk, elem);
         else EmitValStore(lv.stk, elem, ev);
         L(v.lenlv, "++;");

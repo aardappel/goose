@@ -905,7 +905,7 @@ inline void Assign::CgStmt(CodeGen &cg) {
     auto t = lv.t;
     if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
         // Relative-reference slot: encode from the plain reference value.
-        cg.GenRelAssign(lv, rhs, line);
+        cg.GenRelAssign(lv, lval, rhs, line);
         return;
     }
     if (cg.IsResz(t)) {
