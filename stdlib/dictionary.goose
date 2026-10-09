@@ -60,6 +60,19 @@ fn dict_slot<K, V>(d: dictionary<K, V>&, key: K, h: u64) -> i64 {
     }
 }
 
+// Room for one more entry: the table starts at 8 slots and doubles at 2/3
+// load. With its two calls dict_grow stays a function of its own rather than
+// being inlined into each caller, which keeps the callers small, and the
+// stack top that resize fills through stays in a register there
+// (docs/implementation.md §6.10).
+fn dict_room<K, V>(d: dictionary<K, V>&) {
+    if d.slots.len == 0 {
+        dict_grow(d, 8);
+    } else if (d.count + 1) * 3 > d.slots.len * 2 {
+        dict_grow(d, d.slots.len * 2);
+    }
+}
+
 // Grows the table to cap slots, a power of two above its length, in place:
 // the new slots start unused, and every entry is re-placed by a walk over the
 // old slots in cyclic order from just after an unused one. Each entry then
@@ -100,7 +113,7 @@ fn contains<K, V>(d: dictionary<K, V>&, key: K) -> bool { dict_probe(d, key) >= 
 // it makes room for the key before the one walk that finds it or the unused
 // slot where it goes.
 fn insert<K, V>(d: dictionary<K, V>&, key: K, val: V) -> bool {
-    if (d.count + 1) * 3 > d.slots.len * 2 { dict_grow(d, max(d.slots.len * 2, 8)); }
+    dict_room(d);
     let h = hash(key);
     let i = dict_slot(d, key, h);
     if d.slots[i].tag != 0 {
@@ -116,7 +129,7 @@ fn insert<K, V>(d: dictionary<K, V>&, key: K, val: V) -> bool {
 
 // The value for key, inserted as v0 first if absent.
 fn get_or_insert<K, V>(d: dictionary<K, V>&, key: K, v0: V) -> V& {
-    if (d.count + 1) * 3 > d.slots.len * 2 { dict_grow(d, max(d.slots.len * 2, 8)); }
+    dict_room(d);
     let h = hash(key);
     let i = dict_slot(d, key, h);
     if d.slots[i].tag == 0 {
@@ -128,7 +141,7 @@ fn get_or_insert<K, V>(d: dictionary<K, V>&, key: K, v0: V) -> V& {
 
 // F(val&) on the value for key, inserted as v0 first if absent.
 fn update<K, V, F>(d: dictionary<K, V>&, key: K, v0: V) {
-    if (d.count + 1) * 3 > d.slots.len * 2 { dict_grow(d, max(d.slots.len * 2, 8)); }
+    dict_room(d);
     let h = hash(key);
     let i = dict_slot(d, key, h);
     if d.slots[i].tag == 0 {

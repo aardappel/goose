@@ -513,9 +513,11 @@ struct dictionary<K, V> { count: i64 = 0, slots: dictionary_slot<K, V>[>..<] = [
   table of up to 2^31 slots the tag holds the home slot, so growth and
   removal never hash a key again; a larger table hashes the keys it moves.
   The tag costs 3 bytes per slot over a `used` byte (12 bytes for a
-  `u32 → i32` table where 9 would do), which measured as neutral on
-  n-gram counting with `u32` keys, which compare as cheaply as tags, while
-  string-keyed tables gained 15-60%.
+  `u32 → i32` table where 9 would do): n-gram counting with `u32` keys,
+  which compare as cheaply as tags, measured between 3% slower and even,
+  while string-keyed tables (word counts, an LRU cache, an interpreter's
+  variables, a template engine's) gained 18-57% from the dictionary changes
+  alone.
 * Growth doubles at ⅔ load, in place: the slot array tops its stack, so
   `resize` extends it with unused slots, and the entries are re-placed by one
   walk over the old slots in cyclic order, starting just after an unused one.
@@ -524,9 +526,10 @@ struct dictionary<K, V> { count: i64 = 0, slots: dictionary_slot<K, V>[>..<] = [
   no entry still to be moved lies on a moved entry's probe path. No second
   table is built and nothing is copied back. The slot array is grow-shrink
   so that it can be resized through a reference (§5.2). A maximum load of ½
-  measured 21% faster on a small LRU table but slower on large tables that
-  leave the cache (150K entries) and on growth-heavy word counting; ¾
-  measured within noise of ⅔.
+  measured 16% faster on a small LRU table and 9% on n-gram counting, but
+  8% slower on growth-heavy word counting and up to 1.8 times slower on
+  150K-entry tables, which at twice the size leave the cache; ¾ was within
+  noise of ⅔ but for the word count, 8% slower.
 * `insert`, `update` and `get_or_insert` check for growth first and then
   walk the probe sequence once, to the key or to the unused slot where it
   goes.
