@@ -1011,8 +1011,15 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
         // Case 3: the container came from a caller, or its own root is only a
         // bound -- storage this function cannot enumerate may be behind it.
         // Read out of a caller's container, its stores say what it holds.
+        // A holder of a frame around a nested function's or a function
+        // value's body is no caller's storage: its stores are on record as
+        // the activation's own are, and the body is checked again for a call
+        // that finds them otherwise (FnSpec::envreads).
         auto global = croot->isglobal;
         if (!global && (!c.exact || croot->ownerspec != CurRealFrame().spec)) {
+            if (c.exact && inplace && croot->type && !IsTemp(croot) && croot->ownerspec &&
+                OuterLocal(croot) && ContentsReadBack(croot, out))
+                continue;
             out.Add({ croot, false, from, false, classread });
             continue;
         }
@@ -1051,10 +1058,14 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
 // reference to h, at each place an inexact one may name (ShrinkTargets),
 // and a callee's, a nested function's or a function value's, as its call
 // maps it (ApplyCalleeStores). Where each root stored there is a variable's
-// own storage exactly, static data, or a class whose storage's views they
-// are (RootAlt::classread), what is read out of h is one of those, exactly
-// as it was stored, or one of the views, as a read out of the storage
-// itself is, though read out of h (RootAlt::from). A store later in a loop
+// own storage exactly, static data, a class whose storage's views they are
+// (RootAlt::classread), or a parameter's class bounding what its argument
+// held (a holder parameter whose argument points into several arrays), what
+// is read out of h is one of those, exactly as it was stored, one of the
+// views, as a read out of the storage itself is, or the caller's storage
+// behind the class, as a bound, though read out of h (RootAlt::from). The
+// caller filled that storage before the call, so nothing in it can point
+// into this activation's own variables. A store later in a loop
 // body reaches the read on the next iteration, and a store of anything
 // else there adds a root to h's contents or takes the mark off one, which
 // the loop feeds back: it checks the read again. A root that only bounds
@@ -1068,8 +1079,9 @@ inline bool TypeCheck::ContentsReadBack(VarDef *h, Roots &out) {
         if (a.classread) r.Add({ a.root, false, h, false, true });
         else if (!a.root) r.Add({ nullptr, a.exact });
         else if (a.exact) r.Add({ a.root, true, h });
+        else if (IsClassRoot(a.root)) r.Add({ a.root, false, h });
         else return false;
-        known = known || a.classread || a.exact;
+        known = known || a.classread || a.exact || IsClassRoot(a.root);
     }
     if (!known) return false;
     out.Add(r);

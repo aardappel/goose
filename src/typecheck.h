@@ -2215,6 +2215,15 @@ struct TypeCheck {
     bool IsClassRoot(VarDef *v) {
         return v && !v->type && !v->isglobal && !IsTemp(v);
     }
+    // Whether local v is one the body being checked names in a frame on the
+    // compile-time path: its own, or one it is lexically nested in, as a
+    // nested function's or a function value's body is (§7.5, §7.6).
+    bool OuterLocal(VarDef *v) {
+        auto d = Depth(v) - 1;
+        if (d < 0 || d >= (int)scopes.size()) return false;
+        auto vf = FrameOfScope(d);
+        return frames[vf].spec == v->ownerspec && NamesFrame((int)frames.size() - 1, vf);
+    }
     bool CallersJudge(VarDef *r, VarDef *root);
     void NoteLiveViews(Node *at, const string &prefix, VarDef *root, const string &what,
                        bool growonly, TypeExpr *bound);

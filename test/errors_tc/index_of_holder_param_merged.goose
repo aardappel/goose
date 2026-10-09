@@ -1,5 +1,5 @@
 // error: .index_of needs a reference rooted at the array itself
-// error: it was read out of p and may point into xs or the caller's storage behind p
+// error: it was read out of p and may point into the caller's storage behind p
 // One call passes find a holder whose reference may point into os or ns, so
 // what is read out of p is not known to be an element of xs (§3.3, §9.5).
 struct N { v: i64 }

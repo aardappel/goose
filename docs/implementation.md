@@ -695,7 +695,10 @@ made it, so it outlives the variables of the scopes that statement opens (a
 itself declares. What it holds is read back where it points (`intemp`,
 §3.6), and a store record never names a temporary as the source of what it
 holds (`RecordStore`): nothing on record describes a temporary's contents,
-so the stored value's own root bounds them.
+so the stored value's own root bounds them. A popped element that is
+itself a reference or slice is no such value but the one it holds: it is
+read as an element of the receiver is (`ContainerRead`), pointing where the
+element did and as writable as its slot.
 
 The by-value result of an `if`, `match`, block, loop or bare `{ }`, of a
 function value's call, and of `copy(x)` and `default<T>()` (but a null
@@ -755,7 +758,7 @@ a branch of an `if` would not be.
 | a variable `x` (`Ident::Check`) | `x` | yes |
 | `&lvalue` (`CheckRefOf`), or an lvalue bound by reference (`AutoRef`, a slice's slot being `Val::slot`) | the lvalue's owner | as the path |
 | a reference or slice variable (`RefProvOf`) | its committed binding (§3.7); for a global `var` used in a function's body, the read-back rule (`GlobalVarRead`) | its binding's, weakened by rebinds; the read-back's |
-| a reference read out of a field or element (`ContainerRead`) | the read-back rule (§3.6) | only with one candidate |
+| a reference read out of a field or element (`ContainerRead`), a popped reference or slice element, a `for` binder of one | the read-back rule (§3.6) | only with one candidate |
 | a slice loaded through a reference to one (`SlotView`) | for a reference to a slice variable, that variable's binding; behind a parameter's class that has a class for the slice its slot holds (below), the binding of the variable standing for that slice (`VarDef::heldslice`); out of a field or element, the read-back rule; behind any other parameter's class or a temporary, the root as a bound | as that |
 | `a.push(v)`, `a.alloc_ref(v)`, `&a[i]` | `a`'s root | `a`'s exactness |
 | `a.alloc_slice(n)`, `a.realloc_slice(s, n)` | `a`'s root | `a`'s exactness |
@@ -1171,11 +1174,16 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   reference to it, at each place an inexact one may name (`ShrinkTargets`),
   and a callee's, a nested function's or a function value's as its call
   maps it (`ApplyCalleeStores`) included. Where each of their roots is a
-  variable's own storage exactly, static data, or a view the storage of a
-  parameter's class holds (its mark, §3.10 **Class reads**), a value read
-  out of the holder where it is checked (`ReadBackLVal`) is one of them
-  (`ContentsReadBack`): an exact root stays exact, as it was stored, and
-  a marked one is one of the views, as one read out of the storage is. So
+  variable's own storage exactly, static data, a view the storage of a
+  parameter's class holds (its mark, §3.10 **Class reads**), or a
+  parameter's class bounding what its argument held (the event a holder
+  parameter's contents start with where its argument points into several
+  arrays, `RootArg::heldexact` false), a value read out of the holder where
+  it is checked (`ReadBackLVal`) is one of them (`ContentsReadBack`): an
+  exact root stays exact, as it was stored, a marked one is one of the
+  views, as one read out of the storage is, and a class bound stays a
+  bound, the caller's storage, which it filled before the call and which
+  can hold nothing of the activation's own. So
   what `words` or `split` made of a local buffer views that buffer alone,
   of a string literal static data alone, and the rules that need identity
   (`index_of`, relative stores, class grouping, BCE's `UltOf`) take a
@@ -1185,9 +1193,14 @@ into; `ReadBackRoot` (`typecheck_types.h`) re-derives the owner exactly as
   which the loop feeds back (§3.7): its next pass checks the read with that
   store on record. Contents with a root that only bounds what was stored
   (a holder copied out of a slot, whose contents its container bounds)
-  take the candidates, and so does a `for` loop binding views read out of
-  the holder, whose one read-back, made before the body is checked, stands
-  for every iteration's;
+  take the candidates. A `for` loop binding references or views read out
+  of the holder reads them so at the start of each of its passes (`CheckFor`),
+  every element any iteration reads being one stored before the loop or by
+  an earlier pass's body, which the loop feeds back. A holder of a frame a
+  nested function's or a function value's body is written in (`OuterLocal`:
+  a frame on the path the body names) is read the same way: its stores are
+  on record as the declaring body's are, and the body is checked again for
+  a call that finds it holding something else (`envreads`, §3.1);
 * a container reached through a caller's storage, or itself inexact: the
   container's root, inexact, read out of that container (`RootAlt::from`)
   only where the root is the container itself. Where that container is a

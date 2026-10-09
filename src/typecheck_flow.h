@@ -1913,21 +1913,22 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
                  "the loop's binder gives the values their type");
     // A slice element bound by value, or a reference one however it is
     // bound, was read out of the array: it is as writable as its slot says
-    // (§9.5), and where a slice or a relative reference points follows the
-    // read-back rule, not the array's own root.
-    if (IsRefOrSlice(bindtype) && elemtype && (!byref || elemtype->kind == TY_REF)) {
-        if ((elemtype->kind == TY_REF && elemtype->ref->lenstorage >= 0) ||
-            elemtype->kind == TY_SLICE) {
+    // (§9.5), and where it points follows the read-back rule, not the
+    // array's own root. The read-back is made in each pass of the loop, so
+    // what a holder of the activation's holds is what the passes before
+    // stored there too, which the elements later iterations read may be.
+    auto readback = IsRefOrSlice(bindtype) && elemtype && (!byref || elemtype->kind == TY_REF);
+    if (readback) iterprov.writable = SlotLoadWritable(elemtype, iterprov.writable);
+    auto seqprov = iterprov;
+    auto head = SaveFlow();
+    auto sc = CheckLoopPasses(x, head, [&] {
+        if (readback) {
             auto slotread = SlotReadable(elemtype);
-            auto rb = ReadBackRoot(elemtype, iterprov, iterprov.byteview,
-                                   intemp ? &contents : nullptr, slotread);
+            auto rb = ReadBackRoot(elemtype, seqprov, seqprov.byteview,
+                                   intemp ? &contents : nullptr, slotread, true);
             iterprov.TakeAlts(rb);
             for (auto &a : iterprov.alts) a.slotread = slotread;
         }
-        iterprov.writable = SlotLoadWritable(elemtype, iterprov.writable);
-    }
-    auto head = SaveFlow();
-    auto sc = CheckLoopPasses(x, head, [&] {
         auto vd = NewVar(x->var, bindtype, x->line, false, x->vdef);
         vd->assigned = vd->maybeassigned = true;
         vd->copybind = (x->iterkind == IK_ARRAY || x->iterkind == IK_SLICE) && !byref;

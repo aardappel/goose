@@ -1262,7 +1262,10 @@ again against the pairs the cycle records once the whole cycle is.
 ### 5.2 Grow-shrink `[>..<]`
 
 * Fixed-size elements only.
-* `pop()` returns the element by value; `resize`/`clear` allowed, from
+* `pop()` returns the element by value: a reference or slice element as the
+  one it is, pointing where it did and as writable as its slot, as reading
+  the element would give it (§9.5), since what a temporary holds is not
+  rooted at the temporary (§9.2); `resize`/`clear` allowed, from
   anywhere: on a local, through a reference, on a global, on a struct's
   tail. Assigning the array whole is a shrink too.
 * References and slices into it are created like any other (§3.8, §3.10),
@@ -1820,9 +1823,10 @@ Built-in iteration only (no iterator protocol):
   elements; redundant, and a warning, for non-fixed ones). Over a `[>..<]`,
   the binding is a reference in scope: no shrink inside the loop (§5.2).
   An element that is itself a reference binds as the one it holds, loaded
-  if relative (there are no references to references): `&x` makes that
-  binding one that writes through, and a varint-width relative element,
-  non-fixed, binds so without the `&`.
+  if relative (there are no references to references), pointing where the
+  element does by the read-back rule (§9.5), not into the array: `&x`
+  makes that binding one that writes through, and a varint-width relative
+  element, non-fixed, binds so without the `&`.
 * `for x, i in arr` / `for &x, i in arr` — with index (`i: i64`).
   `for x, i: T in arr` gives the index the integer type `T` where `T` holds
   every index `arr` can have: a fixed-size or static-capacity array's length
@@ -2969,9 +2973,18 @@ variable stays its candidate. Then, by where `C`'s own root lies:
    those was rooted at one variable exactly, at static data, or at the
    storage a parameter's argument holds, the value's roots are theirs
    instead: a word of `words(buf)` for a local `buf` points into `buf`,
-   exactly, whatever else in scope could hold a `u8`. A copy of a field or
-   an element has only its container's scope on record, and takes the
-   candidates.
+   exactly, whatever else in scope could hold a `u8`, and a by-value
+   parameter holds what its argument did, so a slice of `g.edges` for a
+   `g: Graph` parameter is bounded by that argument's root, not by the
+   callee's other parameters, which can hold its element type but none of
+   the caller's views. A copy of a field or an element has only its
+   container's scope on record, and takes the candidates. A local of a
+   function that a nested function's or a function value's body is written
+   in is read here as one of the body's own, its stores on record alike:
+   the body is checked for the state each call finds it in (§7.5, §7.6).
+   And a `for` loop reads its binder so in each of its checks, so that what
+   the loop body stores into the holder it walks reaches the elements later
+   iterations read.
 3. **A reference parameter's pointee, or itself inexact.** The owner may be
    caller storage this function cannot enumerate: the root is `C`'s, inexact.
 4. **A temporary** (§9.2). Everything in it came from the literal's

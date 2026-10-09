@@ -527,6 +527,20 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         case 'b': v.type = ast.booltype; break;
         case 'e':
             v.type = LoadType(elem);
+            if (IsRefOrSlice(v.type)) {
+                // A reference or slice element leaves as itself: what a
+                // temporary holds is not rooted at the temporary (§9.2), so
+                // it points where the element did and is as writable as its
+                // slot says, as an element read is (ContainerRead).
+                LVal lv;
+                lv.SetProv(rv);
+                lv.type = elem;
+                lv.fromstorage = true;
+                lv.isslot = true;
+                v.SetProv(ContainerRead(lv));
+                c->rettypes.push_back(v.type);
+                break;
+            }
             v.Set(TempRoot(), false);
             if (HoldsPlainRef(v.type)) {
                 // The element leaves as a temporary, holding what it held in
