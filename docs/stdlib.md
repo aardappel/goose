@@ -1,7 +1,7 @@
 # The Goose standard library
 
-The standard library has eleven modules under `stdlib/`: `std`, `dictionary`,
-`vec`, `math`, `os`, `binary`, `base64`, `audio`, `gfx`, `physics`, and `ui`. Import each module by name,
+The standard library has twelve modules under `stdlib/`: `std`, `dictionary`,
+`vec`, `math`, `os`, `binary`, `base64`, `csv`, `audio`, `gfx`, `physics`, and `ui`. Import each module by name,
 for example `import std;`. The compiler locates the library in its source
 tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
 Everything is written in Goose except the C behind `os`
@@ -59,7 +59,7 @@ The library uses these conventions:
   checker does not yet let `stable_sort` sort an array of references or
   slices (`implementation.md` §10).
 * The `std`, `dictionary`, `vec`, `math`, and `os` names are global; `binary`, `base64`,
-  `audio`, `gfx`, `physics`, and `ui` use their own namespaces. A local named `fill` or `count`
+  `csv`, `audio`, `gfx`, `physics`, and `ui` use their own namespaces. A local named `fill` or `count`
   shadows the corresponding global function, causing an error at a call; a
   global variable of such a name does not, since a call names the functions
   past it (spec §11.1).
@@ -629,6 +629,55 @@ The codec computes the alphabet rather than looking it up, so the C
 compiler vectorizes both loops, and both are `simd fn`s (spec §7.12): where
 clang builds for x86-64 they run as AVX2 or AVX-512 code on a CPU that has
 it, several times faster than on the baseline's SSE2.
+
+## csv
+
+Comma-separated values as RFC 4180 defines them. `import csv;` puts the
+reader and the writer's quoting in namespace `csv`.
+
+```goose
+fn each_record<F>(text: const u8[:], sep: u8 = ',') -> bool    // F(fields: const u8[:][:]) per record
+fn format_field(out: u8[>..]&, s: u8[:], sep: u8 = ',')         // s, quoted where it needs to be
+```
+
+`each_record` hands each record's fields to its block, in order, as slices
+of the text: nothing is copied, and the slice of fields is the reader's own,
+reused for the next record. A field may be quoted, and a quoted field may
+hold separators, line breaks and doubled quotes, which stand for one quote
+each. It comes without its surrounding quotes and with its doubled quotes
+left as they are; since a field that is not quoted cannot hold a quote,
+`format_replaced(out, field, "\"\"", "\"")` appends any field's text.
+Records end at LF or CRLF, and the last one need not; an empty line is a
+record of one empty field, and a header is a record like any other. Spaces
+around a field belong to it. `sep` may be any byte but a quote or a line
+break: `';'`, or `'\t'` for tab-separated values.
+
+`each_record` returns `false` at the first malformed record, which its block
+does not see, having handed it every record before that one: a quote in a
+field that is not quoted, a quoted field with no closing quote, or anything
+but a separator or a line break after a closing quote. A block's `return`
+leaves the function that called `each_record`, as with every block.
+
+```goose
+var total = 0.0;
+let ok = csv::each_record(text) { fields =>
+    let price, valid = parse_flt(fields[2]);
+    if valid { total += price; }
+};
+if !ok { abort("malformed CSV"); }
+```
+
+`format_field` appends `s` as it is, or quoted, with its quotes doubled, if it
+holds the separator, a quote or a line break; the caller writes the
+separators between fields and the line break after a record.
+
+```goose
+for row in rows {
+    csv::format_field(out, row.name);
+    out.push(',');
+    format(out, row.count, "\n");
+}
+```
 
 ## gfx
 
