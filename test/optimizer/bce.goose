@@ -557,22 +557,23 @@ fn sum_through_ref(p: i64[>..]&) -> i64 {
 }
 
 // --- calls: what a callee may do to the caller's arrays ---------------------
-// The callees here are called from more than one place and are too big to
-// inline at -O1, so their callers see them through their effect summaries,
-// not as spliced bodies.
+// The callees here return two values, which keeps them calls (the inliner
+// leaves such a function out of line, also at a call in a loop), so their
+// callers see them through their effect summaries, not as spliced bodies.
 
 // Reads and writes elements only: its callers' length facts survive it.
-fn scale_shift(a: i64[>..]&, m: i64, d: i64) {
+fn scale_shift(a: i64[>..]&, m: i64, d: i64) -> i64, bool {
     for i in a.len {
         a[i] = a[i] * m + d;                      // bce:elide
     }
     for i in a.len {
         if a[i] < 0 { a[i] = 0; }                 // bce:elide
     }
+    return a.len, true;
 }
 
 // Resizes its argument: a caller knows nothing about the length afterwards.
-fn grow_by(a: i64[>..]&, k: i64) {
+fn grow_by(a: i64[>..]&, k: i64) -> i64, bool {
     for i in k {
         a.push(i * 2);
         a.push(i * 2 + 1);
@@ -580,12 +581,13 @@ fn grow_by(a: i64[>..]&, k: i64) {
     for i in a.len {
         if a[i] > 1000 { a[i] = 1000; }           // bce:elide
     }
+    return a.len, true;
 }
 
 var gcount: i64[>..] = [];
 
 // Resizes a global: a caller iterating that global loses its bound.
-fn count_one(x: i64) {
+fn count_one(x: i64) -> i64, bool {
     gcount.push(x);
     for i in gcount.len {
         if gcount[i] < 0 { gcount[i] = 0; }       // bce:elide
@@ -593,6 +595,7 @@ fn count_one(x: i64) {
     for i in gcount.len {
         if gcount[i] > 1000 { gcount[i] = 1000; } // bce:elide
     }
+    return gcount.len, true;
 }
 
 fn callee_effects(extra: i64) -> i64 {
