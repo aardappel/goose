@@ -2832,11 +2832,23 @@ The thresholds per call site of callee K: inline if K is used once, or its
 post-optimization node count is below NC, or count times uses is below NCU
 (`-O1`: 8/48, `-O2`: 16/96). Never inlined (`Scan`): a `recursive` function
 or cycle member, a `thread_fn`, a function returning more than one value, and
-a body that a *separate* live tree still references -- a remaining call to
-a nested function or to a specialization with bound function values reaches
-its locals as free variables, and a remaining callee that does `return ...
-from` it needs its frame. Nothing is inlined *into* a cycle member (its
-locals would become the cycle's own).
+a body that a *separate* live tree still references in a way a copy cannot
+follow -- a remaining call to a specialization with bound function values
+reaches its locals as free variables, and a remaining callee that does
+`return ... from` it needs its frame. A remaining call to a nested function
+reaches them too, but only through the pointers the call passes (§6.4), so
+such a body is inlined like any other (`InlineInfo::nestedcalls`): its
+captured variables' copies stay captured, a captured parameter is bound
+rather than substituted, and each copied call to a nested function records
+the copies it passes in place of the variables the callee names
+(`Call::fvremap`, `Inliner::RemapFreeVars`, composed through further
+copies; a nested function inlined from such a call names those copies,
+`Inliner::outer`). Codegen passes `Call::FreeVarArg` for each of the
+callee's free variables and follows those edges when it collects a body's
+free variables (`CollectSpecs`), and BCE's call kills name the copies the
+callee's effects reach (`CallKills`). Not into a global initializer, whose
+locals belong to no specialization. Nothing is inlined *into* a cycle member
+(its locals would become the cycle's own).
 
 **Views of copies** (`OptViewed`). The value of a call, of a bare block and
 of an `if` or `match` is a temporary copy (§9.2), and the checker takes a

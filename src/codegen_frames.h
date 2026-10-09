@@ -83,12 +83,15 @@ inline void CodeGen::CollectSpecs() {
     // tops cached in locals. A node's type is the slot type the checker
     // fitted it to (FitsAt), so a value built as another type is found
     // where it is made.
-    unordered_map<FnSpec *, vector<FnSpec *>> callees;
+    // A call whose free-variable arguments the optimizer replaced
+    // (Call::fvremap) is an edge of its own: the callee's free variables
+    // reach the caller as what that call passes for them.
+    unordered_map<FnSpec *, vector<pair<FnSpec *, const Call *>>> callees;
     for (auto sp : livespecs) {
         auto &si = sinfo[sp];
         auto &calls = callees[sp];
         set<const VarDef *> seen;
-        set<FnSpec *> seencalls;
+        set<pair<FnSpec *, const Call *>> seencalls;
         for (auto pt : sp->argtypes) si.needssp |= NeedsStack(pt);
         for (auto rt : sp->rets) si.needssp |= NeedsStack(rt);
         function<void(Node *)> walk = [&](Node *n) {
@@ -123,8 +126,9 @@ inline void CodeGen::CollectSpecs() {
             if (auto from = AdtFrom(n)) si.needssp |= NeedsStack(from);
             if (auto c = Is<Call>(n)) {
                 auto add = [&](FnSpec *k) {
-                    if (k && k != sp && sinfo.count(k) && seencalls.insert(k).second)
-                        calls.push_back(k);
+                    pair<FnSpec *, const Call *> e { k, c->fvremap.empty() ? nullptr : c };
+                    if (k && k != sp && sinfo.count(k) && seencalls.insert(e).second)
+                        calls.push_back(e);
                 };
                 if (c->builtin < 0) add(c->spec);
                 for (auto d : c->dispatch) add(d);
@@ -168,15 +172,17 @@ inline void CodeGen::CollectSpecs() {
         for (auto sp : livespecs) {
             auto &si = sinfo[sp];
             set<const VarDef *> seen(si.freevars.begin(), si.freevars.end());
-            for (auto callee : callees[sp]) {
+            for (auto [callee, via] : callees[sp]) {
                 auto &ki = sinfo[callee];
                 // Self edges were omitted, so growing our list cannot
                 // invalidate the callee's list as we read it.
-                for (auto v : ki.freevars)
+                for (auto fv : ki.freevars) {
+                    auto v = via ? via->FreeVarArg(fv) : fv;
                     if (v->ownerspec != sp && seen.insert(v).second) {
                         si.freevars.push_back(v);
                         changed = true;
                     }
+                }
                 for (auto v : ki.globals)
                     if (si.globals.insert(v).second) changed = true;
                 if (ki.needssp && !si.needssp) {

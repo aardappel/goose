@@ -241,7 +241,7 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
     Dst reprefix;
     vector<string> args;
     for (size_t i = 0; i < an.size(); i++) EmitArg(sp, i, an[i], args);
-    for (auto fv : ki.freevars) EmitFvArg(fv, args);
+    for (auto fv : ki.freevars) EmitFvArg(c->FreeVarArg(fv), args);
     vector<string> retex(sp->rets.size());
     for (size_t i = 0; i < sp->rets.size(); i++) {
         auto rt = sp->rets[i];
@@ -692,7 +692,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
                     args.push_back(sharedstk[i]);
             }
         }
-        for (auto fv : ki.freevars) EmitFvArg(fv, args);
+        for (auto fv : ki.freevars) EmitFvArg(c->FreeVarArg(fv), args);
         for (size_t i = 0; i < sp->rets.size(); i++) {
             if (IsResz(sp->rets[i])) {
                 args.push_back(dststk[i]);

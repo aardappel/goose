@@ -22,12 +22,15 @@
 // through any nesting of inlined bodies.
 //
 // A body must not be inlined while a *separate* tree still references its
-// locals: a remaining (non-inlined) call to a nested function or to a spec
-// with bound function values means that callee's own body reaches our locals
-// as free variables, so splicing us elsewhere (which remaps our VarDefs)
-// would strand it. Ditto a remaining callee that does `return ... from` us.
-// Once such calls are themselves inlined the references live inside our own
-// tree, get remapped with everything else, and the restriction lifts.
+// locals in a way the copy cannot follow: a remaining (non-inlined) call to a
+// spec with bound function values means those bodies reach our locals as
+// free variables, so splicing us elsewhere (which remaps our VarDefs) would
+// strand them. Ditto a remaining callee that does `return ... from` us. A
+// remaining call to a nested function reaches them too, but only through
+// what the call passes: the copy of such a call records the copies of our
+// variables it passes in their place (Call::fvremap). Once such calls are
+// themselves inlined the references live inside our own tree, get remapped
+// with everything else, and the restrictions lift.
 //
 // Thresholds per call site of callee K: inline if K is used once anywhere,
 // or nodecount(K) < NC, or nodecount(K) * uses(K) < NCU.
@@ -72,7 +75,14 @@ struct Optimizer {
 
     // Inlining decisions use only this optimizer's classification of a body.
     // Keep it here rather than as annotations exposed to subsequent passes.
-    struct InlineInfo { int nodecount = 0; int nest = 0; bool noinline = false; };
+    // nestedcalls: a remaining call to a nested function, which reaches the
+    // body's captured variables through pointers the call passes.
+    struct InlineInfo {
+        int nodecount = 0;
+        int nest = 0;
+        bool noinline = false;
+        bool nestedcalls = false;
+    };
     unordered_map<FnSpec *, InlineInfo> inlineinfo;
 
     // The C blocks around the node being optimized (Around).
@@ -417,6 +427,7 @@ struct Optimizer {
         auto &info = inlineinfo[sp];
         info.nodecount = 0;
         info.nest = 0;
+        info.nestedcalls = false;
         auto noin = sp->sf->isrec || sp->incycle || sp->sf->isthread || sp->sf->isexport ||
                     sp->rets.size() > 1 || sp->relnamedresult;
         function<void(Node *, int)> rec = [&](Node *n, int d) {
@@ -426,11 +437,13 @@ struct Optimizer {
             if (auto c = Is<Call>(n)) {
                 auto callee = [&](FnSpec *k) {
                     if (!k) return;
-                    // A separate body referencing our locals (nested fn or
-                    // bound function values), or unwinding to us: our body
-                    // must stay a real frame.
-                    if (k->lexparent || !k->fnvals.empty()) noin = true;
+                    // A separate body referencing our locals that a copy
+                    // of the call cannot point elsewhere (bound function
+                    // values), or unwinding to us: our body must stay a
+                    // real frame.
+                    if (!k->fnvals.empty()) noin = true;
                     if (k->needs.count(sp)) noin = true;
+                    if (k->lexparent) info.nestedcalls = true;
                 };
                 if (c->builtin < 0) callee(c->spec);
                 for (auto k : c->dispatch) callee(k);
@@ -540,20 +553,46 @@ struct Inliner {
     FnSpec *dst;             // The spec receiving the copy (null: a global init).
     unordered_map<VarDef *, VarDef *> vmap;
     unordered_map<VarDef *, Node *> subst;   // Param -> constant argument.
+    // The body still calls a nested function, which reaches the captured
+    // variables of the copy through pointers (Call::fvremap): they stay
+    // captured, and none is substituted away.
+    bool keepcaptured = false;
+    // Variables src does not own that the copy names under another one: the
+    // copies the call being inlined passes for them (Call::fvremap).
+    unordered_map<VarDef *, VarDef *> outer;
 
     VarDef *Remap(VarDef *v) {
-        if (!v || v->ownerspec != src) return v;
+        if (!v) return v;
+        if (v->ownerspec != src) {
+            auto it = outer.find(v);
+            return it != outer.end() ? it->second : v;
+        }
         auto it = vmap.find(v);
         if (it != vmap.end()) return it->second;
         auto nv = ast.NewVarDef();
         *nv = *v;
         nv->ownerspec = dst;
         nv->isparam = false;
-        nv->captured = false;  // Every use of the copy lives in the copied tree.
+        // Otherwise every use of the copy lives in the copied tree.
+        nv->captured = keepcaptured && v->captured;
         vmap[v] = nv;
         auto fit = o.facts.find(v);
         if (fit != o.facts.end()) o.facts[nv] = fit->second;
         return nv;
+    }
+
+    // The free variables a copied call to a nested function passes: what the
+    // original call passed, as copied, and every captured variable of the
+    // body this copy replaced.
+    void RemapFreeVars(const Call *from, Call *to) {
+        auto add = [&](VarDef *v, VarDef *nv) {
+            if (v == nv) return;
+            for (auto &p : to->fvremap) if (p.first == v) return;
+            to->fvremap.push_back({ v, nv });
+        };
+        for (auto &p : from->fvremap) add(p.first, Remap(p.second));
+        for (auto &kv : vmap) if (kv.first->captured) add(kv.first, kv.second);
+        for (auto &kv : outer) add(kv.first, kv.second);
     }
 
     // Bind one runtime argument, or substitute an immutable scalar literal.
@@ -562,7 +601,7 @@ struct Inliner {
     VarDecl *BindArg(VarDef *pv, Node *arg, Line ln) {
         auto &f = o.facts[pv];
         if (Optimizer::AsLiteral(arg) && Optimizer::ScalarType(pv->type) &&
-            f.writes == 0 && f.addrof == 0) {
+            f.writes == 0 && f.addrof == 0 && !(keepcaptured && pv->captured)) {
             subst[pv] = arg;
             return nullptr;
         }
@@ -620,9 +659,14 @@ inline Node *Optimizer::TryInline(Call *c) {
     // stays, and a chain of single-use functions folds into one body per
     // MAXNEST levels rather than one as deep as the chain.
     if (depth + info.nest > MAXNEST) return nullptr;
+    // A global initializer's locals belong to no specialization, so its
+    // copies could not be told from the variables they replace.
+    if (info.nestedcalls && !curspec) return nullptr;
     auto argnodes = c->ArgNodes();
     if (argnodes.size() != K->params.size()) return nullptr;
     Inliner inl { *this, ast, K, curspec, {}, {} };
+    inl.keepcaptured = info.nestedcalls;
+    for (auto &p : c->fvremap) inl.outer[p.first] = p.second;
     vector<Node *> decls;
     for (size_t i = 0; i < K->params.size(); i++) {
         if (auto vd = inl.BindArg(K->params[i], argnodes[i], c->line)) {
@@ -750,6 +794,10 @@ inline Node *Call::Cp1(Inliner &inl) const {
     c->fmtcontexts = fmtcontexts;
     for (auto p : fvparams) c->fvparams.push_back(inl.Remap(p));
     c->fvbody = fvbody ? inl.CpBlock(fvbody) : nullptr;
+    // Case functions nested in one scope are dispatch targets too.
+    auto nested = spec && spec->lexparent;
+    for (auto d : dispatch) nested = nested || d->lexparent;
+    if (nested) inl.RemapFreeVars(this, c);
     c->defaultinit = defaultinit ? inl.Cp(defaultinit) : nullptr;
     return c;
 }

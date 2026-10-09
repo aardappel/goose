@@ -945,6 +945,11 @@ NODE(Call)
     vector<VarDef *> fvparams;          //   its parameter bindings.
     SFunction *fvtarget = nullptr;      //   the named fn a plain `return` inside exits.
     vector<TypeExpr *> rettypes;        // All return values (exprtype is rettypes[0] or void).
+    // A call to a nested function that the optimizer copied out of the body
+    // declaring it (Inliner): the variables the callee reaches as free
+    // variables (§7.5) that the copy replaced, each with the copy the call
+    // passes in its place.
+    vector<pair<VarDef *, VarDef *>> fvremap;
     // print/str/format: the user `format` overloads rendering the types that
     // occur in the arguments, by type (§3.7).
     vector<pair<TypeExpr *, FnSpec *>> fmtspecs;
@@ -960,6 +965,11 @@ NODE(Call)
     bool poolcheck = false;
     const string *shaderblob = nullptr;  // embed_shader: its compiled blob, in Ast::shaders.
     Call(Line l, Node *_callee) : Node(l), callee(_callee) {}
+    // What the call passes for the callee's free variable v (fvremap).
+    VarDef *FreeVarArg(VarDef *v) const {
+        for (auto &p : fvremap) if (p.first == v) return p.second;
+        return v;
+    }
     // The first argument in either spelling: a.f(b) is f(a, b) (§7.1).
     Node *FirstArg() const {
         if (auto d = dynamic_cast<Dot *>(callee)) return d->obj;

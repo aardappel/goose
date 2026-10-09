@@ -1463,6 +1463,17 @@ struct BCE {
         if (c->spec) merge(c->spec);
         for (auto d : c->dispatch) merge(d);
         if (!known) { KillByCall(true); return; }
+        // The callee writes the variables this call passes for its free
+        // variables, where the optimizer copied them.
+        if (!c->fvremap.empty()) {
+            auto passed = [&](set<VarDef *> &vs) {
+                set<VarDef *> out;
+                for (auto v : vs) out.insert(c->FreeVarArg(v));
+                vs = std::move(out);
+            };
+            passed(e.vars);
+            passed(e.intvars);
+        }
         ApplyEffects(e, c->ArgNodes());
     }
 
