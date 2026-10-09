@@ -2030,6 +2030,7 @@ struct TypeCheck {
     Val CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *arr, const Roots &built,
                            Dest dest);
     void CheckRebind(Assign *a, LVal &lv);
+    bool InGenericBody();
     bool PointeeWritable(LVal &lv, Node *at);
     void PointeeAssign(Assign *a, LVal &lv, const LVal &at);
     // `via`: how a store through a reference reached slice variable vd

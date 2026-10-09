@@ -2375,6 +2375,12 @@ inline Val TypeCheck::CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *
 
 inline void TypeCheck::CheckAssign(Assign *a) {
     auto lv = CheckLValue(a->lval);
+    // Generic code stores a whole value of a type parameter's type with `.=`
+    // (§3.8): it rebinds where the type is a reference, and assigns as `=`
+    // does where it is not, so moving elements never writes through them.
+    if (a->op == T_DOTASSIGN && (lv.var ? lv.var->type : lv.type)->kind != TY_REF &&
+        InGenericBody())
+        a->op = T_ASSIGN;
     auto held = lv;
     auto throughref = a->op != T_DOTASSIGN && IsPlainRef(held.type);
     if (throughref) DerefLValue(held, a->lval);
@@ -2473,6 +2479,18 @@ inline void TypeCheck::CheckAssign(Assign *a) {
         lv.var->assigned = lv.var->maybeassigned = true;
         KillNarrow(lv.var);
     }
+}
+
+// Whether the code being checked is a generic function's body, or a nested
+// function's or function value's written inside one: a function with type
+// parameters or untyped parameters (§7.7).
+inline bool TypeCheck::InGenericBody() {
+    for (auto sf = frames.back().sf; sf; sf = sf->outer) {
+        if (!sf->generics.empty()) return true;
+        for (auto &p : sf->params)
+            if (!p.type) return true;
+    }
+    return false;
 }
 
 // `.=`: rebinds the reference stored at the location (§3.8).

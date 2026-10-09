@@ -521,7 +521,13 @@ loop's count (`CheckFor`) decay the same way; a reference to an ADT
 scrutinee is kept, its tag and payload read where the value lies, and so is
 one to the array or slice a `for` iterates in place. The node's `exprtype`
 is then the pointee's type, which codegen follows: a written `&x` there
-reads as `x` (`Unary::CgX`).
+reads as `x` (`Unary::CgX`). An assignment to a reference-typed location
+writes the pointee (`Assign::pointee`); `.=` rebinds it (`CheckRebind`).
+In generic code (`InGenericBody`: the current function or one it is nested
+in has type parameters or untyped parameters) `CheckAssign` turns a `.=` on
+a location of non-reference type into `=` in that specialization's clone,
+so one generic body moves elements of any type, rebinding them where they
+are references.
 `CheckValue` also:
 
 * retains `copy(x)` as a call, so repeated checking preserves copy intent;
@@ -4348,6 +4354,14 @@ specification allows, and the shapes the C backend refuses outright:
   elements, a holder's references) stay held even where the overload takes
   the whole argument and nothing of it is rendered around the call (§3.10,
   **Format overloads**).
+* An element read out of an array of references (or slices) and stored back
+  into it through a reference parameter (`xs[0] .= xs[n]`) leaves the array
+  taken to hold a reference into itself, so a shrink of it that a later use
+  follows is an error (std's `heap_pop` sifts before it pops for this
+  reason); and a local array whose elements were appended out of a
+  parameter's holds references rooted at the local, so they cannot be stored
+  back into the parameter's: std's `stable_sort` rejects an array of
+  references or slices.
 * The C backend rejects: binding, copying or dispatching a *resizable* ADT
   payload; a reference to a resizable nested in a variable-size prefix or an
   ADT payload; copying a resizable value with a variable-size prefix; `==` on

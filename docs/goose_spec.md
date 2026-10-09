@@ -567,7 +567,16 @@ pointee where §4.1 asks for one).
 * Rebinding: the special assignment `r .= &x` updates the reference *value*
   itself, rather than writing through it. `.=` applies to any
   reference-typed location — variables (subject to their `let`/`var`),
-  fields, elements. On non-reference locations `.=` is an error. The
+  fields, elements. On non-reference locations `.=` is an error, except in
+  generic code — the body of a function with type parameters or untyped
+  parameters, and the nested functions and function values written in one
+  — where it assigns as `=` does. Generic code thus stores a whole value of
+  a type parameter's type with `.=`, which moves a reference itself where
+  the parameter is bound to a reference type and `=` would write through
+  it, and keeps one in a local of that type, where an inferred `let` would
+  copy the pointee (below): std's `swap_at` is `let t: T = xs[i]; xs[i] .=
+  xs[j]; xs[j] .= t;`, which swaps the elements of an array of references
+  as it does those of any other array. The
   declaration form `let r .= e;` / `var r .= e;` binds `r` to `e` by
   reference whatever `e` is — an lvalue of any size class (`var cur .=
   pool[0];` names the element, no `&`), a reference-returning call (`let e

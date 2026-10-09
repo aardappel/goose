@@ -44,6 +44,19 @@ The library uses these conventions:
 * A function taking an element *by value* (`push_n`, `insert_at`, `fill`,
   `heap_push`) cannot take one that contains self-relative references, because
   those values cannot be copied (spec §3.9). Construct them in place.
+* The functions that move elements around (`swap_at`, `reverse`, `shuffle`,
+  `sort`, `stable_sort`, `fill`, `copy_into`, `insert_at`, `remove_at`,
+  `swap_remove`, `retain`, `dedup`, the heap functions) move the elements
+  themselves, references included: `reverse(refs)` reorders an array of
+  references and leaves what they point to alone, and an array of
+  references to values that cannot be copied (spec §3.9) sorts too. They
+  store whole elements with `.=`, as generic code may (spec §3.8). `swap(a,
+  b)` exchanges the values `a` and `b` refer to. `remove_at`, `swap_remove`
+  and `heap_pop` return a copy of the value removed, for a reference element
+  its pointee's. A reference element passed by value (`insert_at`,
+  `heap_push`) is written `&x`, which makes `T` the reference type. The
+  checker does not yet let `stable_sort` sort an array of references or
+  slices (`implementation.md` §10).
 * The `std`, `dictionary`, `vec`, `math`, and `os` names are global; `binary`, `audio`,
   `gfx`, `physics`, and `ui` use their own namespaces. A local named `fill` or `count`
   shadows the corresponding global function, causing an error at a call; a

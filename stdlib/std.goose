@@ -77,6 +77,9 @@ fn ctz(x: u64) -> i64 {
     return n;
 }
 
+// The values a and b refer to. `T&` of a reference type is that reference
+// (spec §3.8), so for two elements of an array of references this swaps
+// what they point to; swap_at swaps the elements themselves.
 fn swap<T>(a: T&, b: T&) {
     let t = a;
     a = b;
@@ -139,13 +142,16 @@ fn rand_int(r: rng&, n: i64) -> i64 { (rand_u64(r) % (n as u64)) as i64 }
 fn rand_flt(r: rng&) -> f64 { (rand_u64(r) >> 11) * (1.0 / 9007199254740992.0) }
 
 // Fisher-Yates.
+// The functions that move elements around store whole elements with `.=`,
+// which moves a reference element itself rather than writing through it
+// (spec §3.8), and hold one in a `T` local, which keeps a reference.
 fn shuffle<T>(xs: T[:], r: rng&) {
     var i = xs.len - 1;
     while i > 0 {
         let j = rand_int(r, i + 1);
-        let t = xs[i];
-        xs[i] = xs[j];
-        xs[j] = t;
+        let t: T = xs[i];
+        xs[i] .= xs[j];
+        xs[j] .= t;
         i -= 1;
     }
 }
@@ -153,9 +159,9 @@ fn shuffle<T>(xs: T[:], r: rng&) {
 // ---- arrays: reading and searching -------------------------------------------
 
 fn swap_at<T>(xs: T[:], i: i64, j: i64) {
-    let t = xs[i];
-    xs[i] = xs[j];
-    xs[j] = t;
+    let t: T = xs[i];
+    xs[i] .= xs[j];
+    xs[j] .= t;
 }
 
 // F(x), last to first.
@@ -348,12 +354,12 @@ fn concat<T>(a: T[:], b: T[:]) -> T[>..] {
 
 // ---- arrays: in place -------------------------------------------------------------
 
-fn fill<T>(xs: T[:], v: T) { for &x in xs { x = v; } }
+fn fill<T>(xs: T[:], v: T) { for i in xs.len { xs[i] .= v; } }
 
 // Element by element, first to last; the lengths must agree.
 fn copy_into<T>(dst: T[:], src: T[:]) {
     assert(dst.len == src.len);
-    for i in dst.len { dst[i] = src[i]; }
+    for i in dst.len { dst[i] .= src[i]; }
 }
 
 fn reverse<T>(xs: T[:]) {
@@ -384,7 +390,7 @@ fn sort<T, F>(xs: T[:]) {
             if F(xs[mid], xs[l]) { swap_at(xs, l, mid); }
             if F(xs[h - 1], xs[l]) { swap_at(xs, l, h - 1); }
             if F(xs[h - 1], xs[mid]) { swap_at(xs, mid, h - 1); }
-            let p = xs[mid];
+            let p: T = xs[mid];
             var i = l;
             var j = h - 1;
             while i <= j {
@@ -409,13 +415,13 @@ fn sort<T, F>(xs: T[:]) {
         }
         var i = l + 1;
         while i < h {
-            let v = xs[i];
+            let v: T = xs[i];
             var j = i - 1;
             while j >= l && F(v, xs[j]) {
-                xs[j + 1] = xs[j];
+                xs[j + 1] .= xs[j];
                 j -= 1;
             }
-            xs[j + 1] = v;
+            xs[j + 1] .= v;
             i += 1;
         }
     }
@@ -437,12 +443,12 @@ fn stable_sort<T, F>(xs: T[:]) {
             var b = mid;
             var k = i;
             while a < mid && b < hi {
-                if F(xs[b], xs[a]) { tmp[k] = xs[b]; b += 1; }
-                else { tmp[k] = xs[a]; a += 1; }
+                if F(xs[b], xs[a]) { tmp[k] .= xs[b]; b += 1; }
+                else { tmp[k] .= xs[a]; a += 1; }
                 k += 1;
             }
-            while a < mid { tmp[k] = xs[a]; a += 1; k += 1; }
-            while b < hi { tmp[k] = xs[b]; b += 1; k += 1; }
+            while a < mid { tmp[k] .= xs[a]; a += 1; k += 1; }
+            while b < hi { tmp[k] .= xs[b]; b += 1; k += 1; }
             i += 2 * width;
         }
         copy_into(xs, tmp);
@@ -464,18 +470,20 @@ fn insert_at<A, T>(xs: A&, i: i64, v: T) {
     xs.push(v);
     var j = xs.len - 1;
     while j > i {
-        xs[j] = xs[j - 1];
+        xs[j] .= xs[j - 1];
         j -= 1;
     }
-    xs[i] = v;
+    xs[i] .= v;
 }
 
-// Removes and returns xs[i], shifting the rest down.
+// Removes and returns xs[i], shifting the rest down. The result is a copy
+// of the value, as `let v = xs[i]` makes one (of the pointee, for a
+// reference element), here and in swap_remove and heap_pop.
 fn remove_at<A>(xs: A&, i: i64) {
     let v = xs[i];
     var j = i;
     while j + 1 < xs.len {
-        xs[j] = xs[j + 1];
+        xs[j] .= xs[j + 1];
         j += 1;
     }
     xs.pop();
@@ -485,7 +493,7 @@ fn remove_at<A>(xs: A&, i: i64) {
 // Removes and returns xs[i] in O(1), moving the last element into its place.
 fn swap_remove<A>(xs: A&, i: i64) {
     let v = xs[i];
-    xs[i] = xs[xs.len - 1];
+    xs[i] .= xs[xs.len - 1];
     xs.pop();
     return v;
 }
@@ -493,9 +501,9 @@ fn swap_remove<A>(xs: A&, i: i64) {
 // Keeps the elements with F(x), in order.
 fn retain<A, F>(xs: A&) {
     var w = 0;
-    for x in xs {
-        if F(x) {
-            xs[w] = x;
+    for i in xs.len {
+        if F(xs[i]) {
+            xs[w] .= xs[i];
             w += 1;
         }
     }
@@ -509,7 +517,7 @@ fn dedup<A>(xs: A&) {
     var i = 1;
     while i < xs.len {
         if !(xs[i] == xs[w - 1]) {
-            xs[w] = xs[i];
+            xs[w] .= xs[i];
             w += 1;
         }
         i += 1;
@@ -554,11 +562,12 @@ fn sift_down<T, F>(xs: T[:], start: i64) {
 fn heap_pop<A>(xs: A&) { heap_pop(xs) { a, b => a < b } }
 fn heap_pop<A, F>(xs: A&) {
     let top = xs[0];
-    let tail = xs.pop();
-    if xs.len > 0 {
-        xs[0] = tail;
-        sift_down(xs, 0) { a, b => F(a, b) };
-    }
+    let n = xs.len - 1;
+    xs[0] .= xs[n];
+    // Sifted before the pop: for an array of references the checker rejects
+    // a pop between this move and a later use (implementation.md §10).
+    sift_down(xs[..n], 0) { a, b => F(a, b) };
+    xs.pop();
     return top;
 }
 
