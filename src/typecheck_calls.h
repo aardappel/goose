@@ -3234,7 +3234,7 @@ inline Val TypeCheck::CheckFunValCall(Call *c, const FnValBind &fb, TypeExpr *ex
     if (c->trailing)
         Error(c, "a function value call cannot itself take a trailing block");
     if (fb.named) {
-        vector<SFunction *> cands = { fb.named };
+        vector<SFunction *> cands = fb.set ? *fb.set : vector<SFunction *> { fb.named };
         Node *nopre = nullptr;
         return ResolveCall(c, cands, fb.env, fb.named->name, nullptr, nopre, nullptr, expected);
     }

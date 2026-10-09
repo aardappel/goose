@@ -395,8 +395,11 @@ struct FnValBind {
     const FunVal *fv = nullptr;
     SFunction *named = nullptr;
     FnSpec *env = nullptr;
+    // A named function with overloads: the whole set, which each call of the
+    // value resolves against (§7.6); `named` is its first member.
+    const vector<SFunction *> *set = nullptr;
     bool operator==(const FnValBind &o) const {
-        return fv == o.fv && named == o.named && env == o.env;
+        return fv == o.fv && named == o.named && env == o.env && set == o.set;
     }
 };
 

@@ -2082,7 +2082,11 @@ a construct whose branches all are one), which would have no element type
 (§4.2).
 
 A function argument must be a function name (including a bound generic
-function parameter) or a block literal. Runtime expressions producing a
+function parameter) or a block literal. A name with several overloads
+passes them all, and each call of the value resolves among them as a call
+by that name would: `each(xs, sort)` with `fn each<F>(xs: i64[:]) { F(xs);
+}` calls std's one-argument `sort<T>`, and one value may reach different
+overloads at different calls. Runtime expressions producing a
 function value, such as a call, `if`, `match`, `block`, or `loop`, are
 rejected. Evaluate runtime work in ordinary statements before the call;
 use locals when its ordering with other arguments matters. A named

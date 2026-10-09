@@ -2340,7 +2340,10 @@ rather than having their effects discarded. Returning a function value or
 constructing an array of them is also rejected. A named function value
 resolves as a call in the environment its declaration is in, for a nested
 function the scope declaring it, whatever function names it
-(`LookupLocalFnEnv`, as for a call); a block is cloned into
+(`LookupLocalFnEnv`, as for a call). A name with overloads binds the whole
+set (`FnValBind::set`, part of the value's identity and so of the
+specialization key), which each call of the value resolves against
+(`CheckFunValCall` hands it to `ResolveCall`); a block is cloned into
 `Call::fvbody` and checked inline in a frame marked `isfunval` whose lexical
 lookups chain to the definer, with parameters as locals bound to the
 arguments (reference provenance and literal-ness carried through). The
