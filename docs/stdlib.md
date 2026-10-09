@@ -89,7 +89,9 @@ fn hash(s: u8[:]) -> u64            // FNV-1a over the bytes; any u8 array coerc
 fn hash_combine(seed: u64, h: u64) -> u64
 ```
 
-A user key type provides its own overload, which `dictionary` picks up:
+Every hash mixes its whole input into the low 32 bits, which `dictionary`
+masks for the home slot and keeps as the slot's tag. A user key type
+provides its own overload, which `dictionary` picks up:
 
 ```goose
 struct key { a: i64, b: i64 }
@@ -294,6 +296,11 @@ fn each<K, V, F>(d: dictionary<K, V>&)                          // F(key, val&);
 
 Open addressing with linear probing, power-of-two capacity, backward-shift
 deletion. Keys and values are fixed-size; a key type needs `hash` and `==`.
+Each slot keeps 31 bits of its key's hash as a tag, so a lookup compares
+keys only where the tags agree, and growth and removal do not hash keys
+again (in tables of up to 2^31 slots). `insert`, `update` and `get_or_insert` look a key up once, whether or
+not it is there. The table doubles in place at 2/3 load; `reserve(n)` sizes
+it for `n` entries at that load.
 Strings are keyed as `u8[:]` slices into text the caller keeps (`const u8[:]`
 for literals or views of `const` data, §9.5), or as inline
 `u8[..k]`. A set is `dictionary<K, bool>`.

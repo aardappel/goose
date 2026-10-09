@@ -489,7 +489,7 @@ spaces and tabs would leave.
 ### 5.1 Representation
 
 ```goose
-struct dictionary_slot<K, V> { key: K, val: V, used: bool }
+struct dictionary_slot<K, V> { key: K, val: V, tag: u32 }
 struct dictionary<K, V> { count: i64 = 0, slots: dictionary_slot<K, V>[>..<] = [] }
 ```
 
@@ -501,21 +501,33 @@ struct dictionary<K, V> { count: i64 = 0, slots: dictionary_slot<K, V>[>..<] = [
 * A `dictionary` is resizable-class (its tail is a `[>..<]`), so it lives
   where resizables live: a local, a global, a by-reference parameter, the
   tail of a struct. It is spec A.3, generalized.
-* Growth doubles at ⅔ load: a fresh slot array local is filled by
-  re-inserting the used slots and then assigned over `d.slots` — the
-  whole-resizable assignment of §4.4, spelled `d.slots = copy(ns)` (a `move`,
-  spec TODO 3, would save that copy). The slot array is grow-shrink so that
-  the assignment is legal through a reference (§5.2). The
-  transient second table costs one data stack index during the call, never
-  an allocation. In-place doubling (`append` then re-place) is possible
-  with this layout and can replace it later without changing the API.
+* Each slot keeps a tag: 0 when it is unused, else the low 31 bits of the
+  key's hash with bit 31 set. A probe compares keys only where the tags
+  agree (a slice key's length and bytes, an inline key's bytes), and for a
+  table of up to 2^31 slots the tag holds the home slot, so growth and
+  removal never hash a key again; a larger table hashes the keys it moves.
+  The tag costs 3 bytes per slot over a `used` byte (12 bytes for a
+  `u32 → i32` table where 9 would do), which measured as neutral on
+  n-gram counting with `u32` keys, which compare as cheaply as tags, while
+  string-keyed tables gained 15-60%.
+* Growth doubles at ⅔ load, in place: the slot array tops its stack, so
+  `resize` extends it with unused slots, and the entries are re-placed by one
+  walk over the old slots in cyclic order, starting just after an unused one.
+  Every entry then lands within a run of slots the walk has already passed
+  (its new home is its old home or that plus a multiple of the old size), so
+  no entry still to be moved lies on a moved entry's probe path. No second
+  table is built and nothing is copied back. The slot array is grow-shrink
+  so that it can be resized through a reference (§5.2). A maximum load of ½
+  measured 21% faster on a small LRU table but slower on large tables that
+  leave the cache (150K entries) and on growth-heavy word counting; ¾
+  measured within noise of ⅔.
+* `insert`, `update` and `get_or_insert` check for growth first and then
+  walk the probe sequence once, to the key or to the unused slot where it
+  goes.
 * Fresh slots are filled with `default<K>()`/`default<V>()` (§8.2), so a
   reference value is an optional one (`Cell?`, or `in pool`). An update
   stores a whole slot, since `=` into a reference `V` would write its
   pointee (spec §3.8).
-* A hash is not cached in the slot in v1 (17 bytes for an `i64 → i64` table);
-  caching it (`h: u32`) speeds rehash and slice-keyed probes and is a
-  measured decision for later.
 
 ### 5.2 API
 
@@ -803,7 +815,7 @@ The rule applies to individual constructs as follows:
   defined operation, so `g.append(h)` stays as it is.
 * `g = h` between resizables (§4.4's clear-then-copy) becomes `g = copy(h)`;
   `g = f()` stays. This is where a `move(x)` (spec TODO 3) would first be
-  wanted: the dictionary's rehash assigns a dying local.
+  wanted: an assignment of a dying local.
 * `return x` of a non-fixed local moves it (NRVO, no copy); returning a
   non-fixed *field* or parameter copies and takes `copy`. The one implicit
   copy of §7.3 — two different locals returned on different paths — stays
@@ -833,7 +845,7 @@ The rule applies to individual constructs as follows:
 For the library: no binder parameters, no `&` in any example, UFCS works
 for every mutator, generic HOFs could even be untyped, and the library's
 own copies become visible where they are intended (`stable_sort`'s
-temporary is a construction; the dictionary rehash is a `copy`/`move`).
+temporary is a construction).
 
 Pros, beyond the UFCS fix that motivated it: the rule matches the cost
 model (registers for fixed values, in-place construction or a
