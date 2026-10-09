@@ -3109,6 +3109,23 @@ get the same `>= 0` treatment across the whole program
 every live body the step), which is what a parse cursor kept in a global
 needs.
 
+**Step counters.** A counted `for` loop (a range, a count, or an array or
+slice walk with an index) moves its index by exactly one per iteration. A
+local integer that the body changes only by unit steps -- `v += s` with `s`
+a literal 0 or 1 or a branch all of whose arms are (`lt += if less { 1 }
+else { 0 }`), or `v++` -- of which at most one can run per iteration
+(`StepsOf`: the arms of an `if` or `match` count apart, and a step in a
+nested loop or a function value counts as unbounded) cannot gain on the
+index. So where `v <= start + c` holds as the loop starts, `v <= i + c`
+holds at the top of every iteration, and the loop states it beside the
+index's own bounds (`StepCounters`, `ForLoop::BceWalk`): the `lt <= i` that
+the swap index of a branchless partition needs, or a compaction's write
+cursor. The index and the counter must be neither captured nor
+address-taken, so that nothing else writes them. A unit step otherwise
+counts as a shift by one for the invariants, the worst case both for
+wrapping and for `v <= len(P)`, and elsewhere states `old <= new <= old + 1`
+where it cannot wrap (`StepWrite`).
+
 ### 5.8 Across calls
 
 **Effects.** `ComputeEffects` summarizes every live specialization, to a
@@ -3985,6 +4002,10 @@ call sites*. In practice:
   c`/`-= c` that cannot wrap;
 * the same loops over an array that the body *grows*: a `push` never lowers a
   bound (`grow_during_loop` in `test/optimizer/bce.goose`);
+* a second index that a counted `for` loop steps by at most one per
+  iteration, `w += if keep { 1 } else { 0 }` or `if keep { w += 1; }`, where
+  it starts at or below the loop's index: the swap index of std's branchless
+  partition and a compaction's `v[w] = x` (`test/optimizer/bce_step_counters.goose`);
 * an array filled by a counted loop and then indexed by the same count:
   `for i in n { a.push(...) }` states `a.len == n` afterwards, when no other
   statement in that loop touches `a` and no `break`/`continue` skips an
@@ -4039,7 +4060,10 @@ call sites*. In practice:
   whose side is `var + c` where nothing bounds the variable (the addition
   may then have wrapped before the compare);
 * a loop exit condition that is a disjunction (`while i < n && ok`), whose
-  negation the domain cannot state.
+  negation the domain cannot state;
+* a counter stepped twice in one iteration, inside a nested loop, or in a
+  `while` loop, whose own counter can move by any amount: only a `for`
+  loop's index carries a step counter's bound.
 
 Practical consequences: state facts with `assert` where the compiler cannot
 see them (`assert(a.len == n)` at a function's entry when its callers are

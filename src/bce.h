@@ -90,7 +90,10 @@
 // only a shrink disqualifies P. Globals get the same treatment across the
 // whole program (RunAll's first phase), which is what a cursor kept in a
 // global needs: its upper bound comes from the loop condition, its lower
-// bound from nothing else.
+// bound from nothing else. A counter that a counted `for` loop's body steps
+// by at most one per iteration keeps the distance to the loop index it had
+// on entry, which bounds a partition's or compaction's second index by the
+// first (StepCounters).
 #pragma once
 
 namespace goose {
@@ -1573,6 +1576,108 @@ struct BCE {
     }
 
     // ------------------------------------------------------------------
+    // Unit steps: `v += s` with s always 0 or 1, the counter of a branchless
+    // partition or compaction (`lt += if less { 1 } else { 0 }`).
+
+    // An expression whose value is 0 or 1 whichever way it goes: the
+    // literals, and a branch all of whose arms are such.
+    static bool InUnit(Node *n) {
+        if (auto lit = Is<IntLit>(n)) return !lit->uns && (lit->val == 0 || lit->val == 1);
+        if (auto bl = Is<Block>(n)) return bl->stmts.empty() && bl->tail && InUnit(bl->tail);
+        if (auto ie = Is<IfExpr>(n)) return ie->elseb && InUnit(ie->thenb) && InUnit(ie->elseb);
+        return false;
+    }
+
+    // Whether evaluating n can assign v, as one of its writes or by
+    // declaring it anew.
+    static bool WritesVar(Node *n, VarDef *v) {
+        if (!n) return false;
+        if (auto a = Is<Assign>(n)) {
+            auto id = Is<Ident>(a->lval);
+            if (id && id->vdef == v) return true;
+        } else if (auto inc = Is<IncDec>(n)) {
+            auto id = Is<Ident>(inc->lval);
+            if (id && id->vdef == v) return true;
+        } else if (auto vd = Is<VarDecl>(n)) {
+            for (auto d : vd->defs) if (d == v) return true;
+        }
+        auto found = false;
+        n->Children([&](Node *ch) { found = found || WritesVar(ch, v); });
+        return found;
+    }
+
+    static bool IsUnitStep(Assign *a, VarDef *v) {
+        return a->op == T_PLUSEQ && !a->pointee && InUnit(a->rhs) && !WritesVar(a->rhs, v);
+    }
+
+    // The most writes to v one execution of n can make, where each is a unit
+    // step or `v++`; INF if any write is something else, or sits in a loop
+    // or a function value of n, which may run it any number of times.
+    static int64_t StepsOf(Node *n, VarDef *v) {
+        if (!n) return 0;
+        if (auto a = Is<Assign>(n)) {
+            auto id = Is<Ident>(a->lval);
+            if (id && id->vdef == v) return IsUnitStep(a, v) ? 1 : INF;
+        } else if (auto inc = Is<IncDec>(n)) {
+            auto id = Is<Ident>(inc->lval);
+            if (id && id->vdef == v) return inc->op == T_INC ? 1 : INF;
+        } else if (auto vd = Is<VarDecl>(n)) {
+            for (auto d : vd->defs) if (d == v) return INF;
+        } else if (Is<While>(n) || Is<LoopExpr>(n) || Is<ForLoop>(n) || Is<FunVal>(n)) {
+            return WritesVar(n, v) ? INF : 0;
+        } else if (auto ie = Is<IfExpr>(n)) {
+            return SatAdd(StepsOf(ie->cond, v),
+                          std::max(StepsOf(ie->thenb, v), StepsOf(ie->elseb, v)));
+        } else if (auto me = Is<MatchExpr>(n)) {
+            int64_t arms = 0;
+            for (auto &arm : me->arms) arms = std::max(arms, StepsOf(arm.body, v));
+            return SatAdd(StepsOf(me->scrutinee, v), arms);
+        }
+        int64_t s = 0;
+        n->Children([&](Node *ch) { s = SatAdd(s, StepsOf(ch, v)); });
+        return s;
+    }
+
+    // `v += s` for a unit step s: as a shift by 1 for the invariants (the
+    // worst case for wrapping and for `v <= len`), and otherwise a new value
+    // between the old one and one more, where that cannot wrap.
+    void StepWrite(VarDef *v) {
+        NoteInt(OwnerTarget(v));
+        if (mode == M_RECORD) RecordShift(v, 1);
+        if (mode == M_KILLS) { BumpVar(v); return; }
+        auto hi = IntRange(v->type->intstorage).second;
+        auto nowrap = Query(VarBase(v), Zero(), SatSub(hi, 1));
+        auto old = VarBase(v);
+        BumpVar(v, false);
+        if (!nowrap) return;
+        auto nw = VarBase(v);
+        AddFactB(old, nw, 0);
+        AddFactB(nw, old, 1);
+    }
+
+    // The variables a counted loop's body steps by at most one per
+    // iteration, which a for loop ties to its index (ForLoop::BceWalk).
+    vector<VarDef *> StepCounters(Node *body) {
+        vector<VarDef *> written;
+        function<void(Node *)> scan = [&](Node *n) {
+            if (!n) return;
+            Ident *id = nullptr;
+            if (auto a = Is<Assign>(n)) id = Is<Ident>(a->lval);
+            else if (auto inc = Is<IncDec>(n)) id = Is<Ident>(inc->lval);
+            if (id && id->vdef && std::find(written.begin(), written.end(), id->vdef) == written.end())
+                written.push_back(id->vdef);
+            n->Children(scan);
+        };
+        scan(body);
+        vector<VarDef *> out;
+        for (auto v : written)
+            if (ScalarIntVar(v) && !v->captured && !v->isglobal && !addrof.count(v) &&
+                StepsOf(body, v) <= 1)
+                out.push_back(v);
+        return out;
+    }
+
+    // ------------------------------------------------------------------
     // Lvalue chains (for kill targeting).
 
     enum ChainKind { CH_OK, CH_INDEX, CH_FAIL };
@@ -2320,6 +2425,8 @@ inline void Assign::BceMark(BCE &b) {
         } else if ((op == T_PLUSEQ || op == T_MINUSEQ) && lit && !lit->uns) {
             auto c = op == T_PLUSEQ ? lit->val : -lit->val;
             (c >= 0 ? b.wkinds[v].inc : b.wkinds[v].dec) = true;
+        } else if (BCE::IsUnitStep(this, v)) {
+            b.wkinds[v].inc = true;
         } else {
             b.wbad.insert(v);
         }
@@ -2770,6 +2877,22 @@ inline bool ForLoop::BceWalk(BCE &b) {
             fixedlen = !kills.count(pid);
         }
     }
+    auto iv = iterkind == IK_ARRAY || iterkind == IK_SLICE ? idxdef : vdef;
+    // A counter the body steps by at most one per iteration (StepsOf) keeps
+    // the distance to the index it had on entry from growing: v <= start + c
+    // there gives v <= i + c on every iteration, the `lt <= i` that the swap
+    // index of a branchless partition needs. The index moves by exactly one
+    // per iteration, as long as nothing but the loop can write it.
+    vector<pair<VarDef *, int64_t>> stepped;
+    if (iv && BCE::ScalarIntVar(iv) && !iv->captured && !b.addrof.count(iv)) {
+        auto start = iterkind == IK_ARRAY || iterkind == IK_SLICE
+                         ? BCE::Term { true, BCE::Zero(), 0 } : lot;
+        if (start.ok && b.CmpAdmissible(start))
+            for (auto v : b.StepCounters(body)) {
+                auto c = BCE::SatSub(b.Dist(b.VarBase(v), start.b), start.off);
+                if (BCE::SmallOff(c)) stepped.push_back({ v, c });
+            }
+    }
     b.loopdepth++;
     b.LoopViewRefs(body, nullptr, hoistrefs);
     b.StripKills(body);
@@ -2778,11 +2901,11 @@ inline bool ForLoop::BceWalk(BCE &b) {
         hit = b.LenTermOf(iter);
     }
     auto exitf = b.flow;
-    auto iv = iterkind == IK_ARRAY || iterkind == IK_SLICE ? idxdef : vdef;
     if (iv) {
         auto vb = b.VarBase(iv);
         if (lot.ok) b.AddFactB(lot.b, vb, BCE::SatSub(0, lot.off));
         if (hit.ok) b.AddFactB(vb, hit.b, BCE::SatSub(hit.off, 1));
+        for (auto &[v, c] : stepped) b.AddFactB(b.VarBase(v), vb, c);
     }
     if ((iterkind == IK_RANGE || iterkind == IK_COUNT) && idxdef)
         b.AddFactB(BCE::Zero(), b.VarBase(idxdef), 0);
@@ -2937,6 +3060,7 @@ inline bool Assign::BceWalk(BCE &b) {
                 auto lit = Is<IntLit>(rhs);
                 if (lit && !lit->uns && BCE::SmallOff(lit->val))
                     b.ShiftWrite(v, op == T_PLUSEQ ? lit->val : -lit->val);
+                else if (BCE::IsUnitStep(this, v)) b.StepWrite(v);
                 else b.VarKillWrite(v);
             } else {
                 b.VarKillWrite(v);
