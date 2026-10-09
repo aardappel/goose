@@ -411,14 +411,20 @@ static uint64_t gs_mod_u64(uint64_t a, uint64_t b, const char *file, int line) {
 }
 
 /* `as!` float-to-int: truncate toward zero, wrap modulo 2^64 (§6.3). Defined
-   the same on every platform, unlike a raw C cast of an out-of-range value. */
-static int64_t gs_f2iwrap(double d) {
+   the same on every platform, unlike a raw C cast of an out-of-range value.
+   A value lies in the i64 range exactly when its truncation does, and there
+   the C cast truncates by itself (one hardware conversion, where trunc() is
+   a libm call on baseline x86-64), so only NaN and the values beyond the
+   range take the wrap, out of line. */
+static GS_NOINLINE int64_t gs_f2iwrap_slow(double d) {
     if (d != d) return 0;
-    d = trunc(d);
-    if (d >= -9223372036854775808.0 && d < 9223372036854775808.0) return (int64_t)d;
-    d = fmod(d, 18446744073709551616.0);
+    d = fmod(trunc(d), 18446744073709551616.0);
     if (d < 0) d += 18446744073709551616.0;
     return (int64_t)(uint64_t)d;
+}
+static int64_t gs_f2iwrap(double d) {
+    if (d >= -9223372036854775808.0 && d < 9223372036854775808.0) return (int64_t)d;
+    return gs_f2iwrap_slow(d);
 }
 
 /* `as` conversion checks (§6.3): abort in debug builds whenever the
@@ -530,15 +536,15 @@ GS_API gs_qnode *gs_qpoll(gs_queue *q);
 #ifndef GS_RUNTIME_OBJECT
 
 /* The current thread program's stack block: every stack the compiler
-   counted for it, reserved as the program starts (gs_stack_block).
+)GSRT"
+R"GSRT(   counted for it, reserved as the program starts (gs_stack_block).
    gs_sp-relative indices resolve through it. */
 static GS_TLS gs_stack *gs_stks;
 static GS_TLS int64_t gs_nstks;
 
 /* The current program instance's globals (goose_spec.md 11.1), a struct the
    compiler lays out: main's is its one static instance, a worker's a fresh
-)GSRT"
-R"GSRT(   copy of the globals its program uses, taken from the spawning instance
+   copy of the globals its program uses, taken from the spawning instance
    at spawn like the arguments (11.2). No global is shared between program
    instances; the only C statics a program shares are read-only ones. */
 static GS_TLS void *gs_gl;
@@ -743,7 +749,8 @@ static GS_NOINLINE int64_t gs_uleb_read_slow(const uint8_t *p) {
     return gs_uleb_read(p);
 }
 
-static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
+)GSRT"
+R"GSRT(static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
     return gs_uleb_size(p);
 }
 
@@ -753,8 +760,7 @@ static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
 static int64_t gs_uleb_write(uint8_t *p, uint64_t v) {
     uint8_t *q = p;
     for (;;) {
-)GSRT"
-R"GSRT(        uint8_t b = v & 0x7f;
+        uint8_t b = v & 0x7f;
         v >>= 7;
         if (v) *q++ = b | 0x80; else { *q++ = b; break; }
     }

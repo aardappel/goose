@@ -3929,9 +3929,14 @@ functions); division and modulo are always functions, zero-checked, with
 Euclidean `%`. `as` goes through `GS_RANGE`/`GS_F2I`/... macros that check in
 debug and cast in release, except to a float, and from an integer type whose
 every value the target holds, which are plain C casts in every build; `as!`
-and release float-to-int use the defined wrap of `gs_f2iwrap`. A signed type's
-add, sub, mul and neg helper and every checked cast also take the file and
-line of the operation, and a debug check that fails prints them with the
+and release float-to-int use the defined wrap of `gs_f2iwrap`, which tests
+the i64 range on the value itself (a value lies in it exactly when its
+truncation does) and converts there with the C cast, one hardware
+instruction that truncates by itself; NaN and the values past the range go
+to the out-of-line `gs_f2iwrap_slow`, which alone pays for libm's `trunc`
+and `fmod` (calls on baseline x86-64, which has no rounding instruction). A
+signed type's add, sub, mul and neg helper and every checked cast also take
+the file and line of the operation, and a debug check that fails prints them with the
 operands or the value and the type. The release macros drop them unevaluated,
 so release builds compile to the code they would without them; the arguments
 cost about 1% of the generated C, and no measurable TinyCC compile time.

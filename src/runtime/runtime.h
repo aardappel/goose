@@ -397,14 +397,20 @@ static uint64_t gs_mod_u64(uint64_t a, uint64_t b, const char *file, int line) {
 }
 
 /* `as!` float-to-int: truncate toward zero, wrap modulo 2^64 (§6.3). Defined
-   the same on every platform, unlike a raw C cast of an out-of-range value. */
-static int64_t gs_f2iwrap(double d) {
+   the same on every platform, unlike a raw C cast of an out-of-range value.
+   A value lies in the i64 range exactly when its truncation does, and there
+   the C cast truncates by itself (one hardware conversion, where trunc() is
+   a libm call on baseline x86-64), so only NaN and the values beyond the
+   range take the wrap, out of line. */
+static GS_NOINLINE int64_t gs_f2iwrap_slow(double d) {
     if (d != d) return 0;
-    d = trunc(d);
-    if (d >= -9223372036854775808.0 && d < 9223372036854775808.0) return (int64_t)d;
-    d = fmod(d, 18446744073709551616.0);
+    d = fmod(trunc(d), 18446744073709551616.0);
     if (d < 0) d += 18446744073709551616.0;
     return (int64_t)(uint64_t)d;
+}
+static int64_t gs_f2iwrap(double d) {
+    if (d >= -9223372036854775808.0 && d < 9223372036854775808.0) return (int64_t)d;
+    return gs_f2iwrap_slow(d);
 }
 
 /* `as` conversion checks (§6.3): abort in debug builds whenever the

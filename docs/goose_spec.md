@@ -1706,7 +1706,7 @@ mantissa rounds as every float result does.
   is intended, even in debug. To a float it is the same conversion as `as`.
 * float → int (both forms in release, `as!` always) is defined exactly:
   truncate toward zero, then wrap modulo 2^64 into the target's width; NaN
-  yields 0. The common in-range case is one compare and a hardware
+  yields 0. The common in-range case is a range test and a hardware
   conversion; only the out-of-range tail pays for the defined wrap.
 
 **Redundant casts.** An `as` or `as!` that changes nothing is a warning: one
