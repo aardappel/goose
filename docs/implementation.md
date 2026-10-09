@@ -2414,8 +2414,10 @@ when the value is inexact.
 is only the whole initializer of a non-optional relative field whose pointee
 is the literal's own type; the `in pool` form additionally needs the literal
 to be under construction inside that pool. `NoRelRefCopy` rejects copying any
-value holding self-relative references except a literal built in place
-(`HasRelRefT` excludes `in pool` fields, which copy fine); the same rule
+value holding self-relative references except a literal built in place or a
+`default<T>()` (a `..` field's), whose links are null and limited arrays
+empty wherever it lands (`HasRelRefT` excludes `in pool` fields, which copy
+fine); the same rule
 rejects by-value `for` and `match` bindings of such elements and payloads,
 the elements `append` copies from anything but a literal (an element that
 is itself a self-relative reference included), and a `resize` fill value,

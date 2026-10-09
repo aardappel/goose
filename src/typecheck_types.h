@@ -705,6 +705,9 @@ inline void TypeCheck::NoRelRefCopy(Node *n, TypeExpr *t) {
     if (IsRefOrSlice(t) || !HasRelRefT(t)) return;
     if (Is<StructLit>(n) || Is<ArrayLit>(n)) return;   // Constructed in place.
     if (auto d = Is<Dot>(n); d && d->variantconst) return;   // A payload-less variant: a tag.
+    // A default value holds no offset that depends on where it sits: its
+    // relative references are null and a limited array of them is empty.
+    if (auto c = Is<Call>(n); c && c->builtin == B_DEFAULT) return;
     Error(n, cat("copying a value of type ", TypeStr(t), ", which contains self-relative "
                  "references, is not supported; construct it in place"));
 }

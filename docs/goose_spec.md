@@ -703,7 +703,9 @@ array/pool* as the location storing it.
   `resize` fill value, which is copied into every slot it adds even when it
   is a literal)
   is a compile error: the copied offsets would still be measured from the
-  source location. Construct such values in place (literals), and bind their
+  source location. Construct such values in place (literals; a field a
+  literal's `..` fills takes its type's default, whose links are null and
+  whose limited arrays are empty, and is no copy), and bind their
   match payloads, take their variants in case functions and have `format`
   overloads take them by reference: an ADT whose payloads hold them is used
   in variable mode, whose payloads bind by reference where the ADT is not
