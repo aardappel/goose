@@ -289,9 +289,12 @@ then, unless a type parameter or a nested function of the name hides them
 is no variable is then a type parameter (`LookupTypeParam`: the lexical
 binding chain, innermost first, bound to a type or a function value), a
 nested function or a function, which `Ident::Check` and `CheckNamedCall`
-try in that order. `localfns` holds nested function declarations with the
-scope they were declared in; `Scope::serial` tells a scope from a later
-one at the same index. `blockpos` keeps the statement
+try in that order. A call passes over a global variable, which no call can
+name (`CheckNamedCall`, and `thread_spawn`'s first argument): only one in
+scope stops it, and a global one is named in the error only where no
+function or builtin of the name exists. `localfns` holds nested function
+declarations with the scope they were declared in; `Scope::serial` tells a
+scope from a later one at the same index. `blockpos` keeps the statement
 index of every open block, which the shrink rules' liveness scan (§3.10)
 reads.
 

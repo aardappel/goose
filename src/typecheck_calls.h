@@ -46,7 +46,11 @@ inline Val TypeCheck::CheckCall(Call *c, TypeExpr *expected) {
 }
 
 inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id, TypeExpr *expected) {
-    if (LookupVar(id->name, id->ns))
+    // A variable in scope hides the functions of its name (§11.1). A global
+    // one does not: no variable can be called, so the call names the
+    // functions the namespaces declare, which a global variable of the same
+    // name is declared beside.
+    if (auto vd = LookupVar(id->name, id->ns); vd && !vd->isglobal)
         Error(c, cat(id->name, " is a variable, not a function"));
     const FnValBind *fb;
     if (auto t = LookupTypeParam(id->name, fb))
@@ -86,7 +90,11 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id, TypeExpr *expected) {
         for (auto a : args) builtinfallback.erase(a);
         return v;
     }
-    if (!bd) Error(c, cat("unknown function: ", id->name));
+    if (!bd) {
+        if (LookupVar(id->name, id->ns))
+            Error(c, cat(id->name, " is a variable, not a function"));
+        Error(c, cat("unknown function: ", id->name));
+    }
     if (bd->flags & BF_PROPERTY)
         Error(c, cat(id->name, " is a property (use a.", id->name, "), not a call"));
     return CheckBuiltin(c, *bd, c->args, nullptr);

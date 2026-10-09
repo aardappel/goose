@@ -46,7 +46,9 @@ The library uses these conventions:
   those values cannot be copied (spec §3.9). Construct them in place.
 * The `std`, `dictionary`, `vec`, `math`, and `os` names are global; `binary`, `audio`,
   `gfx`, `physics`, and `ui` use their own namespaces. A local named `fill` or `count`
-  shadows the corresponding global function, causing an error at a call.
+  shadows the corresponding global function, causing an error at a call; a
+  global variable of such a name does not, since a call names the functions
+  past it (spec §11.1).
 
 ## std
 
