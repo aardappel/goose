@@ -709,7 +709,16 @@ array/pool* as the location storing it.
   match payloads, take their variants in case functions and have `format`
   overloads take them by reference: an ADT whose payloads hold them is used
   in variable mode, whose payloads bind by reference where the ADT is not
-  resizable (§3.5).
+  resizable (§3.5). None of these is a copy: a call's result, which is
+  built where it is received where it is not fixed-size (§4.3, §7.3), and
+  where it is holds no link but `self` and null, a returned literal having
+  no other root to point within; a function's named result (§7.3), a local
+  every return of the function gives, built at the destination from its
+  declaration (a struct ending in a resizable needs its fields before the
+  resizable tail free of self-relative references and of anything one in
+  the tail points at, since those fields reach the caller as a copy, C.3);
+  and a default value (a literal's `..`, `default<T>()`), whose links are
+  nulls, or `self` where a field's default says so.
   (TODO 16: track the region a relative reference ranges over, so provably
   whole-region copies can be allowed.)
 * Because they are position-independent, structures linked by self-relative

@@ -180,6 +180,7 @@ inline void CodeGen::LandValue(const string &stk, const string &top0, const stri
 // A break's value, or a return's leaving an inlined body, for scope si.
 inline void CodeGen::GenExitValue(Node *val, int si) {
     auto d = cscopes[si].dst;
+    if (d.k != DK_STACK || !NrvoBoundAt(val, d.s, d.lenlv)) NoSelfRelCopy(val);
     auto start = d.k == DK_STACK ? ExitStart(val, d.s, d.lenlv, cscopes[si].open0) : "";
     GenAny(val, d);
     if (!start.empty())
@@ -457,6 +458,7 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
                 else L("*gs_rl", i, " = ", HdrLv(id->vdef), ".len;");
                 continue;
             }
+            NoSelfRelCopy(vals[i]);
             auto lenlv = cat("(*gs_rl", i, ")");
             auto start = ExitStart(vals[i], dst, lenlv, 0);
             GenConstruct(vals[i], dst, rt, lenlv);
@@ -469,6 +471,7 @@ inline void CodeGen::GenNormalReturn(const vector<Node *> &vals) {
                 if (IsResz(id->vdef->type)) EmitNrvoFinish(named->second);
                 continue;
             }
+            NoSelfRelCopy(vals[i]);
             auto start = ExitStart(vals[i], dst, "", 0);
             GenConstruct(vals[i], dst, rt);
             if (!start.empty()) LandValue(dst, DstTop0(i), start, rt, "");

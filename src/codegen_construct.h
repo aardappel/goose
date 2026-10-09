@@ -183,6 +183,27 @@ inline bool CodeGen::HasRelRef(TypeExpr *t) {
     }
 }
 
+// Does a value of type t hold a self-relative reference by value, at any
+// depth, variable-size parts included? Its offsets depend on where it sits.
+inline bool CodeGen::HasSelfRelRef(TypeExpr *t) {
+    switch (t->kind) {
+        case TY_REF: return t->ref->lenstorage >= 0 && !t->ref->pool;
+        case TY_ARRAY: return HasSelfRelRef(t->arr->sub);
+        default: return AnyField(t, [&](TypeExpr *ft) { return HasSelfRelRef(ft); });
+    }
+}
+
+// An exit's value that is a local holding self-relative references reaches
+// its destination only as the named result built there (§3.9, §7.3): the
+// checker allows nothing else (TypeCheck::AllowNamedResult), and a copy
+// would keep offsets measured from the local.
+inline void CodeGen::NoSelfRelCopy(Node *val) {
+    auto id = Is<Ident>(val);
+    if (id && id->vdef && id->vdef->type && HasSelfRelRef(id->vdef->type))
+        Fail(val->line, cat("internal error: ", id->vdef->name, " holds self-relative "
+                            "references and is not built where it is returned"));
+}
+
 inline void CodeGen::ComputeRelRootMax() {
     for (auto vd : ast.vardefs) {
         if (!vd->type || !IsFix(vd->type) || !HasRelRef(vd->type)) continue;

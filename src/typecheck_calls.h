@@ -2892,6 +2892,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
             Val tv;
             {
                 FlagScope ret(inreturn, true);
+                RetValScope rv(*this, spec->body->tail);
                 tv = spec->retsknown ? CheckValue(spec->body->tail, expected)
                                      : CheckInferredResult(spec->body->tail, spec);
             }
@@ -2917,6 +2918,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
         if (!spec->retsknown) spec->retsknown = true;  // No returns at all: void.
     }
     if (!spec->retsknown) spec->retsknown = true;
+    CheckNamedResultUses(spec);
     PopScope();
     frames.pop_back();
     for (auto [v, n] : outernarrowed) v->narrowed = n;
@@ -3191,8 +3193,12 @@ inline void TypeCheck::CheckReturn(Return *r) {
         FlagScope rs(inreturn, true);
         if (r->vals.size() == 1) {
             auto one = tspec->retsknown && tspec->rets.size() == 1 ? tspec->rets[0] : nullptr;
-            auto v = tspec->retsknown ? CheckValue(r->vals[0], one)
-                                      : CheckInferredResult(r->vals[0], tspec);
+            Val v;
+            {
+                RetValScope rv(*this, tf == (int)frames.size() - 1 ? r->vals[0] : nullptr);
+                v = tspec->retsknown ? CheckValue(r->vals[0], one)
+                                     : CheckInferredResult(r->vals[0], tspec);
+            }
             if (auto call = Is<Call>(r->vals[0]); call && call->rettypes.size() > 1) {
                 vals = lastcallrets;  // Forward a multi-value call.
                 // Each value meets its return type as a value of its own

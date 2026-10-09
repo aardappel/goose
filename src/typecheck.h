@@ -1410,6 +1410,29 @@ struct TypeCheck {
     Val CheckIntAny(Node *n);
     bool HasRelRefT(TypeExpr *t, bool inpool = false);
     void NoRelRefCopy(Node *n, TypeExpr *t);
+    // The single value a return or a body's tail is checking (CheckReturn,
+    // CheckSpecBody), which a named result may be (AllowNamedResult).
+    Node *retvalnode = nullptr;
+    struct RetValScope {
+        TypeCheck &tc;
+        Node *saved;
+        RetValScope(TypeCheck &t, Node *n) : tc(t), saved(t.retvalnode) { tc.retvalnode = n; }
+        ~RetValScope() { tc.retvalnode = saved; }
+    };
+    // A return of a local holding self-relative references, allowed as the
+    // body's named result, which only the whole body says it is
+    // (CheckNamedResultUses).
+    struct NamedResultUse {
+        FnSpec *spec;
+        Node *at;
+        VarDef *var;
+    };
+    vector<NamedResultUse> namedresultuses;
+    bool AllowNamedResult(Ident *id, TypeExpr *t);
+    void CheckNamedResultUses(FnSpec *spec);
+    VarDef *NamedResultOf(FnSpec *spec);
+    void SelfRelPointees(TypeExpr *t, vector<TypeExpr *> &out);
+    bool NamedResultKeepsLinks(TypeExpr *t);
 
     // ------------------------------------------------------------------
     // Pool-relative references (§3.9). `T&<u32 in pool>` names a global pool

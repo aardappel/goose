@@ -840,6 +840,8 @@ struct CodeGen {
                        bool inroot = true);
     void EmitRelSelfStore(const string &stk, TypeExpr *rt, int64_t fieldoff, Line ln);
     bool HasRelRef(TypeExpr *t);
+    bool HasSelfRelRef(TypeExpr *t);
+    void NoSelfRelCopy(Node *val);
     bool HasUninitSlots(TypeExpr *t);
 
     // Byte span of the largest fixed value that can be a relative

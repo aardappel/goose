@@ -1909,6 +1909,11 @@ struct FnSpec {
     // call's arguments in place (TypeCheck::ApplyCalleeStores): no other
     // call reuses the check.
     bool storesout = false;
+    // A value with self-relative references is returned as the body's named
+    // result, which is right only where it is built at the destination
+    // (TypeCheck::CheckNamedResultUses): the body is never inlined, where a
+    // destination might not take it in place (Optimizer::Scan).
+    bool relnamedresult = false;
     int id = 0;                    // Unique, for diagnostics/codegen naming.
     // Filled by the optimizer (optimize.h):
     int uses = 0;                  // Call sites in live code (tag-dispatch entries included).

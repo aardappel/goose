@@ -2441,15 +2441,33 @@ when the value is inexact.
 is only the whole initializer of a non-optional relative field whose pointee
 is the literal's own type; the `in pool` form additionally needs the literal
 to be under construction inside that pool. `NoRelRefCopy` rejects copying any
-value holding self-relative references except a literal built in place or a
-`default<T>()` (a `..` field's), whose links are null and limited arrays
-empty wherever it lands (`HasRelRefT` excludes `in pool` fields, which copy
-fine); the same rule
-rejects by-value `for` and `match` bindings of such elements and payloads,
-the elements `append` copies from anything but a literal (an element that
-is itself a self-relative reference included), and a `resize` fill value,
-literal or not, which is built once and copied into every slot added.
-Varint-width relative references are construction-only.
+value holding self-relative references (`HasRelRefT` excludes `in pool`
+fields, which copy fine) but what is no copy: a literal built in place, a
+default (`B_DEFAULT`, a `..` field's among them: nulls, an empty limited
+array, `self` where a field's default says so), the result of a call of a
+Goose function (built at the receiver where it is not fixed-size; a
+fixed-size one is what the callee's returns made, which by this rule hold
+no link but `self` and null, a returned literal having no destination root
+to point within), and the body's named result. That last is `return x`, or a
+tail `x`, of a local declared alone at the top of the body
+(`AllowNamedResult`, for the value `retvalnode` says the return checks), of a
+result that is not fixed-size and has x's layout, or is the variable array
+x's resizable elements make, where x's type is not a resizable struct whose
+fields before the tail hold a self-relative reference or a value one in the
+tail may point at (`NamedResultKeepsLinks`), since a frame object's head
+reaches the caller as a copy (C.3). Whether every return gives x only the
+whole body says: `CheckNamedResultUses`, at the end of `CheckSpecBody`, runs
+codegen's structural test (`NamedResultOf`, as `CodeGen::NamedResult`; a
+return it cannot place counts against it) and reports each such return
+otherwise. A body relying on it is marked (`FnSpec::relnamedresult`) and
+never inlined (`Optimizer::Scan`), so its result is built by `DetectNrvo`'s
+named result at every call; codegen fails loudly should a return or an
+inlined body's exit ever copy such a local instead (`NoSelfRelCopy`). The
+same rule rejects by-value `for` and `match` bindings of such elements and
+payloads, the elements `append` copies from anything but a literal (an
+element that is itself a self-relative reference included), and a `resize`
+fill value, literal or not, which is built once and copied into every slot
+added. Varint-width relative references are construction-only.
 
 A value is never relative (`FitsAt` refuses one anywhere but an identical
 slot), so neither is a result: `CheckSpecBody` rejects a result type written
