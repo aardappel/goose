@@ -692,6 +692,15 @@ struct BCE {
     // their facts are in place; Derived's generation guard rejects the term
     // if anything was invalidated after the value was computed.
     Term BlockValueTerm(Block *b, SFunction *sf) {
+        // A return to the inlined function anywhere else leaves the block
+        // with a value of its own.
+        if (sf) {
+            auto last = !b->tail && !b->stmts.empty() ? Is<Return>(b->stmts.back()) : nullptr;
+            for (auto st : b->stmts)
+                if (st != last && ReturnsTo(st, sf)) return {};
+            if (ReturnsTo(b->tail, sf)) return {};
+            if (last) for (auto v : last->vals) if (ReturnsTo(v, sf)) return {};
+        }
         if (b->tail) return TermOf(b->tail);
         if (b->stmts.empty()) return {};
         auto r = Is<Return>(b->stmts.back());

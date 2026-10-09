@@ -2910,12 +2910,14 @@ carries its operand's term; `a * b` and `a ± b` with two moving operands,
 handled by *intervals*: where both operands have finite constant bounds the
 result gets a fresh base bounded by the four corner products or the summed
 ranges, stated only when it fits the operation's own width (release-mode
-wrapping, §6.2); and the value of an `InlineBlock` or bare block. An
-operation's width is its operands' type (`OpType`), not its `exprtype`,
-which is the possibly wider slot the value lands in (§3.3). Derived
-terms are memoized per node and invalidated by any generation change
-(`Derived`), and an expression whose later operand changed tracked state is
-not rebuilt from its operands' current names (`effectfulterms`).
+wrapping, §6.2); and the value of a bare block or of an `InlineBlock`, its
+tail or final return, where no other return leaves the inlined body with a
+value of its own (`BlockValueTerm`). An operation's width is its operands'
+type (`OpType`), not its `exprtype`, which is the possibly wider slot the
+value lands in (§3.3). Derived terms are memoized per node and invalidated by
+any generation change (`Derived`), and an expression whose later operand
+changed tracked state is not rebuilt from its operands' current names
+(`effectfulterms`).
 
 A term is admissible as a comparison side (`CmpAdmissible`) only if the
 machine comparison equals the mathematical one: a variable with a zero
