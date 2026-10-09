@@ -308,6 +308,7 @@ struct TypeCheck {
     };
     void CheckStmts(Block *b);
     bool MentionsName(Node *n, string_view name, set<SFunction *> &seen);
+    bool EscapingContinue(Node *n);
     bool UsedAfter(VarDef *v);
 
     // The node being checked and every node it is nested in, innermost last,

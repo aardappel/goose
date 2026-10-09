@@ -1191,7 +1191,16 @@ scrutinee of a `match` or the sequence of a `for`, in the parts that one
 leads to — later in its own block or in an enclosing block it was declared
 in, or anywhere in a loop that contains the shrink and that the variable was
 declared outside of, since the next iteration runs the rest of the body
-again. A function value's body runs in the middle of a statement of the
+again. But where a statement of the shrink's own block after the shrink's
+statement is a `return` or a `break`, and neither the shrink's statement nor
+one between them has a `continue` that could lead back into a loop, nothing
+that exit leaves runs again from the shrink: the rest of that block, and for
+a `return` the rest of the function's body, for a `break` the rest of the
+loop or `block` it ends, that loop's next iteration included. So a decoder
+may `result.clear(); return result;` inside its loop while a dictionary of
+views into `result` that the loop fills is still in scope; the exit's own
+statement is read after the shrink like any other. A function value's body
+runs in the middle of a statement of the
 function calling it (§7.6), so that function's variables count as well, and
 that function may call it again: a variable declared outside the body counts
 wherever the body names it, as in a loop. Only code that can name the

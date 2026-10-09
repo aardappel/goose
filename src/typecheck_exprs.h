@@ -2907,6 +2907,21 @@ inline bool TypeCheck::MentionsName(Node *n, string_view name, set<SFunction *> 
     return hit;
 }
 
+// Whether the code under n has a `continue` that leaves it: one that is not
+// inside a loop's body there, nor in a nested function or a function value,
+// whose loops are their own.
+inline bool TypeCheck::EscapingContinue(Node *n) {
+    if (!n || Is<FnDecl>(n) || Is<FunVal>(n)) return false;
+    if (Is<Continue>(n)) return true;
+    Node *body = nullptr;
+    if (auto w = Is<While>(n)) body = w->body;
+    else if (auto l = Is<LoopExpr>(n)) body = l->body;
+    else if (auto fl = Is<ForLoop>(n)) body = fl->body;
+    auto hit = false;
+    n->Children([&](Node *ch) { hit = hit || (ch != body && EscapingContinue(ch)); });
+    return hit;
+}
+
 // Whether variable v can be read again after the shrink being checked
 // (§5.1): in the rest of its statement, later in an open block at or
 // inside v's scope, or anywhere in a loop that contains this point and
@@ -2916,7 +2931,12 @@ inline bool TypeCheck::MentionsName(Node *n, string_view name, set<SFunction *> 
 // may call again. Only code of v's own frame, or of one nested in it, can
 // name v: the same name in another frame -- the function running a function
 // value's body, a callee checked inside its caller's check -- is another
-// variable.
+// variable. Where a statement of the shrink's own block after the shrink's
+// statement is a `return` or a `break`, and nothing up to it is a `continue`
+// that could lead back into a loop, what that exit leaves is not run again
+// from the shrink: the rest of that block and its tail, and for a `return`
+// everything else of this frame's body, for a `break` everything inside the
+// loop or `block` it ends, that loop's next iteration included.
 inline bool TypeCheck::UsedAfter(VarDef *v) {
     set<SFunction *> seen;
     auto vframe = FrameOfScope(Depth(v) - 1);
@@ -2926,7 +2946,30 @@ inline bool TypeCheck::UsedAfter(VarDef *v) {
     auto later = false;
     LaterOperands([&](Node *n, int fi) { later = later || mentions(n, fi); });
     if (later) return true;
-    for (auto i = 0; i < (int)scopes.size(); i++) {
+    // The scopes the exit leaves, from `cut` on, and the statement it is in
+    // the innermost block (its stmts.size() for the tail).
+    auto cut = (int)scopes.size();
+    auto exitat = SIZE_MAX;
+    if (!blockpos.empty()) {
+        auto &bp = blockpos.back();
+        auto &stmts = bp.block->stmts;
+        auto cur = (int)frames.size() - 1;
+        if (bp.scopeidx == (int)scopes.size() - 1 && FrameOfScope(bp.scopeidx) == cur &&
+            bp.idx < stmts.size() && !EscapingContinue(stmts[bp.idx])) {
+            for (auto i = bp.idx + 1; i <= stmts.size(); i++) {
+                auto s = i < stmts.size() ? stmts[i] : bp.block->tail;
+                if (!s || EscapingContinue(s)) break;
+                auto to = Is<Return>(s) ? frames[cur].scopebase
+                          : Is<Break>(s) ? FindBreakScope(false)
+                                         : -1;
+                if (to < 0) continue;
+                cut = to;
+                exitat = i;
+                break;
+            }
+        }
+    }
+    for (auto i = 0; i < (int)scopes.size() && i < cut; i++) {
         if (scopes[i].kind != SK_LOOP) continue;
         // A `for` binding is rebound by the loop itself at every iteration.
         if (auto fl = Is<ForLoop>(scopes[i].node); fl && (fl->vdef == v || fl->idxdef == v))
@@ -2942,9 +2985,14 @@ inline bool TypeCheck::UsedAfter(VarDef *v) {
         if (fr.isfunval && !fr.isdefault && bp.scopeidx == fr.scopebase &&
             Depth(v) - 1 < bp.scopeidx && mentions(bp.block, fi))
             return true;
-        for (auto i = bp.idx + 1; i < bp.block->stmts.size(); i++)
-            if (mentions(bp.block->stmts[i], fi)) return true;
-        if (bp.idx < bp.block->stmts.size() && bp.block->tail && mentions(bp.block->tail, fi))
+        auto &stmts = bp.block->stmts;
+        auto exits = &bp == &blockpos.back() && exitat != SIZE_MAX;
+        if (bp.scopeidx >= cut && !exits) continue;
+        auto end = exits ? min(exitat + 1, stmts.size()) : stmts.size();
+        for (auto i = bp.idx + 1; i < end; i++)
+            if (mentions(stmts[i], fi)) return true;
+        if ((!exits || exitat == stmts.size()) && bp.idx < stmts.size() && bp.block->tail &&
+            mentions(bp.block->tail, fi))
             return true;
     }
     return false;

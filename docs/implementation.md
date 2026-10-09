@@ -1596,7 +1596,16 @@ there): a path entry records the frame checking it (`PathEntry::frame`), a
 block or a loop is in its scope's (`FrameOfScope`), and the same name in
 any other frame -- the function running a function value's body, a callee
 checked inside its first caller's check -- is another variable, whose own
-frame judges it. The test never depends on what the optimizer proves.
+frame judges it. Where the shrink is a statement of the innermost open
+block, of the current frame, and a later statement of that block (or its
+tail) is a `return` or a `break` with no `continue` that leaves its
+statement (`EscapingContinue`) in the shrink's statement or the ones
+between, the scopes that exit leaves are cut: the function's frame from
+its scope base for a `return`, the loop or `block` `FindBreakScope` finds
+for a `break`. The loops among them are not scanned, nor the blocks inside
+them but for the innermost one up to the exit statement; a function
+value's body still counts whole. The test never depends on what the
+optimizer proves.
 
 **Grow-shrink arrays** (§5.2): `ShrinkGrowShrink` runs from anywhere (a
 local, a reference, a global, a struct's tail, whole assignment) and scans
