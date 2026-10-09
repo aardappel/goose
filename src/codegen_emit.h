@@ -380,9 +380,20 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
 
 // A C initializer for a compile-time constant of fixed, flat type. Fails
 // for everything with a runtime component -- references, slices, ADTs,
-// relative references -- leaving the value to gs_init_globals.
+// relative references -- leaving the value to gs_init_globals. A global
+// that is static data itself stands for its initializer, spelled out
+// again, since a C initializer cannot read another object.
 inline bool CodeGen::StaticInitX(Node *n, TypeExpr *t, string &out) {
     if (!n || !t || !IsFix(t) || HasRelRef(t)) return false;
+    if (auto id = Is<Ident>(n)) {
+        auto it = id->vdef ? gstatic.find(id->vdef) : gstatic.end();
+        // An integer constant may be read at a narrower type than its own,
+        // which the checker found its value to fit.
+        if (it == gstatic.end() ||
+            !(TEq(id->vdef->type, t) || (t->kind == TY_INT && id->vdef->type->kind == TY_INT)))
+            return false;
+        return StaticInitX(it->second, t, out);
+    }
     switch (t->kind) {
         case TY_INT: {
             auto i = Is<IntLit>(n);
@@ -491,12 +502,16 @@ inline void CodeGen::EmitGlobalDecls() {
                 string init;
                 // A `let` global of a const type with a compile-time
                 // initializer is never written (§9.5): static data every
-                // instance shares. A `var` one may be assigned as a whole.
+                // instance shares, const in C as well, so that the C
+                // compiler folds what it reads. Its uses spell it without
+                // the qualifier, as the pointers and slices into it that
+                // Goose types do not mark const take it. A `var` one may
+                // be assigned as a whole.
                 if (perdef && !d->isvar && d->type->cq && !PrefVar(d) &&
                     StaticInitX(g->inits[di], d->type, init)) {
-                    Append(data, "static ", VarCT(d), " ", name, " = ", init, ";\n");
-                    gstatic.insert(d);
-                    gnames[d] = name;
+                    Append(data, "static const ", VarCT(d), " ", name, " = ", init, ";\n");
+                    gstatic[d] = g->inits[di];
+                    gnames[d] = cat("(*(", VarCT(d), " *)&", name, ")");
                 } else {
                     member(cat(VarCT(d), " ", name));
                 }

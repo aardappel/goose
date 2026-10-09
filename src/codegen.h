@@ -1141,8 +1141,9 @@ struct CodeGen {
     // ones; initializers run in declaration order before main.
 
     // Globals whose declaration carries a C initializer, so gs_init_globals
-    // has nothing left to do for them (§11.1).
-    set<const VarDef *> gstatic;
+    // has nothing left to do for them (§11.1), with the initializer, which
+    // a later global's initializer naming one is spelled out from.
+    map<const VarDef *, Node *> gstatic;
 
     // Spelling out more elements than this would trade startup work for source
     // size; such a value keeps its runtime initialization.

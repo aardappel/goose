@@ -3421,9 +3421,14 @@ entry thunk and filled from the spawn image (§6.8). Access is `GS_GL->name`,
 which is `(&gs_globals_main)` in a program without workers and the
 thread-local `gs_gl` with them. A `let` (or `const`) global of a `const`
 flat fixed type with a compile-time initializer (`StaticInitX`, up to 256
-array elements) is a C static shared by every instance; a `var` of such a
-type can be assigned as a whole and is a member like any other. Everything
-but the statics is initialized by `gs_init_globals` in declaration order.
+array elements) is a C `static const` shared by every instance, which the
+C compiler folds into the code reading it. The initializer may name
+earlier globals of that kind, anywhere a literal could stand: C cannot
+read another object in an initializer, so the named global's own
+initializer is spelled out in its place (`gstatic` keeps them). A `var` of
+such a type can be assigned as a whole and is a member like any other.
+Everything but the statics is initialized by `gs_init_globals` in
+declaration order.
 
 ### 6.4 The calling convention (C.3)
 
