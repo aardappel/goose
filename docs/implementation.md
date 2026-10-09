@@ -114,9 +114,12 @@ build configuration is unrelated.
 ## 2. Front end
 
 **Lexer** (`lexer.h`): a hand-written scanner over a 0-terminated buffer; the
-token set is an X-macro table. Lexing and parsing handle the syntax described in
-§2 and Appendix D: `T&<u8>` is `&` `<` in type context, and `1..2` lexes as a
-range because a `.` starts a fraction only when a digit follows. `LexRawString`
+token set is an X-macro table. The buffer is the file as `LoadSource`
+(`utils.h`) reads it, without a leading UTF-8 byte-order mark, which the
+diagnostics' echoed source lines then leave out too. Lexing and parsing
+handle the syntax described in §2 and Appendix D: `T&<u8>` is `&` `<` in
+type context, and `1..2` lexes as a range because a `.` starts a fraction
+only when a digit follows. `LexRawString`
 removes the closing line's indentation from each content line of a `"""` string
 and normalizes `\r\n` to `\n`. Its token and the resulting `StrLit` record
 whether it was multiline, allowing `embed_shader` to report errors at the

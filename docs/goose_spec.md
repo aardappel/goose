@@ -85,7 +85,8 @@ beyond the bump pointers themselves.
 
 The syntax follows C and Rust: `{}` blocks, `//` and `/* */` comments (block comments
 nest), semicolon-terminated statements, postfix type annotations (`x: T`).
-Identifiers `[A-Za-z_][A-Za-z0-9_]*`.
+Identifiers `[A-Za-z_][A-Za-z0-9_]*`. A UTF-8 byte-order mark at the start of
+a source file is ignored.
 
 Literals:
 

@@ -132,7 +132,7 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
         queue.pop_back();
         auto contents = make_unique<string>();
         if (rootsource && path == rootpath) *contents = *rootsource;
-        else if (!LoadFile(path, *contents))
+        else if (!LoadSource(path, *contents))
             throw CompileError { cat("cannot open file: ", path) };
         auto fileidx = (int)ast.sources.size();
         ast.sources.emplace_back(path, std::move(contents));
@@ -212,7 +212,7 @@ void CheckRoundtrip(const string &dumped, const string &path,
 
 void DumpTokens(const string &path) {
     string contents;
-    if (!LoadFile(path, contents)) throw CompileError { cat("cannot open file: ", path) };
+    if (!LoadSource(path, contents)) throw CompileError { cat("cannot open file: ", path) };
     Lexer lex(path, contents.c_str());
     string s;
     while (lex.tok != T_EOF) {

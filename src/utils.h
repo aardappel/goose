@@ -90,6 +90,14 @@ inline bool LoadFile(const string &path, string &dest) {
     return read == (size_t)len;
 }
 
+// A Goose source file, without the UTF-8 byte-order mark many Windows
+// editors write at its start (spec §2).
+inline bool LoadSource(const string &path, string &dest) {
+    if (!LoadFile(path, dest)) return false;
+    if (dest.compare(0, 3, "\xEF\xBB\xBF") == 0) dest.erase(0, 3);
+    return true;
+}
+
 // The stdlib modules with a native layer a program calls into, which a JIT
 // run hands it from the compiler's own copies of them.
 struct NativeLayers {
