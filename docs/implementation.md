@@ -3922,6 +3922,21 @@ captured resizable, and no global whose type could be one of those
 parameters' pointees. In that mode the parameters' `.stk` tops are cached
 instead, and every call syncs everything.
 
+**Divisors.** An unsigned `/` or `%`, or a signed one `Binary::nonneg` marks
+(§5.10), by a variable the loop cannot change -- an immutable integer bound
+before the loop, not inside it nor by the loop itself, and assigned nowhere
+in it (tail-recursion elimination assigns a function's parameters in the loop
+it makes) -- multiplies instead of dividing (`LoopDivisible`,
+`HoistDivisors`): ahead of the outermost loop the divisor is fixed for,
+`gs_divu_gen` computes libdivide's magic number and shift for it once (one
+128-by-64-bit division), and each division is the high half of a product,
+adjusted and shifted (`gs_divu_q`); a remainder is the dividend less the
+quotient times the divisor. A zero divisor gets `GS_DIVU_NONE`, under which
+every division takes the plain operator and its zero check, so the abort
+happens where and when a division by zero runs; so does a C compiler without
+128-bit products (TinyCC). The magic costs about one division, so a loop pays
+it back from its second division on.
+
 ### 6.11 `&&` and `||`
 
 The left operand lands in a `uint8_t` temporary. The right one is emitted

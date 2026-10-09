@@ -439,6 +439,87 @@ static uint64_t gs_mod_u64(uint64_t a, uint64_t b, const char *file, int line) {
     return a % b;
 }
 
+/* Unsigned division by a divisor a loop does not change, in libdivide's
+   form: computed once before the loop (gs_divu_gen), x / d is then the high
+   half of a product, adjusted where GS_DIVU_ADD is in `more` and shifted
+   (gs_divu_q). A zero divisor, and a C compiler without 128-bit products,
+   get GS_DIVU_NONE, and their divisions the plain operator, which reports a
+   zero divisor where the division is. */
+#define GS_DIVU_NONE 255
+#define GS_DIVU_ADD 64
+#define GS_DIVU_SHIFT 63
+#if defined(__TINYC__)
+#define GS_HAVE_U128 0
+#elif defined(__SIZEOF_INT128__)
+#define GS_HAVE_U128 1
+static uint64_t gs_mulhi_u64(uint64_t a, uint64_t b) {
+    return (uint64_t)(((unsigned __int128)a * b) >> 64);
+}
+/* (hi * 2^64) / d and its remainder, for hi < d. Clang targeting the
+   Microsoft ABI links no 128-bit division routine, so x86-64 divides with
+   the instruction itself. */
+static uint64_t gs_div128_u64(uint64_t hi, uint64_t d, uint64_t *rem) {
+#if defined(__x86_64__)
+    uint64_t q, r;
+    __asm__("divq %[d]" : "=a"(q), "=d"(r) : [d] "r"(d), "a"((uint64_t)0), "d"(hi));
+    *rem = r;
+    return q;
+#else
+    unsigned __int128 n = (unsigned __int128)hi << 64;
+    *rem = (uint64_t)(n % d);
+    return (uint64_t)(n / d);
+#endif
+}
+#elif defined(_MSC_VER) && _MSC_VER >= 1920 && defined(_M_X64)
+#include <intrin.h>
+#define GS_HAVE_U128 1
+static uint64_t gs_mulhi_u64(uint64_t a, uint64_t b) { return __umulh(a, b); }
+static uint64_t gs_div128_u64(uint64_t hi, uint64_t d, uint64_t *rem) {
+    return _udiv128(hi, 0, d, rem);
+}
+#else
+#define GS_HAVE_U128 0
+#endif
+
+static uint64_t gs_divu_gen(uint64_t d, uint8_t *more) {
+#if GS_HAVE_U128
+    int k = 63;
+    uint64_t rem, m;
+    if (d == 0) { *more = GS_DIVU_NONE; return 0; }
+    while (!(d >> k)) k--;
+    if (!(d & (d - 1))) { *more = (uint8_t)k; return 0; }
+    /* floor(2^(64+k) / d), which fits since d > 2^k; then the smallest
+       power that works, or the 65-bit form one past it. */
+    m = gs_div128_u64((uint64_t)1 << k, d, &rem);
+    if (d - rem < ((uint64_t)1 << k)) {
+        *more = (uint8_t)k;
+    } else {
+        uint64_t twice = rem + rem;
+        m += m;
+        if (twice >= d || twice < rem) m++;
+        *more = (uint8_t)(k | GS_DIVU_ADD);
+    }
+    return m + 1;
+#else
+    (void)d;
+    *more = GS_DIVU_NONE;
+    return 0;
+#endif
+}
+
+static uint64_t gs_divu_q(uint64_t x, uint64_t magic, uint8_t more) {
+#if GS_HAVE_U128
+    uint64_t q;
+    if (!magic) return x >> more;
+    q = gs_mulhi_u64(magic, x);
+    if (more & GS_DIVU_ADD) return (((x - q) >> 1) + q) >> (more & GS_DIVU_SHIFT);
+    return q >> more;
+#else
+    (void)magic;
+    return x >> more;   /* Never called: GS_DIVU_NONE takes the operator. */
+#endif
+}
+
 /* `as!` float-to-int: truncate toward zero, wrap modulo 2^64 (§6.3). Defined
    the same on every platform, unlike a raw C cast of an out-of-range value.
    A value lies in the i64 range exactly when its truncation does, and there
@@ -476,7 +557,8 @@ static uint64_t gs_rangechk_u(uint64_t v, uint64_t hi, const char *type, const c
 /* To a signed type or a narrower unsigned one, whose range is lo..hi. */
 static int64_t gs_f2ichk(double d, int f32, int64_t lo, int64_t hi, const char *type,
                          const char *file, int line) {
-    if (!(d >= -9223372036854775808.0 && d < 9223372036854775808.0))
+)GSRT"
+R"GSRT(    if (!(d >= -9223372036854775808.0 && d < 9223372036854775808.0))
         gs_asfail_f("out of range", d, f32, type, file, line);
     int64_t v = (int64_t)d;
     if (v < lo || v > hi) gs_asfail_f("out of range", d, f32, type, file, line);
@@ -533,8 +615,7 @@ GS_API void gs_stack_stats(int64_t stacks);
    runtime keeps for its thread. */
 GS_API void gs_release_regions(void);
 
-)GSRT"
-R"GSRT(/* ---------------------------------------------------------------------------
+/* ---------------------------------------------------------------------------
    Threads and typed queues (§11.2), runtime_threads.h. */
 
 GS_API int64_t gs_hardware_threads(void);
@@ -670,7 +751,8 @@ static void gs_spans_drop(gs_span *s, int64_t *n, uint8_t **top, int64_t at) {
 
 /* Takes cnt elements off the front of span `at`, or all of a span that
    holds no more. */
-static void gs_spans_take(gs_span *s, int64_t *n, uint8_t **top, int64_t at, int64_t cnt) {
+)GSRT"
+R"GSRT(static void gs_spans_take(gs_span *s, int64_t *n, uint8_t **top, int64_t at, int64_t cnt) {
     if (s[at].cnt <= cnt) {
         gs_spans_drop(s, n, top, at);
         return;
@@ -744,8 +826,7 @@ static void gs_spans_free(uint8_t *base, int64_t *n, uint8_t **top, int64_t idx,
     }
 }
 
-)GSRT"
-R"GSRT(/* ---------------------------------------------------------------------------
+/* ---------------------------------------------------------------------------
    varint (§3.6): ULEB128; struct/payload/offset values additionally zigzag. */
 
 static int64_t gs_uleb_read(const uint8_t *p) {
@@ -877,7 +958,8 @@ GS_API int64_t gs_fmt_bool(uint8_t *dst, int64_t v);
 GS_API int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n);
 
 /* print(...) (§3.7): each argument's text, then a newline. */
-GS_API void gs_out_int(int64_t v);
+)GSRT"
+R"GSRT(GS_API void gs_out_int(int64_t v);
 GS_API void gs_out_uint(uint64_t v);
 GS_API void gs_out_flt(double v);
 GS_API void gs_out_f32(float v);

@@ -46,7 +46,9 @@ inline void CodeGen::GenStmt(Node *n) {
 // sits after the fallthrough restores rather than sharing them.
 
 inline void CodeGen::GenLoopBody(const function<void()> &condexit, Block *bodyb, Dst d,
-                                 const string &forhead, Node *cond, size_t first) {
+                                 const string &forhead, Node *cond, size_t first,
+                                 vector<const VarDef *> binders) {
+    auto divisors = HoistDivisors(bodyb, binders);
     PushSc(SC_LOOP);
     auto si = (int)cscopes.size() - 1;
     cscopes[si].brklbl = Lbl();
@@ -72,6 +74,7 @@ inline void CodeGen::GenLoopBody(const function<void()> &condexit, Block *bodyb,
     PopSc();
     if (usedbrk) L(brklbl, ":;");
     MarkLoopEnd(loopid);
+    for (auto vd : divisors) divmagic.erase(vd);
     termjump = false;
 }
 
@@ -96,6 +99,61 @@ inline bool CodeGen::InStraightLoop() {
         if (cscopes[i].kind == SC_FN) return false;
     }
     return false;
+}
+
+// An unsigned `/` or `%`, or a signed one BCE found to be of nonnegative
+// operands (Binary::nonneg), by a variable whose value cannot change: an
+// immutable integer, not a reference to one.
+inline bool CodeGen::LoopDivisible(Binary *b) {
+    if (b->op != T_DIV && b->op != T_MOD) return false;
+    auto t = b->left->exprtype;
+    if (!t || t->kind != TY_INT || t->intstorage == IS_VARINT) return false;
+    if (!IsUnsigned(t->intstorage) && !b->nonneg) return false;
+    auto id = Is<Ident>(b->right);
+    auto vd = id ? id->vdef : nullptr;
+    return vd && !vd->isvar && vd->type && vd->type->kind == TY_INT &&
+           vd->type->intstorage != IS_VARINT && !fillvalues.count(id);
+}
+
+// The divisions in a loop's body by a variable the loop cannot change
+// (LoopDivisible) that was bound before the loop -- named already, and
+// bound nowhere inside, nor by the loop itself (`binders`, a `for`'s
+// variables) -- multiply by a magic number computed here, ahead of the
+// loop, once for every loop nested in it as well: a hardware division
+// takes several times as long as a multiply and a shift. Returns the
+// divisors it adds to divmagic, for the loop to retire. A parameter is
+// immutable in the source, but where tail-recursion elimination turns
+// self-calls into a loop it assigns the parameters each round
+// (optimize_tre.h), so a divisor assigned in the body counts as bound
+// inside.
+inline vector<const VarDef *> CodeGen::HoistDivisors(Block *body,
+                                                     const vector<const VarDef *> &binders) {
+    vector<const VarDef *> added;
+    set<const VarDef *> inner(binders.begin(), binders.end());
+    vector<Binary *> divs;
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n || Is<FnDecl>(n) || Is<FunVal>(n)) return;
+        if (auto vd = Is<VarDecl>(n)) for (auto d : vd->defs) inner.insert(d);
+        if (auto a = Is<Assign>(n)) if (auto id = Is<Ident>(a->lval)) inner.insert(id->vdef);
+        if (auto fl = Is<ForLoop>(n)) { inner.insert(fl->vdef); inner.insert(fl->idxdef); }
+        if (auto me = Is<MatchExpr>(n)) for (auto &arm : me->arms) inner.insert(arm.binder);
+        if (auto c = Is<Call>(n)) for (auto p : c->fvparams) inner.insert(p);
+        if (auto b = Is<Binary>(n); b && LoopDivisible(b)) divs.push_back(b);
+        RunChildren(n, walk);
+    };
+    walk(body);
+    for (auto b : divs) {
+        auto id = Is<Ident>(b->right);
+        auto vd = id->vdef;
+        if (inner.count(vd) || divmagic.count(vd) || (!vnames.count(vd) && !gnames.count(vd)))
+            continue;
+        auto m = T(), more = T();
+        L("uint8_t ", more, ";");
+        L("uint64_t ", m, " = gs_divu_gen((uint64_t)(", GenX(id), "), &", more, ");");
+        divmagic[vd] = { m, more };
+        added.push_back(vd);
+    }
+    return added;
 }
 
 inline void CodeGen::GenBreakPath(Node *val) {

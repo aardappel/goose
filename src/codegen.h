@@ -948,9 +948,16 @@ struct CodeGen {
     // sits after the fallthrough restores rather than sharing them.
 
     void GenLoopBody(const function<void()> &condexit, Block *bodyb, Dst d,
-                     const string &forhead = "", Node *cond = nullptr, size_t first = 0);
+                     const string &forhead = "", Node *cond = nullptr, size_t first = 0,
+                     vector<const VarDef *> binders = {});
     static bool StraightCode(Node *n);
     bool InStraightLoop();
+
+    // Divisors fixed for a loop being emitted: the divisor variable, and the
+    // C locals holding its gs_divu_gen magic and shift (HoistDivisors).
+    unordered_map<const VarDef *, pair<string, string>> divmagic;
+    bool LoopDivisible(Binary *b);
+    vector<const VarDef *> HoistDivisors(Block *body, const vector<const VarDef *> &binders);
     void GenBreakPath(Node *val);
 
     // Loops run in blocks of iterations (ForLoop::stripk, ForLoop::sumred):

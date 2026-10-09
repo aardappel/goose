@@ -237,12 +237,25 @@ inline string Binary::CgX(CodeGen &cg) {
                                              cg.OvfLocArgs(lt->intstorage, line), ")");
                     case T_MUL:   return cat("gs_mul_", sfx, "(", l, ", ", r,
                                              cg.OvfLocArgs(lt->intstorage, line), ")");
-                    case T_DIV:
-                        if (nonneg) return cat("(", ct, ")((uint64_t)(", lc, ") / (uint64_t)(", rc, "))");
-                        return cat("gs_div_", sfx, "(", l, ", ", r, ", ", cg.LocArgs(line), ")");
-                    default:
-                        if (nonneg) return cat("(", ct, ")((uint64_t)(", lc, ") % (uint64_t)(", rc, "))");
-                        return cat("gs_mod_", sfx, "(", l, ", ", r, ", ", cg.LocArgs(line), ")");
+                    default: {   // T_DIV, T_MOD
+                        auto div = op == T_DIV;
+                        auto plain = nonneg ? cat("(", ct, ")((uint64_t)(", lc, div ? ") / " : ") % ",
+                                                  "(uint64_t)(", rc, "))")
+                                            : cat(div ? "gs_div_" : "gs_mod_", sfx, "(", l, ", ", r,
+                                                  ", ", cg.LocArgs(line), ")");
+                        // A divisor fixed for an enclosing loop: its magic, unless
+                        // gs_divu_gen found none to give (HoistDivisors).
+                        auto id = Is<Ident>(right);
+                        auto dm = id && cg.LoopDivisible(this) ? cg.divmagic.find(id->vdef)
+                                                                : cg.divmagic.end();
+                        if (dm == cg.divmagic.end()) return plain;
+                        auto q = cat("gs_divu_q((uint64_t)(", lc, "), ", dm->second.first, ", ",
+                                     dm->second.second, ")");
+                        auto fast = div ? q
+                                        : cat("(uint64_t)(", lc, ") - ", q, " * (uint64_t)(", rc, ")");
+                        return cat("(", ct, ")(", dm->second.second, " != GS_DIVU_NONE ? ", fast,
+                                   " : ", plain, ")");
+                    }
                 }
             }
             // Elementwise math on identical struct/fixed-array types (§6.1).
@@ -1024,7 +1037,8 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
             return;
         }
         cg.GenLoopBody(bind, body, d,
-            cat("for (", ict, " ", ctr, " = ", lov, "; ", ctr, " < ", hiv, "; ", step, ") {"));
+            cat("for (", ict, " ", ctr, " = ", lov, "; ", ctr, " < ", hiv, "; ", step, ") {"),
+            nullptr, 0, { vdef, idxdef });
         return;
     }
     // Arrays and slices. The length re-reads each iteration (growth during
@@ -1131,7 +1145,7 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
             }
         }, body, d,
             cat("for (int64_t ", gi, " = 0; ", gi, " < ", bound, "; ", gi, "++, ", p,
-                " += ", cg.SizeX(v.elem, p), ") {"));
+                " += ", cg.SizeX(v.elem, p), ") {"), nullptr, 0, { vdef, idxdef });
         return;
     }
     auto esz = cg.FixedSize(v.elem);
@@ -1186,7 +1200,8 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
     cg.GenLoopBody([&]() {
         testlen();
         bind();
-    }, body, d, cat("for (int64_t ", gi, " = 0; ", gi, " < ", bound, "; ", gi, "++) {"));
+    }, body, d, cat("for (int64_t ", gi, " = 0; ", gi, " < ", bound, "; ", gi, "++) {"),
+       nullptr, 0, { vdef, idxdef });
 }
 
 inline void Return::CgStmt(CodeGen &cg) {
