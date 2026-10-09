@@ -819,16 +819,25 @@ fn keep_cross_array(v: i64[:], w: i64[:]) -> i64 {
     return s;
 }
 
-// Facts are not collected from `i + 1 < len` (the sum may have wrapped
-// before the compare); spell it `i < len - 1` instead.
-fn plus_one_limitation(s: i64[:]) -> i64 {
+// `i + 1 < len` is a fact once `i + 1` provably did not wrap: here `i`
+// never exceeds the length, which is at most 2^48.
+fn plus_one_condition(s: i64[:]) -> i64 {
     var r = 0;
     var i = 0;
     while i + 1 < s.len {
-        r += s[i + 1];                        // bce:keep
+        r += s[i + 1];                        // bce:elide
         i++;
     }
     return r;
+}
+
+// With nothing bounding `k` from above, `k + 1` may have wrapped to a
+// negative number that passes the compare, so it states nothing.
+fn plus_one_unbounded(s: i64[:], k: i64) -> i64 {
+    if k >= 0 && k + 1 < s.len {
+        return s[k + 1];                      // bce:keep
+    }
+    return 0;
 }
 
 fn plus_one_provable(s: i64[:]) -> i64 {
@@ -909,12 +918,15 @@ fn main() {
     print(field_place());                     // 13
     print(pool_loop());                       // 51
     print(slice_pool_loop());                 // 5
+    // A completed check proves its index in range from then on, so each of
+    // these takes a fresh load rather than reusing kk.
     print(keep_unknown(data, kk));            // 3
-    print(keep_upper_only(data, kk));         // 3
-    print(keep_lower_only(data, kk));         // 3
-    print(keep_off_by_one(data, kk));         // 3
+    print(keep_upper_only(data, data2[1]));   // 3
+    print(keep_lower_only(data, data2[1]));   // 3
+    print(keep_off_by_one(data, data2[1]));   // 3
     let short = data2[0..3];
     print(keep_cross_array(short, data));     // 6
-    print(plus_one_limitation(data));         // 35
+    print(plus_one_condition(data));          // 35
+    print(plus_one_unbounded(data, data2[1])); // 4
     print(plus_one_provable(data));           // 35
 }

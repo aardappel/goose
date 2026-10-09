@@ -26,13 +26,15 @@
 // across their kill points.
 //
 // Facts come from: `for` headers (0 <= i < n at the appropriate snapshot),
-// while/if/assert conditions and their negations (through !/&&/||),
-// integer match arms, declaration and assignment equalities with
-// recognizable right-hand sides, and ++/--/+=/-= which shift facts in place
-// when the pre-state provably cannot wrap at the variable's width. Condition
-// facts are suppressed when evaluating the condition itself may have changed
-// tracked state (a mutating call inside it), since the comparison then ran
-// against pre-kill values.
+// while/if/assert conditions and their negations (through !/&&/||; a side
+// `i + c` counts where the facts show it did not wrap), integer match arms,
+// declaration and assignment equalities with recognizable right-hand sides,
+// ++/--/+=/-= which shift facts in place when the pre-state provably cannot
+// wrap at the variable's width, and completed checks: past `a[i]` the
+// program only continues with 0 <= i < len. Condition facts are suppressed
+// when evaluating the condition itself may have changed tracked state (a
+// mutating call inside it), since the comparison then ran against pre-kill
+// values.
 //
 // Lengths are tracked exactly where the program states them: a literal's
 // element count, `resize`/`clear`, a push or a constant-length append as a
@@ -170,6 +172,10 @@ struct BCE {
     // earlier one's facts.
     int nexttmp = 0;
     Base TmpBase() { return Base { BK_TMP, nexttmp++, 0 }; }
+    // Constant bounds a one-shot base carries by construction, kept as
+    // axioms of that base rather than as facts: they hold wherever the base
+    // can be named, and they never compete for the fact cap.
+    unordered_map<int, pair<int64_t, int64_t>> tmpival;
     Base VarBase(VarDef *v) {
         auto id = VarId(v);
         auto it = flow.vgen.find(id);
@@ -495,6 +501,12 @@ struct BCE {
             if (b.kind == BK_LEN) {
                 edges.push_back({ 0, (int)i, 0 });         // 0 <= len.
                 edges.push_back({ (int)i, 0, LENMAX });    // len <= 2^48 (§10.4).
+            } else if (b.kind == BK_TMP) {
+                auto it = tmpival.find(b.id);
+                if (it != tmpival.end()) {
+                    edges.push_back({ 0, (int)i, SatSub(0, it->second.first) });
+                    edges.push_back({ (int)i, 0, it->second.second });
+                }
             } else if (b.kind == BK_VAR) {
                 auto v = varof[b.id];
                 auto t = v->type;
@@ -581,8 +593,7 @@ struct BCE {
         auto [tlo, thi] = IntRange(t->intstorage);
         if (lo < tlo || hi > thi) return {};
         auto m = TmpBase();
-        AddFactB(Zero(), m, SatSub(0, lo));   // lo <= m.
-        AddFactB(m, Zero(), hi);              // m <= hi.
+        tmpival[m.id] = { lo, hi };
         return Term { true, m, 0 };
     }
 
@@ -680,11 +691,45 @@ struct BCE {
             return Derived(n, [&] { return MulTerm(b); });
         if (auto b = Is<Binary>(n); b && (b->op == T_MOD || b->op == T_BITAND))
             return Derived(n, [&] { return RangedOpTerm(b); });
+        if (auto b = Is<Binary>(n); b && b->op == T_SHR)
+            return Derived(n, [&] { return ShiftTerm(b); });
         if (auto ac = Is<AsCast>(n)) return Derived(n, [&] { return CastTerm(ac); });
         // A spliced-in call body (or a bare block) is its value expression.
         if (auto ib = Is<InlineBlock>(n)) return BlockValueTerm(ib->body, ib->sf);
         if (auto bl = Is<Block>(n)) return BlockValueTerm(bl, nullptr);
+        // A value read out of storage or returned by a call has no base, but
+        // a narrow integer type still bounds it.
+        if (Is<Index>(n) || Is<Dot>(n) || Is<Call>(n))
+            return Derived(n, [&] { return TypeRangeTerm(n); });
         return {};
+    }
+
+    // The storage range of a value of a sub-64-bit integer type (§6.2: every
+    // operation computes at its type, so no such value lies outside it).
+    Term TypeRangeTerm(Node *n) {
+        if (mode == M_KILLS) return {};
+        auto t = n->exprtype;
+        if (!t || t->kind != TY_INT || t->intstorage == IS_VARINT || IntBits(t->intstorage) >= 64)
+            return {};
+        auto [lo, hi] = IntRange(t->intstorage);
+        return IvalTerm(t, lo, hi);
+    }
+
+    // `a >> c` for a constant count: the shift is monotone, so it maps the
+    // operand's constant bounds to the result's. The count is masked to the
+    // operation's width (§6.2), and an unsigned operand's bounds are already
+    // nonnegative, so the arithmetic shift below is the machine's.
+    Term ShiftTerm(Binary *b) {
+        if (mode == M_KILLS) return {};
+        auto t = OpType(b);
+        if (!t || t->kind != TY_INT || t->intstorage == IS_U64 || t->intstorage == IS_VARINT)
+            return {};
+        auto ct = TermOf(b->right);
+        if (!ct.ok || ct.b.kind != BK_ZERO) return {};
+        auto k = ct.off & (IntBits(t->intstorage) - 1);
+        auto iv = BoundsOf(TermOf(b->left));
+        if (!iv.ok) return {};
+        return IvalTerm(t, iv.lo >> k, iv.hi >> k);
     }
 
     // The value a block produces: its trailing expression, or a final return
@@ -773,11 +818,14 @@ struct BCE {
     }
 
     // A term usable as a comparison side: the machine comparison then equals
-    // the mathematical one. var+const is excluded (the addition itself may
-    // have wrapped before the compare); len+small-const is exact.
-    static bool CmpAdmissible(const Term &t) {
-        if (t.b.kind == BK_VAR) return t.off == 0;
-        return true;   // BK_ZERO any; BK_LEN offsets are SmallOff-capped already.
+    // the mathematical one. A constant, a bare base and len+small-const
+    // (len <= 2^48) are exact; any other base plus an offset only where the
+    // facts show the i64 addition that formed it cannot have wrapped (offsets
+    // on a moving base are only ever formed at i64, see TermOf).
+    bool CmpAdmissible(const Term &t) {
+        if (!t.ok) return false;
+        if (t.b.kind == BK_ZERO || t.b.kind == BK_LEN || t.off == 0) return true;
+        return NoWrap(t, IS_I64);
     }
 
     // ------------------------------------------------------------------
@@ -789,6 +837,9 @@ struct BCE {
     set<int> *shsum = nullptr;         // ...those a non-growing bump can hit...
     set<VarDef *> *vksum = nullptr;    // ...and re-bound/killed variables.
     bool anybump = false;
+    // While HasKillEffects runs: the variables its node declares, whose
+    // bumps change nothing a comparison outside could have read.
+    set<VarDef *> *freshvars = nullptr;
     int loopdepth = 0;          // Inside a loop body or function-value body.
 
     // A kills-only walk with the summary sinks redirected: the flow it
@@ -822,7 +873,7 @@ struct BCE {
     };
 
     void BumpVar(VarDef *v, bool bridge = true) {
-        anybump = true;
+        if (!freshvars || !freshvars->count(v)) anybump = true;
         auto old = VarBase(v);
         flow.vgen[VarId(v)] = ++nextgen;
         if (vksum) vksum->insert(v);
@@ -834,7 +885,7 @@ struct BCE {
     }
 
     void BumpPlace(int pid, int dir) {   // dir: +1 grow, -1 shrink, 0 unknown.
-        anybump = true;
+        if (!freshvars || !freshvars->count(places[pid].rootv)) anybump = true;
         auto old = LenBase(pid);
         flow.pgen[pid] = ++nextgen;
         if (ksum) ksum->insert(pid);
@@ -1595,14 +1646,28 @@ struct BCE {
     }
 
     void JudgeIndex(Index *ix, const Term &lent) {
-        if (mode != M_JUDGE) return;
-        idxtotal++;
+        if (mode == M_KILLS) return;
         auto it = TermOf(ix->idx);
-        auto ok = lent.ok && it.ok &&
-                  Query(Zero(), it.b, it.off) &&
-                  Query(it.b, lent.b, SatSub(SatSub(lent.off, it.off), 1));
-        if (ok) { ix->nobc = true; idxelided++; }
-        RecordLine(ix->line, ok);
+        if (mode == M_JUDGE) {
+            idxtotal++;
+            auto ok = lent.ok && it.ok &&
+                      Query(Zero(), it.b, it.off) &&
+                      Query(it.b, lent.b, SatSub(SatSub(lent.off, it.off), 1));
+            if (ok) { ix->nobc = true; idxelided++; }
+            RecordLine(ix->line, ok);
+        }
+        CheckedFacts(it, lent, -1);
+    }
+
+    // What a completed check proves: execution only continues past one with
+    // 0 <= x <= len + slack (-1 for an index, 0 for a slice bound), so these
+    // hold afterwards. A term's value is the machine's here even where the
+    // addition forming it could have wrapped: a wrapped i64 value lies
+    // outside [0, 2^48], which the check would have rejected.
+    void CheckedFacts(const Term &x, const Term &lent, int64_t slack) {
+        if (!x.ok) return;
+        AddFactB(Zero(), x.b, x.off);
+        if (lent.ok) AddFactB(x.b, lent.b, SatAdd(SatSub(lent.off, x.off), slack));
     }
 
     // One bound of a slice expression, as a term in the state at the moment
@@ -1835,11 +1900,33 @@ struct BCE {
         for (auto &[v, pid] : named) if (!kills.count(pid)) out.push_back(v);
     }
 
+    // The variables declared anywhere inside `n`.
+    static void DeclaredIn(Node *n, set<VarDef *> &out) {
+        if (!n) return;
+        if (auto vd = Is<VarDecl>(n)) for (auto d : vd->defs) if (d) out.insert(d);
+        if (auto fl = Is<ForLoop>(n)) {
+            if (fl->vdef) out.insert(fl->vdef);
+            if (fl->idxdef) out.insert(fl->idxdef);
+        }
+        if (auto m = Is<MatchExpr>(n))
+            for (auto &arm : m->arms) if (arm.binder) out.insert(arm.binder);
+        if (auto c = Is<Call>(n)) for (auto p : c->fvparams) if (p) out.insert(p);
+        RunChildren(n, [&](Node *ch) { DeclaredIn(ch, out); });
+    }
+
     // Runs the walk over `n` recording only kill effects into a scratch flow;
-    // returns whether anything tracked was changed.
+    // returns whether anything tracked was changed. A variable `n` declares
+    // itself does not count: the comparisons a condition contributes facts
+    // from cannot name it (it is out of their scope) except through a block
+    // operand that declares it, whose value is read after the declaration.
     bool HasKillEffects(Node *n) {
+        set<VarDef *> fresh;
+        DeclaredIn(n, fresh);
         KillsScope ks(*this);
+        auto savedfresh = freshvars;
+        freshvars = &fresh;
         Walk(n);
+        freshvars = savedfresh;
         return anybump;
     }
 
@@ -2312,6 +2399,12 @@ inline bool SliceExpr::BceWalk(BCE &b) {
     if (b.nextgen != gen) lot = BCE::Term {};
     if (!kills) b.slicelen = BCE::SliceLenTerm(lot, hit);
     if (b.mode == BCE::M_JUDGE) b.JudgeSlice(this, lent, lot, hit);
+    if (!kills) {
+        // A completed slice has 0 <= lo <= hi <= len.
+        b.CheckedFacts(lot, BCE::Term {}, 0);
+        b.CheckedFacts(hit, lent, 0);
+        if (lot.ok && hit.ok) b.AddFactB(lot.b, hit.b, BCE::SatSub(hit.off, lot.off));
+    }
     return true;
 }
 
@@ -2518,7 +2611,7 @@ inline bool MatchExpr::BceWalk(BCE &b) {
     }
     auto st = b.TermOf(scrutinee);
     auto stt = scrutinee->exprtype;
-    auto admissible = st.ok && BCE::CmpAdmissible(st) && stt && stt->kind == TY_INT &&
+    auto admissible = st.ok && b.CmpAdmissible(st) && stt && stt->kind == TY_INT &&
                       stt->intstorage != IS_U64;
     auto base = b.flow;
     BCE::Flow acc;
@@ -2615,11 +2708,16 @@ inline bool ForLoop::BceWalk(BCE &b) {
         if (auto r = Is<RangeExpr>(iter)) {
             // Codegen saves each endpoint when it is evaluated. In particular,
             // the upper endpoint must not replace an earlier lower read.
+            // An endpoint is only the term's value where the addition that
+            // formed it cannot have wrapped, which is decided in the state
+            // it was evaluated in.
             b.Walk(r->lo);
             lot = b.TermOf(r->lo);
+            if (!b.CmpAdmissible(lot)) lot = BCE::Term {};
             auto gen = b.nextgen;
             b.Walk(r->hi);
             hit = b.TermOf(r->hi);
+            if (!b.CmpAdmissible(hit)) hit = BCE::Term {};
             // A shift keeps its variable's generation, so an upper endpoint
             // that moved anything may have changed what the lower term names.
             if (b.nextgen != gen && lot.b.kind != BCE::BK_ZERO) lot = BCE::Term {};
@@ -2629,6 +2727,7 @@ inline bool ForLoop::BceWalk(BCE &b) {
         if (iterkind == IK_COUNT) {
             lot = BCE::Term { true, BCE::Zero(), 0 };
             hit = b.TermOf(iter);
+            if (!b.CmpAdmissible(hit)) hit = BCE::Term {};
         }
     }
     // Counted push loops `for _ in n { ...; a.push(x); ...; }`: when no other
@@ -2680,10 +2779,8 @@ inline bool ForLoop::BceWalk(BCE &b) {
     auto iv = iterkind == IK_ARRAY || iterkind == IK_SLICE ? idxdef : vdef;
     if (iv) {
         auto vb = b.VarBase(iv);
-        if (lot.ok && BCE::CmpAdmissible(lot))
-            b.AddFactB(lot.b, vb, BCE::SatSub(0, lot.off));
-        if (hit.ok && BCE::CmpAdmissible(hit))
-            b.AddFactB(vb, hit.b, BCE::SatSub(hit.off, 1));
+        if (lot.ok) b.AddFactB(lot.b, vb, BCE::SatSub(0, lot.off));
+        if (hit.ok) b.AddFactB(vb, hit.b, BCE::SatSub(hit.off, 1));
     }
     if ((iterkind == IK_RANGE || iterkind == IK_COUNT) && idxdef)
         b.AddFactB(BCE::Zero(), b.VarBase(idxdef), 0);
@@ -2701,7 +2798,7 @@ inline bool ForLoop::BceWalk(BCE &b) {
                 iters = BCE::Term { true, hit.b, BCE::SatSub(hit.off, lot.off) };
         }
         // A negative count runs zero iterations; facts only when it is >= 0.
-        if (iters.ok && BCE::CmpAdmissible(iters) &&
+        if (iters.ok && b.CmpAdmissible(iters) &&
             b.Query(BCE::Zero(), iters.b, iters.off)) {
             for (size_t i = 0; i < pushpids.size(); i++) {
                 auto [pid, k] = pushpids[i];

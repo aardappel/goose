@@ -2919,9 +2919,22 @@ any generation change (`Derived`), and an expression whose later operand
 changed tracked state is not rebuilt from its operands' current names
 (`effectfulterms`).
 
+A value read out of storage or returned by a call (`Index`, `Dot`, `Call`)
+has no base, but a type narrower than 64 bits still bounds it
+(`TypeRangeTerm`: a byte loaded from an array indexes a 256-entry table),
+and `a >> c` maps its operand's constant bounds through the shift
+(`ShiftTerm`: the byte shifted right by two indexes a 64-entry one). Such
+constant bounds of a one-shot base are axioms of that base (`tmpival`),
+not facts, so they never compete for the fact cap.
+
 A term is admissible as a comparison side (`CmpAdmissible`) only if the
-machine comparison equals the mathematical one: a variable with a zero
-offset, any constant, a length plus a small constant.
+machine comparison equals the mathematical one: any constant, a bare base,
+a length plus a small constant, and any other base plus an offset where the
+facts show that the `i64` addition forming it did not wrap (`NoWrap`). So
+the lookahead `i + 1 < s.len` inside `while i < s.len` is a fact, and so is
+the start of `for j in i + 1..n`; a range endpoint is judged in the state it
+was evaluated in, which also keeps a counted push loop over a range that
+wrapped to empty from claiming its iterations.
 
 ### 5.4 Places and aliasing
 
@@ -2976,9 +2989,18 @@ short-circuit operand (both senses, through `!`, `&&` and `||`), an integer
 entry for ranges and counts, against the re-read length for arrays and
 slices). A condition that itself changed tracked state
 -- a mutating call inside it -- adds nothing (`HasKillEffects`), since the
-comparison ran against pre-kill values. A completed `pop` proves the old
+comparison ran against pre-kill values; the locals the condition declares
+itself, such as the parameter of a predicate inlined into it, do not count,
+since its comparisons cannot name them. A completed `pop` proves the old
 length was at least one; a `resize` states the new length when the count's
 term survived the fill value's evaluation.
+
+A completed check is a fact as well (`CheckedFacts`): the program only
+continues past `a[i]` with `0 <= i < len` and past `a[lo..hi]` with
+`0 <= lo <= hi <= len`, so a repeated index, or an index inside an earlier
+slice's bounds, needs no check of its own. The index's term is the machine's
+value there even where an `i + c` could have wrapped: a wrapped `i64` lies
+outside `[0, 2^48]`, which the check rejects.
 
 Joins are the **meet** of the branch states (`Meet`: a fact survives with the
 weaker constant, generations take the maximum); a branch that diverges
@@ -3082,8 +3104,8 @@ and measured, then dropped because it produced no measurable speedup
 base, so a `u64` local loses the range its initializer had (TODO 0a). Loop
 exit conditions that are disjunctions are not represented (TODO 0f). A
 value read out of a field or element (only variables and lengths are
-bases), a value through a call without a summary, and anything after a
-shrink stays unproven until re-established.
+bases; a narrow type still bounds it), a value through a call without a
+summary, and anything after a shrink stays unproven until re-established.
 
 ---
 
@@ -3890,16 +3912,26 @@ call sites*. In practice:
   `print`) and none is inside a recursive cycle;
 * checks after a call to a function that only reads and writes elements:
   the callee's effect summary says it resizes nothing, so the caller's
-  length facts survive.
+  length facts survive;
+* conditions on a sum whose variable is bounded, so the sum cannot have
+  wrapped: the lookahead `if i + 1 < s.len && s[i + 1] == '"'` inside
+  `while i < s.len`, `while i + 3 <= s.len { s[i + 2]; i += 3; }`, the range
+  `for j in i + 1..n` and the inclusive form `for j in a..e + 1`;
+* a byte (or any value of a type narrower than 64 bits) read out of an
+  array, a field or a call indexing a table its type's range fits:
+  `tab[s[i]]` into 256 entries, `tab[s[i] >> 2]` into 64;
+* an index or slice bound that an earlier check on the same path already
+  passed: `xs[k]` after `xs[k]`, `xs[i]` for `i in lo..hi` after
+  `xs[lo..hi]`.
 
 **Kept** (the check stays, and is usually a well-predicted branch):
 
 * an index loaded from a data structure -- `dist[q[i]]`, `pool[slots[k].node]`,
   `out[cursor[s]]`: the analysis tracks no array contents;
 * a `u64`-typed index variable (a `u64` is never a base), an index read out
-  of a field or element (`n.count`, only variables and lengths are bases),
-  and any value that reaches the index through a cast the facts cannot prove
-  in range;
+  of a field or element (`n.count`, only variables and lengths are bases,
+  though a narrow type's range still counts), and any value that reaches the
+  index through a cast the facts cannot prove in range;
 * an index whose relation to the length crosses a `pop`, `resize`, `clear`,
   whole assignment, or a call the summary says may resize that array (or a
   call with no summary at all: a thread spawn, a call through an opaque
@@ -3907,9 +3939,8 @@ call sites*. In practice:
 * a comparison against a value computed by a call that mutates tracked state
   inside the condition itself;
 * an index that is `var + c` at a width narrower than `i64`, and a condition
-  whose side is `var + c` (only a bare variable, a constant, or a length plus
-  a small constant is admitted as a comparison side, since the addition
-  itself may have wrapped before the compare);
+  whose side is `var + c` where nothing bounds the variable (the addition
+  may then have wrapped before the compare);
 * a loop exit condition that is a disjunction (`while i < n && ok`), whose
   negation the domain cannot state.
 
