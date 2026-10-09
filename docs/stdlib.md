@@ -1,8 +1,8 @@
 # The Goose standard library
 
-The standard library has thirteen modules under `stdlib/`: `std`,
-`dictionary`, `vec`, `math`, `os`, `binary`, `base64`, `csv`, `json`, `audio`,
-`gfx`, `physics`, and `ui`. Import each module by name,
+The standard library has fourteen modules under `stdlib/`: `std`,
+`dictionary`, `vec`, `math`, `os`, `binary`, `base64`, `csv`, `json`, `regex`,
+`audio`, `gfx`, `physics`, and `ui`. Import each module by name,
 for example `import std;`. The compiler locates the library in its source
 tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
 Everything is written in Goose except the C behind `os`
@@ -19,7 +19,8 @@ For **text rendering, fonts and game HUDs**, start with
 [`ui`](#text-rendering-and-game-huds), which renders over `gfx`. For external
 binary file formats, use [`binary`](#binary); `from_bytes` reads Goose's own
 serialization format. Text formats have modules of their own:
-[`json`](#json), [`csv`](#csv) and [`base64`](#base64).
+[`json`](#json), [`csv`](#csv) and [`base64`](#base64), and
+[`regex`](#regex) searches text with regular expressions.
 
 The library uses these conventions:
 
@@ -61,8 +62,8 @@ The library uses these conventions:
   checker does not yet let `stable_sort` sort an array of references or
   slices (`implementation.md` §10).
 * The `std`, `dictionary`, `vec`, `math`, and `os` names are global;
-  `binary`, `base64`, `csv`, `json`, `audio`, `gfx`, `physics`, and `ui` use
-  their own namespaces. A local named `fill` or `count`
+  `binary`, `base64`, `csv`, `json`, `regex`, `audio`, `gfx`, `physics`, and
+  `ui` use their own namespaces. A local named `fill` or `count`
   shadows the corresponding global function, causing an error at a call; a
   global variable of such a name does not, since a call names the functions
   past it (spec §11.1).
@@ -174,7 +175,7 @@ at a time, a single byte through the C library's `memchr`. `byte_set` works
 out how to test a set by going over all 256 bytes, so make the set once, in a
 variable, outside the loop that searches: `members` is the set, and the other
 fields belong to the search. `find_pair` is the test of a prefilter that
-knows two of a match's bytes `d` apart, such as a regex engine's search for
+knows two of a match's bytes `d` apart, as [`regex`](#regex) uses it with
 the rarest two of a pattern's leading bytes.
 
 ```goose
@@ -812,6 +813,87 @@ fn read_items(text: u8[:]) -> Item[>..] {
     if !json::finish(r) { abort(json::message(r)); }
     return items;
 }
+```
+
+## regex
+
+Regular expressions with the syntax and the matching rules of Rust's
+`regex` crate, on bytes. `import regex;` puts them in namespace `regex`.
+
+```goose
+fn compile(pattern: u8[:]) -> Regex                  // aborts on a malformed pattern
+fn compile(pattern: u8[:], err: u8[>..]&) -> Regex   // appends the error to err instead
+fn find(re: Regex&, text: u8[:]) -> i64, i64         // the first match's start and end; -1, -1
+fn matches(re: Regex&, text: u8[:]) -> bool          // whether there is a match
+fn count(re: Regex&, text: u8[:]) -> i64             // the matches each_match finds
+fn each_match<F>(re: Regex&, text: u8[:])            // F(start, end) for each match
+fn each_captures<F>(re: Regex&, text: u8[:])         // F(caps: Captures) for each match
+fn format_replaced<F>(out: u8[>..]&, re: Regex&, text: u8[:])
+                                                     // text, each match replaced by F(caps)
+struct Captures { text: const u8[:], slots: const i64[:] }
+fn group(c: Captures, k: i64) -> const u8[:]         // group k's text; empty if it took no part
+```
+
+Matching is leftmost-first, as in the crate, Perl and most engines: the
+match that starts earliest wins, and of those starting there the one the
+pattern prefers, its alternatives in order, its repetitions greedy unless
+lazy. Searches are unanchored, and the iterating functions find matches that
+do not overlap, left to right, an empty match never where the previous match
+ended: `a*` on `baaa` matches at 0..0 and 1..4. Group 0 is the whole match
+and the others are numbered by their opening parentheses; group k spans
+`slots[2k]..slots[2k + 1]` of the text, both -1 for a group that took no part.
+A group repeated takes its last iteration. The slice `group` returns is
+rooted at the `Captures` the block was handed, so a view of a group that has
+to outlive the block, a dictionary key say, slices the text by the slots
+instead.
+
+The syntax: literal bytes; `.` (a newline only under `s`); classes `[a-z]`,
+`[^...]`, where a `]` first or a `-` first or last is literal; `\d \w \s`
+and their complements `\D \W \S`, in classes too; escapes `\n \t \r \f \v
+\xHH` and any punctuation (`\.`, `\\`); groups `(...)`, `(?:...)` and named
+`(?P<name>...)` or `(?<name>...)`, whose names are accepted and not used;
+flags `i` (letters match either case) and `s`, as `(?i)` to the end of the
+group or `(?i:...)` within, `(?-i)` to turn one off; alternation `|`; and
+`* + ? {n} {n,} {n,m}`, each lazy with a `?` after it. The classes and the
+case folding are ASCII, as the crate's are with Unicode off. Anchors and word
+boundaries (`^ $ \A \z \b \B`), class set operations (`&& -- ~~`), nested
+classes, Unicode classes and the other flags are not supported, and
+`compile` reports them as errors: `regex: anchors are not supported at
+offset 0 in ^a`. Two known differences from the crate are in the module's
+header: an alternation whose branches share a repeating prefix means here
+what it says, as in Perl and RE2, and groups at the end of a pattern under a
+`{0}` are kept.
+
+`compile` builds complete DFAs up front, one that finds where a match ends
+and one over the reversed pattern that finds where it starts, so a search
+costs one table lookup per byte of text it looks at. Where every match has
+rare leading bytes, or a rare byte after a part that cannot hold it, the
+search skips through the text with `find_pair` or `find_any` (above) and
+looks only where a match can be. Groups come from their fixed places in the
+match where the pattern gives them one, and otherwise from a backtracker
+that runs over the match alone; `find`, `matches` and `count` take neither.
+A DFA can need exponentially many states, and a pattern whose program or
+DFAs would grow too large (`[ab]*a[ab]{20}`, or counted repetitions in the
+thousands) is reported as an error rather than compiled. Make the `Regex`
+once, outside the loop that searches with it.
+
+```goose
+let re = regex::compile("(\\w+)=(\\d+)");
+regex::each_captures(re, line) { c =>
+    let n, ok = parse_int(regex::group(c, 2));
+    if ok { settings.insert(line[c.slots[2]..c.slots[3]], n); }    // a key that outlives c
+};
+
+var err: u8[>..] = [];
+let user = regex::compile(pattern_from_user, err);
+if err.len > 0 { print(err); }
+
+var out: u8[>..] = [];
+let field = regex::compile("""\{\{\s*(\w+)\s*\}\}""");
+regex::format_replaced(out, field, template) { caps =>
+    let value = vars.get(regex::group(caps, 1));
+    if value { value } else { "" }
+};
 ```
 
 ## gfx

@@ -1,0 +1,88 @@
+abc on xabcabcab => 1,4 4,7
+a\.b\\c\- on a.b\c- axb\c- => 0,6
+\x41\x7a\t\n on Az\t\n => 0,4
+[a-c]+ on xaby cc d => 1,3 5,7
+[^a-c\n]+ on abxyz\nqcb => 2,5 6,7
+[]a]+ on x]a]b => 1,4
+[a-]+|[-b]+ on a-b- => 0,2 2,4
+[\d.]+ on v1.25 and 3 => 1,5 10,11
+\d+ on a12b345 => 1,3 4,7
+\w+ on foo_bar1 baz! => 0,8 9,12
+\s+ on a \t\nb => 1,4
+\D\W\S on a b!c => 0,3
+.+ on ab\ncd => 0,2 3,5
+(?s).+ on ab\ncd => 0,5
+(?s:.)b on \nb => 0,2
+a.c on abc a\nc => 0,3
+(a)(b)?(c) on ac abc => 0,2|0,1|-1,-1|1,2 3,6|3,4|4,5|5,6
+(?:ab)+ on ababa => 0,4
+(?P<word>\w+)@(?<host>\w+) on me@host you@there => 0,7|0,2|3,7 8,17|8,11|12,17
+((a)|(b))+ on abba => 0,4|3,4|3,4|2,3
+(?i)hello on HeLLo hello HELLO => 0,5 6,11 12,17
+(?i:a)b on Ab AB ab => 0,2 6,8
+(?i)a(?-i:b)c on ABC AbC abc => 4,7 8,11
+(?i)[a-c]x on Bx bX => 0,2 3,5
+a(?i)b|c on aB C c => 0,2 3,4 5,6
+(?is)a.b on A\nB => 0,3
+a|ab on ab => 0,1
+ab|a on ab => 0,2
+foo|foobar on foobar => 0,3
+(a|ab)(c|bcd)(d*) on abcd => 0,4|0,1|1,4|4,4
+x*y|x*z on xxz => 0,3
+|a on aa => 0,0 1,1 2,2
+a* on aaa => 0,3
+a+? on aaa => 0,1 1,2 2,3
+a??b on ab b => 0,2 3,4
+a{2} on aaaaa => 0,2 2,4
+a{2,} on a aa aaaa => 2,4 5,9
+a{1,3} on aaaaa => 0,3 3,5
+a{1,3}? on aaaaa => 0,1 1,2 2,3 3,4 4,5
+a{0}b on ab => 1,2
+a** on aaa => 0,3
+a{2}{3} on aaaaaaa => 0,6
+<.+> on <a><b> => 0,6
+<.+?> on <a><b> => 0,3 3,6
+(a+)(a+) on aaaa => 0,4|0,3|3,4
+(a+?)(a+) on aaaa => 0,4|0,1|1,4
+(ab|a)*c on abac => 0,4|2,3
+(a*)*b on aab => 0,3|0,2
+(a|)+b on aab => 0,3|1,2
+ on abc => 0,0 1,1 2,2 3,3
+a* on baaa => 0,0 1,4
+x* on axxb => 0,0 1,3 4,4
+a*? on aa => 0,0 1,1 2,2
+(a*)b? on ab => 0,2|0,1
+(\w+)\s+(\w+)? on one two three => 0,7|0,3|4,7
+(a|bc)+(d) on abcad => 0,5|3,4|4,5
+([a-c]*)c([a-c]*) on abcbca => 0,6|0,4|5,6
+true true 0 true true
+regex: unclosed class at offset 1 in [ / false 0 -1 -1
+regex: unclosed class at offset 2 in [a / false 0 -1 -1
+regex: unclosed group at offset 1 in ( / false 0 -1 -1
+regex: unclosed group at offset 2 in (a / false 0 -1 -1
+regex: unmatched ) at offset 1 in a) / false 0 -1 -1
+regex: nothing to repeat at offset 0 in *a / false 0 -1 -1
+regex: nothing to repeat at offset 0 in + / false 0 -1 -1
+regex: expected a repetition count at offset 2 in a{ / false 0 -1 -1
+regex: unclosed repetition at offset 3 in a{1 / false 0 -1 -1
+regex: expected a repetition count at offset 2 in a{x} / false 0 -1 -1
+regex: bad repetition range at offset 5 in a{2,1} / false 0 -1 -1
+regex: repetition count too large at offset 5 in a{1001} / false 0 -1 -1
+regex: trailing backslash at offset 0 in \ / false 0 -1 -1
+regex: unsupported escape at offset 0 in \q / false 0 -1 -1
+regex: bad \x escape at offset 0 in \xg1 / false 0 -1 -1
+regex: bad class range at offset 4 in [z-a] / false 0 -1 -1
+regex: unsupported flag at offset 2 in (?x) / false 0 -1 -1
+regex: unclosed group name at offset 5 in (?P<n / false 0 -1 -1
+regex: nested classes are not supported at offset 1 in [[a]] / false 0 -1 -1
+regex: class set operations are not supported at offset 3 in [a--b] / false 0 -1 -1
+regex: class set operations are not supported at offset 3 in [\w&&x] / false 0 -1 -1
+regex: anchors are not supported at offset 0 in ^a / false 0 -1 -1
+regex: anchors are not supported at offset 1 in a$ / false 0 -1 -1
+regex: the pattern is too large: (?:a{1000}){20} / false 0 -1 -1
+regex: the pattern's DFA would be too large: [ab]*a[ab]{20} / false 0 -1 -1
+> Hi you, <x><y> {{ z
+-1 -1 true false
+a [a] [] 0 -1
+b [] [b] -1 1
+3 -1
