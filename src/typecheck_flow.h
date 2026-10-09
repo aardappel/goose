@@ -2649,8 +2649,20 @@ inline bool TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv,
             Error(at, cat("storing a slice rooted at ", rootname(nr), " into ", vd->name, via,
                           ": ", vd->name, " is bound to one rooted at ",
                           rootname(vd->ref.Root()), ", at a different scope depth (§9.2)"));
+        // A parameter's class names the variable its call was given, which
+        // is where the scope depth comes from.
+        auto describe = [&](VarDef *r) -> string {
+            if (!r) return "static data";
+            if (IsTemp(r)) return "a temporary";
+            if (!IsClassRoot(r)) return string(r->name);
+            auto from = UltimateRoot(r);
+            return cat("the caller's storage behind ", r->name,
+                       from && from->type && !from->isglobal ? cat(" (", from->name, ")") : "");
+        };
         Error(at, cat("re-binding ", vd->name, " with a reference rooted at a different "
-                      "scope depth is not supported; declare a new variable"));
+                      "scope depth is not supported; declare a new variable (§9.2): ",
+                      vd->name, " is bound to one rooted at ", describe(vd->ref.Root()),
+                      ", and this one is rooted at ", describe(nr)));
     }
     // Nor does a variable that points into no grow-shrink array start to:
     // what read it before -- earlier in a loop, through a reference to it --
