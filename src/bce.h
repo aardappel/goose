@@ -1016,14 +1016,24 @@ struct BCE {
         else AddFactB(VarBase(v), old, 0);                  // new <= old.
     }
 
+    bool Mentioned(const Base &b) {
+        for (auto &f : flow.facts) if (f.l == b || f.r == b) return true;
+        return false;
+    }
+
     void BumpPlace(int pid, int dir) {   // dir: +1 grow, -1 shrink, 0 unknown.
         if (!freshvars || !freshvars->count(places[pid].rootv)) anybump = true;
         auto old = LenBase(pid);
         flow.pgen[pid] = ++nextgen;
         if (ksum) ksum->insert(pid);
         if (shsum && dir <= 0) shsum->insert(pid);
+        // The direction carries the facts about the old length over to the
+        // new one. With none to carry it is left out: a growth of storage
+        // that may be anything bumps every place in the program, and their
+        // facts would crowd the ones this body has out of the table.
+        if (!dir || !Mentioned(old)) return;
         if (dir > 0) AddFactB(old, LenBase(pid), 0);
-        else if (dir < 0) AddFactB(LenBase(pid), old, 0);
+        else AddFactB(LenBase(pid), old, 0);
     }
 
     // A length mutation with an exactly known delta: push (+1), or append of

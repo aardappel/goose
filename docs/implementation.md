@@ -3121,6 +3121,12 @@ writes shift facts in place when the pre-state provably cannot wrap
 otherwise; a set `v = e` re-pins `v` and records `v == e` when `e` has a term
 that cannot have wrapped.
 
+A directional bump records that the new length is at least (or at most) the
+old one only where a fact names the old length (`BumpPlace`): a growth
+through a reference parameter may be a growth of any global array, and a
+fact for every such place in the program would push this body's own facts
+out of the state, which holds `MAXFACTS` (200) and drops the oldest first.
+
 ### 5.6 Facts from control flow
 
 `CondFacts` adds the comparison of an `if`, `while`, `assert` or
