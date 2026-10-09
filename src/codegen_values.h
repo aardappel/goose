@@ -100,6 +100,15 @@ inline string CodeGen::PointeeLv(const string &p, TypeExpr *t) {
 // steps to the pointee. Optional locs never get here (narrowing).
 inline void CodeGen::DerefLoc(Loc &lv) {
     assert(lv.t->kind == TY_REF);
+    if (lv.aliasof || lv.aliaspath) {
+        auto nl = lv.aliaspath ? GenLoc(lv.aliaspath) : VarLoc(const_cast<VarDef *>(lv.aliasof));
+        // Reads of the array come from the alias's view where it has one;
+        // growth writes the header.
+        if (!lv.hbase.empty() && !IsFrameObj(nl.t)) nl.s = lv.hbase;
+        if (!lv.hlen.empty()) nl.hlen = lv.hlen;
+        lv = nl;
+        return;
+    }
     auto &r = *lv.t->ref;
     if (r.lenstorage >= 0) {
         string faddr, off;
@@ -187,6 +196,33 @@ inline void CodeGen::PinLoc(Loc &lv) {
 inline CodeGen::Loc CodeGen::VarLoc(VarDef *vd) {
     Loc l;
     l.t = vd->type;
+    if (auto ait = refalias.find(vd); ait != refalias.end()) {
+        auto tg = const_cast<VarDef *>(ait->second);
+        if (auto pit = aliaspath.find(vd); pit != aliaspath.end()) {
+            auto tl = GenLoc(pit->second);
+            l.val = true;
+            l.s = cat("((gs_rref){ (gs_rhdr *)&", tl.hdr, ", ", tl.stk, " })");
+            l.aliaspath = pit->second;
+        } else if (tg->type->kind == TY_REF) {
+            l = VarLoc(tg);
+        } else {
+            // The reference value is made where one is needed; its pointee
+            // is the variable's own location (DerefLoc).
+            l.val = true;
+            l.s = cat("((gs_rref){ (gs_rhdr *)&", HdrLv(tg), ", ", VStkOf(tg), " })");
+            l.aliasof = tg;
+        }
+        // A view is the alias's own, hoisted for the loops BCE judged this
+        // spelling in; one of the target's is not taken over.
+        l.t = vd->type;
+        l.hbase.clear();
+        l.hlen.clear();
+        if (auto hit = views.find(vd); hit != views.end()) {
+            l.hbase = hit->second.first;
+            l.hlen = hit->second.second;
+        }
+        return l;
+    }
     auto name = VName(vd);
     if (auto hit = views.find(vd); hit != views.end()) {
         l.hbase = hit->second.first;
@@ -369,8 +405,9 @@ inline bool CodeGen::AddView(VarDef *vd) {
     // A varint length prefix is not a plain load: its view emits statements.
     if (s->arr->akind == A_VAR && LenStore(s->arr) == IS_VARINT) return false;
     // Not named yet means bound inside the loop (a for/match binder, or a
-    // declaration the body repeats), which has no view to read out here.
-    if (!vnames.count(vd) && !gnames.count(vd)) return false;
+    // declaration the body repeats), which has no view to read out here. An
+    // alias is never named; its binding has been passed once it is bound.
+    if (!vnames.count(vd) && !gnames.count(vd) && !aliasbound.count(vd)) return false;
     auto lv = VarLoc(vd);
     DerefLoc(lv);
     auto v = ArrayView(lv);

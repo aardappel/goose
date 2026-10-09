@@ -567,8 +567,10 @@ struct CodeGen {
     // `GS(gs_sp + k)` names a stack no caller expression can also name, and
     // global stacks live outside the indexed block entirely. A reference to a
     // resizable carries its stack inside the reference value (`p.stk`), which
-    // is a second spelling for a stack the body may also name directly, so a
-    // function holding one gets neither of those two (CanCacheTops).
+    // is a second spelling for a stack the body may also name directly, so
+    // which stacks a function caches depends on the references it holds,
+    // class by class (PlanTopClasses): its own, the globals', its captured
+    // resizables', its return destinations'.
     //
     // It caches its reference parameters' stacks instead, where RefTopsOk
     // clears it: `p.stk` is then the body's only spelling of that stack, and
@@ -587,14 +589,37 @@ struct CodeGen {
     struct TopCachePlan {
         vector<TopRegion> regions;
         vector<string> fnlocals;             // Stack -> whole-body local, or "".
+        string fnlens;                       // Whole-body length locals' declarations.
         bool IsRegion(int k, int id) const {
             for (auto r : regions) if (r.stk == k && r.loop == id) return true;
             return false;
         }
     };
-    bool cachetops = false;
-    bool reftops = false;               // Caching reference parameters' stacks.
+    // The count of a resizable whose header is reached through memory -- a
+    // reference parameter's `p.hdr->len`, a global's, a captured one's -- is
+    // as much a store-to-load chain as the top when every push bumps it: a
+    // byte store may alias it. Where the stack under it is cached, so is the
+    // count, over the same extent and synchronized at the same points
+    // (LenSlot, ExpandTopMarkers). Only a header with a single plain spelling
+    // qualifies, and only where every other mention of that header in the
+    // extent is one the expansion can see is harmless: its base, or one
+    // between a call's flush and reload of the stack.
+    struct LenSlot {
+        int stk;          // The cached stack the count's array grows on.
+        string lenlv;     // The count's one spelling.
+        string root;      // The header's spelling, which other mentions would share.
+    };
+    vector<LenSlot> lenslots;
+    void NoteLen(const string &stk, const string &lenlv);
+    static bool LenRoot(const string &lenlv, string &root);
+    bool cachetops = false;             // Any class below is cached.
+    bool topown = false;                // Own indexed stacks, `GS(gs_sp + k)`.
+    bool topglob = false;               // Globals' dedicated stacks.
+    bool topcap = false;                // Captured resizables' stacks.
+    bool topdst = false;                // Return destinations, `gs_dst<i>`.
+    bool reftops = false;               // Reference parameters' stacks.
     set<string> refstkexprs;            // Their `<param>.stk` / `.flstk` spellings.
+    set<string> capstkexprs;            // The captured resizables' `<fv>_stk` spellings.
 
     static constexpr const char *FLUSHMARK = "@@gsflush@@";
     static constexpr const char *RELOADMARK = "@@gsreload@@";
@@ -613,17 +638,28 @@ struct CodeGen {
     // the whole body is emitted and every cached stack is known. The mark
     // carries what the call can reach, so expansion can sync just those --
     // "*" means everything, which is what a function exit needs.
-    void MarkFlush(const string &reach = "*")  { if (cachetops) L(FLUSHMARK, reach); }
-    void MarkReload(const string &reach = "*") { if (cachetops) L(RELOADMARK, reach); }
+    void MarkFlush(const string &reach = "*")  { if (markers) L(FLUSHMARK, reach); }
+    void MarkReload(const string &reach = "*") { if (markers) L(RELOADMARK, reach); }
 
+    bool markers = false;                // A specialization's body: markers are expanded.
+    vector<string> loopcons;             // Region -> "" for a loop, the stack for a construction.
+    bool InConsOf(const string &stk);
     int MarkLoopBegin();
     void MarkLoopEnd(int id);
+    int MarkConsBegin(const string &stk);
+    struct ConsRegion {
+        CodeGen &cg;
+        int id;
+        ConsRegion(CodeGen &cg, const string &stk) : cg(cg), id(cg.MarkConsBegin(stk)) {}
+        ~ConsRegion() { cg.MarkLoopEnd(id); }
+    };
     TopCachePlan PlanTopCaches();
     static bool LineIs(string_view s, const char *pfx);
     static string_view GotoTarget(string_view line);
     static string_view LabelHere(string_view line);
     static string_view NextLine(const string &b, size_t &i, size_t &ind0);
-    string ExpandTopMarkers(const string &b, const TopCachePlan &plan);
+    string ExpandTopMarkers(const string &b, TopCachePlan &plan);
+    string ExpandTopMarkers1(const string &b, TopCachePlan &plan, vector<bool> &lenok, bool &clean);
     string HoistAggregateDecls(string &b);
     void PushSc(int kind);
     void EmitRestores(const CScope &s);
@@ -677,9 +713,31 @@ struct CodeGen {
         // set on the reference by VarLoc, and, for the length, carried across
         // the deref to the pointee, where ArrayView reads it instead of memory.
         string hbase, hlen;
+        // A reference variable standing for a resizable variable or a frame
+        // object's tail (refalias): its pointee is that location.
+        const VarDef *aliasof = nullptr;
+        Node *aliaspath = nullptr;
     };
 
     bool PrefVar(const VarDef *vd);
+
+    // A fat reference variable that cannot be rebound, bound to a resizable
+    // variable or to another such reference -- an inlined callee's `A&`
+    // parameter, a base-case inlining's copy of a reference argument, a
+    // function value's reference parameter -- names exactly what its
+    // initializer names for its whole life. It is emitted as no C variable
+    // of its own: every use reads the variable it stands for, so the stack
+    // and the header keep the one spelling top caching needs (§6.10), and a
+    // local's header is not made to escape by a pointer nothing needs.
+    unordered_map<const VarDef *, const VarDef *> refalias;
+    // An alias of a frame object's tail: the field path it was bound to,
+    // from refalias's variable.
+    unordered_map<const VarDef *, Node *> aliaspath;
+    set<const VarDef *> aliasbound;          // The aliases whose binding has been emitted.
+    set<const VarDef *> capturedvars;        // Every live specialization's free variables.
+    void FindRefAliases(FnSpec *sp);
+    const VarDef *AliasTarget(VarDef *d, Node *init, Node *&path);
+    static bool HandedRef(Node *n);
 
     // Optimizer splices can leave a reference-typed tree in a slot whose
     // checked type already decayed; Dst::t says what the receiver wants, and
@@ -1163,7 +1221,7 @@ struct CodeGen {
     static const char *FnAttrs(FnSpec *sp) { return sp->outofline ? "GS_NOINLINE " : ""; }
     const VarDef *NamedResult(Block *fnbody, SFunction *target, size_t nrets, size_t resultidx);
     const VarDef *OpenIbNrvo(InlineBlock *ib, const Dst &d);
-    bool CanCacheTops(FnSpec *sp);
+    void PlanTopClasses(FnSpec *sp);
     bool RefTopsOk(FnSpec *sp);
     void ResetFnState();
     string EnsureEr(FnSpec *sp);
@@ -1212,6 +1270,8 @@ struct CodeGen {
             if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
         ComputeRelRootMax();
         CollectSpecs();
+        for (auto sp : livespecs)
+            for (auto fv : sinfo[sp].freevars) capturedvars.insert(fv);
         // Zero means "no long-distance return in flight", which is also the
         // state every propagating function's ordinary exit leaves behind.
         if (!fromids.empty()) data += "static GS_TLS int32_t gs_rf;\n";

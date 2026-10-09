@@ -59,34 +59,183 @@ inline const VarDef *CodeGen::OpenIbNrvo(InlineBlock *ib, const Dst &d) {
     return vd;
 }
 
-// A reference to a resizable carries its stack inside the reference value,
-// so a function holding one has a second spelling for a stack it may also
-// name directly; that function keeps the plain memory form throughout.
-inline bool CodeGen::CanCacheTops(FnSpec *sp) {
-    auto ok = true;
-    auto check = [&](const VarDef *v) {
-        // A pool reference likewise carries its stack (and its freelist's).
-        if (v && (PrefVar(v) || (v->type && v->type->kind == TY_REF &&
-                                 IsResz(v->type->ref->sub))))
-            ok = false;
+// What `d`, bound to `init`, stands for (refalias): the resizable variable
+// `&v` names, or the reference variable an identifier names, followed
+// through that one's own alias. Null where d has to be a C variable: it can
+// be rebound, a nested function captures it (and is handed its address),
+// it is pool-shaped, or the initializer is anything but such a name. A
+// parameter, an alias, and a captured reference that cannot be rebound hold
+// the same value as long as d is live; a resizable variable's header and
+// stack never move.
+inline const VarDef *CodeGen::AliasTarget(VarDef *d, Node *init, Node *&path) {
+    path = nullptr;
+    if (!d || !init || !curspec || d->isvar || d->isglobal || d->reusable || !d->type ||
+        !IsFatRef(d->type) || d->type->ref->optional || PrefVar(d) || d->captured ||
+        capturedvars.count(d))
+        return nullptr;
+    // A reference variable that stands for its whole life for what it holds:
+    // a parameter, an alias, a captured reference, none of them rebindable.
+    auto fixedref = [&](const VarDef *t) -> const VarDef * {
+        if (!t || !t->type || !IsFatRef(t->type)) return nullptr;
+        if (refalias.count(t)) return t;
+        if (t->isvar || t->isglobal || t->reusable || PrefVar(t)) return nullptr;
+        for (auto p : curspec->params) if (p == t) return t;
+        for (auto fv : curinfo->freevars) if (fv == t) return t;
+        return nullptr;
     };
-    for (auto p : sp->params) check(p);
-    for (auto fv : sinfo[sp].freevars) check(fv);
-    function<void(Node *)> walk = [&](Node *n) {
-        if (!n || !ok) return;
-        // A fat reference that is not held in a variable either -- one read
-        // out of a field or an element, or returned by a call -- can be
-        // dereferenced right here, and names its stack the same way.
-        // Taking one of a variable does not: that value is only handed on.
-        if (n->exprtype && IsFatRef(n->exprtype)) {
-            auto un = Is<Unary>(n);
-            if (!Is<Ident>(n) && !(un && Is<Ident>(un->child))) ok = false;
+    if (auto u = Is<Unary>(init); u && u->op == T_BITAND) {
+        if (!u->child->exprtype || !TEq(d->type->ref->sub, u->child->exprtype)) return nullptr;
+        if (auto id = Is<Ident>(u->child)) {
+            auto t = id->vdef;
+            if (!t || !t->type || t->reusable || !IsResz(t->type)) return nullptr;
+            return t;
         }
-        NodeVars(n, check);
+        // A frame object's tail, by fields from a variable that holds the
+        // object or from a reference that stands for one: a C member of a
+        // header that never moves, on the object's own stack. A reference
+        // field on the way can be rebound, and leads elsewhere anyway.
+        auto n = u->child;
+        while (auto dot = Is<Dot>(n)) {
+            if (!dot->IsField() || !dot->obj->exprtype) return nullptr;
+            n = dot->obj;
+            if (!Is<Ident>(n) && n->exprtype->kind == TY_REF) return nullptr;
+        }
+        auto id = Is<Ident>(n);
+        if (n == u->child || !id || !id->vdef || !id->vdef->type) return nullptr;
+        auto t = id->vdef;
+        if (IsResz(t->type) ? t->reusable : !fixedref(t)) return nullptr;
+        path = u->child;
+        return t;
+    }
+    auto id = Is<Ident>(init);
+    auto t = id ? id->vdef : nullptr;
+    if (!t || !t->type || !init->exprtype || !TEq(init->exprtype, d->type)) return nullptr;
+    // A receiver the checker takes the reference of in place.
+    if (IsResz(t->type) && !t->reusable && TEq(d->type->ref->sub, t->type)) return t;
+    if (!TEq(t->type, d->type)) return nullptr;
+    if (auto it = refalias.find(t); it != refalias.end()) {
+        if (auto pit = aliaspath.find(t); pit != aliaspath.end()) path = pit->second;
+        return it->second;
+    }
+    return fixedref(t);
+}
+
+// `&x` or `&x.f.g` of a variable: a reference that, made here, is only
+// handed on -- to a call, which syncs whatever it is handed a stack in, into
+// a value, which is passed to calls the same way or read back out of a field
+// (where it counts again), or to an alias, which stands for what it names.
+inline bool CodeGen::HandedRef(Node *n) {
+    auto un = Is<Unary>(n);
+    if (!un || un->op != T_BITAND) return false;
+    auto c = un->child;
+    while (auto d = Is<Dot>(c)) {
+        if (!d->IsField()) return false;
+        c = d->obj;
+        if (!Is<Ident>(c) && c->exprtype && c->exprtype->kind == TY_REF) return false;
+    }
+    return Is<Ident>(c) != nullptr;
+}
+
+// Every binding of the body that AliasTarget accepts, in source order, so
+// that an alias of an alias resolves to the first one's target.
+inline void CodeGen::FindRefAliases(FnSpec *sp) {
+    auto bind = [&](VarDef *d, Node *init) {
+        Node *path = nullptr;
+        auto t = AliasTarget(d, init, path);
+        if (!t) return;
+        refalias[d] = t;
+        if (path) aliaspath[d] = path;
+    };
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n) return;
+        if (auto vd = Is<VarDecl>(n); vd && vd->defs.size() == vd->inits.size()) {
+            for (size_t i = 0; i < vd->defs.size(); i++) bind(vd->defs[i], vd->inits[i]);
+        }
+        if (auto c = Is<Call>(n); c && c->fvbody) {
+            for (size_t i = 0; i < c->fvparams.size() && i < c->args.size(); i++)
+                bind(c->fvparams[i], c->args[i]);
+        }
         RunChildren(n, walk);
     };
     walk(sp->body);
-    return ok;
+}
+
+// Which classes of stacks this specialization caches the tops of (see the
+// note above topcache in codegen.h). A reference to a resizable carries its
+// stack inside the reference value, so it is a second spelling of a stack the
+// body may also name directly; each class is cached only where nothing the
+// body holds can be such a second spelling of one of its stacks:
+//  * its own indexed stacks, which only a fat reference rooted at one of its
+//    own locals could also name: none may be held anywhere but in a
+//    parameter, a free variable or an alias. A fat reference read out of a
+//    field or an element, returned by a call, or held in a variable of any
+//    other kind can be dereferenced right here, and might be one. Taking one
+//    of a variable does not count: that value is only handed on;
+//  * the globals' dedicated stacks, which a parameter or a captured
+//    reference may also be rooted at: there must be none;
+//  * its captured resizables' stacks (`<fv>_stk`), likewise: a parameter or
+//    a captured reference might be rooted at the same variable; and one
+//    that is its function's named result lives at that function's
+//    destination, where a `return ... from` to it builds its value, so
+//    there must be no such return here either;
+//  * its return destinations (`gs_dst<i>`), which a caller may hand over as
+//    a global's stack, a parameter's, or one a captured variable is on:
+//    none of those may be named, and nothing returns to a gs_fdst_ channel;
+//  * its reference parameters' stacks, where RefTopsOk clears it.
+// Own stacks never meet another class: a caller's expressions cannot name
+// them. Of the rest, no two classes that could share a stack are cached
+// together.
+inline void CodeGen::PlanTopClasses(FnSpec *sp) {
+    topown = topglob = topcap = topdst = reftops = false;
+    auto &fvs = sinfo[sp].freevars;
+    auto isparam = [&](const VarDef *v) {
+        return std::find(sp->params.begin(), sp->params.end(), v) != sp->params.end();
+    };
+    auto isfv = [&](const VarDef *v) { return std::find(fvs.begin(), fvs.end(), v) != fvs.end(); };
+    // A pool reference carries its stack (and its freelist's) as well.
+    auto carries = [&](const VarDef *v) {
+        return v && (PrefVar(v) || (v->type && v->type->kind == TY_REF && IsResz(v->type->ref->sub)));
+    };
+    auto fatparam = false, fatfv = false, capresz = false, globals = false, unknown = false;
+    for (size_t i = 0; i < sp->params.size(); i++)
+        if (carries(sp->params[i]) || IsPoolParam(sp, i)) fatparam = true;
+    for (auto fv : fvs) {
+        if (fv->reusable || carries(fv)) fatfv = true;
+        else if (fv->type && IsResz(fv->type)) capresz = true;
+    }
+    // A return exiting this function or an inlined body stays here; any
+    // other target constructs into a gs_fdst_ channel (§7.9).
+    set<SFunction *> localexits { sp->sf };
+    auto farreturn = false;
+    function<void(Node *)> ibs = [&](Node *n) {
+        if (!n) return;
+        if (auto ib = Is<InlineBlock>(n)) localexits.insert(ib->sf);
+        RunChildren(n, ibs);
+    };
+    ibs(sp->body);
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n) return;
+        if (n->exprtype && IsFatRef(n->exprtype)) {
+            if (!Is<Ident>(n) && !HandedRef(n)) unknown = true;
+        }
+        if (auto r = Is<Return>(n); r && !localexits.count(r->target)) farreturn = true;
+        NodeVars(n, [&](const VarDef *v) {
+            if (!v) return;
+            if (carries(v) && !refalias.count(v) && !isparam(v) && !isfv(v)) unknown = true;
+            if (v->isglobal && v->type && (IsBytesT(v->type) || HoldsFatRef(v->type)))
+                globals = true;
+        });
+        RunChildren(n, walk);
+    };
+    walk(sp->body);
+    auto nonfixedret = false;
+    for (auto rt : sp->rets) nonfixedret |= IsBytesT(rt);
+    topown = !unknown;
+    topglob = topown && !fatparam && !fatfv;
+    topcap = topglob && capresz && !farreturn;
+    topdst = topglob && !capresz && !globals && nonfixedret && !farreturn && !fromids.count(sp);
+    reftops = !topglob && RefTopsOk(sp);
+    cachetops = topown || reftops;
 }
 
 // Whether this specialization may cache the tops of the stacks it reaches
@@ -153,16 +302,24 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp) {
             gt = si->ftypes[LastRealField(si->st->fields)];
         }
     };
+    // An alias stands for a parameter or for a resizable variable, whose
+    // spelling it shares; the variable's own identifier is checked where its
+    // binding names it.
     auto check = [&](const VarDef *v) {
         if (!v || !v->type) return;
-        if (IsFatRef(v->type) && !fatparams.count(v)) ok = false;
+        if (IsFatRef(v->type) && !fatparams.count(v) && !refalias.count(v)) ok = false;
         if (v->isglobal && IsBytesT(v->type) && maybeparam(v->type)) ok = false;
     };
     function<void(Node *)> walk = [&](Node *n) {
         if (!n || !ok) return;
         if (n->exprtype && IsFatRef(n->exprtype)) {
+            // A reference taken of a variable is only handed on: to a call,
+            // which syncs everything it is handed a stack in, or to an alias.
             auto id = Is<Ident>(n);
-            if (!id || !fatparams.count(id->vdef)) { ok = false; return; }
+            if (!HandedRef(n) && (!id || !(fatparams.count(id->vdef) || refalias.count(id->vdef)))) {
+                ok = false;
+                return;
+            }
         }
         if (auto r = Is<Return>(n); r && !localexits.count(r->target)) ok = false;
         NodeVars(n, check);
@@ -174,13 +331,21 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp) {
 
 inline void CodeGen::ResetFnState() {
     toporder.clear();
+    lenslots.clear();
     growth.clear();
     loopparent.clear();
+    loopcons.clear();
     loopstack.clear();
+    markers = false;
     refstkexprs.clear();
+    capstkexprs.clear();
     cachetops = false;
     reftops = false;
+    topown = topglob = topcap = topdst = false;
     vnames.clear();
+    refalias.clear();
+    aliaspath.clear();
+    aliasbound.clear();
     views.clear();
     vstk.clear();
     vpool.clear();
@@ -291,9 +456,9 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     emiter = er;
     ResetFnState();
     spexpr = curinfo->needssp ? "gs_sp" : "0";
-    cachetops = CanCacheTops(sp);
-    reftops = !cachetops && RefTopsOk(sp);
-    cachetops = cachetops || reftops;
+    FindRefAliases(sp);
+    PlanTopClasses(sp);
+    markers = true;
     PushSc(SC_FN);
     auto params = SigParams(sp, true, er);
     // The spellings are only known once SigParams has named the parameters.
@@ -305,6 +470,9 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
             if (IsPoolParam(sp, i)) refstkexprs.insert(cat(pn, ".flstk"));
         }
     }
+    if (topcap)
+        for (auto fv : curinfo->freevars)
+            if (fv->type && IsResz(fv->type) && !fv->reusable) capstkexprs.insert(vstk[fv]);
     // In the element-run form named results are not built at the
     // destination: the callee-side copy at return is the specified cost
     // of operating on the whole value first (§7.3).
@@ -363,6 +531,7 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     for (size_t i = 0; i < toporder.size(); i++)
         if (!plan.fnlocals[i].empty())
             Append(code, "    uint8_t *", plan.fnlocals[i], " = ", toporder[i], "->top;\n");
+    code += plan.fnlens;
     // Every global pool's stack is reserved by gs_init_globals, which
     // main runs before anything else, so these are final on entry.
     for (auto &p : poolbases)
@@ -372,6 +541,7 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     curspec = nullptr;
     curinfo = nullptr;
     emiter = false;
+    markers = false;
 }
 
 // ------------------------------------------------------------------

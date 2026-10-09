@@ -260,6 +260,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             auto v = ArrayView(lv);
             auto elem = v.elem;
             auto esz = FixedSize(elem);
+            if (lv.t->arr->akind != A_LIMITED) NoteLen(lv.stk, v.lenlv);
             auto nl = T();
             L("int64_t ", nl, " = ", v.len, " - 1;");
             // On empty, the stored length would wrap (limited arrays) or
@@ -291,6 +292,7 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             auto esz = FixedSize(elem);
             auto ak = lv.t->arr->akind;
             auto relref = elem->kind == TY_REF && elem->ref->lenstorage >= 0;
+            if (ak != A_LIMITED) NoteLen(lv.stk, v.lenlv);
             auto nn = GenPure(an[1]);
             string fv;
             if (an.size() > 2) {
@@ -373,8 +375,10 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
             // dropping the top to the base; a limited array's capacity is
             // reserved and only its length moves.
             auto ak = lv.t->arr->akind;
-            if (ak == A_GROWSHRINK || ak == A_GROW)
+            if (ak == A_GROWSHRINK || ak == A_GROW) {
+                NoteLen(lv.stk, v.lenlv);
                 L(TopW(lv.stk), " = (uint8_t *)(", v.elems, ");");
+            }
             L(v.lenlv, " = 0;");
             return {};
         }
@@ -535,6 +539,7 @@ inline vector<string> CodeGen::EmitPush(vector<Node *> &an, Line ln) {
         ref = e;
     } else {
         assert(!lv.stk.empty());
+        NoteLen(lv.stk, v.lenlv);
         auto e = T();
         if (IsBytesT(elem)) {
             L("uint8_t *", e, " = ", Top(lv.stk), ";");
@@ -570,6 +575,7 @@ inline void CodeGen::EmitAppend(vector<Node *> &an, Line ln) {
     auto st = src->exprtype;
     auto asrun = IsResz(st) || (st->kind == TY_ARRAY && st->arr->akind == A_VAR);
     auto fresh = Is<Call>(src) || IsCtl(src);
+    if (ak != A_LIMITED) NoteLen(lv.stk, v.lenlv);
     if (fresh && asrun && ak != A_LIMITED) {
         auto nn = T();
         L("int64_t ", nn, " = 0;");

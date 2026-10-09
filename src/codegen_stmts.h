@@ -411,6 +411,12 @@ inline void CodeGen::GenExitValue(Node *val, int si) {
 // Declarations and assignment.
 
 inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
+    // An alias reads the variable it stands for; its initializer names that
+    // variable and does nothing else.
+    if (refalias.count(d)) {
+        aliasbound.insert(d);
+        return;
+    }
     auto name = LocalName(d);
     auto t = d->type;
     if (IsResz(t)) {

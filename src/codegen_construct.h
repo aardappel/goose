@@ -430,6 +430,7 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         // Fixed values normally construct as C values; ones containing
         // relative references must be built at their final address.
         if ((Is<StructLit>(n) || Is<ArrayLit>(n)) && HasRelRef(et)) {
+            ConsRegion cons(*this, stk);
             FixedLitAtStk(n, stk);
             return;
         }
@@ -480,11 +481,16 @@ inline void CodeGen::GenConstruct(Node *n, const string &stk, TypeExpr *want, co
         // A `[..cap]` literal taking another array type is empty there: built
         // as its own, which checks the capacity's range, and copied below.
         if (!al->capexpr || TEq(et, al->exprtype)) {
+            ConsRegion cons(*this, stk);
             GenArrayLit(al, stk, lenlv, et);
             return;
         }
     }
-    if (auto sl = Is<StructLit>(n)) { GenStructLit(sl, stk, lenlv); return; }
+    if (auto sl = Is<StructLit>(n)) {
+        ConsRegion cons(*this, stk);
+        GenStructLit(sl, stk, lenlv);
+        return;
+    }
     if (auto d = Is<Dot>(n); d && d->variantconst) {
         // A payload-less variant constant in variable mode: just the tag.
         assert(et->kind == TY_ENUM && et->enu->varmode);

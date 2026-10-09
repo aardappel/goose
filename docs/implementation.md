@@ -3468,8 +3468,8 @@ at 256). C names are unique within a function (`T`, `Unique2`), so what
 the then-block declares clashes with nothing there.
 
 Because a `uint8_t *` store may alias a stack's `top` in C, the tops of the
-stacks a function owns are cached in locals where the function grows them
-(section 6.10).
+stacks a function can name are cached in locals where the function grows
+them (section 6.10).
 
 ### 6.3 Globals and program instances
 
@@ -3955,25 +3955,98 @@ lvalue that growth writes stays on the real header, so a missed growth could
 never miscompile. For a `for` over an array with `fixedlen`, the elements
 pointer and length are likewise read once when the length is a memory load.
 
-**Tops.** A stack the function owns keeps its top in a local where the
+**Tops.** A stack the function can name keeps its top in a local where the
 function grows it, synchronized with memory only where something else can
-observe it: flushed before and reloaded after calls that can reach the stack
-(`SyncReach`: the argument text plus the callee's reachable globals; "*" for
-a callee handed an opaque stack inside a value), and flushed at every exit.
-The local is confined to the loops that grow the stack (`PlanTopCaches`), or
-the whole body for growth outside every loop, and is materialized by a text
-pass over the finished body that resolves markers for loop edges, syncs, and
-jumps out of a region (`ExpandTopMarkers`). Soundness needs one spelling per
-cached stack: a body holding a fat reference in any variable, binding,
-field read or call result has a second spelling for a stack it may also name
-directly and caches nothing (`CanCacheTops`) -- unless it qualifies for the
-**reference-parameter mode** (`RefTopsOk`): every fat reference in the body
-is a parameter named directly, the fat parameters' root classes are distinct
-and exact (and concrete when there are several), no by-value resizable
-parameter, no nonfixed return destination, no `return from` channel, no
-captured resizable, and no global whose type could be one of those
-parameters' pointees. In that mode the parameters' `.stk` tops are cached
-instead, and every call syncs everything.
+observe it: flushed before and reloaded after calls that can reach the stack,
+and flushed at every exit. What a call reaches (`SyncReach`) is the argument
+text plus the callee's globals' stacks; it is everything ("*") for a callee
+handed an opaque stack -- a fat reference or a pool, or a value holding one,
+as an argument or a capture -- and, where a cached stack may be a global's or
+the destination of a `return ... from` target up the chain, for a callee that
+names a global or can propagate such a return. A callee with no stack among
+its arguments and none of its own, a pure helper, reaches nothing and costs
+no sync. The local is confined to the loops that grow the stack
+(`PlanTopCaches`), or the whole body for growth outside every loop, and is
+materialized by a text pass over the finished body that resolves markers for
+loop edges, syncs, and jumps out of a region (`ExpandTopMarkers`).
+
+Soundness needs one spelling per cached stack, which a fat reference held
+anywhere could break: its `.stk` names a stack the body may also name
+directly. So which stacks are cached is decided class by class
+(`PlanTopClasses`), each only where nothing the body holds can be a second
+spelling of one of them:
+
+* the function's own indexed stacks, `GS(gs_sp + k)`, which no caller
+  expression can name, unless the body holds a fat reference that could be
+  rooted at one of its own locals: one in a local variable that is no alias
+  (below), one read out of a field or an element, one a call returns. A
+  reference taken of a variable and handed on, to a call or into a value
+  passed to one, does not count: the call syncs;
+* the globals' dedicated stacks, additionally only with no fat-reference or
+  pool parameter and no captured reference, either of which may be rooted at
+  a global;
+* a nested function's captured resizables' stacks (`<fv>_stk`), likewise, and
+  with no `return ... from` in the body: a captured variable may be its
+  function's named result, built at that function's destination, where such
+  a return builds its value;
+* the return destinations, `gs_dst<i>`, which a caller may hand over as a
+  global's stack, a parameter's or a captured variable's: only where the body
+  names none of those, returns to no gs_fdst channel and is no `return from`
+  target;
+* the reference parameters' `.stk`, in the **reference-parameter mode**
+  (`RefTopsOk`): every fat reference in the body is a parameter (or an alias
+  of one) named directly, or one taken of a variable and handed on; the fat
+  parameters' root classes are distinct and exact (and concrete when there
+  are several); no by-value resizable parameter, no nonfixed return
+  destination, no `return from` channel, no captured resizable, and no global
+  whose type could be one of those parameters' pointees.
+
+Own stacks never meet another class, and no two of the others that could
+share a stack are cached together.
+
+**Aliases.** A fat reference variable that cannot be rebound, bound to a
+resizable variable (`&v`), to a frame object's tail reached from one by
+fields (`&v.f.g`; not through a reference field, which can be rebound), or
+to a parameter, a captured reference or another alias -- an inlined callee's
+`A&` parameter, a base-case inlining's copy of a reference argument, a
+function value's reference parameter -- is no C variable at all
+(`refalias`, `aliaspath`, `FindRefAliases`): every use reads what it stands
+for, its pointee being that location (`VarLoc`, `DerefLoc`), and a use as a
+value makes the `gs_rref` on the spot. The stack
+and the header keep their one spelling, and a local's header does not escape
+through a pointer nothing needs, so an inlined `push_n` or heap operation on a
+local caches as a push on the local itself does. An alias has a view of its
+own where BCE named it in a loop, never its target's.
+
+**Counts.** A push bumps the count too, and where the header is reached
+through memory -- a reference parameter's `p.hdr->len`, a global's, a captured
+array's -- a byte store may alias it like the top. Where the stack is cached,
+so is the count (`LenSlot`, noted at the growth sites, `NoteLen`), over the
+same extent and synchronized at the same points. The expansion replaces the
+count's one spelling with the local, and keeps a slot only where the header
+is mentioned nowhere else in the extent but as its base or between a call's
+flush and reload; where it finds another mention it expands again without
+that slot. A frame object's tail is not cached this way, since a whole copy
+of the object reads its count too, nor a local's header, which the C
+compiler keeps in registers itself.
+
+**Constructions.** A value of several fields built in place at the top of a
+stack no class caches -- a pushed literal of variable-size elements, or of
+ones holding relative references, through a captured reference, say -- has
+its fields written through a local all the same, the top stored once after
+them (`MarkConsBegin`, `ConsRegion`): nothing may grow or shrink that stack
+while the value is under construction (§3.10), so no other spelling moves its
+top meanwhile, and every call among the field initializers syncs it, whatever
+the call reaches.
+
+**Fills and stores.** `resize(n, v)` of a resizable fills the new slots
+through a cursor of its own and stores the top once, as one `memset` where
+every value-bearing byte of a literal fill is the same (`UniformFillByte`).
+A pushed element that is an aggregate of 2, 4 or 8 bytes is stored as one
+integer of that width (`StoreWhole`): stored field by field, a load of the
+whole element soon after (a heap's sift, a pop) could not be forwarded from
+the narrower stores, a stall a cached top exposes, since the load's address
+is ready at once.
 
 **Divisors.** An unsigned `/` or `%`, or a signed one `Binary::nonneg` marks
 (§5.10), by a variable the loop cannot change -- an immutable integer bound
@@ -4412,18 +4485,24 @@ the reloads:
   grows the array cannot have it; move growth out of the read loop, or split
   the loop.
 * **Stack-top caching**: pushes through a fat reference parameter run with
-  the top in a register when the function qualifies (§6.10): every fat
-  reference in the body is a parameter, the parameters are provably distinct
-  arrays at every call site (exact roots), the function returns nothing
-  nonfixed, has no `return from` channel, captures no resizable, and names
-  no global that could be one of the parameters' pointees. A function that
-  also reads a fat reference out of a field, or holds one in a local, keeps
-  the memory form for every stack. For helpers that push frequently, pass
-  distinct pools as parameters to enable this optimization.
+  the top and the count in registers when the function qualifies (§6.10):
+  every fat reference in the body is a parameter, the parameters are
+  provably distinct arrays at every call site (exact roots), the function
+  returns nothing nonfixed, has no `return from` channel, captures no
+  resizable, and names no global that could be one of the parameters'
+  pointees. An inlined helper's reference parameter, or a `let` bound to a
+  variable, is that variable for this purpose. A function that also reads a
+  fat reference out of a field, or holds one in a local otherwise bound,
+  keeps the memory form for every stack but a literal's fields while it is
+  built. For helpers that push frequently, pass distinct pools as parameters
+  to enable this optimization.
 
-A function caches the stack tops of arrays it owns where it grows them.
+A function caches the stack tops of arrays it owns where it grows them, even
+beside reference parameters, and so does a nested function for the arrays it
+captures and a function building its result by pushes for its destination.
 When growth occurs only inside a loop, the cache is confined to that loop.
-A loop that only updates elements therefore needs no register for a cached top.
+A loop that only updates elements therefore needs no register for a cached
+top. A call to a helper that is handed no array costs no synchronization.
 
 ### 9.3 Construction and copies
 
