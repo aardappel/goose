@@ -61,6 +61,24 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
     string(APPEND tcc_config "#define CONFIG_TRIPLET \"${tcc_triplet}\"\n")
 endif()
+# macOS has no /usr/include: the C library's headers are only in the SDK, so
+# name its include directory as TinyCC's configure does. (The libraries need no
+# such help: TinyCC finds the SDK's usr/lib itself when it runs.)
+if(APPLE)
+    execute_process(COMMAND xcrun --show-sdk-path
+                    OUTPUT_VARIABLE tcc_sdk OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+    if(NOT tcc_sdk)
+        set(tcc_sdk "${CMAKE_OSX_SYSROOT}")
+    endif()
+    if(NOT EXISTS "${tcc_sdk}/usr/include/stdint.h")
+        message(STATUS "libtcc: no macOS SDK headers found; "
+                       "building without JIT mode")
+        return()
+    endif()
+    string(APPEND tcc_config
+        "#define CONFIG_TCC_SYSINCLUDEPATHS \"{B}/include:${tcc_sdk}/usr/include\"\n")
+endif()
 # Written only when it changes, so reconfiguring does not rebuild TinyCC.
 file(CONFIGURE OUTPUT "${TCC_BUILD}/config.h" CONTENT "${tcc_config}" @ONLY)
 
