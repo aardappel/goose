@@ -3098,7 +3098,12 @@ such a line must have the annotated outcome. The `test/optimizer/bce*.goose` fix
 check these decisions and also run as ordinary programs, allowing output
 checks to catch incorrect elimination. `--bce-lines` prints the per-line counts
 for comparing two builds of the pass; `bench/bce_ab.py` measures the whole
-pass against `--no-bce`.
+pass against `--no-bce`. `bench/bce_fuzz.py` runs random programs built from
+loop shapes the pass targets, with off-by-one mutations, through the JIT
+with the pass on and off: an elided check that should have fired makes the
+two runs differ (it finds the pass's former misreading of an inlined body
+with several returns as the value of its last one within a few hundred
+programs).
 
 ### 5.12 Known gaps
 
