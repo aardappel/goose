@@ -444,6 +444,10 @@ struct Optimizer {
     // Accumulator tail-recursion elimination, defined in optimize_tre.h.
     void TailRecurse(FnSpec *sp);
 
+    // Marks the loops codegen restates for the C compiler, over the final
+    // live bodies; defined in optimize_loops.h.
+    void ShapeLoops();
+
     // ------------------------------------------------------------------
     // Global initializers: fold (and on the second pass inline into) each
     // init, and register constant scalar globals for propagation everywhere.
@@ -498,6 +502,7 @@ struct Optimizer {
         for (auto sp : ast.fnspecs) { sp->live = false; sp->uses = 0; }
         postorder.clear();
         ReachRoots();
+        ShapeLoops();
     }
 
     // Optimized bodies for eyeballing (--specs); not reparseable.

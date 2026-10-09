@@ -779,6 +779,8 @@ struct CodeGen {
     // The three per-node passes dispatch virtually (ast.h); the bodies live
     // together in codegen_nodes.h, delegating into the machinery here.
     string GenX(Node *n) {
+        if (!substs.empty())
+            if (auto s = substs.find(n); s != substs.end()) return s->second;
         auto it = fillvalues.find(n);
         return it == fillvalues.end() ? n->CgX(*this) : LoadLoc(it->second, it->second.t, n->line);
     }
@@ -925,10 +927,45 @@ struct CodeGen {
     // sits after the fallthrough restores rather than sharing them.
 
     void GenLoopBody(const function<void()> &condexit, Block *bodyb, Dst d,
-                     const string &forhead = "", Node *cond = nullptr);
+                     const string &forhead = "", Node *cond = nullptr, size_t first = 0);
     static bool StraightCode(Node *n);
     bool InStraightLoop();
     void GenBreakPath(Node *val);
+
+    // Loops run in blocks of iterations (ForLoop::stripk, ForLoop::sumred):
+    // a loop over whole blocks, then the rest one iteration at a time, each
+    // running a copy of the body. A copy names the locals it declares afresh
+    // (NameScope), so a body qualifies only where nothing is bound to its
+    // locals once per function (Dupable).
+    struct NameScope {
+        CodeGen &cg;
+        unordered_map<const VarDef *, string> vnames, vstk;
+        unordered_map<const VarDef *, pair<string, string>> vpool;
+        explicit NameScope(CodeGen &_cg)
+            : cg(_cg), vnames(_cg.vnames), vstk(_cg.vstk), vpool(_cg.vpool) {}
+        ~NameScope() {
+            cg.vnames = std::move(vnames);
+            cg.vstk = std::move(vstk);
+            cg.vpool = std::move(vpool);
+        }
+    };
+    // The terms of an in-order float sum computed ahead per block.
+    static constexpr int SUMBLOCK = 8;
+    // A loop over an array whose length BCE bounds by a constant is bounded
+    // by that constant instead where the C compiler will unroll it whole
+    // into few enough exits: a small bound and a small body (ForLoop::CgStmt).
+    static constexpr int64_t MAXTRIPBOUND = 8;
+    static constexpr int MAXTRIPBODY = 48;
+    // Nodes whose value codegen spells as given text instead: a strip-mined
+    // loop's `i % K`, which is its inner counter in a block.
+    unordered_map<const Node *, string> substs;
+    bool DupLocal(VarDef *v);
+    bool Dupable(Node *n);
+    int BlockSize(ForLoop *f);
+    string AtLeastLeft(TypeExpr *ct, const string &hi, const string &ctr, int k, bool fromzero);
+    void GenBodyCopy(Block *bodyb, int si);
+    void GenBlocked(ForLoop *f, int k, const string &more, const string &step,
+                    const function<void()> &bind, const string &cond);
 
     // ------------------------------------------------------------------
     // Exits delivering a value: where the receiver expects it (§7.3, §7.9).

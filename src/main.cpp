@@ -23,6 +23,7 @@
 #include "optimize.h"
 #include "optimize_basecase.h"
 #include "optimize_tre.h"
+#include "optimize_loops.h"
 #include "bce.h"
 #include "codegen.h"
 #include "codegen_types.h"

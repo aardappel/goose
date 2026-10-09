@@ -47,8 +47,8 @@ single translation unit, included in the order the driver lists them.
 | Parse | `lexer.h`, `parser.h`, `ParseProgram` in `main.cpp` | source files, following `import` | the `Ast`: nodes, type expressions, symbols per namespace, globals in initialization order |
 | Resolve | `resolve.h` (`ResolveTypeNames`) | type names as written | struct/enum/generic kinds, aliases substituted away |
 | Typecheck | `typecheck*.h` (`TypeCheckProgram`) | the `Ast` | one `FnSpec` per specialization with a cloned, annotated body; `StructInst`/`EnumInst`; `VarDef`s; the store record; every diagnostic of §3--§11; the shader blobs `embed_shader` compiles (`gfx.h`, `shaderc.c`) |
-| Optimize | `optimize.h`, `optimize_basecase.h`, `optimize_tre.h` (`Optimizer`) | live specializations | bodies rewritten in place (inlined, folded, loops), liveness and use counts |
-| BCE | `bce.h` (`BCE::RunAll`) | live specializations | `Index::nobc`, `SliceExpr::nobc`, `ForLoop::fixedlen`, per-loop `hoistrefs` |
+| Optimize | `optimize.h`, `optimize_basecase.h`, `optimize_tre.h`, `optimize_loops.h` (`Optimizer`) | live specializations | bodies rewritten in place (inlined, folded, loops), liveness and use counts, loop shapes (`ForLoop::stripk`, `sumred`, `While::countdown`) |
+| BCE | `bce.h` (`BCE::RunAll`) | live specializations | `Index::nobc`, `SliceExpr::nobc`, `ForLoop::fixedlen` and `lenbound`, per-loop `hoistrefs` |
 | Codegen | `codegen*.h` (`CodeGen`) | live specializations, globals | one C file, with `src/runtime/` (or its part a program's unit holds) around it |
 | JIT | `jit.h` | the C text | the program run in-process through libtcc, when no `-o` was given |
 
@@ -93,7 +93,7 @@ process started with (`ulimit -s`), which nothing in the executable sets.
 | `--specs` | print every live specialization's optimized body |
 | `--stacks` | print the data stack count of the main program and of each worker, the regions they come to, the thread cap that gives `hardware_threads()`, and every function's share (`codegen_stacks.h`); with `--check` it runs the backend for the counts and writes nothing |
 | `--stack-reserve size` | the address space reserved per data stack, written as `-DGS_STACK_RESERVE` (K/M/G/T suffixes; at most 2^48) |
-| `--no-bce` | skip bounds-check elimination (this also loses the loop-view hoist, §6.10) |
+| `--no-bce` | skip bounds-check elimination (this also loses the loop-view hoist, §6.10, and the restated array loops that need BCE's facts, §6.12) |
 | `--bce-test` | verify `// bce:elide` / `// bce:keep` annotations in the sources |
 | `--bce-lines` | print elided/kept counts per source line |
 | `--unsafe-no-rf-check` | omit the `return from` discriminant checks after calls: a measurement aid, unsound |
@@ -2779,9 +2779,9 @@ every live body first, how often each variable is written and how often its
 address is taken (`facts`), so a write in another specialization's function
 value is visible before any rewriting. Then: global initializers (fold
 only), every specialization in postorder (`SetupBaseCase`, `OptBlock`,
-`TailRecurse`, `Scan`), globals again (now able to inline), and a final
+`TailRecurse`, `Scan`), globals again (now able to inline), a final
 reachability pass so specializations whose every call was inlined go dead
-and codegen skips them.
+and codegen skips them, and loop shaping over the live bodies.
 
 **Constant propagation** (`OptStmt`, `Ident::Opt`): a single-name declaration
 of a scalar with a literal initializer, never written and never
@@ -2922,6 +2922,40 @@ are skipped, and a callee that can `return ... from` the function disables
 the transform. The `var t = ...; if c { t op= self(x) } t` spelling is
 restated as a return first (`AccVarForm`).
 
+**Loop shaping** (`LoopShaper`, `optimize_loops.h`, every level). Some
+loops compile to C that clang cannot make fast, while an equivalent
+restatement of the same loop it can. Once the final bodies are known, this
+pass marks such loops; it rewrites no tree, and codegen restates a marked
+loop only where its own conditions hold too (§6.12). Each mark records a
+fact about the loop as written that makes the restatement compute the same
+values and abort at the same point:
+
+* `ForLoop::stripk` and `lanemods`: the counter starts at 0 and steps by 1
+  -- an array's `i64` index, a count's variable, a range's from a literal 0
+  at the range's own type -- and the body takes it `% K` for a constant
+  `K` from 2 to 16 (the `lanemods`, those with the first `K` found). In a
+  block of `K` iterations starting at a multiple of `K`, `i % K` is the
+  position in the block (§6.2's `%` is Euclidean and the counter is never
+  negative), and the `%` could not abort. The loop variable must not be
+  captured.
+* `ForLoop::sumred`: the body is the single statement `s += e`, `s` a
+  float local that is not global, not captured and never the operand of
+  `&` (the facts `Analyze` collects: a reference to a scalar takes an
+  explicit one), and `e` reads no `s` and has no effect but a possible
+  abort: literals, variables, operators, casts, index and field reads,
+  `if`, and inlined bodies of `let`s of scalars whose returns leave only
+  them. Floating-point addition is not associative, so clang keeps such a
+  loop scalar; computing the terms of a block of iterations first and then
+  adding them to `s` one at a time, in order, changes no bit of any result.
+  A term that aborts does so at the same iteration, and what it leaves
+  unadded is a local nothing reads afterwards.
+* `While::countdown`: `while v > 0 { v--; ... }` (or `0 < v`, or `v -= 1`
+  first), `v` a `var` integer like `s` above that no other statement of
+  the body assigns or steps. The trip count is `v`'s value at entry, and
+  the decrement can neither wrap nor overflow.
+
+A body over 300 nodes is not marked: the first two are emitted twice.
+
 ---
 
 ## 5. Bounds-check elimination
@@ -2929,9 +2963,9 @@ restated as a return first (`AccVarForm`).
 `BCE` (`bce.h`) runs over every live specialization after the optimizer and
 marks the `Index` and `SliceExpr` nodes whose runtime check cannot fire;
 codegen then omits the check. It is required only to be sound; a program's
-meaning never depends on it (§10.5). It is also where two codegen decisions
-are taken that are not about checks at all: `ForLoop::fixedlen` and the
-per-loop `hoistrefs` (§5.10).
+meaning never depends on it (§10.5). It is also where codegen decisions are
+taken that are not about checks at all: `ForLoop::fixedlen` and `lenbound`,
+and the per-loop `hoistrefs` (§5.10).
 
 ### 5.1 The domain
 
@@ -2947,8 +2981,13 @@ anything larger is "unprovable" rather than wrong.
 
 Every query uses these **axioms**: `0 <= len <= 2^48` for every length
 (§10.4 is what makes `len - 1`, `i + 1` and `len + len` provably free of
-overflow), the storage range of every sub-64-bit integer variable, and the
-invariants granted by the recording pass (§5.7).
+overflow), and `len <= k` for a place that is a limited array of static
+capacity `k` (`Place::cap`), the storage range of every sub-64-bit integer
+variable, and the invariants granted by the recording pass (§5.7). A slice
+bound to a whole field takes the length of the field's array, at the place
+`.len` of the field names however the use converted it (`BoundLenOf`), and
+one bound to a whole variable or field declared as such a limited array is
+stated no longer than `k` at its declaration (`DeclCap`).
 
 ### 5.2 Bases and generations
 
@@ -3185,6 +3224,10 @@ elides a constant index into a fixed array (`IndexLoc`).
   summary leaves the iterated place alone, in which case codegen reads the
   view once instead of re-reading the length every iteration (section 3.15 makes
   growth during iteration legal, so the re-read is the default).
+* `ForLoop::lenbound` and `lenexact`: for an array or slice loop, the
+  smallest constant the facts bound the length by once the body's kills are
+  stripped -- so wherever an iteration tests it -- and whether they prove it
+  equal; codegen may bound the loop by that constant (§6.12).
 * `hoistrefs` on every loop: the reference variables the loop indexes whose
   array the body (and a `while` condition) can neither grow, shrink, rewrite
   whole nor reach through a call; codegen reads their base and length into
@@ -3875,6 +3918,58 @@ operand may be what narrows it, §3.8), fields of variable-size structs, and
 any index BCE did not settle that way, since the left operand is often what
 keeps it in bounds (`i < n && a[i] == c`).
 
+### 6.12 Restated loops
+
+Four loop shapes are emitted as an equivalent loop clang optimizes better
+(the marks of §4's loop shaping and §5.10's `lenbound`). Each restated loop
+starts with a comment naming its shape (`/* loop shape: ... */`), which the
+test runner reads in `test/optimizer/loop_shapes.goose`'s C.
+
+**Blocks of iterations** (`GenBlocked`): a `for` marked `stripk` or
+`sumred` whose iteration count is fixed at entry -- a range or a count, an
+array or slice with `fixedlen` or a fixed array, walked where it lies, and
+not one BCE bounds shorter than two blocks -- runs
+`while (at least K left) { K iterations }`, then the rest one iteration at a
+time in a loop of its own, each running a copy of the body. Neither copy
+re-reads a length the body cannot change, so the iterations, their order
+and every value are the loop's. "At least K left" is computed without
+overflow at the counter's type (`AtLeastLeft`). The copies share one Goose
+loop scope: a `break` in either leaves both, a `continue` reaches the end of
+the copy it is in, whose step advances the counter. A body is emitted twice
+only where nothing binds to its locals once per function (`Dupable`): it
+declares no data-stack local, no captured one, no named result built at the
+destination, no nested function and no function value, and builds no
+variable-size value; each copy names its locals afresh (`NameScope`), and
+the element binding of the remainder copy gets a name of its own, as an
+aggregate's declaration moves to the top of the function
+(`HoistAggregateDecls`).
+
+* Strip-mined (`stripk`, `K` from 2 to 16): the block is `for (l = 0; l <
+  K; l++, i++)`, and every `lanemods` node is spelled as `l` (`substs`,
+  consulted by `GenX`). clang unrolls the block, and a `T[K]` indexed by the
+  constant positions stays in registers; a SHA-256 message schedule's 8
+  lanes of `u32` become two SSE vectors.
+* An in-order sum (`sumred`, `K` = 8): the block computes its 8 terms into a
+  local array, then adds them to `s` one after another. The term loop
+  vectorizes; the additions are the loop's own, in its order.
+
+**A bound for the trip count**: an array or slice loop whose `lenbound` is
+at most 8, with a body of at most 48 nodes, runs `for (i = 0; i < bound;
+i++)`, testing `i >= len` at the top of each iteration: clang unrolls it
+whole into straight-line code with predictable exits. The length is still
+read at every test, so growth during the walk is seen as before. A count
+over a cell's `(Cell&<u32>)[..8]` neighbors is the case that needs it. A
+loop whose length is known to equal its bound (`lenexact`) is left alone:
+clang mostly knows that length too (a fixed array's, one an `assert`
+compared), and the constant only changes how clang vectorizes it, which
+measured slower for the asserted neighbor count.
+
+**Countdowns** (`countdown`): `while (v > 0) { v--; body }` becomes `n =
+v; for (j = 0; j < n; j++) { v = n - 1 - j; body }`. `v` holds at every
+statement of the body the value the decrement would have left, and after
+the loop, `0` or its value at entry when that was not positive. An
+up-counting induction variable is the form clang compiles best.
+
 ---
 
 ## 7. The runtime
@@ -4362,6 +4457,28 @@ in 32 { if p1[j] == a && p2[j] == b { n += 1; } }` over slices of 32 bytes,
 whose indices the loop bounds, takes the vector form, and a block with a
 hit is searched again a byte at a time. The same test in a `while` loop
 that stops at the first hit stays scalar.
+
+### 9.10 Loop shapes
+
+The natural spellings of some loops compile as fast as hand-tuned ones,
+because codegen restates them (§6.12):
+
+* State in a few lanes picked by the counter, `for x, i in data { lanes[i
+  % 8] ... }`, runs in blocks where every lane is a constant, so a `T[8]` of
+  lanes lives in registers; there is no need to write the block loop by hand.
+* A float sum `for x in xs { s += term(x); }` keeps its exact order of
+  additions, and its terms are still computed eight at a time where `term`
+  is a pure expression after inlining.
+* A loop over a small limited array, `for n in cell.neighbors` or
+  `count(cell.neighbors) { ... }` over a `T[..8]`, is bounded by the
+  capacity and unrolls whole; an `assert` of the exact length is not needed
+  for that, though it still helps where the lists are full.
+* `while i > 0 { i--; ... }` runs as a counted loop, as fast as counting up
+  and deriving `i`.
+
+The block forms need the iteration count fixed when the loop starts: a body
+that may change the length of the array it walks (§6.5) runs one iteration
+at a time.
 
 ---
 

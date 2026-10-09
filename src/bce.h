@@ -246,6 +246,9 @@ struct BCE {
         bool lenmut = false;    // A grow/shrink operation can target it.
         bool slice = false;     // Its length is a slice's, held in a slot.
         bool inelem = false;    // Of a type an array element can have.
+        // A limited array's static capacity, which its length never exceeds;
+        // -1 for every other place.
+        int64_t cap = -1;
     };
     vector<Place> places;
     map<pair<VarDef *, vector<int>>, int> placeids;
@@ -293,7 +296,16 @@ struct BCE {
             if (t->kind == TY_ARRAY) return isref(t->arr->sub);
             return t->kind == TY_SLICE && isref(t->sub);
         }
-        if (d->fieldidx < 0) return false;
+        auto ft = FieldTypeOf(d);
+        return ft && (isref(ft) || ft->kind == TY_GENERIC);
+    }
+
+    // The declared type of the field a Dot reads, as its object's type
+    // instantiates it; null for anything but a field.
+    static TypeExpr *FieldTypeOf(Dot *d) {
+        auto t = d->obj->exprtype;
+        if (!t || d->fieldidx < 0) return nullptr;
+        if (t->kind == TY_REF) t = t->ref->sub;
         TypeExpr *ft = nullptr;
         if (t->kind == TY_STRUCT) {
             auto inst = t->struc->inst;
@@ -305,7 +317,20 @@ struct BCE {
                 for (size_t vi = 0; vi < inst->en->variants.size(); vi++)
                     if (&inst->en->variants[vi] == v) ft = inst->vftypes[vi][d->fieldidx];
         }
-        return ft && (isref(ft) || ft->kind == TY_GENERIC);
+        return ft;
+    }
+
+    // The static capacity of the limited array a variable or a field holds,
+    // as declared: what a slice of it whole is never longer than, whatever
+    // type the use converted it to. -1 for anything else.
+    static int64_t DeclCap(Node *n) {
+        if (auto u = Is<Unary>(n); u && u->op == T_BITAND) n = u->child;
+        TypeExpr *t = nullptr;
+        if (auto id = Is<Ident>(n)) t = id->vdef ? id->vdef->type : nullptr;
+        else if (auto d = Is<Dot>(n)) t = FieldTypeOf(d);
+        if (t && t->kind == TY_REF) t = t->ref->sub;
+        if (!t || t->kind != TY_ARRAY || t->arr->akind != A_LIMITED) return -1;
+        return t->arr->size;
     }
 
     // The place of the array or slice of type t (a reference's pointee
@@ -335,6 +360,7 @@ struct BCE {
             P.ultv = u;
         }
         P.lenmut = arr && t->arr->akind != A_VAR;
+        if (arr && t->arr->akind == A_LIMITED && t->arr->size >= 0) P.cap = t->arr->size;
         P.slice = slice;
         P.inelem = slice || (arr && t->arr->akind != A_GROW && t->arr->akind != A_GROWSHRINK);
         auto id = (int)places.size();
@@ -344,8 +370,10 @@ struct BCE {
     }
 
     // `crossed` reports a stored reference read on the way, whether or not
-    // a place came of it.
-    int PlaceOf(Node *n, bool *failidx = nullptr, bool *crossed = nullptr) {
+    // a place came of it. With `as`, n is read as that type rather than its
+    // checked one: the declared type of a field whose use converted it.
+    int PlaceOf(Node *n, bool *failidx = nullptr, bool *crossed = nullptr,
+                TypeExpr *as = nullptr) {
         vector<int> path;
         VarDef *root = nullptr;
         for (auto cur = n;;) {
@@ -354,7 +382,7 @@ struct BCE {
                 // A field holding a reference is a crossing of its own: the
                 // place lies wherever that reference points, not in the
                 // object the field belongs to.
-                if (ReadsStoredRef(d)) {
+                if ((as && cur == n) ? IsRefOrSlice(as) : ReadsStoredRef(d)) {
                     path.push_back(-1);
                     if (crossed) *crossed = true;
                 }
@@ -371,7 +399,7 @@ struct BCE {
         }
         if (!root) return -1;
         std::reverse(path.begin(), path.end());
-        return PlaceFor(root, path, n->exprtype);
+        return PlaceFor(root, path, as ? as : n->exprtype);
     }
 
     // The place a variable's own array/slice value occupies (used at
@@ -534,7 +562,9 @@ struct BCE {
             auto &b = nodes[i];
             if (b.kind == BK_LEN) {
                 edges.push_back({ 0, (int)i, 0 });         // 0 <= len.
-                edges.push_back({ (int)i, 0, LENMAX });    // len <= 2^48 (§10.4).
+                // len <= 2^48 (§10.4), or a limited array's capacity.
+                auto cap = places[b.id].cap;
+                edges.push_back({ (int)i, 0, cap >= 0 && cap < LENMAX ? cap : LENMAX });
             } else if (b.kind == BK_TMP) {
                 auto it = tmpival.find(b.id);
                 if (it != tmpival.end()) {
@@ -1418,6 +1448,16 @@ struct BCE {
     Term BoundLenOf(Node *init) {
         if (auto u = Is<Unary>(init); u && u->op == T_BITAND) init = u->child;
         if (!Is<Ident>(init) && !Is<Dot>(init)) return {};
+        // A field converted to the slice it binds views the field's array
+        // whole: its length is that array's, at the place `.len` of the
+        // field names.
+        if (auto d = Is<Dot>(init); d && init->exprtype && init->exprtype->kind == TY_SLICE) {
+            auto ft = FieldTypeOf(d);
+            if (ft && ft->kind == TY_ARRAY && ft->arr->akind != A_FIXED) {
+                auto pid = PlaceOf(init, nullptr, nullptr, ft);
+                return pid >= 0 ? Term { true, LenBase(pid), 0 } : Term {};
+            }
+        }
         return LenTermOf(init);
     }
 
@@ -3023,6 +3063,18 @@ inline bool ForLoop::BceWalk(BCE &b) {
     if (iterkind == IK_ARRAY || iterkind == IK_SLICE) {
         lot = BCE::Term { true, BCE::Zero(), 0 };
         hit = b.LenTermOf(iter);
+        // With the body's kills stripped, what bounds the length now bounds
+        // it wherever an iteration tests it.
+        if (b.mode == BCE::M_JUDGE) {
+            lenbound = -1;
+            lenexact = false;
+            auto up = hit.ok ? b.Dist(hit.b, BCE::Zero()) : BCE::INF;
+            auto ub = up == BCE::INF ? BCE::INF : BCE::SatAdd(up, hit.off);
+            if (ub >= 0 && ub < BCE::LENMAX) {
+                lenbound = ub;
+                lenexact = b.Query(BCE::Zero(), hit.b, BCE::SatSub(hit.off, ub));
+            }
+        }
     }
     auto exitf = b.flow;
     if (iv) {
@@ -3140,6 +3192,12 @@ inline bool VarDecl::BceWalk(BCE &b) {
         if (lt.ok) {
             auto pid = b.PlaceOfVar(v);
             if (pid >= 0) b.ExactLenIs(pid, lt);
+        }
+        // A slice of a whole limited array is no longer than its capacity.
+        if (b.mode != BCE::M_KILLS && v->type && v->type->kind == TY_SLICE) {
+            auto cap = BCE::DeclCap(inits[0]);
+            auto pid = cap >= 0 ? b.PlaceOfVar(v) : -1;
+            if (pid >= 0) b.AddFactB(b.LenBase(pid), BCE::Zero(), cap);
         }
     } else {
         for (auto d : defs) if (d) b.VarKillWrite(d);

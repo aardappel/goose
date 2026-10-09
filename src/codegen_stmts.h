@@ -46,7 +46,7 @@ inline void CodeGen::GenStmt(Node *n) {
 // sits after the fallthrough restores rather than sharing them.
 
 inline void CodeGen::GenLoopBody(const function<void()> &condexit, Block *bodyb, Dst d,
-                                 const string &forhead, Node *cond) {
+                                 const string &forhead, Node *cond, size_t first) {
     PushSc(SC_LOOP);
     auto si = (int)cscopes.size() - 1;
     cscopes[si].brklbl = Lbl();
@@ -59,7 +59,7 @@ inline void CodeGen::GenLoopBody(const function<void()> &condexit, Block *bodyb,
     // body's && and || may take the unconditional form.
     if (condexit) condexit();
     cscopes[si].straight = StraightCode(bodyb) && (!cond || StraightCode(cond));
-    for (auto st : bodyb->stmts) GenStmt(st);
+    for (auto i = first; i < bodyb->stmts.size(); i++) GenStmt(bodyb->stmts[i]);
     if (bodyb->tail) GenStmt(bodyb->tail);
     auto &sc = cscopes.back();
     EmitRestores(sc);
@@ -110,6 +110,142 @@ inline void CodeGen::GenBreakPath(Node *val) {
     cscopes[si].usedbrk = true;
     L("goto ", cscopes[si].brklbl, ";");
     termjump = true;
+}
+
+// ------------------------------------------------------------------
+// Loops in blocks (ForLoop::stripk, ForLoop::sumred; optimize_loops.h).
+
+// A local a body copy can declare again under a name of its own: one held
+// in the C frame, which no other function reaches and which is no named
+// result built at the destination.
+inline bool CodeGen::DupLocal(VarDef *v) {
+    return !v || (v->type && IsFix(v->type) && !IsLargeFixed(v->type) && !v->captured &&
+                  !v->reusable && !nrvo.count(v));
+}
+
+// Whether a body can be emitted twice. Paths to variable-size storage are
+// fine; a value of variable size built in the body, a nested function or a
+// function value, and the locals DupLocal refuses are not.
+inline bool CodeGen::Dupable(Node *n) {
+    if (!n) return true;
+    if (Is<FunVal>(n) || Is<FnDecl>(n)) return false;
+    auto path = Is<Ident>(n) || Is<Dot>(n) || Is<Index>(n);
+    auto t = n->exprtype;
+    if (!path && t && t->kind != TY_VOID &&
+        (t->kind == TY_FN || !IsFix(t) || IsLargeFixed(t)))
+        return false;
+    auto ok = true;
+    if (auto vd = Is<VarDecl>(n)) for (auto v : vd->defs) ok = ok && DupLocal(v);
+    if (auto fl = Is<ForLoop>(n)) ok = DupLocal(fl->vdef) && DupLocal(fl->idxdef);
+    if (auto me = Is<MatchExpr>(n)) for (auto &arm : me->arms) ok = ok && DupLocal(arm.binder);
+    if (auto c = Is<Call>(n)) for (auto p : c->fvparams) ok = ok && DupLocal(p);
+    RunChildren(n, [&](Node *ch) { ok = ok && Dupable(ch); });
+    return ok;
+}
+
+// The number of iterations a loop's body runs in a block, or 0 where it runs
+// them one at a time. The caller has checked that the iteration count is
+// fixed at entry.
+inline int CodeGen::BlockSize(ForLoop *f) {
+    if (!f->stripk && !f->sumred) return 0;
+    if (!DupLocal(f->vdef) || !DupLocal(f->idxdef) || !Dupable(f->body)) return 0;
+    return f->stripk ? f->stripk : SUMBLOCK;
+}
+
+// Whether at least k iterations are left of a range whose counter ctr, of
+// type ct, runs below hi: hi - ctr >= k, where the subtraction can overflow
+// neither in C nor in the counter's own type. A counter that started at 0
+// is never negative.
+inline string CodeGen::AtLeastLeft(TypeExpr *ct, const string &hi, const string &ctr, int k,
+                                   bool fromzero) {
+    if (IntBits(ct->intstorage) < 64) return cat("(int64_t)", hi, " - (int64_t)", ctr, " >= ", k);
+    if (IsUnsigned(ct->intstorage)) return cat(ctr, " < ", hi, " && ", hi, " - ", ctr, " >= ", k);
+    if (fromzero) return cat(hi, " - ", ctr, " >= ", k);
+    return cat(ctr, " < ", hi, " && (uint64_t)", hi, " - (uint64_t)", ctr, " >= ", k);
+}
+
+// One copy of a loop's body in the C loop the caller opened, ending where a
+// continue in it lands.
+inline void CodeGen::GenBodyCopy(Block *bodyb, int si) {
+    for (auto st : bodyb->stmts) GenStmt(st);
+    if (bodyb->tail) GenStmt(bodyb->tail);
+    EmitRestores(cscopes[si]);
+    if (cscopes[si].usedcnt) L(cscopes[si].cntlbl, ":;");
+}
+
+// `while (<more>) { k iterations }`, then `for (; <cond>; <step>)` for the
+// rest; `bind` declares an iteration's loop variables, and `step` advances
+// them. The two copies of the body share one Goose loop scope, so a break in
+// either leaves both, while each has its own continue label.
+//
+// Strip-mined (stripk), the block is a loop of k iterations whose counter is
+// the value of every `i % k` the body takes. An in-order sum (sumred)
+// computes the block's k terms into a local array, then adds them to the sum
+// one after another, as the loop would have.
+inline void CodeGen::GenBlocked(ForLoop *f, int k, const string &more, const string &step,
+                                const function<void()> &bind, const string &cond) {
+    PushSc(SC_LOOP);
+    auto si = (int)cscopes.size() - 1;
+    cscopes[si].brklbl = Lbl();
+    cscopes[si].cntlbl = Lbl();
+    auto loopid = MarkLoopBegin();
+    {
+        NameScope ns(*this);
+        L(f->stripk ? "/* loop shape: strip-mined by " : "/* loop shape: sum terms in blocks of ",
+          k, " */");
+        L("while (", more, ") {");
+        ind++;
+        auto l = T();
+        auto inner = cat("for (int64_t ", l, " = 0; ", l, " < ", k, "; ", l, "++, ", step, ") {");
+        if (f->stripk) {
+            L(inner);
+            ind++;
+            bind();
+            for (auto m : f->lanemods) substs[m] = cat("((", CT(m->exprtype), ")", l, ")");
+            GenBodyCopy(f->body, si);
+            for (auto m : f->lanemods) substs.erase(m);
+            ind--;
+            L("}");
+        } else {
+            auto a = Is<Assign>(f->body->stmts.empty() ? f->body->tail : f->body->stmts[0]);
+            auto sum = GenLoc(a->lval);
+            auto terms = T();
+            L(CT(sum.t), " ", terms, "[", k, "];");
+            L(inner);
+            ind++;
+            bind();
+            PushSc(SC_STMT);
+            termjump = false;
+            auto r = GenX(a->rhs);
+            L(terms, "[", l, "] = ", r, ";");
+            PopSc();
+            termjump = false;
+            EmitRestores(cscopes[si]);
+            ind--;
+            L("}");
+            auto l2 = T();
+            L("for (int64_t ", l2, " = 0; ", l2, " < ", k, "; ", l2, "++) ", sum.s, " = ", sum.s,
+              " + ", terms, "[", l2, "];");
+        }
+        ind--;
+        L("}");
+    }
+    cscopes[si].saves.clear();
+    cscopes[si].usedcnt = false;
+    cscopes[si].cntlbl = Lbl();
+    L("for (; ", cond, "; ", step, ") {");
+    ind++;
+    bind();
+    GenBodyCopy(f->body, si);
+    ind--;
+    L("}");
+    auto usedbrk = cscopes[si].usedbrk;
+    auto brklbl = cscopes[si].brklbl;
+    cscopes.back().saves.clear();
+    PopSc();
+    if (usedbrk) L(brklbl, ":;");
+    MarkLoopEnd(loopid);
+    termjump = false;
 }
 
 // ------------------------------------------------------------------

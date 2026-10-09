@@ -342,6 +342,14 @@ inline void RunChildren(Node *n, const function<void(Node *)> &f) {
     n->Children(f);
 }
 
+// The nodes of a checked tree that run, itself included.
+inline int CountNodes(Node *n) {
+    if (!n) return 0;
+    auto c = 1;
+    RunChildren(n, [&](Node *ch) { c += CountNodes(ch); });
+    return c;
+}
+
 // Whether the tree holds a `return` that exits function sf: exactly the ones
 // an InlineBlock for sf catches (ast.h). The optimizer asks before unwrapping
 // such a block into a plain expression, BCE before taking an inlined body to
