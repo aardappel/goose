@@ -34,6 +34,7 @@
 #include "codegen_builtins.h"
 #include "codegen_render.h"
 #include "codegen_emit.h"
+#include "codegen_stacks.h"
 #include "codegen_nodes.h"
 #include "runtime_inline.h"
 #include "jit.h"
@@ -334,11 +335,96 @@ int RunOnCompilerStack(const function<int()> &fn);
 // the file's name as given.
 constexpr const char *MULTIMARK = "==== goose --multi-test: exit";
 
+// A size with an optional K, M, G or T suffix (--stack-reserve).
+bool ParseSize(string s, uint64_t &out) {
+    if (!s.empty() && toupper((unsigned char)s.back()) == 'B') s.pop_back();
+    if (s.empty()) return false;
+    uint64_t mult = 1;
+    switch (toupper((unsigned char)s.back())) {
+        case 'K': mult = 1ull << 10; s.pop_back(); break;
+        case 'M': mult = 1ull << 20; s.pop_back(); break;
+        case 'G': mult = 1ull << 30; s.pop_back(); break;
+        case 'T': mult = 1ull << 40; s.pop_back(); break;
+    }
+    if (s.empty() || s.size() > 18 || s.find_first_not_of("0123456789") != string::npos)
+        return false;
+    auto n = strtoull(s.c_str(), nullptr, 10);
+    if (n > UINT64_MAX / mult) return false;
+    out = n * mult;
+    return true;
+}
+
+// The value of a runtime configuration macro as runtime.h spells its
+// defaults and a -D may: an integer with C suffixes, or `(N << M)`.
+bool ParseConfigValue(string s, uint64_t &out) {
+    auto strip = [](string &t) {
+        while (!t.empty() && isspace((unsigned char)t.back())) t.pop_back();
+        size_t i = 0;
+        while (i < t.size() && isspace((unsigned char)t[i])) i++;
+        t.erase(0, i);
+    };
+    strip(s);
+    while (s.size() >= 2 && s.front() == '(' && s.back() == ')') {
+        s = s.substr(1, s.size() - 2);
+        strip(s);
+    }
+    auto num = [&](string t, uint64_t &v) {
+        strip(t);
+        while (!t.empty() && (tolower((unsigned char)t.back()) == 'u' ||
+                              tolower((unsigned char)t.back()) == 'l'))
+            t.pop_back();
+        if (t.empty() || t.size() > 19 || t.find_first_not_of("0123456789") != string::npos)
+            return false;
+        v = strtoull(t.c_str(), nullptr, 10);
+        return true;
+    };
+    if (auto sh = s.find("<<"); sh != string::npos) {
+        uint64_t a, b;
+        if (!num(s.substr(0, sh), a) || !num(s.substr(sh + 2), b) || b > 63) return false;
+        out = a << b;
+        return true;
+    }
+    return num(s, out);
+}
+
+// The data stack configuration the generated program compiles with, for
+// the --stacks report: the runtime's defaults (runtime.h), then the -D
+// given, --stack-reserve's among them. A -D the compiler cannot read keeps
+// the default in the report; the C compiler sees it either way.
+CodeGen::StackConfig StackConfigOf(const vector<string> &cdefines) {
+    string_view runtime;
+    for (auto &rf : runtime_files)
+        if (string_view(rf.name) == "runtime.h") runtime = rf.text;
+    auto value = [&](const char *name, uint64_t &out) {
+        auto key = cat("#define ", name, " ");
+        if (auto at = runtime.find(key); at != string_view::npos) {
+            auto line = runtime.substr(at + key.size());
+            line = line.substr(0, line.find('\n'));
+            if (auto c = line.find("/*"); c != string_view::npos) line = line.substr(0, c);
+            ParseConfigValue(string(line), out);
+        }
+        for (auto &d : cdefines) {
+            auto eq = d.find('=');
+            if (d.substr(0, eq) == name)
+                ParseConfigValue(eq == string::npos ? string("1") : d.substr(eq + 1), out);
+        }
+    };
+    CodeGen::StackConfig cfg { 0, 0, 0, 0 };
+    uint64_t maxstacks = 0;
+    value("GS_STACK_RESERVE", cfg.reserve);
+    value("GS_STACK_GAP", cfg.gap);
+    value("GS_STACK_BUDGET", cfg.budget);
+    value("GS_MAX_STACKS", maxstacks);
+    cfg.maxstacks = (int64_t)maxstacks;
+    return cfg;
+}
+
 int Main(int argc, char **argv) {
     string outname, headername, stdlibdir, shaderfile, shadersource, dumpfile;
     auto dump = false, tokens = false, parseonly = false, specs = false, nocgen = false;
     auto roundtrip = false, multitest = false;
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
+    auto stacks = false;
     auto forcejit = false, standalone = false;
     auto optlevel = 1;
     vector<string> cdefines, progargs, includenames, files;
@@ -355,6 +441,17 @@ int Main(int argc, char **argv) {
         else if (arg == "--roundtrip") roundtrip = true;
         else if (arg == "--dump-file" && i + 1 < argc) dumpfile = argv[++i];
         else if (arg == "--specs") specs = true;
+        else if (arg == "--stacks") stacks = true;
+        else if (arg == "--stack-reserve" && i + 1 < argc) {
+            uint64_t size;
+            if (!ParseSize(argv[++i], size) || !size || size > (1ull << 48)) {
+                fprintf(stderr, "--stack-reserve takes a size from 1 byte to 256 TB (2^48, "
+                                "goose_spec.md 10.4), with an optional K, M, G or T suffix: %s\n",
+                        argv[i]);
+                return 1;
+            }
+            cdefines.push_back(cat("GS_STACK_RESERVE=", size, "ull"));
+        }
         else if (arg == "--check") nocgen = true;
         else if (arg == "--no-bce") nobce = true;
         else if (arg == "--bce-test") bcetest = true;
@@ -429,9 +526,10 @@ int Main(int argc, char **argv) {
     }
     if (files.empty()) {
         fprintf(stderr, "usage: goose [--dump] [--parse] [--tokens] [--roundtrip] "
-                        "[--dump-file out.goose] [--specs] [--check] "
+                        "[--dump-file out.goose] [--specs] [--stacks] [--check] "
                         "[--no-bce] [--bce-test] [--bce-lines] [--unsafe-no-rf-check] [-O0|-O1|-O2] "
-                        "[-o out.c [--standalone]] [--jit] [-DNAME=VALUE]... [--include header.h]... "
+                        "[-o out.c [--standalone]] [--jit] [-DNAME=VALUE]... [--stack-reserve size] "
+                        "[--include header.h]... "
                         "[--header out.h] "
                         "[--stdlib dir] file.goose [-- program args...] | "
                         "--multi-test [options] file.goose... | --emit-runtime runtime.c | "
@@ -443,6 +541,9 @@ int Main(int argc, char **argv) {
         fprintf(stderr, "the .c that -o writes links with the runtime that --emit-runtime "
                         "writes, compiled once;\n--standalone writes one that holds the "
                         "runtime itself.\n");
+        fprintf(stderr, "--stacks reports the data stacks the program and each worker can take "
+                        "and the thread cap they\ngive hardware_threads(); --stack-reserve sets "
+                        "the address space reserved per stack (K/M/G/T suffixes).\n");
         fprintf(stderr, "--multi-test compiles each file as a run of its own would, one after "
                         "another, ending what each\nprinted with a line `%s <exit code> <file>` "
                         "on stdout and on stderr; an -o names\neach file's C with a %% "
@@ -549,7 +650,9 @@ int Main(int argc, char **argv) {
             }
             fprintf(msgs, "bce-test: all annotations verified\n");
         }
-        if (nocgen) return 0;
+        // --stacks needs the generated program's bounds, so --check runs
+        // the backend for them and writes nothing.
+        if (nocgen && !stacks) return 0;
         // A quoted include resolves against the including file's own directory
         // first, so the --include headers are written relative to where the .c
         // goes: the generated file then compiles wherever the tree sits,
@@ -565,7 +668,9 @@ int Main(int argc, char **argv) {
         string_view runtime_ext_text;
         for (auto &rf : runtime_files)
             if (string_view(rf.name) == "runtime_ext.h") runtime_ext_text = rf.text;
-        CodeGen cg(ast, runtime_ext_text, includes, norfcheck, library);
+        auto stackcfg = StackConfigOf(cdefines);
+        CodeGen cg(ast, runtime_ext_text, includes, norfcheck, library, stackcfg.maxstacks);
+        if (stacks) cg.StackReport(msgs, stackcfg);
         // Assemble: compiler-set feature defines, the embedded runtime, then
         // the generated program. A program built with a separate runtime
         // holds what runtime.h has of it and the extern support's
@@ -597,7 +702,7 @@ int Main(int argc, char **argv) {
                        cg.head, RuntimeSections({ "runtime_ext.h", "runtime_os.h" }), cg.result);
             return out;
         };
-        if (!outfile.empty()) {
+        if (!outfile.empty() && !nocgen) {
             auto out = assemble(!standalone);
             auto f = fopen(outfile.c_str(), "wb");
             if (!f) throw CompileError { cat("cannot write output file: ", outfile) };
@@ -613,7 +718,7 @@ int Main(int argc, char **argv) {
             fclose(f);
             fprintf(msgs, "wrote %s (%d bytes)\n", headername.c_str(), (int)header.size());
         }
-        if (jit) {
+        if (jit && !nocgen) {
             // TinyCC's in-memory runner rejects a thread-local section, and
             // the runtime keeps each worker's data stacks in one.
             if (cg.usesthreads)

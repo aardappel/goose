@@ -842,24 +842,34 @@ inline vector<string> CodeGen::EmitThreadSpawn(Call *c, vector<Node *> &an) {
                  ")") };
 }
 
-// The worker's entry: unpacks the arguments, then gives the thread a fresh
-// instance of the globals filled from the spawn image, runs the body, and
-// frees the instance (its stacks are released with the thread's others).
+// The worker's entry thunk, by name; its body follows once every thread
+// program's stack count is known (EmitThreadThunk, from EmitProgramInit).
 inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
     auto it = thunks.find(sp);
     if (it != thunks.end()) return it->second;
     auto name = Unique(cat("gs_tmain_", Sanitize(sp->sf->ns, sp->sf->name)));
     thunks[sp] = name;
     Append(protos, "static void ", name, "(uint8_t *p);\n");
+    return name;
+}
+
+// The worker's entry: opens the thread program's block of `stacks` data
+// stacks, unpacks the arguments, then gives the thread a fresh instance of
+// the globals filled from the spawn image, runs the body, and frees the
+// instance (its stacks are released with the thread's others).
+inline void CodeGen::EmitThreadThunk(FnSpec *sp, int64_t stacks) {
+    auto name = thunks[sp];
     auto &ki = sinfo[sp];
     string b;
-    Append(b, "static void ", name, "(uint8_t *p) {\n");
+    Append(b, "static void ", name, "(uint8_t *p) {\n    gs_stack_block(", stacks, ");\n");
     vector<string> args;
+    int regions = 0;    // The dedicated stacks the thunk reserves (thunkregions).
     for (size_t i = 0; i < sp->argtypes.size(); i++) {
         auto pt = sp->argtypes[i];
         if (IsResz(pt)) {
             EmitCoreTypes();
             auto a = cat("a", i), stk = cat(a, "_stk");
+            regions++;
             Append(b, "    gs_stack ", stk, "; gs_stack_init(&", stk, ");\n",
                    "    ", IsFrameObj(pt) ? CT(pt) : string("gs_rhdr"), " ", a, ";\n",
                    "    {\n        int64_t sz = *(int64_t *)p; p += 8;\n");
@@ -905,6 +915,7 @@ inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
         Append(b, "    {\n        int64_t sz = *(int64_t *)p; p += 8; uint8_t *img = p; p += sz;\n");
         if (IsResz(d->type)) {
             auto stk = gstks[d];
+            regions++;
             Append(b, "        gs_stack_init(", stk, ");\n");
             if (IsFrameObj(d->type)) {
                 auto th = FoTailHdr(d->type, gn);
@@ -921,6 +932,7 @@ inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
                 auto &p = gpools[d];
                 auto esz = FixedSize(d->type->arr->sub);
                 auto flsz = FlEntrySize(d);
+                regions++;
                 Append(b, "        int64_t cnt = *(int64_t *)img, ebytes = cnt * ", esz, ";\n",
                        "        ", gn, ".base = ", stk, "->top;\n",
                        "        ", gn, ".len = cnt;\n",
@@ -940,6 +952,7 @@ inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
             }
         } else if (IsBytesT(d->type)) {
             auto stk = gstks[d];
+            regions++;
             Append(b, "        gs_stack_init(", stk, ");\n",
                    "        ", gn, " = ", stk, "->top;\n",
                    "        memcpy(", stk, "->top, img, (size_t)sz);\n",
@@ -953,7 +966,7 @@ inline string CodeGen::EnsureThreadThunk(FnSpec *sp) {
     for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
     Append(b, "    ", ki.cname, "(", argstr, ");\n    free(gs_gl);\n}\n\n");
     code += b;
-    return name;
+    thunkregions[sp] = regions;
 }
 
 // ------------------------------------------------------------------

@@ -347,6 +347,8 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     // Stacks counted from 0 are the outermost callers' (CollectSpecs).
     if (stkmax > 0 && !curinfo->needssp)
         Fail(sp->sf->line, cat("internal: ", curinfo->cname, " uses data stacks without gs_sp"));
+    // The element-run twin is the same body: the larger count of the two.
+    stackown[sp] = std::max(stackown[sp], stkmax);
     // The regions and the markers resolve now that every stack this body
     // grows, and where it grows it, is known.
     auto plan = PlanTopCaches();
@@ -356,11 +358,8 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     Append(code, "static ", SigRet(sp), " ", er ? ernames[sp] : curinfo->cname, "(",
            params, ") {\n");
     code += decls;
-    if (stkmax > 0)
-        Append(code, "    GS_ENSURE(", spexpr, " + ", stkmax, ", ", LocArgs(sp->sf->line),
-               ");\n");
-    // A whole-body cache loads once the stacks are known to exist; a
-    // per-loop one declares and loads itself at its loop's edge.
+    // A whole-body cache loads at entry; a per-loop one declares and loads
+    // itself at its loop's edge.
     for (size_t i = 0; i < toporder.size(); i++)
         if (!plan.fnlocals[i].empty())
             Append(code, "    uint8_t *", plan.fnlocals[i], " = ", toporder[i], "->top;\n");
@@ -512,12 +511,8 @@ inline void CodeGen::EmitGlobalInit() {
     ResetFnState();
     spexpr = "0";
     PushSc(SC_FN);
-    // Running out of data stacks is reported at the initializer that needs
-    // the most of them.
-    Line deepest;
     for (auto g : ast.globals) {
         if (g->inits.empty()) continue;
-        auto before = stkmax;
         PushSc(SC_STMT);
         if (g->defs.size() > 1 && g->inits.size() == 1) {
             auto c = Is<Call>(g->inits[0]);
@@ -559,14 +554,13 @@ inline void CodeGen::EmitGlobalInit() {
         if (termjump) cscopes.back().saves.clear();
         PopSc();
         termjump = false;
-        if (stkmax > before) deepest = g->line;
     }
     EmitExitRestores(0);
     cscopes.clear();
+    stackown[nullptr] = std::max(stackown[nullptr], stkmax);
     auto decls = HoistAggregateDecls(body);
     Append(code, "static void gs_init_globals(void) {\n");
     code += decls;
-    if (stkmax > 0) Append(code, "    GS_ENSURE(", stkmax, ", ", LocArgs(deepest), ");\n");
     code += body;
     code += "}\n\n";
 }
@@ -579,6 +573,7 @@ inline string CodeGen::GlobalLenLv(VarDef *d) {
 
 inline void CodeGen::InitGlobalStack(VarDef *d) {
     auto stk = gstks[d];
+    globalregions++;
     L("gs_stack_init(", stk, ");");
     if (IsResz(d->type) && IsFrameObj(d->type)) {
         // The tail header is set when the value is constructed.
@@ -590,6 +585,7 @@ inline void CodeGen::InitGlobalStack(VarDef *d) {
     }
     if (d->reusable) {
         auto &p = gpools[d];
+        globalregions++;
         L("gs_stack_init(", p.second, ");");
         L(p.first, ".base = ", Top(p.second), ";");
         L(p.first, ".len = 0;");
@@ -598,9 +594,24 @@ inline void CodeGen::InitGlobalStack(VarDef *d) {
 
 inline void CodeGen::EmitProgramInit() {
     Append(data, "static int gs_program_initialized;\n");
+    // Every function is emitted by now, so the counts are final: the main
+    // program's stacks, and the most regions it and any one worker hold.
+    // The worker thunks follow, each opening its program's block.
+    BoundStacks();
+    auto mainstacks = ProgramStacks(MainRoots());
+    auto mainsf = ast.MainFunction();
+    CheckStackLimit("the main program", mainstacks, mainsf ? mainsf->line : Line {});
+    int64_t workerregions = 0;
+    for (auto &[name, sp] : WorkerEntries()) {
+        auto stacks = ProgramStacks({ sp });
+        CheckStackLimit(cat("thread program ", name), stacks, sp->sf->line);
+        EmitThreadThunk(sp, stacks);
+        workerregions = std::max(workerregions, stacks + thunkregions[sp]);
+    }
     Append(code, "static void gs_program_init(int argc, char **argv) {\n"
                  "    if (gs_program_initialized) return;\n"
-                 "    gs_rt_init(argc, argv);\n");
+                 "    gs_rt_init(argc, argv, ", mainstacks, ", ", mainstacks + globalregions,
+           ", ", workerregions, ");\n");
     // The queues, before anything that could use one runs.
     vector<string> qnames;
     for (auto &[m, q] : queues) qnames.push_back(q);
@@ -682,7 +693,7 @@ inline string CodeGen::ExportHeader() {
 
 inline void CodeGen::EmitMain() {
     Append(code, "int main(int argc, char **argv) {\n    gs_program_init(argc, argv);\n",
-           MainCall(), "    return 0;\n}\n");
+           MainCall(), "    gs_rt_stats();\n    return 0;\n}\n");
 }
 
 }  // namespace goose

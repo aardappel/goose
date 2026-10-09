@@ -323,6 +323,7 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
     }
     if (ki.needssp) {
         NoStackAcrossCycleCall(sp, c->line);
+        NoteStackCall(sp, c->line);
         args.push_back(SpTop());
     }
     string argstr;
@@ -701,6 +702,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
         }
         if (ki.needssp) {
             NoStackAcrossCycleCall(sp, c->line);
+            NoteStackCall(sp, c->line);
             args.push_back(SpTop());
         }
         string argstr;

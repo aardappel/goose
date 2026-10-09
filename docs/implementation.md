@@ -91,6 +91,8 @@ process started with (`ulimit -s`), which nothing in the executable sets.
 | `--check` | stop after typecheck, optimization and BCE; no C is written |
 | `-O0`, `-O1` (default), `-O2` | inlining thresholds (§4); folding and propagation run at every level; base-case inlining and tail-recursion elimination need `-O1` or above |
 | `--specs` | print every live specialization's optimized body |
+| `--stacks` | print the data stack count of the main program and of each worker, the regions they come to, the thread cap that gives `hardware_threads()`, and every function's share (`codegen_stacks.h`); with `--check` it runs the backend for the counts and writes nothing |
+| `--stack-reserve size` | the address space reserved per data stack, written as `-DGS_STACK_RESERVE` (K/M/G/T suffixes; at most 2^48) |
 | `--no-bce` | skip bounds-check elimination (this also loses the loop-view hoist, §6.10) |
 | `--bce-test` | verify `// bce:elide` / `// bce:keep` annotations in the sources |
 | `--bce-lines` | print elided/kept counts per source line |
@@ -3182,7 +3184,8 @@ function that uses data stacks takes `int64_t gs_sp`, addresses its own
 nonfixed locals and temporaries as `GS(gs_sp + k)` with a per-function
 constant `k` (`AllocStk`), calls callees with `gs_sp + <indices in use>`
 (`SpTop`), and asks the runtime once at entry to have that many stacks
-(`GS_ENSURE`, which reserves lazily). Globals own dedicated stacks outside the
+(the thread program reserves every one of them as it starts, `gs_stack_block`,
+from the compiler's count). Globals own dedicated stacks outside the
 indexed block. Scopes mirror C braces (`CScope`): every nonfixed local's base
 pointer doubles as the watermark restored at scope exit, and every exit path
 -- fallthrough, `break`, `continue`, `return`, propagation -- emits the
@@ -3485,7 +3488,7 @@ where a root can exceed the width: for `in pool` under
 `#if GS_STACK_RESERVE >= 2^bits`, for self-relative under
 `#if GS_STACK_RESERVE > 2^(bits-1)` when no fixed-size root in the program
 is wider than the width (`relrootmax`), so a `u32` link on the default
-256 MB reservation stores unchecked. A pool's base is loaded
+2 GB reservation stores unchecked. A pool's base is loaded
 once per function into a local (`PoolBase`), and element access through a
 pool global reads that local too. `self` stores minus the field's own offset
 (self-relative) or the value's own pool offset (`in pool`, only where the
@@ -3685,7 +3688,7 @@ That object serves every program the compiler writes, whatever its
 configuration: it always supports workers (`GS_NEED_THREADS`, which
 otherwise only the program's own state follows), holds the failure paths of
 debug and release builds alike, and takes the data stack sizes and
-`GS_MAX_STACKS` from the program as it starts (`gs_rt_start`, called by the
+counts from the program as it starts (`gs_rt_start`, called by the
 program's `gs_rt_init`) rather than from macros. What a program and its
 runtime object do have to agree on is the runtime itself: both define
 `GS_RUNTIME_VERSION`, a hash of the runtime's text, which renames
@@ -3703,18 +3706,47 @@ function a failing check calls is declared not to return, which is what the
 C compiler needs to keep a check's path short.
 
 **Data stacks.** Each stack is one reserved region of `GS_STACK_RESERVE`
-bytes (default 256 MB, capped at 2^48 by §10.4) plus a `GS_STACK_GAP`
+bytes (default 2 GB, capped at 2^48 by §10.4) plus a `GS_STACK_GAP`
 unmapped tail, sizes the program's configuration sets and hands to the
 runtime as it starts; Windows commits on fault through a vectored handler that
 tells a commit from an overrun, POSIX reserves with overcommit and protects
-the gap. A thread program's stacks live in a block reached through
-thread-local `gs_stks` and are created lazily as `GS_ENSURE`, in a function's
-prologue, first asks for them (past `GS_MAX_STACKS` it aborts, naming the
-function's declaration); a worker's are released when it exits. Every region
-owned by the current thread program is registered thread-locally so the fault
-handler never touches another worker's state: a registry of `4 *
-GS_MAX_STACKS` regions, which the runtime allocates as the thread program
-starts and frees with its regions.
+the gap. A region the platform refuses (its address space, an address-space
+limit or strict overcommit accounting exhausted) is retried at half the
+size, and every region after it starts that much smaller, down to 1 MB
+(`gs_reserve_region`): a smaller region is always safe, since the checks the
+compiler leaves out assume no more than `GS_STACK_RESERVE` bytes in a stack
+and the guard gap aborts growth sooner, so each region carries its own sizes
+for the fault handler. An overrun ends the program with a message naming the
+thread program, the region's size and the flag that raises it, written
+without stdio since a signal handler may not call it. A thread program's
+stacks live in a block reached through thread-local `gs_stks`, every one of
+them reserved as the program starts (`gs_stack_block`: main's from
+`gs_rt_init`, a worker's from its entry thunk), since the compiler knows the
+count; a worker's are released when it exits. Every region owned by the
+current thread program is registered thread-locally so the fault handler
+never touches another worker's state: a registry sized to the program's
+region count, which the runtime allocates as the thread program starts and
+frees with its regions.
+
+**Stack counts and the thread cap.** Every function's stacks are `gs_sp + k`
+for constants below its own count, a callee's start above what the caller
+has in use at the call, and no call into a recursive cycle is made with a
+stack in use (§7.8, `NoStackAcrossCycleCall`), so the stacks a program can
+have in use at once are a compile-time constant, which the compiler computes
+over its call graph (`BoundStacks`, `codegen_stacks.h`): a function's own
+count or, over its calls, the index handed on plus the callee's count, the
+members of a cycle sharing one. Past `GS_MAX_STACKS` (the program's
+configuration; 1024 by default) that is a compile error naming the program
+(`CheckStackLimit`); the runtime never checks it. The generated
+`gs_program_init` hands `gs_rt_init` the main program's count and the most
+regions it and any one worker hold (the count plus the dedicated stacks of
+the globals and of the worker's arguments), from which the runtime caps
+`hardware_threads()` at what `GS_STACK_BUDGET` (32 TB by default) holds
+beside the main program, at least one: a pool sized by it never runs the
+program out of address space, which the budget plans for rather than
+enforces. `--stacks` prints the counts, the cap and each function's share,
+and a program built with `-DGS_STACK_STATS=1` reports on stderr, as each
+thread program ends, its stacks and regions.
 
 **Native stacks.** Recursion consumes only the native call stack (spec
 §7.8), whose size is set as its thread starts; running out of it ends the

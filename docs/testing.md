@@ -184,9 +184,10 @@ Every runnable fixture requires an `expected/<name>.out`, including an empty
 file when the program should be silent. Expected aborts additionally require
 `.aborts` and a nonempty `.stderr` containing the expected runtime diagnostic
 substrings. Sanitizer reports fail even when a program was expected to abort.
-Resource-bound fixtures can set a runtime limit in their first line, such as
-`// runtime-define: GS_MAX_STACKS=1`; the runner applies it to both TinyCC
-and generated C. `append_destination_storage.goose` uses this to detect
+Resource-bound fixtures can set a limit in their first line, such as
+`// runtime-define: GS_MAX_STACKS=1`; the runner passes it as a `-D` to
+every compile, where the compiler checks `GS_MAX_STACKS` against the
+program's static stack count and the generated C takes the rest. `append_destination_storage.goose` uses this to detect
 temporary result stacks that output-only comparisons would miss,
 `cycle_scratch_locals.goose` to show that a recursion's scratch locals take
 the same few stacks at every level, and `discarded_resizable_results.goose`
@@ -197,8 +198,13 @@ the rest of its block take, the rest emitted without braces of its own.
 `cycle_static_stacks.goose` runs the shapes a call into a recursive cycle
 allows (§7.8), the `errors_tc/cycle_temporary_*`, `cycle_construction_*` and
 `cycle_result_*` fixtures being the rejected ones, and codegen fails with an
-internal error should any program hold a data stack across such a call. A
-fixture
+internal error should any program hold a data stack across such a call.
+`thread_cap.goose` shrinks the address space budget (`GS_STACK_BUDGET`) so
+that `hardware_threads()` reports its floor of one wherever it runs, and
+`stack_stats.goose` has its program report its stack use
+(`GS_STACK_STATS`), checked through `expected/stack_stats.stderr`. The
+runner also checks the `--stacks` report of `thread_cap.goose` and
+`cycle_scratch_locals.goose` for its shape, not its counts. A fixture
 expecting a debug-only abort sets `GS_DEBUG=1` the same way, which makes
 every run of it a debug build: `cast_abort_location.goose` and
 `overflow_abort_location.goose` check the location a failing check reports.

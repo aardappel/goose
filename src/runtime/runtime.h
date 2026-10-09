@@ -46,14 +46,28 @@
 #endif
 
 /* Configuration; all overridable from the compile command line. */
+/* The most data stacks the compiler lets one thread program use at once:
+   a static count past this is a compile error. The runtime takes the
+   counts from the program and never checks this itself. */
 #ifndef GS_MAX_STACKS
-#define GS_MAX_STACKS 1024          /* Data stacks per thread program. */
+#define GS_MAX_STACKS 1024
 #endif
 #ifndef GS_STACK_RESERVE
-#define GS_STACK_RESERVE (256ull << 20)  /* Address space reserved per stack. */
+#define GS_STACK_RESERVE (2048ull << 20)  /* Address space reserved per stack. */
 #endif
 #ifndef GS_STACK_GAP
 #define GS_STACK_GAP (1ull << 20)   /* Unmapped tail so runaway growth aborts. */
+#endif
+/* The address space the program means to spend on data stack regions over
+   every thread program at once, which is what caps hardware_threads()
+   (§11.2): the regions it holds, less the main program's, divided by a
+   worker's. Not enforced at reservation; what the platform refuses is
+   retried smaller (gs_reserve_region). */
+#ifndef GS_STACK_BUDGET
+#define GS_STACK_BUDGET (32ull << 40)
+#endif
+#ifndef GS_STACK_STATS
+#define GS_STACK_STATS 0    /* 1: each thread program reports its stack use as it ends. */
 #endif
 /* §10.4 caps a stack reservation at 2^48 bytes, which is what lets the
    compiler treat every size, count and index as fitting in 48 bits: the
@@ -115,7 +129,6 @@ enum {
     GS_E_SLICELEN,     /* slice pool length negative or beyond any data stack */
     GS_E_POOLSLICE,    /* a slice handed to a slice pool is not one of its runs */
     GS_E_RELNULL,      /* a non-null optional self-relative target has offset zero */
-    GS_E_STACKS,       /* a function needs more data stacks than GS_MAX_STACKS */
 };
 
 GS_API GS_NORETURN void gs_panic(const char *msg);
@@ -455,13 +468,18 @@ typedef struct {
     uint8_t *top;
 } gs_stack;
 
-/* Starts the runtime on main's thread: the program's arguments, the most
-   data stack regions one thread program may hold, and each region's usable
-   reservation and trailing guard gap. */
-GS_API void gs_rt_start(int argc, char **argv, int64_t maxregions, uint64_t reserve,
-                        uint64_t gap);
+/* Starts the runtime on main's thread: the program's arguments, each
+   region's usable reservation and trailing guard gap, the address space
+   budgeted for regions over the whole program, and the most regions the
+   main program and any one worker hold (the compiler's static counts),
+   which size their registries and give hardware_threads() its cap. */
+GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
+                        uint64_t budget, int64_t mainregions, int64_t workerregions);
 /* A fresh region, registered to the calling thread program. */
 GS_API uint8_t *gs_reserve_region(void);
+/* The calling thread program's stack use, on stderr (GS_STACK_STATS):
+   `stacks` is how many of its indexed data stacks exist. */
+GS_API void gs_stack_stats(int64_t stacks);
 /* Releases every region of the calling thread program, and what else the
    runtime keeps for its thread. */
 GS_API void gs_release_regions(void);
@@ -497,8 +515,9 @@ GS_API gs_qnode *gs_qpoll(gs_queue *q);
 
 #ifndef GS_RUNTIME_OBJECT
 
-/* The current thread program's stack block. gs_sp-relative indices resolve
-   through this; stacks materialize lazily as call depth first reaches them. */
+/* The current thread program's stack block: every stack the compiler
+   counted for it, reserved as the program starts (gs_stack_block).
+   gs_sp-relative indices resolve through it. */
 static GS_TLS gs_stack *gs_stks;
 static GS_TLS int64_t gs_nstks;
 
@@ -511,33 +530,34 @@ static GS_TLS void *gs_gl;
 
 #define GS(i) (&gs_stks[i])
 
-/* A function's prologue asks for the stacks it uses, naming its declaration
-   (gs_init_globals names an initializer) for the abort when there are not
-   enough. */
-static void gs_stks_grow(int64_t n, const char *file, int line) {
-    if (n > GS_MAX_STACKS) gs_abort(GS_E_STACKS, file, line);
-    while (gs_nstks < n) {
-        gs_stack *s = &gs_stks[gs_nstks++];
-        s->top = gs_reserve_region();
-    }
-}
-
-#define GS_ENSURE(n, f, l) do { if ((n) > gs_nstks) gs_stks_grow((n), (f), (l)); } while (0)
-
-static gs_stack *gs_new_stack_block(void) {
-    gs_stack *b = (gs_stack *)calloc(GS_MAX_STACKS, sizeof(gs_stack));
-    if (!b) gs_panic("out of memory allocating stack block");
-    return b;
-}
-
 static void gs_stack_init(gs_stack *s) {
     s->top = gs_reserve_region();
 }
 
-static void gs_rt_init(int argc, char **argv) {
-    gs_rt_start(argc, argv, GS_MAX_STACKS * 4, GS_STACK_RESERVE, GS_STACK_GAP);
-    gs_stks = gs_new_stack_block();
-    gs_nstks = 0;
+/* The calling thread program's block of n stacks, each with its region:
+   main's from gs_rt_init, a worker's from its entry thunk. */
+static void gs_stack_block(int64_t n) {
+    gs_stks = (gs_stack *)calloc((size_t)(n > 0 ? n : 1), sizeof(gs_stack));
+    if (!gs_stks) gs_panic("out of memory allocating stack block");
+    for (int64_t i = 0; i < n; i++) gs_stack_init(&gs_stks[i]);
+    gs_nstks = n;
+}
+
+/* The compiler passes the main program's stack count and the most regions
+   it and any one worker hold: their stacks plus the dedicated ones of the
+   globals and of a worker's arguments. */
+static void gs_rt_init(int argc, char **argv, int64_t mainstacks, int64_t mainregions,
+                       int64_t workerregions) {
+    gs_rt_start(argc, argv, GS_STACK_RESERVE, GS_STACK_GAP, GS_STACK_BUDGET, mainregions,
+                workerregions);
+    gs_stack_block(mainstacks);
+}
+
+/* What a thread program reports as it ends under GS_STACK_STATS. */
+static void gs_rt_stats(void) {
+#if GS_STACK_STATS
+    gs_stack_stats(gs_nstks);
+#endif
 }
 
 /* Every region the calling thread program owns, with its stack block. No
@@ -550,12 +570,12 @@ static void gs_free_thread_stacks(void) {
 }
 
 #if GS_NEED_THREADS
-/* A worker's thread program, on a fresh stack block it lets go of at the end;
-   the runtime releases the regions after it. */
+/* A worker's thread program: its entry thunk opens the stack block, whose
+   count the compiler knows, and the runtime releases the regions after
+   this returns. */
 static void gs_thread_run(void (*entry)(uint8_t *), uint8_t *args) {
-    gs_stks = gs_new_stack_block();
-    gs_nstks = 0;
     entry(args);
+    gs_rt_stats();
     free(gs_stks);
     gs_stks = NULL;
     gs_nstks = 0;

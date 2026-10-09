@@ -21,7 +21,6 @@ static const char *gs_errmsgs[] = {
     "invalid slice length",
     "slice not from this pool",
     "non-null relative reference encodes as null",
-    "too many data stacks (deep call nesting?)",
 };
 
 GS_API GS_NORETURN void gs_panic(const char *msg) {
@@ -118,30 +117,106 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 static int gs_argc;
 static char **gs_argv;
 
-static int64_t gs_maxregions;
-static size_t gs_region_usable, gs_region_size;
+/* What a new region reserves: the usable part, which halves whenever the
+   platform refuses one (gs_reserve_region), and the guard gap behind it;
+   and the usable part as configured, for the reports. */
+static size_t gs_region_usable, gs_region_gap, gs_region_reserve;
+/* The worker running on this thread, main's being -1 (runtime_threads.h). */
+static GS_TLS int64_t gs_current_thread_id = -1;
+/* The program's address space budget for regions and the most regions its
+   main program and any one worker can hold, as gs_rt_start was told, and
+   the workers that leaves room for: what hardware_threads() reports at
+   most. */
+static uint64_t gs_stack_budget;
+static int64_t gs_mainregions, gs_workerregions;
+static int64_t gs_thread_cap = INT64_MAX;
 
-static GS_TLS uint8_t **gs_regions;
+/* A region's own sizes travel with it: those reserved before a refusal
+   halved the size are larger than those after. */
+typedef struct {
+    uint8_t *base;
+    size_t usable, size;    /* size: with the guard gap */
+} gs_region;
+static GS_TLS gs_region *gs_regions;
 static GS_TLS volatile long gs_nregions;
+/* The registry's size: the thread program's region count, as the compiler
+   worked it out, so a reservation past it is a compiler bug. */
+static GS_TLS long gs_regions_cap;
+
+/* Text without stdio, which a fault handler may not call (nor malloc):
+   decimal digits, a size in the largest unit that holds it exactly, and a
+   string. Each returns the end of what it wrote. */
+static char *gs_dec(char *p, uint64_t v) {
+    char d[24];
+    int n = 0;
+    do {
+        d[n++] = (char)('0' + v % 10);
+        v /= 10;
+    } while (v);
+    while (n) *p++ = d[--n];
+    return p;
+}
+static char *gs_size(char *p, uint64_t bytes) {
+    static const char *const units[] = { " bytes", " KB", " MB", " GB", " TB" };
+    int u = 0;
+    while (u < 4 && bytes && bytes % 1024 == 0) {
+        bytes /= 1024;
+        u++;
+    }
+    p = gs_dec(p, bytes);
+    for (const char *s = units[u]; *s; s++) *p++ = *s;
+    return p;
+}
+static char *gs_text(char *p, const char *s) {
+    while (*s) *p++ = *s++;
+    return p;
+}
+
+/* The report of a data stack overrunning its region into the guard gap,
+   for one write from the fault handler: whose stacks, past how much, and
+   what raises it. Fits GS_OVERFLOW_TEXT. */
+#define GS_OVERFLOW_TEXT 320
+static size_t gs_overflow_text(char *buf, const gs_region *r) {
+    char *p = gs_text(buf, "goose runtime error: data stack overflow: a value on ");
+    if (gs_current_thread_id < 0) {
+        p = gs_text(p, "main's");
+    } else {
+        p = gs_text(p, "worker ");
+        p = gs_dec(p, (uint64_t)gs_current_thread_id);
+        p = gs_text(p, "'s");
+    }
+    p = gs_text(p, " data stacks grew past the ");
+    p = gs_size(p, r->usable);
+    p = gs_text(p, " reserved for it");
+    if (r->usable < gs_region_reserve) {
+        p = gs_text(p, " (halved from ");
+        p = gs_size(p, gs_region_reserve);
+        p = gs_text(p, " when the platform ran out of address space)");
+    }
+    p = gs_text(p, "; --stack-reserve or -DGS_STACK_RESERVE raises the reservation, "
+                   "up to 256 TB\n");
+    return (size_t)(p - buf);
+}
 
 /* The calling thread program's registry, empty, as it starts. */
-static void gs_regions_begin(void) {
-    gs_regions = (uint8_t **)calloc((size_t)gs_maxregions, sizeof(uint8_t *));
+static void gs_regions_begin(int64_t capacity) {
+    gs_regions_cap = (long)capacity;
+    gs_regions = (gs_region *)calloc((size_t)(capacity > 0 ? capacity : 1), sizeof(gs_region));
     if (!gs_regions) gs_panic("out of memory allocating the data stack registry");
     gs_nregions = 0;
 }
 
-static void gs_release_region(uint8_t *base);
+static void gs_release_region(const gs_region *r);
 static void gs_native_stack_free(void);
 
 /* Unregister before unmapping, then drop the registry. */
 GS_API void gs_release_regions(void) {
     while (gs_nregions) {
         long i = gs_nregions - 1;
-        uint8_t *base = gs_regions[i];
+        gs_region r = gs_regions[i];
         gs_nregions = i;
-        gs_regions[i] = NULL;
-        gs_release_region(base);
+        gs_regions[i].base = NULL;
+        gs_release_region(&r);
     }
     free(gs_regions);
     gs_regions = NULL;
@@ -174,19 +249,22 @@ static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
         return EXCEPTION_CONTINUE_SEARCH;
     uint8_t *hit = (uint8_t *)ep->ExceptionRecord->ExceptionInformation[1];
     for (long i = 0; i < gs_nregions; i++) {
-        uint8_t *base = gs_regions[i];
-        if ((uintptr_t)hit - (uintptr_t)base < gs_region_size) {
+        const gs_region *r = &gs_regions[i];
+        if ((uintptr_t)hit - (uintptr_t)r->base < r->size) {
             /* Within the usable part: commit another chunk (clamped to the
                region) and resume. Within the gap: a data stack overran. */
-            if (hit < base + gs_region_usable) {
+            if (hit < r->base + r->usable) {
                 uint8_t *page = (uint8_t *)((size_t)hit & ~(gs_page_size - 1));
                 size_t n = GS_COMMIT_CHUNK;
-                if (page + n > base + gs_region_usable)
-                    n = (size_t)(base + gs_region_usable - page);
+                if (page + n > r->base + r->usable)
+                    n = (size_t)(r->base + r->usable - page);
                 if (VirtualAlloc(page, n, MEM_COMMIT, PAGE_READWRITE))
                     return EXCEPTION_CONTINUE_EXECUTION;
             }
-            fputs("goose runtime error: data stack overflow\n", stderr);
+            char msg[GS_OVERFLOW_TEXT];
+            DWORD written;
+            WriteFile(GetStdHandle(STD_ERROR_HANDLE), msg, (DWORD)gs_overflow_text(msg, r),
+                      &written, NULL);
             ExitProcess(1);
         }
     }
@@ -217,19 +295,15 @@ static void gs_native_stack_init(void) {
 
 static void gs_native_stack_free(void) {}
 
-GS_API uint8_t *gs_reserve_region(void) {
-    if (gs_nregions == gs_maxregions)
-        gs_panic("too many data stack regions");
-    uint8_t *p = (uint8_t *)VirtualAlloc(0, gs_region_size, MEM_RESERVE, PAGE_READWRITE);
-    if (!p) gs_panic("cannot reserve data stack address space");
-    long i = gs_nregions;
-    gs_regions[i] = p;
-    gs_nregions = i + 1;  /* Publish only the initialized entry. */
-    return p;
+/* Address space for one region, or NULL where the platform has none left
+   to give: nothing is committed until the fault handler is asked. */
+static uint8_t *gs_os_reserve(size_t usable, size_t size) {
+    (void)usable;
+    return (uint8_t *)VirtualAlloc(0, size, MEM_RESERVE, PAGE_READWRITE);
 }
 
-static void gs_release_region(uint8_t *base) {
-    if (!VirtualFree(base, 0, MEM_RELEASE))
+static void gs_release_region(const gs_region *r) {
+    if (!VirtualFree(r->base, 0, MEM_RELEASE))
         gs_panic("cannot release data stack address space");
 }
 
@@ -257,10 +331,10 @@ static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
     (void)ctx;
     uint8_t *hit = (uint8_t *)info->si_addr;
     for (long i = 0; i < gs_nregions; i++) {
-        uint8_t *base = gs_regions[i];
-        if ((uintptr_t)hit - (uintptr_t)base < gs_region_size) {
-            static const char msg[] = "goose runtime error: data stack overflow\n";
-            ssize_t w = write(2, msg, sizeof(msg) - 1);
+        const gs_region *r = &gs_regions[i];
+        if ((uintptr_t)hit - (uintptr_t)r->base < r->size) {
+            char msg[GS_OVERFLOW_TEXT];
+            ssize_t w = write(2, msg, gs_overflow_text(msg, r));
             (void)w;
             _exit(1);
         }
@@ -347,47 +421,87 @@ static void gs_native_stack_free(void) {
     gs_sigstack = NULL;
 }
 
-GS_API uint8_t *gs_reserve_region(void) {
-    if (gs_nregions == gs_maxregions)
-        gs_panic("too many data stack regions");
-    /* Commit-on-touch via overcommit; the gap at the end stays PROT_NONE. */
-    void *p = mmap(NULL, gs_region_size, PROT_READ | PROT_WRITE,
+/* Address space for one region, or NULL where the platform has none left
+   to give: its address space or an address-space limit exhausted, or
+   strict overcommit accounting, which counts even a MAP_NORESERVE mapping.
+   Commit-on-touch via overcommit; the gap at the end stays PROT_NONE. */
+static uint8_t *gs_os_reserve(size_t usable, size_t size) {
+    void *p = mmap(NULL, size, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS
                    #ifdef MAP_NORESERVE
                        | MAP_NORESERVE
                    #endif
                    , -1, 0);
-    if (p == MAP_FAILED) gs_panic("cannot reserve data stack address space");
-    if (mprotect((uint8_t *)p + gs_region_usable, gs_region_size - gs_region_usable,
-                 PROT_NONE)) {
-        munmap(p, gs_region_size);
+    if (p == MAP_FAILED) return NULL;
+    if (mprotect((uint8_t *)p + usable, size - usable, PROT_NONE)) {
+        munmap(p, size);
         gs_panic("cannot protect data stack guard gap");
     }
-    long i = gs_nregions;
-    gs_regions[i] = (uint8_t *)p;
-    gs_nregions = i + 1;
     return (uint8_t *)p;
 }
 
-static void gs_release_region(uint8_t *base) {
-    if (munmap(base, gs_region_size)) gs_panic("cannot release data stack address space");
+static void gs_release_region(const gs_region *r) {
+    if (munmap(r->base, r->size)) gs_panic("cannot release data stack address space");
 }
 
 #endif
 
-GS_API void gs_rt_start(int argc, char **argv, int64_t maxregions, uint64_t reserve,
-                        uint64_t gap) {
+/* The smallest a region gets before a refusal is fatal. */
+#define GS_REGION_MIN (1u << 20)
+
+/* A region of the size new ones currently get. Where the platform refuses
+   one, every region from then on is half as large, down to GS_REGION_MIN:
+   a smaller region is always safe, since the checks the compiler leaves
+   out assume no more than GS_STACK_RESERVE bytes in a stack, and the guard
+   gap behind a smaller one aborts growth that much sooner. Workers racing
+   through a refusal may each halve the size once more than needed, or
+   restore a larger one for a moment; it only ever settles downward. */
+GS_API uint8_t *gs_reserve_region(void) {
+    if (gs_nregions >= gs_regions_cap)
+        gs_panic("too many data stack regions");
+    size_t usable = gs_region_usable;
+    uint8_t *p;
+    for (;;) {
+        p = gs_os_reserve(usable, usable + gs_region_gap);
+        if (p) break;
+        if (usable <= GS_REGION_MIN) gs_panic("cannot reserve data stack address space");
+        usable /= 2;
+        gs_region_usable = usable;
+    }
+    long i = gs_nregions;
+    gs_regions[i].base = p;
+    gs_regions[i].usable = usable;
+    gs_regions[i].size = usable + gs_region_gap;
+    gs_nregions = i + 1;  /* Publish only the initialized entry. */
+    return p;
+}
+
+GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
+                        uint64_t budget, int64_t mainregions, int64_t workerregions) {
     gs_argc = argc;
     gs_argv = argv;
-    gs_maxregions = maxregions;
-    gs_region_usable = (size_t)reserve;
-    gs_region_size = (size_t)reserve + (size_t)gap;
+    gs_region_usable = gs_region_reserve = (size_t)reserve;
+    gs_region_gap = (size_t)gap;
+    gs_stack_budget = budget;
+    gs_mainregions = mainregions;
+    gs_workerregions = workerregions;
+    /* The workers the budget holds beside the main program, each at the
+       most regions one can take: what hardware_threads() reports at most.
+       At least one, so a program sized by it still runs; the regions the
+       platform then refuses are retried smaller (gs_reserve_region). */
+    if (workerregions > 0) {
+        uint64_t per = reserve + gap;
+        uint64_t total = per ? budget / per : 0;
+        int64_t spare = total > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)total;
+        spare -= mainregions;
+        gs_thread_cap = spare > workerregions ? spare / workerregions : 1;
+    }
     // Unbuffered stdout: output is never lost to an abort or a killed run,
     // and interleaves correctly with stderr diagnostics. Revisit if print
     // throughput ever matters.
     setvbuf(stdout, NULL, _IONBF, 0);
     gs_regions_init();
-    gs_regions_begin();
+    gs_regions_begin(mainregions);
     gs_native_stack_init();
 }
 

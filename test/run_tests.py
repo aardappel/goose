@@ -1365,6 +1365,33 @@ def main():
     for lvl in ("-O0", "-O1", "-O2"):
         r.show_task(optimize, lvl)
 
+    # The data stack report (--stacks): a program with a worker, whose
+    # first-line budget caps the workers at one, and a recursive one whose
+    # first-line GS_MAX_STACKS the compiler checks the count against. The
+    # counts themselves follow the emitted code and are not pinned.
+    def stacks_report(f, patterns):
+        # The report goes where the compiler's messages do: stderr here,
+        # since without an -o the compiler is set to run the program.
+        code, out, err = r.goose("-O1", "--check", "--stacks", f)
+        missing = [p for p in patterns if not re.search(p, err, re.MULTILINE)]
+        if code != 0 or missing:
+            r.fail(f"stacks {f.name}", f"missing {missing}\n{out}{err}")
+        else:
+            r.ok(f"stacks {f.name}")
+    r.show_task(stacks_report, HERE / "threads" / "thread_cap.goose", [
+        r"^data stacks: 2 GB reserved per stack, 1 MB guard gap, 4 GB budget: 1 regions, GS_MAX_STACKS 1024$",
+        r"^main program: \d+ data stacks \+ 0 global stacks = \d+ regions$",
+        r"^worker `worker`: [1-9]\d* data stacks \+ 0 argument and global stacks = \d+ regions$",
+        r"^thread cap: 1 workers \(\(1 - \d+\) / \d+\), what hardware_threads\(\) reports at most$",
+        r"^fn worker: [1-9]\d* own, \d+ with callees$",
+    ])
+    r.show_task(stacks_report, HERE / "codegen" / "cycle_scratch_locals.goose", [
+        r"^data stacks: .*, GS_MAX_STACKS 4$",
+        r"^main program: [1-4] data stacks \+ 0 global stacks = [1-4] regions$",
+        r"^thread cap: none, no workers$",
+        r"^fn in_block: [1-9]\d* own, [1-4] with callees$",
+    ])
+
     # Every annotated regression, including the expected-abort cases. These
     # describe the default O1 pass; O0/O2 execution checks semantics.
     for f in tests:

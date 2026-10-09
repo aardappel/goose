@@ -1,7 +1,7 @@
 // A `u16 in pool` offset spans the pool, not the distance between the two
 // ends, so it covers the first 65,535 bytes of it and a store past that
 // aborts (§3.9, §9.3). The check is emitted wherever the stack reservation
-// can exceed the width, which the default GS_STACK_RESERVE of 256 MB does.
+// can exceed the width, which the default GS_STACK_RESERVE of 2 GB does.
 
 struct UNode { v: i64, link: UNode&<u16 in upool>? }
 

@@ -369,6 +369,45 @@ struct CodeGen {
     unordered_map<FnSpec *, SpecInfo> sinfo;
     vector<FnSpec *> livespecs;
 
+    // Data stack accounting (codegen_stacks.h). What each emitted function
+    // asks for: the calls it hands a stack index, with that index relative
+    // to its own (SpTop), and the most stacks its own body opens. The
+    // nullptr function is what runs with gs_sp fixed at 0: gs_init_globals
+    // and the render functions.
+    struct StackCall {
+        FnSpec *callee;
+        int offset;
+        Line line;
+    };
+    unordered_map<FnSpec *, vector<StackCall>> stackcalls;
+    unordered_map<FnSpec *, int> stackown;
+    // The most stacks a function can have in use at once, its callees
+    // included (BoundStacks): a constant, since no call into a recursive
+    // cycle is made with a stack in use (§7.8).
+    unordered_map<FnSpec *, int64_t> stackneed;
+    // Regions outside the indexed block: the globals' dedicated stacks
+    // gs_init_globals reserves for the main program, and what each worker's
+    // thunk reserves for its arguments and its copy of the globals.
+    int globalregions = 0;
+    unordered_map<FnSpec *, int> thunkregions;
+    // GS_MAX_STACKS as the program is configured (main.cpp): the most data
+    // stacks one thread program may use at once, zero for no limit.
+    int64_t maxstacks = 0;
+    void NoteStackCall(FnSpec *callee, Line ln) {
+        stackcalls[curspec].push_back({ callee, stknext, ln });
+    }
+    void BoundStacks();
+    int64_t ProgramStacks(const vector<FnSpec *> &roots);
+    vector<FnSpec *> MainRoots();
+    vector<pair<string, FnSpec *>> WorkerEntries();
+    void CheckStackLimit(const string &what, int64_t stacks, Line ln);
+    // The runtime configuration a report assumes (main.cpp).
+    struct StackConfig {
+        uint64_t reserve, gap, budget;
+        int64_t maxstacks;
+    };
+    void StackReport(FILE *out, const StackConfig &cfg);
+
     // Long-distance return targets (§7.9): id, per-ret TLS channels.
     unordered_map<FnSpec *, int> fromids;
     set<FnSpec *> fromemitted;
@@ -1031,6 +1070,7 @@ struct CodeGen {
 
     vector<string> EmitThreadSpawn(Call *c, vector<Node *> &an);
     string EnsureThreadThunk(FnSpec *sp);
+    void EmitThreadThunk(FnSpec *sp, int64_t stacks);
     // The image of a resizable value at a scratch stack's top: [int64 count]
     // [fixed fields][tail elements] (queue elements and copied globals).
     void EmitRzImage(Loc src, TypeExpr *t, const string &stk, Line ln);
@@ -1083,8 +1123,8 @@ struct CodeGen {
     // process state that the driver must install before constructing us.
     // A function the extern support declares gets no prototype here.
     CodeGen(Ast &_ast, string_view runtime_ext_text, const vector<string> &headers,
-            bool _norfcheck = false, bool _library = false)
-        : ast(_ast), library(_library), norfcheck(_norfcheck) {
+            bool _norfcheck = false, bool _library = false, int64_t _maxstacks = 0)
+        : ast(_ast), library(_library), maxstacks(_maxstacks), norfcheck(_norfcheck) {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
         ComputeRelRootMax();

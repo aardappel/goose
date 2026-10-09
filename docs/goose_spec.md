@@ -3063,7 +3063,11 @@ and tail header in the native frame.
 
 At startup, reserve N address regions (target: multiple GB each; commit-on-
 touch via guard pages — prototyped at github.com/aardappel/stackalloc),
-plus guard gaps between regions so runaway growth aborts cleanly. Platforms
+plus guard gaps between regions so runaway growth aborts cleanly. An
+implementation budgets the address space it spends on regions over every
+thread program at once (32 TB by default here), which is what bounds
+`hardware_threads()` (§11.2); a region the platform refuses may be reserved
+smaller, which nothing the implementation elides depends on. Platforms
 without address-space reservation (wasm today) fall back to index-based
 references + bounds-checked growth, with reduced performance.
 
@@ -3247,7 +3251,10 @@ the Linda tuple-space / coordination style.
 * Worker count is decided **at runtime** (no static maximum):
   `thread_spawn(worker, args…) -> i64` reserves a fresh stack block, copies
   the args, starts the worker, and returns its id. IDs increase monotonically
-  and are never reused. `hardware_threads() -> i64` exists for sizing.
+  and are never reused. `hardware_threads() -> i64` exists for sizing, and
+  reports no more workers than the implementation's address space for data
+  stacks (§10.4) holds beside the main program, so a pool sized by it never
+  exhausts it.
   `thread_wait(id)` blocks until that worker's body has returned and all of
   its Goose storage has been released — enabling both scoped fork/join
   parallelism and orderly shutdown (send quit messages, then wait). Repeated
@@ -3854,8 +3861,9 @@ compiler's own description, pass by pass and analysis by analysis, is
 * **Stack assignment** is the hidden-argument strategy §10.3 permits: every
   function that uses data stacks takes its base index as a hidden argument
   and addresses its nonfixed locals at constant offsets from it, callees
-  start above its in-use watermark, and stacks are reserved lazily as the
-  depth first reaches them. The globals of a program instance, with the
+  start above its in-use watermark, and every stack the program can reach
+  (a compile-time count, §7.8) is reserved as its thread program starts.
+  The globals of a program instance, with the
   dedicated stacks of the resizable ones, form one struct reached through a
   single thread-local pointer (a plain one in a program without workers):
   main's is a static instance, a worker's is allocated at its start and

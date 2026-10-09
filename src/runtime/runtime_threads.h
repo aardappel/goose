@@ -6,20 +6,47 @@
    internally. */
 
 /* hardware_threads() sizes worker pools, and a program that spawns none may
-   still ask; it needs nothing below. */
+   still ask; it needs nothing below. It reports no more workers than the
+   data stack budget holds beside the main program (gs_rt_start), so a pool
+   sized by it never runs the program out of address space. */
 #ifdef _WIN32
-GS_API int64_t gs_hardware_threads(void) {
+static int64_t gs_os_threads(void) {
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     return (int64_t)si.dwNumberOfProcessors;
 }
 #else
 #include <unistd.h>
-GS_API int64_t gs_hardware_threads(void) {
+static int64_t gs_os_threads(void) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (int64_t)n : 1;
 }
 #endif
+
+GS_API int64_t gs_hardware_threads(void) {
+    int64_t n = gs_os_threads();
+    return n < gs_thread_cap ? n : gs_thread_cap;
+}
+
+GS_API void gs_stack_stats(int64_t stacks) {
+    char who[40], reserve[40], budget[40];
+    if (gs_current_thread_id < 0) snprintf(who, sizeof who, "main");
+    else snprintf(who, sizeof who, "worker %lld", (long long)gs_current_thread_id);
+    *gs_size(reserve, gs_region_usable) = 0;
+    *gs_size(budget, gs_stack_budget) = 0;
+    uint64_t per = gs_region_usable + gs_region_gap;
+    char cap[64];
+    if (gs_workerregions > 0)
+        snprintf(cap, sizeof cap, "a worker %lld, thread cap %lld", (long long)gs_workerregions,
+                 (long long)gs_thread_cap);
+    else
+        snprintf(cap, sizeof cap, "no workers");
+    fprintf(stderr, "goose stack stats: %s: %lld data stacks, %ld regions (reserving %s each); "
+            "budget %s for %llu, main program %lld, %s\n",
+            who, (long long)stacks, gs_nregions, reserve, budget,
+            (unsigned long long)(per ? gs_stack_budget / per : 0), (long long)gs_mainregions,
+            cap);
+}
 
 #if GS_NEED_THREADS
 
@@ -75,7 +102,6 @@ static gs_thread *gs_threads;
 static int64_t gs_numthreads;
 static gs_mutex gs_threads_mutex = GS_MUTEX_INIT;
 static gs_cond gs_threads_done = GS_COND_INIT;
-static GS_TLS int64_t gs_current_thread_id = -1;
 
 #ifdef _WIN32
 static DWORD WINAPI gs_thread_main(LPVOID p)
@@ -84,7 +110,7 @@ static void *gs_thread_main(void *p)
 #endif
 {
     gs_thread *t = (gs_thread *)p;
-    gs_regions_begin();
+    gs_regions_begin(gs_workerregions);
     gs_native_stack_init();
     gs_current_thread_id = t->id;
     t->run(t->entry, t->args);

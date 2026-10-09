@@ -332,6 +332,7 @@ inline void CodeGen::EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln) {
     // numbering spexpr names: a render function runs no overload
     // (EmitRenderFn).
     if (ki.needssp) NoStackAcrossCycleCall(sp, ln);
+    if (ki.needssp) NoteStackCall(sp, ln);
     L(ki.cname, "(", r, ", ", arg, ki.needssp ? cat(", ", SpTop()) : "", ");");
     MarkReload();   // The callee grew the builder's stack.
     PopSc();

@@ -103,7 +103,7 @@ check or detect an invalid pool assignment earlier.
 
 * **One reservation for all documents.** The pool is one grow-only array on
   one data stack, so all documents together are capped by that stack's
-  reservation (`GS_STACK_RESERVE`, 256 MB by default; spec 10.4 allows up to
+  reservation (`GS_STACK_RESERVE`, 2 GB by default; spec 10.4 allows up to
   2^48 bytes). Exceeding it aborts at the guard region: there is no recoverable
   allocation failure.
 * **The array never shrinks.** Closed documents' runs are reused, but the

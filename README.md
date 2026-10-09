@@ -441,7 +441,12 @@ the whole runtime instead, and builds on its own (`cc tour.c -o tour -lm
 `-O0`/`-O1`/`-O2` set the inlining level, `--bce-lines` reports the bounds
 checks kept per line, and `-DGS_DEBUG=1` turns on the overflow, range and tag
 checks in the generated C, each abort naming its source line (and an overflow
-or a cast the values involved).
+or a cast the values involved). Every resizable value lives on a data stack
+of 2 GB of reserved address space, committed as it is used: `--stack-reserve
+16G` changes that for a program, `--stacks` reports how many data stacks the
+program and each of its workers can take and the cap that puts on
+`hardware_threads()`, and `-DGS_STACK_STATS=1` makes a program report its
+actual use as it ends.
 
 A program using `audio` plays procedural mono/stereo PCM through SDL3 without
 opening a graphics window. The optional `GOOSE_AUDIO` build setting is independent
