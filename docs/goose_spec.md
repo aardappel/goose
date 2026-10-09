@@ -1544,10 +1544,14 @@ without conversion overhead.
 values of the *same* struct/fixed-array type whose scalar leaves are all
 integers or all floats; the result has that same type. The compound forms
 `+= -= *= /= %=` apply to these same types, resolving the destination once
-and reading its old value before the right-hand side runs (§2). This covers
-vector math without an operator-overloading feature. The standard library supplies
-`float3` and friends; named vector ops (`dot`, `cross`, `normalize`, …) are
-ordinary stdlib overloads per math type, not language builtins.
+and reading its old value before the right-hand side runs (§2). Unary `-`
+negates such a value memberwise where no leaf is an unsigned integer
+(`-v`, with the same result type; a float member negates exactly, so `0.0`
+becomes `-0.0`, and an integer one overflows as a scalar `-` does). This
+covers vector math without an operator-overloading feature. The standard
+library supplies `float3` and friends; named vector ops (`dot`, `cross`,
+`normalize`, …) are ordinary stdlib overloads per math type, not language
+builtins.
 
 `*` and `/` also accept one scalar operand, in either order, when every
 numeric leaf of the struct/fixed array has exactly the same type. The

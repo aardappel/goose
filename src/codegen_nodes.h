@@ -78,6 +78,14 @@ inline string Unary::CgX(CodeGen &cg) {
             return cg.LoadLoc(cg.GenLoc(child), exprtype, line);
         return cg.GenRefVal(child, line);
     }
+    if (op == T_MINUS && exprtype &&
+        (exprtype->kind == TY_STRUCT || exprtype->kind == TY_ARRAY)) {
+        auto x = cg.GenVal(child);
+        auto tv = cg.T();
+        cg.FixedLocal(exprtype, tv);
+        cg.GenElemwiseNegInto(exprtype, line, x, tv);
+        return tv;
+    }
     auto x = cg.GenX(child);
     switch (op) {
         case T_MINUS:
@@ -692,7 +700,16 @@ inline void NullLit::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
 inline void Ident::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
 inline void ArrayLit::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
 inline void StructLit::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
-inline void Unary::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
+inline void Unary::CgAny(CodeGen &cg, const Dst &d) {
+    // An elementwise negation writes its members straight into a plain
+    // destination, as Binary's does below.
+    if (d.k == DK_LVALUE && op == T_MINUS && exprtype &&
+        (exprtype->kind == TY_STRUCT || exprtype->kind == TY_ARRAY)) {
+        cg.GenElemwiseNegInto(exprtype, line, cg.GenVal(child), d.s);
+        return;
+    }
+    cg.LeafAny(this, d);
+}
 inline void Binary::CgAny(CodeGen &cg, const Dst &d) {
     // An elementwise result (struct/fixed-array typed, §6.1) writes its
     // members straight into a plain destination — including one that aliases

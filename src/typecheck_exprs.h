@@ -1936,6 +1936,13 @@ inline Val TypeCheck::NumericUnary(Unary *u, const Val &cv, bool trial) {
                 }
                 r.constfrom = v.constfrom;
                 if (!trial) u->litfloat = r.litfloat;
+            } else if (ElementwiseOK(t)) {
+                // Elementwise negation (§6.1): every leaf is a signed
+                // integer, or every leaf a float.
+                if (auto leaf = UnsignedLeaf(t))
+                    return fail(cat("cannot negate a value of type ", TypeStr(t),
+                                    ", which holds the unsigned type ", TypeStr(leaf)));
+                r.type = t;
             } else {
                 return fail(cat("cannot negate a value of type ", TypeStr(t)));
             }
@@ -2554,6 +2561,19 @@ inline bool TypeCheck::ElementwiseOK(TypeExpr *t) {
         }
     };
     return (t->kind == TY_STRUCT || t->kind == TY_ARRAY) && rec(t);
+}
+
+// An unsigned integer leaf of an elementwise aggregate, or null.
+inline TypeExpr *TypeCheck::UnsignedLeaf(TypeExpr *t) {
+    switch (t->kind) {
+        case TY_INT: return IsUnsigned(t->intstorage) ? t : nullptr;
+        case TY_STRUCT:
+            for (auto ft : GetStructInst(t)->ftypes)
+                if (auto leaf = ft ? UnsignedLeaf(ft) : nullptr) return leaf;
+            return nullptr;
+        case TY_ARRAY: return UnsignedLeaf(t->arr->sub);
+        default: return nullptr;
+    }
 }
 
 // Scaling keeps the aggregate's nominal type, so every leaf must accept

@@ -1106,41 +1106,53 @@ inline string CodeGen::GenRangeEq(TypeExpr *elem, const string &ae, const string
 inline void CodeGen::GenElemwiseInto(TypeExpr *t, TType op, Line line, const string &l,
                                      const string &r, const string &dst,
                                      bool lscalar, bool rscalar) {
+    GenElemwiseLeaves(t, dst, [&](TypeExpr *tt, const string &path) {
+        auto a = cat("(", l, ")", lscalar ? string() : path);
+        auto c = cat("(", r, ")", rscalar ? string() : path);
+        if (tt->kind == TY_FLT) {
+            switch (op) {
+                case T_PLUS: case T_PLUSEQ:   return cat("(", a, " + ", c, ")");
+                case T_MINUS: case T_MINUSEQ: return cat("(", a, " - ", c, ")");
+                case T_MUL: case T_MULEQ:     return cat("(", a, " * ", c, ")");
+                case T_DIV: case T_DIVEQ:     return cat("(", a, " / ", c, ")");
+                default: return cat((tt->fltstorage == FS_F32 ? "fmodf(" : "fmod("), a, ", ",
+                                    c, ")");
+            }
+        }
+        auto sfx = IntSfx(tt->intstorage);
+        auto ovf = OvfLocArgs(tt->intstorage, line);
+        switch (op) {
+            case T_PLUS: case T_PLUSEQ:   return cat("gs_add_", sfx, "(", a, ", ", c, ovf, ")");
+            case T_MINUS: case T_MINUSEQ: return cat("gs_sub_", sfx, "(", a, ", ", c, ovf, ")");
+            case T_MUL: case T_MULEQ:     return cat("gs_mul_", sfx, "(", a, ", ", c, ovf, ")");
+            case T_DIV: case T_DIVEQ:
+                return cat("gs_div_", sfx, "(", a, ", ", c, ", ", LocArgs(line), ")");
+            default: return cat("gs_mod_", sfx, "(", a, ", ", c, ", ", LocArgs(line), ")");
+        }
+    });
+}
+
+// Elementwise negation (§6.1), member by member as above: member i of the
+// result reads only member i of the operand.
+inline void CodeGen::GenElemwiseNegInto(TypeExpr *t, Line line, const string &x,
+                                        const string &dst) {
+    GenElemwiseLeaves(t, dst, [&](TypeExpr *tt, const string &path) {
+        auto a = cat("(", x, ")", path);
+        if (tt->kind == TY_FLT) return cat("(-", a, ")");
+        return cat("gs_neg_", IntSfx(tt->intstorage), "(", a,
+                   OvfLocArgs(tt->intstorage, line), ")");
+    });
+}
+
+// Stores leaf(type, path) into dst's member at each numeric leaf path of the
+// struct or fixed array type t.
+inline void CodeGen::GenElemwiseLeaves(TypeExpr *t, const string &dst,
+                                       const function<string(TypeExpr *, const string &)> &leaf) {
     function<void(TypeExpr *, const string &)> rec = [&](TypeExpr *tt, const string &path) {
         switch (tt->kind) {
-            case TY_INT: case TY_FLT: {
-                auto a = cat("(", l, ")", lscalar ? string() : path);
-                auto c = cat("(", r, ")", rscalar ? string() : path);
-                string x;
-                if (tt->kind == TY_FLT) {
-                    switch (op) {
-                        case T_PLUS: case T_PLUSEQ:   x = cat("(", a, " + ", c, ")"); break;
-                        case T_MINUS: case T_MINUSEQ: x = cat("(", a, " - ", c, ")"); break;
-                        case T_MUL: case T_MULEQ:     x = cat("(", a, " * ", c, ")"); break;
-                        case T_DIV: case T_DIVEQ:     x = cat("(", a, " / ", c, ")"); break;
-                        default:      x = cat((tt->fltstorage == FS_F32 ? "fmodf(" : "fmod("),
-                                              a, ", ", c, ")"); break;
-                    }
-                } else {
-                    auto sfx = IntSfx(tt->intstorage);
-                    auto ovf = OvfLocArgs(tt->intstorage, line);
-                    switch (op) {
-                        case T_PLUS: case T_PLUSEQ:
-                            x = cat("gs_add_", sfx, "(", a, ", ", c, ovf, ")"); break;
-                        case T_MINUS: case T_MINUSEQ:
-                            x = cat("gs_sub_", sfx, "(", a, ", ", c, ovf, ")"); break;
-                        case T_MUL: case T_MULEQ:
-                            x = cat("gs_mul_", sfx, "(", a, ", ", c, ovf, ")"); break;
-                        case T_DIV: case T_DIVEQ:
-                            x = cat("gs_div_", sfx, "(", a, ", ", c, ", ",
-                                    LocArgs(line), ")"); break;
-                        default:      x = cat("gs_mod_", sfx, "(", a, ", ", c, ", ",
-                                              LocArgs(line), ")"); break;
-                    }
-                }
-                L(dst, path, " = ", x, ";");
+            case TY_INT: case TY_FLT:
+                L(dst, path, " = ", leaf(tt, path), ";");
                 return;
-            }
             case TY_STRUCT: {
                 auto si = SI(tt);
                 for (size_t i = 0; i < si->st->fields.size(); i++)

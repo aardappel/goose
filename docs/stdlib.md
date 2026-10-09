@@ -320,7 +320,8 @@ fn lerp<T>(a: vec3<T>, b: vec3<T>, t: T) -> vec3<T>
 fn xy<T>(v: vec3<T>) -> vec2<T>                 // also xy(vec4), xyz(vec4)
 ```
 
-Elementwise `+ - * /` are the language's: `a + b`, `p - q`. `*` and `/`
+Elementwise `+ - * /` are the language's: `a + b`, `p - q`, and so is
+unary minus on a float or signed integer vector: `-v`. `*` and `/`
 also broadcast a scalar in either order: `v * 2.0`, `v / length(v)`,
 `1.0 / v`; `v *= scale` and `v /= scale` update a vector in place. The
 scalar converts to the component type, so an `f64` variable scaling a

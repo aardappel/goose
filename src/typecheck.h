@@ -1774,6 +1774,7 @@ struct TypeCheck {
     void ReportRedundantCasts();
     bool ElementwiseOK(TypeExpr *t);
     TypeExpr *ElementwiseScalarType(TypeExpr *t);
+    TypeExpr *UnsignedLeaf(TypeExpr *t);
     Val CheckVariantConst(Dot *d, SEnum *en);
     Val MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at, bool wantvalue);
     Val JoinBranches(const Val &a, bool areach, const Val &b, bool breach, Node *at,

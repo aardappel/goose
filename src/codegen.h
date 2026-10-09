@@ -814,6 +814,9 @@ struct CodeGen {
     void GenElemwiseInto(TypeExpr *t, TType op, Line line, const string &l,
                          const string &r, const string &dst,
                          bool lscalar = false, bool rscalar = false);
+    void GenElemwiseNegInto(TypeExpr *t, Line line, const string &x, const string &dst);
+    void GenElemwiseLeaves(TypeExpr *t, const string &dst,
+                           const function<string(TypeExpr *, const string &)> &leaf);
     void ElemwiseOperands(Binary *b, string &l, string &r);
     string GenElemwise(Binary *b, const string &l, const string &r);
     string GenSlice(SliceExpr *se);
