@@ -169,13 +169,25 @@ fn fill<T>(xs: T[:], v: T)
 fn copy_into<T>(dst: T[:], src: T[:])           // equal lengths; first to last
 fn reverse<T>(xs: T[:])
 fn sort<T>(xs: T[:])                            // by <; sort(xs) { a, b => ... } by the block
-fn stable_sort<T>(xs: T[:])                     // merge sort; one temporary of xs.len elements
+fn stable_sort<T>(xs: T[:])                     // natural merge sort; one temporary of xs.len elements
 fn to_lower(s: u8[:])                           // ASCII, in place
 fn to_upper(s: u8[:])
 ```
 
-`sort` is a quicksort with median-of-three pivots, insertion sort below 16
-elements and an explicit range stack; unstable, in place, no allocation.
+`sort` is a pattern-defeating quicksort after pdqsort and Rust's ipnsort:
+unstable (the order it leaves equal elements in is unspecified), in place,
+no allocation. Its partition does not branch on the comparisons, a run of
+equal keys costs a linear pass rather than n log n, and heapsort takes over
+a range that partitioning keeps splitting badly, so the worst case is
+O(n log n). `stable_sort` is a natural merge sort: it finds the runs
+already in order (or in strictly descending order, which it reverses) and
+merges them pass by pass between `xs` and a temporary of `xs.len` elements
+on a fresh data stack. Both take a single pass over input that is in order
+already or strictly descending, and neither allocates for it or for 20
+elements or fewer. A comparator that is no strict weak ordering (`<=`, or
+`<` over floats with NaNs) leaves an unspecified order, but always a
+permutation of the input, and never makes either abort.
+
 A `let` array can be sorted because `let` prevents rebinding, not element
 writes. A `const` array or read-only slice cannot be sorted (spec §9.5).
 

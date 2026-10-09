@@ -381,18 +381,47 @@ fn reverse<T>(xs: T[:])
 fn sort<T>(xs: T[:])                             // by <
 fn sort<T, F>(xs: T[:])                          // by F(a, b); unstable, in place, no allocation
 fn stable_sort<T>(xs: T[:])
-fn stable_sort<T, F>(xs: T[:])                   // merge sort; one temporary of xs.len elements
+fn stable_sort<T, F>(xs: T[:])                   // natural merge sort; one temporary of xs.len elements
 fn to_lower(s: u8[:])                            // ASCII, in place
 fn to_upper(s: u8[:])
 ```
 
-`sort` is a quicksort with median-of-three pivots, insertion sort below 16
-elements, and an explicit `i64[..128]` range stack that always defers the
-larger partition, so it recurses nowhere, allocates nothing, and its stack is
-bounded by 2·log₂(2⁴⁸). Its worst case is quadratic on adversarial input;
-pdqsort's pattern defeat is the planned upgrade once there is a benchmark
-for it. `stable_sort` is bottom-up merge sort with a `T[>..]` temporary on a
-fresh data stack (a stack index, not an allocation).
+`sort` is a pattern-defeating quicksort after pdqsort and Rust's ipnsort.
+A first pass stops at the end of the run the input starts with, and the
+sort is done if that is all of it. Otherwise each round takes a median
+pivot (of three elements, or of three medians of three from 128 on),
+partitions with a branchless Lomuto loop (every element is swapped, and the
+boundary advances by the comparison's outcome), pushes the larger side on
+an `i64[..144]` stack of (lo, hi, budget) ranges and goes on with the
+smaller, so it recurses nowhere, allocates nothing, and holds at most
+log₂(2⁴⁸) ranges. Everything left of a range goes before or with
+everything in it, so when the pivot does not go after the element just
+before the range, the elements equal to it are moved to the front in one
+pass and dropped, as pdqsort does: many equal keys cost linear passes. Each
+range carries a budget of 2·log₂(n) rounds, after which heapsort finishes it,
+bounding the worst case at O(n log n); `test/stdlib/stdlib_sort.goose` builds
+an input against the pivot choice with McIlroy's adversary to check that.
+Ten elements or fewer are insertion sorted: below that, the branchy
+insertion sort measured faster than more partitioning.
+
+`stable_sort` is a natural merge sort. One pass splits the input into runs
+in order, reversing strictly descending ones and extending those shorter
+than 16 by insertion sort; an input that is one run is done there. The runs'
+ends go in a `i64[>..]`, and passes merge neighboring pairs between `xs`
+and a `T[>..]` temporary on a fresh data stack (a stack index, not an
+allocation), alternating direction so that no pass copies back. A merge
+copies runs already in order. Its step either branches on the comparison
+or selects the element and the side with conditional moves; it branches
+while the previous merge switched between its runs on fewer than one step
+in four, since a branch on random input mispredicts about every other step,
+while on structured input a predicted branch lets the comparisons overlap,
+which matters most for a comparator that loads what it compares (BWT's
+rank pairs: 3.7x between the two forms on its unsorted rounds, against
+1.5x the other way on random integers).
+
+Both leave a permutation of the input whatever the comparator returns:
+every index stays in range however the comparisons come out, so a
+comparator that is no strict weak ordering only leaves an unspecified order.
 
 ### 4.7 Arrays: changing the length
 
