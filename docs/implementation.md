@@ -2292,11 +2292,21 @@ records a `DeclSite` for the function, under the environment declaring it
 (`declsiteof`): the variables in scope there, innermost first, with the
 index each holds in `vars`, but those the function's own type parameters
 hide (§11.1); and the functions it may call, every one declared in the
-blocks around the declaration (`blockpos`), the latest at or before it
-first and then those after it, followed by those the declaring body sees
-outside its own scopes. The frame `CheckSpecBody` pushes for a
-specialization keeps the site as `decl`, and `LookupVar` and
-`LookupLocalFnEnv` look there past the body's own scopes (`ForOuterVars`,
+blocks around the declaration (`blockpos`), innermost block first and
+within one the latest at or before the declaration first, then those
+after it, followed by those the declaring body sees outside its own
+scopes, each with the `Scope::serial` of the block declaring it
+(`OuterFn`). A name's nested functions are the overload set of one scope
+(`LookupLocalFns`): in the enclosing code those declared so far in the
+innermost of its scopes declaring the name, latest first, in a body the
+ones of the first scope serial its lookup meets, in the site's order; of
+those with equal parameter types the first met is kept (a later
+declaration shadows), and the set is put back in declaration order. A set
+bound as a function value is kept once in `localfnsets`, so equal sets are
+one `FnValBind::set`, and `TryDispatch` passes the set's environment to each
+case's specialization as `ResolveCall` does. The frame `CheckSpecBody`
+pushes for a specialization keeps the site as `decl`, and `LookupVar` and
+`LookupLocalFns` look there past the body's own scopes (`ForOuterVars`,
 `ForOuterFns`) instead of in the declaring frame as the call finds it, so a
 scope around the call that shadows or adds a name changes nothing, and a
 specialization per `lexparent` serves every call that finds the variables
@@ -2340,7 +2350,7 @@ rather than having their effects discarded. Returning a function value or
 constructing an array of them is also rejected. A named function value
 resolves as a call in the environment its declaration is in, for a nested
 function the scope declaring it, whatever function names it
-(`LookupLocalFnEnv`, as for a call). A name with overloads binds the whole
+(`LookupLocalFns`, as for a call). A name with overloads binds the whole
 set (`FnValBind::set`, part of the value's identity and so of the
 specialization key), which each call of the value resolves against
 (`CheckFunValCall` hands it to `ResolveCall`); a block is cloned into

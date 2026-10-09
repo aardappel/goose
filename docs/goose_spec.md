@@ -2046,6 +2046,17 @@ code has reached its declaration is an error. That code names a nested
 function from its declaration to the end of its scope. It may pass the
 name directly as a static function argument (§7.6).
 
+Nested functions of one name declared in one block overload as top-level
+functions do (§7.1), so case functions (§8.2) may be nested and use free
+variables. A name reaches the set of the innermost block declaring it: for
+the enclosing code the members declared so far, for a nested function's
+body all of them, before or after it. A later one with the parameter types
+of an earlier one shadows it instead, as a later local of a name does: the
+enclosing code calls the latest declared so far, a nested function's body
+the latest declared at or before it, else the first after it. A set in an
+inner block hides an outer block's of the name entirely, and a top-level
+one, as a namespace's set hides the global one (§11.1).
+
 Implementation model: free variables become hidden reference parameters of
 the nested function. A nested function's value never outlives the function
 declaring it (function values do not escape, §7.6), and a call where a
@@ -3185,29 +3196,30 @@ the caller's own facts about `src` intact.
   unqualified name resolves lexically first, to what the scopes around its
   use declare: to a variable or a type parameter, the innermost of the name
   — a function's parameters and locals, then its type parameters, then
-  what is around its declaration (§7.5) —, else to a nested function in
-  scope. Only a name no scope declares resolves in the current
-  declaration's namespace, then in the global namespace and the builtins:
-  a type parameter or a nested function hides a global and a function of
-  its name as a local does. A namespace keeps its global variables apart
-  from its functions, and no variable can be called (function values are
-  no data, §7.6), so the name a call is made by resolves past the global
-  variables to the functions, in each namespace of this order: a global
-  `var last: i32` in any module leaves std's `last(xs)` callable from every
-  module, its own included, while any other use of `last` (`last = 7`, an
-  argument) is the variable. A variable in scope still hides the functions
-  of its name: a local `count` makes `count(xs)` an error. A type parameter
-  bound to a type is no value (in `fn f<N>(x: N)`, `N` as an expression is
-  an error, and `::N` names a global `N`), and no type parameter or nested
-  function is a constant a size or a match pattern may name (§3.3, §8.1).
-  A function name's overload set is that of the first namespace in this
-  order that declares the name at all; sets never merge across namespaces (a
-  namespaced `hash` overload reaches the global integer ones as
-  `::hash(x)`). UFCS follows the same rule for the calling code's namespace,
-  a generic body resolves names where it is defined, and the `format` hook
-  is the one type-directed exception (§3.7). Namespaces affect only name
-  resolution, type identity and generated C names (§7.10): no runtime
-  representation, no privacy, no re-exports.
+  what is around its declaration (§7.5) —, else to the nested functions in
+  scope (the innermost block's set, §7.5). Only a name no scope declares
+  resolves in the current declaration's namespace, then in the global
+  namespace and the builtins: a type parameter or a nested function hides a
+  global and a function of its name as a local does. A namespace keeps its
+  global variables apart from its functions, and no variable can be called
+  (function values are no data, §7.6), so the name a call is made by
+  resolves past the global variables to the functions, in each namespace of
+  this order: a global `var last: i32` in any module leaves std's `last(xs)`
+  callable from every module, its own included, while any other use of
+  `last` (`last = 7`, an argument) is the variable. A variable in scope
+  still hides the functions of its name: a local `count` makes `count(xs)`
+  an error. A type parameter bound to a type is no value (in
+  `fn f<N>(x: N)`, `N` as an expression is an error, and `::N` names a
+  global `N`), and no type parameter or nested function is a constant a size
+  or a match pattern may name (§3.3, §8.1). A function name's overload set
+  is that of the first namespace in this order that declares the name at
+  all; sets never merge across namespaces (a namespaced `hash` overload
+  reaches the global integer ones as `::hash(x)`). UFCS follows the same
+  rule for the calling code's namespace, a generic body resolves names where
+  it is defined, and the `format` hook is the one type-directed exception
+  (§3.7). Namespaces affect only name resolution, type identity and
+  generated C names (§7.10): no runtime representation, no privacy, no
+  re-exports.
 * Globals are declared like locals (`let`/`var`, any type including
   resizable). Semantically the whole program runs inside an implicit
   outermost scope owning them: they participate in the depth check (§9.2) as

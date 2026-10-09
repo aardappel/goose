@@ -658,8 +658,8 @@ inline void TypeCheck::DefaultScopeName(string_view name, Node *at, bool fnonly)
         if (!fnonly)
             for (auto [v, i] : fr.defaultsite->vars)
                 if (v->name == name) error(cat(name, ", a local where ", sf->name, " is declared"));
-        for (auto [f, env] : fr.defaultsite->fns)
-            if (f->name == name) error(cat(name, ", a nested function"));
+        for (auto &o : fr.defaultsite->fns)
+            if (o.sf->name == name) error(cat(name, ", a nested function"));
     }
     for (auto o = sf->outer; o; o = o->outer)
         if (typeparam(o)) return;
@@ -675,8 +675,10 @@ inline bool TypeCheck::ScopeEnded(const DeclSite &d) {
 // called and specialized per caller (§7.5). Its body names what is in scope
 // here, whatever the call, as do the sizes in its signature, checked here, and
 // may call every function declared in the blocks around it, so that nested
-// functions call each other in either order (the latest declared at or before
-// this point wins, then the first after it).
+// functions call each other in either order. The functions of a name in the
+// innermost block declaring one are its overload set, where of several with
+// the same parameter types the latest declared at or before this point
+// wins, then the first after it (LookupLocalFns).
 inline void TypeCheck::DeclareLocalFn(FnDecl *fd) {
     for (auto &p : fd->sf->params)
         if (p.type) ConstNamesIn(p.type);
@@ -700,14 +702,17 @@ inline void TypeCheck::DeclareLocalFn(FnDecl *fd) {
     });
     for (auto bp = blockpos.rbegin(); bp != blockpos.rend() && bp->scopeidx >= fr.scopebase; ++bp) {
         auto &stmts = bp->block->stmts;
+        auto serial = scopes[bp->scopeidx].serial;
         auto at = std::min((int)bp->idx, (int)stmts.size() - 1);
         for (auto i = at; i >= 0; i--)
-            if (auto d = Is<FnDecl>(stmts[i])) site.fns.push_back({ d->sf, fr.lexspec });
+            if (auto d = Is<FnDecl>(stmts[i]))
+                site.fns.push_back({ d->sf, fr.lexspec, serial, i });
         for (auto i = at + 1; i < (int)stmts.size(); i++)
-            if (auto d = Is<FnDecl>(stmts[i])) site.fns.push_back({ d->sf, fr.lexspec });
+            if (auto d = Is<FnDecl>(stmts[i]))
+                site.fns.push_back({ d->sf, fr.lexspec, serial, i });
     }
-    ForOuterFns(top, [&](SFunction *sf, FnSpec *env) {
-        site.fns.push_back({ sf, env });
+    ForOuterFns(top, [&](const OuterFn &o) {
+        site.fns.push_back(o);
         return false;
     });
     declsiteof[{ fr.lexspec, fd->sf }] = &site;
@@ -780,9 +785,9 @@ inline FnSpec *TypeCheck::NamedSpec(FnSpec *env) {
     return env;
 }
 
-inline SFunction *TypeCheck::LookupLocalFn(string_view name) {
+inline bool TypeCheck::LookupLocalFn(string_view name) {
     FnSpec *env;
-    return LookupLocalFnEnv(name, env);
+    return !LookupLocalFns(name, env).empty();
 }
 
 inline vector<int> TypeCheck::NamedFrames(int fi, FnSpec *spec) {

@@ -61,10 +61,8 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id, TypeExpr *expected) {
         return CheckFunValCall(c, *fb, expected);
     }
     FnSpec *env = nullptr;
-    vector<SFunction *> cands;
-    if (auto nf = LookupLocalFnEnv(id->name, env)) {
-        cands.push_back(nf);
-    } else {
+    auto cands = LookupLocalFns(id->name, env);
+    if (cands.empty()) {
         DefaultScopeName(id->name, c, false);
         cands = ast.LookupFunctions(id->name, id->ns);
     }
@@ -100,25 +98,71 @@ inline Val TypeCheck::CheckNamedCall(Call *c, Ident *id, TypeExpr *expected) {
     return CheckBuiltin(c, *bd, c->args, nullptr);
 }
 
-// A nested function visible from the current point, with the lexical
-// environment of the frame that declares it: one declared so far in this
-// frame's scopes, else one the body sees outside them (ForOuterFns).
-inline SFunction *TypeCheck::LookupLocalFnEnv(string_view name, FnSpec *&env) {
+// The nested functions a name reaches from the current point, with the
+// lexical environment of the frame that declares them: those of the name
+// declared so far in the innermost of this frame's scopes that declares one,
+// else those of the innermost scope declaring one that the body sees outside
+// them (ForOuterFns). The functions of one name in one scope are an
+// overload set (§7.5), in declaration order; empty for none. Of several
+// with the same parameter types the one met first wins, as a later local
+// shadows an earlier one: the latest declared so far, and in a body the
+// latest declared at or before it, then the first after it.
+inline vector<SFunction *> TypeCheck::LookupLocalFns(string_view name, FnSpec *&env) {
+    vector<OuterFn> found;
+    auto add = [&](const OuterFn &o) {
+        for (auto &f : found) {
+            if (f.sf->params.size() != o.sf->params.size()) continue;
+            auto same = true;
+            for (size_t i = 0; i < f.sf->params.size() && same; i++) {
+                auto a = f.sf->params[i].type, b = o.sf->params[i].type;
+                same = a && b ? TypeEq(a, b) : !a && !b;
+            }
+            if (same) return;
+        }
+        found.push_back(o);
+    };
     auto top = (int)frames.size() - 1;
+    auto local = false;
     for (auto i = (int)localfns.size() - 1; i >= 0 && localfns[i].first >= frames[top].scopebase;
          i--) {
         if (localfns[i].second->name != name) continue;
         env = frames[top].lexspec;
-        return localfns[i].second;
+        local = true;
+        auto si = localfns[i].first;
+        for (auto j = i; j >= 0 && localfns[j].first >= si; j--)
+            if (localfns[j].first == si && localfns[j].second->name == name)
+                add(OuterFn { localfns[j].second, env, 0, j });
+        break;
     }
-    SFunction *found = nullptr;
-    ForOuterFns(top, [&](SFunction *sf, FnSpec *e) {
-        if (sf->name != name) return false;
-        found = sf;
-        env = e;
-        return true;
-    });
-    return found;
+    if (!local) {
+        auto serial = 0;
+        ForOuterFns(top, [&](const OuterFn &o) {
+            if (o.sf->name != name) return false;
+            if (found.empty()) {
+                serial = o.scopeserial;
+                env = o.env;
+            } else if (o.scopeserial != serial) {
+                return false;
+            }
+            add(o);
+            return false;
+        });
+    }
+    std::sort(found.begin(), found.end(),
+              [](const OuterFn &a, const OuterFn &b) { return a.order < b.order; });
+    vector<SFunction *> fns;
+    for (auto &f : found) fns.push_back(f.sf);
+    return fns;
+}
+
+// The same as one function value: the set's first member, or the whole set
+// where it has several (FnValBind::set), whose storage lasts the check.
+inline FnValBind TypeCheck::LocalFnValue(const vector<SFunction *> &fns, FnSpec *env) {
+    FnValBind fb;
+    fb.named = fns[0];
+    fb.env = env;
+    if (fns.size() > 1) fb.set = &*localfnsets.insert(fns).first;
+    return fb;
 }
 
 inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d, TypeExpr *expected) {
@@ -165,10 +209,8 @@ inline Val TypeCheck::CheckUfcsCall(Call *c, Dot *d, TypeExpr *expected) {
         Error(c, cat("type parameter ", d->name, " is bound to a function value, which is "
                      "called as ", d->name, "(...), not as a member"));
     FnSpec *env = nullptr;
-    vector<SFunction *> cands;
-    if (auto nf = LookupLocalFnEnv(d->name, env)) {
-        cands.push_back(nf);
-    } else {
+    auto cands = LookupLocalFns(d->name, env);
+    if (cands.empty()) {
         DefaultScopeName(d->name, c, true);
         cands = ast.LookupFunctions(d->name, d->ns);
     }
@@ -336,7 +378,7 @@ inline Val TypeCheck::ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *e
         JudgeCallCasts(c, cands, env, argnodes, argvals, best, name, nomatch != nullptr);
     if (tied.empty()) {
         // Tag dispatch (§8.2): the match-as-overload-set form.
-        auto v = TryDispatch(c, cands, argnodes, argvals, name);
+        auto v = TryDispatch(c, cands, env, argnodes, argvals, name);
         if (v.type) return v;
         if (nomatch) {   // The caller has a builtin of this name to fall back on.
             *nomatch = true;
@@ -957,8 +999,9 @@ inline TypeExpr *TypeCheck::SubstOwn(TypeExpr *pt, vector<pair<string_view, Type
 // Case-function tag dispatch (§8.2): calling an overload set of variant
 // types with the ADT (or a reference to it) dispatches on the tag.
 // Returns a Val with null type when no dispatch position exists.
-inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<Node *> &argnodes,
-                                  vector<Val> &argvals, string_view name) {
+inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *env,
+                                  vector<Node *> &argnodes, vector<Val> &argvals,
+                                  string_view name) {
     auto found = -1;
     vector<MatchInfo> matches;  // Per variant, for the found position.
     TypeExpr *enumtype = nullptr;
@@ -980,6 +1023,7 @@ inline Val TypeCheck::TryDispatch(Call *c, vector<SFunction *> &cands, vector<No
             for (auto sf : cands) {
                 MatchInfo mi;
                 mi.sf = sf;
+                mi.env = env;
                 string why;
                 if (!TryMatch(sf, c, argvals, mi, why, defaults)) continue;
                 if (mi.tier == MatchInfo::INTTOFLOAT) {
@@ -3113,9 +3157,8 @@ inline void TypeCheck::CheckReturn(Return *r) {
         // enclosing call of any of those declarations, so an unrelated
         // function sharing the leaf name cannot catch the return.
         FnSpec *env = nullptr;
-        vector<SFunction *> targets;
-        if (auto nf = LookupLocalFnEnv(r->from, env)) targets.push_back(nf);
-        else targets = ast.LookupFunctions(r->from, r->ns);
+        auto targets = LookupLocalFns(r->from, env);
+        if (targets.empty()) targets = ast.LookupFunctions(r->from, r->ns);
         if (targets.empty()) Error(r, cat("return from ", r->from, ": unknown function"));
         for (auto i = (int)frames.size() - 1; i >= 1 && tf < 0; i--) {
             if (frames[i].isfunval || !frames[i].sf) continue;

@@ -169,9 +169,19 @@ struct TypeCheck {
     // before or after it, then those the declaring body sees from outside,
     // each with the environment it is declared in. Kept after the declaring
     // scope ends, for a function whose value leaves it.
+    // A nested function a body can call, with the environment it is
+    // declared in, the scope declaring it (its Scope::serial) and its place
+    // among that scope's declarations: those of one name in one scope are
+    // one overload set (§7.5).
+    struct OuterFn {
+        SFunction *sf = nullptr;
+        FnSpec *env = nullptr;
+        int scopeserial = 0;
+        int order = 0;
+    };
     struct DeclSite {
         vector<pair<VarDef *, int>> vars;
-        vector<pair<SFunction *, FnSpec *>> fns;
+        vector<OuterFn> fns;
         int scope = 0;               // The declaring scope, and its Scope::serial.
         int serial = 0;
     };
@@ -386,6 +396,9 @@ struct TypeCheck {
     template<typename F> void AfterHead(Node *n, Node *next, F f);
     vector<VarDef *> vars;                            // All in-scope variables, all frames.
     vector<pair<int, SFunction *>> localfns;          // Nested fns, with their scope index.
+    // The overload sets of nested functions bound as function values
+    // (FnValBind::set): one copy of each, so that equal sets compare equal.
+    std::set<vector<SFunction *>> localfnsets;
     int scopeserial = 0;
     deque<DeclSite> declsites;
     // The latest declaration site of each nested function, by the
@@ -1203,12 +1216,13 @@ struct TypeCheck {
     }
 
     // The same for the nested functions it can call, in the order a name
-    // resolves to them, each with the environment it is declared in.
+    // resolves to them, each with the environment and scope it is declared
+    // in.
     template <typename F> bool ForOuterFns(int fi, F f) {
         for (;;) {
             auto &fr = frames[fi];
             if (fr.decl) {
-                for (auto [sf, env] : fr.decl->fns) if (f(sf, env)) return true;
+                for (auto &o : fr.decl->fns) if (f(o)) return true;
                 return false;
             }
             auto p = fr.lexframe;
@@ -1216,7 +1230,7 @@ struct TypeCheck {
             for (auto i = (int)localfns.size() - 1; i >= 0; i--) {
                 auto [si, sf] = localfns[i];
                 if (si >= frames[p].scopebase && si < frames[p + 1].scopebase &&
-                    f(sf, frames[p].lexspec))
+                    f(OuterFn { sf, frames[p].lexspec, scopes[si].serial, i }))
                     return true;
             }
             fi = p;
@@ -1234,7 +1248,7 @@ struct TypeCheck {
     int FrameOfScope(int s);
     bool NamesFrame(int fi, int target);
     FnSpec *NamedSpec(FnSpec *env);
-    SFunction *LookupLocalFn(string_view name);
+    bool LookupLocalFn(string_view name);
 
     FlowState SaveFlow();
     void RestoreFlow(const FlowState &f);
@@ -1868,7 +1882,8 @@ struct TypeCheck {
                              MatchInfo &best, TypeExpr *expected, string_view name);
     Val CheckCall(Call *c, TypeExpr *expected);
     Val CheckNamedCall(Call *c, Ident *id, TypeExpr *expected);
-    SFunction *LookupLocalFnEnv(string_view name, FnSpec *&env);
+    vector<SFunction *> LookupLocalFns(string_view name, FnSpec *&env);
+    FnValBind LocalFnValue(const vector<SFunction *> &fns, FnSpec *env);
     Val CheckUfcsCall(Call *c, Dot *d, TypeExpr *expected);
     Val ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *env, string_view name, Val *preval,
                     Node *&prenode, bool *nomatch = nullptr, TypeExpr *expected = nullptr);
@@ -1901,7 +1916,7 @@ struct TypeCheck {
     bool HasGenerics(TypeExpr *t);
     bool BindTypes(TypeExpr *pt, TypeExpr *at, vector<pair<string_view, TypeExpr *>> &b);
     TypeExpr *SubstOwn(TypeExpr *pt, vector<pair<string_view, TypeExpr *>> &b);
-    Val TryDispatch(Call *c, vector<SFunction *> &cands, vector<Node *> &argnodes,
+    Val TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *env, vector<Node *> &argnodes,
                     vector<Val> &argvals, string_view name);
 
     // ------------------------------------------------------------------
