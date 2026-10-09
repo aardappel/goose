@@ -4,7 +4,9 @@ from the loop shapes the pass proves (two indices walking towards each
 other, lookaheads, branch-free partitions, min/max windows, `i + c <= len`
 steps, chunks of `len / k`, `a..a + n` windows, scanners slicing
 `start..pos`, ranges from `i + 1`, inclusive range ends, searches returning
-an index or -1, doubling merge passes), each with random off-by-one
+an index or -1, doubling merge passes, helpers with early returns, push
+loops a `continue` in a block may cut short, cursors moved before a break,
+if-values as indices), each with random off-by-one
 mutations that make some of them unsafe. Every program runs through the JIT
 with the pass on and off; a check the pass wrongly elides turns an abort into
 a read past the end, so the two runs differ. Programs that differ are kept.
@@ -28,7 +30,7 @@ def shape(r, a, n):
     off = pick(0, 0, 0, 1, -1)
     off2 = pick(0, 0, 0, 1, -1, 2)
     k = r.randint(0, 4)
-    kind = r.randint(0, 11)
+    kind = r.randint(0, 15)
     if kind == 0:   # two indices towards each other
         return [f"var {i} = {max(0, off)};", f"var {j} = {a}.len - {1 - off2 if off2 <= 1 else 0};",
                 f"while {i} {pick('<', '<', '<=')} {j} {{",
@@ -73,6 +75,22 @@ def shape(r, a, n):
         v = pick(str(k), f"{a}[{a}.len - 1]")
         return [f"if {a}.len > 0 {{", f"    let {e} = find({a}, {v});",
                 f"    if {e} >= {pick(0, 0, -1)} {{ acc += {a}[{e}{' + 1' if off == 1 else ''}]; }}", "}"]
+    if kind == 12:  # a helper with early returns
+        return [f"if {a}.len > 0 {{",
+                f"    acc += {a}[clampi({k} + {off}, {pick(0, 0, -1)}, {a}.len - 1 + {max(0, off2)})];", "}"]
+    if kind == 13:  # a push loop whose iterations a continue in a block may skip
+        return [f"var q{n}: i64[>..] = [];",
+                f"for {i} in {a}.len {{", f"    block {{ if {a}[{i}] > {k + 2} {{ continue; }} }}",
+                f"    q{n}.push({a}[{i}]);", "}",
+                f"if {a}.len > 0 {{ acc += q{n}[{pick(f'q{n}.len - 1', f'{a}.len - 1', f'q{n}.len - 1')}]; }}"]
+    if kind == 14:  # a loop left through a break that moved the cursor
+        return [f"var {i} = 0;", "loop {",
+                f"    if {i} >= {a}.len {{ {i} += {max(0, off)}; break; }}", f"    {i}++;", "}",
+                f"if {i} > 0 {{ acc += {a}[{i} - 1]; }}"]
+    if kind == 15:  # an if's value as the index
+        return [f"if {a}.len > 0 {{",
+                f"    let {e} = if {a}[0] > {k} {{ {a}.len - 1 }} else {{ {max(0, off)} + {pick(0, 0, 1)} }};",
+                f"    acc += {a}[{e}];", "}"]
     return [f"var {w} = 1;", f"while {w} < {a}.len {{", f"    var {i} = 0;",   # doubling passes
             f"    while {i} < {a}.len {{", f"        let {s} = min({i} + {w}, {a}.len);",
             f"        if {s} > {i} {{ acc += {a}[{s} - 1]; }}",
@@ -85,6 +103,8 @@ def program(seed):
     lines = ["import std;",
              "fn find(xs: i64[:], v: i64) -> i64 {", "    for x, i in xs { if x == v { return i; } }",
              "    return -1;", "}",
+             "fn clampi(x: i64, lo: i64, hi: i64) -> i64 {",
+             "    if x < lo { return lo; }", "    if x > hi { return hi; }", "    return x;", "}",
              "fn body(a: i64[:], b: i64[:]) -> i64 {", "    var acc = 0;"]
     for n in range(r.randint(2, 5)):
         lines += ["    " + l for l in shape(r, r.choice(["a", "b"]), n)]
