@@ -987,9 +987,10 @@ fn parse_int(s: u8[:], base: i64 = 10) -> i64, bool {
 }
 
 // 10^0 .. 10^22: every one exact in binary64, which is what makes one
-// multiply or divide by it correctly rounded.
-let parse_flt_pow10: f64[23] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
-                                1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22];
+// multiply or divide by it correctly rounded. `const`, so it is static C
+// data rather than a member of each program instance's globals.
+const parse_flt_pow10: f64[23] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
+                                  1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22];
 
 // A decimal float with optional sign, fraction and exponent; false otherwise.
 fn parse_flt(s: u8[:]) -> f64, bool {
@@ -999,28 +1000,65 @@ fn parse_flt(s: u8[:]) -> f64, bool {
         neg = s[0] == '-';
         i = 1;
     }
-    // The significant digits as one integer (the first 19 fit a u64), with
-    // the decimal exponent adjusted for digits after the point and for any
-    // dropped beyond the 19th, so the value is mant * 10^exp10.
+    // The significant digits as one integer, with the decimal exponent
+    // adjusted for the digits after the point, so the value is
+    // mant * 10^exp10. One test per digit (the u8 subtraction wraps below
+    // '0'), and the digits are counted from positions.
+    let start = i;
     var mant: u64 = 0;
-    var mdigits = 0;
-    var exp10 = 0;
-    var digits = 0;
-    while i < s.len && s[i] >= '0' && s[i] <= '9' {
-        if mdigits < 19 { mant = mant * 10 + (s[i] - '0'); mdigits += 1; }
-        else { exp10 += 1; }
-        digits += 1;
+    while i < s.len {
+        let d = s[i] - '0';
+        if d >= 10 { break; }
+        mant = mant * 10 + d;
         i += 1;
     }
+    var digits = i - start;
+    var exp10 = 0;
     if i < s.len && s[i] == '.' {
         i += 1;
-        while i < s.len && s[i] >= '0' && s[i] <= '9' {
-            if mdigits < 19 { mant = mant * 10 + (s[i] - '0'); mdigits += 1; exp10 -= 1; }
-            digits += 1;
+        let fstart = i;
+        while i < s.len {
+            let d = s[i] - '0';
+            if d >= 10 { break; }
+            mant = mant * 10 + d;
             i += 1;
         }
+        exp10 = fstart - i;
+        digits -= exp10;
     }
     if digits == 0 { return 0.0, false; }
+    // Up to 19 digits fit a u64 exactly. With no exponent either, the value
+    // is that integer over an exact power of ten, the scaling below in one
+    // step. Up to 18 they fit an i64 too, which converts to f64 in one
+    // instruction where a u64 takes several on x86-64, to the same value.
+    if digits <= 19 && i == s.len {
+        var v = 0.0;
+        if digits <= 18 { v = mant as! i64; } else { v = mant; }
+        if exp10 < 0 { v /= parse_flt_pow10[-exp10]; }
+        if neg { v = -v; }
+        return v, true;
+    }
+    if digits > 19 {
+        // mant wrapped above: read the same digits again keeping the first
+        // 19, with the exponent counting the integer digits dropped past
+        // them. These loops stop where those did, at i.
+        mant = 0;
+        exp10 = 0;
+        var mdigits = 0;
+        var j = start;
+        while j < s.len && s[j] - '0' < 10 {
+            if mdigits < 19 { mant = mant * 10 + (s[j] - '0'); mdigits += 1; }
+            else { exp10 += 1; }
+            j += 1;
+        }
+        if j < s.len && s[j] == '.' {
+            j += 1;
+            while j < s.len && s[j] - '0' < 10 {
+                if mdigits < 19 { mant = mant * 10 + (s[j] - '0'); mdigits += 1; exp10 -= 1; }
+                j += 1;
+            }
+        }
+    }
     if i < s.len && (s[i] == 'e' || s[i] == 'E') {
         i += 1;
         var eneg = false;
