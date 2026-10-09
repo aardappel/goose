@@ -208,6 +208,18 @@ fn make_heap<A>(xs: A&)                         // O(n)
 A `[>..<]` is the natural heap and queue container; a limited `[..k]` field
 works as well.
 
+The heap is binary, with the children of `i` at `2i + 1` and `2i + 2`. Its
+sifts move a hole instead of swapping: the element being placed waits in a
+local while each level moves one element into the hole, and is stored once
+where the hole stops. `heap_pop` walks the hole from the root down to a leaf
+along the child that goes first and then sifts the last element up from
+there, as libstdc++ and Rust do, which takes about one comparison per level
+where sifting it down from the root takes two. For a comparator that is a
+strict weak order every operation leaves the same layout as the textbook
+swapping sifts, ties included, so elements that tie come out in the same
+order. A comparator that reads the heap while it runs sees one slot holding
+a copy of its neighbour rather than the element waiting outside.
+
 ```goose
 var q: i64[>..<] = [];
 q.heap_push(5); q.heap_push(1);

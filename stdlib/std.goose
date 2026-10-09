@@ -719,50 +719,94 @@ fn dedup<A>(xs: A&) {
     xs.resize(w);
 }
 
-// A binary min-heap by < (or by F(a, b), "a goes before b").
+// A binary min-heap by < (or by F(a, b), "a goes before b"). The sifts move
+// a hole rather than swapping: the element being placed waits in a local,
+// each level moves one element into the hole, and the element is stored once
+// where the hole stops. For a comparator that is a strict weak order, every
+// operation leaves the layout that swapping the element along would.
 fn heap_push<A, T>(xs: A&, v: T) { heap_push(xs, v) { a, b => a < b } }
 fn heap_push<A, T, F>(xs: A&, v: T) {
     xs.push(v);
-    var i = xs.len - 1;
+    sift_up(xs, xs.len - 1) { a, b => F(a, b) };
+}
+
+// Moves xs[start] towards the root past every element it goes before. The
+// element is read back from the array rather than taken from heap_push's v,
+// whose type may differ from the elements' (an i32 pushed into i64s), and
+// held in a T, the element type, which keeps a reference element itself.
+fn sift_up<T, F>(xs: T[:], start: i64) {
+    var i = start;
+    let x: T = xs[i];
     while i > 0 {
         let p = (i - 1) / 2;
-        if F(xs[i], xs[p]) {
-            swap_at(xs, i, p);
-            i = p;
-        } else {
-            break;
-        }
+        if !F(x, xs[p]) { break; }
+        xs[i] .= xs[p];
+        i = p;
     }
+    xs[i] .= x;
 }
 
 fn sift_down<T, F>(xs: T[:], start: i64) {
     let n = xs.len;
     var i = start;
+    if 2 * i + 1 >= n { return; }   // A leaf, or a start past the end, is not read.
+    let x: T = xs[i];
     loop {
         let l = 2 * i + 1;
         if l >= n { break; }
         var m = l;
         let r = l + 1;
         if r < n && F(xs[r], xs[l]) { m = r; }
-        if F(xs[m], xs[i]) {
-            swap_at(xs, i, m);
-            i = m;
-        } else {
-            break;
-        }
+        if !F(xs[m], x) { break; }
+        xs[i] .= xs[m];
+        i = m;
     }
+    xs[i] .= x;
 }
 
+// The hole left at the root walks down to a leaf along the child that goes
+// first, and the last element then sifts up from there, as in libstdc++ and
+// Rust: the last element nearly always belongs near the bottom, so this
+// takes about one comparison per level where sifting it down takes two.
 fn heap_pop<A>(xs: A&) { heap_pop(xs) { a, b => a < b } }
 fn heap_pop<A, F>(xs: A&) {
     let top = xs[0];
-    let n = xs.len - 1;
-    xs[0] .= xs[n];
-    // Sifted before the pop: for an array of references the checker rejects
-    // a pop between this move and a later use (implementation.md §10).
-    sift_down(xs[..n], 0) { a, b => F(a, b) };
+    sift_hole(xs) { a, b => F(a, b) };
+    // Popped after the sift: for an array of references the checker rejects
+    // a pop that a use of the array follows (implementation.md §10).
     xs.pop();
     return top;
+}
+
+// Fills the hole heap_pop leaves at the root of xs[..n] with x = xs[n], the
+// element it pops off the end afterwards; x is held in a T, the element
+// type, which keeps a reference element itself.
+fn sift_hole<T, F>(xs: T[:]) {
+    let n = xs.len - 1;
+    if n == 0 { return; }
+    let x: T = xs[n];
+    var i = 0;
+    var c = 1;
+    while c < n - 1 {
+        if F(xs[c + 1], xs[c]) { c += 1; }
+        xs[i] .= xs[c];
+        i = c;
+        c = 2 * c + 1;
+    }
+    if c == n - 1 {
+        xs[i] .= xs[c];
+        i = c;
+    }
+    // Going up, x passes every element that does not go before it, ties
+    // included, and stops below the first that does: where sifting it down
+    // from the root would have stopped.
+    while i > 0 {
+        let p = (i - 1) / 2;
+        if F(xs[p], x) { break; }
+        xs[i] .= xs[p];
+        i = p;
+    }
+    xs[i] .= x;
 }
 
 fn make_heap<A>(xs: A&) { make_heap(xs) { a, b => a < b } }
