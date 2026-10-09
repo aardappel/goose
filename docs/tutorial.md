@@ -1590,9 +1590,10 @@ a few more limits; see
   `01_tour` and `02_memory`, then jump to whatever looks like your problem.
   `13_linked_list`, `14_bst` and `18_json` are the ones that show the data
   structures in detail; `26_file_tree` uses both pool kinds together.
-* **[`docs/stdlib.md`](stdlib.md)** — the library reference. Twelve modules:
+* **[`docs/stdlib.md`](stdlib.md)** — the library reference. Thirteen modules:
   `std`, `dictionary`, `vec`, `math`, `os`, `binary`, `base64`, `csv`,
-  `audio`, `gfx`, `physics`, and `ui`, with Goose interfaces under `stdlib/`.
+  `json`, `audio`, `gfx`, `physics`, and `ui`, with Goose interfaces under
+  `stdlib/`.
 * **[`docs/goose_spec.md`](goose_spec.md)** — the actual rules, when you want
   to know why something did not compile. It is precise rather than friendly,
   and it is where every "spec §" in this document points.
