@@ -97,9 +97,34 @@
 // by at most one per iteration keeps the distance to the loop index it had
 // on entry, which bounds a partition's or compaction's second index by the
 // first (StepCounters).
+//
+// Speculation: in the body of a loop that can be straight-line code, codegen
+// evaluates the right operand of && or || whatever the left gives where that
+// cannot fail or have an effect (CodeGen::Speculatable), which lets the C
+// compiler if-convert and vectorize the loop. An index there qualifies only
+// if its check holds without the facts the left operand establishes, so the
+// judging pass probes each such right operand once more from the state after
+// the left, with neither the left's facts nor those of any && or || nested
+// in it (Binary::specidx, ProbeRight).
 #pragma once
 
 namespace goose {
+
+// Whether index ix is in bounds by the types alone: a fixed array indexed by
+// a constant within it, or by an integer whose type holds no value outside it
+// (a u8 into a [256]). Codegen speculates such an index whatever this pass
+// proved about it (CodeGen::Speculatable).
+inline bool IndexInRangeByType(Index *ix) {
+    auto at = ix->obj->exprtype;
+    if (at && IsPlainRef(at)) at = at->ref->sub;
+    if (!at || !IsArrayKind(at, A_FIXED) || at->arr->size <= 0) return false;
+    auto n = at->arr->size;
+    if (auto lit = Is<IntLit>(ix->idx)) return !lit->uns && lit->val >= 0 && lit->val < n;
+    auto it = ix->idx->exprtype;
+    if (!it || !IsIntT(it)) return false;
+    auto [lo, hi] = IntRange(it->intstorage);
+    return lo >= 0 && hi < n;
+}
 
 struct BCE {
     Ast &ast;
@@ -1795,11 +1820,18 @@ struct BCE {
     void JudgeIndex(Index *ix, const Term &lent) {
         if (mode == M_KILLS) return;
         auto it = TermOf(ix->idx);
+        auto proven = [&] {
+            return lent.ok && it.ok && Query(Zero(), it.b, it.off) &&
+                   Query(it.b, lent.b, SatSub(SatSub(lent.off, it.off), 1));
+        };
+        // A probed operand runs no checks, so none completes to state facts.
+        if (probing) {
+            if (!proven() && !IndexInRangeByType(ix)) probefail = true;
+            return;
+        }
         if (mode == M_JUDGE) {
             idxtotal++;
-            auto ok = lent.ok && it.ok &&
-                      Query(Zero(), it.b, it.off) &&
-                      Query(it.b, lent.b, SatSub(SatSub(lent.off, it.off), 1));
+            auto ok = proven();
             if (ok) { ix->nobc = true; idxelided++; }
             RecordLine(ix->line, ok);
         }
@@ -1852,6 +1884,10 @@ struct BCE {
     Term slicelen;
 
     void JudgeSlice(SliceExpr *se, const Term &lent, const Term &lot, const Term &hit) {
+        if (probing) {
+            probefail = true;
+            return;
+        }
         sltotal++;
         auto ok = lent.ok && lot.ok && hit.ok &&
                   Query(Zero(), lot.b, lot.off) &&
@@ -1909,6 +1945,47 @@ struct BCE {
             case T_EQ:   le(lt, rt, 0); le(rt, lt, 0); break;
             default: break;   // != alone bounds nothing.
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Speculation probes (Binary::specidx).
+
+    bool probing = false;       // Walking a right operand for ProbeRight.
+    bool probefail = false;     // A bounds check in it did not hold.
+
+    // A right operand worth probing: operators, variables, fields, elements,
+    // casts and constants only, with an index among them. Walking these
+    // changes nothing but the flow and the memo of derived terms.
+    static bool ProbeShape(Node *n, bool &index) {
+        if (Is<Index>(n)) index = true;
+        else if (!Is<Binary>(n) && !Is<Unary>(n) && !Is<Ident>(n) && !Is<Dot>(n) &&
+                 !Is<AsCast>(n) && !Is<IntLit>(n) && !Is<FltLit>(n) && !Is<BoolLit>(n) &&
+                 !Is<NullLit>(n))
+            return false;
+        auto ok = true;
+        n->Children([&](Node *ch) { ok = ok && ProbeShape(ch, index); });
+        return ok;
+    }
+
+    // Whether every bounds check in the right operand of && or || holds in
+    // the state after the left operand, without the facts the left
+    // establishes or those of a && or || nested in the right operand, whose
+    // own right operands codegen may evaluate unconditionally too. The walk
+    // judges nothing for the program and leaves the state as it was.
+    void ProbeRight(Binary *bn) {
+        auto index = false;
+        if (!ProbeShape(bn->right, index) || !index) return;
+        auto savedflow = flow;
+        auto savedderived = derived;
+        auto savedslicelen = slicelen;
+        probing = true;
+        probefail = false;
+        Walk(bn->right);
+        probing = false;
+        flow = std::move(savedflow);
+        derived = std::move(savedderived);
+        slicelen = savedslicelen;
+        bn->specidx = probefail || bn->specidx < 0 ? -1 : 1;
     }
 
     // ------------------------------------------------------------------
@@ -2506,9 +2583,11 @@ inline bool Binary::BceWalk(BCE &b) {
         // facts and effects merge against the short-circuit path.
         b.Walk(left);
         auto after = b.flow;
+        if (b.mode == BCE::M_JUDGE && !b.probing) b.ProbeRight(this);
         // Like an if/while condition, a short-circuit operand may have
-        // compared an earlier read against a later state-changing call.
-        if (!b.HasKillEffects(left)) b.CondFacts(left, op == T_ANDAND);
+        // compared an earlier read against a later state-changing call. A
+        // probe takes no facts from the left (ProbeRight).
+        if (!b.probing && !b.HasKillEffects(left)) b.CondFacts(left, op == T_ANDAND);
         b.Walk(right);
         b.flow = b.Meet(after, b.flow);
         return true;

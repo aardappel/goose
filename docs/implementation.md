@@ -3189,6 +3189,22 @@ elides a constant index into a fixed array (`IndexLoc`).
   array the body (and a `while` condition) can neither grow, shrink, rewrite
   whole nor reach through a call; codegen reads their base and length into
   locals before the loop (section 6.10).
+* `Binary::specidx` on a `&&` or `||` whose right operand has an index in it
+  and is made of nothing but operators, variables, fields, elements, casts
+  and constants (`ProbeShape`): whether every bounds check in that operand
+  holds without what the left operand establishes, which codegen needs to
+  evaluate the operand unconditionally (section 6.11). The judging walk
+  probes such an operand once more (`ProbeRight`) from the state after the
+  left operand, taking no facts from the left nor from any `&&` or `||`
+  nested in the operand, and with the flow, the memo of derived terms and
+  the slice length restored afterwards; a probe's judgments only count
+  failures, and an index the types alone keep in bounds
+  (`IndexInRangeByType`) is none. The operand is walked as usual after
+  that, so the program's own elisions are those it would have without the
+  probe. A nested `&&` probes its own right operand in the state its
+  enclosing operands' facts allow, which holds where the enclosing operator
+  short-circuits, and where it does not, codegen asks the enclosing
+  operator's probe, which took none of those facts.
 
 ### 5.11 Verification
 
@@ -3814,6 +3830,51 @@ captured resizable, and no global whose type could be one of those
 parameters' pointees. In that mode the parameters' `.stk` tops are cached
 instead, and every call syncs everything.
 
+### 6.11 `&&` and `||`
+
+The left operand lands in a `uint8_t` temporary. The right one is emitted
+inside an `if` on it, short-circuit style, unless the operator sits in the
+body of a loop that can be straight-line code and evaluating the operand can
+neither fail nor have an effect, whatever the left operand gave
+(`CodeGen::Speculatable`): then it is evaluated unconditionally and combined
+with the left's 0 or 1 by `&` or `|`. A C compiler keeps the branch of a
+short circuit, which in a loop blocks if-conversion and vectorization (a
+loop counting the positions of a block where `p1[j] == a && p2[j] == b`
+stays scalar), but if-converts and vectorizes the unconditional form. The
+operator's value is the same either way, and the short circuit the
+specification promises (§6.1) skips nothing observable in such an operand:
+it has no effect to skip and no failure to avoid.
+
+The loop is the innermost one around the operator in its function, and it
+qualifies when neither its body nor a `while` condition holds a loop, a
+call, `break`, `continue` or `return` (`CodeGen::StraightCode`, recorded on
+the loop's scope once its condition is emitted, since a `while` condition
+is the loop's exit). Elsewhere the short circuit's early branch is as good,
+and ahead of a branch that stays it is better, the left operand usually
+settling it in one compare where the unconditional form makes the branch
+wait for every compare. Measured before these limits: in the sift loops of
+an A* search's heap, where the comparator `a.f < b.f || (a.f == b.f && a.v <
+b.v)` decides a `break`, the unconditional form ran the search 25-30%
+slower, and in a JSON parser's `while` conditions, where `c <= ' '` alone
+ends nearly every whitespace skip, 30% slower.
+
+What qualifies is defined over the operand's tree, at most 24 nodes of it:
+constants; variables, but for an optional reference other than as its own
+null test or truth value; the comparisons and `!`, `&&` and `||` over
+those; integer `& | ^ << >>`; `+ - *` on unsigned integers, which wrap in
+every build, and on floats (and float `/`); casts that cannot fail in any
+build (to a float, or an integer widening or `as!`); fields of fixed structs
+reached through such storage; elements whose bounds check the types settle
+(a `u8` into a `[256]`) or BCE found to hold without the left operand's facts
+(`Binary::specidx`, section 5.10, and `Index::nobc`); and inlined calls and
+blocks made of scalar `let`s and a value of the same kinds. Everything else
+keeps the short circuit: calls, writes, division (a zero check), signed
+arithmetic and narrowing casts (whose debug builds check overflow and range),
+float-to-integer casts, loads through an optional reference (the left
+operand may be what narrows it, §3.8), fields of variable-size structs, and
+any index BCE did not settle that way, since the left operand is often what
+keeps it in bounds (`i < n && a[i] == c`).
+
 ---
 
 ## 7. The runtime
@@ -4288,6 +4349,19 @@ schedules base-plus-offset loads; MSVC does neither, and is better at
 recursion into a bump allocator. `bench/results.md` reports every row under
 both, and the JIT backend (TinyCC) is for running without a toolchain, not
 for speed.
+
+### 9.9 Scanning bytes
+
+A loop that tests one byte at a time runs at about a byte per cycle, which
+no C compiler vectorizes while the loop can exit early. Two things go
+faster. std's `find_any` and `find_pair` (`docs/stdlib.md`) search for a
+`ByteSet` 16 bytes at a time, prepared once outside the loop. And a test
+over a block of fixed size, counting rather than exiting, vectorizes where
+its `&&` and `||` qualify for unconditional evaluation (section 6.11): `for j
+in 32 { if p1[j] == a && p2[j] == b { n += 1; } }` over slices of 32 bytes,
+whose indices the loop bounds, takes the vector form, and a block with a
+hit is searched again a byte at a time. The same test in a `while` loop
+that stops at the first hit stays scalar.
 
 ---
 

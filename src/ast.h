@@ -889,6 +889,12 @@ NODE(Binary)
     Node *left, *right;
     // Filled by typecheck for && and ||: optionals the right operand un-narrows.
     vector<VarDef *> rightkills;
+    // Filled by BCE for && and || (BCE::ProbeRight): 1 where every bounds
+    // check in the right operand holds whatever the left operand gives, -1
+    // where one may not, 0 where the pass did not look. Codegen evaluates a
+    // right operand with a bounds check in it unconditionally only on a 1
+    // (CodeGen::Speculatable).
+    int8_t specidx = 0;
     bool litfloat = false;      // Filled by typecheck: its value is a Val::litfloat.
     bool flexint = false;       // Filled by typecheck: its value is a Val::flexint.
     Binary(Line l, TType _op, Node *_l, Node *_r) : Node(l), op(_op), left(_l), right(_r) {}

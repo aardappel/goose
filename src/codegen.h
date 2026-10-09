@@ -492,6 +492,10 @@ struct CodeGen {
         size_t topat = 0;
         int topind = 0;
         string top0;
+        // SC_LOOP, once its condition is out: the loop can be straight-line
+        // code (StraightCode), whose body's && and || may evaluate a right
+        // operand unconditionally.
+        bool straight = false;
     };
     vector<CScope> cscopes;
 
@@ -769,6 +773,8 @@ struct CodeGen {
     string GenRefVal(Node *child, Line ln);
     string GenXD(Node *n, TypeExpr *want);
     string GenTruth(Node *n);
+    bool Speculatable(Node *n, bool idxok, bool truth, int &budget);
+    bool SpeculatablePlace(Node *n, bool idxok, int &budget);
 
     // The three per-node passes dispatch virtually (ast.h); the bodies live
     // together in codegen_nodes.h, delegating into the machinery here.
@@ -919,7 +925,9 @@ struct CodeGen {
     // sits after the fallthrough restores rather than sharing them.
 
     void GenLoopBody(const function<void()> &condexit, Block *bodyb, Dst d,
-                     const string &forhead = "");
+                     const string &forhead = "", Node *cond = nullptr);
+    static bool StraightCode(Node *n);
+    bool InStraightLoop();
     void GenBreakPath(Node *val);
 
     // ------------------------------------------------------------------

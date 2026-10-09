@@ -46,7 +46,7 @@ inline void CodeGen::GenStmt(Node *n) {
 // sits after the fallthrough restores rather than sharing them.
 
 inline void CodeGen::GenLoopBody(const function<void()> &condexit, Block *bodyb, Dst d,
-                                 const string &forhead) {
+                                 const string &forhead, Node *cond) {
     PushSc(SC_LOOP);
     auto si = (int)cscopes.size() - 1;
     cscopes[si].brklbl = Lbl();
@@ -55,7 +55,10 @@ inline void CodeGen::GenLoopBody(const function<void()> &condexit, Block *bodyb,
     auto loopid = MarkLoopBegin();
     L(forhead.empty() ? "for (;;) {" : forhead);
     ind++;
+    // The condition is the loop's exit, a branch that stays, so only the
+    // body's && and || may take the unconditional form.
     if (condexit) condexit();
+    cscopes[si].straight = StraightCode(bodyb) && (!cond || StraightCode(cond));
     for (auto st : bodyb->stmts) GenStmt(st);
     if (bodyb->tail) GenStmt(bodyb->tail);
     auto &sc = cscopes.back();
@@ -70,6 +73,29 @@ inline void CodeGen::GenLoopBody(const function<void()> &condexit, Block *bodyb,
     if (usedbrk) L(brklbl, ":;");
     MarkLoopEnd(loopid);
     termjump = false;
+}
+
+// Whether n can compile to straight-line code once its ifs are converted:
+// no loop, call, break, continue or return in it, which is the loop body a C
+// compiler if-converts and vectorizes.
+inline bool CodeGen::StraightCode(Node *n) {
+    if (!n) return true;
+    if (Is<While>(n) || Is<ForLoop>(n) || Is<LoopExpr>(n) || Is<Call>(n) || Is<Break>(n) ||
+        Is<Continue>(n) || Is<Return>(n))
+        return false;
+    auto ok = true;
+    n->Children([&](Node *ch) { ok = ok && StraightCode(ch); });
+    return ok;
+}
+
+// Whether the code being emitted is in a loop StraightCode accepts, the
+// innermost one around it in this function.
+inline bool CodeGen::InStraightLoop() {
+    for (auto i = (int)cscopes.size() - 1; i >= 0; i--) {
+        if (cscopes[i].kind == SC_LOOP) return cscopes[i].straight;
+        if (cscopes[i].kind == SC_FN) return false;
+    }
+    return false;
 }
 
 inline void CodeGen::GenBreakPath(Node *val) {

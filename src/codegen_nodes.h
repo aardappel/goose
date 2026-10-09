@@ -132,13 +132,25 @@ inline string Binary::CgX(CodeGen &cg) {
         return cat("(uint8_t)((void *)(", l, ") ", op == T_DOTEQ ? "==" : "!=", " (void *)(", r, "))");
     }
     if (op == T_ANDAND || op == T_OROR) {
+        auto l = cg.GenTruth(left);
+        auto t = cg.T();
+        cg.L("uint8_t ", t, " = (uint8_t)(", l, op == T_ANDAND ? " != 0);" : " != 0);");
+        // In a loop that can be straight-line code, a right operand that can
+        // neither fail nor have an effect runs whatever the left gave,
+        // combined with & or | on the two 0/1 values: a C compiler can
+        // if-convert that, and vectorize the loop, where it keeps the branch
+        // of a short circuit. Elsewhere the early branch is as good, and
+        // better ahead of a branch that stays (docs/implementation.md §6.11).
+        auto budget = 24;
+        if (cg.InStraightLoop() && cg.Speculatable(right, specidx > 0, true, budget)) {
+            auto r = cg.GenTruth(right);
+            return cat("(uint8_t)(", t, op == T_ANDAND ? " & " : " | ", "(uint8_t)(", r,
+                       " != 0))");
+        }
         // Short-circuit with left-to-right statement emission: the right
         // operand's statements may only run when the left allows. So may
         // the restores of the temporaries it builds on data stacks, which
         // are dead once its truth value is taken.
-        auto l = cg.GenTruth(left);
-        auto t = cg.T();
-        cg.L("uint8_t ", t, " = (uint8_t)(", l, op == T_ANDAND ? " != 0);" : " != 0);");
         cg.L("if (", op == T_ANDAND ? t : cat("!", t), ") {");
         cg.ind++;
         cg.PushSc(CodeGen::SC_PLAIN);
@@ -934,7 +946,7 @@ inline void While::CgStmt(CodeGen &cg) {
         // scope's compile-time list and are restored... none yet either.
         cg.L("if (!(", c, ")) goto ", cg.cscopes[si].brklbl, ";");
         cg.cscopes[si].usedbrk = true;
-    }, body, d);
+    }, body, d, "", cond);
 }
 
 inline void ForLoop::CgStmt(CodeGen &cg) {

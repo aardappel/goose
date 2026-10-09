@@ -841,6 +841,144 @@ inline string CodeGen::GenTruth(Node *n) {
     return x;
 }
 
+// Whether evaluating n, the right operand of && or || or a part of it, has
+// no effect but its value and cannot fail, so that Binary::CgX may evaluate
+// it whatever the left operand gave. It calls nothing and writes nothing; it
+// has no check that can fail: no division, none of a debug build's overflow
+// or `as` range checks (signed arithmetic, narrowing casts, float to integer),
+// and no bounds check but one the types settle or BCE found to hold without
+// the left operand's facts (`idxok`, Binary::specidx); and it reads only
+// variables, fields of fixed structs and elements, never through an optional
+// reference, which the left operand may be what narrows (§3.8). In truth
+// position an optional variable stands for its null test, which reads the
+// reference alone. `budget` bounds the work the operand may do for nothing.
+inline bool CodeGen::Speculatable(Node *n, bool idxok, bool truth, int &budget) {
+    if (--budget < 0) return false;
+    auto t = n->exprtype;
+    auto scalar = [](TypeExpr *x) {
+        return x && (IsIntT(x) || x->kind == TY_FLT || x->kind == TY_BOOL);
+    };
+    auto wraps = [](TypeExpr *x) {   // unsigned arithmetic wraps in every build (§6.2)
+        return x && IsIntT(x) && IntRange(x->intstorage).first == 0;
+    };
+    if (Is<IntLit>(n) || Is<FltLit>(n) || Is<BoolLit>(n)) return true;
+    if (auto id = Is<Ident>(n)) {
+        auto vt = id->vdef ? id->vdef->type : nullptr;
+        if (!vt) return false;
+        if (truth && IsOptional(vt) && t && IsOptional(t)) return true;
+        return scalar(t ? OperandT(t) : nullptr) &&
+               (scalar(vt) || (IsPlainRef(vt) && scalar(vt->ref->sub)));
+    }
+    if (auto u = Is<Unary>(n)) {
+        switch (u->op) {
+            case T_NOT: return Speculatable(u->child, idxok, true, budget);
+            case T_BITNOT: return IsIntT(t) && Speculatable(u->child, idxok, false, budget);
+            case T_MINUS:
+                return t && t->kind == TY_FLT && Speculatable(u->child, idxok, false, budget);
+            default: return false;
+        }
+    }
+    if (auto b = Is<Binary>(n)) {
+        auto both = [&](bool tr) {
+            return Speculatable(b->left, idxok, tr, budget) &&
+                   Speculatable(b->right, idxok, tr, budget);
+        };
+        auto lt = b->left->exprtype ? OperandT(b->left->exprtype) : nullptr;
+        auto rt = b->right->exprtype ? OperandT(b->right->exprtype) : nullptr;
+        switch (b->op) {
+            case T_ANDAND: case T_OROR: return both(true);
+            case T_EQ: case T_NEQ:
+                if (Is<NullLit>(b->left) || Is<NullLit>(b->right)) {
+                    auto other = Is<NullLit>(b->left) ? b->right : b->left;
+                    if (Is<NullLit>(other)) return true;
+                    auto id = Is<Ident>(other);
+                    return id && id->vdef && id->vdef->type && IsOptional(id->vdef->type);
+                }
+                return scalar(lt) && scalar(rt) && both(false);
+            case T_LT: case T_GT: case T_LTEQ: case T_GTEQ:
+                return scalar(lt) && scalar(rt) && both(false);
+            // At the operands' type, as Binary::CgX computes.
+            case T_BITAND: case T_BITOR: case T_XOR: case T_SHL: case T_SHR:
+                return lt && IsIntT(lt) && IsIntT(t) && both(false);
+            case T_PLUS: case T_MINUS: case T_MUL:
+                return (wraps(lt) || (lt && lt->kind == TY_FLT)) && scalar(t) && both(false);
+            case T_DIV: return lt && lt->kind == TY_FLT && scalar(t) && both(false);
+            default: return false;
+        }
+    }
+    if (auto d = Is<Dot>(n)) {
+        if (d->member == B_LEN || d->member == B_CAP)
+            return SpeculatablePlace(d->obj, idxok, budget);
+        if (!d->IsField() || !scalar(t ? OperandT(t) : nullptr)) return false;
+        auto ot = d->obj->exprtype ? OperandT(d->obj->exprtype) : nullptr;
+        if (!ot || ot->kind != TY_STRUCT || !IsFix(ot) || !scalar(SI(ot)->ftypes[d->fieldidx]))
+            return false;
+        return SpeculatablePlace(d->obj, idxok, budget);
+    }
+    if (auto ix = Is<Index>(n)) {
+        if (!scalar(t ? OperandT(t) : nullptr) || !(IndexInRangeByType(ix) || (idxok && ix->nobc)))
+            return false;
+        return SpeculatablePlace(ix->obj, idxok, budget) &&
+               Speculatable(ix->idx, idxok, false, budget);
+    }
+    if (auto c = Is<AsCast>(n)) {
+        auto st = c->child->exprtype, tt = c->totype;
+        if (!st || !tt || !(IsIntT(st) || st->kind == TY_FLT)) return false;
+        if (tt->kind == TY_INT) {
+            if (!IsIntT(st) || !IsIntT(tt)) return false;
+            auto [slo, shi] = IntRange(st->intstorage);
+            auto [lo, hi] = IntRange(tt->intstorage);
+            auto exact = st->intstorage == IS_U64 ? tt->intstorage == IS_U64
+                                                  : slo >= lo && shi <= hi;
+            if (!c->unchecked && !TEq(st, tt) && !exact) return false;
+        } else if (tt->kind != TY_FLT) {
+            return false;
+        }
+        return Speculatable(c->child, idxok, false, budget);
+    }
+    // An inlined call or a block: scalar bindings and a value.
+    Block *body = nullptr;
+    if (auto ib = Is<InlineBlock>(n)) body = ib->body;
+    else body = Is<Block>(n);
+    if (!body || !body->tail) return false;
+    for (auto st : body->stmts) {
+        auto vd = Is<VarDecl>(st);
+        if (!vd || vd->isglobal || vd->byref || vd->defs.size() != 1 || vd->inits.size() != 1 ||
+            !vd->defs[0] || !scalar(vd->defs[0]->type) ||
+            !Speculatable(vd->inits[0], idxok, false, budget))
+            return false;
+    }
+    return Speculatable(body->tail, idxok, truth, budget);
+}
+
+// Whether the storage n names is there whatever the left operand of && or ||
+// gave, for Speculatable: a variable but an optional reference, a field of
+// such storage holding a fixed value, or an element of it as Speculatable
+// takes one.
+inline bool CodeGen::SpeculatablePlace(Node *n, bool idxok, int &budget) {
+    if (--budget < 0) return false;
+    if (auto id = Is<Ident>(n)) {
+        auto vt = id->vdef ? id->vdef->type : nullptr;
+        return vt && (vt->kind != TY_REF || IsPlainRef(vt));
+    }
+    if (auto d = Is<Dot>(n)) {
+        if (!d->IsField()) return false;
+        auto ot = d->obj->exprtype ? OperandT(d->obj->exprtype) : nullptr;
+        if (!ot || ot->kind != TY_STRUCT || !IsFix(ot) ||
+            SI(ot)->ftypes[d->fieldidx]->kind == TY_REF)
+            return false;
+        return SpeculatablePlace(d->obj, idxok, budget);
+    }
+    if (auto ix = Is<Index>(n)) {
+        if (!(IndexInRangeByType(ix) || (idxok && ix->nobc))) return false;
+        auto et = ix->exprtype;
+        if (!et || et->kind == TY_REF) return false;
+        return SpeculatablePlace(ix->obj, idxok, budget) &&
+               Speculatable(ix->idx, idxok, false, budget);
+    }
+    return false;
+}
+
 // A control construct used as a fixed-class value: route it into a temp.
 // A varint-typed value (an inlined call initializing a varint field or
 // element) is held in its decoded i64 form, like every other varint read,
