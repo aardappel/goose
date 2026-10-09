@@ -20,7 +20,10 @@
    and structs larger than 16 bytes. TinyCC classifies a small struct as a
    whole, where the System V ABI classifies each eightbyte, so a small struct
    mixing floats and integers would arrive in the wrong registers; the API
-   check rejects one.
+   check rejects one. On macOS arm64 TinyCC also gives each stack argument
+   an eightbyte slot where Apple's ABI packs them, so no argument may follow
+   one of under eight bytes, or a float3, on the stack; the sphere and mesh
+   ray casts take max_fraction ahead of their vectors for that.
 
    Handles are Box3D's own ids, stored as integers: a world in a u32, bodies,
    shapes and joints in a u64, each carrying a generation, so a destroyed
@@ -964,10 +967,10 @@ typedef struct { gs_phys_compound_mesh *data; int64_t len; } gs_phys_compound_me
     X(gs_phys_aabb, gs_phys_mesh_aabb, (gs_phys_mesh m, gs_phys_transform transform, gs_phys_float3 scale)) \
     X(gs_phys_aabb, gs_phys_height_field_aabb, (gs_phys_height_field h, gs_phys_transform transform)) \
     X(gs_phys_aabb, gs_phys_compound_aabb, (gs_phys_compound c, gs_phys_transform transform)) \
-    X(gs_phys_cast_output, gs_phys_sphere_ray_cast, (gs_phys_sphere s, gs_phys_float3 origin, gs_phys_float3 translation, float max_fraction)) \
+    X(gs_phys_cast_output, gs_phys_sphere_ray_cast, (gs_phys_sphere s, float max_fraction, gs_phys_float3 origin, gs_phys_float3 translation)) \
     X(gs_phys_cast_output, gs_phys_capsule_ray_cast, (gs_phys_capsule c, gs_phys_float3 origin, gs_phys_float3 translation, float max_fraction)) \
     X(gs_phys_cast_output, gs_phys_hull_ray_cast, (gs_phys_hull h, gs_phys_float3 origin, gs_phys_float3 translation, float max_fraction)) \
-    X(gs_phys_cast_output, gs_phys_mesh_ray_cast, (gs_phys_mesh m, gs_phys_float3 scale, gs_phys_float3 origin, gs_phys_float3 translation, float max_fraction)) \
+    X(gs_phys_cast_output, gs_phys_mesh_ray_cast, (gs_phys_mesh m, gs_phys_float3 scale, float max_fraction, gs_phys_float3 origin, gs_phys_float3 translation)) \
     X(gs_phys_cast_output, gs_phys_height_field_ray_cast, (gs_phys_height_field h, gs_phys_float3 origin, gs_phys_float3 translation, float max_fraction)) \
     X(gs_phys_cast_output, gs_phys_compound_ray_cast, (gs_phys_compound c, gs_phys_float3 origin, gs_phys_float3 translation, float max_fraction)) \
     X(uint8_t, gs_phys_sphere_overlap, (gs_phys_sphere s, gs_phys_transform transform, gs_phys_float3_slice points, float radius)) \

@@ -668,8 +668,8 @@ static bool phys_ray(gs_phys_float3 origin, gs_phys_float3 translation, float ma
                        (double)translation.y, (double)translation.z, (double)max_fraction);
 }
 
-gs_phys_cast_output gs_phys_sphere_ray_cast(gs_phys_sphere s, gs_phys_float3 origin,
-                                            gs_phys_float3 translation, float max_fraction) {
+gs_phys_cast_output gs_phys_sphere_ray_cast(gs_phys_sphere s, float max_fraction,
+                                            gs_phys_float3 origin, gs_phys_float3 translation) {
     b3RayCastInput ray;
     if (!phys_ray(origin, translation, max_fraction, &ray)) return phys_no_cast();
     b3Sphere g = b3sphere(s);
@@ -692,9 +692,8 @@ gs_phys_cast_output gs_phys_hull_ray_cast(gs_phys_hull h, gs_phys_float3 origin,
     return gscast(b3RayCastHull(g, &ray));
 }
 
-gs_phys_cast_output gs_phys_mesh_ray_cast(gs_phys_mesh m, gs_phys_float3 scale,
-                                          gs_phys_float3 origin, gs_phys_float3 translation,
-                                          float max_fraction) {
+gs_phys_cast_output gs_phys_mesh_ray_cast(gs_phys_mesh m, gs_phys_float3 scale, float max_fraction,
+                                          gs_phys_float3 origin, gs_phys_float3 translation) {
     PHYS_GEOMETRY(PHYS_MESH, m, "ray_cast", b3MeshData, phys_no_cast());
     b3RayCastInput ray;
     if (!phys_ray(origin, translation, max_fraction, &ray)) return phys_no_cast();

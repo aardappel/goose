@@ -1603,14 +1603,24 @@ extern "gs_phys_height_field_aabb" fn compute_aabb(h: HeightField, transform: Tr
 extern "gs_phys_compound_aabb" fn compute_aabb(c: Compound, transform: Transform) -> AABB;
 
 // A ray in the geometry's frame, to max_fraction of the translation.
-extern "gs_phys_sphere_ray_cast" fn ray_cast(s: Sphere, origin: float3, translation: float3,
-                                             max_fraction: f32) -> CastOutput;
+// The sphere and mesh casts take max_fraction ahead of the vectors, which
+// fill the float registers: after them it would follow a vector on the
+// stack, where TinyCC on macOS arm64 puts it elsewhere than clang does.
+extern "gs_phys_sphere_ray_cast" fn ray_cast_raw(s: Sphere, max_fraction: f32, origin: float3,
+                                                 translation: float3) -> CastOutput;
+fn ray_cast(s: Sphere, origin: float3, translation: float3, max_fraction: f32) -> CastOutput {
+    ray_cast_raw(s, max_fraction, origin, translation)
+}
 extern "gs_phys_capsule_ray_cast" fn ray_cast(c: Capsule, origin: float3, translation: float3,
                                               max_fraction: f32) -> CastOutput;
 extern "gs_phys_hull_ray_cast" fn ray_cast(h: Hull, origin: float3, translation: float3,
                                            max_fraction: f32) -> CastOutput;
-extern "gs_phys_mesh_ray_cast" fn ray_cast(m: Mesh, scale: float3, origin: float3,
-                                           translation: float3, max_fraction: f32) -> CastOutput;
+extern "gs_phys_mesh_ray_cast" fn ray_cast_raw(m: Mesh, scale: float3, max_fraction: f32,
+                                               origin: float3, translation: float3) -> CastOutput;
+fn ray_cast(m: Mesh, scale: float3, origin: float3, translation: float3,
+            max_fraction: f32) -> CastOutput {
+    ray_cast_raw(m, scale, max_fraction, origin, translation)
+}
 extern "gs_phys_height_field_ray_cast" fn ray_cast(h: HeightField, origin: float3,
                                                    translation: float3,
                                                    max_fraction: f32) -> CastOutput;

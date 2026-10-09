@@ -87,7 +87,13 @@ fields in the same order, and the same constant values, as it does for gfx.
   small struct with floats in one half and integers in the other would
   arrive in the wrong registers; `test/api_check.py` rejects such a struct
   crossing by value, and one with a misaligned field. Everything larger than
-  16 bytes goes through memory on every ABI.
+  16 bytes goes through memory on every ABI. On macOS arm64 TinyCC lays out
+  stack arguments as the generic AAPCS64 does, an eightbyte slot each, where
+  Apple's ABI packs them at their natural size and alignment: an argument
+  after a stack `f32` or `float3` (12 bytes) would be read four bytes off.
+  The check compares both layouts for every function; the sphere and mesh
+  `ray_cast` take `max_fraction` ahead of their vectors in C, behind a
+  Goose wrapper that keeps the usual order.
 * **Handles** are Box3D's own ids, stored whole: `World` a `u32`, `Body`,
   `Shape` and `Joint` a `u64` (`b3Store*Id`), `Contact` Box3D's three words.
   Each carries a generation, and every entry point checks its ids with
@@ -163,17 +169,18 @@ results, rounded to hundredths or thousandths.
 
 ### Platforms tested
 
-| | Windows 11 | Linux (Ubuntu 24.04 under WSL2) | macOS |
+| | Windows 11 | Linux (Ubuntu 24.04 under WSL2) | macOS 26 (arm64) |
 |---|---|---|---|
-| Build | MSVC | clang++ for the compiler, gcc for the C | not run |
-| Suite, incl. `test/physics/` | MSVC, TinyCC | gcc, clang, TinyCC | not run |
-| Sample | JIT, cl | JIT, gcc | not run |
+| Build | MSVC | clang++ for the compiler, gcc for the C | Apple clang |
+| Suite, incl. `test/physics/` | MSVC, TinyCC | gcc, clang, TinyCC | clang, TinyCC |
+| Sample | JIT, cl | JIT, gcc | JIT, clang (headless) |
 
 On Windows the physics tests and the sample also match their expected output
 built with clang and with clang-cl: Box3D comes out the same to the last
 printed digit on every toolchain, and with one worker thread or four.
-As with gfx, nothing has run on macOS; the ABI rule above was reasoned out
-for System V x86-64 and Windows x64 and is unverified for arm64.
+The ABI rule above was reasoned out for System V x86-64 and Windows x64;
+its stack half was found on macOS arm64, where a ray cast's max_fraction
+arrived four bytes off. Linux arm64, whose ABI is the generic one, is not run.
 
 ## Follow-up work
 

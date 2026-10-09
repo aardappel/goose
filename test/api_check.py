@@ -11,7 +11,10 @@ than trusted.
 It also checks what the header passes by value is what TinyCC passes the way
 the C compilers do: TinyCC classifies a struct of up to 16 bytes as a whole,
 where the System V x86-64 ABI classifies each eightbyte, so such a struct
-mixing floats and integers would arrive in different registers.
+mixing floats and integers would arrive in different registers. And that
+the arguments a call puts on the stack land where the C compilers look for
+them: on macOS arm64 TinyCC gives each one an eightbyte slot, as the generic
+AAPCS64 does, where Apple's packs them at their natural size and alignment.
 
 The naming convention the check relies on: the Goose struct `TextureDesc` is
 `gs_gfx_texture_desc` in C, a slice `const Buffer[:]` is
@@ -206,6 +209,48 @@ def abi_problem(ctype, structs):
     return None
 
 
+def stack_slots(params, structs, apple):
+    """Where AAPCS64 puts each parameter on the stack, None for a register;
+    apple=True packs the stack as Apple's arm64 ABI does, False gives each
+    argument eightbyte slots as the generic one (and TinyCC on macOS) does.
+    The structs are packed: a small non-HFA struct goes in eightbytes either
+    way, one over 16 bytes by pointer."""
+    nx = nv = ns = 0
+    out = []
+    for ctype in params:
+        parts = scalars(ctype, structs) or [(0, 8, "i")]
+        size, unit = parts[-1][0] + parts[-1][1], parts[0][1]
+        hfa = ctype in structs and 1 <= len(parts) <= 4 and \
+            all(k == "f" and n == unit and off == i * unit for i, (off, n, k) in enumerate(parts))
+        if ctype in structs and size > 16:
+            ctype, parts, size, unit = "*", [(0, 8, "i")], 8, 8
+        if hfa or (ctype not in structs and parts[0][2] == "f"):
+            regs = size // unit
+            if nv + regs <= 8:
+                nv += regs
+                out.append(None)
+                continue
+            nv = 8
+        elif ctype not in structs:
+            if nx < 8:
+                nx += 1
+                out.append(None)
+                continue
+        else:
+            size, unit = (size + 7) & ~7, 8
+            if size <= (8 - nx) * 8:
+                nx += size // 8
+                out.append(None)
+                continue
+            nx = 8
+        if not apple:
+            size, unit = (size + 7) & ~7, 8
+        ns = (ns + unit - 1) & -unit
+        out.append(ns)
+        ns += size
+    return out
+
+
 def check(module):
     header, goose, macro, prefix = MODULES[module]
     ctext = (REPO / header).read_text(encoding="utf-8")
@@ -246,6 +291,10 @@ def check(module):
             if why:
                 problems.append(f"{name} {what} {ctype} by value, which TinyCC passes "
                                 f"differently: {why}")
+        tcc, apple = stack_slots(params, cstructs, False), stack_slots(params, cstructs, True)
+        if tcc != apple:
+            problems.append(f"{name}: TinyCC on macOS arm64 puts its stack arguments at "
+                            f"offsets {tcc}, clang at {apple}")
     if not cfns or not cconsts or not cstructs:
         problems.append(f"nothing parsed out of {hname}")
     return problems
