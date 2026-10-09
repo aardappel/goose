@@ -1963,6 +1963,25 @@ static void gs_bld_append(gs_rref b, const void *p, int64_t n) {
     b.hdr->len += n;
 }
 
+/* math's sqrt (stdlib/math.goose). Goose has no errno, and C's sqrt has to
+   set it for a negative argument: clang and gcc then guard the square root
+   instruction with a test and a library call at every use, and will not
+   vectorize a loop around one. A compiler that has a square root without
+   errno uses that instead; the value is the same correctly rounded root
+   either way, and NaN for a negative argument. */
+#if defined(__has_builtin)
+#if __has_builtin(__builtin_elementwise_sqrt)
+#define GS_SQRT_NO_ERRNO 1
+#endif
+#endif
+#ifdef GS_SQRT_NO_ERRNO
+static double gs_sqrt(double x) { return __builtin_elementwise_sqrt(x); }
+static float gs_sqrtf(float x) { return __builtin_elementwise_sqrt(x); }
+#else
+static double gs_sqrt(double x) { return sqrt(x); }
+static float gs_sqrtf(float x) { return sqrtf(x); }
+#endif
+
 GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out);
 GS_API uint8_t gs_os_write_file(sl_u8 path, sl_u8 data);
 GS_API uint8_t gs_os_write_file_atomic(sl_u8 path, sl_u8 data);

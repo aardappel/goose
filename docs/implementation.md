@@ -3827,7 +3827,13 @@ stack state the emitted code reads (`gs_stks`, `gs_gl`) with the few
 functions that touch it, and declarations of everything else;
 `runtime_ext.h`, spliced in after the generated types because it is written
 against them, adds the extern support an `--include` header may use
-(`gs_bld_append`) and declares the `gs_os_*` functions. The other half,
+(`gs_bld_append`), declares the `gs_os_*` functions and defines math's
+`sqrt` (`gs_sqrt`, `gs_sqrtf`): C's `sqrt` sets errno for a negative
+argument, so clang and gcc guard each one with a test and a library call
+and will not vectorize a loop around it, and where the C compiler has a
+square root without errno (`__builtin_elementwise_sqrt`, found with
+`__has_builtin`) the runtime's is that, the same correctly rounded root
+with nothing around it; elsewhere it is C's. The other half,
 `runtime_impl.h`, `runtime_threads.h` and `runtime_os.h`, defines what they
 declare, and is the only part that includes the platform's headers.
 

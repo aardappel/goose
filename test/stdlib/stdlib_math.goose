@@ -15,4 +15,11 @@ fn main() {
     print(is_nan(nan), " ", is_inf(1.0 / z), " ", is_nan(1.0), " ", is_inf(1.0));   // true true false false
     let y: f32 = 0.5;
     print(floor(y), " ", pow(x, y));                                              // 0.0 1.5
+    // sqrt is the runtime's, with no errno: the correctly rounded root, -0.0
+    // for -0.0 and NaN below zero, at both widths. Read from arrays, so no
+    // value is known to the optimizer.
+    var sq: f64[>..] = [2.0, -0.0, -1.0, 1e308];
+    var sqf: f32[>..] = [2.0, -4.0];
+    print(sqrt(sq[0]), " ", sqrt(sq[1]), " ", is_nan(sqrt(sq[2])), " ", sqrt(sq[3]), " ", sqrt(sqf[0]),
+          " ", is_nan(sqrt(sqf[1])));   // 1.4142135623730951 -0.0 true 1e+154 1.4142135 true
 }

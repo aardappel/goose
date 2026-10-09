@@ -380,9 +380,12 @@ scalar converts to the component type, so an `f64` variable scaling a
 
 ## math
 
-libm, both widths (`sqrt(x)` picks `sqrt` or `sqrtf` by the argument's
+libm, both widths (`sin(x)` picks `sin` or `sinf` by the argument's
 type): `sqrt sin cos tan asin acos atan atan2 exp log log2 log10 pow floor
-ceil round trunc`, returning floats as C does (`as i64` converts). An
+ceil round trunc`, returning floats as C does (`as i64` converts). `sqrt`
+is the runtime's (`gs_sqrt`, `gs_sqrtf`): the same correctly rounded root,
+NaN below zero, without C's errno, so it is the bare square root
+instruction where the C compiler allows. An
 integer argument suits both widths, so it names one (`sqrt(n as f64)`);
 `sqrt(n * 0.5)` is the `f64` one, as `sqrt(0.5)` is. Plus:
 
