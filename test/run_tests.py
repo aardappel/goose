@@ -882,6 +882,20 @@ class Runner:
                 self.fail(f"guarded base case {level} {name}",
                           f"copies of the body's start: got {got}, want {want}")
                 valid = False
+        # Inlining heuristics: which bodies are left out of line.
+        live = set(re.findall(r"^fn (ih_\w+)\(", specs, re.MULTILINE))
+        left = {
+            "ih_rare": True,
+            "ih_early": True,
+            "ih_check": not optimized,
+            "ih_wrap": not optimized,
+            "ih_twin": True,
+        }
+        for name, want in left.items():
+            if (name in live) != want:
+                self.fail(f"inlining heuristics {level} {name}",
+                          f"left out of line: got {name in live}, want {want}")
+                valid = False
         return valid
 
     def check_loop_shapes(self, text):

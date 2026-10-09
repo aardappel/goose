@@ -33,7 +33,10 @@
 // with everything else, and the restrictions lift.
 //
 // Thresholds per call site of callee K: inline if K is used once anywhere,
-// or nodecount(K) < NC, or nodecount(K) * uses(K) < NCU.
+// or nodecount(K) < NC, or nodecount(K) * uses(K) < NCU, which a call site
+// inside a loop raises to LOOPNCU * NCU. A K used once that only that first
+// rule would inline stays out of line where the call is in a cold branch,
+// the else of a guard or the body of an early return or break.
 // -O0: no inlining; -O1: NC=8, NCU=48; -O2: NC=16, NCU=96.
 // Whatever the size, the C blocks around the call plus those K's body nests
 // must stay within MAXNEST (see Around): C compilers limit how deep blocks
@@ -87,6 +90,29 @@ struct Optimizer {
 
     // The C blocks around the node being optimized (Around).
     int depth = 0;
+    // The loops around it, in the body being optimized and, for a copy
+    // being re-folded, around the call it replaced. A call site in a loop,
+    // outside its cold branches, runs once per iteration: a callee LOOPNCU
+    // times the size the use rule allows is worth its copy there, which is
+    // what keeps a small wrapper around inlined code from staying a call
+    // inside a hot loop.
+    int loopdepth = 0;
+    static constexpr int LOOPNCU = 4;
+    // The cold branches around it (IfExpr::Opt): a call there runs at most
+    // once per run of the body or the loop it leaves, mostly on an error
+    // path, so a callee inlined there only because it has no other caller
+    // would grow the hot path of its caller for nothing.
+    int colddepth = 0;
+
+    // Whether block b ends by leaving: a return, a break, or abort or exit.
+    static bool Leaves(Node *b) {
+        auto blk = Is<Block>(b);
+        if (!blk || blk->tail || blk->stmts.empty()) return false;
+        auto last = blk->stmts.back();
+        if (Is<Return>(last) || Is<Break>(last)) return true;
+        auto c = Is<Call>(last);
+        return c && (c->builtin == B_ABORT || c->builtin == B_EXIT);
+    }
     // The deepest C nesting an inlined body may reach: half of MSVC's limit
     // of 128 blocks in a function. The rest is for the blocks codegen opens
     // around runtime work, which Around does not count.
@@ -654,7 +680,13 @@ inline Node *Optimizer::TryInline(Call *c) {
     // Never into a recursive cycle: the inlined body's locals would become
     // the cycle function's own, upsetting the §7.8 stack-assignment rule.
     if (curspec && (curspec->incycle || curspec->sf->isrec)) return nullptr;
-    if (!(K->uses == 1 || info.nodecount < nc || info.nodecount * K->uses < ncu)) return nullptr;
+    auto ncuhere = loopdepth > 0 && !colddepth ? ncu * LOOPNCU : ncu;
+    auto small = info.nodecount < nc || info.nodecount * K->uses < ncuhere;
+    if (!small && K->uses == 1 && colddepth > 0) {
+        K->outofline = true;
+        return nullptr;
+    }
+    if (!(K->uses == 1 || small)) return nullptr;
     // The body's blocks would open `depth` deep. Past the limit the call
     // stays, and a chain of single-use functions folds into one body per
     // MAXNEST levels rather than one as deep as the chain.
@@ -1222,11 +1254,20 @@ inline Node *IfExpr::Opt(Optimizer &o) {
             return o.Opt(taken);
         }
     }
+    // A branch that leaves where the other goes on is cold: the else of a
+    // guard, or the body of an early return.
+    auto thenleaves = Optimizer::Leaves(thenb), elseleaves = elseb && Optimizer::Leaves(elseb);
+    auto thencold = thenleaves && !elseleaves && !flat;
+    auto elsecold = elseleaves && (flat || !thenleaves);
     auto k = Optimizer::Around(this, thenb);
     o.depth += k;
+    o.colddepth += thencold;
     o.OptBlock(thenb);
+    o.colddepth -= thencold;
     o.depth -= k;
+    o.colddepth += elsecold;
     if (elseb) elseb = o.OptIn(this, elseb);
+    o.colddepth -= elsecold;
     return this;
 }
 
@@ -1265,23 +1306,30 @@ inline Node *EarlyBlock::Opt(Optimizer &o) {
 }
 
 inline Node *While::Opt(Optimizer &o) {
+    o.loopdepth++;
     cond = o.OptIn(this, cond);
     if (auto b = Is<BoolLit>(cond); b && !b->val) {
+        o.loopdepth--;
         o.folded++;
         return o.EmptyBlock(this);
     }
     o.OptBlock(body);
+    o.loopdepth--;
     return this;
 }
 
 inline Node *LoopExpr::Opt(Optimizer &o) {
+    o.loopdepth++;
     o.OptBlock(body);
+    o.loopdepth--;
     return this;
 }
 
 inline Node *ForLoop::Opt(Optimizer &o) {
     iter = o.OptViewed(iter);
+    o.loopdepth++;
     o.OptBlock(body);
+    o.loopdepth--;
     return this;
 }
 

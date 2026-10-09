@@ -212,8 +212,8 @@ inline string CodeGen::EnsureEr(FnSpec *sp) {
     if (!ok) return ernames[sp] = "";
     auto name = Unique(cat(sinfo[sp].cname, "_er"));
     ernames[sp] = name;
-    Append(protos, "static ", SigRet(sp), " ", name, "(", SigParams(sp, false, true),
-           ");\n");
+    Append(protos, "static ", FnAttrs(sp), SigRet(sp), " ", name, "(",
+           SigParams(sp, false, true), ");\n");
     erqueue.push_back(sp);
     return name;
 }
@@ -355,7 +355,7 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     auto bodyout = ExpandTopMarkers(body, plan);
     assert(bodyout.find("@@gs") == string::npos);
     auto decls = HoistAggregateDecls(bodyout);
-    Append(code, "static ", SigRet(sp), " ", er ? ernames[sp] : curinfo->cname, "(",
+    Append(code, "static ", FnAttrs(sp), SigRet(sp), " ", er ? ernames[sp] : curinfo->cname, "(",
            params, ") {\n");
     code += decls;
     // A whole-body cache loads at entry; a per-loop one declares and loads

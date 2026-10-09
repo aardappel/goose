@@ -627,11 +627,13 @@ fn callee_effects(extra: i64) -> i64 {
     return s;
 }
 
-// A nested function's writes to the enclosing locals are its effects.
+// A nested function's writes to the enclosing locals are its effects. Both
+// return two values, which keeps them calls (the inliner leaves such a
+// function out of line).
 fn nested_effects() -> i64 {
     var v: i64[>..] = [];
     for i in 8 { v.push(i); }
-    fn grow_v(k: i64) {
+    fn grow_v(k: i64) -> i64, bool {
         for j in k {
             v.push(j * 2);
             v.push(j * 2 + 1);
@@ -639,14 +641,15 @@ fn nested_effects() -> i64 {
         for j in v.len {
             if v[j] > 1000 { v[j] = 1000; }
         }
+        return v.len, true;
     }
-    fn sum_v(k: i64) -> i64 {
+    fn sum_v(k: i64) -> i64, bool {
         var t = 0;
         for j in k {
             for x in v { t += x * j; }
             for x in v { t += x; }
         }
-        return t;
+        return t, true;
     }
     var s = 0;
     for i in v.len {

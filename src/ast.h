@@ -1959,6 +1959,10 @@ struct FnSpec {
     // Filled by the optimizer (optimize.h):
     int uses = 0;                  // Call sites in live code (tag-dispatch entries included).
     bool live = false;             // Reachable from main / threads / global initializers.
+    // Left out of line where the inliner could have inlined it, as a cold
+    // branch's only callee (Optimizer::TryInline): the C compiler is told so
+    // too, since it inlines a function with one caller whatever its size.
+    bool outofline = false;
 };
 
 // ---------------------------------------------------------------------------

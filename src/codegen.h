@@ -1156,6 +1156,8 @@ struct CodeGen {
     // Function bodies.
 
     void DetectNrvo(FnSpec *sp);
+    // What a specialization's C declaration says besides its signature.
+    static const char *FnAttrs(FnSpec *sp) { return sp->outofline ? "GS_NOINLINE " : ""; }
     const VarDef *NamedResult(Block *fnbody, SFunction *target, size_t nrets, size_t resultidx);
     const VarDef *OpenIbNrvo(InlineBlock *ib, const Dst &d);
     bool CanCacheTops(FnSpec *sp);
@@ -1213,7 +1215,7 @@ struct CodeGen {
         EmitGlobalDecls();
         // Prototypes for every live specialization, then their bodies.
         for (auto sp : livespecs)
-            Append(protos, "static ", SigRet(sp), " ", sinfo[sp].cname, "(",
+            Append(protos, "static ", FnAttrs(sp), SigRet(sp), " ", sinfo[sp].cname, "(",
                    SigParams(sp, false), ");\n");
         for (auto sp : livespecs) EmitSpec(sp);
         EmitGlobalInit();

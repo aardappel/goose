@@ -2830,7 +2830,19 @@ temporary a function value's call's value lands in and the global an
 initializer sets among them.
 The thresholds per call site of callee K: inline if K is used once, or its
 post-optimization node count is below NC, or count times uses is below NCU
-(`-O1`: 8/48, `-O2`: 16/96). Never inlined (`Scan`): a `recursive` function
+(`-O1`: 8/48, `-O2`: 16/96). A call site inside a loop raises NCU fourfold
+(`loopdepth`, `LOOPNCU`): it runs once per iteration, so a small function
+wrapping inlined work is worth its copies there rather than staying a call
+in the loop. Neither the raise nor the single-use rule applies in a cold
+branch (`colddepth`): the else of a guard (an `IfExpr::flat`), or an arm
+that ends in a `return`, a `break`, `abort` or `exit` where the other path
+goes on. Such an arm runs at most once per run of its function or loop,
+mostly on an error path, so a callee used only there, and too big for the
+size rules, would grow the hot path of its caller for at most one call
+saved. It stays out of line, and is declared `GS_NOINLINE` in C
+(`FnSpec::outofline`), since the C compiler otherwise inlines a static
+function with one caller whatever its size. A branch the condition's
+constant decides is folded away first and is not cold. Never inlined (`Scan`): a `recursive` function
 or cycle member, a `thread_fn`, a function returning more than one value, and
 a body that a *separate* live tree still references in a way a copy cannot
 follow -- a remaining call to a specialization with bound function values

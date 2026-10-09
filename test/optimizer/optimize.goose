@@ -590,6 +590,74 @@ fn guarded_op() {
     print(gb_visits);                                // 96
 }
 
+// --- inlining heuristics ------------------------------------------------------
+// A callee whose one call is in a cold branch -- the else of a guard, the body
+// of an early return -- and that only the single-use rule would inline stays
+// out of line. A wrapper called twice from loops is inlined where the use rule
+// alone would leave it a call, as it does its twin called twice outside loops
+// (run_tests.py checks which bodies are left).
+
+fn ih_rare(x: i64) -> i64 {
+    var t = 0;
+    for i in 1..20 {
+        if i % 3 == 0 { t += x * i; } else if i % 5 == 0 { t -= x / i; } else { t ^= i; }
+        if t > 1000 { t = t % 997 + x; }
+        if t < -1000 { t = -(t % 991) - x; }
+    }
+    for i in 1..9 {
+        if (t + i) % 4 == 1 { t += x; } else if i % 3 == 2 { t = t / 2 - i; } else { t -= i * 3; }
+        if t > 2000 { t = t % 1999 + i; }
+    }
+    return t;
+}
+fn ih_early(x: i64) -> i64 {
+    var t = 1;
+    for i in 1..20 {
+        if i % 2 == 0 { t = t * 3 + x; } else if i % 7 == 0 { t -= x * i; } else { t += i; }
+        if t > 5000 { t = t % 4999 - x; }
+        if t < -5000 { t = -(t % 4993) + x; }
+    }
+    for i in 1..9 {
+        if (t - i) % 4 == 3 { t -= x; } else if i % 3 == 1 { t = t / 3 + i; } else { t += i * 5; }
+        if t < -3000 { t = t % 2999 - i; }
+    }
+    return t;
+}
+fn ih_check(x: i64) -> i64 {
+    guard x >= 0 else { return ih_rare(x); }
+    if x > 100 { return ih_early(x); }
+    return x * 2;
+}
+
+fn ih_wrap(a: i64[:], k: i64) -> i64 {
+    let i = k % a.len;
+    var v = a[i];
+    if v < 0 { v = -v; }
+    if v > 10 { v = v % 10 + k % 3; }
+    if v == 7 { v = k % 5 + 1; }
+    if (v + i) % 2 == 1 { v += a[0] % 4; }
+    return v * 2 + i;
+}
+fn ih_twin(a: i64[:], k: i64) -> i64 {
+    let i = k % a.len;
+    var v = a[i];
+    if v < 0 { v = -v; }
+    if v > 10 { v = v % 10 + k % 3; }
+    if v == 7 { v = k % 5 + 1; }
+    if (v + i) % 2 == 1 { v += a[0] % 4; }
+    return v * 2 + i;
+}
+
+fn heuristics_op() {
+    let xs = [-4, 5, 300];
+    for x in xs { print(ih_check(x)); }              // -87, 10, -490
+    let a = [5, -12, 7, 30];
+    var s = 0;
+    for i in 10 { s += ih_wrap(a, i); }
+    for i in 10 { s += ih_wrap(a, i + 1); }
+    print(s + ih_twin(a, 10) + ih_twin(a, 11));      // 183
+}
+
 fn main_optimize() {
     use_inlining();
     use_params();
@@ -612,6 +680,7 @@ fn main_optimize() {
     varmode();
     recursion_op();
     guarded_op();
+    heuristics_op();
     print(ginit + G);
     var acc = 0;
     acc += gv;
