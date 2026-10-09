@@ -3013,7 +3013,12 @@ invalidate whatever an earlier iteration may have changed, then for real;
 a `while` condition's facts re-establish at every body entry, and its
 negation holds after the loop only if the body has no `break`. Facts
 established by an `EarlyBlock` or an `InlineBlock` with early exits are
-likewise reduced to their kills at the join.
+likewise reduced to their kills at the join. A counted loop whose body
+pushes onto an array a fixed number of times per iteration states the
+array's length after the loop, unless a `break` or `continue` can cut an
+iteration short (`HasIterationJumps`); a `continue` inside a `block { }`
+counts, since it goes to the loop around the block, which binds only the
+breaks inside it.
 
 Since a kill loses the `i >= 0` and `i <= len` facts that the classic
 `var i = 0; while i < a.len { ...; i++; }` needs, each body runs in three
@@ -3891,7 +3896,7 @@ call sites*. In practice:
 * an array filled by a counted loop and then indexed by the same count:
   `for i in n { a.push(...) }` states `a.len == n` afterwards, when no other
   statement in that loop touches `a` and no `break`/`continue` skips an
-  iteration;
+  iteration (a `continue` inside a `block { }` included);
 * `s[s.len - 1]` after `guard s.len > 0`, `s[k]` after `assert(k >= 0);
   assert(k < s.len);` or an early-out `if k < 0 || k >= s.len { return }`;
 * reductions: `a[k % a.len]` once `a.len > 0` is known (a `guard`, or the

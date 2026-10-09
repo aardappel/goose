@@ -1832,25 +1832,27 @@ struct BCE {
     }
 
     // Jumps that would bind a loop/block whose body is `n` (stops at nested
-    // binders; inlined bodies are transparent, over-approximating is fine):
+    // loops; inlined bodies are transparent, over-approximating is fine):
     // breaks, and with `iteration` the continues that cut an iteration short
-    // as well.
-    bool HasJumps(Node *n, bool iteration) {
+    // as well. A `block { }` binds the breaks inside it but not the
+    // continues, which still go to the loop around it.
+    bool HasJumps(Node *n, bool breaks, bool continues) {
         if (!n) return false;
-        if (Is<Break>(n) || (iteration && Is<Continue>(n))) return true;
-        if (Is<While>(n) || Is<LoopExpr>(n) || Is<ForLoop>(n) || Is<EarlyBlock>(n))
-            return false;
+        if ((breaks && Is<Break>(n)) || (continues && Is<Continue>(n))) return true;
+        if (Is<While>(n) || Is<LoopExpr>(n) || Is<ForLoop>(n)) return false;
+        if (Is<EarlyBlock>(n)) breaks = false;
+        if (!breaks && !continues) return false;
         auto found = false;
-        RunChildren(n, [&](Node *ch) { found = found || HasJumps(ch, iteration); });
+        RunChildren(n, [&](Node *ch) { found = found || HasJumps(ch, breaks, continues); });
         return found;
     }
 
-    bool HasBreaks(Node *n) { return HasJumps(n, false); }
+    bool HasBreaks(Node *n) { return HasJumps(n, true, false); }
 
     // A break or continue makes a loop body's per-iteration push count
     // unreliable; a return does not (it leaves the loop for good, and the
     // facts are stated after it).
-    bool HasIterationJumps(Node *n) { return HasJumps(n, true); }
+    bool HasIterationJumps(Node *n) { return HasJumps(n, true, true); }
 
     // Collects the place ids `n` can invalidate into `out`.
     void SummarizeInto(Node *n, set<int> &out) {
