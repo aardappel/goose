@@ -866,6 +866,43 @@ class Runner:
                 valid = False
         return valid
 
+    def check_loop_shapes(self, text):
+        # The loops codegen restates mark themselves in the C with a comment
+        # naming the shape (optimize_loops.h, BCE's lenbound). Every shape_
+        # function of the fixture must have the one it is named for, and no
+        # keep_ function any.
+        bodies = {}
+        for m in re.finditer(r"^static [^\n;]*?\b((?:shape|keep)_\w+?)_g\d*\([^\n]*\) \{\n(.*?)^\}\n",
+                             text, re.MULTILINE | re.DOTALL):
+            bodies[m[1]] = re.findall(r"/\* loop shape: ([^*]*?) \*/", m[2])
+        strip = "strip-mined by"
+        sums = "sum terms in blocks of 8"
+        bound = "trip count bounded by"
+        down = "countdown counted up"
+        shapes = {
+            "shape_strip_lanes": f"{strip} 8", "shape_strip_count": f"{strip} 4",
+            "shape_strip_range": f"{strip} 3", "shape_strip_u8": f"{strip} 16",
+            "shape_strip_return": f"{strip} 4", "shape_strip_structs": f"{strip} 2",
+            "shape_strip_fixed": f"{strip} 4",
+            "shape_sum_dot": sums, "shape_sum_count": sums, "shape_sum_f32": sums,
+            "shape_sum_range": sums, "keep_sum_reads": None,
+            "shape_bound_count": f"{bound} 8", "shape_bound_any": f"{bound} 8",
+            "shape_bound_all": f"{bound} 8", "shape_bound_for": f"{bound} 6",
+            "shape_bound_grow": f"{bound} 8",
+            "shape_down": down, "shape_down_u8": down, "shape_down_i8": down,
+            "shape_down_u64": down, "shape_down_jumps": down, "keep_down_twice": None,
+        }
+        valid = True
+        for name, want in shapes.items():
+            got = bodies.get(name)
+            if got is None:
+                self.fail(f"loop shapes {name}", "no C function of its own (inlined?)")
+                valid = False
+            elif (want not in got) if want else got:
+                self.fail(f"loop shapes {name}", f"got {got}, want {want or 'none'}")
+                valid = False
+        return valid
+
     # --- the Goose-written compiler ---------------------------------------
 
     def goose_in_goose(self, cc, profile, extra, jit):
@@ -1391,6 +1428,17 @@ def main():
         r"^thread cap: none, no workers$",
         r"^fn in_block: [1-9]\d* own, [1-4] with callees$",
     ])
+    # The loops codegen restates, read in the C of their fixture, where -O1
+    # keeps each function a C function of its own.
+    def loop_shapes():
+        f = HERE / "optimizer" / "loop_shapes.goose"
+        cfile = gendir / "loop_shapes-shapes.c"
+        code, out, err = r.goose("-O1", "-o", cfile, f)
+        if code != 0:
+            r.fail(f"loop shapes {f.name}", out + err)
+        elif r.check_loop_shapes(cfile.read_text()):
+            r.ok(f"loop shapes {f.name}")
+    r.show_task(loop_shapes)
 
     # Every annotated regression, including the expected-abort cases. These
     # describe the default O1 pass; O0/O2 execution checks semantics.
