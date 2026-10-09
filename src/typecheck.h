@@ -2021,6 +2021,7 @@ struct TypeCheck {
     int EnvReach(const MatchInfo &mi);
     void CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline);
     void RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at);
+    void NamedResultCopyWarning(FnSpec *spec);
     Val RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &argvals, TypeExpr *t, Node *at);
     Val CallResult(Call *c, FnSpec *spec, vector<Val> &argvals);
     void CheckReturn(Return *r);

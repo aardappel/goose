@@ -2016,7 +2016,9 @@ hand back values whose construction does not read or write that local, such
 as `return []` or `return str("none")` beside `return x`: such a value is
 an exit's value under **Exits** below, built behind the local and moved down
 over it. When different locals are returned on different paths, only one
-can live at the destination and the others are copied on return. This is in
+can live at the destination and the others are copied on return; so is a
+local another return's value may read or write. The compiler warns where a
+return keeps a returned local from its destination that way. This is in
 addition to §4.3's layout relocation.
 
 **Exits.** A `return` or `break` taken while its destination already holds

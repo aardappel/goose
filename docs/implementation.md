@@ -3668,8 +3668,12 @@ provenance may lead into it, and the local is not captured). Such a value
 is an exit that finds the local in front of it (**Exits** below): the local
 counts as a construction open on the destination from its declaration on,
 so the value is built behind its elements and moved down over them, and an
-inlined body's own scope is entered as if the local were not open yet. A
-resizable local returned as a variable array
+inlined body's own scope is entered as if the local were not open yet.
+Where a return names a top-level local and another return keeps it off the
+destination -- another local, a value that may reach it, a forwarded
+multi-value call -- the checker warns at that return once the body is
+checked (`NamedResultCopyWarning`), since the copy it costs shows nowhere in
+the source. A resizable local returned as a variable array
 reserves the destination's length prefix ahead of its elements and patches
 it at the return (`EmitPrefixPatch`, moving the elements up only when a
 varint prefix outgrows its one reserved byte). The same binding is made for

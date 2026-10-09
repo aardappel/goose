@@ -2918,6 +2918,7 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
         if (!spec->retsknown) spec->retsknown = true;  // No returns at all: void.
     }
     if (!spec->retsknown) spec->retsknown = true;
+    NamedResultCopyWarning(spec);
     CheckNamedResultUses(spec);
     PopScope();
     frames.pop_back();
@@ -2939,6 +2940,21 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
     spec->inprogress = false;
     spec->record.eventend = storeevents.size();
     spec->rounds++;
+}
+
+// A local a function returns is built at the result's destination, so that
+// returning it costs nothing (§7.3), unless another return stands in the way
+// (NamedResultOf): then it is built on a stack of its own and copied, which
+// may be a large copy nothing in the source shows.
+inline void TypeCheck::NamedResultCopyWarning(FnSpec *spec) {
+    for (size_t j = 0; j < spec->rets.size(); j++) {
+        if (ClassOf(spec->rets[j]) == SC_FIXED) continue;
+        NamedResultStop ns;
+        if (goose::NamedResultOf(spec->body, spec->sf, spec->rets.size(), j, &ns) || !ns.at)
+            continue;
+        Warn(ns.at, cat("`", ns.local->name, "` is copied on return rather than built where the ",
+                        "result goes: ", ns.why, " (§7.3)"));
+    }
 }
 
 // Shared by `return` statements and body tails: agree the values with

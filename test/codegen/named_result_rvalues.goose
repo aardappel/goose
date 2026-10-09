@@ -1,9 +1,10 @@
+// warning: `s` is copied on return rather than built where the result goes: another return's value may read or write it
 // A named result stays at its destination when the other returns hand back
 // values built without it: each such value is built behind the local's
 // elements and moved down over them (§7.3). Returns before the local is
 // declared, from inside a loop and from an inlined body; resizable and
 // variable-array results; a return reading the local, which keeps the local
-// off the destination.
+// off the destination, and is told so.
 fn evens(n: i64) -> i64[>..] {
     if n < 0 { return []; }
     var r: i64[>..] = [];

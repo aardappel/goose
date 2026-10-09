@@ -400,10 +400,15 @@ inline bool MayReachLocal(Node *n, const VarDef *v) {
 // and every other value returned there is built without reaching it. That
 // value is constructed behind the local's elements and moved down over them,
 // as every exit's value is that finds part of a value at its destination.
-// Null when there is no such local; then `why`, if given, says what stood in
-// the way, or is left empty where no return names a local at all.
+// Null when there is no such local; then `stop`, if given, names the local a
+// return hands back and says what stood in the way where there is one.
+struct NamedResultStop {
+    const VarDef *local = nullptr;
+    string why;
+    Node *at = nullptr;           // The value or return that stood in the way.
+};
 inline const VarDef *NamedResultOf(Block *fnbody, SFunction *target, size_t nrets,
-                                   size_t resultidx, string *why = nullptr) {
+                                   size_t resultidx, NamedResultStop *ns = nullptr) {
     // Only bindings BindLocal places: a multi-name receive wires a call's
     // channels into locals of its own, which are not at a return destination.
     set<const VarDef *> toplocals;
@@ -413,24 +418,27 @@ inline const VarDef *NamedResultOf(Block *fnbody, SFunction *target, size_t nret
     const VarDef *cand = nullptr;
     vector<Node *> others;
     string stop;
+    Node *stopat = nullptr;
+    auto stopped = [&](string what, Node *n) {
+        if (!stop.empty()) return;
+        stop = std::move(what);
+        stopat = n;
+    };
     auto consider = [&](Node *val) {
         auto id = Is<Ident>(val);
         if (!id || !id->vdef || !toplocals.count(id->vdef)) {
             others.push_back(val);
             return;
         }
-        if (cand && cand != id->vdef && stop.empty())
-            stop = cat("another return hands back `", id->vdef->name, "`");
+        if (cand && cand != id->vdef)
+            stopped(cat("another return hands back `", id->vdef->name, "`"), val);
         if (!cand) cand = id->vdef;
     };
     function<void(Node *)> walk = [&](Node *n) {
         if (!n) return;
         if (auto r = Is<Return>(n); r && r->target == target) {
-            if (r->vals.size() != nrets) {
-                if (stop.empty()) stop = "a return forwards several results of a call";
-            } else {
-                consider(r->vals[resultidx]);
-            }
+            if (r->vals.size() != nrets) stopped("a return forwards several results of a call", r);
+            else consider(r->vals[resultidx]);
         }
         RunChildren(n, walk);
     };
@@ -438,14 +446,10 @@ inline const VarDef *NamedResultOf(Block *fnbody, SFunction *target, size_t nret
     auto tail = fnbody->tail;
     if (tail && nrets == 1 && tail->exprtype && tail->exprtype->kind != TY_VOID) consider(tail);
     if (!cand) return nullptr;
-    if (stop.empty())
-        for (auto v : others)
-            if (MayReachLocal(v, cand)) {
-                stop = "another return's value may read or write it";
-                break;
-            }
+    for (auto v : others)
+        if (MayReachLocal(v, cand)) stopped("another return's value may read or write it", v);
     if (stop.empty()) return cand;
-    if (why) *why = stop;
+    if (ns) *ns = { cand, stop, stopat };
     return nullptr;
 }
 
