@@ -856,6 +856,7 @@ struct CodeGen {
     void Bump(const string &stk, const string &n) { L(TopW(stk), " += ", n, ";"); }
 
     void EmitValStore(const string &stk, TypeExpr *t, const string &x);
+    void StoreWhole(const string &p, TypeExpr *t, const string &x);
     void EmitLenCheck(IntStorage ls, const string &n);
     void EmitLenStore(const string &stk, IntStorage ls, const string &n);
     void EmitVarintStore(const string &stk, const string &x);
@@ -1133,6 +1134,8 @@ struct CodeGen {
     RzDest OpenRzDest(TypeExpr *t, Dst d0, Line ln, const char *what);
     void CloseRzDest(RzDest &rd, const string &count);
     vector<string> EmitPush(vector<Node *> &an, Line ln);
+    bool LiteralBytes(Node *n, TypeExpr *t, vector<uint8_t> &out);
+    bool UniformFillByte(Node *n, TypeExpr *t, int &byte);
     void EmitAppend(vector<Node *> &an, Line ln);
     vector<string> EmitAlloc(Call *c, vector<Node *> &an);
     vector<string> EmitSlicePool(Call *c, vector<Node *> &an, Line ln);

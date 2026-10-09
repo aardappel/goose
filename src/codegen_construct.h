@@ -13,8 +13,36 @@ namespace goose {
 inline void CodeGen::EmitValStore(const string &stk, TypeExpr *t, const string &x) {
     auto sz = FixedSize(t);
     if (sz == 0) { L("(void)(", x, ");"); return; }
-    L("*(", CT(t), " *)", Top(stk), " = ", x, ";");
+    StoreWhole(Top(stk), t, x);
     Bump(stk, cat(sz));
+}
+
+// Stores the fixed value x of type t at the byte address p. An aggregate of
+// 2, 4 or 8 bytes goes out as one store of that width: the C compiler
+// otherwise writes it field by field, and a load of the whole value soon
+// after -- a heap's sift reading the element just pushed, a pop -- cannot be
+// forwarded from several narrower stores and waits for them to reach the
+// cache. Copying through an integer of the value's size is what makes the
+// C compiler assemble it in a register first.
+inline void CodeGen::StoreWhole(const string &p, TypeExpr *t, const string &x) {
+    auto sz = FixedSize(t);
+    auto agg = t->kind == TY_STRUCT || t->kind == TY_VARIANT || t->kind == TY_ARRAY ||
+               (t->kind == TY_ENUM && !t->enu->varmode);
+    if (!agg || (sz != 2 && sz != 4 && sz != 8)) {
+        L("*(", CT(t), " *)", p, " = ", x, ";");
+        return;
+    }
+    auto v = x;
+    auto simple = !v.empty() && !isdigit((unsigned char)v[0]);
+    for (auto c : v) simple &= isalnum((unsigned char)c) || c == '_';
+    if (!simple) {
+        v = T();
+        FixedLocal(t, v, x);
+    }
+    auto w = T();
+    L(sz == 8 ? "uint64_t " : sz == 4 ? "uint32_t " : "uint16_t ", w, ";");
+    L("memcpy(&", w, ", &", v, ", ", sz, ");");
+    L("memcpy(", p, ", &", w, ", ", sz, ");");
 }
 
 inline void CodeGen::EmitLenCheck(IntStorage ls, const string &n) {

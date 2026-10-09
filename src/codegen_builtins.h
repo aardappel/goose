@@ -320,23 +320,45 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
                 if (ak == A_LIMITED)
                     L("if (", nn, " > ", LimitedCap(lv), ") gs_abort(GS_E_CAPACITY, ",
                       LocArgs(ln), ");");
-                auto iv = T();
-                L("for (int64_t ", iv, " = ", ol, "; ", iv, " < ", nn, "; ", iv, "++) {");
-                ind++;
-                if (relref) {
-                    if (ak == A_LIMITED)
-                        EmitRelStoreAt(cat("(uint8_t *)(", ElemAddr(v, iv), ")"), elem, fv, ln, true);
-                    else
-                        EmitRelStore(lv.stk, elem, fv, ln);
-                } else if (ak == A_LIMITED) {
-                    if (v.typedelems) L(v.elems, "[", iv, "] = ", fv, ";");
-                    else L("*(", CT(elem), " *)(", ElemAddr(v, iv), ") = ", fv, ";");
-                } else {
-                    L("*(", CT(elem), " *)", Top(lv.stk), " = ", fv, ";");
-                    L(TopW(lv.stk), " += ", esz, ";");
+                // The new slots of a resizable are filled through a cursor of
+                // their own, so no element store can be taken to change the
+                // stack's top (a byte store may alias it in C), and the top
+                // is written once, after the fill.
+                string cur;
+                if (ak != A_LIMITED && !(relref && elem->ref->lenstorage == IS_VARINT)) {
+                    cur = T();
+                    L("uint8_t *", cur, " = ", Top(lv.stk), ";");
                 }
-                ind--;
-                L("}");
+                int fillbyte = 0;
+                if (!cur.empty() && !relref && UniformFillByte(an[2], elem, fillbyte)) {
+                    auto bytes = cat("(", nn, " - ", ol, ") * ", esz);
+                    L("memset(", cur, ", ", fillbyte, ", (size_t)(", bytes, "));");
+                    L(cur, " += ", bytes, ";");
+                } else {
+                    auto iv = T();
+                    L("for (int64_t ", iv, " = ", ol, "; ", iv, " < ", nn, "; ", iv, "++) {");
+                    ind++;
+                    if (relref) {
+                        if (ak == A_LIMITED) {
+                            EmitRelStoreAt(cat("(uint8_t *)(", ElemAddr(v, iv), ")"), elem, fv, ln,
+                                           true);
+                        } else if (cur.empty()) {
+                            EmitRelStore(lv.stk, elem, fv, ln);
+                        } else {
+                            EmitRelStoreAt(cur, elem, fv, ln, true);
+                            L(cur, " += ", esz, ";");
+                        }
+                    } else if (ak == A_LIMITED) {
+                        if (v.typedelems) L(v.elems, "[", iv, "] = ", fv, ";");
+                        else L("*(", CT(elem), " *)(", ElemAddr(v, iv), ") = ", fv, ";");
+                    } else {
+                        L("*(", CT(elem), " *)", cur, " = ", fv, ";");
+                        L(cur, " += ", esz, ";");
+                    }
+                    ind--;
+                    L("}");
+                }
+                if (!cur.empty()) L(TopW(lv.stk), " = ", cur, ";");
                 L(v.lenlv, " = (", LenCast(lv), ")", nn, ";");
             }
             ind--;
@@ -379,6 +401,97 @@ inline vector<string> CodeGen::EmitBuiltin(Call *c, Dst d0) {
     }
 }
 
+// The bytes a literal of fixed type t stores, value-bearing ones only (pads
+// are skipped), when the literal and every part of it is a constant whose
+// image is known here; false otherwise.
+inline bool CodeGen::LiteralBytes(Node *n, TypeExpr *t, vector<uint8_t> &out) {
+    if (!n || !t || !IsFix(t)) return false;
+    auto put = [&](uint64_t v, int64_t size) {
+        for (int64_t i = 0; i < size; i++) out.push_back((uint8_t)(v >> (8 * i)));
+    };
+    if (Is<NullLit>(n)) {
+        // The null of every optional reference is all zero bytes: a null
+        // pointer, a fat reference's { 0, 0 }, a relative offset of 0.
+        if (t->kind != TY_REF || !t->ref->optional) return false;
+        put(0, FixedSize(t));
+        return true;
+    }
+    if (n->exprtype && !TEq(n->exprtype, t)) return false;
+    switch (t->kind) {
+        case TY_INT: {
+            auto i = Is<IntLit>(n);
+            if (!i || t->intstorage == IS_VARINT) return false;
+            put((uint64_t)i->val, IntSize(t->intstorage));
+            return true;
+        }
+        case TY_BOOL: {
+            auto b = Is<BoolLit>(n);
+            if (!b) return false;
+            put(b->val ? 1 : 0, 1);
+            return true;
+        }
+        case TY_FLT: {
+            auto f = Is<FltLit>(n);
+            if (!f) return false;
+            uint64_t bits = 0;
+            if (t->fltstorage == FS_F32) {
+                auto v = (float)f->val;
+                uint32_t b32;
+                memcpy(&b32, &v, 4);
+                bits = b32;
+                put(bits, 4);
+            } else {
+                memcpy(&bits, &f->val, 8);
+                put(bits, 8);
+            }
+            return true;
+        }
+        case TY_STRUCT: {
+            auto sl = Is<StructLit>(n);
+            auto si = SI(t);
+            if (!sl || sl->sinst != si) return false;
+            for (size_t fi = 0; fi < si->st->fields.size(); fi++) {
+                if (si->st->fields[fi].ispad) continue;
+                auto init = sl->InitFor((int)fi);
+                auto ft = si->ftypes[fi];
+                // An omitted field is an optional reference left null.
+                if (!init) {
+                    if (ft->kind != TY_REF || !ft->ref->optional) return false;
+                    put(0, FixedSize(ft));
+                } else if (!LiteralBytes(init, ft, out)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        case TY_ARRAY: {
+            auto al = Is<ArrayLit>(n);
+            if (!al || t->arr->akind != A_FIXED) return false;
+            auto k = ArrSize(t->arr);
+            if (al->fillval) {
+                for (int64_t e = 0; e < k; e++)
+                    if (!LiteralBytes(al->fillval, t->arr->sub, out)) return false;
+                return true;
+            }
+            if ((int64_t)al->elems.size() != k) return false;
+            for (auto e : al->elems)
+                if (!LiteralBytes(e, t->arr->sub, out)) return false;
+            return true;
+        }
+        default: return false;
+    }
+}
+
+// Whether every value-bearing byte a fill of literal n stores into slots of
+// type t is the same byte, which a memset can then write.
+inline bool CodeGen::UniformFillByte(Node *n, TypeExpr *t, int &byte) {
+    vector<uint8_t> img;
+    if (!LiteralBytes(n, t, img) || img.empty()) return false;
+    for (auto b : img) if (b != img[0]) return false;
+    byte = img[0];
+    return true;
+}
+
 inline vector<string> CodeGen::EmitPush(vector<Node *> &an, Line ln) {
     auto lv = RecvLoc(an[0]);
     auto v = ArrayView(lv);
@@ -416,7 +529,7 @@ inline vector<string> CodeGen::EmitPush(vector<Node *> &an, Line ln) {
         } else if (inplace) {
             GenAny(an[1], Dst { DK_LVALUE, cat("(*", e, ")"), elem });
         } else {
-            L("*", e, " = ", ev, ";");
+            StoreWhole(e, elem, ev);
         }
         L(v.lenlv, " = (", LenCast(lv), ")(", nl, " + 1);");
         ref = e;
@@ -567,7 +680,7 @@ inline vector<string> CodeGen::EmitAlloc(Call *c, vector<Node *> &an) {
     auto e = T();
     L(CT(elem), " *", e, " = (", CT(elem), " *)(", ElemAddr(v, iv), ");");
     if (atslot) FixedLitAtLv(an[1], cat("(*", e, ")"), true);
-    else L("*", e, " = ", ev, ";");
+    else StoreWhole(e, elem, ev);
     L("if (", iv, " == ", lv.lenlv, ") {");
     ind++;
     L(lv.lenlv, "++;");
