@@ -209,7 +209,12 @@ instantiated. The standalone check roots each reference, slice and holder
 parameter at a class of its own at the globals' depth, as a call from the
 global initializers passing distinct globals would, with writable
 provenance, and gives eligible grow-only parameters both reusable-pool
-capabilities; it is not evidence that every possible call is valid.
+capabilities; a plain reference to the element type of exactly one pool
+(§3.13) is rooted in that pool instead, the parameters given one sharing
+its class, as a call linking a structure there would pass them, so a body
+storing them in the pool's relative links or asking the pool for their
+index compiles without a caller; it is not evidence that every possible
+call is valid.
 Two whole-program fixups run after that: `SettleParamRootExactness`
 (§3.4) and `VerifyLiterals` (§3.12).
 

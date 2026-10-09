@@ -2554,7 +2554,11 @@ struct TypeCheck {
     // (RootArg's defaults), concrete and exact, standing for that global
     // (VarDef::classfrom). So the body may shrink or grow the array apart
     // from the others' and store its references wherever a global's may go,
-    // inside a recursive cycle too.
+    // inside a recursive cycle too. A plain reference to the element type of
+    // a pool (§3.9), the one pool of that type, is given a reference into
+    // that pool instead, as a call building a linked structure there would
+    // pass, so the body may store it in the pool's relative links; the
+    // parameters given one share its class, as a call's would.
     void CheckUnreached(SFunction *sf) {
         if (!sf->specs.empty() || sf->isthread || sf->isnested) return;
         if (!sf->generics.empty()) return;
@@ -2567,13 +2571,46 @@ struct TypeCheck {
         spec->sf = sf;
         vector<Val> args(sf->params.size());
         auto classes = 0;
+        // The pool a plain reference of type t points into, where exactly one
+        // pool holds its pointee type.
+        auto poolfor = [&](TypeExpr *t) -> VarDef * {
+            if (t->kind != TY_REF || t->ref->lenstorage >= 0) return nullptr;
+            VarDef *found = nullptr;
+            for (auto g : poolglobals) {
+                if (!g->type || !IsArrayKind(g->type, A_GROW) ||
+                    !TypeEq(g->type->arr->sub, t->ref->sub))
+                    continue;
+                if (found) return nullptr;
+                found = g;
+            }
+            return found;
+        };
+        map<VarDef *, int> poolclasses;
         for (size_t i = 0; i < sf->params.size(); i++) {
             auto &p = sf->params[i];
             auto t = Subst(p.type);
             ValidateType(t, sf->line, VT_PARAM);
             spec->argtypes.push_back(t);
             RootArg ra;
+            RootArg noview;
+            noview.cls = -1;
             auto holder = !IsRefOrSlice(t) && HoldsPlainRef(t);
+            if (auto pool = poolfor(t)) {
+                auto &cls = poolclasses[pool];
+                if (!cls) cls = ++classes;
+                ra.cls = cls;
+                ra.concrete = true;
+                ra.writable = true;
+                ra.pool = pool;
+                vector<TypeExpr *> elems, open;
+                ArrayElemsReached(t, elems, open);
+                for (auto e : elems)
+                    if (OneArrayOf(pool, e)) ra.onearray.push_back(e);
+                args[i].Set(pool, true);
+                spec->roots.push_back(ra);
+                spec->views.push_back(noview);
+                continue;
+            }
             if (IsRefOrSlice(t) || holder) {
                 ra.cls = ++classes;
                 ra.concrete = true;
@@ -2599,8 +2636,6 @@ struct TypeCheck {
                 ra.heldexact = !sf->isrec;
             }
             spec->roots.push_back(ra);
-            RootArg noview;
-            noview.cls = -1;
             spec->views.push_back(noview);
         }
         sf->specs.push_back(spec);
