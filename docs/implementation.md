@@ -2892,20 +2892,30 @@ far below the limit: the deepest inline in the tests, samples and
 benchmarks lands 18 blocks deep.
 
 **Base-case inlining** (`BaseCaseInliner`, `optimize_basecase.h`): a
-`recursive fn` whose body *starts* with `if c { return e; }` (or the negated
-`if c { … } else { return e; }` that `guard c else { return e; }` parses
-to), with every parameter fixed-size, `c` a pure read of parameters and
+`recursive fn` whose body *starts* with `if c { return e; }`
+(`SetupLeading`; or the negated `if c { … } else { return e; }` that
+`guard c else { return e; }` parses to), with every parameter fixed-size,
+`c` a pure read of parameters and
 globals, and `e` calling nothing in the cycle, gets each direct self-call
 `f(a...)` rewritten to `{ let p = a; ...; if c[p] { e[p] } else {
 f(p...) } }` under the inliner's size thresholds. This removes
 half the calls of a complete tree walk. The bindings are marked
 `inline_arg`, like an inlined call's, and made in the scope around the block
 (`GenInlineArgs`): a slice argument can view a temporary, which has to last
-while the callee runs and while the block's value is used. It does not fire
-when a statement precedes the base case, on mutual recursion, on
-UFCS-spelled self-calls, or on a self-call whose array result is passed
-where a slice is expected: the array has to outlive the `if`, and each arm
-would build it in a scope of its own.
+while the callee runs and while the block's value is used. The guarded form
+(`SetupGuarded`) is the shape other languages build trees in: `s1...; if c {
+... } s3...; return e;` with every self-call inside the `if`, which has no
+else. Where `c` does not hold the body is `s1; s3; e`, so a self-call becomes
+`{ let p = a; ...; if c[p] { f(p...) } else { s1; s3; e }[p] }`, under the
+same size rule counted over `c`, `s1`, `s3` and `e`. The call site evaluates
+`c` before `s1` runs and the callee after, so `c` may only compare literals
+and parameters the body never assigns (`GuardOK`): such a test gives the
+same answer at both points and cannot abort. `s1`, `s3` and `e` may not
+return, jump out, call into the cycle or call a function that may `return
+... from` this one, whose copy would leave the caller's frame. Neither form
+fires on mutual recursion, on UFCS-spelled self-calls, or on a self-call
+whose array result is passed where a slice is expected: the array has to
+outlive the `if`, and each arm would build it in a scope of its own.
 
 **Accumulator tail-recursion elimination** (`TailRecursion`,
 `optimize_tre.h`, `-O1` and above): a directly self-recursive

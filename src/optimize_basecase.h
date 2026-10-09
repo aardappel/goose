@@ -22,6 +22,18 @@
 // restricted to pure reads. The bindings are made in the scope around the
 // block, as the call's arguments were (`inline_arg`): a slice argument may
 // view a temporary, which the block's value can still view.
+//
+// The guarded form is the shape the other languages' tree builders take:
+// `s1...; if c { ...self-calls... } s3...; return e;`, every self-call inside
+// the `if`, which has no else. Where c does not hold, the body is s1, s3 and
+// e, so a self-call becomes
+//
+//     { let p1 = a1; ...; if c[p := t] { f(t...) } else { s1; s3; e }[p := t] }
+//
+// For that c may only compare parameters the body never assigns, and
+// literals: the call site evaluates it before s1 runs, where the callee
+// evaluates it after, so it has to give the same answer then and be unable
+// to abort. s1, s3 and e may not return, jump out or call into the cycle.
 #pragma once
 
 namespace goose {
@@ -37,6 +49,10 @@ struct BaseCaseInliner {
     Node *basecond = nullptr;     // Private copy of its base-case test, and
     Node *baseexpr = nullptr;     //   of the result (null: a valueless one).
     bool basenot = false;         // The test negated: the arms swap.
+    // The guarded form: basecond is the recursing test, and the base case
+    // is these statements followed by baseexpr.
+    bool guarded = false;
+    vector<Node *> basestmts;
 
     BaseCaseInliner(Optimizer &_o) : o(_o), ast(_o.ast) {}
 
@@ -113,9 +129,13 @@ struct BaseCaseInliner {
             return ok;
         }
         if (auto c = Is<Call>(n)) {
-            auto cyc = [](FnSpec *k) { return k && (k->incycle || k->sf->isrec); };
-            if (cyc(c->spec)) return false;
-            for (auto d : c->dispatch) if (cyc(d)) return false;
+            // A callee that may `return ... from` us would leave the frame
+            // the copy is in, the caller's, rather than the callee's.
+            auto bad = [&](FnSpec *k) {
+                return k && (k->incycle || k->sf->isrec || k->needs.count(o.curspec));
+            };
+            if (bad(c->spec)) return false;
+            for (auto d : c->dispatch) if (bad(d)) return false;
             for (auto p : c->fvparams) bound.insert(p);
         }
         auto ok = true;
@@ -129,38 +149,124 @@ struct BaseCaseInliner {
     void Setup(FnSpec *sp) {
         basespec = nullptr;
         basecond = baseexpr = nullptr;
-        basenot = false;
+        basenot = guarded = false;
+        basestmts.clear();
         if (!o.caninline || !sp->sf->isrec || !sp->body) return;
         // Binding a non-fixed parameter to a temporary would give a cycle
         // member a non-fixed local in scope at the self-call, which §7.8
         // forbids — and copy the value at every level besides, where
         // passing it costs nothing.
         for (auto pv : sp->params) if (!FixedType(pv->type)) return;
+        if (!SetupLeading(sp)) SetupGuarded(sp);
+    }
+
+    // The inliner's size rule, against what the rewrite duplicates: sz
+    // nodes, once per self-call site.
+    bool SizeOK(FnSpec *sp, int sz) {
+        auto sites = SelfCalls(sp->body, sp);
+        return sites && (sz < o.nc || sz * sites < o.ncu);
+    }
+
+    // The base case the body starts with.
+    bool SetupLeading(FnSpec *sp) {
         auto &stmts = sp->body->stmts;
         auto ife = Is<IfExpr>(stmts.empty() ? sp->body->tail : stmts[0]);
-        if (!ife) return;
+        if (!ife) return false;
         auto cond = ife->cond;
         auto neg = ife->elseb != nullptr;
         auto arm = neg ? Is<Block>(ife->elseb) : ife->thenb;
-        if (!arm || arm->tail || arm->stmts.size() != 1) return;
+        if (!arm || arm->tail || arm->stmts.size() != 1) return false;
         auto r = Is<Return>(arm->stmts[0]);
-        if (!r || r->target != sp->sf || !r->from.empty()) return;
-        if (r->vals.size() > 1 || r->vals.size() != sp->rets.size()) return;
+        if (!r || r->target != sp->sf || !r->from.empty()) return false;
+        if (r->vals.size() > 1 || r->vals.size() != sp->rets.size()) return false;
         auto expr = r->vals.empty() ? nullptr : r->vals[0];
         set<VarDef *> bound;
         vector<SFunction *> ibs;
-        if (!BaseOK(cond, bound, ibs, true)) return;
-        if (!BaseOK(expr, bound, ibs, false)) return;
-        // The inliner's size rule, against what this duplicates: the test and
-        // the result, once per self-call site.
-        auto sz = TreeSize(cond) + TreeSize(expr);
-        auto sites = SelfCalls(sp->body, sp);
-        if (!sites || !(sz < o.nc || sz * sites < o.ncu)) return;
+        if (!BaseOK(cond, bound, ibs, true)) return false;
+        if (!BaseOK(expr, bound, ibs, false)) return false;
+        if (!SizeOK(sp, TreeSize(cond) + TreeSize(expr))) return false;
         Inliner inl { o, ast, sp, sp, {}, {} };
         for (auto pv : sp->params) inl.vmap[pv] = pv;   // Parameters stay themselves.
         basecond = inl.Cp(cond);
         if (expr) baseexpr = inl.Cp(expr);
         basenot = neg;
+        basespec = sp;
+        return true;
+    }
+
+    // A test the call site can evaluate before the body's first statements
+    // run and get the callee's answer: comparisons of literals and of
+    // parameters the body never assigns, which cannot abort.
+    bool GuardOK(Node *n, FnSpec *sp) {
+        if (Is<IntLit>(n) || Is<FltLit>(n) || Is<BoolLit>(n) || Is<NullLit>(n)) return true;
+        if (auto id = Is<Ident>(n)) {
+            auto v = id->vdef;
+            if (!v || !v->isparam || v->ownerspec != sp) return false;
+            auto &f = o.facts[v];
+            return f.writes == 0 && f.addrof == 0;
+        }
+        if (auto u = Is<Unary>(n)) return u->op == T_NOT && GuardOK(u->child, sp);
+        if (auto b = Is<Binary>(n)) {
+            switch (b->op) {
+                case T_EQ: case T_NEQ: case T_LT: case T_GT: case T_LTEQ: case T_GTEQ:
+                case T_ANDAND: case T_OROR:
+                    return GuardOK(b->left, sp) && GuardOK(b->right, sp);
+                default: return false;
+            }
+        }
+        return false;
+    }
+
+    // The guarded form: `s1...; if c { ... } s3...; return e;`, with every
+    // self-call inside the if.
+    void SetupGuarded(FnSpec *sp) {
+        auto body = sp->body;
+        auto sites = SelfCalls(body, sp);
+        if (!sites) return;
+        vector<Node *> all = body->stmts;
+        if (body->tail) all.push_back(body->tail);
+        size_t k = 0;
+        IfExpr *ife = nullptr;
+        for (; k < all.size(); k++) {
+            ife = Is<IfExpr>(all[k]);
+            if (ife && SelfCalls(ife->thenb, sp) == sites) break;
+            if (SelfCalls(all[k], sp)) return;
+        }
+        if (k == all.size() || ife->elseb || !GuardOK(ife->cond, sp)) return;
+        // What follows the if: statements, then the result as a final
+        // `return e` or as the body's tail, or none at all.
+        vector<Node *> pre(all.begin(), all.begin() + k), post(all.begin() + k + 1, all.end());
+        Node *expr = nullptr;
+        if (!post.empty() && post.back() == body->tail) {
+            if (sp->rets.size() != 1) return;
+            expr = post.back();
+            post.pop_back();
+        } else if (auto r = post.empty() ? nullptr : Is<Return>(post.back())) {
+            if (r->target != sp->sf || !r->from.empty() || r->vals.size() > 1 ||
+                r->vals.size() != sp->rets.size())
+                return;
+            expr = r->vals.empty() ? nullptr : r->vals[0];
+            post.pop_back();
+        } else if (!sp->rets.empty()) {
+            return;
+        }
+        set<VarDef *> bound;
+        vector<SFunction *> ibs;
+        auto sz = TreeSize(ife->cond) + TreeSize(expr);
+        for (auto part : { &pre, &post })
+            for (auto st : *part) {
+                if (!BaseOK(st, bound, ibs, false)) return;
+                sz += TreeSize(st);
+            }
+        if (!BaseOK(expr, bound, ibs, false) || !SizeOK(sp, sz)) return;
+        Inliner inl { o, ast, sp, sp, {}, {} };
+        for (auto pv : sp->params) inl.vmap[pv] = pv;   // Parameters stay themselves.
+        basecond = inl.Cp(ife->cond);
+        for (auto part : { &pre, &post })
+            for (auto st : *part) basestmts.push_back(inl.Cp(st));
+        if (expr) baseexpr = inl.Cp(expr);
+        inl.RemapProvenance();
+        guarded = true;
         basespec = sp;
     }
 
@@ -198,22 +304,37 @@ struct BaseCaseInliner {
         }
         auto vt = c->exprtype ? c->exprtype : ast.voidtype;
         auto cond = o.Opt(inl.Cp(basecond));
-        // The result lands in an arm of the `if` built below, inside the
-        // block holding the bindings if there are any.
-        auto around = decls.empty() ? 1 : 2;
-        o.depth += around;
-        auto val = baseexpr ? o.Opt(inl.Cp(baseexpr)) : nullptr;
-        o.depth -= around;
         auto arm = [&](Node *v) {
             auto b = ast.New<Block>(c->line);
             if (v) b->tail = v;
             b->exprtype = vt;
             return b;
         };
-        // A negated test is the continuing case, so its arms are the other
-        // way round.
-        auto ife = ast.New<IfExpr>(c->line, cond, arm(basenot ? (Node *)c : val),
-                                   arm(basenot ? val : (Node *)c));
+        IfExpr *ife;
+        if (guarded) {
+            // The base case is the else arm, a block inside the one holding
+            // the bindings if there are any.
+            auto leaf = arm(nullptr);
+            for (auto st : basestmts) leaf->stmts.push_back(inl.Cp(st));
+            if (baseexpr) leaf->tail = inl.Cp(baseexpr);
+            inl.RemapProvenance();
+            auto around = decls.empty() ? 0 : 1;
+            o.depth += around;
+            o.OptBlock(leaf);
+            o.depth -= around;
+            ife = ast.New<IfExpr>(c->line, cond, arm(c), leaf);
+        } else {
+            // The result lands in an arm of the `if` built below, inside the
+            // block holding the bindings if there are any.
+            auto around = decls.empty() ? 1 : 2;
+            o.depth += around;
+            auto val = baseexpr ? o.Opt(inl.Cp(baseexpr)) : nullptr;
+            o.depth -= around;
+            // A negated test is the continuing case, so its arms are the
+            // other way round.
+            ife = ast.New<IfExpr>(c->line, cond, arm(basenot ? (Node *)c : val),
+                                  arm(basenot ? val : (Node *)c));
+        }
         ife->exprtype = vt;
         o.basecases++;
         if (decls.empty()) return ife;

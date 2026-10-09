@@ -839,7 +839,7 @@ class Runner:
         # --specs command or pinning unstable specialization IDs/pass counts.
         bodies = {}
         for spec in specs.split("// spec ")[1:]:
-            match = re.search(r"^fn (tre_\w+)\([^\n]*\) \{\n", spec, re.MULTILINE)
+            match = re.search(r"^fn ((?:tre|gb)_\w+)\([^\n]*\) \{\n", spec, re.MULTILINE)
             if match:
                 bodies[match[1]] = spec[match.end():]
         optimized = level != "-O0"
@@ -863,6 +863,24 @@ class Runner:
             if got != want:
                 self.fail(f"tail-recursion {level} {name}",
                           f"(loop, self call): got {got}, want {want}")
+                valid = False
+        # Guarded base-case inlining: a copy of the body's first statement
+        # per self-call site the rewrite took.
+        copies = {
+            "gb_build": 3 if optimized else 1,
+            "gb_walk": 2 if optimized else 1,
+            "gb_count": 3 if optimized else 1,
+            "gb_global": 1,
+            "gb_field": 1,
+            "gb_arith": 1,
+            "gb_var": 1,
+        }
+        for name, want in copies.items():
+            body = bodies.get(name)
+            got = None if body is None else body.count("gb_visits += 1;")
+            if got != want:
+                self.fail(f"guarded base case {level} {name}",
+                          f"copies of the body's start: got {got}, want {want}")
                 valid = False
         return valid
 

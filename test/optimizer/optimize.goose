@@ -487,6 +487,109 @@ fn recursion_op() {
     print(rec_even(7) + rec_odd(7));                 // 0 + 1
 }
 
+// --- guarded base-case inlining ---------------------------------------------
+// The other languages' shape: every self-call inside an `if` with no else
+// that compares parameters. Each self-call site gets the body without the
+// if, for where the test fails. The `gb_visits += 1` that each body starts
+// with shows how many copies of it there are (run_tests.py).
+
+var gb_visits = 0;
+var gb_limit = 0;
+var gb_pool: RecNode[>..];
+
+recursive fn gb_build(depth: i64, v: i64) -> RecNode& {
+    gb_visits += 1;
+    let n .= gb_pool.push(RecNode { v: v });
+    if depth > 0 {
+        n.l .= gb_build(depth - 1, v * 2);
+        n.r .= gb_build(depth - 1, v * 2 + 1);
+    }
+    return n;
+}
+
+recursive fn gb_walk(n: RecNode&, d: i64) {          // Valueless.
+    gb_visits += 1;
+    if d > 0 {
+        let l = n.l;
+        if l { gb_walk(l, d - 1); }
+    }
+}
+
+recursive fn gb_count(n: RecNode&, d: i64) -> i64 {  // The result as the tail.
+    gb_visits += 1;
+    var t = n.v;
+    if d != 0 {
+        let l = n.l;
+        if l { t += gb_count(l, d - 1); }
+        let r = n.r;
+        if r { t += gb_count(r, d - 1); }
+    }
+    t
+}
+
+// Left alone: the test reads a global or a node, which the statements before
+// it may change before the callee tests it, or it does arithmetic, which may
+// abort, or the body assigns the parameter it reads.
+recursive fn gb_global(n: RecNode&, d: i64) -> i64 {
+    gb_visits += 1;
+    var t = n.v;
+    if d > gb_limit {
+        let l = n.l;
+        if l { t += gb_global(l, d - 1); }
+        let r = n.r;
+        if r { t += gb_global(r, d - 1); }
+    }
+    return t;
+}
+
+recursive fn gb_field(n: RecNode&, d: i64) -> i64 {
+    gb_visits += 1;
+    var t = n.v;
+    if n.v < 8 && d > 0 {
+        let l = n.l;
+        if l { t += gb_field(l, d - 1); }
+        let r = n.r;
+        if r { t += gb_field(r, d - 1); }
+    }
+    return t;
+}
+
+recursive fn gb_arith(n: RecNode&, d: i64) -> i64 {
+    gb_visits += 1;
+    var t = n.v;
+    if d - 1 >= 0 {
+        let l = n.l;
+        if l { t += gb_arith(l, d - 1); }
+        let r = n.r;
+        if r { t += gb_arith(r, d - 1); }
+    }
+    return t;
+}
+
+recursive fn gb_var(n: RecNode&, var d: i64) -> i64 {
+    gb_visits += 1;
+    var t = n.v;
+    d -= 1;
+    if d >= 0 {
+        let l = n.l;
+        if l { t += gb_var(l, d); }
+        let r = n.r;
+        if r { t += gb_var(r, d); }
+    }
+    return t;
+}
+
+fn guarded_op() {
+    let root .= gb_build(3, 1);
+    print(gb_pool.len, " ", gb_visits);              // 15 15
+    gb_walk(root, 2);
+    print(gb_visits);                                // 18
+    print(gb_count(root, 3), " ", gb_count(root, 1)); // 120 6
+    print(gb_global(root, 3), " ", gb_field(root, 3)); // 120 120
+    print(gb_arith(root, 3), " ", gb_var(root, 3));  // 120 120
+    print(gb_visits);                                // 96
+}
+
 fn main_optimize() {
     use_inlining();
     use_params();
@@ -508,6 +611,7 @@ fn main_optimize() {
     tailrec_op();
     varmode();
     recursion_op();
+    guarded_op();
     print(ginit + G);
     var acc = 0;
     acc += gv;
