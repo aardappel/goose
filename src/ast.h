@@ -897,6 +897,10 @@ NODE(Binary)
     int8_t specidx = 0;
     bool litfloat = false;      // Filled by typecheck: its value is a Val::litfloat.
     bool flexint = false;       // Filled by typecheck: its value is a Val::flexint.
+    // Filled by BCE (bce.h) for a signed `/`, `%` or `>>`: the left operand
+    // is provably nonnegative and a divisor provably positive, so codegen
+    // computes it unsigned, with no zero or overflow check to make.
+    bool nonneg = false;
     Binary(Line l, TType _op, Node *_l, Node *_r) : Node(l), op(_op), left(_l), right(_r) {}
 NODE_END
 

@@ -237,10 +237,12 @@ inline string Binary::CgX(CodeGen &cg) {
                                              cg.OvfLocArgs(lt->intstorage, line), ")");
                     case T_MUL:   return cat("gs_mul_", sfx, "(", l, ", ", r,
                                              cg.OvfLocArgs(lt->intstorage, line), ")");
-                    case T_DIV:   return cat("gs_div_", sfx, "(", l, ", ", r, ", ",
-                                             cg.LocArgs(line), ")");
-                    default:      return cat("gs_mod_", sfx, "(", l, ", ", r, ", ",
-                                             cg.LocArgs(line), ")");
+                    case T_DIV:
+                        if (nonneg) return cat("(", ct, ")((uint64_t)(", lc, ") / (uint64_t)(", rc, "))");
+                        return cat("gs_div_", sfx, "(", l, ", ", r, ", ", cg.LocArgs(line), ")");
+                    default:
+                        if (nonneg) return cat("(", ct, ")((uint64_t)(", lc, ") % (uint64_t)(", rc, "))");
+                        return cat("gs_mod_", sfx, "(", l, ", ", r, ", ", cg.LocArgs(line), ")");
                 }
             }
             // Elementwise math on identical struct/fixed-array types (§6.1).
@@ -264,8 +266,11 @@ inline string Binary::CgX(CodeGen &cg) {
         case T_XOR:    return cat("(", ct, ")(", lc, " ^ ", rc, ")");
         case T_SHL:    return cat("gs_shl_", cg.IntSfx(lt->intstorage), "(", l,
                                   ", (int64_t)(", r, "))");
-        case T_SHR:    return cat("gs_shr_", cg.IntSfx(lt->intstorage), "(", l,
-                                  ", (int64_t)(", r, "))");
+        case T_SHR:
+            if (nonneg)
+                return cat("(", ct, ")((uint64_t)(", lc, ") >> ((int64_t)(", r, ") & ",
+                           IntBits(lt->intstorage) - 1, "))");
+            return cat("gs_shr_", cg.IntSfx(lt->intstorage), "(", l, ", (int64_t)(", r, "))");
         default: assert(false); return l;
     }
 }

@@ -43,11 +43,11 @@
 // number of times per iteration, and a slice binding, whose length is the
 // difference of its bounds (`src[lo..lo + W]` is W long, so the row-slice
 // idiom needs no assert). Values likewise: `a % b` and `a & b` land in
-// [0, b], a nonnegative `a / d` or `a >> k` by a constant in [0, a], with
-// the dividend's constant bounds divided or shifted, and a cast whose value
-// the facts already place in the target's range carries its operand's term
-// across — together these prove the reduce-a-hash-into-a-table idiom
-// without any guard in the source.
+// [0, b], a nonnegative `a / d` or `a >> k` in [0, a] (d >= 0, or any
+// count), with the dividend's constant bounds divided or shifted by a
+// constant, and a cast whose value the facts already place in the target's
+// range carries its operand's term across — together these prove the
+// reduce-a-hash-into-a-table idiom without any guard in the source.
 //
 // Products and two-variable sums fall outside a difference domain, so they
 // are handled by intervals instead: where both operands have constant bounds,
@@ -854,20 +854,32 @@ struct BCE {
     // least 2. That bounds a halving index such as a heap's parent
     // `(i - 1) / 2` by its child. The relation needs x's term to be the value
     // the machine divides, not one that wrapped on the way.
+    //
+    // [0, x] also holds for any other shift count, and for a division by any
+    // divisor the facts place at or above zero, unwrapped as well: a
+    // completed division had one of at least 1 (§6.2).
     Term QuotTerm(Binary *b) {
         if (mode == M_KILLS) return {};
         auto t = OpType(b);
         if (!t || t->kind != TY_INT || t->intstorage == IS_U64 || t->intstorage == IS_VARINT)
             return {};
         auto shift = b->op == T_SHR;
-        auto kt = TermOf(b->right);
-        if (!kt.ok || kt.b.kind != BK_ZERO) return {};
-        auto k = shift ? kt.off & (IntBits(t->intstorage) - 1) : kt.off;
-        if (!shift && k < 1) return {};
         auto xt = TermOf(b->left);
         if (!xt.ok) return {};
-        if (k == (shift ? 0 : 1)) return xt;
         auto nonneg = NoWrap(xt, t->intstorage) && Query(Zero(), xt.b, xt.off);
+        auto kt = TermOf(b->right);
+        if (!kt.ok || kt.b.kind != BK_ZERO) {
+            if (!nonneg) return {};
+            if (!shift && !(kt.ok && NoWrap(kt, t->intstorage) && Query(Zero(), kt.b, kt.off)))
+                return {};
+            auto q = TmpBase();
+            AddFactB(Zero(), q, 0);
+            AddFactB(q, xt.b, xt.off);
+            return Term { true, q, 0 };
+        }
+        auto k = shift ? kt.off & (IntBits(t->intstorage) - 1) : kt.off;
+        if (!shift && k < 1) return {};
+        if (k == (shift ? 0 : 1)) return xt;
         auto iv = BoundsOf(xt);
         auto bounded = iv.ok && (shift || iv.lo >= 0);
         if (!nonneg && !bounded) return {};
@@ -882,6 +894,40 @@ struct BCE {
             AddFactB(q, xt.b, below ? SatSub(xt.off, 1) : xt.off);
         }
         return Term { true, q, 0 };
+    }
+
+    // Whether an integer expression is provably nonnegative: its term, or a
+    // difference `a - b` the facts order (`b <= a`) with `b >= 0`, which
+    // then lies in [0, a] and cannot have wrapped. Every term must be the
+    // value the machine computed, not one a release build wrapped (§6.2).
+    bool NonNeg(Node *n) {
+        auto t = TermOf(n);
+        if (t.ok && CmpAdmissible(t) && Query(Zero(), t.b, t.off)) return true;
+        auto b = Is<Binary>(n);
+        if (!b || b->op != T_MINUS || effectfulterms.count(b)) return false;
+        auto ot = OpType(b);
+        if (!ot || ot->kind != TY_INT || ot->intstorage == IS_U64 || ot->intstorage == IS_VARINT)
+            return false;
+        auto lt = TermOf(b->left), rt = TermOf(b->right);
+        return lt.ok && rt.ok && CmpAdmissible(lt) && CmpAdmissible(rt) &&
+               Query(Zero(), rt.b, rt.off) && Query(rt.b, lt.b, SatSub(lt.off, rt.off));
+    }
+
+    // A signed `/`, `%` or `>>` whose left operand is nonnegative, by a
+    // divisor of at least 1, computes the same unsigned and can neither
+    // divide by zero nor overflow: codegen emits it so (Binary::nonneg), and
+    // the C compiler need not prove the sign itself.
+    void JudgeUnsigned(Binary *b) {
+        if (mode != M_JUDGE || effectfulterms.count(b)) return;
+        auto t = OpType(b);
+        if (!t || t->kind != TY_INT || t->intstorage == IS_VARINT || IsUnsigned(t->intstorage))
+            return;
+        if (!NonNeg(b->left)) return;
+        if (b->op != T_SHR) {
+            auto rt = TermOf(b->right);
+            if (!rt.ok || !CmpAdmissible(rt) || !Query(Zero(), rt.b, SatSub(rt.off, 1))) return;
+        }
+        b->nonneg = true;
     }
 
     // A numeric cast whose value is inside the target's range is the
@@ -2637,6 +2683,7 @@ inline bool Binary::BceWalk(BCE &b) {
     b.Walk(right);
     if (b.mode != BCE::M_KILLS && b.nextgen != gen)
         b.effectfulterms.insert(this);
+    if (op == T_DIV || op == T_MOD || op == T_SHR) b.JudgeUnsigned(this);
     return true;
 }
 

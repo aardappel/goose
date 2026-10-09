@@ -3015,13 +3015,15 @@ an integer variable that is not `u64` or `varint`; `.len` of a place (a
 fixed array's length is a constant); `x + c`/`x - c` at `i64` only (narrower
 widths wrap below the 64-bit math the facts are stated in); `a % b` and
 `a & b`, which land in `[0, b]` on a fresh base when `b` is provably
-non-negative (a negative signed mask proves nothing); `a / d` and `a >> k`
-by a constant on a fresh base (`QuotTerm`): a shift maps the dividend's
-constant bounds through, and for a dividend provably non-negative and
-unwrapped the quotient lies in `[0, a]`, below `a` once `a >= 1` and the
-divisor is at least 2 (truncating division and either shift agree there; a
-heap's parent `(i - 1) / 2` is below its child), with the dividend's
-constant bounds divided as well; a cast whose value the
+non-negative (a negative signed mask proves nothing); `a / b` and `a >> k`
+on a fresh base (`QuotTerm`): by a constant, a shift maps the dividend's
+constant bounds through; and for a dividend provably non-negative and
+unwrapped the quotient lies in `[0, a]` wherever `b` is non-negative and
+unwrapped too (a completed division had `b != 0`; a shift count is masked),
+below `a` once `a >= 1` and a constant divisor is at least 2 (truncating
+division and either shift agree there; a heap's parent `(i - 1) / 2` is
+below its child), with the dividend's constant bounds divided by a constant
+as well; a cast whose value the
 facts already place inside the target's range, which is the identity and
 carries its operand's term; `a * b` and `a ± b` with two moving operands,
 handled by *intervals*: where both operands have finite constant bounds the
@@ -3258,6 +3260,13 @@ turn the two stores into one store of a select (the merge step
   enclosing operands' facts allow, which holds where the enclosing operator
   short-circuits, and where it does not, codegen asks the enclosing
   operator's probe, which took none of those facts.
+* `Binary::nonneg` on a signed `/`, `%` or `>>` whose left operand is
+  provably non-negative -- its term, or a difference `a - b` with `0 <= b <=
+  a` -- and whose divisor is provably at least 1 (`JudgeUnsigned`): codegen
+  computes it in unsigned arithmetic, which gives the same value, with no
+  zero or overflow check. Release builds compute signed arithmetic wrapping
+  (§6.2), so the C compiler cannot derive such a sign from the operations
+  itself.
 
 ### 5.11 Verification
 
