@@ -89,9 +89,9 @@ fn swap<T>(a: T&, b: T&) {
 // ---- hashing -------------------------------------------------------------
 // One overload per scalar type: a u8 widens equally well into i64 and u64,
 // so a single generic would be ambiguous. Integers get a multiply-xorshift
-// mix (the low bits are what `dictionary` masks), bytes FNV-1a. A negative
-// integer mixes as its two's-complement bits, and a float as its count of
-// 1/65536ths, truncated and wrapped to 64 bits: `as!`, since those
+// mix (the low bits are what `dictionary` masks and keeps as slot tags). A
+// negative integer mixes as its two's-complement bits, and a float as its
+// count of 1/65536ths, truncated and wrapped to 64 bits: `as!`, since those
 // conversions change the value on purpose.
 
 fn hash_mix(x: u64) -> u64 {
@@ -112,10 +112,43 @@ fn hash(x: bool) -> u64 { if x { return hash_mix(1); } return hash_mix(2); }
 fn hash(x: f32) -> u64 { hash_mix((x * 65536.0) as! u64) }
 fn hash(x: f64) -> u64 { hash_mix((x * 65536.0) as! u64) }
 
+// The 8 bytes of s from i, and the 4 bytes, little-endian; C compilers turn
+// each into one load.
+fn hash_le64(s: u8[:], i: i64) -> u64 {
+    let c = s[i..i + 8];
+    c[0] | (c[1] as u64) << 8 | (c[2] as u64) << 16 | (c[3] as u64) << 24 |
+        (c[4] as u64) << 32 | (c[5] as u64) << 40 | (c[6] as u64) << 48 | (c[7] as u64) << 56
+}
+fn hash_le32(s: u8[:], i: i64) -> u64 {
+    let c = s[i..i + 4];
+    c[0] | (c[1] as u64) << 8 | (c[2] as u64) << 16 | (c[3] as u64) << 24
+}
+
+// Bytes, 8 at a time: one multiply and a rotate per word but the last,
+// which is the final 8 bytes (overlapping the words before) or, for a short
+// s, its bytes gathered into one word, and the length is the seed. The last
+// word goes through two multiply-xorshift rounds, after which every input bit
+// reaches the low bits.
 fn hash(s: u8[:]) -> u64 {
-    var h: u64 = 14695981039346656037;
-    for b in s { h = (h ^ b) * 1099511628211; }
-    return h;
+    let n = s.len;
+    var h = (n as! u64) * 11400714819323198485;
+    var w: u64 = 0;
+    if n > 8 {
+        var i = 0;
+        while i < n - 8 {
+            h = (h ^ hash_le64(s, i)) * 11400714819323198485;
+            h = (h << 29) | (h >> 35);
+            i += 8;
+        }
+        w = hash_le64(s, n - 8);
+    } else if n >= 4 {
+        w = hash_le32(s, 0) | hash_le32(s, n - 4) << 32;
+    } else if n > 0 {
+        w = s[0] | (s[n >> 1] as u64) << 8 | (s[n - 1] as u64) << 16;
+    }
+    h = (h ^ w) * 11400714819323198485;
+    h = (h ^ (h >> 32)) * 15485907386658061715;
+    return h ^ (h >> 32);
 }
 
 fn hash_combine(seed: u64, h: u64) -> u64 {

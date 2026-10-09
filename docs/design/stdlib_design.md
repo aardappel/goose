@@ -300,12 +300,18 @@ fn hash(x: i8) -> u64        // … one overload per integer type, i8 … u64
 fn hash(x: bool) -> u64
 fn hash(x: f32) -> u64
 fn hash(x: f64) -> u64
-fn hash(s: u8[:]) -> u64     // FNV-1a over the bytes; any u8 array coerces
+fn hash(s: u8[:]) -> u64     // 8 bytes per multiply; any u8 array coerces
 fn hash_combine(seed: u64, h: u64) -> u64   // for composite keys
 ```
 
 The integer hashes are a multiply-xorshift mix (Fibonacci hashing), so the
 low bits are well distributed and `dictionary` can mask rather than divide.
+The byte hash reads 8 bytes at a time: a multiply and a rotate per word, the
+last word being the final 8 bytes (or, below 8 bytes, the bytes gathered into
+one word) with the length as the seed, then two multiply-xorshift rounds, so
+that every input bit reaches the low 32 bits that `dictionary` masks and keeps
+as slot tags. Keys that differ only in their last characters (`item_17`,
+`item_18`) would otherwise share their low bits.
 A user key type gets `fn hash(k: key) -> u64 { hash_combine(hash(k.a),
 hash(k.b)) }`. Fixed-capacity inline strings (`u8[..16]`) hash through the
 slice overload, which is what makes them usable as `dictionary` keys.

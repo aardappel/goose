@@ -85,7 +85,7 @@ fn swap<T>(a: T&, b: T&)            // swap(x, y)
 ```goose
 fn hash(x: i8) -> u64               // ... one overload per integer type
 fn hash(x: bool) -> u64             fn hash(x: f32) -> u64      fn hash(x: f64) -> u64
-fn hash(s: u8[:]) -> u64            // FNV-1a over the bytes; any u8 array coerces
+fn hash(s: u8[:]) -> u64            // 8 bytes per multiply; any u8 array coerces
 fn hash_combine(seed: u64, h: u64) -> u64
 ```
 
