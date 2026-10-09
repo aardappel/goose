@@ -158,7 +158,7 @@ inline bool CodeGen::IsFatRef(TypeExpr *t) {
 // reference, or one reachable from the value -- in a field, a payload, an
 // element, or behind a slice or a plain reference. Code handed such a value
 // can grow that stack without the value's name saying which stack it is
-// (PassesOpaqueStack, SyncReach). A nominal type reached again on the way
+// (SyncReach). A nominal type reached again on the way
 // through itself has no further fat reference to offer, so `open` cuts the
 // recursion there.
 inline bool CodeGen::HoldsFatRef(TypeExpr *t) {

@@ -330,7 +330,7 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
     for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
     auto callee = ername.empty() ? ki.cname : ername;
     // The callee reads and bumps the stacks it was handed, and no others.
-    auto reach = SyncReach(sp, args);
+    auto reach = SyncReach(sp, args, an);
     MarkFlush(reach);
     if (ki.cret >= 0) {
         auto r0 = T();
@@ -707,7 +707,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
         }
         string argstr;
         for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
-        auto reach = SyncReach(sp, args);
+        auto reach = SyncReach(sp, args, an);
         MarkFlush(reach);
         if (ki.cret >= 0) L(retex[ki.cret], " = ", ki.cname, "(", argstr, ");");
         else L(ki.cname, "(", argstr, ");");

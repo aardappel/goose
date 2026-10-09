@@ -3959,16 +3959,22 @@ pointer and length are likewise read once when the length is a memory load.
 function grows it, synchronized with memory only where something else can
 observe it: flushed before and reloaded after calls that can reach the stack,
 and flushed at every exit. What a call reaches (`SyncReach`) is the argument
-text plus the callee's globals' stacks; it is everything ("*") for a callee
-handed an opaque stack -- a fat reference or a pool, or a value holding one,
-as an argument or a capture -- and, where a cached stack may be a global's or
-the destination of a `return ... from` target up the chain, for a callee that
-names a global or can propagate such a return. A callee with no stack among
-its arguments and none of its own, a pure helper, reaches nothing and costs
-no sync. The local is confined to the loops that grow the stack
-(`PlanTopCaches`), or the whole body for growth outside every loop, and is
-materialized by a text pass over the finished body that resolves markers for
-loop edges, syncs, and jumps out of a region (`ExpandTopMarkers`).
+text, the callee's globals' stacks, and the stack each reference argument
+carries where its expression says which (`HandedStacks`): a reference taken
+of a variable or of a frame object's tail in one, or held by a parameter, an
+alias or a captured reference. It is everything ("*") for a callee handed a
+value holding a reference -- in a field, a payload, an element, the array a
+reference refers to -- or capturing a reference or a pool, and, where a
+cached stack may be a global's or the destination of a `return ... from`
+target up the chain, for a callee that names a global or can propagate such
+a return. A callee with no stack among its arguments and none of its own, a
+pure helper, reaches nothing and costs no sync. The local is confined to the
+loops that grow the stack (`PlanTopCaches`), or, for growth outside every
+loop, to the innermost block around it, the whole body at its top level (a
+stack grown in one branch of a long function is then no local live, and
+synced at every call, through the rest of it); it is materialized by a text
+pass over the finished body that resolves markers for region edges, syncs,
+and jumps out of a region (`ExpandTopMarkers`).
 
 Soundness needs one spelling per cached stack, which a fat reference held
 anywhere could break: its `.stk` names a stack the body may also name
@@ -4502,7 +4508,10 @@ beside reference parameters, and so does a nested function for the arrays it
 captures and a function building its result by pushes for its destination.
 When growth occurs only inside a loop, the cache is confined to that loop.
 A loop that only updates elements therefore needs no register for a cached
-top. A call to a helper that is handed no array costs no synchronization.
+top. A call to a helper that is handed no array costs no synchronization,
+and one handed a reference to a named array syncs only that array's stack;
+one handed a struct holding a reference, or an array of them, syncs every
+cached stack.
 
 ### 9.3 Construction and copies
 

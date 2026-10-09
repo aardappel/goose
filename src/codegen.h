@@ -436,8 +436,8 @@ struct CodeGen {
     // stack it can name: one handed to it as an argument, or a global it
     // (transitively) mentions. Everything else the caller has cached stays
     // cached across the call.
-    bool PassesOpaqueStack(FnSpec *sp);
-    string SyncReach(FnSpec *callee, const vector<string> &args);
+    string HandedStacks(Node *n);
+    string SyncReach(FnSpec *callee, const vector<string> &args, const vector<Node *> &an);
     void CollectSpecs();
     string SigParams(FnSpec *sp, bool decls, bool er = false);
     string SigRet(FnSpec *sp);
@@ -559,8 +559,10 @@ struct CodeGen {
     // elsewhere it is a live pointer holding a register for nothing, so it is
     // confined to the loops that grow the stack: a kernel loop that only reads
     // and writes elements of an array keeps the memory form for it. Growth
-    // outside every loop caches the stack over the whole body, which is the
-    // extent it is live across anyway.
+    // outside every loop caches the stack over the innermost block around it,
+    // which is the whole body for growth at its top level: a stack grown once
+    // in one branch of a long function is no local live, and synced at every
+    // call, through all of it.
     //
     // Soundness rests on one spelling per cached stack. Own stacks qualify:
     // a callee's indices start above the caller's in-use watermark (§10.3), so
@@ -579,7 +581,8 @@ struct CodeGen {
     // = e; top += n` with top in a register -- and the same marks carry it
     // across calls.
     vector<string> toporder;                  // Cacheable stacks, discovery order.
-    // A stack and its innermost enclosing loop (-1 means the whole body).
+    // A stack and the region (loop, block or construction) it is cached over,
+    // -1 meaning the whole body.
     struct TopRegion { int stk, loop; };
     vector<TopRegion> growth;                // Every growth or shrink.
     vector<int> loopparent;                   // Loop -> enclosing loop, or -1.
@@ -642,9 +645,13 @@ struct CodeGen {
     void MarkReload(const string &reach = "*") { if (markers) L(RELOADMARK, reach); }
 
     bool markers = false;                // A specialization's body: markers are expanded.
-    vector<string> loopcons;             // Region -> "" for a loop, the stack for a construction.
+    // Region -> "" for a loop, BLOCKREGION for a block, the stack for a
+    // construction.
+    vector<string> loopcons;
+    static constexpr const char *BLOCKREGION = "{";
     bool InConsOf(const string &stk);
     int MarkLoopBegin();
+    int MarkBlockBegin();
     void MarkLoopEnd(int id);
     int MarkConsBegin(const string &stk);
     struct ConsRegion {

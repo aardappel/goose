@@ -21,21 +21,51 @@ inline bool CodeGen::IsPoolParam(FnSpec *sp, size_t i) {
 }
 
 // A pool or fat-reference argument carries its stack inside the value, so
-// the argument text does not name it, and neither does the text of a struct,
-// a payload, an array or a captured variable that holds one; such a call
-// syncs everything.
-inline bool CodeGen::PassesOpaqueStack(FnSpec *sp) {
-    for (size_t i = 0; i < sp->argtypes.size(); i++)
-        if (IsPoolParam(sp, i) || HoldsFatRef(sp->argtypes[i])) return true;
-    for (auto fv : sinfo[sp].freevars)
-        if (fv->reusable || (fv->type && HoldsFatRef(fv->type))) return true;
-    return false;
+// the argument text does not name it; its expression may: a reference taken
+// of a variable or of a frame object's tail in one, or the one a parameter,
+// an alias or a captured reference holds, none of them rebindable. The
+// stacks it carries, or "" where the expression does not say.
+inline string CodeGen::HandedStacks(Node *n) {
+    auto c = n;
+    if (auto un = Is<Unary>(n); un && un->op == T_BITAND) c = un->child;
+    while (auto d = Is<Dot>(c)) {
+        if (!d->IsField()) return "";
+        c = d->obj;
+        // A reference field on the way leads to another stack.
+        if (!Is<Ident>(c) && c->exprtype && c->exprtype->kind == TY_REF) return "";
+    }
+    auto id = Is<Ident>(c);
+    auto v = id ? id->vdef : nullptr;
+    while (v && refalias.count(v)) v = const_cast<VarDef *>(refalias[v]);
+    if (!v || !v->type || (!IsResz(v->type) && (!IsFatRef(v->type) || v->isvar)))
+        return "";
+    if (!v->isglobal && !vnames.count(v)) return "";
+    auto lv = VarLoc(v);
+    if (lv.t->kind == TY_REF) DerefLoc(lv);
+    if (lv.stk.empty()) return "";
+    return cat(lv.stk, "\x01", lv.flstk, "\x01");
 }
 
 // What a call to `callee` with these arguments can reach: the argument text
-// (a stack handed over appears in it verbatim) plus the callee's globals.
-inline string CodeGen::SyncReach(FnSpec *callee, const vector<string> &args) {
-    if (!cachetops || PassesOpaqueStack(callee)) return "*";
+// (a stack handed over appears in it verbatim), the stacks the reference
+// arguments carry, and the callee's globals.
+inline string CodeGen::SyncReach(FnSpec *callee, const vector<string> &args,
+                                 const vector<Node *> &an) {
+    if (!cachetops) return "*";
+    for (auto fv : sinfo[callee].freevars)
+        if (fv->reusable || (fv->type && HoldsFatRef(fv->type))) return "*";
+    string handed;
+    for (size_t i = 0; i < callee->argtypes.size(); i++) {
+        auto pt = callee->argtypes[i];
+        if (!IsPoolParam(callee, i) && !HoldsFatRef(pt)) continue;
+        // A value holding a reference -- in a field, a payload, an element,
+        // the array a reference refers to -- says nothing of which stack
+        // that is.
+        if (i >= an.size() || pt->kind != TY_REF || HoldsFatRef(pt->ref->sub)) return "*";
+        auto st = HandedStacks(an[i]);
+        if (st.empty()) return "*";
+        handed += st;
+    }
     // A cached reference parameter's stack, or a return destination, may be
     // a global's, which the callee reaches under a name of its own. Either,
     // or a captured variable's stack (a named result built at its function's
@@ -47,7 +77,7 @@ inline string CodeGen::SyncReach(FnSpec *callee, const vector<string> &args) {
     auto &ki = sinfo[callee];
     if ((reftops || topdst || topcap) && ki.hasrf) return "*";
     if ((reftops || topdst) && !ki.globals.empty()) return "*";
-    string s;
+    auto s = handed;
     for (auto &a : args) { s += a; s += '\x01'; }
     for (auto d : sinfo[callee].globals) {
         // A fat reference held in a global reaches whichever stack it was
@@ -328,14 +358,19 @@ inline string CodeGen::Top(const string &stk) {
 // decides where the cached form is worth having. A watermark restore is
 // not growth: it runs once on the way out of a scope and takes whichever
 // form is already in effect there. A cached stack's growth counts against
-// the innermost loop around it, a construction's against that
-// construction where the stack is not otherwise cached.
+// the innermost loop around it, or, outside every loop, against the
+// innermost block (a growth in one branch of a long function then keeps
+// no local live, and synced at every call, through the rest of it); a
+// construction's counts against that construction where the stack is not
+// otherwise cached.
 inline string CodeGen::TopW(const string &stk) {
     if (CacheableStk(stk)) {
-        auto loop = -1;
-        for (auto it = loopstack.rbegin(); it != loopstack.rend() && loop < 0; ++it)
+        auto loop = -1, block = -1;
+        for (auto it = loopstack.rbegin(); it != loopstack.rend() && loop < 0; ++it) {
             if (loopcons[*it].empty()) loop = *it;
-        growth.push_back({ TopIdx(stk), loop });
+            else if (block < 0 && loopcons[*it] == BLOCKREGION) block = *it;
+        }
+        growth.push_back({ TopIdx(stk), loop >= 0 ? loop : block });
     } else if (markers) {
         for (auto it = loopstack.rbegin(); it != loopstack.rend(); ++it)
             if (loopcons[*it] == stk) {
@@ -352,6 +387,17 @@ inline int CodeGen::MarkLoopBegin() {
     auto id = (int)loopparent.size();
     loopparent.push_back(loopstack.empty() ? -1 : loopstack.back());
     loopcons.push_back("");
+    loopstack.push_back(id);
+    L(LOOPMARK, "b", id);
+    return id;
+}
+
+// A block's edges, likewise (GenBlockInner).
+inline int CodeGen::MarkBlockBegin() {
+    if (!markers) return -1;
+    auto id = (int)loopparent.size();
+    loopparent.push_back(loopstack.empty() ? -1 : loopstack.back());
+    loopcons.push_back(BLOCKREGION);
     loopstack.push_back(id);
     L(LOOPMARK, "b", id);
     return id;
@@ -381,10 +427,10 @@ inline int CodeGen::MarkConsBegin(const string &stk) {
     return id;
 }
 
-// Where each stack is cached: the innermost loop around every growth of
-// it, less any of those nested inside another. A growth outside every
-// loop takes the whole body instead, which is the extent the local is
-// live across in that case anyway.
+// Where each stack is cached: the region TopW counted every growth of it
+// against -- the innermost loop around it, or block outside every loop, or
+// construction -- less any of those nested inside another. A growth at the
+// body's top level takes the whole body instead.
 inline CodeGen::TopCachePlan CodeGen::PlanTopCaches() {
     TopCachePlan plan;
     plan.fnlocals.resize(toporder.size());

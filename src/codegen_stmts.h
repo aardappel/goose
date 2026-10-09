@@ -6,10 +6,14 @@
 namespace goose {
 
 // A Block's contents without emitting the braces/scope (the caller did).
+// The block is a region a stack it grows outside every loop can be cached
+// over (TopW), rather than the whole body.
 inline void CodeGen::GenBlockInner(Block *b, Dst d, size_t first) {
+    auto region = MarkBlockBegin();
     for (auto i = first; i < b->stmts.size(); ++i) GenStmt(b->stmts[i]);
     if (b->tail && !IsVoidT(b->tail->exprtype) && d.k != DK_DISCARD) GenAny(b->tail, d);
     else if (b->tail) GenAny(b->tail, Dst {});
+    MarkLoopEnd(region);
 }
 
 // The argument bindings an inlined call's block starts with (`inline_arg`),

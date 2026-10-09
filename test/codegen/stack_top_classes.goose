@@ -51,6 +51,21 @@ fn glob_and_param(p: i64[>..]&) {
     p.push(glob.len);
 }
 
+// A call handed a reference to one local syncs that local's stack and no
+// other; the other's top stays in its local across the call.
+fn handed() -> i64 {
+    var a: i64[>..] = [];
+    var b: i64[>..] = [];
+    for i in 4 {
+        a.push(i);
+        bump(b, i * 10);
+        a.push(b.len);
+        bump(a, -1);
+        b.push(a.len);
+    }
+    return total(a) * 1000 + total(b);
+}
+
 // Inlined with xs bound to the caller's local or parameter: no reference
 // variable is left, and the pushes use the variable's own stack.
 fn push_n2<A, T>(xs: A&, v: T, n: i64) { for i in n { xs.push(v); xs.push(v); } }
@@ -272,7 +287,7 @@ fn fills() -> i64 {
 fn main() {
     var p: i64[>..] = [];
     print(own_beside_param(p, 9), " ", p);
-    print(own_and_ref(true, 1));
+    print(own_and_ref(true, 1), " ", handed());
     glob_and_param(glob);
     print(glob);
     glob.clear();
