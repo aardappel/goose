@@ -79,10 +79,11 @@ struct NativeLayers {
     bool gfx = false;
     bool physics = false;
     bool ui = false;
+    bool ngfx = false;
 };
 
 // The response file of link inputs a program built from the generated C
-// needs for a stdlib module with a native layer (gfx, physics, ui), which CMake
+// needs for a stdlib module with a native layer (gfx, physics, ui, ngfx), which CMake
 // writes: `style` is "msvc" for cl and clang-cl, "cc" for gcc and clang.
 // Looked for in the directory `env` names, for a moved build tree, then in
 // `<module>/` next to the compiler binary, for an installed one, then where

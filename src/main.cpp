@@ -10,6 +10,8 @@
 #include "resolve.h"
 #include "builtins.h"
 #include "gfx.h"
+#include "slangc.h"
+#include "ngfx.h"
 #include "audio.h"
 #include "physics.h"
 #include "ui.h"
@@ -382,13 +384,14 @@ int Main(int argc, char **argv) {
         else if (arg == "--compile-shader" && i + 1 < argc) shaderfile = argv[++i];
         else if (arg == "--shader-source" && i + 1 < argc) shadersource = argv[++i];
         else if ((arg == "--audio-link" || arg == "--gfx-link" ||
-                  arg == "--physics-link" || arg == "--ui-link") &&
+                  arg == "--physics-link" || arg == "--ui-link" || arg == "--ngfx-link") &&
                  i + 1 < argc) {
             try {
                 auto style = argv[++i];
                 auto path = arg == "--audio-link"     ? AudioLinkFile(DirOf(argv[0]), style)
                             : arg == "--gfx-link"     ? GfxLinkFile(DirOf(argv[0]), style)
                             : arg == "--physics-link" ? PhysicsLinkFile(DirOf(argv[0]), style)
+                            : arg == "--ngfx-link"    ? NgfxLinkFile(DirOf(argv[0]), style)
                                                       : UiLinkFile(DirOf(argv[0]), style);
                 printf("%s\n", path.c_str());
             } catch (CompileError &e) {
@@ -437,7 +440,7 @@ int Main(int argc, char **argv) {
                         "--multi-test [options] file.goose... | --emit-runtime runtime.c | "
                         "--gen-runtime-header | "
                         "--audio-link msvc|cc | --gfx-link msvc|cc | "
-                        "--physics-link msvc|cc | --ui-link msvc|cc\n");
+                        "--physics-link msvc|cc | --ui-link msvc|cc | --ngfx-link msvc|cc\n");
         fprintf(stderr, "without -o the program is compiled and run in this process%s.\n",
                 have_jit ? " by TinyCC" : " -- unavailable in this build, so the .c is written");
         fprintf(stderr, "the .c that -o writes links with the runtime that --emit-runtime "
@@ -625,6 +628,7 @@ int Main(int argc, char **argv) {
             if (cg.layers.gfx && !have_gfx) throw CompileError { no_gfx_error };
             if (cg.layers.physics && !have_physics) throw CompileError { no_physics_error };
             if (cg.layers.ui && !have_ui) throw CompileError { no_ui_error };
+            if (cg.layers.ngfx && !have_ngfx) throw CompileError { no_ngfx_error };
             program = assemble(false);
             layers = cg.layers;
         }

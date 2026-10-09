@@ -137,10 +137,14 @@ def ui_link(exe, cc):
     return native_link(exe, cc, "ui")
 
 
+def ngfx_link(exe, cc):
+    return native_link(exe, cc, "ngfx")
+
+
 # The stdlib modules with a native layer, and the pattern of a program's own
 # import of one: the layers it links. The ui module draws through gfx, so a
 # program showing its ui imports both.
-NATIVE_MODULES = ("audio", "gfx", "physics", "ui")
+NATIVE_MODULES = ("audio", "gfx", "physics", "ui", "ngfx")
 
 
 def native_imports(text):
@@ -148,14 +152,16 @@ def native_imports(text):
     return [m for m in NATIVE_MODULES if re.search(rf"^import {m};", text, re.M)]
 
 
-# What the compiler says when asked to run a gfx, physics or ui program
-# without that layer built in, and what a gfx test prints when there is no
-# GPU device to run on. The runners report these as skips.
+# What the compiler says when asked to run a gfx, physics, ui or ngfx program
+# without that layer built in, and what a gfx or ngfx test prints when there
+# is no GPU device to run on. The runners report these as skips.
 GFX_UNAVAILABLE = "built without SDL3"
 GFX_NO_DEVICE = "gfx: no GPU device"
 PHYSICS_UNAVAILABLE = "built without Box3D"
 UI_UNAVAILABLE = "built without Nuklear"
 AUDIO_UNAVAILABLE = "built without SDL3 audio"
+NGFX_UNAVAILABLE = "built without ngfx"
+NGFX_NO_DEVICE = "no NoGraphicsAPI device"
 
 
 def native_unavailable(module, err):
@@ -167,6 +173,8 @@ def native_unavailable(module, err):
         return GFX_UNAVAILABLE in err or GFX_NO_DEVICE in err
     if module == "ui":
         return UI_UNAVAILABLE in err
+    if module == "ngfx":
+        return NGFX_UNAVAILABLE in err or NGFX_NO_DEVICE in err
     return PHYSICS_UNAVAILABLE in err
 
 
@@ -616,13 +624,15 @@ def run_measured(exe, args=(), *, stdin_path=None):
                      err=decode(errf.read_bytes()).strip(), code=code)
 
 
-def run_capture(argv, cwd=None, stdin_path=None):
+def run_capture(argv, cwd=None, stdin_path=None, env=None):
     """Run a tool, returning (exit code, stdout, stderr) as LF-normalised
-    text. Used where the output is a result rather than something to time."""
+    text. Used where the output is a result rather than something to time.
+    `env` adds to the environment."""
     argv = [str(a) for a in argv]
     stdin_f = open(stdin_path, "rb") if stdin_path else None
     try:
-        r = subprocess.run(argv, cwd=cwd, stdin=stdin_f, capture_output=True)
+        r = subprocess.run(argv, cwd=cwd, stdin=stdin_f, capture_output=True,
+                           env=dict(os.environ, **env) if env else None)
     finally:
         if stdin_f:
             stdin_f.close()

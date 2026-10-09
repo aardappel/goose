@@ -24,14 +24,17 @@ the backend refuses outright is counted as a skip, not a failure.
 
 The audio/ tests use the SDL3 PCM mixer without a device, the gfx/ tests
 use the SDL3 graphics module, the physics/ tests the Box3D
-physics module and the ui/ tests the Nuklear ui module. They always parse,
+physics module, the ui/ tests the Nuklear ui module and the ngfx/ tests the
+NoGraphicsAPI graphics module. They always parse,
 typecheck and generate C; they build and run where the compiler has the
 native layers they use built in -- their category's, and any other they
 import, as a ui test drawing through gfx does -- linking what `goose
---audio-link`, `--gfx-link`, `--physics-link` or `--ui-link` names, and a machine without a
-GPU device counts as a skip for gfx. A fixture there with `// error:`
-markers is a rejection test, as in errors_tc/. test/api_check.py checks
-stdlib/audio.goose, stdlib/gfx.goose, stdlib/physics.goose and stdlib/ui.goose against their C
+--audio-link`, `--gfx-link`, `--physics-link`, `--ui-link` or `--ngfx-link` names, and a
+machine without a GPU device counts as a skip for gfx and ngfx. A fixture there with
+`// error:` markers is a rejection test, as in errors_tc/. Each ngfx/ test also runs
+with GOOSE_NGFX_SYNC=full, which must not change its output. test/api_check.py checks
+stdlib/audio.goose, stdlib/gfx.goose, stdlib/physics.goose, stdlib/ui.goose and
+stdlib/ngfx.goose against their C
 layers' own lists of functions, structs and constants.
 
 Profiles keep the CI coverage deliberate: baseline compares Goose/native C
@@ -735,7 +738,8 @@ class Runner:
                             continue
                     with self.gpu(modules):
                         code, out, err = tc.run_capture(argv)
-                    if "gfx" in modules and tc.GFX_NO_DEVICE in err:
+                    if (("gfx" in modules and tc.GFX_NO_DEVICE in err) or
+                            ("ngfx" in modules and tc.NGFX_NO_DEVICE in err)):
                         res.nativeskips.append(f.name)
                         bad = True
                         break
@@ -779,6 +783,20 @@ class Runner:
                 self.fail(f"jit-output-differs-by-O {f.name}")
             elif self.check_stdout(name, f"jit {f.name}", runs["2"]):
                 self.ok(f"jit {f.name}")
+                if "ngfx" in modules:
+                    self.full_sync_run(f, name, modules)
+
+    def full_sync_run(self, f, name, modules):
+        """An ngfx program again with a full barrier around every pass and
+        dispatch (GOOSE_NGFX_SYNC=full): output that changes under it means
+        a barrier the program or the layer should record is missing."""
+        label = f"jit sync=full {f.name}"
+        with self.gpu(modules):
+            code, out, err = tc.run_capture(self.goose_argv(["-O2", "--jit", f]),
+                                            env={"GOOSE_NGFX_SYNC": "full"})
+        out = self.check_run(name, label, code, out, err)
+        if out is not None and self.check_stdout(name, label, out):
+            self.ok(label)
 
     def dump_program(self, f, res, argv):
         """A stable dump can still change grouping and therefore semantics:
@@ -826,9 +844,9 @@ class Runner:
 
     @contextmanager
     def gpu(self, modules):
-        """Holds the GPU for a program using gfx, where --gpu-jobs limits how
-        many of those run at once."""
-        if "gfx" not in modules or self.gpulock is None:
+        """Holds the GPU for a program using gfx or ngfx, where --gpu-jobs
+        limits how many of those run at once."""
+        if ("gfx" not in modules and "ngfx" not in modules) or self.gpulock is None:
             yield
             return
         with self.gpulock:
@@ -1145,13 +1163,14 @@ def main():
     clang = None if args.nocgen or args.profile == "sanitize" else tc.find_clang_c()
     if args.require_clang and not clang:
         ap.error("requested secondary C front end is unavailable: clang")
-    # What a gfx, physics or ui test program links, by the category directory
+    # What a gfx, physics, ui or ngfx test program links, by the category directory
     # it is in and what it imports, empty for a compiler built without that
     # layer: those tests then only generate C.
     native = {"audio": tc.audio_link(exe, cc) if cc else [],
               "gfx": tc.gfx_link(exe, cc) if cc else [],
               "physics": tc.physics_link(exe, cc) if cc else [],
-              "ui": tc.ui_link(exe, cc) if cc else []}
+              "ui": tc.ui_link(exe, cc) if cc else [],
+              "ngfx": tc.ngfx_link(exe, cc) if cc else []}
     print(f"profile: {args.profile}; C backend: {cc.desc if cc else 'none'}; "
           f"JIT backend: {'TinyCC' if jit else 'none'}; " +
           "; ".join(f"{m}: {'linked' if libs else 'not built in'}" for m, libs in native.items()))

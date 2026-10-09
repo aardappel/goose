@@ -10,6 +10,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # cleanly into a plain /MT program.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 
+# The ngfx module (cmake/ngfx.cmake, below) builds NoGraphicsAPI, whose Metal
+# backend is Objective-C++. Enabled here, before SDL is added: SDL mixes
+# Objective-C and C++ sources, so once the language exists anywhere SDL links
+# as Objective-C++, and its directory must have seen the language enabled.
+option(GOOSE_NGFX "Build the ngfx module on NoGraphicsAPI when the submodule is present" ON)
+if(APPLE AND GOOSE_NGFX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/NoGraphicsAPI/CMakeLists.txt")
+    enable_language(OBJCXX)
+endif()
+
 add_executable(goose
     src/main.cpp
     src/includes.h
@@ -51,6 +60,9 @@ add_executable(goose
     src/runtime/runtime_ext.h
     src/runtime/runtime_os.h
     src/gfx.h
+    src/slangc.h
+    src/ngfx.h
+    src/ngfx/ngfx_blob.h
     src/audio.h
     src/physics.h
     src/ui.h
@@ -91,6 +103,25 @@ else()
     target_compile_options(goose_shaderc PRIVATE -w)
 endif()
 target_link_libraries(goose PRIVATE goose_shaderc)
+
+# The tools behind embed_slang (src/slangc.h), which runs them rather than
+# linking a compiler in: slangc, spirv-val when there is one, and
+# NoGraphicsAPI's shader headers. Each is only a default; the environment
+# overrides it, and a program that embeds no Slang needs none of them.
+find_program(GOOSE_SLANGC_PATH NAMES slangc HINTS "${CMAKE_CURRENT_SOURCE_DIR}/../slang/bin"
+             DOC "slangc 2026.18.2 or later, for embed_slang")
+find_program(GOOSE_SPIRV_VAL_PATH NAMES spirv-val HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
+             DOC "spirv-val, to validate what embed_slang embeds")
+if(GOOSE_SLANGC_PATH)
+    target_compile_definitions(goose PRIVATE GOOSE_SLANGC="${GOOSE_SLANGC_PATH}")
+endif()
+if(GOOSE_SPIRV_VAL_PATH)
+    target_compile_definitions(goose PRIVATE GOOSE_SPIRV_VAL="${GOOSE_SPIRV_VAL_PATH}")
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/NoGraphicsAPI/include/NoGraphicsAPI/shader.slang")
+    target_compile_definitions(goose PRIVATE
+        GOOSE_NOGRAPHICSAPI="${CMAKE_CURRENT_SOURCE_DIR}/third_party/NoGraphicsAPI")
+endif()
 
 # The optional in-process C backend. Present only when the TinyCC submodule has
 # been checked out (`git submodule update --init`); the compiler builds and
@@ -169,6 +200,27 @@ if(GOOSE_HAVE_UI)
     target_link_libraries(goose PRIVATE goose_ui)
     target_compile_definitions(goose PRIVATE
         GOOSE_HAVE_UI=1 GOOSE_UI_LINK_PATH="${CMAKE_BINARY_DIR}/ui/$<CONFIG>")
+endif()
+
+# The optional ngfx module (stdlib/ngfx.goose): NoGraphicsAPI from the
+# third_party/NoGraphicsAPI submodule and the layer over it, built in and
+# linked the way gfx is. Without the submodule, a Metal 4 or Vulkan 1.4
+# toolchain, the SDL submodule or slangc, or with -DGOOSE_NGFX=OFF, the
+# compiler builds and behaves the same, except that it cannot run an ngfx
+# program itself.
+if(GOOSE_NGFX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/NoGraphicsAPI/CMakeLists.txt")
+    include(cmake/ngfx.cmake)
+endif()
+if(GOOSE_HAVE_NGFX)
+    target_link_libraries(goose PRIVATE goose_ngfx)
+    target_compile_definitions(goose PRIVATE
+        GOOSE_HAVE_NGFX=1 GOOSE_NGFX_LINK_PATH="${CMAKE_BINARY_DIR}/ngfx/$<CONFIG>")
+    if(MSVC)
+        # As gfx's DLLs: a compiler run that never opens a device does not
+        # need the Vulkan loader installed.
+        target_link_options(goose PRIVATE "/DELAYLOAD:vulkan-1.dll")
+        target_link_libraries(goose PRIVATE delayimp)
+    endif()
 endif()
 
 if(MSVC)

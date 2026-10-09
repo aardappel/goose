@@ -101,10 +101,11 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             }
             return first;
         }
-        case B_EMBED_SHADER: {
+        case B_EMBED_SHADER:
+        case B_EMBED_SLANG: {
             // The shader compiled now, and the result a read-only view of
             // static data, like a string literal's (stdlib/gfx.goose).
-            c->shaderblob = EmbedShader(c, args);
+            c->shaderblob = d.kind == B_EMBED_SLANG ? EmbedSlang(c, args) : EmbedShader(c, args);
             c->rettypes.push_back(cu8slice);
             Val v;
             v.type = cu8slice;
@@ -907,6 +908,72 @@ inline const string *TypeCheck::EmbedShader(Call *c, vector<Node *> &args) {
         Error(at, cat("embed_shader: ", msg,
                       named[part + 1] ? cat(" (in the shader embedded at ", Where(c->line), ")")
                                       : string()));
+    }
+    return &it->second;
+}
+
+// The blob of the Slang module an embed_slang call names (src/slangc.h),
+// compiled here once per distinct module: embed_slang("x.slang") names a
+// file, relative to the file with the call; embed_slang("""...""", ...) gives
+// the source, its parts joined as lines, with #include relative to that
+// file. Errors map back to the program as embed_shader's do.
+inline const string *TypeCheck::EmbedSlang(Call *c, vector<Node *> &args) {
+    auto &callfile = ast.sources[c->line.fileidx].first;
+    vector<StrLit *> lits;
+    vector<bool> named;
+    for (auto &a : args) {
+        auto lit = ConstStrLit(a);
+        if (!lit)
+            Error(a, "embed_slang takes string literals, and let or const globals "
+                     "initialized with one");
+        named.push_back(lit != a);
+        if (lit != a) a = ast.New<StrLit>(lit->line, lit->val, lit->multiline);
+        a->exprtype = cu8slice;
+        lits.push_back(lit);
+    }
+    if (lits.size() == 1 && !lits[0]->multiline && lits[0]->val.find('\n') == string::npos) {
+        auto path = EmbeddedShaderPath(callfile, lits[0]->val);
+        auto key = cat("slang\n", path);
+        auto it = ast.shaders.find(key);
+        if (it == ast.shaders.end()) {
+            if (!std::filesystem::exists(path))
+                Error(c, cat("embed_slang: cannot open Slang file: ", path));
+            try {
+                it = ast.shaders.emplace(key, CompileSlangFile(path, string())).first;
+            } catch (CompileError &e) {
+                Error(c, cat("embed_slang: ", e.msg));
+            }
+        }
+        return &it->second;
+    }
+    // The source, and the line of it each part starts at.
+    string source;
+    vector<int> starts;
+    for (size_t i = 0; i < lits.size(); i++) {
+        if (i) source += '\n';
+        starts.push_back(1 + (int)count(source.begin(), source.end(), '\n'));
+        source += lits[i]->val;
+    }
+    auto key = cat("slang\n", callfile, "\n", source);
+    auto it = ast.shaders.find(key);
+    if (it != ast.shaders.end()) return &it->second;
+    try {
+        it = ast.shaders.emplace(key, CompileSlangSource(source, callfile)).first;
+    } catch (CompileError &e) {
+        int line;
+        string msg;
+        if (!ShaderMessageAt(e.msg, callfile, line, msg)) Error(c, cat("embed_slang: ", e.msg));
+        if (!line) Error(c, cat("embed_slang: ", msg));
+        auto part = upper_bound(starts.begin(), starts.end(), line) - starts.begin() - 1;
+        auto lit = lits[part];
+        auto at = lit->line;
+        if (lit->multiline) {
+            auto lines = (int)count(lit->val.begin(), lit->val.end(), '\n') + 1;
+            at.line += min(line - starts[part] + 1, lines);
+        }
+        Error(at, cat("embed_slang: ", msg,
+                      named[part] ? cat(" (in the module embedded at ", Where(c->line), ")")
+                                  : string()));
     }
     return &it->second;
 }

@@ -1,8 +1,8 @@
 """Checks that each stdlib module with a native layer and that layer's C API
 header describe the same boundary: stdlib/gfx.goose against
 src/gfx/gfx_api.h, stdlib/physics.goose against src/physics/physics_api.h,
-stdlib/ui.goose against src/ui/ui_api.h, and stdlib/audio.goose against
-src/audio/audio_api.h. Every `extern "gs_..." fn`
+stdlib/ui.goose against src/ui/ui_api.h, stdlib/audio.goose against
+src/audio/audio_api.h, and stdlib/ngfx.goose against src/ngfx/ngfx_api.h. Every `extern "gs_..." fn`
 against the header's list of functions, parameter by parameter; every struct
 that crosses, field by field; and every constant. A mismatch there compiles
 on both sides and then passes garbage, which is why it is checked rather
@@ -19,10 +19,10 @@ AAPCS64 does, where Apple's packs them at their natural size and alignment.
 The naming convention the check relies on: the Goose struct `TextureDesc` is
 `gs_gfx_texture_desc` in C, a slice `const Buffer[:]` is
 `gs_gfx_buffer_slice`, `u8[:]` is `gs_gfx_bytes`, `T&` is a pointer; the
-same with `gs_phys_` for physics, `gs_ui_` for ui and `gs_audio_` for audio.
+same with `gs_phys_` for physics, `gs_ui_` for ui, `gs_audio_` for audio and `gs_ngfx_` for ngfx.
 
 Used by run_tests.py: check(module) returns a list of problems, empty when the
-two agree. Runnable alone: python test/api_check.py [audio|gfx|physics|ui]
+two agree. Runnable alone: python test/api_check.py [audio|gfx|physics|ui|ngfx]
 """
 
 import re
@@ -45,6 +45,7 @@ MODULES = {
     "gfx": ("src/gfx/gfx_api.h", "stdlib/gfx.goose", "GFX", "gs_gfx_"),
     "physics": ("src/physics/physics_api.h", "stdlib/physics.goose", "PHYS", "gs_phys_"),
     "ui": ("src/ui/ui_api.h", "stdlib/ui.goose", "UI", "gs_ui_"),
+    "ngfx": ("src/ngfx/ngfx_api.h", "stdlib/ngfx.goose", "NGFX", "gs_ngfx_"),
 }
 
 

@@ -397,6 +397,12 @@ Nuklear, which the `ui` module is built from. The compiler builds without
 these submodules, but the corresponding features are unavailable: JIT
 execution, graphics, physics, or windows of widgets.
 
+The experimental `ngfx` module also needs the NoGraphicsAPI submodule,
+[`slangc`](https://github.com/shader-slang/slang) 2026.18.2 or later (on the `PATH`
+or in `../slang/bin`), and macOS 26 with Xcode's Metal toolchain or the Vulkan SDK
+1.4.357. Without them the build leaves it out and says why
+([details](docs/design/ngfx.md#how-it-is-built)).
+
 ```bash
 git clone --recursive https://github.com/aardappel/goose
 cd goose
@@ -497,13 +503,14 @@ code --install-extension vscode/goose-language.vsix
   order, from a tour of the language to a JSON parser, a threaded Mandelbrot, a
   file tree built from two pools, a spinning cube on the GPU, thousands of
   boxes raining into a heap and a to-do list in windows of widgets.
-* [Standard library](docs/stdlib.md): ten modules, all readable Goose under
+* [Standard library](docs/stdlib.md): twelve modules, all readable Goose under
   `stdlib/`, including `gfx`, graphics on SDL3's GPU API
   ([how it is built](docs/design/gfx.md)), `physics`, rigid body physics
-  on Box3D ([how it is built](docs/design/physics.md)), and `ui`, fonts,
+  on Box3D ([how it is built](docs/design/physics.md)), `ui`, fonts,
   [text rendering and game HUDs](docs/stdlib.md#text-rendering-and-game-huds),
   windows and widgets on Nuklear, drawn through gfx
-  ([how it is built](docs/design/ui.md)).
+  ([how it is built](docs/design/ui.md)), and the experimental `ngfx`, graphics on
+  NoGraphicsAPI ([how it is built](docs/design/ngfx.md)).
 * [Benchmarks](bench/summary.md): the numbers, with the
   [full results](bench/results.md) and the [design](bench/design.md) behind them.
 * [Implementation notes](docs/implementation.md): how the compiler works, pass

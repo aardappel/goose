@@ -1,7 +1,8 @@
 # The Goose standard library
 
-The standard library has ten modules under `stdlib/`: `std`, `dictionary`,
-`vec`, `math`, `os`, `binary`, `audio`, `gfx`, `physics`, and `ui`. Import each module by name,
+The standard library has twelve modules under `stdlib/`: `std`, `dictionary`,
+`vec`, `math`, `os`, `binary`, `audio`, `gfx`, `physics`, `ui`, and the
+experimental [`ngfx` and `ngfx_ui`](#ngfx). Import each module by name,
 for example `import std;`. The compiler locates the library in its source
 tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
 Everything is written in Goose except the C behind `os`
@@ -1688,3 +1689,44 @@ frame's duration, and the clipboard both ways, pasting the system
 clipboard's text and putting there what a field copied. Both work in the
 screen's pixels, so on a high-density display the ui is as many pixels as
 elsewhere, and smaller, until the program sets a scale.
+
+## ngfx
+
+Experimental graphics on [NoGraphicsAPI](https://github.com/sebbbi/NoGraphicsAPI)
+(`third_party/NoGraphicsAPI`), over Metal 4 or Vulkan 1.4. Tested on Metal 4 only.
+It keeps gfx's window, input, time, screen, textures, samplers, read-back, and
+`screenshot` by name and behavior, and draws the way NoGraphicsAPI does: no bindings,
+no vertex formats, and no resource states. Optional: it needs a compiler built with the
+`third_party/NoGraphicsAPI` and `third_party/SDL` submodules and `slangc`, and a program
+using it links what `goose --ngfx-link msvc|cc` prints. Everything is in namespace
+`ngfx`. The header of `stdlib/ngfx.goose` is the reference, `samples/27_ngfx_cube.goose`
+a small complete program, and `design/ngfx.md` how it works and what it costs.
+
+```goose
+struct Root { vertices: u64, transform: ngfx::float4x4 }
+
+let shaders = embed_slang("cube.slang");            // every entry point of one Slang module
+let pipeline = ngfx::pipeline(shaders);                 // vertex and fragment entry points
+let vertices = ngfx::buffer(bytes_of(cube));        // plain GPU memory
+let root = ngfx::root(Root { vertices: ngfx::address(vertices), transform: m });
+ngfx::draw(root, 36);                               // the shader fetches its own vertices
+```
+
+How it differs from `gfx`:
+
+* **Shaders are Slang modules**, compiled at Goose compile time by `embed_slang`, which
+  runs `slangc` (and Xcode's Metal tools on macOS) and embeds a metallib and SPIR-V
+  together. A module's entry points carry their stages.
+* **A draw or dispatch takes a root**: the GPU address of a struct the program fills,
+  usually with `root(value)` or `frame_data(bytes)` in this frame's memory. The shader
+  reads buffers through GPU addresses (`address(b)`), and textures and samplers through
+  descriptor indices (`index(t)`, `storage_index(t, mip)`).
+* **Clip space is y down**, depth 0 to 1, and matrices are row-major `float4x4`s.
+  `perspective`, `ortho`, and `look_at` produce them.
+* **The program states the barriers between its own passes and dispatches**, with
+  `barrier(before, after)`. `GOOSE_NGFX_SYNC=full` adds a full barrier around each, to
+  check for a missing one.
+* **`generate_mips` is a compute pass** on 2D `SAMPLED | STORAGE` textures, not sRGB.
+
+`ngfx_ui` draws [`ui`](#ui) through ngfx: `ngfx_ui::input(c)` after `ngfx::frame()`,
+and `ngfx_ui::render(c)` or `ngfx_ui::render(c, target)`, as `ui`'s gfx functions do.

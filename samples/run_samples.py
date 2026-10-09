@@ -7,9 +7,9 @@ data/<name>.args as its arguments, and a sample's C header (<name>.h, see
 call_c) is passed with --include. Timings and machine-dependent facts go to
 stderr, which is not compared.
 
-A sample importing gfx draws off screen here (GOOSE_GFX_HEADLESS), links what
-`goose --gfx-link` names, and is skipped where the compiler has no gfx layer
-or the machine no GPU device. A sample importing audio, physics or ui links what
+A sample importing gfx or ngfx draws off screen here (GOOSE_GFX_HEADLESS),
+links what `goose --gfx-link` or `--ngfx-link` names, and is skipped where the
+compiler has no such layer or the machine no GPU device for it. A sample importing audio, physics or ui links what
 `goose --audio-link`, `--physics-link` or `--ui-link` names, and is skipped where the
 compiler has no such layer.
 
@@ -92,11 +92,12 @@ def main():
     native = {"audio": tc.audio_link(exe, cc) if cc else [],
               "gfx": tc.gfx_link(exe, cc) if cc else [],
               "physics": tc.physics_link(exe, cc) if cc else [],
-              "ui": tc.ui_link(exe, cc) if cc else []}
+              "ui": tc.ui_link(exe, cc) if cc else [],
+              "ngfx": tc.ngfx_link(exe, cc) if cc else []}
     gpulock = threading.BoundedSemaphore(args.gpu_jobs) if args.gpu_jobs else None
 
     def gpu(modules):
-        return gpulock if gpulock and "gfx" in modules else contextlib.nullcontext()
+        return gpulock if gpulock and ("gfx" in modules or "ngfx" in modules) else contextlib.nullcontext()
 
     def sample(f):
         """Everything done with one sample, its two runs one after the other:

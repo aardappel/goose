@@ -24,6 +24,9 @@
 #ifdef GOOSE_HAVE_UI
 #include "ui/ui_api.h"
 #endif
+#ifdef GOOSE_HAVE_NGFX
+#include "ngfx/ngfx_api.h"
+#endif
 
 namespace goose {
 
@@ -104,6 +107,17 @@ inline void AddUiSymbols(TCCState *s) {
     #endif
 }
 
+// The ngfx layer's functions (src/ngfx/ngfx_api.h), the same way.
+inline void AddNgfxSymbols(TCCState *s) {
+    #ifdef GOOSE_HAVE_NGFX
+        #define GS_NGFX_SYMBOL(ret, name, params) tcc_add_symbol(s, #name, (const void *)&name);
+        GS_NGFX_API(GS_NGFX_SYMBOL)
+        #undef GS_NGFX_SYMBOL
+    #else
+        (void)s;
+    #endif
+}
+
 // Compiles `csrc` in memory and calls its main, returning what the program
 // returned or exited with. `progargs` become the program's argv after argv[0].
 // `layers` says which native layers the program calls into.
@@ -127,6 +141,7 @@ inline int RunJit(const string &csrc, const string &libpath, const string &progn
     if (layers.gfx) AddGfxSymbols(s);
     if (layers.physics) AddPhysicsSymbols(s);
     if (layers.ui) AddUiSymbols(s);
+    if (layers.ngfx) AddNgfxSymbols(s);
     // tcc_run hands these to the program's main, which takes them as C main
     // does: an array of writable pointers. Hence the mutable copies.
     auto name = progname;

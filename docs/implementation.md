@@ -2575,6 +2575,15 @@ native graphics library interface are separate compatibility surfaces
 (`gfx/gfx_blob.h`, `gfx/gfx_api.h`, `docs/design/gfx.md`), not general Goose
 value layouts.
 
+`embed_slang` is its counterpart for the experimental `ngfx` module
+(`EmbedSlang`, `slangc.h`). One plain string literal is a path; a `"""`
+literal or several parts is Slang source, under the same argument rules and
+error-line mapping as `embed_shader`. It runs `slangc` (and, on macOS,
+Xcode's `metal` and `metallib`) as subprocesses at paths found at configure
+time, and embeds every entry point of the module with its stage and thread
+group size, SPIR-V and a metallib together (`ngfx/ngfx_blob.h`,
+`docs/design/ngfx.md`).
+
 A pool's kind travels with its provenance as bits, `RU_SLOTS` for `reusable`
 and `RU_SLICES` for `reusable[]` (`Prov::reusable`, `RootArg::reusable`), so
 merging two branches keeps only what both allow -- a construct choosing among

@@ -1,0 +1,7 @@
+from a file: GNSB, probe stage 1 1 x 1 x 1
+written here: GNSB, probe stage 1 1 x 1 x 1
+written here: the same blob true
+in parts: GNSB, probe stage 1 1 x 1 x 1
+in parts: the same blob true
+through a second global: GNSB, halved stage 1 1 x 1 x 1
+three stages: GNSB, vs stage 0 1 x 1 x 1, fs stage 1 1 x 1 x 1, cs stage 2 8 x 4 x 1

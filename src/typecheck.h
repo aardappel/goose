@@ -2051,6 +2051,7 @@ struct TypeCheck {
                          Node *arg);
     StrLit *ConstStrLit(Node *n);
     const string *EmbedShader(Call *c, vector<Node *> &args);
+    const string *EmbedSlang(Call *c, vector<Node *> &args);
     void CheckGrowShrink(Node *at, const char *op, Node *recv, const Val &rv);
     // `what` names the array in the diagnostics; `bound` is its type where vd
     // only bounds it (ShrinkTarget).
@@ -2588,6 +2589,7 @@ struct TypeCheck {
                                       : cname.rfind("gs_gfx_", 0) == 0  ? "gfx"
                                       : cname.rfind("gs_phys_", 0) == 0 ? "physics"
                                       : cname.rfind("gs_ui_", 0) == 0   ? "ui"
+                                      : cname.rfind("gs_ngfx_", 0) == 0 ? "ngfx"
                                                                         : nullptr;
                         if (module)
                             Error(n, cat(module, " runs on the main thread only: ",

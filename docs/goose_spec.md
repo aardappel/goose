@@ -3267,6 +3267,7 @@ The language's own functions:
 | `bytes_of(a) -> u8[:]` | the element region alone, as a view: no copy, and never writable |
 | `from_bytes<T[>..]>(b: u8[:]) -> T[>..], bool` | a *verified* array from an untrusted image; empty and `false` if it is not one. Also builds `T[>..<]` and the `T[]` family |
 | `embed_shader(path)` or `embed_shader(stage, source, …) -> const u8[:]` | compile-time GLSL compilation to a static shader blob; graphics extension, detailed in the implementation notes, section 3.14 |
+| `embed_slang(path)` or `embed_slang(source, …) -> const u8[:]` | compile-time Slang compilation of one module to a static blob for `ngfx`; experimental graphics extension, detailed in the implementation notes, section 3.14 |
 
 And the array members, ordinary functions of their receiver per UFCS
 (`a.push(v)` is `push(a, v)`):

@@ -1,4 +1,4 @@
-# Shared SDL3 build and link dependencies for gfx and audio.
+# Shared SDL3 build and link dependencies for gfx, audio and ngfx.
 include_guard(GLOBAL)
 set(GFX_SDL "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL")
 

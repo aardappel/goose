@@ -13,3 +13,6 @@
 	path = third_party/nuklear
 	url = https://github.com/Immediate-Mode-UI/Nuklear
 	shallow = true
+[submodule "third_party/NoGraphicsAPI"]
+	path = third_party/NoGraphicsAPI
+	url = https://github.com/sebbbi/NoGraphicsAPI
