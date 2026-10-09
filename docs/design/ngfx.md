@@ -17,14 +17,17 @@ fetch their own vertices through pointers.
     Goose program --extern fn--> gs_ngfx_* (goose_ngfx, C and C++) --> NoGraphicsAPI (static)
 
 Shaders are Slang modules, compiled into the program at Goose compile time by the
-`embed_slang` builtin. `samples/27_ngfx_cube.goose` is gfx's cube ported to it, and the
-`test/gfx` fixtures are ported to `test/ngfx`.
+`embed_slang` builtin. gfx's four larger programs are ported to it as the acceptance set:
+`27_ngfx_cube`, `29_ngfx_ui_todo`, `30_ngfx_mini_minecraft`, and `31_ngfx_mini_doom`,
+next to their originals, with the `test/gfx` fixtures ported to `test/ngfx`.
 
 ## Status
 
 ngfx is tested on one machine: macOS 26 on an Apple M1 Pro (Metal 4). There, the build,
-`test/run_tests.py`, and `samples/run_samples.py` pass, and run headless, the cube's
-screenshot is byte-identical to the gfx original's.
+`test/run_tests.py`, and `samples/run_samples.py` pass, and run headless, the cube's,
+mini Doom's, and the to-do list's screenshots are byte-identical to the gfx originals'.
+Mini Minecraft's differ in 36 isolated pixels of nearest-sampled leaves, where Slang and
+cute_spirv's MSL round a texture coordinate differently.
 
 The Vulkan path is unverified:
 

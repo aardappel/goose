@@ -110,12 +110,14 @@ calls it, so they are compiled and run as part of the test suite.
 | Sample | What it shows |
 |---|---|
 | [29_ui_todo](29_ui_todo.goose) | A to-do list and a color mixer with the `ui` module: Nuklear's immediate-mode widgets drawn through `gfx`. Each frame lists the windows and widgets and reads back what the user did to them: a text field committed with Enter, buttons, check boxes, options, a menu bar, a tooltip, a progress bar, a color picker and properties; the check marks recolored through Nuklear's color table, text in Roboto from the Nuklear submodule, and the whole ui scaled up and down, its font baked again at each scale. Saves its last frame as `ui_todo.png`. Needs a compiler built with SDL3 and Nuklear (`third_party/nuklear`); the test runner draws 30 frames off screen. |
+| [29_ngfx_ui_todo](29_ngfx_ui_todo.goose) | 29_ui_todo with `ui` drawn through `ngfx` by `ngfx_ui`. Needs a compiler built with ngfx and Nuklear. |
 
 ## A small game
 
 | Sample | What it shows |
 |---|---|
 | [30_mini_minecraft](30_mini_minecraft.goose) | A playable voxel world using only `gfx`: procedural hills, trees, caves, coal, water, pixel textures, sky and a bitmap font. Exposed-face chunk meshes with corner shading, captured mouse look, fixed-step walking and swimming, a grid ray for mining and placement, inventory, four crafting recipes, lamps, mining fragments, a day/night cycle, and validated atomic saves. Starts directly in an 80 × 40 × 80 world. No asset files or physics/UI dependencies. The test runner checks gameplay and renders 30 frames off screen. |
+| [30_ngfx_mini_minecraft](30_ngfx_mini_minecraft.goose) | 30_mini_minecraft on `ngfx`: chunk meshes in GPU buffers, the scene, HUD and fragments in each frame's memory, and the sky, world and HUD as Slang modules. Needs a compiler built with ngfx. |
 
 Run `goose samples/30_mini_minecraft.goose`. WASD walks, Space jumps or swims,
 Shift runs, Ctrl sneaks slowly and stops at ledges, and the mouse or arrow
@@ -146,6 +148,7 @@ world deliberately omits mobs, hunger, damage, tool wear, and flowing water.
 | Sample | What it shows |
 |---|---|
 | [31_mini_doom](31_mini_doom.goose) | A playable Freedoom E1M1 using `gfx` and `audio`: checked little-endian WAD parsing, palette and patch decoding, a texture atlas, BSP-clipped floor polygons, textured walls, billboard sprites, sliding collision, stairs, falling, doors, lifts, pickups, combat, and one update/draw loop. Includes pistol, shotgun, chaingun and fists, four enemy types, imp fireballs, exploding barrels, damaging floors, secrets, the blue key and the exit. Uses the supplied `data/freedoom1-e1m1.wad`. |
+| [31_ngfx_mini_doom](31_ngfx_mini_doom.goose) | 31_mini_doom on `ngfx`: the world and HUD meshes rebuilt into each frame's memory and fetched by the shaders through their roots. Needs a compiler built with ngfx. |
 
 Run `goose samples/31_mini_doom.goose` from the repository root, or
 `goose 31_mini_doom.goose` from `samples`. It starts directly in the level.
