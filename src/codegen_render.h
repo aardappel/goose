@@ -578,39 +578,18 @@ inline vector<string> CodeGen::EmitStr(Call *c, vector<Node *> &an, Dst d0, Line
 // ------------------------------------------------------------------
 // Function bodies.
 
-// Structural named-result discovery on the final body. Both real functions
-// and inlined bodies use it, so rewrites need not maintain an AST annotation.
+// Structural named-result discovery on the final body (NamedResultOf). Both
+// real functions and inlined bodies use it, so rewrites need not maintain an
+// AST annotation.
 inline const VarDef *CodeGen::NamedResult(Block *fnbody, SFunction *target,
                                          size_t nrets, size_t resultidx) {
-    // Only bindings BindLocal places: a multi-name receive wires a call's
-    // channels into locals of its own, which are not at a return destination.
-    set<const VarDef *> toplocals;
-    for (auto st : fnbody->stmts)
-        if (auto vd = Is<VarDecl>(st); vd && vd->defs.size() == 1)
-            toplocals.insert(vd->defs[0]);
-    const VarDef *cand = nullptr;
-    auto ok = true;
-    auto consider = [&](Node *val) {
-        auto id = Is<Ident>(val);
-        if (!id || !id->vdef || !toplocals.count(id->vdef)) { ok = false; return; }
-        if (cand && cand != id->vdef) { ok = false; return; }
-        cand = id->vdef;
-    };
-    function<void(Node *)> walk = [&](Node *n) {
-        if (!n || !ok) return;
-        if (auto r = Is<Return>(n); r && r->target == target) {
-            if (r->vals.size() != nrets) ok = false;
-            else consider(r->vals[resultidx]);
-        }
-        RunChildren(n, walk);
-    };
-    walk(fnbody);
-    if (fnbody->tail && nrets == 1 && !IsVoidT(fnbody->tail->exprtype)) consider(fnbody->tail);
-    return ok ? cand : nullptr;
+    return NamedResultOf(fnbody, target, nrets, resultidx);
 }
 
-// Guaranteed NRVO (§7.3): a top-level local every return hands back in
-// one nonfixed return position is allocated at that destination.
+// Guaranteed NRVO (§7.3): the top-level local the returns hand back in one
+// nonfixed return position is allocated at that destination; a return of any
+// other value builds it behind the local and moves it down (BindLocal marks
+// the local open there).
 inline void CodeGen::DetectNrvo(FnSpec *sp) {
     nrvo.clear();
     // A long-distance return into this function lands its value over the

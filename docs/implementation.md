@@ -3617,10 +3617,19 @@ channel (`GenForward`), except a variable-size or resizable variant, which
 builds in the channel behind its variable-mode ADT's tag, as `GenAdtAdapted`
 builds one (`VariantBehindTag`).
 
-**Named results** (`DetectNrvo`, `OpenIbNrvo`): when every `return` of a
-nonfixed result hands back the same top-level local (`NamedResult`), that
-local is allocated at the return destination from its declaration and the
-return writes only the count; a resizable local returned as a variable array
+**Named results** (`DetectNrvo`, `OpenIbNrvo`): when the returns of a
+nonfixed result hand back one top-level local and no other local
+(`NamedResultOf`, `clone.h`), that local is allocated at the return
+destination from its declaration and its return writes only the count. A
+return of any other value -- `[]`, `str(...)`, a parameter, a call's result
+-- keeps it there provided building that value cannot reach the local
+(`MayReachLocal`: the value names neither the local nor a variable whose
+provenance may lead into it, and the local is not captured). Such a value
+is an exit that finds the local in front of it (**Exits** below): the local
+counts as a construction open on the destination from its declaration on,
+so the value is built behind its elements and moved down over them, and an
+inlined body's own scope is entered as if the local were not open yet. A
+resizable local returned as a variable array
 reserves the destination's length prefix ahead of its elements and patches
 it at the return (`EmitPrefixPatch`, moving the elements up only when a
 varint prefix outgrows its one reserved byte). The same binding is made for
@@ -3637,7 +3646,7 @@ construction on that stack is under way -- inside an element of a literal
 headed there, a `str()` argument, an inlined callee whose named result is
 bound there -- would leave that part in front of its value. Codegen counts
 the constructions open per stack (`openat`: `GenConstruct` for anything but
-a control construct, and an inlined body's named result); an exit that
+a control construct, and a named result from its declaration on); an exit that
 finds more of them open than its scope was entered with takes the top before
 building its value and moves the value down to the scope's top on entry
 afterwards, with the stack's top and a frame object's tail base following
@@ -4377,10 +4386,13 @@ A loop that only updates elements therefore needs no register for a cached top.
 * A nonfixed value is built at its destination (§4.3): `let x = f()`,
   `v.push(f())`, `v.append(f())`, `g(f())`, `x = f()` and a struct field
   initializer all hand the callee their stack. A `return` of a named local
-  costs nothing when every return hands back that one local (`DetectNrvo`),
-  including after the optimizer inlines the callee. Returning different
-  locals on different paths copies all but one; a multi-name receive (`let
-  a, b = f(); return a;`) copies.
+  costs nothing when no return hands back another local (`DetectNrvo`),
+  including after the optimizer inlines the callee: a `return []` or `return
+  str(...)` beside `return result` builds its own value behind `result` and
+  moves it down, which costs that value's size. Returning different locals
+  on different paths copies all but one, as does a return whose value reads
+  the local (`return result[0..n]`); a multi-name receive (`let a, b = f();
+  return a;`) copies.
 * `v.append(f())` for a `T[]`-returning `f` compiles a second copy of `f` in
   element-run form; a builtin or dispatch result there costs one `memmove`
   of the elements over the prefix. A `T[..]` result is built on a temporary

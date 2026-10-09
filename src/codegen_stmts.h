@@ -431,6 +431,8 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
                 Bump(stk, cat(PrefixBytes(nd.ls)));
             }
             nd.hdr = name;
+            // A return of another value finds it in front (ExitStart).
+            if (!nd.inlined) openat[stk]++;
         } else {
             stk = AllocStk(forlocal);
         }
@@ -460,6 +462,7 @@ inline void CodeGen::BindLocal(VarDef *d, Node *init, bool forlocal) {
         assert(init);
         auto nit = nrvo.find(d);
         auto stk = nit != nrvo.end() ? nit->second.stk : AllocStk(forlocal);
+        if (nit != nrvo.end() && !nit->second.inlined) openat[stk]++;
         L("uint8_t *", name, " = ", Top(stk), ";");
         // A named result lives at the destination, which outlives us.
         if (nit == nrvo.end()) SaveBase(forlocal, stk, name);

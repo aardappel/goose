@@ -2011,9 +2011,13 @@ relocation exception (Appendix C.3):
 result returns the same local variable (and those returns are its last
 uses), that local is allocated at the return destination from its
 declaration — `return x` then costs exactly the same as returning the
-constructing expression directly. When different locals are returned on
-different paths, only one can live at the destination and the others are
-copied on return. This is in addition to §4.3's layout relocation.
+constructing expression directly. The same holds where the other returns
+hand back values whose construction does not read or write that local, such
+as `return []` or `return str("none")` beside `return x`: such a value is
+an exit's value under **Exits** below, built behind the local and moved down
+over it. When different locals are returned on different paths, only one
+can live at the destination and the others are copied on return. This is in
+addition to §4.3's layout relocation.
 
 **Exits.** A `return` or `break` taken while its destination already holds
 part of a value -- inside an element of a literal being built there, say,

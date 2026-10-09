@@ -362,6 +362,93 @@ inline bool ReturnsTo(Node *n, SFunction *sf) {
     return found;
 }
 
+// Whether evaluating n can reach the storage of local v: n names v, or a
+// variable that may refer into it or hold a reference into it -- one whose
+// provenance names v, or is not known exactly. A parameter or a global
+// cannot, as v is a local of this activation; nor can a variable whose
+// recorded provenance is complete and elsewhere. A captured v may be
+// reached by any call.
+inline bool MayReachLocal(Node *n, const VarDef *v) {
+    if (v->captured) return true;
+    auto reaches = [&](const Roots &r) {
+        if (r.unknown) return true;
+        for (auto &a : r.alts) if (a.root == v || !a.exact) return true;
+        return false;
+    };
+    auto found = false;
+    function<void(Node *)> walk = [&](Node *m) {
+        if (!m || found) return;
+        if (auto id = Is<Ident>(m); id && id->vdef) {
+            auto d = id->vdef;
+            if (d == v) found = true;
+            else if (!d->isglobal && !d->isparam && d->type) {
+                auto refs = d->type->kind == TY_REF || d->type->kind == TY_SLICE;
+                if ((refs && (!d->refrootknown || d->ref.alts.empty() || reaches(d->ref))) ||
+                    reaches(d->contents))
+                    found = true;
+            }
+        }
+        RunChildren(m, walk);
+    };
+    walk(n);
+    return found;
+}
+
+// The local a function or inlined body builds at its result destination
+// (§7.3): the top-level local that a `return` to `target` hands back in
+// position `resultidx`, when no other return there hands back another one,
+// and every other value returned there is built without reaching it. That
+// value is constructed behind the local's elements and moved down over them,
+// as every exit's value is that finds part of a value at its destination.
+// Null when there is no such local; then `why`, if given, says what stood in
+// the way, or is left empty where no return names a local at all.
+inline const VarDef *NamedResultOf(Block *fnbody, SFunction *target, size_t nrets,
+                                   size_t resultidx, string *why = nullptr) {
+    // Only bindings BindLocal places: a multi-name receive wires a call's
+    // channels into locals of its own, which are not at a return destination.
+    set<const VarDef *> toplocals;
+    for (auto st : fnbody->stmts)
+        if (auto vd = Is<VarDecl>(st); vd && vd->defs.size() == 1)
+            toplocals.insert(vd->defs[0]);
+    const VarDef *cand = nullptr;
+    vector<Node *> others;
+    string stop;
+    auto consider = [&](Node *val) {
+        auto id = Is<Ident>(val);
+        if (!id || !id->vdef || !toplocals.count(id->vdef)) {
+            others.push_back(val);
+            return;
+        }
+        if (cand && cand != id->vdef && stop.empty())
+            stop = cat("another return hands back `", id->vdef->name, "`");
+        if (!cand) cand = id->vdef;
+    };
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n) return;
+        if (auto r = Is<Return>(n); r && r->target == target) {
+            if (r->vals.size() != nrets) {
+                if (stop.empty()) stop = "a return forwards several results of a call";
+            } else {
+                consider(r->vals[resultidx]);
+            }
+        }
+        RunChildren(n, walk);
+    };
+    walk(fnbody);
+    auto tail = fnbody->tail;
+    if (tail && nrets == 1 && tail->exprtype && tail->exprtype->kind != TY_VOID) consider(tail);
+    if (!cand) return nullptr;
+    if (stop.empty())
+        for (auto v : others)
+            if (MayReachLocal(v, cand)) {
+                stop = "another return's value may read or write it";
+                break;
+            }
+    if (stop.empty()) return cand;
+    if (why) *why = stop;
+    return nullptr;
+}
+
 // The variables one checked node names or binds: an identifier's, a
 // declaration's, a `for`'s bindings, a match arm's payload, a function
 // value's parameters. Walking the tree is the caller's business.
