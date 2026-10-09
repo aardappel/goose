@@ -2976,7 +2976,13 @@ an integer variable that is not `u64` or `varint`; `.len` of a place (a
 fixed array's length is a constant); `x + c`/`x - c` at `i64` only (narrower
 widths wrap below the 64-bit math the facts are stated in); `a % b` and
 `a & b`, which land in `[0, b]` on a fresh base when `b` is provably
-non-negative (a negative signed mask proves nothing); a cast whose value the
+non-negative (a negative signed mask proves nothing); `a / d` and `a >> k`
+by a constant on a fresh base (`QuotTerm`): a shift maps the dividend's
+constant bounds through, and for a dividend provably non-negative and
+unwrapped the quotient lies in `[0, a]`, below `a` once `a >= 1` and the
+divisor is at least 2 (truncating division and either shift agree there; a
+heap's parent `(i - 1) / 2` is below its child), with the dividend's
+constant bounds divided as well; a cast whose value the
 facts already place inside the target's range, which is the identity and
 carries its operand's term; `a * b` and `a ± b` with two moving operands,
 handled by *intervals*: where both operands have finite constant bounds the
@@ -2995,7 +3001,7 @@ A value read out of storage or returned by a call (`Index`, `Dot`, `Call`)
 has no base, but a type narrower than 64 bits still bounds it
 (`TypeRangeTerm`: a byte loaded from an array indexes a 256-entry table),
 and `a >> c` maps its operand's constant bounds through the shift
-(`ShiftTerm`: the byte shifted right by two indexes a 64-entry one). Such
+(`QuotTerm`: the byte shifted right by two indexes a 64-entry one). Such
 constant bounds of a one-shot base are axioms of that base (`tmpival`),
 not facts, so they never compete for the fact cap.
 
@@ -3102,8 +3108,12 @@ write preserves `v >= 0`, that no write can wrap at the variable's width,
 and that `v <= len(P)` survives for each place `P` the variable indexes or
 bounds and that is never shrunk or re-bound in the body (growth alone never
 breaks it); and the **judging** walk, which is granted the survivors as
-axioms (`ge0`, `lelen`) and the wrap-free, single-direction variables that
-are never plainly assigned as monotone (`mono`). Global integer variables
+axioms (`ge0`, `lelen`) and the wrap-free, single-direction variables as
+monotone (`mono`): each `+= c`/`-= c`/`++`/`--` moves its variable by its
+sign, and a plain assignment `v = e` (not the declaration, which starts the
+variable over) counts where the recording walk proved `e <= v` or `v <= e`
+just before it (`RecordSetDir`), so `i = (i - 1) / 2` keeps a sift-up index
+below where it started. Global integer variables
 get the same `>= 0` treatment across the whole program
 (`ValidateGlobalInvariants`: the initializer is the base case, every write in
 every live body the step), which is what a parse cursor kept in a global
@@ -4019,6 +4029,11 @@ call sites*. In practice:
   known; a symbolic negation as divisor (`k % (0 - n)`) is not expressible;
   a `u64` hash reduced with `%` or `&` and cast to `i64` carries its range
   through the cast;
+* halving indices: `a[i / 2]` and `a[i >> 1]` for an index `i` already in
+  range, a parent `a[(i - 1) / 2]` once `i > 0`, and a sift-up loop
+  `var i = a.len - 1; while i > 0 { let p = (i - 1) / 2; ...; a[i] = a[p];
+  i = p; }`, whose index only ever moves down from a proven start (std's
+  `heap_push`; `test/optimizer/bce_halving_index.goose`);
 * row-major indexing with bounded counters: `src[y * W + x]` for `y < H`,
   `x < W` and `src.len == W * H` (products and two-term sums of counters with
   constant bounds), and the row-slice form `let row = src[lo..lo + W]` whose
@@ -4063,7 +4078,11 @@ call sites*. In practice:
   negation the domain cannot state;
 * a counter stepped twice in one iteration, inside a nested loop, or in a
   `while` loop, whose own counter can move by any amount: only a `for`
-  loop's index carries a step counter's bound.
+  loop's index carries a step counter's bound;
+* a child index carried around a loop by doubling (`c = 2 * c + 1`, or a
+  hole `i = c` moving down a heap): the domain cannot double a bound, so
+  neither the child's lower bound nor the hole's upper bound survives the
+  loop head (std's `heap_pop` keeps these checks; they measured free).
 
 Practical consequences: state facts with `assert` where the compiler cannot
 see them (`assert(a.len == n)` at a function's entry when its callers are

@@ -22,7 +22,8 @@
 // their direction is known (grow: old <= new, shrink: new <= old), so facts
 // survive pure growth — indexing a grow-only array stays provable across
 // pushes — and are cut by shrinks. Monotone variables (all writes are
-// guarded, non-wrapping increments, or all decrements) get the same bridges
+// guarded, non-wrapping increments, or all decrements, plain assignments
+// included where each is proven to move the same way) get the same bridges
 // across their kill points.
 //
 // Facts come from: `for` headers (0 <= i < n at the appropriate snapshot),
@@ -42,9 +43,11 @@
 // number of times per iteration, and a slice binding, whose length is the
 // difference of its bounds (`src[lo..lo + W]` is W long, so the row-slice
 // idiom needs no assert). Values likewise: `a % b` and `a & b` land in
-// [0, b], and a cast whose value the facts already place in the target's
-// range carries its operand's term across — together these prove the
-// reduce-a-hash-into-a-table idiom without any guard in the source.
+// [0, b], a nonnegative `a / d` or `a >> k` by a constant in [0, a], with
+// the dividend's constant bounds divided or shifted, and a cast whose value
+// the facts already place in the target's range carries its operand's term
+// across — together these prove the reduce-a-hash-into-a-table idiom
+// without any guard in the source.
 //
 // Products and two-variable sums fall outside a difference domain, so they
 // are handled by intervals instead: where both operands have constant bounds,
@@ -378,6 +381,9 @@ struct BCE {
     struct Cand {
         bool ge0 = true;         // v >= 0 preserved by every write.
         bool wrapfree = true;    // No write can wrap at the variable's width.
+        // Every plain assignment `v = e` (not the declaration) provably
+        // lowers or keeps v (setdec), or raises or keeps it (setinc).
+        bool setdec = true, setinc = true;
         vector<int> le;          // Surviving `v <= len(P)` candidates.
         bool declseen = false;
     };
@@ -694,8 +700,8 @@ struct BCE {
             return Derived(n, [&] { return MulTerm(b); });
         if (auto b = Is<Binary>(n); b && (b->op == T_MOD || b->op == T_BITAND))
             return Derived(n, [&] { return RangedOpTerm(b); });
-        if (auto b = Is<Binary>(n); b && b->op == T_SHR)
-            return Derived(n, [&] { return ShiftTerm(b); });
+        if (auto b = Is<Binary>(n); b && (b->op == T_DIV || b->op == T_SHR))
+            return Derived(n, [&] { return QuotTerm(b); });
         if (auto ac = Is<AsCast>(n)) return Derived(n, [&] { return CastTerm(ac); });
         // A spliced-in call body (or a bare block) is its value expression.
         if (auto ib = Is<InlineBlock>(n)) return BlockValueTerm(ib->body, ib->sf);
@@ -716,23 +722,6 @@ struct BCE {
             return {};
         auto [lo, hi] = IntRange(t->intstorage);
         return IvalTerm(t, lo, hi);
-    }
-
-    // `a >> c` for a constant count: the shift is monotone, so it maps the
-    // operand's constant bounds to the result's. The count is masked to the
-    // operation's width (§6.2), and an unsigned operand's bounds are already
-    // nonnegative, so the arithmetic shift below is the machine's.
-    Term ShiftTerm(Binary *b) {
-        if (mode == M_KILLS) return {};
-        auto t = OpType(b);
-        if (!t || t->kind != TY_INT || t->intstorage == IS_U64 || t->intstorage == IS_VARINT)
-            return {};
-        auto ct = TermOf(b->right);
-        if (!ct.ok || ct.b.kind != BK_ZERO) return {};
-        auto k = ct.off & (IntBits(t->intstorage) - 1);
-        auto iv = BoundsOf(TermOf(b->left));
-        if (!iv.ok) return {};
-        return IvalTerm(t, iv.lo >> k, iv.hi >> k);
     }
 
     // The value a block produces: its trailing expression, or a final return
@@ -799,6 +788,45 @@ struct BCE {
             AddFactB(m, rt.b, rt.off);
         }
         return Term { true, m, 0 };
+    }
+
+    // `x / k` for a constant k >= 1 and `x >> k` for a constant count, which
+    // is masked to the operation's width (§6.2). The shift is monotone, so it
+    // maps the dividend's constant bounds to the quotient's. For a dividend
+    // the facts place at or above zero, truncating division and either shift
+    // agree, the dividend's constant bounds carry over divided, and the
+    // quotient lies in [0, x], below x once x >= 1 and the divisor is at
+    // least 2. That bounds a halving index such as a heap's parent
+    // `(i - 1) / 2` by its child. The relation needs x's term to be the value
+    // the machine divides, not one that wrapped on the way.
+    Term QuotTerm(Binary *b) {
+        if (mode == M_KILLS) return {};
+        auto t = OpType(b);
+        if (!t || t->kind != TY_INT || t->intstorage == IS_U64 || t->intstorage == IS_VARINT)
+            return {};
+        auto shift = b->op == T_SHR;
+        auto kt = TermOf(b->right);
+        if (!kt.ok || kt.b.kind != BK_ZERO) return {};
+        auto k = shift ? kt.off & (IntBits(t->intstorage) - 1) : kt.off;
+        if (!shift && k < 1) return {};
+        auto xt = TermOf(b->left);
+        if (!xt.ok) return {};
+        if (k == (shift ? 0 : 1)) return xt;
+        auto nonneg = NoWrap(xt, t->intstorage) && Query(Zero(), xt.b, xt.off);
+        auto iv = BoundsOf(xt);
+        auto bounded = iv.ok && (shift || iv.lo >= 0);
+        if (!nonneg && !bounded) return {};
+        auto q = TmpBase();
+        if (bounded) {
+            tmpival[q.id] = shift ? pair<int64_t, int64_t> { iv.lo >> k, iv.hi >> k }
+                                  : pair<int64_t, int64_t> { iv.lo / k, iv.hi / k };
+        }
+        if (nonneg) {
+            AddFactB(Zero(), q, 0);
+            auto below = (shift || k >= 2) && Query(Zero(), xt.b, SatSub(xt.off, 1));
+            AddFactB(q, xt.b, below ? SatSub(xt.off, 1) : xt.off);
+        }
+        return Term { true, q, 0 };
     }
 
     // A numeric cast whose value is inside the target's range is the
@@ -1498,6 +1526,17 @@ struct BCE {
             else pit = st.le.erase(pit);
     }
 
+    // Which way a plain assignment moves v, measured against v's value just
+    // before it. A term that may have wrapped says nothing about the value.
+    void RecordSetDir(VarDef *v, const Term &t) {
+        auto it = cands.find(v);
+        if (it == cands.end()) return;
+        auto &st = it->second;
+        auto exact = t.ok && NoWrap(t, v->type->intstorage);
+        st.setdec = st.setdec && exact && Query(t.b, VarBase(v), SatSub(0, t.off));   // e <= v.
+        st.setinc = st.setinc && exact && Query(VarBase(v), t.b, t.off);              // v <= e.
+    }
+
     // Re-assert granted axioms as stored facts so a shift transports them.
     void Materialize(VarDef *v) {
         if (mode != M_JUDGE) return;
@@ -1547,16 +1586,19 @@ struct BCE {
         ShiftCore(v, c);
     }
 
+    // A declaration starts the variable over, so only a plain assignment
+    // bridges the generations of a monotone one.
     void SetWrite(VarDef *v, Node *rhs, bool isdecl) {
         NoteInt(OwnerTarget(v));
         auto t = mode == M_KILLS ? Term {} : TermOf(rhs);
         if (mode == M_RECORD) {
             if (t.ok && t.b == VarBase(v)) RecordShift(v, t.off);
             else RecordSet(v, t, isdecl);
+            if (!isdecl) RecordSetDir(v, t);
         }
-        if (mode == M_KILLS) { BumpVar(v, false); return; }
+        if (mode == M_KILLS) { BumpVar(v, !isdecl); return; }
         if (t.ok && t.b == VarBase(v)) { ShiftCore(v, t.off); return; }
-        BumpVar(v, false);
+        BumpVar(v, !isdecl);
         if (NoWrap(t, v->type->intstorage)) {
             auto nb = VarBase(v);
             AddFactB(nb, t.b, t.off);
@@ -2146,9 +2188,12 @@ struct BCE {
                 if (!c.declseen) continue;
                 if (c.ge0) ge0.insert(v);
                 if (!c.le.empty()) lelen[v] = c.le;
+                // Shifts are monotone by their sign; a plain assignment
+                // counts only where the recording walk proved its direction.
                 auto &wk = wkinds[v];
-                if (c.wrapfree && !wk.setw && (wk.inc != wk.dec))
-                    mono[v] = wk.inc ? 1 : -1;
+                auto dec = !wk.inc && (!wk.setw || c.setdec);
+                auto inc = !wk.dec && (!wk.setw || c.setinc);
+                if (c.wrapfree && dec != inc) mono[v] = inc ? 1 : -1;
             }
         }
         mode = M_JUDGE;
