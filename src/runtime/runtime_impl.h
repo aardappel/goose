@@ -516,25 +516,193 @@ GS_API int64_t gs_fmt_u64(uint8_t *dst, uint64_t v) {
     return (int64_t)snprintf((char *)dst, GS_FMT_MAX, "%llu", (unsigned long long)v);
 }
 
-/* C99 asks for at least two exponent digits; the older Microsoft C runtime
-   (which is what tcc links against on Windows) always writes three. Trim the
-   padding, so a float's text form is the language's and not the backend's. */
-static int gs_fmt_exp(char *s, int n) {
-    char *e = (char *)memchr(s, 'e', (size_t)n);
-    if (!e) return n;
-    char *d = e + 2;                    /* past the 'e' and the exponent sign */
-    char *p = d;
-    int digits = n - (int)(d - s);
-    while (digits > 2 && *p == '0') p++, digits--;
-    if (p != d) {
-        memmove(d, p, (size_t)digits);
-        n = (int)(d - s) + digits;
-        s[n] = 0;
+/* A float's text is the fewest significant digits that read back as the
+   same value of its own type and, of those, the ones nearest it, a tie going
+   to the even digit (as Python's repr and Ryu choose). They are found in
+   integers, by Burger and Dybvig's free-format algorithm, not through the C
+   library: msvcrt, which tcc uses on Windows, rounds a printf tie away from
+   zero, and below a power of two the gap to the next float is half the gap
+   above, so the shortest text can lie above the value while the correctly
+   rounded spelling of that length, below it, does not read back.
+
+   The numbers are naturals in 32-bit limbs, least significant first. The
+   denominator s stays below 2^1079 (ten times 2^1075, for the smallest
+   doubles), and the others below eleven times s. */
+typedef struct { int n; uint32_t d[36]; } gs_big;
+
+/* a = v << sh, for v > 0. */
+static void gs_big_set(gs_big *a, uint64_t v, int sh) {
+    int w = sh >> 5, b = sh & 31, i;
+    uint64_t lo = v << b, hi = b ? v >> (64 - b) : 0;
+    for (i = 0; i < w; i++) a->d[i] = 0;
+    a->d[w] = (uint32_t)lo;
+    a->d[w + 1] = (uint32_t)(lo >> 32);
+    a->d[w + 2] = (uint32_t)hi;
+    a->n = w + 3;
+    while (!a->d[a->n - 1]) a->n--;
+}
+
+static void gs_big_mul(gs_big *a, uint32_t m) {
+    uint64_t c = 0;
+    for (int i = 0; i < a->n; i++) {
+        c += (uint64_t)a->d[i] * m;
+        a->d[i] = (uint32_t)c;
+        c >>= 32;
     }
-    return n;
+    if (c) a->d[a->n++] = (uint32_t)c;
+}
+
+static void gs_big_mul_pow10(gs_big *a, int k) {
+    for (; k >= 9; k -= 9) gs_big_mul(a, 1000000000u);
+    for (; k > 0; k--) gs_big_mul(a, 10);
+}
+
+static int gs_big_cmp(const gs_big *a, const gs_big *b) {
+    if (a->n != b->n) return a->n < b->n ? -1 : 1;
+    for (int i = a->n - 1; i >= 0; i--)
+        if (a->d[i] != b->d[i]) return a->d[i] < b->d[i] ? -1 : 1;
+    return 0;
+}
+
+/* t = a + b */
+static void gs_big_add(gs_big *t, const gs_big *a, const gs_big *b) {
+    int n = a->n > b->n ? a->n : b->n;
+    uint64_t c = 0;
+    for (int i = 0; i < n; i++) {
+        c += (uint64_t)(i < a->n ? a->d[i] : 0) + (i < b->n ? b->d[i] : 0);
+        t->d[i] = (uint32_t)c;
+        c >>= 32;
+    }
+    t->n = n;
+    if (c) t->d[t->n++] = (uint32_t)c;
+}
+
+/* a -= b, for a >= b. */
+static void gs_big_sub(gs_big *a, const gs_big *b) {
+    uint64_t borrow = 0;
+    for (int i = 0; i < a->n; i++) {
+        uint64_t x = (uint64_t)a->d[i] - (i < b->n ? b->d[i] : 0) - borrow;
+        a->d[i] = (uint32_t)x;
+        borrow = x >> 63;
+    }
+    while (a->n && !a->d[a->n - 1]) a->n--;
+}
+
+/* The shortest digits of f * 2^e (f > 0) as a float of `bits` significant
+   bits and least exponent emin, into dig; returns their count and sets *k
+   so that the value they spell is 0.d1d2... * 10^*k. */
+static int gs_float_digits(uint64_t f, int e, int bits, int emin, char *dig, int *k) {
+    gs_big r, s, mp, mlo, t;
+    /* Reading rounds a tie to the even significand, so the interval that
+       reads back as f * 2^e includes its ends when f is even. */
+    int even = !(f & 1);
+    /* Below a power of two, the gap to the next float down is half the gap up. */
+    int asym = f == (uint64_t)1 << (bits - 1) && e > emin;
+    int up = e > 0 ? e : 0, lg = e - 1, n = 0, c;
+    /* The value is r / s, and what reads back as it reaches from (r - *mm) / s
+       to (r + mp) / s: half the gap to each neighbour. */
+    gs_big *mm = asym ? &mlo : &mp;
+    gs_big_set(&r, f, up + 1 + asym);
+    gs_big_set(&s, 1, up - e + 1 + asym);
+    gs_big_set(&mp, 1, up + asym);
+    gs_big_set(&mlo, 1, up);
+    /* Scale to 10^*k, the least power of ten above the interval: with
+       lg = floor(log2 value), ceil(lg log10 2) is it or one short, and
+       78913 / 2^18 is log10 2 closely enough to compute that for |lg| < 1650. */
+    for (uint64_t g = f; g; g >>= 1) lg++;
+    *k = lg > 0 ? ((lg * 78913) >> 18) + 1 : -((-lg * 78913) >> 18);
+    if (*k >= 0) gs_big_mul_pow10(&s, *k);
+    else {
+        gs_big_mul_pow10(&r, -*k);
+        gs_big_mul_pow10(&mp, -*k);
+        if (asym) gs_big_mul_pow10(&mlo, -*k);
+    }
+    gs_big_add(&t, &r, &mp);
+    c = gs_big_cmp(&t, &s);
+    if (even ? c >= 0 : c > 0) {
+        gs_big_mul(&s, 10);
+        ++*k;
+    }
+    /* Each digit d leaves the remainder r: stop where the digits so far
+       followed by d (r within *mm) or by d + 1 (r + mp past s) read back. */
+    for (;;) {
+        int d = 0, low, high;
+        gs_big_mul(&r, 10);
+        gs_big_mul(&mp, 10);
+        if (asym) gs_big_mul(&mlo, 10);
+        while (gs_big_cmp(&r, &s) >= 0) {
+            gs_big_sub(&r, &s);
+            d++;
+        }
+        c = gs_big_cmp(&r, mm);
+        low = even ? c <= 0 : c < 0;
+        gs_big_add(&t, &r, &mp);
+        c = gs_big_cmp(&t, &s);
+        high = even ? c >= 0 : c > 0;
+        if (!low && !high) {
+            dig[n++] = (char)('0' + d);
+            continue;
+        }
+        if (low && high) {
+            /* Both read back: the nearer, d + 1 when r is past half of s,
+               and of two as near, the even one. */
+            gs_big_add(&t, &r, &r);
+            c = gs_big_cmp(&t, &s);
+            high = c > 0 || (c == 0 && (d & 1));
+        }
+        dig[n++] = (char)('0' + d + high);
+        return n;
+    }
+}
+
+/* The text of a finite float from its fields: the sign, the significand
+   without its implicit bit and the biased exponent, for a type of `bits`
+   significant bits and least exponent emin. The digits are laid out as C's
+   %g lays them out at a precision of max(15, digits): in exponent form, with
+   at least two exponent digits, below 1e-4 or from that power of ten up. */
+static int64_t gs_fmt_float(uint8_t *dst, int neg, uint64_t frac, int bexp, int bits,
+                            int emin) {
+    char dig[20], *p = (char *)dst;
+    int k, n, x, i;
+    if (neg) *p++ = '-';
+    if (!frac && !bexp) {
+        memcpy(p, "0.0", 3);
+        return p + 3 - (char *)dst;
+    }
+    n = gs_float_digits(bexp ? frac | (uint64_t)1 << (bits - 1) : frac,
+                        (bexp ? bexp - 1 : 0) + emin, bits, emin, dig, &k);
+    x = k - 1;
+    if (x < -4 || x >= (n > 15 ? n : 15)) {
+        *p++ = dig[0];
+        if (n > 1) *p++ = '.';
+        for (i = 1; i < n; i++) *p++ = dig[i];
+        *p++ = 'e';
+        *p++ = x < 0 ? '-' : '+';
+        if (x < 0) x = -x;
+        if (x >= 100) *p++ = (char)('0' + x / 100);
+        *p++ = (char)('0' + x / 10 % 10);
+        *p++ = (char)('0' + x % 10);
+    } else if (x < 0) {
+        *p++ = '0';
+        *p++ = '.';
+        for (i = -1; i > x; i--) *p++ = '0';
+        for (i = 0; i < n; i++) *p++ = dig[i];
+    } else {
+        for (i = 0; i < n || i <= x; i++) {
+            if (i == x + 1) *p++ = '.';
+            *p++ = i < n ? dig[i] : '0';
+        }
+        /* A whole number still reads as a float: 1.0, not 1. */
+        if (n <= x + 1) {
+            *p++ = '.';
+            *p++ = '0';
+        }
+    }
+    return p - (char *)dst;
 }
 
 GS_API int64_t gs_fmt_f64(uint8_t *dst, double v) {
+    uint64_t b;
     /* C libraries disagree here (msvcrt, which tcc uses on Windows, writes
        1.#INF and -1.#IND; others give a NaN's sign bit, which depends on
        the CPU that made it), so these are spelled by the runtime. */
@@ -544,36 +712,19 @@ GS_API int64_t gs_fmt_f64(uint8_t *dst, double v) {
         memcpy(dst, "-inf", 4);
         return 4;
     }
-    int n = snprintf((char *)dst, GS_FMT_MAX, "%.15g", v);
-    if (strtod((char *)dst, NULL) != v) n = snprintf((char *)dst, GS_FMT_MAX, "%.17g", v);
-    n = gs_fmt_exp((char *)dst, n);
-    /* A whole number still reads as a float: 1.0, not 1. */
-    if (!memchr(dst, '.', (size_t)n) && !memchr(dst, 'e', (size_t)n)) {
-        dst[n++] = '.';
-        dst[n++] = '0';
-    }
-    return n;
+    memcpy(&b, &v, sizeof b);
+    return gs_fmt_float(dst, (int)(b >> 63), b & (((uint64_t)1 << 52) - 1),
+                        (int)(b >> 52) & 0x7FF, 53, -1074);
 }
 
-/* The fewest significant digits that read back as the same f32, laid out as
-   the text of the f64 nearest them, so both types share one style. Above
-   the subnormals, %.6g already gives any shorter form that reads back. The
-   test reads through strtod rather than strtof: tcc's strtof on Windows is
-   a rounded strtod, and one test keeps every backend's choice the same. */
+/* The digits are the f32's own, laid out as an f64's are, so 0.1 as an f32
+   prints as 0.1, not as the digits of the f64 it widens to. */
 GS_API int64_t gs_fmt_f32(uint8_t *dst, float v) {
     double d = v;
-    if (d == d && !isinf(d)) {
-        char buf[GS_FMT_MAX];
-        for (int p = (v < 0 ? -v : v) < 1.17549435e-38f ? 1 : 6; p <= 9; p++) {
-            snprintf(buf, sizeof(buf), "%.*g", p, d);
-            double r = strtod(buf, NULL);
-            if ((float)r == v) {
-                d = r;
-                break;
-            }
-        }
-    }
-    return gs_fmt_f64(dst, d);
+    uint32_t b;
+    if (d != d || isinf(d)) return gs_fmt_f64(dst, d);
+    memcpy(&b, &v, sizeof b);
+    return gs_fmt_float(dst, (int)(b >> 31), b & 0x7FFFFF, (int)(b >> 23) & 0xFF, 24, -149);
 }
 
 GS_API int64_t gs_fmt_bool(uint8_t *dst, int64_t v) {

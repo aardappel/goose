@@ -3652,18 +3652,28 @@ the rendered type. This is narrower than ordinary generic overload
 resolution. Reference rendering follows pointees and has no cycle
 detection: a cyclic value recurses through its render functions until the
 native stack runs out (§7, **Native stacks**). Finite float formatting
-currently tries 15 significant decimal digits, then 17 if needed to recover
-the `f64`, with redundant exponent zeroes removed to at least two
-digits (`gs_fmt_f64`). That is a round-trip format, not a general
-shortest-decimal algorithm; see section 11. An `f32` takes the fewest of 6
-to 9 digits that read back as the same `f32` (`gs_fmt_f32`), through
-`strtod` and a cast on every backend, and is laid out as the text of the
-`f64` nearest those digits, so `f32` and `f64` text share one style. A
-whole number gets `.0` (`1.0`, `2147483600.0`), as does the compiler's own
-text of a double (`CatOne`), which C float literals and dumps use. Infinities and NaNs are
-spelled by the runtime (`inf`, `-inf`, `nan`) rather than by the C
-library, which differs between backends: msvcrt, linked by TinyCC on
-Windows, writes `1.#INF` and `-1.#IND`, and others print a NaN's sign.
+(`gs_fmt_f64`, `gs_fmt_f32`) writes the fewest significant decimal digits
+that read back as the same value of the float's own type and, of those,
+the ones nearest it, a tie going to the even digit: what Python's `repr`
+and Ryu give a double, and the same for an `f32`, so an `f32` 0.1 prints
+as `0.1` rather than as the digits of the `f64` it widens to. The digits
+come from Burger and Dybvig's free-format algorithm in integer arithmetic
+(naturals of at most 36 32-bit limbs), not from the C library, so every
+backend prints the same text: msvcrt, linked by TinyCC on Windows, rounds
+a `printf` tie away from zero where other libraries round it to even, and
+no search over correctly rounded `printf` spellings finds a power of
+two's shortest text where that lies above the value (section 11). They
+are laid out as C's `%g` lays them out at a precision of max(15, digit
+count): in exponent form, with at least two exponent digits, below 1e-4
+or from that power of ten up (`1e-05`, `5e-324`, `1e+15`,
+`1.7976931348623157e+308`), positionally otherwise (`123456789012345.6`,
+`9007199254740992.0`), with `.0` after a whole number (`1.0`,
+`2147483600.0`). The compiler's own text of a double (`CatOne`), which C
+float literals and dumps use, is the same text, its digits from
+`std::to_chars`. Infinities and NaNs are spelled by the runtime (`inf`,
+`-inf`, `nan`) rather than by the C library, which differs between
+backends: msvcrt writes `1.#INF` and `-1.#IND`, and others print a NaN's
+sign.
 
 ### 6.10 Loop-invariant views and stack-top caching
 
@@ -4420,12 +4430,25 @@ failures.
    field values once and encode links at each destination; `self` denotes
    each new element. Variable-size operands also evaluate once.
 
-8. **Float text is not always shortest.** `gs_fmt_f64` prints
+8. **Float text was not always shortest.** `gs_fmt_f64` printed
    `1.000000000000001` as `1.0000000000000011`, even though the shorter
-   spelling reads back to the same value. Its 15/17-digit strategy meets
-   round-trip accuracy, but not spec §3.7's shortest-form promise.
-   **Open:** the shortest-float formatting fix is deferred; the compiler
-   retains its existing 15/17-digit formatting.
+   spelling reads back to the same value: it kept the first correctly
+   rounded `printf` spelling of 15, then 17 significant digits that
+   `strtod` read back, and `gs_fmt_f32` did the same from 6 to 9 digits.
+   Trying 16 digits as well still missed powers of two: below one the gap
+   to the next float is half the gap above, so the shortest text can lie
+   above the value while the correctly rounded spelling of that length,
+   below it, reads back as another float. 2^89 printed as
+   `6.1897001964269014e+26` rather than `6.189700196426902e+26`, as did
+   45 other doubles and three `f32`s (2^-96, 2^87 and 2^90) with one digit
+   too many. And under TinyCC on Windows, msvcrt's `printf` rounds a tie
+   away from zero, so `562949953421312.25`, halfway between two 16-digit
+   spellings that both read back, printed as `562949953421312.3` there and
+   as `562949953421312.2` elsewhere.
+   **Resolved:** the runtime finds the shortest digits, and the nearest of
+   those, exactly, in integers (section 6.9), and `CatOne` takes them from
+   `std::to_chars`. `test/runtime/float_text_shortest.goose` prints the
+   powers of two and ties.
 
 9. **Some construction paths still copy whole fresh results.** The
    fallbacks in section 6.5 contradict spec §4.3/§7.3's unconditional
