@@ -1233,6 +1233,11 @@ struct CodeGen {
     void ResetFnState();
     string EnsureEr(FnSpec *sp);
     void EmitSpec(FnSpec *sp, bool er = false);
+    // The instruction-set levels above the baseline a simd function has a
+    // version for; runtime.h names them (GS_SIMD_TARGET1, ...).
+    static constexpr int SIMD_LEVELS = 2;
+    void EmitSimdVersions(FnSpec *sp, const string &name, const string &params,
+                          const string &fnbody);
 
     // ------------------------------------------------------------------
     // Globals (§11.1): C globals plus dedicated data stacks for nonfixed

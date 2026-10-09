@@ -186,9 +186,82 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 #define GS_UNREACHABLE(f, l) ((void)0)
 #endif
 
-/* Unaligned loads of 4 and 8 bytes. The optimizing backends turn the
+/* simd functions (§7.12): the compiler writes each one's body once per
 )GSRT"
-R"GSRT(   fixed-size memcpy into one move. */
+R"GSRT(   instruction-set level, the baseline under the function's name, and the
+   baseline calls the highest version the CPU supports. GS_SIMD is the
+   highest level built: 0 just the baseline, 1 adds an AVX2 version (with
+   BMI1, BMI2, LZCNT and POPCNT, which the check below asks for one by one),
+   2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4). It needs clang
+   on x86-64: its target attribute, its inline assembly for cpuid, and a
+   pragma that keeps every version from contracting a multiply and an add
+   into one fused rounding (AVX-512 implies FMA to clang), which would make
+   a version's float results differ from the baseline's. Elsewhere the
+   versions are left out, and so is the choice. -DGS_SIMD=0 or 1 lowers the
+   level; nothing raises it. */
+#if defined(__clang__) && (defined(__x86_64__) || defined(_M_X64)) && !defined(__TINYC__)
+#ifndef GS_SIMD
+#define GS_SIMD 2
+#endif
+#else
+#undef GS_SIMD
+#define GS_SIMD 0
+#endif
+#if GS_SIMD >= 1
+#define GS_SIMD_TARGET1 __attribute__((target("avx2,bmi,bmi2,lzcnt,popcnt")))
+#define GS_SIMD_TARGET2 \
+    __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,bmi,bmi2,lzcnt,popcnt")))
+#define GS_SIMD_EXACT _Pragma("clang fp contract(off)")
+
+static inline void gs_cpuid(uint32_t leaf, uint32_t r[4]) {
+    __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(0));
+}
+
+/* The highest level both the CPU and the operating system support (the OS
+   has to save the wider registers: XGETBV's XCR0), capped at GS_SIMD. */
+static inline int gs_simd_detect(void) {
+    uint32_t r[4], b7, xcr0, xhi;
+    gs_cpuid(0, r);
+    if (r[0] < 7) return 0;
+    gs_cpuid(1, r);
+    /* OSXSAVE, AVX, POPCNT. */
+    if ((r[2] & (1u << 27 | 1u << 28 | 1u << 23)) != (1u << 27 | 1u << 28 | 1u << 23)) return 0;
+    __asm__ volatile("xgetbv" : "=a"(xcr0), "=d"(xhi) : "c"(0));
+    (void)xhi;
+    if ((xcr0 & 0x6) != 0x6) return 0;                  /* XMM and YMM state. */
+    gs_cpuid(7, r);
+    b7 = r[1];
+    if ((b7 & (1u << 5 | 1u << 3 | 1u << 8)) != (1u << 5 | 1u << 3 | 1u << 8))
+        return 0;                                       /* AVX2, BMI1, BMI2. */
+    gs_cpuid(0x80000000u, r);
+    if (r[0] < 0x80000001u) return 0;
+    gs_cpuid(0x80000001u, r);
+    if (!(r[2] & (1u << 5))) return 0;                  /* LZCNT. */
+    if (GS_SIMD < 2 || (xcr0 & 0xe0) != 0xe0) return 1; /* Opmask and ZMM state. */
+    /* AVX512F, DQ, CD, BW, VL. */
+    if ((b7 & (1u << 16 | 1u << 17 | 1u << 28 | 1u << 30 | 1u << 31)) !=
+        (1u << 16 | 1u << 17 | 1u << 28 | 1u << 30 | 1u << 31))
+        return 1;
+    return 2;
+}
+
+/* Detected at the first call and kept. Every thread computes the same
+   level, so a relaxed atomic is all a race between two first calls needs. */
+static inline int gs_simd_level(void) {
+    static int level = -1;
+    int l = __atomic_load_n(&level, __ATOMIC_RELAXED);
+    if (l < 0) {
+        l = gs_simd_detect();
+        __atomic_store_n(&level, l, __ATOMIC_RELAXED);
+    }
+    return l;
+}
+#else
+#define GS_SIMD_EXACT
+#endif
+
+/* Unaligned loads of 4 and 8 bytes. The optimizing backends turn the
+   fixed-size memcpy into one move. */
 static uint32_t gs_ld32(const void *p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static uint64_t gs_ld64(const void *p) { uint64_t v; memcpy(&v, p, 8); return v; }
 
@@ -297,7 +370,8 @@ static T gs_sub_##SFX(T a, T b, const char *file, int line) { \
     return (T)r; } \
 static T gs_mul_##SFX(T a, T b, const char *file, int line) { \
     int64_t r = (int64_t)a * (int64_t)b; \
-    if (r < MIN || r > MAX) gs_ovf(a, "*", b, #SFX, file, line); \
+)GSRT"
+R"GSRT(    if (r < MIN || r > MAX) gs_ovf(a, "*", b, #SFX, file, line); \
     return (T)r; } \
 static T gs_neg_##SFX(T a, const char *file, int line) { \
     int64_t r = -(int64_t)a; \
@@ -365,8 +439,7 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 #define gs_mul_i8(a, b, f, l)  ((int8_t)((int64_t)(a) * (int64_t)(b)))
 #define gs_neg_i8(a, f, l)     ((int8_t)(-(int64_t)(a)))
 #define gs_shl_i8(a, n)  ((int8_t)((uint64_t)(a) << ((n) & 7)))
-)GSRT"
-R"GSRT(#define gs_shr_i8(a, n)  ((int8_t)((int64_t)(a) >> ((n) & 7)))
+#define gs_shr_i8(a, n)  ((int8_t)((int64_t)(a) >> ((n) & 7)))
 
 #define gs_add_i16(a, b, f, l) ((int16_t)((int64_t)(a) + (int64_t)(b)))
 #define gs_sub_i16(a, b, f, l) ((int16_t)((int64_t)(a) - (int64_t)(b)))
@@ -473,7 +546,8 @@ static uint64_t gs_div128_u64(uint64_t hi, uint64_t d, uint64_t *rem) {
 #elif defined(_MSC_VER) && _MSC_VER >= 1920 && defined(_M_X64)
 #include <intrin.h>
 #define GS_HAVE_U128 1
-static uint64_t gs_mulhi_u64(uint64_t a, uint64_t b) { return __umulh(a, b); }
+)GSRT"
+R"GSRT(static uint64_t gs_mulhi_u64(uint64_t a, uint64_t b) { return __umulh(a, b); }
 static uint64_t gs_div128_u64(uint64_t hi, uint64_t d, uint64_t *rem) {
     return _udiv128(hi, 0, d, rem);
 }
@@ -557,8 +631,7 @@ static uint64_t gs_rangechk_u(uint64_t v, uint64_t hi, const char *type, const c
 /* To a signed type or a narrower unsigned one, whose range is lo..hi. */
 static int64_t gs_f2ichk(double d, int f32, int64_t lo, int64_t hi, const char *type,
                          const char *file, int line) {
-)GSRT"
-R"GSRT(    if (!(d >= -9223372036854775808.0 && d < 9223372036854775808.0))
+    if (!(d >= -9223372036854775808.0 && d < 9223372036854775808.0))
         gs_asfail_f("out of range", d, f32, type, file, line);
     int64_t v = (int64_t)d;
     if (v < lo || v > hi) gs_asfail_f("out of range", d, f32, type, file, line);
@@ -666,7 +739,8 @@ static void gs_stack_init(gs_stack *s) {
 }
 
 /* The calling thread program's block of n stacks, each with its region:
-   main's from gs_rt_init, a worker's from its entry thunk. */
+)GSRT"
+R"GSRT(   main's from gs_rt_init, a worker's from its entry thunk. */
 static void gs_stack_block(int64_t n) {
     gs_stks = (gs_stack *)calloc((size_t)(n > 0 ? n : 1), sizeof(gs_stack));
     if (!gs_stks) gs_panic("out of memory allocating stack block");
@@ -751,8 +825,7 @@ static void gs_spans_drop(gs_span *s, int64_t *n, uint8_t **top, int64_t at) {
 
 /* Takes cnt elements off the front of span `at`, or all of a span that
    holds no more. */
-)GSRT"
-R"GSRT(static void gs_spans_take(gs_span *s, int64_t *n, uint8_t **top, int64_t at, int64_t cnt) {
+static void gs_spans_take(gs_span *s, int64_t *n, uint8_t **top, int64_t at, int64_t cnt) {
     if (s[at].cnt <= cnt) {
         gs_spans_drop(s, n, top, at);
         return;
@@ -886,7 +959,8 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
     return gs_uleb_write(p, ((uint64_t)v << 1) ^ (uint64_t)(v >> 63));
 }
 
-/* ---------------------------------------------------------------------------
+)GSRT"
+R"GSRT(/* ---------------------------------------------------------------------------
    Verified loading (docs/design/serialization.md): what the generated
    gs_verify_<T> walkers are built from. The bytes are untrusted until the
    walk finishes, so every read here is bounded by the image end and reports
@@ -958,8 +1032,7 @@ GS_API int64_t gs_fmt_bool(uint8_t *dst, int64_t v);
 GS_API int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n);
 
 /* print(...) (§3.7): each argument's text, then a newline. */
-)GSRT"
-R"GSRT(GS_API void gs_out_int(int64_t v);
+GS_API void gs_out_int(int64_t v);
 GS_API void gs_out_uint(uint64_t v);
 GS_API void gs_out_flt(double v);
 GS_API void gs_out_f32(float v);

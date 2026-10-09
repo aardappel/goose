@@ -450,6 +450,50 @@ inline string CodeGen::HoistAggregateDecls(string &b) {
     return decls;
 }
 
+// A simd function (§7.12): its body once per instruction-set level above
+// the baseline, each under that level's target attribute and compiled where
+// the C compiler supports the level (GS_SIMD, runtime.h), then the baseline
+// under the function's own name, which starts by calling the highest
+// version the CPU supports. Callers, prototypes and function values see one
+// function. Every version computes what the baseline does: the C is the
+// same text, its integer semantics are spelled out, and GS_SIMD_EXACT keeps
+// the C compiler from fusing a multiply and an add into one rounding in any
+// of them, which the wider instruction sets would otherwise let it do.
+inline void CodeGen::EmitSimdVersions(FnSpec *sp, const string &name, const string &params,
+                                      const string &fnbody) {
+    // The parameter list is `type name` declarations whose types are
+    // typedef names or pointers to them; the names forward the call.
+    string args;
+    if (params != "void") {
+        for (size_t b = 0; b <= params.size();) {
+            auto e = std::min(params.find(',', b), params.size());
+            auto nb = e;
+            while (nb > b && (isalnum((unsigned char)params[nb - 1]) || params[nb - 1] == '_'))
+                nb--;
+            assert(nb < e);
+            Append(args, args.empty() ? "" : ", ", string_view(params).substr(nb, e - nb));
+            b = e + 1;
+        }
+    }
+    auto ret = SigRet(sp);
+    vector<string> vnames(SIMD_LEVELS + 1);
+    for (int lv = SIMD_LEVELS; lv >= 1; lv--) {
+        vnames[lv] = Unique(cat(name, "_simd", lv));
+        Append(code, "#if GS_SIMD >= ", lv, "\nGS_SIMD_TARGET", lv, " static ", ret, " ",
+               vnames[lv], "(", params, ") {\n    GS_SIMD_EXACT\n", fnbody, "}\n#endif\n");
+    }
+    Append(code, "static ", ret, " ", name, "(", params, ") {\n    GS_SIMD_EXACT\n",
+           "#if GS_SIMD >= 1\n    switch (gs_simd_level()) {\n");
+    for (int lv = SIMD_LEVELS; lv >= 1; lv--) {
+        if (lv > 1) Append(code, "#if GS_SIMD >= ", lv, "\n");
+        auto call = cat(vnames[lv], "(", args, ")");
+        if (ret == "void") Append(code, "    case ", lv, ": ", call, "; return;\n");
+        else Append(code, "    case ", lv, ": return ", call, ";\n");
+        if (lv > 1) Append(code, "#endif\n");
+    }
+    Append(code, "    }\n#endif\n", fnbody, "}\n\n");
+}
+
 inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     curspec = sp;
     curinfo = &sinfo[sp];
@@ -523,21 +567,22 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     auto bodyout = ExpandTopMarkers(body, plan);
     assert(bodyout.find("@@gs") == string::npos);
     auto decls = HoistAggregateDecls(bodyout);
-    Append(code, "static ", FnAttrs(sp), SigRet(sp), " ", er ? ernames[sp] : curinfo->cname, "(",
-           params, ") {\n");
-    code += decls;
+    string fnbody = decls;
     // A whole-body cache loads at entry; a per-loop one declares and loads
     // itself at its loop's edge.
     for (size_t i = 0; i < toporder.size(); i++)
         if (!plan.fnlocals[i].empty())
-            Append(code, "    uint8_t *", plan.fnlocals[i], " = ", toporder[i], "->top;\n");
-    code += plan.fnlens;
+            Append(fnbody, "    uint8_t *", plan.fnlocals[i], " = ", toporder[i], "->top;\n");
+    fnbody += plan.fnlens;
     // Every global pool's stack is reserved by gs_init_globals, which
     // main runs before anything else, so these are final on entry.
     for (auto &p : poolbases)
-        Append(code, "    uint8_t *", p.second, " = ", gnames[p.first], ".base;\n");
-    code += bodyout;
-    code += "}\n\n";
+        Append(fnbody, "    uint8_t *", p.second, " = ", gnames[p.first], ".base;\n");
+    fnbody += bodyout;
+    auto name = er ? ernames[sp] : curinfo->cname;
+    if (sp->sf->issimd) EmitSimdVersions(sp, name, params, fnbody);
+    else Append(code, "static ", FnAttrs(sp), SigRet(sp), " ", name, "(", params, ") {\n", fnbody,
+                "}\n\n");
     curspec = nullptr;
     curinfo = nullptr;
     emiter = false;

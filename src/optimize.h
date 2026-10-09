@@ -454,8 +454,9 @@ struct Optimizer {
         info.nodecount = 0;
         info.nest = 0;
         info.nestedcalls = false;
+        // A simd body inlined into a caller would lose its versions (§7.12).
         auto noin = sp->sf->isrec || sp->incycle || sp->sf->isthread || sp->sf->isexport ||
-                    sp->rets.size() > 1 || sp->relnamedresult;
+                    sp->sf->issimd || sp->rets.size() > 1 || sp->relnamedresult;
         function<void(Node *, int)> rec = [&](Node *n, int d) {
             if (!n) return;
             info.nodecount++;

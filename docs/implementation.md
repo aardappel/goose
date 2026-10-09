@@ -2843,7 +2843,8 @@ saved. It stays out of line, and is declared `GS_NOINLINE` in C
 (`FnSpec::outofline`), since the C compiler otherwise inlines a static
 function with one caller whatever its size. A branch the condition's
 constant decides is folded away first and is not cold. Never inlined (`Scan`): a `recursive` function
-or cycle member, a `thread_fn`, a function returning more than one value, and
+or cycle member, a `thread_fn`, a `simd` function (its callers would run the
+baseline only, §6.13), a function returning more than one value, and
 a body that a *separate* live tree still references in a way a copy cannot
 follow -- a remaining call to a specialization with bound function values
 reaches its locals as free variables, and a remaining callee that does
@@ -4166,6 +4167,61 @@ statement of the body the value the decrement would have left, and after
 the loop, `0` or its value at entry when that was not positive. An
 up-counting induction variable is the form clang compiles best.
 
+### 6.13 `simd` functions
+
+A `simd fn` (spec §7.12) is emitted by `EmitSimdVersions` from the finished
+body text of each of its specializations, its element-run twin included:
+one copy per level above the baseline, named `<cname>_simd<level>` and
+marked `GS_SIMD_TARGET<level>`, then the baseline under the function's own
+name, which starts by switching on `gs_simd_level()` to the highest version
+built and supported, forwarding its parameters (the names of `SigParams`'
+declarations). Every caller, prototype, function value, export wrapper and
+thread thunk names the baseline, so nothing else changes. The versions are
+under `#if GS_SIMD >= <level>` and the switch under `#if GS_SIMD >= 1`;
+the runtime (`runtime.h`) sets `GS_SIMD` to 2 under clang on x86-64 and to
+0 everywhere else, where the C compiler sees one ordinary function, so
+MSVC, TinyCC and other targets pay nothing. A build can lower it with
+`-DGS_SIMD=1` (no AVX-512 version) or `0`.
+
+* **Levels.** 1 is AVX2 with BMI1, BMI2, LZCNT and POPCNT; 2 adds AVX-512
+  F, BW, CD, DQ and VL (x86-64-v4). Neither includes FMA. Clang inlines a
+  baseline callee into a version (a callee whose target features are a
+  subset of the caller's), so a small helper the loop calls is vectorized
+  with it; it never inlines a version into the baseline.
+* **Detection** (`gs_simd_detect`) is the compiler's own: `cpuid` for the
+  feature bits and `xgetbv` for the register state the operating system
+  saves (XCR0's YMM bits for level 1, its opmask and ZMM bits for level 2),
+  in inline assembly. An operating system that enables a register state
+  only at its first use (macOS does so for AVX-512) shows it clear and
+  gets the lower level: the check can miss a version, never pick one the
+  machine cannot run. Clang's `target_clones` would write the dispatch
+  itself, but it needs compiler-rt's `__cpu_model` and
+  `__cpu_indicator_init`, which a Windows link does not have. The level is
+  detected at the first call and kept in a static that every thread reads
+  and may write the same value into, through relaxed atomics, so there is
+  no initialization order to get right and no race.
+* **Exactness.** Clang's default `-ffp-contract=on` fuses a multiply and an
+  add within one C expression wherever FMA exists, which AVX-512 implies.
+  That would make a version's float results differ from the baseline's
+  (`test/codegen/simd_versions.goose` prints other digits without the guard),
+  so every version, the baseline included, starts with `GS_SIMD_EXACT`,
+  `#pragma clang fp contract(off)`. The same contraction measured 2x slower
+  on a matrix multiply under AVX-512, an FMA's latency lengthening its dot
+  product's dependency chain. GCC has the target attribute but no such
+  pragma, which is why the versions are clang's only.
+* **Annotated, not automatic.** Building a whole suite of 50 benchmark
+  programs, as written, for AVX2 or for AVX-512 without contraction measured
+  1-4% faster in total, inside the run-to-run noise, with no program gaining
+  in every run: their loops are scalar, or already vectorize at SSE2. With
+  clang's default contraction AVX-512 measured 15% slower. Versions of every
+  function with a loop would cost two to three times their code for that.
+  Whether a loop gains depends on its shape (an arithmetic byte mapping
+  vectorizes, a table lookup becomes gathers that are no faster, a
+  memory-bound kernel gains from AVX2 but not from AVX-512), which the
+  compiler does not know and the programmer measures; so the programmer says
+  which functions get versions. The cost of `simd` is the body once per level
+  and one predicted branch on a load per call.
+
 ---
 
 ## 7. The runtime
@@ -4691,6 +4747,32 @@ because codegen restates them (§6.12):
 The block forms need the iteration count fixed when the loop starts: a body
 that may change the length of the array it walks (§6.5) runs one iteration
 at a time.
+
+### 9.11 Wider instruction sets
+
+The C is built for the target's baseline (SSE2 on x86-64), where many byte
+loops cannot vectorize profitably: a stride-3 deinterleave needs SSSE3's
+`pshufb`. `simd fn` (§6.13) gives a function AVX2 and AVX-512 versions under
+clang, chosen at run time. What makes a loop worth it:
+
+* clang can vectorize it: no early exit (accumulate a validity flag, `seen
+  |= a | b | c | d`, instead of breaking), every check elided (§9.1), and
+  nothing in it that syncs a cached stack top (§6.10);
+* the per-element work is arithmetic. A table lookup becomes a gather,
+  which measured no faster than scalar loads on Zen 5, while ranges tested
+  with a wrapping subtraction (`if c - 'a' < 26 { v = c - 71; }`) become
+  compares and blends;
+* the function runs the loop, rather than being called from inside one.
+
+An arithmetic Base64 codec written so is the example: it encodes and
+decodes a test input in 0.58/0.55 s at SSE2 (a table codec 0.64/0.57),
+0.15/0.20 with AVX2 and 0.10/0.09 with AVX-512. For floats, a loop clang
+may not reassociate has to be vectorizable as written: a dot product's
+running sum is not, while the same sums taken as row updates
+(`c_row[j] += aik * b_row[j]` for k in order) are, and round identically.
+A matrix multiply written that way goes from 2.67 s to 0.91 at SSE2 and
+0.49 with AVX2; AVX-512 adds nothing there, the kernel being bound by its
+reads of `b`.
 
 ---
 

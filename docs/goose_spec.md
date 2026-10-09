@@ -2598,6 +2598,41 @@ The wrapper calls the normal generated Goose specialization, not its hidden
 internal C signature. This keeps Goose's stack argument and other compiler
 implementation details out of the function's public C signature.
 
+### 7.12 `simd fn`: versions per instruction set
+
+```goose
+simd fn encode(out: u8[>..]&, src: u8[:]) { ... }
+```
+
+`simd` asks the implementation to build the function once for the
+baseline instruction set of its target and once more for each wider one it
+supports (AVX2 and AVX-512 on x86-64), and to run, every time the function
+is called, the widest version the CPU running the program has. It is meant
+for a function holding a hot loop the C compiler can vectorize, which the
+baseline's instruction set can only do poorly or not at all: byte
+transforms, codecs, kernels over arrays.
+
+`simd` has no meaning of its own: every version computes exactly what the
+baseline does, so no program's output, aborts or exit status depends on
+which one runs, or on whether there are versions at all. Integers already
+compute at their exact widths (§6.2), checks abort where they would, and
+float operations round as the baseline's do, one rounding per operation:
+no version fuses a multiply and an add into one rounding where the
+baseline would not. An implementation may ignore `simd` entirely, as the
+C backend does under compilers other than clang on x86-64 and under the
+JIT.
+
+Versions are per function: everything the function contains is in each,
+including the callees inlined into it. The function itself stays out of
+line, since a caller it was inlined into would run the baseline's code,
+and each call to it pays for one test of the CPU's level, so it suits a
+function that runs a loop rather than one called from inside one. The cost
+is code size: the function's body once per version.
+
+`simd` comes after `export` and before `recursive`; it applies to
+functions with bodies, nested ones and generic ones included (each
+specialization has its versions), and `extern simd fn` is an error.
+
 ## 8. ADTs in use
 
 ### 8.1 `match`
@@ -3431,8 +3466,9 @@ came from is `design/stdlib_design.md`). The math types of §6.1 are its
 Deliberately out of scope for v1: error-value conventions (§7.9); move
 operations for resizables; multiple resizables per struct; two-way growth
 arrays; inline compaction / copying GC for pools; mixed-type pools;
-SIMD/alignment annotations; dynamic stacks; labeled break; namespace
-privacy, re-exports and nesting (§11.1).
+alignment annotations and explicit vector types (`simd fn`, §7.12, only
+widens the instruction set a function is built for); dynamic stacks;
+labeled break; namespace privacy, re-exports and nesting (§11.1).
 
 ---
 
@@ -3616,7 +3652,11 @@ the end, each with where its resolution lives.
 10. **SIMD/alignment** — measure whether packed layouts cost real SIMD
     performance; consider opt-in aligned types if so. Related: narrow-lane
     elementwise ops (§6.1) should vectorize now that arithmetic runs at the
-    element width; verify with the particle/sum benchmarks.
+    element width; verify with the particle/sum benchmarks. `simd fn`
+    (§7.12) gives a function versions for the wider instruction sets; what
+    remains open is alignment, and whether a function should be able to
+    say which versions it wants (an AVX-512 version is not faster for
+    every loop).
 13. **Labels for `break`** — if early-out patterns demand them.
 15. **Wasm fallback** — index-based reference representation details.
 16. **Relative-reference region tracking** — copies of values containing
@@ -3822,8 +3862,8 @@ field       := ("let" | "const")? ident ":" type ("=" expr)? | "pad" intlit?
 typealias   := "type" declname "=" type ";"
 generics    := "<" ident (":" type)? ("," ident (":" type)?)* ">"
 
-fndecl      := ("export" strlit? | "extern" strlit?)? "recursive"? ("fn" | "thread_fn") declname
-               generics? "(" params? ")" ("->" rettypes)? (blockexpr | ";")
+fndecl      := ("export" strlit? | "extern" strlit?)? "simd"? "recursive"? ("fn" | "thread_fn")
+               declname generics? "(" params? ")" ("->" rettypes)? (blockexpr | ";")
                                                  // nested: ident only
 params      := param ("," param)* ","?
 param       := "var"? ident (":" type ("=" expr)?)?

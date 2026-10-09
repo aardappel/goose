@@ -175,7 +175,8 @@ struct Parser {
                 ast.topdecls.push_back(New<AliasDecl>(line, al));
                 return;
             }
-            case T_RECURSIVE: case T_FN: case T_THREADFN: case T_EXTERN: case T_EXPORT: {
+            case T_RECURSIVE: case T_FN: case T_THREADFN: case T_EXTERN: case T_EXPORT:
+            case T_SIMD: {
                 auto fd = ParseFnDecl(false);
                 ast.topdecls.push_back(fd);
                 return;
@@ -328,6 +329,10 @@ struct Parser {
                 sf->cname = lex.sval;
                 lex.Next();
             }
+        }
+        if (IsNext(T_SIMD)) {
+            if (sf->isextern) Error("extern fn cannot be simd: it has no body to compile");
+            sf->issimd = true;
         }
         sf->isrec = IsNext(T_RECURSIVE);
         if (lex.tok == T_THREADFN) {
@@ -1239,6 +1244,7 @@ struct Parser {
                     continue;
                 }
                 case T_RECURSIVE: case T_FN: case T_THREADFN: case T_EXTERN: case T_EXPORT:
+                case T_SIMD:
                     b->stmts.push_back(ParseFnDecl(true));
                     continue;
                 case T_GUARD:

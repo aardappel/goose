@@ -1544,12 +1544,49 @@ def main():
                 out = r.run_expected([out_exe], "codegen_exec", f"clang-{label} codegen_exec.goose")
                 if out is not None and r.check_stdout("codegen_exec", f"clang-{label}", out):
                     r.ok(f"cgen-clang-{label} codegen_exec.goose")
+        # The versions of the simd functions (spec §7.12) exist only where
+        # clang builds for x86-64: each level the C may be built for runs
+        # here, at -O2 so the loops vectorize, and has to print what the
+        # baseline does. On a CPU without AVX-512 or AVX2 the higher builds
+        # run the highest version it has, which is still a version.
+        def clang_simd():
+            name = "simd_versions"
+            src = gendir / "simdclang.c"
+            code, out, err = r.goose("-O2", "-o", src, HERE / "codegen" / f"{name}.goose")
+            if code != 0:
+                r.fail(f"simd-clang {name}.goose", out + err)
+                return
+            # Every simd function keeps its versions, the single-use ones the
+            # optimizer would otherwise inline and the element-run twin too.
+            # The generic total has two specializations, numbered.
+            ctext = src.read_text(encoding="utf-8")
+            missing = [f for f in ("caesar_g", "checksum_g", "muladd_g", "squares_g", "minmax_g",
+                                   "biased_g", "fib_g", "sum3_g", "squares_g_er")
+                       if f"{f}_simd1(" not in ctext or f"{f}_simd2(" not in ctext]
+            if len(set(re.findall(r"\b(total_g_\d+)_simd[12]\(", ctext))) != 2:
+                missing.append("total_g")
+            if missing:
+                r.fail(f"simd-clang {name}.goose", f"no simd versions of {', '.join(missing)}")
+                return
+            for level in ("2", "1", "0"):
+                label = f"simd{level}"
+                out_exe = gendir / f"simdclang-{level}{tc.EXE_SUFFIX}"
+                ok, log = clang.compile(src, out_exe, opt=2, warn="off", strict_decls=True,
+                                        defines=[f"GS_SIMD={level}"], runtime=r.runtime,
+                                        log=gendir / f"simdclang-{level}.log")
+                if not ok:
+                    r.fail(f"{label}-clang {name}.goose", "\n".join(log.splitlines()[:8]))
+                    continue
+                out = r.run_expected([out_exe], name, f"clang-{label} {name}.goose")
+                if out is not None and r.check_stdout(name, f"clang-{label}", out):
+                    r.ok(f"{label}-clang {name}.goose")
         if args.profile == "sanitize":
             pass  # The full generated-C suite already ran through Clang.
         elif not clang:
             r.show_later(r.say, "skip cgen-clang (no clang found)")
         else:
             r.show_task(clang_codegen)
+            r.show_task(clang_simd)
 
     def resource_paths():
         from resource_paths import check_resource_paths

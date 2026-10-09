@@ -174,6 +174,79 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 #define GS_UNREACHABLE(f, l) ((void)0)
 #endif
 
+/* simd functions (§7.12): the compiler writes each one's body once per
+   instruction-set level, the baseline under the function's name, and the
+   baseline calls the highest version the CPU supports. GS_SIMD is the
+   highest level built: 0 just the baseline, 1 adds an AVX2 version (with
+   BMI1, BMI2, LZCNT and POPCNT, which the check below asks for one by one),
+   2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4). It needs clang
+   on x86-64: its target attribute, its inline assembly for cpuid, and a
+   pragma that keeps every version from contracting a multiply and an add
+   into one fused rounding (AVX-512 implies FMA to clang), which would make
+   a version's float results differ from the baseline's. Elsewhere the
+   versions are left out, and so is the choice. -DGS_SIMD=0 or 1 lowers the
+   level; nothing raises it. */
+#if defined(__clang__) && (defined(__x86_64__) || defined(_M_X64)) && !defined(__TINYC__)
+#ifndef GS_SIMD
+#define GS_SIMD 2
+#endif
+#else
+#undef GS_SIMD
+#define GS_SIMD 0
+#endif
+#if GS_SIMD >= 1
+#define GS_SIMD_TARGET1 __attribute__((target("avx2,bmi,bmi2,lzcnt,popcnt")))
+#define GS_SIMD_TARGET2 \
+    __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,bmi,bmi2,lzcnt,popcnt")))
+#define GS_SIMD_EXACT _Pragma("clang fp contract(off)")
+
+static inline void gs_cpuid(uint32_t leaf, uint32_t r[4]) {
+    __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(0));
+}
+
+/* The highest level both the CPU and the operating system support (the OS
+   has to save the wider registers: XGETBV's XCR0), capped at GS_SIMD. */
+static inline int gs_simd_detect(void) {
+    uint32_t r[4], b7, xcr0, xhi;
+    gs_cpuid(0, r);
+    if (r[0] < 7) return 0;
+    gs_cpuid(1, r);
+    /* OSXSAVE, AVX, POPCNT. */
+    if ((r[2] & (1u << 27 | 1u << 28 | 1u << 23)) != (1u << 27 | 1u << 28 | 1u << 23)) return 0;
+    __asm__ volatile("xgetbv" : "=a"(xcr0), "=d"(xhi) : "c"(0));
+    (void)xhi;
+    if ((xcr0 & 0x6) != 0x6) return 0;                  /* XMM and YMM state. */
+    gs_cpuid(7, r);
+    b7 = r[1];
+    if ((b7 & (1u << 5 | 1u << 3 | 1u << 8)) != (1u << 5 | 1u << 3 | 1u << 8))
+        return 0;                                       /* AVX2, BMI1, BMI2. */
+    gs_cpuid(0x80000000u, r);
+    if (r[0] < 0x80000001u) return 0;
+    gs_cpuid(0x80000001u, r);
+    if (!(r[2] & (1u << 5))) return 0;                  /* LZCNT. */
+    if (GS_SIMD < 2 || (xcr0 & 0xe0) != 0xe0) return 1; /* Opmask and ZMM state. */
+    /* AVX512F, DQ, CD, BW, VL. */
+    if ((b7 & (1u << 16 | 1u << 17 | 1u << 28 | 1u << 30 | 1u << 31)) !=
+        (1u << 16 | 1u << 17 | 1u << 28 | 1u << 30 | 1u << 31))
+        return 1;
+    return 2;
+}
+
+/* Detected at the first call and kept. Every thread computes the same
+   level, so a relaxed atomic is all a race between two first calls needs. */
+static inline int gs_simd_level(void) {
+    static int level = -1;
+    int l = __atomic_load_n(&level, __ATOMIC_RELAXED);
+    if (l < 0) {
+        l = gs_simd_detect();
+        __atomic_store_n(&level, l, __ATOMIC_RELAXED);
+    }
+    return l;
+}
+#else
+#define GS_SIMD_EXACT
+#endif
+
 /* Unaligned loads of 4 and 8 bytes. The optimizing backends turn the
    fixed-size memcpy into one move. */
 static uint32_t gs_ld32(const void *p) { uint32_t v; memcpy(&v, p, 4); return v; }
