@@ -474,10 +474,27 @@ inline string CodeGen::CT(TypeExpr *t) {
     auto name = NameCT(t);
     auto m = Mangle(t);
     if (cdefined.count(m)) return name;
+    // A variant's struct is a member of its enum's union. Emitting the enum
+    // emits each variant's body ahead of the enum's own, also where a payload
+    // names the enum again (through a slice), so a variant starts there.
+    if (t->kind == TY_VARIANT && EIVar(t)->allfixed) {
+        CT(t->var->adt);
+        if (cdefined.count(m)) return name;
+    }
     cdefined.insert(m);   // Before the body: recursion terminates via refs.
     string d;
     switch (t->kind) {
         case TY_SLICE: {
+            if (StructLike(t->sub) && !IsBytesT(t->sub)) {
+                // Like a reference, a slice needs only its element's name, and
+                // the element's body may hold this slice (a node type with a
+                // slice of its children): the typedef goes first, the body
+                // after it.
+                Append(tdecls, "typedef struct { ", NameCT(t->sub), " *data; int64_t len; } ",
+                       name, ";\n\n");
+                CT(t->sub);
+                return name;
+            }
             auto e = IsBytesT(t->sub) ? string("uint8_t") : CT(t->sub);
             Append(d, "typedef struct { ", e, " *data; int64_t len; } ", name, ";\n");
             break;

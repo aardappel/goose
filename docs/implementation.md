@@ -3179,9 +3179,14 @@ Layout details needed for byte/C compatibility (`FixedSize`, `LayoutFields`,
   struct-like kinds get a forward typedef so a node type can reference
   itself (`NameCT`), and their body at the first use by value or through a
   pointer (`PointeeLv`): a struct the program only reaches through
-  references gets it at the first access through one. Every program name
-  carries the `_g` suffix (`Sanitize`), namespaced ones the namespace's
-  length as well.
+  references gets it at the first access through one. A slice of a
+  struct-like element is typedef'd over the element's forward name and
+  emits the element's body right after it, so a type holding a slice of
+  itself (`enum Op { Loop { body: Op[:] } }`) comes out in order whichever
+  of the two a signature names first; a variant type emits its enum, whose
+  union holds the variant's struct by value and so emits it first. Every
+  program name carries the `_g` suffix (`Sanitize`), namespaced ones the
+  namespace's length as well.
 * **Bytes values** (variable class) are self-describing byte images held as
   a `uint8_t *` to the value's start; a field behind a variable-size field
   is reached by a cursor that walks the intervening sizes (`FieldPtr`,
