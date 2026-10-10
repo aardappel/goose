@@ -3287,9 +3287,10 @@ turn the two stores into one store of a select (the merge step
   stripped -- so wherever an iteration tests it -- and whether they prove it
   equal; codegen may bound the loop by that constant (§6.12).
 * `hoistrefs` on every loop: the reference variables the loop indexes whose
-  array the body (and a `while` condition) can neither grow, shrink, rewrite
-  whole nor reach through a call; codegen reads their base and length into
-  locals before the loop (section 6.10).
+  array the body (and a `while` condition, or a `for` loop's iteration
+  expression, which runs after the views are read) can neither grow,
+  shrink, rewrite whole nor reach through a call; codegen reads their base
+  and length into locals before the loop (section 6.10).
 * `hoistfields` on every loop: the same for the grow-only and grow-shrink
   arrays it indexes in fields of a struct a variable holds or references,
   reached by fields alone (`FieldIndexed`), as (variable, field indices). A

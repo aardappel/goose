@@ -3233,7 +3233,9 @@ inline bool ForLoop::BceWalk(BCE &b) {
             }
     }
     b.loopdepth++;
-    b.LoopViewRefs(body, nullptr, hoistrefs, hoistfields);
+    // Codegen reads the views ahead of the whole loop, the iteration
+    // expression included, so what that expression changes counts too.
+    b.LoopViewRefs(body, iter, hoistrefs, hoistfields);
     b.StripKills(body);
     if (iterkind == IK_ARRAY || iterkind == IK_SLICE) {
         lot = BCE::Term { true, BCE::Zero(), 0 };

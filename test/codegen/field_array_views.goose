@@ -3,7 +3,8 @@
 // can neither resize it nor rebind the path to it (BCE's hoistfields), also
 // where an inlined callee's parameter names it. Every loop here prints what
 // it read, so a view kept past a push, a pop, a call that grows the array, a
-// write of the whole array or a rebinding would print stale values.
+// write of the whole array, a rebinding or a for loop's count that grows it
+// would print stale values or fail a bounds check.
 
 struct Rows { w: i64, rows: (i64[:])[>..] }
 struct Cells { n: i64, cells: i64[>..] }
@@ -108,6 +109,26 @@ recursive fn grow_other(c: Cells&, d: Cells&) -> i64 {
     return s * 100 + c.cells.len;
 }
 
+// A for loop's count grows the arrays it then reads, through a reference
+// and in a field: the views are read before the count is, so they must not
+// be kept.
+fn grow_to(c: Cells&, n: i64) -> i64 {
+    while c.cells.len < n { c.cells.push(c.cells.len * 10); }
+    return n;
+}
+
+fn grow_ref(a: i64[>..]&, n: i64) -> i64 {
+    while a.len < n { a.push(a.len * 10); }
+    return n;
+}
+
+recursive fn counted_sums(c: Cells&, a: i64[>..]&) -> i64 {
+    var s = 0;
+    for i in grow_to(c, 6) { s += c.cells[i]; }
+    for i in grow_ref(a, 5) { s += a[i] * 1000; }
+    return s;
+}
+
 // The same loops inlined into a function that is never inlined itself
 // (`recursive`), where they read through its reference parameters.
 recursive fn report(r: Rows&, c: Cells&, st: Stack&, o: Outer&, p: Outer&, a: Cells&, b: Cells&) {
@@ -148,6 +169,10 @@ fn main() {
     var f = Cells { n: 0, cells: [3, 4] };
     print(grow_other(e, e), " ", e.cells);
     print(grow_other(f, e), " ", f.cells, " ", e.cells.len);
+
+    var g = Cells { n: 0, cells: [1, 2, 3] };
+    var ga: i64[>..] = [4, 5];
+    print(counted_sums(g, ga));
 
     var c2 = Cells { n: 0, cells: [1, 2, 3, 10] };
     var st2 = Stack { items: [1, 2, 4] };
