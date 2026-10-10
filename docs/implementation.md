@@ -3460,10 +3460,10 @@ Layout details needed for byte/C compatibility (`FixedSize`, `LayoutFields`,
   (on lookups of strings of some 60 bytes, a fifth of the time). The longer
   compares are a function of their own (`gs_memeq_long`): in `gs_memeq`
   itself they made it too large for the C compiler to inline at the
-  compares of a known short length, a key against a literal. (The same
-  inline form for
-  copies measured slower than the C library's `memcpy` on JSON output, so
-  copies call it at every length.) `CT` emits typedefs on first use;
+  compares of a known short length, a key against a literal. `gs_memcpy`
+  copies the same way, inline up to 256 bytes, `memcpy` beyond: string
+  building that appends many runs of a few dozen bytes ran up to a fifth
+  faster without the library call. `CT` emits typedefs on first use;
   struct-like kinds get a forward typedef so a node type can reference
   itself (`NameCT`), and their body at the first use by value or through a
   pointer (`PointeeLv`): a struct the program only reaches through

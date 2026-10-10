@@ -283,8 +283,38 @@ static uint64_t gs_bytemask(int64_t k) {
 /* memcpy, memmove and memcmp for a slice's elements. An empty slice's data
    pointer is NULL where the slice was zero-filled (default<T>(), a default
    element), and C leaves all three undefined on a null pointer even for
-   zero bytes. */
+   zero bytes. A copy of up to 16 bytes loads both overlapping halves before
+   it stores them, and one of up to 256 bytes moves 16 at a time, the last 16
+   overlapping, where the library's memcpy would take a call and a dispatch
+   on the length; as the C library's memcpy, it takes runs that do not
+   overlap. */
 static void gs_memcpy(void *dst, const void *src, size_t n) {
+#ifndef __TINYC__
+    uint8_t *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+    if (n <= 16) {
+        if (n >= 8) {
+            uint64_t a = gs_ld64(s), b = gs_ld64(s + n - 8);
+            memcpy(d, &a, 8);
+            memcpy(d + n - 8, &b, 8);
+        } else if (n >= 4) {
+            uint32_t a = gs_ld32(s), b = gs_ld32(s + n - 4);
+            memcpy(d, &a, 4);
+            memcpy(d + n - 4, &b, 4);
+        } else if (n) {
+            uint8_t a = s[0], b = s[n >> 1], c = s[n - 1];
+            d[0] = a;
+            d[n >> 1] = b;
+            d[n - 1] = c;
+        }
+        return;
+    }
+    if (n <= 256) {
+        for (size_t i = 0; i + 16 < n; i += 16) memcpy(d + i, s + i, 16);
+        memcpy(d + n - 16, s + n - 16, 16);
+        return;
+    }
+#endif
     if (n) memcpy(dst, src, n);
 }
 
@@ -340,7 +370,8 @@ static int gs_memeq(const void *a, const void *b, size_t n) {
    arithmetic operation in the program — which measured as 13-37% of total
    runtime across the benchmarks.
 
-   The signed types' add, sub, mul and neg also take the file and line of the
+)GSRT"
+R"GSRT(   The signed types' add, sub, mul and neg also take the file and line of the
    operation, for the debug build's overflow message; the release macros
    drop them unevaluated. */
 
@@ -366,8 +397,7 @@ static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
     return (T)r; }
 
 #define GS_DIVOPS_U(SFX, T) \
-)GSRT"
-R"GSRT(static T gs_div_##SFX(T a, T b, const char *file, int line) { \
+static T gs_div_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
     return (T)(a / b); } \
 static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
@@ -515,7 +545,8 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 
 /* 64-bit division and modulo. Division overflow (i64.min / -1) would trap in
    hardware and aborts in every build. */
-static int64_t gs_div_i64(int64_t a, int64_t b, const char *file, int line) {
+)GSRT"
+R"GSRT(static int64_t gs_div_i64(int64_t a, int64_t b, const char *file, int line) {
     if (b == 0) gs_divfail(file, line);
     if (a == INT64_MIN && b == -1) gs_divovf(file, line);
     return a / b;
@@ -540,8 +571,7 @@ static uint64_t gs_mod_u64(uint64_t a, uint64_t b, const char *file, int line) {
 /* Unsigned division by a divisor a loop does not change, in libdivide's
    form: computed once before the loop (gs_divu_gen), x / d is then the high
    half of a product, adjusted where GS_DIVU_ADD is in `more` and shifted
-)GSRT"
-R"GSRT(   (gs_divu_q). A zero divisor, and a C compiler without 128-bit products,
+   (gs_divu_q). A zero divisor, and a C compiler without 128-bit products,
    get GS_DIVU_NONE, and their divisions the plain operator, which reports a
    zero divisor where the division is. */
 #define GS_DIVU_NONE 255
@@ -709,7 +739,8 @@ GS_API uint8_t *gs_reserve_region(void);
 /* The calling thread program's stack use, on stderr (GS_STACK_STATS):
    `stacks` is how many of its indexed data stacks exist. */
 GS_API void gs_stack_stats(int64_t stacks);
-/* Releases every region of the calling thread program, and what else the
+)GSRT"
+R"GSRT(/* Releases every region of the calling thread program, and what else the
    runtime keeps for its thread. */
 GS_API void gs_release_regions(void);
 
@@ -735,8 +766,7 @@ typedef struct gs_qnode {
 } gs_qnode;
 
 typedef struct gs_qstate *gs_queue;
-)GSRT"
-R"GSRT(#define GS_QUEUE_INIT NULL
+#define GS_QUEUE_INIT NULL
 
 GS_API void gs_qinit(gs_queue *q);
 GS_API void gs_qput(gs_queue *q, const void *data, int64_t size);
@@ -909,7 +939,8 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
 
 /* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
    payload bits above the 64th, or is not shortest. The result is the byte count. */
-static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
+)GSRT"
+R"GSRT(static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
     uint64_t v = 0;
     int shift = 0;
     const uint8_t *q = p;
@@ -942,8 +973,7 @@ static int64_t gs_zig_check(const uint8_t *p, const uint8_t *end, int64_t *out) 
    link pass asks whether an offset is one. Only images of variable-size
    elements need it -- for fixed ones a start is a multiple of the size. The
    bitmap is one data stack's worth of scratch, so the largest image that can
-)GSRT"
-R"GSRT(   be verified is eight times a stack's reservation; from_bytes rejects a
+   be verified is eight times a stack's reservation; from_bytes rejects a
    larger one rather than growing into the guard region. */
 #define GS_BM_SET(bm, i) ((bm)[(uint64_t)(i) >> 3] |= (uint8_t)(1u << ((i) & 7)))
 #define GS_BM_GET(bm, i) (((bm)[(uint64_t)(i) >> 3] >> ((i) & 7)) & 1)

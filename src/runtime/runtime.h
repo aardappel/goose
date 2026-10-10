@@ -270,8 +270,38 @@ static uint64_t gs_bytemask(int64_t k) {
 /* memcpy, memmove and memcmp for a slice's elements. An empty slice's data
    pointer is NULL where the slice was zero-filled (default<T>(), a default
    element), and C leaves all three undefined on a null pointer even for
-   zero bytes. */
+   zero bytes. A copy of up to 16 bytes loads both overlapping halves before
+   it stores them, and one of up to 256 bytes moves 16 at a time, the last 16
+   overlapping, where the library's memcpy would take a call and a dispatch
+   on the length; as the C library's memcpy, it takes runs that do not
+   overlap. */
 static void gs_memcpy(void *dst, const void *src, size_t n) {
+#ifndef __TINYC__
+    uint8_t *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+    if (n <= 16) {
+        if (n >= 8) {
+            uint64_t a = gs_ld64(s), b = gs_ld64(s + n - 8);
+            memcpy(d, &a, 8);
+            memcpy(d + n - 8, &b, 8);
+        } else if (n >= 4) {
+            uint32_t a = gs_ld32(s), b = gs_ld32(s + n - 4);
+            memcpy(d, &a, 4);
+            memcpy(d + n - 4, &b, 4);
+        } else if (n) {
+            uint8_t a = s[0], b = s[n >> 1], c = s[n - 1];
+            d[0] = a;
+            d[n >> 1] = b;
+            d[n - 1] = c;
+        }
+        return;
+    }
+    if (n <= 256) {
+        for (size_t i = 0; i + 16 < n; i += 16) memcpy(d + i, s + i, 16);
+        memcpy(d + n - 16, s + n - 16, 16);
+        return;
+    }
+#endif
     if (n) memcpy(dst, src, n);
 }
 

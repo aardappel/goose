@@ -3,7 +3,7 @@
 // capacity around a word boundary compared at each length and with each
 // element differing, slices of every short length, and copies of every
 // short length into a limited array, a grow-only array and a limited
-// array's own slots; and slices of longer lengths.
+// array's own slots; and slices and appends of longer lengths.
 
 struct Key { name: u8[..12], id: u16 }
 
@@ -321,11 +321,33 @@ fn check_copies() -> i64 {
     return hits;
 }
 
+// Appends of every length from 17 to 300, copied 16 bytes at a time up to
+// 256 and by the C library beyond, after a run that leaves the destination
+// at every offset of a word. One hit per length and offset.
+fn check_long_copies() -> i64 {
+    var hits = 0;
+    var src: u8[>..] = [];
+    for i in 320 { src.push((i * 29 + 11) as! u8); }
+    for off in 0..4 {
+        for n in 17..301 {
+            var g: u8[>..] = [];
+            g.append(src[..off]);
+            g.append(src[off + 1..off + 1 + n]);
+            g.push(7);
+            if g.len == off + n + 1 && g[..off] == src[..off] && g[off..off + n] == src[off + 1..off + 1 + n] &&
+               g[off + n] == 7 {
+                hits++;
+            }
+        }
+    }
+    return hits;
+}
+
 fn main() {
     print(check_u8_3(), " ", check_u8_7(), " ", check_u8_9(), " ", check_u8_16());
     print(check_u8_21(), " ", check_u8_64(), " ", check_u8_70());
     print(check_u16_5(), " ", check_i64_3(), " ", check_floats());
     print(check_slices(), " ", check_mixed(), " ", check_keys());
     print(check_long_slices());
-    print(check_copies());
+    print(check_copies(), " ", check_long_copies());
 }
