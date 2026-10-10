@@ -412,6 +412,46 @@ struct BCE {
     // declarations and whole-variable assignments, where no obj node exists).
     int PlaceOfVar(VarDef *v) { return v ? PlaceFor(v, {}, v->type) : -1; }
 
+    // The slice or array an element of a tracked resizable or limited array
+    // holds (`adj[v]`, `g.rows[i]`): one place for all the elements, its
+    // length lying in the array's storage, which is where a reference to an
+    // element would measure it -- so an element write, a resize or an
+    // overwrite of the array is a kill, and nothing else is. It has the
+    // array's owner: a variable, the root class of a reference parameter
+    // the array is reached through (PlaceFor), or storage unknown here. -1
+    // for any other expression.
+    int ElemPlaceOf(Node *n) {
+        auto ix = Is<Index>(n);
+        auto t = n->exprtype;
+        if (!ix || !t || (t->kind != TY_SLICE && t->kind != TY_ARRAY)) return -1;
+        if (t->kind == TY_ARRAY && t->arr->akind == A_FIXED) return -1;
+        auto at = ix->obj->exprtype;
+        if (at && at->kind == TY_REF) at = at->ref->sub;
+        if (!at || at->kind != TY_ARRAY || at->arr->akind == A_FIXED) return -1;
+        auto apid = PlaceOf(ix->obj);
+        if (apid < 0) return -1;
+        auto path = places[apid].path;
+        path.push_back(-2);
+        auto key = pair<VarDef *, vector<int>>(places[apid].rootv, path);
+        auto it = placeids.find(key);
+        if (it != placeids.end()) return it->second;
+        Place P;
+        P.rootv = places[apid].rootv;
+        P.path = path;
+        P.ultkind = places[apid].ultkind;
+        P.ultv = places[apid].ultv;
+        P.refcrossed = true;
+        P.slice = t->kind == TY_SLICE;
+        P.lenmut = t->kind == TY_ARRAY && t->arr->akind != A_VAR;
+        if (t->kind == TY_ARRAY && t->arr->akind == A_LIMITED && t->arr->size >= 0)
+            P.cap = t->arr->size;
+        P.inelem = true;
+        auto id = (int)places.size();
+        places.push_back(P);
+        placeids[key] = id;
+        return id;
+    }
+
     // The exact length of a fresh array value, when its construction states
     // it: a literal's element count, a [v; n] fill count, [..cap]'s zero, a
     // string literal's byte count.
@@ -3210,6 +3250,7 @@ inline bool ForLoop::BceWalk(BCE &b) {
     // kill summary answers, calls included.
     if (b.mode == BCE::M_JUDGE && (iterkind == IK_ARRAY || iterkind == IK_SLICE)) {
         auto pid = b.PlaceOf(iter);
+        if (pid < 0) pid = b.ElemPlaceOf(iter);
         if (pid >= 0) {
             set<int> kills;
             b.SummarizeInto(body, kills);

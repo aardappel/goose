@@ -3114,6 +3114,17 @@ decides whether a write to one place, to owned storage, or to unknown
 storage may name another place; distinct plain paths under one owner are
 distinct arrays.
 
+A loop over a slice or limited array that an element of a tracked array
+holds (`for x in g.adj[v]`) has a place of its own (`ElemPlaceOf`): one for
+every element of that array, whose length lies in the array's storage, as it
+does for a reference to an element, so only what writes an element, resizes
+the array or overwrites it kills it. Its owner is the array's: where the
+array is reached through a reference variable and fields alone, the
+variable or parameter class that reference's exact root names, so that, as
+for any place behind one of the body's parameters, writes to storage the
+body's own variables own leave it alone (`HandedApart`), even where the
+body hands a reference to one to a callee.
+
 ### 5.5 Kills
 
 What invalidates a fact: a grow or shrink builtin (the receiver takes the
@@ -3279,9 +3290,11 @@ turn the two stores into one store of a select (the merge step
 ### 5.10 What else the pass decides
 
 * `ForLoop::fixedlen`: for an array or slice loop, whether the body's kill
-  summary leaves the iterated place alone, in which case codegen reads the
-  view once instead of re-reading the length every iteration (section 3.15 makes
-  growth during iteration legal, so the re-read is the default).
+  summary leaves the iterated place alone (the element place of §5.4 for a
+  sequence an element holds), in which case codegen reads the view once
+  instead of re-reading the length, and the slices and references on the way
+  to it, every iteration (section 3.15 makes growth during iteration legal,
+  so the re-read is the default).
 * `ForLoop::lenbound` and `lenexact`: for an array or slice loop, the
   smallest constant the facts bound the length by once the body's kills are
   stripped -- so wherever an iteration tests it -- and whether they prove it
