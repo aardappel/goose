@@ -968,8 +968,11 @@ inline vector<string> CodeGen::EmitThreadSpawn(Call *c, vector<Node *> &an) {
         }
         L("*", szp, " = ", Top(stk), " - (uint8_t *)(", szp, " + 1);");
     }
-    return { cat("gs_thread_spawn(", thunk, ", ", base, ", ", Top(stk), " - ", base,
-                 ")") };
+    // Emitted here, not returned as text: a discarded result would drop the spawn.
+    auto id = T();
+    L("int64_t ", id, " = gs_thread_spawn(", thunk, ", ", base, ", ", Top(stk), " - ", base,
+      ");");
+    return { id };
 }
 
 // The worker's entry thunk, by name; its body follows once every thread
