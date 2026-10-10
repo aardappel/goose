@@ -4404,10 +4404,13 @@ spans, and an inner node up to 20 children, each with the first index and
 the largest count under it. Placing a run (`gs_spans_alloc`, for
 `alloc_slice` and for a slice `realloc_slice` moves) descends to the first
 span that holds it by those largest counts, falling back to the last span,
-which starts the run where it reaches the end of the array; growth in place
-(`gs_spans_grow`) and freeing (`gs_spans_free`) descend by index to the span
-at or before the one they touch, the span after it being its neighbor in the
-leaf or the first of the next. Each is one descent, and the entries above a
+which starts the run where it reaches the end of the array; freeing
+(`gs_spans_free`) descends by index to the last span before the run, the
+span after it being its neighbor in the leaf or the first of the next. Growth
+of a slice that does not end the array (`gs_spans_regrow`) takes the same
+descent from the slice's start: the span after is the one it grows into,
+and failing that the two are what its elements merge with before it is
+placed again. Each is one descent, two for a move, and the entries above a
 changed leaf are brought up to date on the way back until one is unchanged.
 A full node splits in halves; an emptied one leaves its parent, and a root
 left with one child hands the root down, so a freelist that empties is a

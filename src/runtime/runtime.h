@@ -800,10 +800,11 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
    freelist: for alloc_slice, and for a slice realloc_slice moves. */
 GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
                               int64_t cnt);
-/* realloc_slice growing a slice in place: whether cnt more elements can
-   follow it where it ends, at `end`. */
-GS_API int gs_spans_grow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len, int64_t end,
-                         int64_t cnt);
+/* realloc_slice growing the non-empty slice [idx, idx + ol), which does not
+   end the array, to cnt elements: where it starts now. The caller copies
+   the elements where that moved. */
+GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
+                               int64_t idx, int64_t ol, int64_t cnt);
 /* free_slice, and what realloc_slice lets go of: [idx, idx + cnt) back on
    the freelist. */
 GS_API void gs_spans_free(uint8_t *base, int64_t *n, uint8_t **top, int64_t idx, int64_t cnt);

@@ -788,35 +788,57 @@ GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t 
     return idx;
 }
 
-/* Taken from a free span that starts at `end`, or from past the end of the
-   pool, directly or through such a span reaching it. The caller grows the
-   array to whatever lies past its end. */
-GS_API int gs_spans_grow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len, int64_t end,
-                         int64_t cnt) {
-    gs_sppath p;
-    int64_t k;
-    gs_spleaf *lf;
-    if (end == len) return 1;
-    if (*n == 0) return 0;
-    p.base = base;
-    p.n = n;
-    p.top = top;
-    k = gs_sp_find(&p, end);
-    lf = GS_SPLEAF(&p, p.node[p.h]);
-    if (k < 0 || lf->idx[k] != end) return 0;
-    if (lf->cnt[k] < cnt && end + lf->cnt[k] != len) return 0;
-    gs_sp_take(&p, k, cnt);
-    return 1;
+/* The spans around a run that starts at idx: the path to the leaf holding
+   the last span that starts at or before idx (its position k there, or -1),
+   and the span after that one, which follows it in its leaf or starts the
+   next leaf (nl and nk, reached by the path np), where there is one. */
+typedef struct {
+    gs_spleaf *lf, *nl;
+    int64_t k, nk;
+    gs_sppath *np;
+} gs_spnear;
+
+static void gs_sp_near(gs_sppath *p, gs_sppath *q, int64_t idx, gs_spnear *s) {
+    s->k = gs_sp_find(p, idx);
+    s->lf = GS_SPLEAF(p, p->node[p->h]);
+    s->nl = NULL;
+    s->nk = -1;
+    s->np = p;
+    if (s->k + 1 < s->lf->n) {
+        s->nl = s->lf;
+        s->nk = s->k + 1;
+        return;
+    }
+    *q = *p;
+    if (gs_sp_nextleaf(q)) {
+        s->np = q;
+        s->nl = GS_SPLEAF(q, q->node[q->h]);
+        s->nk = 0;
+    }
 }
 
-/* Merged with the spans it touches: the one before it, which is the last
-   that starts at or before idx, and the one after it, which follows that
-   one in its leaf or starts the next leaf. */
+/* [idx, idx + cnt) back on the freelist beside the spans gs_sp_near found
+   around it, merged with the ones it touches. */
+static void gs_sp_release(gs_sppath *p, gs_spnear *s, int64_t idx, int64_t cnt) {
+    int prev = s->k >= 0 && s->lf->idx[s->k] + s->lf->cnt[s->k] == idx;
+    int next = s->nl && idx + cnt == s->nl->idx[s->nk];
+    if (prev) {
+        s->lf->cnt[s->k] += cnt + (next ? s->nl->cnt[s->nk] : 0);
+        gs_sp_fix(p, p->h);
+        if (next) gs_sp_delete(s->np, s->nk);
+    } else if (next) {
+        s->nl->idx[s->nk] = idx;
+        s->nl->cnt[s->nk] += cnt;
+        gs_sp_fix(s->np, s->np->h);
+    } else {
+        gs_sp_insert(p, s->k + 1, idx, cnt);
+    }
+}
+
+/* Merged with the spans it touches. */
 GS_API void gs_spans_free(uint8_t *base, int64_t *n, uint8_t **top, int64_t idx, int64_t cnt) {
-    gs_sppath p, q, *np = &p;
-    int64_t k, nk = -1;
-    gs_spleaf *lf, *nl = NULL;
-    int prev, next;
+    gs_sppath p, q;
+    gs_spnear s;
     if (cnt <= 0) return;
     p.base = base;
     p.n = n;
@@ -830,32 +852,36 @@ GS_API void gs_spans_free(uint8_t *base, int64_t *n, uint8_t **top, int64_t idx,
         hd->root = gs_sp_newnode(&p);
         GS_SPLEAF(&p, hd->root)->n = 0;
     }
-    k = gs_sp_find(&p, idx);
-    lf = GS_SPLEAF(&p, p.node[p.h]);
-    prev = k >= 0 && lf->idx[k] + lf->cnt[k] == idx;
-    if (k + 1 < lf->n) {
-        nl = lf;
-        nk = k + 1;
-    } else {
-        q = p;
-        if (gs_sp_nextleaf(&q)) {
-            np = &q;
-            nl = GS_SPLEAF(&q, q.node[q.h]);
-            nk = 0;
-        }
+    gs_sp_near(&p, &q, idx, &s);
+    gs_sp_release(&p, &s, idx, cnt);
+}
+
+/* In place where a free span starts where the slice ends and holds the
+   difference or reaches the end of the array; otherwise the slice's
+   elements go back on the freelist and the run goes where alloc_slice
+   places one of cnt elements. The span after the slice is the one after
+   the last span before it, so one descent finds both what growth takes
+   from and what the elements merge with. */
+GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
+                               int64_t idx, int64_t ol, int64_t cnt) {
+    gs_sppath p, q;
+    gs_spnear s;
+    int64_t end = idx + ol;
+    if (*n == 0) {
+        gs_spans_free(base, n, top, idx, ol);
+        return gs_spans_alloc(base, n, top, len, cnt);
     }
-    next = nl && idx + cnt == nl->idx[nk];
-    if (prev) {
-        lf->cnt[k] += cnt + (next ? nl->cnt[nk] : 0);
-        gs_sp_fix(&p, p.h);
-        if (next) gs_sp_delete(np, nk);
-    } else if (next) {
-        nl->idx[nk] = idx;
-        nl->cnt[nk] += cnt;
-        gs_sp_fix(np, np->h);
-    } else {
-        gs_sp_insert(&p, k + 1, idx, cnt);
+    p.base = base;
+    p.n = n;
+    p.top = top;
+    gs_sp_near(&p, &q, idx, &s);
+    if (s.nl && s.nl->idx[s.nk] == end &&
+        (s.nl->cnt[s.nk] >= cnt - ol || end + s.nl->cnt[s.nk] == len)) {
+        gs_sp_take(s.np, s.nk, cnt - ol);
+        return idx;
     }
+    gs_sp_release(&p, &s, idx, ol);
+    return gs_spans_alloc(base, n, top, len, cnt);
 }
 
 /* ---------------------------------------------------------------------------

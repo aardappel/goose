@@ -816,10 +816,11 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
    freelist: for alloc_slice, and for a slice realloc_slice moves. */
 GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
                               int64_t cnt);
-/* realloc_slice growing a slice in place: whether cnt more elements can
-   follow it where it ends, at `end`. */
-GS_API int gs_spans_grow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len, int64_t end,
-                         int64_t cnt);
+/* realloc_slice growing the non-empty slice [idx, idx + ol), which does not
+   end the array, to cnt elements: where it starts now. The caller copies
+   the elements where that moved. */
+GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
+                               int64_t idx, int64_t ol, int64_t cnt);
 /* free_slice, and what realloc_slice lets go of: [idx, idx + cnt) back on
    the freelist. */
 GS_API void gs_spans_free(uint8_t *base, int64_t *n, uint8_t **top, int64_t idx, int64_t cnt);
@@ -940,9 +941,9 @@ static int gs_is_le(void) {
     return *(const uint8_t *)&one == 1;
 }
 
-/* ---------------------------------------------------------------------------
 )GSRT"
-R"GSRT(   Text forms (§3.7): the gs_fmt_* functions write a value's text at dst and
+R"GSRT(/* ---------------------------------------------------------------------------
+   Text forms (§3.7): the gs_fmt_* functions write a value's text at dst and
    return the byte count (at most GS_FMT_MAX); print/str/format are built on
    them. A float takes the shortest form that still round-trips. */
 
@@ -1767,35 +1768,57 @@ GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t 
     return idx;
 }
 
-/* Taken from a free span that starts at `end`, or from past the end of the
-   pool, directly or through such a span reaching it. The caller grows the
-   array to whatever lies past its end. */
-GS_API int gs_spans_grow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len, int64_t end,
-                         int64_t cnt) {
-    gs_sppath p;
-    int64_t k;
-    gs_spleaf *lf;
-    if (end == len) return 1;
-    if (*n == 0) return 0;
-    p.base = base;
-    p.n = n;
-    p.top = top;
-    k = gs_sp_find(&p, end);
-    lf = GS_SPLEAF(&p, p.node[p.h]);
-    if (k < 0 || lf->idx[k] != end) return 0;
-    if (lf->cnt[k] < cnt && end + lf->cnt[k] != len) return 0;
-    gs_sp_take(&p, k, cnt);
-    return 1;
+/* The spans around a run that starts at idx: the path to the leaf holding
+   the last span that starts at or before idx (its position k there, or -1),
+   and the span after that one, which follows it in its leaf or starts the
+   next leaf (nl and nk, reached by the path np), where there is one. */
+typedef struct {
+    gs_spleaf *lf, *nl;
+    int64_t k, nk;
+    gs_sppath *np;
+} gs_spnear;
+
+static void gs_sp_near(gs_sppath *p, gs_sppath *q, int64_t idx, gs_spnear *s) {
+    s->k = gs_sp_find(p, idx);
+    s->lf = GS_SPLEAF(p, p->node[p->h]);
+    s->nl = NULL;
+    s->nk = -1;
+    s->np = p;
+    if (s->k + 1 < s->lf->n) {
+        s->nl = s->lf;
+        s->nk = s->k + 1;
+        return;
+    }
+    *q = *p;
+    if (gs_sp_nextleaf(q)) {
+        s->np = q;
+        s->nl = GS_SPLEAF(q, q->node[q->h]);
+        s->nk = 0;
+    }
 }
 
-/* Merged with the spans it touches: the one before it, which is the last
-   that starts at or before idx, and the one after it, which follows that
-   one in its leaf or starts the next leaf. */
+/* [idx, idx + cnt) back on the freelist beside the spans gs_sp_near found
+   around it, merged with the ones it touches. */
+static void gs_sp_release(gs_sppath *p, gs_spnear *s, int64_t idx, int64_t cnt) {
+    int prev = s->k >= 0 && s->lf->idx[s->k] + s->lf->cnt[s->k] == idx;
+    int next = s->nl && idx + cnt == s->nl->idx[s->nk];
+    if (prev) {
+        s->lf->cnt[s->k] += cnt + (next ? s->nl->cnt[s->nk] : 0);
+        gs_sp_fix(p, p->h);
+        if (next) gs_sp_delete(s->np, s->nk);
+    } else if (next) {
+        s->nl->idx[s->nk] = idx;
+        s->nl->cnt[s->nk] += cnt;
+        gs_sp_fix(s->np, s->np->h);
+    } else {
+        gs_sp_insert(p, s->k + 1, idx, cnt);
+    }
+}
+
+/* Merged with the spans it touches. */
 GS_API void gs_spans_free(uint8_t *base, int64_t *n, uint8_t **top, int64_t idx, int64_t cnt) {
-    gs_sppath p, q, *np = &p;
-    int64_t k, nk = -1;
-    gs_spleaf *lf, *nl = NULL;
-    int prev, next;
+    gs_sppath p, q;
+    gs_spnear s;
     if (cnt <= 0) return;
     p.base = base;
     p.n = n;
@@ -1809,32 +1832,37 @@ GS_API void gs_spans_free(uint8_t *base, int64_t *n, uint8_t **top, int64_t idx,
         hd->root = gs_sp_newnode(&p);
         GS_SPLEAF(&p, hd->root)->n = 0;
     }
-    k = gs_sp_find(&p, idx);
-    lf = GS_SPLEAF(&p, p.node[p.h]);
-    prev = k >= 0 && lf->idx[k] + lf->cnt[k] == idx;
-    if (k + 1 < lf->n) {
-        nl = lf;
-        nk = k + 1;
-    } else {
-        q = p;
-        if (gs_sp_nextleaf(&q)) {
-            np = &q;
-            nl = GS_SPLEAF(&q, q.node[q.h]);
-            nk = 0;
-        }
+    gs_sp_near(&p, &q, idx, &s);
+    gs_sp_release(&p, &s, idx, cnt);
+}
+
+/* In place where a free span starts where the slice ends and holds the
+   difference or reaches the end of the array; otherwise the slice's
+   elements go back on the freelist and the run goes where alloc_slice
+   places one of cnt elements. The span after the slice is the one after
+   the last span before it, so one descent finds both what growth takes
+   from and what the elements merge with. */
+)GSRT"
+R"GSRT(GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
+                               int64_t idx, int64_t ol, int64_t cnt) {
+    gs_sppath p, q;
+    gs_spnear s;
+    int64_t end = idx + ol;
+    if (*n == 0) {
+        gs_spans_free(base, n, top, idx, ol);
+        return gs_spans_alloc(base, n, top, len, cnt);
     }
-    next = nl && idx + cnt == nl->idx[nk];
-    if (prev) {
-        lf->cnt[k] += cnt + (next ? nl->cnt[nk] : 0);
-        gs_sp_fix(&p, p.h);
-        if (next) gs_sp_delete(np, nk);
-    } else if (next) {
-        nl->idx[nk] = idx;
-        nl->cnt[nk] += cnt;
-        gs_sp_fix(np, np->h);
-    } else {
-        gs_sp_insert(&p, k + 1, idx, cnt);
+    p.base = base;
+    p.n = n;
+    p.top = top;
+    gs_sp_near(&p, &q, idx, &s);
+    if (s.nl && s.nl->idx[s.nk] == end &&
+        (s.nl->cnt[s.nk] >= cnt - ol || end + s.nl->cnt[s.nk] == len)) {
+        gs_sp_take(s.np, s.nk, cnt - ol);
+        return idx;
     }
+    gs_sp_release(&p, &s, idx, ol);
+    return gs_spans_alloc(base, n, top, len, cnt);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1842,8 +1870,7 @@ GS_API void gs_spans_free(uint8_t *base, int64_t *n, uint8_t **top, int64_t idx,
    as std's ByteSet, made by its byte_set, which gs_byteset lays out as the
    Goose struct is (spec C.2: packed, in declaration order). `members` is
    the set. `kind` says how a block of bytes is tested for it: by comparing
-)GSRT"
-R"GSRT(   with 1 to 3 of `bytes` (kinds 1-3), or as the range bytes[0] .. bytes[0] +
+   with 1 to 3 of `bytes` (kinds 1-3), or as the range bytes[0] .. bytes[0] +
    bytes[1] (kind 4), both complemented where `invert` is set; kind 0 is the
    empty set, or with `invert` every byte. Every set also has nibble tables,
    bit k of lo[j] standing for the byte k * 16 + j and bit k of hi[j] for the
@@ -1995,7 +2022,8 @@ static GS_SSSE3 GS_INLINE __m128i gs_bsm_tables(const gs_bsm *m, __m128i x) {
     if (i == np) return -1;                                                            \
     k = (unsigned)_mm_movemask_epi8(_mm_and_si128(TESTA(GS_LOAD(p + np - 16)),         \
                                                   TESTB(GS_LOAD(p + np - 16 + d))))    \
-        >> (16 - (np - i));                                                            \
+)GSRT"
+R"GSRT(        >> (16 - (np - i));                                                            \
     return k ? i + gs_ctz32(k) : -1;
 
 #define GS_TEST_S(x) gs_bsm_test(&ms, ks, x)
@@ -2025,8 +2053,7 @@ static GS_INLINE int64_t gs_scan_pair_k(const uint8_t *p, int64_t np, const gs_b
     GS_PAIR_LOOP(GS_TEST_A, GS_TEST_B)
 }
 
-)GSRT"
-R"GSRT(static GS_SSSE3 int64_t gs_scan_pair_tables(const uint8_t *p, int64_t np, const gs_byteset *a,
+static GS_SSSE3 int64_t gs_scan_pair_tables(const uint8_t *p, int64_t np, const gs_byteset *a,
                                             int64_t d, const gs_byteset *b) {
     gs_bsm ma, mb;
     gs_bsm_init(&ma, a, 1);
@@ -2199,7 +2226,8 @@ static void gs_big_mul(gs_big *a, uint32_t m) {
     for (int i = 0; i < a->n; i++) {
         c += (uint64_t)a->d[i] * m;
         a->d[i] = (uint32_t)c;
-        c >>= 32;
+)GSRT"
+R"GSRT(        c >>= 32;
     }
     if (c) a->d[a->n++] = (uint32_t)c;
 }
@@ -2234,8 +2262,7 @@ static void gs_big_sub(gs_big *a, const gs_big *b) {
     uint64_t borrow = 0;
     for (int i = 0; i < a->n; i++) {
         uint64_t x = (uint64_t)a->d[i] - (i < b->n ? b->d[i] : 0) - borrow;
-)GSRT"
-R"GSRT(        a->d[i] = (uint32_t)x;
+        a->d[i] = (uint32_t)x;
         borrow = x >> 63;
     }
     while (a->n && !a->d[a->n - 1]) a->n--;
@@ -2423,7 +2450,8 @@ GS_API void gs_out_f32(float v) {
     fwrite(buf, 1, (size_t)gs_fmt_f32(buf, v), stdout);
 }
 GS_API void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
-GS_API void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
+)GSRT"
+R"GSRT(GS_API void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
 GS_API void gs_out_nl(void) { fputc('\n', stdout); }
 )GSRT"
     ) },

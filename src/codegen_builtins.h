@@ -760,14 +760,17 @@ inline vector<string> CodeGen::EmitSlicePool(Call *c, vector<Node *> &an, Line l
         // merged with free elements beside it, it can be that place; the
         // copy then overlaps its source. An empty slice has nothing to keep
         // in place, so it is always placed like a new run.
-        L("if (", ol, " == 0 || (", i, " + ", ol, " != ", lv.lenlv, " && !gs_spans_grow(",
-          SpanArgs(lv), ", ", lv.lenlv, ", ", i, " + ", ol, ", ", n, " - ", ol, "))) {");
+        L("if (", ol, " == 0) {");
         ind++;
-        L("gs_spans_free(", SpanArgs(lv), ", ", i, ", ", ol, ");");
+        L(i, " = gs_spans_alloc(", SpanArgs(lv), ", ", lv.lenlv, ", ", n, ");");
+        ind--;
+        L("} else if (", i, " + ", ol, " != ", lv.lenlv, ") {");
+        ind++;
         auto ni = T();
-        L("int64_t ", ni, " = gs_spans_alloc(", SpanArgs(lv), ", ", lv.lenlv, ", ", n, ");");
-        L("memmove(", ElemAddr(v, ni), ", ", ElemAddr(v, i), ", (size_t)(", ol, " * ", esz,
-          "));");
+        L("int64_t ", ni, " = gs_spans_regrow(", SpanArgs(lv), ", ", lv.lenlv, ", ", i, ", ", ol,
+          ", ", n, ");");
+        L("if (", ni, " != ", i, ") memmove(", ElemAddr(v, ni), ", ", ElemAddr(v, i),
+          ", (size_t)(", ol, " * ", esz, "));");
         L(i, " = ", ni, ";");
         ind--;
         L("}");
