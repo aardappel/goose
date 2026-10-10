@@ -1481,8 +1481,10 @@ the record of its cycle's previous round (§3.11), none in the first.
 one (`CheckAssign`, `ResizableArrayIn`), pass in this order:
 
 1. the receiver names the array's variable, or a reference variable or
-   parameter whose root is known (the array behind it shrinks); not an
-   element of another value, and not in a global initializer;
+   parameter whose root is known (the array behind it shrinks), or is a
+   struct's tail field on such a path, whose roots, those of the storage
+   the struct lies in, are the receiver's own (`Val`'s); not a temporary,
+   and not in a global initializer;
 2. not a `reusable` pool;
 3. no operand evaluated earlier in this statement and still held may refer
    into it (`CheckHeldShrinks` over `HeldOperands`, §3.3), nor, where it is

@@ -936,17 +936,23 @@ inline const string *TypeCheck::EmbedShader(Call *c, vector<Node *> &args) {
 // reference into it stored, which every store the checker has seen is on
 // record for (storeevents). The receiver is named directly, or through a
 // reference variable or parameter, in which case the array behind the
-// reference is what shrinks.
+// reference is what shrinks, or it is a struct's tail field, which shrinks
+// the storage the struct lies in, as a reference to the field would.
 inline void TypeCheck::CheckGrowShrink(Node *at, const char *op, Node *recv, const Val &rv) {
     auto id = Is<Ident>(recv);
     auto vd = id ? id->vdef : nullptr;
     auto at_type = rv.type->kind == TY_REF ? rv.type->ref->sub : rv.type;
-    if (!vd || at_type->kind != TY_ARRAY)
-        Error(at, cat(op, " on a grow-only array names the array's variable, or a "
-                      "reference to it, not an element of another value (§5.1)"));
-    // Through a reference variable or parameter: the array it points at.
-    auto viaref = vd->type && vd->type->kind == TY_REF;
-    auto roots = viaref ? RefRootsOf(vd) : RootsOf(vd);
+    if (at_type->kind != TY_ARRAY)
+        Error(at, cat(op, " on a grow-only array names the array's variable, a reference "
+                      "to it or a struct's field holding it (§5.1)"));
+    Roots roots;
+    if (vd) {
+        // Through a reference variable or parameter: the array it points at.
+        auto viaref = vd->type && vd->type->kind == TY_REF;
+        roots = viaref ? RefRootsOf(vd) : RootsOf(vd);
+    } else {
+        roots = rv.AsRoots();
+    }
     if (roots.Any([&](const RootAlt &a) { return !a.root || IsTemp(a.root); }))
         Error(at, cat(op, " through a reference whose array is not known (§5.1)"));
     ShrinkThrough(at, op, ExprStr(recv), roots, at_type);

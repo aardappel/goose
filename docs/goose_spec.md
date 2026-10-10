@@ -1158,9 +1158,11 @@ Use grow-only arrays for arenas, pools, string builders, tree storage, and
 scratch buffers that are refilled or popped between phases.
 
 **When a grow-only array may shrink.** The receiver is the array's variable,
-a reference variable or parameter bound to the whole array, or a global —
-not an element of a larger value, and not a `reusable` pool (§5.4: its
-freelist keeps every slot live). The shrink may be anywhere in an
+a reference variable or parameter bound to the whole array, a global, or
+the tail field of a struct reached through any of those (`s.items.pop()`
+for `s: Stack&`), which shrinks the storage the struct lies in as a
+reference to the field would — not a temporary, and not a `reusable` pool
+(§5.4: its freelist keeps every slot live). The shrink may be anywhere in an
 expression — an operand, an argument, a condition, the value of a block,
 `if`, `match` or loop — so `print(a.pop())` and `if !load(s) { … }` are
 fine. At the shrink, nothing *live* may refer into the array. That rules
