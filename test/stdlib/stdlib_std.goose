@@ -48,6 +48,10 @@ fn hashing() {
     print(same, " ", distinct, " ", hash(inline) == hash("item_17"));          // true true true
     print(buckets("item_") > 2450, " ", buckets("v") > 2450, " ",
           buckets("key number ") > 2450);                                      // true true true
+    // Longer keys, which the hash reads in two lanes, numbered at the end
+    // and at the start.
+    print(buckets("a key long enough to be read in two lanes, number ") > 2450, " ",
+          buckets_front(" is the number in front of this long key") > 2450);   // true true
 }
 
 // How many of 4096 buckets the low 12 bits of the hashes of prefix0 ..
@@ -60,6 +64,21 @@ fn buckets(prefix: u8[:]) -> i64 {
     for i in 4096 {
         key.clear();
         format(key, prefix, i);
+        let b = (hash(key) & 4095) as i64;
+        if !seen[b] { n++; }
+        seen[b] = true;
+    }
+    return n;
+}
+
+fn buckets_front(suffix: u8[:]) -> i64 {
+    var seen: bool[>..] = [];
+    for b in 4096 { seen.push(false); }
+    var key: u8[>..] = [];
+    var n = 0;
+    for i in 4096 {
+        key.clear();
+        format(key, i, suffix);
         let b = (hash(key) & 4095) as i64;
         if !seen[b] { n++; }
         seen[b] = true;

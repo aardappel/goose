@@ -128,13 +128,26 @@ fn hash_le32(s: u8[:], i: i64) -> u64 {
 // which is the final 8 bytes (overlapping the words before) or, for a short
 // s, its bytes gathered into one word, and the length is the seed. The last
 // word goes through two multiply-xorshift rounds, after which every input bit
-// reaches the low bits.
+// reaches the low bits. Each word's round waits for the one before, so a
+// longer s runs two lanes of rounds, on the even and the odd words of each
+// 16 bytes, which a processor overlaps, and folds the second into the first.
 fn hash(s: u8[:]) -> u64 {
     let n = s.len;
     var h = (n as! u64) * 11400714819323198485;
     var w: u64 = 0;
     if n > 8 {
         var i = 0;
+        if n > 24 {
+            var g = h ^ 0x9E3779B97F4A7C15;
+            while i < n - 24 {
+                h = (h ^ hash_le64(s, i)) * 11400714819323198485;
+                h = (h << 29) | (h >> 35);
+                g = (g ^ hash_le64(s, i + 8)) * 11400714819323198485;
+                g = (g << 29) | (g >> 35);
+                i += 16;
+            }
+            h = h ^ ((g << 31) | (g >> 33));
+        }
         while i < n - 8 {
             h = (h ^ hash_le64(s, i)) * 11400714819323198485;
             h = (h << 29) | (h >> 35);

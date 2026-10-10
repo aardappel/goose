@@ -312,7 +312,11 @@ last word being the final 8 bytes (or, below 8 bytes, the bytes gathered into
 one word) with the length as the seed, then two multiply-xorshift rounds, so
 that every input bit reaches the low 32 bits that `dictionary` masks and keeps
 as slot tags. Keys that differ only in their last characters (`item_17`,
-`item_18`) would otherwise share their low bits.
+`item_18`) would otherwise share their low bits. Each word's round waits for
+the previous one's multiply, so above 24 bytes the words before the last 24
+bytes or fewer go to two lanes, the even and the odd words of each 16 bytes,
+whose rounds a processor overlaps; the second lane is folded into the first,
+rotated, before the remaining words.
 A user key type gets `fn hash(k: key) -> u64 { hash_combine(hash(k.a),
 hash(k.b)) }`. Fixed-capacity inline strings (`u8[..16]`) hash through the
 slice overload, which is what makes them usable as `dictionary` keys.
