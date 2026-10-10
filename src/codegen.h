@@ -1044,11 +1044,20 @@ struct CodeGen {
     static bool StraightCode(Node *n);
     bool InStraightLoop();
 
-    // Divisors fixed for a loop being emitted: the divisor variable, and the
-    // C locals holding its gs_divu_gen magic and shift (HoistDivisors).
-    unordered_map<const VarDef *, pair<string, string>> divmagic;
+    // Divisors fixed for a loop being emitted, by DivisorKey: the C locals
+    // holding the divisor's value as a u64, its gs_divu_gen magic and its
+    // shift (HoistDivisors).
+    struct DivMagic { string val, magic, more; };
+    unordered_map<string, DivMagic> divmagic;
+    // The variables of the specialization being emitted that a reference is
+    // made to somewhere in it (RefdLocals), for refdspec.
+    set<const VarDef *> refdlocals;
+    FnSpec *refdspec = nullptr;
     bool LoopDivisible(Binary *b);
-    vector<const VarDef *> HoistDivisors(Block *body, const vector<const VarDef *> &binders);
+    string DivisorKey(Node *n, const VarDef **root = nullptr, bool *path = nullptr);
+    string DivisorValue(Node *n, string &ok);
+    const set<const VarDef *> &RefdLocals();
+    vector<string> HoistDivisors(Block *body, Node *cond, const vector<const VarDef *> &binders);
     void GenBreakPath(Node *val);
 
     // Loops run in blocks of iterations (ForLoop::stripk, ForLoop::sumred):

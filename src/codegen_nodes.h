@@ -245,16 +245,14 @@ inline string Binary::CgX(CodeGen &cg) {
                                                   ", ", cg.LocArgs(line), ")");
                         // A divisor fixed for an enclosing loop: its magic, unless
                         // gs_divu_gen found none to give (HoistDivisors).
-                        auto id = Is<Ident>(right);
-                        auto dm = id && cg.LoopDivisible(this) ? cg.divmagic.find(id->vdef)
-                                                                : cg.divmagic.end();
+                        auto key = cg.LoopDivisible(this) ? cg.DivisorKey(right) : string();
+                        auto dm = key.empty() ? cg.divmagic.end() : cg.divmagic.find(key);
                         if (dm == cg.divmagic.end()) return plain;
-                        auto q = cat("gs_divu_q((uint64_t)(", lc, "), ", dm->second.first, ", ",
-                                     dm->second.second, ")");
-                        auto fast = div ? q
-                                        : cat("(uint64_t)(", lc, ") - ", q, " * (uint64_t)(", rc, ")");
-                        return cat("(", ct, ")(", dm->second.second, " != GS_DIVU_NONE ? ", fast,
-                                   " : ", plain, ")");
+                        auto &mg = dm->second;
+                        auto q = cat("gs_divu_q((uint64_t)(", lc, "), ", mg.magic, ", ", mg.more, ")");
+                        auto fast = div ? q : cat("(uint64_t)(", lc, ") - ", q, " * ", mg.val);
+                        return cat("(", ct, ")(", mg.more, " != GS_DIVU_NONE ? ", fast, " : ",
+                                   plain, ")");
                     }
                 }
             }

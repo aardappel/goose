@@ -4141,19 +4141,32 @@ the narrower stores, a stall a cached top exposes, since the load's address
 is ready at once.
 
 **Divisors.** An unsigned `/` or `%`, or a signed one `Binary::nonneg` marks
-(§5.10), by a variable the loop cannot change -- an immutable integer bound
-before the loop, not inside it nor by the loop itself, and assigned nowhere
-in it (tail-recursion elimination assigns a function's parameters in the loop
-it makes) -- multiplies instead of dividing (`LoopDivisible`,
-`HoistDivisors`): ahead of the outermost loop the divisor is fixed for,
-`gs_divu_gen` computes libdivide's magic number and shift for it once (one
-128-by-64-bit division), and each division is the high half of a product,
-adjusted and shifted (`gs_divu_q`); a remainder is the dividend less the
-quotient times the divisor. A zero divisor gets `GS_DIVU_NONE`, under which
-every division takes the plain operator and its zero check, so the abort
-happens where and when a division by zero runs; so does a C compiler without
-128-bit products (TinyCC). The magic costs about one division, so a loop pays
-it back from its second division on.
+(§5.10), by a divisor the loop cannot change multiplies instead of dividing
+(`LoopDivisible`, `HoistDivisors`). The divisor is an integer variable, a
+field of a fixed-size struct variable (through any number of struct fields),
+or an integer conversion of either (`DivisorKey`: `x / (t.total as u64)`),
+whose variable is bound before the loop, not inside it nor by the loop
+itself, and which nothing can write while the loop runs: the loop, its
+condition included, writes no part of it (tail-recursion elimination assigns
+a function's parameters in the loop it makes), no reference to it is made
+anywhere in the function (`RefdLocals`: a `&`, written or inserted where an
+lvalue binds by reference, a `.=`, a by-reference `for` or `match` binding,
+a function value's reference parameter, an argument a user `format` overload
+gets), and no other function's code reaches it (captured, or a named result
+built at its destination). A `let` is as writable through a reference as a
+`var` (§4.4), so being one does not settle it. A global, which any function
+may write, and a variable of global initialization code count only as an
+integer `let` no writable reference is bound to (`VarDef::refwrite`).
+Ahead of the outermost loop the divisor is fixed for, `gs_divu_gen` computes
+libdivide's magic number and shift for it once (one 128-by-64-bit division),
+and each division is the high half of a product, adjusted and shifted
+(`gs_divu_q`); a remainder is the dividend less the quotient times the
+divisor. A zero divisor gets `GS_DIVU_NONE`, under which every division takes
+the plain operator and its zero check, so the abort happens where and when a
+division by zero runs; so does a divisor whose conversion would fail, which
+is computed ahead of the loop without its check (`DivisorValue`), and a C
+compiler without 128-bit products (TinyCC). The magic costs about one
+division, so a loop pays it back from its second division on.
 
 ### 6.11 `&&` and `||`
 

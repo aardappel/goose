@@ -52,7 +52,7 @@ inline void CodeGen::GenStmt(Node *n) {
 inline void CodeGen::GenLoopBody(const function<void()> &condexit, Block *bodyb, Dst d,
                                  const string &forhead, Node *cond, size_t first,
                                  vector<const VarDef *> binders) {
-    auto divisors = HoistDivisors(bodyb, binders);
+    auto divisors = HoistDivisors(bodyb, cond, binders);
     PushSc(SC_LOOP);
     auto si = (int)cscopes.size() - 1;
     cscopes[si].brklbl = Lbl();
@@ -78,7 +78,7 @@ inline void CodeGen::GenLoopBody(const function<void()> &condexit, Block *bodyb,
     PopSc();
     if (usedbrk) L(brklbl, ":;");
     MarkLoopEnd(loopid);
-    for (auto vd : divisors) divmagic.erase(vd);
+    for (auto &k : divisors) divmagic.erase(k);
     termjump = false;
 }
 
@@ -106,56 +106,211 @@ inline bool CodeGen::InStraightLoop() {
 }
 
 // An unsigned `/` or `%`, or a signed one BCE found to be of nonnegative
-// operands (Binary::nonneg), by a variable whose value cannot change: an
-// immutable integer, not a reference to one.
+// operands (Binary::nonneg), by a divisor DivisorKey names, which
+// HoistDivisors may find a loop cannot change.
 inline bool CodeGen::LoopDivisible(Binary *b) {
     if (b->op != T_DIV && b->op != T_MOD) return false;
     auto t = b->left->exprtype;
     if (!t || t->kind != TY_INT || t->intstorage == IS_VARINT) return false;
     if (!IsUnsigned(t->intstorage) && !b->nonneg) return false;
-    auto id = Is<Ident>(b->right);
-    auto vd = id ? id->vdef : nullptr;
-    return vd && !vd->isvar && vd->type && vd->type->kind == TY_INT &&
-           vd->type->intstorage != IS_VARINT && !fillvalues.count(id);
+    auto rt = b->right->exprtype;
+    return rt && rt->kind == TY_INT && !DivisorKey(b->right).empty();
 }
 
-// The divisions in a loop's body by a variable the loop cannot change
-// (LoopDivisible) that was bound before the loop -- named already, and
-// bound nowhere inside, nor by the loop itself (`binders`, a `for`'s
-// variables) -- multiply by a magic number computed here, ahead of the
-// loop, once for every loop nested in it as well: a hardware division
-// takes several times as long as a multiply and a shift. Returns the
-// divisors it adds to divmagic, for the loop to retire. A parameter is
-// immutable in the source, but where tail-recursion elimination turns
-// self-calls into a loop it assigns the parameters each round
-// (optimize_tre.h), so a divisor assigned in the body counts as bound
-// inside.
-inline vector<const VarDef *> CodeGen::HoistDivisors(Block *body,
-                                                     const vector<const VarDef *> &binders) {
-    vector<const VarDef *> added;
+// What a divisor a loop may fix is known by, or "" where it is none: an
+// integer variable, a field of a fixed-size struct variable (or of a field
+// of one, and so on), or an integer conversion of one of those. `root` gets
+// the variable and `path` whether fields lead from it to the value.
+inline string CodeGen::DivisorKey(Node *n, const VarDef **root, bool *path) {
+    auto isint = [](TypeExpr *t) { return t && t->kind == TY_INT && t->intstorage != IS_VARINT; };
+    if (!n || fillvalues.count(n)) return "";
+    if (auto id = Is<Ident>(n)) {
+        auto vd = id->vdef;
+        if (!vd || !vd->type) return "";
+        if (!isint(vd->type) && (vd->type->kind != TY_STRUCT || !IsFix(vd->type))) return "";
+        if (root) *root = vd;
+        if (path) *path = false;
+        return cat("v", (uintptr_t)vd);
+    }
+    if (auto d = Is<Dot>(n)) {
+        auto ot = d->obj->exprtype;
+        if (!d->IsField() || !ot || ot->kind != TY_STRUCT || !IsFix(ot)) return "";
+        auto k = DivisorKey(d->obj, root, path);
+        if (k.empty()) return "";
+        if (path) *path = true;
+        return cat(k, ".", d->fieldidx);
+    }
+    if (auto c = Is<AsCast>(n)) {
+        if (!isint(c->totype) || !isint(c->child->exprtype)) return "";
+        auto k = DivisorKey(c->child, root, path);
+        if (k.empty()) return "";
+        return cat("(", k, c->unchecked ? " as! " : " as ", IntStorageName(c->totype->intstorage),
+                   ")");
+    }
+    return "";
+}
+
+// The value of a divisor DivisorKey names, computed ahead of a loop without
+// the checks of its conversions: `ok` gets the condition under which none
+// of them would fail (or stays "1"), and the value is used only under it.
+inline string CodeGen::DivisorValue(Node *n, string &ok) {
+    auto c = Is<AsCast>(n);
+    if (!c) return GenX(n);
+    auto x = DivisorValue(c->child, ok);
+    auto st = c->child->exprtype;
+    auto is = c->totype->intstorage;
+    string cond;
+    if (!c->unchecked && !TEq(st, c->totype)) {
+        // As AsCast::CgX checks it.
+        auto [lo, hi] = IntRange(is);
+        if (st->intstorage == IS_U64) {
+            if (is != IS_U64) cond = cat("(uint64_t)(", x, ") <= ", (uint64_t)hi, "ULL");
+        } else {
+            auto [slo, shi] = IntRange(st->intstorage);
+            if (slo < lo) cond = cat("(int64_t)(", x, ") >= ", IntStr(lo));
+            if (shi > hi)
+                cond = cat(cond, cond.empty() ? "" : " && ", "(int64_t)(", x, ") <= ", IntStr(hi));
+        }
+    }
+    if (!cond.empty()) ok = ok == "1" ? cond : cat(ok, " && ", cond);
+    return cat("(", IntCT(is), ")(", x, ")");
+}
+
+// The variables of the specialization being emitted that a reference is
+// made to anywhere in it, whose storage may then change where no assignment
+// names them: the roots of `&` paths (written, or made where an lvalue binds
+// by reference, §4.1), of `.=` bindings, of what a by-reference `for` or
+// `match` binding or a function value's reference parameter is bound to,
+// and of what a user `format` overload is handed (§3.7). An operand that is
+// no path counts every variable it names.
+inline const set<const VarDef *> &CodeGen::RefdLocals() {
+    assert(curspec);
+    if (refdspec == curspec) return refdlocals;
+    refdspec = curspec;
+    refdlocals.clear();
+    function<void(Node *)> all = [&](Node *n) {
+        if (!n) return;
+        if (auto id = Is<Ident>(n); id && id->vdef) refdlocals.insert(id->vdef);
+        RunChildren(n, all);
+    };
+    auto mark = [&](Node *n) {
+        while (n) {
+            if (auto id = Is<Ident>(n)) {
+                if (id->vdef) refdlocals.insert(id->vdef);
+                return;
+            }
+            if (auto d = Is<Dot>(n)) n = d->obj;
+            else if (auto ix = Is<Index>(n)) n = ix->obj;
+            else if (auto sl = Is<SliceExpr>(n)) n = sl->obj;
+            else if (auto u = Is<Unary>(n)) n = u->child;
+            else return all(n);
+        }
+    };
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n) return;
+        if (auto u = Is<Unary>(n); u && u->op == T_BITAND) mark(u->child);
+        if (auto vd = Is<VarDecl>(n); vd && vd->byref) for (auto i : vd->inits) mark(i);
+        if (auto a = Is<Assign>(n); a && a->op == T_DOTASSIGN) mark(a->rhs);
+        if (auto fl = Is<ForLoop>(n);
+            fl && (fl->iterkind == IK_ARRAY || fl->iterkind == IK_SLICE) &&
+            !(fl->vdef && fl->vdef->copybind))
+            mark(fl->iter);
+        if (auto me = Is<MatchExpr>(n))
+            for (auto &arm : me->arms) if (arm.pat.byref) mark(me->scrutinee);
+        if (auto c = Is<Call>(n)) {
+            if (!c->fmtspecs.empty()) for (auto a : c->args) all(a);
+            for (size_t i = 0; i < c->fvparams.size() && i < c->args.size(); i++) {
+                auto pt = c->fvparams[i]->type;
+                if (pt && (pt->kind == TY_REF || pt->kind == TY_SLICE)) mark(c->args[i]);
+            }
+        }
+        RunChildren(n, walk);
+    };
+    walk(curspec->body);
+    return refdlocals;
+}
+
+// The divisions in a loop by a divisor the loop cannot change (LoopDivisible)
+// multiply by a magic number computed here, ahead of the loop, once for every
+// loop nested in it as well: a hardware division takes several times as long
+// as a multiply and a shift. The divisor is a variable bound before the loop
+// -- named already, and bound nowhere inside, nor by the loop itself
+// (`binders`, a `for`'s variables) -- or fields of one, or a conversion of
+// either, and the loop (its condition included) writes nothing of that
+// variable. Nothing else may: no reference is made to the variable anywhere
+// in the function (RefdLocals), nor may another function's code reach it
+// (captured, or a function's named result built at its destination). A
+// global, which other functions' code may write, or a variable of global
+// initialization code, which RefdLocals does not see, counts only as an
+// integer `let` no writable reference is bound to (VarDef::refwrite). A
+// conversion that would fail leaves the divisions plain, to fail where and
+// when one runs. Returns the divisors it adds to divmagic, for the loop to
+// retire. Tail-recursion elimination turns self-calls into a loop that
+// assigns the parameters each round (optimize_tre.h), which is a write.
+inline vector<string> CodeGen::HoistDivisors(Block *body, Node *cond,
+                                             const vector<const VarDef *> &binders) {
+    vector<string> added;
     set<const VarDef *> inner(binders.begin(), binders.end());
     vector<Binary *> divs;
+    function<void(Node *)> all = [&](Node *n) {
+        if (!n) return;
+        if (auto id = Is<Ident>(n); id && id->vdef) inner.insert(id->vdef);
+        RunChildren(n, all);
+    };
+    // The variable a written place lies in; every one an lvalue names that
+    // is no path.
+    auto written = [&](Node *n) {
+        while (n) {
+            if (auto id = Is<Ident>(n)) {
+                if (id->vdef) inner.insert(id->vdef);
+                return;
+            }
+            if (auto d = Is<Dot>(n)) n = d->obj;
+            else if (auto ix = Is<Index>(n)) n = ix->obj;
+            else if (auto sl = Is<SliceExpr>(n)) n = sl->obj;
+            else if (auto u = Is<Unary>(n)) n = u->child;
+            else return all(n);
+        }
+    };
     function<void(Node *)> walk = [&](Node *n) {
         if (!n || Is<FnDecl>(n) || Is<FunVal>(n)) return;
         if (auto vd = Is<VarDecl>(n)) for (auto d : vd->defs) inner.insert(d);
-        if (auto a = Is<Assign>(n)) if (auto id = Is<Ident>(a->lval)) inner.insert(id->vdef);
+        if (auto a = Is<Assign>(n)) written(a->lval);
+        if (auto a = Is<IncDec>(n)) written(a->lval);
         if (auto fl = Is<ForLoop>(n)) { inner.insert(fl->vdef); inner.insert(fl->idxdef); }
         if (auto me = Is<MatchExpr>(n)) for (auto &arm : me->arms) inner.insert(arm.binder);
-        if (auto c = Is<Call>(n)) for (auto p : c->fvparams) inner.insert(p);
+        if (auto c = Is<Call>(n)) {
+            for (auto p : c->fvparams) inner.insert(p);
+            if (c->builtin >= 0 && (BuiltinByKind(c->builtin).flags & BF_WRITE))
+                written(c->FirstArg());
+        }
         if (auto b = Is<Binary>(n); b && LoopDivisible(b)) divs.push_back(b);
         RunChildren(n, walk);
     };
     walk(body);
+    walk(cond);
     for (auto b : divs) {
-        auto id = Is<Ident>(b->right);
-        auto vd = id->vdef;
-        if (inner.count(vd) || divmagic.count(vd) || (!vnames.count(vd) && !gnames.count(vd)))
+        const VarDef *root = nullptr;
+        auto path = false;
+        auto key = DivisorKey(b->right, &root, &path);
+        if (divmagic.count(key) || inner.count(root) || root->captured || root->refwrite ||
+            nrvo.count(root))
             continue;
-        auto m = T(), more = T();
+        if (root->isglobal || !curspec) {
+            if (path || root->isvar || !(root->isglobal ? gnames : vnames).count(root)) continue;
+        } else if (!vnames.count(root) || RefdLocals().count(root)) {
+            continue;
+        }
+        auto ok = string("1");
+        auto x = DivisorValue(b->right, ok);
+        auto v = T(), m = T(), more = T();
         L("uint8_t ", more, ";");
-        L("uint64_t ", m, " = gs_divu_gen((uint64_t)(", GenX(id), "), &", more, ");");
-        divmagic[vd] = { m, more };
-        added.push_back(vd);
+        L("uint64_t ", v, " = (uint64_t)(", x, ");");
+        if (ok == "1") L("uint64_t ", m, " = gs_divu_gen(", v, ", &", more, ");");
+        else L("uint64_t ", m, " = (", ok, ") ? gs_divu_gen(", v, ", &", more, ") : (", more,
+               " = GS_DIVU_NONE, 0);");
+        divmagic[key] = { v, m, more };
+        added.push_back(key);
     }
     return added;
 }

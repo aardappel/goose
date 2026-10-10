@@ -3,8 +3,10 @@
 // signed operands the analysis knows to be nonnegative, divisors of every
 // shape (one, powers of two, odd, near the top of the range), nested loops
 // sharing one divisor, a divisor bound in an outer loop's body, a parameter
-// a tail call rebinds, and a zero divisor, which aborts at its division only
-// when a division runs.
+// a tail call rebinds, fields of a struct and conversions of them, a `var`
+// the loop leaves alone, values that do change through a reference or an
+// assignment, and a zero divisor, which aborts at its division only when a
+// division runs.
 import std;
 
 fn mix(x: u64) -> u64 { return (x ^ (x >> 29)) * 0xBF58476D1CE4E5B9; }
@@ -77,6 +79,64 @@ recursive fn leading(n: u64, base: u64) -> u64 {
     return leading(q, base + 1);
 }
 
+struct Model { total: i32, scale: i64, width: u32 }
+struct Coder { model: Model, shift: i8 }
+
+// Fields of a struct nothing makes a reference to are as fixed as a
+// variable, converted or not. A conversion that would fail leaves the
+// division to fail when one runs, and none does where the loop runs none.
+fn by_fields(c: Coder, n: i64) -> u64 {
+    var s: u64 = 0;
+    for i in n {
+        let x = i as u64 * 2654435761;
+        s = s * 31 + x / (c.model.total as u64) + x % (c.model.scale as u64);
+        s = s * 31 + (x >> 3) / (c.shift as! u64) + (x as! u32) % c.model.width;
+    }
+    return s;
+}
+
+// A `var` written before and after the loop, but not in it.
+fn var_divisor(n: i64, k: u64) -> u64 {
+    var d: u64 = 1;
+    if k > 3 { d = k; }
+    var s: u64 = 0;
+    for i in n { s = s * 31 + (i as u64 * 7919) / d + (i as u64) % d; }
+    d += 1;
+    return s + d;
+}
+
+fn bump(x: u64&) { x += 1; }
+
+// A `let` written through a reference, in the loop or by one made before
+// it, and fields a loop assigns or writes through a reference, change from
+// one division to the next.
+fn changing(n: i64) -> u64 {
+    var s: u64 = 0;
+    let a: u64 = 5;
+    for i in n {
+        s = s * 31 + 1000 / a;
+        bump(a);
+    }
+    let b: u64 = 5;
+    let r = &b;
+    for i in n {
+        s = s * 31 + 1000 / b;
+        r += 2;
+    }
+    var m = Model { total: 4, scale: 0, width: 9 };
+    for i in n {
+        s = s * 31 + 1000000 / m.width;
+        m.width += 1;
+    }
+    let t = Model { total: 4, scale: 0, width: 9 };
+    let rw = &t.width;
+    for i in n {
+        s = s * 31 + 1000000 / t.width;
+        rw += 3;
+    }
+    return s;
+}
+
 fn by_zero(d: u64, runs: i64) -> u64 {
     var s: u64 = 0;
     for i in runs { s += 100 / d; }
@@ -96,5 +156,9 @@ fn main() {
     print(nested(13), " ", nested(1), " ", nested(1 << 20));
     print(own_binder(100), " ", by_zero(0, 0), " ", by_zero(7, 3));
     print(leading(1000000, 2), " ", leading(255, 16), " ", leading(1000000000000000000, 3));
+    let coder = Coder { model: Model { total: 1000, scale: 97, width: 641 }, shift: 5 };
+    let broken = Coder { model: Model { total: -3, scale: -1, width: 0 }, shift: 0 };
+    print(by_fields(coder, 300), " ", by_fields(broken, 0));
+    print(var_divisor(100, 2), " ", var_divisor(100, 13), " ", changing(10));
     print(by_zero(0, 1));
 }
