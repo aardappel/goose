@@ -293,9 +293,23 @@ static void gs_memmove(void *dst, const void *src, size_t n) {
 }
 
 /* Whether n bytes at a and b are equal: two overlapping loads per side up
-   to 16 bytes, where keys and names mostly are and a call costs more than
-   the compare, the library's memcmp beyond. TinyCC inlines no memcpy, so
-   its build calls memcmp for every length. */
+   to 16 bytes, where keys and names mostly are, then 16 bytes a step with
+   the last 16 overlapping, up to 256, the library's memcmp beyond. Below
+   that a call and memcmp's own dispatch cost more than the compare. The
+   longer compares are a function of their own, so that gs_memeq stays small
+   enough for the C compiler to inline where the length is known. TinyCC
+   inlines no memcpy, so its build calls memcmp for every length. */
+#ifndef __TINYC__
+static GS_NOINLINE int gs_memeq_long(const uint8_t *p, const uint8_t *q, size_t n) {
+    if (n > 256) return memcmp(p, q, n) == 0;
+    for (size_t i = 0; i + 16 < n; i += 16)
+        if ((gs_ld64(p + i) ^ gs_ld64(q + i)) | (gs_ld64(p + i + 8) ^ gs_ld64(q + i + 8)))
+            return 0;
+    return ((gs_ld64(p + n - 16) ^ gs_ld64(q + n - 16)) |
+            (gs_ld64(p + n - 8) ^ gs_ld64(q + n - 8))) == 0;
+}
+#endif
+
 static int gs_memeq(const void *a, const void *b, size_t n) {
 #ifndef __TINYC__
     const uint8_t *p = (const uint8_t *)a, *q = (const uint8_t *)b;
@@ -305,8 +319,10 @@ static int gs_memeq(const void *a, const void *b, size_t n) {
         return ((gs_ld32(p) ^ gs_ld32(q)) | (gs_ld32(p + n - 4) ^ gs_ld32(q + n - 4))) == 0;
     if (n < 4)
         return n == 0 || ((p[0] ^ q[0]) | (p[n >> 1] ^ q[n >> 1]) | (p[n - 1] ^ q[n - 1])) == 0;
-#endif
+    return gs_memeq_long(p, q, n);
+#else
     return n == 0 || memcmp(a, b, n) == 0;
+#endif
 }
 
 /* ---------------------------------------------------------------------------
@@ -350,7 +366,8 @@ static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
     return (T)r; }
 
 #define GS_DIVOPS_U(SFX, T) \
-static T gs_div_##SFX(T a, T b, const char *file, int line) { \
+)GSRT"
+R"GSRT(static T gs_div_##SFX(T a, T b, const char *file, int line) { \
     if (b == 0) gs_divfail(file, line); \
     return (T)(a / b); } \
 static T gs_mod_##SFX(T a, T b, const char *file, int line) { \
@@ -371,8 +388,7 @@ GS_DIVOPS_U(u32, uint32_t)
 #define GS_INTOPS_S(SFX, T, MIN, MAX, BITS) \
 static T gs_add_##SFX(T a, T b, const char *file, int line) { \
     int64_t r = (int64_t)a + (int64_t)b; \
-)GSRT"
-R"GSRT(    if (r < MIN || r > MAX) gs_ovf(a, "+", b, #SFX, file, line); \
+    if (r < MIN || r > MAX) gs_ovf(a, "+", b, #SFX, file, line); \
     return (T)r; } \
 static T gs_sub_##SFX(T a, T b, const char *file, int line) { \
     int64_t r = (int64_t)a - (int64_t)b; \
@@ -524,7 +540,8 @@ static uint64_t gs_mod_u64(uint64_t a, uint64_t b, const char *file, int line) {
 /* Unsigned division by a divisor a loop does not change, in libdivide's
    form: computed once before the loop (gs_divu_gen), x / d is then the high
    half of a product, adjusted where GS_DIVU_ADD is in `more` and shifted
-   (gs_divu_q). A zero divisor, and a C compiler without 128-bit products,
+)GSRT"
+R"GSRT(   (gs_divu_q). A zero divisor, and a C compiler without 128-bit products,
    get GS_DIVU_NONE, and their divisions the plain operator, which reports a
    zero divisor where the division is. */
 #define GS_DIVU_NONE 255
@@ -541,8 +558,7 @@ static uint64_t gs_mulhi_u64(uint64_t a, uint64_t b) {
    Microsoft ABI links no 128-bit division routine, so x86-64 divides with
    the instruction itself. */
 static uint64_t gs_div128_u64(uint64_t hi, uint64_t d, uint64_t *rem) {
-)GSRT"
-R"GSRT(#if defined(__x86_64__)
+#if defined(__x86_64__)
     uint64_t q, r;
     __asm__("divq %[d]" : "=a"(q), "=d"(r) : [d] "r"(d), "a"((uint64_t)0), "d"(hi));
     *rem = r;
@@ -719,7 +735,8 @@ typedef struct gs_qnode {
 } gs_qnode;
 
 typedef struct gs_qstate *gs_queue;
-#define GS_QUEUE_INIT NULL
+)GSRT"
+R"GSRT(#define GS_QUEUE_INIT NULL
 
 GS_API void gs_qinit(gs_queue *q);
 GS_API void gs_qput(gs_queue *q, const void *data, int64_t size);
@@ -737,8 +754,7 @@ static GS_TLS int64_t gs_nstks;
 /* The current program instance's globals (goose_spec.md 11.1), a struct the
    compiler lays out: main's is its one static instance, a worker's a fresh
    copy of the globals its program uses, taken from the spawning instance
-)GSRT"
-R"GSRT(   at spawn like the arguments (11.2). No global is shared between program
+   at spawn like the arguments (11.2). No global is shared between program
    instances; the only C statics a program shares are read-only ones. */
 static GS_TLS void *gs_gl;
 
@@ -926,7 +942,8 @@ static int64_t gs_zig_check(const uint8_t *p, const uint8_t *end, int64_t *out) 
    link pass asks whether an offset is one. Only images of variable-size
    elements need it -- for fixed ones a start is a multiple of the size. The
    bitmap is one data stack's worth of scratch, so the largest image that can
-   be verified is eight times a stack's reservation; from_bytes rejects a
+)GSRT"
+R"GSRT(   be verified is eight times a stack's reservation; from_bytes rejects a
    larger one rather than growing into the guard region. */
 #define GS_BM_SET(bm, i) ((bm)[(uint64_t)(i) >> 3] |= (uint8_t)(1u << ((i) & 7)))
 #define GS_BM_GET(bm, i) (((bm)[(uint64_t)(i) >> 3] >> ((i) & 7)) & 1)
@@ -941,8 +958,7 @@ static int gs_is_le(void) {
     return *(const uint8_t *)&one == 1;
 }
 
-)GSRT"
-R"GSRT(/* ---------------------------------------------------------------------------
+/* ---------------------------------------------------------------------------
    Text forms (§3.7): the gs_fmt_* functions write a value's text at dst and
    return the byte count (at most GS_FMT_MAX); print/str/format are built on
    them. A float takes the shortest form that still round-trips. */

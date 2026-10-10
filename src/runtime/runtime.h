@@ -280,9 +280,23 @@ static void gs_memmove(void *dst, const void *src, size_t n) {
 }
 
 /* Whether n bytes at a and b are equal: two overlapping loads per side up
-   to 16 bytes, where keys and names mostly are and a call costs more than
-   the compare, the library's memcmp beyond. TinyCC inlines no memcpy, so
-   its build calls memcmp for every length. */
+   to 16 bytes, where keys and names mostly are, then 16 bytes a step with
+   the last 16 overlapping, up to 256, the library's memcmp beyond. Below
+   that a call and memcmp's own dispatch cost more than the compare. The
+   longer compares are a function of their own, so that gs_memeq stays small
+   enough for the C compiler to inline where the length is known. TinyCC
+   inlines no memcpy, so its build calls memcmp for every length. */
+#ifndef __TINYC__
+static GS_NOINLINE int gs_memeq_long(const uint8_t *p, const uint8_t *q, size_t n) {
+    if (n > 256) return memcmp(p, q, n) == 0;
+    for (size_t i = 0; i + 16 < n; i += 16)
+        if ((gs_ld64(p + i) ^ gs_ld64(q + i)) | (gs_ld64(p + i + 8) ^ gs_ld64(q + i + 8)))
+            return 0;
+    return ((gs_ld64(p + n - 16) ^ gs_ld64(q + n - 16)) |
+            (gs_ld64(p + n - 8) ^ gs_ld64(q + n - 8))) == 0;
+}
+#endif
+
 static int gs_memeq(const void *a, const void *b, size_t n) {
 #ifndef __TINYC__
     const uint8_t *p = (const uint8_t *)a, *q = (const uint8_t *)b;
@@ -292,8 +306,10 @@ static int gs_memeq(const void *a, const void *b, size_t n) {
         return ((gs_ld32(p) ^ gs_ld32(q)) | (gs_ld32(p + n - 4) ^ gs_ld32(q + n - 4))) == 0;
     if (n < 4)
         return n == 0 || ((p[0] ^ q[0]) | (p[n >> 1] ^ q[n >> 1]) | (p[n - 1] ^ q[n - 1])) == 0;
-#endif
+    return gs_memeq_long(p, q, n);
+#else
     return n == 0 || memcmp(a, b, n) == 0;
+#endif
 }
 
 /* ---------------------------------------------------------------------------

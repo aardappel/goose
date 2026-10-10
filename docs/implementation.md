@@ -3454,8 +3454,14 @@ Layout details needed for byte/C compatibility (`FixedSize`, `LayoutFields`,
   element-run copies and compares go through the runtime's `gs_memcpy`,
   `gs_memmove` and `gs_memeq` (`CopyFn`, `GenRangeEq`). `gs_memeq`
   compares runs of up to 16 bytes inline, as two overlapping word loads per
-  side, and calls `memcmp` only beyond: keys and names are mostly that
-  short, and a call costs more than the compare. (The same inline form for
+  side, and up to 256 bytes 16 at a time, the last 16 overlapping, and calls
+  `memcmp` only beyond: keys and names are mostly that short, and a call,
+  with `memcmp`'s own dispatch on the length, costs more than the compare
+  (on lookups of strings of some 60 bytes, a fifth of the time). The longer
+  compares are a function of their own (`gs_memeq_long`): in `gs_memeq`
+  itself they made it too large for the C compiler to inline at the
+  compares of a known short length, a key against a literal. (The same
+  inline form for
   copies measured slower than the C library's `memcpy` on JSON output, so
   copies call it at every length.) `CT` emits typedefs on first use;
   struct-like kinds get a forward typedef so a node type can reference

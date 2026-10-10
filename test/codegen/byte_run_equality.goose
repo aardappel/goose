@@ -3,7 +3,7 @@
 // capacity around a word boundary compared at each length and with each
 // element differing, slices of every short length, and copies of every
 // short length into a limited array, a grow-only array and a limited
-// array's own slots.
+// array's own slots; and slices of longer lengths.
 
 struct Key { name: u8[..12], id: u16 }
 
@@ -228,6 +228,31 @@ fn check_slices() -> i64 {
     return hits;
 }
 
+// Longer slices, compared 16 bytes at a time up to 256 and by the C
+// library beyond: every length from 17 to 300 at four offsets, equal and
+// differing at each position. Two hits per length and offset.
+fn check_long_slices() -> i64 {
+    var hits = 0;
+    var buf: u8[>..] = [];
+    for i in 340 { buf.push((i * 13 + 5) as! u8); }
+    var other: u8[>..] = copy(buf);
+    for off in 0..4 {
+        for n in 17..301 {
+            let a = buf[off..off + n];
+            if a == other[off + 3..off + 3 + n] { hits += 100000; }
+            if a == buf[off + 16..off + 16 + n] { hits += 100000; }
+            if a == buf[off..off + n] { hits++; }
+            for at in 0..n {
+                other[off + at] = other[off + at] ^ 1;
+                if a == other[off..off + n] { hits += 100000; }
+                other[off + at] = other[off + at] ^ 1;
+            }
+            if a == other[off..off + n] { hits++; }
+        }
+    }
+    return hits;
+}
+
 // A limited array against a slice, and two limited arrays of different
 // capacities: compared as slices.
 fn check_mixed() -> i64 {
@@ -301,5 +326,6 @@ fn main() {
     print(check_u8_21(), " ", check_u8_64(), " ", check_u8_70());
     print(check_u16_5(), " ", check_i64_3(), " ", check_floats());
     print(check_slices(), " ", check_mixed(), " ", check_keys());
+    print(check_long_slices());
     print(check_copies());
 }
