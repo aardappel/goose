@@ -19,8 +19,8 @@ R"GSRT(/* Goose runtime — the part every compiler-generated C file starts with
 
    This file holds what a program's own translation unit needs: types,
    macros, the configuration, the helpers that must inline (arithmetic,
-   checks, varints, slice pool spans), the data stack state the emitted code
-   reads, and declarations of the rest. That rest (runtime_impl.h,
+   checks, varints), the data stack state the emitted code reads, and
+   declarations of the rest. That rest (runtime_impl.h,
    runtime_threads.h, and runtime_os.h after runtime_ext.h) needs the
    platform's headers, which no program's unit includes, and is built one
    of two ways:
@@ -803,110 +803,26 @@ static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64
 #endif  /* GS_RUNTIME_OBJECT */
 
 /* ---------------------------------------------------------------------------
-   Slice pools (§5.4, `reusable[]`). The freelist is a run of (index, count)
-   spans on a data stack of its own, sorted by index, no two of them
-   touching. The emitted code grows the element region and fills elements;
-   these only keep the spans, and each takes the run's base, its span count
-   and its stack's top, which stays at the end of the run. Indices and counts
-   are in elements. Every span comes from a slice of the pool, so spans stay
-   inside the pool's length whatever the program frees: freeing a slice twice
-   leaves overlapping spans that hand the same elements out twice, never
-   anything outside the pool. */
+   Slice pools (§5.4, `reusable[]`). A pool's freelist is a tree of its free
+   (index, count) spans, kept on a data stack of its own in nodes of
+   GS_SPAN_NODE bytes (runtime_impl.h). The emitted code grows the element
+   region and fills elements; these only keep the spans, and each takes the
+   freelist's base, its node count and its stack's top, which stays past the
+   last node. Indices and counts are in elements. */
 
-typedef struct { int64_t idx, cnt; } gs_span;
+#define GS_SPAN_NODE 512
 
-/* The number of spans starting at or before idx. */
-static int64_t gs_spans_upto(const gs_span *s, int64_t n, int64_t idx) {
-    int64_t lo = 0, hi = n;
-    while (lo < hi) {
-        int64_t mid = lo + (hi - lo) / 2;
-        if (s[mid].idx <= idx) lo = mid + 1;
-        else hi = mid;
-    }
-    return lo;
-}
-
-static void gs_spans_drop(gs_span *s, int64_t *n, uint8_t **top, int64_t at) {
-    memmove(s + at, s + at + 1, (size_t)(*n - at - 1) * sizeof(gs_span));
-    (*n)--;
-    *top -= sizeof(gs_span);
-}
-
-/* Takes cnt elements off the front of span `at`, or all of a span that
-   holds no more. */
-static void gs_spans_take(gs_span *s, int64_t *n, uint8_t **top, int64_t at, int64_t cnt) {
-    if (s[at].cnt <= cnt) {
-        gs_spans_drop(s, n, top, at);
-        return;
-    }
-    s[at].idx += cnt;
-    s[at].cnt -= cnt;
-}
-
-/* Where a run of cnt elements goes in a pool of len elements, for
-   alloc_slice and for a slice realloc_slice moves: the front of the first
-   span holding it, else the end of the array, where a free span that reaches
-   the end starts the run. The caller grows the array to the returned index
-   plus cnt. First fit rather than best: in index order it packs runs toward
-   the start and leaves the end free, and it stops scanning at the fit. */
-static int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
-                              int64_t cnt) {
-    gs_span *s = (gs_span *)base;
-    int64_t at = 0, idx;
-    if (cnt == 0) return len;
-    while (at < *n && s[at].cnt < cnt) at++;
-    if (at == *n) {
-        if (*n == 0 || s[*n - 1].idx + s[*n - 1].cnt != len) return len;
-        at = *n - 1;
-    }
-    idx = s[at].idx;
-    gs_spans_take(s, n, top, at, cnt);
-    return idx;
-}
-
+/* Where a run of cnt elements goes in a pool of len elements, taken off the
+   freelist: for alloc_slice, and for a slice realloc_slice moves. */
+GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
+                              int64_t cnt);
 /* realloc_slice growing a slice in place: whether cnt more elements can
-   follow it where it ends, at `end` -- taken from a free span that starts
-   there, or from past the end of the pool, directly or through such a span
-   reaching it. The caller grows the array to whatever lies past its end. */
-static int gs_spans_grow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len, int64_t end,
-                         int64_t cnt) {
-    gs_span *s = (gs_span *)base;
-    int64_t at;
-    if (end == len) return 1;
-    at = gs_spans_upto(s, *n, end) - 1;
-    if (at < 0 || s[at].idx != end) return 0;
-    if (s[at].cnt < cnt && end + s[at].cnt != len) return 0;
-    gs_spans_take(s, n, top, at, cnt);
-    return 1;
-}
-
+   follow it where it ends, at `end`. */
+GS_API int gs_spans_grow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len, int64_t end,
+                         int64_t cnt);
 /* free_slice, and what realloc_slice lets go of: [idx, idx + cnt) back on
-   the freelist, merged with the spans it touches. */
-static void gs_spans_free(uint8_t *base, int64_t *n, uint8_t **top, int64_t idx, int64_t cnt) {
-    gs_span *s = (gs_span *)base;
-    int64_t at;
-    int prev, next;
-    if (cnt <= 0) return;
-    at = gs_spans_upto(s, *n, idx);
-    prev = at > 0 && s[at - 1].idx + s[at - 1].cnt == idx;
-    next = at < *n && idx + cnt == s[at].idx;
-    if (prev) {
-        s[at - 1].cnt += cnt;
-        if (next) {
-            s[at - 1].cnt += s[at].cnt;
-            gs_spans_drop(s, n, top, at);
-        }
-    } else if (next) {
-        s[at].idx = idx;
-        s[at].cnt += cnt;
-    } else {
-        memmove(s + at + 1, s + at, (size_t)(*n - at) * sizeof(gs_span));
-        s[at].idx = idx;
-        s[at].cnt = cnt;
-        (*n)++;
-        *top += sizeof(gs_span);
-    }
-}
+   the freelist. */
+GS_API void gs_spans_free(uint8_t *base, int64_t *n, uint8_t **top, int64_t idx, int64_t cnt);
 
 /* ---------------------------------------------------------------------------
    varint (§3.6): ULEB128; struct/payload/offset values additionally zigzag. */
@@ -954,8 +870,7 @@ static int64_t gs_uleb_write(uint8_t *p, uint64_t v) {
     for (;;) {
         uint8_t b = v & 0x7f;
         v >>= 7;
-)GSRT"
-R"GSRT(        if (v) *q++ = b | 0x80; else { *q++ = b; break; }
+        if (v) *q++ = b | 0x80; else { *q++ = b; break; }
     }
     return (int64_t)(q - p);
 }
@@ -1026,7 +941,8 @@ static int gs_is_le(void) {
 }
 
 /* ---------------------------------------------------------------------------
-   Text forms (§3.7): the gs_fmt_* functions write a value's text at dst and
+)GSRT"
+R"GSRT(   Text forms (§3.7): the gs_fmt_* functions write a value's text at dst and
    return the byte count (at most GS_FMT_MAX); print/str/format are built on
    them. A float takes the shortest form that still round-trips. */
 
@@ -1059,11 +975,11 @@ GS_API int64_t gs_scan_pair(const uint8_t *p, int64_t n, const void *a, int64_t 
     ) },
     { "runtime_impl.h", string_view(
 R"GSRT(/* Goose runtime — what runtime.h declares and leaves to the runtime: aborts,
-   the data stack regions and the faults that reach them, byte search, text
-   forms and printing. Follows runtime.h, in a standalone program's unit or
-   in the runtime object (runtime.h has the two); this, runtime_threads.h and
-   runtime_os.h are the only parts of either that include the platform's
-   headers. */
+   the data stack regions and the faults that reach them, slice pool
+   freelists, byte search, text forms and printing. Follows runtime.h, in a
+   standalone program's unit or in the runtime object (runtime.h has the
+   two); this, runtime_threads.h and runtime_os.h are the only parts of
+   either that include the platform's headers. */
 
 static const char *gs_errmsgs[] = {
     "limited array capacity exceeded",
@@ -1260,9 +1176,9 @@ static size_t gs_overflow_text(char *buf, const gs_region *r) {
 
 /* The calling thread program's registry, empty, as it starts. */
 static void gs_regions_begin(int64_t capacity) {
-    gs_regions_cap = (long)capacity;
 )GSRT"
-R"GSRT(    gs_regions = (gs_region *)calloc((size_t)(capacity > 0 ? capacity : 1), sizeof(gs_region));
+R"GSRT(    gs_regions_cap = (long)capacity;
+    gs_regions = (gs_region *)calloc((size_t)(capacity > 0 ? capacity : 1), sizeof(gs_region));
     if (!gs_regions) gs_panic("out of memory allocating the data stack registry");
     gs_nregions = 0;
 }
@@ -1476,9 +1392,9 @@ static void gs_native_stack_free(void) {
     if (!gs_sigstack) return;
     memset(&ss, 0, sizeof(ss));
     ss.ss_flags = SS_DISABLE;
-    ss.ss_size = gs_sigstack_size();
 )GSRT"
-R"GSRT(    sigaltstack(&ss, NULL);
+R"GSRT(    ss.ss_size = gs_sigstack_size();
+    sigaltstack(&ss, NULL);
     free(gs_sigstack);
     gs_sigstack = NULL;
 }
@@ -1539,11 +1455,395 @@ GS_API uint8_t *gs_reserve_region(void) {
 }
 
 /* ---------------------------------------------------------------------------
+   Slice pools (§5.4, `reusable[]`). The freelist holds the free (index,
+   count) spans, no two of them touching, in a B+ tree ordered by index:
+   leaves hold spans, and every inner entry holds the first index and the
+   largest count in the subtree under it, which is what lets first fit, the
+   span at or before an index, and the last span each be found by one
+   descent. Nodes are GS_SPAN_NODE bytes, numbered from the freelist's base:
+   node 0 is the header, and the others come off a chain of emptied nodes or
+   past the last one, so the node count is the freelist's size, and the
+   tree, in node numbers, is copied whole when a worker takes a copy of its
+   pool. A freelist starts empty, without a header, until a span is freed.
+   Every span comes from a slice of the pool, so spans stay inside the pool's
+   length whatever the program frees: freeing a slice twice leaves
+   overlapping spans that hand the same elements out twice, never anything
+   outside the pool. */
+
+#define GS_SPAN_LEAF ((GS_SPAN_NODE - 16) / 16)
+#define GS_SPAN_FAN ((GS_SPAN_NODE - 16) / 24)
+/* A full node splits into halves and an empty one leaves its parent, so
+   every level a tree gains takes about GS_SPAN_FAN / 2 times the insertions
+   of the one before: no freelist gets this deep. */
+#define GS_SPAN_DEPTH 24
+
+/* `link` chains emptied nodes. */
+typedef struct { int64_t n, link, idx[GS_SPAN_LEAF], cnt[GS_SPAN_LEAF]; } gs_spleaf;
+typedef struct { int64_t n, link, key[GS_SPAN_FAN], max[GS_SPAN_FAN], child[GS_SPAN_FAN]; } gs_spinner;
+typedef struct { int64_t root, height, chain; } gs_sphead;
+
+/* A freelist, and a path down it: the node and entry taken at each level,
+   the leaf's last. */
+typedef struct {
+    uint8_t *base;
+    int64_t *n;
+    uint8_t **top;
+    int64_t h, node[GS_SPAN_DEPTH], pos[GS_SPAN_DEPTH];
+} gs_sppath;
+
+#define GS_SPHEAD(p) ((gs_sphead *)(p)->base)
+#define GS_SPLEAF(p, i) ((gs_spleaf *)((p)->base + (i) * GS_SPAN_NODE))
+#define GS_SPINNER(p, i) ((gs_spinner *)((p)->base + (i) * GS_SPAN_NODE))
+
+static int64_t gs_sp_newnode(gs_sppath *p) {
+    int64_t i = GS_SPHEAD(p)->chain;
+    if (i) {
+        GS_SPHEAD(p)->chain = GS_SPLEAF(p, i)->link;
+        return i;
+    }
+    *p->top += GS_SPAN_NODE;
+    return (*p->n)++;
+}
+
+static void gs_sp_dropnode(gs_sppath *p, int64_t i) {
+    GS_SPLEAF(p, i)->link = GS_SPHEAD(p)->chain;
+    GS_SPHEAD(p)->chain = i;
+}
+
+/* The largest count under node i, a leaf or an inner node. */
+static int64_t gs_sp_max(gs_sppath *p, int64_t i, int leaf) {
+    int64_t m = 0, k;
+    if (leaf) {
+        gs_spleaf *l = GS_SPLEAF(p, i);
+        for (k = 0; k < l->n; k++)
+            if (l->cnt[k] > m) m = l->cnt[k];
+    } else {
+        gs_spinner *in = GS_SPINNER(p, i);
+        for (k = 0; k < in->n; k++)
+            if (in->max[k] > m) m = in->max[k];
+    }
+    return m;
+}
+
+static int64_t gs_sp_key(gs_sppath *p, int64_t i, int leaf) {
+    return leaf ? GS_SPLEAF(p, i)->idx[0] : GS_SPINNER(p, i)->key[0];
+}
+
+/* Brings the entries above level `from` of the path (the leaf being level
+   h) up to date with the node below each, stopping at the first that is. */
+static void gs_sp_fix(gs_sppath *p, int64_t from) {
+    int64_t l;
+    for (l = from - 1; l >= 0; l--) {
+        gs_spinner *in = GS_SPINNER(p, p->node[l]);
+        int64_t c = p->node[l + 1], k = p->pos[l];
+        int leaf = l + 1 == p->h;
+        int64_t key = gs_sp_key(p, c, leaf), max = gs_sp_max(p, c, leaf);
+        if (in->key[k] == key && in->max[k] == max) return;
+        in->key[k] = key;
+        in->max[k] = max;
+    }
+}
+
+/* Descends to the leaf holding the last span that starts at or before idx,
+   and returns its position there, or -1 where no span does. */
+static int64_t gs_sp_find(gs_sppath *p, int64_t idx) {
+    int64_t l, i = GS_SPHEAD(p)->root, k, lo = 0, hi;
+    gs_spleaf *lf;
+    p->h = GS_SPHEAD(p)->height;
+    for (l = 0; l < p->h; l++) {
+        gs_spinner *in = GS_SPINNER(p, i);
+        for (k = 1; k < in->n && in->key[k] <= idx; k++) {}
+        p->node[l] = i;
+        p->pos[l] = k - 1;
+        i = in->child[k - 1];
+    }
+    p->node[p->h] = i;
+    lf = GS_SPLEAF(p, i);
+    hi = lf->n;
+    while (lo < hi) {
+        int64_t mid = (lo + hi) / 2;
+        if (lf->idx[mid] <= idx) lo = mid + 1;
+        else hi = mid;
+    }
+    p->pos[p->h] = lo - 1;
+    return lo - 1;
+}
+
+/* Moves the path to the next leaf, or returns 0 at the last. */
+static int gs_sp_nextleaf(gs_sppath *p) {
+    int64_t l = p->h - 1;
+    while (l >= 0 && p->pos[l] + 1 >= GS_SPINNER(p, p->node[l])->n) l--;
+    if (l < 0) return 0;
+    p->pos[l]++;
+    for (; l < p->h; l++) {
+        p->node[l + 1] = GS_SPINNER(p, p->node[l])->child[p->pos[l]];
+        p->pos[l + 1] = 0;
+    }
+    return 1;
+}
+
+/* A node full at the root splits under a new root of the two halves. */
+static void gs_sp_newroot(gs_sppath *p, int64_t a, int64_t b, int leaf) {
+    int64_t r = gs_sp_newnode(p);
+    gs_spinner *rn = GS_SPINNER(p, r);
+    rn->n = 2;
+    rn->key[0] = gs_sp_key(p, a, leaf);
+    rn->max[0] = gs_sp_max(p, a, leaf);
+    rn->child[0] = a;
+    rn->key[1] = gs_sp_key(p, b, leaf);
+    rn->max[1] = gs_sp_max(p, b, leaf);
+    rn->child[1] = b;
+    GS_SPHEAD(p)->root = r;
+    GS_SPHEAD(p)->height++;
+}
+
+/* Puts the entry for node `child` at position k of the inner node at level
+   l of the path, splitting full nodes on the way up. */
+static void gs_sp_addchild(gs_sppath *p, int64_t l, int64_t k, int64_t child, int leaf) {
+    for (;;) {
+        gs_spinner *in = GS_SPINNER(p, p->node[l]), *o = in;
+)GSRT"
+R"GSRT(        int64_t key = gs_sp_key(p, child, leaf), max = gs_sp_max(p, child, leaf), s = k, nn = 0;
+        if (in->n == GS_SPAN_FAN) {
+            int64_t half = GS_SPAN_FAN / 2;
+            gs_spinner *r;
+            nn = gs_sp_newnode(p);
+            r = GS_SPINNER(p, nn);
+            r->n = in->n - half;
+            memcpy(r->key, in->key + half, (size_t)r->n * 8);
+            memcpy(r->max, in->max + half, (size_t)r->n * 8);
+            memcpy(r->child, in->child + half, (size_t)r->n * 8);
+            in->n = half;
+            if (k > half) {
+                o = r;
+                s = k - half;
+            }
+        }
+        memmove(o->key + s + 1, o->key + s, (size_t)(o->n - s) * 8);
+        memmove(o->max + s + 1, o->max + s, (size_t)(o->n - s) * 8);
+        memmove(o->child + s + 1, o->child + s, (size_t)(o->n - s) * 8);
+        o->key[s] = key;
+        o->max[s] = max;
+        o->child[s] = child;
+        o->n++;
+        if (!nn) {
+            gs_sp_fix(p, l);
+            return;
+        }
+        if (l == 0) {
+            gs_sp_newroot(p, p->node[0], nn, 0);
+            return;
+        }
+        /* The node keeps its place above, and its new right half goes
+           after it. */
+        gs_sp_fix(p, l);
+        child = nn;
+        leaf = 0;
+        k = p->pos[l - 1] + 1;
+        l--;
+    }
+}
+
+/* Puts span (idx, cnt) at position k of the path's leaf. */
+static void gs_sp_insert(gs_sppath *p, int64_t k, int64_t idx, int64_t cnt) {
+    gs_spleaf *lf = GS_SPLEAF(p, p->node[p->h]), *o = lf;
+    int64_t s = k, nn = 0;
+    if (lf->n == GS_SPAN_LEAF) {
+        int64_t half = GS_SPAN_LEAF / 2;
+        gs_spleaf *r;
+        nn = gs_sp_newnode(p);
+        r = GS_SPLEAF(p, nn);
+        r->n = lf->n - half;
+        memcpy(r->idx, lf->idx + half, (size_t)r->n * 8);
+        memcpy(r->cnt, lf->cnt + half, (size_t)r->n * 8);
+        lf->n = half;
+        if (k > half) {
+            o = r;
+            s = k - half;
+        }
+    }
+    memmove(o->idx + s + 1, o->idx + s, (size_t)(o->n - s) * 8);
+    memmove(o->cnt + s + 1, o->cnt + s, (size_t)(o->n - s) * 8);
+    o->idx[s] = idx;
+    o->cnt[s] = cnt;
+    o->n++;
+    if (!nn) {
+        gs_sp_fix(p, p->h);
+    } else if (p->h == 0) {
+        gs_sp_newroot(p, p->node[0], nn, 1);
+    } else {
+        gs_sp_fix(p, p->h);
+        gs_sp_addchild(p, p->h - 1, p->pos[p->h - 1] + 1, nn, 1);
+    }
+}
+
+/* Removes the span at position k of the path's leaf. An emptied node
+   leaves its parent, and a root left with one child hands the root down. */
+static void gs_sp_delete(gs_sppath *p, int64_t k) {
+    gs_spleaf *lf = GS_SPLEAF(p, p->node[p->h]);
+    int64_t l;
+    memmove(lf->idx + k, lf->idx + k + 1, (size_t)(lf->n - k - 1) * 8);
+    memmove(lf->cnt + k, lf->cnt + k + 1, (size_t)(lf->n - k - 1) * 8);
+    lf->n--;
+    if (lf->n > 0 || p->h == 0) {
+        gs_sp_fix(p, p->h);
+        return;
+    }
+    gs_sp_dropnode(p, p->node[p->h]);
+    for (l = p->h - 1;; l--) {
+        gs_spinner *in = GS_SPINNER(p, p->node[l]);
+        int64_t e = p->pos[l];
+        memmove(in->key + e, in->key + e + 1, (size_t)(in->n - e - 1) * 8);
+        memmove(in->max + e, in->max + e + 1, (size_t)(in->n - e - 1) * 8);
+        memmove(in->child + e, in->child + e + 1, (size_t)(in->n - e - 1) * 8);
+        in->n--;
+        if (in->n > 0) {
+            gs_sp_fix(p, l);
+            break;
+        }
+        /* Never the root: a root of one child is handed down below, so
+           every root has two or more. */
+        gs_sp_dropnode(p, p->node[l]);
+    }
+    while (GS_SPHEAD(p)->height > 0 && GS_SPINNER(p, GS_SPHEAD(p)->root)->n == 1) {
+        int64_t r = GS_SPHEAD(p)->root;
+        GS_SPHEAD(p)->root = GS_SPINNER(p, r)->child[0];
+        GS_SPHEAD(p)->height--;
+        gs_sp_dropnode(p, r);
+    }
+}
+
+/* Takes cnt elements off the front of the span at position k of the path's
+   leaf, or the whole span where it holds no more. */
+static void gs_sp_take(gs_sppath *p, int64_t k, int64_t cnt) {
+    gs_spleaf *lf = GS_SPLEAF(p, p->node[p->h]);
+    if (lf->cnt[k] <= cnt) {
+        gs_sp_delete(p, k);
+        return;
+    }
+    lf->idx[k] += cnt;
+    lf->cnt[k] -= cnt;
+    gs_sp_fix(p, p->h);
+}
+
+/* The front of the first span holding cnt, in index order, else the end of
+   the array, where a free span that reaches the end starts the run. The
+   caller grows the array to the returned index plus cnt. First fit rather
+   than best: in index order it packs runs toward the start and leaves the
+   end free. */
+GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
+                              int64_t cnt) {
+    gs_sppath p;
+    int64_t l, i, k, idx;
+    gs_spleaf *lf;
+    int fit;
+    if (cnt == 0 || *n == 0) return len;
+    p.base = base;
+    p.n = n;
+    p.top = top;
+    p.h = GS_SPHEAD(&p)->height;
+    i = GS_SPHEAD(&p)->root;
+    fit = gs_sp_max(&p, i, p.h == 0) >= cnt;
+    /* Down to the first fit, or else to the last span. */
+    for (l = 0; l < p.h; l++) {
+        gs_spinner *in = GS_SPINNER(&p, i);
+        k = in->n - 1;
+        if (fit)
+            for (k = 0; in->max[k] < cnt; k++) {}
+        p.node[l] = i;
+        p.pos[l] = k;
+        i = in->child[k];
+    }
+    p.node[p.h] = i;
+    lf = GS_SPLEAF(&p, i);
+    if (fit) {
+        for (k = 0; lf->cnt[k] < cnt; k++) {}
+    } else {
+        k = lf->n - 1;
+        if (k < 0 || lf->idx[k] + lf->cnt[k] != len) return len;
+    }
+    idx = lf->idx[k];
+    gs_sp_take(&p, k, cnt);
+    return idx;
+}
+
+/* Taken from a free span that starts at `end`, or from past the end of the
+   pool, directly or through such a span reaching it. The caller grows the
+   array to whatever lies past its end. */
+GS_API int gs_spans_grow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len, int64_t end,
+                         int64_t cnt) {
+    gs_sppath p;
+    int64_t k;
+    gs_spleaf *lf;
+    if (end == len) return 1;
+    if (*n == 0) return 0;
+    p.base = base;
+    p.n = n;
+    p.top = top;
+    k = gs_sp_find(&p, end);
+    lf = GS_SPLEAF(&p, p.node[p.h]);
+    if (k < 0 || lf->idx[k] != end) return 0;
+    if (lf->cnt[k] < cnt && end + lf->cnt[k] != len) return 0;
+    gs_sp_take(&p, k, cnt);
+    return 1;
+}
+
+/* Merged with the spans it touches: the one before it, which is the last
+   that starts at or before idx, and the one after it, which follows that
+   one in its leaf or starts the next leaf. */
+GS_API void gs_spans_free(uint8_t *base, int64_t *n, uint8_t **top, int64_t idx, int64_t cnt) {
+    gs_sppath p, q, *np = &p;
+    int64_t k, nk = -1;
+    gs_spleaf *lf, *nl = NULL;
+    int prev, next;
+    if (cnt <= 0) return;
+    p.base = base;
+    p.n = n;
+    p.top = top;
+    if (*n == 0) {
+        gs_sphead *hd = (gs_sphead *)base;
+        *n = 1;
+        *top = base + GS_SPAN_NODE;
+        hd->chain = 0;
+        hd->height = 0;
+        hd->root = gs_sp_newnode(&p);
+        GS_SPLEAF(&p, hd->root)->n = 0;
+    }
+    k = gs_sp_find(&p, idx);
+    lf = GS_SPLEAF(&p, p.node[p.h]);
+    prev = k >= 0 && lf->idx[k] + lf->cnt[k] == idx;
+    if (k + 1 < lf->n) {
+        nl = lf;
+        nk = k + 1;
+    } else {
+        q = p;
+        if (gs_sp_nextleaf(&q)) {
+            np = &q;
+            nl = GS_SPLEAF(&q, q.node[q.h]);
+            nk = 0;
+        }
+    }
+    next = nl && idx + cnt == nl->idx[nk];
+    if (prev) {
+        lf->cnt[k] += cnt + (next ? nl->cnt[nk] : 0);
+        gs_sp_fix(&p, p.h);
+        if (next) gs_sp_delete(np, nk);
+    } else if (next) {
+        nl->idx[nk] = idx;
+        nl->cnt[nk] += cnt;
+        gs_sp_fix(np, np->h);
+    } else {
+        gs_sp_insert(&p, k + 1, idx, cnt);
+    }
+}
+
+/* ---------------------------------------------------------------------------
    Byte search: std's find_any and find_pair (docs/stdlib.md). A set arrives
    as std's ByteSet, made by its byte_set, which gs_byteset lays out as the
    Goose struct is (spec C.2: packed, in declaration order). `members` is
    the set. `kind` says how a block of bytes is tested for it: by comparing
-   with 1 to 3 of `bytes` (kinds 1-3), or as the range bytes[0] .. bytes[0] +
+)GSRT"
+R"GSRT(   with 1 to 3 of `bytes` (kinds 1-3), or as the range bytes[0] .. bytes[0] +
    bytes[1] (kind 4), both complemented where `invert` is set; kind 0 is the
    empty set, or with `invert` every byte. Every set also has nibble tables,
    bit k of lo[j] standing for the byte k * 16 + j and bit k of hi[j] for the
@@ -1675,8 +1975,7 @@ static GS_SSSE3 GS_INLINE __m128i gs_bsm_tables(const gs_bsm *m, __m128i x) {
 #define GS_ANY_LOOP(TEST)                                                              \
     int64_t i = 0;                                                                     \
     unsigned k;                                                                        \
-)GSRT"
-R"GSRT(    for (; i + 16 <= n; i += 16) {                                                     \
+    for (; i + 16 <= n; i += 16) {                                                     \
         k = (unsigned)_mm_movemask_epi8(TEST(GS_LOAD(p + i)));                         \
         if (k) return i + gs_ctz32(k);                                                 \
     }                                                                                  \
@@ -1726,7 +2025,8 @@ static GS_INLINE int64_t gs_scan_pair_k(const uint8_t *p, int64_t np, const gs_b
     GS_PAIR_LOOP(GS_TEST_A, GS_TEST_B)
 }
 
-static GS_SSSE3 int64_t gs_scan_pair_tables(const uint8_t *p, int64_t np, const gs_byteset *a,
+)GSRT"
+R"GSRT(static GS_SSSE3 int64_t gs_scan_pair_tables(const uint8_t *p, int64_t np, const gs_byteset *a,
                                             int64_t d, const gs_byteset *b) {
     gs_bsm ma, mb;
     gs_bsm_init(&ma, a, 1);
@@ -1861,8 +2161,7 @@ GS_API int64_t gs_fmt_u64(uint8_t *dst, uint64_t v) {
     return n;
 }
 
-)GSRT"
-R"GSRT(GS_API int64_t gs_fmt_i64(uint8_t *dst, int64_t v) {
+GS_API int64_t gs_fmt_i64(uint8_t *dst, int64_t v) {
     if (v >= 0) return gs_fmt_u64(dst, (uint64_t)v);
     /* The magnitude in unsigned arithmetic, so i64.min needs no case. */
     dst[0] = '-';
@@ -1935,7 +2234,8 @@ static void gs_big_sub(gs_big *a, const gs_big *b) {
     uint64_t borrow = 0;
     for (int i = 0; i < a->n; i++) {
         uint64_t x = (uint64_t)a->d[i] - (i < b->n ? b->d[i] : 0) - borrow;
-        a->d[i] = (uint32_t)x;
+)GSRT"
+R"GSRT(        a->d[i] = (uint32_t)x;
         borrow = x >> 63;
     }
     while (a->n && !a->d[a->n - 1]) a->n--;
@@ -2073,8 +2373,7 @@ GS_API int64_t gs_fmt_f64(uint8_t *dst, double v) {
 /* The digits are the f32's own, laid out as an f64's are, so 0.1 as an f32
    prints as 0.1, not as the digits of the f64 it widens to. */
 GS_API int64_t gs_fmt_f32(uint8_t *dst, float v) {
-)GSRT"
-R"GSRT(    double d = v;
+    double d = v;
     uint32_t b;
     if (d != d || isinf(d)) return gs_fmt_f64(dst, d);
     memcpy(&b, &v, sizeof b);

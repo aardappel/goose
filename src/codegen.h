@@ -427,9 +427,11 @@ struct CodeGen {
     set<FnSpec *> fromemitted;
 
     bool IsPoolParam(FnSpec *sp, size_t i);
-    // The bytes of one entry of a pool's freelist: a slot index, or the
-    // (index, count) span of a slice pool (runtime.h's gs_span).
-    static int FlEntrySize(const VarDef *d) { return d->reusable == RU_SLICES ? 16 : 8; }
+    // The bytes of one unit of a pool's freelist, which its count counts: a
+    // slot index, or a node of a slice pool's tree of spans (runtime.h).
+    static const char *FlEntrySize(const VarDef *d) {
+        return d->reusable == RU_SLICES ? "GS_SPAN_NODE" : "8";
+    }
 
     // Which globals with dedicated data stacks a specialization may touch, its
     // callees included, plus the globals holding a fat reference, whose stack

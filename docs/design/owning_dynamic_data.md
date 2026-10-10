@@ -122,10 +122,10 @@ check or detect an invalid pool assignment earlier.
 * **Element types.** Elements are fixed-size, and `realloc_slice` rejects
   element types holding self-relative references, whose offsets a copy would
   leave measuring from the old place (spec 3.9).
-* **Per-operation cost.** Placement scans the free spans in order; adding or
-  removing a span shifts the spans above it (docs/implementation.md 9.7). A
-  workload with thousands of simultaneously free runs pays for both. A slice
-  handed back that the checker cannot place in the pool also pays a range test.
+* **Per-operation cost.** Placement, growth and release each walk a tree of
+  the free spans, so their cost grows with the logarithm of the number of
+  simultaneously free runs (docs/implementation.md 9.7). A slice handed back
+  that the checker cannot place in the pool also pays a range test.
 
 ## The other Goose representations
 

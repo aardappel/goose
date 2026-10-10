@@ -3828,12 +3828,14 @@ divide where the checker placed it in the pool, and otherwise
 element boundary, in `uintptr_t` arithmetic so that a slice of other storage
 compares without undefined pointer arithmetic, aborting with `GS_E_POOLSLICE`.
 An empty slice takes index 0. The freelist is the runtime's (§7): its base, count and top go to the
-`gs_spans_*` call by address, so a cached top works unchanged. Growth of the
+`gs_spans_*` call by address, so a cached top works unchanged. A slice that
+ends the element region grows without a call. Growth of the
 element region is emitted here (`EmitSliceExtend`: count and top, as for a
 push), and so are the default values (`EmitDefaultElems`: one `memset`, or
 the checked default construction per element for a type with field defaults). A move is one
-`memmove`. A pool's freelist entry is 8 bytes for a slot pool and 16 for a
-slice pool (`FlEntrySize`), which the thread-spawn image copies.
+`memmove`. A pool's freelist counts 8-byte slot indices for a slot pool and
+`GS_SPAN_NODE`-byte tree nodes for a slice pool (`FlEntrySize`), which is
+what the thread-spawn image copies.
 
 A fixed struct or array literal that holds relative references is built at
 its final address, never in a C temporary that is then copied (`FixedLitAt`,
@@ -4263,10 +4265,10 @@ MSVC, TinyCC and other targets pay nothing. A build can lower it with
 ## 7. The runtime
 
 The runtime is a small C99 one covering data stacks, integer semantics,
-varints, aborts, text forms, workers and queues, byte search, and the C
-behind `stdlib/os.goose`. It comes in two halves. `src/runtime/runtime.h` is what a
+varints, aborts, text forms, workers and queues, slice pool freelists, byte
+search, and the C behind `stdlib/os.goose`. It comes in two halves. `src/runtime/runtime.h` is what a
 program's own translation unit needs: configuration, macros, the helpers that
-must inline (integer operations, checks, varints, slice pool spans), the data
+must inline (integer operations, checks, varints), the data
 stack state the emitted code reads (`gs_stks`, `gs_gl`) with the few
 functions that touch it, and declarations of everything else;
 `runtime_ext.h`, spliced in after the generated types because it is written
@@ -4392,17 +4394,27 @@ so release builds compile to the code they would without them; the arguments
 cost about 1% of the generated C, and no measurable TinyCC compile time.
 Bounds checks are one unsigned compare (`GS_IDX`).
 
-**Slice pools** (§5.4): the `gs_spans_*` functions keep a `reusable[]`
-pool's freelist, a sorted run of `gs_span { idx, cnt }` on the freelist's own
-stack, handed its base, span count and stack top (the address of a cached top
-works as well as the memory form). Placing a run (`gs_spans_alloc`, for
-`alloc_slice` and for a slice `realloc_slice` moves) scans the spans in
-index order for the first that holds it, falling back to the end of the
-array, where a free span reaching it starts the run; growth in place and
-freeing find their neighbor by binary
-search (`gs_spans_grow`, `gs_spans_free`), and inserting or removing a span
-moves the entries above it. The emitted code keeps the element region's
-count and top and fills the default values itself.
+**Slice pools** (§5.4): the `gs_spans_*` functions (`runtime_impl.h`) keep
+a `reusable[]` pool's freelist on the freelist's own stack, handed its base,
+node count and stack top (the address of a cached top works as well as the
+memory form). The free spans are the leaves of a B+ tree ordered by index,
+in nodes of `GS_SPAN_NODE` (512) bytes numbered from the base: node 0 is a
+header (root, height, the chain of emptied nodes), a leaf holds up to 31
+spans, and an inner node up to 20 children, each with the first index and
+the largest count under it. Placing a run (`gs_spans_alloc`, for
+`alloc_slice` and for a slice `realloc_slice` moves) descends to the first
+span that holds it by those largest counts, falling back to the last span,
+which starts the run where it reaches the end of the array; growth in place
+(`gs_spans_grow`) and freeing (`gs_spans_free`) descend by index to the span
+at or before the one they touch, the span after it being its neighbor in the
+leaf or the first of the next. Each is one descent, and the entries above a
+changed leaf are brought up to date on the way back until one is unchanged.
+A full node splits in halves; an emptied one leaves its parent, and a root
+left with one child hands the root down, so a freelist that empties is a
+single empty leaf again. Nodes are never returned to the stack: emptied ones
+are chained for reuse, which keeps node numbers, and so a worker's copy,
+valid. The emitted code keeps the element region's count and top and fills
+the default values itself.
 
 **The graphics layer** behind `stdlib/gfx.goose` is not part of this runtime:
 it is native C in `src/gfx/`, compiled once into a static library over SDL3
@@ -4724,16 +4736,16 @@ cached stack.
   data stack at every level (§7.8).
 * `reusable` pools cost nothing per operation beyond the freelist push and
   pop; `free(i)` bounds-checks its index.
-* A `reusable[]` pool's `alloc_slice` scans the free spans in index order up
-  to the first that holds the request. Adding or removing a span (a free
-  that merges with neither neighbor or with both, an allocation that uses a
-  span up) moves the spans above it. Both costs grow with the number of free
-  spans, of which merging leaves at most one more than there are allocated
+* A `reusable[]` pool's `alloc_slice`, `free_slice`, and a `realloc_slice`
+  that does not just extend a slice ending the array, each walk the
+  freelist's tree of free spans from the root, so their cost grows with the
+  logarithm of the number of free spans (a few levels for millions of
+  them), of which merging leaves at most one more than there are allocated
   runs between them. A slice handed back costs a range test unless the checker placed it in the pool, and
   new elements cost one `memset` unless the element type has field
   defaults.
-* A `realloc_slice` that cannot grow in place scans for space and copies
-  the slice. The copy lands at the front of the span it takes, so what is
+* A `realloc_slice` that cannot grow in place places the run again and
+  copies the slice. The copy lands at the front of the span it takes, so what is
   left of that span is room to grow into; once none is, a slice grown an
   element at a time is copied at every growth, and growing by a factor keeps
   the copies amortized.

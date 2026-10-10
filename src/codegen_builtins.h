@@ -760,8 +760,8 @@ inline vector<string> CodeGen::EmitSlicePool(Call *c, vector<Node *> &an, Line l
         // merged with free elements beside it, it can be that place; the
         // copy then overlaps its source. An empty slice has nothing to keep
         // in place, so it is always placed like a new run.
-        L("if (", ol, " == 0 || !gs_spans_grow(", SpanArgs(lv), ", ", lv.lenlv, ", ", i, " + ",
-          ol, ", ", n, " - ", ol, ")) {");
+        L("if (", ol, " == 0 || (", i, " + ", ol, " != ", lv.lenlv, " && !gs_spans_grow(",
+          SpanArgs(lv), ", ", lv.lenlv, ", ", i, " + ", ol, ", ", n, " - ", ol, "))) {");
         ind++;
         L("gs_spans_free(", SpanArgs(lv), ", ", i, ", ", ol, ");");
         auto ni = T();
@@ -782,7 +782,7 @@ inline vector<string> CodeGen::EmitSlicePool(Call *c, vector<Node *> &an, Line l
     return { r };
 }
 
-// The freelist as the gs_spans_* helpers take it: its base, its span count
+// The freelist as the gs_spans_* helpers take it: its base, its node count
 // and its stack's top, which they move.
 inline string CodeGen::SpanArgs(const Loc &lv) {
     return cat(lv.fl, ".base, &", lv.fl, ".len, &(", TopW(lv.flstk), ")");
