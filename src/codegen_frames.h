@@ -232,8 +232,47 @@ inline void CodeGen::CollectSpecs() {
     }
 }
 
+// A struct passed by value that is not 1, 2, 4 or 8 bytes travels by
+// reference to a caller's copy in the Windows x64 convention (and above 16
+// bytes in AArch64's). Reading a parameter through that pointer, clang
+// reloads a fat reference's header address or a slice's data and length
+// after every byte store, which may alias the copy; and where a caller
+// writes the copy field by field and the callee reads it as one vector
+// (passing it on to a callee of its own), the load stalls until the stores
+// retire. A slice, a fat reference and a pool reference are therefore
+// passed as their scalar members, each a parameter of its own, which no
+// convention puts in memory the body can alias, and reassembled at entry.
+// The members' C types are the struct's, but for a slice's elements, which
+// take `void *` whatever they are.
+inline vector<pair<string, string>> CodeGen::ParamFields(TypeExpr *t, bool pool) {
+    if (pool)
+        return { { "gs_rhdr *", "hdr" }, { "gs_stack *", "stk" }, { "gs_rhdr *", "fl" },
+                 { "gs_stack *", "flstk" } };
+    if (IsFatRef(t)) return { { "gs_rhdr *", "hdr" }, { "gs_stack *", "stk" } };
+    if (t->kind == TY_SLICE) return { { "void *", "data" }, { "int64_t ", "len" } };
+    return {};
+}
+
+// An argument for a parameter of type t: its members where ParamFields
+// passes it so, read from a temporary unless it is a variable already.
+inline void CodeGen::PushArg(vector<string> &args, TypeExpr *t, bool pool, const string &v) {
+    auto fs = ParamFields(t, pool);
+    if (fs.empty()) {
+        args.push_back(v);
+        return;
+    }
+    auto x = v;
+    if (!all_of(x.begin(), x.end(), [](char c) { return isalnum((unsigned char)c) || c == '_'; })) {
+        x = T();
+        L(pool ? string("gs_pref") : CT(t), " ", x, " = ", v, ";");
+    }
+    for (auto &f : fs) args.push_back(cat(x, ".", f.second));
+}
+
 // The C parameter list of a spec, as (type, name) decl strings; also
-// registers the parameter VarDefs' names and stack expressions.
+// registers the parameter VarDefs' names and stack expressions, and, in the
+// declaring form, collects in paramcopies the entry code reassembling the
+// parameters ParamFields passes as members.
 inline string CodeGen::SigParams(FnSpec *sp, bool decls, bool er) {
     auto &si = sinfo[sp];
     string s;
@@ -241,13 +280,29 @@ inline string CodeGen::SigParams(FnSpec *sp, bool decls, bool er) {
         if (!s.empty()) s += ", ";
         s += d;
     };
+    if (decls) paramcopies.clear();
+    // A by-value parameter of C type ct named pn, or its members.
+    auto addval = [&](TypeExpr *t, bool pool, const string &ct, const string &pn) {
+        auto fs = ParamFields(t, pool);
+        if (fs.empty()) {
+            add(cat(ct, " ", pn));
+            return;
+        }
+        string init;
+        for (auto &f : fs) {
+            auto m = decls ? Unique2(cat(pn, "_", f.second)) : cat(pn, "_", f.second);
+            add(cat(f.first, m));
+            Append(init, init.empty() ? "" : ", ", m);
+        }
+        if (decls) Append(paramcopies, "    ", ct, " ", pn, " = { ", init, " };\n");
+    };
     for (size_t i = 0; i < sp->params.size(); i++) {
         auto vd = sp->params[i];
         auto pt = sp->argtypes[i];
         auto pn = decls ? LocalName(vd) : cat("p", i);
         if (IsPoolParam(sp, i)) {
             EmitCoreTypes();
-            add(cat("gs_pref ", pn));
+            addval(pt, true, "gs_pref", pn);
         } else if (IsResz(pt)) {
             // By-value resizable: the header (or frame object) by value
             // plus its stack (C.3).
@@ -263,7 +318,7 @@ inline string CodeGen::SigParams(FnSpec *sp, bool decls, bool er) {
             add(cat(CT(pt), " *", pn));
             if (decls) fvptr.insert(vd);
         } else {
-            add(cat(CT(pt), " ", pn));
+            addval(pt, false, CT(pt), pn);
         }
     }
     auto fvn = 0;
@@ -272,7 +327,7 @@ inline string CodeGen::SigParams(FnSpec *sp, bool decls, bool er) {
         auto ft = fv->type;
         if (fv->reusable) {
             EmitCoreTypes();
-            add(cat("gs_pref ", fn));
+            addval(ft, true, "gs_pref", fn);
         } else if (IsResz(ft)) {
             EmitCoreTypes();
             add(cat(IsFrameObj(ft) ? CT(ft) : string("gs_rhdr"), " *", fn));

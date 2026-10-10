@@ -444,6 +444,15 @@ struct CodeGen {
     void CollectSpecs();
     string SigParams(FnSpec *sp, bool decls, bool er = false);
     string SigRet(FnSpec *sp);
+    // The members a by-value parameter of type t (a pool reference where
+    // pool is set) is passed as, each a (C type, member name); none where it
+    // is passed whole.
+    vector<pair<string, string>> ParamFields(TypeExpr *t, bool pool);
+    void PushArg(vector<string> &args, TypeExpr *t, bool pool, const string &v);
+    // The entry code reassembling the parameters ParamFields passes as
+    // members, which SigParams' declaring form collects for the function's
+    // opening lines.
+    string paramcopies;
 
     // ------------------------------------------------------------------
     // Per-function generation state.

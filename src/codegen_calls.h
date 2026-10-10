@@ -150,7 +150,7 @@ inline vector<Node *> CodeGen::CallArgNodes(Call *c, size_t nparams) {
 inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &args) {
     auto pt = sp->argtypes[i];
     if (IsPoolParam(sp, i)) {
-        args.push_back(GenPrefVal(node));
+        PushArg(args, pt, true, GenPrefVal(node));
         return;
     }
     if (IsResz(pt)) {
@@ -183,7 +183,8 @@ inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &a
         return;
     }
     auto value = Snapshot(pt, GenXD(node, pt));
-    args.push_back(IsLargeFixed(pt) ? cat("&", value) : value);
+    if (IsLargeFixed(pt)) args.push_back(cat("&", value));
+    else PushArg(args, pt, false, value);
 }
 
 // A free variable of the callee, from the caller's frame (or passed on).
@@ -198,9 +199,9 @@ inline void CodeGen::EmitFvArg(const VarDef *fv, vector<string> &args) {
             auto t = T();
             L("gs_pref ", t, " = { &", name, ", ", vstk[fv], ", &", p.first, ", ",
               p.second, " };");
-            args.push_back(t);
+            PushArg(args, fv->type, true, t);
         } else {
-            args.push_back(name);
+            PushArg(args, fv->type, true, name);
         }
         return;
     }
@@ -682,14 +683,16 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
         // Assemble the arm's call.
         vector<string> args;
         for (size_t i = 0; i < an.size(); i++) {
+            auto pt = sp->argtypes[i];
+            auto &v = (int)i == pos ? varg : shared[i];
+            if (IsLargeFixed(pt)) args.push_back(cat("&", v));
+            else if (IsResz(pt)) args.push_back(v);
+            else PushArg(args, pt, IsPoolParam(sp, i), v);
             if ((int)i == pos) {
-                args.push_back(IsLargeFixed(sp->argtypes[i]) ? cat("&", varg) : varg);
-                if (IsBytesT(sp->argtypes[i]) && IsResz(sp->argtypes[i]))
+                if (IsBytesT(pt) && IsResz(pt))
                     Fail(c->line, "resizable by-value dispatch payloads are unsupported");
-            } else {
-                args.push_back(IsLargeFixed(sp->argtypes[i]) ? cat("&", shared[i]) : shared[i]);
-                if (IsBytesT(sp->argtypes[i]) && IsResz(sp->argtypes[i]))
-                    args.push_back(sharedstk[i]);
+            } else if (IsBytesT(pt) && IsResz(pt)) {
+                args.push_back(sharedstk[i]);
             }
         }
         for (auto fv : ki.freevars) EmitFvArg(c->FreeVarArg(fv), args);

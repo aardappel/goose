@@ -1033,7 +1033,7 @@ inline void CodeGen::EmitThreadThunk(FnSpec *sp, int64_t stacks) {
         } else {
             Append(b, "    ", CT(pt), " a", i, " = *(", CT(pt), " *)p; p += ",
                    FixedSize(pt), ";\n");
-            args.push_back(cat("a", i));
+            PushArg(args, pt, IsPoolParam(sp, i), cat("a", i));
         }
     }
     assert(ki.freevars.empty() && !ki.hasrf && sp->rets.empty());

@@ -1473,6 +1473,25 @@ def main():
         elif r.check_loop_shapes(cfile.read_text()):
             r.ok(f"loop shapes {f.name}")
     r.show_task(loop_shapes)
+    # A slice and a builder parameter are two C parameters each (spec C.3),
+    # the slice's data pointer as `void *` (ParamFields).
+    def member_params():
+        f = HERE / "codegen" / "member_parameters.goose"
+        cfile = gendir / "member_parameters-sig.c"
+        code, out, err = r.goose("-O1", "-o", cfile, f)
+        if code != 0:
+            r.fail(f"member parameters {f.name}", out + err)
+            return
+        sig = re.search(r"^static void walk_g\w*\(([^)]*)\) \{$", cfile.read_text(),
+                        re.MULTILINE)
+        want = (r"void \*\w+, int64_t \w+, int64_t \w+, gs_rhdr \*\w+, gs_stack \*\w+, "
+                r"void \*\w+, int64_t \w+")
+        if not sig or not re.fullmatch(want, sig[1]):
+            r.fail(f"member parameters {f.name}",
+                   f"walk's parameters: got {sig[1] if sig else None}")
+        else:
+            r.ok(f"member parameters {f.name}")
+    r.show_task(member_params)
 
     # Every annotated regression, including the expected-abort cases. These
     # describe the default O1 pass; O0/O2 execution checks semantics.

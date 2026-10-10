@@ -3801,7 +3801,9 @@ is that header's `len`, so its tail cannot be referenced either.
 
 * Fixed-size parameters and returns up to 4096 bytes: native C values
   (structs as packed C structs). The first such return uses the C return
-  value; additional fixed returns use out-pointers.
+  value; additional fixed returns use out-pointers. A slice, a reference to
+  a resizable value and a reusable pool's reference parameter are passed as
+  their members, each a C parameter of its own.
 * Larger fixed-size parameters: the caller makes a private value copy on a
   scoped data stack and passes its typed pointer. The callee can mutate
   that copy without affecting the argument's source. Larger fixed returns

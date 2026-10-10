@@ -333,7 +333,14 @@ inline void CodeGen::EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln) {
     // (EmitRenderFn).
     if (ki.needssp) NoStackAcrossCycleCall(sp, ln);
     if (ki.needssp) NoteStackCall(sp, ln);
-    L(ki.cname, "(", r, ", ", arg, ki.needssp ? cat(", ", SpTop()) : "", ");");
+    vector<string> args;
+    PushArg(args, sp->argtypes[0], false, r);
+    if (IsLargeFixed(pt)) args.push_back(arg);
+    else PushArg(args, pt, false, arg);
+    if (ki.needssp) args.push_back(SpTop());
+    string argstr;
+    for (auto &a : args) Append(argstr, argstr.empty() ? "" : ", ", a);
+    L(ki.cname, "(", argstr, ");");
     MarkReload();   // The callee grew the builder's stack.
     PopSc();
 }

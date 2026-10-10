@@ -568,7 +568,7 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     auto bodyout = ExpandTopMarkers(body, plan);
     assert(bodyout.find("@@gs") == string::npos);
     auto decls = HoistAggregateDecls(bodyout);
-    string fnbody = decls;
+    string fnbody = paramcopies + decls;
     // A whole-body cache loads at entry; a per-loop one declares and loads
     // itself at its loop's edge.
     for (size_t i = 0; i < toporder.size(); i++)
@@ -876,11 +876,13 @@ inline void CodeGen::EmitExports() {
         auto &si = sinfo[sp];
         auto returnslice = !sp->rets.empty() && sp->rets[0]->kind == TY_SLICE;
         string params, args;
+        vector<string> argv;
         for (size_t i = 0; i < sp->argtypes.size(); i++) {
             auto arg = Unique(cat("gs_export_arg", i));
             Append(params, params.empty() ? "" : ", ", CT(sp->argtypes[i]), " ", arg);
-            Append(args, args.empty() ? "" : ", ", arg);
+            PushArg(argv, sp->argtypes[i], IsPoolParam(sp, i), arg);
         }
+        for (auto &a : argv) Append(args, args.empty() ? "" : ", ", a);
         auto outlen = Unique("gs_export_len");
         if (returnslice) Append(params, params.empty() ? "" : ", ", "int64_t *", outlen);
         if (params.empty()) params = "void";

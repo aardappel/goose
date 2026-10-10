@@ -3519,7 +3519,7 @@ declaration order.
 ### 6.4 The calling convention (C.3)
 
 `SigParams`, in order: the declared parameters (a by-value resizable adds
-its `gs_stack *`; a pool parameter is one `gs_pref`; a bytes value is a
+its `gs_stack *`; a pool parameter is a `gs_pref`; a bytes value is a
 `uint8_t *`); the free variables of a nested function or function value
 (fixed ones by pointer, resizables as header pointer plus stack, pools as
 `gs_pref`); result channels in source result order (out-pointers for fixed
@@ -3528,6 +3528,22 @@ destination `gs_stack *` and, for a resizable, the count out-parameter or
 frame object out-parameter); and `gs_sp` when the function touches stacks.
 The C return value is the first fixed result, even when it is not result
 zero; with none it is `void`.
+A slice, a fat reference and a pool's `gs_pref`, as a declared parameter or
+a captured pool, are passed as their members (`ParamFields`): `data` (as
+`void *`) and `len`, `hdr` and `stk`, and those two with `fl` and `flstk`,
+each a C parameter of its own, which the body's opening lines put back
+together into a local of the struct's type under the parameter's name
+(`paramcopies`); every caller passes each member of its argument's
+temporary (`PushArg`). Passed whole, a struct of 16 or 32 bytes travels by
+reference to a caller's copy in the Windows x64 convention (above 16 bytes
+in AArch64's as well), where clang reloads it through that pointer after
+every byte store the body makes, since the store may alias the copy -- a
+slice walk storing bytes reloads the slice at every iteration -- and where
+a caller storing the copy's fields one by one meets a callee reading it as
+one vector, to hand it on, that load waits for the stores to retire (a
+recursive descent parser handing its parser state down spent half its time
+there with its parameters copied into locals at entry). As members,
+nothing of them is in memory the body can reach.
 A multi-value binding takes each fixed result straight into its variable
 (`EmitCallInto`), except a reference result the checker decayed to a copy of
 its fixed-size pointee (§4.1): that one arrives in a temporary and is loaded
