@@ -731,7 +731,8 @@ inline Node *Optimizer::TryInline(Call *c) {
     auto &info = inlineinfo[K];
     if (!K->live || !K->body) return nullptr;
     auto ncuhere = loopdepth > 0 && !colddepth ? ncu * LOOPNCU : ncu;
-    auto small = info.nodecount < nc || info.nodecount * K->uses < ncuhere;
+    // An `inline fn` passes the size rules wherever inlining is on.
+    auto small = (K->sf->isinline && nc > 0) || info.nodecount < nc || info.nodecount * K->uses < ncuhere;
     if (info.noinline) {
         // A body the size rules would inline here, kept a call only because
         // it returns several values: the C compiler is told to inline it.

@@ -97,6 +97,13 @@ struct Lexer {
 
     [[noreturn]] void Error(const string &msg) { ErrorAt(msg, tokline, toklinestart); }
 
+    // The token after the current one, without moving.
+    TType PeekTok() const {
+        auto copy = *this;
+        copy.Next();
+        return copy.tok;
+    }
+
     [[noreturn]] void ErrorAt(const string &msg, int errline, const char *errlinestart,
                               const char *caret = nullptr) {
         auto s = cat(filename, ":", errline, ": error: ", msg);

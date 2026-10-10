@@ -53,6 +53,14 @@ struct Parser {
         return true;
     }
 
+    // `inline` is a keyword only before a function declaration (§7.13): it
+    // stays a name everywhere else.
+    bool AtInline() {
+        if (lex.tok != T_IDENT || lex.attr != "inline") return false;
+        auto next = lex.PeekTok();
+        return next == T_FN || next == T_RECURSIVE || next == T_THREADFN;
+    }
+
     void Expect(TType t, const char *context) {
         if (lex.tok != t)
             Error(cat("expected \'", TName(t), "\' in ", context, ", found \'", TokStr(), "\'"));
@@ -156,6 +164,7 @@ struct Parser {
             default: break;
         }
         declseen = true;
+        if (AtInline()) goto fndecl;
         switch (lex.tok) {
             case T_STRUCT: ParseStructDecl(); return;
             case T_ENUM:   ParseEnumDecl();   return;
@@ -176,7 +185,7 @@ struct Parser {
                 return;
             }
             case T_RECURSIVE: case T_FN: case T_THREADFN: case T_EXTERN: case T_EXPORT:
-            case T_SIMD: {
+            case T_SIMD: fndecl: {
                 auto fd = ParseFnDecl(false);
                 ast.topdecls.push_back(fd);
                 return;
@@ -334,8 +343,17 @@ struct Parser {
             if (sf->isextern) Error("extern fn cannot be simd: it has no body to compile");
             sf->issimd = true;
         }
+        if (AtInline()) {
+            if (sf->isextern) Error("extern fn cannot be inline: it has no body to copy");
+            if (sf->isexport) Error("export fn cannot be inline: its C wrapper calls it");
+            if (sf->issimd) Error("simd fn cannot be inline: its callers would run the baseline only");
+            sf->isinline = true;
+            lex.Next();
+        }
         sf->isrec = IsNext(T_RECURSIVE);
+        if (sf->isinline && sf->isrec) Error("recursive fn cannot be inline");
         if (lex.tok == T_THREADFN) {
+            if (sf->isinline) Error("thread_fn cannot be inline");
             sf->isthread = true;
             if (nested) Error("thread_fn must be declared at top level");
             lex.Next();
@@ -1236,6 +1254,7 @@ struct Parser {
             stmt_level = false;
             stmt_ended = false;
             if (IsNext(T_RCURLY)) break;
+            if (AtInline()) goto nestedfndecl;
             switch (lex.tok) {
                 case T_LET: case T_VAR: case T_CONST: case T_REUSABLE: {
                     auto vd = ParseVarDecl(false);
@@ -1244,7 +1263,7 @@ struct Parser {
                     continue;
                 }
                 case T_RECURSIVE: case T_FN: case T_THREADFN: case T_EXTERN: case T_EXPORT:
-                case T_SIMD:
+                case T_SIMD: nestedfndecl:
                     b->stmts.push_back(ParseFnDecl(true));
                     continue;
                 case T_GUARD:
