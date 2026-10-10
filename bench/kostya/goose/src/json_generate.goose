@@ -9,38 +9,41 @@ import bench;
 import helper;
 import json;
 
-// The options map of a coordinate: string keys to an (i32, bool) pair,
-// which JSON writes as a two-element array.
+// One entry of a coordinate's options map: a string key and an (i32, bool)
+// pair, which JSON writes as a two-element array. A dictionary is resizable
+// and so can't be part of an element of the coordinates array; the map is
+// the list of its entries instead, which serializes to the same object.
 struct Opt { key: u8[varint], num: i32, flag: bool }
 
 // A coordinate's name and options are stored inline, so the whole list is
 // one block of variable-size records.
 struct Coordinate { x: f64, y: f64, z: f64, name: u8[varint], opts: Opt[varint] }
 
-fn round_to_8(v: f64) -> f64 { round(v * 100000000.0) / 100000000.0 }
+// The resizable coordinates have to be the last field; they are still
+// serialized first.
+struct JsonData { info: const u8[:], coordinates: Coordinate[>..] }
 
-// format!("{:.7} {}", next_float(1.0), next_int(10000))
-fn make_name() -> u8[>..] {
-    var s: u8[>..] = [];
-    format_fixed(s, next_float(1.0), 7);
-    s.push(' ');
-    format(s, next_int(10000));
-    return s;
-}
+fn round_to_8(value: f64) -> f64 { round(value * 100000000.0) / 100000000.0 }
 
-fn prepare(n: i64) -> Coordinate[>..] {
-    var coords: Coordinate[>..] = [];
+fn prepare(n: i64) -> JsonData {
+    var data = JsonData { info: "some info", coordinates: [] };
     for i in n {
         let x = round_to_8(next_float(1.0));
         let y = round_to_8(next_float(1.0));
         let z = round_to_8(next_float(1.0));
-        coords.push(Coordinate { x: x, y: y, z: z, name: make_name(),
-                                 opts: [Opt { key: "1", num: 1, flag: true }] });
+
+        var name: u8[>..] = [];
+        format_fixed(name, next_float(1.0), 7);
+        format(name, " ", next_int(10000));
+
+        data.coordinates.push(Coordinate { x: x, y: y, z: z, name: copy(name),
+                                           opts: [Opt { key: "1", num: 1, flag: true }] });
     }
-    return coords;
+    return data;
 }
 
-fn write_coordinate(out: u8[>..]&, c: Coordinate&) {
+// What serde's derived Serialize writes, field by field, for each type.
+fn to_json(out: u8[>..]&, c: Coordinate&) {
     out.push('{');
     json::format_key(out, "x");
     json::format_number(out, c.x);
@@ -70,37 +73,37 @@ fn write_coordinate(out: u8[>..]&, c: Coordinate&) {
 }
 
 // {"coordinates":[...],"info":"some info"}
-fn write_data(out: u8[>..]&, coords: Coordinate[:], info: u8[:]) {
+fn to_json(out: u8[>..]&, data: JsonData&) {
     out.push('{');
     json::format_key(out, "coordinates");
     out.push('[');
-    for c, i in coords {
+    for c, i in data.coordinates {
         if i > 0 { out.push(','); }
-        write_coordinate(out, c);
+        to_json(out, c);
     }
     out.push(']');
     out.push(',');
     json::format_key(out, "info");
-    json::format_string(out, info);
+    json::format_string(out, data.info);
     out.push('}');
 }
 
-// The text the parsing benchmarks read: n coordinates, generated and
-// serialized once.
+// The text the parsing benchmarks prepare: what one run of a generator of
+// n coordinates writes.
 fn text(n: i64) -> u8[>..] {
-    let coords = prepare(n);
+    let data = prepare(n);
     var out: u8[>..] = [];
-    write_data(out, coords, "some info");
+    to_json(out, data);
     return out;
 }
 
 fn run(b: Bench&) -> u32 {
-    let coords = prepare(config_i64(b.name, "coords"));
+    let data = prepare(config_i64(b.name, "coords"));
     var text: u8[>..] = [];
     var result: u32 = 0;
     measure(b) {
         text.clear();
-        write_data(text, coords, "some info");
+        to_json(text, data);
         if starts_with(text, "{\"coordinates\":") { result++; }
     };
     return result;

@@ -1,12 +1,11 @@
 // Calculator::Ast: a generated program of assignments over + - * / % and
 // parentheses, parsed by recursive descent into an AST on every run.
 //
-// The nodes are a variable-mode enum in one grow-only pool, each exactly as
-// big as its variant, linked to its children by 4-byte self-relative
-// references. A variable's name is stored inline in its node, so the tree
-// owns its names without an allocation per name. A run's pool and
-// expression list are locals of the run, so the previous run's tree goes
-// away with a pointer reset rather than a walk over its nodes.
+// The nodes are a variable-mode enum in a grow-only pool, each as big as its
+// variant, linked to its children by 4-byte self-relative references. A
+// variable's name is stored inline in its node. A run's node pool and parser
+// are locals of the run, so the previous run's tree is freed when the run's
+// scope ends.
 
 namespace calculator_ast;
 
@@ -16,12 +15,12 @@ import helper;
 
 enum Node {
     Number { value: i64 },
-    Variable { name: u8[varint] },
+    Variable { name: u8[] },
     BinaryOp { op: u8, left: Node..&<u32>, right: Node..&<u32> },
-    Assignment { name: u8[varint], expr: Node..&<u32> },
+    Assignment { name: u8[], expr: Node..&<u32> },
 }
 
-let EOF: u8 = 0;
+let CHAR_EOF: u8 = 0;
 
 fn generate_random_program(n: i64) -> u8[>..] {
     var result: u8[>..] = [];
@@ -53,98 +52,154 @@ fn generate_random_program(n: i64) -> u8[>..] {
     return result;
 }
 
-fn is_digit(c: u8) -> bool { c >= '0' && c <= '9' }
-fn is_letter(c: u8) -> bool { (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
-fn is_whitespace(c: u8) -> bool { c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+// --- the parser -----------------------------------------------------------------
 
-// Parses `input` into `nodes`, appending each top-level expression to
-// `expressions`. The cursor and the byte under it are this function's
-// locals, which the nested parsing functions share.
-fn parse(input: const u8[:], nodes: Node..[>..]&, expressions: (Node..&)[>..]&) {
-    var pos = 0;
-    var current = if input.len > 0 { input[0] } else { EOF };
+struct Parser {
+    input: const u8[:],
+    pos: i64,
+    len: i64,
+    current_byte: u8,
+    expressions: (Node..&)[>..],
+}
 
-    fn advance() {
-        pos++;
-        current = if pos >= input.len { EOF } else { input[pos] };
-    }
+fn new_parser(input: const u8[:]) -> Parser {
+    let len = input.len;
+    let current_byte = if len > 0 { input[0] } else { CHAR_EOF };
+    return Parser { input: input, pos: 0, len: len, current_byte: current_byte, expressions: [] };
+}
 
-    fn skip_whitespace() {
-        while is_whitespace(current) { advance(); }
-    }
+// The functions that build nodes take the pool the nodes live in, which
+// outlives the parser. It is a parameter rather than a field of the parser
+// because inside the recursive cycle the checker accepts links stored into a
+// pool handed to it that way, not into one reached through a field.
 
-    recursive fn parse_expression() -> Node..& {
-        var node: Node..& = parse_term();
-        loop {
-            skip_whitespace();
-            guard current == '+' || current == '-' else { break; }
-            let op = current;
-            advance();
-            let right: Node..& = parse_term();
-            node .= nodes.push(Node.BinaryOp { op: op, left: node, right: right });
+// Returns the top-level expressions, which stay in the parser.
+fn parse(p: Parser&, nodes: Node..[>..]&) -> (Node..&)[:] {
+    while p.current_byte != CHAR_EOF {
+        p.skip_whitespace();
+        if p.current_byte == CHAR_EOF { break; }
+
+        let expr: Node..& = p.parse_expression(nodes);
+        p.expressions.push(expr);
+
+        p.skip_whitespace();
+        while p.current_byte == '\n' {
+            p.advance();
+            p.skip_whitespace();
         }
+    }
+    return p.expressions;
+}
+
+recursive fn parse_expression(p: Parser&, nodes: Node..[>..]&) -> Node..& {
+    let node: Node..& = p.parse_term(nodes);
+    return p.parse_expression_rest(nodes, node);
+}
+
+fn parse_expression_rest(p: Parser&, nodes: Node..[>..]&, left_node: Node..&) -> Node..& {
+    var current_node: Node..& = left_node;
+    loop {
+        p.skip_whitespace();
+        if p.current_byte == '+' || p.current_byte == '-' {
+            let op = p.current_byte;
+            p.advance();
+            let right: Node..& = p.parse_term(nodes);
+            current_node .= nodes.push(Node.BinaryOp { op: op, left: current_node, right: right });
+        } else {
+            break;
+        }
+    }
+    return current_node;
+}
+
+fn parse_term(p: Parser&, nodes: Node..[>..]&) -> Node..& {
+    let node: Node..& = p.parse_factor(nodes);
+    return p.parse_term_rest(nodes, node);
+}
+
+fn parse_term_rest(p: Parser&, nodes: Node..[>..]&, left_node: Node..&) -> Node..& {
+    var current_node: Node..& = left_node;
+    loop {
+        p.skip_whitespace();
+        if p.current_byte == '*' || p.current_byte == '/' || p.current_byte == '%' {
+            let op = p.current_byte;
+            p.advance();
+            let right: Node..& = p.parse_factor(nodes);
+            current_node .= nodes.push(Node.BinaryOp { op: op, left: current_node, right: right });
+        } else {
+            break;
+        }
+    }
+    return current_node;
+}
+
+fn parse_factor(p: Parser&, nodes: Node..[>..]&) -> Node..& {
+    p.skip_whitespace();
+    if p.is_digit(p.current_byte) {
+        return p.parse_number(nodes);
+    } else if p.is_letter(p.current_byte) {
+        return p.parse_variable(nodes);
+    } else if p.current_byte == '(' {
+        p.advance();
+        let node: Node..& = p.parse_expression(nodes);
+        p.skip_whitespace();
+        if p.current_byte == ')' { p.advance(); }
         return node;
-    }
-
-    fn parse_term() -> Node..& {
-        var node: Node..& = parse_factor();
-        loop {
-            skip_whitespace();
-            guard current == '*' || current == '/' || current == '%' else { break; }
-            let op = current;
-            advance();
-            let right: Node..& = parse_factor();
-            node .= nodes.push(Node.BinaryOp { op: op, left: node, right: right });
-        }
-        return node;
-    }
-
-    fn parse_factor() -> Node..& {
-        skip_whitespace();
-        if is_digit(current) { return parse_number(); }
-        if is_letter(current) { return parse_variable(); }
-        if current == '(' {
-            advance();
-            let node: Node..& = parse_expression();
-            skip_whitespace();
-            if current == ')' { advance(); }
-            return node;
-        }
-        advance();
+    } else {
+        p.advance();
         return nodes.push(Node.Number { value: 0 });
     }
+}
 
-    fn parse_number() -> Node..& {
-        let start = pos;
-        while is_digit(current) { advance(); }
-        let value, ok = parse_int(input[start..pos]);
-        return nodes.push(Node.Number { value: if ok { value } else { 0 } });
+fn parse_number(p: Parser&, nodes: Node..[>..]&) -> Node..& {
+    let start = p.pos;
+    while p.is_digit(p.current_byte) { p.advance(); }
+
+    let num_str = p.input[start..p.pos];
+    let n, ok = parse_int(num_str);
+    return nodes.push(Node.Number { value: if ok { n } else { 0 } });
+}
+
+fn parse_variable(p: Parser&, nodes: Node..[>..]&) -> Node..& {
+    let start = p.pos;
+    while p.is_letter(p.current_byte) || p.is_digit(p.current_byte) { p.advance(); }
+
+    let var_name = p.input[start..p.pos];
+
+    p.skip_whitespace();
+    if p.current_byte == '=' {
+        p.advance();
+        let expr: Node..& = p.parse_expression(nodes);
+        return nodes.push(Node.Assignment { name: var_name, expr: expr });
     }
 
-    fn parse_variable() -> Node..& {
-        let start = pos;
-        while is_letter(current) || is_digit(current) { advance(); }
-        let name = input[start..pos];
-        skip_whitespace();
-        if current == '=' {
-            advance();
-            let expr: Node..& = parse_expression();
-            return nodes.push(Node.Assignment { name: name, expr: expr });
-        }
-        return nodes.push(Node.Variable { name: name });
-    }
+    return nodes.push(Node.Variable { name: var_name });
+}
 
-    while current != EOF {
-        skip_whitespace();
-        if current == EOF { break; }
-        expressions.push(parse_expression());
-        skip_whitespace();
-        while current == '\n' {
-            advance();
-            skip_whitespace();
-        }
+fn advance(p: Parser&) {
+    p.pos++;
+    if p.pos >= p.len {
+        p.current_byte = CHAR_EOF;
+    } else {
+        p.current_byte = p.input[p.pos];
     }
 }
+
+fn skip_whitespace(p: Parser&) {
+    while p.is_whitespace(p.current_byte) { p.advance(); }
+}
+
+fn is_digit(p: Parser&, byte: u8) -> bool { byte >= '0' && byte <= '9' }
+
+fn is_letter(p: Parser&, byte: u8) -> bool {
+    (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z')
+}
+
+fn is_whitespace(p: Parser&, byte: u8) -> bool {
+    byte == ' ' || byte == '\t' || byte == '\n' || byte == '\r'
+}
+
+// --- Calculator::Ast ------------------------------------------------------------
 
 fn run(b: Bench&) -> u32 {
     let n = config_i64(b.name, "operations");
@@ -152,9 +207,10 @@ fn run(b: Bench&) -> u32 {
     var result_val: u32 = 0;
     measure(b) {
         var nodes: Node..[>..] = [];
-        var expressions: (Node..&)[>..] = [];
-        parse(text, nodes, expressions);
+        var parser = new_parser(text);
+        let expressions = parser.parse(nodes);
         result_val += expressions.len as! u32;
+
         if expressions.len > 0 {
             match expressions[expressions.len - 1] {
                 Assignment &a => { result_val += checksum_str(a.name); },

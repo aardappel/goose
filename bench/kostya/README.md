@@ -9,7 +9,7 @@ LangArena's own Rust and C++ implementations.
 
 | here | in a LangArena checkout |
 |---|---|
-| `goose/` (`run`, `test`, `src/`) | `goose/` |
+| `goose/` (`Makefile`, `run`, `test`, `src/`) | `goose/` |
 | `docker/goose` | `docker/goose` |
 
 `goose/src/main.goose` is the runner: it reads a configuration (`run.js` or
@@ -20,6 +20,12 @@ and checksums, and each other file one benchmark group. JSON, regex, Base64
 and CSV come from Goose's standard library, as the other languages take them
 from theirs or from a package.
 
+LangArena measures how well each compiler handles the same algorithm written
+the same way, so every benchmark follows the reference implementations (Rust
+and Crystal) struct by struct and function by function. Where Goose's memory
+model forces another shape (no heap, no growable arrays inside arrays, no
+shared memory between threads), the comments say what stands in for what.
+
 LangArena itself also needs these entries:
 
 * `benchmarks.rb`, in `LANG_MASKS`:
@@ -28,14 +34,14 @@ LangArena itself also needs these entries:
   ```ruby
   Run.new(
     name: "Goose",
-    build_cmd: "sh -c 'mkdir -p target && goose -O2 --standalone -o target/benchmark.c src/main.goose && clang -O3 -w target/benchmark.c -o target/benchmark -lm -pthread'",
+    build_cmd: "make prod",
     binary_name: "./target/benchmark",
     run_cmd: "./target/benchmark",
-    version_cmd: "sh -c 'cd /opt/goose && git describe --always'",
+    version_cmd: "git -C /opt/goose log -1 --format='goose %h %cs'",
     dir: "/src/goose",
     container: "goose",
     group: :prod,
-    deps_cmd: "true",
+    deps_cmd: "mkdir -p target",
   ),
   ```
 * `docker-compose.yaml`, a service like the other languages':
@@ -47,9 +53,12 @@ LangArena itself also needs these entries:
     build:
       dockerfile: docker/goose
       args:
-        version: master
+        version: "<a goose commit>"
+    volumes:
+      - .:/src
+      - ./cache/build/goose/target:/src/goose/target
     depends_on:
-      - base
+      - base_clang
   ```
 
 ## Running here
@@ -58,9 +67,9 @@ LangArena itself also needs these entries:
 LangArena checkout next to this repository's checkout (or `$LANGARENA`) and
 writing everything under `bench/kostya/build/`. C++ is built the way
 LangArena's `make prod` builds it, with clang; Rust with `cargo build
---release`; the generated Goose C with clang `-O3`. On Windows both C and
-C++ get `-fstrict-aliasing`, which is clang's default on Linux, where
-LangArena runs.
+--release`; the generated Goose C with clang `-O2`, as LangArena's own C
+and C++ are. On Windows both C and C++ get `-fstrict-aliasing`, which is
+clang's default on Linux, where LangArena runs.
 
 ```
 python bench/kostya/compare.py build                 # all three languages

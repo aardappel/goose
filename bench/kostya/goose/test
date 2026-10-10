@@ -1,4 +1,2 @@
 #!/bin/sh
-mkdir -p target
-goose -O2 --standalone -o target/benchmark.c src/main.goose && clang -O1 -w target/benchmark.c -o target/benchmark -lm -pthread
-./target/benchmark ../test.js "$@"
+make test && ./target/test ../test.js "$@"

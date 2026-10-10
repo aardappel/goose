@@ -16,27 +16,39 @@ fn number_at(coord: json::Node&, key: u8[:]) -> f64 {
     return v;
 }
 
+fn calc(text: u8[:]) -> f64, f64, f64 {
+    var doc: json::Node[>..] = [];
+    var decoded: u8[>..] = [];
+    let root, err = json::parse(text, doc, decoded);
+    guard root else { abort(err); }
+    let coordinates = json::member(root, "coordinates");
+    guard coordinates else { abort("no coordinates"); }
+    // An array node keeps its element count in its value.
+    var len = 0.0;
+    match coordinates.val {
+        Arr a => { len = a.count; },
+        _ => { abort("coordinates is not an array"); },
+    }
+
+    var x = 0.0;
+    var y = 0.0;
+    var z = 0.0;
+
+    json::each(coordinates) { coord =>
+        x += number_at(coord, "x");
+        y += number_at(coord, "y");
+        z += number_at(coord, "z");
+    };
+
+    return x / len, y / len, z / len;
+}
+
 fn run(b: Bench&) -> u32 {
     let text = json_generate::text(config_i64(b.name, "coords"));
     var result: u32 = 0;
     measure(b) {
-        var doc: json::Node[>..] = [];
-        var decoded: u8[>..] = [];
-        let root, err = json::parse(text, doc, decoded);
-        guard root else { abort(err); }
-        let coordinates = json::member(root, "coordinates");
-        guard coordinates else { abort("no coordinates"); }
-        var x = 0.0;
-        var y = 0.0;
-        var z = 0.0;
-        var len = 0;
-        json::each(coordinates) { coord =>
-            x += number_at(coord, "x");
-            y += number_at(coord, "y");
-            z += number_at(coord, "z");
-            len++;
-        };
-        result += checksum_f64(x / len) + checksum_f64(y / len) + checksum_f64(z / len);
+        let x, y, z = calc(text);
+        result += checksum_f64(x) + checksum_f64(y) + checksum_f64(z);
     };
     return result;
 }

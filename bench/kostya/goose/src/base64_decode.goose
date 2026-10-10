@@ -15,7 +15,7 @@ fn run(b: Bench&) -> u32 {
     var encoded: u8[>..] = [];
     base64::encode(encoded, text);
     var decoded: u8[>..] = [];
-    base64::decode(decoded, encoded);
+    if !base64::decode(decoded, encoded) { abort("Base64::Decode: invalid input"); }
     var result: u32 = 0;
     measure(b) {
         decoded.clear();
@@ -25,8 +25,6 @@ fn run(b: Bench&) -> u32 {
     var message: u8[>..] = [];
     message.append("decode ");
     base64_encode::preview(message, encoded);
-    message.append(" to ");
-    base64_encode::preview(message, decoded);
-    format(message, ": ", result);
+    format(message, " to ", decoded[..4], "...: ", result);
     return checksum_str(message);
 }

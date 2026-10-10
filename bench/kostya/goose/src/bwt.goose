@@ -8,134 +8,152 @@ import std;
 import bench;
 import compress_data;
 
+// The last column of the sorted rotations, and the row at which the input
+// itself sorts.
+struct BWTResult { original_idx: i32, transformed: u8[>..] }
+
 // A rotation's sort key in one doubling round: the rank of its first k
 // characters and the rank of the k after them.
-struct RankPair { first: u32, second: u32 }
+struct RankPair { first: i64, second: i64 }
 
-// The last column of the sorted rotations of `input`, and the row at which
-// `input` itself sorts.
-fn bwt_transform(input: u8[:]) -> u8[>..], i64 {
+fn bwt_transform(input: u8[:]) -> BWTResult {
     let n = input.len;
-    var transformed: u8[>..] = [];
-    if n == 0 { return transformed, 0; }
+    if n == 0 { return BWTResult { original_idx: 0, transformed: [] }; }
 
-    // The rotations bucketed by their first byte, in order of position.
-    var counts: u32[256] = [0; 256];
-    for c in input { counts[c] += 1; }
-    var positions: u32[256] = [0; 256];
-    var total: u32 = 0;
+    var sa: i64[>..] = [];
+    sa.resize(n, 0);
+
+    var counts: i64[256] = [0; 256];
+    for byte in input { counts[byte] += 1; }
+
+    var positions: i64[256] = [0; 256];
+    var total = 0;
     for i in 256 {
         positions[i] = total;
         total += counts[i];
     }
-    var sa: u32[>..] = [];
-    sa.resize(n, 0);
-    var temp_counts: u32[256] = [0; 256];
-    for c, i in input {
-        sa[positions[c] + temp_counts[c]] = i as u32;
-        temp_counts[c] += 1;
+
+    var temp_counts: i64[256] = [0; 256];
+    for i in n {
+        let byte = input[i];
+        let pos = positions[byte] + temp_counts[byte];
+        sa[pos] = i;
+        temp_counts[byte] += 1;
     }
 
     if n > 1 {
-        var rank: u32[>..] = [];
+        var rank: i64[>..] = [];
         rank.resize(n, 0);
-        var current_rank: u32 = 0;
+        var current_rank = 0;
         var prev_char = input[sa[0]];
+
         for idx in sa {
             if input[idx] != prev_char {
-                current_rank++;
+                current_rank += 1;
                 prev_char = input[idx];
             }
             rank[idx] = current_rank;
         }
 
-        // Each round sorts the rotations by their first 2k characters, as
-        // the pair of ranks of two k-character halves, and re-ranks them. The
-        // sort is stable, so ties keep the previous round's order.
-        var pairs: RankPair[>..] = [];
-        pairs.resize(n, RankPair { 0, 0 });
         var k = 1;
         while k < n {
-            for i in n { pairs[i] = RankPair { rank[i], rank[(i + k) % n] }; }
+            var pairs: RankPair[>..] = [];
+            for i in n { pairs.push(RankPair { rank[i], rank[(i + k) % n] }); }
+
             stable_sort(sa) { a, b =>
                 let pa = pairs[a];
                 let pb = pairs[b];
                 if pa.first != pb.first { pa.first < pb.first } else { pa.second < pb.second }
             };
-            // The pairs hold the old ranks, so the new ones can replace them.
-            var r: u32 = 0;
-            rank[sa[0]] = 0;
+
+            var new_rank: i64[>..] = [];
+            new_rank.resize(n, 0);
+            new_rank[sa[0]] = 0;
             for i in 1..n {
-                if pairs[sa[i - 1]] != pairs[sa[i]] { r++; }
-                rank[sa[i]] = r;
+                let prev = sa[i - 1];
+                let curr = sa[i];
+                let same = pairs[prev] == pairs[curr];
+                new_rank[curr] = new_rank[prev] + (if same { 0 } else { 1 });
             }
-            k *= 2;
+
+            // Goose has no move for a growable array: the new ranks are copied.
+            rank = copy(new_rank);
+            k <<= 1;
         }
     }
 
-    var original_idx = 0;
+    // The result is built where it is returned to, its bytes in place.
+    var result = BWTResult { original_idx: 0, transformed: [] };
+    let transformed: u8[>..]& = result.transformed;
+    transformed.resize(n, 0);
     for suffix, i in sa {
         if suffix == 0 {
-            transformed.push(input[n - 1]);
-            original_idx = i;
+            transformed[i] = input[n - 1];
+            result.original_idx = i as i32;
         } else {
-            transformed.push(input[suffix - 1]);
+            transformed[i] = input[suffix - 1];
         }
     }
-    return transformed, original_idx;
+    return result;
 }
 
 fn run_encode(b: Bench&) -> u32 {
-    let data = ::generate_test_data(config_i64(b.name, "size"));
-    var checksum: u32 = 0;
+    let test_data = ::generate_test_data(config_i64(b.name, "size"));
+    var bwt_result = BWTResult { original_idx: 0, transformed: [] };
+    var result_val: u32 = 0;
     measure(b) {
-        let transformed, original_idx = bwt_transform(data);
-        checksum += transformed.len as! u32;
+        bwt_result = bwt_transform(test_data);
+        result_val += bwt_result.transformed.len as! u32;
     };
-    return checksum;
+    return result_val;
 }
 
-// The text whose transform `bwt` is, given the row the text sorted to.
-fn bwt_inverse(bwt: u8[:], original_idx: i64) -> u8[>..] {
+fn bwt_inverse(bwt_result: BWTResult&) -> u8[>..] {
+    let bwt = bwt_result.transformed;
     let n = bwt.len;
-    var result: u8[>..] = [];
-    if n == 0 { return result; }
+    if n == 0 { return []; }
 
-    var counts: u32[256] = [0; 256];
-    for c in bwt { counts[c] += 1; }
-    var positions: u32[256] = [0; 256];
-    var total: u32 = 0;
+    var counts: i32[256] = [0; 256];
+    for byte in bwt { counts[byte] += 1; }
+
+    var positions: i32[256] = [0; 256];
+    var total: i32 = 0;
     for i in 256 {
         positions[i] = total;
         total += counts[i];
     }
 
-    // next[j] is the row of the rotation one character on from row j's.
-    var next: u32[>..] = [];
+    var next: i64[>..] = [];
     next.resize(n, 0);
-    var temp_counts: u32[256] = [0; 256];
-    for c, i in bwt {
-        next[positions[c] + temp_counts[c]] = i as u32;
-        temp_counts[c] += 1;
+    var temp_counts: i32[256] = [0; 256];
+
+    for byte, i in bwt {
+        let pos = positions[byte] + temp_counts[byte];
+        next[pos] = i;
+        temp_counts[byte] += 1;
     }
 
-    var idx = original_idx;
+    var result: u8[>..] = [];
+    result.resize(n, 0);
+    var idx = bwt_result.original_idx as i64;
+
     for i in n {
         idx = next[idx];
-        result.push(bwt[idx]);
+        result[i] = bwt[idx];
     }
     return result;
 }
 
 fn run_decode(b: Bench&) -> u32 {
-    let data = ::generate_test_data(config_i64(b.name, "size"));
-    let transformed, original_idx = bwt_transform(data);
+    // BWTEncode's prepare and run(0).
+    let test_data = ::generate_test_data(config_i64(b.name, "size"));
+    let bwt_result = bwt_transform(test_data);
     var inverted: u8[>..] = [];
-    var checksum: u32 = 0;
+    var result_val: u32 = 0;
     measure(b) {
-        inverted = bwt_inverse(transformed, original_idx);
-        checksum += inverted.len as! u32;
+        inverted = bwt_inverse(bwt_result);
+        result_val += inverted.len as! u32;
     };
-    if inverted == data { checksum += 100000; }
-    return checksum;
+    if inverted == test_data { result_val += 100000; }
+    return result_val;
 }

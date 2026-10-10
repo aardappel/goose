@@ -1,9 +1,10 @@
 // Compress::LZWEncode and Compress::LZWDecode: Lempel-Ziv-Welch with an
-// unbounded dictionary of byte strings and 16-bit big-endian output codes.
+// unbounded dictionary of strings and 16-bit big-endian output codes.
 //
-// Every string the encoder looks up is a run of its input, so its dictionary
-// is keyed by views of the input. The decoder builds each new string, end to
-// end with the others in one byte array, and its table holds views of them.
+// Goose has no heap-allocated string type: a string is a byte array, and a
+// string made at run time is built at the end of a byte array the function
+// owns (`strings`, freed when it returns) and handled as a slice of it, which
+// is what the dictionaries hold.
 
 namespace lzw;
 
@@ -12,112 +13,142 @@ import dictionary;
 import bench;
 import compress_data;
 
-// The 256 one-byte strings the dictionaries start with are views of this.
-fn all_bytes() -> u8[256] {
-    var bytes: u8[256] = [0; 256];
-    for i in 256 { bytes[i] = i as! u8; }
-    return bytes;
+struct LZWResult { data: u8[>..] }
+
+// A new string with the bytes of `s`.
+fn new_string(strings: u8[>..]&, s: u8[:]) -> const u8[:] {
+    let start = strings.len;
+    strings.append(s);
+    return strings[start..];
 }
 
-fn push_code(out: u8[>..]&, code: i64) {
-    out.push(((code >> 8) & 0xFF) as! u8);
-    out.push((code & 0xFF) as! u8);
+// The new string `a + b`.
+fn concat(strings: u8[>..]&, a: u8[:], b: u8[:]) -> const u8[:] {
+    let start = strings.len;
+    strings.append(a);
+    strings.append(b);
+    return strings[start..];
 }
 
 // --- encoding -----------------------------------------------------------------
 
-fn encode(input: u8[:]) -> u8[>..] {
-    var result: u8[>..] = [];
-    if input.len == 0 { return result; }
-    let bytes = all_bytes();
-    var dict = dictionary<const u8[:], i64> {};
-    dict.reserve(4096);
-    for i in 256 { dict.insert(bytes[i..i + 1], i); }
-    var next_code = 256;
+fn lzw_encode(input: u8[:]) -> LZWResult {
+    if input.len == 0 {
+        return LZWResult { data: [] };
+    }
 
-    // The current string is input[start..i]; extending it by input[i] is
-    // input[start..i + 1].
-    var start = 0;
+    var strings: u8[>..] = [];
+    var dict = dictionary<const u8[:], i32> {};
+    dict.reserve(4096);
+    for i: i32 in 0..256 {
+        dict.insert(new_string(strings, [i as! u8]), i);
+    }
+
+    var next_code: i32 = 256;
+
+    var result = LZWResult { data: [] };
+
+    var current = new_string(strings, input[0..1]);
+
     for i in 1..input.len {
-        let new_str = input[start..i + 1];
-        if !dict.contains(new_str) {
-            let code = dict.get(input[start..i]);
+        let next_char_str = new_string(strings, input[i..i + 1]);
+        let new_str = concat(strings, current, next_char_str);
+
+        if dict.contains(new_str) {
+            current = new_str;
+        } else {
+            let code = dict.get(current);
             assert(code);
-            push_code(result, code);
+            result.data.push(((code >> 8) & 0xFF) as! u8);
+            result.data.push((code & 0xFF) as! u8);
+
             dict.insert(new_str, next_code);
             next_code += 1;
-            start = i;
+            current = next_char_str;
         }
     }
-    let code = dict.get(input[start..]);
+
+    let code = dict.get(current);
     assert(code);
-    push_code(result, code);
+    result.data.push(((code >> 8) & 0xFF) as! u8);
+    result.data.push((code & 0xFF) as! u8);
+
     return result;
 }
 
 fn run_encode(b: Bench&) -> u32 {
     let test_data = ::generate_test_data(config_i64(b.name, "size"));
-    var result: u32 = 0;
+    var encoded = LZWResult { data: [] };
+    var result_val: u32 = 0;
     measure(b) {
-        let encoded = encode(test_data);
-        result += encoded.len as! u32;
+        encoded = lzw_encode(test_data);
+        result_val += encoded.data.len as! u32;
     };
-    return result;
+    return result_val;
 }
 
 // --- decoding -----------------------------------------------------------------
 
-// `s` followed by `c`, built at the end of `strings`.
-fn concat(strings: u8[>..]&, s: u8[:], c: u8) -> const u8[:] {
-    let start = strings.len;
-    strings.append(s);
-    strings.push(c);
-    return strings[start..];
-}
+fn lzw_decode(encoded: LZWResult&) -> u8[>..] {
+    if encoded.data.len == 0 {
+        return [];
+    }
 
-fn decode(data: u8[:]) -> u8[>..] {
-    var result: u8[>..] = [];
-    if data.len == 0 { return result; }
-    let bytes = all_bytes();
     var strings: u8[>..] = [];
     var dict: (const u8[:])[>..] = [];
-    for i in 256 { dict.push(bytes[i..i + 1]); }
+    for i in 256 {
+        dict.push(new_string(strings, [i as! u8]));
+    }
 
-    fn code_at(pos: i64) -> i64 { ((data[pos] as i64) << 8) | data[pos + 1] }
+    var result: u8[>..] = [];
+    let data = encoded.data;
+    var pos = 0;
 
-    var old_str = dict[code_at(0)];
+    let high = data[pos] as u16;
+    let low = data[pos + 1] as u16;
+    let old_code = ((high as i64) << 8) | low;
+    pos += 2;
+
+    var old_str = dict[old_code];
     result.append(old_str);
-    var pos = 2;
-    var valid = true;
+
+    var next_code = 256;
+
     while pos < data.len {
-        let new_code = code_at(pos);
+        let high = data[pos] as u16;
+        let low = data[pos + 1] as u16;
+        let new_code = ((high as i64) << 8) | low;
         pos += 2;
-        if new_code > dict.len {
-            valid = false;
-            break;
-        }
-        // A code equal to dict.len is the one this step defines: the
-        // previous string plus its own first byte.
-        let new_str = if new_code < dict.len { dict[new_code] }
-                      else { concat(strings, old_str, old_str[0]) };
+
+        let new_str = if new_code < dict.len {
+            dict[new_code]
+        } else if new_code == next_code {
+            concat(strings, old_str, old_str[0..1])
+        } else {
+            return [];
+        };
+
         result.append(new_str);
-        dict.push(concat(strings, old_str, new_str[0]));
+
+        dict.push(concat(strings, old_str, new_str[0..1]));
+        next_code += 1;
+
         old_str = new_str;
     }
-    // A code no encoder could have written decodes to nothing.
-    if !valid { result.clear(); }
+
     return result;
 }
 
 fn run_decode(b: Bench&) -> u32 {
     let test_data = ::generate_test_data(config_i64(b.name, "size"));
-    let encoded = encode(test_data);
+    // LZWEncode's prepare and run(0).
+    let encoded = lzw_encode(test_data);
     var decoded: u8[>..] = [];
-    var result: u32 = 0;
+    var result_val: u32 = 0;
     measure(b) {
-        decoded = decode(encoded);
-        result += decoded.len as! u32;
+        decoded = lzw_decode(encoded);
+        result_val += decoded.len as! u32;
     };
-    if decoded == test_data { result += 100000; }
-    return result;
+    if decoded == test_data { result_val += 100000; }
+    return result_val;
 }

@@ -9,25 +9,35 @@ import dictionary;
 import bench;
 import regex;
 
-let NAMES = [
-    "errors", "bots", "suspicious", "ips", "api_calls", "post_requests", "auth_attempts",
-    "methods", "emails", "passwords", "tokens", "sessions", "peak_hours",
-];
+// A name and its regular expression; the reference's (&str, Regex) tuple.
+struct Pattern { name: const u8[:], regex: regex::Regex }
+
 let PATTERNS = [
-    """ [5][0-9]{2} | [4][0-9]{2} """,
-    """(?i)bot|crawler|scanner|spider|indexing|crawl|robot|spider""",
-    """(?i)etc/passwd|wp-admin|\.\./""",
-    """\d+\.\d+\.\d+\.35""",
-    """/api/[^ "]+""",
-    """POST [^ ]* HTTP""",
-    """(?i)/login|/signin""",
-    """(?i)get|post|put""",
-    """[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}""",
-    """password=[^&\s"]+""",
-    """token=[^&\s"]+|api[_-]?key=[^&\s"]+""",
-    """session[_-]?id=[^&\s"]+""",
-    """\[\d+/\w+/\d+:1[3-7]:\d+:\d+ [+\-]\d+\]""",
+    Pattern { "errors", regex::compile(""" [5][0-9]{2} | [4][0-9]{2} """) },
+    Pattern { "bots", regex::compile("""(?i)bot|crawler|scanner|spider|indexing|crawl|robot|spider""") },
+    Pattern { "suspicious", regex::compile("""(?i)etc/passwd|wp-admin|\.\./""") },
+    Pattern { "ips", regex::compile("""\d+\.\d+\.\d+\.35""") },
+    Pattern { "api_calls", regex::compile("""/api/[^ "]+""") },
+    Pattern { "post_requests", regex::compile("""POST [^ ]* HTTP""") },
+    Pattern { "auth_attempts", regex::compile("""(?i)/login|/signin""") },
+    Pattern { "methods", regex::compile("""(?i)get|post|put""") },
+    Pattern { "emails", regex::compile("""[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}""") },
+    Pattern { "passwords", regex::compile("""password=[^&\s"]+""") },
+    Pattern { "tokens", regex::compile("""token=[^&\s"]+|api[_-]?key=[^&\s"]+""") },
+    Pattern { "sessions", regex::compile("""session[_-]?id=[^&\s"]+""") },
+    Pattern { "peak_hours", regex::compile("""\[\d+/\w+/\d+:1[3-7]:\d+:\d+ [+\-]\d+\]""") },
 ];
+
+// "192.168.1.1" to "192.168.1.255", each in a limited array, as the elements
+// of an indexable array are fixed-size; an IPv4 address takes at most 15
+// characters.
+let IPS = generate_ips();
+
+fn generate_ips() -> u8[..15][>..] {
+    var ips: u8[..15][>..] = [];
+    for i in 1..256 { ips.push(str("192.168.1.", i)); }
+    return ips;
+}
 
 let METHODS = ["GET", "POST", "PUT", "DELETE"];
 let PATHS = ["/index.html", "/api/users", "/admin", "/images/logo.png", "/etc/passwd", "/wp-admin/setup.php"];
@@ -36,8 +46,8 @@ let AGENTS = ["Mozilla/5.0", "Googlebot/2.1", "curl/7.68.0", "scanner/2.0"];
 let USERS = ["john", "jane", "alex", "sarah", "mike", "anna", "david", "elena"];
 let DOMAINS = ["example.com", "gmail.com", "yahoo.com", "hotmail.com", "company.org", "mail.ru"];
 
-fn generate_line(log: u8[>..]&, i: i64) {
-    format(log, "192.168.1.", i % 255 + 1, " - - [", i % 31, "/Oct/2023:", i % 60, ":55:36 +0000] \"",
+fn generate_log_line(log: u8[>..]&, i: i64) {
+    format(log, IPS[i % IPS.len], " - - [", i % 31, "/Oct/2023:", i % 60, ":55:36 +0000] \"",
            METHODS[i % METHODS.len], " ");
     if i % 3 == 0 {
         format(log, "/login?email=", USERS[i % USERS.len], i % 100, "@", DOMAINS[i % DOMAINS.len],
@@ -56,17 +66,15 @@ fn generate_line(log: u8[>..]&, i: i64) {
 }
 
 fn run(b: Bench&) -> u32 {
-    let lines = config_i64(b.name, "lines_count");
+    let lines_count = config_i64(b.name, "lines_count");
     var log: u8[>..] = [];
-    for i in lines { generate_line(log, i); }
-    var patterns: regex::Regex[>..] = [];
-    for p in PATTERNS { patterns.push(regex::compile(p)); }
+    for i in lines_count { generate_log_line(log, i); }
     var checksum: u32 = 0;
     measure(b) {
         var matches = dictionary<const u8[:], i64> {};
-        for re, k in patterns { matches.insert(NAMES[k], regex::count(re, log)); }
+        for p in PATTERNS { matches.insert(p.name, regex::count(p.regex, log)); }
         var total = 0;
-        matches.each() { name, n => total += n; };
+        matches.each() { name, count => total += count; };
         checksum += total as! u32;
     };
     return checksum;

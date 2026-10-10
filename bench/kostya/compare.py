@@ -103,9 +103,9 @@ def run(argv, cwd=None, env=None, check=True):
 
 # --- Goose ---------------------------------------------------------------------
 
-# Flags kept in one place so the LangArena `run` script and this file agree.
+# The flags of goose/Makefile, which LangArena builds with.
 GOOSE_FLAGS = ["-O2"]
-GOOSE_CFLAGS = ["-O3", "-w"] + (["-fstrict-aliasing"] if os.name == "nt" else [])
+GOOSE_CFLAGS = ["-O2", "-w"] + (["-fstrict-aliasing"] if os.name == "nt" else [])
 
 
 def build_goose(extra_goose=(), extra_cflags=(), tag="goose", entry="main.goose", compiler=None, src=None):

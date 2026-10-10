@@ -1,6 +1,6 @@
 // Calculator::Interpreter: evaluates the Calculator::Ast program's tree with
-// a fresh interpreter on every run. The variables live in a hash map keyed
-// by views of the names stored in the tree, so an assignment copies no name.
+// a fresh interpreter on every run. The variables are a hash map keyed by
+// views of the names stored in the tree.
 
 namespace calculator_interpreter;
 
@@ -26,52 +26,62 @@ fn simple_mod(a: i64, b: i64) -> i64 {
     return a - simple_div(a, b) * b;
 }
 
-// Evaluates every expression in order with a fresh set of variables, and
-// returns the value of the last one.
-fn interpret(expressions: (calculator_ast::Node..&)[:]) -> i64 {
-    var variables = dictionary<const u8[:], i64> {};
+// --- the interpreter ------------------------------------------------------------
 
-    recursive fn evaluate(node: calculator_ast::Node..&) -> i64 {
-        match node {
-            Number &n => n.value,
-            Variable &v => {
-                let value = variables.get(v.name);
-                if value { value } else { 0 }
-            },
-            BinaryOp &op => {
-                let left = evaluate(op.left);
-                let right = evaluate(op.right);
-                match op.op {
-                    '+' => wrapping_add(left, right),
-                    '-' => wrapping_sub(left, right),
-                    '*' => wrapping_mul(left, right),
-                    '/' => simple_div(left, right),
-                    '%' => simple_mod(left, right),
-                    _ => 0,
-                }
-            },
-            Assignment &a => {
-                let value = evaluate(a.expr);
-                variables.insert(a.name, value);
-                value
-            },
-        }
+struct Interpreter { variables: dictionary<const u8[:], i64> }
+
+fn new_interpreter() -> Interpreter {
+    return Interpreter { variables: dictionary<const u8[:], i64> {} };
+}
+
+recursive fn evaluate(interp: Interpreter&, node: calculator_ast::Node..&) -> i64 {
+    match node {
+        Number &n => n.value,
+        Variable &v => {
+            let value = interp.variables.get(v.name);
+            if value { value } else { 0 }
+        },
+        BinaryOp &op => {
+            let left_val = interp.evaluate(op.left);
+            let right_val = interp.evaluate(op.right);
+            match op.op {
+                '+' => wrapping_add(left_val, right_val),
+                '-' => wrapping_sub(left_val, right_val),
+                '*' => wrapping_mul(left_val, right_val),
+                '/' => simple_div(left_val, right_val),
+                '%' => simple_mod(left_val, right_val),
+                _ => 0,
+            }
+        },
+        Assignment &a => {
+            let value = interp.evaluate(a.expr);
+            interp.variables.insert(a.name, value);
+            value
+        },
     }
+}
 
+fn run(interp: Interpreter&, expressions: (calculator_ast::Node..&)[:]) -> i64 {
     var result = 0;
-    for expr in expressions { result = evaluate(expr); }
+    for expr in expressions { result = interp.evaluate(expr); }
     return result;
 }
 
+// --- Calculator::Interpreter ----------------------------------------------------
+
 fn run(b: Bench&) -> u32 {
     let n = config_i64(b.name, "operations");
+    // The tree a Calculator::Ast with this many operations builds in its
+    // prepare and first run.
     let text = calculator_ast::generate_random_program(n);
     var nodes: calculator_ast::Node..[>..] = [];
-    var expressions: (calculator_ast::Node..&)[>..] = [];
-    calculator_ast::parse(text, nodes, expressions);
+    var parser = calculator_ast::new_parser(text);
+    let ast = calculator_ast::parse(parser, nodes);
     var result_val: u32 = 0;
     measure(b) {
-        result_val += interpret(expressions) as! u32;
+        var interpreter = new_interpreter();
+        let result = interpreter.run(ast);
+        result_val += result as! u32;
     };
     return result_val;
 }

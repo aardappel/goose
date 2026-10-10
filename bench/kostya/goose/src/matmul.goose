@@ -7,7 +7,12 @@ import std;
 import bench;
 import helper;
 
-// An n x n matrix, row-major in one flat array.
+// A matrix is one flat array holding its rows back to back, and row(m, n, i)
+// is its row i as a slice. The threaded variants send each worker its own
+// copy of a and b, and a value crossing to another thread can hold no slices
+// or references, so a matrix can't be an array of row slices.
+fn row(m: f64[:], n: i64, i: i64) -> f64[:] { m[i * n..(i + 1) * n] }
+
 fn matgen(n: i64) -> f64[>..] {
     let tmp = 1.0 / (n * n) as f64;
     var a: f64[>..] = [];
@@ -17,99 +22,134 @@ fn matgen(n: i64) -> f64[>..] {
     return a;
 }
 
-// Row i of a matrix with rows of n elements.
-fn row(m: f64[:], n: i64, i: i64) -> f64[:] { m[i * n..(i + 1) * n] }
-
-fn dot(x: f64[:], y: f64[:]) -> f64 {
-    assert(x.len == y.len);
-    var s = 0.0;
-    for k in x.len { s += x[k] * y[k]; }
-    return s;
-}
-
-// Columns [first, last) of the n x n matrix b as the rows of a new matrix.
-fn transpose_columns(b: f64[:], n: i64, first: i64, last: i64) -> f64[>..] {
-    var bt: f64[>..] = [];
-    bt.resize((last - first) * n, 0.0);
+// Columns [first, last) of the n x n matrix b as the rows of a new matrix:
+// all of b transposed for 0..n.
+fn transpose(b: f64[:], n: i64, first: i64, last: i64) -> f64[>..] {
+    var b_t: f64[>..] = [];
+    b_t.resize((last - first) * n, 0.0);
     for i in n {
-        for x, j in row(b, n, i)[first..last] { bt[j * n + i] = x; }
+        for j in first..last {
+            row(b_t, n, j - first)[i] = row(b, n, i)[j];
+        }
     }
-    return bt;
+    return b_t;
 }
 
-// Columns [first, last) of a * b, row by row.
-fn multiply_columns(a: f64[:], b: f64[:], n: i64, first: i64, last: i64) -> f64[>..] {
-    let b_t = transpose_columns(b, n, first, last);
+fn matmul_sequential(a: f64[:], b: f64[:], n: i64) -> f64[>..] {
+    let b_t = transpose(b, n, 0, n);
+
     var c: f64[>..] = [];
+    c.resize(n * n, 0.0);
+
     for i in n {
         let a_row = row(a, n, i);
-        for j in last - first { c.push(dot(a_row, row(b_t, n, j))); }
+        let c_row = row(c, n, i);
+
+        for j in n {
+            let b_col = row(b_t, n, j);
+            var s = 0.0;
+
+            for k in n {
+                s += a_row[k] * b_col[k];
+            }
+
+            c_row[j] = s;
+        }
     }
+
     return c;
 }
 
-fn center(c: f64[:], n: i64) -> f64 { c[(n >> 1) * n + (n >> 1)] }
-
-fn single(b: Bench&) -> u32 {
-    let n = config_i64(b.name, "n");
-    let ma = matgen(n);
-    let mb = matgen(n);
-    var result: u32 = 0;
-    measure(b) {
-        let c = multiply_columns(ma, mb, n, 0, n);
-        result += checksum_f64(center(c, n));
+fn single(bench: Bench&) -> u32 {
+    let n = config_i64(bench.name, "n");
+    let a = matgen(n);
+    let b = matgen(n);
+    var result_val: u32 = 0;
+    measure(bench) {
+        let c = matmul_sequential(a, b, n);
+        let center_value = row(c, n, n >> 1)[n >> 1];
+        result_val += checksum_f64(center_value);
     };
-    return result;
+    return result_val;
 }
 
 // --- the threaded variants ----------------------------------------------------
 
 // Goose threads share no memory, so each worker holds its own copy of a and
 // b, received once when the pool starts, as the other languages' benchmark
-// objects hold theirs. The work is split by columns of c rather than by rows,
-// so that no worker needs all of b_t: a job hands a worker a range of c's
-// columns, it transposes just those columns of b, which are the rows of b_t
-// its dot products read, and sends the finished columns back. Every run
-// splits c's columns evenly over the workers, so that together they
-// transpose all of b, and assembles all of c from their parts.
+// objects hold theirs. Each run splits the columns of c evenly over the
+// workers: a worker transposes just its columns of b, which are the rows of
+// b_t its dot products read, so that together they transpose all of b, and
+// it sends its columns of c back for matmul_parallel to assemble.
 
-struct Job { first: i64, last: i64 }                     // first < 0: stop
-struct Columns { first: i64, last: i64, cells: f64[] }   // c[i][first..last] for each row i
+struct Job { first: i64, last: i64 }                       // first < 0: stop
+struct Columns { first: i64, last: i64, cells: f64[] }     // row i: c[i][first..last]
 
 thread_fn worker(a: f64[], b: f64[], n: i64) {
     loop {
         let job = qget<Job>();
         guard job.first >= 0 else { break; }
-        qput(Columns { first: job.first, last: job.last,
-                       cells: multiply_columns(a, b, n, job.first, job.last) });
+
+        let b_t = transpose(b, n, job.first, job.last);
+
+        let width = job.last - job.first;
+        var c: f64[>..] = [];
+        c.resize(n * width, 0.0);
+
+        for i in n {
+            let a_row = row(a, n, i);
+            let c_row = row(c, width, i);
+
+            for j in width {
+                let b_col = row(b_t, n, j);
+                var s = 0.0;
+
+                for k in n {
+                    s += a_row[k] * b_col[k];
+                }
+
+                c_row[j] = s;
+            }
+        }
+
+        qput(Columns { first: job.first, last: job.last, cells: copy(c) });
     }
 }
 
-fn parallel(b: Bench&, threads: i64) -> u32 {
-    let n = config_i64(b.name, "n");
-    let ma = matgen(n);
-    let mb = matgen(n);
-    var ids: i64[>..] = [];
-    for t in threads { ids.push(thread_spawn(worker, copy(ma), copy(mb), n)); }
-    let per_thread = (n + threads - 1) / threads;
-    var result: u32 = 0;
-    measure(b) {
-        for t in threads {
-            let first = min(t * per_thread, n);
-            qput(Job { first: first, last: min(first + per_thread, n) });
+fn matmul_parallel(n: i64, threads: i64) -> f64[>..] {
+    let columns_per_worker = (n + threads - 1) / threads;
+    for worker_id in threads {
+        let first = min(worker_id * columns_per_worker, n);
+        qput(Job { first: first, last: min(first + columns_per_worker, n) });
+    }
+
+    var c: f64[>..] = [];
+    c.resize(n * n, 0.0);
+
+    for t in threads {
+        let part = qget<Columns>();
+        let width = part.last - part.first;
+        for i in n {
+            copy_into(row(c, n, i)[part.first..part.last], row(part.cells, width, i));
         }
-        var c: f64[>..] = [];
-        c.resize(n * n, 0.0);
-        for t in threads {
-            let part = qget<Columns>();
-            let w = part.last - part.first;
-            for i in n {
-                copy_into(row(c, n, i)[part.first..part.last], row(part.cells, w, i));
-            }
-        }
-        result += checksum_f64(center(c, n));
+    }
+
+    return c;
+}
+
+fn parallel(bench: Bench&, threads: i64) -> u32 {
+    let n = config_i64(bench.name, "n");
+    let a = matgen(n);
+    let b = matgen(n);
+    var workers: i64[>..] = [];
+    for t in threads { workers.push(thread_spawn(worker, copy(a), copy(b), n)); }
+    var result_val: u32 = 0;
+    measure(bench) {
+        let c = matmul_parallel(n, threads);
+        let center_value = row(c, n, n >> 1)[n >> 1];
+        result_val += checksum_f64(center_value);
     };
     for t in threads { qput(Job { first: -1, last: -1 }); }
-    for id in ids { thread_wait(id); }
-    return result;
+    for id in workers { thread_wait(id); }
+    return result_val;
 }

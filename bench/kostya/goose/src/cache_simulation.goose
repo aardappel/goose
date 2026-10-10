@@ -10,115 +10,141 @@ import dictionary;
 import bench;
 import helper;
 
-// The nodes live in a reusable pool, so an evicted node's slot is what the
-// next insertion takes, as with the free list of the other versions. Keys
-// and values are stored inline, and the links are 4-byte offsets from the
-// pool's base. The list is circular through a sentinel node, so no link is
-// ever null.
+// The nodes live in a reusable pool, which hands an evicted node's slot to
+// the next insertion, as the Rust version's nodes and free list do. A pool
+// element has a fixed size, so the key and value strings are stored inline
+// with room for "item_" and "updated_" plus a number. The links are offsets
+// from the pool's base.
 struct Node {
-    key: u8[..16],       // "item_" and an i32
-    value: u8[..32],     // "updated_" and an i64
-    prev: Node&<u32 in nodes>,
-    next: Node&<u32 in nodes>,
+    key: u8[..16],
+    value: u8[..32],
+    prev: Node&<u32 in nodes>?,
+    next: Node&<u32 in nodes>?,
 }
 
 reusable var nodes: Node[>..] = [];
 
+fn new_node(key: u8[:], value: u8[:]) -> Node {
+    return Node { key: key, value: value, prev: null, next: null };
+}
+
 struct LruCache {
     capacity: i64,
-    size: i64 = 0,
-    head: Node&<u32 in nodes>,   // the sentinel: head.next is the newest entry, head.prev the oldest
+    head: Node&<u32 in nodes>?,
+    tail: Node&<u32 in nodes>?,
+    size: i64,
     cache: dictionary<u8[..16], Node&<u32 in nodes>?>,
 }
 
 fn new_cache(capacity: i64) -> LruCache {
-    var c = LruCache {
-        capacity: capacity,
-        head: nodes.alloc_ref(Node { key: [], value: [], prev: self, next: self }),
-        ..
-    };
+    var c = LruCache { capacity: capacity, head: null, tail: null, size: 0, .. };
     c.cache.reserve(capacity);
     return c;
-}
-
-fn unlink(n: Node&) {
-    n.prev.next .= n.next;
-    n.next.prev .= n.prev;
-}
-
-fn add_to_front(c: LruCache&, n: Node&) {
-    n.prev .= c.head;
-    n.next .= c.head.next;
-    c.head.next.prev .= n;
-    c.head.next .= n;
-}
-
-fn move_to_front(c: LruCache&, n: Node&) {
-    if n .== c.head.next { return; }
-    unlink(n);
-    add_to_front(c, n);
-}
-
-fn remove_oldest(c: LruCache&) {
-    let oldest .= c.head.prev;
-    if oldest .== c.head { return; }
-    c.cache.remove(oldest.key);
-    unlink(oldest);
-    nodes.free(nodes.index_of(oldest));
-    c.size--;
 }
 
 // The value stored for key, now the most recent entry, or null. This get
 // shadows the dictionary's inside the namespace, so that one is `::get`.
 fn get(c: LruCache&, key: u8[..16]) -> u8[..32]? {
-    let n = ::get(c.cache, key);
-    guard n else { return null; }
-    move_to_front(c, n);
-    return n.value;
+    let node = ::get(c.cache, key);
+    guard node else { return null; }
+    c.move_to_front(node);
+    return node.value;
 }
 
 fn put(c: LruCache&, key: u8[..16], value: u8[:]) {
     let found = ::get(c.cache, key);
     if found {
         found.value = value;
-        move_to_front(c, found);
+        c.move_to_front(found);
         return;
     }
-    if c.size >= c.capacity { remove_oldest(c); }
-    let n .= nodes.alloc_ref(Node { key: key, value: value, prev: self, next: self });
-    c.cache.insert(key, n);
-    add_to_front(c, n);
+
+    if c.size >= c.capacity {
+        c.remove_oldest();
+    }
+
+    let node .= nodes.alloc_ref(new_node(key, value));
+
+    c.cache.insert(key, node);
+    c.add_to_front(node);
     c.size++;
+}
+
+fn len(c: LruCache&) -> i64 { c.size }
+
+fn move_to_front(c: LruCache&, node: Node&) {
+    if node .== c.head { return; }
+
+    let prev = node.prev;
+    let next = node.next;
+
+    if prev { prev.next .= next; }
+    if next { next.prev .= prev; }
+
+    if node .== c.tail { c.tail .= prev; }
+
+    node.prev .= null;
+    node.next .= c.head;
+
+    let head = c.head;
+    if head { head.prev .= node; }
+
+    c.head .= node;
+
+    if c.tail == null { c.tail .= node; }
+}
+
+fn add_to_front(c: LruCache&, node: Node&) {
+    node.next .= c.head;
+
+    let head = c.head;
+    if head { head.prev .= node; }
+
+    c.head .= node;
+
+    if c.tail == null { c.tail .= node; }
+}
+
+fn remove_oldest(c: LruCache&) {
+    let tail_node = c.tail;
+    if tail_node {
+        c.cache.remove(tail_node.key);
+
+        let prev = tail_node.prev;
+        if prev { prev.next .= null; }
+
+        c.tail .= prev;
+
+        if tail_node .== c.head { c.head .= null; }
+
+        nodes.free(nodes.index_of(tail_node));
+        c.size--;
+    }
 }
 
 fn run(b: Bench&) -> u32 {
     let values_size = config_i64(b.name, "values");
-    var cache = new_cache(config_i64(b.name, "size"));
+    let cache_size = config_i64(b.name, "size");
+    var cache = new_cache(cache_size);
     var hits: u32 = 0;
     var misses: u32 = 0;
-    // Keys and values are written into one reused builder.
-    var text: u8[>..] = [];
+
     measure(b) { iteration_id =>
         for i in 1000 {
-            text.clear();
-            text.append("item_");
-            format_int(text, next_int(values_size), 10, 0, ' ');
-            let key: u8[..16] = text;
-            text.clear();
+            let key: u8[..16] = str("item_", next_int(values_size));
             if cache.get(key) {
                 hits++;
-                text.append("updated_");
+                cache.put(key, str("updated_", iteration_id));
             } else {
                 misses++;
-                text.append("new_");
+                cache.put(key, str("new_", iteration_id));
             }
-            format_int(text, iteration_id, 10, 0, ' ');
-            cache.put(key, text);
         }
     };
+
     var result: u32 = 5432;
     result = (result << 5) + hits;
     result = (result << 5) + misses;
-    result = (result << 5) + cache.size as! u32;
+    result = (result << 5) + cache.len() as! u32;
     return result;
 }

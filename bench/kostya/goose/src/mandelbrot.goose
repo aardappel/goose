@@ -35,7 +35,7 @@ fn run(b: Bench&) -> u32 {
                     i++;
                 }
                 byte_acc <<= 1;
-                if tr + ti <= LIMIT * LIMIT { byte_acc |= 1; }
+                if tr + ti <= LIMIT * LIMIT { byte_acc |= 0x01; }
                 bit_num++;
                 if bit_num == 8 {
                     result_bin.push(byte_acc);
