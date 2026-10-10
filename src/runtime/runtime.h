@@ -96,6 +96,15 @@
 #define GS_NORETURN __attribute__((noreturn))
 #define GS_NOINLINE __attribute__((noinline))
 #endif
+/* Inlined at every call: the byte search's helpers (runtime_impl.h), and a
+   function the inliner would splice but for returning several values. */
+#if defined(__GNUC__) || defined(__clang__)
+#define GS_INLINE __attribute__((always_inline)) inline
+#elif defined(_MSC_VER)
+#define GS_INLINE __forceinline
+#else
+#define GS_INLINE inline
+#endif
 
 #if GS_NEED_THREADS
 #ifdef _MSC_VER

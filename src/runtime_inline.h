@@ -108,6 +108,15 @@ R"GSRT(/* Goose runtime — the part every compiler-generated C file starts with
 #define GS_NORETURN __attribute__((noreturn))
 #define GS_NOINLINE __attribute__((noinline))
 #endif
+/* Inlined at every call: the byte search's helpers (runtime_impl.h), and a
+   function the inliner would splice but for returning several values. */
+#if defined(__GNUC__) || defined(__clang__)
+#define GS_INLINE __attribute__((always_inline)) inline
+#elif defined(_MSC_VER)
+#define GS_INLINE __forceinline
+#else
+#define GS_INLINE inline
+#endif
 
 #if GS_NEED_THREADS
 #ifdef _MSC_VER
@@ -179,14 +188,14 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
                                     const char *file, int line);
 
 /* Bounds check as one unsigned compare; the index operand must be side-effect
-   free (the compiler guarantees this at emission). The failing arm's int64_t
+)GSRT"
+R"GSRT(   free (the compiler guarantees this at emission). The failing arm's int64_t
    gives the result the type of (i) and an int64_t together, and its call is
    one the C compiler knows does not return, also where gs_idxfail is in the
    runtime object. */
 #define GS_IDX(i, n, f, l) \
     ((uint64_t)(i) < (uint64_t)(n) ? (i) \
-)GSRT"
-R"GSRT(                                   : (gs_idxfail((int64_t)(i), (n), (f), (l)), (int64_t)0))
+                                   : (gs_idxfail((int64_t)(i), (n), (f), (l)), (int64_t)0))
 
 /* Statically unreachable spots (e.g. an ADT tag no variant matches): checked
    in debug builds, an optimizer hint in release. */
@@ -364,14 +373,14 @@ static int gs_memeq(const void *a, const void *b, size_t n) {
 
    Only division and modulo check anything in a release build, so only they
    need to be functions there; everything else is a macro whose body is the
-   expression the release function would have returned. An optimizing backend
+)GSRT"
+R"GSRT(   expression the release function would have returned. An optimizing backend
    inlines either form to the same instruction, but a backend that does not
    inline (libtcc, or any -O0 build) would otherwise pay a call for every
    arithmetic operation in the program — which measured as 13-37% of total
    runtime across the benchmarks.
 
-)GSRT"
-R"GSRT(   The signed types' add, sub, mul and neg also take the file and line of the
+   The signed types' add, sub, mul and neg also take the file and line of the
    operation, for the debug build's overflow message; the release macros
    drop them unevaluated. */
 
@@ -537,7 +546,8 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 
 #define gs_add_u64(a, b) ((uint64_t)((a) + (b)))
 #define gs_sub_u64(a, b) ((uint64_t)((a) - (b)))
-#define gs_mul_u64(a, b) ((uint64_t)((a) * (b)))
+)GSRT"
+R"GSRT(#define gs_mul_u64(a, b) ((uint64_t)((a) * (b)))
 #define gs_shl_u64(a, n) ((uint64_t)((a) << ((n) & 63)))
 #define gs_shr_u64(a, n) ((uint64_t)((a) >> ((n) & 63)))
 
@@ -545,8 +555,7 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 
 /* 64-bit division and modulo. Division overflow (i64.min / -1) would trap in
    hardware and aborts in every build. */
-)GSRT"
-R"GSRT(static int64_t gs_div_i64(int64_t a, int64_t b, const char *file, int line) {
+static int64_t gs_div_i64(int64_t a, int64_t b, const char *file, int line) {
     if (b == 0) gs_divfail(file, line);
     if (a == INT64_MIN && b == -1) gs_divovf(file, line);
     return a / b;
@@ -734,13 +743,13 @@ typedef struct {
    which size their registries and give hardware_threads() its cap. */
 GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
                         uint64_t budget, int64_t mainregions, int64_t workerregions);
-/* A fresh region, registered to the calling thread program. */
+)GSRT"
+R"GSRT(/* A fresh region, registered to the calling thread program. */
 GS_API uint8_t *gs_reserve_region(void);
 /* The calling thread program's stack use, on stderr (GS_STACK_STATS):
    `stacks` is how many of its indexed data stacks exist. */
 GS_API void gs_stack_stats(int64_t stacks);
-)GSRT"
-R"GSRT(/* Releases every region of the calling thread program, and what else the
+/* Releases every region of the calling thread program, and what else the
    runtime keeps for its thread. */
 GS_API void gs_release_regions(void);
 
@@ -934,13 +943,13 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
 /* ---------------------------------------------------------------------------
    Verified loading (docs/design/serialization.md): what the generated
    gs_verify_<T> walkers are built from. The bytes are untrusted until the
-   walk finishes, so every read here is bounded by the image end and reports
+)GSRT"
+R"GSRT(   walk finishes, so every read here is bounded by the image end and reports
    a malformed encoding instead of running past it. */
 
 /* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
    payload bits above the 64th, or is not shortest. The result is the byte count. */
-)GSRT"
-R"GSRT(static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
+static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
     uint64_t v = 0;
     int shift = 0;
     const uint8_t *q = p;
@@ -1970,12 +1979,10 @@ static int64_t gs_scan_pair_bytes(const uint8_t *p, int64_t np, const gs_byteset
 #include <cpuid.h>
 #endif
 #if defined(__GNUC__) || defined(__clang__)
-#define GS_INLINE __attribute__((always_inline)) inline
 /* clang and gcc compile pshufb only into a function that asks for it. */
 #define GS_SSSE3 __attribute__((target("ssse3")))
 #define gs_ctz32(x) __builtin_ctz(x)
 #else
-#define GS_INLINE __forceinline
 #define GS_SSSE3
 static int gs_ctz32(unsigned x) {
     unsigned long i;
@@ -2070,9 +2077,9 @@ static GS_SSSE3 GS_INLINE __m128i gs_bsm_tables(const gs_bsm *m, __m128i x) {
     }                                                                                  \
     if (i == np) return -1;                                                            \
     k = (unsigned)_mm_movemask_epi8(_mm_and_si128(TESTA(GS_LOAD(p + np - 16)),         \
+                                                  TESTB(GS_LOAD(p + np - 16 + d))))    \
 )GSRT"
-R"GSRT(                                                  TESTB(GS_LOAD(p + np - 16 + d))))    \
-        >> (16 - (np - i));                                                            \
+R"GSRT(        >> (16 - (np - i));                                                            \
     return k ? i + gs_ctz32(k) : -1;
 
 #define GS_TEST_S(x) gs_bsm_test(&ms, ks, x)
@@ -2272,11 +2279,11 @@ static void gs_big_set(gs_big *a, uint64_t v, int sh) {
 
 static void gs_big_mul(gs_big *a, uint32_t m) {
     uint64_t c = 0;
-)GSRT"
-R"GSRT(    for (int i = 0; i < a->n; i++) {
+    for (int i = 0; i < a->n; i++) {
         c += (uint64_t)a->d[i] * m;
         a->d[i] = (uint32_t)c;
-        c >>= 32;
+)GSRT"
+R"GSRT(        c >>= 32;
     }
     if (c) a->d[a->n++] = (uint32_t)c;
 }
@@ -2498,9 +2505,9 @@ GS_API void gs_out_f32(float v) {
     uint8_t buf[GS_FMT_MAX];
     fwrite(buf, 1, (size_t)gs_fmt_f32(buf, v), stdout);
 }
+GS_API void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
 )GSRT"
-R"GSRT(GS_API void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
-GS_API void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
+R"GSRT(GS_API void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
 GS_API void gs_out_nl(void) { fputc('\n', stdout); }
 )GSRT"
     ) },
