@@ -79,6 +79,35 @@ fn rebind_sum(a: Cells&, b: Cells&) -> i64 {
     return s;
 }
 
+// Out of line (`recursive`), so that the loops below call it.
+recursive fn append(out: i64[>..]&, v: i64) { out.push(v); }
+
+// A local array grows in the loop, through a call: no reference the caller
+// handed in can name it, so the view of c.cells stays. This function and
+// the next are out of line too, so that their parameters are references a
+// caller handed in.
+recursive fn collect(c: Cells&) -> i64 {
+    var out: i64[>..] = [];
+    for i in c.cells.len {
+        append(out, c.cells[i] * 2);
+        if c.cells[i] % 2 == 0 { append(out, c.cells[i]); }
+    }
+    return out.len * 1000 + out[out.len - 1];
+}
+
+// d grows in the loop. Called with c and d the same struct, c.cells grows
+// with it; called with two structs, it does not.
+recursive fn grow_other(c: Cells&, d: Cells&) -> i64 {
+    var s = 0;
+    var i = 0;
+    while i < c.cells.len && i < 8 {
+        s = s * 2 + c.cells[i];
+        if i < 3 { d.cells.push(i + 20); }
+        i++;
+    }
+    return s * 100 + c.cells.len;
+}
+
 // The same loops inlined into a function that is never inlined itself
 // (`recursive`), where they read through its reference parameters.
 recursive fn report(r: Rows&, c: Cells&, st: Stack&, o: Outer&, p: Outer&, a: Cells&, b: Cells&) {
@@ -113,6 +142,12 @@ fn main() {
     var a = Cells { n: 0, cells: [1, 2, 3, 4] };
     var b = Cells { n: 0, cells: [5, 6, 7, 8] };
     print(rebind_sum(a, b));
+
+    print(collect(c));
+    var e = Cells { n: 0, cells: [1, 2] };
+    var f = Cells { n: 0, cells: [3, 4] };
+    print(grow_other(e, e), " ", e.cells);
+    print(grow_other(f, e), " ", f.cells, " ", e.cells.len);
 
     var c2 = Cells { n: 0, cells: [1, 2, 3, 10] };
     var st2 = Stack { items: [1, 2, 4] };

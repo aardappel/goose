@@ -3095,9 +3095,14 @@ wrapped to empty from claiming its iterations.
 A **place** is an array or slice location nameable as a variable plus a chain
 of struct fields, with reference crossings marked, and an "ultimate" owner:
 owned storage (the root variable), static data, or opaque (a stored
-reference read on the way, an inexact root). `UltOf` follows reference and
-slice provenance to the owning variable; a synthetic parameter class is
-opaque as storage but two references in distinct classes are known distinct.
+reference read on the way, an inexact root). The crossing of a root
+reference variable, fields after it included, is no stored reference read:
+the place lies in the storage that reference points into. `UltOf` follows
+reference and slice provenance to the owning variable; a synthetic parameter
+class is opaque as storage but two references in distinct classes are known
+distinct, and a reference in one of the body's own parameter classes, which
+its caller formed before it ran, names no storage of a variable the body
+declares (`HandedApart`).
 A slice's length is held in the slot the slice lies in -- a variable, a field,
 an element -- so a place reached through a reference to a slice is owned by
 the slot the reference is rooted at (§3.4): `UltOf`'s slot mode stops at a

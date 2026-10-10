@@ -63,7 +63,8 @@
 // owner is a global, is captured, or has its address taken (creating any
 // reference into a variable's storage requires one of those); reference
 // parameters use the specialization's root classes, where distinct classes
-// are provably distinct roots. Unknown callees kill everything reachable.
+// are provably distinct roots and none names storage of a variable the body
+// declares. Unknown callees kill everything reachable.
 //
 // Calls into user code are summarized rather than assumed hostile. A first
 // pass computes, per specialization, the storage its body may resize or
@@ -346,7 +347,12 @@ struct BCE {
         Place P;
         P.rootv = root;
         P.path = path;
-        auto midcross = std::find(path.begin(), path.end(), -1) != path.end();
+        // A leading crossing is the root reference's own: what lies past it
+        // is in the storage that reference points into, as for the root's
+        // own pointee. Any later one reads a stored reference.
+        auto rootcross = !path.empty() && path[0] == -1 && root->type &&
+                         root->type->kind == TY_REF;
+        auto midcross = std::find(path.begin() + (rootcross ? 1 : 0), path.end(), -1) != path.end();
         P.refcrossed = midcross || (root->type && root->type->kind == TY_REF);
         if (!P.refcrossed) {
             P.ultkind = UK_OWNED;
@@ -490,6 +496,16 @@ struct BCE {
     set<VarDef *> ownvars;       // Variables this body declares, parameters included.
     map<VarDef *, vector<int>> classparams;   // Parameter root class -> member indices.
     set<VarDef *> ownclasses;    // The root classes of this body's own parameters.
+
+    // Whether place P is reached through a reference this body was handed
+    // (rooted at one of its own parameter classes) and v is a variable it
+    // declares itself, a by-value parameter included: that reference was
+    // formed before the body ran, so it names none of the storage v owns.
+    // KillClassWrite applies the same rule from the other side.
+    bool HandedApart(const Place &P, VarDef *v) {
+        return P.ultkind == UK_OPAQUE && P.ultv && ownclasses.count(P.ultv) &&
+               OwnerTarget(v).kind == TG_OWN;
+    }
 
     // The call graph over live specializations: callees per caller, the
     // number of ordinary call sites per callee, and the callees also reached
@@ -1075,14 +1091,14 @@ struct BCE {
             if (R.ultkind == UK_OWNED) {
                 if (P.ultkind == UK_OWNED && P.ultv == R.ultv)
                     return P.refcrossed || R.refcrossed;   // Distinct plain paths are distinct arrays.
-                return P.ultkind == UK_OPAQUE && Reach(R.ultv);
+                return P.ultkind == UK_OPAQUE && Reach(R.ultv) && !HandedApart(P, R.ultv);
             }
             return Reach(P.rootv) || (P.ultkind == UK_OWNED ? Reach(P.ultv) : true);
         }
         if (tk == UK_OWNED) {
             if (P.rootv == tu) return true;
             if (P.ultkind == UK_OWNED && P.ultv == tu) return true;
-            return P.ultkind == UK_OPAQUE && Reach(tu);
+            return P.ultkind == UK_OPAQUE && Reach(tu) && !HandedApart(P, tu);
         }
         return Reach(P.rootv) || (P.ultkind == UK_OWNED ? Reach(P.ultv) : true);
     }
