@@ -32,7 +32,8 @@ simd fn checksum(xs: u8[:]) -> u32 {
 // c + a * b per element through a growable result: rounded twice in every
 // version, never fused into one rounding. The product is the right operand
 // so that the C has both operations in one expression, which is what clang
-// contracts where FMA is available (the AVX-512 version) unless told not to.
+// contracts where FMA is available (the AVX-512 version, and all of them on
+// arm64) unless told not to.
 simd fn muladd(out: f64[>..]&, a: f64[:], b: f64[:], c: f64[:]) {
     assert(a.len == b.len && b.len == c.len);
     let start = out.len;

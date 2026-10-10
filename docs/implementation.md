@@ -4201,14 +4201,16 @@ MSVC, TinyCC and other targets pay nothing. A build can lower it with
   and may write the same value into, through relaxed atomics, so there is
   no initialization order to get right and no race.
 * **Exactness.** Clang's default `-ffp-contract=on` fuses a multiply and an
-  add within one C expression wherever FMA exists, which AVX-512 implies.
-  That would make a version's float results differ from the baseline's
-  (`test/codegen/simd_versions.goose` prints other digits without the guard),
-  so every version, the baseline included, starts with `GS_SIMD_EXACT`,
-  `#pragma clang fp contract(off)`. The same contraction measured 2x slower
+  add within one C expression wherever FMA exists, which AVX-512 implies
+  and arm64 always has; GCC's default fuses across statements as well.
+  That would make a version's float results differ from the baseline's, and
+  a program's on arm64 from its results elsewhere
+  (`test/codegen/simd_versions.goose` prints other digits without the
+  guard), so `runtime.h` turns contraction off for the whole translation
+  unit: `#pragma clang fp contract(off)`, GCC's `optimize("fp-contract=off")`
+  and MSVC's `fp_contract(off)`. The same contraction measured 2x slower
   on a matrix multiply under AVX-512, an FMA's latency lengthening its dot
-  product's dependency chain. GCC has the target attribute but no such
-  pragma, which is why the versions are clang's only.
+  product's dependency chain.
 * **Annotated, not automatic.** Building a whole suite of 50 benchmark
   programs, as written, for AVX2 or for AVX-512 without contraction measured
   1-4% faster in total, inside the run-to-run noise, with no program gaining

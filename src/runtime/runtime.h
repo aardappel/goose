@@ -38,6 +38,19 @@
 #include <stdlib.h>
 #include <math.h>
 
+/* Every float operation rounds on its own. A C compiler may otherwise
+   contract a multiply and an add into one fused rounding wherever the target
+   has FMA (arm64, and x86-64 once AVX-512 or -march=native turns it on):
+   clang within one expression, gcc across statements too. The program would
+   then print other digits there than TinyCC and other targets give it. */
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#elif defined(__GNUC__) && !defined(__TINYC__)
+#pragma GCC optimize("fp-contract=off")
+#elif defined(_MSC_VER)
+#pragma fp_contract(off)
+#endif
+
 #ifndef GS_NEED_THREADS
 #define GS_NEED_THREADS 0
 #endif
@@ -179,13 +192,12 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
    baseline calls the highest version the CPU supports. GS_SIMD is the
    highest level built: 0 just the baseline, 1 adds an AVX2 version (with
    BMI1, BMI2, LZCNT and POPCNT, which the check below asks for one by one),
-   2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4). It needs clang
-   on x86-64: its target attribute, its inline assembly for cpuid, and a
-   pragma that keeps every version from contracting a multiply and an add
-   into one fused rounding (AVX-512 implies FMA to clang), which would make
-   a version's float results differ from the baseline's. Elsewhere the
-   versions are left out, and so is the choice. -DGS_SIMD=0 or 1 lowers the
-   level; nothing raises it. */
+   2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4). The versions
+   are built by clang on x86-64, through its target attribute and inline
+   assembly for cpuid; the contraction pragma above keeps their float
+   results the baseline's, though AVX-512 implies FMA to clang. Elsewhere
+   the versions are left out, and so is the choice. -DGS_SIMD=0 or 1 lowers
+   the level; nothing raises it. */
 #if defined(__clang__) && (defined(__x86_64__) || defined(_M_X64)) && !defined(__TINYC__)
 #ifndef GS_SIMD
 #define GS_SIMD 2
@@ -198,7 +210,6 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 #define GS_SIMD_TARGET1 __attribute__((target("avx2,bmi,bmi2,lzcnt,popcnt")))
 #define GS_SIMD_TARGET2 \
     __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,bmi,bmi2,lzcnt,popcnt")))
-#define GS_SIMD_EXACT _Pragma("clang fp contract(off)")
 
 static inline void gs_cpuid(uint32_t leaf, uint32_t r[4]) {
     __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(0));
@@ -243,8 +254,6 @@ static inline int gs_simd_level(void) {
     }
     return l;
 }
-#else
-#define GS_SIMD_EXACT
 #endif
 
 /* Unaligned loads of 4 and 8 bytes. The optimizing backends turn the

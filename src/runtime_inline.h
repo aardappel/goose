@@ -50,6 +50,19 @@ R"GSRT(/* Goose runtime — the part every compiler-generated C file starts with
 #include <stdlib.h>
 #include <math.h>
 
+/* Every float operation rounds on its own. A C compiler may otherwise
+   contract a multiply and an add into one fused rounding wherever the target
+   has FMA (arm64, and x86-64 once AVX-512 or -march=native turns it on):
+   clang within one expression, gcc across statements too. The program would
+   then print other digits there than TinyCC and other targets give it. */
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#elif defined(__GNUC__) && !defined(__TINYC__)
+#pragma GCC optimize("fp-contract=off")
+#elif defined(_MSC_VER)
+#pragma fp_contract(off)
+#endif
+
 #ifndef GS_NEED_THREADS
 #define GS_NEED_THREADS 0
 #endif
@@ -172,7 +185,8 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
    runtime object. */
 #define GS_IDX(i, n, f, l) \
     ((uint64_t)(i) < (uint64_t)(n) ? (i) \
-                                   : (gs_idxfail((int64_t)(i), (n), (f), (l)), (int64_t)0))
+)GSRT"
+R"GSRT(                                   : (gs_idxfail((int64_t)(i), (n), (f), (l)), (int64_t)0))
 
 /* Statically unreachable spots (e.g. an ADT tag no variant matches): checked
    in debug builds, an optimizer hint in release. */
@@ -187,18 +201,16 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 #endif
 
 /* simd functions (§7.12): the compiler writes each one's body once per
-)GSRT"
-R"GSRT(   instruction-set level, the baseline under the function's name, and the
+   instruction-set level, the baseline under the function's name, and the
    baseline calls the highest version the CPU supports. GS_SIMD is the
    highest level built: 0 just the baseline, 1 adds an AVX2 version (with
    BMI1, BMI2, LZCNT and POPCNT, which the check below asks for one by one),
-   2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4). It needs clang
-   on x86-64: its target attribute, its inline assembly for cpuid, and a
-   pragma that keeps every version from contracting a multiply and an add
-   into one fused rounding (AVX-512 implies FMA to clang), which would make
-   a version's float results differ from the baseline's. Elsewhere the
-   versions are left out, and so is the choice. -DGS_SIMD=0 or 1 lowers the
-   level; nothing raises it. */
+   2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4). The versions
+   are built by clang on x86-64, through its target attribute and inline
+   assembly for cpuid; the contraction pragma above keeps their float
+   results the baseline's, though AVX-512 implies FMA to clang. Elsewhere
+   the versions are left out, and so is the choice. -DGS_SIMD=0 or 1 lowers
+   the level; nothing raises it. */
 #if defined(__clang__) && (defined(__x86_64__) || defined(_M_X64)) && !defined(__TINYC__)
 #ifndef GS_SIMD
 #define GS_SIMD 2
@@ -211,7 +223,6 @@ R"GSRT(   instruction-set level, the baseline under the function's name, and the
 #define GS_SIMD_TARGET1 __attribute__((target("avx2,bmi,bmi2,lzcnt,popcnt")))
 #define GS_SIMD_TARGET2 \
     __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,bmi,bmi2,lzcnt,popcnt")))
-#define GS_SIMD_EXACT _Pragma("clang fp contract(off)")
 
 static inline void gs_cpuid(uint32_t leaf, uint32_t r[4]) {
     __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(0));
@@ -256,8 +267,6 @@ static inline int gs_simd_level(void) {
     }
     return l;
 }
-#else
-#define GS_SIMD_EXACT
 #endif
 
 /* Unaligned loads of 4 and 8 bytes. The optimizing backends turn the
@@ -362,7 +371,8 @@ GS_DIVOPS_U(u32, uint32_t)
 #define GS_INTOPS_S(SFX, T, MIN, MAX, BITS) \
 static T gs_add_##SFX(T a, T b, const char *file, int line) { \
     int64_t r = (int64_t)a + (int64_t)b; \
-    if (r < MIN || r > MAX) gs_ovf(a, "+", b, #SFX, file, line); \
+)GSRT"
+R"GSRT(    if (r < MIN || r > MAX) gs_ovf(a, "+", b, #SFX, file, line); \
     return (T)r; } \
 static T gs_sub_##SFX(T a, T b, const char *file, int line) { \
     int64_t r = (int64_t)a - (int64_t)b; \
@@ -370,8 +380,7 @@ static T gs_sub_##SFX(T a, T b, const char *file, int line) { \
     return (T)r; } \
 static T gs_mul_##SFX(T a, T b, const char *file, int line) { \
     int64_t r = (int64_t)a * (int64_t)b; \
-)GSRT"
-R"GSRT(    if (r < MIN || r > MAX) gs_ovf(a, "*", b, #SFX, file, line); \
+    if (r < MIN || r > MAX) gs_ovf(a, "*", b, #SFX, file, line); \
     return (T)r; } \
 static T gs_neg_##SFX(T a, const char *file, int line) { \
     int64_t r = -(int64_t)a; \
@@ -532,7 +541,8 @@ static uint64_t gs_mulhi_u64(uint64_t a, uint64_t b) {
    Microsoft ABI links no 128-bit division routine, so x86-64 divides with
    the instruction itself. */
 static uint64_t gs_div128_u64(uint64_t hi, uint64_t d, uint64_t *rem) {
-#if defined(__x86_64__)
+)GSRT"
+R"GSRT(#if defined(__x86_64__)
     uint64_t q, r;
     __asm__("divq %[d]" : "=a"(q), "=d"(r) : [d] "r"(d), "a"((uint64_t)0), "d"(hi));
     *rem = r;
@@ -546,8 +556,7 @@ static uint64_t gs_div128_u64(uint64_t hi, uint64_t d, uint64_t *rem) {
 #elif defined(_MSC_VER) && _MSC_VER >= 1920 && defined(_M_X64)
 #include <intrin.h>
 #define GS_HAVE_U128 1
-)GSRT"
-R"GSRT(static uint64_t gs_mulhi_u64(uint64_t a, uint64_t b) { return __umulh(a, b); }
+static uint64_t gs_mulhi_u64(uint64_t a, uint64_t b) { return __umulh(a, b); }
 static uint64_t gs_div128_u64(uint64_t hi, uint64_t d, uint64_t *rem) {
     return _udiv128(hi, 0, d, rem);
 }
@@ -728,7 +737,8 @@ static GS_TLS int64_t gs_nstks;
 /* The current program instance's globals (goose_spec.md 11.1), a struct the
    compiler lays out: main's is its one static instance, a worker's a fresh
    copy of the globals its program uses, taken from the spawning instance
-   at spawn like the arguments (11.2). No global is shared between program
+)GSRT"
+R"GSRT(   at spawn like the arguments (11.2). No global is shared between program
    instances; the only C statics a program shares are read-only ones. */
 static GS_TLS void *gs_gl;
 
@@ -739,8 +749,7 @@ static void gs_stack_init(gs_stack *s) {
 }
 
 /* The calling thread program's block of n stacks, each with its region:
-)GSRT"
-R"GSRT(   main's from gs_rt_init, a worker's from its entry thunk. */
+   main's from gs_rt_init, a worker's from its entry thunk. */
 static void gs_stack_block(int64_t n) {
     gs_stks = (gs_stack *)calloc((size_t)(n > 0 ? n : 1), sizeof(gs_stack));
     if (!gs_stks) gs_panic("out of memory allocating stack block");
@@ -945,7 +954,8 @@ static int64_t gs_uleb_write(uint8_t *p, uint64_t v) {
     for (;;) {
         uint8_t b = v & 0x7f;
         v >>= 7;
-        if (v) *q++ = b | 0x80; else { *q++ = b; break; }
+)GSRT"
+R"GSRT(        if (v) *q++ = b | 0x80; else { *q++ = b; break; }
     }
     return (int64_t)(q - p);
 }
@@ -959,8 +969,7 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
     return gs_uleb_write(p, ((uint64_t)v << 1) ^ (uint64_t)(v >> 63));
 }
 
-)GSRT"
-R"GSRT(/* ---------------------------------------------------------------------------
+/* ---------------------------------------------------------------------------
    Verified loading (docs/design/serialization.md): what the generated
    gs_verify_<T> walkers are built from. The bytes are untrusted until the
    walk finishes, so every read here is bounded by the image end and reports

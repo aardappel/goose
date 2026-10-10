@@ -456,9 +456,9 @@ inline string CodeGen::HoistAggregateDecls(string &b) {
 // under the function's own name, which starts by calling the highest
 // version the CPU supports. Callers, prototypes and function values see one
 // function. Every version computes what the baseline does: the C is the
-// same text, its integer semantics are spelled out, and GS_SIMD_EXACT keeps
-// the C compiler from fusing a multiply and an add into one rounding in any
-// of them, which the wider instruction sets would otherwise let it do.
+// same text, its integer semantics are spelled out, and runtime.h keeps the
+// C compiler from fusing a multiply and an add into one rounding in any of
+// them, which the wider instruction sets would otherwise let it do.
 inline void CodeGen::EmitSimdVersions(FnSpec *sp, const string &name, const string &params,
                                       const string &fnbody) {
     // The parameter list is `type name` declarations whose types are
@@ -480,9 +480,9 @@ inline void CodeGen::EmitSimdVersions(FnSpec *sp, const string &name, const stri
     for (int lv = SIMD_LEVELS; lv >= 1; lv--) {
         vnames[lv] = Unique(cat(name, "_simd", lv));
         Append(code, "#if GS_SIMD >= ", lv, "\nGS_SIMD_TARGET", lv, " static ", ret, " ",
-               vnames[lv], "(", params, ") {\n    GS_SIMD_EXACT\n", fnbody, "}\n#endif\n");
+               vnames[lv], "(", params, ") {\n", fnbody, "}\n#endif\n");
     }
-    Append(code, "static ", ret, " ", name, "(", params, ") {\n    GS_SIMD_EXACT\n",
+    Append(code, "static ", ret, " ", name, "(", params, ") {\n",
            "#if GS_SIMD >= 1\n    switch (gs_simd_level()) {\n");
     for (int lv = SIMD_LEVELS; lv >= 1; lv--) {
         if (lv > 1) Append(code, "#if GS_SIMD >= ", lv, "\n");
