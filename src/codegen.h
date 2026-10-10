@@ -1027,7 +1027,7 @@ struct CodeGen {
 
     bool termjump = false;   // The last emitted statement left via goto/return.
 
-    void GenBlockInner(Block *b, Dst d, size_t first = 0);
+    void GenBlockInner(Block *b, Dst d, size_t first = 0, int exitscope = -1);
     size_t GenInlineArgs(Block *b);
     void GenStmt(Node *n);
 
