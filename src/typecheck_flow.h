@@ -1163,7 +1163,7 @@ inline Val TypeCheck::TempCopy(Val v) {
     if (!v.holderset && HoldsPlainRef(v.type)) {
         // What the source holds is bounded by its storage, as a container
         // read's is (ContainerRead).
-        v.contents = Bounds(v);
+        v.contents = HeldAt(v);
         v.holderfrom = HolderSource(v);
         v.holderset = true;
     }
@@ -1494,11 +1494,9 @@ inline Val TypeCheck::CheckMatch(MatchExpr *m, TypeExpr *expected, bool wantvalu
                         // the match makes.
                         ReadBack contents;
                         auto intemp = TempContents(sv, contents);
-                        Roots held = intemp ? contents.roots : sv.AsRoots();
-                        if (!intemp) {
-                            held.Weaken();
+                        Roots held = intemp ? contents.roots : HeldAt(sv, true);
+                        if (!intemp)
                             for (auto &a : held.alts) a.slotread = true;
-                        }
                         auto saved = fitnode;
                         fitnode = m;
                         RecordStore(binder, held, sv.byteview, nullptr,
@@ -1937,11 +1935,9 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
             // its source the one container it lies in, as a holder read out
             // of an element's are (ContainerRead); the copy is a store the
             // loop makes.
-            Roots held = intemp ? contents.roots : iterprov.AsRoots();
-            if (!intemp) {
-                held.Weaken();
+            Roots held = intemp ? contents.roots : HeldAt(iterprov, true);
+            if (!intemp)
                 for (auto &a : held.alts) a.slotread = true;
-            }
             auto saved = fitnode;
             fitnode = x;
             RecordStore(vd, held, iterprov.byteview, nullptr,

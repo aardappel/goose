@@ -7,7 +7,7 @@ fn replace(x: i64[>..<]&, y: i64[>..<]&) { x = copy(y); }
 fn main() {
     var a: i64[>..<] = [1];
     var b: i64[>..<] = [2, 3];
-    let hs = [Holder { r: a }];
+    let hs = [Holder { r: a }, Holder { r: b }];
     let h = hs[0];
     let r .= h.r;
     replace(b, r);

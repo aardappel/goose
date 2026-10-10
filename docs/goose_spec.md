@@ -3044,8 +3044,13 @@ variable stays its candidate. Then, by where `C`'s own root lies:
    parameter holds what its argument did, so a slice of `g.edges` for a
    `g: Graph` parameter is bounded by that argument's root, not by the
    callee's other parameters, which can hold its element type but none of
-   the caller's views. A copy of a field or an element has only its
-   container's scope on record, and takes the candidates. A local of a
+   the caller's views. A copy of a field or an element of such a local --
+   a `let` of one, a `for` or `match` binder's copy, a popped element, a
+   value loaded whole through a reference to it -- holds no more than was
+   stored into the local, which is then on record for the copy too: out of
+   `let hs = [H { r: a }]`, `hs[0].r` points into `a`, exactly. A copy out
+   of any other container has only its container's scope on record, and
+   takes the candidates. A local of a
    function that a nested function's or a function value's body is written
    in is read here as one of the body's own, its stores on record alike:
    the body is checked for the state each call finds it in (§7.5, §7.6).

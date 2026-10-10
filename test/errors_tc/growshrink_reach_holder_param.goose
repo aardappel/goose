@@ -12,9 +12,10 @@ fn f(t: Top) {
     t.a.push(Cell { v: 99 });
     print(loc[0].v);
 }
+fn pass(ts: Top[>..]&) { f(ts[0]); }
 fn main() {
     var mine: Cell[>..<] = [Cell { v: 1 }];
     var tops: Top[>..] = [];
     tops.push(Top { a: mine });
-    f(tops[0]);
+    pass(tops);
 }

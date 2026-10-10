@@ -1129,9 +1129,11 @@ later stores in its next pass (§3.7), and are none where only nulls and
 empty slices were stored there so far (so `var x = N { link: null };
 return x;` returns nothing rooted in `x`), and a global's are rooted at the
 globals (the null root, inexact); a container read's are the
-container's roots, inexact, slot reads (§3.10) out of a field or an element,
-as a `for` or `match` binder's copy's, a popped element's and what `append`
-copies out of a slice are, and out of a temporary the temporary's own; a
+container's own `contents` where it lies in one local holder exactly, else
+the container's roots, inexact (`HeldAt`), slot reads (§3.10) out of a
+field or an element, as a `for` or `match` binder's copy's, a popped
+element's and what `append` copies out of a slice are, and out of a
+temporary the temporary's own; a
 holder loaded through a reference (`DecayRef`) is a container read of where
 the reference points, no slot read; a container read's source is the
 container only where the holder lies in exactly one (`Val::holderfrom`),

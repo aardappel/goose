@@ -244,14 +244,15 @@ inline Val TypeCheck::ContainerRead(LVal lv) {
     v.SetProv(lv);
     if (!IsRefOrSlice(v.type) && HoldsPlainRef(v.type)) {
         // What a holder read out of a container points at is bounded by
-        // the container: everything stored into it had to outlive it. Out
-        // of a temporary, it points where the temporary's contents do. Out
-        // of a field or an element, every reference it holds was stored
+        // the container: everything stored into it had to outlive it, and
+        // where that is one local holder, its record says where (HeldAt).
+        // Out of a temporary, it points where the temporary's contents do.
+        // Out of a field or an element, every reference it holds was stored
         // there, so none points into a grow-shrink array (RootAlt::slotread).
         if (lv.intemp) {
             v.contents = lv.contents.roots;
         } else {
-            v.contents = Bounds(lv);
+            v.contents = HeldAt(lv);
             for (auto &a : v.contents.alts) a.slotread = lv.isslot;
         }
         v.holderset = true;
@@ -670,7 +671,7 @@ inline Val TypeCheck::DecayRef(Val v) {
         r.writable = v.writable && !IsVarintT(v.type->ref->sub);
         r.byteview = v.byteview && HoldsPlainRef(r.type);
         if (HoldsPlainRef(r.type)) {
-            r.contents = Bounds(r);
+            r.contents = HeldAt(r);
             r.holderset = true;
             r.holderfrom = HolderSource(r);
             MarkClassCopy(r);

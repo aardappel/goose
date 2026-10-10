@@ -545,7 +545,7 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
             if (HoldsPlainRef(v.type)) {
                 // The element leaves as a temporary, holding what it held in
                 // the receiver, as an element read would (ContainerRead).
-                v.contents = Bounds(rv);
+                v.contents = HeldAt(rv);
                 for (auto &a : v.contents.alts) a.slotread = true;
                 v.holderset = true;
                 v.holderfrom = HolderSource(rv);

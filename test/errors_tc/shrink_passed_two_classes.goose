@@ -12,7 +12,7 @@ fn consume(r: i64&, a: i64[>..]&) {
 fn main() {
     var values: i64[>..] = [8, 9];
     var other = 5;
-    let hs = [H { values[0] }];
+    let hs = [H { values[0] }, H { other }];
     let h = hs[0];
     consume(h.r, values);
     print(other);

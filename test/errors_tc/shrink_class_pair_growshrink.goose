@@ -7,7 +7,7 @@ fn g(xs: i64[>..<]&, r: i64&) { xs.pop(); xs.push(77); print(r); }
 fn main() {
     var ys: i64[>..<] = [1, 2, 3];
     var zs: i64[>..<] = [4];
-    let hs = [H { a: ys }];
+    let hs = [H { a: ys }, H { a: zs }];
     let h = hs[0];
     g(h.a, ys[2]);
 }

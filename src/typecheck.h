@@ -1531,6 +1531,19 @@ struct TypeCheck {
     static VarDef *HolderSource(const Roots &at) {
         return at.Exact() && !IsTemp(at.alts[0].root) ? at.alts[0].root : nullptr;
     }
+    // What a holder lying where `at` points holds: where it lies in one local
+    // holder exactly, no more than what was stored into that local, which its
+    // record says (§9.5); anywhere else, whatever outlives the storage there,
+    // with the containers it was read out of where `keepfrom` (Bounds).
+    static Roots HeldAt(const Roots &at, bool keepfrom = false) {
+        auto src = HolderSource(at);
+        if (src && src->type && !src->isglobal && !IsRefOrSlice(src->type))
+            return src->contents;
+        if (!keepfrom) return Bounds(at);
+        Roots r = at;
+        r.Weaken();
+        return r;
+    }
     // A holder that lies in the storage a parameter's class stands for alone
     // (Val::holderfrom) holds views that storage holds: its contents there
     // are marked so (RootAlt::classread), which a merge, a literal and a

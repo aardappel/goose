@@ -13,7 +13,7 @@ fn g(xs: f64[>..<]&, ys: f64[>..<]&) {
 fn main() {
     var a: f64[>..<] = [1.0, 2.0, 3.0];
     var b: f64[>..<] = [4.0];
-    let hs = [H { a: b }];
+    let hs = [H { a: b }, H { a: a }];
     let h = hs[0];
     g(h.a, a);
 }

@@ -15,7 +15,7 @@ fn f(a: i64[>..]&, b: i64[>..]&) {
 fn main() {
     var ys: i64[>..] = [1, 2, 3];
     var zs: i64[>..] = [4];
-    let hs = [H { a: ys }];
+    let hs = [H { a: ys }, H { a: zs }];
     let h = hs[0];
     f(h.a, ys);
 }

@@ -9,7 +9,7 @@ fn f(x: i64[>..]&, y: i64[>..]&) { x.append(mk(y)); }
 fn main() {
     var a: i64[>..] = [1];
     var b: i64[>..] = [];
-    let hs = [Holder { r: a }];
+    let hs = [Holder { r: a }, Holder { r: b }];
     let h = hs[0];
     let r .= h.r;
     f(b, r);

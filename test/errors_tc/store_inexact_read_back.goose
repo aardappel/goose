@@ -10,7 +10,7 @@ fn main() {
     {
         var m = Node { p: null };
         var x: i64 = 5;
-        var hs = [Holder { node: n }];
+        var hs = [Holder { node: n }, Holder { node: m }];
         var h = hs[0];
         let r: Node& = h.node;
         r.p .= x;
