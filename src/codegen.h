@@ -801,17 +801,30 @@ struct CodeGen {
     // can neither resize nor re-bind (`hoistrefs`); for those the view is read
     // into locals once before the loop and every access inside uses them.
     unordered_map<const VarDef *, pair<string, string>> views;   // base, length.
+    // The same for arrays in fields (`hoistfields`), by the root variable an
+    // alias stands for (FieldRoot) and the field indices.
+    map<pair<const VarDef *, vector<int>>, pair<string, string>> fieldviews;
 
     bool AddView(VarDef *vd);
+    const VarDef *FieldRoot(const VarDef *vd);
+    bool AddFieldView(const FieldPath &fp);
+    void UseFieldView(Dot *d, Loc &lv);
 
     // Installs the views a loop body may read, for the extent of that body.
     struct ViewScope {
         CodeGen &cg;
         vector<VarDef *> added;
-        ViewScope(CodeGen &_cg, const vector<VarDef *> &refs) : cg(_cg) {
+        vector<pair<const VarDef *, vector<int>>> addedfields;
+        ViewScope(CodeGen &_cg, const vector<VarDef *> &refs, const vector<FieldPath> &fields)
+            : cg(_cg) {
             for (auto vd : refs) if (cg.AddView(vd)) added.push_back(vd);
+            for (auto &fp : fields)
+                if (cg.AddFieldView(fp)) addedfields.push_back({ cg.FieldRoot(fp.first), fp.second });
         }
-        ~ViewScope() { for (auto vd : added) cg.views.erase(vd); }
+        ~ViewScope() {
+            for (auto vd : added) cg.views.erase(vd);
+            for (auto &k : addedfields) cg.fieldviews.erase(k);
+        }
     };
 
     string Snapshot(TypeExpr *t, const string &x);

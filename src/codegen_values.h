@@ -424,6 +424,63 @@ inline bool CodeGen::AddView(VarDef *vd) {
     return true;
 }
 
+// The variable a field path's root names the storage of: an alias stands
+// for its target, which every spelling of the path shares.
+inline const VarDef *CodeGen::FieldRoot(const VarDef *vd) {
+    for (auto guard = 0; guard < 16; guard++) {
+        auto it = refalias.find(vd);
+        if (it == refalias.end() || aliaspath.count(vd)) break;
+        vd = it->second;
+    }
+    return vd;
+}
+
+// Reads the view of a grow-only or grow-shrink array held in a field into
+// locals ahead of a loop (`hoistfields`), as AddView does for a reference.
+inline bool CodeGen::AddFieldView(const FieldPath &fp) {
+    auto vd = const_cast<VarDef *>(FieldRoot(fp.first));
+    auto key = pair<const VarDef *, vector<int>>(vd, fp.second);
+    auto t = vd->type;
+    if (fieldviews.count(key) || !t || fp.second.empty()) return false;
+    if (t->kind == TY_REF && (t->ref->optional || t->ref->lenstorage >= 0)) return false;
+    // Bound inside the loop: no view to read out here (see AddView).
+    if (!vnames.count(vd) && !gnames.count(vd) && !aliasbound.count(vd)) return false;
+    auto lv = VarLoc(vd);
+    if (lv.t->kind == TY_REF) DerefLoc(lv);
+    for (auto f : fp.second) {
+        if (lv.t->kind != TY_STRUCT || !lv.val) return false;
+        lv = FieldLocAt(lv, f);
+    }
+    if (lv.t->kind != TY_ARRAY || !IsResz(lv.t) || IsFrameObj(lv.t) || lv.lenlv.empty())
+        return false;
+    auto v = RawArrayView(lv);
+    auto nb = T(), nl = T();
+    L("uint8_t *", nb, " = ", v.elems, ";");
+    L("int64_t ", nl, " = ", v.len, ";");
+    fieldviews[key] = { nb, nl };
+    return true;
+}
+
+// A field array whose view a loop around this code read out (fieldviews)
+// is read from there; growth still writes the header.
+inline void CodeGen::UseFieldView(Dot *d, Loc &lv) {
+    if (lv.lenlv.empty() || lv.t->kind != TY_ARRAY || !IsResz(lv.t) || IsFrameObj(lv.t)) return;
+    vector<int> path;
+    Node *cur = d;
+    while (auto dd = Is<Dot>(cur)) {
+        if (!dd->IsField()) return;
+        path.push_back(dd->fieldidx);
+        cur = dd->obj;
+    }
+    auto id = Is<Ident>(cur);
+    if (!id || !id->vdef) return;
+    std::reverse(path.begin(), path.end());
+    auto hit = fieldviews.find({ FieldRoot(id->vdef), path });
+    if (hit == fieldviews.end()) return;
+    lv.s = hit->second.first;
+    lv.hlen = hit->second.second;
+}
+
 // Large fixed values keep their ordinary packed C type, but their storage
 // is a data-stack slot (LargeFixedOnStack). Pointer locals cannot be hoisted
 // into a huge native frame by HoistAggregateDecls or by a C compiler's
@@ -606,7 +663,9 @@ inline CodeGen::Loc CodeGen::GenLoc(Node *n) {
     if (auto d = Is<Dot>(n); d && d->IsField()) {
         auto lv = GenLoc(d->obj);
         if (lv.t->kind == TY_REF) DerefLoc(lv);
-        return MemberLoc(lv, d);
+        auto ml = MemberLoc(lv, d);
+        if (!fieldviews.empty()) UseFieldView(d, ml);
+        return ml;
     }
     if (auto ix = Is<Index>(n)) {
         auto lv = GenLoc(ix->obj);

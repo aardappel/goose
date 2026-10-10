@@ -2206,19 +2206,90 @@ struct BCE {
         RunChildren(n, [&](Node *ch) { RefIndexed(ch, out); });
     }
 
+    // The references to structs `n` binds to just another variable, which
+    // they stand for while they live: `let r = v`, `let r = &v`, as an
+    // inlined callee's reference parameter is bound to its argument.
+    static void BoundRefs(Node *n, unordered_map<VarDef *, VarDef *> &out) {
+        if (!n) return;
+        if (auto vd = Is<VarDecl>(n); vd && vd->defs.size() == 1 && vd->inits.size() == 1) {
+            auto d = vd->defs[0];
+            auto init = vd->inits[0];
+            if (auto u = Is<Unary>(init); u && u->op == T_BITAND) init = u->child;
+            auto id = Is<Ident>(init);
+            auto pointee = [](TypeExpr *t) { return t && t->kind == TY_REF ? t->ref->sub : t; };
+            auto a = d && d->type && d->type->kind == TY_REF ? d->type->ref->sub : nullptr;
+            auto b = id && id->vdef ? pointee(id->vdef->type) : nullptr;
+            if (a && b && !d->isvar && !d->type->ref->optional && id->vdef != d &&
+                a->kind == TY_STRUCT && b->kind == TY_STRUCT && a->struc->st == b->struc->st &&
+                a->struc->inst == b->struc->inst)
+                out[d] = id->vdef;
+        }
+        RunChildren(n, [&](Node *ch) { BoundRefs(ch, out); });
+    }
+
+    // The grow-only and grow-shrink arrays `n` indexes that are fields of a
+    // struct a variable holds or references, reached by fields alone (no
+    // stored reference read on the way): the variable and the field indices.
+    // A root `bound` maps to another variable is named by that one, so that a
+    // reference bound afresh at every iteration, such as an inlined callee's
+    // parameter, names the storage it stands for.
+    void FieldIndexed(Node *n, const unordered_map<VarDef *, VarDef *> &bound,
+                      vector<FieldPath> &out) {
+        if (!n) return;
+        auto ix = Is<Index>(n);
+        auto d = ix ? Is<Dot>(ix->obj) : nullptr;
+        auto ft = d && d->fieldidx >= 0 ? FieldTypeOf(d) : nullptr;
+        if (ft && ft->kind == TY_ARRAY &&
+            (ft->arr->akind == A_GROW || ft->arr->akind == A_GROWSHRINK)) {
+            vector<int> path;
+            Node *cur = d;
+            auto ok = true;
+            while (auto dd = Is<Dot>(cur)) {
+                auto ot = dd->obj->exprtype;
+                if (dd->fieldidx < 0 || ReadsStoredRef(dd) || !ot) { ok = false; break; }
+                path.push_back(dd->fieldidx);
+                cur = dd->obj;
+                // Only the root may be a reference.
+                if (ot->kind == TY_REF ? !Is<Ident>(cur) : ot->kind != TY_STRUCT) ok = false;
+                if (!ok || ot->kind == TY_REF) break;
+            }
+            auto id = Is<Ident>(cur);
+            if (ok && id && id->vdef) {
+                auto root = id->vdef;
+                for (auto guard = 0; guard < 16; guard++) {
+                    auto it = bound.find(root);
+                    if (it == bound.end()) break;
+                    root = it->second;
+                }
+                std::reverse(path.begin(), path.end());
+                FieldPath fp { root, path };
+                if (std::find(out.begin(), out.end(), fp) == out.end()) out.push_back(fp);
+            }
+        }
+        RunChildren(n, [&](Node *ch) { FieldIndexed(ch, bound, out); });
+    }
+
     // Which of the reference variables a loop indexes keep the same array,
     // base and length throughout: an array behind a reference has both halves
     // of its view in memory the C backend must reload after every byte store
     // (§6.5 also makes growth during iteration legal), and only a grow, a
     // shrink, a whole-value write or a call that can reach the array changes
     // them -- exactly what the kill summary reports. Codegen reads the view of
-    // each variable named here once, before the loop.
-    void LoopViewRefs(Node *body, Node *cond, vector<VarDef *> &out) {
+    // each variable named here once, before the loop. The same holds for the
+    // arrays it indexes in fields (`fout`), whose header sits in the struct.
+    void LoopViewRefs(Node *body, Node *cond, vector<VarDef *> &out, vector<FieldPath> &fout) {
         out.clear();
+        fout.clear();
         if (mode != M_JUDGE) return;
         vector<VarDef *> vars;
         RefIndexed(body, vars);
         RefIndexed(cond, vars);
+        unordered_map<VarDef *, VarDef *> bound;
+        BoundRefs(body, bound);
+        BoundRefs(cond, bound);
+        vector<FieldPath> fields;
+        FieldIndexed(body, bound, fields);
+        FieldIndexed(cond, bound, fields);
         // The summary only reports kills for places that already exist, so
         // name them all before walking.
         vector<pair<VarDef *, int>> named;
@@ -2226,11 +2297,31 @@ struct BCE {
             auto pid = PlaceOfVar(v);
             if (pid >= 0) named.push_back({ v, pid });
         }
-        if (named.empty()) return;
+        vector<pair<FieldPath *, int>> fnamed;
+        for (auto &fp : fields) {
+            auto rt = fp.first->type;
+            if (!rt) continue;
+            vector<int> path;
+            if (rt->kind == TY_REF) path.push_back(-1);
+            path.insert(path.end(), fp.second.begin(), fp.second.end());
+            // The declared type of the last field, which FieldIndexed checked.
+            auto st = rt->kind == TY_REF ? rt->ref->sub : rt;
+            TypeExpr *ft = nullptr;
+            for (auto f : fp.second) {
+                if (!st || st->kind != TY_STRUCT) { ft = nullptr; break; }
+                auto inst = st->struc->inst;
+                ft = inst ? inst->ftypes[f] : st->struc->st->fields[f].type;
+                st = ft;
+            }
+            auto pid = ft ? PlaceFor(fp.first, path, ft) : -1;
+            if (pid >= 0) fnamed.push_back({ &fp, pid });
+        }
+        if (named.empty() && fnamed.empty()) return;
         set<int> kills;
         SummarizeInto(body, kills);
         SummarizeInto(cond, kills);
         for (auto &[v, pid] : named) if (!kills.count(pid)) out.push_back(v);
+        for (auto &[fp, pid] : fnamed) if (!kills.count(pid)) fout.push_back(*fp);
     }
 
     // The variables declared anywhere inside `n`.
@@ -3001,7 +3092,7 @@ inline bool While::BceWalk(BCE &b) {
         b.loopdepth--;
         return true;
     }
-    b.LoopViewRefs(body, cond, hoistrefs);
+    b.LoopViewRefs(body, cond, hoistrefs, hoistfields);
     b.StripKills(cond);
     b.StripKills(body);
     b.Walk(cond);
@@ -3022,7 +3113,7 @@ inline bool LoopExpr::BceWalk(BCE &b) {
         b.loopdepth--;
         return true;
     }
-    b.LoopViewRefs(body, nullptr, hoistrefs);
+    b.LoopViewRefs(body, nullptr, hoistrefs, hoistfields);
     b.StripKills(body);
     auto exitf = b.flow;
     b.Walk(body);
@@ -3126,7 +3217,7 @@ inline bool ForLoop::BceWalk(BCE &b) {
             }
     }
     b.loopdepth++;
-    b.LoopViewRefs(body, nullptr, hoistrefs);
+    b.LoopViewRefs(body, nullptr, hoistrefs, hoistfields);
     b.StripKills(body);
     if (iterkind == IK_ARRAY || iterkind == IK_SLICE) {
         lot = BCE::Term { true, BCE::Zero(), 0 };

@@ -1094,12 +1094,18 @@ NODE(EarlyBlock)                // "block { }": breakable early-out construct.
     EarlyBlock(Line l, Block *_body) : Node(l), body(_body) {}
 NODE_END
 
+// A resizable array in a field: the variable holding or referencing the
+// struct, and the field indices from there out (BCE::FieldIndexed).
+using FieldPath = pair<VarDef *, vector<int>>;
+
 NODE(While)
     BCE_WALK
     // Set by BCE: the reference variables this loop indexes whose array it can
     // neither resize nor re-bind, so codegen reads their base and length once
     // before the loop instead of through the reference at every access.
     vector<VarDef *> hoistrefs;
+    // Likewise for the arrays it indexes in fields (FieldPath).
+    vector<FieldPath> hoistfields;
     // Set by the optimizer's loop shaping (optimize_loops.h): the loop is
     // `while v > 0 { v--; ... }` over a local integer nothing else in the
     // body can write, so its trip count is v's value at entry and codegen
@@ -1113,6 +1119,7 @@ NODE_END
 NODE(LoopExpr)
     BCE_WALK
     vector<VarDef *> hoistrefs;   // See While.
+    vector<FieldPath> hoistfields;
     Block *body;
     vector<Break *> breaks;       // Filled by typecheck: the breaks giving it a value.
     LoopExpr(Line l, Block *_body) : Node(l), body(_body) {}
@@ -1126,6 +1133,7 @@ NODE(ForLoop)
     // iteration is legal).
     bool fixedlen = false;
     vector<VarDef *> hoistrefs;   // See While.
+    vector<FieldPath> hoistfields;
     // Set by BCE for array/slice iteration: a constant the length never
     // exceeds where an iteration tests it (-1: none known), and whether it
     // always equals it.

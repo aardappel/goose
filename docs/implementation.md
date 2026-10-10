@@ -48,7 +48,7 @@ single translation unit, included in the order the driver lists them.
 | Resolve | `resolve.h` (`ResolveTypeNames`) | type names as written | struct/enum/generic kinds, aliases substituted away |
 | Typecheck | `typecheck*.h` (`TypeCheckProgram`) | the `Ast` | one `FnSpec` per specialization with a cloned, annotated body; `StructInst`/`EnumInst`; `VarDef`s; the store record; every diagnostic of §3--§11; the shader blobs `embed_shader` compiles (`gfx.h`, `shaderc.c`) |
 | Optimize | `optimize.h`, `optimize_basecase.h`, `optimize_tre.h`, `optimize_loops.h` (`Optimizer`) | live specializations | bodies rewritten in place (inlined, folded, loops), liveness and use counts, loop shapes (`ForLoop::stripk`, `sumred`, `While::countdown`) |
-| BCE | `bce.h` (`BCE::RunAll`) | live specializations | `Index::nobc`, `SliceExpr::nobc`, `ForLoop::fixedlen` and `lenbound`, per-loop `hoistrefs` |
+| BCE | `bce.h` (`BCE::RunAll`) | live specializations | `Index::nobc`, `SliceExpr::nobc`, `ForLoop::fixedlen` and `lenbound`, per-loop `hoistrefs` and `hoistfields` |
 | Codegen | `codegen*.h` (`CodeGen`) | live specializations, globals | one C file, with `src/runtime/` (or its part a program's unit holds) around it |
 | JIT | `jit.h` | the C text | the program run in-process through libtcc, when no `-o` was given |
 
@@ -3000,7 +3000,7 @@ marks the `Index` and `SliceExpr` nodes whose runtime check cannot fire;
 codegen then omits the check. It is required only to be sound; a program's
 meaning never depends on it (§10.5). It is also where codegen decisions are
 taken that are not about checks at all: `ForLoop::fixedlen` and `lenbound`,
-and the per-loop `hoistrefs` (§5.10).
+and the per-loop `hoistrefs` and `hoistfields` (§5.10).
 
 ### 5.1 The domain
 
@@ -3285,6 +3285,13 @@ turn the two stores into one store of a select (the merge step
   array the body (and a `while` condition) can neither grow, shrink, rewrite
   whole nor reach through a call; codegen reads their base and length into
   locals before the loop (section 6.10).
+* `hoistfields` on every loop: the same for the grow-only and grow-shrink
+  arrays it indexes in fields of a struct a variable holds or references,
+  reached by fields alone (`FieldIndexed`), as (variable, field indices). A
+  reference the body binds to just another variable (`BoundRefs`), such as
+  an inlined callee's parameter, which a kill summary sees rebound at every
+  iteration, is replaced by that variable, and the place checked against
+  the summary is the one under it.
 * `Binary::specidx` on a `&&` or `||` whose right operand has an index in it
   and is made of nothing but operators, variables, fields, elements, casts
   and constants (`ProbeShape`): whether every bounds check in that operand
@@ -3957,8 +3964,12 @@ any byte store may alias the header. For each reference variable BCE named
 in a loop's `hoistrefs`, the view is read into locals before the loop
 (`AddView`, `ViewScope`) and every access inside uses them; the length
 lvalue that growth writes stays on the real header, so a missed growth could
-never miscompile. For a `for` over an array with `fixedlen`, the elements
-pointer and length are likewise read once when the length is a memory load.
+never miscompile. An array in a field named in `hoistfields` is read out the
+same way (`AddFieldView`), keyed by the variable an alias stands for
+(`FieldRoot`) and the field indices, and every field path in the loop with
+that key reads the locals (`UseFieldView`), whichever alias spells it. For
+a `for` over an array with `fixedlen`, the elements pointer and length are
+likewise read once when the length is a memory load.
 
 **Tops.** A stack the function can name keeps its top in a local where the
 function grows it, synchronized with memory only where something else can

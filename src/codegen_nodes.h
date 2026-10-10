@@ -634,7 +634,7 @@ inline void EarlyBlock::CgAny(CodeGen &cg, const Dst &d) {
 }
 
 inline void LoopExpr::CgAny(CodeGen &cg, const Dst &d) {
-    CodeGen::ViewScope vs(cg, hoistrefs);
+    CodeGen::ViewScope vs(cg, hoistrefs, hoistfields);
     cg.GenLoopBody({}, body, d);
 }
 
@@ -973,7 +973,7 @@ inline void IncDec::CgStmt(CodeGen &cg) {
 inline void FnDecl::CgStmt(CodeGen &) {}   // Nested declarations are separate specs.
 inline void While::CgStmt(CodeGen &cg) {
     Dst d;
-    CodeGen::ViewScope vs(cg, hoistrefs);
+    CodeGen::ViewScope vs(cg, hoistrefs, hoistfields);
     if (countdown) {
         // `while v > 0 { v--; ... }` runs v's value at entry times: counted
         // up as j, the iteration's v is that value minus 1 minus j, which is
@@ -1003,7 +1003,7 @@ inline void While::CgStmt(CodeGen &cg) {
 
 inline void ForLoop::CgStmt(CodeGen &cg) {
     auto d = Dst {};
-    CodeGen::ViewScope vs(cg, hoistrefs);
+    CodeGen::ViewScope vs(cg, hoistrefs, hoistfields);
     auto iv = vdef ? cg.LocalName(vdef) : cg.T();
     auto ix = idxdef ? cg.LocalName(idxdef) : "";
     if (iterkind == IK_RANGE || iterkind == IK_COUNT) {
