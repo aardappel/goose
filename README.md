@@ -487,11 +487,23 @@ python samples/run_samples.py
 ```
 
 For editing, the [VS Code extension](vscode/README.md) gives syntax
-highlighting, compiler checks on save and one-key runs through the JIT:
+highlighting, formatting on save through the Goose-written language server,
+compiler checks on save and one-key runs through the JIT:
 
 ```bash
 code --install-extension vscode/goose-language.vsix
 ```
+
+The formatter and stdio language server are written in Goose:
+
+```bash
+cmake --build build --target goose-tools --config Release
+build/goose-tools --write path/to/file.goose
+build/goose-tools --lsp
+```
+
+See the [tooling guide](tools/gls/README.md) for usage and the
+[VS Code guide](vscode/README.md#formatter-and-language-server) for editor setup.
 
 ## Documentation
 

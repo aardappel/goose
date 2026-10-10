@@ -29,10 +29,14 @@ async function run() {
     const config = vscode.workspace.getConfiguration('goose', folder.uri);
     await config.update('compilerPath', process.env.GOOSE_TEST_COMPILER || compilerPath('', root), vscode.ConfigurationTarget.WorkspaceFolder);
     await config.update('entryFile', 'main.goose', vscode.ConfigurationTarget.WorkspaceFolder);
+    const tools = process.env.GOOSE_TEST_TOOLS || path.join(root, 'build', process.platform === 'win32' ? 'goose-tools.exe' : 'goose-tools');
+    try { await fs.access(tools); await config.update('languageServerPath', tools, vscode.ConfigurationTarget.WorkspaceFolder); } catch { /* Exercise the compiler JIT fallback. */ }
     await config.update('checkOnSave', false, vscode.ConfigurationTarget.WorkspaceFolder);
+    const formatterConfig = vscode.Uri.joinPath(folder.uri, 'gls.json');
+    await fs.writeFile(formatterConfig.fsPath, JSON.stringify({ formatter: { singleLineExpressions: true } }));
     const main = vscode.Uri.joinPath(folder.uri, 'main.goose');
     const helper = vscode.Uri.joinPath(folder.uri, 'helper.goose');
-    await fs.writeFile(main.fsPath, 'import helper;\nfn main() { helper(); }\n');
+    await fs.writeFile(main.fsPath, 'import helper;\n// Runs **helper**.\nfn main(){helper();}\n');
     await fs.writeFile(helper.fsPath, 'fn helper() { let x = 1; x = 2; }\n');
     const doc = await vscode.workspace.openTextDocument(main);
     assert.equal(doc.languageId, 'goose');
@@ -52,6 +56,18 @@ async function run() {
     assert.ok(symbols.some(item => item.name === 'main'));
     const links = await vscode.commands.executeCommand('vscode.executeLinkProvider', main);
     assert.ok(links.some(link => link.target.fsPath === helper.fsPath));
+    const formatting = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', main, { tabSize: 2, insertSpaces: true });
+    // VS Code may split the server's whole-document edit into smaller edits.
+    let formattedMain = doc.getText();
+    for (const edit of [...formatting].sort((a, b) => doc.offsetAt(b.range.start) - doc.offsetAt(a.range.start))) {
+        formattedMain = formattedMain.slice(0, doc.offsetAt(edit.range.start)) + edit.newText + formattedMain.slice(doc.offsetAt(edit.range.end));
+    }
+    assert.equal(formattedMain, 'import helper;\n// Runs **helper**.\nfn main() { helper(); }\n', 'formatting comes from the Goose LSP');
+    const hovers = await vscode.commands.executeCommand('vscode.executeHoverProvider', main, new vscode.Position(2, 4));
+    const hoverContent = hovers.flatMap(hover => hover.contents).map(content => content.value).join('\n');
+    assert.ok(hoverContent.includes('```goose\nfn main()\n```'), 'hover renders a processed signature');
+    assert.ok(hoverContent.includes('Runs **helper**.'), 'hover preserves documentation Markdown');
+    assert.ok(!hoverContent.includes('helper();'), 'hover excludes implementation code');
     const tasks = await vscode.tasks.fetchTasks({ type: 'goose' });
     for (const action of ['check', 'run', 'generateC']) {
         const task = tasks.find(item => item.definition.action === action);
@@ -79,9 +95,17 @@ async function run() {
         edit.replace(helper, new vscode.Range(helperDoc.positionAt(0), helperDoc.positionAt(helperDoc.getText().length)), text);
         assert.ok(await vscode.workspace.applyEdit(edit));
     };
-    await replace('fn helper() { var x = 1; x = 2; }\n');
+    await vscode.workspace.getConfiguration('editor', helper).update('formatOnSave', true, vscode.ConfigurationTarget.WorkspaceFolder);
+    await fs.writeFile(formatterConfig.fsPath, JSON.stringify({ formatter: { singleLineExpressions: false, indentWidth: 2 } }));
+    await replace('fn helper(){print(1);}');
+    assert.ok(await helperDoc.save());
+    assert.equal(helperDoc.getText(), 'fn helper() {\n  print(1);\n}\n', 'save reads project formatter settings');
+    await fs.writeFile(formatterConfig.fsPath, JSON.stringify({ formatter: { singleLineExpressions: true } }));
+    await replace('fn helper(){var x=1;x=2;}');
     await until(() => problems().length === 0, 'edit clears outdated error');
     assert.ok(await helperDoc.save());
+    assert.equal(helperDoc.getText(), 'fn helper() {\n    var x = 1;\n    x = 2;\n}\n', 'save applies LSP formatting to the buffer and file');
+    assert.equal(await fs.readFile(helper.fsPath, 'utf8'), helperDoc.getText());
     await vscode.commands.executeCommand('goose.check');
     assert.equal(problems().length, 0);
     await replace('fn helper() { let x = 1; x = 2; }\n');

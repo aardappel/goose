@@ -26,9 +26,38 @@ extern "gs_os_list_dir" fn list_dir(path: const u8[:], out: u8[>..]&) -> bool;
 // Standard streams.
 extern "gs_os_read_line" fn read_line(out: u8[>..]&) -> bool;    // one line of stdin, no newline; false at end
 extern "gs_os_read_stdin" fn read_stdin(out: u8[>..]&);          // everything until end of input
+// Append exactly count bytes. At EOF or on error, append what was read and return false.
+// Does not wait for EOF, so it suits framed protocols such as LSP.
+extern "gs_os_read_stdin_bytes" fn read_stdin_bytes(count: i64, out: u8[>..]&) -> bool;
+// Turn off Windows newline translation, for protocols that count bytes on standard streams.
+extern "gs_os_binary_stdio" fn binary_stdio();
 extern "gs_os_write_stdout" fn write_stdout(s: const u8[:]);
 extern "gs_os_write_stderr" fn write_stderr(s: const u8[:]);
 extern "gs_os_flush_stdout" fn flush_stdout();
+
+// Append the absolute current working directory, in UTF-8.
+extern "gs_os_working_directory" fn working_directory(out: u8[>..]&) -> bool;
+
+// Runs a program without a shell and appends its standard output and
+// standard error to `out`. The program is looked up on PATH and gets an empty
+// standard input. Returns the exit status, 128 plus the signal number if a
+// signal killed it, -1 if it could not be started, and -2 if it was killed
+// after `timeout_ms` (zero or less means no limit). Arguments are UTF-8 and
+// cannot contain a NUL byte.
+extern "gs_os_run" fn run_joined(argv: const u8[:], timeout_ms: i64, out: u8[>..]&) -> i64;
+
+fn run(argv: const (const u8[:])[:], timeout_ms: i64, out: u8[>..]&) -> i64 {
+    if argv.len == 0 { return -1; }
+    var joined: u8[>..] = [];
+    for i in argv.len {
+        if i > 0 { joined.push(0); }
+        for c in argv[i] {
+            if c == 0 { return -1; }
+            joined.push(c);
+        }
+    }
+    return run_joined(joined, timeout_ms, out);
+}
 
 // Arguments and environment.
 extern "gs_os_arg_count" fn arg_count() -> i64;

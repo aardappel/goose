@@ -4,5 +4,6 @@ test/**
 node_modules/**
 package-lock.json
 build_vsix.py
+package_vsix.js
 .gitignore
 *.vsix

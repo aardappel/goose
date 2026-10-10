@@ -1,19 +1,29 @@
 # Goose for Visual Studio Code
 
-An extension for the [Goose language](https://github.com/aardappel/goose). No
-language server, runtime dependencies, or compiler changes are required.
+An extension for the [Goose language](https://github.com/aardappel/goose), with
+a formatter and language server written in Goose. A small JavaScript adapter
+passes requests to the Goose process and has no npm runtime dependencies.
 
 ## Features
 
 - Syntax highlighting for `.goose` files, including nested block comments,
   escaped strings and characters, raw `"""` strings across lines, decimal/hex
   floats, namespaces and builtins.
+- Highlighting for `goose` fenced code blocks in Markdown (``` or `~~~`), in the
+  editor and in the Markdown preview.
 - Bracket matching, auto-closing, indentation, comment toggling, folding and
   snippets (`main`, `fn`, `struct`, `enum`, `for`, `guard`, `match`, and more).
 - Compiler checks on open/save, error and warning underlines, and Problems
   entries. Use **F8 / Shift+F8** to jump between problems. Lexer errors use the
   compiler's caret; type errors highlight the source line. Instantiation chains
   appear as related locations in Problems.
+  While a Goose file is open, a status bar item shows the last check: **Goose**
+  with a check mark, **Goose: N errors** (opens Problems), or **Goose: Check
+  Failed** when the check failed without a source location (compiler not found,
+  timeout, or an unlocated message). A failure also adds a warning in Problems
+  on the checked file with no text underlined, and clicking the item opens the
+  Goose output with the full compiler output. **Run** next to it runs the file
+  with the JIT.
 - **Goose: Check Program**, **Goose: Run with JIT**, **Goose: Generate C**, and
   **Goose: Show Compiler Output** in the Command Palette. The editor's play
   button and **▶ Goose** status-bar button run the program in a task terminal,
@@ -22,14 +32,66 @@ language server, runtime dependencies, or compiler changes are required.
   (**Cmd+Shift+B** for build on macOS). **Goose: Run with JIT** is also available
   in VS Code's Run configuration picker.
 - Top-level declarations in Outline, breadcrumbs and Go to Symbol (**Ctrl+Shift+O**).
+- **Format Document** and format on save, using the same formatter as the
+  command-line tool. It formats the unsaved editor text.
+- Completion, hover and go to definition for top-level declarations in the
+  current file and the files it imports, including the standard library,
+  through the language server.
+- Delimiter and unterminated-literal diagnostics that update as you type.
 - Clickable imports, with root-relative, importing-file-relative (`import .foo;`),
   and standard-library resolution matching the compiler.
 - Check, Run and Generate C tasks, plus the `$goose` problem matcher for custom
   tasks with absolute paths or paths relative to the workspace folder.
 
-The extension uses lexical analysis and compiler commands. It does not yet
-provide semantic completion, rename, cross-file symbol definitions, formatting,
-debugging, or an LSP.
+Completion and navigation are lexical and cover top-level declarations in the
+current file and its imports. They do not resolve locals or members, and they
+list every overload instead of choosing one. Compiler checks on save still give
+semantic diagnostics. Rename and debugging are not implemented.
+
+## Formatter and language server
+
+Build the compiler and the tools executable from the repository root:
+
+```sh
+cmake -S . -B build
+cmake --build build --target goose-tools --config Release
+```
+
+The executable formats files (`--write`, `--check`, or stdin to stdout) and runs
+the language server with `--lsp`. Options, project settings in `gls.json` and
+the server's features are described in the
+[tooling guide](../tools/gls/README.md). The formatter does not wrap long
+lines, and it refuses incomplete or unsafe input without writing anything.
+
+The extension does not include the language server. It looks for `goose-tools`
+in `build/`, `build/Release/` and `build/Debug/` of the workspace, then on
+`PATH`, and `goose.languageServerPath` points it somewhere else. Without one,
+the extension warns once and formatting, hover and completion stay off.
+Highlighting, tasks and compiler checks do not need it. Inside a checkout of
+this repository it falls back to running `tools/gls/` through your compiler's
+JIT, which needs a compiler built from the same checkout.
+The server starts the first time an editor feature needs it, and only in trusted
+workspaces.
+
+For other editors, point the LSP client at `goose-tools --lsp` and enable format
+on save. The server returns edits and never writes files itself. It also runs the
+compiler on opened and saved files and reports its errors (see the
+[tooling guide](../tools/gls/README.md#diagnostics)). VS Code turns that off,
+because the extension already checks files with `goose.compilerPath`.
+
+Format on save is on for Goose by default. To turn it off:
+
+```json
+{
+  "[goose]": {
+    "editor.defaultFormatter": "aardappel.goose-language",
+    "editor.formatOnSave": false
+  }
+}
+```
+
+Build `goose-tools` before running `npm test` so the native tool and protocol
+tests run. Set `GOOSE_TEST_TOOLS` to use a different executable.
 
 ## Install the prebuilt extension
 
@@ -55,6 +117,9 @@ python vscode/build_vsix.py
 
 The script works from any working directory. It installs the locked npm build
 dependencies, runs the extension tests, and writes `vscode/goose-language.vsix`.
+Packaging stages the extension files and the icon in a temporary directory and
+removes it afterwards. For another output path, run
+`npm run package -- --out /path/to/goose-language.vsix` from `vscode/`.
 Use `--skip-install` to reuse existing `node_modules`. The VSIX file is tracked
 in Git. Commit the rebuilt file with extension updates so people can install
 without building locally. The extension version still comes from `package.json`.
@@ -73,8 +138,9 @@ for `goose`, `build/Release/goose`, `build/Debug/goose`, and `build/goose` (with
 `.exe` on Windows), then uses `goose` on PATH. For another location, set
 `goose.compilerPath` to the executable, without shell quotes or arguments.
 
-For a project with imported files, set the entry file so that checks and runs
-use the whole program:
+A file with no `fn main()` is checked as a module, so editing an imported file
+does not report a missing `main`. For a project with imported files, set the
+entry file so that checks and runs use the whole program:
 
 ```json
 {
@@ -89,7 +155,8 @@ use the whole program:
 Paths are relative to the containing workspace folder, or the source directory
 when no folder is open. Settings can be configured per folder in a multi-root
 workspace. `goose.stdlibPath` supplies `--stdlib`; leave it empty to use Goose's
-usual lookup, including `GOOSE_STDLIB` and directories near the executable.
+usual lookup, including `GOOSE_STDLIB` and directories near the compiler. Run
+`goose --print-stdlib` to see which directory that is.
 
 Checks use `goose --check` and never run the program or generate C. They check
 saved files, wait while any open Goose file in the same folder has unsaved

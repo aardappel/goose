@@ -463,9 +463,13 @@ fn delete_dir(path: const u8[:]) -> bool                   // an empty one
 fn list_dir(path: const u8[:], out: u8[>..]&) -> bool      // appends each name and '\n', sorted
 fn read_line(out: u8[>..]&) -> bool                  // stdin, newline stripped; false at end
 fn read_stdin(out: u8[>..]&)                         // everything until end of input
+fn read_stdin_bytes(count: i64, out: u8[>..]&) -> bool // exactly count bytes, without waiting for EOF
+fn binary_stdio()                                  // disable Windows newline translation
 fn write_stdout(s: const u8[:])   fn write_stderr(s: const u8[:])   fn flush_stdout()
 fn arg_count() -> i64       fn arg(i: i64, out: u8[>..]&)
 fn args() -> u8[:][>..]                              // indexable; argument 0 is the program
+fn working_directory(out: u8[>..]&) -> bool           // absolute UTF-8 directory
+fn run(argv: const (const u8[:])[:], timeout_ms: i64, out: u8[>..]&) -> i64 // run a program, no shell
 fn env(name: const u8[:], out: u8[>..]&) -> bool
 fn resource_dir() -> u8[>..]                         // absolute directory, trailing separator
 fn resource_dir(out: u8[>..]&) -> bool               // appends; unchanged on failure
@@ -483,6 +487,23 @@ keep only the characters it has. A path is refused, and the call returns
 `false`, if it is longer than 4095 bytes, contains a NUL byte, or on Windows
 is not valid UTF-8: cut short or read another way, it could name a
 different file.
+
+`read_stdin_bytes` appends exactly `count` bytes and returns `true`. On EOF or
+error it appends what was available and returns `false`. A negative count
+returns `false` and zero returns `true`. For byte-counted protocols, call
+`binary_stdio` first. It turns off CRLF and EOF-character translation on Windows
+and does nothing elsewhere.
+
+`run` starts the program `argv[0]` with the arguments `argv[1..]`, without a
+shell, so nothing in the arguments is interpreted. The program is searched for
+on `PATH` and gets an empty standard input. Everything it writes to standard
+output and standard error is appended to `out`, interleaved as it arrived
+(capped at 64 MiB). The result is the exit status, `128` plus the signal if one
+ended it, `-1` if the program could not be started (or `argv` is empty or holds
+a NUL byte), and `-2` if it was killed after `timeout_ms` milliseconds. A
+`timeout_ms` of zero or less waits without limit. The call blocks. There is no
+way to pass input, set the environment or directory, or run a program in the
+background.
 
 `write_file_atomic` is for files that must never be seen half-written, such
 as saved games. It writes the data to a new file beside `path`, named after
@@ -538,7 +559,7 @@ it is not promised writable. User-supplied paths, outputs and saves can
 continue to use ordinary file operations and their chosen locations.
 
 `exit(code)` and `abort(msg)` are builtins, since the checker knows they
-diverge. Subprocesses and networking are not in v1; they arrive as
+diverge. Networking and background processes are not in v1; they arrive as
 `extern fn`s when a program needs them.
 
 ## binary

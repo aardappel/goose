@@ -3,18 +3,47 @@
 const vscode = require('vscode');
 const path = require('node:path');
 const { settings, argumentsFor, stdlibDirectories, absolute } = require('./config');
-const { parseDiagnostics, runCompiler, CheckQueue } = require('./diagnostics');
+const { parseDiagnostics, failureMessage, runCompiler, CheckQueue } = require('./diagnostics');
 const { declarations, imports, importCandidates } = require('./language');
+const { registerLsp } = require('./lsp-client');
 
 const isGoose = doc => doc.languageId === 'goose' && doc.uri.scheme === 'file';
 
 function activate(context) {
     const diagnostics = vscode.languages.createDiagnosticCollection('goose');
     const output = vscode.window.createOutputChannel('Goose');
+    registerLsp(vscode, context, output);
     let disposed = false;
     let publication = 0;
     let reportedFailure = '';
     const loggedResults = new WeakSet();
+
+    // The result of the last compiler check: a failure with no source location,
+    // or the number of errors. Shown in bottom status bar.
+    const checkStatus = vscode.window.createStatusBarItem('goose.check', vscode.StatusBarAlignment.Left, 4);
+    checkStatus.name = 'Goose: Check';
+    let checkState = { problem: undefined, errors: 0 };
+    function updateCheckStatus() {
+        if (!vscode.workspace.isTrusted || vscode.window.activeTextEditor?.document.languageId !== 'goose') { checkStatus.hide(); return; }
+        const { problem, errors } = checkState;
+        if (problem) {
+            checkStatus.text = `$(warning) Goose: ${problem.title}`;
+            checkStatus.tooltip = `${problem.message.split('\n').slice(0, 6).join('\n')}\n\nClick to open the Goose output.`;
+            checkStatus.command = 'goose.showOutput';
+            checkStatus.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+        } else if (errors > 0) {
+            checkStatus.text = `$(error) Goose: ${errors} error${errors === 1 ? '' : 's'}`;
+            checkStatus.tooltip = 'The last Goose check found errors. Click to open Problems.';
+            checkStatus.command = 'workbench.actions.view.problems';
+            checkStatus.backgroundColor = undefined;
+        } else {
+            checkStatus.text = '$(check) Goose';
+            checkStatus.tooltip = 'The last Goose check found no errors. Click to open the Goose output.';
+            checkStatus.command = 'goose.showOutput';
+            checkStatus.backgroundColor = undefined;
+        }
+        checkStatus.show();
+    }
 
     async function publish(results) {
         if (disposed) return;
@@ -22,6 +51,11 @@ function activate(context) {
         diagnostics.clear();
         const grouped = new Map();
         const lines = new Map();
+        // A failure with no source location is not an error on any line. It is
+        // listed in Problems against the checked file at an empty range, so it
+        // marks no text. It also goes to the status bar and the output channel.
+        let problem;
+        let errors = 0;
         async function sourceLine(file, line) {
             if (!lines.has(file)) {
                 const open = vscode.workspace.textDocuments.find(doc => doc.uri.fsPath === file);
@@ -42,14 +76,14 @@ function activate(context) {
                 if (error && !parsed.some(item => item.severity === 'error')) output.appendLine(error.message);
             }
             if (error && !parsed.some(item => item.severity === 'error')) {
-                // No location (e.g. missing import or missing executable): still make
-                // the failure visible, but never invent a position in an import.
-                const message = error.code === 'ENOENT'
+                const missing = error.code === 'ENOENT';
+                const message = missing
                     ? `Goose compiler not found: ${config.compiler}. Set goose.compilerPath to the executable.`
                     : error.killed ? `Goose check exceeded ${config.timeout} ms or was terminated.`
-                    : text.trim() || error.message;
-                parsed.push({ file: config.file, line: 0, severity: 'error', message, related: [] });
-                if (error.code === 'ENOENT' && reportedFailure !== message) {
+                    : failureMessage(text) || error.message;
+                problem = problem || { message, title: missing ? 'Compiler Not Found' : error.killed ? 'Check Timed Out' : 'Check Failed' };
+                parsed.push({ file: config.file, line: 0, column: 0, empty: true, severity: 'warning', message: `Goose check failed: ${message}`, related: [] });
+                if (missing && reportedFailure !== message) {
                     reportedFailure = message;
                     void vscode.window.showWarningMessage(message);
                 }
@@ -57,7 +91,7 @@ function activate(context) {
             for (const item of parsed) {
                 const line = await sourceLine(item.file, item.line);
                 const start = item.column === undefined ? Math.max(0, line.search(/\S/)) : Math.min(item.column, line.length);
-                const end = item.column === undefined ? line.length : Math.min(line.length, start + (line.slice(start).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0].length || 1));
+                const end = item.empty ? start : item.column === undefined ? line.length : Math.min(line.length, start + (line.slice(start).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0].length || 1));
                 const range = new vscode.Range(item.line, start, item.line, Math.max(start, end));
                 const diagnostic = new vscode.Diagnostic(range, item.message,
                     item.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error);
@@ -70,6 +104,9 @@ function activate(context) {
             }
         }
         if (!disposed && generation === publication) {
+            for (const items of grouped.values()) errors += items.filter(item => item.severity === vscode.DiagnosticSeverity.Error).length;
+            checkState = { problem, errors };
+            updateCheckStatus();
             diagnostics.set([...grouped].map(([file, items]) => [vscode.Uri.file(file), items]));
         }
     }
@@ -133,7 +170,7 @@ function activate(context) {
 
     const runStatus = vscode.window.createStatusBarItem('goose.run', vscode.StatusBarAlignment.Left, 5);
     runStatus.name = 'Goose: Run with JIT';
-    runStatus.text = '$(play) Goose';
+    runStatus.text = '$(play) Run';
     runStatus.tooltip = 'Compile and run Goose with the JIT';
     runStatus.command = 'goose.run';
     function updateRunStatus() {
@@ -184,10 +221,10 @@ function activate(context) {
     };
 
     context.subscriptions.push(
-        diagnostics, output, runStatus,
+        diagnostics, output, runStatus, checkStatus,
         { dispose() { disposed = true; queue.invalidate(); } },
-        vscode.window.onDidChangeActiveTextEditor(updateRunStatus),
-        vscode.workspace.onDidGrantWorkspaceTrust(updateRunStatus),
+        vscode.window.onDidChangeActiveTextEditor(() => { updateRunStatus(); updateCheckStatus(); }),
+        vscode.workspace.onDidGrantWorkspaceTrust(() => { updateRunStatus(); updateCheckStatus(); }),
         vscode.debug.registerDebugConfigurationProvider('goose', launchProvider),
         vscode.debug.registerDebugConfigurationProvider('goose', { provideDebugConfigurations: jitConfigurations }, vscode.DebugConfigurationProviderTriggerKind.Dynamic),
         vscode.commands.registerCommand('goose.showOutput', () => output.show()),
@@ -298,6 +335,7 @@ function activate(context) {
     };
     context.subscriptions.push(watcher, watcher.onDidCreate(changedOnDisk), watcher.onDidChange(changedOnDisk), watcher.onDidDelete(changedOnDisk));
     updateRunStatus();
+    updateCheckStatus();
     recheck();
 }
 

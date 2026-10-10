@@ -62,6 +62,32 @@ add_executable(goose
 find_package(Threads REQUIRED)
 target_link_libraries(goose PRIVATE Threads::Threads)
 
+# Editor tools are implemented in Goose and share one formatter between the
+# CLI and stdio LSP. Build explicitly with --target goose-tools; no JIT is
+# required by the resulting standalone executable.
+# Every module in tools/gls is a dependency, so a change to any of them
+# regenerates the program, not only a change to main.goose.
+file(GLOB goose_tools_modules CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/gls/*.goose")
+set(goose_tools_sources
+    ${goose_tools_modules}
+    stdlib/json.goose
+    stdlib/std.goose
+    stdlib/os.goose
+)
+set(goose_tools_c "${CMAKE_CURRENT_BINARY_DIR}/goose-tools.c")
+add_custom_command(
+    OUTPUT "${goose_tools_c}"
+    COMMAND $<TARGET_FILE:goose> --stdlib "${CMAKE_CURRENT_SOURCE_DIR}/stdlib"
+        --standalone -o "${goose_tools_c}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/gls/main.goose"
+    DEPENDS goose ${goose_tools_sources}
+    VERBATIM
+)
+add_executable(goose-tools EXCLUDE_FROM_ALL "${goose_tools_c}")
+target_link_libraries(goose-tools PRIVATE Threads::Threads)
+if(NOT WIN32)
+    target_link_libraries(goose-tools PRIVATE m)
+endif()
+
 # A program run in-process runs on the main thread (main.cpp), whose stack the
 # executable sets: 64 MB reserved, as for the compile thread, where Windows
 # would give it 1 MB and macOS 8 MB. Only what a program's depth reaches is
