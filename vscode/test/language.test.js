@@ -73,6 +73,7 @@ import broken.
 test('compiler arguments are separate, check cannot accidentally run or emit C', () => {
     const config = { file: path.resolve('with spaces', 'main.goose'), stdlib: path.resolve('std lib'), output: 'output.c', runArguments: ['hello world', '--check', '$(echo unwanted)'] };
     assert.deepEqual(argumentsFor('check', config), ['--stdlib', config.stdlib, '--check', config.file]);
+    assert.deepEqual(argumentsFor('check', { ...config, module: true }), ['--stdlib', config.stdlib, '--check', '--module', config.file]);
     assert.deepEqual(argumentsFor('run', config), ['--stdlib', config.stdlib, '--jit', config.file, '--', ...config.runArguments]);
     assert.deepEqual(argumentsFor('generateC', config), ['--stdlib', config.stdlib, '-o', 'output.c', config.file]);
     assert.throws(() => argumentsFor('unknown', config));

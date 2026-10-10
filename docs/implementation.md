@@ -89,6 +89,7 @@ process started with (`ulimit -s`), which nothing in the executable sets.
 | `--roundtrip` | after resolution, parse the dump as a program of its own and require it to dump to the same text (`CheckRoundtrip`), then go on to whatever else was asked for |
 | `--dump-file f.goose` | also write the dump to a file, and go on |
 | `--check` | stop after typecheck, optimization and BCE; no C is written |
+| `--module` | with `--check`, accept a file without `fn main()` and check its functions on their own |
 | `-O0`, `-O1` (default), `-O2` | inlining thresholds (§4); folding and propagation run at every level; base-case inlining and tail-recursion elimination need `-O1` or above |
 | `--specs` | print every live specialization's optimized body |
 | `--stacks` | print the data stack count of the main program and of each worker, the regions they come to, the thread cap that gives `hardware_threads()`, and every function's share (`codegen_stacks.h`); with `--check` it runs the backend for the counts and writes nothing |
@@ -97,7 +98,7 @@ process started with (`ulimit -s`), which nothing in the executable sets.
 | `--bce-test` | verify `// bce:elide` / `// bce:keep` annotations in the sources |
 | `--bce-lines` | print elided/kept counts per source line |
 | `--unsafe-no-rf-check` | omit the `return from` discriminant checks after calls: a measurement aid, unsound |
-| `-o out.c`, `--jit`, `--header`, `-D`, `--include`, `--stdlib`, `--` | output file, in-process run, a C API header for the exports (which builds the C without a `main`, for a C host), a define written into the generated C, a user header, the stdlib directory, program arguments |
+| `-o out.c`, `--jit`, `--header`, `-D`, `--include`, `--stdlib`, `--print-stdlib`, `--` | output file, in-process run, a C API header for the exports (which builds the C without a `main`, for a C host), a define written into the generated C, a user header, the stdlib directory, print the stdlib directory that would be used, program arguments |
 | `--gfx-link msvc\|cc` | print the response file of link inputs a program using `gfx` needs (`gfx.h`, `GfxLinkFile`) |
 | `--physics-link msvc\|cc` | the same for `physics` (`physics.h`, `PhysicsLinkFile`) |
 | `--ui-link msvc\|cc` | the same for `ui` (`ui.h`, `UiLinkFile`) |

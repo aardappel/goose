@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const path = require('node:path');
-const { parseDiagnostics, CheckQueue } = require('../src/diagnostics');
+const { parseDiagnostics, failureMessage, CheckQueue } = require('../src/diagnostics');
 
 test('lexer carets, warnings, explicit columns and related instantiations', () => {
     const cwd = path.resolve('workspace');
@@ -95,4 +95,12 @@ test('synchronous launch failures are surfaced and pending timers cancel cleanly
     const pending = queue.schedule({ file: 'a.goose', cwd: '/one' }, 1000);
     queue.invalidate();
     assert.equal(await pending, false);
+});
+
+test('unlocated failures drop the compiler progress lines', () => {
+    assert.equal(failureMessage('parsed ok: 50 top-level declarations, 3 file(s)\nprogram needs exactly one global fn main()\n'),
+        'program needs exactly one global fn main()');
+    assert.equal(failureMessage('parsed ok: 1 top-level declarations, 1 file(s)\n'), '');
+    assert.equal(failureMessage('cannot open file: x.goose\n'), 'cannot open file: x.goose');
+    assert.equal(failureMessage('typechecked ok: 1 specialization(s)\nbce: elided 0/0 index and 0/0 slice checks\nwrote a.c (12 bytes)\nbroken'), 'broken');
 });

@@ -36,6 +36,8 @@ function settings(vscode, uri, definition = {}, taskFolder) {
         stdlib: config.get('stdlibPath', '') ? absolute(config.get('stdlibPath'), cwd, uri.fsPath) : '',
         timeout: Math.min(300000, Math.max(1000, config.get('checkTimeout', 15000))),
         checkOnSave: config.get('checkOnSave', true),
+        // Without an entry file or task file, the open file may be a module with no fn main().
+        module: !definition.file && !config.get('entryFile', ''),
         runArguments: config.get('runArguments', []),
         output: definition.output ? absolute(definition.output, cwd, file) : file.replace(/(?:\.goose)?$/, '.c')
     };
@@ -43,7 +45,7 @@ function settings(vscode, uri, definition = {}, taskFolder) {
 
 function argumentsFor(action, config) {
     const args = config.stdlib ? ['--stdlib', config.stdlib] : [];
-    if (action === 'check') args.push('--check');
+    if (action === 'check') args.push('--check', ...(config.module ? ['--module'] : []));
     else if (action === 'run') args.push('--jit');
     else if (action === 'generateC') args.push('-o', config.output);
     else throw new Error(`Unknown Goose task action: ${action}`);

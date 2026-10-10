@@ -119,6 +119,24 @@ vector<string> StdlibDirs(const string &stdlibdir, const string &exe) {
     return dirs;
 }
 
+// The directory --print-stdlib reports: the first search candidate that holds
+// std.goose, as an absolute path without a trailing separator. Empty if none.
+string FirstStdlibDir(const vector<string> &stdlibdirs) {
+    for (auto &dir : stdlibdirs) {
+        if (!FileExists(cat(dir, "std.goose"))) continue;
+        char buf[4096];
+#ifdef _WIN32
+        auto full = _fullpath(buf, dir.c_str(), sizeof buf);
+#else
+        auto full = realpath(dir.c_str(), buf);
+#endif
+        string path = full ? full : dir;
+        while (path.size() > 1 && (path.back() == '/' || path.back() == '\\')) path.pop_back();
+        return path;
+    }
+    return "";
+}
+
 // Parses a root file and, transitively, everything it imports (each file once).
 // `import a.b;` resolves relative to the root file's directory, then in the
 // standard library; `import .a.b;` relative to the importing file's. A
@@ -426,7 +444,8 @@ int Main(int argc, char **argv) {
     auto exe = ExePath(argv[0]);
     string outname, headername, stdlibdir, shaderfile, shadersource, dumpfile;
     auto dump = false, tokens = false, parseonly = false, specs = false, nocgen = false;
-    auto roundtrip = false, multitest = false;
+    auto roundtrip = false, multitest = false, modulecheck = false;
+    auto printstdlib = false;
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
     auto stacks = false;
     auto forcejit = false, standalone = false;
@@ -457,6 +476,7 @@ int Main(int argc, char **argv) {
             cdefines.push_back(cat("GS_STACK_RESERVE=", size, "ull"));
         }
         else if (arg == "--check") nocgen = true;
+        else if (arg == "--module") modulecheck = true;
         else if (arg == "--no-bce") nobce = true;
         else if (arg == "--bce-test") bcetest = true;
         else if (arg == "--bce-lines") bcelines = true;
@@ -505,6 +525,7 @@ int Main(int argc, char **argv) {
         else if (arg == "--header" && i + 1 < argc) headername = argv[++i];
         else if (arg == "--include" && i + 1 < argc) includenames.push_back(argv[++i]);
         else if (arg == "--stdlib" && i + 1 < argc) stdlibdir = argv[++i];
+        else if (arg == "--print-stdlib") printstdlib = true;
         // A -D lands in the generated C itself rather than on some backend's
         // command line, so a JIT run and a compiled one see the same source.
         else if (arg == "-D" && i + 1 < argc) cdefines.push_back(argv[++i]);
@@ -519,6 +540,15 @@ int Main(int argc, char **argv) {
         fprintf(stderr, "multiple input files given\n");
         return 1;
     }
+    if (printstdlib) {
+        auto dir = FirstStdlibDir(StdlibDirs(stdlibdir, argv[0]));
+        if (dir.empty()) {
+            fprintf(stderr, "standard library not found\n");
+            return 1;
+        }
+        printf("%s\n", dir.c_str());
+        return 0;
+    }
     if (!shaderfile.empty()) {
         try {
             DumpShader(shaderfile, shadersource);
@@ -530,12 +560,13 @@ int Main(int argc, char **argv) {
     }
     if (files.empty()) {
         fprintf(stderr, "usage: goose [--dump] [--parse] [--tokens] [--roundtrip] "
-                        "[--dump-file out.goose] [--specs] [--stacks] [--check] "
+                        "[--dump-file out.goose] [--specs] [--stacks] [--check [--module]] "
                         "[--no-bce] [--bce-test] [--bce-lines] [--unsafe-no-rf-check] [-O0|-O1|-O2] "
                         "[-o out.c [--standalone]] [--jit] [-DNAME=VALUE]... [--stack-reserve size] "
                         "[--include header.h]... "
                         "[--header out.h] "
                         "[--stdlib dir] file.goose [-- program args...] | "
+                        "--print-stdlib [--stdlib dir] | "
                         "--multi-test [options] file.goose... | --emit-runtime runtime.c | "
                         "--gen-runtime-header | "
                         "--audio-link msvc|cc | --gfx-link msvc|cc | "
@@ -565,6 +596,10 @@ int Main(int argc, char **argv) {
     // A header is for a C host, which supplies its own main and starts the
     // program through goose_init.
     auto library = !headername.empty();
+    if (modulecheck && !nocgen) {
+        fprintf(stderr, "--module only applies to --check\n");
+        return 1;
+    }
     if (multitest && (tokens || !dumpfile.empty() || !progargs.empty() ||
                       (!outname.empty() && outname.find('%') == string::npos) ||
                       (jit && !nocgen && !parseonly && !dump))) {
@@ -621,7 +656,7 @@ int Main(int argc, char **argv) {
             fprintf(msgs, "roundtrip ok: %d bytes of dump\n", (int)dumped.size());
         }
         if (parseonly) return 0;
-        TypeCheckProgram(ast, library);
+        TypeCheckProgram(ast, library, modulecheck);
         Optimizer opt(ast, optlevel);
         if (specs) {
             string s;

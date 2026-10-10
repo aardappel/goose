@@ -1,0 +1,6 @@
+{
+  "formatter": {
+    "singleLineExpressions": true,
+    "maxBlankLinesBetweenFunctions": 1
+  }
+}

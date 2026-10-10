@@ -46,6 +46,33 @@ test('real check succeeds without C output or executing the program, including s
     }
 });
 
+test('real check of a module without fn main() succeeds, and still reports its errors', options, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'goose vscode module '));
+    try {
+        const file = path.join(dir, 'helper.goose');
+        fs.writeFileSync(file, 'fn helper(x: i64) -> i64 { x + 1 }\n');
+        const entry = { ...config(file), module: false };
+        assert.match((await runCompiler(entry).promise).output, /exactly one global fn main/);
+        const module = { ...entry, module: true };
+        const ok = await runCompiler(module).promise;
+        assert.equal(ok.error, null, ok.output);
+        fs.writeFileSync(file, 'fn helper(x: i64) -> i64 { x + "s" }\n');
+        const [diagnostic] = parseDiagnostics((await runCompiler(module).promise).output, root);
+        assert.equal(diagnostic.file, file);
+        assert.equal(diagnostic.line, 0);
+    } finally {
+        removeFixture(dir);
+    }
+});
+
+test('every Goose tooling module checks on its own, so editing it shows no false errors', options, async () => {
+    const directory = path.join(root, 'tools/gls');
+    for (const name of fs.readdirSync(directory).filter(file => file.endsWith('.goose'))) {
+        const result = await runCompiler({ ...config(path.join(directory, name)), module: true }).promise;
+        assert.equal(result.error, null, `${name}\n${result.output}`);
+    }
+});
+
 test('real errors in imported modules point to that module and include caller locations', options, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'goose vscode imports '));
     try {
