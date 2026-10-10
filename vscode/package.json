@@ -118,6 +118,12 @@
         "enablement": "editorLangId == goose && isWorkspaceTrusted"
       },
       {
+        "command": "goose.restartLanguageServer",
+        "title": "Restart Language Server",
+        "category": "Goose",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
         "command": "goose.showOutput",
         "title": "Show Compiler Output",
         "category": "Goose"

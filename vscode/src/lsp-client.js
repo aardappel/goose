@@ -187,6 +187,16 @@ function registerLsp(vscode, context, output) {
             return null;
         }
     }
+    // Stops every server. The next request starts a new one, and open documents ask for one now.
+    function restart() {
+        for (const client of clients.values()) client.dispose();
+        clients.clear();
+        diagnostics.clear();
+        reportedMissing = false;
+        for (const document of vscode.workspace.textDocuments) {
+            if (document.languageId === 'goose' && document.uri.scheme === 'file') void call(document, 'textDocument/documentSymbol', {});
+        }
+    }
     const position = p => ({ line: p.line, character: p.character });
     const range = r => new vscode.Range(r.start.line, r.start.character, r.end.line, r.end.character);
     const registrations = [
@@ -235,11 +245,12 @@ function registerLsp(vscode, context, output) {
             }).catch(() => { });
         }),
         vscode.workspace.onDidChangeConfiguration(event => {
-            if (!event.affectsConfiguration('goose')) return;
-            for (const client of clients.values()) client.dispose();
-            clients.clear();
-            diagnostics.clear();
-            reportedMissing = false;
+            if (event.affectsConfiguration('goose')) restart();
+        }),
+        vscode.commands.registerCommand('goose.restartLanguageServer', () => {
+            if (!vscode.workspace.isTrusted) return;
+            output.appendLine('Restarting the language server.');
+            restart();
         }),
         { dispose() { disposed = true; for (const client of clients.values()) client.dispose(); clients.clear(); } }
     ];

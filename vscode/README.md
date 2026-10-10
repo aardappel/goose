@@ -25,7 +25,8 @@ passes requests to the Goose process and has no npm runtime dependencies.
   Goose output with the full compiler output. **Run** next to it runs the file
   with the JIT.
 - **Goose: Check Program**, **Goose: Run with JIT**, **Goose: Generate C**, and
-  **Goose: Show Compiler Output** in the Command Palette. The editor's play
+  **Goose: Show Compiler Output** in the Command Palette. **Goose: Restart Language
+  Server** restarts `goose-tools`, for example after rebuilding it. The editor's play
   button and **▶ Goose** status-bar button run the program in a task terminal,
   with stdin and clickable errors.
 - **Ctrl+Shift+B**, **F5**, and **Ctrl+F5** run with JIT while editing Goose
