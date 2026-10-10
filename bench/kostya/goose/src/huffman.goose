@@ -40,10 +40,7 @@ fn build_huffman_tree(frequencies: i32[:], pool: HuffmanNode[>..]&) -> HuffmanNo
         if freq > 0 { nodes.push(pool.push(new_huffman_node(freq, i as! u8, true))); }
     }
 
-    // std's stable_sort cannot sort an array of references yet. sort is
-    // stable too on up to 10 elements (insertion sort), and the test data
-    // has five distinct bytes.
-    sort(nodes) { a, b => a.frequency < b.frequency };
+    stable_sort(nodes) { a, b => a.frequency < b.frequency };
 
     if nodes.len == 1 {
         let node .= nodes[0];

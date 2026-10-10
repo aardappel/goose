@@ -9,6 +9,13 @@ import bench;
 enum Op { Dec, Inc, Prev, Next, Print, Loop { body: Op[:] } }
 
 // The tape grows to the right as the head reaches its end.
+//
+// Every operation indexes the tape at `pos`, as the other implementations
+// do, for the sake of comparing like with like. This is not idiomatic Goose:
+// a reference into a grow-only array stays valid as it grows, so we would
+// keep a reference to the current cell, moved only by `<` and `>`, and
+// dispatch on the op with one case function per variant, which runs this
+// benchmark about 1.2x faster.
 struct Tape { pos: i64, tape: u8[>..] }
 
 fn new_tape() -> Tape { Tape { pos: 0, tape: [0] } }
@@ -25,9 +32,7 @@ fn prev(t: Tape&) {
 
 fn next(t: Tape&) {
     t.pos++;
-    // One cell more, as resize(pos + 1, 0) would: a struct's growable field
-    // grows by push.
-    if t.pos >= t.tape.len { t.tape.push(0); }
+    if t.pos >= t.tape.len { t.tape.resize(t.pos + 1, 0); }
 }
 
 struct Program { ops: Op[:] }

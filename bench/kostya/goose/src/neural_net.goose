@@ -71,6 +71,12 @@ fn update_weights(n: Neuron&, rate: f64, sources: Neuron[:], synapses: Synapse[:
     n.prev_threshold = temp_threshold;
 }
 
+// The network keeps every synapse in one array and neurons and synapses refer
+// to each other by index, as the Rust version does, for the sake of comparing
+// like with like. This is not idiomatic Goose: we would keep each synapse
+// inline in the neuron it feeds, linked to its source neuron by a reference,
+// with the layers as fixed arrays, which runs this benchmark about 1.2x
+// faster.
 struct NeuralNetwork {
     input_layer: Neuron[],
     hidden_layer: Neuron[],

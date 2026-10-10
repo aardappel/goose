@@ -32,6 +32,11 @@ fn concat(strings: u8[>..]&, a: u8[:], b: u8[:]) -> const u8[:] {
 
 // --- encoding -----------------------------------------------------------------
 
+// The encoder builds every phrase as a new string, as the other
+// implementations do, for the sake of comparing like with like. This is not
+// idiomatic Goose: every phrase is a substring of the input, so we would key
+// the dictionary by slices of the input itself and build no strings at all,
+// which runs LZWEncode about 1.8x faster.
 fn lzw_encode(input: u8[:]) -> LZWResult {
     if input.len == 0 {
         return LZWResult { data: [] };

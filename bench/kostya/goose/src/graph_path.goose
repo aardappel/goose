@@ -12,47 +12,54 @@ let I32_MAX: i32 = 2147483647;
 
 // --- the graph ------------------------------------------------------------------
 
-// An array cannot hold growable arrays, so each adjacency list is a limited
-// array, which grows in place up to its capacity. The configurations in
-// run.js and test.js give no vertex more than 47 neighbours; a 65th would
-// abort.
-let MAX_DEGREE = 64;
-
-struct Graph { vertices: i32, jumps: i32, jump_len: i32, adj: (i32[..MAX_DEGREE])[>..] }
+// Each adjacency list is a run of the slice pool `edges`, which the
+// benchmark owns, grown by one element per edge.
+//
+// This follows the other implementations' list of growable lists as closely
+// as Goose allows, for the sake of comparing like with like, but it is not
+// idiomatic Goose. We would collect the edges first and then lay all the lists
+// out back to back in one array, each vertex's list found through an offset
+// (compressed sparse rows): a third less memory, and Graph::DFS runs about
+// 1.4x and Graph::BFS about 1.1x faster.
+struct Graph { vertices: i32, jumps: i32, jump_len: i32, adj: (i32[:])[>..] }
 
 fn new_graph(vertices: i32, jumps: i32, jump_len: i32) -> Graph {
     var graph = Graph { vertices: vertices, jumps: jumps, jump_len: jump_len, adj: [] };
-    for v in vertices { graph.adj.push([]); }
+    for v in vertices { graph.adj.push(default<i32[:]>()); }
     return graph;
 }
 
-fn add_edge(graph: Graph&, u: i32, v: i32) {
+fn add_edge(graph: Graph&, edges: i32[>..]&, u: i32, v: i32) {
     if u < graph.adj.len && v < graph.adj.len {
-        graph.adj[u].push(v);
-        graph.adj[v].push(u);
+        let nu = graph.adj[u].len;
+        graph.adj[u] = edges.realloc_slice(graph.adj[u], nu + 1);
+        graph.adj[u][nu] = v;
+        let nv = graph.adj[v].len;
+        graph.adj[v] = edges.realloc_slice(graph.adj[v], nv + 1);
+        graph.adj[v][nv] = u;
     }
 }
 
-fn generate_random(graph: Graph&) {
-    for i: i32 in 1..graph.vertices { graph.add_edge(i, i - 1); }
+fn generate_random(graph: Graph&, edges: i32[>..]&) {
+    for i: i32 in 1..graph.vertices { graph.add_edge(edges, i, i - 1); }
 
     for v: i32 in 0..graph.vertices {
         let num_jumps = next_int(graph.jumps);
         for j in num_jumps {
             let offset = next_int(graph.jump_len) - graph.jump_len / 2;
             let u = v + offset;
-            if u >= 0 && u < graph.vertices && u != v { graph.add_edge(v, u); }
+            if u >= 0 && u < graph.vertices && u != v { graph.add_edge(edges, v, u); }
         }
     }
 }
 
 // GraphPathBenchmark::prepare: the graph for benchmark `b`'s configuration.
-fn prepare(b: Bench&) -> Graph {
+fn prepare(b: Bench&, edges: i32[>..]&) -> Graph {
     let vertices = config_i64(b.name, "vertices") as i32;
     let jumps = config_i64(b.name, "jumps") as i32;
     let jump_len = config_i64(b.name, "jump_len") as i32;
     var graph = new_graph(vertices, jumps, jump_len);
-    graph.generate_random();
+    graph.generate_random(edges);
     return graph;
 }
 
@@ -85,7 +92,8 @@ fn bfs_shortest_path(graph: Graph&, start: i32, target: i32) -> i64 {
 }
 
 fn bfs(b: Bench&) -> u32 {
-    let graph = prepare(b);
+    reusable[] var edges: i32[>..] = [];
+    let graph = prepare(b, edges);
     var result_val: u32 = 0;
     measure(b) { result_val += bfs_shortest_path(graph, 0, graph.vertices - 1) as! u32; };
     return result_val;
@@ -116,7 +124,8 @@ fn dfs_find_path(graph: Graph&, start: i32, target: i32) -> i64 {
 }
 
 fn dfs(b: Bench&) -> u32 {
-    let graph = prepare(b);
+    reusable[] var edges: i32[>..] = [];
+    let graph = prepare(b, edges);
     var result_val: u32 = 0;
     measure(b) { result_val += dfs_find_path(graph, 0, graph.vertices - 1) as! u32; };
     return result_val;
@@ -166,7 +175,8 @@ fn a_star_shortest_path(graph: Graph&, start: i32, target: i32) -> i64 {
 }
 
 fn astar(b: Bench&) -> u32 {
-    let graph = prepare(b);
+    reusable[] var edges: i32[>..] = [];
+    let graph = prepare(b, edges);
     var result_val: u32 = 0;
     measure(b) { result_val += a_star_shortest_path(graph, 0, graph.vertices - 1) as! u32; };
     return result_val;

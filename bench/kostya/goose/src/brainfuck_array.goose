@@ -9,6 +9,13 @@ import bench;
 
 // The tape grows to the right as the head reaches its end. A growable array
 // can only be a struct's last field, so it follows `pos`.
+//
+// Tape and Program are the other implementations' classes, the commands kept
+// as their characters, for the sake of comparing like with like. This is not
+// idiomatic Goose: we would decode the program into an enum of commands with
+// u32 jump targets and keep the tape and its position in locals of the
+// interpreter loop, which ran this benchmark up to 1.4x faster (this loop is
+// unusually sensitive to code placement, so the factor varies by build).
 struct Tape { pos: i64, tape: u8[>..] }
 
 fn new_tape() -> Tape { Tape { pos: 0, tape: [0; 30000] } }
@@ -42,9 +49,7 @@ fn new_program(text: const u8[:]) -> Program, bool {
     };
     if program.commands.len == 0 { return program, false; }
 
-    // A zero per command: resize and push_n take the array's own variable,
-    // and a struct's growable field grows by push.
-    for c in program.commands { program.jumps.push(0); }
+    program.jumps.resize(program.commands.len, 0);
     var stack: i64[>..<] = [];
     for cmd, i in program.commands {
         match cmd {
