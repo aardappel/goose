@@ -1004,15 +1004,36 @@ inline void CodeGen::EnsureFromChannels(FnSpec *t) {
     auto &rets = t->rets;
     for (size_t i = 0; i < rets.size(); i++) {
         if (IsFix(rets[i])) {
-            Append(data, "static GS_TLS ", CT(rets[i]), " gs_lret_", tid, "_", i, ";\n");
+            AddThreadLocal(string(CT(rets[i])), cat("gs_lret_", tid, "_", i));
             continue;
         }
-        Append(data, "static GS_TLS gs_stack *gs_fdst_", tid, "_", i, ";\n");
-        Append(data, "static GS_TLS uint8_t *gs_fval_", tid, "_", i, ";\n");
+        AddThreadLocal("gs_stack *", cat("gs_fdst_", tid, "_", i));
+        AddThreadLocal("uint8_t *", cat("gs_fval_", tid, "_", i));
         if (IsResz(rets[i]))
-            Append(data, "static GS_TLS ", IsFrameObj(rets[i]) ? CT(rets[i]) : string("int64_t"),
-                   " gs_lret_", tid, "_", i, ";\n");
+            AddThreadLocal(IsFrameObj(rets[i]) ? string(CT(rets[i])) : string("int64_t"),
+                           cat("gs_lret_", tid, "_", i));
     }
+}
+
+// The program's thread-locals. Where GS_TLS_BLOCK says the C compiler cannot
+// place them (runtime.h), they are the fields of one struct per thread, which
+// the thread allocates on first use and the runtime frees as it ends.
+inline void CodeGen::EmitThreadLocals() {
+    if (threadlocals.empty()) return;
+    string fields, macros, plain;
+    for (auto &[type, name] : threadlocals) {
+        Append(fields, "    ", type, " ", name, ";\n");
+        Append(macros, "#define ", name, " (gs_prog_tls()->", name, ")\n");
+        Append(plain, "static GS_TLS ", type, " ", name, ";\n");
+    }
+    Append(data, "#ifdef GS_TLS_BLOCK\ntypedef struct {\n", fields, "} gs_prog_tls_t;\n",
+           "static gs_prog_tls_t *gs_prog_tls(void) {\n",
+           "    gs_tls_block *b = gs_tls();\n",
+           "    if (!b->prog) {\n",
+           "        b->prog = calloc(1, sizeof(gs_prog_tls_t));\n",
+           "        if (!b->prog) gs_panic(\"out of memory allocating thread-locals\");\n",
+           "    }\n",
+           "    return (gs_prog_tls_t *)b->prog;\n}\n", macros, "#else\n", plain, "#endif\n");
 }
 
 // ------------------------------------------------------------------

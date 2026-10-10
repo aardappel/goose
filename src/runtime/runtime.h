@@ -757,8 +757,31 @@ GS_API void gs_qput(gs_queue *q, const void *data, int64_t size);
 GS_API gs_qnode *gs_qget(gs_queue *q);
 GS_API gs_qnode *gs_qpoll(gs_queue *q);
 
+/* TinyCC cannot place thread-local storage in a Mach-O file. On macOS a
+   program it compiles keeps its thread-locals in this block instead, which
+   the runtime object (built by a compiler that can) holds per thread. prog
+   holds the ones the compiler emits for the program (CodeGen::
+   EmitThreadLocals), allocated on the thread's first use. */
+typedef struct {
+    gs_stack *stks;
+    int64_t nstks;
+    void *gl;
+    void *prog;
+} gs_tls_block;
+#if defined(__APPLE__) && defined(GS_SEPARATE_RUNTIME)
+GS_API gs_tls_block *gs_tls(void);
+#endif
+#if GS_NEED_THREADS && defined(__TINYC__) && defined(__APPLE__) && defined(GS_SEPARATE_RUNTIME)
+#define GS_TLS_BLOCK 1
+#endif
+
 #ifndef GS_RUNTIME_OBJECT
 
+#ifdef GS_TLS_BLOCK
+#define gs_stks (gs_tls()->stks)
+#define gs_nstks (gs_tls()->nstks)
+#define gs_gl (gs_tls()->gl)
+#else
 /* The current thread program's stack block: every stack the compiler
    counted for it, reserved as the program starts (gs_stack_block).
    gs_sp-relative indices resolve through it. */
@@ -771,6 +794,7 @@ static GS_TLS int64_t gs_nstks;
    at spawn like the arguments (11.2). No global is shared between program
    instances; the only C statics a program shares are read-only ones. */
 static GS_TLS void *gs_gl;
+#endif
 
 #define GS(i) (&gs_stks[i])
 
@@ -811,6 +835,10 @@ static void gs_free_thread_stacks(void) {
     free(gs_stks);
     gs_stks = NULL;
     gs_nstks = 0;
+#ifdef GS_TLS_BLOCK
+    free(gs_tls()->prog);
+    gs_tls()->prog = NULL;
+#endif
 }
 
 #if GS_NEED_THREADS
@@ -823,6 +851,10 @@ static void gs_thread_run(void (*entry)(uint8_t *), uint8_t *args) {
     free(gs_stks);
     gs_stks = NULL;
     gs_nstks = 0;
+#ifdef GS_TLS_BLOCK
+    free(gs_tls()->prog);
+    gs_tls()->prog = NULL;
+#endif
 }
 
 static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64_t argsize) {

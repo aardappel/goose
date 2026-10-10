@@ -425,6 +425,13 @@ struct CodeGen {
     // Long-distance return targets (§7.9): id, per-ret TLS channels.
     unordered_map<FnSpec *, int> fromids;
     set<FnSpec *> fromemitted;
+    // The program's own thread-locals, one "type name" each, which
+    // EmitThreadLocals declares once codegen is done.
+    vector<pair<string, string>> threadlocals;
+    void AddThreadLocal(string type, string name) {
+        threadlocals.push_back({ std::move(type), std::move(name) });
+    }
+    void EmitThreadLocals();
 
     bool IsPoolParam(FnSpec *sp, size_t i);
     // The bytes of one unit of a pool's freelist, which its count counts: a
@@ -1322,7 +1329,7 @@ struct CodeGen {
             for (auto fv : sinfo[sp].freevars) capturedvars.insert(fv);
         // Zero means "no long-distance return in flight", which is also the
         // state every propagating function's ordinary exit leaves behind.
-        if (!fromids.empty()) data += "static GS_TLS int32_t gs_rf;\n";
+        if (!fromids.empty()) AddThreadLocal("int32_t", "gs_rf");
         EmitGlobalDecls();
         // Prototypes for every live specialization, then their bodies.
         for (auto sp : livespecs)
@@ -1365,6 +1372,7 @@ struct CodeGen {
             for (auto &c : inc) if (c == '\\') c = '/';
             Append(includes, "#include \"", inc, "\"\n");
         }
+        EmitThreadLocals();
         Append(head, "\n/* ---- types ---- */\n#pragma pack(push, 1)\n", tdecls, pdata,
                "#pragma pack(pop)\n\n/* ---- data ---- */\n", data);
         Append(result, "\n/* ---- includes ---- */\n", includes,

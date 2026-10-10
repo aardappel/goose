@@ -773,8 +773,31 @@ GS_API void gs_qput(gs_queue *q, const void *data, int64_t size);
 GS_API gs_qnode *gs_qget(gs_queue *q);
 GS_API gs_qnode *gs_qpoll(gs_queue *q);
 
+/* TinyCC cannot place thread-local storage in a Mach-O file. On macOS a
+   program it compiles keeps its thread-locals in this block instead, which
+   the runtime object (built by a compiler that can) holds per thread. prog
+   holds the ones the compiler emits for the program (CodeGen::
+   EmitThreadLocals), allocated on the thread's first use. */
+typedef struct {
+    gs_stack *stks;
+    int64_t nstks;
+    void *gl;
+    void *prog;
+} gs_tls_block;
+#if defined(__APPLE__) && defined(GS_SEPARATE_RUNTIME)
+GS_API gs_tls_block *gs_tls(void);
+#endif
+#if GS_NEED_THREADS && defined(__TINYC__) && defined(__APPLE__) && defined(GS_SEPARATE_RUNTIME)
+#define GS_TLS_BLOCK 1
+#endif
+
 #ifndef GS_RUNTIME_OBJECT
 
+#ifdef GS_TLS_BLOCK
+#define gs_stks (gs_tls()->stks)
+#define gs_nstks (gs_tls()->nstks)
+#define gs_gl (gs_tls()->gl)
+#else
 /* The current thread program's stack block: every stack the compiler
    counted for it, reserved as the program starts (gs_stack_block).
    gs_sp-relative indices resolve through it. */
@@ -787,6 +810,7 @@ static GS_TLS int64_t gs_nstks;
    at spawn like the arguments (11.2). No global is shared between program
    instances; the only C statics a program shares are read-only ones. */
 static GS_TLS void *gs_gl;
+#endif
 
 #define GS(i) (&gs_stks[i])
 
@@ -827,6 +851,10 @@ static void gs_free_thread_stacks(void) {
     free(gs_stks);
     gs_stks = NULL;
     gs_nstks = 0;
+#ifdef GS_TLS_BLOCK
+    free(gs_tls()->prog);
+    gs_tls()->prog = NULL;
+#endif
 }
 
 #if GS_NEED_THREADS
@@ -839,6 +867,10 @@ static void gs_thread_run(void (*entry)(uint8_t *), uint8_t *args) {
     free(gs_stks);
     gs_stks = NULL;
     gs_nstks = 0;
+#ifdef GS_TLS_BLOCK
+    free(gs_tls()->prog);
+    gs_tls()->prog = NULL;
+#endif
 }
 
 static int64_t gs_thread_spawn(void (*entry)(uint8_t *), const void *args, int64_t argsize) {
@@ -915,7 +947,8 @@ static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
 static int64_t gs_uleb_write(uint8_t *p, uint64_t v) {
     uint8_t *q = p;
     for (;;) {
-        uint8_t b = v & 0x7f;
+)GSRT"
+R"GSRT(        uint8_t b = v & 0x7f;
         v >>= 7;
         if (v) *q++ = b | 0x80; else { *q++ = b; break; }
     }
@@ -939,8 +972,7 @@ static int64_t gs_zig_write(uint8_t *p, int64_t v) {
 
 /* The ULEB128 at p, or 0 if it runs past `end`, past ten bytes, or carries
    payload bits above the 64th, or is not shortest. The result is the byte count. */
-)GSRT"
-R"GSRT(static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
+static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out) {
     uint64_t v = 0;
     int shift = 0;
     const uint8_t *q = p;
@@ -1166,6 +1198,12 @@ static GS_TLS volatile long gs_nregions;
    worked it out, so a reservation past it is a compiler bug. */
 static GS_TLS long gs_regions_cap;
 
+#if defined(__APPLE__) && defined(GS_SEPARATE_RUNTIME)
+/* The thread-locals of a program TinyCC compiled (runtime.h). */
+static GS_TLS gs_tls_block gs_tls_this;
+GS_API gs_tls_block *gs_tls(void) { return &gs_tls_this; }
+#endif
+
 /* Text without stdio, which a fault handler may not call (nor malloc):
    decimal digits, a size in the largest unit that holds it exactly, and a
    string. Each returns the end of what it wrote. */
@@ -1216,15 +1254,15 @@ static size_t gs_overflow_text(char *buf, const gs_region *r) {
         p = gs_size(p, gs_region_reserve);
         p = gs_text(p, " when the platform ran out of address space)");
     }
-    p = gs_text(p, "; --stack-reserve or -DGS_STACK_RESERVE raises the reservation, "
+)GSRT"
+R"GSRT(    p = gs_text(p, "; --stack-reserve or -DGS_STACK_RESERVE raises the reservation, "
                    "up to 256 TB\n");
     return (size_t)(p - buf);
 }
 
 /* The calling thread program's registry, empty, as it starts. */
 static void gs_regions_begin(int64_t capacity) {
-)GSRT"
-R"GSRT(    gs_regions_cap = (long)capacity;
+    gs_regions_cap = (long)capacity;
     gs_regions = (gs_region *)calloc((size_t)(capacity > 0 ? capacity : 1), sizeof(gs_region));
     if (!gs_regions) gs_panic("out of memory allocating the data stack registry");
     gs_nregions = 0;
@@ -1428,7 +1466,8 @@ static void gs_native_stack_init(void) {
     #endif
     if (lo > GS_NATIVE_SLOP) {
         gs_native_lo = lo - GS_NATIVE_SLOP;
-        gs_native_hi = hi;
+)GSRT"
+R"GSRT(        gs_native_hi = hi;
     }
 }
 
@@ -1439,8 +1478,7 @@ static void gs_native_stack_free(void) {
     if (!gs_sigstack) return;
     memset(&ss, 0, sizeof(ss));
     ss.ss_flags = SS_DISABLE;
-)GSRT"
-R"GSRT(    ss.ss_size = gs_sigstack_size();
+    ss.ss_size = gs_sigstack_size();
     sigaltstack(&ss, NULL);
     free(gs_sigstack);
     gs_sigstack = NULL;
@@ -1645,12 +1683,12 @@ static void gs_sp_newroot(gs_sppath *p, int64_t a, int64_t b, int leaf) {
 }
 
 /* Puts the entry for node `child` at position k of the inner node at level
-   l of the path, splitting full nodes on the way up. */
+)GSRT"
+R"GSRT(   l of the path, splitting full nodes on the way up. */
 static void gs_sp_addchild(gs_sppath *p, int64_t l, int64_t k, int64_t child, int leaf) {
     for (;;) {
         gs_spinner *in = GS_SPINNER(p, p->node[l]), *o = in;
-)GSRT"
-R"GSRT(        int64_t key = gs_sp_key(p, child, leaf), max = gs_sp_max(p, child, leaf), s = k, nn = 0;
+        int64_t key = gs_sp_key(p, child, leaf), max = gs_sp_max(p, child, leaf), s = k, nn = 0;
         if (in->n == GS_SPAN_FAN) {
             int64_t half = GS_SPAN_FAN / 2;
             gs_spinner *r;
@@ -1886,11 +1924,11 @@ GS_API void gs_spans_free(uint8_t *base, int64_t *n, uint8_t **top, int64_t idx,
 }
 
 /* In place where a free span starts where the slice ends and holds the
-   difference or reaches the end of the array; otherwise the slice's
+)GSRT"
+R"GSRT(   difference or reaches the end of the array; otherwise the slice's
    elements go back on the freelist and the run goes where alloc_slice
    places one of cnt elements. The span after the slice is the one after
-)GSRT"
-R"GSRT(   the last span before it, so one descent finds both what growth takes
+   the last span before it, so one descent finds both what growth takes
    from and what the elements merge with. */
 GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
                                int64_t idx, int64_t ol, int64_t cnt) {
@@ -2067,11 +2105,11 @@ static GS_SSSE3 GS_INLINE __m128i gs_bsm_tables(const gs_bsm *m, __m128i x) {
         k = (unsigned)_mm_movemask_epi8(                                               \
             _mm_and_si128(TESTA(GS_LOAD(p + i)), TESTB(GS_LOAD(p + i + d))));          \
         if (k) return i + gs_ctz32(k);                                                 \
-    }                                                                                  \
+)GSRT"
+R"GSRT(    }                                                                                  \
     if (i == np) return -1;                                                            \
     k = (unsigned)_mm_movemask_epi8(_mm_and_si128(TESTA(GS_LOAD(p + np - 16)),         \
-)GSRT"
-R"GSRT(                                                  TESTB(GS_LOAD(p + np - 16 + d))))    \
+                                                  TESTB(GS_LOAD(p + np - 16 + d))))    \
         >> (16 - (np - i));                                                            \
     return k ? i + gs_ctz32(k) : -1;
 
@@ -2262,7 +2300,8 @@ typedef struct { int n; uint32_t d[36]; } gs_big;
 static void gs_big_set(gs_big *a, uint64_t v, int sh) {
     int w = sh >> 5, b = sh & 31, i;
     uint64_t lo = v << b, hi = b ? v >> (64 - b) : 0;
-    for (i = 0; i < w; i++) a->d[i] = 0;
+)GSRT"
+R"GSRT(    for (i = 0; i < w; i++) a->d[i] = 0;
     a->d[w] = (uint32_t)lo;
     a->d[w + 1] = (uint32_t)(lo >> 32);
     a->d[w + 2] = (uint32_t)hi;
@@ -2272,8 +2311,7 @@ static void gs_big_set(gs_big *a, uint64_t v, int sh) {
 
 static void gs_big_mul(gs_big *a, uint32_t m) {
     uint64_t c = 0;
-)GSRT"
-R"GSRT(    for (int i = 0; i < a->n; i++) {
+    for (int i = 0; i < a->n; i++) {
         c += (uint64_t)a->d[i] * m;
         a->d[i] = (uint32_t)c;
         c >>= 32;
@@ -2490,7 +2528,8 @@ GS_API void gs_out_uint(uint64_t v) {
     uint8_t buf[GS_FMT_MAX];
     fwrite(buf, 1, (size_t)gs_fmt_u64(buf, v), stdout);
 }
-GS_API void gs_out_flt(double v) {
+)GSRT"
+R"GSRT(GS_API void gs_out_flt(double v) {
     uint8_t buf[GS_FMT_MAX];
     fwrite(buf, 1, (size_t)gs_fmt_f64(buf, v), stdout);
 }
@@ -2498,8 +2537,7 @@ GS_API void gs_out_f32(float v) {
     uint8_t buf[GS_FMT_MAX];
     fwrite(buf, 1, (size_t)gs_fmt_f32(buf, v), stdout);
 }
-)GSRT"
-R"GSRT(GS_API void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
+GS_API void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
 GS_API void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
 GS_API void gs_out_nl(void) { fputc('\n', stdout); }
 )GSRT"

@@ -143,6 +143,12 @@ static GS_TLS volatile long gs_nregions;
    worked it out, so a reservation past it is a compiler bug. */
 static GS_TLS long gs_regions_cap;
 
+#if defined(__APPLE__) && defined(GS_SEPARATE_RUNTIME)
+/* The thread-locals of a program TinyCC compiled (runtime.h). */
+static GS_TLS gs_tls_block gs_tls_this;
+GS_API gs_tls_block *gs_tls(void) { return &gs_tls_this; }
+#endif
+
 /* Text without stdio, which a fault handler may not call (nor malloc):
    decimal digits, a size in the largest unit that holds it exactly, and a
    string. Each returns the end of what it wrote. */
