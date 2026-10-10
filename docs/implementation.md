@@ -2865,7 +2865,9 @@ temporary a function value's call's value lands in and the global an
 initializer sets among them.
 The thresholds per call site of callee K: inline if K is used once, or its
 post-optimization node count is below NC, or count times uses is below NCU
-(`-O1`: 8/48, `-O2`: 16/96). A call site inside a loop raises NCU fourfold
+(`-O1`: 8/48, `-O2`: 16/96). An `inline fn` (§7.13 of the spec,
+`SFunction::isinline`) passes them at every call site wherever inlining is
+on. A call site inside a loop raises NCU fourfold
 (`loopdepth`, `LOOPNCU`): it runs once per iteration, so a small function
 wrapping inlined work is worth its copies there rather than staying a call
 in the loop. Neither the raise nor the single-use rule applies in a cold
@@ -2892,7 +2894,11 @@ branch, so the call left there costs less than the call to F it would bring
 back. A callee F calls on every run is inlined into it as before: calling
 it instead of F saves nothing. Never inlined (`Scan`): a `recursive` function
 or cycle member, a `thread_fn`, a `simd` function (its callers would run the
-baseline only, §6.13), a function returning more than one value, and
+baseline only, §6.13), a function returning more than one value (where
+that is the only reason, `InlineInfo::c_inlinable`, and the thresholds pass
+at a call site, the function is declared `GS_INLINE` in C instead,
+`FnSpec::cinline`, so the C compiler inlines it: always_inline under gcc
+and clang, `__forceinline` under MSVC), and
 a body that a *separate* live tree still references in a way a copy cannot
 follow -- a remaining call to a specialization with bound function values
 reaches its locals as free variables, and a remaining callee that does

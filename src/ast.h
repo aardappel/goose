@@ -1267,6 +1267,7 @@ struct SFunction {
     vector<TypeExpr *> rets;    // Empty + !has_rets = inferred/none.
     bool has_rets = false;
     bool isrec = false;         // Declared with `recursive`.
+    bool isinline = false;      // Declared with `inline`: inlined whatever its size (§7.13).
     bool issimd = false;        // Declared with `simd`: one version per instruction set (§7.12).
     bool isthread = false;
     bool isextern = false;      // A C function behind a Goose signature (§7.10); no body.
@@ -1972,6 +1973,10 @@ struct FnSpec {
     // branch's only callee (Optimizer::TryInline): the C compiler is told so
     // too, since it inlines a function with one caller whatever its size.
     bool outofline = false;
+    // Goose wanted to inline this function at some call but could not
+    // (Optimizer::TryInline), so it is declared GS_INLINE in C and the C
+    // compiler inlines it.
+    bool cinline = false;
 };
 
 // ---------------------------------------------------------------------------

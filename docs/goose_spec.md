@@ -2649,6 +2649,29 @@ is code size: the function's body once per version.
 functions with bodies, nested ones and generic ones included (each
 specialization has its versions), and `extern simd fn` is an error.
 
+### 7.13 `inline fn`: inlined whatever its size
+
+```goose
+inline fn project(cam: Camera, p: double3) -> f64, f64, bool { ... }
+```
+
+`inline` asks for the function to be inlined at every call, however big
+it is and however many calls there are. Without it, the implementation
+decides from the function's size and its number of calls, and a function
+called from a hot loop can stay a call because it is called from several
+places.
+
+`inline` has no meaning of its own: a program computes the same with or
+without it. It is a request the implementation may not be able to grant
+at every call. Where Goose cannot inline a function itself (one returning
+several values, §7.3), the C backend asks the C compiler to inline it
+instead. Where inlining is off (`-O0`), every call stays a call.
+
+`inline` is a keyword only directly before `fn`, `recursive` or
+`thread_fn`, so it stays usable as a name. It is an error together with
+`extern` (no body to copy), `export` (its C wrapper calls it), `simd` (a
+caller would run the baseline only), `recursive` and `thread_fn`.
+
 ## 8. ADTs in use
 
 ### 8.1 `match`

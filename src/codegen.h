@@ -1261,7 +1261,9 @@ struct CodeGen {
 
     void DetectNrvo(FnSpec *sp);
     // What a specialization's C declaration says besides its signature.
-    static const char *FnAttrs(FnSpec *sp) { return sp->outofline ? "GS_NOINLINE " : ""; }
+    static const char *FnAttrs(FnSpec *sp) {
+        return sp->outofline ? "GS_NOINLINE " : sp->cinline ? "GS_INLINE " : "";
+    }
     const VarDef *NamedResult(Block *fnbody, SFunction *target, size_t nrets, size_t resultidx);
     const VarDef *OpenIbNrvo(InlineBlock *ib, const Dst &d);
     void PlanTopClasses(FnSpec *sp);

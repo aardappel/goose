@@ -86,6 +86,10 @@ struct Optimizer {
         int nodecount = 0;
         int nest = 0;
         bool noinline = false;
+        // Goose's inliner cannot paste this body into a caller, but the C
+        // compiler could inline the function: TryInline asks it to
+        // (FnSpec::cinline).
+        bool c_inlinable = false;
         bool nestedcalls = false;
     };
     unordered_map<FnSpec *, InlineInfo> inlineinfo;
@@ -466,7 +470,8 @@ struct Optimizer {
         info.nestedcalls = false;
         // A simd body inlined into a caller would lose its versions (§7.12).
         auto noin = sp->sf->isrec || sp->incycle || sp->sf->isthread || sp->sf->isexport ||
-                    sp->sf->issimd || sp->rets.size() > 1 || sp->relnamedresult;
+                    sp->sf->issimd || sp->relnamedresult;
+        auto multiret = sp->rets.size() > 1;
         function<void(Node *, int)> rec = [&](Node *n, int d) {
             if (!n) return;
             info.nodecount++;
@@ -488,7 +493,8 @@ struct Optimizer {
             RunChildren(n, [&](Node *ch) { rec(ch, d + Around(n, ch)); });
         };
         rec(sp->body, 0);
-        info.noinline = noin;
+        info.noinline = noin || multiret;
+        info.c_inlinable = multiret && !noin;
     }
 
     // Optimizes the body of sp. A callee K used once that only the used-once
@@ -724,12 +730,18 @@ inline Node *Optimizer::TryInline(Call *c) {
     if (!caninline || !c->spec || c->builtin >= 0 || !c->dispatch.empty()) return nullptr;
     auto K = c->spec;
     auto &info = inlineinfo[K];
-    if (!K->live || info.noinline || !K->body) return nullptr;
+    if (!K->live || !K->body) return nullptr;
+    auto ncuhere = loopdepth > 0 && !colddepth ? ncu * LOOPNCU : ncu;
+    // An `inline fn` passes the size rules wherever inlining is on.
+    auto small = (K->sf->isinline && nc > 0) || info.nodecount < nc || info.nodecount * K->uses < ncuhere;
+    if (info.noinline) {
+        // Goose would inline it here but cannot: let the C compiler do it.
+        if (info.c_inlinable && small && !K->outofline) K->cinline = true;
+        return nullptr;
+    }
     // Never into a recursive cycle: the inlined body's locals would become
     // the cycle function's own, upsetting the §7.8 stack-assignment rule.
     if (curspec && (curspec->incycle || curspec->sf->isrec)) return nullptr;
-    auto ncuhere = loopdepth > 0 && !colddepth ? ncu * LOOPNCU : ncu;
-    auto small = info.nodecount < nc || info.nodecount * K->uses < ncuhere;
     if (!small && K->uses == 1 && colddepth > 0) {
         K->outofline = true;
         return nullptr;
