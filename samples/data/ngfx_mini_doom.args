@@ -1,1 +1,1 @@
---test --frames 30
+--frames 30 --wad data/freedoom1-e1m1.wad
