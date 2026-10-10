@@ -181,6 +181,8 @@ out: u8[>..]&, eol: const u8[:]) -> bool {
     var squares = 0;
     var brace_parens: i64[>..] =[];
     var brace_squares: i64[>..] =[];
+    // One entry per open ( or [. True when it ends its line, so what it holds is indented.
+    var hung: bool[>..] =[];
     var previous: const u8[:] = s[..0];
     var previous_end = 0;
     var previous_kind = 0;
@@ -215,6 +217,14 @@ out: u8[>..]&, eol: const u8[:]) -> bool {
             if brace_parens.len > 0 {
                 brace_parens.pop();
                 brace_squares.pop();
+            }
+        }
+        if (text == ")" || text == "]") && hung.len > 0 {
+            let was_hung = hung[hung.len - 1];
+            hung.pop();
+            if was_hung {
+                depth--;
+                layout_newline(out, eol);
             }
         }
         if out.len == 0 || out[out.len - 1] == '\n' {
@@ -258,6 +268,11 @@ out: u8[>..]&, eol: const u8[:]) -> bool {
                 overflow = true;
             }
         }
+        if text == "(" || text == "[" {
+            let ends_line = n + 1 < ts.len && find(s[t.end..ts[n + 1].start], "\n") >= 0;
+            hung.push(ends_line && !compact[n]);
+            if ends_line && !compact[n] { depth++; }
+        }
         if text == "(" { parens++; }
         if text == ")" { parens--; }
         if text == "[" { squares++; }
@@ -278,6 +293,11 @@ out: u8[>..]&, eol: const u8[:]) -> bool {
             layout_newline(out, eol);
         }
         if text == "}" && next != ";" && next != "," && next != ")" && next != "]" && next != "." && next != "?" && next != "else" && next != "(" && next != "}" && !trailing_comment &&(!compact[n] || closers[n] >= 0) {
+            layout_newline(out, eol);
+        }
+        // In a bracket that holds its items on their own lines, a block item ends its line.
+        if text == "," && previous == "}" && hung.len > 0 && hung[hung.len - 1] && n + 1 < ts.len &&
+        ts[n + 1].kind != COMMENT_TOKEN && find(s[t.end..ts[n + 1].start], "\n") < 0 {
             layout_newline(out, eol);
         }
         if t.kind == COMMENT_TOKEN && source_has(s, t.start, "//") { layout_newline(out, eol); }
