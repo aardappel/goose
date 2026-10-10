@@ -2791,9 +2791,14 @@ inline bool TypeCheck::InitOrderSafe(Node *n, set<FnSpec *> &visiting, FnSpec *c
         Is<NullLit>(n) || Is<SelfRef>(n) || Is<Ident>(n)) return true;
     if (auto d = Is<Dot>(n)) return d->variantconst || safe(d->obj);
     if (auto u = Is<Unary>(n)) {
-        auto t = LoadType(u->child->exprtype);
-        if (u->op == T_MINUS && !IsIntT(t) && t->kind != TY_FLT) return false;
-        if (u->op == T_MINUS && IsIntT(t) && !IsUnsigned(t->intstorage)) return false;
+        // Implicit reference conversions have a typed unary node but need not
+        // type its synthesized operand. Only negation needs the operand's type
+        // to prove that initializer reordering cannot cross an overflow check.
+        if (u->op == T_MINUS) {
+            auto t = LoadType(u->child->exprtype);
+            if (!IsIntT(t) && t->kind != TY_FLT) return false;
+            if (IsIntT(t) && !IsUnsigned(t->intstorage)) return false;
+        }
         return safe(u->child);
     }
     if (auto b = Is<Binary>(n)) {
