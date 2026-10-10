@@ -2007,6 +2007,10 @@ struct TypeCheck {
         // The classes created from its parameters' values, or given them at a
         // back edge: each points where it does only while it stays threaded.
         vector<VarDef *> heirs;
+        // Its arguments are read through a threaded class rather than rooted
+        // at one exactly: in every activation it points into storage that
+        // class leads to, though not into the same part of it.
+        bool bounded = false;
     };
     unordered_map<VarDef *, ThreadedClass> threadedclasses;
     void ValidateThreadArgs(FnSpec *spec, vector<Val> &argvals, Node *callnode);

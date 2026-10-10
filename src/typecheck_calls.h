@@ -2206,7 +2206,10 @@ inline void TypeCheck::ValidateThreadArgs(FnSpec *spec, vector<Val> &argvals, No
         if (it == threadedclasses.end() || it->second.broken) continue;
         if (argvals[i].None()) continue;   // Nowhere yet: the next round knows.
         auto ar = argvals[i].Root();
-        if (!argvals[i].Exact() || UltimateRoot(pr) != UltimateRoot(ar) || !ThreadedChain(ar)) {
+        // A class read through a threaded one takes what is read through it
+        // or rooted at it.
+        auto rooted = argvals[i].Exact() || (it->second.bounded && argvals[i].alts.size() == 1);
+        if (!rooted || UltimateRoot(pr) != UltimateRoot(ar) || !ThreadedChain(ar)) {
             Unthread(pr, cat(spec->inprogress ? "the recursive call at " : "the call at ",
                              Where(callnode->line), " passes ", spec->params[i]->name,
                              " rooted differently from ",
@@ -2224,13 +2227,14 @@ inline void TypeCheck::ValidateThreadArgs(FnSpec *spec, vector<Val> &argvals, No
 
 // Whether what is rooted at r is the same storage in every activation, as
 // far as the parameter classes it was passed through tell: a pool class's
-// always is, and any other class's while it is threaded. A class is known
-// by the root it was created from: a variable whose declaration is being
-// checked has no type yet either.
+// always is, and any other class's while it is threaded, unless it was
+// read through one (ThreadedClass::bounded). A class is known by the root it
+// was created from: a variable whose declaration is being checked has no
+// type yet either.
 inline bool TypeCheck::ThreadedChain(VarDef *r) {
     if (!r || !r->classfrom || r->poolclass) return true;
     auto it = threadedclasses.find(r);
-    return it != threadedclasses.end() && !it->second.broken;
+    return it != threadedclasses.end() && !it->second.broken && !it->second.bounded;
 }
 
 // A class its creating call rooted exactly (CheckSpecBody): threaded until a
@@ -2247,6 +2251,7 @@ inline void TypeCheck::NoteThreadedClass(VarDef *cls) {
     }
     auto &tc = threadedclasses[cls];
     if (!parent) return;
+    tc.bounded = parent->bounded;
     if (parent->broken) {
         tc.broken = true;
         tc.why = parent->why;
@@ -2847,9 +2852,39 @@ inline void TypeCheck::CheckSpecBodyOnce(FnSpec *spec, vector<Val> *argvals, Lin
         h->ref.byteview = va.byteview;
         h->ref.freshview = va.byteview;
     }
-    for (size_t k = 1; !spec->rounds && k < classroots.size(); k++)
-        if (classroots[k] && exactrefs[k] && !classroots[k]->poolclass)
+    // A class whose arguments were each read through one parameter class,
+    // a pool class or one threaded exactly, points into the storage that
+    // class leads to, outside the cycle, as long as it stays so (§7.8).
+    auto readthrough = [&](size_t k) {
+        if (!argvals) return false;
+        auto any = false;
+        for (size_t i = 0; i < sf->params.size() && i < argvals->size(); i++) {
+            if (i < spec->views.size() && spec->views[i].cls == (int)k) return false;
+            if (spec->roots[i].cls != (int)k) continue;
+            if (!IsRefOrSlice(spec->argtypes[i])) return false;
+            auto &av = (*argvals)[i];
+            if (av.alts.size() != 1 || av.alts[0].exact) return false;
+            auto r = av.alts[0].root;
+            if (!r || !r->classfrom) return false;
+            if (!r->poolclass) {
+                auto it = threadedclasses.find(r);
+                if (it == threadedclasses.end() || it->second.broken || it->second.bounded)
+                    return false;
+            }
+            any = true;
+        }
+        return any;
+    };
+    for (size_t k = 1; !spec->rounds && k < classroots.size(); k++) {
+        if (!classroots[k] || classroots[k]->poolclass) continue;
+        if (exactrefs[k]) {
             NoteThreadedClass(classroots[k]);
+        } else if (readthrough(k)) {
+            NoteThreadedClass(classroots[k]);
+            if (auto it = threadedclasses.find(classroots[k]); it != threadedclasses.end())
+                it->second.bounded = true;
+        }
+    }
     if (sf->has_rets && !spec->retsknown) {
         for (auto rt : sf->rets) {
             auto ct = Subst(rt);

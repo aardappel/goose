@@ -2083,6 +2083,14 @@ at the store (`CycleStoreError`), the ones checked before the call by the
 cycle's next round, which finds the class broken (**Rounds** below). A
 merged value or rebound variable that may be rooted at a threaded class
 relies on it like any other, every one of its roots having to be storable.
+A class all of whose members' arguments were each read through one pool
+class or one class threaded exactly -- one alternative, inexact, rooted
+there -- is threaded too, but `bounded` (`ThreadedClass::bounded`): what it
+points at lies in storage that class leads to, outside the cycle, which
+makes it storable, but at other storage in each activation, so
+`ThreadedChain` takes it for no destination, and a class created from it is
+bounded as well. A call into the cycle keeps it threaded where it passes
+one alternative at the same ultimate root, exact or not.
 
 A recursion whose types never repeat has no back edge: each round is a new
 specialization, checked inside the one before, until the native stack runs

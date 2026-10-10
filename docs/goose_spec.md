@@ -2417,7 +2417,13 @@ stored inside the cycle, into storage that is the same in every activation:
 a local, a pool, or what another such parameter points at or leads to, not
 what a parameter the cycle passes something else does. So a recursive walk
 over a context of borrowed tables (A.6) stores the views it reads through
-the context into the tables it reaches through it. Nothing makes a
+the context into the tables it reaches through it. A parameter whose
+argument is, on every call, a reference or slice read through one such
+parameter, or through a pool, points outside the cycle in every activation
+as well, though not at the same storage, so what is rooted at it may be
+stored the same way while it is no storage to store into: a builder hands
+the node read through the context to the function that links it under a
+new one (`rest(c, c.nodes.push(…))`). Nothing makes a
 recursive call pass such a parameter on, so it is restricted only once a
 store relies on it: a later call into the cycle that passes it anything
 else is a compile error reported at the store, and one before any store
