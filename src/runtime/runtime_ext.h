@@ -45,6 +45,49 @@ static double gs_sqrt(double x) { return sqrt(x); }
 static float gs_sqrtf(float x) { return sqrtf(x); }
 #endif
 
+/* math's other libm functions (stdlib/math.goose). C has them set errno on a
+   domain or range error, so a C compiler takes each call for a write to
+   memory: a loop around one loads again after it whatever it had hoisted
+   out or kept in registers. Goose has no errno, so where the compiler has
+   asm labels and the const attribute each is libm's own function declared
+   under a name of its own as depending on its arguments alone; elsewhere
+   the name forwards to libm. */
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
+#define GS_LIBM_SYM2(p, f) #p #f
+#define GS_LIBM_SYM(p, f) GS_LIBM_SYM2(p, f)
+#define GS_LIBM
+#define GS_LIBM1(f) __asm__(GS_LIBM_SYM(__USER_LABEL_PREFIX__, f)) __attribute__((const));
+#define GS_LIBM2(f) GS_LIBM1(f)
+#else
+#define GS_LIBM static
+#define GS_LIBM1(f) { return f(x); }
+#define GS_LIBM2(f) { return f(x, y); }
+#endif
+GS_LIBM double gs_sin(double x) GS_LIBM1(sin)
+GS_LIBM double gs_cos(double x) GS_LIBM1(cos)
+GS_LIBM double gs_tan(double x) GS_LIBM1(tan)
+GS_LIBM double gs_asin(double x) GS_LIBM1(asin)
+GS_LIBM double gs_acos(double x) GS_LIBM1(acos)
+GS_LIBM double gs_atan(double x) GS_LIBM1(atan)
+GS_LIBM double gs_atan2(double x, double y) GS_LIBM2(atan2)
+GS_LIBM double gs_exp(double x) GS_LIBM1(exp)
+GS_LIBM double gs_log(double x) GS_LIBM1(log)
+GS_LIBM double gs_log2(double x) GS_LIBM1(log2)
+GS_LIBM double gs_log10(double x) GS_LIBM1(log10)
+GS_LIBM double gs_pow(double x, double y) GS_LIBM2(pow)
+GS_LIBM float gs_sinf(float x) GS_LIBM1(sinf)
+GS_LIBM float gs_cosf(float x) GS_LIBM1(cosf)
+GS_LIBM float gs_tanf(float x) GS_LIBM1(tanf)
+GS_LIBM float gs_asinf(float x) GS_LIBM1(asinf)
+GS_LIBM float gs_acosf(float x) GS_LIBM1(acosf)
+GS_LIBM float gs_atanf(float x) GS_LIBM1(atanf)
+GS_LIBM float gs_atan2f(float x, float y) GS_LIBM2(atan2f)
+GS_LIBM float gs_expf(float x) GS_LIBM1(expf)
+GS_LIBM float gs_logf(float x) GS_LIBM1(logf)
+GS_LIBM float gs_log2f(float x) GS_LIBM1(log2f)
+GS_LIBM float gs_log10f(float x) GS_LIBM1(log10f)
+GS_LIBM float gs_powf(float x, float y) GS_LIBM2(powf)
+
 /* std's find_any and find_pair over a slice (gs_scan_any, gs_scan_pair); a
    set is a pointer to std's ByteSet. */
 static int64_t gs_find_any(sl_u8 s, const void *set) { return gs_scan_any(s.data, s.len, set); }

@@ -431,7 +431,11 @@ type): `sqrt sin cos tan asin acos atan atan2 exp log log2 log10 pow floor
 ceil round trunc`, returning floats as C does (`as i64` converts). `sqrt`
 is the runtime's (`gs_sqrt`, `gs_sqrtf`): the same correctly rounded root,
 NaN below zero, without C's errno, so it is the bare square root
-instruction where the C compiler allows. An
+instruction where the C compiler allows. The others C has set errno
+(`sin` to `pow`) are libm's own functions under runtime names (`gs_exp`,
+`gs_expf`, ...), which gcc and clang are told depend on their arguments
+alone: Goose has no errno, so a call does not make the C compiler load
+again what a loop around it holds in registers. An
 integer argument suits both widths, so it names one (`sqrt(n as f64)`);
 `sqrt(n * 0.5)` is the `f64` one, as `sqrt(0.5)` is. Plus:
 
