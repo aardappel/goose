@@ -658,8 +658,8 @@ inline void TypeCheck::DefaultScopeName(string_view name, Node *at, bool fnonly)
         if (!fnonly)
             for (auto [v, i] : fr.defaultsite->vars)
                 if (v->name == name) error(cat(name, ", a local where ", sf->name, " is declared"));
-        for (auto [f, env] : fr.defaultsite->fns)
-            if (f->name == name) error(cat(name, ", a nested function"));
+        for (auto &o : fr.defaultsite->fns)
+            if (o.sf->name == name) error(cat(name, ", a nested function"));
     }
     for (auto o = sf->outer; o; o = o->outer)
         if (typeparam(o)) return;
@@ -675,8 +675,10 @@ inline bool TypeCheck::ScopeEnded(const DeclSite &d) {
 // called and specialized per caller (§7.5). Its body names what is in scope
 // here, whatever the call, as do the sizes in its signature, checked here, and
 // may call every function declared in the blocks around it, so that nested
-// functions call each other in either order (the latest declared at or before
-// this point wins, then the first after it).
+// functions call each other in either order. The functions of a name in the
+// innermost block declaring one are its overload set, where of several with
+// the same parameter types the latest declared at or before this point
+// wins, then the first after it (LookupLocalFns).
 inline void TypeCheck::DeclareLocalFn(FnDecl *fd) {
     for (auto &p : fd->sf->params)
         if (p.type) ConstNamesIn(p.type);
@@ -700,14 +702,17 @@ inline void TypeCheck::DeclareLocalFn(FnDecl *fd) {
     });
     for (auto bp = blockpos.rbegin(); bp != blockpos.rend() && bp->scopeidx >= fr.scopebase; ++bp) {
         auto &stmts = bp->block->stmts;
+        auto serial = scopes[bp->scopeidx].serial;
         auto at = std::min((int)bp->idx, (int)stmts.size() - 1);
         for (auto i = at; i >= 0; i--)
-            if (auto d = Is<FnDecl>(stmts[i])) site.fns.push_back({ d->sf, fr.lexspec });
+            if (auto d = Is<FnDecl>(stmts[i]))
+                site.fns.push_back({ d->sf, fr.lexspec, serial, i });
         for (auto i = at + 1; i < (int)stmts.size(); i++)
-            if (auto d = Is<FnDecl>(stmts[i])) site.fns.push_back({ d->sf, fr.lexspec });
+            if (auto d = Is<FnDecl>(stmts[i]))
+                site.fns.push_back({ d->sf, fr.lexspec, serial, i });
     }
-    ForOuterFns(top, [&](SFunction *sf, FnSpec *env) {
-        site.fns.push_back({ sf, env });
+    ForOuterFns(top, [&](const OuterFn &o) {
+        site.fns.push_back(o);
         return false;
     });
     declsiteof[{ fr.lexspec, fd->sf }] = &site;
@@ -780,9 +785,9 @@ inline FnSpec *TypeCheck::NamedSpec(FnSpec *env) {
     return env;
 }
 
-inline SFunction *TypeCheck::LookupLocalFn(string_view name) {
+inline bool TypeCheck::LookupLocalFn(string_view name) {
     FnSpec *env;
-    return LookupLocalFnEnv(name, env);
+    return !LookupLocalFns(name, env).empty();
 }
 
 inline vector<int> TypeCheck::NamedFrames(int fi, FnSpec *spec) {
@@ -1908,21 +1913,22 @@ inline void TypeCheck::CheckFor(ForLoop *x) {
                  "the loop's binder gives the values their type");
     // A slice element bound by value, or a reference one however it is
     // bound, was read out of the array: it is as writable as its slot says
-    // (§9.5), and where a slice or a relative reference points follows the
-    // read-back rule, not the array's own root.
-    if (IsRefOrSlice(bindtype) && elemtype && (!byref || elemtype->kind == TY_REF)) {
-        if ((elemtype->kind == TY_REF && elemtype->ref->lenstorage >= 0) ||
-            elemtype->kind == TY_SLICE) {
+    // (§9.5), and where it points follows the read-back rule, not the
+    // array's own root. The read-back is made in each pass of the loop, so
+    // what a holder of the activation's holds is what the passes before
+    // stored there too, which the elements later iterations read may be.
+    auto readback = IsRefOrSlice(bindtype) && elemtype && (!byref || elemtype->kind == TY_REF);
+    if (readback) iterprov.writable = SlotLoadWritable(elemtype, iterprov.writable);
+    auto seqprov = iterprov;
+    auto head = SaveFlow();
+    auto sc = CheckLoopPasses(x, head, [&] {
+        if (readback) {
             auto slotread = SlotReadable(elemtype);
-            auto rb = ReadBackRoot(elemtype, iterprov, iterprov.byteview,
-                                   intemp ? &contents : nullptr, slotread);
+            auto rb = ReadBackRoot(elemtype, seqprov, seqprov.byteview,
+                                   intemp ? &contents : nullptr, slotread, true);
             iterprov.TakeAlts(rb);
             for (auto &a : iterprov.alts) a.slotread = slotread;
         }
-        iterprov.writable = SlotLoadWritable(elemtype, iterprov.writable);
-    }
-    auto head = SaveFlow();
-    auto sc = CheckLoopPasses(x, head, [&] {
         auto vd = NewVar(x->var, bindtype, x->line, false, x->vdef);
         vd->assigned = vd->maybeassigned = true;
         vd->copybind = (x->iterkind == IK_ARRAY || x->iterkind == IK_SLICE) && !byref;
@@ -2370,6 +2376,12 @@ inline Val TypeCheck::CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *
 
 inline void TypeCheck::CheckAssign(Assign *a) {
     auto lv = CheckLValue(a->lval);
+    // Generic code stores a whole value of a type parameter's type with `.=`
+    // (§3.8): it rebinds where the type is a reference, and assigns as `=`
+    // does where it is not, so moving elements never writes through them.
+    if (a->op == T_DOTASSIGN && (lv.var ? lv.var->type : lv.type)->kind != TY_REF &&
+        InGenericBody())
+        a->op = T_ASSIGN;
     auto held = lv;
     auto throughref = a->op != T_DOTASSIGN && IsPlainRef(held.type);
     if (throughref) DerefLValue(held, a->lval);
@@ -2468,6 +2480,18 @@ inline void TypeCheck::CheckAssign(Assign *a) {
         lv.var->assigned = lv.var->maybeassigned = true;
         KillNarrow(lv.var);
     }
+}
+
+// Whether the code being checked is a generic function's body, or a nested
+// function's or function value's written inside one: a function with type
+// parameters or untyped parameters (§7.7).
+inline bool TypeCheck::InGenericBody() {
+    for (auto sf = frames.back().sf; sf; sf = sf->outer) {
+        if (!sf->generics.empty()) return true;
+        for (auto &p : sf->params)
+            if (!p.type) return true;
+    }
+    return false;
 }
 
 // `.=`: rebinds the reference stored at the location (§3.8).
@@ -2625,8 +2649,20 @@ inline bool TypeCheck::CheckRefRebindRoot(Node *at, VarDef *vd, const Val &rv,
             Error(at, cat("storing a slice rooted at ", rootname(nr), " into ", vd->name, via,
                           ": ", vd->name, " is bound to one rooted at ",
                           rootname(vd->ref.Root()), ", at a different scope depth (§9.2)"));
+        // A parameter's class names the variable its call was given, which
+        // is where the scope depth comes from.
+        auto describe = [&](VarDef *r) -> string {
+            if (!r) return "static data";
+            if (IsTemp(r)) return "a temporary";
+            if (!IsClassRoot(r)) return string(r->name);
+            auto from = UltimateRoot(r);
+            return cat("the caller's storage behind ", r->name,
+                       from && from->type && !from->isglobal ? cat(" (", from->name, ")") : "");
+        };
         Error(at, cat("re-binding ", vd->name, " with a reference rooted at a different "
-                      "scope depth is not supported; declare a new variable"));
+                      "scope depth is not supported; declare a new variable (§9.2): ",
+                      vd->name, " is bound to one rooted at ", describe(vd->ref.Root()),
+                      ", and this one is rooted at ", describe(nr)));
     }
     // Nor does a variable that points into no grow-shrink array start to:
     // what read it before -- earlier in a loop, through a reference to it --

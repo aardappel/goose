@@ -10,7 +10,8 @@ recursive fn image(a: u8[>..]&, n: i64) -> u8 {
     return 9;
 }
 recursive fn wrap(a: u8[>..]&, n: i64) -> u8[>..] {
-    return [7, image(a, n), 8];
+    let middle = image(a, n);
+    return [7, middle, 8];
 }
 recursive fn add(a: u8[>..]&, n: i64) {
     a.append(wrap(a, n));

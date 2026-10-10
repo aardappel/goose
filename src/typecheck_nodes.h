@@ -157,21 +157,19 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
         return v;
     }
     FnSpec *env = nullptr;
-    if (auto sf = tc.LookupLocalFnEnv(name, env)) {
-        fnref = sf;
+    if (auto fns = tc.LookupLocalFns(name, env); !fns.empty()) {
+        fnref = fns[0];
         Val v;
         v.type = tc.fntype;
-        v.fnv.named = sf;
-        v.fnv.env = env;
+        v.fnv = tc.LocalFnValue(fns, env);
         return v;
     }
     if (auto &cands = tc.ast.LookupFunctions(name, ns); !cands.empty()) {
-        if (cands.size() != 1)
-            tc.Error(this, cat("overloaded function ", name, " cannot be a function value"));
         fnref = cands[0];
         Val v;
         v.type = tc.fntype;
         v.fnv.named = cands[0];
+        if (cands.size() > 1) v.fnv.set = &cands;
         return v;
     }
     tc.Error(this, cat("unknown identifier: ", name));

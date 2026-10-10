@@ -85,7 +85,8 @@ beyond the bump pointers themselves.
 
 The syntax follows C and Rust: `{}` blocks, `//` and `/* */` comments (block comments
 nest), semicolon-terminated statements, postfix type annotations (`x: T`).
-Identifiers `[A-Za-z_][A-Za-z0-9_]*`.
+Identifiers `[A-Za-z_][A-Za-z0-9_]*`. A UTF-8 byte-order mark at the start of
+a source file is ignored.
 
 Literals:
 
@@ -444,7 +445,7 @@ are canonical: the shortest encoding of the unsigned or zigzag-transformed
 value. A verified byte image must preserve that invariant (§12).
 LEB was chosen because this type is optimized for values that are usually very small but
 have occasional outliers, where it outperformed other formats (measurements
-in `varint_bench/results.md`).
+summarized in Appendix B, Resolved, item 1).
 
 There is one `varint` type, with two encodings by position — this is
 user-visible whenever Goose data is serialized directly:
@@ -566,7 +567,16 @@ pointee where §4.1 asks for one).
 * Rebinding: the special assignment `r .= &x` updates the reference *value*
   itself, rather than writing through it. `.=` applies to any
   reference-typed location — variables (subject to their `let`/`var`),
-  fields, elements. On non-reference locations `.=` is an error. The
+  fields, elements. On non-reference locations `.=` is an error, except in
+  generic code — the body of a function with type parameters or untyped
+  parameters, and the nested functions and function values written in one
+  — where it assigns as `=` does. Generic code thus stores a whole value of
+  a type parameter's type with `.=`, which moves a reference itself where
+  the parameter is bound to a reference type and `=` would write through
+  it, and keeps one in a local of that type, where an inferred `let` would
+  copy the pointee (below): std's `swap_at` is `let t: T = xs[i]; xs[i] .=
+  xs[j]; xs[j] .= t;`, which swaps the elements of an array of references
+  as it does those of any other array. The
   declaration form `let r .= e;` / `var r .= e;` binds `r` to `e` by
   reference whatever `e` is — an lvalue of any size class (`var cur .=
   pool[0];` names the element, no `&`), a reference-returning call (`let e
@@ -693,11 +703,22 @@ array/pool* as the location storing it.
   `resize` fill value, which is copied into every slot it adds even when it
   is a literal)
   is a compile error: the copied offsets would still be measured from the
-  source location. Construct such values in place (literals), and bind their
+  source location. Construct such values in place (literals; a field a
+  literal's `..` fills takes its type's default, whose links are null and
+  whose limited arrays are empty, and is no copy), and bind their
   match payloads, take their variants in case functions and have `format`
   overloads take them by reference: an ADT whose payloads hold them is used
   in variable mode, whose payloads bind by reference where the ADT is not
-  resizable (§3.5).
+  resizable (§3.5). None of these is a copy: a call's result, which is
+  built where it is received where it is not fixed-size (§4.3, §7.3), and
+  where it is holds no link but `self` and null, a returned literal having
+  no other root to point within; a function's named result (§7.3), a local
+  every return of the function gives, built at the destination from its
+  declaration (a struct ending in a resizable needs its fields before the
+  resizable tail free of self-relative references and of anything one in
+  the tail points at, since those fields reach the caller as a copy, C.3);
+  and a default value (a literal's `..`, `default<T>()`), whose links are
+  nulls, or `self` where a field's default says so.
   (TODO 16: track the region a relative reference ranges over, so provably
   whole-region copies can be allowed.)
 * Because they are position-independent, structures linked by self-relative
@@ -1179,7 +1200,16 @@ scrutinee of a `match` or the sequence of a `for`, in the parts that one
 leads to — later in its own block or in an enclosing block it was declared
 in, or anywhere in a loop that contains the shrink and that the variable was
 declared outside of, since the next iteration runs the rest of the body
-again. A function value's body runs in the middle of a statement of the
+again. But where a statement of the shrink's own block after the shrink's
+statement is a `return` or a `break`, and neither the shrink's statement nor
+one between them has a `continue` that could lead back into a loop, nothing
+that exit leaves runs again from the shrink: the rest of that block, and for
+a `return` the rest of the function's body, for a `break` the rest of the
+loop or `block` it ends, that loop's next iteration included. So a decoder
+may `result.clear(); return result;` inside its loop while a dictionary of
+views into `result` that the loop fills is still in scope; the exit's own
+statement is read after the shrink like any other. A function value's body
+runs in the middle of a statement of the
 function calling it (§7.6), so that function's variables count as well, and
 that function may call it again: a variable declared outside the body counts
 wherever the body names it, as in a loop. Only code that can name the
@@ -1250,7 +1280,10 @@ again against the pairs the cycle records once the whole cycle is.
 ### 5.2 Grow-shrink `[>..<]`
 
 * Fixed-size elements only.
-* `pop()` returns the element by value; `resize`/`clear` allowed, from
+* `pop()` returns the element by value: a reference or slice element as the
+  one it is, pointing where it did and as writable as its slot, as reading
+  the element would give it (§9.5), since what a temporary holds is not
+  rooted at the temporary (§9.2); `resize`/`clear` allowed, from
   anywhere: on a local, through a reference, on a global, on a struct's
   tail. Assigning the array whole is a shrink too.
 * References and slices into it are created like any other (§3.8, §3.10),
@@ -1543,10 +1576,14 @@ without conversion overhead.
 values of the *same* struct/fixed-array type whose scalar leaves are all
 integers or all floats; the result has that same type. The compound forms
 `+= -= *= /= %=` apply to these same types, resolving the destination once
-and reading its old value before the right-hand side runs (§2). This covers
-vector math without an operator-overloading feature. The standard library supplies
-`float3` and friends; named vector ops (`dot`, `cross`, `normalize`, …) are
-ordinary stdlib overloads per math type, not language builtins.
+and reading its old value before the right-hand side runs (§2). Unary `-`
+negates such a value memberwise where no leaf is an unsigned integer
+(`-v`, with the same result type; a float member negates exactly, so `0.0`
+becomes `-0.0`, and an integer one overflows as a scalar `-` does). This
+covers vector math without an operator-overloading feature. The standard
+library supplies `float3` and friends; named vector ops (`dot`, `cross`,
+`normalize`, …) are ordinary stdlib overloads per math type, not language
+builtins.
 
 `*` and `/` also accept one scalar operand, in either order, when every
 numeric leaf of the struct/fixed array has exactly the same type. The
@@ -1669,7 +1706,7 @@ mantissa rounds as every float result does.
   is intended, even in debug. To a float it is the same conversion as `as`.
 * float → int (both forms in release, `as!` always) is defined exactly:
   truncate toward zero, then wrap modulo 2^64 into the target's width; NaN
-  yields 0. The common in-range case is one compare and a hardware
+  yields 0. The common in-range case is a range test and a hardware
   conversion; only the out-of-range tail pays for the defined wrap.
 
 **Redundant casts.** An `as` or `as!` that changes nothing is a warning: one
@@ -1804,9 +1841,10 @@ Built-in iteration only (no iterator protocol):
   elements; redundant, and a warning, for non-fixed ones). Over a `[>..<]`,
   the binding is a reference in scope: no shrink inside the loop (§5.2).
   An element that is itself a reference binds as the one it holds, loaded
-  if relative (there are no references to references): `&x` makes that
-  binding one that writes through, and a varint-width relative element,
-  non-fixed, binds so without the `&`.
+  if relative (there are no references to references), pointing where the
+  element does by the read-back rule (§9.5), not into the array: `&x`
+  makes that binding one that writes through, and a varint-width relative
+  element, non-fixed, binds so without the `&`.
 * `for x, i in arr` / `for &x, i in arr` — with index (`i: i64`).
   `for x, i: T in arr` gives the index the integer type `T` where `T` holds
   every index `arr` can have: a fixed-size or static-capacity array's length
@@ -1973,9 +2011,15 @@ relocation exception (Appendix C.3):
 result returns the same local variable (and those returns are its last
 uses), that local is allocated at the return destination from its
 declaration — `return x` then costs exactly the same as returning the
-constructing expression directly. When different locals are returned on
-different paths, only one can live at the destination and the others are
-copied on return. This is in addition to §4.3's layout relocation.
+constructing expression directly. The same holds where the other returns
+hand back values whose construction does not read or write that local, such
+as `return []` or `return str("none")` beside `return x`: such a value is
+an exit's value under **Exits** below, built behind the local and moved down
+over it. When different locals are returned on different paths, only one
+can live at the destination and the others are copied on return; so is a
+local another return's value may read or write. The compiler warns where a
+return keeps a returned local from its destination that way. This is in
+addition to §4.3's layout relocation.
 
 **Exits.** A `return` or `break` taken while its destination already holds
 part of a value -- inside an element of a literal being built there, say,
@@ -2041,6 +2085,17 @@ code has reached its declaration is an error. That code names a nested
 function from its declaration to the end of its scope. It may pass the
 name directly as a static function argument (§7.6).
 
+Nested functions of one name declared in one block overload as top-level
+functions do (§7.1), so case functions (§8.2) may be nested and use free
+variables. A name reaches the set of the innermost block declaring it: for
+the enclosing code the members declared so far, for a nested function's
+body all of them, before or after it. A later one with the parameter types
+of an earlier one shadows it instead, as a later local of a name does: the
+enclosing code calls the latest declared so far, a nested function's body
+the latest declared at or before it, else the first after it. A set in an
+inner block hides an outer block's of the name entirely, and a top-level
+one, as a namespace's set hides the global one (§11.1).
+
 Implementation model: free variables become hidden reference parameters of
 the nested function. A nested function's value never outlives the function
 declaring it (function values do not escape, §7.6), and a call where a
@@ -2077,7 +2132,11 @@ a construct whose branches all are one), which would have no element type
 (§4.2).
 
 A function argument must be a function name (including a bound generic
-function parameter) or a block literal. Runtime expressions producing a
+function parameter) or a block literal. A name with several overloads
+passes them all, and each call of the value resolves among them as a call
+by that name would: `each(xs, sort)` with `fn each<F>(xs: i64[:]) { F(xs);
+}` calls std's one-argument `sort<T>`, and one value may reach different
+overloads at different calls. Runtime expressions producing a
 function value, such as a call, `if`, `match`, `block`, or `loop`, are
 rejected. Evaluate runtime work in ordinary statements before the call;
 use locals when its ordering with other arguments matters. A named
@@ -2244,11 +2303,45 @@ outside it (below). Growable data that must outlive a recursive call is
 owned outside the cycle and passed in (references, slices, reusable pools,
 or one struct of references to several tables, A.6). The compiler checks
 every call into a cycle in call-graph order; recursion depth then only
-consumes native call stack. Unnamed nonfixed *temporaries* (e.g. an
-intermediate call result) are exempt: they cannot be referred to across
-activations, so the soundness argument holds — but an implementation may
-then consume data-stack slots proportional to recursion depth for them
-(aborting past its limit).
+consumes native call stack.
+
+**Temporaries.** The same holds of the unnamed nonfixed values of the
+statement making the call: **at a call into the cycle, no nonfixed value of
+the enclosing statement may be live**, since each lives on a data stack of
+the activation (§10.3) — a temporary until its statement ends (§9.2), a
+value under construction until it is complete — and would otherwise cost a
+stack per activation as a local in scope does. That forbids: (a) a nonfixed
+temporary as an argument of the call — a call's result, a `copy`, a `str`,
+a literal of nonfixed class, or the copy a by-value nonfixed parameter takes
+of its argument (§4.1) — which the callee's view keeps alive across the
+call; (b) the call nested inside a nonfixed value under construction: an
+element or field initializer of an array or struct literal of nonfixed
+class, or an argument of `print` or `str`, whose text is being rendered
+(`format` is no such value: its text goes into the storage it is given);
+(c) a nonfixed temporary evaluated earlier in the same statement, whether or
+not something has consumed it since — a temporary lives to the end of its
+statement, as does one built by the head of a construct the call is inside
+(an `if` condition, a `match` scrutinee, a `while` condition, a `for`
+sequence), which runs in the scope around the construct; (d) the call's own
+nonfixed result anywhere but as the whole value of a `return` of the same
+result type — through the branches of an `if` or `match` and a block's tail,
+or by `return … from` — where it is built in the caller's destination, or
+pushed or appended in place into resizable storage owned outside the cycle,
+where it is built at that storage's top (which §1.3(4) then rejects wherever
+a function of the cycle grows that storage, as every one appending into it
+does); anywhere else — an argument, an operand, a dropped statement value,
+an element of a literal, a value assigned (which §4.4 rejects as well) — it
+needs a destination temporary taken before the call and held across it.
+The compiler reports each case with the call and the value. What to
+do instead: evaluate the value in a statement of its own before the call
+(`let width = str(n).len;`, the binding being fixed-size), pass scratch in
+from outside the cycle (the `mark` / `resize(mark)` pattern below), or take
+an output buffer by reference and build into it in place instead of
+returning a growable value. Fixed-size values and temporaries are never
+affected: a slice of a fixed literal, a struct of fixed fields, a large fixed
+value (§10.3) all cost no data stack at the call. So a program's stack count
+is a compile-time constant, with the number of worker threads (§11.2) the
+only dynamic factor.
 
 Scratch passed down this way can be viewed across the recursive calls. An
 activation that takes `let mark = scratch.len` of a grow-shrink scratch
@@ -2505,6 +2598,41 @@ The wrapper calls the normal generated Goose specialization, not its hidden
 internal C signature. This keeps Goose's stack argument and other compiler
 implementation details out of the function's public C signature.
 
+### 7.12 `simd fn`: versions per instruction set
+
+```goose
+simd fn encode(out: u8[>..]&, src: u8[:]) { ... }
+```
+
+`simd` asks the implementation to build the function once for the
+baseline instruction set of its target and once more for each wider one it
+supports (AVX2 and AVX-512 on x86-64), and to run, every time the function
+is called, the widest version the CPU running the program has. It is meant
+for a function holding a hot loop the C compiler can vectorize, which the
+baseline's instruction set can only do poorly or not at all: byte
+transforms, codecs, kernels over arrays.
+
+`simd` has no meaning of its own: every version computes exactly what the
+baseline does, so no program's output, aborts or exit status depends on
+which one runs, or on whether there are versions at all. Integers already
+compute at their exact widths (§6.2), checks abort where they would, and
+float operations round as the baseline's do, one rounding per operation:
+no version fuses a multiply and an add into one rounding where the
+baseline would not. An implementation may ignore `simd` entirely, as the
+C backend does under compilers other than clang on x86-64 and under the
+JIT.
+
+Versions are per function: everything the function contains is in each,
+including the callees inlined into it. The function itself stays out of
+line, since a caller it was inlined into would run the baseline's code,
+and each call to it pays for one test of the CPU's level, so it suits a
+function that runs a loop rather than one called from inside one. The cost
+is code size: the function's body once per version.
+
+`simd` comes after `export` and before `recursive`; it applies to
+functions with bodies, nested ones and generic ones included (each
+specialization has its versions), and `extern simd fn` is an error.
+
 ## 8. ADTs in use
 
 ### 8.1 `match`
@@ -2709,7 +2837,10 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
 * A reference *variable* commits to its first binding's root: `.=` may
   rebind it only within the same root, or to one at the same scope depth
   (the common case: retargeting to another element of the same or a sibling
-  container in a loop). Anything else needs a new variable. A slice
+  container in a loop). Anything else needs a new variable. What a callee
+  reads out of storage it was given is rooted at that argument (§9.5), so a
+  key a dictionary's `each` hands a function value is rooted at the
+  dictionary passed, at its depth, whatever text the keys view. A slice
   variable commits the same way, and a store through a reference to its
   slot (§3.8) assigns it as `s = v` does, a `let` included (§4.4): through
   one that may name it -- read out of storage, merged, or a parameter given
@@ -2904,9 +3035,18 @@ variable stays its candidate. Then, by where `C`'s own root lies:
    those was rooted at one variable exactly, at static data, or at the
    storage a parameter's argument holds, the value's roots are theirs
    instead: a word of `words(buf)` for a local `buf` points into `buf`,
-   exactly, whatever else in scope could hold a `u8`. A copy of a field or
-   an element has only its container's scope on record, and takes the
-   candidates.
+   exactly, whatever else in scope could hold a `u8`, and a by-value
+   parameter holds what its argument did, so a slice of `g.edges` for a
+   `g: Graph` parameter is bounded by that argument's root, not by the
+   callee's other parameters, which can hold its element type but none of
+   the caller's views. A copy of a field or an element has only its
+   container's scope on record, and takes the candidates. A local of a
+   function that a nested function's or a function value's body is written
+   in is read here as one of the body's own, its stores on record alike:
+   the body is checked for the state each call finds it in (§7.5, §7.6).
+   And a `for` loop reads its binder so in each of its checks, so that what
+   the loop body stores into the holder it walks reaches the elements later
+   iterations read.
 3. **A reference parameter's pointee, or itself inexact.** The owner may be
    caller storage this function cannot enumerate: the root is `C`'s, inexact.
 4. **A temporary** (§9.2). Everything in it came from the literal's
@@ -3011,6 +3151,15 @@ This threshold is a backend policy, not a language limit or a change to a
 type's size class, packed layout, value semantics or reference lifetime.
 It prevents large arrays and records, including temporaries introduced by
 inlining, from exhausting a platform's much smaller native call stack.
+Inside a function of a recursive cycle (§7.8) such values stay on the native
+stack instead: a data stack held across a call into the cycle would cost a
+stack per activation, which §7.8 rules out for every value, while the
+recursion's depth is bounded by the native stack already, and a fixed value
+belongs with fixed values. A large fixed parameter copy, local or temporary
+of a cycle function is therefore a native value, which deep recursion over
+large values avoids by taking them by reference; rejecting such parameters
+and locals in cycle functions instead would have made the backend's
+threshold a language rule.
 Variable-class locals may be placed on the native stack (`alloca`) instead
 of a data stack when the compiler chooses; the current backend places them
 on data stacks. Resizable frame objects (C.2) still keep their fixed prefix
@@ -3020,7 +3169,11 @@ and tail header in the native frame.
 
 At startup, reserve N address regions (target: multiple GB each; commit-on-
 touch via guard pages — prototyped at github.com/aardappel/stackalloc),
-plus guard gaps between regions so runaway growth aborts cleanly. Platforms
+plus guard gaps between regions so runaway growth aborts cleanly. An
+implementation budgets the address space it spends on regions over every
+thread program at once (32 TB by default here), which is what bounds
+`hardware_threads()` (§11.2); a region the platform refuses may be reserved
+smaller, which nothing the implementation elides depends on. Platforms
 without address-space reservation (wasm today) fall back to index-based
 references + bounds-checked growth, with reduced performance.
 
@@ -3113,7 +3266,8 @@ the caller's own facts about `src` intact.
   the `stdlib/` of the source tree the compiler was built in); the form
   `import .a.b;` (leading dot) resolves relative to the *importing file*
   instead. All declarations are public in v1; a name collision within one
-  namespace is an error. Top-level declarations are order-independent.
+  namespace is an error, except that a global variable and functions may
+  share a name (below). Top-level declarations are order-independent.
 * **Namespaces** (docs/design/namespaces.md). `namespace image;`, at most
   once and before a file's declarations, places them in namespace `image`;
   a file without it declares into the global namespace, and several files
@@ -3128,22 +3282,30 @@ the caller's own facts about `src` intact.
   unqualified name resolves lexically first, to what the scopes around its
   use declare: to a variable or a type parameter, the innermost of the name
   — a function's parameters and locals, then its type parameters, then
-  what is around its declaration (§7.5) —, else to a nested function in
-  scope. Only a name no scope declares resolves in the current
-  declaration's namespace, then in the global namespace and the builtins:
-  a type parameter or a nested function hides a global and a function of
-  its name as a local does. A type parameter bound to a type is no value
-  (in `fn f<N>(x: N)`, `N` as an expression is an error, and `::N` names a
-  global `N`), and no type parameter or nested function is a constant a
-  size or a match pattern may name (§3.3, §8.1). A function name's
-  overload set is that of the first namespace in this order that declares
-  the name at all; sets never merge across namespaces (a namespaced `hash`
-  overload reaches the global integer ones as `::hash(x)`). UFCS follows
-  the same rule for the calling code's namespace, a generic body resolves
-  names where it is defined, and the `format` hook is the one
-  type-directed exception (§3.7). Namespaces affect only name resolution,
-  type identity and generated C names (§7.10): no runtime representation,
-  no privacy, no re-exports.
+  what is around its declaration (§7.5) —, else to the nested functions in
+  scope (the innermost block's set, §7.5). Only a name no scope declares
+  resolves in the current declaration's namespace, then in the global
+  namespace and the builtins: a type parameter or a nested function hides a
+  global and a function of its name as a local does. A namespace keeps its
+  global variables apart from its functions, and no variable can be called
+  (function values are no data, §7.6), so the name a call is made by
+  resolves past the global variables to the functions, in each namespace of
+  this order: a global `var last: i32` in any module leaves std's `last(xs)`
+  callable from every module, its own included, while any other use of
+  `last` (`last = 7`, an argument) is the variable. A variable in scope
+  still hides the functions of its name: a local `count` makes `count(xs)`
+  an error. A type parameter bound to a type is no value (in
+  `fn f<N>(x: N)`, `N` as an expression is an error, and `::N` names a
+  global `N`), and no type parameter or nested function is a constant a size
+  or a match pattern may name (§3.3, §8.1). A function name's overload set
+  is that of the first namespace in this order that declares the name at
+  all; sets never merge across namespaces (a namespaced `hash` overload
+  reaches the global integer ones as `::hash(x)`). UFCS follows the same
+  rule for the calling code's namespace, a generic body resolves names where
+  it is defined, and the `format` hook is the one type-directed exception
+  (§3.7). Namespaces affect only name resolution, type identity and
+  generated C names (§7.10): no runtime representation, no privacy, no
+  re-exports.
 * Globals are declared like locals (`let`/`var`, any type including
   resizable). Semantically the whole program runs inside an implicit
   outermost scope owning them: they participate in the depth check (§9.2) as
@@ -3204,7 +3366,10 @@ the Linda tuple-space / coordination style.
 * Worker count is decided **at runtime** (no static maximum):
   `thread_spawn(worker, args…) -> i64` reserves a fresh stack block, copies
   the args, starts the worker, and returns its id. IDs increase monotonically
-  and are never reused. `hardware_threads() -> i64` exists for sizing.
+  and are never reused. `hardware_threads() -> i64` exists for sizing, and
+  reports no more workers than the implementation's address space for data
+  stacks (§10.4) holds beside the main program, so a pool sized by it never
+  exhausts it.
   `thread_wait(id)` blocks until that worker's body has returned and all of
   its Goose storage has been released — enabling both scoped fork/join
   parallelism and orderly shutdown (send quit messages, then wait). Repeated
@@ -3302,8 +3467,9 @@ came from is `design/stdlib_design.md`). The math types of §6.1 are its
 Deliberately out of scope for v1: error-value conventions (§7.9); move
 operations for resizables; multiple resizables per struct; two-way growth
 arrays; inline compaction / copying GC for pools; mixed-type pools;
-SIMD/alignment annotations; dynamic stacks; labeled break; namespace
-privacy, re-exports and nesting (§11.1).
+alignment annotations and explicit vector types (`simd fn`, §7.12, only
+widens the instruction set a function is built for); dynamic stacks;
+labeled break; namespace privacy, re-exports and nesting (§11.1).
 
 ---
 
@@ -3487,7 +3653,11 @@ the end, each with where its resolution lives.
 10. **SIMD/alignment** — measure whether packed layouts cost real SIMD
     performance; consider opt-in aligned types if so. Related: narrow-lane
     elementwise ops (§6.1) should vectorize now that arithmetic runs at the
-    element width; verify with the particle/sum benchmarks.
+    element width; verify with the particle/sum benchmarks. `simd fn`
+    (§7.12) gives a function versions for the wider instruction sets; what
+    remains open is alignment, and whether a function should be able to
+    say which versions it wants (an AVX-512 version is not faster for
+    every loop).
 13. **Labels for `break`** — if early-out patterns demand them.
 15. **Wasm fallback** — index-based reference representation details.
 16. **Relative-reference region tracking** — copies of values containing
@@ -3523,8 +3693,7 @@ the end, each with where its resolution lives.
     remains: a back edge that passes storage of its own for a parameter the
     entry call gave static data gets a holder result that may only be
     passed down.
-1. **varint format benchmark** — DONE, see `varint_bench/results.md`:
-   ULEB128 adopted (§3.6). Break-even vs the best branchless format sits at
+1. **varint format benchmark** — DONE: ULEB128 adopted (§3.6). Break-even vs the best branchless format sits at
    ~70–75% single-byte values (a cliff, not a slope); above it ULEB wins
    ~3x, below it loses up to ~3x. Revisit only if a per-field format choice
    is ever wanted for unpredictable-length data.
@@ -3694,8 +3863,8 @@ field       := ("let" | "const")? ident ":" type ("=" expr)? | "pad" intlit?
 typealias   := "type" declname "=" type ";"
 generics    := "<" ident (":" type)? ("," ident (":" type)?)* ">"
 
-fndecl      := ("export" strlit? | "extern" strlit?)? "recursive"? ("fn" | "thread_fn") declname
-               generics? "(" params? ")" ("->" rettypes)? (blockexpr | ";")
+fndecl      := ("export" strlit? | "extern" strlit?)? "simd"? "recursive"? ("fn" | "thread_fn")
+               declname generics? "(" params? ")" ("->" rettypes)? (blockexpr | ";")
                                                  // nested: ident only
 params      := param ("," param)* ","?
 param       := "var"? ident (":" type ("=" expr)?)?
@@ -3813,8 +3982,9 @@ compiler's own description, pass by pass and analysis by analysis, is
 * **Stack assignment** is the hidden-argument strategy §10.3 permits: every
   function that uses data stacks takes its base index as a hidden argument
   and addresses its nonfixed locals at constant offsets from it, callees
-  start above its in-use watermark, and stacks are reserved lazily as the
-  depth first reaches them. The globals of a program instance, with the
+  start above its in-use watermark, and every stack the program can reach
+  (a compile-time count, §7.8) is reserved as its thread program starts.
+  The globals of a program instance, with the
   dedicated stacks of the resizable ones, form one struct reached through a
   single thread-local pointer (a plain one in a program without workers):
   main's is a static instance, a worker's is allocated at its start and

@@ -169,9 +169,19 @@ struct TypeCheck {
     // before or after it, then those the declaring body sees from outside,
     // each with the environment it is declared in. Kept after the declaring
     // scope ends, for a function whose value leaves it.
+    // A nested function a body can call, with the environment it is
+    // declared in, the scope declaring it (its Scope::serial) and its place
+    // among that scope's declarations: those of one name in one scope are
+    // one overload set (§7.5).
+    struct OuterFn {
+        SFunction *sf = nullptr;
+        FnSpec *env = nullptr;
+        int scopeserial = 0;
+        int order = 0;
+    };
     struct DeclSite {
         vector<pair<VarDef *, int>> vars;
-        vector<pair<SFunction *, FnSpec *>> fns;
+        vector<OuterFn> fns;
         int scope = 0;               // The declaring scope, and its Scope::serial.
         int serial = 0;
     };
@@ -216,6 +226,10 @@ struct TypeCheck {
         // where it made the latest (JoinCycle).
         int cyclecalls = 0;
         Line cyclecall;
+        // The body state its statements are checked in (StateOf): the
+        // index in outerbodies the state is saved at while a body is
+        // checked inside it, or past them for the state being checked now.
+        int bodyidx = 0;
         // A specialization's body being checked (CheckSpecBodyOnce): its exits.
         BodyExits *exits = nullptr;
     };
@@ -294,6 +308,7 @@ struct TypeCheck {
     };
     void CheckStmts(Block *b);
     bool MentionsName(Node *n, string_view name, set<SFunction *> &seen);
+    bool EscapingContinue(Node *n);
     bool UsedAfter(VarDef *v);
 
     // The node being checked and every node it is nested in, innermost last,
@@ -382,6 +397,9 @@ struct TypeCheck {
     template<typename F> void AfterHead(Node *n, Node *next, F f);
     vector<VarDef *> vars;                            // All in-scope variables, all frames.
     vector<pair<int, SFunction *>> localfns;          // Nested fns, with their scope index.
+    // The overload sets of nested functions bound as function values
+    // (FnValBind::set): one copy of each, so that equal sets compare equal.
+    std::set<vector<SFunction *>> localfnsets;
     int scopeserial = 0;
     deque<DeclSite> declsites;
     // The latest declaration site of each nested function, by the
@@ -1199,12 +1217,13 @@ struct TypeCheck {
     }
 
     // The same for the nested functions it can call, in the order a name
-    // resolves to them, each with the environment it is declared in.
+    // resolves to them, each with the environment and scope it is declared
+    // in.
     template <typename F> bool ForOuterFns(int fi, F f) {
         for (;;) {
             auto &fr = frames[fi];
             if (fr.decl) {
-                for (auto [sf, env] : fr.decl->fns) if (f(sf, env)) return true;
+                for (auto &o : fr.decl->fns) if (f(o)) return true;
                 return false;
             }
             auto p = fr.lexframe;
@@ -1212,7 +1231,7 @@ struct TypeCheck {
             for (auto i = (int)localfns.size() - 1; i >= 0; i--) {
                 auto [si, sf] = localfns[i];
                 if (si >= frames[p].scopebase && si < frames[p + 1].scopebase &&
-                    f(sf, frames[p].lexspec))
+                    f(OuterFn { sf, frames[p].lexspec, scopes[si].serial, i }))
                     return true;
             }
             fi = p;
@@ -1230,7 +1249,7 @@ struct TypeCheck {
     int FrameOfScope(int s);
     bool NamesFrame(int fi, int target);
     FnSpec *NamedSpec(FnSpec *env);
-    SFunction *LookupLocalFn(string_view name);
+    bool LookupLocalFn(string_view name);
 
     FlowState SaveFlow();
     void RestoreFlow(const FlowState &f);
@@ -1391,6 +1410,29 @@ struct TypeCheck {
     Val CheckIntAny(Node *n);
     bool HasRelRefT(TypeExpr *t, bool inpool = false);
     void NoRelRefCopy(Node *n, TypeExpr *t);
+    // The single value a return or a body's tail is checking (CheckReturn,
+    // CheckSpecBody), which a named result may be (AllowNamedResult).
+    Node *retvalnode = nullptr;
+    struct RetValScope {
+        TypeCheck &tc;
+        Node *saved;
+        RetValScope(TypeCheck &t, Node *n) : tc(t), saved(t.retvalnode) { tc.retvalnode = n; }
+        ~RetValScope() { tc.retvalnode = saved; }
+    };
+    // A return of a local holding self-relative references, allowed as the
+    // body's named result, which only the whole body says it is
+    // (CheckNamedResultUses).
+    struct NamedResultUse {
+        FnSpec *spec;
+        Node *at;
+        VarDef *var;
+    };
+    vector<NamedResultUse> namedresultuses;
+    bool AllowNamedResult(Ident *id, TypeExpr *t);
+    void CheckNamedResultUses(FnSpec *spec);
+    VarDef *NamedResultOf(FnSpec *spec);
+    void SelfRelPointees(TypeExpr *t, vector<TypeExpr *> &out);
+    bool NamedResultKeepsLinks(TypeExpr *t);
 
     // ------------------------------------------------------------------
     // Pool-relative references (§3.9). `T&<u32 in pool>` names a global pool
@@ -1539,10 +1581,12 @@ struct TypeCheck {
     // apply reference transparency.
     Val CheckV(Node *n, TypeExpr *expected) {
         NodeScope ns(*this, n);
+        auto cyclecalls = frames.back().cyclecalls;
         auto v = n->Check(*this, expected);
         if (v.type == fntype && !Is<Ident>(n) && !Is<FunVal>(n))
             Error(n, "a function value must be a function name or block literal (§7.6); "
                      "evaluate runtime expressions separately");
+        NoteTemp(n, v, cyclecalls);
         RecordVal(n, v);
         return v;
     }
@@ -1768,6 +1812,7 @@ struct TypeCheck {
     void ReportRedundantCasts();
     bool ElementwiseOK(TypeExpr *t);
     TypeExpr *ElementwiseScalarType(TypeExpr *t);
+    TypeExpr *UnsignedLeaf(TypeExpr *t);
     Val CheckVariantConst(Dot *d, SEnum *en);
     Val MergeVals(const Val &a, bool areach, const Val &b, bool breach, Node *at, bool wantvalue);
     Val JoinBranches(const Val &a, bool areach, const Val &b, bool breach, Node *at,
@@ -1861,7 +1906,8 @@ struct TypeCheck {
                              MatchInfo &best, TypeExpr *expected, string_view name);
     Val CheckCall(Call *c, TypeExpr *expected);
     Val CheckNamedCall(Call *c, Ident *id, TypeExpr *expected);
-    SFunction *LookupLocalFnEnv(string_view name, FnSpec *&env);
+    vector<SFunction *> LookupLocalFns(string_view name, FnSpec *&env);
+    FnValBind LocalFnValue(const vector<SFunction *> &fns, FnSpec *env);
     Val CheckUfcsCall(Call *c, Dot *d, TypeExpr *expected);
     Val ResolveCall(Call *c, vector<SFunction *> &cands, FnSpec *env, string_view name, Val *preval,
                     Node *&prenode, bool *nomatch = nullptr, TypeExpr *expected = nullptr);
@@ -1894,7 +1940,7 @@ struct TypeCheck {
     bool HasGenerics(TypeExpr *t);
     bool BindTypes(TypeExpr *pt, TypeExpr *at, vector<pair<string_view, TypeExpr *>> &b);
     TypeExpr *SubstOwn(TypeExpr *pt, vector<pair<string_view, TypeExpr *>> &b);
-    Val TryDispatch(Call *c, vector<SFunction *> &cands, vector<Node *> &argnodes,
+    Val TryDispatch(Call *c, vector<SFunction *> &cands, FnSpec *env, vector<Node *> &argnodes,
                     vector<Val> &argvals, string_view name);
 
     // ------------------------------------------------------------------
@@ -1975,6 +2021,7 @@ struct TypeCheck {
     int EnvReach(const MatchInfo &mi);
     void CheckSpecBody(FnSpec *spec, vector<Val> *argvals, Line callline);
     void RecordReturn(FnSpec *tspec, vector<Val> &vals, Node *at);
+    void NamedResultCopyWarning(FnSpec *spec);
     Val RetAltVal(FnSpec *spec, const RootAlt &alt, vector<Val> &argvals, TypeExpr *t, Node *at);
     Val CallResult(Call *c, FnSpec *spec, vector<Val> &argvals);
     void CheckReturn(Return *r);
@@ -2008,6 +2055,7 @@ struct TypeCheck {
     Val CheckAssignedValue(Assign *a, TypeExpr *target, TypeExpr *arr, const Roots &built,
                            Dest dest);
     void CheckRebind(Assign *a, LVal &lv);
+    bool InGenericBody();
     bool PointeeWritable(LVal &lv, Node *at);
     void PointeeAssign(Assign *a, LVal &lv, const LVal &at);
     // `via`: how a store through a reference reached slice variable vd
@@ -2193,6 +2241,15 @@ struct TypeCheck {
     bool IsClassRoot(VarDef *v) {
         return v && !v->type && !v->isglobal && !IsTemp(v);
     }
+    // Whether local v is one the body being checked names in a frame on the
+    // compile-time path: its own, or one it is lexically nested in, as a
+    // nested function's or a function value's body is (§7.5, §7.6).
+    bool OuterLocal(VarDef *v) {
+        auto d = Depth(v) - 1;
+        if (d < 0 || d >= (int)scopes.size()) return false;
+        auto vf = FrameOfScope(d);
+        return frames[vf].spec == v->ownerspec && NamesFrame((int)frames.size() - 1, vf);
+    }
     bool CallersJudge(VarDef *r, VarDef *root);
     void NoteLiveViews(Node *at, const string &prefix, VarDef *root, const string &what,
                        bool growonly, TypeExpr *bound);
@@ -2288,6 +2345,18 @@ struct TypeCheck {
     // The states of the bodies being checked around this one, outermost
     // first: the callers' on the compile-time call path.
     vector<BodyState *> outerbodies;
+    BodyState &StateOf(int fi) {
+        auto b = frames[fi].bodyidx;
+        return b < (int)outerbodies.size() ? *outerbodies[b] : cur;
+    }
+    // A statement's non-fixed-size temporaries, which a call into a
+    // recursive cycle may not be made across (§7.8): NoteTemp marks the
+    // nodes whose values are one, FindTemp finds one in what an operand
+    // evaluated, and JoinCycle asks each frame on the call path.
+    void NoteTemp(Node *n, const Val &v, int cyclecalls);
+    Node *FindTemp(Node *n, bool self = true);
+    void CycleCallTemps(int fi, Node *callnode);
+    void CycleCallResult(FnSpec *spec, Node *callnode);
     // A fresh body state for the extent of a scope; the enclosing one
     // returns when it ends.
     struct BodyScope {
@@ -2511,7 +2580,11 @@ struct TypeCheck {
     // (RootArg's defaults), concrete and exact, standing for that global
     // (VarDef::classfrom). So the body may shrink or grow the array apart
     // from the others' and store its references wherever a global's may go,
-    // inside a recursive cycle too.
+    // inside a recursive cycle too. A plain reference to the element type of
+    // a pool (§3.9), the one pool of that type, is given a reference into
+    // that pool instead, as a call building a linked structure there would
+    // pass, so the body may store it in the pool's relative links; the
+    // parameters given one share its class, as a call's would.
     void CheckUnreached(SFunction *sf) {
         if (!sf->specs.empty() || sf->isthread || sf->isnested) return;
         if (!sf->generics.empty()) return;
@@ -2524,13 +2597,46 @@ struct TypeCheck {
         spec->sf = sf;
         vector<Val> args(sf->params.size());
         auto classes = 0;
+        // The pool a plain reference of type t points into, where exactly one
+        // pool holds its pointee type.
+        auto poolfor = [&](TypeExpr *t) -> VarDef * {
+            if (t->kind != TY_REF || t->ref->lenstorage >= 0) return nullptr;
+            VarDef *found = nullptr;
+            for (auto g : poolglobals) {
+                if (!g->type || !IsArrayKind(g->type, A_GROW) ||
+                    !TypeEq(g->type->arr->sub, t->ref->sub))
+                    continue;
+                if (found) return nullptr;
+                found = g;
+            }
+            return found;
+        };
+        map<VarDef *, int> poolclasses;
         for (size_t i = 0; i < sf->params.size(); i++) {
             auto &p = sf->params[i];
             auto t = Subst(p.type);
             ValidateType(t, sf->line, VT_PARAM);
             spec->argtypes.push_back(t);
             RootArg ra;
+            RootArg noview;
+            noview.cls = -1;
             auto holder = !IsRefOrSlice(t) && HoldsPlainRef(t);
+            if (auto pool = poolfor(t)) {
+                auto &cls = poolclasses[pool];
+                if (!cls) cls = ++classes;
+                ra.cls = cls;
+                ra.concrete = true;
+                ra.writable = true;
+                ra.pool = pool;
+                vector<TypeExpr *> elems, open;
+                ArrayElemsReached(t, elems, open);
+                for (auto e : elems)
+                    if (OneArrayOf(pool, e)) ra.onearray.push_back(e);
+                args[i].Set(pool, true);
+                spec->roots.push_back(ra);
+                spec->views.push_back(noview);
+                continue;
+            }
             if (IsRefOrSlice(t) || holder) {
                 ra.cls = ++classes;
                 ra.concrete = true;
@@ -2556,8 +2662,6 @@ struct TypeCheck {
                 ra.heldexact = !sf->isrec;
             }
             spec->roots.push_back(ra);
-            RootArg noview;
-            noview.cls = -1;
             spec->views.push_back(noview);
         }
         sf->specs.push_back(spec);

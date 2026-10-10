@@ -1,0 +1,5 @@
+#!/bin/sh
+mkdir -p target
+rm -f ./target/benchmark
+goose -O2 --standalone -o target/benchmark.c src/main.goose && clang -O3 -w target/benchmark.c -o target/benchmark -lm -pthread
+../xtime.rb ./target/benchmark ../run.js "$@"

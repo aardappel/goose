@@ -150,8 +150,15 @@ world deliberately omits mobs, hunger, damage, tool wear, and flowing water.
 | [31_mini_doom](31_mini_doom.goose) | A playable Freedoom E1M1 using `gfx` and `audio`: checked little-endian WAD parsing, palette and patch decoding, a texture atlas, BSP-clipped floor polygons, textured walls, billboard sprites, sliding collision, stairs, falling, doors, lifts, pickups, combat, and one update/draw loop. Includes pistol, shotgun, chaingun and fists, four enemy types, imp fireballs, exploding barrels, damaging floors, secrets, the blue key and the exit. Uses the supplied `data/freedoom1-e1m1.wad`. |
 | [31_ngfx_mini_doom](31_ngfx_mini_doom.goose) | 31_mini_doom on `ngfx`: the world and HUD meshes rebuilt into each frame's memory and fetched by the shaders through their roots. Needs a compiler built with ngfx. |
 
-Run `goose samples/31_mini_doom.goose` from the repository root, or
-`goose 31_mini_doom.goose` from `samples`. It starts directly in the level.
+Run `goose samples/31_mini_doom.goose` from the repository root, or pass the
+source's path from any working directory. It starts directly in the level.
+Its default WAD path is `data/freedoom1-e1m1.wad` under `resource_dir()`:
+beside the entry source for JIT, or beside a compiled executable for AOT.
+When distributing the executable, include that `data` directory, or use
+`--wad <path>` to select an external WAD. The sample runner supplies `--wad`
+because it builds executables outside the sample's asset directory.
+The recursive BSP walk uses caller-owned growable scratch, restoring its
+length on return; clipping has no fixed polygon-corner limit.
 WASD walks, Shift runs, mouse or Left/Right turns, E or Space uses doors
 and switches, and left mouse or Ctrl fires. Select fists, pistol, shotgun,
 or chaingun with 1–4 (the latter two must be collected). Tab toggles the map;
@@ -164,17 +171,14 @@ switch. Lifts lower when used or crossed, wait, and carry you back up. Some
 walls are secret doors. The automap shows the whole map and does not pause
 play. Blue lines mark locked doors; yellow lines mark triggers.
 
-`-- --test` runs the checks without a graphics window or sound device,
-including automated walks to the key and exit with enemies removed. The
-sample runner uses `-- --test --frames 30` to also render a repeatable PNG.
+`-- --frames 30` runs for thirty frames with a fixed timestep and saves a PNG.
+The sample runner uses this mode for its rendering smoke check.
 `-- --silent` disables playback; device failure also permits silent play.
-`-- --wad PATH` selects the supplied WAD when running from another directory.
-The checks deliberately target this particular level.
+`-- --wad PATH` overrides the default WAD; relative paths use the working directory.
 
 This is an independent, approximate game, not a compatible Doom engine.
 It omits music, saves, multiplayer, jumping, vertical aiming, monster
 pathfinding, directional monster art and the larger weapon set. Unimplemented
 weapon/ammo pickups provide bullets; a chainsaw pickup does the same. The
 WAD's own sprites, font and sounds keep the sample self-contained beyond
-that one asset file. See [implementation and API feedback](mini_doom_notes.md)
-for design choices, validation, and possible improvements to Goose.
+that one asset file.

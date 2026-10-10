@@ -100,6 +100,15 @@ inline string CodeGen::PointeeLv(const string &p, TypeExpr *t) {
 // steps to the pointee. Optional locs never get here (narrowing).
 inline void CodeGen::DerefLoc(Loc &lv) {
     assert(lv.t->kind == TY_REF);
+    if (lv.aliasof || lv.aliaspath) {
+        auto nl = lv.aliaspath ? GenLoc(lv.aliaspath) : VarLoc(const_cast<VarDef *>(lv.aliasof));
+        // Reads of the array come from the alias's view where it has one;
+        // growth writes the header.
+        if (!lv.hbase.empty() && !IsFrameObj(nl.t)) nl.s = lv.hbase;
+        if (!lv.hlen.empty()) nl.hlen = lv.hlen;
+        lv = nl;
+        return;
+    }
     auto &r = *lv.t->ref;
     if (r.lenstorage >= 0) {
         string faddr, off;
@@ -187,6 +196,33 @@ inline void CodeGen::PinLoc(Loc &lv) {
 inline CodeGen::Loc CodeGen::VarLoc(VarDef *vd) {
     Loc l;
     l.t = vd->type;
+    if (auto ait = refalias.find(vd); ait != refalias.end()) {
+        auto tg = const_cast<VarDef *>(ait->second);
+        if (auto pit = aliaspath.find(vd); pit != aliaspath.end()) {
+            auto tl = GenLoc(pit->second);
+            l.val = true;
+            l.s = cat("((gs_rref){ (gs_rhdr *)&", tl.hdr, ", ", tl.stk, " })");
+            l.aliaspath = pit->second;
+        } else if (tg->type->kind == TY_REF) {
+            l = VarLoc(tg);
+        } else {
+            // The reference value is made where one is needed; its pointee
+            // is the variable's own location (DerefLoc).
+            l.val = true;
+            l.s = cat("((gs_rref){ (gs_rhdr *)&", HdrLv(tg), ", ", VStkOf(tg), " })");
+            l.aliasof = tg;
+        }
+        // A view is the alias's own, hoisted for the loops BCE judged this
+        // spelling in; one of the target's is not taken over.
+        l.t = vd->type;
+        l.hbase.clear();
+        l.hlen.clear();
+        if (auto hit = views.find(vd); hit != views.end()) {
+            l.hbase = hit->second.first;
+            l.hlen = hit->second.second;
+        }
+        return l;
+    }
     auto name = VName(vd);
     if (auto hit = views.find(vd); hit != views.end()) {
         l.hbase = hit->second.first;
@@ -311,7 +347,6 @@ inline CodeGen::ArrView CodeGen::RawArrayView(const Loc &lv) {
         v.elems = cat(lv.s, ".data");
         v.len = cat(lv.s, ".len");
         v.typedelems = !IsBytesT(t->sub);
-        v.nullable = true;
         return v;
     }
     assert(t->kind == TY_ARRAY);
@@ -370,8 +405,9 @@ inline bool CodeGen::AddView(VarDef *vd) {
     // A varint length prefix is not a plain load: its view emits statements.
     if (s->arr->akind == A_VAR && LenStore(s->arr) == IS_VARINT) return false;
     // Not named yet means bound inside the loop (a for/match binder, or a
-    // declaration the body repeats), which has no view to read out here.
-    if (!vnames.count(vd) && !gnames.count(vd)) return false;
+    // declaration the body repeats), which has no view to read out here. An
+    // alias is never named; its binding has been passed once it is bound.
+    if (!vnames.count(vd) && !gnames.count(vd) && !aliasbound.count(vd)) return false;
     auto lv = VarLoc(vd);
     DerefLoc(lv);
     auto v = ArrayView(lv);
@@ -389,11 +425,12 @@ inline bool CodeGen::AddView(VarDef *vd) {
 }
 
 // Large fixed values keep their ordinary packed C type, but their storage
-// is a data-stack slot. Pointer locals cannot be hoisted into a huge native
-// frame by HoistAggregateDecls or by a C compiler's inliner. Reuse follows
-// the existing scope watermarks, including break/continue/return-from.
+// is a data-stack slot (LargeFixedOnStack). Pointer locals cannot be hoisted
+// into a huge native frame by HoistAggregateDecls or by a C compiler's
+// inliner. Reuse follows the existing scope watermarks, including
+// break/continue/return-from.
 inline void CodeGen::FixedLocal(TypeExpr *t, string &name, const string &init, bool forlocal) {
-    if (!IsLargeFixed(t)) {
+    if (!LargeFixedOnStack(t)) {
         L(CT(t), " ", name, init.empty() ? ";" : cat(" = ", init, ";"));
         return;
     }
@@ -487,6 +524,75 @@ inline CodeGen::Loc CodeGen::IndexLoc(Loc lv, Node *idxnode, Line ln, bool nobc)
     assert(IsFix(v.elem));   // Variable elements are never indexed (TC).
     return BytesLoc(cat("(", v.elems, " + ", ix, " * ", FixedSize(v.elem), ")"), v.elem,
                     lv);
+}
+
+// A path whose address takes no check and calls nothing: a variable, or a
+// field of one, through references too.
+static bool CheckFreePath(Node *n) {
+    if (auto id = Is<Ident>(n)) return id->vdef != nullptr;
+    if (auto d = Is<Dot>(n)) return d->IsField() && CheckFreePath(d->obj);
+    return false;
+}
+
+// Two check-free paths, or integer constants, that denote the same thing.
+inline bool CodeGen::SamePath(Node *a, Node *b) {
+    if (auto ia = Is<Ident>(a)) {
+        auto ib = Is<Ident>(b);
+        return ib && ia->vdef && ia->vdef == ib->vdef;
+    }
+    if (auto la = Is<IntLit>(a)) {
+        auto lb = Is<IntLit>(b);
+        return lb && la->val == lb->val;
+    }
+    auto da = Is<Dot>(a), db = Is<Dot>(b);
+    return da && db && da->IsField() && db->IsField() && da->fieldidx == db->fieldidx &&
+           TEq(da->obj->exprtype, db->obj->exprtype) && SamePath(da->obj, db->obj);
+}
+
+// The Index whose bounds check is the first thing `arm` does: its first
+// statement assigns to a path through an element of an array named by a
+// check-free path, at an index held in a variable or a constant. Null
+// otherwise, and where there is no check: elided already, or a constant
+// within a fixed array (IndexLoc).
+inline Index *CodeGen::LeadingCheck(Node *arm) {
+    auto b = Is<Block>(arm);
+    if (!b || b->stmts.empty()) return nullptr;
+    auto a = Is<Assign>(b->stmts[0]);
+    if (!a) return nullptr;
+    auto p = a->lval;
+    while (auto d = Is<Dot>(p)) {
+        if (!d->IsField()) return nullptr;
+        p = d->obj;
+    }
+    auto ix = Is<Index>(p);
+    if (!ix || ix->nobc || fillvalues.count(ix) || !CheckFreePath(ix->obj)) return nullptr;
+    if (auto iv = Is<Ident>(ix->idx)) return iv->vdef ? ix : nullptr;
+    auto il = Is<IntLit>(ix->idx);
+    auto at = ix->obj->exprtype;
+    if (at && at->kind == TY_REF) at = at->ref->sub;
+    if (!il || !at || (at->kind == TY_ARRAY && at->arr->akind == A_FIXED)) return nullptr;
+    return ix;
+}
+
+// Whether two leading checks test the same index against the same array.
+inline bool CodeGen::SameCheck(Index *a, Index *b) {
+    return SamePath(a->obj, b->obj) && SamePath(a->idx, b->idx) &&
+           TEq(a->obj->exprtype, b->obj->exprtype);
+}
+
+// The check both arms of an if start with (LeadingCheck), emitted once
+// ahead of the branch on condition `c`: it fails where either arm's would,
+// and reports the location of the arm `c` selects.
+inline void CodeGen::EmitHoistedCheck(Index *ta, Index *ea, const string &c) {
+    auto lv = GenLoc(ta->obj);
+    while (lv.t->kind == TY_REF) DerefLoc(lv);
+    auto v = ArrayView(lv);
+    auto idx = GenPure(ta->idx);
+    auto tl = ta->line, el = ea->line;
+    auto file = tl.fileidx == el.fileidx
+                    ? FileRef(tl) : cat("(", c, ") ? ", FileRef(tl), " : ", FileRef(el));
+    auto line = tl.line == el.line ? cat(tl.line) : cat("(", c, ") ? ", tl.line, " : ", el.line);
+    L("(void)GS_IDX((int64_t)(", idx, "), ", v.len, ", ", file, ", ", line, ");");
 }
 
 inline CodeGen::Loc CodeGen::GenLoc(Node *n) {
@@ -750,17 +856,70 @@ inline string CodeGen::AdaptToFixed(Loc lv, TypeExpr *et, Line ln) {
         return tv;
     }
     assert(et->kind == TY_ARRAY && et->arr->akind == A_LIMITED);
+    auto tv = T();
+    FixedLocal(et, tv);
+    CopyIntoLimited(lv, et, ln, tv, false);
+    return tv;
+}
+
+// The elements of the array or slice at `lv` copied into the
+// static-capacity limited array (type `et`) at the C lvalue `dst`, under
+// its capacity check (§4.2). The count and the elements are read before
+// anything is written, and with `overlap` they move as memmove moves them,
+// so the source may lie in `dst`'s own slots.
+inline void CodeGen::CopyIntoLimited(Loc lv, TypeExpr *et, Line ln, const string &dst,
+                                     bool overlap) {
     auto v = ArrayView(lv);
     auto nn = T();
     L("int64_t ", nn, " = ", v.len, ";");
     L("if (", nn, " > ", ArrSize(et->arr),
       ") gs_abort(GS_E_CAPACITY, ", LocArgs(ln), ");");
-    auto tv = T();
-    FixedLocal(et, tv);
-    L(tv, ".len = (", IntCT(LenStore(et->arr)), ")", nn, ";");
-    L(CopyFn(v.nullable), "(", tv, ".e, ", v.elems, ", (size_t)(", nn, " * ",
+    L(overlap ? "gs_memmove" : CopyFn(), "(", dst, ".e, ", v.elems, ", (size_t)(", nn, " * ",
       FixedSize(et->arr->sub), "));");
-    return tv;
+    L(dst, ".len = (", IntCT(LenStore(et->arr)), ")", nn, ";");
+}
+
+// Whether `n`, for a static-capacity limited destination `want`, is an
+// array or slice of another representation that is copied in (§4.2).
+inline bool CodeGen::AdaptsToLimited(Node *n, TypeExpr *want) {
+    auto nt = n->exprtype;
+    if (!want || !nt || !IsStaticLimited(want) || fillvalues.count(n)) return false;
+    auto st = IsPlainRef(nt) ? nt->ref->sub : nt;
+    return (st->kind == TY_ARRAY || st->kind == TY_SLICE) && !TEq(st, want);
+}
+
+// `n` stored into `dst`, a static-capacity limited array of type `want`,
+// with an array or slice of another representation copied straight into
+// its slots (CopyIntoLimited) rather than built in a temporary of `want`'s
+// type first. That covers a node whose checked type differs from `want`,
+// and a range or a path the checker typed as `want` whose location is such
+// an array or slice. False, with nothing emitted, for anything else.
+inline bool CodeGen::GenIntoLimited(Node *n, TypeExpr *want, const string &dst, bool overlap) {
+    if (!want || !IsStaticLimited(want) || !n->exprtype || fillvalues.count(n)) return false;
+    Loc lv;
+    auto dot = Is<Dot>(n);
+    if (AdaptsToLimited(n, want)) {
+        lv = GenLoc(n);
+    } else if (!TEq(n->exprtype, want)) {
+        return false;
+    } else if (auto se = Is<SliceExpr>(n)) {
+        lv.val = true;
+        lv.s = GenSlice(se);
+        lv.t = ast.SliceOf(want->arr->sub, n->line);
+    } else if (Is<Ident>(n) || Is<Index>(n) || (dot && !dot->variantconst && dot->member < 0)) {
+        // What their GenX reads: the location, loaded at `want`.
+        lv = GenLoc(n);
+        while (lv.t->kind == TY_REF) DerefLoc(lv);
+        if (lv.t->kind != TY_SLICE && (lv.t->kind != TY_ARRAY || TEq(lv.t, want))) {
+            L(dst, " = ", LoadLoc(lv, want, n->line), ";");
+            return true;
+        }
+    } else {
+        return false;
+    }
+    while (lv.t->kind == TY_REF) DerefLoc(lv);
+    CopyIntoLimited(lv, want, n->line, dst, overlap);
+    return true;
 }
 
 inline string CodeGen::BytesAddrOf(const Loc &lv) {
@@ -804,18 +963,14 @@ inline string CodeGen::GenRefVal(Node *child, Line ln) {
 inline string CodeGen::GenXD(Node *n, TypeExpr *want) {
     if (auto it = fillvalues.find(n); it != fillvalues.end())
         return LoadLoc(it->second, want, n->line);
-    auto nt = n->exprtype;
-    if (want && nt && IsStaticLimited(want)) {
+    if (AdaptsToLimited(n, want)) {
         // Any array or slice of the element type reaching a static-capacity
         // limited destination in a representation of its own (a copy's
         // source, a spliced callee body's result): copied into the C value
         // from wherever it lives (§4.2).
-        auto st = IsPlainRef(nt) ? nt->ref->sub : nt;
-        if ((st->kind == TY_ARRAY || st->kind == TY_SLICE) && !TEq(st, want)) {
-            auto lv = GenLoc(n);
-            if (lv.t->kind == TY_REF) DerefLoc(lv);
-            return AdaptToFixed(lv, want, n->line);
-        }
+        auto lv = GenLoc(n);
+        if (lv.t->kind == TY_REF) DerefLoc(lv);
+        return AdaptToFixed(lv, want, n->line);
     }
     if (NeedsDeref(n->exprtype, want)) {
         auto sub = n->exprtype->ref->sub;
@@ -838,6 +993,144 @@ inline string CodeGen::GenTruth(Node *n) {
     auto t = n->exprtype;
     if (t->kind == TY_REF && IsResz(t->ref->sub)) return cat("(", x, ".hdr != 0)");
     return x;
+}
+
+// Whether evaluating n, the right operand of && or || or a part of it, has
+// no effect but its value and cannot fail, so that Binary::CgX may evaluate
+// it whatever the left operand gave. It calls nothing and writes nothing; it
+// has no check that can fail: no division, none of a debug build's overflow
+// or `as` range checks (signed arithmetic, narrowing casts, float to integer),
+// and no bounds check but one the types settle or BCE found to hold without
+// the left operand's facts (`idxok`, Binary::specidx); and it reads only
+// variables, fields of fixed structs and elements, never through an optional
+// reference, which the left operand may be what narrows (§3.8). In truth
+// position an optional variable stands for its null test, which reads the
+// reference alone. `budget` bounds the work the operand may do for nothing.
+inline bool CodeGen::Speculatable(Node *n, bool idxok, bool truth, int &budget) {
+    if (--budget < 0) return false;
+    auto t = n->exprtype;
+    auto scalar = [](TypeExpr *x) {
+        return x && (IsIntT(x) || x->kind == TY_FLT || x->kind == TY_BOOL);
+    };
+    auto wraps = [](TypeExpr *x) {   // unsigned arithmetic wraps in every build (§6.2)
+        return x && IsIntT(x) && IntRange(x->intstorage).first == 0;
+    };
+    if (Is<IntLit>(n) || Is<FltLit>(n) || Is<BoolLit>(n)) return true;
+    if (auto id = Is<Ident>(n)) {
+        auto vt = id->vdef ? id->vdef->type : nullptr;
+        if (!vt) return false;
+        if (truth && IsOptional(vt) && t && IsOptional(t)) return true;
+        return scalar(t ? OperandT(t) : nullptr) &&
+               (scalar(vt) || (IsPlainRef(vt) && scalar(vt->ref->sub)));
+    }
+    if (auto u = Is<Unary>(n)) {
+        switch (u->op) {
+            case T_NOT: return Speculatable(u->child, idxok, true, budget);
+            case T_BITNOT: return IsIntT(t) && Speculatable(u->child, idxok, false, budget);
+            case T_MINUS:
+                return t && t->kind == TY_FLT && Speculatable(u->child, idxok, false, budget);
+            default: return false;
+        }
+    }
+    if (auto b = Is<Binary>(n)) {
+        auto both = [&](bool tr) {
+            return Speculatable(b->left, idxok, tr, budget) &&
+                   Speculatable(b->right, idxok, tr, budget);
+        };
+        auto lt = b->left->exprtype ? OperandT(b->left->exprtype) : nullptr;
+        auto rt = b->right->exprtype ? OperandT(b->right->exprtype) : nullptr;
+        switch (b->op) {
+            case T_ANDAND: case T_OROR: return both(true);
+            case T_EQ: case T_NEQ:
+                if (Is<NullLit>(b->left) || Is<NullLit>(b->right)) {
+                    auto other = Is<NullLit>(b->left) ? b->right : b->left;
+                    if (Is<NullLit>(other)) return true;
+                    auto id = Is<Ident>(other);
+                    return id && id->vdef && id->vdef->type && IsOptional(id->vdef->type);
+                }
+                return scalar(lt) && scalar(rt) && both(false);
+            case T_LT: case T_GT: case T_LTEQ: case T_GTEQ:
+                return scalar(lt) && scalar(rt) && both(false);
+            // At the operands' type, as Binary::CgX computes.
+            case T_BITAND: case T_BITOR: case T_XOR: case T_SHL: case T_SHR:
+                return lt && IsIntT(lt) && IsIntT(t) && both(false);
+            case T_PLUS: case T_MINUS: case T_MUL:
+                return (wraps(lt) || (lt && lt->kind == TY_FLT)) && scalar(t) && both(false);
+            case T_DIV: return lt && lt->kind == TY_FLT && scalar(t) && both(false);
+            default: return false;
+        }
+    }
+    if (auto d = Is<Dot>(n)) {
+        if (d->member == B_LEN || d->member == B_CAP)
+            return SpeculatablePlace(d->obj, idxok, budget);
+        if (!d->IsField() || !scalar(t ? OperandT(t) : nullptr)) return false;
+        auto ot = d->obj->exprtype ? OperandT(d->obj->exprtype) : nullptr;
+        if (!ot || ot->kind != TY_STRUCT || !IsFix(ot) || !scalar(SI(ot)->ftypes[d->fieldidx]))
+            return false;
+        return SpeculatablePlace(d->obj, idxok, budget);
+    }
+    if (auto ix = Is<Index>(n)) {
+        if (!scalar(t ? OperandT(t) : nullptr) || !(IndexInRangeByType(ix) || (idxok && ix->nobc)))
+            return false;
+        return SpeculatablePlace(ix->obj, idxok, budget) &&
+               Speculatable(ix->idx, idxok, false, budget);
+    }
+    if (auto c = Is<AsCast>(n)) {
+        auto st = c->child->exprtype, tt = c->totype;
+        if (!st || !tt || !(IsIntT(st) || st->kind == TY_FLT)) return false;
+        if (tt->kind == TY_INT) {
+            if (!IsIntT(st) || !IsIntT(tt)) return false;
+            auto [slo, shi] = IntRange(st->intstorage);
+            auto [lo, hi] = IntRange(tt->intstorage);
+            auto exact = st->intstorage == IS_U64 ? tt->intstorage == IS_U64
+                                                  : slo >= lo && shi <= hi;
+            if (!c->unchecked && !TEq(st, tt) && !exact) return false;
+        } else if (tt->kind != TY_FLT) {
+            return false;
+        }
+        return Speculatable(c->child, idxok, false, budget);
+    }
+    // An inlined call or a block: scalar bindings and a value.
+    Block *body = nullptr;
+    if (auto ib = Is<InlineBlock>(n)) body = ib->body;
+    else body = Is<Block>(n);
+    if (!body || !body->tail) return false;
+    for (auto st : body->stmts) {
+        auto vd = Is<VarDecl>(st);
+        if (!vd || vd->isglobal || vd->byref || vd->defs.size() != 1 || vd->inits.size() != 1 ||
+            !vd->defs[0] || !scalar(vd->defs[0]->type) ||
+            !Speculatable(vd->inits[0], idxok, false, budget))
+            return false;
+    }
+    return Speculatable(body->tail, idxok, truth, budget);
+}
+
+// Whether the storage n names is there whatever the left operand of && or ||
+// gave, for Speculatable: a variable but an optional reference, a field of
+// such storage holding a fixed value, or an element of it as Speculatable
+// takes one.
+inline bool CodeGen::SpeculatablePlace(Node *n, bool idxok, int &budget) {
+    if (--budget < 0) return false;
+    if (auto id = Is<Ident>(n)) {
+        auto vt = id->vdef ? id->vdef->type : nullptr;
+        return vt && (vt->kind != TY_REF || IsPlainRef(vt));
+    }
+    if (auto d = Is<Dot>(n)) {
+        if (!d->IsField()) return false;
+        auto ot = d->obj->exprtype ? OperandT(d->obj->exprtype) : nullptr;
+        if (!ot || ot->kind != TY_STRUCT || !IsFix(ot) ||
+            SI(ot)->ftypes[d->fieldidx]->kind == TY_REF)
+            return false;
+        return SpeculatablePlace(d->obj, idxok, budget);
+    }
+    if (auto ix = Is<Index>(n)) {
+        if (!(IndexInRangeByType(ix) || (idxok && ix->nobc))) return false;
+        auto et = ix->exprtype;
+        if (!et || et->kind == TY_REF) return false;
+        return SpeculatablePlace(ix->obj, idxok, budget) &&
+               Speculatable(ix->idx, idxok, false, budget);
+    }
+    return false;
 }
 
 // A control construct used as a fixed-class value: route it into a temp.
@@ -866,9 +1159,11 @@ inline void CodeGen::LeafAny(Node *n, const Dst &d) {
         if (d.pool) { L(d.s, " = ", GenPrefVal(n), ";"); return; }
         // A literal holding relative references builds at the destination;
         // assigning it from a temporary would copy the temporary's offsets.
-        if ((Is<StructLit>(n) || Is<ArrayLit>(n)) && HasRelRef(n->exprtype))
+        if ((Is<StructLit>(n) || Is<ArrayLit>(n)) && HasRelRef(n->exprtype)) {
             FixedLitAt(n, d.s);
-        else L(d.s, " = ", GenXD(n, d.t), ";");
+        } else if (!GenIntoLimited(n, d.t, d.s, true)) {   // The source may lie in d.s.
+            L(d.s, " = ", GenXD(n, d.t), ";");
+        }
         return;
     }
     if (IsVoidT(n->exprtype)) { Fail(n->line, "internal: valueless leaf"); }
@@ -1058,20 +1353,20 @@ inline string CodeGen::GenEquality(TypeExpr *lt, const string &l, const string &
 
 inline string CodeGen::GenSliceEq(TypeExpr *st, const string &l, const string &r) {
     return GenRangeEq(st->sub, cat(l, ".data"), cat(l, ".len"), cat(r, ".data"),
-                      cat(r, ".len"), true);
+                      cat(r, ".len"));
 }
 
 // Structural equality of two element ranges (§4.5): length then elements.
-// `nullable` as ArrView's, for either range.
+// Either range's elements may be an empty slice's null pointer, which
+// gs_memeq allows.
 inline string CodeGen::GenRangeEq(TypeExpr *elem, const string &ae, const string &an,
-                                  const string &be, const string &bn, bool nullable) {
+                                  const string &be, const string &bn) {
     auto t = T();
     L("uint8_t ", t, " = ", an, " == ", bn, ";");
     L("if (", t, ") {");
     ind++;
     if (ScalarEq(elem) && BitwiseEq(elem)) {
-        L(t, " = ", nullable ? "gs_memcmp(" : "memcmp(", ae, ", ", be, ", (size_t)((", an,
-          ") * ", FixedSize(elem), ")) == 0;");
+        L(t, " = gs_memeq(", ae, ", ", be, ", (size_t)((", an, ") * ", FixedSize(elem), "));");
     } else if (IsFix(elem)) {
         auto pa = T(), pb = T(), iv = T();
         L("const ", CT(elem), " *", pa, " = (const ", CT(elem), " *)(", ae, ");");
@@ -1105,41 +1400,53 @@ inline string CodeGen::GenRangeEq(TypeExpr *elem, const string &ae, const string
 inline void CodeGen::GenElemwiseInto(TypeExpr *t, TType op, Line line, const string &l,
                                      const string &r, const string &dst,
                                      bool lscalar, bool rscalar) {
+    GenElemwiseLeaves(t, dst, [&](TypeExpr *tt, const string &path) {
+        auto a = cat("(", l, ")", lscalar ? string() : path);
+        auto c = cat("(", r, ")", rscalar ? string() : path);
+        if (tt->kind == TY_FLT) {
+            switch (op) {
+                case T_PLUS: case T_PLUSEQ:   return cat("(", a, " + ", c, ")");
+                case T_MINUS: case T_MINUSEQ: return cat("(", a, " - ", c, ")");
+                case T_MUL: case T_MULEQ:     return cat("(", a, " * ", c, ")");
+                case T_DIV: case T_DIVEQ:     return cat("(", a, " / ", c, ")");
+                default: return cat((tt->fltstorage == FS_F32 ? "fmodf(" : "fmod("), a, ", ",
+                                    c, ")");
+            }
+        }
+        auto sfx = IntSfx(tt->intstorage);
+        auto ovf = OvfLocArgs(tt->intstorage, line);
+        switch (op) {
+            case T_PLUS: case T_PLUSEQ:   return cat("gs_add_", sfx, "(", a, ", ", c, ovf, ")");
+            case T_MINUS: case T_MINUSEQ: return cat("gs_sub_", sfx, "(", a, ", ", c, ovf, ")");
+            case T_MUL: case T_MULEQ:     return cat("gs_mul_", sfx, "(", a, ", ", c, ovf, ")");
+            case T_DIV: case T_DIVEQ:
+                return cat("gs_div_", sfx, "(", a, ", ", c, ", ", LocArgs(line), ")");
+            default: return cat("gs_mod_", sfx, "(", a, ", ", c, ", ", LocArgs(line), ")");
+        }
+    });
+}
+
+// Elementwise negation (§6.1), member by member as above: member i of the
+// result reads only member i of the operand.
+inline void CodeGen::GenElemwiseNegInto(TypeExpr *t, Line line, const string &x,
+                                        const string &dst) {
+    GenElemwiseLeaves(t, dst, [&](TypeExpr *tt, const string &path) {
+        auto a = cat("(", x, ")", path);
+        if (tt->kind == TY_FLT) return cat("(-", a, ")");
+        return cat("gs_neg_", IntSfx(tt->intstorage), "(", a,
+                   OvfLocArgs(tt->intstorage, line), ")");
+    });
+}
+
+// Stores leaf(type, path) into dst's member at each numeric leaf path of the
+// struct or fixed array type t.
+inline void CodeGen::GenElemwiseLeaves(TypeExpr *t, const string &dst,
+                                       const function<string(TypeExpr *, const string &)> &leaf) {
     function<void(TypeExpr *, const string &)> rec = [&](TypeExpr *tt, const string &path) {
         switch (tt->kind) {
-            case TY_INT: case TY_FLT: {
-                auto a = cat("(", l, ")", lscalar ? string() : path);
-                auto c = cat("(", r, ")", rscalar ? string() : path);
-                string x;
-                if (tt->kind == TY_FLT) {
-                    switch (op) {
-                        case T_PLUS: case T_PLUSEQ:   x = cat("(", a, " + ", c, ")"); break;
-                        case T_MINUS: case T_MINUSEQ: x = cat("(", a, " - ", c, ")"); break;
-                        case T_MUL: case T_MULEQ:     x = cat("(", a, " * ", c, ")"); break;
-                        case T_DIV: case T_DIVEQ:     x = cat("(", a, " / ", c, ")"); break;
-                        default:      x = cat((tt->fltstorage == FS_F32 ? "fmodf(" : "fmod("),
-                                              a, ", ", c, ")"); break;
-                    }
-                } else {
-                    auto sfx = IntSfx(tt->intstorage);
-                    auto ovf = OvfLocArgs(tt->intstorage, line);
-                    switch (op) {
-                        case T_PLUS: case T_PLUSEQ:
-                            x = cat("gs_add_", sfx, "(", a, ", ", c, ovf, ")"); break;
-                        case T_MINUS: case T_MINUSEQ:
-                            x = cat("gs_sub_", sfx, "(", a, ", ", c, ovf, ")"); break;
-                        case T_MUL: case T_MULEQ:
-                            x = cat("gs_mul_", sfx, "(", a, ", ", c, ovf, ")"); break;
-                        case T_DIV: case T_DIVEQ:
-                            x = cat("gs_div_", sfx, "(", a, ", ", c, ", ",
-                                    LocArgs(line), ")"); break;
-                        default:      x = cat("gs_mod_", sfx, "(", a, ", ", c, ", ",
-                                              LocArgs(line), ")"); break;
-                    }
-                }
-                L(dst, path, " = ", x, ";");
+            case TY_INT: case TY_FLT:
+                L(dst, path, " = ", leaf(tt, path), ";");
                 return;
-            }
             case TY_STRUCT: {
                 auto si = SI(tt);
                 for (size_t i = 0; i < si->st->fields.size(); i++)

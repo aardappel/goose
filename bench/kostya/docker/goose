@@ -1,0 +1,15 @@
+FROM langarena:base_clang
+
+ARG version
+
+# Goose compiles a program to one C file, which clang then builds. The
+# compiler finds its standard library in the source tree it was built from,
+# so the tree stays where it was built. The optional graphics, audio, physics,
+# ui and in-process TinyCC layers are not needed by a benchmark.
+RUN git clone https://github.com/aardappel/goose /opt/goose \
+    && cd /opt/goose \
+    && git checkout $version \
+    && cmake -B build -DCMAKE_BUILD_TYPE=Release -DGOOSE_LIBTCC=OFF -DGOOSE_GFX=OFF \
+       -DGOOSE_AUDIO=OFF -DGOOSE_PHYSICS=OFF -DGOOSE_UI=OFF \
+    && cmake --build build --target goose -j \
+    && ln -s /opt/goose/build/goose /usr/local/bin/goose

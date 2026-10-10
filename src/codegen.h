@@ -69,6 +69,18 @@ struct Dst {
     bool pool = false;
 };
 
+// What a relative store knows of the reference it encodes beyond its type:
+// that it is a plain `T&`, never null (CodeGen::RelValue), and that no target
+// can lie at the slot's own address, where a self-relative optional slot's
+// offset would read as null (CodeGen::RelSlotApart). It is declared outside
+// CodeGen because CodeGen's member functions take it as a defaulted argument,
+// and clang and gcc reject a default argument of a nested class with member
+// initializers before the enclosing class is complete.
+struct RelFacts {
+    bool nonnull = false;
+    bool apart = false;
+};
+
 struct CodeGen {
     Ast &ast;
 
@@ -143,7 +155,7 @@ struct CodeGen {
     // file in the generated code; call sites pass it plus the line number.
     map<int, string> filerefs;
 
-    string LocArgs(Line l) {
+    string FileRef(Line l) {
         auto it = filerefs.find(l.fileidx);
         if (it == filerefs.end()) {
             auto f = l.fileidx >= 0 && l.fileidx < (int)ast.sources.size()
@@ -153,8 +165,9 @@ struct CodeGen {
             Append(data, "static const char ", name, "[] = ", CStr(f), ";\n");
             it = filerefs.emplace(l.fileidx, name).first;
         }
-        return cat(it->second, ", ", l.line);
+        return it->second;
     }
+    string LocArgs(Line l) { return cat(FileRef(l), ", ", l.line); }
 
     // The trailing arguments of a gs_add/sub/mul/neg helper call: a signed
     // type's operation takes its location, for the debug build's overflow
@@ -369,6 +382,45 @@ struct CodeGen {
     unordered_map<FnSpec *, SpecInfo> sinfo;
     vector<FnSpec *> livespecs;
 
+    // Data stack accounting (codegen_stacks.h). What each emitted function
+    // asks for: the calls it hands a stack index, with that index relative
+    // to its own (SpTop), and the most stacks its own body opens. The
+    // nullptr function is what runs with gs_sp fixed at 0: gs_init_globals
+    // and the render functions.
+    struct StackCall {
+        FnSpec *callee;
+        int offset;
+        Line line;
+    };
+    unordered_map<FnSpec *, vector<StackCall>> stackcalls;
+    unordered_map<FnSpec *, int> stackown;
+    // The most stacks a function can have in use at once, its callees
+    // included (BoundStacks): a constant, since no call into a recursive
+    // cycle is made with a stack in use (§7.8).
+    unordered_map<FnSpec *, int64_t> stackneed;
+    // Regions outside the indexed block: the globals' dedicated stacks
+    // gs_init_globals reserves for the main program, and what each worker's
+    // thunk reserves for its arguments and its copy of the globals.
+    int globalregions = 0;
+    unordered_map<FnSpec *, int> thunkregions;
+    // GS_MAX_STACKS as the program is configured (main.cpp): the most data
+    // stacks one thread program may use at once, zero for no limit.
+    int64_t maxstacks = 0;
+    void NoteStackCall(FnSpec *callee, Line ln) {
+        stackcalls[curspec].push_back({ callee, stknext, ln });
+    }
+    void BoundStacks();
+    int64_t ProgramStacks(const vector<FnSpec *> &roots);
+    vector<FnSpec *> MainRoots();
+    vector<pair<string, FnSpec *>> WorkerEntries();
+    void CheckStackLimit(const string &what, int64_t stacks, Line ln);
+    // The runtime configuration a report assumes (main.cpp).
+    struct StackConfig {
+        uint64_t reserve, gap, budget;
+        int64_t maxstacks;
+    };
+    void StackReport(FILE *out, const StackConfig &cfg);
+
     // Long-distance return targets (§7.9): id, per-ret TLS channels.
     unordered_map<FnSpec *, int> fromids;
     set<FnSpec *> fromemitted;
@@ -384,8 +436,8 @@ struct CodeGen {
     // stack it can name: one handed to it as an argument, or a global it
     // (transitively) mentions. Everything else the caller has cached stays
     // cached across the call.
-    bool PassesOpaqueStack(FnSpec *sp);
-    string SyncReach(FnSpec *callee, const vector<string> &args);
+    string HandedStacks(Node *n);
+    string SyncReach(FnSpec *callee, const vector<string> &args, const vector<Node *> &an);
     void CollectSpecs();
     string SigParams(FnSpec *sp, bool decls, bool er = false);
     string SigRet(FnSpec *sp);
@@ -453,6 +505,10 @@ struct CodeGen {
         size_t topat = 0;
         int topind = 0;
         string top0;
+        // SC_LOOP, once its condition is out: the loop can be straight-line
+        // code (StraightCode), whose body's && and || may evaluate a right
+        // operand unconditionally.
+        bool straight = false;
     };
     vector<CScope> cscopes;
 
@@ -467,6 +523,28 @@ struct CodeGen {
 
     string SpIdx(int k) { return cat("GS(", spexpr, " + ", k, ")"); }
     string SpTop() { return cat(spexpr, " + ", stknext); }   // First free index.
+    // A call into the recursive cycle the function being emitted is in
+    // (§7.8) is made with none of its stacks in use: the checker rejects
+    // every shape that would hold one across it (TypeCheck::JoinCycle), so
+    // every activation of the cycle starts its stacks at the same index and
+    // a program's stack count is static. One in use here is a checker gap,
+    // never a program's to work around.
+    void NoStackAcrossCycleCall(FnSpec *callee, Line ln) {
+        if (!curspec || !curspec->incycle || !callee->incycle || !stknext) return;
+        auto cycle = [](FnSpec *s) { while (s->cyclelink) s = s->cyclelink; return s; };
+        if (cycle(callee) != cycle(curspec)) return;
+        Fail(ln, cat("internal: ", curspec->sf->name, " holds ", stknext, " data stack(s) "
+                     "across its call into the recursive cycle through ", callee->sf->name,
+                     " (§7.8)"));
+    }
+    // Whether a fixed value above NATIVE_VALUE_LIMIT is held on a data
+    // stack here (FixedLocal). Inside a function of a recursive cycle it is
+    // a native local instead: the recursion's depth is bounded by the
+    // native stack already, and a data stack held across a call into the
+    // cycle would cost a stack per activation (NoStackAcrossCycleCall).
+    bool LargeFixedOnStack(TypeExpr *t) {
+        return IsLargeFixed(t) && !(curspec && curspec->incycle);
+    }
 
     // ------------------------------------------------------------------
     // Data-stack top caching. A bump pointer read and written through
@@ -481,16 +559,20 @@ struct CodeGen {
     // elsewhere it is a live pointer holding a register for nothing, so it is
     // confined to the loops that grow the stack: a kernel loop that only reads
     // and writes elements of an array keeps the memory form for it. Growth
-    // outside every loop caches the stack over the whole body, which is the
-    // extent it is live across anyway.
+    // outside every loop caches the stack over the innermost block around it,
+    // which is the whole body for growth at its top level: a stack grown once
+    // in one branch of a long function is no local live, and synced at every
+    // call, through all of it.
     //
     // Soundness rests on one spelling per cached stack. Own stacks qualify:
     // a callee's indices start above the caller's in-use watermark (§10.3), so
     // `GS(gs_sp + k)` names a stack no caller expression can also name, and
     // global stacks live outside the indexed block entirely. A reference to a
     // resizable carries its stack inside the reference value (`p.stk`), which
-    // is a second spelling for a stack the body may also name directly, so a
-    // function holding one gets neither of those two (CanCacheTops).
+    // is a second spelling for a stack the body may also name directly, so
+    // which stacks a function caches depends on the references it holds,
+    // class by class (PlanTopClasses): its own, the globals', its captured
+    // resizables', its return destinations'.
     //
     // It caches its reference parameters' stacks instead, where RefTopsOk
     // clears it: `p.stk` is then the body's only spelling of that stack, and
@@ -499,7 +581,8 @@ struct CodeGen {
     // = e; top += n` with top in a register -- and the same marks carry it
     // across calls.
     vector<string> toporder;                  // Cacheable stacks, discovery order.
-    // A stack and its innermost enclosing loop (-1 means the whole body).
+    // A stack and the region (loop, block or construction) it is cached over,
+    // -1 meaning the whole body.
     struct TopRegion { int stk, loop; };
     vector<TopRegion> growth;                // Every growth or shrink.
     vector<int> loopparent;                   // Loop -> enclosing loop, or -1.
@@ -509,14 +592,37 @@ struct CodeGen {
     struct TopCachePlan {
         vector<TopRegion> regions;
         vector<string> fnlocals;             // Stack -> whole-body local, or "".
+        string fnlens;                       // Whole-body length locals' declarations.
         bool IsRegion(int k, int id) const {
             for (auto r : regions) if (r.stk == k && r.loop == id) return true;
             return false;
         }
     };
-    bool cachetops = false;
-    bool reftops = false;               // Caching reference parameters' stacks.
+    // The count of a resizable whose header is reached through memory -- a
+    // reference parameter's `p.hdr->len`, a global's, a captured one's -- is
+    // as much a store-to-load chain as the top when every push bumps it: a
+    // byte store may alias it. Where the stack under it is cached, so is the
+    // count, over the same extent and synchronized at the same points
+    // (LenSlot, ExpandTopMarkers). Only a header with a single plain spelling
+    // qualifies, and only where every other mention of that header in the
+    // extent is one the expansion can see is harmless: its base, or one
+    // between a call's flush and reload of the stack.
+    struct LenSlot {
+        int stk;          // The cached stack the count's array grows on.
+        string lenlv;     // The count's one spelling.
+        string root;      // The header's spelling, which other mentions would share.
+    };
+    vector<LenSlot> lenslots;
+    void NoteLen(const string &stk, const string &lenlv);
+    static bool LenRoot(const string &lenlv, string &root);
+    bool cachetops = false;             // Any class below is cached.
+    bool topown = false;                // Own indexed stacks, `GS(gs_sp + k)`.
+    bool topglob = false;               // Globals' dedicated stacks.
+    bool topcap = false;                // Captured resizables' stacks.
+    bool topdst = false;                // Return destinations, `gs_dst<i>`.
+    bool reftops = false;               // Reference parameters' stacks.
     set<string> refstkexprs;            // Their `<param>.stk` / `.flstk` spellings.
+    set<string> capstkexprs;            // The captured resizables' `<fv>_stk` spellings.
 
     static constexpr const char *FLUSHMARK = "@@gsflush@@";
     static constexpr const char *RELOADMARK = "@@gsreload@@";
@@ -535,17 +641,32 @@ struct CodeGen {
     // the whole body is emitted and every cached stack is known. The mark
     // carries what the call can reach, so expansion can sync just those --
     // "*" means everything, which is what a function exit needs.
-    void MarkFlush(const string &reach = "*")  { if (cachetops) L(FLUSHMARK, reach); }
-    void MarkReload(const string &reach = "*") { if (cachetops) L(RELOADMARK, reach); }
+    void MarkFlush(const string &reach = "*")  { if (markers) L(FLUSHMARK, reach); }
+    void MarkReload(const string &reach = "*") { if (markers) L(RELOADMARK, reach); }
 
+    bool markers = false;                // A specialization's body: markers are expanded.
+    // Region -> "" for a loop, BLOCKREGION for a block, the stack for a
+    // construction.
+    vector<string> loopcons;
+    static constexpr const char *BLOCKREGION = "{";
+    bool InConsOf(const string &stk);
     int MarkLoopBegin();
+    int MarkBlockBegin();
     void MarkLoopEnd(int id);
+    int MarkConsBegin(const string &stk);
+    struct ConsRegion {
+        CodeGen &cg;
+        int id;
+        ConsRegion(CodeGen &cg, const string &stk) : cg(cg), id(cg.MarkConsBegin(stk)) {}
+        ~ConsRegion() { cg.MarkLoopEnd(id); }
+    };
     TopCachePlan PlanTopCaches();
     static bool LineIs(string_view s, const char *pfx);
     static string_view GotoTarget(string_view line);
     static string_view LabelHere(string_view line);
     static string_view NextLine(const string &b, size_t &i, size_t &ind0);
-    string ExpandTopMarkers(const string &b, const TopCachePlan &plan);
+    string ExpandTopMarkers(const string &b, TopCachePlan &plan);
+    string ExpandTopMarkers1(const string &b, TopCachePlan &plan, vector<bool> &lenok, bool &clean);
     string HoistAggregateDecls(string &b);
     void PushSc(int kind);
     void EmitRestores(const CScope &s);
@@ -599,9 +720,31 @@ struct CodeGen {
         // set on the reference by VarLoc, and, for the length, carried across
         // the deref to the pointee, where ArrayView reads it instead of memory.
         string hbase, hlen;
+        // A reference variable standing for a resizable variable or a frame
+        // object's tail (refalias): its pointee is that location.
+        const VarDef *aliasof = nullptr;
+        Node *aliaspath = nullptr;
     };
 
     bool PrefVar(const VarDef *vd);
+
+    // A fat reference variable that cannot be rebound, bound to a resizable
+    // variable or to another such reference -- an inlined callee's `A&`
+    // parameter, a base-case inlining's copy of a reference argument, a
+    // function value's reference parameter -- names exactly what its
+    // initializer names for its whole life. It is emitted as no C variable
+    // of its own: every use reads the variable it stands for, so the stack
+    // and the header keep the one spelling top caching needs (§6.10), and a
+    // local's header is not made to escape by a pointer nothing needs.
+    unordered_map<const VarDef *, const VarDef *> refalias;
+    // An alias of a frame object's tail: the field path it was bound to,
+    // from refalias's variable.
+    unordered_map<const VarDef *, Node *> aliaspath;
+    set<const VarDef *> aliasbound;          // The aliases whose binding has been emitted.
+    set<const VarDef *> capturedvars;        // Every live specialization's free variables.
+    void FindRefAliases(FnSpec *sp);
+    const VarDef *AliasTarget(VarDef *d, Node *init, Node *&path);
+    static bool HandedRef(Node *n);
 
     // Optimizer splices can leave a reference-typed tree in a slot whose
     // checked type already decayed; Dst::t says what the receiver wants, and
@@ -629,12 +772,11 @@ struct CodeGen {
         string lenlv;      // Length lvalue for ops that change it (may be typed).
         TypeExpr *elem = nullptr;
         bool typedelems = false;   // elems is CT* (else uint8_t*).
-        bool nullable = false;     // elems is a slice's: NULL when zero-filled and empty.
     };
 
-    // The C copy for elements whose pointer may be a slice's: memcpy may
-    // not be handed a null pointer, even for zero bytes.
-    static const char *CopyFn(bool nullable) { return nullable ? "gs_memcpy" : "memcpy"; }
+    // The C copy for a run of elements: gs_memcpy takes a slice's null
+    // pointer for zero bytes, which memcpy may not be handed.
+    static const char *CopyFn() { return "gs_memcpy"; }
 
     ArrView ArrayView(const Loc &lv);
     ArrView RawArrayView(const Loc &lv);
@@ -686,6 +828,10 @@ struct CodeGen {
     static string IntStr(int64_t v);
     static string FltStr(double v, bool f32);
     Loc IndexLoc(Loc lv, Node *idxnode, Line ln, bool nobc);
+    Index *LeadingCheck(Node *arm);
+    bool SamePath(Node *a, Node *b);
+    bool SameCheck(Index *a, Index *b);
+    void EmitHoistedCheck(Index *ta, Index *ea, const string &c);
     Loc GenLoc(Node *n);
     string BytesTemp(string &stk);
     string RzTemp(TypeExpr *t, string &stk);
@@ -704,14 +850,21 @@ struct CodeGen {
     static bool IsCtl(Node *n);
     string LoadLoc(Loc lv, TypeExpr *et, Line ln);
     string AdaptToFixed(Loc lv, TypeExpr *et, Line ln);
+    void CopyIntoLimited(Loc lv, TypeExpr *et, Line ln, const string &dst, bool overlap);
+    bool AdaptsToLimited(Node *n, TypeExpr *want);
+    bool GenIntoLimited(Node *n, TypeExpr *want, const string &dst, bool overlap);
     string BytesAddrOf(const Loc &lv);
     string GenRefVal(Node *child, Line ln);
     string GenXD(Node *n, TypeExpr *want);
     string GenTruth(Node *n);
+    bool Speculatable(Node *n, bool idxok, bool truth, int &budget);
+    bool SpeculatablePlace(Node *n, bool idxok, int &budget);
 
     // The three per-node passes dispatch virtually (ast.h); the bodies live
     // together in codegen_nodes.h, delegating into the machinery here.
     string GenX(Node *n) {
+        if (!substs.empty())
+            if (auto s = substs.find(n); s != substs.end()) return s->second;
         auto it = fillvalues.find(n);
         return it == fillvalues.end() ? n->CgX(*this) : LoadLoc(it->second, it->second.t, n->line);
     }
@@ -749,10 +902,13 @@ struct CodeGen {
     string GenEquality(TypeExpr *lt, const string &l, const string &r);
     string GenSliceEq(TypeExpr *st, const string &l, const string &r);
     string GenRangeEq(TypeExpr *elem, const string &ae, const string &an, const string &be,
-                      const string &bn, bool nullable);
+                      const string &bn);
     void GenElemwiseInto(TypeExpr *t, TType op, Line line, const string &l,
                          const string &r, const string &dst,
                          bool lscalar = false, bool rscalar = false);
+    void GenElemwiseNegInto(TypeExpr *t, Line line, const string &x, const string &dst);
+    void GenElemwiseLeaves(TypeExpr *t, const string &dst,
+                           const function<string(TypeExpr *, const string &)> &leaf);
     void ElemwiseOperands(Binary *b, string &l, string &r);
     string GenElemwise(Binary *b, const string &l, const string &r);
     string GenSlice(SliceExpr *se);
@@ -765,17 +921,24 @@ struct CodeGen {
     void Bump(const string &stk, const string &n) { L(TopW(stk), " += ", n, ";"); }
 
     void EmitValStore(const string &stk, TypeExpr *t, const string &x);
+    void StoreWhole(const string &p, TypeExpr *t, const string &x);
     void EmitLenCheck(IntStorage ls, const string &n);
     void EmitLenStore(const string &stk, IntStorage ls, const string &n);
     void EmitVarintStore(const string &stk, const string &x);
     void EmitRelRangeCheck(TypeExpr *rt, const string &off, Line ln, bool inroot);
-    string RelOffset(TypeExpr *rt, const string &org, const string &rv, Line ln);
-    void EmitRelStoreAt(const string &fa, TypeExpr *rt, const string &rv, Line ln, bool inroot);
-    void EmitRelStore(const string &stk, TypeExpr *rt, const string &rv, Line ln);
+    RelFacts RelValue(Node *v);
+    bool RelSlotApart(TypeExpr *rt, TypeExpr *holder, int64_t off);
+    string RelOffset(TypeExpr *rt, const string &org, const string &rv, Line ln, RelFacts f);
+    void EmitRelStoreAt(const string &fa, TypeExpr *rt, const string &rv, Line ln, bool inroot,
+                        RelFacts f = {});
+    void EmitRelStore(const string &stk, TypeExpr *rt, const string &rv, Line ln,
+                      RelFacts f = {});
     void EmitRelSelfAt(const string &fa, TypeExpr *rt, int64_t fieldoff, Line ln,
                        bool inroot = true);
     void EmitRelSelfStore(const string &stk, TypeExpr *rt, int64_t fieldoff, Line ln);
     bool HasRelRef(TypeExpr *t);
+    bool HasSelfRelRef(TypeExpr *t);
+    void NoSelfRelCopy(Node *val);
     bool HasUninitSlots(TypeExpr *t);
 
     // Byte span of the largest fixed value that can be a relative
@@ -786,15 +949,13 @@ struct CodeGen {
     int64_t relrootmax = 0;
 
     void ComputeRelRootMax();
-    void EmitCopyElems(const string &stk, TypeExpr *elem, const string &src, const string &n,
-                       bool nullable = false);
+    void EmitCopyElems(const string &stk, TypeExpr *elem, const string &src, const string &n);
 
     // Element count + elements pointer of an array/slice-valued source node,
     // for construction and append. Understands string literals, slices, and
     // all array kinds (through references too).
     struct SrcElems {
         string elems, n;
-        bool nullable = false;   // As ArrView::nullable.
     };
 
     SrcElems GenSrcElems(Node *n);
@@ -853,8 +1014,52 @@ struct CodeGen {
     // sits after the fallthrough restores rather than sharing them.
 
     void GenLoopBody(const function<void()> &condexit, Block *bodyb, Dst d,
-                     const string &forhead = "");
+                     const string &forhead = "", Node *cond = nullptr, size_t first = 0,
+                     vector<const VarDef *> binders = {});
+    static bool StraightCode(Node *n);
+    bool InStraightLoop();
+
+    // Divisors fixed for a loop being emitted: the divisor variable, and the
+    // C locals holding its gs_divu_gen magic and shift (HoistDivisors).
+    unordered_map<const VarDef *, pair<string, string>> divmagic;
+    bool LoopDivisible(Binary *b);
+    vector<const VarDef *> HoistDivisors(Block *body, const vector<const VarDef *> &binders);
     void GenBreakPath(Node *val);
+
+    // Loops run in blocks of iterations (ForLoop::stripk, ForLoop::sumred):
+    // a loop over whole blocks, then the rest one iteration at a time, each
+    // running a copy of the body. A copy names the locals it declares afresh
+    // (NameScope), so a body qualifies only where nothing is bound to its
+    // locals once per function (Dupable).
+    struct NameScope {
+        CodeGen &cg;
+        unordered_map<const VarDef *, string> vnames, vstk;
+        unordered_map<const VarDef *, pair<string, string>> vpool;
+        explicit NameScope(CodeGen &_cg)
+            : cg(_cg), vnames(_cg.vnames), vstk(_cg.vstk), vpool(_cg.vpool) {}
+        ~NameScope() {
+            cg.vnames = std::move(vnames);
+            cg.vstk = std::move(vstk);
+            cg.vpool = std::move(vpool);
+        }
+    };
+    // The terms of an in-order float sum computed ahead per block.
+    static constexpr int SUMBLOCK = 8;
+    // A loop over an array whose length BCE bounds by a constant is bounded
+    // by that constant instead where the C compiler will unroll it whole
+    // into few enough exits: a small bound and a small body (ForLoop::CgStmt).
+    static constexpr int64_t MAXTRIPBOUND = 8;
+    static constexpr int MAXTRIPBODY = 48;
+    // Nodes whose value codegen spells as given text instead: a strip-mined
+    // loop's `i % K`, which is its inner counter in a block.
+    unordered_map<const Node *, string> substs;
+    bool DupLocal(VarDef *v);
+    bool Dupable(Node *n);
+    int BlockSize(ForLoop *f);
+    string AtLeastLeft(TypeExpr *ct, const string &hi, const string &ctr, int k, bool fromzero);
+    void GenBodyCopy(Block *bodyb, int si);
+    void GenBlocked(ForLoop *f, int k, const string &more, const string &step,
+                    const function<void()> &bind, const string &cond);
 
     // ------------------------------------------------------------------
     // Exits delivering a value: where the receiver expects it (§7.3, §7.9).
@@ -875,7 +1080,7 @@ struct CodeGen {
     void BindLocal(VarDef *d, Node *init, bool forlocal = true);
     string GenPrefVal(Node *n);
     string Unique2(const string &base);
-    void GenRelAssign(Loc lv, Node *rhs, Line ln);
+    void GenRelAssign(Loc lv, Node *lval, Node *rhs, Line ln);
     void GenRebind(Assign *a, Loc lv);
 
     // ------------------------------------------------------------------
@@ -976,9 +1181,8 @@ struct CodeGen {
     void EmitFormatInto(Loc lv, Node *a, Line ln, Call *c);
     vector<string> EmitStr(Call *c, vector<Node *> &an, Dst d0, Line ln);
     void EmitLeCheck(Line ln);
-    void PayloadOf(Node *n, string &src, string &sz, bool &nullable);
-    void AppendBytes(const Loc &lv, const string &src, const string &n, Line ln,
-                     bool nullable = false);
+    void PayloadOf(Node *n, string &src, string &sz);
+    void AppendBytes(const Loc &lv, const string &src, const string &n, Line ln);
     vector<string> EmitBytesOf(Call *c, vector<Node *> &an, Line ln);
     vector<string> EmitToBytes(vector<Node *> &an, Dst d0, Line ln);
     vector<string> EmitFromBytes(Call *c, vector<Node *> &an, Dst d0, Line ln);
@@ -995,6 +1199,8 @@ struct CodeGen {
     RzDest OpenRzDest(TypeExpr *t, Dst d0, Line ln, const char *what);
     void CloseRzDest(RzDest &rd, const string &count);
     vector<string> EmitPush(vector<Node *> &an, Line ln);
+    bool LiteralBytes(Node *n, TypeExpr *t, vector<uint8_t> &out);
+    bool UniformFillByte(Node *n, TypeExpr *t, int &byte);
     void EmitAppend(vector<Node *> &an, Line ln);
     vector<string> EmitAlloc(Call *c, vector<Node *> &an);
     vector<string> EmitSlicePool(Call *c, vector<Node *> &an, Line ln);
@@ -1009,6 +1215,7 @@ struct CodeGen {
 
     vector<string> EmitThreadSpawn(Call *c, vector<Node *> &an);
     string EnsureThreadThunk(FnSpec *sp);
+    void EmitThreadThunk(FnSpec *sp, int64_t stacks);
     // The image of a resizable value at a scratch stack's top: [int64 count]
     // [fixed fields][tail elements] (queue elements and copied globals).
     void EmitRzImage(Loc src, TypeExpr *t, const string &stk, Line ln);
@@ -1017,21 +1224,29 @@ struct CodeGen {
     // Function bodies.
 
     void DetectNrvo(FnSpec *sp);
+    // What a specialization's C declaration says besides its signature.
+    static const char *FnAttrs(FnSpec *sp) { return sp->outofline ? "GS_NOINLINE " : ""; }
     const VarDef *NamedResult(Block *fnbody, SFunction *target, size_t nrets, size_t resultidx);
     const VarDef *OpenIbNrvo(InlineBlock *ib, const Dst &d);
-    bool CanCacheTops(FnSpec *sp);
+    void PlanTopClasses(FnSpec *sp);
     bool RefTopsOk(FnSpec *sp);
     void ResetFnState();
     string EnsureEr(FnSpec *sp);
     void EmitSpec(FnSpec *sp, bool er = false);
+    // The instruction-set levels above the baseline a simd function has a
+    // version for; runtime.h names them (GS_SIMD_TARGET1, ...).
+    static constexpr int SIMD_LEVELS = 2;
+    void EmitSimdVersions(FnSpec *sp, const string &name, const string &params,
+                          const string &fnbody);
 
     // ------------------------------------------------------------------
     // Globals (§11.1): C globals plus dedicated data stacks for nonfixed
     // ones; initializers run in declaration order before main.
 
     // Globals whose declaration carries a C initializer, so gs_init_globals
-    // has nothing left to do for them (§11.1).
-    set<const VarDef *> gstatic;
+    // has nothing left to do for them (§11.1), with the initializer, which
+    // a later global's initializer naming one is spelled out from.
+    map<const VarDef *, Node *> gstatic;
 
     // Spelling out more elements than this would trade startup work for source
     // size; such a value keeps its runtime initialization.
@@ -1061,19 +1276,21 @@ struct CodeGen {
     // process state that the driver must install before constructing us.
     // A function the extern support declares gets no prototype here.
     CodeGen(Ast &_ast, string_view runtime_ext_text, const vector<string> &headers,
-            bool _norfcheck = false, bool _library = false)
-        : ast(_ast), library(_library), norfcheck(_norfcheck) {
+            bool _norfcheck = false, bool _library = false, int64_t _maxstacks = 0)
+        : ast(_ast), library(_library), maxstacks(_maxstacks), norfcheck(_norfcheck) {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
         ComputeRelRootMax();
         CollectSpecs();
+        for (auto sp : livespecs)
+            for (auto fv : sinfo[sp].freevars) capturedvars.insert(fv);
         // Zero means "no long-distance return in flight", which is also the
         // state every propagating function's ordinary exit leaves behind.
         if (!fromids.empty()) data += "static GS_TLS int32_t gs_rf;\n";
         EmitGlobalDecls();
         // Prototypes for every live specialization, then their bodies.
         for (auto sp : livespecs)
-            Append(protos, "static ", SigRet(sp), " ", sinfo[sp].cname, "(",
+            Append(protos, "static ", FnAttrs(sp), SigRet(sp), " ", sinfo[sp].cname, "(",
                    SigParams(sp, false), ");\n");
         for (auto sp : livespecs) EmitSpec(sp);
         EmitGlobalInit();

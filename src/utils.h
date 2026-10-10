@@ -18,12 +18,30 @@ inline void CatOne(string &s, double v) {
     // The spellings Goose programs print (§3.7), whatever the C library's.
     if (v != v) { s += "nan"; return; }
     if (std::isinf(v)) { s += v > 0 ? "inf" : "-inf"; return; }
-    // %.17g roundtrips, but prefer the shortest form that still does.
+    // The runtime's text (gs_fmt_f64): the fewest significant digits that
+    // read back as v and the nearest of those, which to_chars finds as well,
+    // laid out as %g lays them out at a precision of max(15, digits): in
+    // exponent form below 1e-4 or from that power of ten up, else
+    // positionally, with .0 on a whole number.
     char buf[32];
-    snprintf(buf, sizeof(buf), "%.15g", v);
-    if (strtod(buf, nullptr) != v) snprintf(buf, sizeof(buf), "%.17g", v);
-    s += buf;
-    if (!strpbrk(buf, ".e")) s += ".0";
+    *to_chars(buf, buf + sizeof buf - 1, v, chars_format::scientific).ptr = 0;
+    auto e = strchr(buf, 'e');
+    string dig;
+    for (auto p = buf; p != e; p++)
+        if (*p != '-' && *p != '.') dig += *p;
+    int n = (int)dig.size(), x = atoi(e + 1);
+    if (x < -4 || x >= max(n, 15)) { s += buf; return; }
+    if (buf[0] == '-') s += '-';
+    if (x < 0) {
+        s += "0.";
+        s.append(-x - 1, '0');
+        s += dig;
+        return;
+    }
+    s += dig.substr(0, x + 1);
+    if (n < x + 1) s.append(x + 1 - n, '0');
+    s += '.';
+    s += n > x + 1 ? dig.substr(x + 1) : "0";
 }
 
 template<typename... Ts> void Append(string &s, const Ts &...args) {
@@ -70,6 +88,14 @@ inline bool LoadFile(const string &path, string &dest) {
     auto read = fread(dest.data(), 1, (size_t)len, f);
     fclose(f);
     return read == (size_t)len;
+}
+
+// A Goose source file, without the UTF-8 byte-order mark many Windows
+// editors write at its start (spec §2).
+inline bool LoadSource(const string &path, string &dest) {
+    if (!LoadFile(path, dest)) return false;
+    if (dest.compare(0, 3, "\xEF\xBB\xBF") == 0) dest.erase(0, 3);
+    return true;
 }
 
 // The stdlib modules with a native layer a program calls into, which a JIT

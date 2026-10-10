@@ -857,7 +857,7 @@ class Runner:
         # --specs command or pinning unstable specialization IDs/pass counts.
         bodies = {}
         for spec in specs.split("// spec ")[1:]:
-            match = re.search(r"^fn (tre_\w+)\([^\n]*\) \{\n", spec, re.MULTILINE)
+            match = re.search(r"^fn ((?:tre|gb)_\w+)\([^\n]*\) \{\n", spec, re.MULTILINE)
             if match:
                 bodies[match[1]] = spec[match.end():]
         optimized = level != "-O0"
@@ -881,6 +881,75 @@ class Runner:
             if got != want:
                 self.fail(f"tail-recursion {level} {name}",
                           f"(loop, self call): got {got}, want {want}")
+                valid = False
+        # Guarded base-case inlining: a copy of the body's first statement
+        # per self-call site the rewrite took.
+        copies = {
+            "gb_build": 3 if optimized else 1,
+            "gb_walk": 2 if optimized else 1,
+            "gb_count": 3 if optimized else 1,
+            "gb_global": 1,
+            "gb_field": 1,
+            "gb_arith": 1,
+            "gb_var": 1,
+        }
+        for name, want in copies.items():
+            body = bodies.get(name)
+            got = None if body is None else body.count("gb_visits += 1;")
+            if got != want:
+                self.fail(f"guarded base case {level} {name}",
+                          f"copies of the body's start: got {got}, want {want}")
+                valid = False
+        # Inlining heuristics: which bodies are left out of line.
+        live = set(re.findall(r"^fn (ih_\w+)\(", specs, re.MULTILINE))
+        left = {
+            "ih_rare": True,
+            "ih_early": True,
+            "ih_check": not optimized,
+            "ih_wrap": not optimized,
+            "ih_twin": True,
+        }
+        for name, want in left.items():
+            if (name in live) != want:
+                self.fail(f"inlining heuristics {level} {name}",
+                          f"left out of line: got {name in live}, want {want}")
+                valid = False
+        return valid
+
+    def check_loop_shapes(self, text):
+        # The loops codegen restates mark themselves in the C with a comment
+        # naming the shape (optimize_loops.h, BCE's lenbound). Every shape_
+        # function of the fixture must have the one it is named for, and no
+        # keep_ function any.
+        bodies = {}
+        for m in re.finditer(r"^static [^\n;]*?\b((?:shape|keep)_\w+?)_g\d*\([^\n]*\) \{\n(.*?)^\}\n",
+                             text, re.MULTILINE | re.DOTALL):
+            bodies[m[1]] = re.findall(r"/\* loop shape: ([^*]*?) \*/", m[2])
+        strip = "strip-mined by"
+        sums = "sum terms in blocks of 8"
+        bound = "trip count bounded by"
+        down = "countdown counted up"
+        shapes = {
+            "shape_strip_lanes": f"{strip} 8", "shape_strip_count": f"{strip} 4",
+            "shape_strip_range": f"{strip} 3", "shape_strip_u8": f"{strip} 16",
+            "shape_strip_return": f"{strip} 4", "shape_strip_structs": f"{strip} 2",
+            "shape_strip_fixed": f"{strip} 4",
+            "shape_sum_dot": sums, "shape_sum_count": sums, "shape_sum_f32": sums,
+            "shape_sum_range": sums, "keep_sum_reads": None,
+            "shape_bound_count": f"{bound} 8", "shape_bound_any": f"{bound} 8",
+            "shape_bound_all": f"{bound} 8", "shape_bound_for": f"{bound} 6",
+            "shape_bound_grow": f"{bound} 8",
+            "shape_down": down, "shape_down_u8": down, "shape_down_i8": down,
+            "shape_down_u64": down, "shape_down_jumps": down, "keep_down_twice": None,
+        }
+        valid = True
+        for name, want in shapes.items():
+            got = bodies.get(name)
+            if got is None:
+                self.fail(f"loop shapes {name}", "no C function of its own (inlined?)")
+                valid = False
+            elif (want not in got) if want else got:
+                self.fail(f"loop shapes {name}", f"got {got}, want {want or 'none'}")
                 valid = False
         return valid
 
@@ -1384,6 +1453,46 @@ def main():
     for lvl in ("-O0", "-O1", "-O2"):
         r.show_task(optimize, lvl)
 
+    # The data stack report (--stacks): a program with a worker, whose
+    # first-line budget caps the workers at one, and a recursive one whose
+    # first-line GS_MAX_STACKS the compiler checks the count against. The
+    # counts themselves follow the emitted code and are not pinned.
+    def stacks_report(f, patterns):
+        # The report goes where the compiler's messages do: without an -o,
+        # stderr where it has TinyCC to run the program, stdout where it
+        # would write the .c instead.
+        code, out, err = r.goose("-O1", "--check", "--stacks", f)
+        missing = [p for p in patterns
+                   if not any(re.search(p, s, re.MULTILINE) for s in (out, err))]
+        if code != 0 or missing:
+            r.fail(f"stacks {f.name}", f"missing {missing}\n{out}{err}")
+        else:
+            r.ok(f"stacks {f.name}")
+    r.show_task(stacks_report, HERE / "threads" / "thread_cap.goose", [
+        r"^data stacks: 2 GB reserved per stack, 1 MB guard gap, 4 GB budget: 1 regions, GS_MAX_STACKS 1024$",
+        r"^main program: \d+ data stacks \+ 0 global stacks = \d+ regions$",
+        r"^worker `worker`: [1-9]\d* data stacks \+ 0 argument and global stacks = \d+ regions$",
+        r"^thread cap: 1 workers \(\(1 - \d+\) / \d+\), what hardware_threads\(\) reports at most$",
+        r"^fn worker: [1-9]\d* own, \d+ with callees$",
+    ])
+    r.show_task(stacks_report, HERE / "codegen" / "cycle_scratch_locals.goose", [
+        r"^data stacks: .*, GS_MAX_STACKS 4$",
+        r"^main program: [1-4] data stacks \+ 0 global stacks = [1-4] regions$",
+        r"^thread cap: none, no workers$",
+        r"^fn in_block: [1-9]\d* own, [1-4] with callees$",
+    ])
+    # The loops codegen restates, read in the C of their fixture, where -O1
+    # keeps each function a C function of its own.
+    def loop_shapes():
+        f = HERE / "optimizer" / "loop_shapes.goose"
+        cfile = gendir / "loop_shapes-shapes.c"
+        code, out, err = r.goose("-O1", "-o", cfile, f)
+        if code != 0:
+            r.fail(f"loop shapes {f.name}", out + err)
+        elif r.check_loop_shapes(cfile.read_text()):
+            r.ok(f"loop shapes {f.name}")
+    r.show_task(loop_shapes)
+
     # Every annotated regression, including the expected-abort cases. These
     # describe the default O1 pass; O0/O2 execution checks semantics.
     for f in tests:
@@ -1456,12 +1565,74 @@ def main():
                 out = r.run_expected([out_exe], "codegen_exec", f"clang-{label} codegen_exec.goose")
                 if out is not None and r.check_stdout("codegen_exec", f"clang-{label}", out):
                     r.ok(f"cgen-clang-{label} codegen_exec.goose")
+        # The versions of the simd functions (spec §7.12) exist only where
+        # clang builds for x86-64: each level the C may be built for runs
+        # here, at -O2 so the loops vectorize, and has to print what the
+        # baseline does. On a CPU without AVX-512 or AVX2 the higher builds
+        # run the highest version it has, which is still a version.
+        # simd_versions.goose covers the language's side; the stdlib fixtures
+        # check the library's simd functions, as clang builds them.
+        def clang_simd_versions(ctext):
+            # Every simd function keeps its versions, the single-use ones the
+            # optimizer would otherwise inline and the element-run twin too.
+            # The generic total has two specializations, numbered.
+            missing = [f for f in ("caesar_g", "checksum_g", "muladd_g", "squares_g", "minmax_g",
+                                   "biased_g", "fib_g", "sum3_g", "squares_g_er")
+                       if f"{f}_simd1(" not in ctext or f"{f}_simd2(" not in ctext]
+            if len(set(re.findall(r"\b(total_g_\d+)_simd[12]\(", ctext))) != 2:
+                missing.append("total_g")
+            return missing
+
+        def clang_simd_named(*names):
+            # A C name may carry a specialization's number after the module's.
+            def missing(ctext):
+                return [f for f in names
+                        if not re.search(rf"\b{f}_g\d+(_\d+)?_simd1\(", ctext)
+                        or not re.search(rf"\b{f}_g\d+(_\d+)?_simd2\(", ctext)]
+            return missing
+
+        def clang_simd(name, path, versions):
+            src = gendir / f"simdclang-{name}.c"
+            code, out, err = r.goose("-O2", "-o", src, path)
+            if code != 0:
+                r.fail(f"simd-clang {name}.goose", out + err)
+                return
+            missing = versions(src.read_text(encoding="utf-8"))
+            if missing:
+                r.fail(f"simd-clang {name}.goose", f"no simd versions of {', '.join(missing)}")
+                return
+            for level in ("2", "1", "0"):
+                label = f"simd{level}"
+                out_exe = gendir / f"simdclang-{name}-{level}{tc.EXE_SUFFIX}"
+                ok, log = clang.compile(src, out_exe, opt=2, warn="off", strict_decls=True,
+                                        defines=[f"GS_SIMD={level}"], runtime=r.runtime,
+                                        log=gendir / f"simdclang-{name}-{level}.log")
+                if not ok:
+                    r.fail(f"{label}-clang {name}.goose", "\n".join(log.splitlines()[:8]))
+                    continue
+                out = r.run_expected([out_exe], name, f"clang-{label} {name}.goose")
+                if out is not None and r.check_stdout(name, f"clang-{label}", out):
+                    r.ok(f"{label}-clang {name}.goose")
         if args.profile == "sanitize":
             pass  # The full generated-C suite already ran through Clang.
         elif not clang:
             r.show_later(r.say, "skip cgen-clang (no clang found)")
         else:
             r.show_task(clang_codegen)
+            r.show_task(clang_simd, "simd_versions", HERE / "codegen" / "simd_versions.goose",
+                        clang_simd_versions)
+            r.show_task(clang_simd, "stdlib_base64", HERE / "stdlib" / "stdlib_base64.goose",
+                        clang_simd_named("base64_encode", "base64_decode"))
+
+    def resource_paths():
+        from resource_paths import check_resource_paths
+        try:
+            check_resource_paths(exe, cc, gendir, jit=jit, runtime=r.runtime, extra=extra)
+            r.ok("resource paths: JIT/native roots, relocation and unchanged cwd")
+        except RuntimeError as e:
+            r.fail("resource paths", str(e))
+    if cc or jit:
+        r.show_task(resource_paths)
 
     show_goose_in_goose()
 

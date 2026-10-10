@@ -44,7 +44,9 @@ The memory model has four main properties:
 * You may still take **references into a growing container**, and the
   compiler proves they never dangle — no annotations, no `'a`, no `Rc`.
 
-This model has limitations, listed in §18, and measurable benefits: over sixteen
+This model has limitations, listed in
+[section 18](#18-what-it-costs-you) with the rules that impose them and how
+to work with each, and measurable benefits: over sixteen
 benchmarks Goose runs at about **3.3x the speed of idiomatic C++**, roughly
 level with hand-tuned C++ and with the best safe Rust, on **1.9x less memory**
 than the C++ and 1.2x less than the Rust
@@ -427,9 +429,10 @@ words.push(str("word", i));         // written straight into the new element
 ```
 
 There is no temporary string that is then copied into the array. The
-copy-free construction guarantee (spec §4.3) says a constructed value is
-always built in its final home, propagated top-down through calls, and the
-compiler is required not to need a fallback.
+copy-free construction guarantee
+([spec §4.3](goose_spec.md#43-the-in-place-construction-guarantee)) says a
+constructed value is always built in its final home, propagated top-down
+through calls, and the compiler is required not to need a fallback.
 
 Slicing text costs nothing, because a slice is a pointer and a count into
 bytes that already exist:
@@ -695,7 +698,8 @@ shapes[2] = Shape.Rect { w: 1.0, h: 1.0 };      // a different variant, in place
 **Variable mode** (`Shape..` — note the trailing dots) gives each value
 exactly its own variant's size: a `Dot` is 1 byte, a `Circle` 9, a `Rect` 17.
 The price is that the elements are packed against each other, so the array is
-sequential (short of an index you keep beside it, section 10) and a value can
+sequential (short of an index you keep beside it,
+[section 10](#an-index-for-variable-size-elements)) and a value can
 never change variant. In exchange you may take references *into* a payload:
 
 ```goose
@@ -1085,8 +1089,9 @@ error rather than reserving it for catastrophes
 bad escape are all one line each).
 
 The same machinery is what lets a block `return` from its enclosing function
-rather than from the HOF calling it (§13), which is the other place you will
-meet it.
+rather than from the HOF calling it
+([section 13](#13-generics-and-blocks-that-disappear)), which is the other
+place you will meet it.
 
 And the ones that stop the program rather than reporting: `assert(c)` for
 invariants, `abort(msg)` with a message, `exit(code)`. The checker knows the
@@ -1459,7 +1464,7 @@ means a reduction is in range by construction.
 
 **What the numbers actually say** ([`bench/summary.md`](../bench/summary.md),
 [`bench/results.md`](../bench/results.md)): 3.3x the speed of idiomatic C++,
-1.16x hand-optimized C++, 1.04–1.12x the best safe Rust, on 1.9x/1.3x/1.2x
+1.16x hand-optimized C++, 1.05–1.11x the best safe Rust, on 1.9x/1.3x/1.2x
 less memory, over sixteen benchmarks. Read the losses too — they are in
 there, with explanations. `particles` is a flat float kernel where the design
 never predicted an advantage and there is none. `calc`, at 0.82x against
@@ -1472,35 +1477,51 @@ cost the other languages pay and Goose does not.
 
 ## 18. What it costs you
 
-You will meet all of these.
+You will meet all of these. Each one links to the section above that shows
+how to work with it, where there is one, and to the specification rule that
+imposes it.
 
 * **You have to think about where data lives.** Not constantly, but the
   question "who owns this, and how long does its scope last" is one you now
   answer explicitly. Most of the time the answer is "the function that builds
-  it", and that is free. When it is not, it is a `reusable` pool.
+  it", and that is free. When it is not, it is a `reusable` pool
+  ([section 11](#11-when-lifetimes-really-are-not-nested);
+  [spec §1.2](goose_spec.md#12-memory-model),
+  [§5.4](goose_spec.md#54-reusable-arrays-safe-allocation-escape-hatch)).
 * **Recursive functions cannot keep growable data across a recursive call.**
   Scratch in a block that ends before the call is fine; anything that lives
   longer is passed in. This changes how a recursive-descent parser is
   structured — the state becomes locals of the non-recursive entry function,
   or a struct of references to them, which is arguably nicer, but it is a
-  change.
+  change ([Several tables, one context](#several-tables-one-context);
+  [spec §7.8](goose_spec.md#78-recursion)).
 * **Arrays of variable-size elements cannot be indexed.** You pick, per
   container, between "compact and walkable" and "indexable", or pay for an
-  index of references beside a compact one (section 10).
+  index of references beside a compact one
+  ([section 10](#an-index-for-variable-size-elements);
+  [spec §3.3](goose_spec.md#33-the-array-family)).
 * **A fixed-mode enum cannot be pointed into; a variable-mode one cannot be
-  overwritten.** You pick, per use site.
+  overwritten.** You pick, per use site ([section 9](#9-enums-in-two-sizes);
+  [spec §3.5](goose_spec.md#35-algebraic-data-types),
+  [§8.1](goose_spec.md#81-match)).
 * **No closures that escape, no function pointers, no dynamic dispatch beyond
   ADT tags.** The closed-world compiler is what makes roots and destinations
-  static; it is also what stops you writing a plugin system.
+  static; it is also what stops you writing a plugin system
+  ([section 13](#13-generics-and-blocks-that-disappear);
+  [spec §7.6](goose_spec.md#76-static-function-values),
+  [§8.2](goose_spec.md#82-case-functions-match-as-an-overload-set)).
 * **Whole-program compilation.** No separate compilation, no shared
-  libraries of Goose code.
+  libraries of Goose code
+  ([spec §10.1](goose_spec.md#101-whole-program-call-graph-order)).
 * **A `reusable` pool manages its elements loosely.** Nothing is freed and
   nothing is unsafe, but a slot you handed back and then still name reads
   whatever its next owner put there — the array equivalent of a stale index,
-  and yours to avoid.
+  and yours to avoid ([section 11](#11-when-lifetimes-really-are-not-nested);
+  [spec §9.4](goose_spec.md#94-type-safe-reuse-and-stale-references)).
 * **v1 omissions** you will notice: no move for resizables, one resizable per
-  struct, no labeled break, no namespace privacy, no subprocesses or
-  networking in the library yet.
+  struct, no labeled break, no namespace privacy
+  ([spec §12](goose_spec.md#12-builtins-the-standard-library-and-what-v1-leaves-out)),
+  no subprocesses or networking in the library yet ([`os`](stdlib.md#os)).
 
 ---
 
@@ -1556,24 +1577,26 @@ may leave `main` out. A `const u8[:]` result comes back as a pointer plus an
 extra `int64_t *` parameter that receives its length; scalars and flat
 fixed-size values are returned by value. The generated functions are not
 thread-safe: call them from the thread that called `goose_init`. The
-signatures that may cross are the ones from §16, with a few more limits; see
-[spec §7.11](goose_spec.md).
+signatures that may cross are the ones from [section 16](#16-calling-c), with
+a few more limits; see
+[spec §7.11](goose_spec.md#711-exporting-goose-functions-to-c).
 
 ---
 
 ## 20. Where to go next
 
-* **[`samples/`](../samples/README.md)** — twenty-nine complete programs in
+* **[`samples/`](../samples/README.md)** — thirty-one complete programs in
   reading order, each one commented for what it demonstrates. Start with
   `01_tour` and `02_memory`, then jump to whatever looks like your problem.
   `13_linked_list`, `14_bst` and `18_json` are the ones that show the data
   structures in detail; `26_file_tree` uses both pool kinds together.
-* **[`docs/stdlib.md`](stdlib.md)** — the library reference. Eight modules:
-  `std`, `dictionary`, `vec`, `math`, `os`, `gfx`, `physics`, and `ui`, with
-  Goose interfaces under `stdlib/`.
+* **[`docs/stdlib.md`](stdlib.md)** — the library reference. Fourteen modules:
+  `std`, `dictionary`, `vec`, `math`, `os`, `binary`, `base64`, `csv`,
+  `json`, `regex`, `audio`, `gfx`, `physics`, and `ui`, with Goose interfaces
+  under `stdlib/`.
 * **[`docs/goose_spec.md`](goose_spec.md)** — the actual rules, when you want
   to know why something did not compile. It is precise rather than friendly,
-  and it is where every "§" in this document points.
+  and it is where every "spec §" in this document points.
 * **[`bench/`](../bench/summary.md)** — the numbers and the design notes
   behind them.
 * **[`docs/implementation.md`](implementation.md)** — how the compiler works,

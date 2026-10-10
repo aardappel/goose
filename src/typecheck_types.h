@@ -224,6 +224,7 @@ inline TypeCheck::DefaultScope::DefaultScope(TypeCheck &t, FnSpec *env, Line cal
     f.scopebase = (int)tc.scopes.size();
     f.varbase = (int)tc.vars.size();
     f.callline = callline;
+    f.bodyidx = (int)tc.outerbodies.size();
     tc.frames.push_back(f);
 }
 
@@ -704,8 +705,144 @@ inline void TypeCheck::NoRelRefCopy(Node *n, TypeExpr *t) {
     if (IsRefOrSlice(t) || !HasRelRefT(t)) return;
     if (Is<StructLit>(n) || Is<ArrayLit>(n)) return;   // Constructed in place.
     if (auto d = Is<Dot>(n); d && d->variantconst) return;   // A payload-less variant: a tag.
+    // A default value's relative references are nulls, an empty limited
+    // array's none, and `self` where a field's default says so: offsets that
+    // mean the same wherever the value sits.
+    if (auto c = Is<Call>(n); c && c->builtin == B_DEFAULT) return;
+    // A function's result is built where it is received where it is not
+    // fixed-size (§4.3, §7.3). A fixed-size one is what its returns made,
+    // which by this same rule is a literal, a default, another call's result
+    // or a named result, and a returned literal has no root for a relative
+    // reference to point within but itself: its links are nulls and `self`.
+    if (auto c = Is<Call>(n); c && c->builtin < 0) {
+        auto user = [](FnSpec *s) { return s && s->sf && !s->sf->isextern; };
+        auto &ds = c->dispatch;
+        if (ds.empty() ? user(c->spec) : all_of(ds.begin(), ds.end(), user)) return;
+    }
+    if (auto id = Is<Ident>(n); id && n == retvalnode && AllowNamedResult(id, t)) return;
     Error(n, cat("copying a value of type ", TypeStr(t), ", which contains self-relative "
                  "references, is not supported; construct it in place"));
+}
+
+// `return x` of a local every return of the function gives is built at the
+// result's destination from its declaration (§7.3), so nothing is copied:
+// the local is declared at the top of the body, the result is not
+// fixed-size, and its layout is the local's, or a resizable array's elements
+// make the variable array returned. Whether every return gives it only the
+// whole body says, which the end of its check judges (CheckNamedResultUses).
+inline bool TypeCheck::AllowNamedResult(Ident *id, TypeExpr *t) {
+    auto &fr = frames.back();
+    auto spec = fr.spec;
+    auto vd = id->vdef;
+    if (!spec || !fr.sf || fr.isfunval || fr.isdefault || !spec->body || !vd || !vd->type ||
+        spec->rets.size() != 1 || ClassOf(t) == SC_FIXED)
+        return false;
+    auto top = false;
+    for (auto st : spec->body->stmts)
+        if (auto d = Is<VarDecl>(st); d && d->defs.size() == 1 && d->defs[0] == vd) top = true;
+    if (!top) return false;
+    auto ct = vd->type;
+    auto elems = IsArrayKind(ct, A_GROW) || IsArrayKind(ct, A_GROWSHRINK);
+    if (!TypeEq(ct, t) && !(elems && IsArrayKind(t, A_VAR) && TypeEq(ct->arr->sub, t->arr->sub)))
+        return false;
+    if (!NamedResultKeepsLinks(ct)) return false;
+    namedresultuses.push_back({ spec, id, vd });
+    return true;
+}
+
+// The named result a body's returns agree on, as codegen finds it on the
+// final body (CodeGen::NamedResult): a local declared alone at the top of
+// the body that every return of the function gives, the tail included. A
+// return not checked as one of this function's counts as one.
+inline VarDef *TypeCheck::NamedResultOf(FnSpec *spec) {
+    auto body = spec->body;
+    set<VarDef *> top;
+    for (auto st : body->stmts)
+        if (auto d = Is<VarDecl>(st); d && d->defs.size() == 1) top.insert(d->defs[0]);
+    VarDef *cand = nullptr;
+    auto ok = true;
+    auto consider = [&](Node *v) {
+        auto id = Is<Ident>(v);
+        if (!id || !id->vdef || !top.count(id->vdef) || (cand && cand != id->vdef)) {
+            ok = false;
+            return;
+        }
+        cand = id->vdef;
+    };
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n || !ok) return;
+        if (auto r = Is<Return>(n); r && (r->target == spec->sf || !r->target)) {
+            if (r->vals.size() != 1) ok = false;
+            else consider(r->vals[0]);
+        }
+        RunChildren(n, walk);
+    };
+    walk(body);
+    if (body->tail && body->tail->exprtype && body->tail->exprtype->kind != TY_VOID)
+        consider(body->tail);
+    return ok ? cand : nullptr;
+}
+
+// The returns that relied on being the body's named result (AllowNamedResult)
+// stand where the body has one and it is theirs.
+inline void TypeCheck::CheckNamedResultUses(FnSpec *spec) {
+    VarDef *named = nullptr;
+    auto found = false;
+    for (size_t i = 0; i < namedresultuses.size();) {
+        auto u = namedresultuses[i];
+        if (u.spec != spec) {
+            i++;
+            continue;
+        }
+        namedresultuses.erase(namedresultuses.begin() + (ptrdiff_t)i);
+        if (!found) {
+            named = NamedResultOf(spec);
+            found = true;
+        }
+        if (named != u.var)
+            Error(u.at, cat("copying a value of type ", TypeStr(u.var->type), ", which contains "
+                            "self-relative references, is not supported: ", u.var->name,
+                            " is built where the result goes only where every return of ",
+                            spec->sf->name, " gives it (§7.3); construct it in place"));
+        spec->relnamedresult = true;
+    }
+}
+
+// The pointee types of the self-relative references a value of type t holds
+// by value.
+inline void TypeCheck::SelfRelPointees(TypeExpr *t, vector<TypeExpr *> &out) {
+    switch (t->kind) {
+        case TY_REF:
+            if (t->ref->lenstorage >= 0 && !t->ref->pool) out.push_back(LoadType(t->ref->sub));
+            return;
+        case TY_ARRAY: SelfRelPointees(t->arr->sub, out); return;
+        default: EachField(t, [&](TypeExpr *ft) { SelfRelPointees(ft, out); });
+    }
+}
+
+// A resizable struct returned as a named result keeps its resizable tail at
+// the destination, but its fields before the tail reach the caller's header
+// as a copy (C.3): a self-relative reference among them, or one in the tail
+// to a value they hold, would still measure from where they were.
+inline bool TypeCheck::NamedResultKeepsLinks(TypeExpr *t) {
+    vector<TypeExpr *> head;
+    auto tail = t;
+    while (tail->kind == TY_STRUCT && ClassOf(tail) == SC_RESIZABLE) {
+        vector<TypeExpr *> fts;
+        EachField(tail, [&](TypeExpr *ft) { fts.push_back(ft); });
+        if (fts.empty()) break;
+        head.insert(head.end(), fts.begin(), fts.end() - 1);
+        tail = fts.back();
+    }
+    if (tail->kind != TY_ARRAY && ClassOf(tail) == SC_RESIZABLE) return false;
+    vector<TypeExpr *> pointees;
+    SelfRelPointees(tail, pointees);
+    for (auto h : head) {
+        if (HasRelRefT(h)) return false;
+        for (auto p : pointees)
+            if (CanContain(h, p)) return false;
+    }
+    return true;
 }
 
 // ------------------------------------------------------------------
@@ -1007,8 +1144,15 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
         // Case 3: the container came from a caller, or its own root is only a
         // bound -- storage this function cannot enumerate may be behind it.
         // Read out of a caller's container, its stores say what it holds.
+        // A holder of a frame around a nested function's or a function
+        // value's body is no caller's storage: its stores are on record as
+        // the activation's own are, and the body is checked again for a call
+        // that finds them otherwise (FnSpec::envreads).
         auto global = croot->isglobal;
         if (!global && (!c.exact || croot->ownerspec != CurRealFrame().spec)) {
+            if (c.exact && inplace && croot->type && !IsTemp(croot) && croot->ownerspec &&
+                OuterLocal(croot) && ContentsReadBack(croot, out))
+                continue;
             out.Add({ croot, false, from, false, classread });
             continue;
         }
@@ -1047,10 +1191,14 @@ inline Roots TypeCheck::ReadBackRoot(TypeExpr *rt, const Roots &container, bool 
 // reference to h, at each place an inexact one may name (ShrinkTargets),
 // and a callee's, a nested function's or a function value's, as its call
 // maps it (ApplyCalleeStores). Where each root stored there is a variable's
-// own storage exactly, static data, or a class whose storage's views they
-// are (RootAlt::classread), what is read out of h is one of those, exactly
-// as it was stored, or one of the views, as a read out of the storage
-// itself is, though read out of h (RootAlt::from). A store later in a loop
+// own storage exactly, static data, a class whose storage's views they are
+// (RootAlt::classread), or a parameter's class bounding what its argument
+// held (a holder parameter whose argument points into several arrays), what
+// is read out of h is one of those, exactly as it was stored, one of the
+// views, as a read out of the storage itself is, or the caller's storage
+// behind the class, as a bound, though read out of h (RootAlt::from). The
+// caller filled that storage before the call, so nothing in it can point
+// into this activation's own variables. A store later in a loop
 // body reaches the read on the next iteration, and a store of anything
 // else there adds a root to h's contents or takes the mark off one, which
 // the loop feeds back: it checks the read again. A root that only bounds
@@ -1064,8 +1212,9 @@ inline bool TypeCheck::ContentsReadBack(VarDef *h, Roots &out) {
         if (a.classread) r.Add({ a.root, false, h, false, true });
         else if (!a.root) r.Add({ nullptr, a.exact });
         else if (a.exact) r.Add({ a.root, true, h });
+        else if (IsClassRoot(a.root)) r.Add({ a.root, false, h });
         else return false;
-        known = known || a.classread || a.exact;
+        known = known || a.classread || a.exact || IsClassRoot(a.root);
     }
     if (!known) return false;
     out.Add(r);

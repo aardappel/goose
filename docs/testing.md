@@ -73,6 +73,7 @@ Test fixtures are grouped by category; `run_tests.py` stays at the root of `test
 | `expected/` | Shared output and runtime-diagnostic expectations. |
 | `run_tests.py` | The Python test runner. |
 | `compiler_roots.cpp` | Root-set join laws, feedback on weakening, order-independent equality and the deliberate comparison projections; compiled and run in both native profiles. |
+| `resource_paths.py` | JIT entry-source resource roots, native executable roots with separate and standalone runtimes, relocation, and unchanged working-directory file access. Called by the main runner. |
 | `api_check.py` | Checks `stdlib/gfx.goose`, `stdlib/physics.goose` and `stdlib/ui.goose` against their C layers' headers; run by `run_tests.py`. |
 
 Positive fixtures are discovered one level below `test/`; nested import helpers
@@ -184,17 +185,27 @@ Every runnable fixture requires an `expected/<name>.out`, including an empty
 file when the program should be silent. Expected aborts additionally require
 `.aborts` and a nonempty `.stderr` containing the expected runtime diagnostic
 substrings. Sanitizer reports fail even when a program was expected to abort.
-Resource-bound fixtures can set a runtime limit in their first line, such as
-`// runtime-define: GS_MAX_STACKS=1`; the runner applies it to both TinyCC
-and generated C. `append_destination_storage.goose` uses this to detect
+Resource-bound fixtures can set a limit in their first line, such as
+`// runtime-define: GS_MAX_STACKS=1`; the runner passes it as a `-D` to
+every compile, where the compiler checks `GS_MAX_STACKS` against the
+program's static stack count and the generated C takes the rest. `append_destination_storage.goose` uses this to detect
 temporary result stacks that output-only comparisons would miss,
 `cycle_scratch_locals.goose` to show that a recursion's scratch locals take
 the same few stacks at every level, and `discarded_resizable_results.goose`
 shrinks each stack's reservation (`GS_STACK_RESERVE`) so that its loops
 overflow one unless every discarded result is released, as
 `guard_flat_storage.goose` does for what a guard's condition, its else and
-the rest of its block take, the rest emitted without braces of its own;
-`data_stacks_exhausted.goose` runs out of stacks on purpose. A fixture
+the rest of its block take, the rest emitted without braces of its own.
+`cycle_static_stacks.goose` runs the shapes a call into a recursive cycle
+allows (§7.8), the `errors_tc/cycle_temporary_*`, `cycle_construction_*` and
+`cycle_result_*` fixtures being the rejected ones, and codegen fails with an
+internal error should any program hold a data stack across such a call.
+`thread_cap.goose` shrinks the address space budget (`GS_STACK_BUDGET`) so
+that `hardware_threads()` reports its floor of one wherever it runs, and
+`stack_stats.goose` has its program report its stack use
+(`GS_STACK_STATS`), checked through `expected/stack_stats.stderr`. The
+runner also checks the `--stacks` report of `thread_cap.goose` and
+`cycle_scratch_locals.goose` for its shape, not its counts. A fixture
 expecting a debug-only abort sets `GS_DEBUG=1` the same way, which makes
 every run of it a debug build: `cast_abort_location.goose` and
 `overflow_abort_location.goose` check the location a failing check reports.
@@ -237,7 +248,8 @@ The runner checks more than exit status and runtime output:
 | `gfx_err_shader_syntax.goose`, `gfx_err_shader_part.goose` | Besides their markers, the error is reported at the program's line holding the offending GLSL. |
 | Generated `call_chain.goose`, `call_chain_too_deep.goose` (`build/gen/<profile>/`) | A compile-time call path through 2000 distinct functions checks at `-O0`, and runs through TinyCC; at `-O2`, where the inliner may fold its single-use functions into one body only 64 C blocks deep at a time, it builds with the native C compiler and runs (`docs/implementation.md` §4). One through 6000, each calling the next from 32 blocks deep, is rejected as too deep for the compiler's stack instead of overflowing it (§3.1). |
 | Generated `guard_runs.goose` (`build/gen/<profile>/`) | 300 guards in a row, in a function's body and in a loop's, build with the native C compiler and run at `-O0` and `-O2`: the rest of the block after a guard whose else leaves opens no C block (`docs/implementation.md` §6.2), where MSVC stops at 128 levels and clang at 256. A chain of 200 single-use functions, each calling the next behind four guards, folds at `-O2` into bodies 64 blocks deep, which would nest past both limits if the inliner's count left out blocks codegen opens (§4). |
-| `optimize.goose` at O0/O1/O2 | Inspect named tail-recursion bodies in `--specs`: supported integer accumulator/plain recursion becomes loops; modulo, floating-point reassociation, nonlocal-return frames and returns inside nested loops retain self calls. Mixed operators retain the ineligible call. Leading locals prevent base-case inlining from consuming these cases first. |
+| `loop_shapes.goose` at O1 | Read the generated C: every `shape_` function has the restated loop it is named for, marked by codegen's `/* loop shape: ... */` comment, and no `keep_` function has one (`docs/implementation.md` §6.12). Its runs check that each restated loop computes what a reference loop does. |
+| `optimize.goose` at O0/O1/O2 | Inspect named tail-recursion bodies in `--specs`: supported integer accumulator/plain recursion becomes loops; modulo, floating-point reassociation, nonlocal-return frames and returns inside nested loops retain self calls. Mixed operators retain the ineligible call. Leading locals prevent base-case inlining from consuming these cases first. The `gb_` functions count the copies of their first statement: guarded base-case inlining copies the body once per self-call site where the test compares unassigned parameters, and not where it reads a global or a node, does arithmetic, or reads an assigned parameter. |
 
 The fixture audit retained the small lifetime, optional-narrowing, alias-cycle,
 dispatch and frame-layout regressions. Similar diagnostics do not make them

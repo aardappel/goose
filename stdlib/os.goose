@@ -35,6 +35,17 @@ extern "gs_os_arg_count" fn arg_count() -> i64;
 extern "gs_os_arg" fn arg(i: i64, out: u8[>..]&);              // appends argument i (0 = the program)
 extern "gs_os_getenv" fn env(name: const u8[:], out: u8[>..]&) -> bool;
 
+// Application resources: the entry source's directory in JIT, the executable's
+// directory in AOT (Contents/Resources/ in a macOS .app). Absolute UTF-8 with
+// a trailing separator, ready to concatenate. Ordinary file paths still use cwd.
+// The builder form appends nothing on failure; the string form aborts on failure.
+extern "gs_os_resource_dir" fn resource_dir(out: u8[>..]&) -> bool;
+fn resource_dir() -> u8[>..] {
+    var out: u8[>..] = [];
+    if !resource_dir(out) { abort("cannot locate the application resource directory"); }
+    return out;
+}
+
 // The bytes behind args(): grow-only, so the slices handed out stay valid
 // however many times it is called.
 var argv_text: u8[>..] = [];

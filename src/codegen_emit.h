@@ -59,34 +59,183 @@ inline const VarDef *CodeGen::OpenIbNrvo(InlineBlock *ib, const Dst &d) {
     return vd;
 }
 
-// A reference to a resizable carries its stack inside the reference value,
-// so a function holding one has a second spelling for a stack it may also
-// name directly; that function keeps the plain memory form throughout.
-inline bool CodeGen::CanCacheTops(FnSpec *sp) {
-    auto ok = true;
-    auto check = [&](const VarDef *v) {
-        // A pool reference likewise carries its stack (and its freelist's).
-        if (v && (PrefVar(v) || (v->type && v->type->kind == TY_REF &&
-                                 IsResz(v->type->ref->sub))))
-            ok = false;
+// What `d`, bound to `init`, stands for (refalias): the resizable variable
+// `&v` names, or the reference variable an identifier names, followed
+// through that one's own alias. Null where d has to be a C variable: it can
+// be rebound, a nested function captures it (and is handed its address),
+// it is pool-shaped, or the initializer is anything but such a name. A
+// parameter, an alias, and a captured reference that cannot be rebound hold
+// the same value as long as d is live; a resizable variable's header and
+// stack never move.
+inline const VarDef *CodeGen::AliasTarget(VarDef *d, Node *init, Node *&path) {
+    path = nullptr;
+    if (!d || !init || !curspec || d->isvar || d->isglobal || d->reusable || !d->type ||
+        !IsFatRef(d->type) || d->type->ref->optional || PrefVar(d) || d->captured ||
+        capturedvars.count(d))
+        return nullptr;
+    // A reference variable that stands for its whole life for what it holds:
+    // a parameter, an alias, a captured reference, none of them rebindable.
+    auto fixedref = [&](const VarDef *t) -> const VarDef * {
+        if (!t || !t->type || !IsFatRef(t->type)) return nullptr;
+        if (refalias.count(t)) return t;
+        if (t->isvar || t->isglobal || t->reusable || PrefVar(t)) return nullptr;
+        for (auto p : curspec->params) if (p == t) return t;
+        for (auto fv : curinfo->freevars) if (fv == t) return t;
+        return nullptr;
     };
-    for (auto p : sp->params) check(p);
-    for (auto fv : sinfo[sp].freevars) check(fv);
-    function<void(Node *)> walk = [&](Node *n) {
-        if (!n || !ok) return;
-        // A fat reference that is not held in a variable either -- one read
-        // out of a field or an element, or returned by a call -- can be
-        // dereferenced right here, and names its stack the same way.
-        // Taking one of a variable does not: that value is only handed on.
-        if (n->exprtype && IsFatRef(n->exprtype)) {
-            auto un = Is<Unary>(n);
-            if (!Is<Ident>(n) && !(un && Is<Ident>(un->child))) ok = false;
+    if (auto u = Is<Unary>(init); u && u->op == T_BITAND) {
+        if (!u->child->exprtype || !TEq(d->type->ref->sub, u->child->exprtype)) return nullptr;
+        if (auto id = Is<Ident>(u->child)) {
+            auto t = id->vdef;
+            if (!t || !t->type || t->reusable || !IsResz(t->type)) return nullptr;
+            return t;
         }
-        NodeVars(n, check);
+        // A frame object's tail, by fields from a variable that holds the
+        // object or from a reference that stands for one: a C member of a
+        // header that never moves, on the object's own stack. A reference
+        // field on the way can be rebound, and leads elsewhere anyway.
+        auto n = u->child;
+        while (auto dot = Is<Dot>(n)) {
+            if (!dot->IsField() || !dot->obj->exprtype) return nullptr;
+            n = dot->obj;
+            if (!Is<Ident>(n) && n->exprtype->kind == TY_REF) return nullptr;
+        }
+        auto id = Is<Ident>(n);
+        if (n == u->child || !id || !id->vdef || !id->vdef->type) return nullptr;
+        auto t = id->vdef;
+        if (IsResz(t->type) ? t->reusable : !fixedref(t)) return nullptr;
+        path = u->child;
+        return t;
+    }
+    auto id = Is<Ident>(init);
+    auto t = id ? id->vdef : nullptr;
+    if (!t || !t->type || !init->exprtype || !TEq(init->exprtype, d->type)) return nullptr;
+    // A receiver the checker takes the reference of in place.
+    if (IsResz(t->type) && !t->reusable && TEq(d->type->ref->sub, t->type)) return t;
+    if (!TEq(t->type, d->type)) return nullptr;
+    if (auto it = refalias.find(t); it != refalias.end()) {
+        if (auto pit = aliaspath.find(t); pit != aliaspath.end()) path = pit->second;
+        return it->second;
+    }
+    return fixedref(t);
+}
+
+// `&x` or `&x.f.g` of a variable: a reference that, made here, is only
+// handed on -- to a call, which syncs whatever it is handed a stack in, into
+// a value, which is passed to calls the same way or read back out of a field
+// (where it counts again), or to an alias, which stands for what it names.
+inline bool CodeGen::HandedRef(Node *n) {
+    auto un = Is<Unary>(n);
+    if (!un || un->op != T_BITAND) return false;
+    auto c = un->child;
+    while (auto d = Is<Dot>(c)) {
+        if (!d->IsField()) return false;
+        c = d->obj;
+        if (!Is<Ident>(c) && c->exprtype && c->exprtype->kind == TY_REF) return false;
+    }
+    return Is<Ident>(c) != nullptr;
+}
+
+// Every binding of the body that AliasTarget accepts, in source order, so
+// that an alias of an alias resolves to the first one's target.
+inline void CodeGen::FindRefAliases(FnSpec *sp) {
+    auto bind = [&](VarDef *d, Node *init) {
+        Node *path = nullptr;
+        auto t = AliasTarget(d, init, path);
+        if (!t) return;
+        refalias[d] = t;
+        if (path) aliaspath[d] = path;
+    };
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n) return;
+        if (auto vd = Is<VarDecl>(n); vd && vd->defs.size() == vd->inits.size()) {
+            for (size_t i = 0; i < vd->defs.size(); i++) bind(vd->defs[i], vd->inits[i]);
+        }
+        if (auto c = Is<Call>(n); c && c->fvbody) {
+            for (size_t i = 0; i < c->fvparams.size() && i < c->args.size(); i++)
+                bind(c->fvparams[i], c->args[i]);
+        }
         RunChildren(n, walk);
     };
     walk(sp->body);
-    return ok;
+}
+
+// Which classes of stacks this specialization caches the tops of (see the
+// note above topcache in codegen.h). A reference to a resizable carries its
+// stack inside the reference value, so it is a second spelling of a stack the
+// body may also name directly; each class is cached only where nothing the
+// body holds can be such a second spelling of one of its stacks:
+//  * its own indexed stacks, which only a fat reference rooted at one of its
+//    own locals could also name: none may be held anywhere but in a
+//    parameter, a free variable or an alias. A fat reference read out of a
+//    field or an element, returned by a call, or held in a variable of any
+//    other kind can be dereferenced right here, and might be one. Taking one
+//    of a variable does not count: that value is only handed on;
+//  * the globals' dedicated stacks, which a parameter or a captured
+//    reference may also be rooted at: there must be none;
+//  * its captured resizables' stacks (`<fv>_stk`), likewise: a parameter or
+//    a captured reference might be rooted at the same variable; and one
+//    that is its function's named result lives at that function's
+//    destination, where a `return ... from` to it builds its value, so
+//    there must be no such return here either;
+//  * its return destinations (`gs_dst<i>`), which a caller may hand over as
+//    a global's stack, a parameter's, or one a captured variable is on:
+//    none of those may be named, and nothing returns to a gs_fdst_ channel;
+//  * its reference parameters' stacks, where RefTopsOk clears it.
+// Own stacks never meet another class: a caller's expressions cannot name
+// them. Of the rest, no two classes that could share a stack are cached
+// together.
+inline void CodeGen::PlanTopClasses(FnSpec *sp) {
+    topown = topglob = topcap = topdst = reftops = false;
+    auto &fvs = sinfo[sp].freevars;
+    auto isparam = [&](const VarDef *v) {
+        return std::find(sp->params.begin(), sp->params.end(), v) != sp->params.end();
+    };
+    auto isfv = [&](const VarDef *v) { return std::find(fvs.begin(), fvs.end(), v) != fvs.end(); };
+    // A pool reference carries its stack (and its freelist's) as well.
+    auto carries = [&](const VarDef *v) {
+        return v && (PrefVar(v) || (v->type && v->type->kind == TY_REF && IsResz(v->type->ref->sub)));
+    };
+    auto fatparam = false, fatfv = false, capresz = false, globals = false, unknown = false;
+    for (size_t i = 0; i < sp->params.size(); i++)
+        if (carries(sp->params[i]) || IsPoolParam(sp, i)) fatparam = true;
+    for (auto fv : fvs) {
+        if (fv->reusable || carries(fv)) fatfv = true;
+        else if (fv->type && IsResz(fv->type)) capresz = true;
+    }
+    // A return exiting this function or an inlined body stays here; any
+    // other target constructs into a gs_fdst_ channel (§7.9).
+    set<SFunction *> localexits { sp->sf };
+    auto farreturn = false;
+    function<void(Node *)> ibs = [&](Node *n) {
+        if (!n) return;
+        if (auto ib = Is<InlineBlock>(n)) localexits.insert(ib->sf);
+        RunChildren(n, ibs);
+    };
+    ibs(sp->body);
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n) return;
+        if (n->exprtype && IsFatRef(n->exprtype)) {
+            if (!Is<Ident>(n) && !HandedRef(n)) unknown = true;
+        }
+        if (auto r = Is<Return>(n); r && !localexits.count(r->target)) farreturn = true;
+        NodeVars(n, [&](const VarDef *v) {
+            if (!v) return;
+            if (carries(v) && !refalias.count(v) && !isparam(v) && !isfv(v)) unknown = true;
+            if (v->isglobal && v->type && (IsBytesT(v->type) || HoldsFatRef(v->type)))
+                globals = true;
+        });
+        RunChildren(n, walk);
+    };
+    walk(sp->body);
+    auto nonfixedret = false;
+    for (auto rt : sp->rets) nonfixedret |= IsBytesT(rt);
+    topown = !unknown;
+    topglob = topown && !fatparam && !fatfv;
+    topcap = topglob && capresz && !farreturn;
+    topdst = topglob && !capresz && !globals && nonfixedret && !farreturn && !fromids.count(sp);
+    reftops = !topglob && RefTopsOk(sp);
+    cachetops = topown || reftops;
 }
 
 // Whether this specialization may cache the tops of the stacks it reaches
@@ -153,16 +302,24 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp) {
             gt = si->ftypes[LastRealField(si->st->fields)];
         }
     };
+    // An alias stands for a parameter or for a resizable variable, whose
+    // spelling it shares; the variable's own identifier is checked where its
+    // binding names it.
     auto check = [&](const VarDef *v) {
         if (!v || !v->type) return;
-        if (IsFatRef(v->type) && !fatparams.count(v)) ok = false;
+        if (IsFatRef(v->type) && !fatparams.count(v) && !refalias.count(v)) ok = false;
         if (v->isglobal && IsBytesT(v->type) && maybeparam(v->type)) ok = false;
     };
     function<void(Node *)> walk = [&](Node *n) {
         if (!n || !ok) return;
         if (n->exprtype && IsFatRef(n->exprtype)) {
+            // A reference taken of a variable is only handed on: to a call,
+            // which syncs everything it is handed a stack in, or to an alias.
             auto id = Is<Ident>(n);
-            if (!id || !fatparams.count(id->vdef)) { ok = false; return; }
+            if (!HandedRef(n) && (!id || !(fatparams.count(id->vdef) || refalias.count(id->vdef)))) {
+                ok = false;
+                return;
+            }
         }
         if (auto r = Is<Return>(n); r && !localexits.count(r->target)) ok = false;
         NodeVars(n, check);
@@ -174,13 +331,21 @@ inline bool CodeGen::RefTopsOk(FnSpec *sp) {
 
 inline void CodeGen::ResetFnState() {
     toporder.clear();
+    lenslots.clear();
     growth.clear();
     loopparent.clear();
+    loopcons.clear();
     loopstack.clear();
+    markers = false;
     refstkexprs.clear();
+    capstkexprs.clear();
     cachetops = false;
     reftops = false;
+    topown = topglob = topcap = topdst = false;
     vnames.clear();
+    refalias.clear();
+    aliaspath.clear();
+    aliasbound.clear();
     views.clear();
     vstk.clear();
     vpool.clear();
@@ -212,8 +377,8 @@ inline string CodeGen::EnsureEr(FnSpec *sp) {
     if (!ok) return ernames[sp] = "";
     auto name = Unique(cat(sinfo[sp].cname, "_er"));
     ernames[sp] = name;
-    Append(protos, "static ", SigRet(sp), " ", name, "(", SigParams(sp, false, true),
-           ");\n");
+    Append(protos, "static ", FnAttrs(sp), SigRet(sp), " ", name, "(",
+           SigParams(sp, false, true), ");\n");
     erqueue.push_back(sp);
     return name;
 }
@@ -285,15 +450,59 @@ inline string CodeGen::HoistAggregateDecls(string &b) {
     return decls;
 }
 
+// A simd function (§7.12): its body once per instruction-set level above
+// the baseline, each under that level's target attribute and compiled where
+// the C compiler supports the level (GS_SIMD, runtime.h), then the baseline
+// under the function's own name, which starts by calling the highest
+// version the CPU supports. Callers, prototypes and function values see one
+// function. Every version computes what the baseline does: the C is the
+// same text, its integer semantics are spelled out, and runtime.h keeps the
+// C compiler from fusing a multiply and an add into one rounding in any of
+// them, which the wider instruction sets would otherwise let it do.
+inline void CodeGen::EmitSimdVersions(FnSpec *sp, const string &name, const string &params,
+                                      const string &fnbody) {
+    // The parameter list is `type name` declarations whose types are
+    // typedef names or pointers to them; the names forward the call.
+    string args;
+    if (params != "void") {
+        for (size_t b = 0; b <= params.size();) {
+            auto e = std::min(params.find(',', b), params.size());
+            auto nb = e;
+            while (nb > b && (isalnum((unsigned char)params[nb - 1]) || params[nb - 1] == '_'))
+                nb--;
+            assert(nb < e);
+            Append(args, args.empty() ? "" : ", ", string_view(params).substr(nb, e - nb));
+            b = e + 1;
+        }
+    }
+    auto ret = SigRet(sp);
+    vector<string> vnames(SIMD_LEVELS + 1);
+    for (int lv = SIMD_LEVELS; lv >= 1; lv--) {
+        vnames[lv] = Unique(cat(name, "_simd", lv));
+        Append(code, "#if GS_SIMD >= ", lv, "\nGS_SIMD_TARGET", lv, " static ", ret, " ",
+               vnames[lv], "(", params, ") {\n", fnbody, "}\n#endif\n");
+    }
+    Append(code, "static ", ret, " ", name, "(", params, ") {\n",
+           "#if GS_SIMD >= 1\n    switch (gs_simd_level()) {\n");
+    for (int lv = SIMD_LEVELS; lv >= 1; lv--) {
+        if (lv > 1) Append(code, "#if GS_SIMD >= ", lv, "\n");
+        auto call = cat(vnames[lv], "(", args, ")");
+        if (ret == "void") Append(code, "    case ", lv, ": ", call, "; return;\n");
+        else Append(code, "    case ", lv, ": return ", call, ";\n");
+        if (lv > 1) Append(code, "#endif\n");
+    }
+    Append(code, "    }\n#endif\n", fnbody, "}\n\n");
+}
+
 inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     curspec = sp;
     curinfo = &sinfo[sp];
     emiter = er;
     ResetFnState();
     spexpr = curinfo->needssp ? "gs_sp" : "0";
-    cachetops = CanCacheTops(sp);
-    reftops = !cachetops && RefTopsOk(sp);
-    cachetops = cachetops || reftops;
+    FindRefAliases(sp);
+    PlanTopClasses(sp);
+    markers = true;
     PushSc(SC_FN);
     auto params = SigParams(sp, true, er);
     // The spellings are only known once SigParams has named the parameters.
@@ -305,6 +514,9 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
             if (IsPoolParam(sp, i)) refstkexprs.insert(cat(pn, ".flstk"));
         }
     }
+    if (topcap)
+        for (auto fv : curinfo->freevars)
+            if (fv->type && IsResz(fv->type) && !fv->reusable) capstkexprs.insert(vstk[fv]);
     // In the element-run form named results are not built at the
     // destination: the callee-side copy at return is the specified cost
     // of operating on the whole value first (§7.3).
@@ -347,32 +559,34 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
     // Stacks counted from 0 are the outermost callers' (CollectSpecs).
     if (stkmax > 0 && !curinfo->needssp)
         Fail(sp->sf->line, cat("internal: ", curinfo->cname, " uses data stacks without gs_sp"));
+    // The element-run twin is the same body: the larger count of the two.
+    stackown[sp] = std::max(stackown[sp], stkmax);
     // The regions and the markers resolve now that every stack this body
     // grows, and where it grows it, is known.
     auto plan = PlanTopCaches();
     auto bodyout = ExpandTopMarkers(body, plan);
     assert(bodyout.find("@@gs") == string::npos);
     auto decls = HoistAggregateDecls(bodyout);
-    Append(code, "static ", SigRet(sp), " ", er ? ernames[sp] : curinfo->cname, "(",
-           params, ") {\n");
-    code += decls;
-    if (stkmax > 0)
-        Append(code, "    GS_ENSURE(", spexpr, " + ", stkmax, ", ", LocArgs(sp->sf->line),
-               ");\n");
-    // A whole-body cache loads once the stacks are known to exist; a
-    // per-loop one declares and loads itself at its loop's edge.
+    string fnbody = decls;
+    // A whole-body cache loads at entry; a per-loop one declares and loads
+    // itself at its loop's edge.
     for (size_t i = 0; i < toporder.size(); i++)
         if (!plan.fnlocals[i].empty())
-            Append(code, "    uint8_t *", plan.fnlocals[i], " = ", toporder[i], "->top;\n");
+            Append(fnbody, "    uint8_t *", plan.fnlocals[i], " = ", toporder[i], "->top;\n");
+    fnbody += plan.fnlens;
     // Every global pool's stack is reserved by gs_init_globals, which
     // main runs before anything else, so these are final on entry.
     for (auto &p : poolbases)
-        Append(code, "    uint8_t *", p.second, " = ", gnames[p.first], ".base;\n");
-    code += bodyout;
-    code += "}\n\n";
+        Append(fnbody, "    uint8_t *", p.second, " = ", gnames[p.first], ".base;\n");
+    fnbody += bodyout;
+    auto name = er ? ernames[sp] : curinfo->cname;
+    if (sp->sf->issimd) EmitSimdVersions(sp, name, params, fnbody);
+    else Append(code, "static ", FnAttrs(sp), SigRet(sp), " ", name, "(", params, ") {\n", fnbody,
+                "}\n\n");
     curspec = nullptr;
     curinfo = nullptr;
     emiter = false;
+    markers = false;
 }
 
 // ------------------------------------------------------------------
@@ -381,9 +595,20 @@ inline void CodeGen::EmitSpec(FnSpec *sp, bool er) {
 
 // A C initializer for a compile-time constant of fixed, flat type. Fails
 // for everything with a runtime component -- references, slices, ADTs,
-// relative references -- leaving the value to gs_init_globals.
+// relative references -- leaving the value to gs_init_globals. A global
+// that is static data itself stands for its initializer, spelled out
+// again, since a C initializer cannot read another object.
 inline bool CodeGen::StaticInitX(Node *n, TypeExpr *t, string &out) {
     if (!n || !t || !IsFix(t) || HasRelRef(t)) return false;
+    if (auto id = Is<Ident>(n)) {
+        auto it = id->vdef ? gstatic.find(id->vdef) : gstatic.end();
+        // An integer constant may be read at a narrower type than its own,
+        // which the checker found its value to fit.
+        if (it == gstatic.end() ||
+            !(TEq(id->vdef->type, t) || (t->kind == TY_INT && id->vdef->type->kind == TY_INT)))
+            return false;
+        return StaticInitX(it->second, t, out);
+    }
     switch (t->kind) {
         case TY_INT: {
             auto i = Is<IntLit>(n);
@@ -492,12 +717,16 @@ inline void CodeGen::EmitGlobalDecls() {
                 string init;
                 // A `let` global of a const type with a compile-time
                 // initializer is never written (§9.5): static data every
-                // instance shares. A `var` one may be assigned as a whole.
+                // instance shares, const in C as well, so that the C
+                // compiler folds what it reads. Its uses spell it without
+                // the qualifier, as the pointers and slices into it that
+                // Goose types do not mark const take it. A `var` one may
+                // be assigned as a whole.
                 if (perdef && !d->isvar && d->type->cq && !PrefVar(d) &&
                     StaticInitX(g->inits[di], d->type, init)) {
-                    Append(data, "static ", VarCT(d), " ", name, " = ", init, ";\n");
-                    gstatic.insert(d);
-                    gnames[d] = name;
+                    Append(data, "static const ", VarCT(d), " ", name, " = ", init, ";\n");
+                    gstatic[d] = g->inits[di];
+                    gnames[d] = cat("(*(", VarCT(d), " *)&", name, ")");
                 } else {
                     member(cat(VarCT(d), " ", name));
                 }
@@ -512,12 +741,8 @@ inline void CodeGen::EmitGlobalInit() {
     ResetFnState();
     spexpr = "0";
     PushSc(SC_FN);
-    // Running out of data stacks is reported at the initializer that needs
-    // the most of them.
-    Line deepest;
     for (auto g : ast.globals) {
         if (g->inits.empty()) continue;
-        auto before = stkmax;
         PushSc(SC_STMT);
         if (g->defs.size() > 1 && g->inits.size() == 1) {
             auto c = Is<Call>(g->inits[0]);
@@ -550,7 +775,7 @@ inline void CodeGen::EmitGlobalInit() {
                     L(gnames[d], " = ", GenPrefVal(g->inits[i]), ";");
                 } else if (d->type->kind == TY_REF && d->type->ref->lenstorage >= 0) {
                     EmitRelStoreAt(cat("(uint8_t *)&", gnames[d]), d->type, GenX(g->inits[i]),
-                                   g->inits[i]->line, true);
+                                   g->inits[i]->line, true, RelValue(g->inits[i]));
                 } else {
                     GenAny(g->inits[i], Dst { DK_LVALUE, gnames[d], d->type });
                 }
@@ -559,14 +784,13 @@ inline void CodeGen::EmitGlobalInit() {
         if (termjump) cscopes.back().saves.clear();
         PopSc();
         termjump = false;
-        if (stkmax > before) deepest = g->line;
     }
     EmitExitRestores(0);
     cscopes.clear();
+    stackown[nullptr] = std::max(stackown[nullptr], stkmax);
     auto decls = HoistAggregateDecls(body);
     Append(code, "static void gs_init_globals(void) {\n");
     code += decls;
-    if (stkmax > 0) Append(code, "    GS_ENSURE(", stkmax, ", ", LocArgs(deepest), ");\n");
     code += body;
     code += "}\n\n";
 }
@@ -579,6 +803,7 @@ inline string CodeGen::GlobalLenLv(VarDef *d) {
 
 inline void CodeGen::InitGlobalStack(VarDef *d) {
     auto stk = gstks[d];
+    globalregions++;
     L("gs_stack_init(", stk, ");");
     if (IsResz(d->type) && IsFrameObj(d->type)) {
         // The tail header is set when the value is constructed.
@@ -590,6 +815,7 @@ inline void CodeGen::InitGlobalStack(VarDef *d) {
     }
     if (d->reusable) {
         auto &p = gpools[d];
+        globalregions++;
         L("gs_stack_init(", p.second, ");");
         L(p.first, ".base = ", Top(p.second), ";");
         L(p.first, ".len = 0;");
@@ -598,9 +824,24 @@ inline void CodeGen::InitGlobalStack(VarDef *d) {
 
 inline void CodeGen::EmitProgramInit() {
     Append(data, "static int gs_program_initialized;\n");
+    // Every function is emitted by now, so the counts are final: the main
+    // program's stacks, and the most regions it and any one worker hold.
+    // The worker thunks follow, each opening its program's block.
+    BoundStacks();
+    auto mainstacks = ProgramStacks(MainRoots());
+    auto mainsf = ast.MainFunction();
+    CheckStackLimit("the main program", mainstacks, mainsf ? mainsf->line : Line {});
+    int64_t workerregions = 0;
+    for (auto &[name, sp] : WorkerEntries()) {
+        auto stacks = ProgramStacks({ sp });
+        CheckStackLimit(cat("thread program ", name), stacks, sp->sf->line);
+        EmitThreadThunk(sp, stacks);
+        workerregions = std::max(workerregions, stacks + thunkregions[sp]);
+    }
     Append(code, "static void gs_program_init(int argc, char **argv) {\n"
                  "    if (gs_program_initialized) return;\n"
-                 "    gs_rt_init(argc, argv);\n");
+                 "    gs_rt_init(argc, argv, ", mainstacks, ", ", mainstacks + globalregions,
+           ", ", workerregions, ");\n");
     // The queues, before anything that could use one runs.
     vector<string> qnames;
     for (auto &[m, q] : queues) qnames.push_back(q);
@@ -682,7 +923,7 @@ inline string CodeGen::ExportHeader() {
 
 inline void CodeGen::EmitMain() {
     Append(code, "int main(int argc, char **argv) {\n    gs_program_init(argc, argv);\n",
-           MainCall(), "    return 0;\n}\n");
+           MainCall(), "    gs_rt_stats();\n    return 0;\n}\n");
 }
 
 }  // namespace goose

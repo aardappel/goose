@@ -1,0 +1,23 @@
+plain: [a|b|c] [1|2|3]
+no final break: [a|b] [c|d]
+crlf: [a|b] [c|d]
+empty fields: [||] [a||b] [a|] [|a]
+blank lines: [a] [] [b] []
+crlf blank: [] []
+empty text:
+quoted: [a,b|c""d|]
+quoted breaks: [line 1\nline 2|x] [one\r\ntwo|y]
+quoted crlf: [a] [b|c]
+quoted only quotes: [""] [""""]
+lone cr kept: [a\rb|c\r]
+semicolons: [a|b,c|d;e]
+tabs: [a|b|c\td]
+spaces kept: [ a | b ]
+bare quote: [ok] malformed
+unterminated: [ok] malformed
+after quote: [ok] malformed
+cr after quote: malformed
+space after quote: malformed
+2 -1
+true 2000 records, 5997 fields, 0 wrong
+<plain> <> <"a,b"> <"say ""hi"""> <"two\nlines"> <"cr\r"> <semi;colon> <"semi;colon">

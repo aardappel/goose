@@ -21,25 +21,63 @@ inline bool CodeGen::IsPoolParam(FnSpec *sp, size_t i) {
 }
 
 // A pool or fat-reference argument carries its stack inside the value, so
-// the argument text does not name it, and neither does the text of a struct,
-// a payload, an array or a captured variable that holds one; such a call
-// syncs everything.
-inline bool CodeGen::PassesOpaqueStack(FnSpec *sp) {
-    for (size_t i = 0; i < sp->argtypes.size(); i++)
-        if (IsPoolParam(sp, i) || HoldsFatRef(sp->argtypes[i])) return true;
-    for (auto fv : sinfo[sp].freevars)
-        if (fv->reusable || (fv->type && HoldsFatRef(fv->type))) return true;
-    return false;
+// the argument text does not name it; its expression may: a reference taken
+// of a variable or of a frame object's tail in one, or the one a parameter,
+// an alias or a captured reference holds, none of them rebindable. The
+// stacks it carries, or "" where the expression does not say.
+inline string CodeGen::HandedStacks(Node *n) {
+    auto c = n;
+    if (auto un = Is<Unary>(n); un && un->op == T_BITAND) c = un->child;
+    while (auto d = Is<Dot>(c)) {
+        if (!d->IsField()) return "";
+        c = d->obj;
+        // A reference field on the way leads to another stack.
+        if (!Is<Ident>(c) && c->exprtype && c->exprtype->kind == TY_REF) return "";
+    }
+    auto id = Is<Ident>(c);
+    auto v = id ? id->vdef : nullptr;
+    while (v && refalias.count(v)) v = const_cast<VarDef *>(refalias[v]);
+    if (!v || !v->type || (!IsResz(v->type) && (!IsFatRef(v->type) || v->isvar)))
+        return "";
+    if (!v->isglobal && !vnames.count(v)) return "";
+    auto lv = VarLoc(v);
+    if (lv.t->kind == TY_REF) DerefLoc(lv);
+    if (lv.stk.empty()) return "";
+    return cat(lv.stk, "\x01", lv.flstk, "\x01");
 }
 
 // What a call to `callee` with these arguments can reach: the argument text
-// (a stack handed over appears in it verbatim) plus the callee's globals.
-inline string CodeGen::SyncReach(FnSpec *callee, const vector<string> &args) {
-    // A cached reference parameter's stack is opaque to this analysis: the
-    // callee may reach it under a name of its own (a global only it
-    // mentions, a pool it captures), so those bodies sync at every call.
-    if (!cachetops || reftops || PassesOpaqueStack(callee)) return "*";
-    string s;
+// (a stack handed over appears in it verbatim), the stacks the reference
+// arguments carry, and the callee's globals.
+inline string CodeGen::SyncReach(FnSpec *callee, const vector<string> &args,
+                                 const vector<Node *> &an) {
+    if (!cachetops) return "*";
+    for (auto fv : sinfo[callee].freevars)
+        if (fv->reusable || (fv->type && HoldsFatRef(fv->type))) return "*";
+    string handed;
+    for (size_t i = 0; i < callee->argtypes.size(); i++) {
+        auto pt = callee->argtypes[i];
+        if (!IsPoolParam(callee, i) && !HoldsFatRef(pt)) continue;
+        // A value holding a reference -- in a field, a payload, an element,
+        // the array a reference refers to -- says nothing of which stack
+        // that is.
+        if (i >= an.size() || pt->kind != TY_REF || HoldsFatRef(pt->ref->sub)) return "*";
+        auto st = HandedStacks(an[i]);
+        if (st.empty()) return "*";
+        handed += st;
+    }
+    // A cached reference parameter's stack, or a return destination, may be
+    // a global's, which the callee reaches under a name of its own. Either,
+    // or a captured variable's stack (a named result built at its function's
+    // destination), may also be the destination of a `return ... from`
+    // target up the chain, whose channel a propagating callee builds its
+    // value in (§7.9). A callee with no other way to a stack than its
+    // arguments (a pool or a captured reference it holds counts as passing
+    // one, above) reaches none of them.
+    auto &ki = sinfo[callee];
+    if ((reftops || topdst || topcap) && ki.hasrf) return "*";
+    if ((reftops || topdst) && !ki.globals.empty()) return "*";
+    auto s = handed;
     for (auto &a : args) { s += a; s += '\x01'; }
     for (auto d : sinfo[callee].globals) {
         // A fat reference held in a global reaches whichever stack it was
@@ -83,12 +121,15 @@ inline void CodeGen::CollectSpecs() {
     // tops cached in locals. A node's type is the slot type the checker
     // fitted it to (FitsAt), so a value built as another type is found
     // where it is made.
-    unordered_map<FnSpec *, vector<FnSpec *>> callees;
+    // A call whose free-variable arguments the optimizer replaced
+    // (Call::fvremap) is an edge of its own: the callee's free variables
+    // reach the caller as what that call passes for them.
+    unordered_map<FnSpec *, vector<pair<FnSpec *, const Call *>>> callees;
     for (auto sp : livespecs) {
         auto &si = sinfo[sp];
         auto &calls = callees[sp];
         set<const VarDef *> seen;
-        set<FnSpec *> seencalls;
+        set<pair<FnSpec *, const Call *>> seencalls;
         for (auto pt : sp->argtypes) si.needssp |= NeedsStack(pt);
         for (auto rt : sp->rets) si.needssp |= NeedsStack(rt);
         function<void(Node *)> walk = [&](Node *n) {
@@ -123,8 +164,9 @@ inline void CodeGen::CollectSpecs() {
             if (auto from = AdtFrom(n)) si.needssp |= NeedsStack(from);
             if (auto c = Is<Call>(n)) {
                 auto add = [&](FnSpec *k) {
-                    if (k && k != sp && sinfo.count(k) && seencalls.insert(k).second)
-                        calls.push_back(k);
+                    pair<FnSpec *, const Call *> e { k, c->fvremap.empty() ? nullptr : c };
+                    if (k && k != sp && sinfo.count(k) && seencalls.insert(e).second)
+                        calls.push_back(e);
                 };
                 if (c->builtin < 0) add(c->spec);
                 for (auto d : c->dispatch) add(d);
@@ -168,15 +210,17 @@ inline void CodeGen::CollectSpecs() {
         for (auto sp : livespecs) {
             auto &si = sinfo[sp];
             set<const VarDef *> seen(si.freevars.begin(), si.freevars.end());
-            for (auto callee : callees[sp]) {
+            for (auto [callee, via] : callees[sp]) {
                 auto &ki = sinfo[callee];
                 // Self edges were omitted, so growing our list cannot
                 // invalidate the callee's list as we read it.
-                for (auto v : ki.freevars)
+                for (auto fv : ki.freevars) {
+                    auto v = via ? via->FreeVarArg(fv) : fv;
                     if (v->ownerspec != sp && seen.insert(v).second) {
                         si.freevars.push_back(v);
                         changed = true;
                     }
+                }
                 for (auto v : ki.globals)
                     if (si.globals.insert(v).second) changed = true;
                 if (ki.needssp && !si.needssp) {
@@ -271,14 +315,21 @@ inline string CodeGen::SigRet(FnSpec *sp) {
     return si.cret >= 0 ? CT(sp->rets[si.cret]) : "void";
 }
 
-// The function's own indexed stacks, plus -- per the mode -- either the
-// globals' dedicated ones or the reference parameters': each has a single
-// spelling in its mode (see the note above). A caller's stack arriving as
-// a plain `gs_stack *` parameter never does, and keeps the memory form.
+// The stacks of the classes PlanTopClasses admitted: each has a single
+// spelling then (see the note above). A caller's stack arriving as a plain
+// `gs_stack *` parameter otherwise never does, and keeps the memory form.
 inline bool CodeGen::CacheableStk(const string &stk) {
     if (!cachetops) return false;
-    if (stk.compare(0, 3, "GS(") == 0) return true;
-    return reftops ? refstkexprs.count(stk) != 0 : gstkexprs.count(stk) != 0;
+    if (stk.compare(0, 3, "GS(") == 0) return topown;
+    if (gstkexprs.count(stk)) return topglob;
+    if (reftops && refstkexprs.count(stk)) return true;
+    if (topcap && capstkexprs.count(stk)) return true;
+    if (topdst && stk.compare(0, 6, "gs_dst") == 0 && stk.size() > 6) {
+        for (size_t i = 6; i < stk.size(); i++)
+            if (!isdigit((unsigned char)stk[i])) return false;
+        return true;
+    }
+    return false;
 }
 
 // A function owns a handful of stacks at most, so these stay linear scans.
@@ -288,30 +339,65 @@ inline int CodeGen::TopIdx(const string &stk) {
     return (int)toporder.size() - 1;
 }
 
+// Whether a construction region of stk is open here (MarkConsBegin).
+inline bool CodeGen::InConsOf(const string &stk) {
+    for (auto id : loopstack) if (loopcons[id] == stk) return true;
+    return false;
+}
+
 // The lvalue for a stack's top, emitted as a placeholder: which form it
 // takes here depends on the regions, and those are only known once the
-// whole body is.
+// whole body is. A stack no class caches has one only inside a
+// construction at its top.
 inline string CodeGen::Top(const string &stk) {
-    if (!CacheableStk(stk)) return cat(stk, "->top");
+    if (!markers || (!CacheableStk(stk) && !InConsOf(stk))) return cat(stk, "->top");
     return cat(TOPMARK, TopIdx(stk), "@@");
 }
 
 // The same, at a point that grows or shrinks the stack -- which is what
 // decides where the cached form is worth having. A watermark restore is
 // not growth: it runs once on the way out of a scope and takes whichever
-// form is already in effect there.
+// form is already in effect there. A cached stack's growth counts against
+// the innermost loop around it, or, outside every loop, against the
+// innermost block (a growth in one branch of a long function then keeps
+// no local live, and synced at every call, through the rest of it); a
+// construction's counts against that construction where the stack is not
+// otherwise cached.
 inline string CodeGen::TopW(const string &stk) {
     if (CacheableStk(stk)) {
-        growth.push_back({ TopIdx(stk), loopstack.empty() ? -1 : loopstack.back() });
+        auto loop = -1, block = -1;
+        for (auto it = loopstack.rbegin(); it != loopstack.rend() && loop < 0; ++it) {
+            if (loopcons[*it].empty()) loop = *it;
+            else if (block < 0 && loopcons[*it] == BLOCKREGION) block = *it;
+        }
+        growth.push_back({ TopIdx(stk), loop >= 0 ? loop : block });
+    } else if (markers) {
+        for (auto it = loopstack.rbegin(); it != loopstack.rend(); ++it)
+            if (loopcons[*it] == stk) {
+                growth.push_back({ TopIdx(stk), *it });
+                break;
+            }
     }
     return Top(stk);
 }
 
 // A loop's edges, where the tops it grows are loaded and stored back.
 inline int CodeGen::MarkLoopBegin() {
-    if (!cachetops) return -1;
+    if (!markers) return -1;
     auto id = (int)loopparent.size();
     loopparent.push_back(loopstack.empty() ? -1 : loopstack.back());
+    loopcons.push_back("");
+    loopstack.push_back(id);
+    L(LOOPMARK, "b", id);
+    return id;
+}
+
+// A block's edges, likewise (GenBlockInner).
+inline int CodeGen::MarkBlockBegin() {
+    if (!markers) return -1;
+    auto id = (int)loopparent.size();
+    loopparent.push_back(loopstack.empty() ? -1 : loopstack.back());
+    loopcons.push_back(BLOCKREGION);
     loopstack.push_back(id);
     L(LOOPMARK, "b", id);
     return id;
@@ -324,10 +410,27 @@ inline void CodeGen::MarkLoopEnd(int id) {
     L(LOOPMARK, "e", id);
 }
 
-// Where each stack is cached: the innermost loop around every growth of
-// it, less any of those nested inside another. A growth outside every
-// loop takes the whole body instead, which is the extent the local is
-// live across in that case anyway.
+// A value built in place at a stack's top that no class caches -- a pushed
+// literal of several fields, say -- has its fields written through a local
+// of its own all the same, and the top stored once after them: nothing may
+// grow or shrink that stack while the value is under construction (§3.10,
+// growth during construction), so no other spelling of it moves its top
+// meanwhile, and a call among the fields' initializers syncs it whatever
+// the call reaches.
+inline int CodeGen::MarkConsBegin(const string &stk) {
+    if (!markers || CacheableStk(stk) || InConsOf(stk)) return -1;
+    auto id = (int)loopparent.size();
+    loopparent.push_back(loopstack.empty() ? -1 : loopstack.back());
+    loopcons.push_back(stk);
+    loopstack.push_back(id);
+    L(LOOPMARK, "b", id);
+    return id;
+}
+
+// Where each stack is cached: the region TopW counted every growth of it
+// against -- the innermost loop around it, or block outside every loop, or
+// construction -- less any of those nested inside another. A growth at the
+// body's top level takes the whole body instead.
 inline CodeGen::TopCachePlan CodeGen::PlanTopCaches() {
     TopCachePlan plan;
     plan.fnlocals.resize(toporder.size());
@@ -384,13 +487,69 @@ inline string_view CodeGen::NextLine(const string &b, size_t &i, size_t &ind0) {
     return n == string_view::npos ? string_view() : line.substr(n);
 }
 
+// The count a growth site writes, for caching with the stack's top when its
+// header qualifies (LenSlot).
+inline void CodeGen::NoteLen(const string &stk, const string &lenlv) {
+    string root;
+    if (!CacheableStk(stk) || !LenRoot(lenlv, root)) return;
+    auto k = TopIdx(stk);
+    for (auto &s : lenslots) if (s.stk == k && s.lenlv == lenlv) return;
+    lenslots.push_back({ k, lenlv, root });
+}
+
+// Whether `lenlv` is the count of a plain resizable header spelled one way
+// -- a reference parameter's `p.hdr->len`, a global's `GS_GL->g.len`, a
+// captured one's `(*v).len` -- and the header's spelling, which any other
+// mention of it shares. A frame object's tail has others (the whole object
+// copied), and a local's header is the C compiler's to keep in registers.
+inline bool CodeGen::LenRoot(const string &lenlv, string &root) {
+    auto ident = [&](size_t b, size_t e) {
+        if (b >= e || isdigit((unsigned char)lenlv[b])) return false;
+        for (auto i = b; i < e; i++)
+            if (!isalnum((unsigned char)lenlv[i]) && lenlv[i] != '_') return false;
+        return true;
+    };
+    auto ends = [&](const char *suf) {
+        auto n = strlen(suf);
+        return lenlv.size() > n && lenlv.compare(lenlv.size() - n, n, suf) == 0;
+    };
+    auto n = lenlv.size();
+    if (ends(".hdr->len") && ident(0, n - 9)) {
+        root = lenlv.substr(0, n - 5);
+        return true;
+    }
+    if (lenlv.compare(0, 7, "GS_GL->") == 0 && ends(".len") && ident(7, n - 4)) {
+        root = lenlv.substr(0, n - 4);
+        return true;
+    }
+    if (lenlv.compare(0, 2, "(*") == 0 && ends(").len") && ident(2, n - 5)) {
+        root = lenlv.substr(0, n - 4);
+        return true;
+    }
+    return false;
+}
+
 // Replaces the markers: a region's edges load and store its local, a
 // call's mark syncs the stacks it can reach that are cached where it
 // stands, a jump out of a region flushes it on the way, and every top
-// placeholder becomes the local in force there or the memory form.
-// A body that cached nothing still has its markers to remove.
-inline string CodeGen::ExpandTopMarkers(const string &b, const TopCachePlan &plan) {
-    if (!cachetops) return b;
+// placeholder becomes the local in force there or the memory form. The
+// counts of LenSlot ride along. A slot is kept only where its header is
+// mentioned nowhere in its extent but as that count, its base, or between a
+// call's flush and reload of the stack; each pass drops the slots it finds
+// mentioned otherwise, until one finds none. A body that cached nothing
+// still has its markers to remove.
+inline string CodeGen::ExpandTopMarkers(const string &b, TopCachePlan &plan) {
+    if (!markers) return b;
+    vector<bool> lenok(lenslots.size(), true);
+    for (;;) {
+        auto clean = true;
+        auto out = ExpandTopMarkers1(b, plan, lenok, clean);
+        if (clean) return out;
+    }
+}
+
+inline string CodeGen::ExpandTopMarkers1(const string &b, TopCachePlan &plan,
+                                         vector<bool> &lenok, bool &clean) {
     // A region is the text between its loop's two markers, so a jump stays
     // inside it exactly when the line its label sits on does.
     vector<int> loopbeg(loopparent.size(), 0), loopend(loopparent.size(), 0);
@@ -409,6 +568,46 @@ inline string CodeGen::ExpandTopMarkers(const string &b, const TopCachePlan &pla
     }
     vector<string> active = plan.fnlocals;   // Empty: the memory form here.
     vector<int> open;
+    // Each slot's local while its stack's is in force, and whether the last
+    // mark for that stack was a call's flush, which a reload ends.
+    vector<string> lenlocal(lenslots.size());
+    vector<bool> synced(toporder.size(), false);
+    plan.fnlens.clear();
+    for (size_t j = 0; j < lenslots.size(); j++) {
+        if (!lenok[j] || plan.fnlocals[lenslots[j].stk].empty()) continue;
+        lenlocal[j] = T();
+        Append(plan.fnlens, "    int64_t ", lenlocal[j], " = ", lenslots[j].lenlv, ";\n");
+    }
+    auto store = [&](string &out, size_t ind0, int k) {
+        out.append(ind0, ' ');
+        Append(out, toporder[k], "->top = ", active[k], ";\n");
+        for (size_t j = 0; j < lenslots.size(); j++) {
+            if (lenslots[j].stk != k || lenlocal[j].empty()) continue;
+            out.append(ind0, ' ');
+            Append(out, lenslots[j].lenlv, " = ", lenlocal[j], ";\n");
+        }
+    };
+    auto load = [&](string &out, size_t ind0, int k) {
+        out.append(ind0, ' ');
+        Append(out, active[k], " = ", toporder[k], "->top;\n");
+        for (size_t j = 0; j < lenslots.size(); j++) {
+            if (lenslots[j].stk != k || lenlocal[j].empty()) continue;
+            out.append(ind0, ' ');
+            Append(out, lenlocal[j], " = ", lenslots[j].lenlv, ";\n");
+        }
+    };
+    auto isid = [](char c) { return isalnum((unsigned char)c) || c == '_'; };
+    // Where `w` occurs in `s` as a whole spelling, not as part of a longer
+    // identifier or member path.
+    auto occurs = [&](const string &s, size_t at, const string &w) {
+        if (s.compare(at, w.size(), w) != 0) return false;
+        if (at > 0 && isid(w[0])) {
+            auto c = s[at - 1];
+            if (isid(c) || c == '.' || c == '>') return false;
+        }
+        auto e = at + w.size();
+        return e >= s.size() || !isid(s[e]) || !isid(w.back());
+    };
     string out;
     for (size_t i = 0, ind0 = 0; i < b.size();) {
         auto rest = NextLine(b, i, ind0);
@@ -419,13 +618,22 @@ inline string CodeGen::ExpandTopMarkers(const string &b, const TopCachePlan &pla
             if (beg) open.push_back(id); else open.pop_back();
             for (size_t k = 0; k < toporder.size(); k++) {
                 if (!plan.IsRegion((int)k, id)) continue;
-                out.append(ind0, ' ');
                 if (beg) {
                     active[k] = T();
+                    out.append(ind0, ' ');
                     Append(out, "uint8_t *", active[k], " = ", toporder[k], "->top;\n");
+                    for (size_t j = 0; j < lenslots.size(); j++) {
+                        if (lenslots[j].stk != (int)k || !lenok[j]) continue;
+                        lenlocal[j] = T();
+                        out.append(ind0, ' ');
+                        Append(out, "int64_t ", lenlocal[j], " = ", lenslots[j].lenlv, ";\n");
+                    }
+                    synced[k] = false;
                 } else {
-                    Append(out, toporder[k], "->top = ", active[k], ";\n");
+                    store(out, ind0, (int)k);
                     active[k].clear();
+                    for (size_t j = 0; j < lenslots.size(); j++)
+                        if (lenslots[j].stk == (int)k) lenlocal[j].clear();
                 }
             }
             continue;
@@ -435,10 +643,14 @@ inline string CodeGen::ExpandTopMarkers(const string &b, const TopCachePlan &pla
             auto reach = rest.substr(strlen(isflush ? FLUSHMARK : RELOADMARK));
             for (size_t k = 0; k < toporder.size(); k++) {
                 if (active[k].empty()) continue;
-                if (reach != "*" && reach.find(toporder[k]) == string_view::npos) continue;
-                out.append(ind0, ' ');
-                if (isflush) Append(out, toporder[k], "->top = ", active[k], ";\n");
-                else Append(out, active[k], " = ", toporder[k], "->top;\n");
+                // A stack cached only for a construction syncs at every call:
+                // the call may reach it under a name of its own.
+                if (reach != "*" && CacheableStk(toporder[k]) &&
+                    reach.find(toporder[k]) == string_view::npos)
+                    continue;
+                if (isflush) store(out, ind0, (int)k);
+                else load(out, ind0, (int)k);
+                synced[k] = isflush;
             }
             continue;
         }
@@ -450,23 +662,51 @@ inline string CodeGen::ExpandTopMarkers(const string &b, const TopCachePlan &pla
                 auto reg = -1;
                 for (auto id : open) if (plan.IsRegion((int)k, id)) reg = id;
                 if (reg >= 0 && at > loopbeg[reg] && at < loopend[reg]) continue;
-                out.append(ind0, ' ');
-                Append(out, toporder[k], "->top = ", active[k], ";\n");
+                store(out, ind0, (int)k);
             }
         }
-        out.append(ind0, ' ');
+        string line;
         for (size_t p = 0; p < rest.size();) {
             auto m = rest.find(TOPMARK, p);
-            if (m == string_view::npos) { out.append(rest.substr(p)); break; }
-            out.append(rest.substr(p, m - p));
+            if (m == string_view::npos) { line.append(rest.substr(p)); break; }
+            line.append(rest.substr(p, m - p));
             auto ds = m + strlen(TOPMARK);
             auto e = rest.find("@@", ds);
             assert(e != string_view::npos);
             auto k = atoi(string(rest.substr(ds, e - ds)).c_str());
-            if (active[k].empty()) Append(out, toporder[k], "->top");
-            else out.append(active[k]);
+            if (active[k].empty()) Append(line, toporder[k], "->top");
+            else line.append(active[k]);
             p = e + 2;
         }
+        for (size_t j = 0; j < lenslots.size(); j++) {
+            if (lenlocal[j].empty()) continue;
+            auto &sl = lenslots[j];
+            auto member = sl.lenlv.substr(sl.root.size(), sl.lenlv.size() - sl.root.size() - 3);
+            string nl;
+            for (size_t p = 0; p < line.size();) {
+                if (!occurs(line, p, sl.root)) { nl += line[p++]; continue; }
+                auto after = p + sl.root.size();
+                if (occurs(line, p, sl.lenlv)) {
+                    nl += lenlocal[j];
+                    p += sl.lenlv.size();
+                    continue;
+                }
+                // The header's address, even handed on, may be read through
+                // a temporary before the call that syncs the stack.
+                auto base = member + "base";
+                auto isbase = line.compare(after, base.size(), base) == 0 &&
+                              (after + base.size() >= line.size() || !isid(line[after + base.size()]));
+                if (!isbase && !synced[sl.stk]) {
+                    lenok[j] = false;
+                    clean = false;
+                }
+                nl.append(sl.root);
+                p = after;
+            }
+            line = nl;
+        }
+        out.append(ind0, ' ');
+        out += line;
         out += '\n';
     }
     return out;

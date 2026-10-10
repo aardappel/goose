@@ -175,7 +175,7 @@ slots only, and then skips the cursor over the whole capacity.
 
 **The bitmap ceiling.** One bit per payload byte, on one data stack, so the
 largest verifiable image of *variable* elements is eight times a stack's
-reservation — 2 GB at the default `GS_STACK_RESERVE` of 256 MB, and it moves
+reservation — 16 GB at the default `GS_STACK_RESERVE` of 2 GB, and it moves
 with that constant. A payload past it is rejected (`false`) rather than
 growing into the guard region, which would be an abort. Fixed-element images
 have no such limit, since they need no scratch. The alternative — an array of

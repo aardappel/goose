@@ -1,9 +1,11 @@
 // The Goose standard library: `math` (docs/stdlib.md): libm, declared once
 // per function and float width (spec §7.10), plus the constants and
 // conversions that need no C. floor/ceil/round/trunc return floats, as in C;
-// `as i64` converts. Float `%` is already fmod (§6.1).
+// `as i64` converts. Float `%` is already fmod (§6.1). sqrt is the runtime's
+// (runtime_ext.h), which has no errno to set and so compiles to the bare
+// square root instruction where the C compiler allows.
 
-extern fn sqrt(x: f64) -> f64;      extern "sqrtf" fn sqrt(x: f32) -> f32;
+extern "gs_sqrt" fn sqrt(x: f64) -> f64;   extern "gs_sqrtf" fn sqrt(x: f32) -> f32;
 extern fn sin(x: f64) -> f64;       extern "sinf" fn sin(x: f32) -> f32;
 extern fn cos(x: f64) -> f64;       extern "cosf" fn cos(x: f32) -> f32;
 extern fn tan(x: f64) -> f64;       extern "tanf" fn tan(x: f32) -> f32;

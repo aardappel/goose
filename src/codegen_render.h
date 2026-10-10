@@ -146,7 +146,7 @@ inline void CodeGen::RenderLoc(Loc &out, Loc lv, TypeExpr *t, bool nested, Call 
                 } else {
                     auto n = T();
                     L("int64_t ", n, " = ", v.len, ";");
-                    L(CopyFn(v.nullable), "(", Top(out.stk), ", (const uint8_t *)(", v.elems,
+                    L(CopyFn(), "(", Top(out.stk), ", (const uint8_t *)(", v.elems,
                       "), (size_t)", n, ");");
                     Bump(out.stk, n);
                     L(out.lenlv, " += ", n, ";");
@@ -327,7 +327,12 @@ inline void CodeGen::EmitUserFormat(Loc &out, Loc lv, FnSpec *sp, Line ln) {
     MarkFlush();
     auto &ki = sinfo[sp];
     // The callee's stacks start above everything live here, the builder's
-    // and the value's included, like any other call's (SpTop).
+    // and the value's included, like any other call's (SpTop). This is
+    // always inside a function or a global initializer, whose stack
+    // numbering spexpr names: a render function runs no overload
+    // (EmitRenderFn).
+    if (ki.needssp) NoStackAcrossCycleCall(sp, ln);
+    if (ki.needssp) NoteStackCall(sp, ln);
     L(ki.cname, "(", r, ", ", arg, ki.needssp ? cat(", ", SpTop()) : "", ");");
     MarkReload();   // The callee grew the builder's stack.
     PopSc();
@@ -362,7 +367,16 @@ inline void CodeGen::EmitRenderCall(Loc &out, const Loc &lv, TypeExpr *t, Line l
 
 // A render function's body (RenderFn): the value gs_v refers to, rendered
 // into the builder gs_out as the level RenderLoc was inside of when it
-// reached it.
+// reached it. The function takes no stack index, and none is needed: the
+// only stack it writes is the builder's, through gs_out, and it opens no
+// stacks of its own (stkmax stays 0). Nor does it hand one on: RenderLoc is
+// run without a call, so it applies no format overload, which is where a
+// rendering calls into user code with a stack index (EmitUserFormat), and
+// the checker sees to it that no overload is lost that way -- no part of a
+// type that reaches itself through references has one (CheckPrintable's
+// OverloadedPart), so the overloads of a print are all run at its first
+// level, by the function printing, above its live stacks. spexpr is "0"
+// only so that nothing below forms a stack expression by accident.
 inline void CodeGen::EmitRenderFn(RenderFnReq r) {
     curspec = nullptr;
     curinfo = nullptr;
@@ -481,7 +495,6 @@ inline void CodeGen::EmitFormatInto(Loc lv, Node *a, Line ln, Call *c) {
     auto bytes = t->kind == TY_ARRAY || t->kind == TY_SLICE;
     auto n = T();
     string src;   // Where the bytes to append sit, when not already at the top.
-    auto nullable = false;
     if (!SimpleText(c, t)) {
         // Into a limited array: rendered aside, then copied under the
         // capacity check like any bytes.
@@ -493,7 +506,6 @@ inline void CodeGen::EmitFormatInto(Loc lv, Node *a, Line ln, Call *c) {
         auto se = GenSrcElems(a);
         L("int64_t ", n, " = ", se.n, ";");
         src = cat("(const uint8_t *)(", se.elems, ")");
-        nullable = se.nullable;
     } else if (limited) {
         src = T();
         L("uint8_t ", src, "[GS_FMT_MAX];");
@@ -504,7 +516,7 @@ inline void CodeGen::EmitFormatInto(Loc lv, Node *a, Line ln, Call *c) {
     // Bytes to copy -- a limited array's, under its capacity check, or a
     // rendered or array source into a resizable -- append like any others.
     if (limited || bytes) {
-        AppendBytes(lv, src, n, ln, nullable);
+        AppendBytes(lv, src, n, ln);
         return;
     }
     // A scalar's text is at the resizable's top already: only the count moves.
@@ -549,7 +561,7 @@ inline vector<string> CodeGen::EmitStr(Call *c, vector<Node *> &an, Dst d0, Line
         } else if (t->kind == TY_ARRAY || t->kind == TY_SLICE) {
             auto se = GenSrcElems(a);
             L("int64_t ", n, " = ", se.n, ";");
-            L(CopyFn(se.nullable), "(", Top(stk), ", (const uint8_t *)(", se.elems, "), (size_t)",
+            L(CopyFn(), "(", Top(stk), ", (const uint8_t *)(", se.elems, "), (size_t)",
               n, ");");
         } else {
             L("int64_t ", n, " = ", FmtCall(a, Top(stk)), ";");
@@ -566,39 +578,18 @@ inline vector<string> CodeGen::EmitStr(Call *c, vector<Node *> &an, Dst d0, Line
 // ------------------------------------------------------------------
 // Function bodies.
 
-// Structural named-result discovery on the final body. Both real functions
-// and inlined bodies use it, so rewrites need not maintain an AST annotation.
+// Structural named-result discovery on the final body (NamedResultOf). Both
+// real functions and inlined bodies use it, so rewrites need not maintain an
+// AST annotation.
 inline const VarDef *CodeGen::NamedResult(Block *fnbody, SFunction *target,
                                          size_t nrets, size_t resultidx) {
-    // Only bindings BindLocal places: a multi-name receive wires a call's
-    // channels into locals of its own, which are not at a return destination.
-    set<const VarDef *> toplocals;
-    for (auto st : fnbody->stmts)
-        if (auto vd = Is<VarDecl>(st); vd && vd->defs.size() == 1)
-            toplocals.insert(vd->defs[0]);
-    const VarDef *cand = nullptr;
-    auto ok = true;
-    auto consider = [&](Node *val) {
-        auto id = Is<Ident>(val);
-        if (!id || !id->vdef || !toplocals.count(id->vdef)) { ok = false; return; }
-        if (cand && cand != id->vdef) { ok = false; return; }
-        cand = id->vdef;
-    };
-    function<void(Node *)> walk = [&](Node *n) {
-        if (!n || !ok) return;
-        if (auto r = Is<Return>(n); r && r->target == target) {
-            if (r->vals.size() != nrets) ok = false;
-            else consider(r->vals[resultidx]);
-        }
-        RunChildren(n, walk);
-    };
-    walk(fnbody);
-    if (fnbody->tail && nrets == 1 && !IsVoidT(fnbody->tail->exprtype)) consider(fnbody->tail);
-    return ok ? cand : nullptr;
+    return NamedResultOf(fnbody, target, nrets, resultidx);
 }
 
-// Guaranteed NRVO (§7.3): a top-level local every return hands back in
-// one nonfixed return position is allocated at that destination.
+// Guaranteed NRVO (§7.3): the top-level local the returns hand back in one
+// nonfixed return position is allocated at that destination; a return of any
+// other value builds it behind the local and moves it down (BindLocal marks
+// the local open there).
 inline void CodeGen::DetectNrvo(FnSpec *sp) {
     nrvo.clear();
     // A long-distance return into this function lands its value over the

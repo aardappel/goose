@@ -557,22 +557,23 @@ fn sum_through_ref(p: i64[>..]&) -> i64 {
 }
 
 // --- calls: what a callee may do to the caller's arrays ---------------------
-// The callees here are called from more than one place and are too big to
-// inline at -O1, so their callers see them through their effect summaries,
-// not as spliced bodies.
+// The callees here return two values, which keeps them calls (the inliner
+// leaves such a function out of line, also at a call in a loop), so their
+// callers see them through their effect summaries, not as spliced bodies.
 
 // Reads and writes elements only: its callers' length facts survive it.
-fn scale_shift(a: i64[>..]&, m: i64, d: i64) {
+fn scale_shift(a: i64[>..]&, m: i64, d: i64) -> i64, bool {
     for i in a.len {
         a[i] = a[i] * m + d;                      // bce:elide
     }
     for i in a.len {
         if a[i] < 0 { a[i] = 0; }                 // bce:elide
     }
+    return a.len, true;
 }
 
 // Resizes its argument: a caller knows nothing about the length afterwards.
-fn grow_by(a: i64[>..]&, k: i64) {
+fn grow_by(a: i64[>..]&, k: i64) -> i64, bool {
     for i in k {
         a.push(i * 2);
         a.push(i * 2 + 1);
@@ -580,12 +581,13 @@ fn grow_by(a: i64[>..]&, k: i64) {
     for i in a.len {
         if a[i] > 1000 { a[i] = 1000; }           // bce:elide
     }
+    return a.len, true;
 }
 
 var gcount: i64[>..] = [];
 
 // Resizes a global: a caller iterating that global loses its bound.
-fn count_one(x: i64) {
+fn count_one(x: i64) -> i64, bool {
     gcount.push(x);
     for i in gcount.len {
         if gcount[i] < 0 { gcount[i] = 0; }       // bce:elide
@@ -593,6 +595,7 @@ fn count_one(x: i64) {
     for i in gcount.len {
         if gcount[i] > 1000 { gcount[i] = 1000; } // bce:elide
     }
+    return gcount.len, true;
 }
 
 fn callee_effects(extra: i64) -> i64 {
@@ -627,11 +630,13 @@ fn callee_effects(extra: i64) -> i64 {
     return s;
 }
 
-// A nested function's writes to the enclosing locals are its effects.
+// A nested function's writes to the enclosing locals are its effects. Both
+// return two values, which keeps them calls (the inliner leaves such a
+// function out of line).
 fn nested_effects() -> i64 {
     var v: i64[>..] = [];
     for i in 8 { v.push(i); }
-    fn grow_v(k: i64) {
+    fn grow_v(k: i64) -> i64, bool {
         for j in k {
             v.push(j * 2);
             v.push(j * 2 + 1);
@@ -639,14 +644,15 @@ fn nested_effects() -> i64 {
         for j in v.len {
             if v[j] > 1000 { v[j] = 1000; }
         }
+        return v.len, true;
     }
-    fn sum_v(k: i64) -> i64 {
+    fn sum_v(k: i64) -> i64, bool {
         var t = 0;
         for j in k {
             for x in v { t += x * j; }
             for x in v { t += x; }
         }
-        return t;
+        return t, true;
     }
     var s = 0;
     for i in v.len {
@@ -819,16 +825,25 @@ fn keep_cross_array(v: i64[:], w: i64[:]) -> i64 {
     return s;
 }
 
-// Facts are not collected from `i + 1 < len` (the sum may have wrapped
-// before the compare); spell it `i < len - 1` instead.
-fn plus_one_limitation(s: i64[:]) -> i64 {
+// `i + 1 < len` is a fact once `i + 1` provably did not wrap: here `i`
+// never exceeds the length, which is at most 2^48.
+fn plus_one_condition(s: i64[:]) -> i64 {
     var r = 0;
     var i = 0;
     while i + 1 < s.len {
-        r += s[i + 1];                        // bce:keep
+        r += s[i + 1];                        // bce:elide
         i++;
     }
     return r;
+}
+
+// With nothing bounding `k` from above, `k + 1` may have wrapped to a
+// negative number that passes the compare, so it states nothing.
+fn plus_one_unbounded(s: i64[:], k: i64) -> i64 {
+    if k >= 0 && k + 1 < s.len {
+        return s[k + 1];                      // bce:keep
+    }
+    return 0;
 }
 
 fn plus_one_provable(s: i64[:]) -> i64 {
@@ -909,12 +924,15 @@ fn main() {
     print(field_place());                     // 13
     print(pool_loop());                       // 51
     print(slice_pool_loop());                 // 5
+    // A completed check proves its index in range from then on, so each of
+    // these takes a fresh load rather than reusing kk.
     print(keep_unknown(data, kk));            // 3
-    print(keep_upper_only(data, kk));         // 3
-    print(keep_lower_only(data, kk));         // 3
-    print(keep_off_by_one(data, kk));         // 3
+    print(keep_upper_only(data, data2[1]));   // 3
+    print(keep_lower_only(data, data2[1]));   // 3
+    print(keep_off_by_one(data, data2[1]));   // 3
     let short = data2[0..3];
     print(keep_cross_array(short, data));     // 6
-    print(plus_one_limitation(data));         // 35
+    print(plus_one_condition(data));          // 35
+    print(plus_one_unbounded(data, data2[1])); // 4
     print(plus_one_provable(data));           // 35
 }

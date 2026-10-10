@@ -395,8 +395,11 @@ struct FnValBind {
     const FunVal *fv = nullptr;
     SFunction *named = nullptr;
     FnSpec *env = nullptr;
+    // A named function with overloads: the whole set, which each call of the
+    // value resolves against (§7.6); `named` is its first member.
+    const vector<SFunction *> *set = nullptr;
     bool operator==(const FnValBind &o) const {
-        return fv == o.fv && named == o.named && env == o.env;
+        return fv == o.fv && named == o.named && env == o.env && set == o.set;
     }
 };
 
@@ -731,6 +734,10 @@ struct Val : Prov {
 struct Node {
     Line line;
     TypeExpr *exprtype = nullptr;   // Filled by typecheck (the value's type; TY_VOID for none).
+    // Filled by typecheck: the value is of non-fixed-size class and no
+    // storage, so it is a temporary of its statement, held on a data stack
+    // of the activation until the statement ends (TypeCheck::NoteTemp, §7.8).
+    bool nftemp = false;
     // The node as the source has it, which every clone of it shares; null in
     // that one itself.
     const Node *origin = nullptr;
@@ -882,8 +889,18 @@ NODE(Binary)
     Node *left, *right;
     // Filled by typecheck for && and ||: optionals the right operand un-narrows.
     vector<VarDef *> rightkills;
+    // Filled by BCE for && and || (BCE::ProbeRight): 1 where every bounds
+    // check in the right operand holds whatever the left operand gives, -1
+    // where one may not, 0 where the pass did not look. Codegen evaluates a
+    // right operand with a bounds check in it unconditionally only on a 1
+    // (CodeGen::Speculatable).
+    int8_t specidx = 0;
     bool litfloat = false;      // Filled by typecheck: its value is a Val::litfloat.
     bool flexint = false;       // Filled by typecheck: its value is a Val::flexint.
+    // Filled by BCE (bce.h) for a signed `/`, `%` or `>>`: the left operand
+    // is provably nonnegative and a divisor provably positive, so codegen
+    // computes it unsigned, with no zero or overflow check to make.
+    bool nonneg = false;
     Binary(Line l, TType _op, Node *_l, Node *_r) : Node(l), op(_op), left(_l), right(_r) {}
 NODE_END
 
@@ -928,6 +945,11 @@ NODE(Call)
     vector<VarDef *> fvparams;          //   its parameter bindings.
     SFunction *fvtarget = nullptr;      //   the named fn a plain `return` inside exits.
     vector<TypeExpr *> rettypes;        // All return values (exprtype is rettypes[0] or void).
+    // A call to a nested function that the optimizer copied out of the body
+    // declaring it (Inliner): the variables the callee reaches as free
+    // variables (§7.5) that the copy replaced, each with the copy the call
+    // passes in its place.
+    vector<pair<VarDef *, VarDef *>> fvremap;
     // print/str/format: the user `format` overloads rendering the types that
     // occur in the arguments, by type (§3.7).
     vector<pair<TypeExpr *, FnSpec *>> fmtspecs;
@@ -943,6 +965,11 @@ NODE(Call)
     bool poolcheck = false;
     const string *shaderblob = nullptr;  // embed_shader: its compiled blob, in Ast::shaders.
     Call(Line l, Node *_callee) : Node(l), callee(_callee) {}
+    // What the call passes for the callee's free variable v (fvremap).
+    VarDef *FreeVarArg(VarDef *v) const {
+        for (auto &p : fvremap) if (p.first == v) return p.second;
+        return v;
+    }
     // The first argument in either spelling: a.f(b) is f(a, b) (§7.1).
     Node *FirstArg() const {
         if (auto d = dynamic_cast<Dot *>(callee)) return d->obj;
@@ -1073,6 +1100,11 @@ NODE(While)
     // neither resize nor re-bind, so codegen reads their base and length once
     // before the loop instead of through the reference at every access.
     vector<VarDef *> hoistrefs;
+    // Set by the optimizer's loop shaping (optimize_loops.h): the loop is
+    // `while v > 0 { v--; ... }` over a local integer nothing else in the
+    // body can write, so its trip count is v's value at entry and codegen
+    // runs it as a counted loop.
+    bool countdown = false;
     Node *cond;
     Block *body;
     While(Line l, Node *_cond, Block *_body) : Node(l), cond(_cond), body(_body) {}
@@ -1094,6 +1126,22 @@ NODE(ForLoop)
     // iteration is legal).
     bool fixedlen = false;
     vector<VarDef *> hoistrefs;   // See While.
+    // Set by BCE for array/slice iteration: a constant the length never
+    // exceeds where an iteration tests it (-1: none known), and whether it
+    // always equals it.
+    int64_t lenbound = -1;
+    bool lenexact = false;
+    // Set by the optimizer's loop shaping (optimize_loops.h); codegen uses
+    // them where the iteration count is fixed at entry and the body can be
+    // emitted twice (CodeGen::Dupable). `stripk`: the counter starts at 0
+    // and the body takes it modulo stripk (the `lanemods`), which in a block
+    // of stripk iterations starting at a multiple of it is the position in
+    // the block. `sumred`: the body is `s += e` on a float local that e
+    // neither reads nor writes, so the terms of a block of iterations may be
+    // computed before they are added to s, in order.
+    int stripk = 0;
+    vector<Binary *> lanemods;
+    bool sumred = false;
     BCE_MARK
     bool byref;                 // for &x in ...
     string_view var;
@@ -1211,6 +1259,7 @@ struct SFunction {
     vector<TypeExpr *> rets;    // Empty + !has_rets = inferred/none.
     bool has_rets = false;
     bool isrec = false;         // Declared with `recursive`.
+    bool issimd = false;        // Declared with `simd`: one version per instruction set (§7.12).
     bool isthread = false;
     bool isextern = false;      // A C function behind a Goose signature (§7.10); no body.
     bool isexport = false;      // A Goose function exposed through a C ABI wrapper.
@@ -1902,10 +1951,19 @@ struct FnSpec {
     // call's arguments in place (TypeCheck::ApplyCalleeStores): no other
     // call reuses the check.
     bool storesout = false;
+    // A value with self-relative references is returned as the body's named
+    // result, which is right only where it is built at the destination
+    // (TypeCheck::CheckNamedResultUses): the body is never inlined, where a
+    // destination might not take it in place (Optimizer::Scan).
+    bool relnamedresult = false;
     int id = 0;                    // Unique, for diagnostics/codegen naming.
     // Filled by the optimizer (optimize.h):
     int uses = 0;                  // Call sites in live code (tag-dispatch entries included).
     bool live = false;             // Reachable from main / threads / global initializers.
+    // Left out of line where the inliner could have inlined it, as a cold
+    // branch's only callee (Optimizer::TryInline): the C compiler is told so
+    // too, since it inlines a function with one caller whatever its size.
+    bool outofline = false;
 };
 
 // ---------------------------------------------------------------------------

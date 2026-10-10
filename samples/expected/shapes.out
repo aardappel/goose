@@ -1,11 +1,11 @@
-circle Circle { 1.0 } area 3.1415926535897931 sides 0
+circle Circle { 1.0 } area 3.141592653589793 sides 0
 rectangle Rect { 2.0, 3.0 } area 6.0 sides 4
 other Tri { 3.0, 4.0, 5.0 } area 6.0 sides 3
 other Shape.Dot area 0.0 sides 0
 square Rect { 2.0, 2.0 } area 4.0 sides 4
 total area 19.141592653589793
 [Circle { 2.0 }, Rect { 4.0, 6.0 }, Tri { 6.0, 8.0, 10.0 }, Circle { 1.0 }, Rect { 4.0, 4.0 }]
-circle 3.1415926535897931
+circle 3.141592653589793
 other 0.0
 square 9.0
 other 0.0

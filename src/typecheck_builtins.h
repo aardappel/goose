@@ -52,8 +52,10 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         case B_THREAD_SPAWN: {
             auto wid = Is<Ident>(args[0]);
             SFunction *wsf = nullptr;
-            // A variable, type parameter or nested function of the name hides it (§11.1).
-            if (wid && !LookupVar(wid->name, wid->ns) && !ScopeNameKind(wid->name))
+            // A variable in scope, a type parameter or a nested function of the
+            // name hides it, as at a call (§11.1).
+            auto wvd = wid ? LookupVar(wid->name, wid->ns) : nullptr;
+            if (wid && !(wvd && !wvd->isglobal) && !ScopeNameKind(wid->name))
                 for (auto sf : ast.LookupFunctions(wid->name, wid->ns))
                     if (sf->isthread) wsf = sf;
             if (!wsf) Error(c, "thread_spawn's first argument names a thread_fn");
@@ -526,6 +528,20 @@ inline Val TypeCheck::CheckBuiltin(Call *c, const BuiltinDef &d, vector<Node *> 
         case 'b': v.type = ast.booltype; break;
         case 'e':
             v.type = LoadType(elem);
+            if (IsRefOrSlice(v.type)) {
+                // A reference or slice element leaves as itself: what a
+                // temporary holds is not rooted at the temporary (§9.2), so
+                // it points where the element did and is as writable as its
+                // slot says, as an element read is (ContainerRead).
+                LVal lv;
+                lv.SetProv(rv);
+                lv.type = elem;
+                lv.fromstorage = true;
+                lv.isslot = true;
+                v.SetProv(ContainerRead(lv));
+                c->rettypes.push_back(v.type);
+                break;
+            }
             v.Set(TempRoot(), false);
             if (HoldsPlainRef(v.type)) {
                 // The element leaves as a temporary, holding what it held in

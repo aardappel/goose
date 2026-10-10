@@ -38,13 +38,18 @@ fn churn() -> i64 {
 }
 
 // At -O1 and above the self-call's base case is inlined in its place, with
-// the copy bound in front of it.
-recursive fn spell(s: const u8[:], n: i64) {
+// the argument bound in front of it. The copy the next level reads is made
+// in scratch owned outside the cycle, since no temporary may be live at a
+// call into it (§7.8), and released after the call.
+recursive fn spell(s: const u8[:], n: i64, scratch: u8[>..<]&) {
     if n == 0 { return; }
     letter[0] = letter[0] + 1;
     let k = churn();
     spelled.push(s[0] + k as u8);
-    spell(copy(letter), n - 1);
+    let mark = scratch.len;
+    scratch.append(letter);
+    spell(scratch[mark..], n - 1, scratch);
+    scratch.resize(mark);
 }
 
 fn main() {
@@ -71,6 +76,7 @@ fn main() {
     print(variable(copy(text)), " ", text);
     print(resizable(copy(word)), " ", word);
     print(popped(copy(rows[1])), " ", rows[1][0]);
-    spell(copy(letter), 3);
+    var scratch: u8[>..<] = [];
+    spell(copy(letter), 3, scratch);
     print(spelled, " ", letter);
 }

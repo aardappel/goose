@@ -3,7 +3,7 @@
    gcc, clang, and tcc. Kept deliberately small: per-operation behavior (push,
    indexing, field access) is emitted inline by the compiler; only genuinely
    shared machinery lives in the runtime (data stacks, varints, printing,
-   aborts, threads/queues).
+   aborts, threads/queues, byte search).
 
    This file holds what a program's own translation unit needs: types,
    macros, the configuration, the helpers that must inline (arithmetic,
@@ -38,6 +38,19 @@
 #include <stdlib.h>
 #include <math.h>
 
+/* Every float operation rounds on its own. A C compiler may otherwise
+   contract a multiply and an add into one fused rounding wherever the target
+   has FMA (arm64, and x86-64 once AVX-512 or -march=native turns it on):
+   clang within one expression, gcc across statements too. The program would
+   then print other digits there than TinyCC and other targets give it. */
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#elif defined(__GNUC__) && !defined(__TINYC__)
+#pragma GCC optimize("fp-contract=off")
+#elif defined(_MSC_VER)
+#pragma fp_contract(off)
+#endif
+
 #ifndef GS_NEED_THREADS
 #define GS_NEED_THREADS 0
 #endif
@@ -46,14 +59,28 @@
 #endif
 
 /* Configuration; all overridable from the compile command line. */
+/* The most data stacks the compiler lets one thread program use at once:
+   a static count past this is a compile error. The runtime takes the
+   counts from the program and never checks this itself. */
 #ifndef GS_MAX_STACKS
-#define GS_MAX_STACKS 1024          /* Data stacks per thread program. */
+#define GS_MAX_STACKS 1024
 #endif
 #ifndef GS_STACK_RESERVE
-#define GS_STACK_RESERVE (256ull << 20)  /* Address space reserved per stack. */
+#define GS_STACK_RESERVE (2048ull << 20)  /* Address space reserved per stack. */
 #endif
 #ifndef GS_STACK_GAP
 #define GS_STACK_GAP (1ull << 20)   /* Unmapped tail so runaway growth aborts. */
+#endif
+/* The address space the program means to spend on data stack regions over
+   every thread program at once, which is what caps hardware_threads()
+   (§11.2): the regions it holds, less the main program's, divided by a
+   worker's. Not enforced at reservation; what the platform refuses is
+   retried smaller (gs_reserve_region). */
+#ifndef GS_STACK_BUDGET
+#define GS_STACK_BUDGET (32ull << 40)
+#endif
+#ifndef GS_STACK_STATS
+#define GS_STACK_STATS 0    /* 1: each thread program reports its stack use as it ends. */
 #endif
 /* §10.4 caps a stack reservation at 2^48 bytes, which is what lets the
    compiler treat every size, count and index as fitting in 48 bits: the
@@ -115,7 +142,6 @@ enum {
     GS_E_SLICELEN,     /* slice pool length negative or beyond any data stack */
     GS_E_POOLSLICE,    /* a slice handed to a slice pool is not one of its runs */
     GS_E_RELNULL,      /* a non-null optional self-relative target has offset zero */
-    GS_E_STACKS,       /* a function needs more data stacks than GS_MAX_STACKS */
 };
 
 GS_API GS_NORETURN void gs_panic(const char *msg);
@@ -161,15 +187,113 @@ GS_API GS_NORETURN void gs_asfail_f(const char *why, double d, int f32, const ch
 #define GS_UNREACHABLE(f, l) ((void)0)
 #endif
 
-/* memcpy and memcmp for a slice's elements. An empty slice's data pointer is
-   NULL where the slice was zero-filled (default<T>(), a default element),
-   and C leaves both undefined on a null pointer even for zero bytes. */
+/* simd functions (§7.12): the compiler writes each one's body once per
+   instruction-set level, the baseline under the function's name, and the
+   baseline calls the highest version the CPU supports. GS_SIMD is the
+   highest level built: 0 just the baseline, 1 adds an AVX2 version (with
+   BMI1, BMI2, LZCNT and POPCNT, which the check below asks for one by one),
+   2 an AVX-512 one as well (F, BW, CD, DQ and VL: x86-64-v4). The versions
+   are built by clang on x86-64, through its target attribute and inline
+   assembly for cpuid; the contraction pragma above keeps their float
+   results the baseline's, though AVX-512 implies FMA to clang. Elsewhere
+   the versions are left out, and so is the choice. -DGS_SIMD=0 or 1 lowers
+   the level; nothing raises it. */
+#if defined(__clang__) && (defined(__x86_64__) || defined(_M_X64)) && !defined(__TINYC__)
+#ifndef GS_SIMD
+#define GS_SIMD 2
+#endif
+#else
+#undef GS_SIMD
+#define GS_SIMD 0
+#endif
+#if GS_SIMD >= 1
+#define GS_SIMD_TARGET1 __attribute__((target("avx2,bmi,bmi2,lzcnt,popcnt")))
+#define GS_SIMD_TARGET2 \
+    __attribute__((target("avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,bmi,bmi2,lzcnt,popcnt")))
+
+static inline void gs_cpuid(uint32_t leaf, uint32_t r[4]) {
+    __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(0));
+}
+
+/* The highest level both the CPU and the operating system support (the OS
+   has to save the wider registers: XGETBV's XCR0), capped at GS_SIMD. */
+static inline int gs_simd_detect(void) {
+    uint32_t r[4], b7, xcr0, xhi;
+    gs_cpuid(0, r);
+    if (r[0] < 7) return 0;
+    gs_cpuid(1, r);
+    /* OSXSAVE, AVX, POPCNT. */
+    if ((r[2] & (1u << 27 | 1u << 28 | 1u << 23)) != (1u << 27 | 1u << 28 | 1u << 23)) return 0;
+    __asm__ volatile("xgetbv" : "=a"(xcr0), "=d"(xhi) : "c"(0));
+    (void)xhi;
+    if ((xcr0 & 0x6) != 0x6) return 0;                  /* XMM and YMM state. */
+    gs_cpuid(7, r);
+    b7 = r[1];
+    if ((b7 & (1u << 5 | 1u << 3 | 1u << 8)) != (1u << 5 | 1u << 3 | 1u << 8))
+        return 0;                                       /* AVX2, BMI1, BMI2. */
+    gs_cpuid(0x80000000u, r);
+    if (r[0] < 0x80000001u) return 0;
+    gs_cpuid(0x80000001u, r);
+    if (!(r[2] & (1u << 5))) return 0;                  /* LZCNT. */
+    if (GS_SIMD < 2 || (xcr0 & 0xe0) != 0xe0) return 1; /* Opmask and ZMM state. */
+    /* AVX512F, DQ, CD, BW, VL. */
+    if ((b7 & (1u << 16 | 1u << 17 | 1u << 28 | 1u << 30 | 1u << 31)) !=
+        (1u << 16 | 1u << 17 | 1u << 28 | 1u << 30 | 1u << 31))
+        return 1;
+    return 2;
+}
+
+/* Detected at the first call and kept. Every thread computes the same
+   level, so a relaxed atomic is all a race between two first calls needs. */
+static inline int gs_simd_level(void) {
+    static int level = -1;
+    int l = __atomic_load_n(&level, __ATOMIC_RELAXED);
+    if (l < 0) {
+        l = gs_simd_detect();
+        __atomic_store_n(&level, l, __ATOMIC_RELAXED);
+    }
+    return l;
+}
+#endif
+
+/* Unaligned loads of 4 and 8 bytes. The optimizing backends turn the
+   fixed-size memcpy into one move. */
+static uint32_t gs_ld32(const void *p) { uint32_t v; memcpy(&v, p, 4); return v; }
+static uint64_t gs_ld64(const void *p) { uint64_t v; memcpy(&v, p, 8); return v; }
+
+/* The low k bytes of a word set (none for k <= 0, all for k >= 8): which
+   bytes of a little-endian load lie within a length. */
+static uint64_t gs_bytemask(int64_t k) {
+    return k >= 8 ? ~(uint64_t)0 : k <= 0 ? 0 : ((uint64_t)1 << (k * 8)) - 1;
+}
+
+/* memcpy, memmove and memcmp for a slice's elements. An empty slice's data
+   pointer is NULL where the slice was zero-filled (default<T>(), a default
+   element), and C leaves all three undefined on a null pointer even for
+   zero bytes. */
 static void gs_memcpy(void *dst, const void *src, size_t n) {
     if (n) memcpy(dst, src, n);
 }
 
-static int gs_memcmp(const void *a, const void *b, size_t n) {
-    return n ? memcmp(a, b, n) : 0;
+static void gs_memmove(void *dst, const void *src, size_t n) {
+    if (n) memmove(dst, src, n);
+}
+
+/* Whether n bytes at a and b are equal: two overlapping loads per side up
+   to 16 bytes, where keys and names mostly are and a call costs more than
+   the compare, the library's memcmp beyond. TinyCC inlines no memcpy, so
+   its build calls memcmp for every length. */
+static int gs_memeq(const void *a, const void *b, size_t n) {
+#ifndef __TINYC__
+    const uint8_t *p = (const uint8_t *)a, *q = (const uint8_t *)b;
+    if (n >= 8 && n <= 16)
+        return ((gs_ld64(p) ^ gs_ld64(q)) | (gs_ld64(p + n - 8) ^ gs_ld64(q + n - 8))) == 0;
+    if (n >= 4 && n < 8)
+        return ((gs_ld32(p) ^ gs_ld32(q)) | (gs_ld32(p + n - 4) ^ gs_ld32(q + n - 4))) == 0;
+    if (n < 4)
+        return n == 0 || ((p[0] ^ q[0]) | (p[n >> 1] ^ q[n >> 1]) | (p[n - 1] ^ q[n - 1])) == 0;
+#endif
+    return n == 0 || memcmp(a, b, n) == 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -383,15 +507,102 @@ static uint64_t gs_mod_u64(uint64_t a, uint64_t b, const char *file, int line) {
     return a % b;
 }
 
+/* Unsigned division by a divisor a loop does not change, in libdivide's
+   form: computed once before the loop (gs_divu_gen), x / d is then the high
+   half of a product, adjusted where GS_DIVU_ADD is in `more` and shifted
+   (gs_divu_q). A zero divisor, and a C compiler without 128-bit products,
+   get GS_DIVU_NONE, and their divisions the plain operator, which reports a
+   zero divisor where the division is. */
+#define GS_DIVU_NONE 255
+#define GS_DIVU_ADD 64
+#define GS_DIVU_SHIFT 63
+#if defined(__TINYC__)
+#define GS_HAVE_U128 0
+#elif defined(__SIZEOF_INT128__)
+#define GS_HAVE_U128 1
+static uint64_t gs_mulhi_u64(uint64_t a, uint64_t b) {
+    return (uint64_t)(((unsigned __int128)a * b) >> 64);
+}
+/* (hi * 2^64) / d and its remainder, for hi < d. Clang targeting the
+   Microsoft ABI links no 128-bit division routine, so x86-64 divides with
+   the instruction itself. */
+static uint64_t gs_div128_u64(uint64_t hi, uint64_t d, uint64_t *rem) {
+#if defined(__x86_64__)
+    uint64_t q, r;
+    __asm__("divq %[d]" : "=a"(q), "=d"(r) : [d] "r"(d), "a"((uint64_t)0), "d"(hi));
+    *rem = r;
+    return q;
+#else
+    unsigned __int128 n = (unsigned __int128)hi << 64;
+    *rem = (uint64_t)(n % d);
+    return (uint64_t)(n / d);
+#endif
+}
+#elif defined(_MSC_VER) && _MSC_VER >= 1920 && defined(_M_X64)
+#include <intrin.h>
+#define GS_HAVE_U128 1
+static uint64_t gs_mulhi_u64(uint64_t a, uint64_t b) { return __umulh(a, b); }
+static uint64_t gs_div128_u64(uint64_t hi, uint64_t d, uint64_t *rem) {
+    return _udiv128(hi, 0, d, rem);
+}
+#else
+#define GS_HAVE_U128 0
+#endif
+
+static uint64_t gs_divu_gen(uint64_t d, uint8_t *more) {
+#if GS_HAVE_U128
+    int k = 63;
+    uint64_t rem, m;
+    if (d == 0) { *more = GS_DIVU_NONE; return 0; }
+    while (!(d >> k)) k--;
+    if (!(d & (d - 1))) { *more = (uint8_t)k; return 0; }
+    /* floor(2^(64+k) / d), which fits since d > 2^k; then the smallest
+       power that works, or the 65-bit form one past it. */
+    m = gs_div128_u64((uint64_t)1 << k, d, &rem);
+    if (d - rem < ((uint64_t)1 << k)) {
+        *more = (uint8_t)k;
+    } else {
+        uint64_t twice = rem + rem;
+        m += m;
+        if (twice >= d || twice < rem) m++;
+        *more = (uint8_t)(k | GS_DIVU_ADD);
+    }
+    return m + 1;
+#else
+    (void)d;
+    *more = GS_DIVU_NONE;
+    return 0;
+#endif
+}
+
+static uint64_t gs_divu_q(uint64_t x, uint64_t magic, uint8_t more) {
+#if GS_HAVE_U128
+    uint64_t q;
+    if (!magic) return x >> more;
+    q = gs_mulhi_u64(magic, x);
+    if (more & GS_DIVU_ADD) return (((x - q) >> 1) + q) >> (more & GS_DIVU_SHIFT);
+    return q >> more;
+#else
+    (void)magic;
+    return x >> more;   /* Never called: GS_DIVU_NONE takes the operator. */
+#endif
+}
+
 /* `as!` float-to-int: truncate toward zero, wrap modulo 2^64 (§6.3). Defined
-   the same on every platform, unlike a raw C cast of an out-of-range value. */
-static int64_t gs_f2iwrap(double d) {
+   the same on every platform, unlike a raw C cast of an out-of-range value.
+   A value lies in the i64 range exactly when its truncation does, and there
+   the C cast truncates by itself (one hardware conversion, where trunc() is
+   a libm call on baseline x86-64), so only NaN and the values beyond the
+   range take the wrap, out of line. */
+static GS_NOINLINE int64_t gs_f2iwrap_slow(double d) {
     if (d != d) return 0;
-    d = trunc(d);
-    if (d >= -9223372036854775808.0 && d < 9223372036854775808.0) return (int64_t)d;
-    d = fmod(d, 18446744073709551616.0);
+    d = fmod(trunc(d), 18446744073709551616.0);
     if (d < 0) d += 18446744073709551616.0;
     return (int64_t)(uint64_t)d;
+}
+static int64_t gs_f2iwrap(double d) {
+    if (d >= -9223372036854775808.0 && d < 9223372036854775808.0) return (int64_t)d;
+    return gs_f2iwrap_slow(d);
 }
 
 /* `as` conversion checks (§6.3): abort in debug builds whenever the
@@ -455,13 +666,18 @@ typedef struct {
     uint8_t *top;
 } gs_stack;
 
-/* Starts the runtime on main's thread: the program's arguments, the most
-   data stack regions one thread program may hold, and each region's usable
-   reservation and trailing guard gap. */
-GS_API void gs_rt_start(int argc, char **argv, int64_t maxregions, uint64_t reserve,
-                        uint64_t gap);
+/* Starts the runtime on main's thread: the program's arguments, each
+   region's usable reservation and trailing guard gap, the address space
+   budgeted for regions over the whole program, and the most regions the
+   main program and any one worker hold (the compiler's static counts),
+   which size their registries and give hardware_threads() its cap. */
+GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
+                        uint64_t budget, int64_t mainregions, int64_t workerregions);
 /* A fresh region, registered to the calling thread program. */
 GS_API uint8_t *gs_reserve_region(void);
+/* The calling thread program's stack use, on stderr (GS_STACK_STATS):
+   `stacks` is how many of its indexed data stacks exist. */
+GS_API void gs_stack_stats(int64_t stacks);
 /* Releases every region of the calling thread program, and what else the
    runtime keeps for its thread. */
 GS_API void gs_release_regions(void);
@@ -497,8 +713,9 @@ GS_API gs_qnode *gs_qpoll(gs_queue *q);
 
 #ifndef GS_RUNTIME_OBJECT
 
-/* The current thread program's stack block. gs_sp-relative indices resolve
-   through this; stacks materialize lazily as call depth first reaches them. */
+/* The current thread program's stack block: every stack the compiler
+   counted for it, reserved as the program starts (gs_stack_block).
+   gs_sp-relative indices resolve through it. */
 static GS_TLS gs_stack *gs_stks;
 static GS_TLS int64_t gs_nstks;
 
@@ -511,33 +728,34 @@ static GS_TLS void *gs_gl;
 
 #define GS(i) (&gs_stks[i])
 
-/* A function's prologue asks for the stacks it uses, naming its declaration
-   (gs_init_globals names an initializer) for the abort when there are not
-   enough. */
-static void gs_stks_grow(int64_t n, const char *file, int line) {
-    if (n > GS_MAX_STACKS) gs_abort(GS_E_STACKS, file, line);
-    while (gs_nstks < n) {
-        gs_stack *s = &gs_stks[gs_nstks++];
-        s->top = gs_reserve_region();
-    }
-}
-
-#define GS_ENSURE(n, f, l) do { if ((n) > gs_nstks) gs_stks_grow((n), (f), (l)); } while (0)
-
-static gs_stack *gs_new_stack_block(void) {
-    gs_stack *b = (gs_stack *)calloc(GS_MAX_STACKS, sizeof(gs_stack));
-    if (!b) gs_panic("out of memory allocating stack block");
-    return b;
-}
-
 static void gs_stack_init(gs_stack *s) {
     s->top = gs_reserve_region();
 }
 
-static void gs_rt_init(int argc, char **argv) {
-    gs_rt_start(argc, argv, GS_MAX_STACKS * 4, GS_STACK_RESERVE, GS_STACK_GAP);
-    gs_stks = gs_new_stack_block();
-    gs_nstks = 0;
+/* The calling thread program's block of n stacks, each with its region:
+   main's from gs_rt_init, a worker's from its entry thunk. */
+static void gs_stack_block(int64_t n) {
+    gs_stks = (gs_stack *)calloc((size_t)(n > 0 ? n : 1), sizeof(gs_stack));
+    if (!gs_stks) gs_panic("out of memory allocating stack block");
+    for (int64_t i = 0; i < n; i++) gs_stack_init(&gs_stks[i]);
+    gs_nstks = n;
+}
+
+/* The compiler passes the main program's stack count and the most regions
+   it and any one worker hold: their stacks plus the dedicated ones of the
+   globals and of a worker's arguments. */
+static void gs_rt_init(int argc, char **argv, int64_t mainstacks, int64_t mainregions,
+                       int64_t workerregions) {
+    gs_rt_start(argc, argv, GS_STACK_RESERVE, GS_STACK_GAP, GS_STACK_BUDGET, mainregions,
+                workerregions);
+    gs_stack_block(mainstacks);
+}
+
+/* What a thread program reports as it ends under GS_STACK_STATS. */
+static void gs_rt_stats(void) {
+#if GS_STACK_STATS
+    gs_stack_stats(gs_nstks);
+#endif
 }
 
 /* Every region the calling thread program owns, with its stack block. No
@@ -550,12 +768,12 @@ static void gs_free_thread_stacks(void) {
 }
 
 #if GS_NEED_THREADS
-/* A worker's thread program, on a fresh stack block it lets go of at the end;
-   the runtime releases the regions after it. */
+/* A worker's thread program: its entry thunk opens the stack block, whose
+   count the compiler knows, and the runtime releases the regions after
+   this returns. */
 static void gs_thread_run(void (*entry)(uint8_t *), uint8_t *args) {
-    gs_stks = gs_new_stack_block();
-    gs_nstks = 0;
     entry(args);
+    gs_rt_stats();
     free(gs_stks);
     gs_stks = NULL;
     gs_nstks = 0;
@@ -813,3 +1031,10 @@ GS_API void gs_out_f32(float v);
 GS_API void gs_out_bool(int64_t v);
 GS_API void gs_out_bytes(const uint8_t *p, int64_t len);
 GS_API void gs_out_nl(void);
+
+/* Byte search behind std's find_any and find_pair (runtime_impl.h): the
+   first i < n with p[i] in the set, or with p[i] in a and p[i + d] in b
+   (i + d < n); -1 if there is none. A set is std's ByteSet. */
+GS_API int64_t gs_scan_any(const uint8_t *p, int64_t n, const void *set);
+GS_API int64_t gs_scan_pair(const uint8_t *p, int64_t n, const void *a, int64_t d,
+                            const void *b);

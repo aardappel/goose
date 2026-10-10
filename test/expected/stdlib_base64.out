@@ -1,0 +1,21 @@
+"" "Zg==" "Zm8=" "Zm9v" "Zm9vYg==" "Zm9vYmE=" "Zm9vYmFy"
+AAECAwQFBgcICQoLDA0ODxAR.../P3+/w== 344
+51013 checks against the plain codec
+Zg== true <f>
+Zm8= true <fo>
+Zg= false <>
+Zg false <>
+Z false <>
+Z=== false <>
+==== false <>
+=Zg= false <>
+Zm=v false <>
+Zg==Zg== false <>
+Zh== true <f>
+Zm9= true <fo>
+Zm9vYg== true <foob>
+Zm9vYg false <>
+Zm9v\n false <>
+Zm 9v false <>
+Zm9- false <>
+Zm9_ false <>

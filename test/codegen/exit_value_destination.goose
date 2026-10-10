@@ -166,14 +166,20 @@ fn half(n: i64) -> u8[] {
 }
 fn outer(n: i64) -> u8[][] { return [str("o"), half(n)]; }
 
-// Recursion: the innermost call catches.
+// Recursion: the innermost call catches. The text goes into a buffer owned
+// outside the cycle, since a value under construction may not be live at a
+// call into it (§7.8); the exit leaves the activation's part of it as far
+// as it got, inside the format rendering rbail's result.
 fn rbail(n: i64) -> i64 {
-    if n == 2 { return str("stop", n) from rec; }
+    if n == 2 { return -20 from rec; }
     return n;
 }
-recursive fn rec(n: i64) -> u8[] {
-    if n == 0 { return str("end"); }
-    return str("<", rbail(n), rec(n - 1), ">");
+recursive fn rec(out: u8[>..]&, n: i64) -> i64 {
+    if n == 0 { out.append("end"); return 0; }
+    format(out, "<", rbail(n));
+    let inner = rec(out, n - 1);
+    out.append(">");
+    return inner + 1;
 }
 
 // A plain return, and breaks, inside a value under construction.
@@ -225,5 +231,9 @@ fn main() {
         print(n, " ", v, " ", [outer(n), [str("next")]], " ", evaluate2(n));
         print(n, " ", [early(n), [str("next")]], " ", early_str(n), " ", brk(n), " ", blk(n));
     }
-    print(gl, " ", rec(3), " ", rec(1));
+    var text: u8[>..] = [];
+    let caught = rec(text, 3);
+    text.append(" ");
+    let ended = rec(text, 1);
+    print(gl, " ", text, " ", caught, " ", ended);
 }

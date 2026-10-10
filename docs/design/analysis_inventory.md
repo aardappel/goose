@@ -107,7 +107,7 @@ subjects since 2026-09-12 that touch it.
 | 18 | Held temporaries and liveness (support for 6–8) | §5.1 | `heldtemps`, `TempScope`, `shrinkrest`, `RestScope`, `blockpos`, `UsedAfter`, `MentionsName`, `invalue`, `loopassigned` | ~120 | C+ | pushed at ~12 sites |
 | 19 | Bounds-check elimination | §10.5 | `bce.h` | ~2,300 | A- | 8 commits total; the two recent ones fixed operand types |
 | 20 | Optimizer facts: reachability, writes/addr-of, constants, inlining classification, views of copies, base-case and TRE eligibility | §4 (impl. notes) | `Reach`, `Analyze`, `Scan`, `OptViewed`, `NamesStorage`, `CodeFree`, `BaseOK`, `Pure`, `RootStable`, `Rebindable` | ~230 of ~2,000 | B+ | `OptViewed` is a patch for a checker decision the tree does not record |
-| 21 | Codegen: free variables, globals and `gs_sp` need (fixpoint), stack assignment, top caching, NRVO, evaluation snapshots | C.2, C.3, §6.10 | `CollectSpecs`, `CanCacheTops`, `RefTopsOk`, `PlanTopCaches`, `ExpandTopMarkers`, `SyncReach`, `DetectNrvo`, `NamedResult`, `Snapshot`, `AllocStk/SaveBase`, `HoistAggregateDecls` | ~520 of ~9,500 | B (marker expansion C) | 17 commits mention stacks/caching |
+| 21 | Codegen: free variables, globals and `gs_sp` need (fixpoint), stack assignment, top caching, NRVO, evaluation snapshots | C.2, C.3, §6.10 (impl. notes) | `CollectSpecs`, `PlanTopClasses`, `RefTopsOk`, `PlanTopCaches`, `ExpandTopMarkers`, `SyncReach`, `DetectNrvo`, `NamedResult`, `Snapshot`, `AllocStk/SaveBase`, `HoistAggregateDecls` | ~520 of ~9,500 | B (marker expansion C) | 17 commits mention stacks/caching |
 
 Supporting weight: `docs/implementation.md` needs 800 lines (§3.4–3.11) to
 describe analyses 2–11; `test/errors_tc` holds 647 fixtures (8,400 lines),
@@ -448,11 +448,12 @@ temporary copy" on the node would let the optimizer read it instead.
 
 `CollectSpecs` computes free variables, touched globals and `gs_sp` need
 by a fixpoint over the call graph (its third computation of the call
-graph). Top caching decides per function (`CanCacheTops`, `RefTopsOk`
-reading `RootArg::exact`/`concrete`), plans regions, and then rewrites the
-emitted C text: `ExpandTopMarkers` parses `goto`s and labels out of the
-generated code to place flushes, and `HoistAggregateDecls` moves
-declarations by text for an MSVC bug. NRVO is a syntactic scan of returns.
+graph). Top caching decides per function and class of stack
+(`PlanTopClasses`, `RefTopsOk` reading `RootArg::exact`/`concrete`), plans
+regions, and then rewrites the emitted C text: `ExpandTopMarkers` parses
+`goto`s and labels out of the generated code to place flushes, and
+`HoistAggregateDecls` moves declarations by text for an MSVC bug. NRVO is a
+syntactic scan of returns.
 
 **Option.** Emit into a minimal statement list with explicit loop and
 flush nodes and expand from that instead of from text (medium, isolated).

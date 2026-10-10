@@ -78,6 +78,14 @@ inline string Unary::CgX(CodeGen &cg) {
             return cg.LoadLoc(cg.GenLoc(child), exprtype, line);
         return cg.GenRefVal(child, line);
     }
+    if (op == T_MINUS && exprtype &&
+        (exprtype->kind == TY_STRUCT || exprtype->kind == TY_ARRAY)) {
+        auto x = cg.GenVal(child);
+        auto tv = cg.T();
+        cg.FixedLocal(exprtype, tv);
+        cg.GenElemwiseNegInto(exprtype, line, x, tv);
+        return tv;
+    }
     auto x = cg.GenX(child);
     switch (op) {
         case T_MINUS:
@@ -124,13 +132,25 @@ inline string Binary::CgX(CodeGen &cg) {
         return cat("(uint8_t)((void *)(", l, ") ", op == T_DOTEQ ? "==" : "!=", " (void *)(", r, "))");
     }
     if (op == T_ANDAND || op == T_OROR) {
+        auto l = cg.GenTruth(left);
+        auto t = cg.T();
+        cg.L("uint8_t ", t, " = (uint8_t)(", l, op == T_ANDAND ? " != 0);" : " != 0);");
+        // In a loop that can be straight-line code, a right operand that can
+        // neither fail nor have an effect runs whatever the left gave,
+        // combined with & or | on the two 0/1 values: a C compiler can
+        // if-convert that, and vectorize the loop, where it keeps the branch
+        // of a short circuit. Elsewhere the early branch is as good, and
+        // better ahead of a branch that stays (docs/implementation.md §6.11).
+        auto budget = 24;
+        if (cg.InStraightLoop() && cg.Speculatable(right, specidx > 0, true, budget)) {
+            auto r = cg.GenTruth(right);
+            return cat("(uint8_t)(", t, op == T_ANDAND ? " & " : " | ", "(uint8_t)(", r,
+                       " != 0))");
+        }
         // Short-circuit with left-to-right statement emission: the right
         // operand's statements may only run when the left allows. So may
         // the restores of the temporaries it builds on data stacks, which
         // are dead once its truth value is taken.
-        auto l = cg.GenTruth(left);
-        auto t = cg.T();
-        cg.L("uint8_t ", t, " = (uint8_t)(", l, op == T_ANDAND ? " != 0);" : " != 0);");
         cg.L("if (", op == T_ANDAND ? t : cat("!", t), ") {");
         cg.ind++;
         cg.PushSc(CodeGen::SC_PLAIN);
@@ -182,8 +202,7 @@ inline string Binary::CgX(CodeGen &cg) {
         auto ra = cg.GenLoc(right);
         if (ra.t->kind == TY_REF) cg.DerefLoc(ra);
         auto rvw = cg.ArrayView(ra);
-        auto eq = cg.GenRangeEq(lvw.elem, lvw.elems, lvw.len, rvw.elems, rvw.len,
-                                lvw.nullable || rvw.nullable);
+        auto eq = cg.GenRangeEq(lvw.elem, lvw.elems, lvw.len, rvw.elems, rvw.len);
         return op == T_EQ ? eq : cat("(uint8_t)(!", eq, ")");
     }
     // Order of evaluation is left-to-right (§2): the left operand lands in
@@ -218,10 +237,25 @@ inline string Binary::CgX(CodeGen &cg) {
                                              cg.OvfLocArgs(lt->intstorage, line), ")");
                     case T_MUL:   return cat("gs_mul_", sfx, "(", l, ", ", r,
                                              cg.OvfLocArgs(lt->intstorage, line), ")");
-                    case T_DIV:   return cat("gs_div_", sfx, "(", l, ", ", r, ", ",
-                                             cg.LocArgs(line), ")");
-                    default:      return cat("gs_mod_", sfx, "(", l, ", ", r, ", ",
-                                             cg.LocArgs(line), ")");
+                    default: {   // T_DIV, T_MOD
+                        auto div = op == T_DIV;
+                        auto plain = nonneg ? cat("(", ct, ")((uint64_t)(", lc, div ? ") / " : ") % ",
+                                                  "(uint64_t)(", rc, "))")
+                                            : cat(div ? "gs_div_" : "gs_mod_", sfx, "(", l, ", ", r,
+                                                  ", ", cg.LocArgs(line), ")");
+                        // A divisor fixed for an enclosing loop: its magic, unless
+                        // gs_divu_gen found none to give (HoistDivisors).
+                        auto id = Is<Ident>(right);
+                        auto dm = id && cg.LoopDivisible(this) ? cg.divmagic.find(id->vdef)
+                                                                : cg.divmagic.end();
+                        if (dm == cg.divmagic.end()) return plain;
+                        auto q = cat("gs_divu_q((uint64_t)(", lc, "), ", dm->second.first, ", ",
+                                     dm->second.second, ")");
+                        auto fast = div ? q
+                                        : cat("(uint64_t)(", lc, ") - ", q, " * (uint64_t)(", rc, ")");
+                        return cat("(", ct, ")(", dm->second.second, " != GS_DIVU_NONE ? ", fast,
+                                   " : ", plain, ")");
+                    }
                 }
             }
             // Elementwise math on identical struct/fixed-array types (§6.1).
@@ -245,8 +279,11 @@ inline string Binary::CgX(CodeGen &cg) {
         case T_XOR:    return cat("(", ct, ")(", lc, " ^ ", rc, ")");
         case T_SHL:    return cat("gs_shl_", cg.IntSfx(lt->intstorage), "(", l,
                                   ", (int64_t)(", r, "))");
-        case T_SHR:    return cat("gs_shr_", cg.IntSfx(lt->intstorage), "(", l,
-                                  ", (int64_t)(", r, "))");
+        case T_SHR:
+            if (nonneg)
+                return cat("(", ct, ")((uint64_t)(", lc, ") >> ((int64_t)(", r, ") & ",
+                           IntBits(lt->intstorage) - 1, "))");
+            return cat("gs_shr_", cg.IntSfx(lt->intstorage), "(", l, ", (int64_t)(", r, "))");
         default: assert(false); return l;
     }
 }
@@ -421,6 +458,21 @@ inline void IfExpr::CgAny(CodeGen &cg, const Dst &d) {
         cg.termjump = false;
         return;
     }
+    // Both arms starting with the same bounds check (same array, same index,
+    // nothing before it): one check ahead of the branch, after the
+    // condition, reporting the line of the arm that is taken. The arms'
+    // accesses are then plain addresses, which lets the C compiler merge
+    // their stores into one of a select instead of keeping the branch.
+    auto ta = elseb ? cg.LeadingCheck(thenb) : nullptr;
+    auto ea = ta ? cg.LeadingCheck(elseb) : nullptr;
+    auto hoist = ea && cg.SameCheck(ta, ea);
+    if (hoist) {
+        auto ct = cg.T();
+        cg.L("uint8_t ", ct, " = (uint8_t)(", c, ");");
+        c = ct;
+        cg.EmitHoistedCheck(ta, ea, c);
+        ta->nobc = ea->nobc = true;
+    }
     cg.L("if (", c, ") {");
     cg.ind++;
     cg.PushSc(CodeGen::SC_PLAIN);
@@ -438,6 +490,8 @@ inline void IfExpr::CgAny(CodeGen &cg, const Dst &d) {
     }
     cg.L("}");
     cg.termjump = false;
+    // A body can be emitted more than once (element-run twins).
+    if (hoist) ta->nobc = ea->nobc = false;
 }
 
 inline void MatchExpr::CgAny(CodeGen &cg, const Dst &d) {
@@ -640,6 +694,8 @@ inline void InlineBlock::EmitBody(CodeGen &cg, const Dst &d) {
     cg.L("{");
     cg.ind++;
     cg.EnterDst(si, d);
+    // The named result is in front of the value any other return builds.
+    if (named) cg.cscopes[si].open0--;
     cg.GenBlockInner(body, d, first);
     cg.PopSc();
     cg.ind--;
@@ -692,7 +748,16 @@ inline void NullLit::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
 inline void Ident::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
 inline void ArrayLit::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
 inline void StructLit::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
-inline void Unary::CgAny(CodeGen &cg, const Dst &d) { cg.LeafAny(this, d); }
+inline void Unary::CgAny(CodeGen &cg, const Dst &d) {
+    // An elementwise negation writes its members straight into a plain
+    // destination, as Binary's does below.
+    if (d.k == DK_LVALUE && op == T_MINUS && exprtype &&
+        (exprtype->kind == TY_STRUCT || exprtype->kind == TY_ARRAY)) {
+        cg.GenElemwiseNegInto(exprtype, line, cg.GenVal(child), d.s);
+        return;
+    }
+    cg.LeafAny(this, d);
+}
 inline void Binary::CgAny(CodeGen &cg, const Dst &d) {
     // An elementwise result (struct/fixed-array typed, §6.1) writes its
     // members straight into a plain destination — including one that aliases
@@ -860,7 +925,7 @@ inline void Assign::CgStmt(CodeGen &cg) {
     auto t = lv.t;
     if (t->kind == TY_REF && t->ref->lenstorage >= 0) {
         // Relative-reference slot: encode from the plain reference value.
-        cg.GenRelAssign(lv, rhs, line);
+        cg.GenRelAssign(lv, lval, rhs, line);
         return;
     }
     if (cg.IsResz(t)) {
@@ -909,6 +974,22 @@ inline void FnDecl::CgStmt(CodeGen &) {}   // Nested declarations are separate s
 inline void While::CgStmt(CodeGen &cg) {
     Dst d;
     CodeGen::ViewScope vs(cg, hoistrefs);
+    if (countdown) {
+        // `while v > 0 { v--; ... }` runs v's value at entry times: counted
+        // up as j, the iteration's v is that value minus 1 minus j, which is
+        // where the decrement would have left it (optimize_loops.h).
+        auto c = Is<Binary>(cond);
+        auto var = Is<Ident>(c->op == T_GT ? c->left : c->right);
+        auto lv = cg.GenLoc(var);
+        auto ct = cg.CT(var->vdef->type);
+        auto n = cg.T(), j = cg.T();
+        cg.L("/* loop shape: countdown counted up */");
+        cg.L(ct, " ", n, " = ", lv.s, ";");
+        cg.GenLoopBody([&]() { cg.L(lv.s, " = (", ct, ")(", n, " - 1 - ", j, ");"); }, body, d,
+                       cat("for (", ct, " ", j, " = 0; ", j, " < ", n, "; ", j, "++) {"), nullptr,
+                       1);
+        return;
+    }
     cg.GenLoopBody([&]() {
         auto c = cg.GenTruth(cond);
         auto si = (int)cg.cscopes.size() - 1;
@@ -917,7 +998,7 @@ inline void While::CgStmt(CodeGen &cg) {
         // scope's compile-time list and are restored... none yet either.
         cg.L("if (!(", c, ")) goto ", cg.cscopes[si].brklbl, ";");
         cg.cscopes[si].usedbrk = true;
-    }, body, d);
+    }, body, d, "", cond);
 }
 
 inline void ForLoop::CgStmt(CodeGen &cg) {
@@ -945,11 +1026,21 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
         if (!ix.empty()) cg.L("int64_t ", ix, " = 0;");
         auto wide = ct->intstorage != vdef->type->intstorage;
         auto ctr = wide ? cg.T() : iv;
-        cg.GenLoopBody([&]() {
+        auto bind = [&]() {
             if (wide) cg.L(cg.CT(vdef->type), " ", iv, " = (", cg.CT(vdef->type), ")", ctr, ";");
-        }, body, d,
-            cat("for (", ict, " ", ctr, " = ", lov, "; ", ctr, " < ", hiv, "; ", ctr, "++",
-                ix.empty() ? "" : cat(", ", ix, "++"), ") {"));
+        };
+        auto step = cat(ctr, "++", ix.empty() ? "" : cat(", ", ix, "++"));
+        if (auto k = cg.BlockSize(this)) {
+            auto lit = r ? Is<IntLit>(r->lo) : nullptr;
+            auto fromzero = !r || (lit && !lit->uns && lit->val == 0);
+            cg.L(ict, " ", ctr, " = ", lov, ";");
+            cg.GenBlocked(this, k, cg.AtLeastLeft(ct, hiv, ctr, k, fromzero), step, bind,
+                          cat(ctr, " < ", hiv));
+            return;
+        }
+        cg.GenLoopBody(bind, body, d,
+            cat("for (", ict, " ", ctr, " = ", lov, "; ", ctr, " < ", hiv, "; ", step, ") {"),
+            nullptr, 0, { vdef, idxdef });
         return;
     }
     // Arrays and slices. The length re-reads each iteration (growth during
@@ -994,6 +1085,30 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
     // An element that is a reference binds as the reference it holds, by
     // `&x` too (the checker's binding type), decoded if relative (§3.9).
     auto held = v.elem->kind == TY_REF;
+    auto fixedarr = lv.t->kind == TY_ARRAY && lv.t->arr->akind == A_FIXED;
+    // A small constant the length never exceeds (BCE's lenbound: a limited
+    // array's capacity, say) bounds the loop instead, which the C compiler
+    // can unroll whole; the length is still tested at the top of every
+    // iteration. A length known to equal it is one the C compiler mostly
+    // knows as well (a fixed array's, one an assert compared), and the
+    // constant there only changes how it vectorizes, not always for the
+    // better, so such a loop stays as it is.
+    auto bound = cat("(", v.len, ")");
+    auto exitlen = false;
+    auto setbound = [&]() {
+        if (fixedarr || lenbound < 0 || lenexact || lenbound > CodeGen::MAXTRIPBOUND ||
+            CountNodes(body) > CodeGen::MAXTRIPBODY)
+            return;
+        bound = cat(lenbound);
+        exitlen = true;
+        cg.L("/* loop shape: trip count bounded by ", lenbound, " */");
+    };
+    auto testlen = [&]() {
+        if (!exitlen) return;
+        auto si = (int)cg.cscopes.size() - 1;
+        cg.L("if (", gi, " >= (", v.len, ")) goto ", cg.cscopes[si].brklbl, ";");
+        cg.cscopes[si].usedbrk = true;
+    };
     if (!cg.IsFix(v.elem)) {
         // Sequential walk, &-binding only; the cursor advances in the
         // increment clause so `continue` behaves.
@@ -1005,7 +1120,9 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
             at = cg.T();
             cg.L("uint8_t *", at, " = ", p, ";");
         }
+        setbound();
         cg.GenLoopBody([&]() {
+            testlen();
             if (moves) {
                 auto e = cg.T();
                 cg.L("uint8_t *", e, " = (uint8_t *)(", cg.ArrayView(lv).elems, ");");
@@ -1029,12 +1146,20 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
                 cg.L("uint8_t *", iv, " = ", p, ";");
             }
         }, body, d,
-            cat("for (int64_t ", gi, " = 0; ", gi, " < (", v.len, "); ", gi, "++, ", p,
-                " += ", cg.SizeX(v.elem, p), ") {"));
+            cat("for (int64_t ", gi, " = 0; ", gi, " < ", bound, "; ", gi, "++, ", p,
+                " += ", cg.SizeX(v.elem, p), ") {"), nullptr, 0, { vdef, idxdef });
         return;
     }
     auto esz = cg.FixedSize(v.elem);
-    cg.GenLoopBody([&]() {
+    auto nbinds = 0;
+    auto bind = [&]() {
+        // Each copy of a body run in blocks binds the element under a name of
+        // its own: an aggregate's declaration moves to the top of the
+        // function (HoistAggregateDecls).
+        if (nbinds++) {
+            iv = cg.Unique2(cg.Sanitize(vdef->name));
+            cg.vnames[vdef] = iv;
+        }
         bindix();
         // The start of the elements behind a varint length prefix is a
         // statement's (RawArrayView), which runs again where they can move.
@@ -1061,8 +1186,24 @@ inline void ForLoop::CgStmt(CodeGen &cg) {
             cg.FixedLocal(et, iv, elem, true);
             cg.vnames[vdef] = iv;
         }
-    }, body, d,
-        cat("for (int64_t ", gi, " = 0; ", gi, " < (", v.len, "); ", gi, "++) {"));
+    };
+    // Blocks of iterations need the count fixed at entry: a length the body
+    // cannot change, of elements that stay where they are. A loop known to
+    // be shorter than two blocks is better off without them.
+    if (!moves && (fixedlen || fixedarr)) {
+        if (auto k = cg.BlockSize(this); k && (lenbound < 0 || lenbound >= 2 * k)) {
+            cg.L("int64_t ", gi, " = 0;");
+            cg.GenBlocked(this, k, cat("(", v.len, ") - ", gi, " >= ", k), cat(gi, "++"), bind,
+                          cat(gi, " < (", v.len, ")"));
+            return;
+        }
+    }
+    setbound();
+    cg.GenLoopBody([&]() {
+        testlen();
+        bind();
+    }, body, d, cat("for (int64_t ", gi, " = 0; ", gi, " < ", bound, "; ", gi, "++) {"),
+       nullptr, 0, { vdef, idxdef });
 }
 
 inline void Return::CgStmt(CodeGen &cg) {

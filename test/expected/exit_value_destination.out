@@ -30,4 +30,4 @@
 4 ["bad4", "next", "ok"] bad5ok 98 [6, 204]
 4 bad! [["inner"], ["next"]] bad
 4 [["bad"], ["next"]] bad ["bad"] ["bad"]
-["bad"] <3stop2> <1end>
+["bad"] <3<> <1end> -19 1

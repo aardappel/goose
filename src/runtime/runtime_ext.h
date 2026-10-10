@@ -5,8 +5,8 @@
    it uses here as codegen does (CodeGen::EmitCoreTypes, CT). An --include
    header follows this and may use what it defines. The generated program
    calls the OS primitives behind stdlib/os.goose (spec §7.10, defined in
-   runtime_os.h) directly from `extern "gs_os_..." fn` declarations; no
-   prototype is emitted for a function declared here. */
+   runtime_os.h) and std's byte search directly from `extern "gs_..." fn`
+   declarations; no prototype is emitted for a function declared here. */
 
 #ifdef GS_RUNTIME_OBJECT
 #pragma pack(push, 1)
@@ -24,6 +24,32 @@ static void gs_bld_append(gs_rref b, const void *p, int64_t n) {
     memcpy(b.stk->top, p, (size_t)n);
     b.stk->top += n;
     b.hdr->len += n;
+}
+
+/* math's sqrt (stdlib/math.goose). Goose has no errno, and C's sqrt has to
+   set it for a negative argument: clang and gcc then guard the square root
+   instruction with a test and a library call at every use, and will not
+   vectorize a loop around one. A compiler that has a square root without
+   errno uses that instead; the value is the same correctly rounded root
+   either way, and NaN for a negative argument. */
+#if defined(__has_builtin)
+#if __has_builtin(__builtin_elementwise_sqrt)
+#define GS_SQRT_NO_ERRNO 1
+#endif
+#endif
+#ifdef GS_SQRT_NO_ERRNO
+static double gs_sqrt(double x) { return __builtin_elementwise_sqrt(x); }
+static float gs_sqrtf(float x) { return __builtin_elementwise_sqrt(x); }
+#else
+static double gs_sqrt(double x) { return sqrt(x); }
+static float gs_sqrtf(float x) { return sqrtf(x); }
+#endif
+
+/* std's find_any and find_pair over a slice (gs_scan_any, gs_scan_pair); a
+   set is a pointer to std's ByteSet. */
+static int64_t gs_find_any(sl_u8 s, const void *set) { return gs_scan_any(s.data, s.len, set); }
+static int64_t gs_find_pair(sl_u8 s, const void *a, int64_t d, const void *b) {
+    return gs_scan_pair(s.data, s.len, a, d, b);
 }
 
 GS_API uint8_t gs_os_read_file(sl_u8 path, gs_rref out);
@@ -45,6 +71,7 @@ GS_API void gs_os_read_stdin(gs_rref out);
 GS_API int64_t gs_os_arg_count(void);
 GS_API void gs_os_arg(int64_t i, gs_rref out);
 GS_API uint8_t gs_os_getenv(sl_u8 name, gs_rref out);
+GS_API uint8_t gs_os_resource_dir(gs_rref out);
 GS_API int64_t gs_os_time_ns(void);
 GS_API int64_t gs_os_clock_ns(void);
 GS_API void gs_os_sleep_ms(int64_t ms);

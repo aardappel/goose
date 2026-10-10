@@ -10,6 +10,7 @@ type
 fn
 thread_fn
 recursive
+simd
 let
 var
 const

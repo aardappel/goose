@@ -14,8 +14,13 @@ fn load(bytes: const u8[:]) {
 }
 
 // Each recursive frame owns its argument. Captures see that private copy,
-// not the caller's value, and a returned value survives the frame's restore.
-recursive fn alter(g: Game, n: i64) -> Game {
+// not the caller's value, and a returned value survives the frame's return.
+// Inside a recursive cycle a large fixed value lives on the native stack,
+// not a data stack, so that no stack is held across the call into the cycle
+// (§7.8, §10.3): the recursion's values stay above the threshold but well
+// inside a 1 MiB native stack across its four activations.
+struct Piece { blocks: u8[20000], seed: i64 }
+recursive fn alter(g: Piece, n: i64) -> Piece {
     fn stamp() { g.blocks[0] += 1; g.seed += 1; }
     stamp();
     if n == 0 { return g; }
@@ -30,15 +35,16 @@ fn change() -> i64 { game.seed = 99; return 0; }
 
 fn calls() {
     reset(7);
-    let result = alter(game, 3);
+    let piece = Piece { seed: 7, .. };
+    let result = alter(piece, 3);
     assert(result.seed == 11 && result.blocks[0] == 4);
-    assert(game.seed == 7 && game.blocks[0] == 0);
-    let copied, seed = forward(result);
-    assert(copied == result && seed == 11);
+    assert(piece.seed == 7 && piece.blocks[0] == 0);
+    let copied, seed = forward(game);
+    assert(copied == game && seed == 7);
     let before = second(game, change());
     assert(before.seed == 7 && game.seed == 99);
-    let selected = if seed == 11 { copied } else { game };
-    assert(selected.seed == 11);
+    let selected = if seed == 7 { copied } else { game };
+    assert(selected.seed == 7);
 }
 
 // A large return can unwind through other large locals. Repeat exits often

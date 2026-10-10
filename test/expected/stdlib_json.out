@@ -1,0 +1,115 @@
+"plain" "q\"b\\s/ \n\r\t \u0001\u001f\x7f caf\xc3\xa9" "k\"ey":-9223372036854775808 9223372036854775807 true false
+0.0 -0.0 1.0 -2.0 0.5 123.25 0.1 0.3333333333333333 0.6666666666666666 100.0 1e-7 1.5e300 0.001 0.0001 0.00001 1e-6 1000000000000000.0 1e16 1.2345678901234568e17 1e21 1e22 1e23 9007199254740992.0 9007199254740992.0 4.35 5e-324 2.2250738585072014e-308 1.7976931348623157e308 -1.7976931348623157e308 0.30000000000000004 null null null
+{"a":[1,-2,3.5,-0.0,100.0,true,false,null,"s",{},[]],"nested":{"x":{"y":{"z":"deep"}}},"esc":"\xc3\xa9\xf0\x9f\x98\x80\"\\/\b\f\n\r\t","lone":"\xed\xa0\x80!","key":7,"big":9223372036854775807,"small":-9223372036854775808,"over":9.223372036854776e18,"long":1.2345678901234567e19,"e":0.01,"dup":1,"dup":2}
+27 nodes, 21 bytes decoded
+deep true true true 7 true 1 true 9223372036854775807 true -9223372036854775808 true 0 false 9.223372036854776e18 true
+[true true false false][true true false false][true false false false][true false false false][true false false false][false false true false][false false true false][false false false false][false false false true][false false false false][false false false false]
+0.0 false false false true
+root object of 12 members
+0
+-12
+"s"
+true
+null
+{}
+[]
+[[],{},[[]]]
+7
+40001 true
+ => json: unexpected end of input at byte 0
+   => json: unexpected end of input at byte 2
+[ => json: unexpected end of input at byte 1
+[1, => json: unexpected end of input at byte 3
+[1,] => json: expected a value at byte 3
+[1 2] => json: expected ',' or ']' at byte 3
+{"a"} => json: expected ':' at byte 4
+{"a":} => json: expected a value at byte 5
+{,} => json: expected a key at byte 1
+{"a":1,} => json: expected a key at byte 7
+{"a" 1} => json: expected ':' at byte 5
+{1:2} => json: expected a key at byte 1
+["a": 1] => json: expected ',' or ']' at byte 4
+tru => json: expected a value at byte 0
+nul => json: expected a value at byte 0
+nulll => json: trailing input at byte 4
+01 => json: bad number at byte 0
+1. => json: bad number at byte 0
+1e => json: bad number at byte 0
+- => json: bad number at byte 0
+.5 => json: expected a value at byte 0
++1 => json: expected a value at byte 0
+"abc => json: bad string at byte 0
+"a\nb" => json: bad string at byte 0
+"\x" => json: bad string at byte 4
+"\u12G4" => json: bad string at byte 8
+"\u12" => json: bad string at byte 6
+[1]] => json: trailing input at byte 3
+{}x => json: trailing input at byte 2
+[1} => json: expected ',' or ']' at byte 2
+{"a":[} => json: expected a value at byte 6
+] => json: expected a value at byte 0
+\xef\xbb\xbf{} => json: expected a value at byte 0
+0.1 => 0.1
+0.2 => 0.2
+0.3 => 0.3
+1e23 => 1e23
+8.98846567431158e307 => 8.98846567431158e307
+2.2250738585072011e-308 => 2.225073858507201e-308
+2.2250738585072012e-308 => 2.2250738585072014e-308
+2.2250738585072014e-308 => 2.2250738585072014e-308
+4.9406564584124654e-324 => 5e-324
+2.4703282292062327e-324 => 0.0
+2.4703282292062328e-324 => 5e-324
+1e-324 => 0.0
+3e-324 => 5e-324
+1.7976931348623157e308 => 1.7976931348623157e308
+1.7976931348623158e308 => 1.7976931348623157e308
+1.7976931348623159e308 => null
+1e400 => null
+-1e400 => null
+1e-400 => 0.0
+9007199254740993.0 => 9007199254740992.0
+9007199254740995.0 => 9007199254740996.0
+1.00000000000000011102230246251565404236316680908203125 => 1.0
+1.00000000000000011102230246251565404236316680908203125000000001 => 1.0000000000000002
+1.00000000000000011102230246251565404236316680908203124999999999 => 1.0
+123456789012345678901234567890 => 1.2345678901234568e29
+0.000000000000000000000000000000000000001234 => 1.234e-39
+7.2057594037927933e16 => 7.205759403792794e16
+3.0540412816658963e-16 => 3.054041281665896e-16
+1448997445238699.0 => 1448997445238699.0
+-1e-7 => -1e-7
+100000000000000000000000.0 => 1e23
+0e10 => 0.0
+-0.0 => -0.0
+0.0e-999 => 0.0
+1E+2 => 100.0
+10000000000000000000000000000000000000000000000000000000000000000000000e-70 => 1.0
+0.00000000000000000000000000000000000000000000000000000000000000000000001e70 => 0.1
+4.4501477170144023e-308 => 4.4501477170144023e-308
+4.4501477170144022e-308 => 4.4501477170144023e-308
+1.2345678901234567e-300 => 1.2345678901234568e-300
+6.631236846766476e-316 => 6.63123685e-316
+3.9999999999999999999999999999999999999999 => 4.0
+0 random doubles that did not read back
+ok
+1 one 9.5 2 true
+-2 two 1000.0 0 false
+0  0.0 0 false
+{"items": [{"id": 1.5}]} => json: expected an integer at byte 18
+{"items": [{"id": 1e2}]} => json: expected an integer at byte 18
+{"items": [{"ok": 1}]} => json: expected true or false at byte 18
+{"items": [{"name": 5}]} => json: expected a string at byte 20
+{"items": [{"price": "x"}]} => json: expected a number at byte 21
+{"items": [{"id": 1}]} x => json: trailing input at byte 23
+{"items": [{"id": 1},]} => json: expected '{' at byte 21
+{"items": {}} => json: expected '[' at byte 10
+[] => json: expected '{' at byte 0
+{"skip": [1, 2} => json: expected ',' or ']' at byte 14
+{"skip": {"a" 1}} => json: expected ':' at byte 14
+{"skip": tru} => json: expected a value at byte 9
+{"skip": "\q"} => json: bad string at byte 9
+{"items": [{"name": "\u00"}]} => json: bad escape at byte 20
+{"skip": [1, } => json: expected a value at byte 13
+{"items": [{"id": 9223372036854775808}]} => json: expected an integer at byte 18
+42 true 0

@@ -430,6 +430,7 @@ fn build(n: i64) -> u8[>..] {
     return out;                          // Same local: built at the destination.
 }
 
+// warning: `x` is copied on return rather than built where the result goes: another return hands back `y`
 fn pick_one(n: i64) -> u8[>..] {
     var x: u8[>..] = "x";
     var y: u8[>..] = "y";

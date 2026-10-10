@@ -179,7 +179,7 @@ inline void CodeGen::EmitArg(FnSpec *sp, size_t i, Node *node, vector<string> &a
     if (pt->kind == TY_REF && pt->ref->lenstorage >= 0) {
         auto t = T();
         L(CT(pt), " ", t, ";");
-        EmitRelStoreAt(cat("(uint8_t *)&", t), pt, GenX(node), node->line, true);
+        EmitRelStoreAt(cat("(uint8_t *)&", t), pt, GenX(node), node->line, true, RelValue(node));
         args.push_back(t);
         return;
     }
@@ -242,7 +242,7 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
     Dst reprefix;
     vector<string> args;
     for (size_t i = 0; i < an.size(); i++) EmitArg(sp, i, an[i], args);
-    for (auto fv : ki.freevars) EmitFvArg(fv, args);
+    for (auto fv : ki.freevars) EmitFvArg(c->FreeVarArg(fv), args);
     vector<string> retex(sp->rets.size());
     for (size_t i = 0; i < sp->rets.size(); i++) {
         auto rt = sp->rets[i];
@@ -322,12 +322,16 @@ inline vector<string> CodeGen::EmitSpecCall(Call *c, FnSpec *sp, Dst d0, vector<
             }
         }
     }
-    if (ki.needssp) args.push_back(SpTop());
+    if (ki.needssp) {
+        NoStackAcrossCycleCall(sp, c->line);
+        NoteStackCall(sp, c->line);
+        args.push_back(SpTop());
+    }
     string argstr;
     for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
     auto callee = ername.empty() ? ki.cname : ername;
     // The callee reads and bumps the stacks it was handed, and no others.
-    auto reach = SyncReach(sp, args);
+    auto reach = SyncReach(sp, args, an);
     MarkFlush(reach);
     if (ki.cret >= 0) {
         auto r0 = T();
@@ -689,7 +693,7 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
                     args.push_back(sharedstk[i]);
             }
         }
-        for (auto fv : ki.freevars) EmitFvArg(fv, args);
+        for (auto fv : ki.freevars) EmitFvArg(c->FreeVarArg(fv), args);
         for (size_t i = 0; i < sp->rets.size(); i++) {
             if (IsResz(sp->rets[i])) {
                 args.push_back(dststk[i]);
@@ -697,10 +701,14 @@ inline vector<string> CodeGen::EmitDispatch(Call *c, Dst d0, vector<Dst> *alldst
             } else if (IsBytesT(sp->rets[i])) args.push_back(dststk[i]);
             else if ((int)i != ki.cret) args.push_back(cat("&", retex[i]));
         }
-        if (ki.needssp) args.push_back(SpTop());
+        if (ki.needssp) {
+            NoStackAcrossCycleCall(sp, c->line);
+            NoteStackCall(sp, c->line);
+            args.push_back(SpTop());
+        }
         string argstr;
         for (size_t i = 0; i < args.size(); i++) Append(argstr, i ? ", " : "", args[i]);
-        auto reach = SyncReach(sp, args);
+        auto reach = SyncReach(sp, args, an);
         MarkFlush(reach);
         if (ki.cret >= 0) L(retex[ki.cret], " = ", ki.cname, "(", argstr, ");");
         else L(ki.cname, "(", argstr, ");");

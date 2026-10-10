@@ -29,6 +29,42 @@ fn hashing() {
     print(hash(0.1) == hash(0.1), " ", hash(-1.5) != hash(1.5));               // true true
     let q: f32 = 0.1;
     print(hash(q) == hash(q), " ", hash(q) != hash(-q));                       // true true
+    // Bytes: the same bytes hash the same wherever they lie, every prefix
+    // of a text (each length the hash reads its own way) hashes differently,
+    // and the low 12 bits, which a 4096-slot dictionary uses, spread 4096
+    // keys that differ in their last digits over as many buckets as random
+    // values would: 2594 on average, where the bound 2450 is far below and
+    // a byte-at-a-time FNV-1a, at 2360 for item_N, would already miss it.
+    let text = "the quick brown fox jumps over the lazy dog";
+    var buf: u8[>..] = [];
+    buf.append(text);
+    var same = true;
+    var distinct = true;
+    for i in text.len + 1 {
+        if hash(text[0..i]) != hash(buf[0..i]) || hash(text[i..]) != hash(buf[i..]) { same = false; }
+        for j in i { if hash(text[0..i]) == hash(text[0..j]) { distinct = false; } }
+    }
+    let inline: u8[..16] = "item_17";
+    print(same, " ", distinct, " ", hash(inline) == hash("item_17"));          // true true true
+    print(buckets("item_") > 2450, " ", buckets("v") > 2450, " ",
+          buckets("key number ") > 2450);                                      // true true true
+}
+
+// How many of 4096 buckets the low 12 bits of the hashes of prefix0 ..
+// prefix4095 fill.
+fn buckets(prefix: u8[:]) -> i64 {
+    var seen: bool[>..] = [];
+    for b in 4096 { seen.push(false); }
+    var key: u8[>..] = [];
+    var n = 0;
+    for i in 4096 {
+        key.clear();
+        format(key, prefix, i);
+        let b = (hash(key) & 4095) as i64;
+        if !seen[b] { n++; }
+        seen[b] = true;
+    }
+    return n;
 }
 
 fn random() {

@@ -4,10 +4,11 @@ This document records the original standard library design: its scope,
 conventions, and the builtins and language rules it required (§8). It
 preserves the reasoning at the time. Later changes include `const` types,
 namespaces, generic aliases, serialization, graphics, physics, user
-interfaces, and directories and atomic replacement in `os`; some rules and
-limitations below have therefore been superseded. See
-`../stdlib.md` for the current API and `../goose_spec.md` for current language
-rules. References of the form §N refer to that specification.
+interfaces, directories and atomic replacement in `os`, and the `base64`,
+`csv`, `json` and `regex` modules; some rules and limitations below have
+therefore been superseded. See `../stdlib.md` for the current API and
+`../goose_spec.md` for current language rules. References of the form §N
+refer to that specification.
 
 ---
 
@@ -300,12 +301,18 @@ fn hash(x: i8) -> u64        // … one overload per integer type, i8 … u64
 fn hash(x: bool) -> u64
 fn hash(x: f32) -> u64
 fn hash(x: f64) -> u64
-fn hash(s: u8[:]) -> u64     // FNV-1a over the bytes; any u8 array coerces
+fn hash(s: u8[:]) -> u64     // 8 bytes per multiply; any u8 array coerces
 fn hash_combine(seed: u64, h: u64) -> u64   // for composite keys
 ```
 
 The integer hashes are a multiply-xorshift mix (Fibonacci hashing), so the
 low bits are well distributed and `dictionary` can mask rather than divide.
+The byte hash reads 8 bytes at a time: a multiply and a rotate per word, the
+last word being the final 8 bytes (or, below 8 bytes, the bytes gathered into
+one word) with the length as the seed, then two multiply-xorshift rounds, so
+that every input bit reaches the low 32 bits that `dictionary` masks and keeps
+as slot tags. Keys that differ only in their last characters (`item_17`,
+`item_18`) would otherwise share their low bits.
 A user key type gets `fn hash(k: key) -> u64 { hash_combine(hash(k.a),
 hash(k.b)) }`. Fixed-capacity inline strings (`u8[..16]`) hash through the
 slice overload, which is what makes them usable as `dictionary` keys.
@@ -381,18 +388,54 @@ fn reverse<T>(xs: T[:])
 fn sort<T>(xs: T[:])                             // by <
 fn sort<T, F>(xs: T[:])                          // by F(a, b); unstable, in place, no allocation
 fn stable_sort<T>(xs: T[:])
-fn stable_sort<T, F>(xs: T[:])                   // merge sort; one temporary of xs.len elements
+fn stable_sort<T, F>(xs: T[:])                   // natural merge sort; one temporary of xs.len elements
 fn to_lower(s: u8[:])                            // ASCII, in place
 fn to_upper(s: u8[:])
 ```
 
-`sort` is a quicksort with median-of-three pivots, insertion sort below 16
-elements, and an explicit `i64[..128]` range stack that always defers the
-larger partition, so it recurses nowhere, allocates nothing, and its stack is
-bounded by 2·log₂(2⁴⁸). Its worst case is quadratic on adversarial input;
-pdqsort's pattern defeat is the planned upgrade once there is a benchmark
-for it. `stable_sort` is bottom-up merge sort with a `T[>..]` temporary on a
-fresh data stack (a stack index, not an allocation).
+`sort` is a pattern-defeating quicksort after pdqsort and Rust's ipnsort.
+A first pass stops at the end of the run the input starts with, and the
+sort is done if that is all of it. Otherwise each round takes a median
+pivot (of three elements, or of three medians of three from 128 on),
+partitions with a branchless Lomuto loop (every element is swapped, and the
+boundary advances by the comparison's outcome), pushes the larger side on
+an `i64[..144]` stack of (lo, hi, budget) ranges and goes on with the
+smaller, so it recurses nowhere, allocates nothing, and holds at most
+log₂(2⁴⁸) ranges. Everything left of a range goes before or with
+everything in it, so when the pivot does not go after the element just
+before the range, the elements equal to it are moved to the front in one
+pass and dropped, as pdqsort does: many equal keys cost linear passes. Each
+range carries a budget of 2·log₂(n) rounds, after which heapsort finishes it,
+bounding the worst case at O(n log n); `test/stdlib/stdlib_sort.goose` builds
+an input against the pivot choice with McIlroy's adversary to check that.
+Ten elements or fewer are insertion sorted: below that, the branchy
+insertion sort measured faster than more partitioning. One shape is slower
+than with the Hoare partition `sort` had before: input in order but for a
+few misplaced elements. The branchless partition swaps every element, which
+rotates each side of a sorted range by one, so nothing below the first run
+check sees order to exploit, and such input costs about two thirds of
+random input, where the old quicksort's well-predicted scans took half the
+new time (200k elements: 1.6 ms against 0.8 ms; random input 2.5 ms against
+8.3 ms).
+
+`stable_sort` is a natural merge sort. One pass splits the input into runs
+in order, reversing strictly descending ones and extending those shorter
+than 16 by insertion sort; an input that is one run is done there. The runs'
+ends go in a `i64[>..]`, and passes merge neighboring pairs between `xs`
+and a `T[>..]` temporary on a fresh data stack (a stack index, not an
+allocation), alternating direction so that no pass copies back. A merge
+copies runs already in order. Its step either branches on the comparison
+or selects the element and the side with conditional moves; it branches
+while the previous merge switched between its runs on fewer than one step
+in four, since a branch on random input mispredicts about every other step,
+while on structured input a predicted branch lets the comparisons overlap,
+which matters most for a comparator that loads what it compares (BWT's
+rank pairs: 3.7x between the two forms on its unsorted rounds, against
+1.5x the other way on random integers).
+
+Both leave a permutation of the input whatever the comparator returns:
+every index stays in range however the comparisons come out, so a
+comparator that is no strict weak ordering only leaves an unspecified order.
 
 ### 4.7 Arrays: changing the length
 
@@ -453,7 +496,7 @@ spaces and tabs would leave.
 ### 5.1 Representation
 
 ```goose
-struct dictionary_slot<K, V> { key: K, val: V, used: bool }
+struct dictionary_slot<K, V> { key: K, val: V, tag: u32 }
 struct dictionary<K, V> { count: i64 = 0, slots: dictionary_slot<K, V>[>..<] = [] }
 ```
 
@@ -465,21 +508,36 @@ struct dictionary<K, V> { count: i64 = 0, slots: dictionary_slot<K, V>[>..<] = [
 * A `dictionary` is resizable-class (its tail is a `[>..<]`), so it lives
   where resizables live: a local, a global, a by-reference parameter, the
   tail of a struct. It is spec A.3, generalized.
-* Growth doubles at ⅔ load: a fresh slot array local is filled by
-  re-inserting the used slots and then assigned over `d.slots` — the
-  whole-resizable assignment of §4.4, spelled `d.slots = copy(ns)` (a `move`,
-  spec TODO 3, would save that copy). The slot array is grow-shrink so that
-  the assignment is legal through a reference (§5.2). The
-  transient second table costs one data stack index during the call, never
-  an allocation. In-place doubling (`append` then re-place) is possible
-  with this layout and can replace it later without changing the API.
+* Each slot keeps a tag: 0 when it is unused, else the low 31 bits of the
+  key's hash with bit 31 set. A probe compares keys only where the tags
+  agree (a slice key's length and bytes, an inline key's bytes), and for a
+  table of up to 2^31 slots the tag holds the home slot, so growth and
+  removal never hash a key again; a larger table hashes the keys it moves.
+  The tag costs 3 bytes per slot over a `used` byte (12 bytes for a
+  `u32 → i32` table where 9 would do): n-gram counting with `u32` keys,
+  which compare as cheaply as tags, measured between 3% slower and even,
+  while string-keyed tables (word counts, an LRU cache, an interpreter's
+  variables, a template engine's) gained 18-57% from the dictionary changes
+  alone.
+* Growth doubles at ⅔ load, in place: the slot array tops its stack, so
+  `resize` extends it with unused slots, and the entries are re-placed by one
+  walk over the old slots in cyclic order, starting just after an unused one.
+  Every entry then lands within a run of slots the walk has already passed
+  (its new home is its old home or that plus a multiple of the old size), so
+  no entry still to be moved lies on a moved entry's probe path. No second
+  table is built and nothing is copied back. The slot array is grow-shrink
+  so that it can be resized through a reference (§5.2). A maximum load of ½
+  measured 16% faster on a small LRU table and 9% on n-gram counting, but
+  8% slower on growth-heavy word counting and up to 1.8 times slower on
+  150K-entry tables, which at twice the size leave the cache; ¾ was within
+  noise of ⅔ but for the word count, 8% slower.
+* `insert`, `update` and `get_or_insert` check for growth first and then
+  walk the probe sequence once, to the key or to the unused slot where it
+  goes.
 * Fresh slots are filled with `default<K>()`/`default<V>()` (§8.2), so a
   reference value is an optional one (`Cell?`, or `in pool`). An update
   stores a whole slot, since `=` into a reference `V` would write its
   pointee (spec §3.8).
-* A hash is not cached in the slot in v1 (17 bytes for an `i64 → i64` table);
-  caching it (`h: u32`) speeds rehash and slice-keyed probes and is a
-  measured decision for later.
 
 ### 5.2 API
 
@@ -767,7 +825,7 @@ The rule applies to individual constructs as follows:
   defined operation, so `g.append(h)` stays as it is.
 * `g = h` between resizables (§4.4's clear-then-copy) becomes `g = copy(h)`;
   `g = f()` stays. This is where a `move(x)` (spec TODO 3) would first be
-  wanted: the dictionary's rehash assigns a dying local.
+  wanted: an assignment of a dying local.
 * `return x` of a non-fixed local moves it (NRVO, no copy); returning a
   non-fixed *field* or parameter copies and takes `copy`. The one implicit
   copy of §7.3 — two different locals returned on different paths — stays
@@ -797,7 +855,7 @@ The rule applies to individual constructs as follows:
 For the library: no binder parameters, no `&` in any example, UFCS works
 for every mutator, generic HOFs could even be untyped, and the library's
 own copies become visible where they are intended (`stable_sort`'s
-temporary is a construction; the dictionary rehash is a `copy`/`move`).
+temporary is a construction).
 
 Pros, beyond the UFCS fix that motivated it: the rule matches the cost
 model (registers for fixed values, in-place construction or a

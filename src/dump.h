@@ -560,6 +560,7 @@ inline void FnDecl::Dump(string &s, int ind) const {
         s += "extern ";
         if (sf->cname != sf->name) { s += "\""; s += sf->cname; s += "\" "; }
     }
+    if (sf->issimd) s += "simd ";
     if (sf->isrec) s += "recursive ";
     s += sf->isthread ? "thread_fn " : "fn ";
     s += sf->isnested ? sf->name : sf->qname;   // See VarDecl::Dump.

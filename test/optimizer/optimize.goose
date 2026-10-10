@@ -487,6 +487,177 @@ fn recursion_op() {
     print(rec_even(7) + rec_odd(7));                 // 0 + 1
 }
 
+// --- guarded base-case inlining ---------------------------------------------
+// The other languages' shape: every self-call inside an `if` with no else
+// that compares parameters. Each self-call site gets the body without the
+// if, for where the test fails. The `gb_visits += 1` that each body starts
+// with shows how many copies of it there are (run_tests.py).
+
+var gb_visits = 0;
+var gb_limit = 0;
+var gb_pool: RecNode[>..];
+
+recursive fn gb_build(depth: i64, v: i64) -> RecNode& {
+    gb_visits += 1;
+    let n .= gb_pool.push(RecNode { v: v });
+    if depth > 0 {
+        n.l .= gb_build(depth - 1, v * 2);
+        n.r .= gb_build(depth - 1, v * 2 + 1);
+    }
+    return n;
+}
+
+recursive fn gb_walk(n: RecNode&, d: i64) {          // Valueless.
+    gb_visits += 1;
+    if d > 0 {
+        let l = n.l;
+        if l { gb_walk(l, d - 1); }
+    }
+}
+
+recursive fn gb_count(n: RecNode&, d: i64) -> i64 {  // The result as the tail.
+    gb_visits += 1;
+    var t = n.v;
+    if d != 0 {
+        let l = n.l;
+        if l { t += gb_count(l, d - 1); }
+        let r = n.r;
+        if r { t += gb_count(r, d - 1); }
+    }
+    t
+}
+
+// Left alone: the test reads a global or a node, which the statements before
+// it may change before the callee tests it, or it does arithmetic, which may
+// abort, or the body assigns the parameter it reads.
+recursive fn gb_global(n: RecNode&, d: i64) -> i64 {
+    gb_visits += 1;
+    var t = n.v;
+    if d > gb_limit {
+        let l = n.l;
+        if l { t += gb_global(l, d - 1); }
+        let r = n.r;
+        if r { t += gb_global(r, d - 1); }
+    }
+    return t;
+}
+
+recursive fn gb_field(n: RecNode&, d: i64) -> i64 {
+    gb_visits += 1;
+    var t = n.v;
+    if n.v < 8 && d > 0 {
+        let l = n.l;
+        if l { t += gb_field(l, d - 1); }
+        let r = n.r;
+        if r { t += gb_field(r, d - 1); }
+    }
+    return t;
+}
+
+recursive fn gb_arith(n: RecNode&, d: i64) -> i64 {
+    gb_visits += 1;
+    var t = n.v;
+    if d - 1 >= 0 {
+        let l = n.l;
+        if l { t += gb_arith(l, d - 1); }
+        let r = n.r;
+        if r { t += gb_arith(r, d - 1); }
+    }
+    return t;
+}
+
+recursive fn gb_var(n: RecNode&, var d: i64) -> i64 {
+    gb_visits += 1;
+    var t = n.v;
+    d -= 1;
+    if d >= 0 {
+        let l = n.l;
+        if l { t += gb_var(l, d); }
+        let r = n.r;
+        if r { t += gb_var(r, d); }
+    }
+    return t;
+}
+
+fn guarded_op() {
+    let root .= gb_build(3, 1);
+    print(gb_pool.len, " ", gb_visits);              // 15 15
+    gb_walk(root, 2);
+    print(gb_visits);                                // 18
+    print(gb_count(root, 3), " ", gb_count(root, 1)); // 120 6
+    print(gb_global(root, 3), " ", gb_field(root, 3)); // 120 120
+    print(gb_arith(root, 3), " ", gb_var(root, 3));  // 120 120
+    print(gb_visits);                                // 96
+}
+
+// --- inlining heuristics ------------------------------------------------------
+// A callee whose one call is in a cold branch -- the else of a guard, the body
+// of an early return -- and that only the single-use rule would inline stays
+// out of line. A wrapper called twice from loops is inlined where the use rule
+// alone would leave it a call, as it does its twin called twice outside loops
+// (run_tests.py checks which bodies are left).
+
+fn ih_rare(x: i64) -> i64 {
+    var t = 0;
+    for i in 1..20 {
+        if i % 3 == 0 { t += x * i; } else if i % 5 == 0 { t -= x / i; } else { t ^= i; }
+        if t > 1000 { t = t % 997 + x; }
+        if t < -1000 { t = -(t % 991) - x; }
+    }
+    for i in 1..9 {
+        if (t + i) % 4 == 1 { t += x; } else if i % 3 == 2 { t = t / 2 - i; } else { t -= i * 3; }
+        if t > 2000 { t = t % 1999 + i; }
+    }
+    return t;
+}
+fn ih_early(x: i64) -> i64 {
+    var t = 1;
+    for i in 1..20 {
+        if i % 2 == 0 { t = t * 3 + x; } else if i % 7 == 0 { t -= x * i; } else { t += i; }
+        if t > 5000 { t = t % 4999 - x; }
+        if t < -5000 { t = -(t % 4993) + x; }
+    }
+    for i in 1..9 {
+        if (t - i) % 4 == 3 { t -= x; } else if i % 3 == 1 { t = t / 3 + i; } else { t += i * 5; }
+        if t < -3000 { t = t % 2999 - i; }
+    }
+    return t;
+}
+fn ih_check(x: i64) -> i64 {
+    guard x >= 0 else { return ih_rare(x); }
+    if x > 100 { return ih_early(x); }
+    return x * 2;
+}
+
+fn ih_wrap(a: i64[:], k: i64) -> i64 {
+    let i = k % a.len;
+    var v = a[i];
+    if v < 0 { v = -v; }
+    if v > 10 { v = v % 10 + k % 3; }
+    if v == 7 { v = k % 5 + 1; }
+    if (v + i) % 2 == 1 { v += a[0] % 4; }
+    return v * 2 + i;
+}
+fn ih_twin(a: i64[:], k: i64) -> i64 {
+    let i = k % a.len;
+    var v = a[i];
+    if v < 0 { v = -v; }
+    if v > 10 { v = v % 10 + k % 3; }
+    if v == 7 { v = k % 5 + 1; }
+    if (v + i) % 2 == 1 { v += a[0] % 4; }
+    return v * 2 + i;
+}
+
+fn heuristics_op() {
+    let xs = [-4, 5, 300];
+    for x in xs { print(ih_check(x)); }              // -87, 10, -490
+    let a = [5, -12, 7, 30];
+    var s = 0;
+    for i in 10 { s += ih_wrap(a, i); }
+    for i in 10 { s += ih_wrap(a, i + 1); }
+    print(s + ih_twin(a, 10) + ih_twin(a, 11));      // 183
+}
+
 fn main_optimize() {
     use_inlining();
     use_params();
@@ -508,6 +679,8 @@ fn main_optimize() {
     tailrec_op();
     varmode();
     recursion_op();
+    guarded_op();
+    heuristics_op();
     print(ginit + G);
     var acc = 0;
     acc += gv;

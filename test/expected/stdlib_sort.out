@@ -1,0 +1,7 @@
+sort: 1968 runs, 0 wrong
+stable_sort: 984 runs, 0 wrong
+slices: true
+killer 1000: sorted true, within 6 n log2 n compares true
+killer 20000: sorted true, within 6 n log2 n compares true
+bad comparators: true, NaNs kept 286
+kinds: true apple yuzu

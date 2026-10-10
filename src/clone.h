@@ -342,6 +342,14 @@ inline void RunChildren(Node *n, const function<void(Node *)> &f) {
     n->Children(f);
 }
 
+// The nodes of a checked tree that run, itself included.
+inline int CountNodes(Node *n) {
+    if (!n) return 0;
+    auto c = 1;
+    RunChildren(n, [&](Node *ch) { c += CountNodes(ch); });
+    return c;
+}
+
 // Whether the tree holds a `return` that exits function sf: exactly the ones
 // an InlineBlock for sf catches (ast.h). The optimizer asks before unwrapping
 // such a block into a plain expression, BCE before taking an inlined body to
@@ -352,6 +360,97 @@ inline bool ReturnsTo(Node *n, SFunction *sf) {
     auto found = false;
     RunChildren(n, [&](Node *ch) { found = found || ReturnsTo(ch, sf); });
     return found;
+}
+
+// Whether evaluating n can reach the storage of local v: n names v, or a
+// variable that may refer into it or hold a reference into it -- one whose
+// provenance names v, or is not known exactly. A parameter or a global
+// cannot, as v is a local of this activation; nor can a variable whose
+// recorded provenance is complete and elsewhere. A captured v may be
+// reached by any call.
+inline bool MayReachLocal(Node *n, const VarDef *v) {
+    if (v->captured) return true;
+    auto reaches = [&](const Roots &r) {
+        if (r.unknown) return true;
+        for (auto &a : r.alts) if (a.root == v || !a.exact) return true;
+        return false;
+    };
+    auto found = false;
+    function<void(Node *)> walk = [&](Node *m) {
+        if (!m || found) return;
+        if (auto id = Is<Ident>(m); id && id->vdef) {
+            auto d = id->vdef;
+            if (d == v) found = true;
+            else if (!d->isglobal && !d->isparam && d->type) {
+                auto refs = d->type->kind == TY_REF || d->type->kind == TY_SLICE;
+                if ((refs && (!d->refrootknown || d->ref.alts.empty() || reaches(d->ref))) ||
+                    reaches(d->contents))
+                    found = true;
+            }
+        }
+        RunChildren(m, walk);
+    };
+    walk(n);
+    return found;
+}
+
+// The local a function or inlined body builds at its result destination
+// (§7.3): the top-level local that a `return` to `target` hands back in
+// position `resultidx`, when no other return there hands back another one,
+// and every other value returned there is built without reaching it. That
+// value is constructed behind the local's elements and moved down over them,
+// as every exit's value is that finds part of a value at its destination.
+// Null when there is no such local; then `stop`, if given, names the local a
+// return hands back and says what stood in the way where there is one.
+struct NamedResultStop {
+    const VarDef *local = nullptr;
+    string why;
+    Node *at = nullptr;           // The value or return that stood in the way.
+};
+inline const VarDef *NamedResultOf(Block *fnbody, SFunction *target, size_t nrets,
+                                   size_t resultidx, NamedResultStop *ns = nullptr) {
+    // Only bindings BindLocal places: a multi-name receive wires a call's
+    // channels into locals of its own, which are not at a return destination.
+    set<const VarDef *> toplocals;
+    for (auto st : fnbody->stmts)
+        if (auto vd = Is<VarDecl>(st); vd && vd->defs.size() == 1)
+            toplocals.insert(vd->defs[0]);
+    const VarDef *cand = nullptr;
+    vector<Node *> others;
+    string stop;
+    Node *stopat = nullptr;
+    auto stopped = [&](string what, Node *n) {
+        if (!stop.empty()) return;
+        stop = std::move(what);
+        stopat = n;
+    };
+    auto consider = [&](Node *val) {
+        auto id = Is<Ident>(val);
+        if (!id || !id->vdef || !toplocals.count(id->vdef)) {
+            others.push_back(val);
+            return;
+        }
+        if (cand && cand != id->vdef)
+            stopped(cat("another return hands back `", id->vdef->name, "`"), val);
+        if (!cand) cand = id->vdef;
+    };
+    function<void(Node *)> walk = [&](Node *n) {
+        if (!n) return;
+        if (auto r = Is<Return>(n); r && r->target == target) {
+            if (r->vals.size() != nrets) stopped("a return forwards several results of a call", r);
+            else consider(r->vals[resultidx]);
+        }
+        RunChildren(n, walk);
+    };
+    walk(fnbody);
+    auto tail = fnbody->tail;
+    if (tail && nrets == 1 && tail->exprtype && tail->exprtype->kind != TY_VOID) consider(tail);
+    if (!cand) return nullptr;
+    for (auto v : others)
+        if (MayReachLocal(v, cand)) stopped("another return's value may read or write it", v);
+    if (stop.empty()) return cand;
+    if (ns) *ns = { cand, stop, stopat };
+    return nullptr;
 }
 
 // The variables one checked node names or binds: an identifier's, a

@@ -1,12 +1,14 @@
 # The Goose standard library
 
-The standard library has twelve modules under `stdlib/`: `std`, `dictionary`,
-`vec`, `math`, `os`, `binary`, `audio`, `gfx`, `physics`, `ui`, and the
-experimental [`ngfx` and `ngfx_ui`](#ngfx). Import each module by name,
+The standard library has sixteen modules under `stdlib/`: `std`,
+`dictionary`, `vec`, `math`, `os`, `binary`, `base64`, `csv`, `json`, `regex`,
+`audio`, `gfx`, `physics`, `ui`, and the experimental [`ngfx` and
+`ngfx_ui`](#ngfx). Import each module by name,
 for example `import std;`. The compiler locates the library in its source
 tree; use `--stdlib <dir>` or `GOOSE_STDLIB` to select another location.
 Everything is written in Goose except the C behind `os`
-(`src/runtime/runtime_os.h`), libm behind `math`, the graphics layer behind
+(`src/runtime/runtime_os.h`), the byte search behind `std`'s `find_any` and
+`find_pair` (`src/runtime/runtime_impl.h`), libm behind `math`, the graphics layer behind
 `gfx` (`src/gfx/`), the physics layer behind `physics` (`src/physics/`) and
 the ui layer behind `ui` (`src/ui/`), and the PCM mixer behind `audio`
 (`src/audio/`), all reached through `extern fn` (spec
@@ -17,7 +19,9 @@ for `ui`, and `design/audio.md` for `audio`); this is the reference.
 For **text rendering, fonts and game HUDs**, start with
 [`ui`](#text-rendering-and-game-huds), which renders over `gfx`. For external
 binary file formats, use [`binary`](#binary); `from_bytes` reads Goose's own
-serialization format.
+serialization format. Text formats have modules of their own:
+[`json`](#json), [`csv`](#csv) and [`base64`](#base64), and
+[`regex`](#regex) searches text with regular expressions.
 
 The library uses these conventions:
 
@@ -45,9 +49,25 @@ The library uses these conventions:
 * A function taking an element *by value* (`push_n`, `insert_at`, `fill`,
   `heap_push`) cannot take one that contains self-relative references, because
   those values cannot be copied (spec §3.9). Construct them in place.
-* The `std`, `dictionary`, `vec`, `math`, and `os` names are global; `binary`, `audio`,
-  `gfx`, `physics`, and `ui` use their own namespaces. A local named `fill` or `count`
-  shadows the corresponding global function, causing an error at a call.
+* The functions that move elements around (`swap_at`, `reverse`, `shuffle`,
+  `sort`, `stable_sort`, `fill`, `copy_into`, `insert_at`, `remove_at`,
+  `swap_remove`, `retain`, `dedup`, the heap functions) move the elements
+  themselves, references included: `reverse(refs)` reorders an array of
+  references and leaves what they point to alone, and an array of
+  references to values that cannot be copied (spec §3.9) sorts too. They
+  store whole elements with `.=`, as generic code may (spec §3.8). `swap(a,
+  b)` exchanges the values `a` and `b` refer to. `remove_at`, `swap_remove`
+  and `heap_pop` return a copy of the value removed, for a reference element
+  its pointee's. A reference element passed by value (`insert_at`,
+  `heap_push`) is written `&x`, which makes `T` the reference type. The
+  checker does not yet let `stable_sort` sort an array of references or
+  slices (`implementation.md` §10).
+* The `std`, `dictionary`, `vec`, `math`, and `os` names are global;
+  `binary`, `base64`, `csv`, `json`, `regex`, `audio`, `gfx`, `physics`, and
+  `ui` use their own namespaces. A local named `fill` or `count`
+  shadows the corresponding global function, causing an error at a call; a
+  global variable of such a name does not, since a call names the functions
+  past it (spec §11.1).
 
 ## std
 
@@ -71,11 +91,14 @@ fn swap<T>(a: T&, b: T&)            // swap(x, y)
 ```goose
 fn hash(x: i8) -> u64               // ... one overload per integer type
 fn hash(x: bool) -> u64             fn hash(x: f32) -> u64      fn hash(x: f64) -> u64
-fn hash(s: u8[:]) -> u64            // FNV-1a over the bytes; any u8 array coerces
+fn hash(s: u8[:]) -> u64            // 8 bytes per multiply; any u8 array coerces
 fn hash_combine(seed: u64, h: u64) -> u64
 ```
 
-A user key type provides its own overload, which `dictionary` picks up:
+These hashes mix their whole input into the low 32 bits, which `dictionary`
+masks for the home slot and keeps as the slot's tag, and a user key type's
+overload, which `dictionary` picks up, should do the same (`hash_combine`
+of the fields' hashes does):
 
 ```goose
 struct key { a: i64, b: i64 }
@@ -132,6 +155,42 @@ var row = 0;
 each_chunk(pixels, width) { line, y => row += line.len; };
 ```
 
+### Byte sets
+
+```goose
+struct ByteSet { members: bool[256], ... }      // a set of bytes, prepared for searching
+fn byte_set(members: bool[256]) -> ByteSet
+fn byte_set(bytes: u8[:]) -> ByteSet            // the bytes listed: byte_set(",\"\n")
+fn find_any(s: const u8[:], set: const ByteSet&) -> i64
+                                                // first i with s[i] in the set, -1 if none
+fn find_pair(s: u8[:], a: const ByteSet&, d: i64, b: const ByteSet&) -> i64
+                                                // first i with s[i] in a and s[i + d] in b
+                                                // (i + d < s.len), -1 if none; d >= 0
+```
+
+These scan in the runtime, 16 bytes at a time on x86-64 (SSE2, which every
+such CPU has; a set that is neither at most three bytes, nor one range, nor
+the complement of either, is looked up in nibble tables, which takes SSSE3,
+checked as the program starts). Elsewhere, and in a JIT run, they test a byte
+at a time, a single byte through the C library's `memchr`. `byte_set` works
+out how to test a set by going over all 256 bytes, so make the set once, in a
+variable, outside the loop that searches: `members` is the set, and the other
+fields belong to the search. `find_pair` is the test of a prefilter that
+knows two of a match's bytes `d` apart, as [`regex`](#regex) uses it with
+the rarest two of a pattern's leading bytes.
+
+```goose
+let special = byte_set(",\"\n");
+var pos = 0;
+loop {
+    let k = find_any(text[pos..], special);
+    if k < 0 { break; }
+    pos += k;
+    handle(text[pos]);
+    pos += 1;
+}
+```
+
 ### Arrays: transforming
 
 ```goose
@@ -155,13 +214,25 @@ fn fill<T>(xs: T[:], v: T)
 fn copy_into<T>(dst: T[:], src: T[:])           // equal lengths; first to last
 fn reverse<T>(xs: T[:])
 fn sort<T>(xs: T[:])                            // by <; sort(xs) { a, b => ... } by the block
-fn stable_sort<T>(xs: T[:])                     // merge sort; one temporary of xs.len elements
+fn stable_sort<T>(xs: T[:])                     // natural merge sort; one temporary of xs.len elements
 fn to_lower(s: u8[:])                           // ASCII, in place
 fn to_upper(s: u8[:])
 ```
 
-`sort` is a quicksort with median-of-three pivots, insertion sort below 16
-elements and an explicit range stack; unstable, in place, no allocation.
+`sort` is a pattern-defeating quicksort after pdqsort and Rust's ipnsort:
+unstable (the order it leaves equal elements in is unspecified), in place,
+no allocation. Its partition does not branch on the comparisons, a run of
+equal keys costs a linear pass rather than n log n, and heapsort takes over
+a range that partitioning keeps splitting badly, so the worst case is
+O(n log n). `stable_sort` is a natural merge sort: it finds the runs
+already in order (or in strictly descending order, which it reverses) and
+merges them pass by pass between `xs` and a temporary of `xs.len` elements
+on a fresh data stack. Both take a single pass over input that is in order
+already or strictly descending, and neither allocates for it or for 20
+elements or fewer. A comparator that is no strict weak ordering (`<=`, or
+`<` over floats with NaNs) leaves an unspecified order, but always a
+permutation of the input, and never makes either abort.
+
 A `let` array can be sorted because `let` prevents rebinding, not element
 writes. A `const` array or read-only slice cannot be sorted (spec §9.5).
 
@@ -181,6 +252,18 @@ fn make_heap<A>(xs: A&)                         // O(n)
 
 A `[>..<]` is the natural heap and queue container; a limited `[..k]` field
 works as well.
+
+The heap is binary, with the children of `i` at `2i + 1` and `2i + 2`. Its
+sifts move a hole instead of swapping: the element being placed waits in a
+local while each level moves one element into the hole, and is stored once
+where the hole stops. `heap_pop` walks the hole from the root down to a leaf
+along the child that goes first and then sifts the last element up from
+there, as libstdc++ and Rust do, which takes about one comparison per level
+where sifting it down from the root takes two. For a comparator that is a
+strict weak order every operation leaves the same layout as the textbook
+swapping sifts, ties included, so elements that tie come out in the same
+order. A comparator that reads the heap while it runs sees one slot holding
+a copy of its neighbour rather than the element waiting outside.
 
 ```goose
 var q: i64[>..<] = [];
@@ -214,8 +297,10 @@ fn push_utf8(out: u8[>..]&, cp: i64)
 ```
 
 Plain rendering of scalars and strings is the builtin `format`/`str`/
-`print`; these add control and parsing. Strings are `u8` arrays: input is
-`u8[:]`, output a `u8[>..]&` builder, storage `u8[]`/`u8[..k]`.
+`print`; these add control and parsing. In base 10, `format_int` and
+`format_uint` write what `format` does, after any padding, and cost the
+same. Strings are `u8` arrays: input is `u8[:]`, output a `u8[>..]&`
+builder, storage `u8[]`/`u8[..k]`.
 
 ```goose
 var line: u8[>..] = [];
@@ -256,6 +341,12 @@ fn each<K, V, F>(d: dictionary<K, V>&)                          // F(key, val&);
 
 Open addressing with linear probing, power-of-two capacity, backward-shift
 deletion. Keys and values are fixed-size; a key type needs `hash` and `==`.
+Each slot keeps 31 bits of its key's hash as a tag, so a lookup compares
+keys only where the tags agree, and growth and removal do not hash keys
+again (in tables of up to 2^31 slots). `insert`, `update` and
+`get_or_insert` look a key up once, whether or not it is there. The table
+doubles in place at 2/3 load; `reserve(n)` sizes it for `n` entries at that
+load.
 Strings are keyed as `u8[:]` slices into text the caller keeps (`const u8[:]`
 for literals or views of `const` data, §9.5), or as inline
 `u8[..k]`. A set is `dictionary<K, bool>`.
@@ -321,7 +412,8 @@ fn lerp<T>(a: vec3<T>, b: vec3<T>, t: T) -> vec3<T>
 fn xy<T>(v: vec3<T>) -> vec2<T>                 // also xy(vec4), xyz(vec4)
 ```
 
-Elementwise `+ - * /` are the language's: `a + b`, `p - q`. `*` and `/`
+Elementwise `+ - * /` are the language's: `a + b`, `p - q`, and so is
+unary minus on a float or signed integer vector: `-v`. `*` and `/`
 also broadcast a scalar in either order: `v * 2.0`, `v / length(v)`,
 `1.0 / v`; `v *= scale` and `v /= scale` update a vector in place. The
 scalar converts to the component type, so an `f64` variable scaling a
@@ -330,9 +422,12 @@ scalar converts to the component type, so an `f64` variable scaling a
 
 ## math
 
-libm, both widths (`sqrt(x)` picks `sqrt` or `sqrtf` by the argument's
+libm, both widths (`sin(x)` picks `sin` or `sinf` by the argument's
 type): `sqrt sin cos tan asin acos atan atan2 exp log log2 log10 pow floor
-ceil round trunc`, returning floats as C does (`as i64` converts). An
+ceil round trunc`, returning floats as C does (`as i64` converts). `sqrt`
+is the runtime's (`gs_sqrt`, `gs_sqrtf`): the same correctly rounded root,
+NaN below zero, without C's errno, so it is the bare square root
+instruction where the C compiler allows. An
 integer argument suits both widths, so it names one (`sqrt(n as f64)`);
 `sqrt(n * 0.5)` is the `f64` one, as `sqrt(0.5)` is. Plus:
 
@@ -364,6 +459,8 @@ fn write_stdout(s: const u8[:])   fn write_stderr(s: const u8[:])   fn flush_std
 fn arg_count() -> i64       fn arg(i: i64, out: u8[>..]&)
 fn args() -> u8[:][>..]                              // indexable; argument 0 is the program
 fn env(name: const u8[:], out: u8[>..]&) -> bool
+fn resource_dir() -> u8[>..]                         // absolute directory, trailing separator
+fn resource_dir(out: u8[>..]&) -> bool               // appends; unchanged on failure
 fn time() -> f64                                     // seconds since the epoch
 fn clock() -> f64                                    // monotonic, high resolution
 fn time_ns() -> i64         fn clock_ns() -> i64
@@ -403,6 +500,34 @@ if list_dir("saves", names) {
 }
 if !write_file_atomic("saves/slot1.sav", image) { write_stderr("not saved\n"); }
 ```
+
+### Application resources
+
+Ordinary relative paths resolve against the process working directory, as
+in C/C++. Goose does not change that directory when it starts a program.
+For data distributed with the application, `resource_dir()` returns an
+absolute UTF-8 directory with a trailing separator, ready to concatenate:
+
+```goose
+var wad: u8[>..] = [];
+if !read_file(str(resource_dir(), "data/map.wad"), wad) {
+    abort("cannot read map.wad");
+}
+```
+
+In JIT runs the root is the entry source's directory, regardless of which
+imported module calls the helper. In AOT programs it is the running
+executable's directory, discovered at runtime rather than recorded at
+compilation. In a conventional macOS `.app` bundle it is `Contents/Resources/`.
+Deploy the data relative to that root; moving the executable and its data
+together preserves resource lookup. An AOT program does not depend on its
+original source tree or on the launcher's working directory.
+
+The string-returning form aborts if the directory cannot be discovered;
+the builder overload returns false and appends nothing. Native discovery
+supports Windows, Linux and macOS. This directory is for shipped assets;
+it is not promised writable. User-supplied paths, outputs and saves can
+continue to use ordinary file operations and their chosen locations.
 
 `exit(code)` and `abort(msg)` are builtins, since the checker knows they
 diverge. Subprocesses and networking are not in v1; they arrive as
@@ -479,6 +604,298 @@ Use offset reads for random access and cursors for sequential records.
 Applications still validate signatures, counts, indices and format-specific
 limits after checking the read. The WAD loader in
 [`31_mini_doom.goose`](../samples/31_mini_doom.goose) shows both styles.
+
+## base64
+
+Base64 as RFC 4648 §4 defines it: the standard alphabet (`A`-`Z`, `a`-`z`,
+`0`-`9`, `+`, `/`) and `=` padding. `import base64;` puts it in namespace
+`base64`.
+
+```goose
+fn encode(out: u8[>..]&, src: const u8[:])            // appends 4 characters per 3 bytes, padded
+fn decode(out: u8[>..]&, src: const u8[:]) -> bool    // appends the bytes; false if src is invalid
+```
+
+`decode` takes whole groups of four characters, the last of which may end
+in `=` or `==`, and nothing else: no line breaks or white space, no
+unpadded text, and no other alphabet (`-` and `_` of the URL-safe one are
+invalid). It does not insist that the bits padding leaves over are zero, so
+`Zh==` decodes as `Zg==` does, as most decoders allow. On invalid input it
+returns `false` and leaves `out` as it was.
+
+```goose
+var text: u8[>..] = [];
+base64::encode(text, "foobar");              // "Zm9vYmFy"
+var bytes: u8[>..] = [];
+if !base64::decode(bytes, text) { abort("not base64"); }
+```
+
+The codec computes the alphabet rather than looking it up, so the C
+compiler vectorizes both loops, and both are `simd fn`s (spec §7.12): where
+clang builds for x86-64 they run as AVX2 or AVX-512 code on a CPU that has
+it, several times faster than on the baseline's SSE2.
+
+## csv
+
+Comma-separated values as RFC 4180 defines them. `import csv;` puts the
+reader and the writer's quoting in namespace `csv`.
+
+```goose
+fn each_record<F>(text: const u8[:], sep: u8 = ',') -> bool    // F(fields: const u8[:][:]) per record
+fn format_field(out: u8[>..]&, s: u8[:], sep: u8 = ',')         // s, quoted where it needs to be
+```
+
+`each_record` hands each record's fields to its block, in order, as slices
+of the text: nothing is copied, and the slice of fields is the reader's own,
+reused for the next record. A field may be quoted, and a quoted field may
+hold separators, line breaks and doubled quotes, which stand for one quote
+each. It comes without its surrounding quotes and with its doubled quotes
+left as they are; since a field that is not quoted cannot hold a quote,
+`format_replaced(out, field, "\"\"", "\"")` appends any field's text.
+Records end at LF or CRLF, and the last one need not; an empty line is a
+record of one empty field, and a header is a record like any other. Spaces
+around a field belong to it. `sep` may be any byte but a quote or a line
+break: `';'`, or `'\t'` for tab-separated values.
+
+`each_record` returns `false` at the first malformed record, which its block
+does not see, having handed it every record before that one: a quote in a
+field that is not quoted, a quoted field with no closing quote, or anything
+but a separator or a line break after a closing quote. A block's `return`
+leaves the function that called `each_record`, as with every block.
+
+```goose
+var total = 0.0;
+let ok = csv::each_record(text) { fields =>
+    let price, valid = parse_flt(fields[2]);
+    if valid { total += price; }
+};
+if !ok { abort("malformed CSV"); }
+```
+
+`format_field` appends `s` as it is, or quoted, with its quotes doubled, if it
+holds the separator, a quote or a line break; the caller writes the
+separators between fields and the line break after a record.
+
+```goose
+for row in rows {
+    csv::format_field(out, row.name);
+    out.push(',');
+    format(out, row.count, "\n");
+}
+```
+
+## json
+
+JSON as RFC 8259 defines it, three ways: a writer that appends values to a
+builder, a parser that builds a document tree, and a reader that maps the
+text straight onto the caller's own types, the way a serde derive does.
+`import json;` puts them in namespace `json`.
+
+### Writing
+
+```goose
+fn format_string(out: u8[>..]&, s: u8[:])    // quoted, with " \ and control characters escaped
+fn format_key(out: u8[>..]&, key: u8[:])     // a quoted key and its colon: "key":
+fn format_number(out: u8[>..]&, v: f64)      // the shortest form that reads back as v
+fn format_int(out: u8[>..]&, v: i64)
+fn format_bool(out: u8[>..]&, b: bool)
+```
+
+The caller writes the brackets and the commas between values. A string's
+bytes from 0x80 up go out as they are, so UTF-8 text stays UTF-8.
+`format_number` writes the fewest significant digits that read back as `v`
+exactly, laid out as serde_json lays them out (`1.0`, `0.1`, `1e-7`,
+`1.5e300`, `0.30000000000000004`), and `null` for NaN and the infinities,
+which JSON has no numbers for.
+
+```goose
+out.push('{');
+json::format_key(out, "name");
+json::format_string(out, player.name);
+out.push(',');
+json::format_key(out, "pos");
+out.push('[');
+json::format_number(out, player.x);
+out.push(',');
+json::format_number(out, player.y);
+out.append("]}");
+```
+
+### The document tree
+
+```goose
+struct Node { next: Node&<u32>?, first: Node&<u32>?, key: const u8[:], val: Value }
+enum Value { Null, Bool { v: bool }, Int { v: i64 }, Num { v: f64 }, Str { s: const u8[:] },
+             Arr { count: i64 }, Obj { count: i64 } }
+fn parse(text: u8[:], doc: Node[>..]&, decoded: u8[>..]&) -> Node?, u8[>..]
+                                             // the root, or null and the error
+fn member(n: Node?, key: u8[:]) -> Node?     // the first member named key; null if none
+fn each<F>(n: Node&)                         // F(child) for each element or member, in order
+fn as_f64(n: Node?) -> f64, bool             // an Int or a Num
+fn as_i64(n: Node?) -> i64, bool             // an Int
+fn as_bool(n: Node?) -> bool, bool
+fn as_string(n: Node?) -> const u8[:], bool
+```
+
+`parse` pushes a node for every value onto `doc`, in text order: a link to
+its next sibling, a link to its first child (a container's), its key (empty
+in an array) and its value. Keys and strings are slices of `text`, or, where
+they held escapes, of the text they decode to, which goes onto `decoded`;
+nothing else is copied. A number without a fraction or an exponent that fits
+an `i64` is an `Int`, any other a `Num`, correctly rounded, and infinite
+where it is too large for an `f64`. Escapes decode to UTF-8, a surrogate
+pair to one code point and a lone surrogate to the three bytes of its own;
+strings are not checked to be UTF-8. On malformed text `parse` returns null
+and a message naming the byte at which it found the text malformed, `json:
+expected ',' or '}' at byte 41`, having pushed the nodes before it. The
+parse is one loop with the open containers on a stack of its own, so any
+depth of nesting parses. `member` and the accessors take a null node, so
+lookups chain; duplicate keys stay in the tree, and `member` finds the first.
+
+```goose
+var doc: json::Node[>..] = [];
+var decoded: u8[>..] = [];
+let root, err = json::parse(text, doc, decoded);
+guard root else { abort(err); }
+let w, ok = json::as_i64(json::member(json::member(root, "window"), "width"));
+let items = json::member(root, "items");
+if items {
+    json::each(items) { item =>
+        let name, named = json::as_string(json::member(item, "name"));
+        if named { print(name); }
+    };
+}
+```
+
+### Reading into your own types
+
+```goose
+struct Reader { text: const u8[:], pos: i64, error: const u8[:], error_at: i64 }
+fn reader(text: const u8[:]) -> Reader
+fn each_member<F>(r: Reader&)                // F(key) for each member of the object at the cursor
+fn each_element<F>(r: Reader&)               // F() for each element of the array at the cursor
+fn read_number(r: Reader&) -> f64
+fn read_int(r: Reader&) -> i64               // no fraction or exponent, and fits an i64
+fn read_bool(r: Reader&) -> bool
+fn read_string(r: Reader&, scratch: u8[>..]&) -> const u8[:]
+fn skip(r: Reader&)                          // passes over a value of any kind, checking it
+fn peek(r: Reader&) -> u8                    // the next byte past white space; 0 at the end
+fn finish(r: Reader&) -> bool                // no error, and nothing but white space left
+fn message(r: Reader&) -> u8[>..]            // "json: <what> at byte <n>"
+```
+
+The reader parses as it goes and builds nothing: each block reads the value
+it is handed with the function for the type it expects, and passes over
+what it has no use for with `skip`. `read_string` returns a slice of the
+text, or of `scratch` for a string that held escapes. Keys are handed over
+as written, escapes and all, so a key spelled with an escape never equals a
+plain one. Errors are sticky: a read that meets text it does not expect
+records what it expected and where, and moves the cursor to the end, so
+every read after it fails as well and every loop ends. The caller checks
+once, with `finish`, which also rejects anything but white space after the
+value. A `null` where a value is optional is a `peek(r) == 'n'` and a
+`skip`.
+
+```goose
+struct Item { id: i64, price: f64 }
+
+fn read_items(text: u8[:]) -> Item[>..] {
+    var r = json::reader(text);
+    var items: Item[>..] = [];
+    json::each_element(r) {
+        var it = Item { id: 0, price: 0.0 };
+        json::each_member(r) { key =>
+            if key == "id" { it.id = json::read_int(r); }
+            else if key == "price" { it.price = json::read_number(r); }
+            else { json::skip(r); }
+        };
+        items.push(it);
+    };
+    if !json::finish(r) { abort(json::message(r)); }
+    return items;
+}
+```
+
+## regex
+
+Regular expressions with the syntax and the matching rules of Rust's
+`regex` crate, on bytes. `import regex;` puts them in namespace `regex`.
+
+```goose
+fn compile(pattern: u8[:]) -> Regex                  // aborts on a malformed pattern
+fn compile(pattern: u8[:], err: u8[>..]&) -> Regex   // appends the error to err instead
+fn find(re: Regex&, text: u8[:]) -> i64, i64         // the first match's start and end; -1, -1
+fn matches(re: Regex&, text: u8[:]) -> bool          // whether there is a match
+fn count(re: Regex&, text: u8[:]) -> i64             // the matches each_match finds
+fn each_match<F>(re: Regex&, text: u8[:])            // F(start, end) for each match
+fn each_captures<F>(re: Regex&, text: u8[:])         // F(caps: Captures) for each match
+fn format_replaced<F>(out: u8[>..]&, re: Regex&, text: u8[:])
+                                                     // text, each match replaced by F(caps)
+struct Captures { text: const u8[:], slots: const i64[:] }
+fn group(c: Captures, k: i64) -> const u8[:]         // group k's text; empty if it took no part
+```
+
+Matching is leftmost-first, as in the crate, Perl and most engines: the
+match that starts earliest wins, and of those starting there the one the
+pattern prefers, its alternatives in order, its repetitions greedy unless
+lazy. Searches are unanchored, and the iterating functions find matches that
+do not overlap, left to right, an empty match never where the previous match
+ended: `a*` on `baaa` matches at 0..0 and 1..4. Group 0 is the whole match
+and the others are numbered by their opening parentheses; group k spans
+`slots[2k]..slots[2k + 1]` of the text, both -1 for a group that took no part.
+A group repeated takes its last iteration. The slice `group` returns is
+rooted at the `Captures` the block was handed, so a view of a group that has
+to outlive the block, a dictionary key say, slices the text by the slots
+instead.
+
+The syntax: literal bytes; `.` (a newline only under `s`); classes `[a-z]`,
+`[^...]`, where a `]` first or a `-` first or last is literal; `\d \w \s`
+and their complements `\D \W \S`, in classes too; escapes `\n \t \r \f \v
+\xHH` and any punctuation (`\.`, `\\`); groups `(...)`, `(?:...)` and named
+`(?P<name>...)` or `(?<name>...)`, whose names are accepted and not used;
+flags `i` (letters match either case) and `s`, as `(?i)` to the end of the
+group or `(?i:...)` within, `(?-i)` to turn one off; alternation `|`; and
+`* + ? {n} {n,} {n,m}`, each lazy with a `?` after it. The classes and the
+case folding are ASCII, as the crate's are with Unicode off. Anchors and word
+boundaries (`^ $ \A \z \b \B`), class set operations (`&& -- ~~`), nested
+classes, Unicode classes and the other flags are not supported, and
+`compile` reports them as errors: `regex: anchors are not supported at
+offset 0 in ^a`. Two known differences from the crate are in the module's
+header: an alternation whose branches share a repeating prefix means here
+what it says, as in Perl and RE2, and groups at the end of a pattern under a
+`{0}` are kept.
+
+`compile` builds complete DFAs up front, one that finds where a match ends
+and one over the reversed pattern that finds where it starts, so a search
+costs one table lookup per byte of text it looks at. Where every match has
+rare leading bytes, or a rare byte after a part that cannot hold it, the
+search skips through the text with `find_pair` or `find_any` (above) and
+looks only where a match can be. Groups come from their fixed places in the
+match where the pattern gives them one, and otherwise from a backtracker
+that runs over the match alone; `find`, `matches` and `count` take neither.
+A DFA can need exponentially many states, and a pattern whose program or
+DFAs would grow too large (`[ab]*a[ab]{20}`, or counted repetitions in the
+thousands) is reported as an error rather than compiled. Make the `Regex`
+once, outside the loop that searches with it.
+
+```goose
+let re = regex::compile("(\\w+)=(\\d+)");
+regex::each_captures(re, line) { c =>
+    let n, ok = parse_int(regex::group(c, 2));
+    if ok { settings.insert(line[c.slots[2]..c.slots[3]], n); }    // a key that outlives c
+};
+
+var err: u8[>..] = [];
+let user = regex::compile(pattern_from_user, err);
+if err.len > 0 { print(err); }
+
+var out: u8[>..] = [];
+let field = regex::compile("""\{\{\s*(\w+)\s*\}\}""");
+regex::format_replaced(out, field, template) { caps =>
+    let value = vars.get(regex::group(caps, 1));
+    if value { value } else { "" }
+};
+```
 
 ## gfx
 
