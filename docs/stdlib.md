@@ -1693,7 +1693,7 @@ elsewhere, and smaller, until the program sets a scale.
 ## ngfx
 
 Experimental graphics on [NoGraphicsAPI](https://github.com/sebbbi/NoGraphicsAPI)
-(`third_party/NoGraphicsAPI`), over Metal 4 or Vulkan 1.4. Tested on Metal 4 only.
+(`third_party/NoGraphicsAPI`), over Metal 4 or Vulkan 1.4. Tested on Metal 4 and on Vulkan on Windows.
 It keeps gfx's window, input, time, screen, textures, samplers, read-back, and
 `screenshot` by name and behavior, and draws the way NoGraphicsAPI does: no bindings,
 no vertex formats, and no resource states. Optional: it needs a compiler built with the

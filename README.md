@@ -4,7 +4,7 @@
 
 Fork of [aardappel/goose](https://github.com/aardappel/goose) adding `ngfx`, an
 experimental graphics module on [NoGraphicsAPI](https://github.com/sebbbi/NoGraphicsAPI).
-Tested on Metal 4 only; see [its design notes](docs/design/ngfx.md).
+Tested on Metal 4 (M1 Pro) and on Vulkan on Windows (RTX 4090); see [its design notes](docs/design/ngfx.md).
 
 A memory-safe systems language with no heap allocator, garbage collector, or
 lifetime annotations. In this repository's benchmarks, Goose runs faster than

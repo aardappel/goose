@@ -23,29 +23,25 @@ next to their originals, with the `test/gfx` fixtures ported to `test/ngfx`.
 
 ## Status
 
-ngfx is tested on one machine: macOS 26 on an Apple M1 Pro (Metal 4). There, the build,
-`test/run_tests.py`, and `samples/run_samples.py` pass, and run headless, the cube's,
-mini Doom's, and the to-do list's screenshots are byte-identical to the gfx originals'.
-Mini Minecraft's differ in 36 isolated pixels of nearest-sampled leaves, where Slang and
-cute_spirv's MSL round a texture coordinate differently.
-
-The Vulkan path is unverified:
+ngfx is tested on two machines: macOS 26 on an Apple M1 Pro (Metal 4), and Windows 11 on
+an NVIDIA RTX 4090 (Vulkan 1.4, driver 617.42, Vulkan SDK 1.4.363, slangc 2026.18.2,
+MSVC 14.51). On both, the build, `test/run_tests.py`'s ngfx fixtures, and
+`samples/run_samples.py` pass, and run headless, the cube's, mini Doom's, and the to-do
+list's screenshots are byte-identical to the gfx originals'. Mini Minecraft's differ in
+36 isolated pixels of nearest-sampled leaves on Metal, where Slang and cute_spirv's MSL
+round a texture coordinate differently, and in one pixel by one step on Vulkan.
 
 | Platform | State |
 | --- | --- |
 | macOS 26, Metal 4 | Tested on an M1 Pro. |
-| Windows, Vulkan 1.4 | Not yet built or run. Needs verification. |
+| Windows, Vulkan 1.4 | Tested on an RTX 4090, headless and windowed. |
 | Linux, Vulkan 1.4 | Not built. NoGraphicsAPI is headless-only on Linux, and `cmake/ngfx.cmake` opts out there. Needs a little work to build headless. |
 
-What a first Vulkan run has to check:
-
-- `embed_slang`'s SPIR-V half. On macOS it is produced but never run, and `spirv-val`
-  only runs where it is found.
-- The HWND path in `src/ngfx/ngfx_platform.c`.
-- `--ngfx-link msvc|cc`: `cmake/ngfx.cmake` adds `Vulkan::Vulkan` and no C++ runtime.
-- `goose.exe` delay-loads `vulkan-1.dll`, so it should start on a machine without it.
-- `RunTool`'s `cmd /c` quoting in `src/slangc.h`.
-- On RADV (AMD on Linux), descriptor heaps may still need `RADV_EXPERIMENTAL=heap`.
+The first Windows run checked `embed_slang`'s SPIR-V half with `spirv-val`, the HWND
+path in `src/ngfx/ngfx_platform.c`, `--ngfx-link msvc`, and `RunTool`'s `cmd /c`
+quoting in `src/slangc.h`. Still unchecked: that `goose.exe`, which delay-loads
+`vulkan-1.dll`, starts on a machine without it, and, on RADV (AMD on Linux), whether
+descriptor heaps still need `RADV_EXPERIMENTAL=heap`.
 
 ## What upstream may not want
 
@@ -207,12 +203,13 @@ test runners' `native` maps.
   with `pad n`: a `u64` pointer on an 8-byte boundary, `float3` as 12 bytes aligned to 4.
 - **By value, a packed Goose struct stands in for a naturally aligned C one** when the
   bytes match and the struct is larger than 16 bytes or integer-only. A layout test of
-  an earlier one-to-one binding checked this on arm64; the rule is unverified elsewhere.
+  an earlier one-to-one binding checked this on arm64; on x64 Windows, ngfx's own structs
+  pass the test suite under MSVC and TinyCC, but the rule is not checked in general.
 
 ## Open
 
-- Verify on Vulkan: Windows with an NVIDIA GPU first, then Linux headless on AMD, which
-  needs `cmake/ngfx.cmake` to build there (see [Status](#status)).
+- Verify on Vulkan on Linux, headless on AMD, which needs `cmake/ngfx.cmake` to build
+  there (see [Status](#status)).
 - Uploads on a copy queue, waiting on `UploadQueue::flush()`'s timeline point, would stop
   a frame with uploads from serializing against the previous frame. It needs no surface
   change, and waits for a machine whose queues are independent engines.

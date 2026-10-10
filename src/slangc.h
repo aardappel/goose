@@ -26,6 +26,7 @@
 #include "ngfx/ngfx_blob.h"
 
 #ifdef _WIN32
+    #include <process.h>
     #define GOOSE_POPEN _popen
     #define GOOSE_PCLOSE _pclose
 #else
