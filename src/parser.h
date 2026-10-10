@@ -30,6 +30,11 @@ struct Parser {
     bool stmt_level = false;
     bool stmt_ended = false;
 
+    // A failed generic-argument parse is syntactically determined at its
+    // source position. Remember it so nested `<` comparisons do not reparse
+    // the same suffix once for every enclosing ambiguity.
+    set<pair<const char *, bool>> failed_tyargs;
+
     SFunction *curfn = nullptr;      // The function whose body is being parsed.
 
     // Namespaces (docs/design/namespaces.md): the file's `namespace` directive,
@@ -1103,13 +1108,18 @@ struct Parser {
     // a block in an array size among them declared: resolution would take
     // them for written ones, and the `ns::limit` of `a < ns::limit` is no type.
     bool TryParseTyArgs(vector<TypeExpr *> &tyargs) {
+        auto failure = make_pair(lex.attr.data(), no_struct_lit);
+        if (failed_tyargs.count(failure)) return false;
         auto save = lex;
+        auto nnodes = ast.allnodes.size();
         auto ntypes = ast.alltypes.size();
+        auto ndetails = ast.typedetails.size();
         auto nfunctions = ast.functions.size();
         auto backtrack = [&]() {
             lex = save;
             tyargs.clear();
-            ast.DropSince(ntypes, nfunctions);
+            ast.DropSince(nnodes, ntypes, ndetails, nfunctions);
+            failed_tyargs.insert(failure);
             return false;
         };
         lex.Next();  // The '<'.

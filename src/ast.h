@@ -2158,12 +2158,16 @@ struct Ast {
         return t;
     }
 
-    // Deletes the types and functions made since the two lists had these
-    // sizes: a parse the parser backtracked over made them, and the passes
-    // that walk the lists would take them for written ones.
-    void DropSince(size_t ntypes, size_t nfunctions) {
+    // Deletes the syntax made by a speculative parse. Leaving expression
+    // nodes from array sizes behind makes repeated generic disambiguation
+    // retain trees that no accepted program can reach.
+    void DropSince(size_t nnodes, size_t ntypes, size_t ndetails, size_t nfunctions) {
+        for (auto i = nnodes; i < allnodes.size(); i++) delete allnodes[i];
+        allnodes.resize(nnodes);
         for (auto i = ntypes; i < alltypes.size(); i++) delete alltypes[i];
         alltypes.resize(ntypes);
+        for (auto i = ndetails; i < typedetails.size(); i++) delete typedetails[i];
+        typedetails.resize(ndetails);
         for (auto i = nfunctions; i < functions.size(); i++) delete functions[i];
         functions.resize(nfunctions);
     }
