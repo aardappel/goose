@@ -32,13 +32,13 @@
 // themselves inlined the references live inside our own tree, get remapped
 // with everything else, and the restrictions lift.
 //
-// Thresholds per call site of callee K: inline if K is used once anywhere,
-// or nodecount(K) < NC, or nodecount(K) * uses(K) < NCU, which a call site
-// inside a loop raises to LOOPNCU * NCU. A K used once that only that first
-// rule would inline stays out of line where the call is in a cold branch,
-// the else of a guard or the body of an early return or break, and where
-// its body would make a caller with several call sites too big to inline
-// at them (OptBody).
+// Thresholds per call site of callee K: inline if K is used once anywhere
+// and nodecount(K) <= ONCEMAX, or nodecount(K) < NC, or nodecount(K) *
+// uses(K) < NCU, which a call site inside a loop raises to LOOPNCU * NCU.
+// A K used once that only that first rule would inline stays out of line
+// where the call is in a cold branch, the else of a guard or the body of an
+// early return or break, and where its body would make a caller with several
+// call sites too big to inline at them (OptBody).
 // -O0: no inlining; -O1: NC=8, NCU=48; -O2: NC=16, NCU=96.
 // Whatever the size, the C blocks around the call plus those K's body nests
 // must stay within MAXNEST (see Around): C compilers limit how deep blocks
@@ -104,6 +104,12 @@ struct Optimizer {
     // inside a hot loop.
     int loopdepth = 0;
     static constexpr int LOOPNCU = 4;
+    // The largest callee the used-once rule inlines. A used-once callee adds
+    // no code where it is inlined, but every walk of its caller pays for the
+    // size again. Without a limit, a program's single-use helpers fold into
+    // main through the chain of calls, and the later passes and the C compiler
+    // then work on one huge function.
+    static constexpr int ONCEMAX = 200;
     // The cold branches around it (IfExpr::Opt): a call there runs at most
     // once per run of the body or the loop it leaves, mostly on an error
     // path, so a callee inlined there only because it has no other caller
@@ -746,7 +752,7 @@ inline Node *Optimizer::TryInline(Call *c) {
         K->outofline = true;
         return nullptr;
     }
-    if (!(K->uses == 1 || small)) return nullptr;
+    if (!((K->uses == 1 && info.nodecount <= ONCEMAX) || small)) return nullptr;
     // The body's blocks would open `depth` deep. Past the limit the call
     // stays, and a chain of single-use functions folds into one body per
     // MAXNEST levels rather than one as deep as the chain.
