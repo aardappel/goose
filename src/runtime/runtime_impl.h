@@ -764,8 +764,9 @@ GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t 
     p.top = top;
     p.h = GS_SPHEAD(&p)->height;
     i = GS_SPHEAD(&p)->root;
-    fit = gs_sp_max(&p, i, p.h == 0) >= cnt;
-    /* Down to the first fit, or else to the last span. */
+    /* Down to the first fit, or else to the last span. A tree of one leaf
+       learns which while scanning it. */
+    fit = p.h == 0 || gs_sp_max(&p, i, 0) >= cnt;
     for (l = 0; l < p.h; l++) {
         gs_spinner *in = GS_SPINNER(&p, i);
         k = in->n - 1;
@@ -777,9 +778,10 @@ GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t 
     }
     p.node[p.h] = i;
     lf = GS_SPLEAF(&p, i);
-    if (fit) {
-        for (k = 0; lf->cnt[k] < cnt; k++) {}
-    } else {
+    k = 0;
+    if (fit)
+        while (k < lf->n && lf->cnt[k] < cnt) k++;
+    if (!fit || k == lf->n) {
         k = lf->n - 1;
         if (k < 0 || lf->idx[k] + lf->cnt[k] != len) return len;
     }
@@ -809,6 +811,7 @@ static void gs_sp_near(gs_sppath *p, gs_sppath *q, int64_t idx, gs_spnear *s) {
         s->nk = s->k + 1;
         return;
     }
+    if (p->h == 0) return;
     *q = *p;
     if (gs_sp_nextleaf(q)) {
         s->np = q;

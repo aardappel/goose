@@ -1744,8 +1744,9 @@ GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t 
     p.top = top;
     p.h = GS_SPHEAD(&p)->height;
     i = GS_SPHEAD(&p)->root;
-    fit = gs_sp_max(&p, i, p.h == 0) >= cnt;
-    /* Down to the first fit, or else to the last span. */
+    /* Down to the first fit, or else to the last span. A tree of one leaf
+       learns which while scanning it. */
+    fit = p.h == 0 || gs_sp_max(&p, i, 0) >= cnt;
     for (l = 0; l < p.h; l++) {
         gs_spinner *in = GS_SPINNER(&p, i);
         k = in->n - 1;
@@ -1757,9 +1758,10 @@ GS_API int64_t gs_spans_alloc(uint8_t *base, int64_t *n, uint8_t **top, int64_t 
     }
     p.node[p.h] = i;
     lf = GS_SPLEAF(&p, i);
-    if (fit) {
-        for (k = 0; lf->cnt[k] < cnt; k++) {}
-    } else {
+    k = 0;
+    if (fit)
+        while (k < lf->n && lf->cnt[k] < cnt) k++;
+    if (!fit || k == lf->n) {
         k = lf->n - 1;
         if (k < 0 || lf->idx[k] + lf->cnt[k] != len) return len;
     }
@@ -1789,6 +1791,7 @@ static void gs_sp_near(gs_sppath *p, gs_sppath *q, int64_t idx, gs_spnear *s) {
         s->nk = s->k + 1;
         return;
     }
+    if (p->h == 0) return;
     *q = *p;
     if (gs_sp_nextleaf(q)) {
         s->np = q;
@@ -1840,10 +1843,10 @@ GS_API void gs_spans_free(uint8_t *base, int64_t *n, uint8_t **top, int64_t idx,
    difference or reaches the end of the array; otherwise the slice's
    elements go back on the freelist and the run goes where alloc_slice
    places one of cnt elements. The span after the slice is the one after
-   the last span before it, so one descent finds both what growth takes
-   from and what the elements merge with. */
 )GSRT"
-R"GSRT(GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
+R"GSRT(   the last span before it, so one descent finds both what growth takes
+   from and what the elements merge with. */
+GS_API int64_t gs_spans_regrow(uint8_t *base, int64_t *n, uint8_t **top, int64_t len,
                                int64_t idx, int64_t ol, int64_t cnt) {
     gs_sppath p, q;
     gs_spnear s;
@@ -2021,9 +2024,9 @@ static GS_SSSE3 GS_INLINE __m128i gs_bsm_tables(const gs_bsm *m, __m128i x) {
     }                                                                                  \
     if (i == np) return -1;                                                            \
     k = (unsigned)_mm_movemask_epi8(_mm_and_si128(TESTA(GS_LOAD(p + np - 16)),         \
-                                                  TESTB(GS_LOAD(p + np - 16 + d))))    \
 )GSRT"
-R"GSRT(        >> (16 - (np - i));                                                            \
+R"GSRT(                                                  TESTB(GS_LOAD(p + np - 16 + d))))    \
+        >> (16 - (np - i));                                                            \
     return k ? i + gs_ctz32(k) : -1;
 
 #define GS_TEST_S(x) gs_bsm_test(&ms, ks, x)
@@ -2223,11 +2226,11 @@ static void gs_big_set(gs_big *a, uint64_t v, int sh) {
 
 static void gs_big_mul(gs_big *a, uint32_t m) {
     uint64_t c = 0;
-    for (int i = 0; i < a->n; i++) {
+)GSRT"
+R"GSRT(    for (int i = 0; i < a->n; i++) {
         c += (uint64_t)a->d[i] * m;
         a->d[i] = (uint32_t)c;
-)GSRT"
-R"GSRT(        c >>= 32;
+        c >>= 32;
     }
     if (c) a->d[a->n++] = (uint32_t)c;
 }
@@ -2449,9 +2452,9 @@ GS_API void gs_out_f32(float v) {
     uint8_t buf[GS_FMT_MAX];
     fwrite(buf, 1, (size_t)gs_fmt_f32(buf, v), stdout);
 }
-GS_API void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
 )GSRT"
-R"GSRT(GS_API void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
+R"GSRT(GS_API void gs_out_bool(int64_t v) { fputs(v ? "true" : "false", stdout); }
+GS_API void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
 GS_API void gs_out_nl(void) { fputc('\n', stdout); }
 )GSRT"
     ) },

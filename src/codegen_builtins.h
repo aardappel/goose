@@ -739,7 +739,7 @@ inline vector<string> CodeGen::EmitSlicePool(Call *c, vector<Node *> &an, Line l
     if (c->builtin == B_ALLOC_SLICE) {
         n = SliceLen(an[1], elem, ln);
         i = T();
-        L("int64_t ", i, " = gs_spans_alloc(", SpanArgs(lv), ", ", lv.lenlv, ", ", n, ");");
+        L("int64_t ", i, " = ", PlaceRun(lv, n), ";");
         EmitSliceExtend(lv, cat(i, " + ", n), esz);
         EmitDefaultElems(v, i, n, c->defaultinit);
     } else {
@@ -762,7 +762,7 @@ inline vector<string> CodeGen::EmitSlicePool(Call *c, vector<Node *> &an, Line l
         // in place, so it is always placed like a new run.
         L("if (", ol, " == 0) {");
         ind++;
-        L(i, " = gs_spans_alloc(", SpanArgs(lv), ", ", lv.lenlv, ", ", n, ");");
+        L(i, " = ", PlaceRun(lv, n), ";");
         ind--;
         L("} else if (", i, " + ", ol, " != ", lv.lenlv, ") {");
         ind++;
@@ -783,6 +783,14 @@ inline vector<string> CodeGen::EmitSlicePool(Call *c, vector<Node *> &an, Line l
     L(CT(ast.SliceOf(elem, ln)), " ", r, " = { (", CT(elem), " *)(", ElemAddr(v, i), "), ", n,
       " };");
     return { r };
+}
+
+// Where a slice pool places a run of n elements: past the end of the array
+// while the freelist is empty, as it stays in a pool nothing is freed from,
+// and otherwise where the runtime finds room.
+inline string CodeGen::PlaceRun(const Loc &lv, const string &n) {
+    return cat("(", lv.fl, ".len ? gs_spans_alloc(", SpanArgs(lv), ", ", lv.lenlv, ", ", n,
+               ") : ", lv.lenlv, ")");
 }
 
 // The freelist as the gs_spans_* helpers take it: its base, its node count
