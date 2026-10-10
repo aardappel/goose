@@ -2650,9 +2650,18 @@ struct BCE {
         for (auto &[v, ok] : gge0) if (gaddr.count(v)) ok = false;
         for (auto sp : ast.fnspecs) {
             if (!sp->live || !sp->body) continue;
-            auto any = false;
-            for (auto &[v, ok] : gge0) if (ok) any = true;
+            // Every write that can drop a candidate notes the global in the
+            // body's effect summary, so a body whose summary names none of
+            // the live candidates has nothing to check.
+            auto &writes = effects[sp].intvars;
+            auto any = false, here = false;
+            for (auto &[v, ok] : gge0)
+                if (ok) {
+                    any = true;
+                    here = here || writes.count(v);
+                }
             if (!any) return;
+            if (!here) continue;
             SetupSpec(sp);
             for (auto &[v, ok] : gge0)
                 if (ok) {
