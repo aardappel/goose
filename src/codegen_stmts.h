@@ -8,10 +8,15 @@ namespace goose {
 // A Block's contents without emitting the braces/scope (the caller did).
 // The block is a region a stack it grows outside every loop can be cached
 // over (TopW), rather than the whole body.
-inline void CodeGen::GenBlockInner(Block *b, Dst d, size_t first) {
+inline void CodeGen::GenBlockInner(Block *b, Dst d, size_t first, int exitscope) {
     auto region = MarkBlockBegin();
     for (auto i = first; i < b->stmts.size(); ++i) GenStmt(b->stmts[i]);
-    if (b->tail && !IsVoidT(b->tail->exprtype) && d.k != DK_DISCARD) GenAny(b->tail, d);
+    if (b->tail && !IsVoidT(b->tail->exprtype) && d.k != DK_DISCARD) {
+        // An inlined body's tail is a return too: another named result may
+        // already occupy its destination, just as at an explicit return.
+        if (exitscope >= 0) GenExitValue(b->tail, exitscope);
+        else GenAny(b->tail, d);
+    }
     else if (b->tail) GenAny(b->tail, Dst {});
     MarkLoopEnd(region);
 }
