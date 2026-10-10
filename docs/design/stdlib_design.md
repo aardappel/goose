@@ -316,7 +316,10 @@ as slot tags. Keys that differ only in their last characters (`item_17`,
 the previous one's multiply, so above 24 bytes the words before the last 24
 bytes or fewer go to two lanes, the even and the odd words of each 16 bytes,
 whose rounds a processor overlaps; the second lane is folded into the first,
-rotated, before the remaining words.
+rotated, before the remaining words. That form is a function of its own
+(`hash_lanes`), called from an early return, which the optimizer keeps out
+of line, so that the short keys' code stays small enough for the C compiler
+to inline into a dictionary's lookups.
 A user key type gets `fn hash(k: key) -> u64 { hash_combine(hash(k.a),
 hash(k.b)) }`. Fixed-capacity inline strings (`u8[..16]`) hash through the
 slice overload, which is what makes them usable as `dictionary` keys.

@@ -128,26 +128,16 @@ fn hash_le32(s: u8[:], i: i64) -> u64 {
 // which is the final 8 bytes (overlapping the words before) or, for a short
 // s, its bytes gathered into one word, and the length is the seed. The last
 // word goes through two multiply-xorshift rounds, after which every input bit
-// reaches the low bits. Each word's round waits for the one before, so a
-// longer s runs two lanes of rounds, on the even and the odd words of each
-// 16 bytes, which a processor overlaps, and folds the second into the first.
+// reaches the low bits. Keys longer than 24 bytes take hash_lanes, a call of
+// its own from this early return, so that the short keys' code stays small
+// enough for the C compiler to inline into a dictionary's lookups.
 fn hash(s: u8[:]) -> u64 {
     let n = s.len;
+    if n > 24 { return hash_lanes(s); }
     var h = (n as! u64) * 11400714819323198485;
     var w: u64 = 0;
     if n > 8 {
         var i = 0;
-        if n > 24 {
-            var g = h ^ 0x9E3779B97F4A7C15;
-            while i < n - 24 {
-                h = (h ^ hash_le64(s, i)) * 11400714819323198485;
-                h = (h << 29) | (h >> 35);
-                g = (g ^ hash_le64(s, i + 8)) * 11400714819323198485;
-                g = (g << 29) | (g >> 35);
-                i += 16;
-            }
-            h = h ^ ((g << 31) | (g >> 33));
-        }
         while i < n - 8 {
             h = (h ^ hash_le64(s, i)) * 11400714819323198485;
             h = (h << 29) | (h >> 35);
@@ -160,6 +150,33 @@ fn hash(s: u8[:]) -> u64 {
         w = s[0] | (s[n >> 1] as u64) << 8 | (s[n - 1] as u64) << 16;
     }
     h = (h ^ w) * 11400714819323198485;
+    h = (h ^ (h >> 32)) * 15485907386658061715;
+    return h ^ (h >> 32);
+}
+
+// hash of an s longer than 24 bytes. Each word's round waits for the one
+// before, so the words before the last 24 bytes or fewer go to two lanes of
+// rounds, the even and the odd words of each 16 bytes, which a processor
+// overlaps; the second is folded into the first for the remaining words.
+fn hash_lanes(s: u8[:]) -> u64 {
+    let n = s.len;
+    var h = (n as! u64) * 11400714819323198485;
+    var g = h ^ 0x9E3779B97F4A7C15;
+    var i = 0;
+    while i < n - 24 {
+        h = (h ^ hash_le64(s, i)) * 11400714819323198485;
+        h = (h << 29) | (h >> 35);
+        g = (g ^ hash_le64(s, i + 8)) * 11400714819323198485;
+        g = (g << 29) | (g >> 35);
+        i += 16;
+    }
+    h = h ^ ((g << 31) | (g >> 33));
+    while i < n - 8 {
+        h = (h ^ hash_le64(s, i)) * 11400714819323198485;
+        h = (h << 29) | (h >> 35);
+        i += 8;
+    }
+    h = (h ^ hash_le64(s, n - 8)) * 11400714819323198485;
     h = (h ^ (h >> 32)) * 15485907386658061715;
     return h ^ (h >> 32);
 }
