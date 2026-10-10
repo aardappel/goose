@@ -1405,6 +1405,7 @@ struct TypeCheck {
 
     TypeExpr *LoadType(TypeExpr *t);
     TypeExpr *ValueType(TypeExpr *t);
+    TypeExpr *DeclType(TypeExpr *t, TypeExpr *s);
     static bool ImplicitInt(IntStorage from, IntStorage to);
     TypeExpr *DerefType(TypeExpr *t);
     Val CheckIntAny(Node *n);

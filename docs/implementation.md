@@ -2495,7 +2495,14 @@ as a relative reference, and gives one a type argument makes relative its
 loaded plain reference (`ValueType`), which the callee's returns are checked
 against and the call yields. `default<T>()` of an optional relative reference
 is typed the same way, as the plain null, so it exists at the varint width
-too.
+too. A variable or parameter is a relative slot only where its declared type
+is written as one (an alias use is a copy of the aliased type, so it counts):
+`DeclType` gives a local's annotation (`CheckVarDecl`) and a parameter's type
+(`UnifyArgRaw`, and `TryMatch` for a left-out one) the same `ValueType` where
+the written type is anything else, so `let t: T` and `v: T` over an array of
+links hold the plain reference, bound and checked as one, and a store of it
+back into an element meets the element's relative slot in `FitsAt` like any
+other plain reference. A field or element of type `T` stays relative.
 
 ### 3.14 Arithmetic, constants, and the rest
 

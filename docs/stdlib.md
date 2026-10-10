@@ -54,11 +54,18 @@ The library uses these conventions:
   themselves, references included: `reverse(refs)` reorders an array of
   references and leaves what they point to alone, and an array of
   references to values that cannot be copied (spec §3.9) sorts too. They
-  store whole elements with `.=`, as generic code may (spec §3.8). `swap(a,
-  b)` exchanges the values `a` and `b` refer to. `remove_at`, `swap_remove`
-  and `heap_pop` return a copy of the value removed, for a reference element
-  its pointee's. A reference element passed by value (`insert_at`,
-  `heap_push`) is written `&x`, which makes `T` the reference type.
+  store whole elements with `.=`, as generic code may (spec §3.8). An array
+  of relative references, self-relative or `in pool`, reorders the same way:
+  a `T` local or parameter holds the plain reference, and each element it is
+  stored back into encodes it again, which for a self-relative link needs it
+  to point within that element's root (spec §3.9), as a link moved within
+  its own array does. `swap(a, b)` exchanges the values `a` and `b` refer
+  to. `remove_at`, `swap_remove` and `heap_pop` return a copy of the value
+  removed, for a reference element its pointee's. A reference element
+  passed by value (`insert_at`, `heap_push`) is written `&x`, which makes
+  `T` the reference type. `stable_sort` sorts an array of `in pool` links,
+  but its temporary array cannot hold copies of self-relative ones (spec
+  §3.9).
 * The `std`, `dictionary`, `vec`, `math`, and `os` names are global;
   `binary`, `base64`, `csv`, `json`, `regex`, `audio`, `gfx`, `physics`, and
   `ui` use their own namespaces. A local named `fill` or `count`

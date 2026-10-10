@@ -575,8 +575,9 @@ pointee where §4.1 asks for one).
   the parameter is bound to a reference type and `=` would write through
   it, and keeps one in a local of that type, where an inferred `let` would
   copy the pointee (below): std's `swap_at` is `let t: T = xs[i]; xs[i] .=
-  xs[j]; xs[j] .= t;`, which swaps the elements of an array of references
-  as it does those of any other array. The
+  xs[j]; xs[j] .= t;`, which swaps the elements of an array of references,
+  relative ones included (the local holds the plain reference, §3.9), as it
+  does those of any other array. The
   declaration form `let r .= e;` / `var r .= e;` binds `r` to `e` by
   reference whatever `e` is — an lvalue of any size class (`var cur .=
   pool[0];` names the element, no `&`), a reference-returning call (`let e
@@ -767,14 +768,21 @@ where the field is declared, and a local's name means nothing there.
   it.
 
 **Values.** A relative reference is storage — a field, an element, or a
-variable or parameter declared with the type — and never a value: loading
-one yields the plain reference, and that is what anything else receives. A
-function's result may not be declared relative (declare the plain `T&` or
-`T?`, which a relative slot receiving it encodes), while a result a type
-argument makes relative, the `-> T` of `fn get<T>(a: T[>..]&, i: i64)` over
-an array of links, is the plain reference, as indexing gives it.
-`default<T>()` of an optional relative reference is likewise the plain null,
-at any width.
+variable or parameter whose declaration writes the type (or an alias of it)
+— and never a value: loading one yields the plain reference, and that is
+what anything else receives. A function's result may not be declared
+relative (declare the plain `T&` or `T?`, which a relative slot receiving it
+encodes), while a result a type argument makes relative, the `-> T` of `fn
+get<T>(a: T[>..]&, i: i64)` over an array of links, is the plain reference,
+as indexing gives it. So is a variable or parameter a type argument makes
+relative: `let t: T` and `v: T` over an array of links hold the plain
+reference, which is how generic code moving elements through a `T` local
+(std's `swap_at`, §3.8) moves links as it moves plain references. Each store
+back into an element encodes the reference again, so a self-relative one
+must still point within that element's root and an `in pool` one into its
+pool. A field or element of type `T` (`T[4]`, `struct Box<T> { x: T }`)
+is a link. `default<T>()` of an optional relative reference is likewise the
+plain null, at any width.
 
 **`self`.** A non-optional relative reference has no null, so a value whose
 links point back at itself — the sentinel of a circular list, the first node

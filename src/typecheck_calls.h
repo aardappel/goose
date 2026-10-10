@@ -801,7 +801,7 @@ inline bool TypeCheck::TryMatch(SFunction *sf, Call *c, vector<Val> &argvals, Ma
         ownexclude = &sf->generics;
         auto pt = Subst(sf->params[i].type);
         ownexclude = saveex;
-        auto ct = SubstOwn(pt, mi.bindings);
+        auto ct = DeclType(sf->params[i].type, SubstOwn(pt, mi.bindings));
         if (HasGenerics(ct)) {
             for (auto g : unbound) if (undecided(g)) return false;
             why = cat("cannot infer the type of parameter ", sf->params[i].name,
@@ -839,9 +839,14 @@ inline TypeExpr *TypeCheck::UnifyArg(TypeExpr *pt, Val &av,
 
 inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
                                         vector<pair<string_view, TypeExpr *>> &b, int &tier) {
+    auto written = pt;
     pt = Subst(pt);  // Enclosing functions' generics are already bound.
-    if (av.isnull) {
+    auto own = [&]() {
         auto ct = SubstOwn(pt, b);
+        return ct ? DeclType(written, ct) : ct;
+    };
+    if (av.isnull) {
+        auto ct = own();
         if (!ct || HasGenerics(ct) || !IsOptional(ct)) return nullptr;
         tier = std::max(tier, 2);
         return ct;
@@ -849,7 +854,7 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
     // A [] takes an array parameter's type, and at a slice parameter is a
     // temporary array of its elements, viewed whole (§4.2).
     if (av.emptyarr) {
-        auto ct = SubstOwn(pt, b);
+        auto ct = own();
         if (!ct || HasGenerics(ct) || (ct->kind != TY_ARRAY && ct->kind != TY_SLICE))
             return nullptr;
         tier = std::max(tier, 2);
@@ -876,7 +881,7 @@ inline TypeExpr *TypeCheck::UnifyArgRaw(TypeExpr *pt, Val &av,
                 BindTypes(pt->sub, at->arr->sub, b);
         }
     }
-    auto ct = SubstOwn(pt, b);
+    auto ct = own();
     if (!ct || HasGenerics(ct)) return nullptr;
     if (TopConstEq(at, ct)) {
         if (hadgen) tier = std::max(tier, 1);

@@ -2109,7 +2109,7 @@ inline void TypeCheck::CheckVarDecl(VarDecl *vd, bool global) {
     TypeExpr *ann = nullptr;
     if (vd->type) {
         ConstNamesIn(vd->type);
-        ann = Subst(vd->type);
+        ann = DeclType(vd->type, Subst(vd->type));
         ValidateType(ann, vd->line, global ? VT_GLOBAL : VT_LOCAL);
         if (vd->isconst) ann = ast.ConstOf(ann);   // `const x: T` is `let x: const T`.
     }

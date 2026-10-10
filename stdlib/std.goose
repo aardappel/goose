@@ -207,7 +207,8 @@ fn rand_flt(r: rng&) -> f64 { (rand_u64(r) >> 11) * (1.0 / 9007199254740992.0) }
 // Fisher-Yates.
 // The functions that move elements around store whole elements with `.=`,
 // which moves a reference element itself rather than writing through it
-// (spec §3.8), and hold one in a `T` local, which keeps a reference.
+// (spec §3.8), and hold one in a `T` local, which keeps a reference: the
+// plain one, for relative elements, which the store back encodes (§3.9).
 fn shuffle<T>(xs: T[:], r: rng&) {
     var i = xs.len - 1;
     while i > 0 {

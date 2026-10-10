@@ -656,6 +656,16 @@ inline TypeExpr *TypeCheck::ValueType(TypeExpr *t) {
     return t->kind == TY_REF && t->ref->lenstorage >= 0 ? LoadType(t) : t;
 }
 
+// The type of a variable or parameter declared with written type t, which
+// is s in the current bindings. A variable or parameter is a relative slot
+// only where its declaration spells the relative reference (or names an
+// alias of one): one a type argument makes relative, a `T` or `T?` local in
+// generic code over an array of links, holds the plain reference, as a
+// result of that type does (§3.9).
+inline TypeExpr *TypeCheck::DeclType(TypeExpr *t, TypeExpr *s) {
+    return t->kind == TY_REF && t->ref->lenstorage >= 0 ? s : ValueType(s);
+}
+
 // The implicit numeric widenings (§6.3): conversions that can never
 // change a value — to a wider type of the same signedness, or from an
 // unsigned type to any strictly wider signed type; f32 to f64.
