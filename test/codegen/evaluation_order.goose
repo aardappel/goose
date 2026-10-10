@@ -66,4 +66,16 @@ fn main() {
     bag_a.items.push(5);
     bag_b.items.push(6);
     print(bag_a.tag, bag_a.items, " ", bag_b.tag, bag_b.items);
+    // A field that no index or rebinding can move is stored to as it is
+    // spelled, after the right side, which here writes it too; compound
+    // assignment still reads the old value first.
+    var p = Pair { x: 1, y: 2 };
+    fn bump() -> i64 { p.x = 50; p.y = 60; 3 }
+    p.x = bump();
+    print(p.x, " ", p.y);
+    p.y += bump();
+    print(p.x, " ", p.y);
+    let pr .= p;
+    pr.x = bump();
+    print(p.x, " ", p.y);
 }

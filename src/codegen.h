@@ -858,6 +858,7 @@ struct CodeGen {
     bool SameCheck(Index *a, Index *b);
     void EmitHoistedCheck(Index *ta, Index *ea, const string &c);
     Loc GenLoc(Node *n);
+    bool StableDest(Node *n);
     string BytesTemp(string &stk);
     string RzTemp(TypeExpr *t, string &stk);
     string RzLenLv(TypeExpr *t, const string &h);

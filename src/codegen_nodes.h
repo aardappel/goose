@@ -847,10 +847,14 @@ inline void Assign::CgStmt(CodeGen &cg) {
     // also its count and its stack, which a reference that can be rebound
     // spells as `r.hdr->len` and `r.stk`. Stacks that top caching names
     // cannot move and keep their spelling, so the cached tops still apply.
+    // A destination neither can move is stored to as it is spelled
+    // (StableDest).
     if (lv.val) {
-        auto p = cg.T();
-        cg.L(lv.ispref ? string("gs_pref") : cg.CT(lv.t), " *", p, " = &(", lv.s, ");");
-        lv.s = cat("(*", p, ")");
+        if (lv.viaref || lv.ispref || !cg.StableDest(lval)) {
+            auto p = cg.T();
+            cg.L(lv.ispref ? string("gs_pref") : cg.CT(lv.t), " *", p, " = &(", lv.s, ");");
+            lv.s = cat("(*", p, ")");
+        }
     } else if (!cg.IsResz(lv.t)) {
         auto p = cg.T();
         cg.L("uint8_t *", p, " = ", lv.s, ";");

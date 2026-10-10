@@ -2745,7 +2745,15 @@ presence of aliases (`Snapshot`, `IndexLoc`, `GenSlice`, `Assign::CgStmt`,
   growth does not enlarge the earlier receiver view for this operation;
   an invalidating shrink must be rejected by the lifetime rules.
 * Assignment resolves its destination before evaluating its right-hand
-  side. Compound assignment also samples the old value first. Whole
+  side. Compound assignment also samples the old value first. A
+  destination the right side cannot move -- a variable, or a field of a
+  fixed-size value down from one with no index on the way and no reference
+  that can be rebound (`StableDest`) -- is stored to as it is spelled after
+  the right side has run, rather than through a pointer taken first: a
+  member store, which the C compiler's type-based alias analysis keeps
+  apart from other structs' fields of the same type (a loop updating
+  `s.w` keeps `n.e` in a register), where a store through a `double *`
+  may be to any double. Whole
   resizable assignment has the clear-before-construction semantics of
   spec §4.4; overlapping permitted copies have memmove semantics.
 * A range/count `for` samples its bounds once, before iteration, and runs

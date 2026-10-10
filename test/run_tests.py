@@ -1498,6 +1498,23 @@ def main():
         else:
             r.ok(f"member parameters {f.name}")
     r.show_task(member_params)
+    # Fields nothing can move are member stores, not stores through a
+    # pointer taken first (StableDest).
+    def member_stores():
+        f = HERE / "codegen" / "member_stores.goose"
+        cfile = gendir / "member_stores-c.c"
+        code, out, err = r.goose("-O1", "-o", cfile, f)
+        if code != 0:
+            r.fail(f"member stores {f.name}", out + err)
+            return
+        body = re.search(r"^static void store_links_g\w*\([^\n]*\) \{\n(.*?)^\}\n",
+                         cfile.read_text(), re.MULTILINE | re.DOTALL)
+        stores = body and all(re.search(rf"\)\.{fld}_g = ", body[1]) for fld in ("w", "prev"))
+        if not stores or re.search(r"double \*t\d+ = &", body[1]):
+            r.fail(f"member stores {f.name}", body[1] if body else "no store_links in the C")
+        else:
+            r.ok(f"member stores {f.name}")
+    r.show_task(member_stores)
 
     # Every annotated regression, including the expected-abort cases. These
     # describe the default O1 pass; O0/O2 execution checks semantics.
