@@ -58,9 +58,7 @@ The library uses these conventions:
   b)` exchanges the values `a` and `b` refer to. `remove_at`, `swap_remove`
   and `heap_pop` return a copy of the value removed, for a reference element
   its pointee's. A reference element passed by value (`insert_at`,
-  `heap_push`) is written `&x`, which makes `T` the reference type. The
-  checker does not yet let `stable_sort` sort an array of references or
-  slices (`implementation.md` §10).
+  `heap_push`) is written `&x`, which makes `T` the reference type.
 * The `std`, `dictionary`, `vec`, `math`, and `os` names are global;
   `binary`, `base64`, `csv`, `json`, `regex`, `audio`, `gfx`, `physics`, and
   `ui` use their own namespaces. A local named `fill` or `count`

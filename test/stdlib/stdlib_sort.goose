@@ -224,6 +224,44 @@ fn check_kinds() {
     print("kinds: ", ok, " ", views[0], " ", views[views.len - 1]);
 }
 
+// stable_sort over arrays of references and of slices, with an odd and an
+// even number of merge passes: the elements move, what they point at stays.
+struct Rec { key: i32, id: i32 }
+
+fn check_references() {
+    var r = rng { 11 };
+    var pool: Rec[>..] = [];
+    var ok = true;
+    let sizes = [50, 300, 1000];
+    for n in sizes {
+        var refs: (Rec&)[>..<] = [];
+        for i in n { refs.push(pool.push(Rec { key: r.rand_int(20) as i32, id: i as i32 })); }
+        stable_sort(refs) { a, b => a.key < b.key };
+        for i in 1..refs.len {
+            let a .= refs[i - 1];
+            let b .= refs[i];
+            if a.key > b.key || (a.key == b.key && a.id > b.id) { ok = false; }
+        }
+    }
+    var words: u8[][>..] = [];
+    for i in 200 { words.push(str(r.rand_int(1000) * 7919 % 100003)); }
+    var views: const u8[:][>..] = [];
+    for w in words { views.push(w); }
+    var order = copy(views);
+    stable_sort(views) { a, b => a.len < b.len };
+    for i in 1..views.len { if views[i - 1].len > views[i].len { ok = false; } }
+    // Equal lengths keep the order they had.
+    var k = 0;
+    for len in 1..7 {
+        for w in order {
+            if w.len != len { continue; }
+            if compare(views[k], w) != 0 { ok = false; }
+            k += 1;
+        }
+    }
+    print("references: ", ok, " ", pool.len, " ", k == views.len);
+}
+
 fn main() {
     check_unstable();
     check_stable();
@@ -231,4 +269,5 @@ fn main() {
     check_adversary();
     check_bad_comparators();
     check_kinds();
+    check_references();
 }

@@ -710,9 +710,10 @@ fn sort_merge<T, F>(l: T[:], r: T[:], d: T[:], chaotic: bool&) {
 // or in strictly descending order (reversed), extending each run shorter
 // than 16 by insertion sort; then passes merge neighboring runs in pairs,
 // alternating between xs and one temporary of xs.len elements on a fresh
-// stack, so that no pass copies back. Input that is one run takes the first
-// pass alone, and 20 or fewer elements are insertion sorted; neither
-// allocates.
+// stack, so that no pass copies back. The first pass merges out of the
+// temporary where the number of passes is odd, so that the last one lands
+// in xs. Input that is one run takes the first pass alone, and 20 or fewer
+// elements are insertion sorted; neither allocates.
 fn stable_sort<T>(xs: T[:]) { stable_sort(xs) { a, b => a < b } }
 fn stable_sort<T, F>(xs: T[:]) {
     let n = xs.len;
@@ -738,7 +739,13 @@ fn stable_sort<T, F>(xs: T[:]) {
     }
     var tmp: T[>..] = [];
     tmp.append(xs);
-    var into_tmp = true;
+    var passes = 0;
+    var runs = ends.len;
+    while runs > 1 {
+        runs = (runs + 1) / 2;
+        passes += 1;
+    }
+    var into_tmp = passes % 2 == 0;
     var chaotic = true;
     while ends.len > 1 {
         let src: T[:] = if into_tmp { xs } else { tmp };
@@ -763,7 +770,6 @@ fn stable_sort<T, F>(xs: T[:]) {
         ends.resize(w);
         into_tmp = !into_tmp;
     }
-    if !into_tmp { copy_into(xs, tmp); }
 }
 
 // ---- arrays: changing the length -------------------------------------------------

@@ -1117,7 +1117,14 @@ deep as the argument's root; where that root is inexact, or the event is a
 bound one, the call widens the store to every storage the argument's root
 may stand for (`ShrinkTargets` over that type), checks the stored value's
 mapped root against each, and records it on each, a class of its own
-caller's marked `bound` again. For a callee still being checked (a back
+caller's marked `bound` again. A stored value that is one of the views the
+storage of a callee's class held (a `classread` event out of that class)
+maps to what each place the class's argument names exactly holds -- a local
+holder's `contents` (`HeldAt`), a view a class of the caller's holds --
+rather than to the argument's roots as bounds; the call applies those
+events after its others, and again until what they store stops growing,
+since its other stores may add to the storage they read (`mappedheld`). For
+a callee still being checked (a back
 edge) it replays the record its cycle's previous round made (`RecordOf`,
 §3.11), and none in the first round.
 
@@ -5050,10 +5057,13 @@ specification allows, and the shapes the C backend refuses outright:
   into it through a reference parameter (`xs[0] .= xs[n]`) leaves the array
   taken to hold a reference into itself, so a shrink of it that a later use
   follows is an error (std's `heap_pop` sifts before it pops for this
-  reason); and a local array whose elements were appended out of a
-  parameter's holds references rooted at the local, so they cannot be stored
-  back into the parameter's: std's `stable_sort` rejects an array of
-  references or slices.
+  reason). A callee storing a view read out of one parameter's storage into
+  another's is checked in its body by their classes' depths, which bound the
+  storage and not the views it holds: `copy_into(xs, tmp)` for a local `tmp`
+  of views copied out of the parameter `xs` is an error, while the same with
+  slices that may each be `xs` or `tmp` is judged at the call by what each
+  holds, which is why std's `stable_sort` merges its last pass into `xs`
+  instead of copying back.
 * The C backend rejects: binding, copying or dispatching a *resizable* ADT
   payload; a reference to a resizable nested in a variable-size prefix or an
   ADT payload; copying a resizable value with a variable-size prefix; `==` on
