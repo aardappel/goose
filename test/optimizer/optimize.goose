@@ -753,6 +753,58 @@ fn heuristics_op() {
     print(t);                                        // 7428
 }
 
+// --- inline fn ------------------------------------------------------------------
+// An `inline fn` is inlined at every call whatever its size, where its twin
+// without the keyword stays a call. One returning two values stays a call
+// in Goose and is declared GS_INLINE in the C, for the C compiler to inline
+// (run_tests.py checks which bodies are left, and the C).
+
+inline fn il_big(x: i64) -> i64 {
+    var t = x;
+    for i in 1..20 {
+        if i % 3 == 0 { t += x * i; } else if i % 5 == 0 { t -= x / i; } else { t ^= i; }
+        if t > 1000 { t = t % 997 + x; }
+        if t < -1000 { t = -(t % 991) - x; }
+    }
+    for i in 1..9 {
+        if (t + i) % 4 == 1 { t += x; } else if i % 3 == 2 { t = t / 2 - i; } else { t -= i * 3; }
+        if t > 2000 { t = t % 1999 + i; }
+    }
+    return t;
+}
+fn il_plain(x: i64) -> i64 {
+    var t = x;
+    for i in 1..20 {
+        if i % 3 == 0 { t += x * i; } else if i % 5 == 0 { t -= x / i; } else { t ^= i; }
+        if t > 1000 { t = t % 997 + x; }
+        if t < -1000 { t = -(t % 991) - x; }
+    }
+    for i in 1..9 {
+        if (t + i) % 4 == 1 { t += x; } else if i % 3 == 2 { t = t / 2 - i; } else { t -= i * 3; }
+        if t > 2000 { t = t % 1999 + i; }
+    }
+    return t;
+}
+inline fn il_pair(x: i64) -> i64, i64 {
+    if x < 0 { return -x, 1; }
+    return x / 3, x % 3;
+}
+
+fn inline_op() {
+    let inline = 7;                                  // still a name
+    print(il_big(inline) + il_big(-3) + il_big(250));    // 607
+    print(il_plain(inline) + il_plain(-3) + il_plain(250));    // 607
+    var s = 0;
+    for i in -5..30 {
+        let q, r = il_pair(i);
+        s += q * 10 + r;
+    }
+    let q, r = il_pair(100);
+    print(s + q + r);                                // 1569
+    inline fn twice_plus(v: i64) -> i64 { v * 2 + inline }
+    print(twice_plus(4));                            // 15
+}
+
 fn main_optimize() {
     use_inlining();
     use_params();
@@ -776,6 +828,7 @@ fn main_optimize() {
     recursion_op();
     guarded_op();
     heuristics_op();
+    inline_op();
     print(ginit + G);
     var acc = 0;
     acc += gv;

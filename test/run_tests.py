@@ -885,7 +885,7 @@ class Runner:
                           f"copies of the body's start: got {got}, want {want}")
                 valid = False
         # Inlining heuristics: which bodies are left out of line.
-        live = set(re.findall(r"^fn (ih_\w+)\(", specs, re.MULTILINE))
+        live = set(re.findall(r"^(?:inline )?fn (i[hl]_\w+)\(", specs, re.MULTILINE))
         left = {
             "ih_rare": True,
             "ih_early": True,
@@ -896,6 +896,11 @@ class Runner:
             "ih_slow": True,
             "ih_front": True,
             "ih_work": not optimized,
+            # inline fn: inlined however big; its twin without the keyword
+            # stays; one returning two values stays a call in Goose.
+            "il_big": not optimized,
+            "il_plain": True,
+            "il_pair": True,
         }
         for name, want in left.items():
             if (name in live) != want:
@@ -1479,6 +1484,23 @@ def main():
         elif r.check_loop_shapes(cfile.read_text()):
             r.ok(f"loop shapes {f.name}")
     r.show_task(loop_shapes)
+    # An inline fn returning two values stays a call in Goose and is declared
+    # GS_INLINE in the C, for the C compiler to inline (§7.13).
+    def inline_fn_c():
+        f = HERE / "optimizer" / "optimize.goose"
+        cfile = gendir / "optimize-inline.c"
+        code, out, err = r.goose("-O1", "-o", cfile, f)
+        if code != 0:
+            r.fail("inline fn C", out + err)
+            return
+        text = cfile.read_text()
+        pair = re.search(r"^static GS_INLINE [^\n;]*\bil_pair_g\d*\(", text, re.MULTILINE)
+        plain = re.search(r"^static GS_INLINE [^\n;]*\bil_plain_g\d*\(", text, re.MULTILINE)
+        if not pair or plain:
+            r.fail("inline fn C", f"il_pair GS_INLINE: {bool(pair)}, il_plain GS_INLINE: {bool(plain)}")
+        else:
+            r.ok("inline fn C")
+    r.show_task(inline_fn_c)
     # A slice and a builder parameter are two C parameters each (spec C.3),
     # the slice's data pointer as `void *` (ParamFields).
     def member_params():
