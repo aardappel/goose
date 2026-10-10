@@ -2805,7 +2805,10 @@ Rules (scopes ordered by nesting; globals are the outermost scope, §11.1):
   slice (§6.4).
 * **Return**: a returned reference's root must be visible to the caller (a
   caller-supplied root, a global, or the function's own in-place-constructed
-  return value) — every return's, whatever the others give.
+  return value) — every return's, whatever the others give. A returned value
+  that holds references is judged by the ones it holds, which for a local
+  are those stored into it (§9.5): one whose reference fields were only ever
+  null returns as freely as a value holding no references.
 * **Merged values**: a value that may be any of several — the branches of an
   `if` or `match`, the `break`s of a `block` or `loop`, a reference
   variable's bindings, or a function's `return`s, which each call maps to

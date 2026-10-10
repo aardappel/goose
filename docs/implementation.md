@@ -1125,8 +1125,9 @@ Holder values carry their contents' roots as `Val::contents` (§9.2's
 "implicitly generic over the fields' roots"): a literal's are those of its
 reference initializers (`NoteLitElem`, `HolderFromLit`); a variable's are
 its `contents`, marks included (§3.10 **Class reads**), which hold a loop's
-later stores in its next pass (§3.7), or the variable itself as the bound
-where nothing was stored there yet, and a global's are rooted at the
+later stores in its next pass (§3.7), and are none where only nulls and
+empty slices were stored there so far (so `var x = N { link: null };
+return x;` returns nothing rooted in `x`), and a global's are rooted at the
 globals (the null root, inexact); a container read's are the
 container's roots, inexact, slot reads (§3.10) out of a field or an element,
 as a `for` or `match` binder's copy's, a popped element's and what `append`

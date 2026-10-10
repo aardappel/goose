@@ -127,19 +127,14 @@ inline Val Ident::Check(TypeCheck &tc, TypeExpr *) {
             v.lvalue = true;
             if (tc.HoldsPlainRef(v.type)) {
                 // What the references inside point at: a global's contents
-                // are rooted at globals or static data; anything else is
-                // bounded by the variable itself, which its contents
-                // outlive. The contents are what was stored so far, a
-                // loop's later iterations' stores included (CheckLoopPasses).
+                // are rooted at globals or static data; a local's are what
+                // was stored into it so far, a loop's later iterations'
+                // stores included (CheckLoopPasses), which is nothing where
+                // only nulls and empty slices were.
                 v.holderset = true;
                 v.holderfrom = vd;
-                if (vd->isglobal) {
-                    v.contents.Set(nullptr, false);
-                } else if (!vd->contents.None() || vd->contents.unknown) {
-                    v.contents = vd->contents;
-                } else {
-                    v.contents.Set(vd, false);
-                }
+                if (vd->isglobal) v.contents.Set(nullptr, false);
+                else v.contents = vd->contents;
             }
         }
         return v;
