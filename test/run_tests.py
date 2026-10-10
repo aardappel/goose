@@ -1439,10 +1439,12 @@ def main():
     # first-line GS_MAX_STACKS the compiler checks the count against. The
     # counts themselves follow the emitted code and are not pinned.
     def stacks_report(f, patterns):
-        # The report goes where the compiler's messages do: stderr here,
-        # since without an -o the compiler is set to run the program.
+        # The report goes where the compiler's messages do: without an -o,
+        # stderr where it has TinyCC to run the program, stdout where it
+        # would write the .c instead.
         code, out, err = r.goose("-O1", "--check", "--stacks", f)
-        missing = [p for p in patterns if not re.search(p, err, re.MULTILINE)]
+        missing = [p for p in patterns
+                   if not any(re.search(p, s, re.MULTILINE) for s in (out, err))]
         if code != 0 or missing:
             r.fail(f"stacks {f.name}", f"missing {missing}\n{out}{err}")
         else:
