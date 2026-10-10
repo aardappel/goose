@@ -141,8 +141,10 @@ string FirstStdlibDir(const vector<string> &stdlibdirs) {
 // `import a.b;` resolves relative to the root file's directory, then in the
 // standard library; `import .a.b;` relative to the importing file's. A
 // `rootsource` is the root file's text, which is then not read from disk.
+// With `module` the root file is a module checked on its own, so the program
+// root is unknown and `import a.b;` is also tried in each parent directory.
 void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlibdirs,
-                  const string *rootsource = nullptr) {
+                  const string *rootsource = nullptr, bool module = false) {
     auto rootdir = DirOf(rootpath);
     vector<string> queue = { rootpath };
     set<string> loaded = { rootpath };
@@ -164,6 +166,15 @@ void ParseProgram(Ast &ast, const string &rootpath, const vector<string> &stdlib
         parser.ParseTop();
         for (auto &imp : parser.imports) {
             auto imppath = cat(imp.relative ? DirOf(path) : rootdir, imp.path, ".goose");
+            if (!imp.relative && module && !FileExists(imppath)) {
+                auto dir = rootdir;
+                while (!dir.empty()) {
+                    while (!dir.empty() && (dir.back() == '/' || dir.back() == '\\')) dir.pop_back();
+                    dir = DirOf(dir);
+                    auto cand = cat(dir, imp.path, ".goose");
+                    if (FileExists(cand)) { imppath = cand; break; }
+                }
+            }
             if (!imp.relative && !FileExists(imppath)) {
                 for (auto &dir : stdlibdirs) {
                     auto cand = cat(dir, imp.path, ".goose");
@@ -624,7 +635,7 @@ int Main(int argc, char **argv) {
         }
         Ast ast;
         auto stdlibdirs = StdlibDirs(stdlibdir, exe);
-        ParseProgram(ast, filename, stdlibdirs);
+        ParseProgram(ast, filename, stdlibdirs, nullptr, modulecheck);
         if (dump) {
             // Dump is parse-level output: no name resolution or typecheck,
             // so parse-only test files can roundtrip, and every name shows
