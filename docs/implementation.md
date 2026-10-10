@@ -2842,7 +2842,20 @@ size rules, would grow the hot path of its caller for at most one call
 saved. It stays out of line, and is declared `GS_NOINLINE` in C
 (`FnSpec::outofline`), since the C compiler otherwise inlines a static
 function with one caller whatever its size. A branch the condition's
-constant decides is folded away first and is not cold. Never inlined (`Scan`): a `recursive` function
+constant decides is folded away first and is not cold. The single-use rule
+also yields to the caller's own inlining (`OptBody`): in a function F with
+several call sites, a callee used once on a branch of F (an `if` or `match`
+arm, the right operand of `&&` or `||`) outside F's loops, and too big for
+the size rules, would put its whole body into every copy of F. So F is
+first optimized without such callees; then, in the order the walk met them,
+each is inlined while F stays small enough to inline at its call sites in a
+loop (count times F's uses below LOOPNCU times NCU, or count below NC), or
+wherever F never was. The others keep their calls, which every copy of F
+repeats, so they take F's number of uses for their own inlining from then
+on; a second walk of F inlines the rest. A run of F need not take the
+branch, so the call left there costs less than the call to F it would bring
+back. A callee F calls on every run is inlined into it as before: calling
+it instead of F saves nothing. Never inlined (`Scan`): a `recursive` function
 or cycle member, a `thread_fn`, a `simd` function (its callers would run the
 baseline only, §6.13), a function returning more than one value, and
 a body that a *separate* live tree still references in a way a copy cannot

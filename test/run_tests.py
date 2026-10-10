@@ -890,6 +890,10 @@ class Runner:
             "ih_check": not optimized,
             "ih_wrap": not optimized,
             "ih_twin": True,
+            "ih_key": not optimized,
+            "ih_slow": True,
+            "ih_front": True,
+            "ih_work": not optimized,
         }
         for name, want in left.items():
             if (name in live) != want:

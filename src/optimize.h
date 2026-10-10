@@ -36,7 +36,9 @@
 // or nodecount(K) < NC, or nodecount(K) * uses(K) < NCU, which a call site
 // inside a loop raises to LOOPNCU * NCU. A K used once that only that first
 // rule would inline stays out of line where the call is in a cold branch,
-// the else of a guard or the body of an early return or break.
+// the else of a guard or the body of an early return or break, and where
+// its body would make a caller with several call sites too big to inline
+// at them (OptBody).
 // -O0: no inlining; -O1: NC=8, NCU=48; -O2: NC=16, NCU=96.
 // Whatever the size, the C blocks around the call plus those K's body nests
 // must stay within MAXNEST (see Around): C compilers limit how deep blocks
@@ -103,6 +105,14 @@ struct Optimizer {
     // path, so a callee inlined there only because it has no other caller
     // would grow the hot path of its caller for nothing.
     int colddepth = 0;
+    // The branches around it that a run of the body may not take: the arms
+    // of an `if` or `match`, the right operand of && and ||.
+    int branchdepth = 0;
+    // While set, a callee only the used-once rule would inline, called on
+    // such a branch outside any loop, is not inlined but collected here, for
+    // OptBody to weigh against the size of the body it is optimizing.
+    bool deferonce = false;
+    vector<FnSpec *> deferred;
 
     // Whether block b ends by leaving: a return, a break, or abort or exit.
     static bool Leaves(Node *b) {
@@ -481,6 +491,43 @@ struct Optimizer {
         info.noinline = noin;
     }
 
+    // Optimizes the body of sp. A callee K used once that only the used-once
+    // rule would inline adds no code where sp is a real function, but sp's
+    // copies carry K's body wherever sp is inlined, and a sp small enough to
+    // inline at its several call sites (in a loop, at the most) may no longer
+    // be once it holds K. Where a run of sp need not call K, the call to K
+    // costs less than the call to sp it would bring back. So for such a sp
+    // the body is first optimized without those callees, and they are
+    // inlined, in the order the walk met them, only while sp stays small
+    // enough or where it never was. The rest keep their calls, which each
+    // copy of sp repeats: K then has as many uses as sp, which is what its
+    // ordinary inlining is decided by.
+    void OptBody(FnSpec *sp) {
+        deferonce = sp->uses > 1;
+        deferred.clear();
+        OptBlock(sp->body);
+        deferonce = false;
+        if (deferred.empty()) return;
+        Scan(sp);
+        auto &info = inlineinfo[sp];
+        auto maxsize = max(nc - 1, (ncu * LOOPNCU - 1) / sp->uses);
+        auto inlinable = !info.noinline && info.nodecount <= maxsize;
+        auto size = info.nodecount;
+        auto any = false;
+        for (auto K : deferred) {
+            auto ksize = inlineinfo[K].nodecount;
+            if (!inlinable || size + ksize <= maxsize) {
+                size += ksize;
+                any = true;
+            } else {
+                K->uses = sp->uses;
+            }
+        }
+        // Once more, where the callees still used once now inline: the walk
+        // takes the same decisions as before for everything else.
+        if (any) OptBlock(sp->body);
+    }
+
     // Accumulator tail-recursion elimination, defined in optimize_tre.h.
     void TailRecurse(FnSpec *sp);
 
@@ -529,7 +576,7 @@ struct Optimizer {
             curspec = sp;
             cursf = sp->sf;
             SetupBaseCase(sp);
-            OptBlock(sp->body);
+            OptBody(sp);
             TailRecurse(sp);
             Scan(sp);
         }
@@ -697,6 +744,10 @@ inline Node *Optimizer::TryInline(Call *c) {
     if (info.nestedcalls && !curspec) return nullptr;
     auto argnodes = c->ArgNodes();
     if (argnodes.size() != K->params.size()) return nullptr;
+    if (!small && deferonce && branchdepth > 0 && loopdepth == 0) {
+        deferred.push_back(K);
+        return nullptr;
+    }
     Inliner inl { *this, ast, K, curspec, {}, {} };
     inl.keepcaptured = info.nestedcalls;
     for (auto &p : c->fvremap) inl.outer[p.first] = p.second;
@@ -1040,7 +1091,9 @@ inline Node *Binary::Opt(Optimizer &o) {
             if (op == T_ANDAND) return lb->val ? o.Opt(right) : left;
             return lb->val ? left : o.Opt(right);
         }
+        o.branchdepth++;
         right = o.OptIn(this, right);
+        o.branchdepth--;
         if (auto rb = Is<BoolLit>(right)) {
             // The left still evaluates; only the trivial combine drops.
             if (op == T_ANDAND && rb->val) { o.folded++; return left; }
@@ -1261,6 +1314,7 @@ inline Node *IfExpr::Opt(Optimizer &o) {
     auto thencold = thenleaves && !elseleaves && !flat;
     auto elsecold = elseleaves && (flat || !thenleaves);
     auto k = Optimizer::Around(this, thenb);
+    o.branchdepth++;
     o.depth += k;
     o.colddepth += thencold;
     o.OptBlock(thenb);
@@ -1269,6 +1323,7 @@ inline Node *IfExpr::Opt(Optimizer &o) {
     o.colddepth += elsecold;
     if (elseb) elseb = o.OptIn(this, elseb);
     o.colddepth -= elsecold;
+    o.branchdepth--;
     return this;
 }
 
@@ -1297,7 +1352,9 @@ inline Node *MatchExpr::Opt(Optimizer &o) {
             return o.Opt(sel->body);
         }
     }
+    o.branchdepth++;
     for (auto &arm : arms) arm.body = o.OptIn(this, arm.body);
+    o.branchdepth--;
     return this;
 }
 
